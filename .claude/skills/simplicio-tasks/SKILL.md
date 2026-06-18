@@ -642,6 +642,38 @@ count drift is a WARNING only. On hard failure, issue ONE targeted fix touching 
 
 ## Step 6 — Deliver + close + self-audit
 
+### HARD RULE — Never close an issue without concrete evidence
+
+**An issue MUST NOT be closed unless AT LEAST ONE of the following is true:**
+
+1. **Merged PR** — a pull request that implements the item is merged into the default branch
+   (`gh pr list --state merged` shows it), AND the issue is linked/referenced in that PR.
+2. **Passing CI** — the merged PR's checks are green (no test failures, no compile errors).
+3. **Run evidence** — `§4b` run-verification passed: the changed command/feature was actually
+   invoked and produced the expected output (not just compiled).
+4. **Human explicitly closed it** — the human owner of the repo closed or asked to close it
+   directly. The orchestrator NEVER closes on the human's behalf for human-owned work.
+
+**What does NOT count as evidence (HARD BLOCK — never close for these alone):**
+- "Spec documented" or "doc created" — a spec is not an implementation.
+- "Not planned" batch-close of a queue — only the human owner may close items as not-planned;
+  the orchestrator must mark them `needs-human` and leave them open.
+- Self-report from a sub-agent — "I implemented it" is not evidence; the merged PR + green CI is.
+- Issue body already describes the desired state — description ≠ done.
+- Workaround or partial stub — stubs must be `partial`, not `done`.
+
+**If the work is human-only** (requires credentials, external accounts, business decisions,
+legal sign-off, or physical actions): mark `needs-human`, leave the issue OPEN, post a comment
+explaining what the human must do, and move on. Never close it.
+
+**Closing sequence (mandatory):**
+```
+1. Verify merged PR exists: gh pr list --state merged --search "closes #<N>" OR body contains "#<N>"
+2. Verify CI green on that PR
+3. Post evidence comment: "Closes #<N> — PR #<M> merged, CI green, <binary/cmd> ran: <output snippet>"
+4. gh issue close <N>   ← ONLY after steps 1-3 pass
+```
+
 For each completed item: commit (Conventional Commits, English), push, Draft PR, close the
 item in its source with a short evidence comment (PR link + verification summary).
 
