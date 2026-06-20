@@ -16,17 +16,9 @@ The target text is in the skill arguments (e.g. `/simplicio-tasks termine as iss
 abertas`). If no argument, default to "all open work-items in the default source";
 confirm scope in ONE line only if ambiguous.
 
-## Step 0 — Load the contract (mandatory)
-
-Read the orchestrator contract before acting. Resolve it in this order, first hit
-wins:
-
-1. `docs/contracts/orchestrator-v6.md` (repo, canonical, versioned)
-2. fall back to v5 if v6 is absent, and note the downgrade.
-
-The contract is the source of truth for HOW to execute (dual-path router,
-auto-scaling, safety/secret/human-override gates, self-audit convergence). This
-SKILL is the launcher; the contract holds the full protocol.
+This file is the complete, self-contained protocol — there is no external contract to
+load. Everything needed to execute (dual-path router, auto-scaling, safety/secret/
+human-override gates, self-audit convergence) is below.
 
 ## Step 1 — Identity + environment (cheap, no heavy bootstrap)
 
@@ -39,25 +31,25 @@ detect which EXTENSION POINTS (Step 1b) the host runtime can satisfy natively �
 record the set; everything unbound falls back to the LLM. Do NOT run a full
 heavy preflight for a small job — the router decides depth.
 
-## Step 1d — Pre-flight: arm the three prerequisites (MANDATORY before any work)
+## Step 1a — Pre-flight: arm the three prerequisites (MANDATORY before any work)
 
 Run these three checks before any discovery or dispatch. They are fast and cheap.
 If any is BLOCKING, fix it inline — do not skip and proceed.
 
 ### PRE-1: Kill-switch budget file
 
-Check if `.orchestrator/loop-budget.json` exists and has `daily_usd_ceiling > 0`:
+Read `.orchestrator/loop-budget.json` and check `daily_usd_ceiling > 0`. Use the file tool
+or a cross-platform reader (NOT a shell-specific `cat`):
 
-```bash
-cat .orchestrator/loop-budget.json 2>/dev/null
+```
+python3 -c "import json,os; p='.orchestrator/loop-budget.json'; print(json.load(open(p))['daily_usd_ceiling'] if os.path.exists(p) else 'MISSING')"
 ```
 
 If missing OR `daily_usd_ceiling == 0`:
 - Ask the user ONE line: `"Daily $ ceiling not set. How much can I spend per day? (e.g. 5.00 — or 0 to run only this session without the 24/7 watcher)"`
-- On response, create/update the file:
-  ```bash
-  mkdir -p .orchestrator
-  cat > .orchestrator/loop-budget.json <<'EOF'
+- On response, WRITE `.orchestrator/loop-budget.json` with your file tool (cross-platform —
+  do NOT rely on a bash heredoc, which fails on PowerShell/cmd) containing:
+  ```json
   {
     "daily_usd_ceiling": <user_value>,
     "per_run_token_ceiling": 0,
@@ -65,7 +57,6 @@ If missing OR `daily_usd_ceiling == 0`:
     "reset_at": "<today+1 at 00:00 UTC ISO-8601>",
     "state": "running"
   }
-  EOF
   ```
 - If user says "0" or "this session only": set `daily_usd_ceiling: 0`, which disables
   the 24/7 watcher (runs once, then stops — fail-safe is honored).
@@ -75,8 +66,7 @@ If missing OR `daily_usd_ceiling == 0`:
 ### PRE-2: Source auth check (gh / Jira / etc.)
 
 ```bash
-gh auth status 2>&1
-gh auth token 2>&1 | head -1
+gh auth status        # exit 0 = authed; non-zero = re-auth needed (cross-platform, no `head`)
 ```
 
 - If `gh auth status` fails or token is expired: run `gh auth login` interactively OR
@@ -90,7 +80,7 @@ gh auth token 2>&1 | head -1
 
 ### PRE-3: Arm the watcher (24/7 recurring trigger)
 
-If `daily_usd_ceiling > 0` (from PRE-1), arm the idle watcher so new work is picked up
+If `daily_usd_ceiling > 0` (from Step 1a PRE-1), arm the idle watcher so new work is picked up
 automatically while the user is away. Choose the most durable available mechanism:
 
 **Option A — Session loop (least durable, but always available):**
@@ -208,8 +198,7 @@ Never reason about what a command "would return" — always invoke it and use th
 Priority order for execution:
 1. **Host runtime native command** (if bound to `shell_exec` extension point) — structured output, minimal tokens, cross-platform
 2. **Bash/shell tool call with output clamping** (`| head -20` or `2>&1 | tail -5`) — raw but bounded
-
-4. NEVER: LLM reasoning about what a command would output
+3. NEVER: LLM reasoning about what a command would output
 
 **Auto-clarity (safety overrides brevity).** The output-compression / terse-report / NO-THINK policy YIELDS to the safety gate. Whenever an item, command, or message is security-sensitive, irreversible (the Step 5 set: force-push, history rewrite, prod deploy, data/schema delete, mass-file delete), or order-dependent (a multi-step sequence where dropped conjunctions or reordering changes meaning), FORCE full-clarity verbose output for that segment: the complete warning in plain language, the exact command quoted verbatim, and the steps in explicit order — then resume terse mode. The SAME trigger set that drives the Step 5 human/irreversible-op gate wires into this terseness policy, so compression can never silently degrade a destructive-op confirmation or a security warning into an ambiguous fragment. Brevity is never applied to a confirmation a human must act on.
 
@@ -321,10 +310,11 @@ silently fall back to GitHub). Each adapter must expose: list_ready (metadata-on
 get_details, claim, update_status, attach_evidence, close.
 
 From the resolved source, list candidates by METADATA only (titles, labels, status) —
-do not open every body. Normalize each to the canonical work-item schema (contract
-§3.2). Dedup by source-id + normalized-title + problem-fingerprint AND by existing
-branch/PR (idempotency — never double-implement; the repo has a real "#783 done twice
-in parallel" incident).
+do not open every body. Normalize each to the canonical work-item schema (title, body,
+labels, status, acceptance-criteria, links — see Step 2b-1). Dedup by source-id +
+normalized-title + problem-fingerprint AND by existing branch/PR (idempotency — never
+double-implement; parallel double-implementation of the same item is a real, observed
+failure mode).
 
 Count the independent items → this drives scale. Maintain a persistent `seen` set for
 the whole run. Discovery is NOT one-shot — it re-runs continuously (Step 3b).
@@ -385,7 +375,7 @@ Plan:
 ```
 Only after the plan is written does coding start. This is the gate between intake and execute.
 
-## Step 3 — Route: fast-path vs heavy-path (from the contract router)
+## Step 3 — Route: fast-path vs heavy-path (dual-path router)
 
 Score complexity per item and pick the lane:
 
@@ -475,7 +465,7 @@ work exists it launches a fresh run. See "## Arming the watcher".
 ### Guards (both layers)
 - Idempotency: never re-pick an item in `seen` (no duplicate branch/PR/commit).
 - Dead-letter: an item that failed K times does NOT re-enter intake.
-- Scoped runs: if the user pinned a fixed list (e.g. "feche #1989..#2002"), DISABLE
+- Scoped runs: if the user pinned a fixed list (e.g. "close #1989..#2002"), DISABLE
   re-discovery and the watcher — finish exactly that set and stop.
 - Conflict-serialization holds for any newly-arrived same-file item.
 
@@ -539,6 +529,11 @@ one not spent — prefer `deterministic_edit` over any model for decided changes
 
 ## Step 4 — Quality loop per item (the Looping principle)
 
+> Stack-agnostic: examples below use Rust/`cargo` for concreteness, but every build/lint/
+> typecheck/test command MUST be the one `toolchain_detect` resolved for this repo
+> (`tsc`/`vitest`, `go build`/`go test`, `pytest`, `mvn`, etc.). The gates are the same; only
+> the commands differ.
+
 edit → fmt → lint → targeted tests → analyze failure → fix → repeat until green or genuinely
 blocked. Never mark done without green gates + evidence. Code failure is NOT a blocker —
 investigate first. Drive the loop with the `diagnostics` point (parse build/test output →
@@ -556,8 +551,8 @@ DoD checklist per item:
   [ ] No unimplemented!() / todo!() / panic! in production paths
   [ ] Code reads from context (no duplicate of existing logic, no ignored adjacent module)
   [ ] Comments/design decisions from the issue body incorporated
-  [ ] Compiles: cargo check clean on changed files
-  [ ] RUNS: see §4b below
+  [ ] Compiles/typechecks: clean on changed files (e.g. `cargo check`, `tsc`, `go build`)
+  [ ] RUNS: see Step 4b below
   [ ] Review comments addressed (if any)
 ```
 
@@ -574,7 +569,7 @@ must RUN:
 - Stub function that returns `Err(NotImplemented)` → acceptable IF the AC only asks for a
   typed interface; NOT acceptable if the AC asks for working behavior.
 - Use the `validate`/`smoke` point if bound — it exercises the system, not the compiler.
-- This is the "funciona, não só compila" north star. An item that compiles but was never
+- This is the "works, not just compiles" north star. An item that compiles but was never
   run is PARTIAL, not done.
 
 ### 4c — Adversarial verify for MEDIUM+ items (multi-vote)
@@ -585,11 +580,11 @@ verifiers, each prompted to REFUTE the implementation AND check each AC. Majorit
 Each verifier gets:
 - The full issue body + ACs from Step 2b-1
 - The diff
-- The run evidence from §4b
+- The run evidence from Step 4b
 - Task: "Find any AC that is NOT met by this implementation. Find any fake/placeholder
   return. Refute or confirm with specific line references."
 
-## Step 5 — Safety gates (NON-NEGOTIABLE, from contract)
+## Step 5 — Safety gates (NON-NEGOTIABLE)
 
 Before any commit/push: secret-scan the diff (block on hit). Before any IRREVERSIBLE op
 (force-push, history rewrite, prod deploy, data/schema delete, mass-file delete) → STOP and
@@ -642,38 +637,6 @@ count drift is a WARNING only. On hard failure, issue ONE targeted fix touching 
 
 ## Step 6 — Deliver + close + self-audit
 
-### HARD RULE — Never close an issue without concrete evidence
-
-**An issue MUST NOT be closed unless AT LEAST ONE of the following is true:**
-
-1. **Merged PR** — a pull request that implements the item is merged into the default branch
-   (`gh pr list --state merged` shows it), AND the issue is linked/referenced in that PR.
-2. **Passing CI** — the merged PR's checks are green (no test failures, no compile errors).
-3. **Run evidence** — `§4b` run-verification passed: the changed command/feature was actually
-   invoked and produced the expected output (not just compiled).
-4. **Human explicitly closed it** — the human owner of the repo closed or asked to close it
-   directly. The orchestrator NEVER closes on the human's behalf for human-owned work.
-
-**What does NOT count as evidence (HARD BLOCK — never close for these alone):**
-- "Spec documented" or "doc created" — a spec is not an implementation.
-- "Not planned" batch-close of a queue — only the human owner may close items as not-planned;
-  the orchestrator must mark them `needs-human` and leave them open.
-- Self-report from a sub-agent — "I implemented it" is not evidence; the merged PR + green CI is.
-- Issue body already describes the desired state — description ≠ done.
-- Workaround or partial stub — stubs must be `partial`, not `done`.
-
-**If the work is human-only** (requires credentials, external accounts, business decisions,
-legal sign-off, or physical actions): mark `needs-human`, leave the issue OPEN, post a comment
-explaining what the human must do, and move on. Never close it.
-
-**Closing sequence (mandatory):**
-```
-1. Verify merged PR exists: gh pr list --state merged --search "closes #<N>" OR body contains "#<N>"
-2. Verify CI green on that PR
-3. Post evidence comment: "Closes #<N> — PR #<M> merged, CI green, <binary/cmd> ran: <output snippet>"
-4. gh issue close <N>   ← ONLY after steps 1-3 pass
-```
-
 For each completed item: commit (Conventional Commits, English), push, Draft PR, close the
 item in its source with a short evidence comment (PR link + verification summary).
 
@@ -683,19 +646,19 @@ The final step runs: the merged build/test, the `smoke` gate, and a source re-qu
 confirming the items are actually closed. The run's status = that measured state, not the sum
 of agent claims. Any discrepancy → reopen + fix, do not report done.
 
-Then run the contract's **self-audit**: score the run (correctness, safety, token-efficiency,
+Then run the **self-audit**: score the run (correctness, safety, token-efficiency,
 scalability, recovery, evidence), list any P0/P1, and if any remain, loop a fix pass. Converge
 to "only strengths" (zero P0/P1) or report the residual honestly. Finish with:
 
 ```
-Feito: {n itens entregues / fechados}
-Evidência: {PR links / receipt}
+Done: {n items delivered / closed}        # respond in the user's language
+Evidence: {PR links / receipt}
 Status: done | partial | blocked
 ```
 
 ## Step 6b — Close the feedback loop (comments, CI, conflicts) until merge-ready
 
-Opening a Draft PR is `dev_done`, NOT `merge_ready` (contract §31.9). Pursue these loops —
+Opening a Draft PR is `dev_done`, NOT `merge_ready` (see Step 6b-5). Pursue these loops —
 POLLED like intake (Step 3b); comments and CI land minutes later.
 
 1. **CI feedback → fix.** Check PR status; if a check fails, fetch the failed log, parse via
@@ -716,7 +679,7 @@ POLLED like intake (Step 3b); comments and CI land minutes later.
      with full conflict evidence — never silently abort.
 4. **Send evidence — to the PR AND the source item.** Attach the receipt, green gates, smoke
    result, and real savings via the `pr`/`evidence` point; post a short pointer comment (no
-   long logs — Evidence Economy §3.5).
+   long logs — keep evidence terse, link don't paste).
 5. **Merge-readiness.** Mark `merge_ready` only when CI is green AND review approved AND
    acceptance criteria met. `done` in the tracker ≠ merge-ready.
 
@@ -780,7 +743,7 @@ Never treat all failures the same. Classify and apply the matching retry strateg
 
 | Failure class | Detection | Retry strategy |
 |---|---|---|
-| Compile error | `cargo check` has `^error` | Fix via `diagnostics` → retry immediately (max 3×) |
+| Compile error | build/typecheck emits `^error` (e.g. `cargo check`, `tsc`, `go build`) | Fix via `diagnostics` → retry immediately (max 3×) |
 | Test failure | test runner exit ≠ 0 | Parse failing test + assertion → targeted fix → retry (max 3×) |
 | Merge conflict | `git merge/rebase` exit ≠ 0 | Conflict retry protocol (Step 6b) → rebase → retry (max 3×) |
 | Static analysis blocker | Sonar/clippy new blocker | Fix specific finding → re-run → retry (max 2×) |
@@ -813,7 +776,7 @@ It MUST reuse the exact same catalog the live gate uses so the audit never drift
 measurement into an EXPENSIVE generator (runs the model once, snapshots raw outputs + metadata — model
 id, runtime version, timestamp, sample size, baseline definition — to a committed file) and a CHEAP
 offline scorer (recomputes metrics from that snapshot with a FIXED tokenizer, NO model call). Regenerate
-only when the skill/contract or prompt set materially changes; treat the snapshot diff as the review
+only when the skill or prompt set materially changes; treat the snapshot diff as the review
 surface. Prefer per-item MEDIAN over mean, include min–max + stdev, disclose limits inline. Any published
 metric lives between begin/end markers, mechanically rewritten from committed evidence — never hand-typed.
 
@@ -833,8 +796,9 @@ Only STOPS on the explicit stop signal, budget exhaustion, or a safety halt.
 
 ## Arming the watcher (idle, between runs)
 
-**Configured mode for this repo: ALWAYS-ON 24/7, poll interval ~2 minutes** (user standing
-decision, 2026-06-18). Catch work opened at any moment.
+**Cadence is configurable, not hardcoded.** Default poll interval ~2 minutes; the user
+chooses always-on vs session-only via the kill-switch ceiling (Step 1a PRE-1: `ceiling > 0`
+arms the 24/7 watcher, `ceiling = 0` runs once and stops). Catch work opened at any moment.
 
 Arming mechanisms (prefer the most durable available):
 - **Host-native durable scheduler** (if bound): a 2-minute tick that discovers + dispatches.
@@ -862,10 +826,13 @@ the heavy-path to internal multi-pass — no swarm, same gates.
 
 ## Notes
 
-- This skill is the launcher; the **contract** (`docs/contracts/orchestrator-v6.md`) holds the
-  full protocol. Keep them in sync.
-- End every message with the mandatory token-savings line. Back it with REAL numbers from
-  the `savings_ledger` extension point when bound; otherwise estimate honestly.
+- This file is self-contained — it IS the full protocol; there is no external contract.
+- End every message with the mandatory token-savings line, in this exact format:
+  ```
+  simplicio-tasks: ~<spent> tokens · baseline ~<control-arm> · saved ~<saved> (<pct>%)
+  ```
+  Back it with REAL numbers from the `savings_ledger` extension point when bound; otherwise
+  estimate honestly.
 - **Savings baseline = control arm, not worst case.** The baseline is the CHEAPEST sensible
   NON-orchestrated path to the same outcome (a generic terse LLM pass over only the files
   genuinely needed), NOT a verbose strawman that assumes bulk-reading the whole repo or
@@ -877,7 +844,7 @@ the heavy-path to internal multi-pass — no swarm, same gates.
   Only report savings for an item whose run-verification (Step 4b) AND acceptance-criteria gate
   (Step 4a) PASSED. A turn that compressed aggressively but failed its quality gate reports NO
   savings credit. Raw compression is never success on its own.
-- **One-time standing-context compaction.** The orchestrator re-loads its run-contract, shared
+- **One-time standing-context compaction.** The orchestrator re-loads its standing protocol, shared
   digest, and accumulated memory on EVERY tick — compacting them ONCE pays back across hundreds of
   iterations. Rewrite standing context into a terse form that preserves code/paths/URLs/numbers/
   versions VERBATIM (run it through `transform_guard`), keep a `.original` backup, never touch

@@ -176,18 +176,18 @@ skill depends on the abstraction, never on a specific runtime.
 A full inventory of what the skill carries — every mechanism, cited.
 
 ### The loop (7 steps + sub-steps)
-- **Step 0** — Load the contract (canonical protocol).
 - **Step 1** — Identity + cheap environment detection.
+- **Step 1a** — Pre-flight: kill-switch budget, source auth, arm the watcher.
 - **Step 1b** — The 43 extension points (bind native or LLM-fallback).
 - **Step 1c** — Token-economy gate: `THINK / NO-THINK`, `INTERNET off by default`,
   `terminal-first execution`, **output-reduction catalog**, **signal-tiered caps**,
   **success-collapse + dedup**, **compound-command clamping**, **consumer-routed
   density tiers**, **fail-open**, **auto-clarity (safety overrides brevity)**.
-- **Step 1d** — Pre-flight: kill-switch budget, source auth, arm the watcher.
 - **Step 2** — Discover + normalize work-items (any source adapter).
 - **Step 2b** — Deep intake: read full body + comments, extract **acceptance
   criteria**, **orient the codebase**, **signatures-only read mode**, build a plan.
-- **Step 2c** — Dependency DAG + topological scheduling.
+- **Dependency DAG** (`dependency_graph` point) — resumable topological ordering between
+  items, scheduled within Step 3.
 - **Step 3** — Dual-path router: **fast-path** vs **heavy-path** continuous worker
   pool · **conflict-aware isolation** · **worker report contract** · **corrections
   memory**.

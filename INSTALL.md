@@ -40,6 +40,9 @@ per-runtime entry points.
 
 Create a cost kill-switch so the watcher is allowed to run while you sleep:
 
+Create `.orchestrator/loop-budget.json` with your editor (cross-platform — the bash
+heredoc below is just one way; on Windows/PowerShell use your editor or `Set-Content`):
+
 ```bash
 mkdir -p .orchestrator
 cat > .orchestrator/loop-budget.json <<'JSON'
@@ -47,12 +50,13 @@ cat > .orchestrator/loop-budget.json <<'JSON'
   "daily_usd_ceiling": 5.00,
   "per_run_token_ceiling": 0,
   "spent_usd_today": 0,
-  "reset_at": "2026-01-01T00:00:00Z",
+  "reset_at": "<next local midnight, UTC ISO-8601, e.g. 2026-06-20T00:00:00Z>",
   "state": "running"
 }
 JSON
 ```
 
+Set `reset_at` to the next midnight (not a past date, or the budget resets immediately).
 With `daily_usd_ceiling = 0` (or no file) the watcher **refuses** to run unattended —
 that is the intentional fail-safe.
 

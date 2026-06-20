@@ -1,0 +1,9 @@
+# Per-machine Claude Code settings (machine-specific paths, not for distribution)
+.claude/settings.local.json
+
+# Runtime state written by the skill at run time
+.orchestrator/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
