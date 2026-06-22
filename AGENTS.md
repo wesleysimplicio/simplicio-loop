@@ -1,18 +1,41 @@
 # AGENTS.md — simplicio-tasks
 
-This repository ships **one runtime-agnostic skill**: the Universal Looping AI
-Orchestrator. Any agent runtime that reads `AGENTS.md` / skill folders can run it.
+This repository ships a runtime-agnostic **super-plugin**: the Universal Looping AI
+Orchestrator plus five satellite skills, packaged for 11 runtimes. Any agent runtime that
+reads `AGENTS.md` / skill folders can run it.
 
 ## What to load
 
-The skill lives at:
+The orchestrator IS the protocol — load it and follow it end-to-end:
 
 ```
 .claude/skills/simplicio-tasks/SKILL.md
 ```
 
-That single file IS the protocol. Load it and follow it end-to-end. It uses only
-standard tools (shell, git, gh, file edit, web) so it works on any strong LLM.
+It is self-contained and uses only standard tools (shell, git, gh, file edit, web), so it
+works on any strong LLM. When present, it DELEGATES to its five satellites for deeper,
+token-cheaper behavior (it never requires them):
+
+| Skill | Absorbs | Role |
+|---|---|---|
+| `simplicio-loop` | Ralph Wiggum loop | re-feed the goal until an evidence-gated `<promise>` or a `max_iterations` cap |
+| `simplicio-orient` | rtk + caveman terminal discipline | terminal-first execution, output-reduction catalog, tee-cache, signatures-read |
+| `simplicio-review` | thermos | parallel adversarial review on distinct rubrics → deduped verdict |
+| `simplicio-compress` | caveman | prose + memory compression, byte-preserving, fail-closed `transform_guard` |
+| `simplicio-learn` | continual-learning + teaching | retrospective → durable, deduped lessons in memory |
+
+## Hooks (cross-platform Python, fail-open)
+
+`hooks/` makes the loop + token economy deterministic where the runtime supports hooks:
+`loop_stop.py` / `loop_capture.py` (the loop), `orient_clamp.py` (clamp any command's output +
+tee-on-failure — works with NO wiring on every runtime), `orient_rewrite.py` (opt-in
+auto-clamp), `learn_stop.py` (queue a retrospective). See [`hooks/README.md`](hooks/README.md).
+
+## Runtimes
+
+Install for any of the 11 runtimes with `scripts/install.sh <runtime>` (or `install.ps1`). See
+[`adapters/MATRIX.md`](adapters/MATRIX.md): Claude Code · Codex · VS Code (Copilot) · Cursor ·
+Antigravity · Kiro · OpenCode · Gemini · Aider · Hermes · OpenClaw.
 
 ## Activation
 

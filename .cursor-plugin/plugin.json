@@ -1,0 +1,26 @@
+{
+  "name": "simplicio-tasks",
+  "displayName": "simplicio-tasks — Universal Looping AI Orchestrator",
+  "version": "7.0.0",
+  "description": "Super-plugin: an autonomous looping orchestrator (6 skills) that drains any queue of work end-to-end on ANY runtime — discover→implement→verify→merge→close→watch 24/7 — with a hardened Ralph loop, rtk/caveman token economy, thermos adversarial review, and a hard cost kill-switch.",
+  "author": {
+    "name": "Wesley Simplicio",
+    "email": "wesleybob4@gmail.com"
+  },
+  "homepage": "https://github.com/wesleysimplicio/simplicio-tasks",
+  "repository": "https://github.com/wesleysimplicio/simplicio-tasks",
+  "license": "MIT",
+  "keywords": [
+    "orchestrator",
+    "autonomous",
+    "loop",
+    "ralph-loop",
+    "token-economy",
+    "agent-loop",
+    "runtime-agnostic"
+  ],
+  "category": "developer-tools",
+  "tags": ["automation", "orchestration", "token-economy", "loop"],
+  "skills": "./.claude/skills/",
+  "hooks": "./hooks/hooks.json"
+}

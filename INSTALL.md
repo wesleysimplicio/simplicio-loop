@@ -1,34 +1,41 @@
 # Install — simplicio-tasks
 
-simplicio-tasks is a **skill**, not a binary. There is nothing to compile and no
-dependency to install. You copy one folder into your agent runtime.
+simplicio-tasks is a **super-plugin** made of skills (markdown) + cross-platform Python hooks.
+There is nothing to compile. One installer copies the 6 skills into your runtime, wires the
+loop where supported, and prints the optional native-bind line.
 
-## 1. Get the skill
+## 1. Get it
 
 ```bash
 git clone https://github.com/wesleysimplicio/simplicio-tasks
+cd simplicio-tasks
 ```
 
-## 2. Drop it into your runtime
-
-**Claude Code** — project-local or global:
+## 2. Install for your runtime
 
 ```bash
-# project-local (this repo's agents only)
-cp -r simplicio-tasks/.claude/skills/simplicio-tasks  <your-repo>/.claude/skills/
-
-# global (all projects) — user skills dir
-cp -r simplicio-tasks/.claude/skills/simplicio-tasks  ~/.claude/skills/
+# macOS / Linux
+bash scripts/install.sh <runtime> [--global] [--target DIR]
+# Windows / pwsh
+pwsh scripts/install.ps1 <runtime> [-Global] [-Target DIR]
 ```
 
-**Codex / Gemini / Copilot / local agents** — load the same file:
+`<runtime>` ∈ `claude codex vscode cursor antigravity kiro opencode gemini aider hermes
+openclaw`. Omit it to auto-detect from the current directory. `--target DIR` installs into
+another project; `--global` installs to the runtime's user-wide location.
 
-```
-simplicio-tasks/.claude/skills/simplicio-tasks/SKILL.md
-```
+The only requirement is **python3** on PATH (the skills, hooks, and installer are all
+cross-platform Python). For GitHub sources you also want `git` + an authenticated `gh`.
 
-See [`AGENTS.md`](AGENTS.md), [`CLAUDE.md`](CLAUDE.md), [`GEMINI.md`](GEMINI.md) for
-per-runtime entry points.
+What the installer does (all reversible — copies + a config edit):
+- copies `.claude/skills/simplicio-*` (6 skills) into the runtime's skills location,
+- copies `hooks/` so hook paths resolve,
+- wires the loop (`Stop`/`stop` hook) where the runtime supports it; else the loop self-paces,
+- ensures the runtime's entry file (`AGENTS.md` / `GEMINI.md` / `.github/copilot-instructions.md`
+  / `.kiro/steering/…` / `CONVENTIONS.md`) references the protocol — idempotently,
+- prints `simplicio mcp register --client <runtime>` for optional native binding.
+
+See [`adapters/MATRIX.md`](adapters/MATRIX.md) and `adapters/<runtime>/README.md` for details.
 
 ## 3. Run it
 
@@ -36,29 +43,36 @@ per-runtime entry points.
 /simplicio-tasks finish all the open issues
 ```
 
-## 4. (Optional) Before an unattended 24/7 run
+(or `codex exec`, `gemini -p`, `aider --message`, etc. — see your runtime's adapter.)
 
-Create a cost kill-switch so the watcher is allowed to run while you sleep:
+## 4. Token economy (no wiring needed)
 
 ```bash
-mkdir -p .orchestrator
-cat > .orchestrator/loop-budget.json <<'JSON'
+python3 hooks/orient_clamp.py -- cargo test     # reduced output, tee log on failure
+```
+
+## 5. (Optional) Before an unattended 24/7 run
+
+Create a cost kill-switch so the watcher is allowed to run while you sleep. Create
+`.orchestrator/loop-budget.json` with your editor (cross-platform):
+
+```json
 {
   "daily_usd_ceiling": 5.00,
   "per_run_token_ceiling": 0,
   "spent_usd_today": 0,
-  "reset_at": "2026-01-01T00:00:00Z",
+  "reset_at": "<next local midnight, UTC ISO-8601, e.g. 2026-06-23T00:00:00Z>",
   "state": "running"
 }
-JSON
 ```
 
-With `daily_usd_ceiling = 0` (or no file) the watcher **refuses** to run unattended —
-that is the intentional fail-safe.
+Set `reset_at` to the next midnight (not a past date). With `daily_usd_ceiling = 0` (or no
+file) the watcher **refuses** to run unattended — that is the intentional fail-safe. The loop
+also stops on its `max_iterations` cap, an evidence-gated `<promise>`, or `.orchestrator/STOP`.
 
 ## Requirements
 
-- A strong LLM agent runtime (Claude Code, Codex, Gemini, Copilot, or a local agent).
-- `git` and, for GitHub sources, the `gh` CLI authenticated.
-- That's it. Every extension point has an LLM fallback, so no native runtime is
-  required — though if one is present it makes the skill faster and cheaper.
+- A strong LLM agent runtime (any of the 11 above).
+- `python3` on PATH. `git` and, for GitHub sources, an authenticated `gh`.
+- That's it. Every extension point has an LLM fallback, so no native runtime is required —
+  though `simplicio-runtime`, if present, makes the skill faster and cheaper.

@@ -6,7 +6,8 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-tasks/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-tasks?style=social" alt="Stars"></a>
-  <a href="https://github.com/wesleysimplicio/simplicio-tasks"><img src="https://img.shields.io/badge/skill-runtime--agnostic-39FF14" alt="Runtime-agnostic"></a>
+  <a href="#-the-6-skills-super-plugin"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
+  <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-the-43-extension-points"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
   <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
@@ -14,9 +15,11 @@
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-vs-caveman--rtk">vs caveman & rtk</a> ·
-  <a href="#-the-43-extension-points">43 Points</a> ·
-  <a href="#-everything-inside">Everything Inside</a> ·
+  <a href="#-the-6-skills-super-plugin">6 Skills</a> ·
+  <a href="#-11-runtimes-one-protocol">11 Runtimes</a> ·
+  <a href="#-the-loop">The Loop</a> ·
+  <a href="#-token-economy">Token Economy</a> ·
+  <a href="#-built-on-the-shoulders-of">Credits</a> ·
   <a href="#-install--use">Install</a>
 </p>
 
@@ -43,24 +46,18 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks** is a single, runtime-agnostic **skill** that turns any strong LLM
-(Claude, Codex, Copilot, Gemini, Grok, local models) into an **autonomous looping
-orchestrator**. You point it at a body of work — *"finish all the open issues"*,
-*"clear the CI queue"*, *"drain the Jira board"* — and it runs the whole lifecycle
-on its own:
+**simplicio-tasks** is a runtime-agnostic **super-plugin** — one autonomous looping
+orchestrator plus **five satellite skills** — that turns any strong LLM (Claude, Codex,
+Copilot, Gemini, Cursor, local models) into a self-driving worker. You point it at a body of
+work — *"finish all the open issues"*, *"clear the CI queue"*, *"drain the Jira board"* — and it
+runs the whole lifecycle on its own:
 
 > **discover → understand → decide → act → verify → correct → record → repeat**
 
-It discovers work from any source, dedups, auto-scales an agent fleet to your
-machine, implements each item through a quality loop that **runs the code (not just
-compiles it)**, opens PRs, resolves CI/review feedback, merges, and keeps watching
-**24/7** for new work — all behind safety gates and a hard cost kill-switch.
-
-It carries **43 named extension points**. Each has an always-works LLM fallback, and
-each *binds to a host runtime's native command* when one is present — making the
-step deterministic and near-zero-token. **The skill names no runtime; the runtime
-detects the skill.** That inversion is the whole trick: one universal protocol, with
-optional native speed injected underneath.
+It discovers work from any source, dedups, auto-scales an agent fleet to your machine,
+implements each item through a quality loop that **runs the code (not just compiles it)**, opens
+PRs, resolves CI/review feedback, merges, and keeps watching **24/7** for new work — all behind
+safety gates and a hard cost kill-switch.
 
 ```text
 /simplicio-tasks termine as issues abertas
@@ -69,37 +66,58 @@ optional native speed injected underneath.
 → autoscale fleet = 14 · pipeline implement→review→merge
 → each item: read body+ACs → orient code → plan → edit → run → verify → PR
 → merge · close with evidence · rollback if main breaks
-→ keep polling every ~2 min for new work
+→ keep looping every ~2 min until the queue is dry (evidence-gated, never a false "done")
 ```
+
+Three things make it different: it is a **super-plugin of focused skills**, it runs the **same
+protocol on 11 runtimes**, and it does all of this with **aggressive, honest token economy**.
 
 ---
 
-## 🆚 vs caveman & rtk
+## 🧠 The 6 skills (super-plugin)
 
-simplicio-tasks was built **after deeply studying** the two best token-savers on
-GitHub — [**caveman**](https://github.com/JuliusBrussee/caveman) (74k★, *compress the
-talk*) and [**rtk**](https://github.com/rtk-ai/rtk) (63k★, *compress the commands*).
-It folds the best of **both** into a full orchestrator. They reduce tokens;
-simplicio-tasks **does the work** and reduces tokens while doing it.
+The orchestrator is the core; five satellites each absorb the best of a well-known technique and
+expose it as a reusable skill. Each satellite is **optional** — when loaded, the orchestrator
+delegates to it (richer + cheaper); when absent, the orchestrator's inline protocol covers 100%
+of the work. Same inverted dependency, one level up.
 
-| | 🪨 **caveman** | ⚙️ **rtk** | 🔁 **simplicio-tasks** |
+| Skill | Absorbs | What it does |
+|---|---|---|
+| 🔁 **simplicio-tasks** | — | The orchestrator loop: discover → implement → verify → merge → close → watch 24/7. 43 extension points, dual-path router, self-audit convergence. |
+| ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | The hardened Ralph loop: re-feed the same goal each turn so the agent sees its own work, exiting only on an **evidence-gated `<promise>`** or a `max_iterations` cap — never a false "done". |
+| 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-first execution: answer facts with the shell, never the LLM. Output-reduction catalog, **tee-cache on failure**, signatures-only reads, optional auto-rewrite hook. |
+| 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Adversarial review: parallel subagents on distinct rubrics (security/correctness + code-quality), spawned in one message, deduped into one verdict. |
+| 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Output + memory compression: terse prose levels that preserve code/paths byte-for-byte, plus a one-time memory compaction that pays back every turn. Fail-closed `transform_guard`. |
+| 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) + continual-learning | Retrospective: mine durable, deduped lessons from a run and write them to memory so the next run is cheaper and more correct. |
+
+Each is a normal skill folder under [`.claude/skills/`](.claude/skills) — usable standalone or
+as part of the loop.
+
+---
+
+## 🌐 11 runtimes, one protocol
+
+One universal skill core + one set of hooks drives every runtime. An adapter is thin: it tells a
+runtime *where to load the skills*, *how to arm the loop*, and *how to bind native speed*. **The
+skill names no runtime; the runtime detects the skill.**
+
+| Runtime | Skill load | Loop drive | Native bind |
 |---|---|---|---|
-| **What it is** | Claude Code skill | Rust CLI proxy | Runtime-agnostic skill |
-| **Core idea** | Talk terser (drop filler) | Reduce dev-command output | **Orchestrate the whole job** |
-| **Scope** | LLM prose output | Shell command output | Full work lifecycle, end to end |
-| **Token savings** | ~65% on replies | 60–90% on commands | Both — catalog + caps + clamping |
-| **Does the work?** | ❌ formatting only | ❌ proxy only | ✅ discover→implement→merge→close |
-| **Multi-step autonomy** | ❌ | ❌ | ✅ continuous worker pool |
-| **Quality gates** | — | — | ✅ AC gate · run-verification · adversarial verify · delivery gate |
-| **Safety** | — | semgrep, disclaimers | ✅ 4-state verdict · attestation · secret-scan · human gate · kill-switch |
-| **24/7 loop** | ❌ | ❌ | ✅ durable watcher, self-healing |
-| **Runtime binding** | Claude/Codex/Gemini | any (PATH proxy) | **any** (43 extension points) |
-| **What we took** | terse worker reports, density tiers, never-paraphrase guard, honest baseline | per-command reduction catalog, signal-tiered caps, compound-clamping, fail-open, 4-state verdict | — |
-| **What we left** | grammar word-dropping (degrades code quality) | per-language registries (runtime-specific) | — |
+| **Claude Code** | `.claude/skills/` + plugin | `Stop` hook | MCP |
+| **Codex** | `AGENTS.md` | self-paced | MCP / adapter |
+| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | MCP |
+| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | MCP / rules |
+| **Antigravity** | rules / `AGENTS.md` | self-paced | MCP |
+| **Kiro** | `.kiro/steering/` | specs | MCP |
+| **OpenCode** | `AGENTS.md` | self-paced | MCP |
+| **Gemini** | `GEMINI.md` | self-paced | MCP / adapter |
+| **Aider** | `CONVENTIONS.md` | self-paced | — (LLM fallback) |
+| **Hermes** | native recall | native loop | **native** |
+| **OpenClaw** | plugin SDK | native scheduler | **native** |
 
-> We **rejected** caveman's "talk-like-caveman" word-dropping on purpose — terse
-> *prose* is fine, but mangling grammar degrades code and confirmations. We kept the
-> *discipline* (never paraphrase code/URLs/paths), not the gimmick.
+The promise: **same protocol, same gates, same safety on all 11 — only the speed differs.**
+`orient_clamp.py` (token economy) works on every runtime with zero wiring. See
+[`adapters/MATRIX.md`](adapters/MATRIX.md).
 
 <p align="center">
   <img src="assets/architecture.svg" alt="architecture" width="900" />
@@ -107,180 +125,168 @@ simplicio-tasks **does the work** and reduces tokens while doing it.
 
 ---
 
-## 🧩 The 43 extension points
+## 🔁 The loop
 
-Every step of work happens at a **named extension point**. If a host runtime exposes
-a native capability it **binds** (deterministic, near-zero token). Otherwise the LLM
-performs the **fallback** with standard tools (shell, git, gh, file edit, web). The
-skill depends on the abstraction, never on a specific runtime.
+The drive underneath the orchestrator is a **hardened Ralph loop** (`simplicio-loop`):
 
-### Orchestration & scale
-| Point | What it does |
-|---|---|
-| `orient` | Compressed repo/work map |
-| `normalize` | Work-item → canonical schema |
-| `intake` | Ingest work from a sprint/board link |
-| `source_adapter` | Uniform source connector (list/get/claim/update/attach/close) |
-| `autoscale` | Safe fleet size from machine profile |
-| `plan` / `decide` | Plan & decision support |
-| `execute` | Local agent fan-out for mass/mechanical work |
-| `issue_factory` | Full loop: discover→claim→implement→PR |
-| `claim` | Atomic, cross-session-safe work-item claim |
-| `worktree` | Per-item isolated checkout |
-| `dependency_graph` | Resumable DAG ordering between items |
-| `durable_workflow` | Per-item pipeline as a resumable phase state-machine |
-| `work_queue` | Durable priority queue with auto-retry + write-lock |
-| `resource_governor` | Dynamic mid-loop throttle + machine-tier ceilings |
-| `model_route` | Cheapest viable substrate per sub-task (L0→remote) |
-| `model_preflight` | Probe a usable model before routing generation |
+1. The goal is written to a single, human-readable state file
+   (`.orchestrator/loop/scratchpad.md`) — trivially inspectable, editable, cancellable.
+2. After each turn a **stop-hook** re-feeds the same goal, so the agent sees its own prior edits
+   (via git + the working tree) and converges. Token cost per cycle stays flat — no context
+   stuffing.
+3. It exits **only** when a typed sentinel `<promise>EXACT TEXT</promise>` is emitted **and**
+   backed by concrete in-turn evidence (a passing gate, a merged-PR link, AC receipts), or when
+   a hard `max_iterations` cap / the cost kill-switch fires.
 
-### Editing, quality & evidence
-| Point | What it does |
-|---|---|
-| `deterministic_edit` | Mechanical, zero-token apply of a decided change |
-| `diagnostics` | Parse build/test output → structured errors → iterate |
-| `toolchain_detect` | Detect the repo's real build/lint/typecheck/test stack |
-| `validate` / `smoke` | Run-verification: "works, not just compiles" |
-| `delivery_gate` | DoD: AC check + regression + diff review + certificate |
-| `endpoint_compare` | Web↔API↔agent drift → follow-up items |
-| `web_verify` | Drive a real browser to prove a UI change works |
-| `pr` / `evidence` | PR open/update + verifiable evidence ledger |
-| `retry` | Classified retry+backoff by failure class |
-| `reuse_precedent` | Match a prior solved run → reuse, not regenerate |
-| `trajectory` | Record run outcome for self-improvement |
-| `learn` | Learn from a run — update precedents/memory |
-| `status` | Live observability dashboard |
-| `capability_rank` | Rank which skill/tool fits a sub-task |
+> **Never a false promise.** A `<promise>` with no evidence is ignored and the loop continues.
+> This wires the loop directly into the repo's hard rule: *never close work without a merged PR
+> or concrete evidence.*
 
-### Tokens, context & safety
-| Point | What it does |
-|---|---|
-| `recall` | Prior decisions / precedents |
-| `compress` | Context compression / output clamping |
-| `prompt_budget` | Token-budgeted prompt envelope + fragment cache |
-| `shell_exec` | Clamped shell execution (structured, bounded) |
-| `transform_guard` | Verify a compaction kept every code/URL/path/version token |
-| `action_gate` | Risk-classify every mutation (safe/auto/ask) before it runs |
-| `security` | Supply-chain / secret scan |
-| `human_gate` | Async human approval channel |
-| `notify` | Push progress/blocker/digest + receive approvals |
-| `checkpoint_restore` | Snapshot state before a risky batch; restore on failure |
-| `watcher` | Durable scheduler / poller (survives reboot) |
-| `savings_ledger` | Real token-spend tracking per session |
-| `web_research` | Fetch current external knowledge, gated, with provenance |
-
----
-
-## 📦 Everything inside
-
-A full inventory of what the skill carries — every mechanism, cited.
-
-### The loop (7 steps + sub-steps)
-- **Step 0** — Load the contract (canonical protocol).
-- **Step 1** — Identity + cheap environment detection.
-- **Step 1b** — The 43 extension points (bind native or LLM-fallback).
-- **Step 1c** — Token-economy gate: `THINK / NO-THINK`, `INTERNET off by default`,
-  `terminal-first execution`, **output-reduction catalog**, **signal-tiered caps**,
-  **success-collapse + dedup**, **compound-command clamping**, **consumer-routed
-  density tiers**, **fail-open**, **auto-clarity (safety overrides brevity)**.
-- **Step 1d** — Pre-flight: kill-switch budget, source auth, arm the watcher.
-- **Step 2** — Discover + normalize work-items (any source adapter).
-- **Step 2b** — Deep intake: read full body + comments, extract **acceptance
-  criteria**, **orient the codebase**, **signatures-only read mode**, build a plan.
-- **Step 2c** — Dependency DAG + topological scheduling.
-- **Step 3** — Dual-path router: **fast-path** vs **heavy-path** continuous worker
-  pool · **conflict-aware isolation** · **worker report contract** · **corrections
-  memory**.
-- **Step 3b** — Continuous intake: intra-run poller + idle watcher (see new work
-  any minute).
-- **Step 3c** — Speed model: pipeline (not barrier), shared compile cache,
-  verify-once-at-merge, **shared context digest**.
-- **Step 3d** — Model routing L0→L4 (deterministic → local → mid → reasoning → paid).
-- **Step 4** — Quality loop · **AC gate (real DoD)** · **run-verification** ·
-  **adversarial multi-vote verify** · **static-analysis gate**.
-- **Step 5** — Safety gates: secret-scan, irreversible-op human gate, **4-state
-  pre-execution verdict**, **per-segment compound attestation**, **trust-before-load
-  config**, **supply-chain integrity gate**, **transform_guard**.
-- **Step 6** — Deliver + close + self-audit · **evidence package** · **verify
-  reality (never trust self-report)** · **rollback-guard if merge breaks main**.
-- **Step 6b** — Close the feedback loop: CI → fix, review comments → resolve,
-  branch-behind → reconcile, full **PR lifecycle** until merge-ready.
-- **Step 7** — 24/7 standing loop (10 axes): durable driver, total coverage matrix,
-  durable state, **cost governance + hard kill-switch**, unattended safety,
-  self-healing + **intelligent retry by failure class**, prioritization/WIP,
-  observability + **periodic savings audit** + **snapshot measurement**,
-  self-improvement, coordination & clean stop.
-
-### Token economy (folded in from rtk + caveman)
-- Terminal-first execution — never simulate a command.
-- **Cross-platform** substitution table (Windows / macOS / Linux): 30+ facts the
-  terminal answers cheaper than the LLM.
-- **Output-reduction catalog** as data: per-command recipe, expected-savings %,
-  `skip-if-structured` guard.
-- **Signal-tiered caps**: `CAP_ERRORS / CAP_WARNINGS / CAP_LIST / CAP_INVENTORY`.
-- **Success-collapse** + **dedup-with-counts** (with an `unless errors` guard).
-- **Compound-command clamping** — per-segment, pipe/redirect-safe, fail-open.
-- **Density tiers by consumer** (machine vs human); skip already-dense content.
-- **Worker report contract** — status-token-first terse schema for sub-agents.
-- **Honest savings baseline** = realistic control arm, **bound to a passing quality
-  gate** (compression that fails its gate earns zero credit).
-
-### Quality & delivery
-- Acceptance-criteria DoD checklist · run-verification · adversarial verify ·
-  static-analysis gate · delivery certificate · reality re-verification ·
-  automatic rollback.
-
-### Safety
-- Secret-scan · irreversible-op human gate · 4-state verdict (never escalate
-  privilege) · compound-command attestation · trust-before-load · supply-chain
-  integrity · prompt-injection hardening · hard $ kill-switch for unattended runs.
-
-### 24/7 autonomy
-- Durable scheduler · live queue + idle watcher · durable journal/state ·
-  circuit breakers · dead-letter quarantine · self-improvement & meta-review ·
-  multi-instance atomic claims · clean STOP signal.
-
----
-
-## 🚀 Install & use
-
-simplicio-tasks is a **skill** — a single folder you drop into any runtime that
-loads skills. No dependency, no binary required.
-
-```bash
-# Claude Code (project or user skills dir)
-git clone https://github.com/wesleysimplicio/simplicio-tasks
-cp -r simplicio-tasks/.claude/skills/simplicio-tasks  <your-repo>/.claude/skills/
-
-# then, in your agent:
-/simplicio-tasks finish all the open issues
-```
-
-Other runtimes (Codex, Gemini, Copilot, local agents) load the same
-`SKILL.md` — see [`AGENTS.md`](AGENTS.md), [`CLAUDE.md`](CLAUDE.md) and
-[`GEMINI.md`](GEMINI.md) for the per-runtime entry points. Where a host runtime
-exposes native commands, it auto-binds them to the extension points; otherwise the
-LLM fallbacks cover **100%** of the work.
-
-**Before an unattended 24/7 run:** set a cost ceiling (`.orchestrator/loop-budget.json`,
-`daily_usd_ceiling > 0`), confirm source auth is persistent, and keep the
-irreversible-op human gate + secret-scan on. With `ceiling = 0` the watcher refuses
-to run unattended (fail-safe).
+On runtimes without hooks the loop **self-paces** via the host scheduler (cron / `/loop` / the
+runtime's task runner) — same exit conditions. The hooks are cross-platform Python and
+**fail-open**: a hook that errors always lets the agent stop. The real guards are the cap and
+the budget, never hook cleverness.
 
 ---
 
 ## 📊 Token economy
 
-Every message ends with an honest savings line:
+The cheapest token is the one not spent. `simplicio-orient` + `simplicio-compress` fold the best
+of **rtk** (compress the commands) and **caveman** (compress the talk) into the safety spine:
+
+- **Terminal-first execution** — the shell knows facts exactly; the LLM approximates them
+  expensively. A cross-platform substitution table (Windows/macOS/Linux) answers 30+ facts via
+  `git`/`gh`/`rg`/`python3`. **Never simulate a command — run it.**
+- **Output-reduction catalog** (data table) — per-command recipe + expected-savings% +
+  `skip-if-structured` guard. A raw `cargo check` costs ~2000 tokens to read; clamped, ~80.
+- **tee-cache on failure** *(new, from rtk)* — aggressive truncation is only safe if
+  recoverable: on failure the full output is written to `.orchestrator/tee/…log` and only the
+  path is surfaced, so the agent recovers context **without re-running** the command.
+- **Signatures-only reads** *(from rtk)* — read a file's API surface (declarations, bodies
+  elided): a 600-line file becomes ~40 lines during intake.
+- **Signal-tiered caps + success-collapse + dedup** — keep errors over noise; collapse a clean
+  run to one line; collapse repeated lines to `line xN` — always `unless errors present`.
+- **Prose levels + memory compaction** *(from caveman)* — terse output that preserves
+  code/paths/URLs **byte-for-byte** (`transform_guard` fails closed on any lost token), plus a
+  one-time compaction of standing memory that amortizes across every future turn.
+- **Honest baseline** — savings are measured against a realistic *"answer concisely"* control
+  arm (not a verbose strawman), count only **output** tokens (not reasoning), and are credited
+  **only on a verified-correct outcome**. Compression that fails its quality gate earns zero.
+
+Every message ends with an honest line:
 
 ```
 simplicio-tasks: ~<spent> tokens · baseline ~<control-arm> · saved ~<saved> (<pct>%)
 ```
 
-The baseline is the **cheapest sensible non-orchestrated path** to the same outcome —
-not a verbose strawman — and savings are **only credited when the item's
-run-verification and acceptance-criteria gate pass**. Raw compression is never
-counted as success on its own.
+Try it now, no wiring:
+
+```bash
+python3 hooks/orient_clamp.py -- cargo test      # reduced output + tee log on failure
+python3 hooks/orient_clamp.py --json -- git diff  # machine summary
+```
+
+---
+
+## 🏗️ Built on the shoulders of
+
+simplicio-tasks was built **after deeply studying** the best loop + token-economy work on
+GitHub, and folds each into a focused skill — keeping the discipline, dropping the gimmicks.
+
+| Project | What we took | What we left |
+|---|---|---|
+| 🪨 [**caveman**](https://github.com/JuliusBrussee/caveman) | terse prose levels, byte-preserve identifiers, memory compaction, honest *"answer concisely"* baseline | grammar word-dropping (degrades code & confirmations) |
+| ⚙️ [**rtk**](https://github.com/rtk-ai/rtk) | per-command reduction catalog, signal-tiered caps, **tee-cache**, signatures-read, auto-rewrite hook + exclude list | per-language registries (runtime-specific) |
+| ♾️ [**ralph-loop**](https://github.com/cursor/plugins/tree/main/ralph-loop) | single-file loop state, exact-match promise sentinel, two-hook split | trust-the-model completion (we make it **evidence-gated**) |
+| 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | single-message parallel reviewers, separate rubrics, dedup-on-synthesis | — |
+| 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | retrospective that persists state so the next cycle doesn't re-derive | the human-learning domain itself |
+| 🧭 outcome-oriented execution | converge on the end state; planned, scoped, reversible intermediate breakage | — |
+
+> They reduce tokens; simplicio-tasks **does the work** and reduces tokens while doing it.
+
+---
+
+## 🧩 The 43 extension points
+
+Every step of work happens at a **named extension point**. If a host runtime exposes a native
+capability it **binds** (deterministic, near-zero token); otherwise the LLM performs the
+**fallback** with standard tools. The skill depends on the abstraction, never on a runtime.
+
+<details>
+<summary><strong>Orchestration & scale</strong></summary>
+
+`orient` · `normalize` · `intake` · `source_adapter` · `autoscale` · `plan`/`decide` ·
+`execute` · `issue_factory` · `claim` · `worktree` · `dependency_graph` · `durable_workflow` ·
+`work_queue` · `resource_governor` · `model_route` · `model_preflight`
+</details>
+
+<details>
+<summary><strong>Editing, quality & evidence</strong></summary>
+
+`deterministic_edit` · `diagnostics` · `toolchain_detect` · `validate`/`smoke` ·
+`delivery_gate` · `endpoint_compare` · `web_verify` · `pr`/`evidence` · `retry` ·
+`reuse_precedent` · `trajectory` · `learn` · `status` · `capability_rank`
+</details>
+
+<details>
+<summary><strong>Tokens, context & safety</strong></summary>
+
+`recall` · `compress` · `prompt_budget` · `shell_exec` · `transform_guard` · `action_gate` ·
+`security` · `human_gate` · `notify` · `checkpoint_restore` · `watcher` · `savings_ledger` ·
+`web_research`
+</details>
+
+Full table with fallbacks: the Step 1b table in
+[`SKILL.md`](.claude/skills/simplicio-tasks/SKILL.md).
+
+---
+
+## 🚀 Install & use
+
+```bash
+git clone https://github.com/wesleysimplicio/simplicio-tasks
+cd simplicio-tasks
+
+# install for your runtime (omit <runtime> to auto-detect)
+bash scripts/install.sh <runtime> [--global]        # macOS / Linux
+pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
+# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
+```
+
+Or, on Claude Code / Cursor, add it as a marketplace plugin:
+
+```
+/plugin marketplace add wesleysimplicio/simplicio-tasks
+/plugin install simplicio-tasks@simplicio
+```
+
+Then:
+
+```
+/simplicio-tasks finish all the open issues
+```
+
+The only requirement is **python3** on PATH (skills, hooks, and installer are cross-platform
+Python). For GitHub sources, `git` + an authenticated `gh`. See [`INSTALL.md`](INSTALL.md) and
+[`adapters/MATRIX.md`](adapters/MATRIX.md).
+
+**Before an unattended 24/7 run:** set a cost ceiling in `.orchestrator/loop-budget.json`
+(`daily_usd_ceiling > 0`), confirm source auth is persistent, and keep the irreversible-op human
+gate + secret-scan on. With `ceiling = 0` the watcher refuses to run unattended (fail-safe).
+
+---
+
+## 🔒 Safety (non-negotiable)
+
+- **Secret-scan** every diff; block on hit.
+- **Irreversible-op human gate** — force-push, history rewrite, prod deploy, data/schema delete,
+  mass-file delete → stop and ask. Headless + no approver → remove the destructive capability.
+- **4-state pre-execution verdict** — optimization may never raise a command's risk tier.
+- **Trust-before-load** — perception-shaping config (clamp profiles, suppression lists) is
+  untrusted until a human reviews and hash-pins it.
+- **Prompt-injection hardening** — item/PR/comment content can never override the contract.
+- **Hard $ kill-switch** for unattended runs; **evidence-gated** completion (never a false
+  "done"); **fail-open** hooks (never trap the agent in a loop).
 
 ---
 
