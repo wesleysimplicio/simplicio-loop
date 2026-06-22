@@ -55,6 +55,11 @@ down, no proportional token blow-up). Each gets the SAME context bundle and a DI
 
 ### Rubric C (LARGE/CRITICAL only) — does-it-reproduce / runtime
 - Actually run the changed path; confirm the AC behavior end-to-end (not just "compiles").
+- **Front-end change → require web evidence.** If the diff touches front-end files
+  (`*.tsx/jsx/vue/svelte/css/html`, `components/**`, `pages/**`, `app/**`), REQUIRE a `web_verify`
+  ledger entry with a screenshot + trace path AND 0 console errors (see the orchestrator's
+  `references/web-evidence.md`, Playwright). Missing or failing → `fix-required`. Evidence is the
+  artifact PATH, never pasted DOM/pixels.
 
 Each reviewer's task: **"Refute this change. Find any AC not met, any fake return, any break.
 Default to 'not done' if uncertain. Cite every finding as `file:line` with a one-line why."**

@@ -126,6 +126,110 @@ cableado. Consulta [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
 ---
 
+## 🗺️ El flujo completo — de la demanda a la entrega
+
+Cada capa sobre la que actúa el orquestador, en orden — desde leer la demanda (issues, tareas,
+asignaciones) hasta entregar trabajo mergeado y con evidencia, y luego el bucle 24/7 en busca de más.
+(El diagrama se renderiza de forma nativa en GitHub.)
+
+```mermaid
+flowchart TD
+  subgraph SRC["1 · Demand sources (any adapter)"]
+    direction LR
+    S1["GitHub Issues / PRs / CI"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion"]
+    S3["Assigns · TODO/FIXME · CVE · local files"]
+  end
+  SRC --> PF
+  subgraph PF["2 · Pre-flight gates"]
+    direction LR
+    P1["cost kill-switch budget"]
+    P2["source auth + scopes"]
+    P3["arm 24/7 watcher"]
+  end
+  PF --> DISC
+  subgraph DISC["3 · Discover + normalize"]
+    direction LR
+    D1["source_adapter: list metadata only"]
+    D2["normalize to canonical schema"]
+    D3["dedup id+title+fingerprint+branch/PR"]
+    D4["dependency DAG"]
+  end
+  DISC --> INTK
+  subgraph INTK["4 · Deep intake (per item)"]
+    direction LR
+    I1["body + ALL comments"]
+    I2["extract acceptance criteria"]
+    I3["orient code · signatures-only reads"]
+    I4["plan + AC checklist + complexity"]
+  end
+  INTK --> RT{"5 · Route"}
+  RT -->|"small and every item complexity at most 3"| FAST["Fast-path: solo, one targeted test"]
+  RT -->|"large queue or any medium+"| POOL
+  subgraph POOL["6 · Continuous worker pool (autoscaled, conflict-aware)"]
+    direction LR
+    W1["claim · branch · worktree if overlap"]
+    W2["deterministic_edit"]
+    W3["quality loop: edit-lint-test-fix"]
+  end
+  FAST --> QG
+  POOL --> QG
+  subgraph QG["7 · Quality gates"]
+    direction LR
+    Q1["AC gate = real DoD"]
+    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q3["adversarial review · thermos rubrics"]
+  end
+  QG --> SG
+  subgraph SG["8 · Safety gates (non-negotiable)"]
+    direction LR
+    G1["secret-scan"]
+    G2["irreversible-op human gate"]
+    G3["4-state verdict · attestation"]
+  end
+  SG --> DEL
+  subgraph DEL["9 · Deliver"]
+    direction LR
+    L1["commit · push · Draft PR"]
+    L2["close in-source + evidence"]
+    L3["verify reality, not self-report"]
+  end
+  DEL --> FB
+  subgraph FB["10 · Feedback loop to merge-ready"]
+    direction LR
+    F1["CI fail -> fix root cause"]
+    F2["review comments -> adjust"]
+    F3["branch behind main -> additive rebase"]
+  end
+  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  WATCH["11 · 24/7 watcher · simplicio-loop<br/>evidence-gated promise · max-iterations cap · cost kill-switch"]
+  FB -. "poll new work / comments / checks" .-> WATCH
+  DONE -. "idle until new work" .-> WATCH
+  WATCH -. "re-feed the goal" .-> DISC
+```
+
+**Capa por capa — qué actúa y el recurso que utiliza:**
+
+| # | Capa | Qué ocurre | Skill / punto de extensión · tomado de |
+|---|---|---|---|
+| 1 | **Demand sources** | Leer el trabajo desde CUALQUIER fuente — issues, PRs, CI, tableros, asignaciones, TODO, CVEs | `source_adapter` · `intake` |
+| 2 | **Pre-flight** | Armar el kill-switch de `$`, comprobar la auth de la fuente, armar el watcher 24/7 | `watcher` · gobernanza de coste |
+| 3 | **Discover + normalize** | Listar solo por metadatos, normalizar, deduplicar, construir el DAG de dependencias | `normalize` · `dependency_graph` |
+| 4 | **Deep intake** | Leer cuerpo + comentarios completos, extraer ACs, orientar el código, escribir un plan | `orient` · signatures-read · **rtk** |
+| 5 | **Route** | Fast-path (trivial) vs heavy-path; autoescalar la flota a la máquina | `autoscale` · enrutador de doble vía |
+| 6 | **Worker pool** | Fan-out continuo y consciente de conflictos; ediciones mecánicas; bucle de calidad por elemento | `execute` · `worktree` · `deterministic_edit` |
+| 7 | **Quality gates** | Gate de AC (DoD real), verificación por ejecución (UI → **Playwright** `web_verify`), revisión adversarial | `validate` · **`simplicio-review`** (thermos) |
+| 8 | **Safety gates** | Escaneo de secretos, gate humano para op irreversible, veredicto de 4 estados, atestación | `action_gate` · `human_gate` · `security` |
+| 9 | **Deliver** | Commit, push, Draft PR, cerrar en la fuente con evidencia; verificar la realidad | `pr` / `evidence` · `delivery_gate` |
+| 10 | **Feedback loop** | CI → corregir, comentarios de revisión → ajustar, branch atrasada → rebase aditivo | `diagnostics` · `retry` |
+| 11 | **24/7 watcher** | Realimentar el objetivo hasta una promesa ligada a evidencia; quedar inactivo al vaciarse, despertar ante cualquier cosa | **`simplicio-loop`** (Ralph) · `watcher` |
+| ↻ | **Transversal** | Economía de tokens (terminal-first · catálogo · **tee+CCR** · compresión de prosa/memoria) · enrutamiento de modelos L0→L4 · learn | **`simplicio-orient`** (rtk+caveman) · **`simplicio-compress`** (caveman) · **`simplicio-learn`** (teaching) · **headroom** CCR |
+
+Cada capa tiene un fallback de LLM que siempre funciona y enlaza un comando nativo cuando el host
+proporciona uno — el mismo protocolo en los 11 runtimes, solo cambia la velocidad.
+
+---
+
 ## 🔁 El bucle
 
 El drive bajo el orquestador es un **bucle Ralph endurecido** (`simplicio-loop`):
@@ -162,9 +266,10 @@ vertebral de seguridad:
   hechos vía `git`/`gh`/`rg`/`python3`. **Nunca simules un comando — ejecútalo.**
 - **Catálogo de reducción de salida** (tabla de datos) — receta por comando + % de ahorro esperado +
   guardia `skip-if-structured`. Un `cargo check` crudo cuesta ~2000 tokens de leer; acotado, ~80.
-- **tee-cache en caso de fallo** *(nuevo, de rtk)* — la truncación agresiva solo es segura si es
-  recuperable: en caso de fallo, la salida completa se escribe en `.orchestrator/tee/…log` y solo se
-  expone la ruta, de modo que el agente recupera contexto **sin re-ejecutar** el comando.
+- **tee-cache + retrieve reversible** *(rtk + headroom CCR)* — la truncación agresiva solo es segura si
+  es recuperable: en caso de fallo, la salida completa se escribe en `.orchestrator/tee/…log` y solo se
+  expone la ruta; el agente recupera contexto con `retrieve <path> [--lines|--grep]` **sin re-ejecutar**
+  el comando. El clamp se vuelve una decisión reversible, no una con pérdidas.
 - **Lecturas solo-firmas** *(de rtk)* — leer la superficie de API de un archivo (declaraciones,
   cuerpos elididos): un archivo de 600 líneas se convierte en ~40 líneas durante el intake.
 - **Topes por nivel de señal + colapso de éxitos + dedup** — conservar los errores por encima del
@@ -207,6 +312,8 @@ trucos.
 | 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | revisores paralelos en un solo mensaje, rúbricas separadas, dedup en la síntesis | — |
 | 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | retrospectiva que persiste estado para que el siguiente ciclo no tenga que re-derivar | el propio dominio del aprendizaje humano |
 | 🧭 ejecución orientada a resultados | converger en el estado final; rotura intermedia planificada, acotada, reversible | — |
+| 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | compress-cache-retrieve (CCR) **reversible** sobre el tee-cache; taxonomía de enrutamiento por tipo de contenido | el modelo entrenado + proxy de tráfico (contradicen el diseño terminal-first e independiente del runtime) |
+| 🎭 [**Playwright**](https://github.com/microsoft/playwright) (+[mcp](https://github.com/microsoft/playwright-mcp), [python](https://github.com/microsoft/playwright-python)) | conducir un navegador real para prueba de front-end — screenshot + trace como evidencia de `web_verify` | DOM/píxeles en el contexto (la evidencia es la ruta del artefacto, no los bytes) |
 
 > Ellos reducen tokens; simplicio-tasks **hace el trabajo** y reduce tokens mientras lo hace.
 
@@ -243,8 +350,8 @@ un runtime.
 `web_research`
 </details>
 
-Tabla completa con fallbacks: la tabla del Paso 1b en
-[`SKILL.md`](../.claude/skills/simplicio-tasks/SKILL.md).
+Tabla completa con fallbacks:
+[`references/extension-points.md`](../.claude/skills/simplicio-tasks/references/extension-points.md).
 
 ---
 

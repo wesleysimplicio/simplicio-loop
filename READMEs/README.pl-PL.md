@@ -129,6 +129,111 @@ podłączania. Zobacz [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
 ---
 
+## 🗺️ Pełny przepływ — od popytu do dostawy
+
+Każda warstwa, na której działa orkiestrator, po kolei — od odczytu popytu (zgłoszenia, zadania,
+przypisania) do dostarczenia scalonej, popartej dowodami pracy, a następnie pętla 24/7 w
+poszukiwaniu kolejnej. (Diagram renderuje się natywnie na GitHubie.)
+
+```mermaid
+flowchart TD
+  subgraph SRC["1 · Demand sources (any adapter)"]
+    direction LR
+    S1["GitHub Issues / PRs / CI"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion"]
+    S3["Assigns · TODO/FIXME · CVE · local files"]
+  end
+  SRC --> PF
+  subgraph PF["2 · Pre-flight gates"]
+    direction LR
+    P1["cost kill-switch budget"]
+    P2["source auth + scopes"]
+    P3["arm 24/7 watcher"]
+  end
+  PF --> DISC
+  subgraph DISC["3 · Discover + normalize"]
+    direction LR
+    D1["source_adapter: list metadata only"]
+    D2["normalize to canonical schema"]
+    D3["dedup id+title+fingerprint+branch/PR"]
+    D4["dependency DAG"]
+  end
+  DISC --> INTK
+  subgraph INTK["4 · Deep intake (per item)"]
+    direction LR
+    I1["body + ALL comments"]
+    I2["extract acceptance criteria"]
+    I3["orient code · signatures-only reads"]
+    I4["plan + AC checklist + complexity"]
+  end
+  INTK --> RT{"5 · Route"}
+  RT -->|"small and every item complexity at most 3"| FAST["Fast-path: solo, one targeted test"]
+  RT -->|"large queue or any medium+"| POOL
+  subgraph POOL["6 · Continuous worker pool (autoscaled, conflict-aware)"]
+    direction LR
+    W1["claim · branch · worktree if overlap"]
+    W2["deterministic_edit"]
+    W3["quality loop: edit-lint-test-fix"]
+  end
+  FAST --> QG
+  POOL --> QG
+  subgraph QG["7 · Quality gates"]
+    direction LR
+    Q1["AC gate = real DoD"]
+    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q3["adversarial review · thermos rubrics"]
+  end
+  QG --> SG
+  subgraph SG["8 · Safety gates (non-negotiable)"]
+    direction LR
+    G1["secret-scan"]
+    G2["irreversible-op human gate"]
+    G3["4-state verdict · attestation"]
+  end
+  SG --> DEL
+  subgraph DEL["9 · Deliver"]
+    direction LR
+    L1["commit · push · Draft PR"]
+    L2["close in-source + evidence"]
+    L3["verify reality, not self-report"]
+  end
+  DEL --> FB
+  subgraph FB["10 · Feedback loop to merge-ready"]
+    direction LR
+    F1["CI fail -> fix root cause"]
+    F2["review comments -> adjust"]
+    F3["branch behind main -> additive rebase"]
+  end
+  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  WATCH["11 · 24/7 watcher · simplicio-loop<br/>evidence-gated promise · max-iterations cap · cost kill-switch"]
+  FB -. "poll new work / comments / checks" .-> WATCH
+  DONE -. "idle until new work" .-> WATCH
+  WATCH -. "re-feed the goal" .-> DISC
+```
+
+**Warstwa po warstwie — co działa i jakiego zasobu używa:**
+
+| # | Warstwa | Co się dzieje | Skill / punkt rozszerzenia · zaczerpnięte z |
+|---|---|---|---|
+| 1 | **Demand sources** | Odczyt pracy z DOWOLNEGO źródła — zgłoszenia, PR-y, CI, tablice, przypisania, TODO, CVE | `source_adapter` · `intake` |
+| 2 | **Pre-flight** | Uzbrój wyłącznik awaryjny `$`, sprawdź uwierzytelnienie źródła, uzbrój obserwatora 24/7 | `watcher` · zarządzanie kosztami |
+| 3 | **Discover + normalize** | Wylistuj tylko po metadanych, znormalizuj, zdeduplikuj, zbuduj graf zależności DAG | `normalize` · `dependency_graph` |
+| 4 | **Deep intake** | Odczytaj pełną treść + komentarze, wyodrębnij AC, zorientuj się w kodzie, napisz plan | `orient` · signatures-read · **rtk** |
+| 5 | **Route** | Szybka ścieżka (trywialne) vs ciężka ścieżka; autoskalowanie floty do maszyny | `autoscale` · router dwuścieżkowy |
+| 6 | **Worker pool** | Ciągły, świadomy konfliktów fan-out; mechaniczne edycje; pętla jakości per element | `execute` · `worktree` · `deterministic_edit` |
+| 7 | **Quality gates** | Bramka AC (prawdziwy DoD), weryfikacja uruchomieniowa (UI → **Playwright** `web_verify`), przegląd adwersarialny | `validate` · **`simplicio-review`** (thermos) |
+| 8 | **Safety gates** | Skan sekretów, bramka ludzka dla operacji nieodwracalnych, werdykt 4-stanowy, atestacja | `action_gate` · `human_gate` · `security` |
+| 9 | **Deliver** | Commit, push, Draft PR, zamknięcie w źródle z dowodami; weryfikacja rzeczywistości | `pr` / `evidence` · `delivery_gate` |
+| 10 | **Feedback loop** | CI → napraw, komentarze przeglądu → dostosuj, gałąź w tyle → addytywny rebase | `diagnostics` · `retry` |
+| 11 | **24/7 watcher** | Podawaj cel ponownie aż do bramkowanej dowodami obietnicy; bezczynnie przy opróżnieniu, budź się na cokolwiek | **`simplicio-loop`** (Ralph) · `watcher` |
+| ↻ | **Cross-cutting** | Ekonomia tokenów (terminal-first · katalog · **tee+CCR** · kompresja prozy/pamięci) · routing modeli L0→L4 · uczenie | **`simplicio-orient`** (rtk+caveman) · **`simplicio-compress`** (caveman) · **`simplicio-learn`** (teaching) · **headroom** CCR |
+
+Każda warstwa ma zawsze-działającą ścieżkę awaryjną LLM i wiąże natywne polecenie, gdy host je
+udostępnia — ten sam protokół na wszystkich 11 środowiskach uruchomieniowych, różni się tylko
+szybkość.
+
+---
+
 ## 🔁 Pętla
 
 Napędem pod orkiestratorem jest **utwardzona pętla Ralph** (`simplicio-loop`):
@@ -166,10 +271,11 @@ bezpieczeństwa:
 - **Katalog redukcji wyjścia** (tablica danych) — przepis per polecenie + oczekiwane
   oszczędności % + ochrona `skip-if-structured`. Surowy `cargo check` kosztuje ~2000 tokenów na
   odczyt; przycięty, ~80.
-- **tee-cache przy awarii** *(nowość, z rtk)* — agresywne ucinanie jest bezpieczne tylko, gdy
-  odwracalne: przy awarii pełne wyjście jest zapisywane do `.orchestrator/tee/…log`, a na
-  zewnątrz wystawiana jest tylko ścieżka, więc agent odzyskuje kontekst **bez ponownego
-  uruchamiania** polecenia.
+- **tee-cache + odwracalny retrieve** *(rtk + headroom CCR)* — agresywne ucinanie jest bezpieczne
+  tylko, gdy odwracalne: przy awarii pełne wyjście jest zapisywane do `.orchestrator/tee/…log`, a
+  na zewnątrz wystawiana jest tylko ścieżka; agent odzyskuje kontekst przez
+  `retrieve <path> [--lines|--grep]` **bez ponownego uruchamiania** polecenia. Przycięcie staje się
+  decyzją odwracalną, a nie stratną.
 - **Odczyt tylko sygnatur** *(z rtk)* — odczytaj powierzchnię API pliku (deklaracje, ciała
   pominięte): plik 600-liniowy staje się ~40 liniami podczas wczytywania.
 - **Limity warstwowane sygnałem + zwinięcie sukcesu + dedup** — zachowuj błędy ponad szumem;
@@ -213,6 +319,8 @@ sztuczki.
 | 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | równolegli recenzenci w jednej wiadomości, osobne rubryki, dedup przy syntezie | — |
 | 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | retrospektywa, która utrwala stan, by następny cykl nie wyprowadzał wszystkiego od nowa | sama dziedzina ludzkiego uczenia się |
 | 🧭 wykonanie zorientowane na rezultat | zbiegaj do stanu końcowego; planowana, ograniczona, odwracalna pośrednia awaria | — |
+| 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | **odwracalny** compress-cache-retrieve (CCR) na tee-cache; taksonomia routingu wg typu treści | wytrenowany model + proxy ruchu (przeczą projektowi terminal-first, niezależnemu od środowiska) |
+| 🎭 [**Playwright**](https://github.com/microsoft/playwright) (+[mcp](https://github.com/microsoft/playwright-mcp), [python](https://github.com/microsoft/playwright-python)) | sterowanie prawdziwą przeglądarką dla dowodu front-endu — zrzut ekranu + ślad jako dowód `web_verify` | DOM/piksele w kontekście (dowodem jest ścieżka artefaktu, nie bajty) |
 
 > One redukują tokeny; simplicio-tasks **wykonuje pracę** i przy tym redukuje tokeny.
 
@@ -249,8 +357,8 @@ abstrakcji, nigdy od konkretnego środowiska uruchomieniowego.
 `web_research`
 </details>
 
-Pełna tabela ze ścieżkami awaryjnymi: tabela z Kroku 1b w
-[`SKILL.md`](../.claude/skills/simplicio-tasks/SKILL.md).
+Pełna tabela ze ścieżkami awaryjnymi:
+[`references/extension-points.md`](../.claude/skills/simplicio-tasks/references/extension-points.md).
 
 ---
 

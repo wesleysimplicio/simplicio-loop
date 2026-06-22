@@ -127,6 +127,110 @@ Söz: **aynı protokol, aynı kapılar, 11'inin hepsinde aynı güvenlik — yal
 
 ---
 
+## 🗺️ Tüm akış — talepten teslimata
+
+Orkestratörün üzerinde işlem yaptığı her katman, sırayla — talebi okumaktan (issue'lar, görevler,
+atamalar) birleştirilmiş, kanıtlanmış işi teslim etmeye, ardından daha fazlası için 7/24
+döngüye kadar. (Diyagram GitHub'da yerel olarak işlenir.)
+
+```mermaid
+flowchart TD
+  subgraph SRC["1 · Demand sources (any adapter)"]
+    direction LR
+    S1["GitHub Issues / PRs / CI"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion"]
+    S3["Assigns · TODO/FIXME · CVE · local files"]
+  end
+  SRC --> PF
+  subgraph PF["2 · Pre-flight gates"]
+    direction LR
+    P1["cost kill-switch budget"]
+    P2["source auth + scopes"]
+    P3["arm 24/7 watcher"]
+  end
+  PF --> DISC
+  subgraph DISC["3 · Discover + normalize"]
+    direction LR
+    D1["source_adapter: list metadata only"]
+    D2["normalize to canonical schema"]
+    D3["dedup id+title+fingerprint+branch/PR"]
+    D4["dependency DAG"]
+  end
+  DISC --> INTK
+  subgraph INTK["4 · Deep intake (per item)"]
+    direction LR
+    I1["body + ALL comments"]
+    I2["extract acceptance criteria"]
+    I3["orient code · signatures-only reads"]
+    I4["plan + AC checklist + complexity"]
+  end
+  INTK --> RT{"5 · Route"}
+  RT -->|"small and every item complexity at most 3"| FAST["Fast-path: solo, one targeted test"]
+  RT -->|"large queue or any medium+"| POOL
+  subgraph POOL["6 · Continuous worker pool (autoscaled, conflict-aware)"]
+    direction LR
+    W1["claim · branch · worktree if overlap"]
+    W2["deterministic_edit"]
+    W3["quality loop: edit-lint-test-fix"]
+  end
+  FAST --> QG
+  POOL --> QG
+  subgraph QG["7 · Quality gates"]
+    direction LR
+    Q1["AC gate = real DoD"]
+    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q3["adversarial review · thermos rubrics"]
+  end
+  QG --> SG
+  subgraph SG["8 · Safety gates (non-negotiable)"]
+    direction LR
+    G1["secret-scan"]
+    G2["irreversible-op human gate"]
+    G3["4-state verdict · attestation"]
+  end
+  SG --> DEL
+  subgraph DEL["9 · Deliver"]
+    direction LR
+    L1["commit · push · Draft PR"]
+    L2["close in-source + evidence"]
+    L3["verify reality, not self-report"]
+  end
+  DEL --> FB
+  subgraph FB["10 · Feedback loop to merge-ready"]
+    direction LR
+    F1["CI fail -> fix root cause"]
+    F2["review comments -> adjust"]
+    F3["branch behind main -> additive rebase"]
+  end
+  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  WATCH["11 · 24/7 watcher · simplicio-loop<br/>evidence-gated promise · max-iterations cap · cost kill-switch"]
+  FB -. "poll new work / comments / checks" .-> WATCH
+  DONE -. "idle until new work" .-> WATCH
+  WATCH -. "re-feed the goal" .-> DISC
+```
+
+**Katman katman — ne işlem yapar ve hangi kaynağı kullanır:**
+
+| # | Katman | Ne olur | Skill / genişletme noktası · ödünç alındığı yer |
+|---|---|---|---|
+| 1 | **Demand sources** | İşi HERHANGİ bir kaynaktan oku — issue'lar, PR'lar, CI, board'lar, atamalar, TODO, CVE'ler | `source_adapter` · `intake` |
+| 2 | **Pre-flight** | `$` acil durdurma anahtarını kur, kaynak kimlik doğrulamasını denetle, 7/24 watcher'ı kur | `watcher` · maliyet yönetimi |
+| 3 | **Discover + normalize** | Yalnızca metaveriye göre listele, normalleştir, dedup, bağımlılık DAG'ını oluştur | `normalize` · `dependency_graph` |
+| 4 | **Deep intake** | Tam gövdeyi + yorumları oku, AC'leri çıkar, kodda yönünü bul, bir plan yaz | `orient` · signatures-read · **rtk** |
+| 5 | **Route** | Hızlı yol (önemsiz) vs ağır yol; filoyu makineye göre otomatik ölçeklendir | `autoscale` · çift-yollu yönlendirici |
+| 6 | **Worker pool** | Sürekli, çakışma-farkında fan-out; mekanik düzenlemeler; öğe başına kalite döngüsü | `execute` · `worktree` · `deterministic_edit` |
+| 7 | **Quality gates** | AC kapısı (gerçek DoD), çalıştırma-doğrulaması (UI → **Playwright** `web_verify`), çekişmeli inceleme | `validate` · **`simplicio-review`** (thermos) |
+| 8 | **Safety gates** | Gizli-tarama, geri-alınamaz-işlem insan kapısı, 4-durumlu karar, atestasyon | `action_gate` · `human_gate` · `security` |
+| 9 | **Deliver** | Commit, push, Draft PR, kaynakta kanıtla kapatma; gerçekliği doğrula | `pr` / `evidence` · `delivery_gate` |
+| 10 | **Feedback loop** | CI → düzelt, inceleme yorumları → ayarla, gerideki dal → eklemeli rebase | `diagnostics` · `retry` |
+| 11 | **24/7 watcher** | Kanıt-kapılı bir söze ulaşana dek hedefi yeniden besle; boşaldığında bekle, her şeye uyan | **`simplicio-loop`** (Ralph) · `watcher` |
+| ↻ | **Cross-cutting** | Token ekonomisi (terminal-öncelikli · katalog · **tee+CCR** · düzyazı/bellek sıkıştırma) · model yönlendirme L0→L4 · öğrenme | **`simplicio-orient`** (rtk+caveman) · **`simplicio-compress`** (caveman) · **`simplicio-learn`** (teaching) · **headroom** CCR |
+
+Her katmanın her zaman-çalışan bir LLM yedeği vardır ve host bir komut sağladığında yerel komutu
+bağlar — 11 runtime'ın hepsinde aynı protokol, yalnızca hız farklıdır.
+
+---
+
 ## 🔁 Döngü
 
 Orkestratörün altındaki sürücü, **sertleştirilmiş bir Ralph döngüsüdür** (`simplicio-loop`):
@@ -163,9 +267,10 @@ katlar:
   `git`/`gh`/`rg`/`python3` aracılığıyla yanıtlar. **Bir komutu asla simüle etme — onu çalıştır.**
 - **Çıktı-azaltma kataloğu** (veri tablosu) — komut başına tarif + beklenen-tasarruf % +
   `skip-if-structured` koruması. Ham bir `cargo check` okumak ~2000 token tutar; kırpılınca ~80.
-- **Hata anında tee-cache** *(yeni, rtk'den)* — agresif kesme yalnızca geri kazanılabilirse
-  güvenlidir: hatada tam çıktı `.orchestrator/tee/…log`'a yazılır ve dışarıya yalnızca yol
-  verilir, böylece ajan bağlamı komutu **yeniden çalıştırmadan** geri kazanır.
+- **tee-cache + tersine çevrilebilir retrieve** *(rtk + headroom CCR)* — agresif kesme yalnızca
+  geri kazanılabilirse güvenlidir: hatada tam çıktı `.orchestrator/tee/…log`'a yazılır ve dışarıya
+  yalnızca yol verilir; ajan bağlamı `retrieve <path> [--lines|--grep]` ile komutu **yeniden
+  çalıştırmadan** geri kazanır. Kırpma, kayıplı değil tersine çevrilebilir bir karara dönüşür.
 - **Yalnızca-imza okumaları** *(rtk'den)* — bir dosyanın API yüzeyini oku (bildirimler, gövdeler
   atlanmış): 600-satırlık bir dosya, alım sırasında ~40 satır olur.
 - **Sinyal-kademeli tavanlar + başarı-toplama + dedup** — gürültü yerine hataları koru; temiz bir
@@ -209,6 +314,8 @@ koruyup, hileleri bırakarak.
 | 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | tek-mesaj paralel inceleyiciler, ayrı rubrikler, sentezde-dedup | — |
 | 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | durumu kalıcılaştıran retrospektif, böylece sonraki döngü her şeyi yeniden türetmesin | insan-öğrenimi alanının kendisi |
 | 🧭 sonuç-odaklı yürütme | son duruma yakınsa; planlı, kapsamlı, geri-alınabilir ara bozulma | — |
+| 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | tee-cache üzerinde **tersine çevrilebilir** compress-cache-retrieve (CCR); içerik-türü yönlendirme taksonomisi | eğitilmiş model + trafik proxy'si (terminal-öncelikli, runtime'dan bağımsız tasarımla çelişir) |
+| 🎭 [**Playwright**](https://github.com/microsoft/playwright) (+[mcp](https://github.com/microsoft/playwright-mcp), [python](https://github.com/microsoft/playwright-python)) | ön-yüz kanıtı için gerçek bir tarayıcı sür — `web_verify` kanıtı olarak ekran görüntüsü + iz | bağlamdaki DOM/pikseller (kanıt, bayt değil, artefakt yoludur) |
 
 > Onlar token azaltır; simplicio-tasks **işi yapar** ve bunu yaparken token'ı azaltır.
 
@@ -245,8 +352,8 @@ runtime'a değil.
 `web_research`
 </details>
 
-Yedeklerle birlikte tam tablo: [`SKILL.md`](../.claude/skills/simplicio-tasks/SKILL.md)
-içindeki Adım 1b tablosu.
+Yedeklerle birlikte tam tablo:
+[`references/extension-points.md`](../.claude/skills/simplicio-tasks/references/extension-points.md).
 
 ---
 

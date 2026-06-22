@@ -126,6 +126,110 @@ velocità.** `orient_clamp.py` (economia dei token) funziona su ogni runtime sen
 
 ---
 
+## 🗺️ Il flusso completo — dalla richiesta alla consegna
+
+Ogni livello su cui agisce l'orchestratore, in ordine — dalla lettura della richiesta (issue, task,
+assegnazioni) fino alla consegna di lavoro mergeato e documentato, poi il loop 24/7 per altro lavoro.
+(Il diagramma viene renderizzato nativamente su GitHub.)
+
+```mermaid
+flowchart TD
+  subgraph SRC["1 · Demand sources (any adapter)"]
+    direction LR
+    S1["GitHub Issues / PRs / CI"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion"]
+    S3["Assigns · TODO/FIXME · CVE · local files"]
+  end
+  SRC --> PF
+  subgraph PF["2 · Pre-flight gates"]
+    direction LR
+    P1["cost kill-switch budget"]
+    P2["source auth + scopes"]
+    P3["arm 24/7 watcher"]
+  end
+  PF --> DISC
+  subgraph DISC["3 · Discover + normalize"]
+    direction LR
+    D1["source_adapter: list metadata only"]
+    D2["normalize to canonical schema"]
+    D3["dedup id+title+fingerprint+branch/PR"]
+    D4["dependency DAG"]
+  end
+  DISC --> INTK
+  subgraph INTK["4 · Deep intake (per item)"]
+    direction LR
+    I1["body + ALL comments"]
+    I2["extract acceptance criteria"]
+    I3["orient code · signatures-only reads"]
+    I4["plan + AC checklist + complexity"]
+  end
+  INTK --> RT{"5 · Route"}
+  RT -->|"small and every item complexity at most 3"| FAST["Fast-path: solo, one targeted test"]
+  RT -->|"large queue or any medium+"| POOL
+  subgraph POOL["6 · Continuous worker pool (autoscaled, conflict-aware)"]
+    direction LR
+    W1["claim · branch · worktree if overlap"]
+    W2["deterministic_edit"]
+    W3["quality loop: edit-lint-test-fix"]
+  end
+  FAST --> QG
+  POOL --> QG
+  subgraph QG["7 · Quality gates"]
+    direction LR
+    Q1["AC gate = real DoD"]
+    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q3["adversarial review · thermos rubrics"]
+  end
+  QG --> SG
+  subgraph SG["8 · Safety gates (non-negotiable)"]
+    direction LR
+    G1["secret-scan"]
+    G2["irreversible-op human gate"]
+    G3["4-state verdict · attestation"]
+  end
+  SG --> DEL
+  subgraph DEL["9 · Deliver"]
+    direction LR
+    L1["commit · push · Draft PR"]
+    L2["close in-source + evidence"]
+    L3["verify reality, not self-report"]
+  end
+  DEL --> FB
+  subgraph FB["10 · Feedback loop to merge-ready"]
+    direction LR
+    F1["CI fail -> fix root cause"]
+    F2["review comments -> adjust"]
+    F3["branch behind main -> additive rebase"]
+  end
+  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  WATCH["11 · 24/7 watcher · simplicio-loop<br/>evidence-gated promise · max-iterations cap · cost kill-switch"]
+  FB -. "poll new work / comments / checks" .-> WATCH
+  DONE -. "idle until new work" .-> WATCH
+  WATCH -. "re-feed the goal" .-> DISC
+```
+
+**Livello per livello — cosa agisce e quale risorsa usa:**
+
+| # | Livello | Cosa accade | Skill / extension point · preso in prestito da |
+|---|---|---|---|
+| 1 | **Demand sources** | Leggere il lavoro da QUALSIASI fonte — issue, PR, CI, board, assegnazioni, TODO, CVE | `source_adapter` · `intake` |
+| 2 | **Pre-flight** | Armare il kill-switch `$`, controllare l'auth della fonte, armare il watcher 24/7 | `watcher` · governance dei costi |
+| 3 | **Discover + normalize** | Elencare solo per metadati, normalizzare, deduplicare, costruire il DAG delle dipendenze | `normalize` · `dependency_graph` |
+| 4 | **Deep intake** | Leggere body completo + commenti, estrarre gli AC, orientare il codice, scrivere un piano | `orient` · signatures-read · **rtk** |
+| 5 | **Route** | Fast-path (banale) vs heavy-path; autoscalare la flotta sulla macchina | `autoscale` · router a doppio percorso |
+| 6 | **Worker pool** | Fan-out continuo e conflict-aware; edit meccanici; loop di qualità per elemento | `execute` · `worktree` · `deterministic_edit` |
+| 7 | **Quality gates** | AC gate (vera DoD), verifica di esecuzione (UI → **Playwright** `web_verify`), review avversariale | `validate` · **`simplicio-review`** (thermos) |
+| 8 | **Safety gates** | Secret-scan, gate umano sulle operazioni irreversibili, verdetto a 4 stati, attestazione | `action_gate` · `human_gate` · `security` |
+| 9 | **Deliver** | Commit, push, Draft PR, chiusura in-source con evidenze; verificare la realtà | `pr` / `evidence` · `delivery_gate` |
+| 10 | **Feedback loop** | CI → fix, commenti di review → adattare, branch indietro → rebase additivo | `diagnostics` · `retry` |
+| 11 | **24/7 watcher** | Ri-iniettare l'obiettivo fino a una promise vincolata a evidenze; inattivo quando svuotato, si sveglia per qualsiasi cosa | **`simplicio-loop`** (Ralph) · `watcher` |
+| ↻ | **Trasversale** | Economia dei token (terminal-first · catalogo · **tee+CCR** · compressione prosa/memoria) · routing dei modelli L0→L4 · apprendimento | **`simplicio-orient`** (rtk+caveman) · **`simplicio-compress`** (caveman) · **`simplicio-learn`** (teaching) · **headroom** CCR |
+
+Ogni livello ha un fallback LLM che funziona sempre e si lega a un comando nativo quando l'host ne fornisce
+uno — lo stesso protocollo su tutti e 11 i runtime, cambia solo la velocità.
+
+---
+
 ## 🔁 Il loop
 
 Il drive sotto l'orchestratore è un **loop Ralph rinforzato** (`simplicio-loop`):
@@ -163,9 +267,10 @@ sicurezza:
 - **Catalogo di riduzione dell'output** (tabella di dati) — ricetta per comando + % di risparmio atteso
   + guardia `skip-if-structured`. Un `cargo check` grezzo costa ~2000 token da leggere; con il clamping,
   ~80.
-- **tee-cache in caso di fallimento** *(nuovo, da rtk)* — un troncamento aggressivo è sicuro solo se
+- **tee-cache + retrieve reversibile** *(rtk + headroom CCR)* — un troncamento aggressivo è sicuro solo se
   recuperabile: in caso di fallimento l'output completo viene scritto in `.orchestrator/tee/…log` e viene
-  mostrato solo il percorso, così l'agente recupera il contesto **senza rieseguire** il comando.
+  mostrato solo il percorso; l'agente recupera il contesto con `retrieve <path> [--lines|--grep]` **senza
+  rieseguire** il comando. Il clamp diventa una decisione reversibile, non una con perdita.
 - **Letture solo-firme** *(da rtk)* — leggi la superficie API di un file (dichiarazioni, corpi omessi):
   un file di 600 righe diventa ~40 righe durante l'intake.
 - **Limiti a livelli di segnale + success-collapse + dedup** — tieni gli errori sopra il rumore;
@@ -208,6 +313,8 @@ espedienti.
 | 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | reviewer paralleli in un unico messaggio, rubriche separate, dedup in fase di sintesi | — |
 | 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | retrospettiva che persiste lo stato così che il ciclo successivo non debba riderivare | il dominio dell'apprendimento umano in sé |
 | 🧭 esecuzione orientata all'esito | converge sullo stato finale; rotture intermedie pianificate, circoscritte, reversibili | — |
+| 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | compress-cache-retrieve (CCR) **reversibile** sopra la tee-cache; tassonomia di routing per tipo di contenuto | il modello addestrato + il proxy del traffico (contraddicono il design terminal-first e indipendente dal runtime) |
+| 🎭 [**Playwright**](https://github.com/microsoft/playwright) (+[mcp](https://github.com/microsoft/playwright-mcp), [python](https://github.com/microsoft/playwright-python)) | guidare un browser reale per la prova front-end — screenshot + trace come evidenza di `web_verify` | DOM/pixel nel contesto (l'evidenza è il percorso dell'artefatto, non i byte) |
 
 > Loro riducono i token; simplicio-tasks **fa il lavoro** e riduce i token mentre lo fa.
 
@@ -243,8 +350,8 @@ nativa, lo step vi **si lega** (deterministico, quasi a zero token); altrimenti 
 `web_research`
 </details>
 
-Tabella completa con i fallback: la tabella dello Step 1b in
-[`SKILL.md`](../.claude/skills/simplicio-tasks/SKILL.md).
+Tabella completa con i fallback:
+[`references/extension-points.md`](../.claude/skills/simplicio-tasks/references/extension-points.md).
 
 ---
 

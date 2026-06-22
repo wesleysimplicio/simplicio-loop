@@ -127,6 +127,110 @@ Laufzeit ohne jegliche Verdrahtung. Siehe [`adapters/MATRIX.md`](../adapters/MAT
 
 ---
 
+## 🗺️ Der vollständige Ablauf — von der Anforderung zur Auslieferung
+
+Jede Ebene, auf die der Orchestrator einwirkt, der Reihe nach — vom Lesen der Anforderung (Issues, Tasks,
+Zuweisungen) bis zur Auslieferung gemergter, belegter Arbeit, dann das Schleifen rund um die Uhr für mehr.
+(Das Diagramm wird auf GitHub nativ gerendert.)
+
+```mermaid
+flowchart TD
+  subgraph SRC["1 · Demand sources (any adapter)"]
+    direction LR
+    S1["GitHub Issues / PRs / CI"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion"]
+    S3["Assigns · TODO/FIXME · CVE · local files"]
+  end
+  SRC --> PF
+  subgraph PF["2 · Pre-flight gates"]
+    direction LR
+    P1["cost kill-switch budget"]
+    P2["source auth + scopes"]
+    P3["arm 24/7 watcher"]
+  end
+  PF --> DISC
+  subgraph DISC["3 · Discover + normalize"]
+    direction LR
+    D1["source_adapter: list metadata only"]
+    D2["normalize to canonical schema"]
+    D3["dedup id+title+fingerprint+branch/PR"]
+    D4["dependency DAG"]
+  end
+  DISC --> INTK
+  subgraph INTK["4 · Deep intake (per item)"]
+    direction LR
+    I1["body + ALL comments"]
+    I2["extract acceptance criteria"]
+    I3["orient code · signatures-only reads"]
+    I4["plan + AC checklist + complexity"]
+  end
+  INTK --> RT{"5 · Route"}
+  RT -->|"small and every item complexity at most 3"| FAST["Fast-path: solo, one targeted test"]
+  RT -->|"large queue or any medium+"| POOL
+  subgraph POOL["6 · Continuous worker pool (autoscaled, conflict-aware)"]
+    direction LR
+    W1["claim · branch · worktree if overlap"]
+    W2["deterministic_edit"]
+    W3["quality loop: edit-lint-test-fix"]
+  end
+  FAST --> QG
+  POOL --> QG
+  subgraph QG["7 · Quality gates"]
+    direction LR
+    Q1["AC gate = real DoD"]
+    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q3["adversarial review · thermos rubrics"]
+  end
+  QG --> SG
+  subgraph SG["8 · Safety gates (non-negotiable)"]
+    direction LR
+    G1["secret-scan"]
+    G2["irreversible-op human gate"]
+    G3["4-state verdict · attestation"]
+  end
+  SG --> DEL
+  subgraph DEL["9 · Deliver"]
+    direction LR
+    L1["commit · push · Draft PR"]
+    L2["close in-source + evidence"]
+    L3["verify reality, not self-report"]
+  end
+  DEL --> FB
+  subgraph FB["10 · Feedback loop to merge-ready"]
+    direction LR
+    F1["CI fail -> fix root cause"]
+    F2["review comments -> adjust"]
+    F3["branch behind main -> additive rebase"]
+  end
+  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  WATCH["11 · 24/7 watcher · simplicio-loop<br/>evidence-gated promise · max-iterations cap · cost kill-switch"]
+  FB -. "poll new work / comments / checks" .-> WATCH
+  DONE -. "idle until new work" .-> WATCH
+  WATCH -. "re-feed the goal" .-> DISC
+```
+
+**Ebene für Ebene — was handelt und welche Ressource es nutzt:**
+
+| # | Ebene | Was passiert | Skill / Erweiterungspunkt · entlehnt von |
+|---|---|---|---|
+| 1 | **Demand sources** | Die Arbeit aus JEDER Quelle lesen — Issues, PRs, CI, Boards, Zuweisungen, TODO, CVEs | `source_adapter` · `intake` |
+| 2 | **Pre-flight** | Den `$`-Kill-Switch scharfschalten, Quellen-Auth prüfen, den 24/7-Watcher scharfschalten | `watcher` · Kostengovernance |
+| 3 | **Discover + normalize** | Nur nach Metadaten auflisten, normalisieren, deduplizieren, den Abhängigkeits-DAG bauen | `normalize` · `dependency_graph` |
+| 4 | **Deep intake** | Vollständigen Body + Kommentare lesen, ACs extrahieren, den Code orientieren, einen Plan schreiben | `orient` · signatures-read · **rtk** |
+| 5 | **Route** | Fast-path (trivial) vs. Heavy-path; die Flotte auf die Maschine autoskalieren | `autoscale` · Dual-Path-Router |
+| 6 | **Worker pool** | Kontinuierlicher, konfliktbewusster Fan-out; mechanische Edits; Qualitätsschleife pro Element | `execute` · `worktree` · `deterministic_edit` |
+| 7 | **Quality gates** | AC-Gate (echte DoD), Run-Verifikation (UI → **Playwright** `web_verify`), adversariale Review | `validate` · **`simplicio-review`** (thermos) |
+| 8 | **Safety gates** | Secret-Scan, Human-Gate für irreversible Operationen, 4-Zustands-Urteil, Attestierung | `action_gate` · `human_gate` · `security` |
+| 9 | **Deliver** | Commit, Push, Draft-PR, in-source mit Belegen schließen; Realität verifizieren | `pr` / `evidence` · `delivery_gate` |
+| 10 | **Feedback loop** | CI → Fix, Review-Kommentare → anpassen, Branch-behind → additiver Rebase | `diagnostics` · `retry` |
+| 11 | **24/7 watcher** | Das Ziel erneut einspeisen bis zu einem nachweis-gegateten Versprechen; im Leerlauf, sobald geleert, bei allem aufwachen | **`simplicio-loop`** (Ralph) · `watcher` |
+| ↻ | **Querschnitt** | Token-Ökonomie (Terminal-first · Katalog · **tee+CCR** · Prosa-/Memory-Kompression) · Modell-Routing L0→L4 · Lernen | **`simplicio-orient`** (rtk+caveman) · **`simplicio-compress`** (caveman) · **`simplicio-learn`** (teaching) · **headroom** CCR |
+
+Jede Ebene hat einen Immer-funktioniert-LLM-Fallback und bindet einen nativen Befehl, wenn der Host einen
+bereitstellt — dasselbe Protokoll auf allen 11 Laufzeiten, nur die Geschwindigkeit unterscheidet sich.
+
+---
+
 ## 🔁 Die Schleife
 
 Der Antrieb unter dem Orchestrator ist eine **gehärtete Ralph-Schleife** (`simplicio-loop`):
@@ -163,10 +267,11 @@ Sicherheitsrückgrat:
   `git`/`gh`/`rg`/`python3`. **Niemals einen Befehl simulieren — ihn ausführen.**
 - **Ausgabe-Reduktionskatalog** (Datentabelle) — Rezept pro Befehl + erwartete Einsparungs-% +
   `skip-if-structured`-Schutz. Ein rohes `cargo check` kostet ~2000 Tokens zum Lesen; geklemmt ~80.
-- **tee-Cache bei Fehler** *(neu, aus rtk)* — aggressive Kürzung ist nur dann sicher, wenn sie
-  wiederherstellbar ist: bei einem Fehler wird die vollständige Ausgabe nach `.orchestrator/tee/…log`
-  geschrieben und nur der Pfad angezeigt, sodass der Agent den Kontext wiederherstellt, **ohne den
-  Befehl erneut auszuführen**.
+- **tee-Cache + umkehrbares Retrieve** *(rtk + headroom CCR)* — aggressive Kürzung ist nur dann sicher,
+  wenn sie wiederherstellbar ist: bei einem Fehler wird die vollständige Ausgabe nach
+  `.orchestrator/tee/…log` geschrieben und nur der Pfad angezeigt; der Agent stellt den Kontext mit
+  `retrieve <path> [--lines|--grep]` wieder her, **ohne den Befehl erneut auszuführen**. Die Klemmung
+  wird zu einer umkehrbaren Entscheidung, nicht zu einer verlustbehafteten.
 - **Signaturen-only-Lesemodus** *(aus rtk)* — die API-Oberfläche einer Datei lesen (Deklarationen,
   Bodies ausgelassen): eine 600-Zeilen-Datei wird bei der Aufnahme zu ~40 Zeilen.
 - **Signalgestaffelte Obergrenzen + Success-Collapse + Dedup** — Fehler über Rauschen halten; einen
@@ -209,6 +314,8 @@ weglassend.
 | 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | Parallele Reviewer in einer einzigen Nachricht, getrennte Rubriken, Dedup bei der Synthese | — |
 | 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | Retrospektive, die den Zustand persistiert, damit der nächste Zyklus nichts neu herleiten muss | die Human-Learning-Domäne selbst |
 | 🧭 ergebnisorientierte Ausführung | auf den Endzustand konvergieren; geplante, abgegrenzte, umkehrbare Zwischenbrüche | — |
+| 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | **umkehrbares** Compress-Cache-Retrieve (CCR) über dem tee-Cache; Taxonomie zum Content-Type-Routing | das trainierte Modell + Traffic-Proxy (widersprechen dem Terminal-first-, laufzeitunabhängigen Design) |
+| 🎭 [**Playwright**](https://github.com/microsoft/playwright) (+[mcp](https://github.com/microsoft/playwright-mcp), [python](https://github.com/microsoft/playwright-python)) | einen echten Browser für Frontend-Nachweise steuern — Screenshot + Trace als `web_verify`-Beleg | DOM/Pixel im Kontext (der Beleg ist der Artefaktpfad, nicht die Bytes) |
 
 > Sie reduzieren Tokens; simplicio-tasks **erledigt die Arbeit** und reduziert dabei Tokens.
 
@@ -245,8 +352,8 @@ Abstraktion ab, niemals von einer Laufzeit.
 `web_research`
 </details>
 
-Vollständige Tabelle mit Fallbacks: die Step-1b-Tabelle in
-[`SKILL.md`](../.claude/skills/simplicio-tasks/SKILL.md).
+Vollständige Tabelle mit Fallbacks:
+[`references/extension-points.md`](../.claude/skills/simplicio-tasks/references/extension-points.md).
 
 ---
 

@@ -126,6 +126,110 @@ Voir [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
 ---
 
+## 🗺️ Le flux complet — de la demande à la livraison
+
+Chaque couche sur laquelle agit l'orchestrateur, dans l'ordre — depuis la lecture de la demande (issues,
+tâches, affectations) jusqu'à la livraison d'un travail fusionné et prouvé, puis la boucle 24h/24 pour
+en chercher davantage. (Le diagramme se rend nativement sur GitHub.)
+
+```mermaid
+flowchart TD
+  subgraph SRC["1 · Demand sources (any adapter)"]
+    direction LR
+    S1["GitHub Issues / PRs / CI"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion"]
+    S3["Assigns · TODO/FIXME · CVE · local files"]
+  end
+  SRC --> PF
+  subgraph PF["2 · Pre-flight gates"]
+    direction LR
+    P1["cost kill-switch budget"]
+    P2["source auth + scopes"]
+    P3["arm 24/7 watcher"]
+  end
+  PF --> DISC
+  subgraph DISC["3 · Discover + normalize"]
+    direction LR
+    D1["source_adapter: list metadata only"]
+    D2["normalize to canonical schema"]
+    D3["dedup id+title+fingerprint+branch/PR"]
+    D4["dependency DAG"]
+  end
+  DISC --> INTK
+  subgraph INTK["4 · Deep intake (per item)"]
+    direction LR
+    I1["body + ALL comments"]
+    I2["extract acceptance criteria"]
+    I3["orient code · signatures-only reads"]
+    I4["plan + AC checklist + complexity"]
+  end
+  INTK --> RT{"5 · Route"}
+  RT -->|"small and every item complexity at most 3"| FAST["Fast-path: solo, one targeted test"]
+  RT -->|"large queue or any medium+"| POOL
+  subgraph POOL["6 · Continuous worker pool (autoscaled, conflict-aware)"]
+    direction LR
+    W1["claim · branch · worktree if overlap"]
+    W2["deterministic_edit"]
+    W3["quality loop: edit-lint-test-fix"]
+  end
+  FAST --> QG
+  POOL --> QG
+  subgraph QG["7 · Quality gates"]
+    direction LR
+    Q1["AC gate = real DoD"]
+    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q3["adversarial review · thermos rubrics"]
+  end
+  QG --> SG
+  subgraph SG["8 · Safety gates (non-negotiable)"]
+    direction LR
+    G1["secret-scan"]
+    G2["irreversible-op human gate"]
+    G3["4-state verdict · attestation"]
+  end
+  SG --> DEL
+  subgraph DEL["9 · Deliver"]
+    direction LR
+    L1["commit · push · Draft PR"]
+    L2["close in-source + evidence"]
+    L3["verify reality, not self-report"]
+  end
+  DEL --> FB
+  subgraph FB["10 · Feedback loop to merge-ready"]
+    direction LR
+    F1["CI fail -> fix root cause"]
+    F2["review comments -> adjust"]
+    F3["branch behind main -> additive rebase"]
+  end
+  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  WATCH["11 · 24/7 watcher · simplicio-loop<br/>evidence-gated promise · max-iterations cap · cost kill-switch"]
+  FB -. "poll new work / comments / checks" .-> WATCH
+  DONE -. "idle until new work" .-> WATCH
+  WATCH -. "re-feed the goal" .-> DISC
+```
+
+**Couche par couche — ce qui agit et la ressource qu'elle utilise :**
+
+| # | Couche | Ce qui se passe | Skill / point d'extension · emprunté à |
+|---|---|---|---|
+| 1 | **Demand sources** | Lire le travail depuis N'IMPORTE QUELLE source — issues, PR, CI, tableaux, affectations, TODO, CVE | `source_adapter` · `intake` |
+| 2 | **Pre-flight** | Armer le coupe-circuit `$`, vérifier l'auth de la source, armer le watcher 24h/24 | `watcher` · gouvernance de coût |
+| 3 | **Discover + normalize** | Lister uniquement par métadonnées, normaliser, dédupliquer, construire le DAG de dépendances | `normalize` · `dependency_graph` |
+| 4 | **Deep intake** | Lire le corps + tous les commentaires, extraire les ACs, orienter le code, écrire un plan | `orient` · signatures-read · **rtk** |
+| 5 | **Route** | Fast-path (trivial) vs heavy-path ; mettre la flotte à l'échelle de la machine | `autoscale` · routeur à deux voies |
+| 6 | **Worker pool** | Fan-out continu et conscient des conflits ; éditions mécaniques ; boucle de qualité par élément | `execute` · `worktree` · `deterministic_edit` |
+| 7 | **Quality gates** | Gate d'AC (DoD réel), vérification par exécution (UI → **Playwright** `web_verify`), revue adverse | `validate` · **`simplicio-review`** (thermos) |
+| 8 | **Safety gates** | Scan de secrets, gate humain pour op irréversible, verdict à 4 états, attestation | `action_gate` · `human_gate` · `security` |
+| 9 | **Deliver** | Commit, push, Draft PR, clôturer dans la source avec preuve ; vérifier la réalité | `pr` / `evidence` · `delivery_gate` |
+| 10 | **Feedback loop** | CI → corriger, commentaires de revue → ajuster, branche en retard → rebase additif | `diagnostics` · `retry` |
+| 11 | **24/7 watcher** | Réinjecter l'objectif jusqu'à une promesse adossée à une preuve ; rester inactif une fois vidé, se réveiller pour tout | **`simplicio-loop`** (Ralph) · `watcher` |
+| ↻ | **Transversal** | Économie de tokens (terminal-first · catalogue · **tee+CCR** · compression prose/mémoire) · routage des modèles L0→L4 · learn | **`simplicio-orient`** (rtk+caveman) · **`simplicio-compress`** (caveman) · **`simplicio-learn`** (teaching) · **headroom** CCR |
+
+Chaque couche dispose d'un repli LLM qui fonctionne toujours et lie une commande native lorsque l'hôte en
+fournit une — le même protocole sur les 11 runtimes, seule la vitesse diffère.
+
+---
+
 ## 🔁 La boucle
 
 Le moteur sous l'orchestrateur est une **boucle Ralph durcie** (`simplicio-loop`) :
@@ -162,9 +266,10 @@ conversation) dans la colonne vertébrale de sécurité :
   faits via `git`/`gh`/`rg`/`python3`. **Ne jamais simuler une commande — l'exécuter.**
 - **Catalogue de réduction de sortie** (table de données) — recette par commande + % d'économie attendu
   + garde-fou `skip-if-structured`. Un `cargo check` brut coûte ~2000 tokens à lire ; bridé, ~80.
-- **tee-cache en cas d'échec** *(nouveau, de rtk)* — la troncature agressive n'est sûre que si elle est
-  récupérable : en cas d'échec, la sortie complète est écrite dans `.orchestrator/tee/…log` et seul le
-  chemin est exposé, de sorte que l'agent récupère le contexte **sans réexécuter** la commande.
+- **tee-cache + retrieve réversible** *(rtk + headroom CCR)* — la troncature agressive n'est sûre que si
+  elle est récupérable : en cas d'échec, la sortie complète est écrite dans `.orchestrator/tee/…log` et
+  seul le chemin est exposé ; l'agent récupère le contexte avec `retrieve <path> [--lines|--grep]` **sans
+  réexécuter** la commande. Le clamp devient une décision réversible, pas une décision avec pertes.
 - **Lectures signatures seules** *(de rtk)* — lire la surface d'API d'un fichier (déclarations, corps
   élidés) : un fichier de 600 lignes devient ~40 lignes lors de l'ingestion.
 - **Plafonds par paliers de signal + collapse-succès + dédup** — garder les erreurs plutôt que le
@@ -207,6 +312,8 @@ abandonnant les gadgets.
 | 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | relecteurs parallèles en un seul message, grilles séparées, dédup à la synthèse | — |
 | 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | rétrospective qui persiste l'état pour que le cycle suivant n'ait pas à re-dériver | le domaine de l'apprentissage humain lui-même |
 | 🧭 exécution orientée résultat | converger vers l'état final ; casse intermédiaire planifiée, cadrée, réversible | — |
+| 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | compress-cache-retrieve (CCR) **réversible** par-dessus le tee-cache ; taxonomie de routage par type de contenu | le modèle entraîné + proxy de trafic (contredisent la conception terminal-first, indépendante du runtime) |
+| 🎭 [**Playwright**](https://github.com/microsoft/playwright) (+[mcp](https://github.com/microsoft/playwright-mcp), [python](https://github.com/microsoft/playwright-python)) | piloter un vrai navigateur pour la preuve front-end — screenshot + trace comme preuve `web_verify` | DOM/pixels dans le contexte (la preuve est le chemin de l'artefact, pas les octets) |
 
 > Eux réduisent les tokens ; simplicio-tasks **fait le travail** et réduit les tokens en le faisant.
 
@@ -242,8 +349,8 @@ exécute le **repli** avec des outils standard. La skill dépend de l'abstractio
 `web_research`
 </details>
 
-Table complète avec les replis : la table de l'Étape 1b dans
-[`SKILL.md`](../.claude/skills/simplicio-tasks/SKILL.md).
+Table complète avec les replis :
+[`references/extension-points.md`](../.claude/skills/simplicio-tasks/references/extension-points.md).
 
 ---
 
