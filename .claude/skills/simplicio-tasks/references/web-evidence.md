@@ -71,6 +71,22 @@ At MEDIUM+, `simplicio-review` adds: "if the diff is front-end, REQUIRE a `web_v
 with screenshot+trace paths and 0 console errors, else FAIL." `web_verify` is the producer;
 `simplicio-review` is the enforcer; `pr`/`evidence` attaches.
 
+## Runnable worker (`scripts/web_verify.py`)
+The prose above is the contract; `scripts/web_verify.py` is the runnable form. Two backends via
+`--runner`: `npx` (default, Fallback A) and `pytest` (Fallback B, playwright-python);
+playwright-mcp stays the richer path when a worker has the MCP server:
+```bash
+python3 scripts/web_verify.py detect --base origin/main [--exit-code]   # cheap FE-diff gate
+python3 scripts/web_verify.py run    --url URL --expect "Sign in" --issue 10 [--runner npx|pytest] [--upload --pr N]
+python3 scripts/web_verify.py verify --url URL --expect TEXT --base origin/main --issue 10
+```
+`verify` = detect + (run only if the diff is front-end, else a SKIP ledger note). It writes the
+screenshot, trace, and console scan under `.orchestrator/tee/web/`, appends the ledger row, and
+prints the MACHINE-tier verdict (`done|fail|skip|blocked`); a missing toolchain yields BLOCKED,
+never a fake pass. **CI artifact upload:** `.github/workflows/web-verify.yml` runs the worker on
+front-end PRs and uploads `.orchestrator/tee/web` via `actions/upload-artifact@v4`; locally pass
+`--upload --pr <N>` to `gh release upload` the artifacts and `gh pr comment` the links.
+
 ## Scope (v1 — don't over-engineer)
 Build: FE-diff detector · `web_verify` worker (playwright-mcp preferred, npx/pytest fallback) ·
 ledger row schema · the review rubric line. Skip: vision/coordinate caps, video, visual-diff

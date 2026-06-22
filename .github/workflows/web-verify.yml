@@ -1,0 +1,63 @@
+# simplicio-tasks — web_verify CI (front-end proof + artifact upload).
+# Runs the web_verify worker and uploads the screenshot+trace evidence as a CI artifact.
+# Gated on a front-end path filter so it never runs on doc/script-only PRs; also runnable
+# on demand. Set WEB_VERIFY_URL (repo/secret var) to the app URL the job should probe; if
+# unset, the job runs the cheap FE-diff detector only and uploads whatever evidence exists.
+name: web-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "URL to probe (overrides WEB_VERIFY_URL)"
+        required: false
+      expect:
+        description: "Text expected to be visible"
+        required: false
+  pull_request:
+    paths:
+      - "**/*.tsx"
+      - "**/*.jsx"
+      - "**/*.vue"
+      - "**/*.svelte"
+      - "**/*.css"
+      - "**/*.scss"
+      - "**/*.html"
+      - "components/**"
+      - "pages/**"
+      - "app/**"
+      - "public/**"
+      - "src/ui/**"
+
+jobs:
+  web-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # need history for the FE-diff detector
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: web_verify
+        env:
+          URL: ${{ github.event.inputs.url || vars.WEB_VERIFY_URL }}
+          EXPECT: ${{ github.event.inputs.expect }}
+        run: |
+          if [ -n "$URL" ]; then
+            python3 scripts/web_verify.py verify --url "$URL" --expect "$EXPECT" \
+              --base "origin/${{ github.base_ref || github.ref_name }}" --issue ci
+          else
+            python3 scripts/web_verify.py detect \
+              --base "origin/${{ github.base_ref || github.ref_name }}"
+          fi
+      - name: upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-verify-evidence
+          path: .orchestrator/tee/web
+          if-no-files-found: ignore
