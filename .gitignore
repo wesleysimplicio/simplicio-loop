@@ -4,6 +4,10 @@
 # Runtime state written by the skill at run time
 .orchestrator/
 
+# Python bytecode (hooks + installer are Python)
+__pycache__/
+*.pyc
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

@@ -1,0 +1,17 @@
+{
+  "name": "simplicio",
+  "owner": {
+    "name": "Wesley Simplicio",
+    "email": "wesleybob4@gmail.com"
+  },
+  "metadata": {
+    "description": "Simplicio ecosystem — the Universal Looping AI Orchestrator and its satellite skills (loop, orient, review, compress, learn)."
+  },
+  "plugins": [
+    {
+      "name": "simplicio-tasks",
+      "source": ".",
+      "description": "Super-plugin: autonomous looping orchestrator + 5 satellite skills. Drains any queue of work end-to-end on any runtime, 24/7, behind safety gates and a cost kill-switch."
+    }
+  ]
+}

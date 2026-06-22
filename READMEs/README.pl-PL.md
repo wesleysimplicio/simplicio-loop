@@ -6,7 +6,8 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-tasks/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-tasks?style=social" alt="Stars"></a>
-  <a href="https://github.com/wesleysimplicio/simplicio-tasks"><img src="https://img.shields.io/badge/skill-runtime--agnostic-39FF14" alt="Runtime-agnostic"></a>
+  <a href="#-6-skilli-super-plugin"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
+  <a href="#-11-środowisk-uruchomieniowych-jeden-protokół"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-43-punkty-rozszerzeń"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
   <a href="#-ekonomia-tokenów"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
@@ -14,14 +15,16 @@
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-vs-caveman--rtk">vs caveman i rtk</a> ·
-  <a href="#-43-punkty-rozszerzeń">43 punkty</a> ·
-  <a href="#-wszystko-w-środku">Wszystko w środku</a> ·
+  <a href="#-6-skilli-super-plugin">6 skilli</a> ·
+  <a href="#-11-środowisk-uruchomieniowych-jeden-protokół">11 środowisk</a> ·
+  <a href="#-pętla">Pętla</a> ·
+  <a href="#-ekonomia-tokenów">Ekonomia tokenów</a> ·
+  <a href="#-na-barkach-gigantów">Podziękowania</a> ·
   <a href="#-instalacja--użycie">Instalacja</a>
 </p>
 
 <p align="center">
-  <strong>🌍 Języki:</strong><br>
+  <strong>🌍 Languages:</strong><br>
   <a href="../README.md">🇬🇧 English</a> |
   <a href="README.pt-BR.md">🇧🇷 Português</a> |
   <a href="README.es-ES.md">🇪🇸 Español</a> |
@@ -32,7 +35,7 @@
   <a href="README.ko-KR.md">🇰🇷 한국어</a> |
   <a href="README.zh-CN.md">🇨🇳 简体中文</a> |
   <a href="README.ru-RU.md">🇷🇺 Русский</a> |
-  <strong>🇵🇱 Polski</strong> |
+  <a href="README.pl-PL.md">🇵🇱 Polski</a> |
   <a href="README.tr-TR.md">🇹🇷 Türkçe</a> |
   <a href="README.nl-NL.md">🇳🇱 Nederlands</a> |
   <a href="README.hi-IN.md">🇮🇳 हिन्दी</a> |
@@ -43,25 +46,19 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks** to pojedynczy, niezależny od środowiska uruchomieniowego **skill**,
-który zamienia dowolny mocny LLM (Claude, Codex, Copilot, Gemini, Grok, modele lokalne)
-w **autonomiczny zapętlony orkiestrator**. Wskazujesz mu pewien zakres pracy — *„dokończ
-wszystkie otwarte zgłoszenia"*, *„opróżnij kolejkę CI"*, *„rozładuj tablicę Jira"* — a on
-samodzielnie przeprowadza cały cykl życia:
+**simplicio-tasks** to niezależny od środowiska uruchomieniowego **super-plugin** — jeden
+autonomiczny zapętlony orkiestrator plus **pięć skilli satelitarnych** — który zamienia dowolny
+mocny LLM (Claude, Codex, Copilot, Gemini, Cursor, modele lokalne) w samosterującego pracownika.
+Wskazujesz mu pewien zakres pracy — *„dokończ wszystkie otwarte zgłoszenia"*, *„opróżnij kolejkę
+CI"*, *„rozładuj tablicę Jira"* — a on samodzielnie przeprowadza cały cykl życia:
 
 > **odkryj → zrozum → zdecyduj → działaj → zweryfikuj → popraw → zapisz → powtórz**
 
 Odkrywa pracę z dowolnego źródła, usuwa duplikaty, automatycznie skaluje flotę agentów do
-możliwości Twojej maszyny, realizuje każdy element w pętli jakościowej, która **uruchamia
-kod (a nie tylko go kompiluje)**, otwiera PR-y, rozwiązuje uwagi z CI/przeglądu, scala
-zmiany i nieprzerwanie obserwuje **24/7** w poszukiwaniu nowej pracy — wszystko za bramkami
-bezpieczeństwa i twardym wyłącznikiem awaryjnym kosztów.
-
-Niesie ze sobą **43 nazwane punkty rozszerzeń**. Każdy ma awaryjną ścieżkę LLM, która zawsze
-działa, a każdy *wiąże się z natywnym poleceniem środowiska hostującego*, gdy takie jest
-dostępne — czyniąc dany krok deterministycznym i niemal zerotokenowym. **Skill nie wskazuje
-żadnego środowiska uruchomieniowego; to środowisko wykrywa skill.** Ta inwersja jest całą
-sztuczką: jeden uniwersalny protokół z opcjonalną natywną szybkością wstrzykniętą pod spód.
+możliwości Twojej maszyny, realizuje każdy element w pętli jakościowej, która **uruchamia kod
+(a nie tylko go kompiluje)**, otwiera PR-y, rozwiązuje uwagi z CI/przeglądu, scala zmiany i
+nieprzerwanie obserwuje **24/7** w poszukiwaniu nowej pracy — wszystko za bramkami bezpieczeństwa
+i twardym wyłącznikiem awaryjnym kosztów.
 
 ```text
 /simplicio-tasks termine as issues abertas
@@ -70,37 +67,61 @@ sztuczką: jeden uniwersalny protokół z opcjonalną natywną szybkością wstr
 → autoscale fleet = 14 · pipeline implement→review→merge
 → each item: read body+ACs → orient code → plan → edit → run → verify → PR
 → merge · close with evidence · rollback if main breaks
-→ keep polling every ~2 min for new work
+→ keep looping every ~2 min until the queue is dry (evidence-gated, never a false "done")
 ```
+
+Trzy rzeczy wyróżniają go na tle innych: jest **super-pluginem skupionych skilli**, uruchamia
+**ten sam protokół na 11 środowiskach uruchomieniowych** i robi to wszystko z **agresywną,
+uczciwą ekonomią tokenów**.
 
 ---
 
-## 🆚 vs caveman i rtk
+## 🧠 6 skilli (super-plugin)
 
-simplicio-tasks powstał **po dogłębnym przestudiowaniu** dwóch najlepszych narzędzi do
-oszczędzania tokenów na GitHubie — [**caveman**](https://github.com/JuliusBrussee/caveman)
-(74k★, *kompresja rozmowy*) i [**rtk**](https://github.com/rtk-ai/rtk) (63k★, *kompresja
-poleceń*). Łączy to, co najlepsze z **obu**, w pełnoprawnego orkiestratora. Tamte redukują
-tokeny; simplicio-tasks **wykonuje pracę** i przy tym redukuje tokeny.
+Orkiestrator jest rdzeniem; pięć satelitów, z których każdy wchłania to, co najlepsze z dobrze
+znanej techniki, i udostępnia to jako wielokrotnego użytku skill. Każdy satelita jest
+**opcjonalny** — gdy jest załadowany, orkiestrator deleguje do niego (bogaciej + taniej); gdy go
+brak, wbudowany protokół orkiestratora pokrywa 100% pracy. Ta sama odwrócona zależność, poziom
+wyżej.
 
-| | 🪨 **caveman** | ⚙️ **rtk** | 🔁 **simplicio-tasks** |
+| Skill | Wchłania | Co robi |
+|---|---|---|
+| 🔁 **simplicio-tasks** | — | Pętla orkiestratora: discover → implement → verify → merge → close → watch 24/7. 43 punkty rozszerzeń, router dwuścieżkowy, zbieżność przez autoaudyt. |
+| ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Utwardzona pętla Ralph: podaje ten sam cel ponownie w każdej turze, by agent widział własną pracę, wychodząc wyłącznie przy **bramkowanym dowodami `<promise>`** lub pułapie `max_iterations` — nigdy przy fałszywym „gotowe". |
+| 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Wykonanie terminal-first: odpowiadaj na fakty powłoką, nigdy LLM-em. Katalog redukcji wyjścia, **tee-cache przy awarii**, odczyt tylko sygnatur, opcjonalny hook auto-przepisywania. |
+| 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Przegląd adwersarialny: równoległe podagenty na odrębnych rubrykach (bezpieczeństwo/poprawność + jakość kodu), uruchomione w jednej wiadomości, zdeduplikowane w jeden werdykt. |
+| 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Kompresja wyjścia + pamięci: poziomy zwięzłej prozy zachowujące kod/ścieżki bajt w bajt, plus jednorazowa kompakcja pamięci, która zwraca się w każdej turze. Fail-closed `transform_guard`. |
+| 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) + continual-learning | Retrospektywa: wydobądź trwałe, zdeduplikowane lekcje z przebiegu i zapisz je do pamięci, by następny przebieg był tańszy i bardziej poprawny. |
+
+Każdy to zwykły folder skilla w [`.claude/skills/`](../.claude/skills) — używalny samodzielnie
+lub jako część pętli.
+
+---
+
+## 🌐 11 środowisk uruchomieniowych, jeden protokół
+
+Jeden uniwersalny rdzeń skilla + jeden zestaw hooków napędzają każde środowisko uruchomieniowe.
+Adapter jest cienki: mówi środowisku *gdzie załadować skille*, *jak uzbroić pętlę* i *jak związać
+natywną szybkość*. **Skill nie wskazuje żadnego środowiska uruchomieniowego; to środowisko wykrywa
+skill.**
+
+| Środowisko | Ładowanie skilla | Napęd pętli | Wiązanie natywne |
 |---|---|---|---|
-| **Czym jest** | Skill dla Claude Code | Proxy CLI w Rust | Skill niezależny od środowiska |
-| **Główna idea** | Mów zwięźlej (odrzuć wypełniacze) | Redukuj wyjście poleceń deweloperskich | **Orkiestruj całą pracę** |
-| **Zakres** | Prozaiczne wyjście LLM | Wyjście poleceń powłoki | Pełny cykl życia pracy, od początku do końca |
-| **Oszczędność tokenów** | ~65% na odpowiedziach | 60–90% na poleceniach | Oba — katalog + limity + przycinanie |
-| **Wykonuje pracę?** | ❌ tylko formatowanie | ❌ tylko proxy | ✅ odkryj→zrealizuj→scal→zamknij |
-| **Wielokrokowa autonomia** | ❌ | ❌ | ✅ ciągła pula pracowników |
-| **Bramki jakości** | — | — | ✅ bramka AC · weryfikacja przez uruchomienie · weryfikacja adwersarialna · bramka dostarczenia |
-| **Bezpieczeństwo** | — | semgrep, zastrzeżenia | ✅ werdykt 4-stanowy · atestacja · skan sekretów · bramka ludzka · wyłącznik awaryjny |
-| **Pętla 24/7** | ❌ | ❌ | ✅ trwały obserwator, samonaprawiający się |
-| **Wiązanie ze środowiskiem** | Claude/Codex/Gemini | dowolne (proxy PATH) | **dowolne** (43 punkty rozszerzeń) |
-| **Co zaczerpnęliśmy** | zwięzłe raporty pracowników, poziomy gęstości, ochrona przed parafrazowaniem, uczciwa linia bazowa | katalog redukcji per polecenie, limity warstwowane sygnałem, przycinanie złożone, fail-open, werdykt 4-stanowy | — |
-| **Co pominęliśmy** | upuszczanie słów na poziomie gramatyki (pogarsza jakość kodu) | rejestry per język (specyficzne dla środowiska) | — |
+| **Claude Code** | `.claude/skills/` + plugin | hook `Stop` | MCP |
+| **Codex** | `AGENTS.md` | własne tempo | MCP / adapter |
+| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | MCP |
+| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | MCP / rules |
+| **Antigravity** | rules / `AGENTS.md` | własne tempo | MCP |
+| **Kiro** | `.kiro/steering/` | specs | MCP |
+| **OpenCode** | `AGENTS.md` | własne tempo | MCP |
+| **Gemini** | `GEMINI.md` | własne tempo | MCP / adapter |
+| **Aider** | `CONVENTIONS.md` | własne tempo | — (awaryjny LLM) |
+| **Hermes** | natywna pamięć | natywna pętla | **natywne** |
+| **OpenClaw** | plugin SDK | natywny harmonogram | **natywne** |
 
-> **Świadomie odrzuciliśmy** caveman-owe „mów-jak-jaskiniowiec" upuszczanie słów — zwięzła
-> *proza* jest w porządku, ale kaleczenie gramatyki pogarsza kod i potwierdzenia. Zachowaliśmy
-> *dyscyplinę* (nigdy nie parafrazuj kodu/URL-i/ścieżek), a nie sztuczkę.
+Obietnica: **ten sam protokół, te same bramki, to samo bezpieczeństwo na wszystkich 11 — różni się
+tylko szybkość.** `orient_clamp.py` (ekonomia tokenów) działa na każdym środowisku bez żadnego
+podłączania. Zobacz [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
 <p align="center">
   <img src="../assets/architecture.svg" alt="architecture" width="900" />
@@ -108,182 +129,181 @@ tokeny; simplicio-tasks **wykonuje pracę** i przy tym redukuje tokeny.
 
 ---
 
-## 🧩 43 punkty rozszerzeń
+## 🔁 Pętla
 
-Każdy krok pracy odbywa się w **nazwanym punkcie rozszerzenia**. Jeśli środowisko hostujące
-udostępnia natywną zdolność, następuje **wiązanie** (deterministyczne, niemal zerotokenowe).
-W przeciwnym razie LLM realizuje **ścieżkę awaryjną** standardowymi narzędziami (powłoka, git,
-gh, edycja plików, sieć). Skill zależy od abstrakcji, nigdy od konkretnego środowiska.
+Napędem pod orkiestratorem jest **utwardzona pętla Ralph** (`simplicio-loop`):
 
-### Orkiestracja i skala
-| Punkt | Co robi |
-|---|---|
-| `orient` | Skompresowana mapa repozytorium/pracy |
-| `normalize` | Element pracy → schemat kanoniczny |
-| `intake` | Pobranie pracy z linku do sprintu/tablicy |
-| `source_adapter` | Jednolity łącznik źródła (list/get/claim/update/attach/close) |
-| `autoscale` | Bezpieczny rozmiar floty na podstawie profilu maszyny |
-| `plan` / `decide` | Wsparcie planowania i decyzji |
-| `execute` | Lokalne rozproszenie agentów dla pracy masowej/mechanicznej |
-| `issue_factory` | Pełna pętla: discover→claim→implement→PR |
-| `claim` | Atomowe, bezpieczne między sesjami przejęcie elementu pracy |
-| `worktree` | Izolowany checkout dla każdego elementu |
-| `dependency_graph` | Wznawialne uporządkowanie DAG między elementami |
-| `durable_workflow` | Potok per element jako wznawialna maszyna stanów faz |
-| `work_queue` | Trwała kolejka priorytetowa z automatycznym ponawianiem + blokadą zapisu |
-| `resource_governor` | Dynamiczne dławienie w trakcie pętli + pułapy warstwy maszyny |
-| `model_route` | Najtańszy realny substrat na podzadanie (L0→zdalny) |
-| `model_preflight` | Sondowanie używalnego modelu przed routingiem generacji |
+1. Cel jest zapisywany do jednego, czytelnego dla człowieka pliku stanu
+   (`.orchestrator/loop/scratchpad.md`) — trywialnie podglądalnego, edytowalnego, anulowalnego.
+2. Po każdej turze **stop-hook** podaje ten sam cel ponownie, więc agent widzi własne wcześniejsze
+   edycje (przez git + drzewo robocze) i zbiega się. Koszt tokenów na cykl pozostaje płaski —
+   żadnego upychania kontekstu.
+3. Wychodzi **wyłącznie** wtedy, gdy wyemitowano typowany wartownik
+   `<promise>DOKŁADNY TEKST</promise>` **i** poparto go konkretnymi dowodami z danej tury
+   (przejęta bramka, link do scalonego PR, potwierdzenia AC), albo gdy zadziała twardy pułap
+   `max_iterations` / wyłącznik awaryjny kosztów.
 
-### Edycja, jakość i dowody
-| Punkt | Co robi |
-|---|---|
-| `deterministic_edit` | Mechaniczne, zerotokenowe zastosowanie podjętej zmiany |
-| `diagnostics` | Parsowanie wyjścia budowania/testów → ustrukturyzowane błędy → iteracja |
-| `toolchain_detect` | Wykrycie rzeczywistego stosu build/lint/typecheck/test repozytorium |
-| `validate` / `smoke` | Weryfikacja przez uruchomienie: „działa, a nie tylko kompiluje się" |
-| `delivery_gate` | DoD: sprawdzenie AC + regresja + przegląd diffu + certyfikat |
-| `endpoint_compare` | Rozjazd Web↔API↔agent → elementy do uzupełnienia |
-| `web_verify` | Sterowanie prawdziwą przeglądarką, by udowodnić, że zmiana UI działa |
-| `pr` / `evidence` | Otwarcie/aktualizacja PR + weryfikowalny rejestr dowodów |
-| `retry` | Sklasyfikowane ponawianie + odczekanie wg klasy awarii |
-| `reuse_precedent` | Dopasowanie wcześniej rozwiązanego przebiegu → ponowne użycie, nie regeneracja |
-| `trajectory` | Rejestracja wyniku przebiegu na potrzeby samodoskonalenia |
-| `learn` | Uczenie się z przebiegu — aktualizacja precedensów/pamięci |
-| `status` | Dashboard obserwowalności na żywo |
-| `capability_rank` | Ranking, który skill/narzędzie pasuje do podzadania |
+> **Nigdy fałszywej obietnicy.** `<promise>` bez dowodów jest ignorowany, a pętla trwa dalej.
+> To wpina pętlę bezpośrednio w twardą zasadę repozytorium: *nigdy nie zamykaj pracy bez
+> scalonego PR lub konkretnych dowodów.*
 
-### Tokeny, kontekst i bezpieczeństwo
-| Punkt | Co robi |
-|---|---|
-| `recall` | Wcześniejsze decyzje / precedensy |
-| `compress` | Kompresja kontekstu / przycinanie wyjścia |
-| `prompt_budget` | Koperta promptu z budżetem tokenów + cache fragmentów |
-| `shell_exec` | Przycięte wykonanie powłoki (ustrukturyzowane, ograniczone) |
-| `transform_guard` | Sprawdzenie, czy kompakcja zachowała każdy token kodu/URL/ścieżki/wersji |
-| `action_gate` | Klasyfikacja ryzyka każdej mutacji (safe/auto/ask) przed jej wykonaniem |
-| `security` | Skan łańcucha dostaw / sekretów |
-| `human_gate` | Asynchroniczny kanał zatwierdzeń przez człowieka |
-| `notify` | Wypchnięcie postępu/blokera/podsumowania + odbiór zatwierdzeń |
-| `checkpoint_restore` | Zrzut stanu przed ryzykowną partią; przywrócenie przy awarii |
-| `watcher` | Trwały harmonogram / poller (przetrwa restart) |
-| `savings_ledger` | Śledzenie rzeczywistego zużycia tokenów na sesję |
-| `web_research` | Pobranie aktualnej wiedzy zewnętrznej, bramkowane, z proweniencją |
-
----
-
-## 📦 Wszystko w środku
-
-Pełen inwentarz tego, co niesie skill — każdy mechanizm, z odniesieniem.
-
-### Pętla (7 kroków + podkroki)
-- **Krok 0** — Załaduj kontrakt (kanoniczny protokół).
-- **Krok 1** — Tożsamość + tania detekcja środowiska.
-- **Krok 1b** — 43 punkty rozszerzeń (wiązanie natywne lub awaryjna ścieżka LLM).
-- **Krok 1c** — Bramka ekonomii tokenów: `THINK / NO-THINK`, `INTERNET off by default`,
-  `terminal-first execution`, **katalog redukcji wyjścia**, **limity warstwowane sygnałem**,
-  **zwinięcie sukcesu + deduplikacja**, **przycinanie poleceń złożonych**, **poziomy gęstości
-  routowane wg odbiorcy**, **fail-open**, **auto-klarowność (bezpieczeństwo ważniejsze niż
-  zwięzłość)**.
-- **Krok 1d** — Pre-flight: budżet wyłącznika awaryjnego, uwierzytelnienie źródła, uzbrojenie
-  obserwatora.
-- **Krok 2** — Odkrycie + normalizacja elementów pracy (dowolny adapter źródła).
-- **Krok 2b** — Głęboki intake: odczyt pełnej treści + komentarzy, wyodrębnienie **kryteriów
-  akceptacji**, **orientacja w bazie kodu**, **tryb odczytu tylko sygnatur**, zbudowanie planu.
-- **Krok 2c** — DAG zależności + harmonogramowanie topologiczne.
-- **Krok 3** — Router dwuścieżkowy: ciągła pula pracowników **fast-path** vs **heavy-path** ·
-  **izolacja świadoma konfliktów** · **kontrakt raportu pracownika** · **pamięć poprawek**.
-- **Krok 3b** — Ciągły intake: poller wewnątrz przebiegu + obserwator bezczynności (zobacz nową
-  pracę w każdej minucie).
-- **Krok 3c** — Model szybkości: potok (nie bariera), współdzielony cache kompilacji,
-  weryfikacja-raz-przy-scaleniu, **współdzielony skrót kontekstu**.
-- **Krok 3d** — Routing modeli L0→L4 (deterministyczny → lokalny → średni → rozumujący → płatny).
-- **Krok 4** — Pętla jakości · **bramka AC (prawdziwe DoD)** · **weryfikacja przez uruchomienie** ·
-  **adwersarialna weryfikacja wielogłosowa** · **bramka analizy statycznej**.
-- **Krok 5** — Bramki bezpieczeństwa: skan sekretów, bramka ludzka dla operacji nieodwracalnych,
-  **werdykt 4-stanowy przed wykonaniem**, **atestacja złożona per segment**, **konfiguracja
-  zaufaj-przed-załadowaniem**, **bramka integralności łańcucha dostaw**, **transform_guard**.
-- **Krok 6** — Dostarczenie + zamknięcie + autoaudyt · **pakiet dowodów** · **weryfikacja
-  rzeczywistości (nigdy nie ufaj autoraportowi)** · **strażnik wycofania, jeśli scalenie psuje
-  main**.
-- **Krok 6b** — Zamknięcie pętli sprzężenia zwrotnego: CI → naprawa, komentarze przeglądu →
-  rozwiązanie, gałąź-w-tyle → uzgodnienie, pełny **cykl życia PR** aż do gotowości do scalenia.
-- **Krok 7** — Stała pętla 24/7 (10 osi): trwały sterownik, macierz pełnego pokrycia, trwały stan,
-  **zarządzanie kosztami + twardy wyłącznik awaryjny**, bezpieczeństwo bez nadzoru, samonaprawa +
-  **inteligentne ponawianie wg klasy awarii**, priorytetyzacja/WIP, obserwowalność + **okresowy
-  audyt oszczędności** + **pomiar zrzutu**, samodoskonalenie, koordynacja i czyste zatrzymanie.
-
-### Ekonomia tokenów (złożona z rtk + caveman)
-- Wykonanie terminal-first — nigdy nie symuluj polecenia.
-- **Wieloplatformowa** tablica podstawień (Windows / macOS / Linux): 30+ faktów, na które
-  terminal odpowiada taniej niż LLM.
-- **Katalog redukcji wyjścia** jako dane: przepis per polecenie, oczekiwane oszczędności %,
-  ochrona `skip-if-structured`.
-- **Limity warstwowane sygnałem**: `CAP_ERRORS / CAP_WARNINGS / CAP_LIST / CAP_INVENTORY`.
-- **Zwinięcie sukcesu** + **deduplikacja-z-liczbami** (z ochroną `unless errors`).
-- **Przycinanie poleceń złożonych** — per segment, bezpieczne dla potoków/przekierowań, fail-open.
-- **Poziomy gęstości wg odbiorcy** (maszyna vs człowiek); pomijanie już gęstej treści.
-- **Kontrakt raportu pracownika** — zwięzły schemat status-token-first dla podagentów.
-- **Uczciwa linia bazowa oszczędności** = realistyczne ramię kontrolne, **powiązane z przejściem
-  bramki jakości** (kompresja, która nie przejdzie swojej bramki, zdobywa zero punktów).
-
-### Jakość i dostarczenie
-- Lista kontrolna DoD kryteriów akceptacji · weryfikacja przez uruchomienie · weryfikacja
-  adwersarialna · bramka analizy statycznej · certyfikat dostarczenia · ponowna weryfikacja
-  rzeczywistości · automatyczne wycofanie.
-
-### Bezpieczeństwo
-- Skan sekretów · bramka ludzka dla operacji nieodwracalnych · werdykt 4-stanowy (nigdy nie
-  eskaluj uprawnień) · atestacja poleceń złożonych · zaufaj-przed-załadowaniem · integralność
-  łańcucha dostaw · utwardzenie przeciw wstrzykiwaniu promptów · twardy wyłącznik awaryjny $ dla
-  przebiegów bez nadzoru.
-
-### Autonomia 24/7
-- Trwały harmonogram · kolejka na żywo + obserwator bezczynności · trwały dziennik/stan ·
-  bezpieczniki obwodowe · kwarantanna dead-letter · samodoskonalenie i metaprzegląd ·
-  atomowe przejęcia wielu instancji · czysty sygnał STOP.
-
----
-
-## 🚀 Instalacja i użycie
-
-simplicio-tasks to **skill** — pojedynczy folder, który wrzucasz do dowolnego środowiska
-uruchomieniowego ładującego skille. Bez zależności, bez wymaganego binarki.
-
-```bash
-# Claude Code (project or user skills dir)
-git clone https://github.com/wesleysimplicio/simplicio-tasks
-cp -r simplicio-tasks/.claude/skills/simplicio-tasks  <your-repo>/.claude/skills/
-
-# then, in your agent:
-/simplicio-tasks finish all the open issues
-```
-
-Inne środowiska (Codex, Gemini, Copilot, agenci lokalni) ładują ten sam `SKILL.md` — zobacz
-[`AGENTS.md`](../AGENTS.md), [`CLAUDE.md`](../CLAUDE.md) i [`GEMINI.md`](../GEMINI.md), by poznać
-punkty wejścia dla poszczególnych środowisk. Tam, gdzie środowisko hostujące udostępnia natywne
-polecenia, automatycznie wiąże je z punktami rozszerzeń; w przeciwnym razie ścieżki awaryjne LLM
-pokrywają **100%** pracy.
-
-**Przed przebiegiem 24/7 bez nadzoru:** ustaw pułap kosztów (`.orchestrator/loop-budget.json`,
-`daily_usd_ceiling > 0`), potwierdź, że uwierzytelnienie źródła jest trwałe, i pozostaw włączone
-bramkę ludzką dla operacji nieodwracalnych + skan sekretów. Przy `ceiling = 0` obserwator
-odmawia działania bez nadzoru (fail-safe).
+Na środowiskach bez hooków pętla **sama narzuca sobie tempo** przez harmonogram hosta (cron /
+`/loop` / runner zadań danego środowiska) — te same warunki wyjścia. Hooki to
+wieloplatformowy Python i są **fail-open**: hook, który zwróci błąd, zawsze pozwala agentowi się
+zatrzymać. Prawdziwymi strażnikami są pułap i budżet, nigdy spryt hooków.
 
 ---
 
 ## 📊 Ekonomia tokenów
 
-Każda wiadomość kończy się uczciwą linią oszczędności:
+Najtańszy token to ten niewydany. `simplicio-orient` + `simplicio-compress` składają to, co
+najlepsze z **rtk** (kompresuj polecenia) i **caveman** (kompresuj rozmowę) w kręgosłup
+bezpieczeństwa:
+
+- **Wykonanie terminal-first** — powłoka zna fakty dokładnie; LLM przybliża je kosztownie.
+  Wieloplatformowa tablica podstawień (Windows/macOS/Linux) odpowiada na 30+ faktów przez
+  `git`/`gh`/`rg`/`python3`. **Nigdy nie symuluj polecenia — uruchom je.**
+- **Katalog redukcji wyjścia** (tablica danych) — przepis per polecenie + oczekiwane
+  oszczędności % + ochrona `skip-if-structured`. Surowy `cargo check` kosztuje ~2000 tokenów na
+  odczyt; przycięty, ~80.
+- **tee-cache przy awarii** *(nowość, z rtk)* — agresywne ucinanie jest bezpieczne tylko, gdy
+  odwracalne: przy awarii pełne wyjście jest zapisywane do `.orchestrator/tee/…log`, a na
+  zewnątrz wystawiana jest tylko ścieżka, więc agent odzyskuje kontekst **bez ponownego
+  uruchamiania** polecenia.
+- **Odczyt tylko sygnatur** *(z rtk)* — odczytaj powierzchnię API pliku (deklaracje, ciała
+  pominięte): plik 600-liniowy staje się ~40 liniami podczas wczytywania.
+- **Limity warstwowane sygnałem + zwinięcie sukcesu + dedup** — zachowuj błędy ponad szumem;
+  zwiń czysty przebieg do jednej linii; zwiń powtórzone linie do `line xN` — zawsze
+  `unless errors present`.
+- **Poziomy prozy + kompakcja pamięci** *(z caveman)* — zwięzłe wyjście zachowujące
+  kod/ścieżki/URL-e **bajt w bajt** (`transform_guard` zamyka się fail-closed przy każdym
+  utraconym tokenie), plus jednorazowa kompakcja stałej pamięci, amortyzowana przez każdą przyszłą
+  turę.
+- **Uczciwa linia bazowa** — oszczędności mierzone względem realistycznego ramienia kontrolnego
+  *„odpowiadaj zwięźle"* (a nie rozwlekłego chochoła), liczą tylko tokeny **wyjściowe** (nie
+  rozumowania) i są zaliczane **tylko przy zweryfikowanym poprawnym wyniku**. Kompresja, która
+  nie przejdzie swojej bramki jakości, zdobywa zero.
+
+Każda wiadomość kończy się uczciwą linią:
 
 ```
 simplicio-tasks: ~<spent> tokens · baseline ~<control-arm> · saved ~<saved> (<pct>%)
 ```
 
-Linia bazowa to **najtańsza rozsądna ścieżka bez orkiestracji** do tego samego rezultatu — a nie
-rozwlekły chochoł — a oszczędności są **zaliczane tylko wtedy, gdy weryfikacja przez uruchomienie
-i bramka kryteriów akceptacji danego elementu przejdą**. Sama surowa kompresja nigdy nie jest
-liczona jako sukces.
+Wypróbuj od razu, bez żadnego podłączania:
+
+```bash
+python3 hooks/orient_clamp.py -- cargo test      # reduced output + tee log on failure
+python3 hooks/orient_clamp.py --json -- git diff  # machine summary
+```
+
+---
+
+## 🏗️ Na barkach gigantów
+
+simplicio-tasks powstał **po dogłębnym przestudiowaniu** najlepszych prac dotyczących pętli +
+ekonomii tokenów na GitHubie i składa każdą w skupiony skill — zachowując dyscyplinę, porzucając
+sztuczki.
+
+| Projekt | Co zaczerpnęliśmy | Co pominęliśmy |
+|---|---|---|
+| 🪨 [**caveman**](https://github.com/JuliusBrussee/caveman) | poziomy zwięzłej prozy, bajtowe zachowanie identyfikatorów, kompakcja pamięci, uczciwa linia bazowa *„odpowiadaj zwięźle"* | upuszczanie słów na poziomie gramatyki (pogarsza kod i potwierdzenia) |
+| ⚙️ [**rtk**](https://github.com/rtk-ai/rtk) | katalog redukcji per polecenie, limity warstwowane sygnałem, **tee-cache**, odczyt sygnatur, hook auto-przepisywania + lista wykluczeń | rejestry per język (specyficzne dla środowiska) |
+| ♾️ [**ralph-loop**](https://github.com/cursor/plugins/tree/main/ralph-loop) | jednoplikowy stan pętli, wartownik-obietnica z dokładnym dopasowaniem, podział na dwa hooki | ukończenie „zaufaj modelowi" (my czynimy je **bramkowanym dowodami**) |
+| 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | równolegli recenzenci w jednej wiadomości, osobne rubryki, dedup przy syntezie | — |
+| 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | retrospektywa, która utrwala stan, by następny cykl nie wyprowadzał wszystkiego od nowa | sama dziedzina ludzkiego uczenia się |
+| 🧭 wykonanie zorientowane na rezultat | zbiegaj do stanu końcowego; planowana, ograniczona, odwracalna pośrednia awaria | — |
+
+> One redukują tokeny; simplicio-tasks **wykonuje pracę** i przy tym redukuje tokeny.
+
+---
+
+## 🧩 43 punkty rozszerzeń
+
+Każdy krok pracy odbywa się w **nazwanym punkcie rozszerzenia**. Jeśli środowisko hostujące
+udostępnia natywną zdolność, następuje **wiązanie** (deterministyczne, niemal zerotokenowe); w
+przeciwnym razie LLM realizuje **ścieżkę awaryjną** standardowymi narzędziami. Skill zależy od
+abstrakcji, nigdy od konkretnego środowiska uruchomieniowego.
+
+<details>
+<summary><strong>Orkiestracja i skala</strong></summary>
+
+`orient` · `normalize` · `intake` · `source_adapter` · `autoscale` · `plan`/`decide` ·
+`execute` · `issue_factory` · `claim` · `worktree` · `dependency_graph` · `durable_workflow` ·
+`work_queue` · `resource_governor` · `model_route` · `model_preflight`
+</details>
+
+<details>
+<summary><strong>Edycja, jakość i dowody</strong></summary>
+
+`deterministic_edit` · `diagnostics` · `toolchain_detect` · `validate`/`smoke` ·
+`delivery_gate` · `endpoint_compare` · `web_verify` · `pr`/`evidence` · `retry` ·
+`reuse_precedent` · `trajectory` · `learn` · `status` · `capability_rank`
+</details>
+
+<details>
+<summary><strong>Tokeny, kontekst i bezpieczeństwo</strong></summary>
+
+`recall` · `compress` · `prompt_budget` · `shell_exec` · `transform_guard` · `action_gate` ·
+`security` · `human_gate` · `notify` · `checkpoint_restore` · `watcher` · `savings_ledger` ·
+`web_research`
+</details>
+
+Pełna tabela ze ścieżkami awaryjnymi: tabela z Kroku 1b w
+[`SKILL.md`](../.claude/skills/simplicio-tasks/SKILL.md).
+
+---
+
+## 🚀 Instalacja i użycie
+
+```bash
+git clone https://github.com/wesleysimplicio/simplicio-tasks
+cd simplicio-tasks
+
+# install for your runtime (omit <runtime> to auto-detect)
+bash scripts/install.sh <runtime> [--global]        # macOS / Linux
+pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
+# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
+```
+
+Albo, na Claude Code / Cursor, dodaj go jako plugin z marketplace:
+
+```
+/plugin marketplace add wesleysimplicio/simplicio-tasks
+/plugin install simplicio-tasks@simplicio
+```
+
+Następnie:
+
+```
+/simplicio-tasks finish all the open issues
+```
+
+Jedynym wymaganiem jest **python3** w PATH (skille, hooki i instalator to wieloplatformowy
+Python). Dla źródeł GitHub — `git` + uwierzytelniony `gh`. Zobacz [`INSTALL.md`](../INSTALL.md) i
+[`adapters/MATRIX.md`](../adapters/MATRIX.md).
+
+**Przed bezobsługowym przebiegiem 24/7:** ustaw pułap kosztów w `.orchestrator/loop-budget.json`
+(`daily_usd_ceiling > 0`), potwierdź, że uwierzytelnienie źródła jest trwałe, i pozostaw włączone
+bramkę ludzką dla operacji nieodwracalnych + skan sekretów. Przy `ceiling = 0` obserwator odmawia
+działania bez nadzoru (fail-safe).
+
+---
+
+## 🔒 Bezpieczeństwo (nie podlega negocjacji)
+
+- **Skan sekretów** każdego diffu; blokada przy trafieniu.
+- **Bramka ludzka dla operacji nieodwracalnych** — force-push, przepisanie historii, deploy na
+  prod, usunięcie danych/schematu, masowe usunięcie plików → zatrzymaj się i zapytaj. Headless +
+  brak zatwierdzającego → usuń destrukcyjną zdolność.
+- **Werdykt 4-stanowy przed wykonaniem** — optymalizacja nigdy nie może podnieść poziomu ryzyka
+  polecenia.
+- **Zaufaj-przed-załadowaniem** — konfiguracja kształtująca percepcję (profile przycinania, listy
+  tłumienia) jest niezaufana, dopóki człowiek jej nie sprawdzi i nie przypnie hashem.
+- **Utwardzenie przeciw wstrzykiwaniu promptów** — treść elementu/PR/komentarza nigdy nie może
+  nadpisać kontraktu.
+- **Twardy wyłącznik awaryjny $** dla przebiegów bez nadzoru; ukończenie **bramkowane dowodami**
+  (nigdy fałszywe „gotowe"); hooki **fail-open** (nigdy nie zamykają agenta w pętli).
 
 ---
 

@@ -171,6 +171,26 @@ without the skill ever naming that runtime. The binding lives in the host runtim
 here. This is the INVERTED DEPENDENCY: the skill stays universal; the runtime injects
 the speed.
 
+## Step 1b' — Companion skills (the super-plugin satellites)
+
+simplicio-tasks ships as a **super-plugin**: this orchestrator plus five satellite skills.
+Each satellite is the deep, standalone form of a discipline gestured at inline below. They are
+an LLM-LEVEL binding for the extension points — when loaded, DELEGATE to them (richer +
+token-cheaper); when absent, the inline protocol in this file covers 100% of the work. This
+file stays self-contained and runnable alone — the satellites are optional speed/quality, never
+a dependency.
+
+| Companion skill | Absorbs | Binds (extension points) | Delegate for |
+|---|---|---|---|
+| `simplicio-orient` | rtk + caveman terminal discipline | `orient` · `shell_exec` · `compress` · `prompt_budget` | terminal-first execution, output-reduction catalog, **tee cache on failure**, signatures-only reads, optional auto-rewrite hook (Step 1c) |
+| `simplicio-loop` | Ralph Wiggum loop (hardened) | `watcher` · `durable_workflow` · `issue_factory` | the self-referential drive: re-feed goal each turn, **evidence-gated completion-promise**, `max_iterations` cap (Steps 3b, 7) |
+| `simplicio-review` | thermos parallel rubrics | `validate` · `plan`/`decide` · `capability_rank` | MEDIUM+ adversarial verify: parallel reviewers on distinct rubrics, dedup→verdict (Step 4c) |
+| `simplicio-compress` | caveman prose + memory | `compress` · `transform_guard` · `savings_ledger` | output-side prose levels, input-side one-time memory compaction, honest baseline (Notes) |
+| `simplicio-learn` | continual-learning + teaching | `trajectory` · `learn` · `recall` · `reuse_precedent` | post-run retrospective → durable deduped lessons written to memory (Steps 6, 7§9) |
+
+Rule: if a satellite is loaded, the orchestrator calls it rather than re-deriving the behavior
+inline — same inverted-dependency principle as native runtime binding, one level up.
+
 ## Step 1c — Token-economy routing gate (NO-THINK / NO-NET / NO-TOOLS / NO-SKILLS)
 
 Before each sub-task, pick the LEANEST mode that still completes it correctly.
@@ -218,6 +238,8 @@ Priority order for execution:
 **Signal-tiered truncation caps (one named set, used everywhere).** Replace any flat "head N + tail N" with caps tiered by signal density (flat truncation over-cuts errors — the thing the Step 4 loop needs most — and under-cuts noise). ONE shared set the whole skill references: `CAP_ERRORS = 20`, `CAP_WARNINGS = 10`, `CAP_LIST = 20`, `CAP_INVENTORY = 50`. Always keep ERROR lines over surrounding context. A lowered cap is underflow-safe: it falls back to the full cap rather than ever emptying a non-empty result.
 
 **Two clamp primitives.** (a) **Success-collapse:** exit 0 AND output matches a known-clean pattern with no error/warning lines → replace the WHOLE output with a one-line verdict (`cmd: ok`, `no changes`, `up-to-date`). (b) **Dedup-with-counts:** collapse runs of identical/near-identical lines into `line ×N`. BOTH carry a mandatory `unless errors present` guard — if any error/warning line exists, fall back to the signal-tiered caps instead of collapsing, so a collapse can NEVER hide a failure.
+
+**tee cache — failure escape hatch (aggressive clamp is only safe if recoverable).** On any NON-ZERO exit, OR whenever a cap clips a FAILING command, write the full unfiltered output to `.orchestrator/tee/<ts>_<cmd-slug>.log` and surface ONLY the path alongside the kept error lines: `FAILED: 2/15 · [full output: .orchestrator/tee/<ts>_cargo_test.log]`. The agent re-reads that file lazily only if the kept errors aren't enough — recovering full context WITHOUT re-running the command (which re-burns tokens and may be non-deterministic). Config knob `.orchestrator/orient.toml` → `tee.mode = failures|always|never` (default `failures`). This de-risks success-collapse: the bytes needed on failure are never thrown away. (Delegated to `simplicio-orient` when loaded.)
 
 **Compound-command clamping (clamp each segment, never corrupt the chain).** The clamp gate understands `&&` / `||` / `;` / `|` so it captures savings on chains WITHOUT corrupting a piped stream: (1) split on operators respecting quotes/escapes, clamp EACH segment via the catalog; (2) for a `|`, clamp ONLY the left producer and leave the pipe TARGET raw (the consumer `grep`/`xargs`/`jq`/`sort` needs the unmodified stream), then resume clamping later `&&`/`||`/`;` segments; (3) never clamp a `find`/glob producer feeding a pipe; (4) strip trailing redirects (`2>&1`, `>/dev/null`), clamp the inner command, re-append; (5) unsplittable (heredoc, `$((...))`, `$(...)`, file-target redirect) → run RAW with a tail clamp, never corrupt.
 
@@ -805,6 +827,10 @@ Arming mechanisms (prefer the most durable available):
 - **OS cron / scheduled task**: a `*/2 * * * *` job re-invoking this skill — survives reboots.
 - **Session loop** (least durable): `/loop 2m /simplicio-tasks termine as issues abertas` —
   runs while the session is alive; cache stays warm (< 5 min).
+- **simplicio-loop** (if loaded): binds the re-feed/iteration accounting to a real stop-hook with
+  an **evidence-gated completion-promise** — the loop exits only when `<promise>` is genuinely
+  true AND backed by a passing gate (never on a self-reported "done"). This wires the watcher
+  directly into the repo's hard rule: never close work without a merged PR or concrete evidence.
 
 Every tick: poll → if new ready items, launch a run; if nothing, exit cheap.
 
@@ -838,7 +864,10 @@ the heavy-path to internal multi-pass — no swarm, same gates.
   genuinely needed), NOT a verbose strawman that assumes bulk-reading the whole repo or
   max-verbosity. Report `saved = baseline − spent` against THAT; disclose it is approximate and
   that orchestration adds some input-token overhead. A strawman baseline inflates the figure and
-  corrupts the Step 1c routing and Step 7 §4 budget decisions — flag it.
+  corrupts the Step 1c routing and Step 7 §4 budget decisions — flag it. Concretely, the control
+  arm is a generic `"answer concisely"` pass (not the verbose default), and the reduction is on
+  OUTPUT/context tokens — thinking/reasoning tokens are untouched, so do not claim them as saved.
+  (Delegated to `simplicio-compress` when loaded.)
 - **Savings only counts on a verified-correct outcome.** An unchecked efficiency metric
   incentivizes degrading quality to win it (the degenerate "empty answer maximizes savings").
   Only report savings for an item whose run-verification (Step 4b) AND acceptance-criteria gate
