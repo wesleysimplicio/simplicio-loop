@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — El orquestador de IA universal en bucle
+# 🔁 simplicio-loop — El orquestador de IA universal en bucle
 
 <p align="center">
   <img src="../assets/simplicio-tasks-logo.svg" alt="simplicio-tasks" width="920" />
@@ -46,7 +46,7 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks** es un **super-plugin** independiente del runtime — un único orquestador
+**simplicio-loop** es un **super-plugin** independiente del runtime — un único orquestador
 autónomo en bucle más **cinco skills satélite** — que convierte cualquier LLM potente (Claude, Codex,
 Copilot, Gemini, Cursor, modelos locales) en un worker que se conduce solo. Lo apuntas a un cuerpo de
 trabajo — *«termina todas las issues abiertas»*, *«vacía la cola de CI»*, *«drena el tablero de Jira»* — y
@@ -471,7 +471,7 @@ O, en Claude Code / Cursor, añádelo como plugin de marketplace:
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 Después:

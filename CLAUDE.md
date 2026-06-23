@@ -1,7 +1,8 @@
-# CLAUDE.md — simplicio-tasks (Claude Code)
+# CLAUDE.md — simplicio-loop (Claude Code)
 
-This repo ships **simplicio-tasks**, a runtime-agnostic **super-plugin**: an autonomous
-looping orchestrator plus five satellite skills, packaged for 11 runtimes.
+This repo ships **simplicio-loop**, a runtime-agnostic **super-plugin**: an autonomous
+looping orchestrator (the `/simplicio-tasks` skill) plus five satellite skills, packaged for 11
+runtimes.
 
 ## The 6 skills
 
@@ -31,7 +32,7 @@ Or as a marketplace plugin:
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 ## Use

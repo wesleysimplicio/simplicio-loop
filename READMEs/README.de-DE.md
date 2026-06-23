@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — Der universelle, schleifenfähige KI-Orchestrator
+# 🔁 simplicio-loop — Der universelle, schleifenfähige KI-Orchestrator
 
 <p align="center">
   <img src="../assets/simplicio-tasks-logo.svg" alt="simplicio-tasks" width="920" />
@@ -46,7 +46,7 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks** ist ein laufzeitunabhängiges **Super-Plugin** — ein einziger autonomer,
+**simplicio-loop** ist ein laufzeitunabhängiges **Super-Plugin** — ein einziger autonomer,
 schleifenfähiger Orchestrator plus **fünf Satelliten-Skills** — das jedes starke LLM (Claude, Codex,
 Copilot, Gemini, Cursor, lokale Modelle) in einen selbstfahrenden Worker verwandelt. Du richtest es
 auf einen Arbeitsumfang aus — *„schließe alle offenen Issues ab"*, *„arbeite die CI-Warteschlange ab"*,
@@ -473,7 +473,7 @@ Oder füge es auf Claude Code / Cursor als Marketplace-Plugin hinzu:
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 Dann:

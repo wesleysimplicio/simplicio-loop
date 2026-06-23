@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — Evrensel Döngülü Yapay Zeka Orkestratörü
+# 🔁 simplicio-loop — Evrensel Döngülü Yapay Zeka Orkestratörü
 
 <p align="center">
   <img src="../assets/simplicio-tasks-logo.svg" alt="simplicio-tasks" width="920" />
@@ -46,7 +46,7 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks**, runtime'dan bağımsız bir **süper-eklentidir** — tek bir otonom döngülü
+**simplicio-loop**, runtime'dan bağımsız bir **süper-eklentidir** — tek bir otonom döngülü
 orkestratör artı **beş uydu skill** — ve güçlü herhangi bir LLM'i (Claude, Codex, Copilot,
 Gemini, Cursor, yerel modeller) kendi kendini süren bir işçiye dönüştürür. Onu bir iş yığınına
 yönlendirirsiniz — *"tüm açık issue'ları bitir"*, *"CI kuyruğunu boşalt"*, *"Jira board'unu
@@ -471,7 +471,7 @@ Veya, Claude Code / Cursor üzerinde, onu bir marketplace eklentisi olarak ekley
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 Ardından:

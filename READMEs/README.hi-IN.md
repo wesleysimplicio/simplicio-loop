@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — सार्वभौमिक लूपिंग AI ऑर्केस्ट्रेटर
+# 🔁 simplicio-loop — सार्वभौमिक लूपिंग AI ऑर्केस्ट्रेटर
 
 <p align="center">
   <img src="../assets/simplicio-tasks-logo.svg" alt="simplicio-tasks" width="920" />
@@ -46,7 +46,7 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks** एक रनटाइम-निरपेक्ष **सुपर-प्लगइन** है — एक स्वायत्त लूपिंग
+**simplicio-loop** एक रनटाइम-निरपेक्ष **सुपर-प्लगइन** है — एक स्वायत्त लूपिंग
 ऑर्केस्ट्रेटर और साथ में **पाँच उपग्रह स्किल्स** — जो किसी भी सशक्त LLM (Claude, Codex,
 Copilot, Gemini, Cursor, स्थानीय मॉडल) को एक स्व-संचालित वर्कर में बदल देता है। आप इसे किसी
 कार्य-भार की ओर इशारा करते हैं — *"सभी खुले issues पूरे करो"*, *"CI कतार साफ़ करो"*, *"Jira
@@ -467,7 +467,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 फिर:

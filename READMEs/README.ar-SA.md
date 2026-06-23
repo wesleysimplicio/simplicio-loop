@@ -1,6 +1,6 @@
 <div dir="rtl">
 
-# 🔁 simplicio-tasks — منسّق الذكاء الاصطناعي العالمي ذو الحلقة المتكررة
+# 🔁 simplicio-loop — منسّق الذكاء الاصطناعي العالمي ذو الحلقة المتكررة
 
 </div>
 
@@ -52,7 +52,7 @@
 
 ## ⚡ الخلاصة
 
-**simplicio-tasks** هو **سوبر-بلجن** مستقلّ عن بيئة التشغيل — منسّق واحد ذاتي الحركة يعمل
+**simplicio-loop** هو **سوبر-بلجن** مستقلّ عن بيئة التشغيل — منسّق واحد ذاتي الحركة يعمل
 بحلقة متكررة، إضافةً إلى **خمس مهارات تابعة** — يحوّل أي نموذج لغوي قوي (Claude أو Codex أو
 Copilot أو Gemini أو Cursor أو النماذج المحلية) إلى عاملٍ ذاتي القيادة. توجّهه نحو مجموعة من
 الأعمال — *"أنهِ كل القضايا المفتوحة"*، *"أفرغ طابور الـ CI"*، *"صفّ لوحة Jira"* — وهو يدير
@@ -522,7 +522,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 <div dir="rtl">

@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — 万能のループ型AIオーケストレーター
+# 🔁 simplicio-loop — 万能のループ型AIオーケストレーター
 
 <p align="center">
   <img src="../assets/simplicio-tasks-logo.svg" alt="simplicio-tasks" width="920" />
@@ -46,7 +46,7 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks** はランタイム非依存の**スーパープラグイン**です——自律的にループする
+**simplicio-loop** はランタイム非依存の**スーパープラグイン**です——自律的にループする
 オーケストレーター1つと、**5つのサテライトスキル**から成り、あらゆる高性能LLM（Claude、Codex、
 Copilot、Gemini、Cursor、ローカルモデル）を自走するワーカーへと変えます。作業のまとまり——
 *「開いているissueを全部片付けて」*、*「CIキューを空にして」*、*「Jiraボードを消化して」*——を
@@ -464,7 +464,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 それから：

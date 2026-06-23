@@ -1,7 +1,7 @@
-# 🔁 simplicio-tasks — The Universal Looping AI Orchestrator
+# 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="assets/simplicio-tasks-logo.svg" alt="simplicio-tasks" width="920" />
+  <img src="assets/simplicio-tasks-logo.svg" alt="simplicio-loop" width="920" />
 </p>
 
 <p align="center">
@@ -46,9 +46,10 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks** is a runtime-agnostic **super-plugin** — one autonomous looping
-orchestrator plus **five satellite skills** — that turns any strong LLM (Claude, Codex,
-Copilot, Gemini, Cursor, local models) into a self-driving worker. You point it at a body of
+**simplicio-loop** is a runtime-agnostic **super-plugin** — one autonomous looping
+orchestrator (invoked as **`/simplicio-tasks`**) plus **five satellite skills** — that turns any
+strong LLM (Claude, Codex, Copilot, Gemini, Cursor, local models) into a self-driving worker. You
+point it at a body of
 work — *"finish all the open issues"*, *"clear the CI queue"*, *"drain the Jira board"* — and it
 runs the whole lifecycle on its own:
 
@@ -394,7 +395,7 @@ python3 hooks/orient_clamp.py --json -- git diff  # machine summary
 
 ## 🏗️ Built on the shoulders of
 
-simplicio-tasks was built **after deeply studying** the best loop + token-economy work on
+simplicio-loop was built **after deeply studying** the best loop + token-economy work on
 GitHub, and folds each into a focused skill — keeping the discipline, dropping the gimmicks.
 
 | Project | What we took | What we left |
@@ -408,7 +409,7 @@ GitHub, and folds each into a focused skill — keeping the discipline, dropping
 | 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | **reversible** compress-cache-retrieve (CCR) over the tee-cache; content-type routing taxonomy | the trained model + traffic proxy (contradict terminal-first, runtime-agnostic design) |
 | 🎭 [**Playwright**](https://github.com/microsoft/playwright) (+[mcp](https://github.com/microsoft/playwright-mcp), [python](https://github.com/microsoft/playwright-python)) | drive a real browser for front-end proof — screenshot + trace as `web_verify` evidence | DOM/pixels in context (evidence is the artifact path, not bytes) |
 
-> They reduce tokens; simplicio-tasks **does the work** and reduces tokens while doing it.
+> They reduce tokens; simplicio-loop **does the work** and reduces tokens while doing it.
 
 ---
 
@@ -463,7 +464,7 @@ Or, on Claude Code / Cursor, add it as a marketplace plugin:
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 Then:

@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — Универсальный циклический ИИ-оркестратор
+# 🔁 simplicio-loop — Универсальный циклический ИИ-оркестратор
 
 <p align="center">
   <img src="../assets/simplicio-tasks-logo.svg" alt="simplicio-tasks" width="920" />
@@ -46,7 +46,7 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks** — это не зависящий от среды выполнения **супер-плагин**: один автономный
+**simplicio-loop** — это не зависящий от среды выполнения **супер-плагин**: один автономный
 циклический оркестратор плюс **пять навыков-сателлитов**, — который превращает любую сильную LLM
 (Claude, Codex, Copilot, Gemini, Cursor, локальные модели) в самоуправляемого воркера. Вы
 указываете ему на объём работы — *«закрой все открытые issue»*, *«разгреби очередь CI»*,
@@ -473,7 +473,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 Затем:

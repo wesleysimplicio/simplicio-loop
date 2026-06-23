@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — 범용 반복 루프 AI 오케스트레이터
+# 🔁 simplicio-loop — 범용 반복 루프 AI 오케스트레이터
 
 <p align="center">
   <img src="../assets/simplicio-tasks-logo.svg" alt="simplicio-tasks" width="920" />
@@ -46,7 +46,7 @@
 
 ## ⚡ 요약
 
-**simplicio-tasks**는 런타임에 종속되지 않는 **슈퍼 플러그인**입니다 — 자율 반복 루프
+**simplicio-loop**는 런타임에 종속되지 않는 **슈퍼 플러그인**입니다 — 자율 반복 루프
 오케스트레이터 하나에 **다섯 개의 위성 스킬**이 더해져, 강력한 LLM(Claude, Codex, Copilot,
 Gemini, Cursor, 로컬 모델)을 스스로 굴러가는 워커로 바꿔 줍니다. 처리할 작업 더미 —
 *"열린 이슈를 전부 끝내라"*, *"CI 큐를 비워라"*, *"Jira 보드를 비워라"* — 를 가리키기만 하면,
@@ -463,7 +463,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 그런 다음:

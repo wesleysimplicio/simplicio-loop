@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — Uniwersalny zapętlony orkiestrator AI
+# 🔁 simplicio-loop — Uniwersalny zapętlony orkiestrator AI
 
 <p align="center">
   <img src="../assets/simplicio-tasks-logo.svg" alt="simplicio-tasks" width="920" />
@@ -46,7 +46,7 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks** to niezależny od środowiska uruchomieniowego **super-plugin** — jeden
+**simplicio-loop** to niezależny od środowiska uruchomieniowego **super-plugin** — jeden
 autonomiczny zapętlony orkiestrator plus **pięć skilli satelitarnych** — który zamienia dowolny
 mocny LLM (Claude, Codex, Copilot, Gemini, Cursor, modele lokalne) w samosterującego pracownika.
 Wskazujesz mu pewien zakres pracy — *„dokończ wszystkie otwarte zgłoszenia"*, *„opróżnij kolejkę
@@ -476,7 +476,7 @@ Albo, na Claude Code / Cursor, dodaj go jako plugin z marketplace:
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 Następnie:

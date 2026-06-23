@@ -1,6 +1,6 @@
-# Install — simplicio-tasks
+# Install — simplicio-loop
 
-simplicio-tasks is a **super-plugin** made of skills (markdown) + cross-platform Python hooks.
+simplicio-loop is a **super-plugin** made of skills (markdown) + cross-platform Python hooks.
 There is nothing to compile. One installer copies the 6 skills into your runtime, wires the
 loop where supported, and prints the optional native-bind line.
 

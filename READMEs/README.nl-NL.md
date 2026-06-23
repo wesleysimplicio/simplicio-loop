@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — De universele lussende AI-orkestrator
+# 🔁 simplicio-loop — De universele lussende AI-orkestrator
 
 <p align="center">
   <img src="../assets/simplicio-tasks-logo.svg" alt="simplicio-tasks" width="920" />
@@ -46,7 +46,7 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks** is een runtime-onafhankelijk **super-plugin** — één autonome lussende orkestrator
+**simplicio-loop** is een runtime-onafhankelijk **super-plugin** — één autonome lussende orkestrator
 plus **vijf satelliet-skills** — dat elke sterke LLM (Claude, Codex, Copilot, Gemini, Cursor, lokale
 modellen) verandert in een zelfsturende worker. Je wijst hem op een hoeveelheid werk — *"maak alle open
 issues af"*, *"werk de CI-wachtrij weg"*, *"leeg het Jira-board"* — en hij draait de hele levenscyclus
@@ -466,7 +466,7 @@ Of voeg het op Claude Code / Cursor toe als marketplace-plugin:
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 Dan:
