@@ -6,14 +6,18 @@ ensures the runtime's entry/instructions file references the skill, and prints t
 line. Pure Python ->identical on Windows/macOS/Linux. Safe: create-or-merge, never clobbers
 unrelated config; idempotent marker blocks.
 
+Also installs+verifies the two REQUIRED loop operators (simplicio-mapper, simplicio-cli) unless
+--skip-operators is passed.
+
 Usage:
-    python3 scripts/install_lib.py <runtime> [--global] [--target DIR]
+    python3 scripts/install_lib.py <runtime> [--global] [--target DIR] [--skip-operators]
     <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
     omit <runtime> to auto-detect.
 """
 import json
 import os
 import shutil
+import subprocess
 import sys
 
 try:  # Windows consoles default to cp1252 and choke on non-ASCII — force UTF-8.
@@ -27,6 +31,10 @@ SOURCE = os.path.dirname(HERE)
 HOME = os.path.expanduser("~")
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
           "simplicio-review", "simplicio-compress", "simplicio-learn"]
+# The simplicio-loop drive REQUIRES two operators (see simplicio-loop/SKILL.md § Bound operators):
+#   simplicio-mapper -> repo survey (binds `orient`); binary: simplicio-mapper
+#   simplicio-cli    -> action operator (binds `execute`/`deterministic_edit`); binary: simplicio
+OPERATORS = [("simplicio-mapper", "simplicio-mapper"), ("simplicio-cli", "simplicio")]
 MARK_A, MARK_B = "<!-- simplicio-tasks:begin -->", "<!-- simplicio-tasks:end -->"
 ENTRY_BLOCK = (
     MARK_A + "\n"
@@ -158,6 +166,31 @@ def print_claude_snippet():
     log("add to .claude/settings.json manually — see adapters/claude/README.md")
 
 
+def ensure_operators(skip_install=False):
+    """Install + verify the two REQUIRED loop operators (simplicio-mapper, simplicio-cli).
+
+    The simplicio-loop drive surveys via `simplicio-mapper` and acts via `simplicio` instead of
+    the LLM, so both must be present. pip-install (unless skipped), then verify the binaries are on
+    PATH. Missing binary after install is a hard error — the loop would BLOCK at runtime otherwise.
+    """
+    pkgs = [pkg for pkg, _ in OPERATORS]
+    if not skip_install:
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-U", *pkgs],
+                           check=True)
+            log("operators installed -> %s" % ", ".join(pkgs))
+        except Exception as e:
+            log("! pip install of operators failed (%s) — install manually: pip install %s"
+                % (e, " ".join(pkgs)))
+    missing = [b for _, b in OPERATORS if shutil.which(b) is None]
+    if missing:
+        log("! REQUIRED loop operators NOT on PATH: %s" % ", ".join(missing))
+        log("  the simplicio-loop drive will BLOCK until present — run: pip install %s"
+            % " ".join(pkgs))
+    else:
+        log("operators verified on PATH: %s" % ", ".join(b for _, b in OPERATORS))
+
+
 def detect():
     for rt, mark in [("cursor", ".cursor"), ("claude", ".claude"),
                      ("kiro", ".kiro"), ("vscode", ".github"), ("gemini", ".gemini")]:
@@ -169,7 +202,8 @@ def detect():
 def main():
     args = sys.argv[1:]
     is_global = "--global" in args
-    args = [a for a in args if a != "--global"]
+    skip_operators = "--skip-operators" in args
+    args = [a for a in args if a not in ("--global", "--skip-operators")]
     target = None
     if "--target" in args:
         i = args.index("--target")
@@ -188,6 +222,7 @@ def main():
         target = cwd if os.path.abspath(cwd) != os.path.abspath(SOURCE) else SOURCE
 
     print("simplicio-tasks installer - runtime=%s - target=%s" % (runtime, target))
+    ensure_operators(skip_install=skip_operators)
     copy_skills(target)
     copy_hooks(target, is_global)
     ensure_entry(target, cfg["entry"])

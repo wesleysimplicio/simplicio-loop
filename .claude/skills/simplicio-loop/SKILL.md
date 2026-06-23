@@ -41,6 +41,55 @@ The rest of this file is the mechanism that enforces this contract.
 - As the engine for `simplicio-tasks` when it must drain a queue unattended.
 - NOT for a one-shot edit — use the host's normal flow.
 
+## Bound operators (REQUIRED): survey + operate
+
+This loop does NOT survey the repo with the LLM, and it does NOT hand-edit files with the LLM.
+Two installed CLIs are the operators; the model only DECIDES, the operators DO. Both ship as
+hard dependencies of the `simplicio-loop` package (`pip install simplicio-loop` pulls them):
+
+| Operator | CLI (binary) | Binds | Role in the loop |
+|---|---|---|---|
+| **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
+| **simplicio-dev-cli** | `simplicio` | `execute` / `deterministic_edit` / `validate` / `diagnostics` | **Operate** — applies a DECIDED change through its 6-layer contract (mapper context → precedent → prompt → diff → test → verify, ≤3 retries). The CLI edits and verifies; the AI does not hand-write the diff. |
+
+**Preflight (MANDATORY, BLOCKING).** Before iteration 1, confirm both operators are on PATH:
+```bash
+simplicio-mapper --version   # survey operator
+simplicio --version       # action operator (simplicio-dev-cli, package: simplicio-cli)
+```
+If either is missing, do NOT fall back to LLM survey/editing — STOP and emit
+`simplicio-loop: BLOCKED — missing operator <name>; run: pip install simplicio-loop` (the install
+re-pulls `simplicio-mapper` + `simplicio-cli`). This requirement is scoped to the loop drive.
+
+**Survey step (each loop start + on any structural change).** Run
+`simplicio-mapper index . --json` (add `--watch` for long runs) to (re)build `.simplicio/`. Read
+the survey artifacts — never re-scan the tree by hand when a fresh map exists. For a multi-repo
+levantamento, run the mapper per repo root and aggregate the JSON.
+
+**Operate step (every turn that mutates code).** Once the AC and the change are DECIDED, delegate
+the mutation to the operator, one decided change at a time:
+```bash
+simplicio task "<the decided, AC-scoped change>" --target <file> [--json]
+```
+The operator applies the diff, runs the tests, and self-corrects up to 3× — its passing
+verification IS the in-turn evidence the promise gate needs (below). The AI never edits the file
+directly inside the loop; if `simplicio` cannot complete a change after its retries, treat that
+as a genuine blocker to investigate, not a reason to hand-edit around it.
+
+**Where each operator fires.** The AI only DECIDES (triage, AC extraction, choosing the change,
+merge/close gates); the operators do survey + apply:
+
+| Phase | Operator | Command |
+|---|---|---|
+| Preflight (before iteration 1) | both | `simplicio-mapper --version` · `simplicio --version` → BLOCK if missing |
+| Survey (loop start; multi-repo: per root) | mapper | `simplicio-mapper index . --json` → `.simplicio/*.json` |
+| Loop contract step 2 — Triage (every turn) | mapper | re-read `.simplicio/*.json`; `simplicio-mapper index . --json` to refresh if the tree changed |
+| Loop contract step 3 — Work the goal | dev-cli | `simplicio task "<decided change>" --target <file> [--json]` |
+| Evidence-gated `<promise>` / `simplicio-tasks` Step 4b | dev-cli | the operator's passing test+verify pass = in-turn evidence |
+
+One turn: `preflight → survey (mapper) → triage (re-read survey) → DECIDE (AI) → operate
+(simplicio task: apply+test+retry ≤3×) → <promise> only if the operator's gate passed`.
+
 ## State file (single source of truth)
 
 `.orchestrator/loop/scratchpad.md` — human-readable, trivially editable/cancellable:
@@ -65,13 +114,17 @@ A sibling flag file `.orchestrator/loop/done` is `touch`ed only when the promise
    `max_iterations` safety net even when the user wants "unlimited" — pair unlimited with the
    `.orchestrator/loop-budget.json` $ kill-switch (see `simplicio-tasks` Step 1a/7).
 2. **Triage the live state FIRST (mandatory).** Before any action each turn, re-read the ground
-   truth — `git status`/`git diff`, the working tree, the scratchpad notes, AND the source of
-   record (re-query the open issues/PRs, existing branches, the `.orchestrator/loop/done` flag).
-   Act only on what is still genuinely open; never redo done work or act on a stale picture
-   (idempotency).
-3. **Work the goal** each turn as if fresh, against that triaged state. End EVERY iteration with
-   a short, concrete verification — one gate / command / `file:line` receipt. Keep iterations
-   small and verifiable: a turn that only edits without verifying is incomplete.
+   truth — the **`simplicio-mapper` survey** (`.simplicio/*.json`; refresh it with
+   `simplicio-mapper index . --json` if the tree changed), `git status`/`git diff`, the working
+   tree, the scratchpad notes, AND the source of record (re-query the open issues/PRs, existing
+   branches, the `.orchestrator/loop/done` flag). Act only on what is still genuinely open; never
+   redo done work or act on a stale picture (idempotency).
+3. **Work the goal** each turn as if fresh, against that triaged state. The model DECIDES the
+   AC-scoped change; the **`simplicio` operator APPLIES and verifies it**
+   (`simplicio task "<change>" --target <file>`) — do not hand-edit inside the loop. End EVERY
+   iteration with a short, concrete verification — the operator's passing test run, or one gate /
+   command / `file:line` receipt. Keep iterations small and verifiable: a turn that only edits
+   without verifying is incomplete.
 4. **Re-feed** happens at turn end via the stop-hook (below). Each re-fed turn is prefixed
    `[simplicio-loop iteration N. To finish: output <promise>TEXT</promise> ONLY when genuinely true.]`.
 5. **Exit** by emitting the sentinel `<promise>EXACT TEXT</promise>` — and ONLY when every
@@ -82,7 +135,8 @@ A sibling flag file `.orchestrator/loop/done` is `touch`ed only when the promise
 The classic Ralph loop trusts the model to be honest. We do not. A `<promise>` is accepted
 only if, in the SAME turn, there is concrete evidence the work is truly done:
 
-- the run-verification gate passed ("works, not just compiles" — `simplicio-tasks` Step 4b), or
+- the run-verification gate passed ("works, not just compiles" — `simplicio-tasks` Step 4b) —
+  the `simplicio` operator's passing test+verify pass (its contract step 5/6) satisfies this, or
 - the named acceptance criteria are each checked with a `file:line` or command-output receipt, or
 - for a queue, the source re-query confirms the items are actually closed/merged.
 
