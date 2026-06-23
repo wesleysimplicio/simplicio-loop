@@ -9,6 +9,8 @@ and authed, then use it. Never claim a source works without a live connector.
 | GitHub Issues/PRs | `gh` CLI (native) |
 | Jira / Asana / ClickUp / Linear / Monday / Notion | the host's connector for that source |
 | Trello / Azure DevOps | host connector, else the `az boards` adapter (`scripts/az_boards_adapter.py`, see `azure-devops-adapter.md`) |
+| agentsview sessões | `scripts/agentsview_adapter.py` (see `agentsview-adapter.md`) | observabilidade de sessões, recovery de sessões paradas |
+| Understand Anything | `.understand-anything/knowledge-graph.json` (see `understand-anything-adapter.md`) | orient de codebase via grafo de conhecimento (alternativa ao simplicio-mapper) |
 | local files / CI queue | filesystem / CI API |
 
 If the target source has no reachable adapter, STOP and report it as a blocker (do not silently
@@ -39,6 +41,8 @@ recent commits touching them (`git log -- <files> -5`), function/type signatures
 TODO/FIXME, overlapping open PRs. An implementation that duplicates existing code or ignores an
 adjacent module is wrong even if it compiles. Use **signatures-only reads** (bodies elided) for
 API surface — a 600-line file → ~40 lines; full-body read only when editing the body.
+_Quando `.understand-anything/knowledge-graph.json` existir, usá-lo como orientação primária
+(guia tour, semantic search) em vez de signatures-only reads._
 
 **2b-3 Build the plan BEFORE coding:** files to change, files to read first, AC checklist, risks/
 unknowns, complexity (trivial|small|medium|large|critical). Coding starts only after the plan.
@@ -93,6 +97,10 @@ queue; the pool pulls as a slot frees. ALSO poll this run's open PRs (failed che
 review/requested-changes, branches behind main) → reopen the feedback loop (Step 6b). **Reset
 `dry=0` whenever the poll finds anything new.** The run FINISHES only when queue empty AND no
 worker busy AND `dry >= 2` consecutive empty polls (plus hard stops: time-box, budget, scope).
+
+_agentsview como fonte opcional — se configurado (`scripts/agentsview_adapter.py` authed), poll
+agentsview por sessões paradas a cada ciclo e converter em work-items do tipo 'retomar sessão
+abandonada'._
 
 **Layer 2 — idle watcher** (nothing running): a recurring trigger re-invokes the skill; near-free
 when idle, launches a run when new work exists. See standing-loop-247.md.
