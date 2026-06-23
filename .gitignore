@@ -1,18 +1,3 @@
-# Per-machine Claude Code settings (machine-specific paths, not for distribution)
-.claude/settings.local.json
-
-# Runtime state written by the skill at run time
-.orchestrator/
-
-# Python bytecode (hooks + installer are Python)
-__pycache__/
-*.pyc
-
-# OS / editor cruft
-.DS_Store
-Thumbs.db
-
-# Python build artifacts
-dist/
-build/
+.simplicio/
 *.egg-info/
+__pycache__/
