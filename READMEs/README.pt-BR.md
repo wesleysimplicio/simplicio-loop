@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-as-6-skills-super-plugin"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
+  <a href="#-as-10-skills--aceleradores"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
   <a href="#-adaptadores-de-fonte"><img src="https://img.shields.io/badge/source%20adapters-6-00E08A" alt="6 source adapters"></a>
   <a href="#-11-runtimes-um-protocolo"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-aceleradores"><img src="https://img.shields.io/badge/accelerators-3-FF6B6B" alt="3 accelerators"></a>

@@ -202,6 +202,42 @@ headroom stats           # show real-time savings
 headroom learn --repo .
 ```
 
+## Live setup (macOS)
+
+### launchd service
+The headroom proxy runs as a launchd service for automatic startup:
+
+\
+### Status dashboard
+\❌ headroom proxy — NOT RUNNING
+  │ Total Memories: 0                                                            │
+  │ Database Size: 56 KB                                                         │
+  📊 Output savings: no data yet (seed with headroom learn)
+  💰 Savings ledger: 1 events
+  🪵 Logs: /Users/wesleysimplicio/.hermes/logs/headroom.log
+### Proxy config for Claude Code
+\
+### Seed baseline savings
+\
+============================================================
+Verbosity — simplicio-loop
+Path: /Users/wesleysimplicio/Projetos/ai/simplicio-loop
+============================================================
+  Sessions: 1  human turns: 1  responses: 1
+  Interrupts:  0  (0% of turns)   ← push-back signal
+  Fast-skips:  0 / 0 long answers (0% unread)   ← strongest signal
+  Echo ratio:  0.0% of output restated context
+
+  Source: heuristic
+  Too few human turns to calibrate; defaulting to L2.
+
+  >> Recommended verbosity level: 2 (confidence: low)
+
+  [WROTE] /Users/wesleysimplicio/.headroom/verbosity.json (level 2)
+  [WROTE] /Users/wesleysimplicio/.headroom/output_savings.json (baseline: 0 samples, 0 strata)
+
+  The output shaper now uses this level when HEADROOM_OUTPUT_SHAPER=1 and HEADROOM_VERBOSITY_LEVEL is unset.
+
 ## References
 
 - Repo: https://github.com/chopratejas/headroom

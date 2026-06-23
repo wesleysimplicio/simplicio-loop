@@ -6,20 +6,18 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-the-6-skills-super-plugin"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
-  <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-6-00E08A" alt="6 source adapters"></a>
+  <a href="#-the-10-skills--accelerators"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-the-43-extension-points"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
-  <a href="#-accelerators"><img src="https://img.shields.io/badge/accelerators-4-FF6B6B" alt="4 accelerators"></a>
   <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-the-6-skills-super-plugin">6 Skills</a> ·
+  <a href="#-the-10-skills--accelerators">10 Skills</a> ·
   <a href="#-source-adapters">Source Adapters</a> ·
-  <a href="#-accelerators">Accelerators</a> ·
   <a href="#-11-runtimes-one-protocol">11 Runtimes</a> ·
   <a href="#-the-loop">The Loop</a> ·
   <a href="#-token-economy">Token Economy</a> ·
@@ -78,24 +76,27 @@ protocol on 11 runtimes**, and it does all of this with **aggressive, honest tok
 
 ---
 
-## 🧠 The 6 skills (super-plugin)
+## 🧠 The 10 skills & accelerators
 
-The orchestrator is the core; five satellites each absorb the best of a well-known technique and
-expose it as a reusable skill. Each satellite is **optional** — when loaded, the orchestrator
-delegates to it (richer + cheaper); when absent, the orchestrator's inline protocol covers 100%
-of the work.
+The orchestrator core + five satellites + four accelerators. Each satellite is **optional** —
+when loaded, the orchestrator delegates to it (richer + cheaper); when absent, the inline protocol
+covers 100%. Accelerators are **auto-detected** — present = used, absent = LLM fallback.
 
-| Skill | Absorbs | What it does |
-|---|---|---|
-| 🔁 **simplicio-tasks** | — | The orchestrator loop: discover → implement → verify → merge → close → watch 24/7. 43 extension points, dual-path router, self-audit convergence. |
-| ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | The hardened Ralph loop: re-feed the same goal each turn so the agent sees its own work, exiting only on an **evidence-gated `<promise>`** or a `max_iterations` cap — never a false "done". |
-| 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-first execution: answer facts with the shell, never the LLM. Output-reduction catalog, **tee-cache on failure**, signatures-only reads, optional auto-rewrite hook. |
-| 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Adversarial review: parallel subagents on distinct rubrics (security/correctness + code-quality), spawned in one message, deduped into one verdict. |
-| 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Output + memory compression: terse prose levels that preserve code/paths byte-for-byte, plus a one-time memory compaction that pays back every turn. Fail-closed `transform_guard`. |
-| 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) + continual-learning | Retrospective: mine durable, deduped lessons from a run and write them to memory so the next run is cheaper and more correct. |
+| # | Capability | Absorbs | What it does | Token impact |
+|---|---|---|---|---|
+| 1 | 🔁 **simplicio-tasks** | — | The orchestrator loop: 43 extension points, dual-path router, self-audit convergence | Core |
+| 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Hardened Ralph loop: evidence-gated `<promise>` exit, max_iterations cap | Loop drive |
+| 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-first execution, output-reduction catalog, tee-cache, signatures-read | L0 deterministic |
+| 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Parallel adversarial review on distinct rubrics → deduped verdict | Quality gate |
+| 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Output + memory compression, fail-closed `transform_guard` | 40-60% fewer |
+| 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | Post-run retrospective → durable, deduped lessons in memory | Smarter each run |
+| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Knowledge graph orient: semantic search, guided tours, dependency graph | **L0 zero tokens** |
+| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Session analytics, cost tracking, stalled-session discovery | **L1** SQL only |
+| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV cache between loop turns — 40-70% TTFT reduction on local models | GPU time ↓ |
+| 10 | 🗜️ **Headroom** | [chopratejas](https://github.com/chopratejas/headroom) | Transparent compression proxy + MCP server, 6 algorithms, cross-agent memory | **60-95% fewer** |
 
-Each is a normal skill folder under [`.claude/skills/`](.claude/skills) — usable standalone or
-as part of the loop.
+Each skill lives under [`.claude/skills/`](.claude/skills); each accelerator has a reference doc
+under `.claude/skills/simplicio-tasks/references/`.
 
 ---
 
@@ -114,24 +115,7 @@ The orchestrator discovers work from any source via pluggable adapters. Each exp
 
 See each adapter's reference doc under `.claude/skills/simplicio-tasks/references/`.
 
----
-
-## ⚡ Accelerators
-
-simplicio-loop integrates with three acceleration layers to make the loop faster, cheaper, and
-smarter:
-
-| Accelerator | Extension point | What it does | Token impact |
-|---|---|---|---|
-| **Understand Anything** | `orient` / `recall` (Step 2b-2) | Knowledge graph of the codebase — semantic search, guided tours, dependency graph. Replaces ad-hoc LLM code reads with deterministic `jq` queries. | **L0 (zero tokens)** — queries are JSON, not LLM calls |
-| **agentsview** | `source_adapter` + pre-flight budget (Step 1a/3b) | Session analytics, cost tracking, stalled-session discovery. Feeds real spend data into the kill-switch. | **L1** — metadata-only queries, aggregate SQL |
-| **LMCache** | `model_route` (Step 3d) + token economy | KV cache between loop turns eliminates redundant prefill on repeated prompts. Reduces TTFT by 40-70% on local models (L2-L3). | **GPU time reduction** — less $ per iteration, scales with loop length |
-| **Headroom** | `compress` + `recall` + `learn` (Step 1c) | Transparent compression proxy + MCP server. 6 algorithms auto-detect content type. Cross-agent memory store. Automated failure mining. | **60-95% fewer tokens** — additive to existing compression |
-
-Each accelerator is optional and auto-detected — when present, the loop uses it; when absent,
-the LLM fallback covers 100%.
-
----
+|---
 
 ## 🌐 11 runtimes, one protocol
 
@@ -274,24 +258,7 @@ Between turns, LMCache (when available) caches the KV state so re-feed costs nea
 Savings only count on a verified-correct outcome. Baseline = the cheapest sensible non-orchestrated
 path to the same result. See `references/token-economy.md`.
 
----
-
-## 📋 Recent activity
-
-| # | PR | State | Description |
-|---|---|---|---|
-| 39 | [#39](https://github.com/wesleysimplicio/simplicio-loop/pull/39) | ✅ Merged | agentsview (source adapter) + Understand Anything (orient) + LMCache (accelerator) |
-| 38 | [#38](https://github.com/wesleysimplicio/simplicio-loop/pull/38) | ✅ Merged | agentsview source adapter for session analytics & cost observability |
-| 36 | [#36](https://github.com/wesleysimplicio/simplicio-loop/pull/36) | ✅ Merged | Bind required loop operators (simplicio-mapper + simplicio-dev-cli) |
-| 35 | [#35](https://github.com/wesleysimplicio/simplicio-loop/pull/35) | ✅ Merged | Normative loop contract + verification guidance |
-| 33 | [#33](https://github.com/wesleysimplicio/simplicio-loop/pull/33) | ✅ Merged | Release 1.0.3 — bundle skill hardening + PyPI |
-| 32 | [#32](https://github.com/wesleysimplicio/simplicio-loop/pull/32) | ✅ Merged | Harden simplicio-loop loop contract (closes #26–#31) |
-| 25 | [#25](https://github.com/wesleysimplicio/simplicio-loop/pull/25) | ✅ Merged | PyPI packaging — pip install simplicio-loop (1.0.2) |
-| 24 | [#24](https://github.com/wesleysimplicio/simplicio-loop/pull/24) | ✅ Merged | Fix 1.0.2 — Claude plugin install id + hooks |
-| 23 | [#23](https://github.com/wesleysimplicio/simplicio-loop/pull/23) | ✅ Merged | Auto-loop on invocation + language policy |
-| 22 | [#22](https://github.com/wesleysimplicio/simplicio-loop/pull/22) | ✅ Merged | Close #15/#10/#12 + adapter e2e verifier |
-
----
+|---
 
 ## 🏛️ Design pillars (in detail)
 
