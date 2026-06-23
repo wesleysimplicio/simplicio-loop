@@ -70,7 +70,7 @@ kill-switch de custo.
 
 | # | PR | Estado | Descrição |
 |---|---|---|---|
-| 39 | [#39](https://github.com/wesleysimplicio/simplicio-loop/pull/39) | 🟡 Aberto | agentsview + Understand Anything + LMCache |
+| 39 | [#39](https://github.com/wesleysimplicio/simplicio-loop/pull/39) | ✅ Mergeado | agentsview (source adapter) + Understand Anything (orient) + LMCache (accelerator) |
 | 38 | [#38](https://github.com/wesleysimplicio/simplicio-loop/pull/38) | ✅ Mergeado | agentsview source adapter |
 | 36 | [#36](https://github.com/wesleysimplicio/simplicio-loop/pull/36) | ✅ Mergeado | Operadores de loop obrigatórios |
 | 35 | [#35](https://github.com/wesleysimplicio/simplicio-loop/pull/35) | ✅ Mergeado | Contrato normativo do loop |

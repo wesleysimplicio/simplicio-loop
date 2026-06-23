@@ -168,8 +168,8 @@ flowchart TD
   subgraph SRC["1 · Demand sources (any adapter)"]
     direction LR
     S1["GitHub Issues / PRs / CI"]
-    S2["Jira · Azure DevOps · Linear · ClickUp · Notion · agentsview · Understand Anything"]
-    S3["Assigns · TODO/FIXME · CVE · local files · LMCache (KV cache inference accelerator)"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion · agentsview · Understand Anything (orient)"]
+    S3["Assigns · TODO/FIXME · CVE · local files · LMCache (inference accelerator)"]
   end
   SRC --> PF
   subgraph PF["2 · Pre-flight gates"]
@@ -278,7 +278,7 @@ path to the same result. See `references/token-economy.md`.
 
 | # | PR | State | Description |
 |---|---|---|---|
-| 39 | [#39](https://github.com/wesleysimplicio/simplicio-loop/pull/39) | 🟡 Open | agentsview + Understand Anything + LMCache — source adapters + accelerators |
+| 39 | [#39](https://github.com/wesleysimplicio/simplicio-loop/pull/39) | ✅ Merged | agentsview (source adapter) + Understand Anything (orient) + LMCache (accelerator) |
 | 38 | [#38](https://github.com/wesleysimplicio/simplicio-loop/pull/38) | ✅ Merged | agentsview source adapter for session analytics & cost observability |
 | 36 | [#36](https://github.com/wesleysimplicio/simplicio-loop/pull/36) | ✅ Merged | Bind required loop operators (simplicio-mapper + simplicio-dev-cli) |
 | 35 | [#35](https://github.com/wesleysimplicio/simplicio-loop/pull/35) | ✅ Merged | Normative loop contract + verification guidance |

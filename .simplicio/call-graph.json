@@ -1,0 +1,1971 @@
+{
+  "schema": "simplicio.call-graph/v1",
+  "version": 1,
+  "generated_at": "2026-06-23T18:51:28.754Z",
+  "source_symbol_index": ".simplicio/symbol-index.json",
+  "edges": [
+    {
+      "type": "calls",
+      "source_file": "hooks/learn_stop.py",
+      "source_symbol": "hooks/learn_stop.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/learn_stop.py",
+      "source_symbol": "hooks/learn_stop.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/learn_stop.py",
+      "source_symbol": "hooks/learn_stop.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_capture.py",
+      "source_symbol": "hooks/loop_capture.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_capture.py",
+      "source_symbol": "hooks/loop_capture.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_capture.py",
+      "source_symbol": "hooks/loop_capture.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_capture.py",
+      "source_symbol": "hooks/loop_capture.py::main",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::close",
+      "line": 58,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_capture.py",
+      "source_symbol": "hooks/loop_capture.py::main",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::close",
+      "line": 58,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::allow_stop",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::allow_stop",
+      "line": 37,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::budget_halted",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::budget_halted",
+      "line": 111,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::cleanup_and_stop",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::cleanup_and_stop",
+      "line": 42,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::emit_refeed",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::emit_refeed",
+      "line": 126,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::last_assistant_text",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::last_assistant_text",
+      "line": 75,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::parse_frontmatter",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::parse_frontmatter",
+      "line": 60,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::read_stdin_json",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::read_stdin_json",
+      "line": 52,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::allow_stop",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::allow_stop",
+      "line": 37,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::budget_halted",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::budget_halted",
+      "line": 111,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::cleanup_and_stop",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::cleanup_and_stop",
+      "line": 42,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::emit_refeed",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::emit_refeed",
+      "line": 126,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::last_assistant_text",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::last_assistant_text",
+      "line": 75,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::parse_frontmatter",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::parse_frontmatter",
+      "line": 60,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::read_stdin_json",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::read_stdin_json",
+      "line": 52,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::clamp",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::clamp",
+      "line": 94,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::dedup_counts",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::dedup_counts",
+      "line": 80,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::is_excluded",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::is_excluded",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::load_config",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::load_config",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::tee_write",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::tee_write",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::clamp",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::clamp",
+      "line": 94,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::dedup_counts",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::dedup_counts",
+      "line": 80,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::is_excluded",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::is_excluded",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::load_config",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::load_config",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::tee_write",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::tee_write",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::allow_unchanged",
+      "target_file": "hooks/orient_rewrite.py",
+      "target_symbol": "hooks/orient_rewrite.py::allow_unchanged",
+      "line": 41,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::load_excludes",
+      "target_file": "hooks/orient_rewrite.py",
+      "target_symbol": "hooks/orient_rewrite.py::load_excludes",
+      "line": 49,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::allow_unchanged",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::allow_unchanged",
+      "line": 41,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::load_excludes",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::load_excludes",
+      "line": 49,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 248,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 248,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 248,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::agent_breakdown",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::agent_breakdown",
+      "line": 225,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::api_base",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::api_base",
+      "line": 51,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::attach_evidence",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::attach_evidence",
+      "line": 168,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::claim",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::claim",
+      "line": 138,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::sqlite_query",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::close",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::cost_summary",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::cost_summary",
+      "line": 199,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::detect_db_path",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::detect_db_path",
+      "line": 34,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::get_details",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::get_details",
+      "line": 114,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::http_get",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::http_get",
+      "line": 66,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::http_patch",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::http_patch",
+      "line": 78,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::list_ready",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::list_ready",
+      "line": 90,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::mode",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::mode",
+      "line": 47,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::sqlite_query",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::sqlite_query",
+      "line": 55,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::update_status",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::update_status",
+      "line": 153,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::attach_evidence",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::attach_evidence",
+      "line": 168,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::claim",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::claim",
+      "line": 138,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::sqlite_query",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::close",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::get_details",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::get_details",
+      "line": 114,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::list_ready",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::list_ready",
+      "line": 90,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::update_status",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::update_status",
+      "line": 153,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 288,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 288,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 288,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::attach_evidence",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::attach_evidence",
+      "line": 202,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::claim",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::claim",
+      "line": 169,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::close",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::close",
+      "line": 210,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::get_details",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::get_details",
+      "line": 145,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::list_ready",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::list_ready",
+      "line": 120,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::update_status",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::update_status",
+      "line": 194,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_az",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_az",
+      "line": 83,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_common",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_common",
+      "line": 74,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_exe",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_exe",
+      "line": 63,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_org",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_org",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_parse",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_parse",
+      "line": 270,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_az",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_quote",
+      "line": 87,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::get_details",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_require",
+      "line": 146,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_show",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_show",
+      "line": 140,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_wiql_lit",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_wiql_lit",
+      "line": 109,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::attach_evidence",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::attach_evidence",
+      "line": 202,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::claim",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::claim",
+      "line": 169,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::close",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::close",
+      "line": 210,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::get_details",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::get_details",
+      "line": 145,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::list_ready",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::list_ready",
+      "line": 120,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::log",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::log",
+      "line": 59,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::open_pr",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::open_pr",
+      "line": 219,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::pipeline_status",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::pipeline_status",
+      "line": 248,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::pr_status",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::pr_status",
+      "line": 232,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::run_pipeline",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::run_pipeline",
+      "line": 240,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::update_status",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::update_status",
+      "line": 194,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::log",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::log",
+      "line": 59,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_parse",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_parse",
+      "line": 270,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::log",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::log",
+      "line": 59,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_exe",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_exe",
+      "line": 63,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_parse",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_parse",
+      "line": 270,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 203,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 203,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 203,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::log",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::log",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::cmd",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::cmd",
+      "line": 149,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::copy_hooks",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::copy_hooks",
+      "line": 89,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::copy_skills",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::copy_skills",
+      "line": 72,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::detect",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::detect",
+      "line": 195,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::ensure_entry",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::ensure_entry",
+      "line": 99,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::ensure_operators",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::ensure_operators",
+      "line": 170,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::has",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::has",
+      "line": 132,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::hooks_dir",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::hooks_dir",
+      "line": 84,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::log",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::log",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::merge_claude_hooks",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::merge_claude_hooks",
+      "line": 120,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::merge_claude_hooks",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::print_claude_snippet",
+      "line": 129,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::log",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::log",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::ensure_operators",
+      "target_file": "simplicio_loop/cli.py",
+      "target_symbol": "simplicio_loop/cli.py::install",
+      "line": 174,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 236,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 236,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 236,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_parse",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_parse",
+      "line": 217,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::log",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::log",
+      "line": 51,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::log",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::log",
+      "line": 51,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_load_snapshots",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_load_snapshots",
+      "line": 93,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_parse",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_parse",
+      "line": 217,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_print_report",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_print_report",
+      "line": 166,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_read_source",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_read_source",
+      "line": 60,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_stats",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_stats",
+      "line": 111,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_store_path",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_store_path",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::cmd_score",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::cmd_score",
+      "line": 185,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::cmd_selftest",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::cmd_selftest",
+      "line": 194,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::cmd_snapshot",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::cmd_snapshot",
+      "line": 73,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::count_tokens",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::count_tokens",
+      "line": 55,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::log",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::log",
+      "line": 51,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::score",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::score",
+      "line": 124,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_parse",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_parse",
+      "line": 217,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 101,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 101,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 101,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::_check",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::hooks_dir",
+      "line": 74,
+      "confidence": 0.58
+    },
+    {
+      "type": "imports",
+      "source_file": "scripts/verify_adapters.py",
+      "target_file": "scripts/install_lib.py",
+      "import": "install_lib",
+      "confidence": 0.65
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::_check",
+      "target_file": "scripts/verify_adapters.py",
+      "target_symbol": "scripts/verify_adapters.py::_check",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::_install",
+      "target_file": "scripts/verify_adapters.py",
+      "target_symbol": "scripts/verify_adapters.py::_install",
+      "line": 39,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::verify",
+      "target_file": "scripts/verify_adapters.py",
+      "target_symbol": "scripts/verify_adapters.py::verify",
+      "line": 90,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 251,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 251,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 251,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::test_web_verify",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::close",
+      "line": 129,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_exe",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_exe",
+      "line": 59,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_parse",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_parse",
+      "line": 233,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::test_web_verify",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::close",
+      "line": 129,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::log",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::log",
+      "line": 55,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::log",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::log",
+      "line": 55,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_parse",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_parse",
+      "line": 233,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::log",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::log",
+      "line": 55,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_append_ledger",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_append_ledger",
+      "line": 136,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_blocked",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_blocked",
+      "line": 142,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_exe",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_exe",
+      "line": 59,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_parse",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_parse",
+      "line": 233,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_run",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_run",
+      "line": 64,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::cmd_run",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_upload",
+      "line": 201,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::cmd_detect",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::cmd_detect",
+      "line": 86,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::cmd_run",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::cmd_run",
+      "line": 149,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::cmd_verify",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::cmd_verify",
+      "line": 220,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::fe_changed_files",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::fe_changed_files",
+      "line": 73,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/learn_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/learn_stop.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/learn_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/learn_stop.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/learn_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/learn_stop.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_capture.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_capture.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_capture.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_capture.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_capture.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_capture.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_capture.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_capture.py::main",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::close",
+      "line": 58,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_capture.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_capture.py::main",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::close",
+      "line": 58,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::allow_stop",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::allow_stop",
+      "line": 37,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::budget_halted",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::budget_halted",
+      "line": 111,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::cleanup_and_stop",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::cleanup_and_stop",
+      "line": 42,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::emit_refeed",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::emit_refeed",
+      "line": 126,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::last_assistant_text",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::last_assistant_text",
+      "line": 75,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::parse_frontmatter",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::parse_frontmatter",
+      "line": 60,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::read_stdin_json",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::read_stdin_json",
+      "line": 52,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::allow_stop",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::allow_stop",
+      "line": 37,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::budget_halted",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::budget_halted",
+      "line": 111,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::cleanup_and_stop",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::cleanup_and_stop",
+      "line": 42,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::emit_refeed",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::emit_refeed",
+      "line": 126,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::last_assistant_text",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::last_assistant_text",
+      "line": 75,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::parse_frontmatter",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::parse_frontmatter",
+      "line": 60,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::read_stdin_json",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::read_stdin_json",
+      "line": 52,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::clamp",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::clamp",
+      "line": 94,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::dedup_counts",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::dedup_counts",
+      "line": 80,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::is_excluded",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::is_excluded",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::load_config",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::load_config",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::tee_write",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::tee_write",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::clamp",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::clamp",
+      "line": 94,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::dedup_counts",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::dedup_counts",
+      "line": 80,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::is_excluded",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::is_excluded",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::load_config",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::load_config",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::tee_write",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::tee_write",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::allow_unchanged",
+      "target_file": "hooks/orient_rewrite.py",
+      "target_symbol": "hooks/orient_rewrite.py::allow_unchanged",
+      "line": 41,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::load_excludes",
+      "target_file": "hooks/orient_rewrite.py",
+      "target_symbol": "hooks/orient_rewrite.py::load_excludes",
+      "line": 49,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::allow_unchanged",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::allow_unchanged",
+      "line": 41,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::load_excludes",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::load_excludes",
+      "line": 49,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/cli.py",
+      "source_symbol": "simplicio_loop/cli.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/cli.py",
+      "source_symbol": "simplicio_loop/cli.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/cli.py",
+      "source_symbol": "simplicio_loop/cli.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "imports",
+      "source_file": "simplicio_loop/cli.py",
+      "target_file": "simplicio_loop/__init__.py",
+      "import": ".",
+      "confidence": 0.82
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/cli.py",
+      "source_symbol": "simplicio_loop/cli.py::_copy_tree",
+      "target_file": "simplicio_loop/cli.py",
+      "target_symbol": "simplicio_loop/cli.py::_copy_tree",
+      "line": 13,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/cli.py",
+      "source_symbol": "simplicio_loop/cli.py::install",
+      "target_file": "simplicio_loop/cli.py",
+      "target_symbol": "simplicio_loop/cli.py::install",
+      "line": 25,
+      "confidence": 0.58
+    }
+  ],
+  "counts": {
+    "edges": 218,
+    "imports": 2,
+    "calls": 216
+  }
+}

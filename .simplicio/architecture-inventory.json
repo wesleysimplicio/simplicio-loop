@@ -1,0 +1,4734 @@
+{
+  "schema": "simplicio.architecture-inventory/v1",
+  "version": 1,
+  "generated_at": "2026-06-23T18:51:28.754Z",
+  "root": "/Users/wesleysimplicio/Projetos/ai/simplicio-loop",
+  "source_project_map": ".simplicio/project-map.json",
+  "source_symbol_index": ".simplicio/symbol-index.json",
+  "source_call_graph": ".simplicio/call-graph.json",
+  "product": {
+    "name": "simplicio-loop",
+    "stack": "unknown",
+    "project_mode": "root"
+  },
+  "architecture": {
+    "signals": [
+      "express",
+      "nextjs",
+      "playwright",
+      "vue"
+    ],
+    "system_type": "web"
+  },
+  "modules": [
+    {
+      "name": ".",
+      "summary": "Groups 9 files across 3 detected layers.",
+      "file_count": 9,
+      "files": [
+        ".gitignore",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "GEMINI.md",
+        "INSTALL.md",
+        "LICENSE",
+        "PYPI.md",
+        "README.md",
+        "pyproject.toml"
+      ],
+      "layers": [
+        "asset",
+        "config",
+        "documentation"
+      ],
+      "entry_points": [],
+      "tests": [],
+      "public_symbols": [],
+      "evidence": [
+        {
+          "file": ".gitignore"
+        },
+        {
+          "file": "AGENTS.md"
+        },
+        {
+          "file": "CLAUDE.md"
+        },
+        {
+          "file": "GEMINI.md"
+        },
+        {
+          "file": "INSTALL.md"
+        },
+        {
+          "file": "LICENSE"
+        },
+        {
+          "file": "PYPI.md"
+        },
+        {
+          "file": "README.md"
+        },
+        {
+          "file": "pyproject.toml"
+        }
+      ]
+    },
+    {
+      "name": ".claude",
+      "summary": "Groups 15 files across 2 detected layers.",
+      "file_count": 15,
+      "files": [
+        ".claude/skills/simplicio-compress/SKILL.md",
+        ".claude/skills/simplicio-learn/SKILL.md",
+        ".claude/skills/simplicio-loop/SKILL.md",
+        ".claude/skills/simplicio-orient/SKILL.md",
+        ".claude/skills/simplicio-review/SKILL.md",
+        ".claude/skills/simplicio-tasks/SKILL.md",
+        ".claude/skills/simplicio-tasks/references/agentsview-adapter.md",
+        ".claude/skills/simplicio-tasks/references/azure-devops-adapter.md",
+        ".claude/skills/simplicio-tasks/references/extension-points.md",
+        ".claude/skills/simplicio-tasks/references/orchestration.md",
+        ".claude/skills/simplicio-tasks/references/quality-safety-delivery.md",
+        ".claude/skills/simplicio-tasks/references/standing-loop-247.md",
+        ".claude/skills/simplicio-tasks/references/token-economy.md",
+        ".claude/skills/simplicio-tasks/references/understand-anything-adapter.md",
+        ".claude/skills/simplicio-tasks/references/web-evidence.md"
+      ],
+      "layers": [
+        "documentation",
+        "ui"
+      ],
+      "entry_points": [],
+      "tests": [],
+      "public_symbols": [],
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-compress/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-learn/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-loop/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-orient/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-review/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-tasks/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-tasks/references/agentsview-adapter.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-tasks/references/azure-devops-adapter.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-tasks/references/extension-points.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-tasks/references/orchestration.md"
+        }
+      ]
+    },
+    {
+      "name": ".claude-plugin",
+      "summary": "Groups 2 files across 1 detected layers.",
+      "file_count": 2,
+      "files": [
+        ".claude-plugin/marketplace.json",
+        ".claude-plugin/plugin.json"
+      ],
+      "layers": [
+        "asset"
+      ],
+      "entry_points": [],
+      "tests": [],
+      "public_symbols": [],
+      "evidence": [
+        {
+          "file": ".claude-plugin/marketplace.json"
+        },
+        {
+          "file": ".claude-plugin/plugin.json"
+        }
+      ]
+    },
+    {
+      "name": ".cursor-plugin",
+      "summary": "Groups 2 files across 1 detected layers.",
+      "file_count": 2,
+      "files": [
+        ".cursor-plugin/marketplace.json",
+        ".cursor-plugin/plugin.json"
+      ],
+      "layers": [
+        "asset"
+      ],
+      "entry_points": [],
+      "tests": [],
+      "public_symbols": [],
+      "evidence": [
+        {
+          "file": ".cursor-plugin/marketplace.json"
+        },
+        {
+          "file": ".cursor-plugin/plugin.json"
+        }
+      ]
+    },
+    {
+      "name": ".github",
+      "summary": "Groups 1 files across 1 detected layers.",
+      "file_count": 1,
+      "files": [
+        ".github/workflows/web-verify.yml"
+      ],
+      "layers": [
+        "asset"
+      ],
+      "entry_points": [],
+      "tests": [],
+      "public_symbols": [],
+      "evidence": [
+        {
+          "file": ".github/workflows/web-verify.yml"
+        }
+      ]
+    },
+    {
+      "name": ".orchestrator",
+      "summary": "Groups 1 files across 1 detected layers.",
+      "file_count": 1,
+      "files": [
+        ".orchestrator/loop/scratchpad.md"
+      ],
+      "layers": [
+        "documentation"
+      ],
+      "entry_points": [],
+      "tests": [],
+      "public_symbols": [],
+      "evidence": [
+        {
+          "file": ".orchestrator/loop/scratchpad.md"
+        }
+      ]
+    },
+    {
+      "name": "READMEs",
+      "summary": "Groups 14 files across 1 detected layers.",
+      "file_count": 14,
+      "files": [
+        "READMEs/README.ar-SA.md",
+        "READMEs/README.de-DE.md",
+        "READMEs/README.es-ES.md",
+        "READMEs/README.fr-FR.md",
+        "READMEs/README.hi-IN.md",
+        "READMEs/README.it-IT.md",
+        "READMEs/README.ja-JP.md",
+        "READMEs/README.ko-KR.md",
+        "READMEs/README.nl-NL.md",
+        "READMEs/README.pl-PL.md",
+        "READMEs/README.pt-BR.md",
+        "READMEs/README.ru-RU.md",
+        "READMEs/README.tr-TR.md",
+        "READMEs/README.zh-CN.md"
+      ],
+      "layers": [
+        "documentation"
+      ],
+      "entry_points": [],
+      "tests": [],
+      "public_symbols": [],
+      "evidence": [
+        {
+          "file": "READMEs/README.ar-SA.md"
+        },
+        {
+          "file": "READMEs/README.de-DE.md"
+        },
+        {
+          "file": "READMEs/README.es-ES.md"
+        },
+        {
+          "file": "READMEs/README.fr-FR.md"
+        },
+        {
+          "file": "READMEs/README.hi-IN.md"
+        },
+        {
+          "file": "READMEs/README.it-IT.md"
+        },
+        {
+          "file": "READMEs/README.ja-JP.md"
+        },
+        {
+          "file": "READMEs/README.ko-KR.md"
+        },
+        {
+          "file": "READMEs/README.nl-NL.md"
+        },
+        {
+          "file": "READMEs/README.pl-PL.md"
+        }
+      ]
+    },
+    {
+      "name": "adapters",
+      "summary": "Groups 12 files across 1 detected layers.",
+      "file_count": 12,
+      "files": [
+        "adapters/MATRIX.md",
+        "adapters/aider/README.md",
+        "adapters/antigravity/README.md",
+        "adapters/claude/README.md",
+        "adapters/codex/README.md",
+        "adapters/cursor/README.md",
+        "adapters/gemini/README.md",
+        "adapters/hermes/README.md",
+        "adapters/kiro/README.md",
+        "adapters/openclaw/README.md",
+        "adapters/opencode/README.md",
+        "adapters/vscode/README.md"
+      ],
+      "layers": [
+        "documentation"
+      ],
+      "entry_points": [],
+      "tests": [],
+      "public_symbols": [],
+      "evidence": [
+        {
+          "file": "adapters/MATRIX.md"
+        },
+        {
+          "file": "adapters/aider/README.md"
+        },
+        {
+          "file": "adapters/antigravity/README.md"
+        },
+        {
+          "file": "adapters/claude/README.md"
+        },
+        {
+          "file": "adapters/codex/README.md"
+        },
+        {
+          "file": "adapters/cursor/README.md"
+        },
+        {
+          "file": "adapters/gemini/README.md"
+        },
+        {
+          "file": "adapters/hermes/README.md"
+        },
+        {
+          "file": "adapters/kiro/README.md"
+        },
+        {
+          "file": "adapters/openclaw/README.md"
+        }
+      ]
+    },
+    {
+      "name": "hooks",
+      "summary": "Groups 8 files across 3 detected layers.",
+      "file_count": 8,
+      "files": [
+        "hooks/README.md",
+        "hooks/hooks.claude.json",
+        "hooks/hooks.json",
+        "hooks/learn_stop.py",
+        "hooks/loop_capture.py",
+        "hooks/loop_stop.py",
+        "hooks/orient_clamp.py",
+        "hooks/orient_rewrite.py"
+      ],
+      "layers": [
+        "asset",
+        "code",
+        "documentation"
+      ],
+      "entry_points": [],
+      "tests": [],
+      "public_symbols": [
+        "allow_stop",
+        "allow_unchanged",
+        "budget_halted",
+        "clamp",
+        "cleanup_and_stop",
+        "dedup_counts",
+        "emit_refeed",
+        "is_excluded",
+        "last_assistant_text",
+        "load_config",
+        "load_excludes",
+        "main",
+        "parse_frontmatter",
+        "read_stdin_json",
+        "tee_write"
+      ],
+      "evidence": [
+        {
+          "file": "hooks/README.md"
+        },
+        {
+          "file": "hooks/hooks.claude.json"
+        },
+        {
+          "file": "hooks/hooks.json"
+        },
+        {
+          "file": "hooks/learn_stop.py"
+        },
+        {
+          "file": "hooks/loop_capture.py"
+        },
+        {
+          "file": "hooks/loop_stop.py"
+        },
+        {
+          "file": "hooks/orient_clamp.py"
+        },
+        {
+          "file": "hooks/orient_rewrite.py"
+        }
+      ]
+    },
+    {
+      "name": "scripts",
+      "summary": "Groups 8 files across 2 detected layers.",
+      "file_count": 8,
+      "files": [
+        "scripts/agentsview_adapter.py",
+        "scripts/az_boards_adapter.py",
+        "scripts/install.ps1",
+        "scripts/install.sh",
+        "scripts/install_lib.py",
+        "scripts/savings_harness.py",
+        "scripts/verify_adapters.py",
+        "scripts/web_verify.py"
+      ],
+      "layers": [
+        "script",
+        "ui"
+      ],
+      "entry_points": [],
+      "tests": [],
+      "public_symbols": [
+        "_append_ledger",
+        "_az",
+        "_blocked",
+        "_check",
+        "_common",
+        "_exe",
+        "_install",
+        "_load_snapshots",
+        "_org",
+        "_parse",
+        "_print_report",
+        "_quote",
+        "_read_source",
+        "_require",
+        "_run",
+        "_show",
+        "_stats",
+        "_store_path",
+        "_upload",
+        "_wiql_lit",
+        "agent_breakdown",
+        "api_base",
+        "attach_evidence",
+        "claim",
+        "close",
+        "cmd",
+        "cmd_detect",
+        "cmd_run",
+        "cmd_score",
+        "cmd_selftest",
+        "cmd_snapshot",
+        "cmd_verify",
+        "copy_hooks",
+        "copy_skills",
+        "cost_summary",
+        "count_tokens",
+        "detect",
+        "detect_db_path",
+        "ensure_entry",
+        "ensure_operators"
+      ],
+      "evidence": [
+        {
+          "file": "scripts/agentsview_adapter.py"
+        },
+        {
+          "file": "scripts/az_boards_adapter.py"
+        },
+        {
+          "file": "scripts/install.ps1"
+        },
+        {
+          "file": "scripts/install.sh"
+        },
+        {
+          "file": "scripts/install_lib.py"
+        },
+        {
+          "file": "scripts/savings_harness.py"
+        },
+        {
+          "file": "scripts/verify_adapters.py"
+        },
+        {
+          "file": "scripts/web_verify.py"
+        }
+      ]
+    },
+    {
+      "name": "simplicio_loop",
+      "summary": "Groups 22 files across 5 detected layers.",
+      "file_count": 22,
+      "files": [
+        "simplicio_loop/__init__.py",
+        "simplicio_loop/_bundle/hooks/hooks.claude.json",
+        "simplicio_loop/_bundle/hooks/hooks.json",
+        "simplicio_loop/_bundle/hooks/learn_stop.py",
+        "simplicio_loop/_bundle/hooks/loop_capture.py",
+        "simplicio_loop/_bundle/hooks/loop_stop.py",
+        "simplicio_loop/_bundle/hooks/orient_clamp.py",
+        "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+        "simplicio_loop/_bundle/skills/simplicio-compress/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-learn/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-loop/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-orient/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-review/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/azure-devops-adapter.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/extension-points.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/orchestration.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/quality-safety-delivery.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/standing-loop-247.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/token-economy.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/web-evidence.md",
+        "simplicio_loop/cli.py"
+      ],
+      "layers": [
+        "asset",
+        "code",
+        "documentation",
+        "entrypoint",
+        "ui"
+      ],
+      "entry_points": [
+        "simplicio_loop/cli.py"
+      ],
+      "tests": [],
+      "public_symbols": [
+        "_copy_tree",
+        "allow_stop",
+        "allow_unchanged",
+        "budget_halted",
+        "clamp",
+        "cleanup_and_stop",
+        "dedup_counts",
+        "emit_refeed",
+        "install",
+        "is_excluded",
+        "last_assistant_text",
+        "load_config",
+        "load_excludes",
+        "main",
+        "parse_frontmatter",
+        "read_stdin_json",
+        "tee_write"
+      ],
+      "evidence": [
+        {
+          "file": "simplicio_loop/__init__.py"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/hooks.claude.json"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/hooks.json"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/learn_stop.py"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/loop_capture.py"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/loop_stop.py"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/orient_clamp.py"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/orient_rewrite.py"
+        },
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-compress/SKILL.md"
+        },
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-learn/SKILL.md"
+        }
+      ]
+    }
+  ],
+  "layers": [
+    {
+      "name": "asset",
+      "file_count": 11,
+      "files": [
+        ".claude-plugin/marketplace.json",
+        ".claude-plugin/plugin.json",
+        ".cursor-plugin/marketplace.json",
+        ".cursor-plugin/plugin.json",
+        ".github/workflows/web-verify.yml",
+        ".gitignore",
+        "LICENSE",
+        "hooks/hooks.claude.json",
+        "hooks/hooks.json",
+        "simplicio_loop/_bundle/hooks/hooks.claude.json",
+        "simplicio_loop/_bundle/hooks/hooks.json"
+      ],
+      "modules": [
+        ".",
+        ".claude-plugin",
+        ".cursor-plugin",
+        ".github",
+        "hooks",
+        "simplicio_loop"
+      ],
+      "evidence": [
+        {
+          "file": ".claude-plugin/marketplace.json"
+        },
+        {
+          "file": ".claude-plugin/plugin.json"
+        },
+        {
+          "file": ".cursor-plugin/marketplace.json"
+        },
+        {
+          "file": ".cursor-plugin/plugin.json"
+        },
+        {
+          "file": ".github/workflows/web-verify.yml"
+        },
+        {
+          "file": ".gitignore"
+        },
+        {
+          "file": "LICENSE"
+        },
+        {
+          "file": "hooks/hooks.claude.json"
+        },
+        {
+          "file": "hooks/hooks.json"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/hooks.claude.json"
+        }
+      ]
+    },
+    {
+      "name": "code",
+      "file_count": 11,
+      "files": [
+        "hooks/learn_stop.py",
+        "hooks/loop_capture.py",
+        "hooks/loop_stop.py",
+        "hooks/orient_clamp.py",
+        "hooks/orient_rewrite.py",
+        "simplicio_loop/__init__.py",
+        "simplicio_loop/_bundle/hooks/learn_stop.py",
+        "simplicio_loop/_bundle/hooks/loop_capture.py",
+        "simplicio_loop/_bundle/hooks/loop_stop.py",
+        "simplicio_loop/_bundle/hooks/orient_clamp.py",
+        "simplicio_loop/_bundle/hooks/orient_rewrite.py"
+      ],
+      "modules": [
+        "hooks",
+        "simplicio_loop"
+      ],
+      "evidence": [
+        {
+          "file": "hooks/learn_stop.py"
+        },
+        {
+          "file": "hooks/loop_capture.py"
+        },
+        {
+          "file": "hooks/loop_stop.py"
+        },
+        {
+          "file": "hooks/orient_clamp.py"
+        },
+        {
+          "file": "hooks/orient_rewrite.py"
+        },
+        {
+          "file": "simplicio_loop/__init__.py"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/learn_stop.py"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/loop_capture.py"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/loop_stop.py"
+        },
+        {
+          "file": "simplicio_loop/_bundle/hooks/orient_clamp.py"
+        }
+      ]
+    },
+    {
+      "name": "config",
+      "file_count": 1,
+      "files": [
+        "pyproject.toml"
+      ],
+      "modules": [
+        "."
+      ],
+      "evidence": [
+        {
+          "file": "pyproject.toml"
+        }
+      ]
+    },
+    {
+      "name": "documentation",
+      "file_count": 62,
+      "files": [
+        ".claude/skills/simplicio-compress/SKILL.md",
+        ".claude/skills/simplicio-learn/SKILL.md",
+        ".claude/skills/simplicio-loop/SKILL.md",
+        ".claude/skills/simplicio-orient/SKILL.md",
+        ".claude/skills/simplicio-review/SKILL.md",
+        ".claude/skills/simplicio-tasks/SKILL.md",
+        ".claude/skills/simplicio-tasks/references/agentsview-adapter.md",
+        ".claude/skills/simplicio-tasks/references/azure-devops-adapter.md",
+        ".claude/skills/simplicio-tasks/references/extension-points.md",
+        ".claude/skills/simplicio-tasks/references/orchestration.md",
+        ".claude/skills/simplicio-tasks/references/quality-safety-delivery.md",
+        ".claude/skills/simplicio-tasks/references/standing-loop-247.md",
+        ".claude/skills/simplicio-tasks/references/token-economy.md",
+        ".claude/skills/simplicio-tasks/references/understand-anything-adapter.md",
+        ".claude/skills/simplicio-tasks/references/web-evidence.md",
+        ".orchestrator/loop/scratchpad.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "GEMINI.md",
+        "INSTALL.md",
+        "PYPI.md",
+        "README.md",
+        "READMEs/README.ar-SA.md",
+        "READMEs/README.de-DE.md",
+        "READMEs/README.es-ES.md",
+        "READMEs/README.fr-FR.md",
+        "READMEs/README.hi-IN.md",
+        "READMEs/README.it-IT.md",
+        "READMEs/README.ja-JP.md",
+        "READMEs/README.ko-KR.md",
+        "READMEs/README.nl-NL.md",
+        "READMEs/README.pl-PL.md",
+        "READMEs/README.pt-BR.md",
+        "READMEs/README.ru-RU.md",
+        "READMEs/README.tr-TR.md",
+        "READMEs/README.zh-CN.md",
+        "adapters/MATRIX.md",
+        "adapters/aider/README.md",
+        "adapters/antigravity/README.md",
+        "adapters/claude/README.md",
+        "adapters/codex/README.md",
+        "adapters/cursor/README.md",
+        "adapters/gemini/README.md",
+        "adapters/hermes/README.md",
+        "adapters/kiro/README.md",
+        "adapters/openclaw/README.md",
+        "adapters/opencode/README.md",
+        "adapters/vscode/README.md",
+        "hooks/README.md",
+        "simplicio_loop/_bundle/skills/simplicio-compress/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-learn/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-loop/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-orient/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-review/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/SKILL.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/azure-devops-adapter.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/extension-points.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/orchestration.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/quality-safety-delivery.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/standing-loop-247.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/token-economy.md",
+        "simplicio_loop/_bundle/skills/simplicio-tasks/references/web-evidence.md"
+      ],
+      "modules": [
+        ".",
+        ".claude",
+        ".orchestrator",
+        "READMEs",
+        "adapters",
+        "hooks",
+        "simplicio_loop"
+      ],
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-compress/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-learn/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-loop/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-orient/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-review/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-tasks/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-tasks/references/agentsview-adapter.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-tasks/references/azure-devops-adapter.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-tasks/references/extension-points.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-tasks/references/orchestration.md"
+        }
+      ]
+    },
+    {
+      "name": "entrypoint",
+      "file_count": 1,
+      "files": [
+        "simplicio_loop/cli.py"
+      ],
+      "modules": [
+        "simplicio_loop"
+      ],
+      "evidence": [
+        {
+          "file": "simplicio_loop/cli.py"
+        }
+      ]
+    },
+    {
+      "name": "script",
+      "file_count": 8,
+      "files": [
+        "scripts/agentsview_adapter.py",
+        "scripts/az_boards_adapter.py",
+        "scripts/install.ps1",
+        "scripts/install.sh",
+        "scripts/install_lib.py",
+        "scripts/savings_harness.py",
+        "scripts/verify_adapters.py",
+        "scripts/web_verify.py"
+      ],
+      "modules": [
+        "scripts"
+      ],
+      "evidence": [
+        {
+          "file": "scripts/agentsview_adapter.py"
+        },
+        {
+          "file": "scripts/az_boards_adapter.py"
+        },
+        {
+          "file": "scripts/install.ps1"
+        },
+        {
+          "file": "scripts/install.sh"
+        },
+        {
+          "file": "scripts/install_lib.py"
+        },
+        {
+          "file": "scripts/savings_harness.py"
+        },
+        {
+          "file": "scripts/verify_adapters.py"
+        },
+        {
+          "file": "scripts/web_verify.py"
+        }
+      ]
+    },
+    {
+      "name": "ui",
+      "file_count": 4,
+      "files": [
+        ".claude/skills/simplicio-review/SKILL.md",
+        ".claude/skills/simplicio-tasks/references/agentsview-adapter.md",
+        "scripts/agentsview_adapter.py",
+        "simplicio_loop/_bundle/skills/simplicio-review/SKILL.md"
+      ],
+      "modules": [
+        ".claude",
+        "scripts",
+        "simplicio_loop"
+      ],
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-review/SKILL.md"
+        },
+        {
+          "file": ".claude/skills/simplicio-tasks/references/agentsview-adapter.md"
+        },
+        {
+          "file": "scripts/agentsview_adapter.py"
+        },
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-review/SKILL.md"
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": ".claude-plugin/marketplace.json",
+      "language": "json",
+      "module": ".claude-plugin",
+      "layers": [
+        "asset"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": ".claude-plugin/marketplace.json"
+        }
+      ]
+    },
+    {
+      "path": ".claude-plugin/plugin.json",
+      "language": "json",
+      "module": ".claude-plugin",
+      "layers": [
+        "asset"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": ".claude-plugin/plugin.json"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-compress/SKILL.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-compress/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-learn/SKILL.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-learn/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-loop/SKILL.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-loop/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-orient/SKILL.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-orient/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-review/SKILL.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation",
+        "ui"
+      ],
+      "roles": [
+        "ui"
+      ],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-review/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-tasks/SKILL.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-tasks/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-tasks/references/agentsview-adapter.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation",
+        "ui"
+      ],
+      "roles": [
+        "ui"
+      ],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-tasks/references/agentsview-adapter.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-tasks/references/azure-devops-adapter.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-tasks/references/azure-devops-adapter.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-tasks/references/extension-points.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-tasks/references/extension-points.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-tasks/references/orchestration.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-tasks/references/orchestration.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-tasks/references/quality-safety-delivery.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-tasks/references/quality-safety-delivery.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-tasks/references/standing-loop-247.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-tasks/references/standing-loop-247.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-tasks/references/token-economy.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-tasks/references/token-economy.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-tasks/references/understand-anything-adapter.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-tasks/references/understand-anything-adapter.md"
+        }
+      ]
+    },
+    {
+      "path": ".claude/skills/simplicio-tasks/references/web-evidence.md",
+      "language": "markdown",
+      "module": ".claude",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".claude/skills/simplicio-tasks/references/web-evidence.md"
+        }
+      ]
+    },
+    {
+      "path": ".cursor-plugin/marketplace.json",
+      "language": "json",
+      "module": ".cursor-plugin",
+      "layers": [
+        "asset"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": ".cursor-plugin/marketplace.json"
+        }
+      ]
+    },
+    {
+      "path": ".cursor-plugin/plugin.json",
+      "language": "json",
+      "module": ".cursor-plugin",
+      "layers": [
+        "asset"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": ".cursor-plugin/plugin.json"
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/web-verify.yml",
+      "language": "yaml",
+      "module": ".github",
+      "layers": [
+        "asset"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": ".github/workflows/web-verify.yml"
+        }
+      ]
+    },
+    {
+      "path": ".gitignore",
+      "language": "text",
+      "module": ".",
+      "layers": [
+        "asset"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": ".gitignore"
+        }
+      ]
+    },
+    {
+      "path": ".orchestrator/loop/scratchpad.md",
+      "language": "markdown",
+      "module": ".orchestrator",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": ".orchestrator/loop/scratchpad.md"
+        }
+      ]
+    },
+    {
+      "path": "AGENTS.md",
+      "language": "markdown",
+      "module": ".",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "AGENTS.md"
+        }
+      ]
+    },
+    {
+      "path": "CLAUDE.md",
+      "language": "markdown",
+      "module": ".",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "CLAUDE.md"
+        }
+      ]
+    },
+    {
+      "path": "GEMINI.md",
+      "language": "markdown",
+      "module": ".",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "GEMINI.md"
+        }
+      ]
+    },
+    {
+      "path": "INSTALL.md",
+      "language": "markdown",
+      "module": ".",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "INSTALL.md"
+        }
+      ]
+    },
+    {
+      "path": "LICENSE",
+      "language": "text",
+      "module": ".",
+      "layers": [
+        "asset"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": "LICENSE"
+        }
+      ]
+    },
+    {
+      "path": "PYPI.md",
+      "language": "markdown",
+      "module": ".",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "PYPI.md"
+        }
+      ]
+    },
+    {
+      "path": "README.md",
+      "language": "markdown",
+      "module": ".",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "README.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.ar-SA.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.ar-SA.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.de-DE.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.de-DE.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.es-ES.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.es-ES.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.fr-FR.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.fr-FR.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.hi-IN.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.hi-IN.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.it-IT.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.it-IT.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.ja-JP.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.ja-JP.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.ko-KR.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.ko-KR.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.nl-NL.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.nl-NL.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.pl-PL.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.pl-PL.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.pt-BR.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.pt-BR.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.ru-RU.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.ru-RU.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.tr-TR.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.tr-TR.md"
+        }
+      ]
+    },
+    {
+      "path": "READMEs/README.zh-CN.md",
+      "language": "markdown",
+      "module": "READMEs",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "READMEs/README.zh-CN.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/MATRIX.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/MATRIX.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/aider/README.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/aider/README.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/antigravity/README.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/antigravity/README.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/claude/README.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/claude/README.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/codex/README.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/codex/README.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/cursor/README.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/cursor/README.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/gemini/README.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/gemini/README.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/hermes/README.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/hermes/README.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/kiro/README.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/kiro/README.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/openclaw/README.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/openclaw/README.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/opencode/README.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/opencode/README.md"
+        }
+      ]
+    },
+    {
+      "path": "adapters/vscode/README.md",
+      "language": "markdown",
+      "module": "adapters",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "adapters/vscode/README.md"
+        }
+      ]
+    },
+    {
+      "path": "hooks/README.md",
+      "language": "markdown",
+      "module": "hooks",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "hooks/README.md"
+        }
+      ]
+    },
+    {
+      "path": "hooks/hooks.claude.json",
+      "language": "json",
+      "module": "hooks",
+      "layers": [
+        "asset"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": "hooks/hooks.claude.json"
+        }
+      ]
+    },
+    {
+      "path": "hooks/hooks.json",
+      "language": "json",
+      "module": "hooks",
+      "layers": [
+        "asset"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": "hooks/hooks.json"
+        }
+      ]
+    },
+    {
+      "path": "hooks/learn_stop.py",
+      "language": "python",
+      "module": "hooks",
+      "layers": [
+        "code"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "sys",
+        "time"
+      ],
+      "symbols": [
+        "main"
+      ],
+      "summary": "Defines exported symbols: main.",
+      "evidence": [
+        {
+          "file": "hooks/learn_stop.py"
+        }
+      ]
+    },
+    {
+      "path": "hooks/loop_capture.py",
+      "language": "python",
+      "module": "hooks",
+      "layers": [
+        "code"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "re",
+        "sys"
+      ],
+      "symbols": [
+        "main"
+      ],
+      "summary": "Defines exported symbols: main.",
+      "evidence": [
+        {
+          "file": "hooks/loop_capture.py"
+        }
+      ]
+    },
+    {
+      "path": "hooks/loop_stop.py",
+      "language": "python",
+      "module": "hooks",
+      "layers": [
+        "code"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "re",
+        "sys"
+      ],
+      "symbols": [
+        "allow_stop",
+        "cleanup_and_stop",
+        "read_stdin_json",
+        "parse_frontmatter",
+        "last_assistant_text",
+        "budget_halted",
+        "emit_refeed",
+        "main"
+      ],
+      "summary": "Defines exported symbols: allow_stop, budget_halted, cleanup_and_stop, emit_refeed, last_assistant_text.",
+      "evidence": [
+        {
+          "file": "hooks/loop_stop.py"
+        }
+      ]
+    },
+    {
+      "path": "hooks/orient_clamp.py",
+      "language": "python",
+      "module": "hooks",
+      "layers": [
+        "code"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "re",
+        "subprocess",
+        "sys",
+        "time"
+      ],
+      "symbols": [
+        "load_config",
+        "is_excluded",
+        "tee_write",
+        "dedup_counts",
+        "clamp",
+        "main"
+      ],
+      "summary": "Defines exported symbols: clamp, dedup_counts, is_excluded, load_config, main.",
+      "evidence": [
+        {
+          "file": "hooks/orient_clamp.py"
+        }
+      ]
+    },
+    {
+      "path": "hooks/orient_rewrite.py",
+      "language": "python",
+      "module": "hooks",
+      "layers": [
+        "code"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "re",
+        "sys"
+      ],
+      "symbols": [
+        "allow_unchanged",
+        "load_excludes",
+        "main"
+      ],
+      "summary": "Defines exported symbols: allow_unchanged, load_excludes, main.",
+      "evidence": [
+        {
+          "file": "hooks/orient_rewrite.py"
+        }
+      ]
+    },
+    {
+      "path": "pyproject.toml",
+      "language": "toml",
+      "module": ".",
+      "layers": [
+        "config"
+      ],
+      "roles": [
+        "config"
+      ],
+      "imports": [],
+      "symbols": [],
+      "summary": "Configures tooling, build, runtime or packaging behavior.",
+      "evidence": [
+        {
+          "file": "pyproject.toml"
+        }
+      ]
+    },
+    {
+      "path": "scripts/agentsview_adapter.py",
+      "language": "python",
+      "module": "scripts",
+      "layers": [
+        "script",
+        "ui"
+      ],
+      "roles": [
+        "ui"
+      ],
+      "imports": [
+        "argparse",
+        "json",
+        "os",
+        "sqlite3",
+        "subprocess",
+        "sys",
+        "urllib.request"
+      ],
+      "symbols": [
+        "detect_db_path",
+        "mode",
+        "api_base",
+        "sqlite_query",
+        "http_get",
+        "http_patch",
+        "list_ready",
+        "get_details",
+        "claim",
+        "update_status",
+        "attach_evidence",
+        "close",
+        "cost_summary",
+        "agent_breakdown",
+        "main"
+      ],
+      "summary": "Defines exported symbols: agent_breakdown, api_base, attach_evidence, claim, close.",
+      "evidence": [
+        {
+          "file": "scripts/agentsview_adapter.py"
+        }
+      ]
+    },
+    {
+      "path": "scripts/az_boards_adapter.py",
+      "language": "python",
+      "module": "scripts",
+      "layers": [
+        "script"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "shutil",
+        "subprocess",
+        "sys"
+      ],
+      "symbols": [
+        "log",
+        "_exe",
+        "_org",
+        "_common",
+        "_az",
+        "_quote",
+        "_wiql_lit",
+        "list_ready",
+        "_show",
+        "get_details",
+        "claim",
+        "update_status",
+        "attach_evidence",
+        "close",
+        "open_pr",
+        "pr_status",
+        "run_pipeline",
+        "pipeline_status",
+        "_require",
+        "_parse",
+        "main"
+      ],
+      "summary": "Defines exported symbols: _az, _common, _exe, _org, _parse.",
+      "evidence": [
+        {
+          "file": "scripts/az_boards_adapter.py"
+        }
+      ]
+    },
+    {
+      "path": "scripts/install.ps1",
+      "language": "powershell",
+      "module": "scripts",
+      "layers": [
+        "script"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": "scripts/install.ps1"
+        }
+      ]
+    },
+    {
+      "path": "scripts/install.sh",
+      "language": "shell",
+      "module": "scripts",
+      "layers": [
+        "script"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": "scripts/install.sh"
+        }
+      ]
+    },
+    {
+      "path": "scripts/install_lib.py",
+      "language": "python",
+      "module": "scripts",
+      "layers": [
+        "script"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "shutil",
+        "subprocess",
+        "sys"
+      ],
+      "symbols": [
+        "log",
+        "copy_skills",
+        "hooks_dir",
+        "copy_hooks",
+        "ensure_entry",
+        "merge_claude_hooks",
+        "has",
+        "cmd",
+        "print_claude_snippet",
+        "ensure_operators",
+        "detect",
+        "main"
+      ],
+      "summary": "Defines exported symbols: cmd, copy_hooks, copy_skills, detect, ensure_entry.",
+      "evidence": [
+        {
+          "file": "scripts/install_lib.py"
+        }
+      ]
+    },
+    {
+      "path": "scripts/savings_harness.py",
+      "language": "python",
+      "module": "scripts",
+      "layers": [
+        "script"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "math",
+        "os",
+        "statistics",
+        "sys",
+        "time"
+      ],
+      "symbols": [
+        "log",
+        "count_tokens",
+        "_read_source",
+        "_store_path",
+        "cmd_snapshot",
+        "_load_snapshots",
+        "_stats",
+        "score",
+        "_print_report",
+        "cmd_score",
+        "cmd_selftest",
+        "_parse",
+        "main"
+      ],
+      "summary": "Defines exported symbols: _load_snapshots, _parse, _print_report, _read_source, _stats.",
+      "evidence": [
+        {
+          "file": "scripts/savings_harness.py"
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify_adapters.py",
+      "language": "python",
+      "module": "scripts",
+      "layers": [
+        "script"
+      ],
+      "roles": [],
+      "imports": [
+        "install_lib",
+        "os",
+        "shutil",
+        "subprocess",
+        "sys",
+        "tempfile"
+      ],
+      "symbols": [
+        "_install",
+        "_check",
+        "verify",
+        "main"
+      ],
+      "summary": "Defines exported symbols: _check, _install, main, verify.",
+      "evidence": [
+        {
+          "file": "scripts/verify_adapters.py"
+        }
+      ]
+    },
+    {
+      "path": "scripts/web_verify.py",
+      "language": "python",
+      "module": "scripts",
+      "layers": [
+        "script"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "playwright.sync_api",
+        "re",
+        "shutil",
+        "subprocess",
+        "sys",
+        "tempfile"
+      ],
+      "symbols": [
+        "log",
+        "_exe",
+        "_run",
+        "fe_changed_files",
+        "cmd_detect",
+        "test_web_verify",
+        "_append_ledger",
+        "_blocked",
+        "cmd_run",
+        "_upload",
+        "cmd_verify",
+        "_parse",
+        "main"
+      ],
+      "summary": "Defines exported symbols: _append_ledger, _blocked, _exe, _parse, _run.",
+      "evidence": [
+        {
+          "file": "scripts/web_verify.py"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/__init__.py",
+      "language": "python",
+      "module": "simplicio_loop",
+      "layers": [
+        "code"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/__init__.py"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/hooks/hooks.claude.json",
+      "language": "json",
+      "module": "simplicio_loop",
+      "layers": [
+        "asset"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/hooks/hooks.claude.json"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/hooks/hooks.json",
+      "language": "json",
+      "module": "simplicio_loop",
+      "layers": [
+        "asset"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Participates in the project implementation; inspect imports and symbols for exact usage.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/hooks/hooks.json"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/hooks/learn_stop.py",
+      "language": "python",
+      "module": "simplicio_loop",
+      "layers": [
+        "code"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "sys",
+        "time"
+      ],
+      "symbols": [
+        "main"
+      ],
+      "summary": "Defines exported symbols: main.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/hooks/learn_stop.py"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/hooks/loop_capture.py",
+      "language": "python",
+      "module": "simplicio_loop",
+      "layers": [
+        "code"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "re",
+        "sys"
+      ],
+      "symbols": [
+        "main"
+      ],
+      "summary": "Defines exported symbols: main.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/hooks/loop_capture.py"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "language": "python",
+      "module": "simplicio_loop",
+      "layers": [
+        "code"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "re",
+        "sys"
+      ],
+      "symbols": [
+        "allow_stop",
+        "cleanup_and_stop",
+        "read_stdin_json",
+        "parse_frontmatter",
+        "last_assistant_text",
+        "budget_halted",
+        "emit_refeed",
+        "main"
+      ],
+      "summary": "Defines exported symbols: allow_stop, budget_halted, cleanup_and_stop, emit_refeed, last_assistant_text.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/hooks/loop_stop.py"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "language": "python",
+      "module": "simplicio_loop",
+      "layers": [
+        "code"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "re",
+        "subprocess",
+        "sys",
+        "time"
+      ],
+      "symbols": [
+        "load_config",
+        "is_excluded",
+        "tee_write",
+        "dedup_counts",
+        "clamp",
+        "main"
+      ],
+      "summary": "Defines exported symbols: clamp, dedup_counts, is_excluded, load_config, main.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/hooks/orient_clamp.py"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "language": "python",
+      "module": "simplicio_loop",
+      "layers": [
+        "code"
+      ],
+      "roles": [],
+      "imports": [
+        "json",
+        "os",
+        "re",
+        "sys"
+      ],
+      "symbols": [
+        "allow_unchanged",
+        "load_excludes",
+        "main"
+      ],
+      "summary": "Defines exported symbols: allow_unchanged, load_excludes, main.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/hooks/orient_rewrite.py"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-compress/SKILL.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-compress/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-learn/SKILL.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-learn/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-loop/SKILL.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-loop/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-orient/SKILL.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-orient/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-review/SKILL.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation",
+        "ui"
+      ],
+      "roles": [
+        "ui"
+      ],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-review/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-tasks/SKILL.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-tasks/SKILL.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-tasks/references/azure-devops-adapter.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-tasks/references/azure-devops-adapter.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-tasks/references/extension-points.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-tasks/references/extension-points.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-tasks/references/orchestration.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-tasks/references/orchestration.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-tasks/references/quality-safety-delivery.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-tasks/references/quality-safety-delivery.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-tasks/references/standing-loop-247.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-tasks/references/standing-loop-247.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-tasks/references/token-economy.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-tasks/references/token-economy.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/_bundle/skills/simplicio-tasks/references/web-evidence.md",
+      "language": "markdown",
+      "module": "simplicio_loop",
+      "layers": [
+        "documentation"
+      ],
+      "roles": [],
+      "imports": [],
+      "symbols": [],
+      "summary": "Documents product, architecture, operation or contributor workflow.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/_bundle/skills/simplicio-tasks/references/web-evidence.md"
+        }
+      ]
+    },
+    {
+      "path": "simplicio_loop/cli.py",
+      "language": "python",
+      "module": "simplicio_loop",
+      "layers": [
+        "entrypoint"
+      ],
+      "roles": [
+        "entrypoint"
+      ],
+      "imports": [
+        ".",
+        "__future__",
+        "argparse",
+        "pathlib",
+        "shutil"
+      ],
+      "symbols": [
+        "_copy_tree",
+        "install",
+        "main"
+      ],
+      "summary": "Starts a CLI, runtime or package entrypoint.",
+      "evidence": [
+        {
+          "file": "simplicio_loop/cli.py"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "type": "calls",
+      "source_file": "hooks/learn_stop.py",
+      "source_symbol": "hooks/learn_stop.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/learn_stop.py",
+      "source_symbol": "hooks/learn_stop.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/learn_stop.py",
+      "source_symbol": "hooks/learn_stop.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_capture.py",
+      "source_symbol": "hooks/loop_capture.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_capture.py",
+      "source_symbol": "hooks/loop_capture.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_capture.py",
+      "source_symbol": "hooks/loop_capture.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_capture.py",
+      "source_symbol": "hooks/loop_capture.py::main",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::close",
+      "line": 58,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_capture.py",
+      "source_symbol": "hooks/loop_capture.py::main",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::close",
+      "line": 58,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::allow_stop",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::allow_stop",
+      "line": 37,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::budget_halted",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::budget_halted",
+      "line": 111,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::cleanup_and_stop",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::cleanup_and_stop",
+      "line": 42,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::emit_refeed",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::emit_refeed",
+      "line": 126,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::last_assistant_text",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::last_assistant_text",
+      "line": 75,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::parse_frontmatter",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::parse_frontmatter",
+      "line": 60,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::read_stdin_json",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::read_stdin_json",
+      "line": 52,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::allow_stop",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::allow_stop",
+      "line": 37,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::budget_halted",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::budget_halted",
+      "line": 111,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::cleanup_and_stop",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::cleanup_and_stop",
+      "line": 42,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::emit_refeed",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::emit_refeed",
+      "line": 126,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::last_assistant_text",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::last_assistant_text",
+      "line": 75,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::parse_frontmatter",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::parse_frontmatter",
+      "line": 60,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/loop_stop.py",
+      "source_symbol": "hooks/loop_stop.py::read_stdin_json",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::read_stdin_json",
+      "line": 52,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::clamp",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::clamp",
+      "line": 94,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::dedup_counts",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::dedup_counts",
+      "line": 80,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::is_excluded",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::is_excluded",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::load_config",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::load_config",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::tee_write",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::tee_write",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::clamp",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::clamp",
+      "line": 94,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::dedup_counts",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::dedup_counts",
+      "line": 80,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::is_excluded",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::is_excluded",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::load_config",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::load_config",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_clamp.py",
+      "source_symbol": "hooks/orient_clamp.py::tee_write",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::tee_write",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::allow_unchanged",
+      "target_file": "hooks/orient_rewrite.py",
+      "target_symbol": "hooks/orient_rewrite.py::allow_unchanged",
+      "line": 41,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::load_excludes",
+      "target_file": "hooks/orient_rewrite.py",
+      "target_symbol": "hooks/orient_rewrite.py::load_excludes",
+      "line": 49,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::allow_unchanged",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::allow_unchanged",
+      "line": 41,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "hooks/orient_rewrite.py",
+      "source_symbol": "hooks/orient_rewrite.py::load_excludes",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::load_excludes",
+      "line": 49,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 248,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 248,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 248,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::agent_breakdown",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::agent_breakdown",
+      "line": 225,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::api_base",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::api_base",
+      "line": 51,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::attach_evidence",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::attach_evidence",
+      "line": 168,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::claim",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::claim",
+      "line": 138,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::sqlite_query",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::close",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::cost_summary",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::cost_summary",
+      "line": 199,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::detect_db_path",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::detect_db_path",
+      "line": 34,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::get_details",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::get_details",
+      "line": 114,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::http_get",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::http_get",
+      "line": 66,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::http_patch",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::http_patch",
+      "line": 78,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::list_ready",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::list_ready",
+      "line": 90,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::mode",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::mode",
+      "line": 47,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::sqlite_query",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::sqlite_query",
+      "line": 55,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::update_status",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::update_status",
+      "line": 153,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::attach_evidence",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::attach_evidence",
+      "line": 168,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::claim",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::claim",
+      "line": 138,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::sqlite_query",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::close",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::get_details",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::get_details",
+      "line": 114,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::list_ready",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::list_ready",
+      "line": 90,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/agentsview_adapter.py",
+      "source_symbol": "scripts/agentsview_adapter.py::update_status",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::update_status",
+      "line": 153,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 288,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 288,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 288,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::attach_evidence",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::attach_evidence",
+      "line": 202,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::claim",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::claim",
+      "line": 169,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::close",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::close",
+      "line": 210,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::get_details",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::get_details",
+      "line": 145,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::list_ready",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::list_ready",
+      "line": 120,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::update_status",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::update_status",
+      "line": 194,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_az",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_az",
+      "line": 83,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_common",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_common",
+      "line": 74,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_exe",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_exe",
+      "line": 63,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_org",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_org",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_parse",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_parse",
+      "line": 270,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_az",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_quote",
+      "line": 87,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::get_details",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_require",
+      "line": 146,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_show",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_show",
+      "line": 140,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_wiql_lit",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_wiql_lit",
+      "line": 109,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::attach_evidence",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::attach_evidence",
+      "line": 202,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::claim",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::claim",
+      "line": 169,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::close",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::close",
+      "line": 210,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::get_details",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::get_details",
+      "line": 145,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::list_ready",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::list_ready",
+      "line": 120,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::log",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::log",
+      "line": 59,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::open_pr",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::open_pr",
+      "line": 219,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::pipeline_status",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::pipeline_status",
+      "line": 248,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::pr_status",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::pr_status",
+      "line": 232,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::run_pipeline",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::run_pipeline",
+      "line": 240,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::update_status",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::update_status",
+      "line": 194,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::log",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::log",
+      "line": 59,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_parse",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_parse",
+      "line": 270,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::log",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::log",
+      "line": 59,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_exe",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_exe",
+      "line": 63,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/az_boards_adapter.py",
+      "source_symbol": "scripts/az_boards_adapter.py::_parse",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_parse",
+      "line": 270,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 203,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 203,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 203,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::log",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::log",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::cmd",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::cmd",
+      "line": 149,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::copy_hooks",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::copy_hooks",
+      "line": 89,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::copy_skills",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::copy_skills",
+      "line": 72,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::detect",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::detect",
+      "line": 195,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::ensure_entry",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::ensure_entry",
+      "line": 99,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::ensure_operators",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::ensure_operators",
+      "line": 170,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::has",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::has",
+      "line": 132,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::hooks_dir",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::hooks_dir",
+      "line": 84,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::log",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::log",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::merge_claude_hooks",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::merge_claude_hooks",
+      "line": 120,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::merge_claude_hooks",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::print_claude_snippet",
+      "line": 129,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::log",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::log",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/install_lib.py",
+      "source_symbol": "scripts/install_lib.py::ensure_operators",
+      "target_file": "simplicio_loop/cli.py",
+      "target_symbol": "simplicio_loop/cli.py::install",
+      "line": 174,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 236,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 236,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 236,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_parse",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_parse",
+      "line": 217,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::log",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::log",
+      "line": 51,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::log",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::log",
+      "line": 51,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_load_snapshots",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_load_snapshots",
+      "line": 93,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_parse",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_parse",
+      "line": 217,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_print_report",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_print_report",
+      "line": 166,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_read_source",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_read_source",
+      "line": 60,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_stats",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_stats",
+      "line": 111,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_store_path",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_store_path",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::cmd_score",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::cmd_score",
+      "line": 185,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::cmd_selftest",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::cmd_selftest",
+      "line": 194,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::cmd_snapshot",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::cmd_snapshot",
+      "line": 73,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::count_tokens",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::count_tokens",
+      "line": 55,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::log",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::log",
+      "line": 51,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::score",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::score",
+      "line": 124,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/savings_harness.py",
+      "source_symbol": "scripts/savings_harness.py::_parse",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_parse",
+      "line": 217,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 101,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 101,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 101,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::_check",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::hooks_dir",
+      "line": 74,
+      "confidence": 0.58
+    },
+    {
+      "type": "imports",
+      "source_file": "scripts/verify_adapters.py",
+      "target_file": "scripts/install_lib.py",
+      "import": "install_lib",
+      "confidence": 0.65
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::_check",
+      "target_file": "scripts/verify_adapters.py",
+      "target_symbol": "scripts/verify_adapters.py::_check",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::_install",
+      "target_file": "scripts/verify_adapters.py",
+      "target_symbol": "scripts/verify_adapters.py::_install",
+      "line": 39,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/verify_adapters.py",
+      "source_symbol": "scripts/verify_adapters.py::verify",
+      "target_file": "scripts/verify_adapters.py",
+      "target_symbol": "scripts/verify_adapters.py::verify",
+      "line": 90,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 251,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 251,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 251,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::test_web_verify",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::close",
+      "line": 129,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_exe",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_exe",
+      "line": 59,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_parse",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::_parse",
+      "line": 233,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::test_web_verify",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::close",
+      "line": 129,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::log",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::log",
+      "line": 55,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::log",
+      "target_file": "scripts/install_lib.py",
+      "target_symbol": "scripts/install_lib.py::log",
+      "line": 55,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_parse",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::_parse",
+      "line": 233,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::log",
+      "target_file": "scripts/savings_harness.py",
+      "target_symbol": "scripts/savings_harness.py::log",
+      "line": 55,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_append_ledger",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_append_ledger",
+      "line": 136,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_blocked",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_blocked",
+      "line": 142,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_exe",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_exe",
+      "line": 59,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_parse",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_parse",
+      "line": 233,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::_run",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_run",
+      "line": 64,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::cmd_run",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::_upload",
+      "line": 201,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::cmd_detect",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::cmd_detect",
+      "line": 86,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::cmd_run",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::cmd_run",
+      "line": 149,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::cmd_verify",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::cmd_verify",
+      "line": 220,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "scripts/web_verify.py",
+      "source_symbol": "scripts/web_verify.py::fe_changed_files",
+      "target_file": "scripts/web_verify.py",
+      "target_symbol": "scripts/web_verify.py::fe_changed_files",
+      "line": 73,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/learn_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/learn_stop.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/learn_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/learn_stop.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/learn_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/learn_stop.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 20,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_capture.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_capture.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_capture.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_capture.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_capture.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_capture.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 29,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_capture.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_capture.py::main",
+      "target_file": "scripts/agentsview_adapter.py",
+      "target_symbol": "scripts/agentsview_adapter.py::close",
+      "line": 58,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_capture.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_capture.py::main",
+      "target_file": "scripts/az_boards_adapter.py",
+      "target_symbol": "scripts/az_boards_adapter.py::close",
+      "line": 58,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::allow_stop",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::allow_stop",
+      "line": 37,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::budget_halted",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::budget_halted",
+      "line": 111,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::cleanup_and_stop",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::cleanup_and_stop",
+      "line": 42,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::emit_refeed",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::emit_refeed",
+      "line": 126,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::last_assistant_text",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::last_assistant_text",
+      "line": 75,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 137,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::parse_frontmatter",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::parse_frontmatter",
+      "line": 60,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::read_stdin_json",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::read_stdin_json",
+      "line": 52,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::allow_stop",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::allow_stop",
+      "line": 37,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::budget_halted",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::budget_halted",
+      "line": 111,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::cleanup_and_stop",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::cleanup_and_stop",
+      "line": 42,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::emit_refeed",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::emit_refeed",
+      "line": 126,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::last_assistant_text",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::last_assistant_text",
+      "line": 75,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::parse_frontmatter",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::parse_frontmatter",
+      "line": 60,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::read_stdin_json",
+      "target_file": "simplicio_loop/_bundle/hooks/loop_stop.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/loop_stop.py::read_stdin_json",
+      "line": 52,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 115,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::clamp",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::clamp",
+      "line": 94,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::dedup_counts",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::dedup_counts",
+      "line": 80,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::is_excluded",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::is_excluded",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::load_config",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::load_config",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::tee_write",
+      "target_file": "hooks/orient_clamp.py",
+      "target_symbol": "hooks/orient_clamp.py::tee_write",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::clamp",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::clamp",
+      "line": 94,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::dedup_counts",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::dedup_counts",
+      "line": 80,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::is_excluded",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::is_excluded",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::load_config",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::load_config",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::tee_write",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_clamp.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_clamp.py::tee_write",
+      "line": 68,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 62,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::allow_unchanged",
+      "target_file": "hooks/orient_rewrite.py",
+      "target_symbol": "hooks/orient_rewrite.py::allow_unchanged",
+      "line": 41,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::load_excludes",
+      "target_file": "hooks/orient_rewrite.py",
+      "target_symbol": "hooks/orient_rewrite.py::load_excludes",
+      "line": 49,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::allow_unchanged",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::allow_unchanged",
+      "line": 41,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "source_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::load_excludes",
+      "target_file": "simplicio_loop/_bundle/hooks/orient_rewrite.py",
+      "target_symbol": "simplicio_loop/_bundle/hooks/orient_rewrite.py::load_excludes",
+      "line": 49,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/cli.py",
+      "source_symbol": "simplicio_loop/cli.py::main",
+      "target_file": "hooks/learn_stop.py",
+      "target_symbol": "hooks/learn_stop.py::main",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/cli.py",
+      "source_symbol": "simplicio_loop/cli.py::main",
+      "target_file": "hooks/loop_capture.py",
+      "target_symbol": "hooks/loop_capture.py::main",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/cli.py",
+      "source_symbol": "simplicio_loop/cli.py::main",
+      "target_file": "hooks/loop_stop.py",
+      "target_symbol": "hooks/loop_stop.py::main",
+      "line": 46,
+      "confidence": 0.58
+    },
+    {
+      "type": "imports",
+      "source_file": "simplicio_loop/cli.py",
+      "target_file": "simplicio_loop/__init__.py",
+      "import": ".",
+      "confidence": 0.82
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/cli.py",
+      "source_symbol": "simplicio_loop/cli.py::_copy_tree",
+      "target_file": "simplicio_loop/cli.py",
+      "target_symbol": "simplicio_loop/cli.py::_copy_tree",
+      "line": 13,
+      "confidence": 0.58
+    },
+    {
+      "type": "calls",
+      "source_file": "simplicio_loop/cli.py",
+      "source_symbol": "simplicio_loop/cli.py::install",
+      "target_file": "simplicio_loop/cli.py",
+      "target_symbol": "simplicio_loop/cli.py::install",
+      "line": 25,
+      "confidence": 0.58
+    }
+  ],
+  "coverage": {
+    "files": 94,
+    "modules": 11,
+    "layers": 7,
+    "symbols": 119,
+    "relationships": 218,
+    "tests": 0
+  },
+  "notes": [
+    "Generated from deterministic repository inspection.",
+    "Relationship confidence below 1.0 means the edge is heuristic and should be reviewed before making broad claims."
+  ]
+}
