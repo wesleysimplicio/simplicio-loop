@@ -10,7 +10,7 @@
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-6-00E08A" alt="6 source adapters"></a>
   <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-the-43-extension-points"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
-  <a href="#-accelerators"><img src="https://img.shields.io/badge/accelerators-3-FF6B6B" alt="3 accelerators"></a>
+  <a href="#-accelerators"><img src="https://img.shields.io/badge/accelerators-4-FF6B6B" alt="4 accelerators"></a>
   <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
@@ -126,6 +126,7 @@ smarter:
 | **Understand Anything** | `orient` / `recall` (Step 2b-2) | Knowledge graph of the codebase — semantic search, guided tours, dependency graph. Replaces ad-hoc LLM code reads with deterministic `jq` queries. | **L0 (zero tokens)** — queries are JSON, not LLM calls |
 | **agentsview** | `source_adapter` + pre-flight budget (Step 1a/3b) | Session analytics, cost tracking, stalled-session discovery. Feeds real spend data into the kill-switch. | **L1** — metadata-only queries, aggregate SQL |
 | **LMCache** | `model_route` (Step 3d) + token economy | KV cache between loop turns eliminates redundant prefill on repeated prompts. Reduces TTFT by 40-70% on local models (L2-L3). | **GPU time reduction** — less $ per iteration, scales with loop length |
+| **Headroom** | `compress` + `recall` + `learn` (Step 1c) | Transparent compression proxy + MCP server. 6 algorithms auto-detect content type. Cross-agent memory store. Automated failure mining. | **60-95% fewer tokens** — additive to existing compression |
 
 Each accelerator is optional and auto-detected — when present, the loop uses it; when absent,
 the LLM fallback covers 100%.
@@ -268,6 +269,7 @@ Between turns, LMCache (when available) caches the KV state so re-feed costs nea
 | `simplicio-compress` | Terse prose + one-time memory compaction |
 | `orient_clamp.py` | Clamp + tee on every shell command, zero wiring |
 | LMCache KV cache | 40-70% TTFT reduction on repeated prompts (local models) |
+| Headroom proxy + MCP | 60-95% fewer tokens on tool outputs via transparent compression daemon |
 
 Savings only count on a verified-correct outcome. Baseline = the cheapest sensible non-orchestrated
 path to the same result. See `references/token-economy.md`.

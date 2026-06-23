@@ -22,7 +22,7 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 | `watcher` | Durable scheduler / poller (survives reboot) | OS cron / scheduled task / session loop |
 | `savings_ledger` | REAL token spend tracking per session | estimate `ceil(chars/4)` |
 | `capability_rank` | Rank which skill/tool fits a sub-task | LLM picks |
-| `compress` | Context compression / output clamping | summarize to bullets, head+tail clamp |
+| `compress` | Context compression / output clamping | summarize to bullets, head+tail clamp. Also: headroom proxy (`pip install headroom-ai`) for transparent 6-algorithm compression via daemon |
 | `trajectory` | Record run outcome for self-improvement | manual log |
 | `learn` | Learn from run — update precedents / memory | manual ADR |
 | `human_gate` | Async human approval channel | ask user inline |
