@@ -15,6 +15,26 @@ Credit: the technique is Ralph Wiggum / cursor `ralph-loop`. We keep its best pa
 single human-readable state file, exact-match promise sentinel, two-hook split — and add
 the simplicio safety spine (evidence-gated promise, budget kill-switch, cross-platform hook).
 
+## Normative contract (non-negotiable)
+
+These invariants are MUST-level. Any runtime that loads this skill (Hermes, Claude, Cursor, or a
+bare LLM) follows them mechanically — no paraphrase, no drift:
+
+1. **Evidence-gated exit.** The loop MUST NOT terminate without concrete evidence, produced in the
+   SAME turn, that the goal is met. No in-turn evidence → no exit.
+2. **Exact promise.** Completion is gated by the EXACT sentinel `<promise>EXACT TEXT</promise>`
+   equal to `completion_promise` verbatim. A paraphrase or a fuzzy "I'm done" never counts.
+3. **Deterministic continuation.** If the promise is not satisfied, the next iteration MUST re-feed
+   the current goal + state unchanged — a mechanical re-feed, never a manual "shall I continue?".
+4. **Bounded by construction.** `max_iterations` OR a budget ceiling MUST be set before iteration 1
+   — the loop is NEVER unbounded — and the cap/budget is checked BEFORE every continuation.
+5. **Single source of truth.** All loop state lives in the one scratchpad below; the sibling
+   `.orchestrator/loop/done` flag is touched ONLY when the promise is verified.
+6. **Fallback obeys the same contract.** When the host has no hooks, the self-paced scheduler mode
+   is first-class and MUST honor invariants 1–5 identically.
+
+The rest of this file is the mechanism that enforces this contract.
+
 ## When to use
 
 - "run a ralph loop on X", "iterate until the tests pass", "keep going until done".
@@ -118,6 +138,21 @@ Delete `.orchestrator/loop/` (the `cancel-ralph` analogue). A single STOP signal
   times out repeatedly, stop fanning out and proceed inline with direct execution — a degraded
   but moving loop beats a stalled swarm.
 - Emit the standard savings line each turn (see `simplicio-tasks`).
+
+## Verifying a good loop (what "good" looks like)
+
+A correctly-run loop is auditable after the fact:
+
+- **Promise traces to evidence.** The turn that emitted `<promise>` also shows the proof — a passing
+  gate, a `file:line` receipt, or a merged-PR / closed-item re-query.
+- **Stops only after proof.** No turn ended the loop on a self-reported "done"; every exit has a
+  concrete artifact behind it.
+- **Bounded iteration.** The iteration count never exceeded `max_iterations` (or the budget halted
+  first); the loop never ran unbounded.
+- **Clean cancellation.** Deleting `.orchestrator/loop/` (or a STOP signal) leaves no orphaned state
+  — the next run starts fresh.
+
+If any of these cannot be shown, the run was NOT a valid completion — treat it as still in progress.
 
 ## Output
 
