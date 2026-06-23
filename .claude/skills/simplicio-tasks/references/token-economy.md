@@ -173,3 +173,59 @@ terminal knows it exactly; the LLM approximates it expensively. Always pick the 
 - NO-SKILLS by default. Rank/recall first; lazy-load only a genuinely relevant skill.
 
 Record the chosen modes per sub-task in the receipt (one line).
+
+## LMCache — KV-cache acceleration for local inference
+
+LMCache accelerates inference inside the loop by caching KV (Key-Value) caches **between turns**, reducing TTFT (time-to-first-token) and eliminating redundant prefill on repeated or similar prompts.
+
+### How it works
+
+In a looping agent workflow, each turn triggers a fresh prefill on the accumulated context. LMCache intercepts and reuses previously computed KV caches so that only the *new* portion of the conversation needs to be prefilled:
+
+- Caches KV state from previous turns in the loop
+- Skips recomputation when the prompt prefix matches a cached entry
+- Reduces TTFT significantly (up to 2–10× depending on cache hit ratio)
+- Works with most local LLM inference engines (vLLM, SGLang, llama.cpp via adapter)
+
+### Why it matters for token economy
+
+| Dimension | Without LMCache | With LMCache |
+|-----------|----------------|--------------|
+| Prefill per turn | Full context re-prefilled | Only new tokens prefilled |
+| TTFT | Grows linearly with conversation length | ~Constant after warmup |
+| Token burn on re-prefill | Wasted on every turn | Recycled via cache hits |
+
+### Installation
+
+```bash
+pip install lmcache
+```
+
+### Configuration
+
+LMCache is configured via environment variables or a config file. Basic setup:
+
+```bash
+export LMCACHE_ENABLED=true
+export LMCACHE_CACHE_DIR=~/.cache/lmcache
+export LMCACHE_MAX_CACHE_SIZE_GB=10
+```
+
+For vLLM integration, pass `--kv-cache-dtype auto` and load the LMCache server plugin:
+
+```bash
+python -m lmcache.server &
+```
+
+### Relevance in model routing (L2–L3)
+
+LMCache is **most impactful for local models** — typically L2 (fast local) and L3 (strong local) in the `simplicio-loop` model routing tiers:
+
+- **L2 (fast local)**: Small local models benefit from LMCache's low overhead — TTFT drops enough to feel interactive even on long conversations.
+- **L3 (strong local)**: Larger local models have the most to gain because their prefill is the most expensive — caching avoids the full forward pass on repeated context prefixes.
+- **L1 (cloud)**: Cloud APIs already handle KV caching server-side; LMCache adds little value there unless you self-host the endpoint.
+
+### Resources
+
+- Official docs: [docs.lmcache.ai](https://docs.lmcache.ai)
+- GitHub: [github.com/LMCache/LMCache](https://github.com/LMCache/LMCache)

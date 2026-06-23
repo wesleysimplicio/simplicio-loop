@@ -137,7 +137,7 @@ flowchart TD
     direction LR
     S1["GitHub Issues / PRs / CI"]
     S2["Jira · Azure DevOps · Linear · ClickUp · Notion · agentsview · Understand Anything"]
-    S3["Assigns · TODO/FIXME · CVE · local files"]
+    S3["Assigns · TODO/FIXME · CVE · local files · LMCache (acelerador de inferência KV cache)"]
   end
   SRC --> PF
   subgraph PF["2 · Pre-flight gates"]

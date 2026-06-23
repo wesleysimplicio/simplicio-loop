@@ -1,155 +1,591 @@
-# Understand Anything adapter — knowledge-graph code orientation
+# Understand Anything adapter (`orient` / `recall` via Egonex-AI knowledge graph)
 
-Binds the **`orient`** and **`recall`** extension points to **Understand Anything**
-([Egonex-AI/Understand-Anything](https://github.com/Egonex-AI/Understand-Anything)), a
-multi-agent pipeline that turns any codebase into an interactive knowledge graph.
+A concrete binding of the `orient` and `recall` extension points that uses **Understand
+Anything** (Egonex-AI) — a pre-computed knowledge graph generator — instead of the default
+`simplicio-mapper`. The graph lives at `.understand-anything/knowledge-graph.json` once
+generated. All queries against it are L0 deterministic (zero LLM tokens, pure `jq` / file
+reads). This adapter is an **alternative** to `simplicio-mapper` for the `orient` and `recall`
+points; it does not replace `simplicio-dev-cli` for `execute`/`deterministic_edit`.
 
-Instead of signatures-only reads (`rg`/`git grep`) or the simplicio-mapper project map, the
-orchestrator can use Understand Anything's pre-computed knowledge graph
-(`.understand-anything/knowledge-graph.json`) for richer, cheaper code orientation.
+Credit: [Egonex-AI / Understand Anything](https://github.com/egonex-ai/understand-anything).
 
-## What it provides
+---
 
-| Capability | Extension point | LLM fallback replaced |
+## What is Understand Anything
+
+Understand Anything is a static analysis tool that scans a codebase and produces a full
+**code knowledge graph** as a single JSON file. It discovers:
+
+- **Every file** and its path classification (source, test, config, doc, etc.)
+- **Every function / method** — name, signature, location, docstring, calls (outgoing edges)
+- **Every class** — name, hierarchy (inherits from / implemented by), methods, attributes
+- **Dependencies** — import/require/include edges between files
+- **Semantic relationships** — cross-file usage, similar-named symbols, high-level domain
+  clusters derived from embedding-based analysis
+- **Entry points** — `main()`, CLI handlers, web route registration, test fixtures
+- **Test-to-code mapping** — which test exercises which module (by import analysis + name
+  convention)
+
+The graph is **pre-computed and cached**. Querying it costs nothing more than reading a JSON
+file — no LLM invocation, no re-scan. The full analysis is re-run only intentionally
+(`/understand`, `understand-anything scan .`).
+
+---
+
+## How it fits in the simplicio-loop architecture
+
+### Extension point bindings
+
+| Extension point | Default (`simplicio-mapper`) | Understand Anything adapter |
 |---|---|---|
-| Structural graph (files, functions, classes, dependencies) | `orient` | signatures-only reads via `rg`/`git grep` |
-| Semantic search ("which parts handle auth?") | `recall` | grepping for keywords |
-| Guided tours (architecture walkthrough, ordered by dep) | `orient` | reading files in arbitrary order |
-| Diff impact analysis (ripple effects before commit) | `validate` | manual code inspection |
-| Domain view (business logic mapping) | `orient` | none (purely LLM) |
-| Persona-adaptive explanations (junior vs senior) | `recall` | generic LLM explanation |
+| `orient` | `simplicio-mapper index . --json` → `.simplicio/*.json` | Read `.understand-anything/knowledge-graph.json` + `jq` queries |
+| `recall` | `.simplicio/precedent-index.json` (past resolutions) | Guided tours + semantic search over the graph + prior `/understand-diff` snapshots |
 
-## Detection
+### When to use which
 
-The adapter is active when the file `.understand-anything/knowledge-graph.json` exists at the
-repository root. No config needed.
+- **Prefer Understand Anything** when the codebase is large (>10K files), has complex
+  cross-module dependencies, or benefits from embedding-based semantic search (monorepos,
+  microservices, multi-language stacks).
+- **Prefer `simplicio-mapper`** when the repo is small, fast turnaround is critical, or
+  fine-grained symbol-index + call-graph traversal is needed per-turn.
+- **Fallback** if neither is available: LLM reads the tree with `rg` / `git grep` / `find`
+  (the generic LLM fallback from `extension-points.md`).
+
+### Detection (which adapter is present)
 
 ```bash
-test -f .understand-anything/knowledge-graph.json && echo "UA available" || echo "run /understand first"
+# Understand Anything available?
+test -f .understand-anything/knowledge-graph.json && echo "ua:ready" || echo "ua:absent"
+
+# simplicio-mapper available?
+command -v simplicio-mapper && echo "mapper:ready" || echo "mapper:absent"
 ```
 
-## Knowledge graph schema
+When both are present, the orchestrator may choose based on task profile:
+- Big-picture architecture, semantic search, cross-module impact → Understand Anything
+- Symbol-level edits, fast per-turn survey → simplicio-mapper
 
-The graph is a JSON file with the following top-level structure. Query it deterministically
-with `jq` — zero LLM tokens.
+---
 
-```json
+## The knowledge graph: format, location, schema
+
+### Location
+
+```
+.understand-anything/knowledge-graph.json
+```
+
+Generated by running `/understand` (Cline/Claude Code plugin) or the CLI directly:
+```bash
+# Via the Understand Anything CLI plugin
+understand-anything scan .
+
+# Via the Cline plugin's slash command
+/understand
+```
+
+### Schema (key top-level fields)
+
+```jsonc
 {
-  "nodes": [
+  "version": "1.0",
+  "project": {
+    "name": "<repo-name>",
+    "root": "<absolute-path>",
+    "language": "<primary-lang>"
+  },
+  "files": {
+    "src/main.py": {
+      "path": "src/main.py",
+      "type": "source",             // source | test | config | doc | build | data
+      "language": "python",
+      "size_bytes": 1234,
+      "last_modified": "2025-06-01T10:00:00Z"
+    }
+  },
+  "symbols": [
     {
-      "id": "src/auth/login.ts",
-      "type": "file",
-      "label": "login.ts",
-      "layer": "API",
-      "summary": "Handles user login with email/password and OAuth",
-      "children": ["src/auth/login.ts:LoginForm", "src/auth/login.ts:validateCredentials"]
-    },
-    {
-      "id": "src/auth/login.ts:LoginForm",
-      "type": "component",
-      "label": "LoginForm",
-      "layer": "UI",
-      "summary": "React component for login form with validation"
+      "name": "handle_request",
+      "kind": "function",           // function | method | class | variable | constant | interface | type
+      "file": "src/main.py",
+      "line": 42,
+      "signature": "def handle_request(req: Request, ctx: Context) -> Response",
+      "docstring": "Process an incoming HTTP request and return a Response.",
+      "calls": ["validate_auth", "fetch_data", "format_response"],
+      "called_by": ["main_loop", "route_handler"],
+      "class": "RequestHandler",    // if a method, the owning class
+      "access_modifier": "public"   // public | private | protected
     }
   ],
-  "edges": [
-    { "source": "src/auth/login.ts:LoginForm", "target": "src/auth/login.ts:validateCredentials", "relation": "calls" },
-    { "source": "src/auth/login.ts", "target": "src/api/auth.ts", "relation": "imports" }
+  "classes": [
+    {
+      "name": "RequestHandler",
+      "file": "src/main.py",
+      "line": 30,
+      "docstring": "Handles HTTP requests with auth and validation.",
+      "extends": ["BaseHandler"],
+      "implements": ["MiddlewareInterface"],
+      "methods": ["handle_request", "validate", "format"],
+      "attributes": ["timeout", "max_retries"]
+    }
   ],
-  "metadata": {
-    "projectName": "my-app",
-    "analyzedAt": "2026-06-23T15:00:00Z",
-    "totalNodes": 1240,
-    "totalEdges": 8900,
-    "layers": ["API", "Service", "Data", "UI", "Utility"]
-  }
+  "dependencies": {
+    "src/main.py": ["src/auth.py", "src/data.py", "src/format.py"],
+    "src/auth.py": ["lib/crypto.py"]
+  },
+  "entry_points": [
+    {"name": "main", "file": "src/main.py", "line": 1, "kind": "function"}
+  ],
+  "test_coverage": {
+    "src/auth.py": ["tests/test_auth.py"]
+  },
+  "semantic_clusters": [
+    {
+      "label": "Authentication & Security",
+      "files": ["src/auth.py", "src/middleware.py", "src/tokens.py"],
+      "symbols": ["validate_auth", "generate_token", "verify_token"]
+    }
+  ],
+  "generated_at": "2025-06-23T12:00:00Z",
+  "scan_duration_ms": 3421
 }
 ```
 
-## Using in the orchestrator flow
+The exact schema may vary by Understand Anything version. The fields above are the stable
+intersection across recent releases. Always check `jq '.version'` on the actual file.
 
-### Step 2b-2 — Orient the codebase (PRIMARY use)
+---
 
-When `.understand-anything/knowledge-graph.json` exists, use it as the **primary orientation
-source** before implementing a work-item:
+## How to use
+
+### 1. Check if the graph exists
 
 ```bash
-# 1. Find which nodes are relevant to the work-item
-jq '[.nodes[] | select(.summary | test("auth|login|session"; "i")) | {id, layer, summary}]' .understand-anything/knowledge-graph.json
-
-# 2. Find the dependency chain (what imports what)
-jq '[.edges[] | select(.source | test("auth|login"; "i")) | {from: .source, to: .target, rel: .relation}]' .understand-anything/knowledge-graph.json
-
-# 3. Get architectural context — which layer does this belong to?
-jq '[.nodes[] | select(.id == "src/auth/login.ts") | .layer]' .understand-anything/knowledge-graph.json
-
-# 4. Get guided tour for the relevant module
-jq '[.nodes[] | select(.id | startswith("src/auth/")) | {id, layer, summary}]' .understand-anything/knowledge-graph.json
+test -f .understand-anything/knowledge-graph.json && echo "READY" || echo "MISSING — run: /understand"
 ```
 
-The orchestrator does these queries with `jq` (deterministic, L0, zero tokens) instead of
-reading source files with the LLM.
-
-### Step 6b — Diff impact analysis (before commit)
-
-Before committing a change, use Understand Anything's diff analysis to check ripple effects:
+### 2. Basic info
 
 ```bash
-# Run the diff impact command (Requires understand-anything plugin installed)
+# Project name + language
+jq -r '{project, generated_at}' .understand-anything/knowledge-graph.json
+
+# File count by type
+jq '[.files[] | .type] | group_by(.) | map({type: .[0], count: length})' \
+  .understand-anything/knowledge-graph.json
+
+# Total symbols
+jq '[.symbols[]] | length' .understand-anything/knowledge-graph.json
+```
+
+### 3. Queries for `orient` (codebase orientation)
+
+**All public functions in a module:**
+```bash
+jq '[.symbols[] | select(.file == "src/auth.py" and .kind == "function" and .access_modifier == "public") | {name, line, signature}]' \
+  .understand-anything/knowledge-graph.json
+```
+
+**Entry points (where execution starts):**
+```bash
+jq '.entry_points' .understand-anything/knowledge-graph.json
+```
+
+**What does a given function call?**
+```bash
+jq '[.symbols[] | select(.name == "handle_request") | {name, calls, called_by}]' \
+  .understand-anything/knowledge-graph.json
+```
+
+**Class hierarchy:**
+```bash
+jq '[.classes[] | select(.name == "RequestHandler" or .extends != []) | {name, extends, implements}]' \
+  .understand-anything/knowledge-graph.json
+```
+
+**Import dependencies of a file:**
+```bash
+jq '.dependencies["src/main.py"]' .understand-anything/knowledge-graph.json
+```
+
+### 4. Guided tours (architecture overview)
+
+Guided tours are pre-baked `jq` chains stored in `.understand-anything/tours/` (optional,
+created on first `/understand --tour` or manually). Each tour is a JSON file mapping a
+narrative sequence to graph queries:
+
+```bash
+# List available tours
+ls .understand-anything/tours/*.json 2>/dev/null || echo "No tours yet"
+
+# Example: tour of the auth module
+cat .understand-anything/tours/auth-flow.json
+{
+  "title": "Authentication flow",
+  "steps": [
+    {"query": ".entry_points[] | select(.file | test(\"auth\"))", "label": "Auth entry point"},
+    {"query": "[.symbols[] | select(.class == \"AuthMiddleware\") | {name, signature, calls}]", "label": "Middleware symbols"},
+    {"query": ".dependencies[\"src/auth.py\"]", "label": "Auth imports"}
+  ]
+}
+
+# Run a tour step
+jq -f .understand-anything/tours/auth-flow.json .understand-anything/knowledge-graph.json
+```
+
+Create new tours as needed during Step 2b-2 orientation:
+```bash
+mkdir -p .understand-anything/tours
+cat > .understand-anything/tours/<name>.json << 'EOF'
+{ "title": "<description>", "steps": [...] }
+EOF
+```
+
+### 5. Semantic search (find modules by description)
+
+Semantic clusters provide high-level groupings:
+
+```bash
+# Find clusters matching "database"
+jq '[.semantic_clusters[] | select(.label | test("database"; "i"))]' \
+  .understand-anything/knowledge-graph.json
+
+# All files in a cluster
+jq '[.semantic_clusters[] | select(.label | test("auth"; "i")) | .files[]]' \
+  .understand-anything/knowledge-graph.json
+
+# Symbols in a cluster's files
+jq '[.semantic_clusters[] | select(.label | test("auth"; "i")) | .symbols[]]' \
+  .understand-anything/knowledge-graph.json
+```
+
+For deeper semantic queries, pipe the graph to an embedding-aware tool or use the
+Understand Anything plugin's own search (if available).
+
+---
+
+## Step 2b-2 integration (Code orientation)
+
+During **Step 2b-2** of the orchestrator, the agent must orient the existing code *before*
+writing a line. With the Understand Anything adapter this becomes:
+
+### Protocol
+
+```bash
+# 1. Confirm graph is fresh (generated_at >= last git change)
+GRAPH_TIME=$(jq -r '.generated_at' .understand-anything/knowledge-graph.json)
+LAST_COMMIT=$(git log -1 --format=%ci)
+if [[ "$GRAPH_TIME" < "$LAST_COMMIT" ]]; then
+  echo "WARN: graph older than HEAD — consider re-running /understand"
+fi
+
+# 2. Find files relevant to the item-under-implementation
+#    (by matching the item's title / labels against file paths, symbol names, clusters)
+jq '[.files[] | select(.path | test("<regex-from-item>"; "i")) | .path]' \
+  .understand-anything/knowledge-graph.json
+
+# 3. Guided tour of the relevant module
+jq '[.symbols[] | select(.file | test("<module-regex>")) | {name, kind, signature, line}]' \
+  .understand-anything/knowledge-graph.json
+
+# 4. Check for existing implementations (avoid duplication)
+jq '[.symbols[] | select(.name | test("<feature-name>"; "i"))]' \
+  .understand-anything/knowledge-graph.json
+
+# 5. Test mapping — which tests exist for the impacted files?
+jq '.test_coverage["<impacted-file>"]' .understand-anything/knowledge-graph.json
+```
+
+### When to re-scan
+
+- **Always** at the start of a new simplicio-tasks run (Step 2).
+- **On structural changes** — when the diff adds new files, modules, or entry points (Step 6b
+  feedback loop).
+- **Before any architectural investigation** — the graph is your ground truth; don't guess
+  module boundaries.
+
+Re-scan command:
+```bash
+# Via the plugin
+/understand
+
+# Direct CLI (if available)
+npx @egonex-ai/understand-anything scan .
+# or
+pnpm dlx @egonex-ai/understand-anything scan .
+```
+
+---
+
+## Step 6b integration (Diff impact analysis)
+
+During **Step 6b** (feedback loop — CI failure, review comments, merge conflicts), analyze
+the diff against the knowledge graph to determine impact scope:
+
+### `/understand-diff` (if the plugin exposes it)
+
+```bash
+# Analyze the current diff against the graph
 /understand-diff
+# Output: list of impacted symbols, files, tests, and cross-module dependencies
 ```
 
-Or query the knowledge graph for affected nodes:
+### Manual diff analysis against the graph
 
 ```bash
-# Find nodes related to changed files
-git diff --name-only | xargs -I{} jq --arg f "{}" '[.nodes[] | select(.id | startswith($f)) | {id, summary, children}]' .understand-anything/knowledge-graph.json
+# 1. Get changed files
+CHANGED=$(git diff --name-only HEAD~1..HEAD)   # or against the base branch
+
+# 2. Map each changed file to impacted symbols
+for f in $CHANGED; do
+  jq "[.symbols[] | select(.file == \"$f\") | {name, kind, called_by}]" \
+    .understand-anything/knowledge-graph.json
+done
+
+# 3. Identify affected tests (test files that import changed modules)
+for f in $CHANGED; do
+  TEST=$(jq -r ".test_coverage[\"$f\"] // empty" .understand-anything/knowledge-graph.json)
+  if [ -n "$TEST" ]; then
+    echo "IMPACT: $f → test(s): $TEST"
+  fi
+done
+
+# 4. Flag callers (reverse dependencies) — code that may break due to signature changes
+jq "[.symbols[] | select(.calls | index(\"<changed-function>\")) | {name, file, line}]" \
+  .understand-anything/knowledge-graph.json
 ```
 
-### Step 1b — Extension point binding
+### Merge conflict impact
 
-When UA is detected, bind `orient` to the knowledge graph:
+When a branch is behind main, the graph tells you if the conflict zone has dependencies:
+```bash
+# Who calls the conflicted function?
+jq '[.symbols[] | select(.name == "<conflicted-symbol>") | .called_by]' \
+  .understand-anything/knowledge-graph.json
 
-```text
-orient → orient via .understand-anything/knowledge-graph.json (jq queries)
-recall → semantic search via jq queries on the graph (or /understand-chat if plugin active)
+# Which semantic clusters touch the conflicted file?
+jq '[.semantic_clusters[] | select(.files | index("<conflicted-file>")) | .label]' \
+  .understand-anything/knowledge-graph.json
 ```
 
-The simplicio-mapper remains the default `orient` binding; UA is a **richer alternative**
-when available. Prefer UA when present.
+---
 
 ## Prerequisites
 
-- **Understand Anything installed** in the target runtime (Claude Code / Cursor / Codex / etc.)
-  ```bash
-  # Via Claude Code plugin marketplace
-  /plugin marketplace add Egonex-AI/Understand-Anything
-  /plugin install understand-anything
-  ```
-- **At least one `/understand` run** completed in the project (generates the knowledge graph)
-  ```bash
-  /understand
-  ```
-- **Node.js 22+** and **pnpm** (for building the plugin, if not using marketplace)
-- Understand Anything also supports Hermes: install via `~/.hermes/skills/`
+| Requirement | Version / Detail | Verification |
+|---|---|---|
+| **Node.js** | ≥ 22 | `node --version` |
+| **Package manager** | `pnpm` (preferred) or `npm` | `pnpm --version` |
+| **Understand Anything plugin** | Installed in the runtime (Cline, Claude Code, etc.) | `plugin --list` (runtime specific) or check CLI: `npx @egonex-ai/understand-anything --help` |
+| **Initial scan** | At least 1 successful `/understand` run to generate the graph | `test -f .understand-anything/knowledge-graph.json` |
+| **`jq`** | ≥ 1.6 | `jq --version` |
+
+### Installation (one-time, project root)
+
+```bash
+# Install pnpm if not present
+corepack enable && corepack prepare pnpm@latest --activate
+
+# Install Understand Anything CLI globally or as a dev dependency
+pnpm add -D @egonex-ai/understand-anything
+# Or with npx (no install needed, but slower cold start):
+# npx @egonex-ai/understand-anything scan .
+
+# Run the initial scan
+pnpm understand-anything scan .
+# or just /understand in the runtime
+```
+
+### `.gitignore` recommendation
+
+```
+# Keep the graph in version control? Yes — it's deterministic, provides
+# offline context for agents, and avoids re-scan cost per session.
+# Exclude only the raw scan cache if any:
+.understand-anything/cache/
+```
+
+---
 
 ## Token economy
 
-- The knowledge graph is **pre-computed** — querying it with `jq` costs zero LLM tokens (L0)
-- Semantic search is a JSON query, not an LLM call
-- Guided tours are already in the graph as ordered node lists
-- No LLM fallback needed for structural questions about the codebase
-- The graph is **incremental** — subsequent `/understand` runs only re-analyze changed files
+| Operation | Layer | Token cost | Notes |
+|---|---|---|---|
+| Check graph exists | L0 (file test) | **0 tokens** | `test -f` — pure shell |
+| Read graph metadata | L0 | **0 tokens** | `jq '.project'` — pure shell |
+| Query symbols / deps / clusters | L0 | **0 tokens** | All `jq` queries — deterministic |
+| Guided tour (read + filter) | L0 | **0 tokens** | Pre-baked `jq` pipeline |
+| Semantic search via `jq` | L0 | **0 tokens** | Regex/string match over pre-computed clusters |
+| Re-scan (graph generation) | L1 (local CLI) | 0 LLM tokens, ~3–10s CPU | One-time cost; resource-bound |
+| `/understand-diff` (if bound) | L0/L1 | 0 LLM tokens | Deterministic diff analysis |
 
-## Test offline (no plugin needed)
+**Total: zero LLM tokens for any read operation.** The graph is the cheapest form of
+`orient`/`recall` available — cheaper than `simplicio-mapper` (which runs a local CLI that
+scans the tree) and vastly cheaper than LLM fallback (which reads files with AI).
+
+### Savings compared to fallbacks
+
+| Task | LLM fallback (tokens) | Understand Anything (tokens) | Savings |
+|---|---|---|---|
+| "Find all functions in src/auth.py" | ~800 (read + parse file) | **0** (jq) | 100% |
+| "What does handle_request depend on?" | ~1200 (read the file, trace imports) | **0** (jq) | 100% |
+| "Map the auth module architecture" | ~3000 (read 3–5 files, summarize) | **0** (guided tour query) | 100% |
+| "Which tests cover this change?" | ~1500 (search + read test files) | **0** (jq `.test_coverage`) | 100% |
+
+---
+
+## Test offline (no source project needed)
+
+### 1. Verify graph file exists and is valid JSON
 
 ```bash
-# Check if knowledge graph exists
-test -f .understand-anything/knowledge-graph.json && echo "UA available"
+# Existence
+test -f .understand-anything/knowledge-graph.json && echo "PASS: graph exists" || echo "FAIL: missing"
 
-# Query structure (counts only, zero tokens)
-jq '{nodes: (.nodes | length), edges: (.edges | length), layers: .metadata.layers}' .understand-anything/knowledge-graph.json
+# Valid JSON + schema
+jq '.' .understand-anything/knowledge-graph.json > /dev/null 2>&1 && \
+  echo "PASS: valid JSON" || echo "FAIL: invalid JSON"
 
-# Search for a module by name
-jq '[.nodes[] | select(.label | test("auth|login|session"; "i")) | {id, layer}]' .understand-anything/knowledge-graph.json
+# Version field
+jq -r '.version' .understand-anything/knowledge-graph.json || echo "FAIL: no version"
 ```
+
+### 2. Validate key schema invariants
+
+```bash
+# Files is a non-empty object
+jq -e '.files | length > 0' .understand-anything/knowledge-graph.json && \
+  echo "PASS: files present" || echo "FAIL: no files"
+
+# Symbols is an array
+jq -e '.symbols | type == "array"' .understand-anything/knowledge-graph.json && \
+  echo "PASS: symbols is array" || echo "FAIL: symbols not an array"
+
+# Each symbol has required fields
+jq -e '[.symbols[] | select(.name == null or .kind == null or .file == null)] | length == 0' \
+  .understand-anything/knowledge-graph.json && \
+  echo "PASS: all symbols have name, kind, file" || echo "FAIL: some symbols missing required fields"
+
+# Dependencies object exists
+jq -e '.dependencies | type == "object"' .understand-anything/knowledge-graph.json && \
+  echo "PASS: dependencies present" || echo "FAIL: dependencies missing"
+```
+
+### 3. Run example `jq` queries
+
+```bash
+# List all symbol kinds present
+jq '[.symbols[] | .kind] | unique' .understand-anything/knowledge-graph.json
+
+# Find orphan files (no incoming dependencies)
+jq '[.dependencies | to_entries[] | select(.value | length == 0) | .key]' \
+  .understand-anything/knowledge-graph.json
+
+# Top 5 most-depended-on files
+jq '[.dependencies | to_entries | map({file: .key, deps: (.value | length)}) | sort_by(-.deps) | .[0:5]]' \
+  .understand-anything/knowledge-graph.json
+
+# Count classes vs functions
+jq '[.symbols[] | .kind] | group_by(.) | map({kind: .[0], count: length})' \
+  .understand-anything/knowledge-graph.json
+```
+
+### 4. Test guided tour (if tours exist)
+
+```bash
+for tour in .understand-anything/tours/*.json; do
+  echo "=== Tour: $(basename $tour) ==="
+  jq -r '.steps[] | .label' "$tour"
+  # Run each step
+  jq -f "$tour" .understand-anything/knowledge-graph.json > /dev/null 2>&1 && \
+    echo "  PASS" || echo "  FAIL"
+done
+```
+
+### 5. Full health check script
+
+Save as `scripts/check-ua-adapter.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+GRAPH=".understand-anything/knowledge-graph.json"
+EXIT=0
+
+echo "=== Understand Anything adapter health check ==="
+
+# 1. Existence
+if [ ! -f "$GRAPH" ]; then
+  echo "FAIL: $GRAPH not found. Run /understand first."
+  exit 1
+fi
+echo "PASS: graph exists"
+
+# 2. Valid JSON
+jq '.' "$GRAPH" > /dev/null 2>&1 || { echo "FAIL: invalid JSON"; exit 1; }
+echo "PASS: valid JSON"
+
+# 3. Version
+VERSION=$(jq -r '.version // "unknown"' "$GRAPH")
+echo "INFO: schema version $VERSION"
+
+# 4. File count
+FILE_COUNT=$(jq '[.files[]] | length' "$GRAPH")
+SYM_COUNT=$(jq '[.symbols[]] | length' "$GRAPH")
+echo "INFO: $FILE_COUNT files, $SYM_COUNT symbols"
+
+# 5. Dependencies present
+DEP_FILES=$(jq '[.dependencies | keys[]] | length' "$GRAPH")
+echo "INFO: $DEP_FILES files have dependency entries"
+
+# 6. Freshness (vs git)
+GRAPH_TIME=$(jq -r '.generated_at // "1970-01-01"' "$GRAPH")
+LAST_COMMIT=$(git log -1 --format=%ci 2>/dev/null || echo "1970-01-01")
+if [[ "$GRAPH_TIME" < "$LAST_COMMIT" ]]; then
+  echo "WARN: graph ($GRAPH_TIME) older than HEAD ($LAST_COMMIT)"
+else
+  echo "PASS: graph is up to date"
+fi
+
+# 7. Query smoke tests
+echo "--- Smoke queries ---"
+jq -r '(.project.name // "unknown") + " — " + (.project.language // "unknown")' "$GRAPH" | \
+  xargs echo "Project:"
+jq '[.entry_points[] | .name]' "$GRAPH" | xargs echo "Entry points:"
+CLUSTERS=$(jq '[.semantic_clusters[] | .label]' "$GRAPH" 2>/dev/null || echo "[]")
+echo "Semantic clusters: $(echo "$CLUSTERS" | jq 'length')"
+
+echo "=== Health: $([ $EXIT -eq 0 ] && echo 'ALL PASS' || echo 'SOME FAIL') ==="
+exit $EXIT
+```
+
+Run with:
+```bash
+bash scripts/check-ua-adapter.sh
+```
+
+---
+
+## Known limitations
+
+| Limitation | Impact | Mitigation |
+|---|---|---|
+| Graph is a snapshot | Stale if code changes without re-scan | Check `generated_at` vs HEAD; re-scan on structural changes |
+| No real-time symbol resolution | Cannot answer "what depends on this symbol right now" mid-edit | Supplement with `rg` / `git grep` for the exact edit scope |
+| Semantic clusters are heuristic | May miss novel groupings | Use `jq` regex for finer control; create custom tours |
+| Requires Node.js 22+ and pnpm | Not usable in environments without the runtime | Fall back to `simplicio-mapper` or LLM `orient` |
+| Large graphs (>100MB) may slow `jq` | Query latency in seconds | Use `jq --stream` or filter `.symbols[]` upfront |
+
+---
+
+## Relationship to other adapters
+
+| Adapter | Extension point | Role | Conflict |
+|---|---|---|---|
+| `simplicio-mapper` (default) | `orient` / `recall` | Symbol-level survey per turn | **Alternatives** — pick one per run |
+| Understand Anything | `orient` / `recall` | Pre-computed knowledge graph | **Alternatives** — pick one per run |
+| LLM fallback | `orient` / `recall` | Ad-hoc `rg` + file reads | Used when neither adapter is available |
+
+The orchestrator detects which adapter is present at Step 1b and binds accordingly. Both
+adapters serve the same extension points with different trade-offs; neither is required.

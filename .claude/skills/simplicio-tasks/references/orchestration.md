@@ -125,7 +125,9 @@ wave's review. Speed comes from removing redundant work, not skipping gates.
 - **L2** Mid coding model: standard implementation + review.
 - **L3** Reasoning model: planning for LARGE/CRITICAL, architecture, ambiguity, adversarial verify
   of risky findings, security review. Sparse, high-value.
-- **L4** Paid remote (last resort): only after local cannot close the gap, with recorded escalation.
+|- **L4** Paid remote (last resort): only after local cannot close the gap, with recorded escalation.
+
+> **LMCache KV cache accelerator.** When running local models (L2-L3), `pip install lmcache` + `lmcache serve` cacheia KV caches entre turnos do loop — reduz TTFT em chamadas similares, menos GPU time por iteração. Especialmente relevante em loops longos (Step 3b poller) onde o mesmo prompt base é re-alimentado. Config via `LMCACHE_CONFIG` ou `~/.lmcache/config.yaml`.
 
 | Phase | Tier | | Phase | Tier |
 |---|---|---|---|---|
