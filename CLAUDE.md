@@ -30,7 +30,7 @@ pwsh scripts/install.ps1 claude
 Or as a marketplace plugin:
 
 ```
-/plugin marketplace add wesleysimplicio/simplicio-tasks
+/plugin marketplace add wesleysimplicio/simplicio-loop
 /plugin install simplicio-tasks@simplicio
 ```
 

@@ -12,7 +12,7 @@ bash scripts/install.sh claude --global   # all projects (~/.claude/skills)
 Or as a marketplace plugin:
 
 ```
-/plugin marketplace add wesleysimplicio/simplicio-tasks
+/plugin marketplace add wesleysimplicio/simplicio-loop
 /plugin install simplicio-tasks@simplicio
 ```
 

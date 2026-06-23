@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wesleysimplicio/simplicio-tasks/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-tasks?style=social" alt="Stars"></a>
+  <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
   <a href="#-6-навыков-супер-плагин"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
   <a href="#-11-сред-выполнения-один-протокол"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-43-точки-расширения"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
@@ -460,8 +460,8 @@ simplicio-tasks был создан **после глубокого изучен
 ## 🚀 Установка и использование
 
 ```bash
-git clone https://github.com/wesleysimplicio/simplicio-tasks
-cd simplicio-tasks
+git clone https://github.com/wesleysimplicio/simplicio-loop
+cd simplicio-loop
 
 # install for your runtime (omit <runtime> to auto-detect)
 bash scripts/install.sh <runtime> [--global]        # macOS / Linux
@@ -472,7 +472,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 Или, на Claude Code / Cursor, добавьте его как маркетплейс-плагин:
 
 ```
-/plugin marketplace add wesleysimplicio/simplicio-tasks
+/plugin marketplace add wesleysimplicio/simplicio-loop
 /plugin install simplicio-tasks@simplicio
 ```
 

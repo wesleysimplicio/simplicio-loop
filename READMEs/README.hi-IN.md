@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wesleysimplicio/simplicio-tasks/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-tasks?style=social" alt="Stars"></a>
+  <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
   <a href="#-6-स्किल्स-सुपर-प्लगइन"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
   <a href="#-11-रनटाइम-एक-प्रोटोकॉल"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-43-एक्सटेंशन-पॉइंट्स"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
@@ -454,8 +454,8 @@ simplicio-tasks को GitHub पर सर्वश्रेष्ठ लूप
 ## 🚀 इंस्टॉल करें और उपयोग करें
 
 ```bash
-git clone https://github.com/wesleysimplicio/simplicio-tasks
-cd simplicio-tasks
+git clone https://github.com/wesleysimplicio/simplicio-loop
+cd simplicio-loop
 
 # install for your runtime (omit <runtime> to auto-detect)
 bash scripts/install.sh <runtime> [--global]        # macOS / Linux
@@ -466,7 +466,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 या, Claude Code / Cursor पर, इसे एक मार्केटप्लेस प्लगइन के रूप में जोड़ें:
 
 ```
-/plugin marketplace add wesleysimplicio/simplicio-tasks
+/plugin marketplace add wesleysimplicio/simplicio-loop
 /plugin install simplicio-tasks@simplicio
 ```
 

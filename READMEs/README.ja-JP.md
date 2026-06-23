@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wesleysimplicio/simplicio-tasks/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-tasks?style=social" alt="Stars"></a>
+  <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
   <a href="#-6つのスキルスーパープラグイン"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
   <a href="#-11のランタイム1つのプロトコル"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-43個の拡張ポイント"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
@@ -451,8 +451,8 @@ LLMが標準ツールで**フォールバック**を実行します。スキル�
 ## 🚀 インストールと使い方
 
 ```bash
-git clone https://github.com/wesleysimplicio/simplicio-tasks
-cd simplicio-tasks
+git clone https://github.com/wesleysimplicio/simplicio-loop
+cd simplicio-loop
 
 # install for your runtime (omit <runtime> to auto-detect)
 bash scripts/install.sh <runtime> [--global]        # macOS / Linux
@@ -463,7 +463,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 または、Claude Code／Cursor では、マーケットプレイスプラグインとして追加できます：
 
 ```
-/plugin marketplace add wesleysimplicio/simplicio-tasks
+/plugin marketplace add wesleysimplicio/simplicio-loop
 /plugin install simplicio-tasks@simplicio
 ```
 

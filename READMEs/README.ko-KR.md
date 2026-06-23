@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wesleysimplicio/simplicio-tasks/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-tasks?style=social" alt="Stars"></a>
+  <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
   <a href="#-6개의-스킬슈퍼-플러그인"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
   <a href="#-11개의-런타임-하나의-프로토콜"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-43개의-확장-지점"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
@@ -450,8 +450,8 @@ simplicio-tasks는 GitHub에서 가장 뛰어난 루프 + 토큰 경제 작업�
 ## 🚀 설치 & 사용
 
 ```bash
-git clone https://github.com/wesleysimplicio/simplicio-tasks
-cd simplicio-tasks
+git clone https://github.com/wesleysimplicio/simplicio-loop
+cd simplicio-loop
 
 # install for your runtime (omit <runtime> to auto-detect)
 bash scripts/install.sh <runtime> [--global]        # macOS / Linux
@@ -462,7 +462,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 또는, Claude Code / Cursor에서는 마켓플레이스 플러그인으로 추가할 수 있습니다:
 
 ```
-/plugin marketplace add wesleysimplicio/simplicio-tasks
+/plugin marketplace add wesleysimplicio/simplicio-loop
 /plugin install simplicio-tasks@simplicio
 ```
 

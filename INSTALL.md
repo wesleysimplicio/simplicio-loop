@@ -7,8 +7,8 @@ loop where supported, and prints the optional native-bind line.
 ## 1. Get it
 
 ```bash
-git clone https://github.com/wesleysimplicio/simplicio-tasks
-cd simplicio-tasks
+git clone https://github.com/wesleysimplicio/simplicio-loop
+cd simplicio-loop
 ```
 
 ## 2. Install for your runtime
