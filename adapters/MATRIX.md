@@ -54,3 +54,18 @@ copy + a config edit — reversible, no build.
   conventions/instructions file. Larger context, identical behavior.
 
 The promise: **same protocol, same gates, same safety on all 11 — only the speed differs.**
+
+## Verifying an adapter
+
+The installer's contract (skills copied · entry file marked · hooks present/wired) is verified
+end-to-end per runtime by `scripts/verify_adapters.py`, which installs into a throwaway target and
+asserts each promise — no risk to your real config, runnable in CI:
+
+```bash
+python3 scripts/verify_adapters.py                 # all 11
+python3 scripts/verify_adapters.py antigravity kiro opencode aider   # a subset
+```
+
+That covers everything up to launching the runtime itself. The final manual smoke — open the
+runtime, run `/simplicio-tasks <small task>`, confirm the loop drives and the gates fire — is the
+one step a file-level harness can't do; do it once per runtime per the adapter's README.

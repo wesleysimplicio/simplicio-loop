@@ -8,7 +8,7 @@ and authed, then use it. Never claim a source works without a live connector.
 |---|---|
 | GitHub Issues/PRs | `gh` CLI (native) |
 | Jira / Asana / ClickUp / Linear / Monday / Notion | the host's connector for that source |
-| Trello / Azure DevOps | host connector, else `az boards`/REST adapter via API token |
+| Trello / Azure DevOps | host connector, else the `az boards` adapter (`scripts/az_boards_adapter.py`, see `azure-devops-adapter.md`) |
 | local files / CI queue | filesystem / CI API |
 
 If the target source has no reachable adapter, STOP and report it as a blocker (do not silently
