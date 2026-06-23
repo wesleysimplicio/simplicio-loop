@@ -40,8 +40,8 @@ recent commits touching them (`git log -- <files> -5`), function/type signatures
 TODO/FIXME, overlapping open PRs. An implementation that duplicates existing code or ignores an
 adjacent module is wrong even if it compiles. Use **signatures-only reads** (bodies elided) for
 API surface — a 600-line file → ~40 lines; full-body read only when editing the body.
-_Quando `.understand-anything/knowledge-graph.json` existir, usá-lo como orientação primária
-(guia tour, semantic search) em vez de signatures-only reads._
+
+> **Understand Anything (optional).** Quando `.understand-anything/knowledge-graph.json` existir, usar o knowledge graph como orientação primária — guided tours para arquitetura, semantic search para achar módulos específicos, em vez de signatures-only reads.
 
 **2b-3 Build the plan BEFORE coding:** files to change, files to read first, AC checklist, risks/
 unknowns, complexity (trivial|small|medium|large|critical). Coding starts only after the plan.
@@ -97,9 +97,9 @@ review/requested-changes, branches behind main) → reopen the feedback loop (St
 `dry=0` whenever the poll finds anything new.** The run FINISHES only when queue empty AND no
 worker busy AND `dry >= 2` consecutive empty polls (plus hard stops: time-box, budget, scope).
 
-_agentsview como fonte opcional — se configurado (`scripts/agentsview_adapter.py` authed), poll
+**agentsview (optional).** Se configurado (`scripts/agentsview_adapter.py` authed), poll
 agentsview por sessões paradas a cada ciclo e converter em work-items do tipo 'retomar sessão
-abandonada'._
+abandonada'.
 
 **Layer 2 — idle watcher** (nothing running): a recurring trigger re-invokes the skill; near-free
 when idle, launches a run when new work exists. See standing-loop-247.md.
