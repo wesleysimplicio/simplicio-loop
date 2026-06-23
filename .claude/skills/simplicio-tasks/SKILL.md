@@ -72,6 +72,7 @@ back to the LLM). No heavy preflight for a small job — the router decides dept
      "reset_at": "<next local midnight, UTC ISO-8601>", "state": "running" }
    ```
    `ceiling = 0` → session-only (watcher disabled, fail-safe). BLOCKING for 24/7 if unresolved.
+1b. **Agentsview cost check (optional).** If agentsview adapter is installed and `.orchestrator/loop-budget.json` has `"agentsview": {"cost_source": true}`, run `python3 scripts/agentsview_adapter.py cost_summary --days 1` to seed real spend into `spent_usd_today`.
 2. **Source auth.** `gh auth status` (or the source's metadata-only list call). On failure, fix or
    STOP — never proceed on broken auth. Verify scopes (`repo,read:org,workflow`); note expiry.
 3. **Watcher.** The session loop is already auto-armed (Step 0). If `ceiling > 0`, ALSO arm the
@@ -132,6 +133,8 @@ item, do the MANDATORY deep intake: read full body + ALL comments, extract accep
 (an obvious-but-missing AC is a BLOCKER — ask once), orient the existing code (signatures-only
 reads for API surface), then write a short plan with an AC checklist + complexity. Detail:
 `references/orchestration.md`.
+
+> **Understand Anything (optional).** Se `.understand-anything/knowledge-graph.json` existir, use Understand Anything como orientação primária — o grafo já contém a estrutura completa do código, relacionamentos e tours guiados. Consulte-o via semantic search em vez de signatures-only reads.
 
 ## Step 3 — Route (dual-path) + scale
 - **Fast-path** (small queue AND every item ≤ complexity 3): inline, solo, one targeted test → Step 6.

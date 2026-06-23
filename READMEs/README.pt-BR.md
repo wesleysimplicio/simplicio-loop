@@ -136,7 +136,7 @@ flowchart TD
   subgraph SRC["1 · Demand sources (any adapter)"]
     direction LR
     S1["GitHub Issues / PRs / CI"]
-    S2["Jira · Azure DevOps · Linear · ClickUp · Notion · agentsview"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion · agentsview · Understand Anything"]
     S3["Assigns · TODO/FIXME · CVE · local files"]
   end
   SRC --> PF

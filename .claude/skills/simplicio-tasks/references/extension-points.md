@@ -6,7 +6,7 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 
 | Extension point | What it does | LLM fallback (always available) |
 |---|---|---|
-| `orient` | Compressed repo/work map | `rg` / `git grep` / `git log --oneline -10`, read few files |
+| `orient` | Compressed repo/work map | `rg` / `git grep` / `git log --oneline -10`, read few files. Also: `.understand-anything/knowledge-graph.json` (Understand Anything) for rich structural graph + semantic search + guided tours |
 | `recall` | Prior decisions / precedents | read ADRs / git history / past PRs |
 | `normalize` | Work-item → canonical schema | LLM maps fields by hand |
 | `deterministic_edit` | Mechanical file writer (zero-token apply of a decided change) | LLM applies edit with file tool |
