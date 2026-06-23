@@ -5,4 +5,4 @@ queue of work end-to-end on any LLM/runtime. This package ships the skills and
 hooks and installs them into a runtime's skills location.
 """
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"

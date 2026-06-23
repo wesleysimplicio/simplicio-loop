@@ -1,7 +1,7 @@
 {
   "name": "simplicio-loop",
   "displayName": "simplicio-loop — Universal Looping AI Orchestrator",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Super-plugin: an autonomous looping orchestrator (6 skills) that drains any queue of work end-to-end on ANY runtime — discover→implement→verify→merge→close→watch 24/7 — with a hardened Ralph loop, rtk/caveman token economy, thermos adversarial review, and a hard cost kill-switch.",
   "author": {
     "name": "Wesley Simplicio",
