@@ -10,7 +10,6 @@ and authed, then use it. Never claim a source works without a live connector.
 | Jira / Asana / ClickUp / Linear / Monday / Notion | the host's connector for that source |
 | Trello / Azure DevOps | host connector, else the `az boards` adapter (`scripts/az_boards_adapter.py`, see `azure-devops-adapter.md`) |
 | agentsview sessões | `scripts/agentsview_adapter.py` (see `agentsview-adapter.md`) | observabilidade de sessões, recovery de sessões paradas |
-| Understand Anything | `.understand-anything/knowledge-graph.json` (see `understand-anything-adapter.md`) | orient de codebase via grafo de conhecimento (alternativa ao simplicio-mapper) |
 | local files / CI queue | filesystem / CI API |
 
 If the target source has no reachable adapter, STOP and report it as a blocker (do not silently
