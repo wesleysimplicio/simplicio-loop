@@ -3,6 +3,24 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [1.3.0] — 2026-06-23
+
+### Changed
+- **Token Monitor is now data-forward.** Replaced the large logo hero with a compact top bar
+  (small badge + green/yellow wordmark + live status chips) and gave the screen to the data:
+  a **real-time token chart** (before / after / saved area) driven by the engine's request
+  history, plus the savings gauge and a tighter KPI strip.
+- **Primary data source is now `proxy_savings.json`** (lifetime + per-request history), with the
+  raw proxy log kept as fallback — more robust and exact than log scraping, and it exposes the
+  real provider/model of each intercepted request.
+
+### Added
+- **"LLMs / runtimes we intercept" panel with per-runtime logos** and an honest interceptability
+  tier: `native` (engine durable integration: Claude, Codex, VS Code/Copilot, OpenClaw),
+  `base-url` (OpenAI/Anthropic-compatible: Hermes, Cursor, OpenCode), `not interceptable`
+  (proprietary APIs: Gemini, Kiro, Antigravity). Shows 7/10 interceptable, dimming the rest.
+- **$ saved** KPI and a models-intercepted readout sourced from real request history.
+
 ## [1.2.0] — 2026-06-23
 
 ### Changed
