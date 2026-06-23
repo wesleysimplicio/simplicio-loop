@@ -88,6 +88,12 @@ ABSTRACTION, never a runtime — the INVERTED DEPENDENCY (the skill names no run
 detects the skill). Full table + fallbacks: `references/extension-points.md`. Core rule: any
 DECIDED change goes through `deterministic_edit` — never hand-write or regenerate it with a model.
 
+When the run is driven by `simplicio-loop` (Step 0 auto-arm), two points are bound to REQUIRED
+operators instead of LLM fallbacks: `simplicio-mapper` surveys the repo (`orient`) and
+`simplicio task` applies+verifies each decided change (`execute`/`deterministic_edit`) — the AI
+decides, the operators act. Both ship with `pip install simplicio-loop`; the loop BLOCKS if either
+is absent (see `references/extension-points.md` § bound operators).
+
 ## Step 1b' — Companion skills (the super-plugin satellites)
 simplicio-tasks ships as a super-plugin: this orchestrator + five satellites. Each is the deep,
 standalone form of a discipline; when loaded, DELEGATE to it (richer + cheaper); when absent, the

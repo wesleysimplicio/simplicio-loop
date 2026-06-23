@@ -21,6 +21,13 @@ classifiers = [
   "Topic :: Utilities",
   "Operating System :: OS Independent",
 ]
+# The simplicio-loop drive REQUIRES two operators (see .claude/skills/simplicio-loop/SKILL.md):
+#   simplicio-mapper -> the repo-survey step (binds `orient`)
+#   simplicio-cli    -> the operator that applies+verifies changes (binds `execute`/`deterministic_edit`)
+dependencies = [
+  "simplicio-mapper",
+  "simplicio-cli",
+]
 
 [project.urls]
 Homepage = "https://github.com/wesleysimplicio/simplicio-loop"

@@ -54,6 +54,20 @@ Rule: any change already DECIDED goes through `deterministic_edit` — never han
 or regenerate it with a model when a mechanical apply exists. Reach for a paid model only for
 genuine reasoning the deterministic layer cannot do (model routing in orchestration.md).
 
+## simplicio-loop's bound operators (REQUIRED for the loop drive)
+
+The `simplicio-loop` companion skill is NOT runtime-optional about two of these points — it binds
+them to two installed CLIs (hard deps of `pip install simplicio-loop`) and BLOCKS if absent:
+
+| Point(s) | Bound CLI | What replaces the LLM fallback |
+|---|---|---|
+| `orient` / `recall` | `simplicio-mapper` (`simplicio-mapper index . --json`) | the repo SURVEY — `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph) instead of ad-hoc LLM reads |
+| `execute` / `deterministic_edit` / `validate` / `diagnostics` | `simplicio task` (simplicio-dev-cli, pkg `simplicio-cli`) | the OPERATOR — applies a decided change via its 6-layer contract (mapper→precedent→prompt→diff→test→verify, ≤3 retries); the AI never hand-writes the diff inside the loop |
+
+This is the one place the abstraction is realized by a REQUIRED binding rather than an optional
+one. Everywhere else the inverted-dependency rule below still holds. See
+`.claude/skills/simplicio-loop/SKILL.md` (§ Bound operators).
+
 A host runtime MAY detect that this skill is running (by name) and auto-bind its native commands
 to these points — transparently, at near-zero token cost — without the skill ever naming that
 runtime. The binding lives in the host runtime, not here. This is the INVERTED DEPENDENCY: the

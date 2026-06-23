@@ -12,9 +12,10 @@ if (-not $py) {
 $pyArgs = @("$dir/install_lib.py")
 foreach ($a in $args) {
   switch ($a) {
-    "-Global" { $pyArgs += "--global" }
-    "-Target" { $pyArgs += "--target" }
-    default   { $pyArgs += $a }
+    "-Global"         { $pyArgs += "--global" }
+    "-Target"         { $pyArgs += "--target" }
+    "-SkipOperators"  { $pyArgs += "--skip-operators" }
+    default           { $pyArgs += $a }
   }
 }
 & $py @pyArgs
