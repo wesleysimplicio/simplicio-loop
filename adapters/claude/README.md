@@ -13,7 +13,7 @@ Or as a marketplace plugin:
 
 ```
 /plugin marketplace add wesleysimplicio/simplicio-loop
-/plugin install simplicio-tasks@simplicio
+/plugin install simplicio-loop@simplicio
 ```
 
 Or by hand: copy `.claude/skills/simplicio-*` into your repo's `.claude/skills/` (this repo
