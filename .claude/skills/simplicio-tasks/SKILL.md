@@ -1,6 +1,6 @@
 ---
 name: simplicio-tasks
-description: Autonomously complete a body of work (tasks, issues, cards, CI failures) on ANY LLM/runtime. Use when the user types /simplicio-tasks or asks to clear/finish/close/implement a queue of work — e.g. "termine as issues abertas", "feche os bugs do milestone X", "implemente o épico #235", "resolva a fila do CI", "limpe o board do Jira". Runtime-agnostic: discovers work-items from any source, dedups, auto-scales to machine capacity, fast-path for trivial items / heavy-path continuous waves for large queues, then merges and closes with evidence. If a host runtime is present it binds native capabilities to this skill's extension points; otherwise the LLM performs every step directly.
+description: Autonomously complete a body of work (tasks, issues, cards, CI failures) on ANY LLM/runtime. Use when the user types /simplicio-tasks or asks to clear/finish/close/implement a queue of work — e.g. "termine as issues abertas", "feche os bugs do milestone X", "implemente o épico #235", "resolva a fila do CI", "limpe o board do Jira". Runtime-agnostic: discovers work-items from any source, dedups, auto-scales to machine capacity, fast-path for trivial items / heavy-path continuous waves for large queues, then merges and closes with evidence. If a host runtime is present it binds native capabilities to this skill's extension points; otherwise the LLM performs every step directly. Invoking it ALWAYS runs as a loop — it auto-arms on start (no separate /loop or /simplicio-loop command) and keeps re-feeding the goal until the queue is drained and verified, or a cap/budget/STOP fires.
 ---
 
 # /simplicio-tasks — Universal Looping Orchestrator
@@ -29,6 +29,34 @@ disclosure keeps this file small while contemplating everything.
 | 24/7 standing loop · arming the watcher | `references/standing-loop-247.md` |
 | front-end proof via Playwright | `references/web-evidence.md` |
 
+## Step 0 — Auto-arm the loop (FIRST action, EVERY invocation)
+simplicio-tasks **IS a loop by default** — invoking it needs NO separate `/loop` or
+`/simplicio-loop` command. Before anything else, ARM the loop by writing
+`.orchestrator/loop/scratchpad.md` with your file tool:
+```markdown
+---
+iteration: 1
+max_iterations: <backstop: 3× item-count, min 10; or 0 only when a $ budget ceiling is set>
+completion_promise: "SIMPLICIO_DONE"
+evidence_required: true
+---
+<the goal, verbatim>
+```
+Then proceed (Step 1…). At each turn's end the **stop-hook** (`hooks/loop_stop.py`) — or the
+self-paced fallback when the host has no hooks — RE-FEEDS the goal, so the agent sees its own prior
+work and continues **automatically**.
+
+**Dual exit — the loop ends ONLY when:**
+- **success:** the queue is drained AND verified — emit `<promise>SIMPLICIO_DONE</promise>` in the
+  SAME turn as the evidence (PR links / green gates / closed-item re-query). Evidence-gated: a
+  promise with no in-turn evidence is ignored and the loop continues — NEVER a false "done"; OR
+- **safety:** `max_iterations` hit, the `$` budget kill-switch halted, or `.orchestrator/STOP` exists.
+
+Notes: stop-hooks load at SESSION START, so the auto-loop engages in sessions started after the
+skill is installed — if it ran once and stopped, open a fresh session (or rely on the self-paced
+fallback). A scoped run (pinned list) still auto-loops but converges and stops when that exact set
+is done — no re-discovery beyond scope. Delegates to `simplicio-loop` when loaded.
+
 ## Step 1 — Identity + environment (cheap)
 Emit one identity line: `I am {runtime}-{role}-{short-id}-{date}. Coordination: {backend}. Mode:
 {selected}.` Detect only what you need: git default branch, source auth, build/test runner, CPU/
@@ -46,8 +74,9 @@ back to the LLM). No heavy preflight for a small job — the router decides dept
    `ceiling = 0` → session-only (watcher disabled, fail-safe). BLOCKING for 24/7 if unresolved.
 2. **Source auth.** `gh auth status` (or the source's metadata-only list call). On failure, fix or
    STOP — never proceed on broken auth. Verify scopes (`repo,read:org,workflow`); note expiry.
-3. **Arm the watcher** only if `ceiling > 0` (see `references/standing-loop-247.md`); skip if
-   already armed or session-only.
+3. **Watcher.** The session loop is already auto-armed (Step 0). If `ceiling > 0`, ALSO arm the
+   durable 24/7 watcher (survives reboot — `references/standing-loop-247.md`); if `ceiling = 0`, the
+   loop still runs this session, just no cross-reboot watcher. Skip if already armed.
 
 Emit: `Pre-flight: kill-switch ✓ ($<c>/day) · auth ✓ (expires <date>) · watcher ✓ (<mech>)` —
 or `Pre-flight: BLOCKED — <reason>` and stop.

@@ -328,9 +328,11 @@ signal). It never exits on a self-reported "done" — and never runs forever. Th
 
 ## 🔁 The loop
 
-The drive underneath the orchestrator is a **hardened Ralph loop** (`simplicio-loop`):
+**Invoking `/simplicio-tasks` IS the loop** — it auto-arms on start (no separate `/loop` or
+`/simplicio-loop` command) and keeps going until the queue is drained and verified, or a
+cap/budget/STOP fires. The drive underneath is a **hardened Ralph loop** (`simplicio-loop`):
 
-1. The goal is written to a single, human-readable state file
+1. On invocation the goal is auto-written to a single, human-readable state file
    (`.orchestrator/loop/scratchpad.md`) — trivially inspectable, editable, cancellable.
 2. After each turn a **stop-hook** re-feeds the same goal, so the agent sees its own prior edits
    (via git + the working tree) and converges. Token cost per cycle stays flat — no context
