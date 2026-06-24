@@ -3,6 +3,19 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [1.8.0] — 2026-06-23
+
+### Added
+- **Cross-platform (macOS · Linux · Windows).** `scripts/install_services.py` registers the three
+  always-on services on whichever OS you run it — launchd (macOS), systemd `--user` (Linux),
+  Startup-folder launchers (Windows) — plus cross-platform `wire`/`unwire`/`status`. The tray
+  (`app/simplicio_tray.py`) now auto-selects **rumps** on macOS (native menu-bar number) and
+  **pystray** on Windows/Linux, with a headless print fallback.
+- **Provider interceptability catalog (`app/providers.json`)** derived from the Hermes/OpenCode
+  provider lists: **141 of 144 providers (98%) are interceptable** (139 OpenAI-compatible + 2
+  Anthropic; only 3 Google-native are not). The dashboard surfaces the live `141/144` count next
+  to the runtime panel — interception is really about providers, and we cover essentially all of them.
+
 ## [1.7.0] — 2026-06-23
 
 ### Added

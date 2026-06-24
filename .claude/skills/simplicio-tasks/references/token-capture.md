@@ -13,6 +13,31 @@ that flows through it is logged with `tok_before` / `tok_after` / `tok_saved` an
 So "make capture work for runtime X" always means one of: route X's API base URL through the proxy,
 or install the engine's durable integration for X. Some runtimes can do neither.
 
+## Providers we intercept (the real breadth)
+
+Interception is really about **providers**, not apps. From the Hermes/OpenCode provider lists
+(`app/providers.json`, derived from `~/.hermes/models_dev_cache.json` + the active providers),
+**141 of 144 providers (98%)** are interceptable — every OpenAI-compatible endpoint (139) plus
+Anthropic (2). Only 3 are Google-native (`google`, `vertex`, `gemini`) and need their own shim.
+So routing a client through the capture proxy intercepts essentially **any** provider it talks to
+(deepseek, openai, openrouter, xai, groq, mistral, fireworks, cerebras, …). The dashboard shows the
+live `141/144` count.
+
+## Cross-platform (macOS · Linux · Windows)
+
+The stack runs on all three:
+
+| Piece | macOS | Linux | Windows |
+|---|---|---|---|
+| services (proxy/monitor/tray) | launchd (`setup_simplicio.sh`) | systemd `--user` | Startup-folder launchers |
+| tray/widget | rumps (menu-bar text) | pystray | pystray |
+| always-capture wire | `~/.zshrc` / `~/.bashrc` | shell profile | `setx OPENAI_BASE_URL` |
+
+One cross-platform entrypoint: `python3 scripts/install_services.py {install|uninstall|status|wire|unwire}`
+detects the OS and does the right thing (resolves the engine binary, registers the three services,
+routes `OPENAI_BASE_URL`). The tray (`app/simplicio_tray.py`) auto-selects rumps on macOS and pystray
+elsewhere, with a headless print fallback.
+
 ## Interceptability matrix (honest)
 
 | Tier | Runtimes | How capture is wired | Notes |

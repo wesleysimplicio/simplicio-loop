@@ -422,7 +422,9 @@ async function refresh(){
     ].join('');
 
     document.getElementById('runtimeGrid').innerHTML=(d.runtimes||[]).map(runtimeCard).join('');
-    document.getElementById('interceptMeta').textContent=`${d.intercept_ready} interceptable · ${d.intercept_none} not yet`;
+    const provPct=d.provider_total?Math.round(d.provider_interceptable/d.provider_total*100):0;
+    const provMeta=d.provider_total?` · ${d.provider_interceptable}/${d.provider_total} providers (${provPct}%)`:'';
+    document.getElementById('interceptMeta').textContent=`${d.intercept_ready}/${(d.runtimes||[]).length} runtimes${provMeta}`;
     document.getElementById('logSource').textContent=d.log_source||'no log yet';
     document.getElementById('footMeta').textContent=`${fmt(d.requests)} requests · ${(d.models_seen||[]).slice(0,3).map(m=>m.provider+'/'+m.model).join(' · ')||'no models yet'}`;
 
@@ -478,6 +480,18 @@ _FAVICON = "data:image/svg+xml;base64," + _b64.b64encode(BADGE_SVG.encode()).dec
 BODY = BODY.replace("__BADGE__", BADGE_SVG)
 _SLOTS = {"__FAVICON__": _FAVICON, "__STYLE__": STYLE, "__BODY__": BODY, "__SCRIPT__": SCRIPT}
 HTML = _re.sub(r"__(?:FAVICON|STYLE|BODY|SCRIPT)__", lambda m: _SLOTS[m.group(0)], HTML)
+
+
+def _read_providers():
+    """Provider interceptability catalog (derived from Hermes/OpenCode provider lists)."""
+    p = REPO_ROOT / "app" / "providers.json"
+    if p.exists():
+        try:
+            d = json.loads(p.read_text(errors="replace"))
+            return int(d.get("total", 0)), int(d.get("interceptable", 0))
+        except (ValueError, OSError):
+            pass
+    return 0, 0
 
 
 def _read_savings_json():
@@ -571,8 +585,11 @@ def get_status():
             ready += 1
         runtimes.append({**r, "live": live})
     none_count = len(RUNTIMES) - ready
+    prov_total, prov_intercept = _read_providers()
 
     return {
+        "provider_total": prov_total,
+        "provider_interceptable": prov_intercept,
         "proxy_running": proxy_running,
         "port": port,
         "uptime": uptime,

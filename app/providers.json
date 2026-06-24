@@ -1,0 +1,874 @@
+{
+  "generated_from": [
+    "hermes:models_dev_cache",
+    "hermes:provider_models_cache"
+  ],
+  "total": 144,
+  "interceptable": 141,
+  "providers": [
+    {
+      "name": "302ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "abacus",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "abliteration-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "aihubmix",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "alibaba",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "alibaba-cn",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "alibaba-coding-plan",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "alibaba-coding-plan-cn",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "alibaba-token-plan",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "alibaba-token-plan-cn",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "amazon-bedrock",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "ambient",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "anthropic",
+      "tier": "anthropic",
+      "interceptable": true,
+      "active": true
+    },
+    {
+      "name": "anyapi",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "atomic-chat",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "auriko",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "azure",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "azure-cognitive-services",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "bailing",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "baseten",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "berget",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "cerebras",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "chutes",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "clarifai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "claudinio",
+      "tier": "anthropic",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "cloudferro-sherlock",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "cloudflare-ai-gateway",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "cloudflare-workers-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "cohere",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "cortecs",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "crof",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "databricks",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "deepinfra",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "deepseek",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": true
+    },
+    {
+      "name": "digitalocean",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "dinference",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "drun",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "evroc",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "fastrouter",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "fireworks-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "freemodel",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "friendli",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "frogbot",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "github-copilot",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "github-models",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "gitlab",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "gmicloud",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "google",
+      "tier": "gemini-native",
+      "interceptable": false,
+      "active": false
+    },
+    {
+      "name": "google-vertex",
+      "tier": "gemini-native",
+      "interceptable": false,
+      "active": false
+    },
+    {
+      "name": "google-vertex-anthropic",
+      "tier": "gemini-native",
+      "interceptable": false,
+      "active": false
+    },
+    {
+      "name": "groq",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "helicone",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "hpc-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "huggingface",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "iflowcn",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "inception",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "inceptron",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "inference",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "io-net",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "jiekou",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "kilo",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "kimi-for-coding",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "kuae-cloud-coding-plan",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "lilac",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "llama",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "llmgateway",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "llmtr",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "lmstudio",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "lucidquery",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "meganova",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "merge-gateway",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "minimax",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "minimax-cn",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "minimax-cn-coding-plan",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "minimax-coding-plan",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "mistral",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "mixlayer",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "moark",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "modelscope",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "moonshotai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "moonshotai-cn",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "morph",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "nano-gpt",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "nearai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "nebius",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "neon",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "neuralwatt",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "nova",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "novita-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "nvidia",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "ollama-cloud",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "openai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": true
+    },
+    {
+      "name": "opencode",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "opencode-go",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": true
+    },
+    {
+      "name": "openrouter",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": true
+    },
+    {
+      "name": "orcarouter",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "ovhcloud",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "perplexity",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "perplexity-agent",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "poe",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "poolside",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "privatemode-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "qihang-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "qiniu-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "regolo-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "requesty",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "routing-run",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "sap-ai-core",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "sarvam",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "scaleway",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "siliconflow",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "siliconflow-cn",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "snowflake-cortex",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "stackit",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "stepfun",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "stepfun-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "submodel",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "synthetic",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "tencent-coding-plan",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "tencent-tokenhub",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "the-grid-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "togetherai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "umans-ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "umans-ai-coding-plan",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "upstage",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "v0",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "venice",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "vercel",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "vivgrid",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "vultr",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "wafer.ai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "wandb",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "xai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "xiaomi",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "xiaomi-token-plan-ams",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "xiaomi-token-plan-cn",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "xiaomi-token-plan-sgp",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "xpersona",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "zai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "zai-coding-plan",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "zeldoc",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "zenmux",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "zhipuai",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    },
+    {
+      "name": "zhipuai-coding-plan",
+      "tier": "openai-compat",
+      "interceptable": true,
+      "active": false
+    }
+  ]
+}
