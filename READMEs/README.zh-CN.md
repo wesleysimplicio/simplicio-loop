@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks —— 通用循环式 AI 编排器
+# 🔁 simplicio-tasks — The Universal Looping AI Orchestrator
 
 <p align="center">
   <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -6,23 +6,23 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-the-10-skills--accelerators"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
-  <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
-  <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-the-43-extension-points"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
-  <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
+  <a href="#-11-个-skill-与加速器"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
+  <a href="#-来源适配器"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
+  <a href="#-11-个运行时一套协议"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
+  <a href="#-11-个运行时一套协议"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
+  <a href="#-token-经济"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">摘要</a> ·
-  <a href="#-the-10-skills--accelerators">10 个 Skill</a> ·
-  <a href="#-source-adapters">来源适配器</a> ·
-  <a href="#-11-runtimes-one-protocol">11 个运行时</a> ·
-  <a href="#-the-loop">循环</a> ·
-  <a href="#-token-economy">Token 经济</a> ·
-  <a href="#-token-economy">捕获引擎</a> ·
-  <a href="#-install--use">安装</a>
+  <a href="#-11-个-skill-与加速器">11 个 Skill</a> ·
+  <a href="#-来源适配器">来源适配器</a> ·
+  <a href="#-11-个运行时一套协议">11 个运行时</a> ·
+  <a href="#-循环">循环</a> ·
+  <a href="#-token-经济">Token 经济</a> ·
+  <a href="#-token-经济">捕获引擎</a> ·
+  <a href="#-安装与使用">安装</a>
 </p>
 
 <p align="center">
@@ -76,15 +76,40 @@
 
 ---
 
-## 🧠 10 个 skill 与加速器
+## 📘 官方能力清单（v3.4.0）
 
-编排器核心 + 五个卫星 + 四个加速器。每个卫星都是**可选的** —— 加载后，编排器会委派给它
+`simplicio-tasks` 所交付内容的完整、官方名册 —— 下面的每一项能力都是**真实、可运行、
+经过测试的**（`python3 scripts/check.py`：claims-audit 4/4 + 24 项测试）。每一项都链接到它的
+深入小节与它的 worker。
+
+| 能力 | 它做什么 | 证明 / worker | 详情 |
+|---|---|---|---|
+| 🎬 **视频证据**（`video_evidence`） | 用 [hyperframes](https://github.com/heygen-com/hyperframes) 渲染某个屏幕/功能的**确定性 MP4** 演示 —— 满足 `/simplicio-tasks faça um vídeo demonstrativo da tela X`，并兼作 CI 可复现的证明，表明某个 UI 改动确实可用 | `scripts/video_evidence.py` · 缺少 Node 22+/FFmpeg 时 BLOCKED（绝不假装通过） | [§ 视频证据](#-视频证据--通过-hyperframes-生成演示视频) |
+| 🧠 **尝试记忆 + 停滞检测器** | 一份耐久的运行日志（`.orchestrator/loop/journal.jsonl`）+ 一个停滞检测器，让循环**改变策略而非来回振荡**；增量分诊（`since`）每轮只读取增量部分 | `scripts/loop_journal.py` · `selftest` 9/9 | [§ 防振荡](#-尝试记忆--停滞检测器防振荡) |
+| 🔒 **失败即关闭的安全门**（`action_gate`） | 一个 `PreToolUse`/git-pre-push 钩子，**以机械方式阻断** force-push、历史重写、批量删除、破坏性 DDL、基础设施拆除以及携带密钥的提交/推送 —— 把第 5 步从散文变成可执行 | `hooks/action_gate.py` · `selftest` 15/15 | [§ 安全](#-安全不可妥协) |
+| 🔬 **本地验证** | 一套测试套件（worker selftest + 一个证明经证据门控退出的**循环驱动器 e2e**）+ 一份 **claims-audit**（被引用的脚本存在 · 计数一致 · `_bundle ≡ source`）—— 全部本地、**无需付费 CI** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ 测试与本地检查](#-测试与本地检查无需付费-ci) |
+| ✅ **诚实的节省** | 节省那一行现在是**经证据门控的，而非强制的** —— 只有在拿到一份实测凭据（clamp/signatures/cache/`deterministic_edit`/ledger）时才会显示数字；绝不编造 | token 经济契约 | [§ Token 经济](#-token-经济) |
+| 💳 **开放核心计费** | 在循环已经产生的计量之上，做一个确定性、保护隐私的 计量→发票（急停开关 + `savings_ledger`）—— 三档（席位/运行/计量） | `scripts/billing_aggregator.py` · `selftest` 11/11 | [PRICING.md](../PRICING.md) |
+
+两种循环**模式**让终止变得明确：**converge**（单个硬任务 —— 在经证据门控的 `<promise>`
+或一次停滞升级时结束）vs **drain**（一个队列 —— 当来源重新查询连续 K 轮保持为空时结束）。
+两者仍然遵守通用退出条件（promise+证据、`max_iterations`、预算、STOP）。
+
+> 这条工作线上的循环评分：**7.5**（设计强，但未经证明）→ **9**（尝试记忆 + 防振荡）→
+> **9.5**（可复现的本地证明）→ **~10**（强制安全 + 完整的循环语义）。验证基础设施现在
+> 会随着项目成长而捕获其自身的回归。
+
+---
+
+## 🧠 11 个 skill 与加速器
+
+编排器核心 + 五个卫星 + 五个加速器/集成。每个卫星都是**可选的** —— 加载后，编排器会委派给它
 （更丰富、更便宜）；缺席时，内联协议覆盖 100% 的工作。加速器是**自动探测**的 ——
 存在即使用，缺席则回退到 LLM 兜底。
 
 | # | 能力 | 吸收自 | 它做什么 | Token 影响 |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-tasks** | — | 编排器循环：43 个扩展点、双路径路由器、自审收敛 | 核心 |
+| 1 | 🔁 **simplicio-tasks** | — | 编排器循环：44 个扩展点、双路径路由器、自审收敛 | 核心 |
 | 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | 强化版 Ralph 循环：经证据门控的 `<promise>` 退出、max_iterations 上限 | 循环驱动 |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | 终端优先执行、输出缩减目录、tee-cache、仅签名读取 | L0 确定性 |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | 按不同评分标准并行对抗式评审 → 去重裁决 | 质量门控 |
@@ -94,9 +119,12 @@
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | 会话分析、成本追踪、停滞会话发现 | **L1** 仅 SQL |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | 循环各轮之间的 KV 缓存 —— 本地模型 TTFT 降低 40-70% | GPU 时间 ↓ |
 | 10 | 🗜️ **Simplicio 捕获引擎** | `engine/simplicio_engine.py`（原生，仅依赖标准库；savings-schema 与开源 [headroom](https://github.com/headroomlabs-ai/headroom) 项目兼容） | 透明捕获代理：转发到真实供应商，度量 + 确定性压缩，写入 `proxy_savings.json` | **确定性** |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | 渲染某个屏幕/功能的**确定性 MP4** 演示视频 —— 满足 `/simplicio-tasks faça um vídeo demonstrativo da tela X`，并兼作 CI 可复现的证明，表明某个 UI 改动确实可用 | 证据生产者 |
 
 每个 skill 都位于 [`.claude/skills/`](../.claude/skills) 下；每个加速器在
-`.claude/skills/simplicio-tasks/references/` 下都有一份参考文档。
+`.claude/skills/simplicio-tasks/references/` 下都有一份参考文档（视频生产者：
+[`video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md)，worker
+[`scripts/video_evidence.py`](../scripts/video_evidence.py)）。
 
 ---
 
@@ -115,7 +143,7 @@
 
 参见每个适配器在 `.claude/skills/simplicio-tasks/references/` 下的参考文档。
 
-|---
+---
 
 ## 🌐 11 个运行时，一套协议
 
@@ -192,7 +220,7 @@ flowchart TD
   subgraph QG["7 · Quality gates"]
     direction LR
     Q1["AC gate = real DoD"]
-    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q2["WORKS not just compiles · web_verify (Playwright) · video_evidence (hyperframes MP4)"]
     Q3["adversarial review · thermos rubrics"]
   end
   QG --> SG
@@ -216,7 +244,7 @@ flowchart TD
     F2["review comments -> adjust"]
     F3["branch behind main -> additive rebase"]
   end
-  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  FB -->|"merged and closed"| DONE(["done + evidence + measured savings (only if a receipt exists)"])
   WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
@@ -238,6 +266,67 @@ flowchart TD
 
 在各轮之间，LMCache（可用时）会缓存 KV 状态，于是重新投喂的 prefill 成本接近于零。
 
+### 🧠 尝试记忆 + 停滞检测器（防振荡）
+
+一个什么都记不住的重新投喂循环会振荡 —— 试 X、失败、再试 X —— 直到把上限烧光。
+simplicio-loop 维护一份**耐久的运行日志**（`.orchestrator/loop/journal.jsonl`，仅追加：
+`iteration · action · hypothesis · gate · error-fingerprint`）和一个**停滞检测器**
+（[`scripts/loop_journal.py`](../scripts/loop_journal.py)，确定性 + 无需模型）：
+
+- **错误指纹** —— 失败门控的输出被归约为一个稳定哈希，其中行号、路径、hex/uuid、时间戳和
+  耗时都被归一化掉，于是即使附带文本有别，*同一个* bug 也能跨轮被识别出来。
+- **停滞 = 连续 K 次相同指纹的失败**（默认 K=3）。变化的指纹意味着循环在前进
+  （PROGRESS）；同一个出现 K 次则意味着它在空转（STALLED）。
+- 一旦 STALLED，循环**不会**重新投喂同一目标 —— 它会点名应避开的**死胡同动作**，然后
+  **切换策略**或带着指纹**升级到人工门控**。
+- `loop_journal.py resume` 在每一轮开头被读取，于是一个全新进程无需重新推导先前的尝试
+  即可继续（真正的恢复），且绝不重试一个已知的死胡同。
+
+```bash
+loop_journal.py resume                       # what was tried + dead-ends to avoid
+loop_journal.py record --iteration N --action "…" --gate fail --gate-output test.log
+loop_journal.py stall --k 3 --exit-code      # PROGRESS → re-feed · STALLED → switch/escalate
+```
+
+---
+
+## 🎬 视频证据 —— 通过 hyperframes 生成演示视频
+
+应请求，循环可以**创建**某个屏幕/功能的**演示视频**，并复用该视频作为某个改动可用的证明。
+生产者是 [**hyperframes**](https://github.com/heygen-com/hyperframes)（来自 HeyGen）—— 它把
+HTML/CSS/媒体合成渲染为**确定性 MP4**（“相同输入、相同帧、相同输出”），于是这段演示是一份
+CI 可复现的产物，而不是用完即弃的录屏。无需 API 密钥；通过无头 Chrome + FFmpeg 本地渲染
+（Node 22+）。
+
+它有两种触发方式 —— 都经由 `video_evidence` 扩展点（worker
+[`scripts/video_evidence.py`](../scripts/video_evidence.py)，契约
+[`references/video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md)）：
+
+1. **应请求 —— 视频本身就是交付物。** 直接索取，编排器就会把该工作项路由到 hyperframes
+   生产者：
+
+   ```text
+   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
+   → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
+   → attach the MP4 to the PR as evidence + close with the link
+   ```
+
+2. **作为证明 —— 视频为代码改动背书。** 在一次 UI 改动之后，同一段 MP4 演练是最强的
+   “可用，而不仅仅是编译通过”的凭据（第 4b 步），也是该循环一个有效的、经证据门控的
+   `<promise>` —— 一段从未渲染出来的视频会得到 **BLOCKED**，绝不假装通过。
+
+两个证据生产者会串联：`web_verify`（Playwright）捕获逐步截图，`video_evidence`（hyperframes）
+把它们组装成一段带字幕的、确定性的 MP4 演练。证据始终是一个**文件路径 + 布尔裁决** ——
+绝不把视频字节放入上下文（token 经济）。
+
+```bash
+# one-shot, outside the loop
+python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py verify  --name checkout-demo \
+    --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
+```
+
 ---
 
 ## 📊 Token 经济
@@ -255,7 +344,31 @@ flowchart TD
 | Simplicio 捕获代理 + MCP | 通过一个透明压缩守护进程，工具输出 token 减少 60-95% |
 
 只有在结果经验证为正确时才计入节省。基线 = 通向同一结果的最便宜、合理且未经编排的路径。
-参见 `references/token-economy.md`。
+**节省的上报是经证据门控的，而非强制的：** 只有当某一轮确实运行了一条产生经济效益的命令、
+且该数字可追溯到一份实测凭据（clamp tee、仅签名读取、缓存命中、`deterministic_edit`、
+`savings_ledger`）时，才会显示一个节省数字。没有实测的经济效益 → 没有节省那一行；编排器
+绝不编造基线或百分比。参见 `references/token-economy.md`。
+
+### 🔎 运行 `simplicio-tasks`：经济 vs 度量（按运行时）
+
+当你调用 **`simplicio-tasks`** 时会发生两件不同的事，它们在各运行时上的行为也不同：
+
+- **经济** —— 压缩、输出钳制、仅签名读取、`deterministic_edit` —— 只要 skill 运行并加载了
+  `simplicio-orient` / `simplicio-compress`，**在任何运行时上每一次都会生效。** 它是 skill 的
+  行为加上钩子（在有钩子的地方最强：`orient_clamp.py` 在 Claude 和 Cursor 上自动钳制；其他地方
+  则由指令驱动）。
+- **度量** —— Token 监视器的实时数字 —— 只统计流经**捕获代理**的流量。
+
+| 运行时 | 经济（skill） | 度量（监视器） |
+|---|---|---|
+| **Hermes** | ✓ | ✓ **自动** —— 已经经由代理路由（`base_url → :8788`） |
+| **Claude** | ✓（skill + 钩子） | ✗ 默认 —— Claude 直接与 `api.anthropic.com` 通信；只有在路由之后才被度量（`simplicio wrap claude`，或 `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`） |
+| **Codex** | ✓（skill） | ✗ 默认 —— `simplicio init codex` 会添加 MCP 工具但不路由 LLM 流量；用 `simplicio wrap codex` 或一个指向代理的 OpenAI base-url 来度量 |
+
+所以：**节省在每个运行时上都会发生**；**监视器在 Hermes 上会自动统计它们**，并在 Claude/Codex 上
+经过一次**一次性路由步骤**（`simplicio wrap …` / base-url → `:8788`）后统计。没有路由，经济
+依然生效 —— 只是监视器不会统计那些 token。`scripts/simplicio-economy.sh wire` 会在安装时为
+OpenAI 兼容客户端完成这一路由。
 
 ### 📈 Simplicio Token 监视器
 
@@ -314,7 +427,7 @@ flowchart TD
 （axum 反向代理）、`simplicio-parity`（Rust↔Python 一致性校验工具）。用 `maturin` 构建 ——
 Python 引擎在没有它们时也能完整工作；这些 crate 只是额外增加原生速度。
 
-|---
+---
 
 ## 🏛️ 设计支柱（详解）
 
@@ -369,6 +482,9 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 - 对每个 diff 进行**密钥扫描**；命中即阻断。
 - **不可逆操作人工门控** —— force-push、历史重写、生产部署、数据/schema 删除、批量文件删除
   → 停下来询问。无头 + 无审批者 → 移除该破坏性能力。
+- **强制执行，而不仅是承诺** —— `hooks/action_gate.py` 是一个 **fail-closed** 的 `PreToolUse` /
+  git-pre-push 钩子，它在上述操作（以及携带密钥的提交）*运行之前*以机械方式阻断它们。
+  即使模型忘记了，安全契约依然成立。`selftest` 证明了该规则集（14/14）。
 - **四态执行前裁决** —— 优化绝不能抬高一条命令的风险等级。
 - **先信任后加载** —— 塑造感知的配置（钳制配置档、抑制列表）在人类审查并以哈希钉死之前一律
   视为不可信。
@@ -378,6 +494,39 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 
 ---
 
+## ✅ 测试与本地检查（无需付费 CI）
+
+声明都经过验证，而不仅仅是断言 —— 而且这道门控**在本地**运行，零 CI 成本：
+
+```bash
+python3 scripts/check.py            # the whole gate (audit + tests)
+```
+
+- **测试套件**（`tests/`）—— worker 的确定性 `selftest`，外加一个**循环驱动器
+  （`hooks/loop_stop.py`）的 e2e**：它证明该循环**在证据上停止**、**忽略一个裸的
+  `<promise>`**、并在**上限处停止**，三者是不同的退出路径 —— 还证明证据生产者在其工具链
+  缺席时会 **BLOCK**（绝不假装通过）。在 `pytest` 下运行*或*在完全没有 pip 时在裸 python3
+  上自运行（`python3 tests/test_*.py`）。
+- **声明审计**（`scripts/claims_audit.py`，fail-closed）—— 文档引用的每个 `scripts/*.py`
+  都存在 · 扩展点计数在所有文件中一致 · 每条被引用的 worker 命令确实能运行 · 随附的
+  `simplicio_loop/_bundle/` skill 与源码**逐字节相同**。
+- **把它接成 git pre-push 钩子**，免费保持 `main` 诚实：
+  ```bash
+  printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+  ```
+
+`pip install "simplicio-loop[dev]"` 会加入 pytest 以获得更友好的输出；但它从不是必需的。
+
+---
+
 ## 📄 许可证
 
 MIT
+
+## 💳 定价
+
+引擎是**免费且 MIT 的** —— 完全可自托管，绝不阉割。一个拟议中的**开放核心托管层**
+（托管的 7×24 看守者、托管的操作器、保留的节省仪表盘、分布式 `video_evidence` 渲染）在
+[`PRICING.md`](../PRICING.md) 中有勾勒，并附带一套建立在循环已产生的计量原语
+（`loop-budget.json` 急停开关 + `savings_ledger`）之上的、确定性且保护隐私的计费架构。
+这只是一个提案 —— 如今没有任何费用产生。

@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — सार्वभौमिक लूपिंग AI ऑर्केस्ट्रेटर
+# 🔁 simplicio-tasks — The Universal Looping AI Orchestrator
 
 <p align="center">
   <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -6,17 +6,17 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-10-स्किल्स--एक्सेलेरेटर्स"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-11-स्किल्स-और-एक्सेलेरेटर्स"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
   <a href="#-स्रोत-एडाप्टर्स"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-रनटाइम-एक-प्रोटोकॉल"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-43-एक्सटेंशन-पॉइंट्स"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
+  <a href="#-पूरा-प्रवाह--माँग-से-वितरण-तक"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
   <a href="#-टोकन-अर्थव्यवस्था"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-10-स्किल्स--एक्सेलेरेटर्स">10 स्किल्स</a> ·
+  <a href="#-11-स्किल्स-और-एक्सेलेरेटर्स">11 स्किल्स</a> ·
   <a href="#-स्रोत-एडाप्टर्स">स्रोत एडाप्टर्स</a> ·
   <a href="#-11-रनटाइम-एक-प्रोटोकॉल">11 रनटाइम</a> ·
   <a href="#-लूप">लूप</a> ·
@@ -76,15 +76,41 @@
 
 ---
 
-## 🧠 10 स्किल्स और एक्सेलेरेटर्स
+## 📘 आधिकारिक क्षमता अभिलेख (v3.4.0)
 
-ऑर्केस्ट्रेटर केंद्र + पाँच उपग्रह + चार एक्सेलेरेटर्स। प्रत्येक उपग्रह **वैकल्पिक** है —
+`simplicio-tasks` जो कुछ भेजता है उसकी संपूर्ण, आधिकारिक सूची — नीचे की हर क्षमता **वास्तविक,
+चलाने-योग्य और परीक्षित** है (`python3 scripts/check.py`: claims-audit 4/4 + 24 tests)। प्रत्येक अपने
+गहन खंड और अपने वर्कर से जुड़ती है।
+
+| क्षमता | यह क्या करती है | प्रमाण / वर्कर | विवरण |
+|---|---|---|---|
+| 🎬 **Video evidence** (`video_evidence`) | किसी स्क्रीन/फ़ीचर का **नियतात्मक MP4** डेमो [hyperframes](https://github.com/heygen-com/hyperframes) के साथ रेंडर करती है — `/simplicio-tasks faça um vídeo demonstrativo da tela X` को पूरा करती है और किसी UI परिवर्तन के काम करने के CI-पुनरुत्पादनीय प्रमाण के रूप में भी कार्य करती है | `scripts/video_evidence.py` · Node 22+/FFmpeg के बिना BLOCKED (कभी fake-pass नहीं) | [§ Video evidence](#-video-evidence--hyperframes-के-माध्यम-से-डेमो-वीडियो) |
+| 🧠 **Attempt memory + stall detector** | एक टिकाऊ रन-जर्नल (`.orchestrator/loop/journal.jsonl`) + एक stall detector ताकि लूप **दोलन करने के बजाय रणनीति बदले**; वृद्धिशील ट्राइएज (`since`) हर बारी केवल डेल्टा पढ़ता है | `scripts/loop_journal.py` · `selftest` 9/9 | [§ Anti-oscillation](#-attempt-memory--stall-detector-दोलन-रोधी) |
+| 🔒 **Fail-closed safety gate** (`action_gate`) | एक `PreToolUse`/git-pre-push हुक जो force-push, इतिहास पुनर्लेखन, मास-डिलीट, विनाशकारी DDL, इन्फ़्रा teardown, और सीक्रेट-युक्त कमिट्स/पुश को **यांत्रिक रूप से ब्लॉक** करता है — Step 5 को निष्पादन-योग्य बनाया गया, गद्य नहीं | `hooks/action_gate.py` · `selftest` 15/15 | [§ Safety](#-सुरक्षा-गैर-समझौता-योग्य) |
+| 🔬 **Local verification** | एक टेस्ट सूट (वर्कर selftests + लूप ड्राइवर का एक **e2e** जो साक्ष्य-गेटेड निकास सिद्ध करता है) + एक **claims-audit** (संदर्भित स्क्रिप्ट्स मौजूद · गणनाएँ संगत · `_bundle ≡ source`) — सब स्थानीय, **कोई सशुल्क CI नहीं** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Tests & local checks](#-परीक्षण-और-स्थानीय-जाँच-कोई-सशुल्क-ci-नहीं) |
+| ✅ **Honest savings** | बचत पंक्ति अब **साक्ष्य-गेटेड है, अनिवार्य नहीं** — कोई संख्या केवल किसी मापी गई रसीद के साथ दिखाई जाती है (clamp/signatures/cache/`deterministic_edit`/ledger); कभी मनगढ़ंत नहीं | token-economy अनुबंध | [§ Token economy](#-टोकन-अर्थव्यवस्था) |
+| 💳 **Open-core billing** | लूप द्वारा पहले से उत्पादित मीटरिंग पर एक नियतात्मक, गोपनीयता-संरक्षित meter→invoice (kill-switch + `savings_ledger`) — तीन स्तर (seat/run/metered) | `scripts/billing_aggregator.py` · `selftest` 11/11 | [PRICING.md](../PRICING.md) |
+
+दो लूप **मोड** समापन को स्पष्ट करते हैं: **converge** (एक एकल कठिन कार्य — साक्ष्य-गेटेड
+`<promise>` या stall एस्केलेशन पर समाप्त) बनाम **drain** (एक कतार — समाप्त तब जब स्रोत
+पुनः-क्वेरी K राउंड खाली रहे)। दोनों फिर भी सार्वभौमिक निकासों का पालन करते हैं (promise+evidence,
+`max_iterations`, बजट, STOP)।
+
+> इस कार्य-श्रृंखला में लूप स्कोरिंग: **7.5** (मज़बूत डिज़ाइन, असिद्ध) → **9** (attempt memory +
+> दोलन-रोधी) → **9.5** (पुनरुत्पादनीय स्थानीय प्रमाण) → **~10** (प्रवर्तित सुरक्षा + संपूर्ण लूप
+> सिमेंटिक्स)। सत्यापन अवसंरचना अब परियोजना के अपने रिग्रेशन्स को बढ़ने के साथ पकड़ती है।
+
+---
+
+## 🧠 11 स्किल्स और एक्सेलेरेटर्स
+
+ऑर्केस्ट्रेटर केंद्र + पाँच उपग्रह + पाँच एक्सेलेरेटर्स/इंटीग्रेशन। प्रत्येक उपग्रह **वैकल्पिक** है —
 लोड होने पर ऑर्केस्ट्रेटर उसे सौंप देता है (समृद्ध + सस्ता); अनुपस्थित होने पर इनलाइन प्रोटोकॉल
 कार्य का 100% कवर करता है। एक्सेलेरेटर्स **स्वतः-पहचाने** जाते हैं — उपस्थित = उपयोग, अनुपस्थित = LLM फ़ॉलबैक।
 
 | # | क्षमता | किसे आत्मसात करता है | यह क्या करता है | टोकन प्रभाव |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-tasks** | — | ऑर्केस्ट्रेटर लूप: 43 एक्सटेंशन पॉइंट्स, द्वि-पथ राउटर, स्व-ऑडिट अभिसरण | कोर |
+| 1 | 🔁 **simplicio-tasks** | — | ऑर्केस्ट्रेटर लूप: 44 एक्सटेंशन पॉइंट्स, द्वि-पथ राउटर, स्व-ऑडिट अभिसरण | कोर |
 | 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | कठोरीकृत Ralph लूप: साक्ष्य-गेटेड `<promise>` निकास, max_iterations सीमा | लूप ड्राइव |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | टर्मिनल-फ़र्स्ट निष्पादन, आउटपुट-घटाव कैटलॉग, tee-cache, signatures-read | L0 नियतात्मक |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | अलग-अलग रूब्रिक्स पर समानांतर प्रतिकूल समीक्षा → डुप्लिकेट-मुक्त निर्णय | गुणवत्ता गेट |
@@ -94,9 +120,12 @@
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | सत्र विश्लेषण, लागत ट्रैकिंग, ठप-सत्र खोज | **L1** केवल SQL |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | लूप बारियों के बीच KV कैश — स्थानीय मॉडल पर 40-70% TTFT कमी | GPU समय ↓ |
 | 10 | 🗜️ **Simplicio कैप्चर इंजन** | `engine/simplicio_engine.py` (native, stdlib-only; savings-schema OSS [headroom](https://github.com/headroomlabs-ai/headroom) प्रोजेक्ट के साथ संगत) | पारदर्शी कैप्चर प्रॉक्सी: असली प्रदाता को अग्रेषित करता है, मापता है + नियतात्मक रूप से संपीड़ित करता है, `proxy_savings.json` लिखता है | **नियतात्मक** |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | किसी स्क्रीन/फ़ीचर का **नियतात्मक MP4** डेमो वीडियो रेंडर करता है — `/simplicio-tasks faça um vídeo demonstrativo da tela X` को पूरा करता है और किसी UI परिवर्तन के काम करने के CI-पुनरुत्पादनीय प्रमाण के रूप में भी कार्य करता है | साक्ष्य उत्पादक |
 
 प्रत्येक स्किल [`.claude/skills/`](../.claude/skills) के अंतर्गत रहती है; प्रत्येक एक्सेलेरेटर के लिए
-`.claude/skills/simplicio-tasks/references/` के अंतर्गत एक संदर्भ दस्तावेज़ है।
+`.claude/skills/simplicio-tasks/references/` के अंतर्गत एक संदर्भ दस्तावेज़ है (वीडियो उत्पादक:
+[`video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md), वर्कर
+[`scripts/video_evidence.py`](../scripts/video_evidence.py))।
 
 ---
 
@@ -115,7 +144,7 @@
 
 प्रत्येक एडाप्टर का संदर्भ दस्तावेज़ `.claude/skills/simplicio-tasks/references/` के अंतर्गत देखें।
 
-|---
+---
 
 ## 🌐 11 रनटाइम, एक प्रोटोकॉल
 
@@ -193,7 +222,7 @@ flowchart TD
   subgraph QG["7 · Quality gates"]
     direction LR
     Q1["AC gate = real DoD"]
-    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q2["WORKS not just compiles · web_verify (Playwright) · video_evidence (hyperframes MP4)"]
     Q3["adversarial review · thermos rubrics"]
   end
   QG --> SG
@@ -217,7 +246,7 @@ flowchart TD
     F2["review comments -> adjust"]
     F3["branch behind main -> additive rebase"]
   end
-  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  FB -->|"merged and closed"| DONE(["done + evidence + measured savings (only if a receipt exists)"])
   WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
@@ -239,6 +268,68 @@ flowchart TD
 
 बारियों के बीच, LMCache (जब उपलब्ध हो) KV स्थिति को कैश करता है ताकि पुनः-फ़ीड की लागत लगभग-शून्य प्रीफ़िल हो।
 
+### 🧠 Attempt memory + stall detector (दोलन-रोधी)
+
+एक पुनः-फ़ीड लूप जो कुछ याद नहीं रखता वह दोलन करता है — X आज़माओ, असफल, X फिर आज़माओ — जब तक
+सीमा भस्म न हो जाए। simplicio-loop एक **टिकाऊ रन-जर्नल** रखता है (`.orchestrator/loop/journal.jsonl`,
+append-only: `iteration · action · hypothesis · gate · error-fingerprint`) और एक **stall detector**
+([`scripts/loop_journal.py`](../scripts/loop_journal.py), नियतात्मक + मॉडल-मुक्त):
+
+- **Error fingerprint** — विफल गेट आउटपुट को एक स्थिर hash में घटाया जाता है जिसमें पंक्ति-संख्याएँ,
+  पथ, hex/uuids, टाइमस्टैम्प और अवधियाँ सामान्यीकृत होती हैं, ताकि *वही* बग बारियों में पहचाना जाए
+  भले ही आनुषंगिक पाठ भिन्न हो।
+- **Stall = लगातार K समान-fingerprint विफलताएँ** (डिफ़ॉल्ट K=3)। एक बदलता fingerprint मतलब
+  लूप आगे बढ़ रहा है (PROGRESS); वही K बार मतलब वह घूम रहा है (STALLED)।
+- STALLED पर लूप वही लक्ष्य फिर से **नहीं** फ़ीड करता — वह बचने योग्य **dead-end actions** का नाम
+  देता है, फिर **रणनीति बदलता है** या fingerprint के साथ **मानव गेट तक एस्केलेट** करता है।
+- `loop_journal.py resume` हर बारी के शीर्ष पर पढ़ा जाता है, ताकि एक ताज़ा प्रक्रिया पूर्व प्रयासों को
+  पुनः-व्युत्पन्न किए बिना जारी रहे (असली resume) और किसी ज्ञात dead-end को कभी पुनः न आज़माए।
+
+```bash
+loop_journal.py resume                       # what was tried + dead-ends to avoid
+loop_journal.py record --iteration N --action "…" --gate fail --gate-output test.log
+loop_journal.py stall --k 3 --exit-code      # PROGRESS → re-feed · STALLED → switch/escalate
+```
+
+---
+
+## 🎬 Video evidence — hyperframes के माध्यम से डेमो वीडियो
+
+लूप अनुरोध पर किसी स्क्रीन/फ़ीचर के **प्रदर्शन वीडियो बना** सकता है, और उस वीडियो को किसी परिवर्तन के
+काम करने के प्रमाण के रूप में पुनः उपयोग कर सकता है। उत्पादक [**hyperframes**](https://github.com/heygen-com/hyperframes)
+(HeyGen द्वारा) है — यह HTML/CSS/मीडिया रचनाओं को एक **नियतात्मक MP4** में रेंडर करता है ("वही इनपुट, वही
+फ़्रेम, वही आउटपुट"), ताकि डेमो एक CI-पुनरुत्पादनीय कलाकृति हो, न कि कोई फेंकी-जाने-वाली रिकॉर्डिंग। कोई API
+कुंजी नहीं; headless Chrome + FFmpeg (Node 22+) के माध्यम से स्थानीय रेंडर।
+
+यह दो तरीकों से सक्रिय होता है — दोनों `video_evidence` एक्सटेंशन पॉइंट के माध्यम से (वर्कर
+[`scripts/video_evidence.py`](../scripts/video_evidence.py), अनुबंध
+[`references/video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md)):
+
+1. **अनुरोध पर — वीडियो ही वितरण है।** इसे सीधे माँगें और ऑर्केस्ट्रेटर कार्य-आइटम को
+   hyperframes उत्पादक तक राउट करता है:
+
+   ```text
+   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
+   → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
+   → attach the MP4 to the PR as evidence + close with the link
+   ```
+
+2. **प्रमाण के रूप में — वीडियो किसी कोड परिवर्तन का समर्थन करता है।** किसी UI परिवर्तन के बाद, वही MP4
+   walkthrough सबसे मज़बूत "काम करता है, केवल कंपाइल नहीं" रसीद (Step 4b) और लूप के लिए एक वैध
+   साक्ष्य-गेटेड `<promise>` है — एक वीडियो जो कभी रेंडर नहीं हुआ वह **BLOCKED** देता है, कभी fake pass नहीं।
+
+दोनों साक्ष्य उत्पादक श्रृंखलाबद्ध होते हैं: `web_verify` (Playwright) प्रति-चरण स्क्रीनशॉट कैप्चर करता है,
+`video_evidence` (hyperframes) उन्हें एक कैप्शन-युक्त, नियतात्मक MP4 walkthrough में जोड़ता है।
+साक्ष्य हमेशा एक **फ़ाइल पथ + बूलियन निर्णय** होता है — कभी संदर्भ में वीडियो बाइट्स नहीं (टोकन अर्थव्यवस्था)।
+
+```bash
+# one-shot, outside the loop
+python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py verify  --name checkout-demo \
+    --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
+```
+
 ---
 
 ## 📊 टोकन अर्थव्यवस्था
@@ -256,7 +347,33 @@ flowchart TD
 | Simplicio कैप्चर प्रॉक्सी + MCP | एक पारदर्शी संपीड़न डेमन के माध्यम से टूल आउटपुट पर 60-95% कम टोकन |
 
 बचत केवल किसी सत्यापित-सही परिणाम पर गिनी जाती है। बेसलाइन = उसी परिणाम तक का सबसे सस्ता समझदार
-गैर-ऑर्केस्ट्रेटेड पथ। देखें `references/token-economy.md`।
+गैर-ऑर्केस्ट्रेटेड पथ। **बचत रिपोर्टिंग साक्ष्य-गेटेड है, अनिवार्य नहीं:** एक बचत आँकड़ा
+केवल तब दिखाया जाता है जब किसी बारी ने वास्तव में कोई अर्थव्यवस्था-उत्पादक कमांड चलाया हो और संख्या किसी
+मापी गई रसीद तक पहुँचती हो (clamp tee, signatures-read, cache hit, `deterministic_edit`, `savings_ledger`)।
+कोई मापी गई अर्थव्यवस्था नहीं → कोई बचत पंक्ति नहीं; ऑर्केस्ट्रेटर कभी कोई बेसलाइन या प्रतिशत नहीं गढ़ता।
+देखें `references/token-economy.md`।
+
+### 🔎 `simplicio-tasks` चलाना: अर्थव्यवस्था बनाम मापन (प्रति रनटाइम)
+
+जब आप **`simplicio-tasks`** को कॉल करते हैं तो दो अलग बातें होती हैं, और वे प्रति रनटाइम भिन्न व्यवहार करती हैं:
+
+- **अर्थव्यवस्था** — संपीड़न, आउटपुट क्लैम्प्स, signatures-only रीड्स, `deterministic_edit` — **हर बार
+  जब स्किल चलती है और `simplicio-orient` / `simplicio-compress` लोड करती है, किसी भी रनटाइम पर** लागू होती है।
+  यह स्किल का व्यवहार प्लस हुक्स है (जहाँ हुक्स मौजूद हैं वहाँ सबसे मज़बूत: `orient_clamp.py` Claude और
+  Cursor पर ऑटो-क्लैम्प करता है; अन्यत्र यह निर्देश-संचालित है)।
+- **मापन** — Token Monitor की सजीव संख्याएँ — केवल उस ट्रैफ़िक की गिनती करती हैं जो **कैप्चर प्रॉक्सी से होकर**
+  बहता है।
+
+| रनटाइम | अर्थव्यवस्था (स्किल) | मापन (मॉनिटर) |
+|---|---|---|
+| **Hermes** | ✓ | ✓ **स्वचालित** — पहले से प्रॉक्सी से राउट (`base_url → :8788`) |
+| **Claude** | ✓ (स्किल + हुक्स) | ✗ डिफ़ॉल्ट रूप से — Claude सीधे `api.anthropic.com` से बात करता है; राउट होने पर ही मापा जाता है (`simplicio wrap claude`, या `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
+| **Codex** | ✓ (स्किल) | ✗ डिफ़ॉल्ट रूप से — `simplicio init codex` MCP टूल्स जोड़ता है पर LLM ट्रैफ़िक राउट नहीं करता; `simplicio wrap codex` या प्रॉक्सी की ओर इशारा करने वाले OpenAI base-url के साथ मापा जाता है |
+
+तो: **बचत हर रनटाइम पर होती है**; **मॉनिटर उन्हें Hermes पर स्वचालित रूप से** गिनता है, और
+Claude/Codex पर एक **एक-बार के राउटिंग चरण** के बाद (`simplicio wrap …` / base-url → `:8788`)। राउटिंग के बिना,
+अर्थव्यवस्था फिर भी लागू होती है — मॉनिटर बस उन टोकन्स को नहीं गिनेगा। `scripts/simplicio-economy.sh wire`
+इंस्टॉल समय पर OpenAI-संगत क्लाइंट्स के लिए यह राउटिंग करता है।
 
 ### 📈 Simplicio Token Monitor
 
@@ -275,8 +392,9 @@ flowchart TD
 ### 🛠️ कैप्चर इंजन — एक मूल मॉड्यूल, हर कमांड
 
 [`engine/simplicio_engine.py`](../engine/simplicio_engine.py) मूल Simplicio कैप्चर इंजन है
-(stdlib-only, fail-open) — किसी बाहरी निर्भरता के बिना अपस्ट्रीम [headroom](https://github.com/headroomlabs-ai/headroom)
-सतह का **पूर्ण पुनर्निर्माण**। किसी भी कमांड को [`scripts/simplicio-engine`](../scripts/simplicio-engine) रैपर के माध्यम से चलाएँ (उदा. `simplicio-engine doctor`):
+(stdlib-only, fail-open) — किसी बाहरी निर्भरता के बिना अपस्ट्रीम
+[headroom](https://github.com/headroomlabs-ai/headroom) सतह का **पूर्ण पुनर्निर्माण**। किसी भी
+कमांड को [`scripts/simplicio-engine`](../scripts/simplicio-engine) रैपर के माध्यम से चलाएँ (उदा. `simplicio-engine doctor`):
 
 | कमांड | यह क्या करता है |
 |---|---|
@@ -312,7 +430,7 @@ flowchart TD
 (axum रिवर्स प्रॉक्सी), `simplicio-parity` (Rust↔Python parity हार्नेस)। `maturin` से बिल्ड करें — Python
 इंजन उनके बिना पूरी तरह काम करता है; crates केवल मूल गति जोड़ते हैं।
 
-|---
+---
 
 ## 🏛️ डिज़ाइन स्तंभ (विस्तार में)
 
@@ -367,6 +485,9 @@ GitHub स्रोतों के लिए, `git` + एक प्रमाण
 - हर diff पर **सीक्रेट-स्कैन**; हिट पर रोकें।
 - **अपरिवर्तनीय-संचालन मानव गेट** — force-push, इतिहास पुनर्लेखन, prod डिप्लॉय, डेटा/स्कीमा डिलीट,
   मास-फ़ाइल डिलीट → रुको और पूछो। हेडलेस + कोई अनुमोदक नहीं → विनाशकारी क्षमता हटा दें।
+- **प्रवर्तित, केवल वादा नहीं** — `hooks/action_gate.py` एक **fail-closed** `PreToolUse` /
+  git-pre-push हुक है जो उपरोक्त (और सीक्रेट-युक्त कमिट्स) को उनके चलने से *पहले* यांत्रिक रूप से ब्लॉक करता है।
+  सुरक्षा अनुबंध तब भी कायम रहता है जब मॉडल इसे भूल जाए। `selftest` ruleset सिद्ध करता है (14/14)।
 - **4-अवस्था पूर्व-निष्पादन निर्णय** — अनुकूलन किसी कमांड के जोखिम स्तर को कभी नहीं बढ़ा सकता।
 - **Trust-before-load** — धारणा-आकार देने वाला कॉन्फ़िग (clamp प्रोफ़ाइल, suppression सूचियाँ)
   तब तक अविश्वसनीय रहता है जब तक कोई मानव समीक्षा करके उसे hash-pin न कर दे।
@@ -376,6 +497,39 @@ GitHub स्रोतों के लिए, `git` + एक प्रमाण
 
 ---
 
+## ✅ परीक्षण और स्थानीय जाँच (कोई सशुल्क CI नहीं)
+
+दावे सत्यापित होते हैं, केवल अभिकथित नहीं — और गेट **स्थानीय रूप से** चलता है, शून्य CI लागत के साथ:
+
+```bash
+python3 scripts/check.py            # the whole gate (audit + tests)
+```
+
+- **टेस्ट सूट** (`tests/`) — वर्कर्स के नियतात्मक `selftest`s, साथ ही लूप ड्राइवर का एक **e2e**
+  (`hooks/loop_stop.py`): यह सिद्ध करता है कि लूप **साक्ष्य पर रुकता है**, एक बेयर
+  `<promise>` को **अनदेखा करता है**, और **सीमा पर रुकता है** — अलग-अलग निकासों के रूप में — और कि साक्ष्य उत्पादक
+  अपने toolchain के अनुपस्थित होने पर **BLOCK** करते हैं (कभी fake-pass नहीं)। `pytest` के अंतर्गत *या*, बिना किसी pip
+  के, बेयर python3 पर स्व-चलता है (`python3 tests/test_*.py`)।
+- **Claims audit** (`scripts/claims_audit.py`, fail-closed) — दस्तावेज़ संदर्भित हर `scripts/*.py`
+  मौजूद है · एक्सटेंशन-पॉइंट गणना सभी फ़ाइलों में सहमत है · प्रत्येक उद्धृत वर्कर कमांड
+  वास्तव में चलता है · भेजी गई `simplicio_loop/_bundle/` स्किल्स स्रोत के साथ **बाइट-समान** हैं।
+- **इसे एक git pre-push हुक के रूप में वायर करें** ताकि `main` मुफ़्त में ईमानदार रहे:
+  ```bash
+  printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+  ```
+
+`pip install "simplicio-loop[dev]"` बेहतर आउटपुट के लिए pytest जोड़ता है; यह कभी आवश्यक नहीं है।
+
+---
+
 ## 📄 लाइसेंस
 
 MIT
+
+## 💳 मूल्य-निर्धारण
+
+इंजन **मुफ़्त और MIT** है — पूर्णतः स्व-होस्ट-योग्य, कभी अपंग नहीं। एक प्रस्तावित **open-core
+होस्टेड स्तर** (प्रबंधित 24/7 watcher, होस्टेड ऑपरेटर्स, संरक्षित बचत डैशबोर्ड, वितरित
+`video_evidence` रेंडर) [`PRICING.md`](../PRICING.md) में रेखांकित है, साथ ही एक नियतात्मक,
+गोपनीयता-संरक्षित बिलिंग आर्किटेक्चर जो लूप द्वारा पहले से उत्पादित मीटरिंग प्रिमिटिव्स पर बना है
+(`loop-budget.json` किल-स्विच + `savings_ledger`)। यह एक प्रस्ताव है — आज कुछ भी बिल नहीं किया जाता।

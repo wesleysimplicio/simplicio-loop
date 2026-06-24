@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — 万能のループ型AIオーケストレーター
+# 🔁 simplicio-tasks — The Universal Looping AI Orchestrator
 
 <p align="center">
   <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -6,17 +6,17 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-the-10-skills--accelerators"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-the-11-skills--accelerators"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-the-43-extension-points"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
+  <a href="#-the-44-extension-points"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
   <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-the-10-skills--accelerators">10のスキル</a> ·
+  <a href="#-the-11-skills--accelerators">11のスキル</a> ·
   <a href="#-source-adapters">ソースアダプタ</a> ·
   <a href="#-11-runtimes-one-protocol">11のランタイム</a> ·
   <a href="#-the-loop">ループ</a> ·
@@ -78,16 +78,41 @@
 
 ---
 
-## 🧠 The 10 skills & accelerators
+## 📘 公式ケイパビリティ記録（v3.4.0）
 
-オーケストレーターの中核＋5つのサテライト＋4つのアクセラレーター。各サテライトは**オプション**です——
-読み込まれていれば、オーケストレーターはそこに委譲し（より豊かで、より安価）、なければインライン
-プロトコルが作業の100%をカバーします。アクセラレーターは**自動検出**されます——あれば使われ、
-なければLLMフォールバックになります。
+`simplicio-tasks` が提供するものの完全かつ公式な一覧です——以下のすべての機能は**実在し、実行可能で、
+テスト済み**です（`python3 scripts/check.py`：claims-audit 4/4 ＋ 24テスト）。各項目は対応する詳細
+セクションとワーカーへのリンクを持ちます。
+
+| 機能 | 何をするか | 証明／ワーカー | 詳細 |
+|---|---|---|---|
+| 🎬 **Video evidence**（`video_evidence`） | 画面／機能の**決定論的なMP4**デモを [hyperframes](https://github.com/heygen-com/hyperframes) でレンダリング——`/simplicio-tasks faça um vídeo demonstrativo da tela X` を満たし、UI変更が動作することのCI再現可能な証明も兼ねる | `scripts/video_evidence.py` · Node 22+／FFmpeg がなければ BLOCKED（決してフェイクで通さない） | [§ Video evidence](#-video-evidence--demo-videos-via-hyperframes) |
+| 🧠 **試行メモリ＋ストール検出器** | 耐久性のあるランジャーナル（`.orchestrator/loop/journal.jsonl`）＋ストール検出器により、ループが**振動する代わりに戦略を変える**；増分トリアージ（`since`）は毎ターン差分のみを読む | `scripts/loop_journal.py` · `selftest` 9/9 | [§ 振動防止](#-attempt-memory--stall-detector-anti-oscillation) |
+| 🔒 **フェイルクローズの安全ゲート**（`action_gate`） | force-push、履歴の書き換え、大量削除、破壊的なDDL、インフラの解体、シークレットを含むコミット／プッシュを**機械的にブロック**する `PreToolUse`／git-pre-push フック——Step 5 を散文ではなく実行可能にしたもの | `hooks/action_gate.py` · `selftest` 15/15 | [§ Safety](#-safety-non-negotiable) |
+| 🔬 **ローカル検証** | テストスイート（ワーカーのselftest＋エビデンスゲートでの終了を証明する**ループドライバのe2e**）＋**claims-audit**（参照されるスクリプトが存在 · カウントが一貫 · `_bundle ≡ source`）——すべてローカル、**有料CIなし** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Tests & local checks](#-tests--local-checks-no-paid-ci) |
+| ✅ **誠実な節約** | 節約の行は**エビデンスゲート付きで、必須ではない**ものになった——数値は計測されたレシート（clamp／signatures／cache／`deterministic_edit`／ledger）がある場合にのみ表示される；決して捏造しない | token-economy contract | [§ Token economy](#-token-economy) |
+| 💳 **オープンコア課金** | ループが既に生成している計測（キルスイッチ＋`savings_ledger`）に対する、決定論的でプライバシーを保護するメーター→請求書——3つのティア（seat/run/metered） | `scripts/billing_aggregator.py` · `selftest` 11/11 | [PRICING.md](../PRICING.md) |
+
+2つのループ**モード**が終了を明示します。**converge**（単一のハードタスク——エビデンスゲートを通った
+`<promise>` またはストールのエスカレーションで終了）と **drain**（キュー——ソース再クエリがKラウンド
+空のままで終了）。どちらも普遍的な出口（promise＋evidence、`max_iterations`、予算、STOP）に従います。
+
+> このライン全体でのループの採点：**7.5**（強い設計、未実証）→ **9**（試行メモリ＋振動防止）→
+> **9.5**（再現可能なローカル証明）→ **~10**（強制された安全性＋完全なループセマンティクス）。検証
+> インフラは、プロジェクトの成長に伴い、プロジェクト自身のリグレッションを捕捉するようになりました。
+
+---
+
+## 🧠 The 11 skills & accelerators
+
+オーケストレーターの中核＋5つのサテライト＋5つのアクセラレーター／インテグレーション。各サテライトは
+**オプション**です——読み込まれていれば、オーケストレーターはそこに委譲し（より豊かで、より安価）、
+なければインラインプロトコルが作業の100%をカバーします。アクセラレーターは**自動検出**されます——
+あれば使われ、なければLLMフォールバックになります。
 
 | # | 機能 | 取り込み元 | 何をするか | トークンへの影響 |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-tasks** | — | オーケストレーターのループ：43個の拡張ポイント、デュアルパスルーター、自己監査による収束 | コア |
+| 1 | 🔁 **simplicio-tasks** | — | オーケストレーターのループ：44個の拡張ポイント、デュアルパスルーター、自己監査による収束 | コア |
 | 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | 強化されたRalphループ：エビデンスゲートを通った `<promise>` 終了、max_iterations 上限 | ループの駆動 |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | ターミナル優先の実行、出力削減カタログ、tee-cache、シグネチャ読み込み | L0 決定論的 |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | 別々のルーブリックでの並列敵対的レビュー → 重複排除済み判定 | 品質ゲート |
@@ -97,9 +122,12 @@
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | セッション分析、コスト追跡、停滞セッションの発見 | **L1** SQLのみ |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | ループターン間のKVキャッシュ — ローカルモデルでTTFTを40〜70%削減 | GPU時間 ↓ |
 | 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py`（ネイティブ、stdlibのみ；savingsスキーマはOSSの [headroom](https://github.com/headroomlabs-ai/headroom) プロジェクトと互換） | 透過的なキャプチャプロキシ：実プロバイダへ転送し、計測＋決定論的に圧縮し、`proxy_savings.json` を書き込む | **決定論的** |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | 画面／機能の**決定論的なMP4**デモ動画をレンダリング——`/simplicio-tasks faça um vídeo demonstrativo da tela X` を満たし、かつUI変更が動作することのCI再現可能な証明も兼ねる | エビデンスのプロデューサー |
 
 各スキルは [`.claude/skills/`](../.claude/skills) 配下にあり、各アクセラレーターは
-`.claude/skills/simplicio-tasks/references/` 配下にリファレンスドキュメントを持ちます。
+`.claude/skills/simplicio-tasks/references/` 配下にリファレンスドキュメントを持ちます（動画プロデューサー：
+[`video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md)、ワーカー
+[`scripts/video_evidence.py`](../scripts/video_evidence.py)）。
 
 ---
 
@@ -118,7 +146,7 @@
 
 各アダプタのリファレンスドキュメントは `.claude/skills/simplicio-tasks/references/` 配下を参照してください。
 
-|---
+---
 
 ## 🌐 11 runtimes, one protocol
 
@@ -196,7 +224,7 @@ flowchart TD
   subgraph QG["7 · Quality gates"]
     direction LR
     Q1["AC gate = real DoD"]
-    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q2["WORKS not just compiles · web_verify (Playwright) · video_evidence (hyperframes MP4)"]
     Q3["adversarial review · thermos rubrics"]
   end
   QG --> SG
@@ -220,7 +248,7 @@ flowchart TD
     F2["review comments -> adjust"]
     F3["branch behind main -> additive rebase"]
   end
-  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  FB -->|"merged and closed"| DONE(["done + evidence + measured savings (only if a receipt exists)"])
   WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
@@ -244,6 +272,70 @@ flowchart TD
 ターンの間、LMCache（利用可能な場合）はKV状態をキャッシュするので、再投入のプレフィルコストは
 ほぼゼロになります。
 
+### 🧠 Attempt memory + stall detector (anti-oscillation)
+
+何も覚えていない再投入ループは振動します——Xを試し、失敗し、またXを試す——上限を使い切るまで。
+simplicio-loop は**耐久性のあるランジャーナル**（`.orchestrator/loop/journal.jsonl`、追記専用：
+`iteration · action · hypothesis · gate · error-fingerprint`）と**ストール検出器**
+（[`scripts/loop_journal.py`](../scripts/loop_journal.py)、決定論的でモデル不要）を保持します：
+
+- **エラーフィンガープリント** — 失敗したゲートの出力は、行番号、パス、hex/uuid、タイムスタンプ、
+  実行時間を正規化して除いた安定したハッシュに縮約されるので、付随的なテキストが異なっても、ターンを
+  またいで*同じ*バグが認識されます。
+- **ストール＝同一フィンガープリントの失敗がK回連続**（既定 K=3）。フィンガープリントが変わって
+  いればループは前進しており（PROGRESS）、同じものがK回続けばそれは空回りです（STALLED）。
+- STALLED のとき、ループは同じゴールを再投入**しません**——避けるべき**行き止まりのアクション**を
+  名指しし、**戦略を切り替える**か、フィンガープリント付きで**人間ゲートへエスカレートします**。
+- `loop_journal.py resume` は毎ターンの冒頭で読まれるので、新しいプロセスは以前の試行を再導出せずに
+  続行でき（真のresume）、既知の行き止まりを決して再試行しません。
+
+```bash
+loop_journal.py resume                       # what was tried + dead-ends to avoid
+loop_journal.py record --iteration N --action "…" --gate fail --gate-output test.log
+loop_journal.py stall --k 3 --exit-code      # PROGRESS → re-feed · STALLED → switch/escalate
+```
+
+---
+
+## 🎬 Video evidence — demo videos via hyperframes
+
+ループは要求に応じて画面／機能の**デモ動画を作成**でき、その動画を変更が動作することの証明として
+再利用できます。プロデューサーは [**hyperframes**](https://github.com/heygen-com/hyperframes)（HeyGen製）
+です——HTML/CSS/メディアの構成を**決定論的なMP4**にレンダリングします（「同じ入力、同じフレーム、
+同じ出力」）。そのためデモは使い捨ての録画ではなく、CI再現可能なアーティファクトになります。APIキー
+不要；ヘッドレスChrome＋FFmpegによるローカルレンダリング（Node 22+）。
+
+発火の仕方は2通り——いずれも `video_evidence` 拡張ポイント経由です（ワーカー
+[`scripts/video_evidence.py`](../scripts/video_evidence.py)、契約
+[`references/video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md)）：
+
+1. **要求に応じて——動画こそが成果物。** 直接依頼すると、オーケストレーターはその作業項目を
+   hyperframes プロデューサーへルーティングします：
+
+   ```text
+   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
+   → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
+   → attach the MP4 to the PR as evidence + close with the link
+   ```
+
+2. **証明として——動画がコード変更を裏付ける。** UI変更の後、同じMP4ウォークスルーは「コンパイル
+   するだけでなく動作する」ことの最も強いレシート（Step 4b）であり、ループにとって有効なエビデンス
+   ゲート付き `<promise>` です——レンダリングされなかった動画は **BLOCKED** をもたらし、決して
+   フェイクで通りません。
+
+2つのエビデンスプロデューサーは連鎖します。`web_verify`（Playwright）がステップごとの
+スクリーンショットを撮り、`video_evidence`（hyperframes）がそれらをキャプション付きの決定論的な
+MP4ウォークスルーへ組み立てます。エビデンスは常に**ファイルパス＋真偽の判定**です——動画のバイト列を
+コンテキストに入れることは決してありません（トークンエコノミー）。
+
+```bash
+# one-shot, outside the loop
+python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py verify  --name checkout-demo \
+    --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
+```
+
 ---
 
 ## 📊 Token economy
@@ -261,7 +353,34 @@ flowchart TD
 | Simplicioキャプチャプロキシ + MCP | 透過的な圧縮デーモンによりツール出力のトークンを60〜95%削減 |
 
 節約は、検証で正しいと確認された結果に対してのみ加点されます。ベースライン＝同じ結果に至る、
-最も安価で妥当なオーケストレーションなしの経路。`references/token-economy.md` を参照してください。
+最も安価で妥当なオーケストレーションなしの経路。**節約の報告はエビデンスゲート付きで、必須では
+ありません：** 節約の数値は、ターンが実際に経済を生むコマンドを走らせ、その数値が計測された
+レシート（clamp tee、signatures-read、cacheヒット、`deterministic_edit`、`savings_ledger`）に
+たどれる場合にのみ表示されます。計測された経済がなければ節約の行はなく、オーケストレーターは
+ベースラインやパーセンテージを決して捏造しません。`references/token-economy.md` を参照してください。
+
+### 🔎 `simplicio-tasks` の実行：経済 vs 計測（ランタイムごと）
+
+**`simplicio-tasks`** を呼ぶと2つの異なることが起き、それらはランタイムごとに異なる挙動をします：
+
+- **経済** — 圧縮、出力クランプ、シグネチャのみ読み込み、`deterministic_edit` —— は、**スキルが
+  走り `simplicio-orient` ／ `simplicio-compress` を読み込むたびに、どのランタイムでも**適用されます。
+  これはスキルの挙動＋フックです（フックがあるところで最も強い：`orient_clamp.py` は Claude と Cursor
+  で自動クランプし、それ以外では指示駆動）。
+- **計測** — Token Monitor のライブ数値 — は、**キャプチャプロキシを通過する**トラフィックだけを
+  数えます。
+
+| ランタイム | 経済（スキル） | 計測（モニター） |
+|---|---|---|
+| **Hermes** | ✓ | ✓ **自動** — すでにプロキシ経由でルーティング済み（`base_url → :8788`） |
+| **Claude** | ✓（スキル＋フック） | ✗ 既定では — Claude は `api.anthropic.com` と直接やり取り；ルーティングして初めて計測（`simplicio wrap claude`、または `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`） |
+| **Codex** | ✓（スキル） | ✗ 既定では — `simplicio init codex` は MCP ツールを追加するが LLM トラフィックはルーティングしない；`simplicio wrap codex` またはプロキシを指す OpenAI base-url で計測 |
+
+つまり、**節約はあらゆるランタイムで起きます**；**モニターは Hermes では自動的に集計し**、Claude/Codex
+では**一度きりのルーティング手順**（`simplicio wrap …` ／ base-url → `:8788`）の後に集計します。
+ルーティングなしでも経済は適用されます——モニターがそのトークンを数えないだけです。
+`scripts/simplicio-economy.sh wire` がインストール時に OpenAI 互換クライアント向けにこのルーティングを
+行います。
 
 ### 📈 Simplicio Token Monitor
 
@@ -318,7 +437,7 @@ flowchart TD
 （axumリバースプロキシ）、`simplicio-parity`（Rust↔Pythonパリティハーネス）。`maturin` でビルドします——Python
 エンジンはそれらなしでも完全に動作し、クレートはネイティブの高速性を加えるだけです。
 
-|---
+---
 
 ## 🏛️ Design pillars (in detail)
 
@@ -374,6 +493,9 @@ Python）。GitHubソースには、`git` ＋認証済みの `gh`。[`INSTALL.md
 - すべての差分を**シークレットスキャン**し、ヒットしたらブロックします。
 - **不可逆操作の人間ゲート** — force-push、履歴の書き換え、本番デプロイ、データ／スキーマの削除、
   大量ファイルの削除 → 停止して尋ねます。ヘッドレス＋承認者なし → 破壊的な機能を取り除きます。
+- **約束だけでなく強制される** — `hooks/action_gate.py` は**フェイルクローズ**の `PreToolUse` ／
+  git-pre-push フックで、上記（およびシークレットを含むコミット）を実行*前*に機械的にブロックします。
+  安全契約はモデルが忘れても成立します。`selftest` がルールセットを証明します（14/14）。
 - **4状態の実行前判定** — 最適化がコマンドのリスクティアを引き上げることは決して許されません。
 - **読み込み前の信頼確認** — 認識を形作る設定（クランププロファイル、抑制リスト）は、人間が
   レビューしてハッシュでピン留めするまで信頼されません。
@@ -384,6 +506,40 @@ Python）。GitHubソースには、`git` ＋認証済みの `gh`。[`INSTALL.md
 
 ---
 
+## ✅ Tests & local checks (no paid CI)
+
+主張は、ただ断言されるのではなく検証されます——そしてそのゲートは**ローカル**で、CIコストはゼロで実行されます：
+
+```bash
+python3 scripts/check.py            # the whole gate (audit + tests)
+```
+
+- **テストスイート**（`tests/`） — ワーカーの決定論的な `selftest`、加えて**ループドライバ**
+  （`hooks/loop_stop.py`）の**e2e**：ループが**エビデンスで停止する**、**裸の `<promise>` を無視
+  する**、**上限で停止する**ことをそれぞれ別個の出口として証明し、エビデンスプロデューサーが
+  ツールチェーンの不在時に**BLOCK**する（決してフェイクで通さない）ことも証明します。`pytest` の下、
+  *または*、pipが一切なくても、裸のpython3で自己実行します（`python3 tests/test_*.py`）。
+- **Claims audit**（`scripts/claims_audit.py`、フェイルクローズ） — ドキュメントが参照する
+  すべての `scripts/*.py` が存在 · 拡張ポイントのカウントが全ファイルで一致 · 引用された各ワーカー
+  コマンドが実際に動く · 出荷される `simplicio_loop/_bundle/` のスキルがソースと**バイト単位で同一**。
+- **gitのpre-pushフックとして配線**して、`main` を無料で誠実に保ちます：
+  ```bash
+  printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+  ```
+
+`pip install "simplicio-loop[dev]"` はより見やすい出力のためにpytestを追加します；必須ではありません。
+
+---
+
 ## 📄 License
 
 MIT
+
+## 💳 Pricing
+
+エンジンは**無料でMIT**です——完全にセルフホスト可能で、決して機能を削られていません。提案されている
+**オープンコアのホスト型ティア**（マネージドな24/7 watcher、ホストされたオペレーター、保持される
+節約ダッシュボード、分散 `video_evidence` レンダリング）は [`PRICING.md`](../PRICING.md) にスケッチ
+されており、ループが既に生成する計測プリミティブ（`loop-budget.json` キルスイッチ＋
+`savings_ledger`）の上に構築された、決定論的でプライバシーを保護する課金アーキテクチャも併せて
+記しています。これは提案であり——今日課金されるものは何もありません。

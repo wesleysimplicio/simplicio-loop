@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — Evrensel Döngülü Yapay Zeka Orkestratörü
+# 🔁 simplicio-tasks — The Universal Looping AI Orchestrator
 
 <p align="center">
   <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -6,17 +6,17 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-10-skill--hızlandırıcı"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-11-skill--hızlandırıcı"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
   <a href="#-kaynak-adaptörleri"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtime-tek-protokol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-43-genişletme-noktası"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
+  <a href="#-token-ekonomisi"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
   <a href="#-token-ekonomisi"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-10-skill--hızlandırıcı">10 Skill</a> ·
+  <a href="#-11-skill--hızlandırıcı">11 Skill</a> ·
   <a href="#-kaynak-adaptörleri">Kaynak Adaptörleri</a> ·
   <a href="#-11-runtime-tek-protokol">11 Runtime</a> ·
   <a href="#-döngü">Döngü</a> ·
@@ -78,15 +78,41 @@ yapmasıdır.
 
 ---
 
-## 🧠 10 skill & hızlandırıcı
+## 📘 Resmi yetenek kaydı (v3.4.0)
 
-Orkestratör çekirdeği + beş uydu + dört hızlandırıcı. Her uydu **isteğe bağlıdır** — yüklendiğinde
-orkestratör ona devreder (daha zengin + daha ucuz); yokken dahili protokol işin %100'ünü kapsar.
-Hızlandırıcılar **otomatik algılanır** — mevcut = kullanılır, yok = LLM yedeği.
+`simplicio-tasks`'in sunduklarının eksiksiz, resmi listesi — aşağıdaki her yetenek **gerçek,
+çalıştırılabilir ve test edilmiştir** (`python3 scripts/check.py`: claims-audit 4/4 + 24 test). Her
+biri kendi derin bölümüne ve worker'ına bağlanır.
+
+| Yetenek | Ne yapar | Kanıt / worker | Ayrıntılar |
+|---|---|---|---|
+| 🎬 **Video kanıtı** (`video_evidence`) | Bir ekranın/özelliğin **deterministik MP4** demosunu [hyperframes](https://github.com/heygen-com/hyperframes) ile render eder — `/simplicio-tasks faça um vídeo demonstrativo da tela X` isteğini karşılar ve bir UI değişikliğinin çalıştığına dair CI'da yeniden üretilebilir bir kanıt olarak da iş görür | `scripts/video_evidence.py` · Node 22+/FFmpeg olmadan BLOCKED (asla sahte-geçiş) | [§ Video kanıtı](#-video-kanıtı--hyperframes-ile-demo-videoları) |
+| 🧠 **Deneme belleği + takılma dedektörü** | Kalıcı bir koşu-günlüğü (`.orchestrator/loop/journal.jsonl`) + bir takılma dedektörü, böylece döngü **salınım yapmak yerine strateji değiştirir**; artımlı triaj (`since`) her turda yalnızca farkı okur | `scripts/loop_journal.py` · `selftest` 9/9 | [§ Anti-salınım](#-deneme-belleği--takılma-dedektörü-anti-salınım) |
+| 🔒 **Fail-closed güvenlik kapısı** (`action_gate`) | force-push, geçmiş yeniden yazma, toplu-silme, yıkıcı DDL, altyapı sökme ve gizli-yüklü commit/push'ları **mekanik olarak engelleyen** bir `PreToolUse`/git-pre-push hook'u — Adım 5 düzyazı değil, çalıştırılabilir hale getirildi | `hooks/action_gate.py` · `selftest` 15/15 | [§ Güvenlik](#-güvenlik-pazarlığa-kapalı) |
+| 🔬 **Yerel doğrulama** | Bir test paketi (worker selftest'leri + kanıt-kapılı çıkışı kanıtlayan bir **döngü sürücüsü e2e'si**) + bir **claims-audit** (referans verilen scriptler var · sayımlar tutarlı · `_bundle ≡ source`) — hepsi yerel, **ücretli CI yok** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Testler & yerel kontroller](#-testler--yerel-kontroller-ücretli-ci-yok) |
+| ✅ **Dürüst tasarruflar** | Tasarruf satırı artık **zorunlu değil, kanıt-kapılıdır** — bir sayı yalnızca ölçülmüş bir makbuzla (clamp/signatures/cache/`deterministic_edit`/ledger) gösterilir; asla uydurulmaz | token-ekonomisi sözleşmesi | [§ Token ekonomisi](#-token-ekonomisi) |
+| 💳 **Open-core faturalama** | Döngünün zaten ürettiği metrikleme üzerinden deterministik, gizliliği koruyan bir meter→fatura akışı (kill-switch + `savings_ledger`) — üç kademe (seat/run/metered) | `scripts/billing_aggregator.py` · `selftest` 11/11 | [PRICING.md](../PRICING.md) |
+
+İki döngü **modu** sonlandırmayı açık kılar: **converge** (tek bir sert görev — kanıt-kapılı
+`<promise>` veya bir takılma yükseltmesinde biter) vs **drain** (bir kuyruk — kaynak yeniden-sorgusu
+K tur boş kaldığında biter). Her ikisi de yine evrensel çıkışlara uyar (promise+kanıt,
+`max_iterations`, bütçe, STOP).
+
+> Bu iş hattındaki döngü puanlaması: **7.5** (güçlü tasarım, kanıtlanmamış) → **9** (deneme belleği +
+> anti-salınım) → **9.5** (yeniden üretilebilir yerel kanıt) → **~10** (zorunlu güvenlik + eksiksiz
+> döngü semantiği). Doğrulama altyapısı, proje büyüdükçe artık projenin kendi gerilemelerini de yakalar.
+
+---
+
+## 🧠 11 skill & hızlandırıcı
+
+Orkestratör çekirdeği + beş uydu + beş hızlandırıcı/entegrasyon. Her uydu **isteğe bağlıdır** —
+yüklendiğinde orkestratör ona devreder (daha zengin + daha ucuz); yokken dahili protokol işin
+%100'ünü kapsar. Hızlandırıcılar **otomatik algılanır** — mevcut = kullanılır, yok = LLM yedeği.
 
 | # | Yetenek | Özümsediği | Ne yapar | Token etkisi |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-tasks** | — | Orkestratör döngüsü: 43 genişletme noktası, çift-yollu yönlendirici, öz-denetimle yakınsama | Çekirdek |
+| 1 | 🔁 **simplicio-tasks** | — | Orkestratör döngüsü: 44 genişletme noktası, çift-yollu yönlendirici, öz-denetimle yakınsama | Çekirdek |
 | 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Sertleştirilmiş Ralph döngüsü: kanıt-kapılı `<promise>` çıkışı, max_iterations tavanı | Döngü sürücüsü |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-öncelikli yürütme, çıktı-azaltma kataloğu, tee-cache, imza-okuma | L0 deterministik |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Ayrı rubriklerde paralel çekişmeli inceleme → deduplike edilmiş karar | Kalite kapısı |
@@ -96,9 +122,12 @@ Hızlandırıcılar **otomatik algılanır** — mevcut = kullanılır, yok = LL
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Oturum analitiği, maliyet takibi, takılı-oturum keşfi | **L1** yalnızca SQL |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Döngü turları arasında KV cache — yerel modellerde %40-70 TTFT azalması | GPU süresi ↓ |
 | 10 | 🗜️ **Simplicio yakalama motoru** | `engine/simplicio_engine.py` (yerel, yalnızca stdlib; OSS [headroom](https://github.com/headroomlabs-ai/headroom) projesiyle savings-schema uyumlu) | Şeffaf yakalama proxy'si: gerçek sağlayıcıya iletir, ölçer + deterministik olarak sıkıştırır, `proxy_savings.json` yazar | **deterministik** |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | Bir ekranın/özelliğin **deterministik MP4** demo videosunu render eder — `/simplicio-tasks faça um vídeo demonstrativo da tela X` isteğini karşılar VE bir UI değişikliğinin çalıştığına dair CI'da yeniden üretilebilir bir kanıt olarak da iş görür | Kanıt üreticisi |
 
 Her skill [`.claude/skills/`](../.claude/skills) altında yaşar; her hızlandırıcının
-`.claude/skills/simplicio-tasks/references/` altında bir referans dokümanı vardır.
+`.claude/skills/simplicio-tasks/references/` altında bir referans dokümanı vardır (video üreticisi:
+[`video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md), worker
+[`scripts/video_evidence.py`](../scripts/video_evidence.py)).
 
 ---
 
@@ -117,7 +146,7 @@ fiil sunar: `list_ready`, `get_details`, `claim`, `update_status`, `attach_evide
 
 Her adaptörün referans dokümanına `.claude/skills/simplicio-tasks/references/` altında bakın.
 
-|---
+---
 
 ## 🌐 11 runtime, tek protokol
 
@@ -196,7 +225,7 @@ flowchart TD
   subgraph QG["7 · Quality gates"]
     direction LR
     Q1["AC gate = real DoD"]
-    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q2["WORKS not just compiles · web_verify (Playwright) · video_evidence (hyperframes MP4)"]
     Q3["adversarial review · thermos rubrics"]
   end
   QG --> SG
@@ -220,7 +249,7 @@ flowchart TD
     F2["review comments -> adjust"]
     F3["branch behind main -> additive rebase"]
   end
-  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  FB -->|"merged and closed"| DONE(["done + evidence + measured savings (only if a receipt exists)"])
   WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
@@ -243,6 +272,73 @@ kendi önceki çalışmasını görür. Çıkış YALNIZCA şunlarla olur:
 Turlar arasında, LMCache (mevcut olduğunda) KV durumunu cache'ler, böylece yeniden besleme neredeyse
 sıfır prefill maliyeti tutar.
 
+### 🧠 Deneme belleği + takılma dedektörü (anti-salınım)
+
+Hiçbir şey hatırlamayan bir yeniden-besleme döngüsü salınım yapar — X'i dene, başarısız ol, X'i
+tekrar dene — tavan tükenene dek. simplicio-loop **kalıcı bir koşu-günlüğü** tutar
+(`.orchestrator/loop/journal.jsonl`, yalnızca-ekleme: `iteration · action · hypothesis · gate ·
+error-fingerprint`) ve bir **takılma dedektörü**
+([`scripts/loop_journal.py`](../scripts/loop_journal.py), deterministik + modelden bağımsız):
+
+- **Hata parmak izi** — başarısız kapı çıktısı, satır numaraları, yollar, hex/uuid'ler, zaman
+  damgaları ve süreler normalize edilerek kararlı bir hash'e indirgenir, böylece *aynı* hata,
+  arızi metin farklı olsa bile turlar arası tanınır.
+- **Takılma = arka arkaya K özdeş-parmak-izi başarısızlığı** (varsayılan K=3). Değişen bir parmak
+  izi döngünün hareket ettiği anlamına gelir (PROGRESS); aynısının K kez gelmesi döngünün boşa
+  döndüğü anlamına gelir (STALLED).
+- STALLED durumunda döngü aynı hedefi **yeniden beslemez** — kaçınılacak **çıkmaz eylemleri**
+  adlandırır, ardından **strateji değiştirir** ya da parmak iziyle **insan kapısına yükseltir**.
+- `loop_journal.py resume` her turun başında okunur, böylece taze bir süreç önceki denemeleri
+  yeniden türetmeden devam eder (gerçek resume) ve bilinen bir çıkmazı asla yeniden denemez.
+
+```bash
+loop_journal.py resume                       # what was tried + dead-ends to avoid
+loop_journal.py record --iteration N --action "…" --gate fail --gate-output test.log
+loop_journal.py stall --k 3 --exit-code      # PROGRESS → re-feed · STALLED → switch/escalate
+```
+
+---
+
+## 🎬 Video kanıtı — hyperframes ile demo videoları
+
+Döngü, istek üzerine bir ekranın/özelliğin **gösterim videolarını oluşturabilir** ve bu videoyu bir
+değişikliğin çalıştığına dair kanıt olarak yeniden kullanabilir. Üretici
+[**hyperframes**](https://github.com/heygen-com/hyperframes)'tir (HeyGen tarafından) — HTML/CSS/medya
+kompozisyonlarını **deterministik bir MP4**'e render eder ("aynı girdi, aynı kareler, aynı çıktı"),
+böylece demo, atılıp gidecek bir kayıt değil, CI'da yeniden üretilebilir bir artefakttır. API
+anahtarı yok; headless Chrome + FFmpeg ile yerel render (Node 22+).
+
+İki şekilde tetiklenir — her ikisi de `video_evidence` genişletme noktası aracılığıyla (worker
+[`scripts/video_evidence.py`](../scripts/video_evidence.py), sözleşme
+[`references/video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md)):
+
+1. **İstek üzerine — video, teslimatın kendisidir.** Doğrudan isteyin, orkestratör iş-öğesini
+   hyperframes üreticisine yönlendirir:
+
+   ```text
+   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
+   → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
+   → attach the MP4 to the PR as evidence + close with the link
+   ```
+
+2. **Kanıt olarak — video, bir kod değişikliğini destekler.** Bir UI değişikliğinden sonra, aynı MP4
+   yürüyüşü "sadece derlenmiyor, çalışıyor" makbuzunun en güçlüsüdür (Adım 4b) ve döngü için geçerli
+   bir kanıt-kapılı `<promise>`'tir — hiç render edilmemiş bir video **BLOCKED** verir, asla sahte
+   bir geçiş değil.
+
+İki kanıt üreticisi zincirlenir: `web_verify` (Playwright) adım-başına ekran görüntülerini yakalar,
+`video_evidence` (hyperframes) bunları başlıklı, deterministik bir MP4 yürüyüşü halinde birleştirir.
+Kanıt her zaman bir **dosya yolu + boolean karardır** — asla bağlamda video bytes değil (token
+ekonomisi).
+
+```bash
+# one-shot, outside the loop
+python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py verify  --name checkout-demo \
+    --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
+```
+
 ---
 
 ## 📊 Token ekonomisi
@@ -260,7 +356,34 @@ sıfır prefill maliyeti tutar.
 | Simplicio yakalama proxy'si + MCP | Şeffaf bir sıkıştırma daemon'ı aracılığıyla araç çıktılarında %60-95 daha az token |
 
 Tasarruflar yalnızca doğrulanmış-doğru bir sonuçta sayılır. Baz çizgi = aynı sonuca giden en ucuz
-makul orkestrasyonsuz yol. Bkz. `references/token-economy.md`.
+makul orkestrasyonsuz yol. **Tasarruf raporlaması zorunlu değil, kanıt-kapılıdır:** bir tasarruf
+rakamı yalnızca bir tur gerçekten ekonomi-üreten bir komut çalıştırdığında ve sayı ölçülmüş bir
+makbuza (clamp tee, signatures-read, cache isabeti, `deterministic_edit`, `savings_ledger`)
+izlendiğinde gösterilir. Ölçülmüş ekonomi yok → tasarruf satırı yok; orkestratör asla bir baz çizgi
+ya da yüzde uydurmaz. Bkz. `references/token-economy.md`.
+
+### 🔎 `simplicio-tasks` çalıştırmak: ekonomi vs ölçüm (runtime başına)
+
+**`simplicio-tasks`**'i çağırdığınızda iki farklı şey olur ve bunlar runtime başına farklı davranır:
+
+- **Ekonomi** — sıkıştırma, çıktı kırpmaları, yalnızca-imza okumaları, `deterministic_edit` — skill
+  her çalıştığında ve `simplicio-orient` / `simplicio-compress`'i yüklediğinde **herhangi bir
+  runtime'da geçerlidir.** Bu, skill'in davranışı artı hook'lardır (hook'ların olduğu yerde en güçlü:
+  `orient_clamp.py` Claude ve Cursor'da otomatik-kırpar; başka yerlerde talimat-güdümlüdür).
+- **Ölçüm** — Token Monitor'ün canlı sayıları — yalnızca yakalama proxy'sinden **geçen** trafiği
+  sayar.
+
+| Runtime | Ekonomi (skill) | Ölçüm (monitör) |
+|---|---|---|
+| **Hermes** | ✓ | ✓ **otomatik** — zaten proxy üzerinden yönlendirilmiş (`base_url → :8788`) |
+| **Claude** | ✓ (skill + hook'lar) | ✗ varsayılan olarak — Claude doğrudan `api.anthropic.com` ile konuşur; yalnızca yönlendirildiğinde ölçülür (`simplicio wrap claude` ya da `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
+| **Codex** | ✓ (skill) | ✗ varsayılan olarak — `simplicio init codex` MCP araçlarını ekler ama LLM trafiğini yönlendirmez; `simplicio wrap codex` ya da proxy'ye işaret eden bir OpenAI base-url ile ölçülür |
+
+Yani: **tasarruflar her runtime'da gerçekleşir**; **monitör bunları Hermes'te otomatik olarak
+toplar** ve Claude/Codex'te bir **tek-seferlik yönlendirme adımından** sonra (`simplicio wrap …` /
+base-url → `:8788`). Yönlendirme olmadan ekonomi yine de geçerlidir — monitör yalnızca o token'ları
+saymaz. `scripts/simplicio-economy.sh wire`, kurulum sırasında OpenAI-uyumlu istemciler için bu
+yönlendirmeyi yapar.
 
 ### 📈 Simplicio Token Monitor
 
@@ -320,7 +443,7 @@ buna atıfta bulunur): `simplicio-core` (sıkıştırıcılar + smart-crusher), 
 `simplicio-proxy` (axum ters proxy), `simplicio-parity` (Rust↔Python parite koşum takımı). `maturin`
 ile derleyin — Python motoru onlar olmadan tam çalışır; crate'ler yalnızca yerel hız ekler.
 
-|---
+---
 
 ## 🏛️ Tasarım sütunları (ayrıntılı)
 
@@ -377,6 +500,10 @@ watcher gözetimsiz çalışmayı reddeder (fail-safe).
 - **Geri-alınamaz-işlem insan kapısı** — force-push, geçmiş yeniden yazma, prod dağıtımı,
   veri/şema silme, toplu-dosya silme → dur ve sor. Headless + onaylayan yok → yıkıcı yeteneği
   kaldır.
+- **Sadece vaat değil, zorunlu** — `hooks/action_gate.py`, yukarıdakileri (ve gizli-yüklü
+  commit'leri) çalışmadan *önce* mekanik olarak engelleyen bir **fail-closed** `PreToolUse` /
+  git-pre-push hook'udur. Güvenlik sözleşmesi, model onu unutsa bile geçerli kalır. `selftest`
+  kural setini kanıtlar (14/14).
 - **4 durumlu yürütme-öncesi karar** — optimizasyon, bir komutun risk kademesini asla yükseltemez.
 - **Yüklemeden-önce-güven** — algıyı şekillendiren yapılandırma (kırpma profilleri, bastırma
   listeleri), bir insan onu inceleyip hash ile sabitleyene dek güvenilmezdir.
@@ -386,6 +513,41 @@ watcher gözetimsiz çalışmayı reddeder (fail-safe).
 
 ---
 
+## ✅ Testler & yerel kontroller (ücretli CI yok)
+
+İddialar yalnızca öne sürülmez, doğrulanır — ve kapı **yerel** çalışır, sıfır CI maliyetiyle:
+
+```bash
+python3 scripts/check.py            # the whole gate (audit + tests)
+```
+
+- **Test paketi** (`tests/`) — worker'ların deterministik `selftest`'leri, artı bir **döngü
+  sürücüsü e2e'si** (`hooks/loop_stop.py`): döngünün ayrı çıkışlar olarak **kanıtta durduğunu**,
+  **çıplak bir `<promise>`'i yok saydığını** ve **tavanda durduğunu** kanıtlar — ve kanıt
+  üreticilerinin, araç zincirleri yokken **BLOCK** ettiğini (asla sahte-geçiş değil). `pytest`
+  altında *veya*, hiç pip olmadan, çıplak python3'te kendi kendine çalışır (`python3 tests/test_*.py`).
+- **Claims audit** (`scripts/claims_audit.py`, fail-closed) — dokümanların referans verdiği her
+  `scripts/*.py` var · genişletme noktası sayısı tüm dosyalarda uyuşuyor · her atıf yapılan worker
+  komutu gerçekten çalışıyor · sevk edilen `simplicio_loop/_bundle/` skill'leri kaynakla
+  **byte-özdeş**.
+- **Onu bir git pre-push hook'u olarak bağlayın**, `main`'i ücretsiz dürüst tutmak için:
+  ```bash
+  printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+  ```
+
+`pip install "simplicio-loop[dev]"` daha güzel çıktı için pytest ekler; asla zorunlu değildir.
+
+---
+
 ## 📄 Lisans
 
 MIT
+
+## 💳 Fiyatlandırma
+
+Motor **ücretsiz ve MIT'tir** — tamamen kendi sunucunuzda barındırılabilir, asla kısıtlanmamış.
+Önerilen bir **open-core barındırılan kademe** (yönetilen 7/24 watcher, barındırılan operatörler,
+saklanan tasarruf panosu, dağıtık `video_evidence` render) [`PRICING.md`](../PRICING.md)'de, döngünün
+zaten ürettiği metrikleme primitifleri üzerine kurulu deterministik, gizliliği koruyan bir faturalama
+mimarisiyle birlikte taslak halinde sunulmuştur (`loop-budget.json` kill-switch + `savings_ledger`).
+Bu bir öneridir — bugün hiçbir şey faturalandırılmaz.
