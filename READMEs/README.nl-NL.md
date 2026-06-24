@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — De universele lussende AI-orkestrator
+# 🔁 simplicio-tasks — The Universal Looping AI Orchestrator
 
 <p align="center">
   <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -6,17 +6,17 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-de-10-skills--accelerators"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-de-11-skills--accelerators"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtimes-één-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-de-43-uitbreidingspunten"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
+  <a href="#-de-44-uitbreidingspunten"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
   <a href="#-token-economie"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-de-10-skills--accelerators">10 Skills</a> ·
+  <a href="#-de-11-skills--accelerators">11 Skills</a> ·
   <a href="#-source-adapters">Source Adapters</a> ·
   <a href="#-11-runtimes-één-protocol">11 Runtimes</a> ·
   <a href="#-de-lus">De lus</a> ·
@@ -78,16 +78,43 @@ token-economie**.
 
 ---
 
-## 🧠 De 10 skills & accelerators
+## 📘 Officieel capaciteitsregister (v3.4.0)
 
-De orkestrator-kern + vijf satellieten + vier accelerators. Elke satelliet is **optioneel** —
-wanneer geladen, delegeert de orkestrator eraan (rijker + goedkoper); wanneer afwezig, dekt het
-inline-protocol 100%. Accelerators worden **automatisch gedetecteerd** — aanwezig = gebruikt,
-afwezig = LLM-fallback.
+Het complete, officiële overzicht van wat `simplicio-tasks` levert — elke capaciteit hieronder is
+**echt, uitvoerbaar en getest** (`python3 scripts/check.py`: claims-audit 4/4 + 24 tests). Elk
+verwijst naar zijn uitgebreide sectie en zijn worker.
+
+| Capaciteit | Wat het doet | Bewijs / worker | Details |
+|---|---|---|---|
+| 🎬 **Video-bewijs** (`video_evidence`) | Rendert een **deterministische MP4**-demo van een scherm/feature met [hyperframes](https://github.com/heygen-com/hyperframes) — vervult `/simplicio-tasks faça um vídeo demonstrativo da tela X` en dient tevens als CI-reproduceerbaar bewijs dat een UI-wijziging werkt | `scripts/video_evidence.py` · GEBLOKKEERD (nooit fake-pass) zonder Node 22+/FFmpeg | [§ Video-bewijs](#-video-bewijs--demovideos-via-hyperframes) |
+| 🧠 **Pogingengeheugen + stall-detector** | Een duurzaam run-journal (`.orchestrator/loop/journal.jsonl`) + een stall-detector zodat de lus **van strategie verandert in plaats van te oscilleren**; incrementele triage (`since`) leest elke beurt alleen het verschil | `scripts/loop_journal.py` · `selftest` 9/9 | [§ Anti-oscillatie](#-pogingengeheugen--stall-detector-anti-oscillatie) |
+| 🔒 **Fail-closed veiligheidspoort** (`action_gate`) | Een `PreToolUse`-/git-pre-push-hook die **mechanisch** force-push, history-herschrijving, massa-verwijdering, destructieve DDL, infra-afbraak en commits/pushes vol secrets **blokkeert** — Stap 5 uitvoerbaar gemaakt, niet als proza | `hooks/action_gate.py` · `selftest` 15/15 | [§ Veiligheid](#-veiligheid-niet-onderhandelbaar) |
+| 🔬 **Lokale verificatie** | Een testsuite (worker-selftests + een **e2e van de loop-driver** die bewijs-gepoorte uitgang aantoont) + een **claims-audit** (gerefereerde scripts bestaan · tellingen consistent · `_bundle ≡ source`) — allemaal lokaal, **geen betaalde CI** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Tests & lokale checks](#-tests--lokale-checks-geen-betaalde-ci) |
+| ✅ **Eerlijke besparing** | De besparingsregel is nu **bewijs-gepoort, niet verplicht** — een getal wordt alleen getoond met een gemeten bewijsstuk (clamp/signatures/cache/`deterministic_edit`/ledger); nooit verzonnen | token-economie-contract | [§ Token-economie](#-token-economie) |
+| 💳 **Open-core facturatie** | Een deterministische, privacy-bewarende meter→factuur over de metering die de lus toch al produceert (kill-switch + `savings_ledger`) — drie niveaus (seat/run/metered) | `scripts/billing_aggregator.py` · `selftest` 11/11 | [PRICING.md](../PRICING.md) |
+
+Twee lus-**modi** maken terminatie expliciet: **converge** (één harde taak — eindigt op de
+bewijs-gepoorte `<promise>` of een stall-escalatie) versus **drain** (een wachtrij — eindigt wanneer
+de herbevraging van de bron K rondes leeg blijft). Beide gehoorzamen nog steeds de universele
+uitgangen (promise+bewijs, `max_iterations`, budget, STOP).
+
+> Lusscore over deze lijn van werk: **7.5** (sterk ontwerp, onbewezen) → **9** (pogingengeheugen +
+> anti-oscillatie) → **9.5** (reproduceerbaar lokaal bewijs) → **~10** (afgedwongen veiligheid +
+> complete lus-semantiek). De verificatie-infra vangt nu de eigen regressies van het project op
+> naarmate het groeit.
+
+---
+
+## 🧠 De 11 skills & accelerators
+
+De orkestrator-kern + vijf satellieten + vijf accelerators/integraties. Elke satelliet is
+**optioneel** — wanneer geladen, delegeert de orkestrator eraan (rijker + goedkoper); wanneer
+afwezig, dekt het inline-protocol 100%. Accelerators worden **automatisch gedetecteerd** — aanwezig
+= gebruikt, afwezig = LLM-fallback.
 
 | # | Capaciteit | Neemt over van | Wat het doet | Token-impact |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-tasks** | — | De orkestrator-lus: 43 uitbreidingspunten, dual-path-router, zelfaudit-convergentie | Kern |
+| 1 | 🔁 **simplicio-tasks** | — | De orkestrator-lus: 44 uitbreidingspunten, dual-path-router, zelfaudit-convergentie | Kern |
 | 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Geharde Ralph-lus: bewijs-gepoorte `<promise>`-uitgang, max_iterations-plafond | Lusaandrijving |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-first uitvoering, output-reductiecatalogus, tee-cache, signatures-read | L0 deterministisch |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Parallelle adversariële review op afzonderlijke rubrieken → gededupliceerd oordeel | Kwaliteitspoort |
@@ -97,9 +124,12 @@ afwezig = LLM-fallback.
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Sessie-analyse, kostenregistratie, ontdekking van vastgelopen sessies | **L1** alleen SQL |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV-cache tussen lusbeurten — 40-70% TTFT-reductie op lokale modellen | GPU-tijd ↓ |
 | 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (native, alleen-stdlib; savings-schema compatibel met het OSS-project [headroom](https://github.com/headroomlabs-ai/headroom)) | Transparante capture-proxy: stuurt door naar de echte provider, meet + comprimeert deterministisch, schrijft `proxy_savings.json` | **deterministisch** |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | Rendert een **deterministische MP4**-demovideo van een scherm/feature — vervult `/simplicio-tasks faça um vídeo demonstrativo da tela X` ÉN dient tevens als CI-reproduceerbaar bewijs dat een UI-wijziging werkt | Bewijsproducent |
 
 Elke skill leeft onder [`.claude/skills/`](../.claude/skills); elke accelerator heeft een
-referentiedocument onder `.claude/skills/simplicio-tasks/references/`.
+referentiedocument onder `.claude/skills/simplicio-tasks/references/` (de video-producent:
+[`video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md), worker
+[`scripts/video_evidence.py`](../scripts/video_evidence.py)).
 
 ---
 
@@ -118,7 +148,7 @@ De orkestrator ontdekt werk uit elke bron via pluggable adapters. Elke biedt zes
 
 Zie het referentiedocument van elke adapter onder `.claude/skills/simplicio-tasks/references/`.
 
-|---
+---
 
 ## 🌐 11 runtimes, één protocol
 
@@ -196,7 +226,7 @@ flowchart TD
   subgraph QG["7 · Quality gates"]
     direction LR
     Q1["AC gate = real DoD"]
-    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q2["WORKS not just compiles · web_verify (Playwright) · video_evidence (hyperframes MP4)"]
     Q3["adversarial review · thermos rubrics"]
   end
   QG --> SG
@@ -220,7 +250,7 @@ flowchart TD
     F2["review comments -> adjust"]
     F3["branch behind main -> additive rebase"]
   end
-  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  FB -->|"merged and closed"| DONE(["done + evidence + measured savings (only if a receipt exists)"])
   WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
@@ -244,6 +274,74 @@ zodat de agent zijn eigen eerdere werk ziet. Uitgang is ALLEEN via:
 Tussen beurten cachet LMCache (indien beschikbaar) de KV-toestand zodat herinvoer bijna-nul prefill
 kost.
 
+### 🧠 Pogingengeheugen + stall-detector (anti-oscillatie)
+
+Een herinvoer-lus die niets onthoudt oscilleert — probeer X, faal, probeer X opnieuw — totdat het
+plafond opbrandt. simplicio-loop houdt een **duurzaam run-journal** bij
+(`.orchestrator/loop/journal.jsonl`, append-only:
+`iteration · action · hypothesis · gate · error-fingerprint`) en een **stall-detector**
+([`scripts/loop_journal.py`](../scripts/loop_journal.py), deterministisch + modelvrij):
+
+- **Error fingerprint** — de output van de falende poort wordt gereduceerd tot een stabiele hash met
+  regelnummers, paden, hex/uuids, timestamps en duraties weg-genormaliseerd, zodat dezelfde bug over
+  beurten heen wordt herkend, zelfs wanneer de bijkomstige tekst verschilt.
+- **Stall = K identieke-fingerprint-falingen op rij** (standaard K=3). Een veranderende fingerprint
+  betekent dat de lus beweegt (PROGRESS); dezelfde K keer betekent dat hij rondtolt (STALLED).
+- Bij STALLED voert de lus **niet** hetzelfde doel opnieuw in — hij benoemt de te vermijden
+  **doodlopende acties**, en **wisselt dan van strategie** of **escaleert naar de menselijke poort**
+  met de fingerprint.
+- `loop_journal.py resume` wordt aan het begin van elke beurt gelezen, zodat een vers proces
+  doorgaat zonder eerdere pogingen opnieuw af te leiden (echte resume) en nooit een bekende
+  doodlopende weg opnieuw probeert.
+
+```bash
+loop_journal.py resume                       # what was tried + dead-ends to avoid
+loop_journal.py record --iteration N --action "…" --gate fail --gate-output test.log
+loop_journal.py stall --k 3 --exit-code      # PROGRESS → re-feed · STALLED → switch/escalate
+```
+
+---
+
+## 🎬 Video-bewijs — demovideo's via hyperframes
+
+De lus kan op verzoek **demonstratievideo's** van een scherm/feature **maken**, en die video
+hergebruiken als bewijs dat een wijziging werkt. De producent is
+[**hyperframes**](https://github.com/heygen-com/hyperframes) (van HeyGen) — het rendert HTML/CSS/media-
+composities naar een **deterministische MP4** ("dezelfde input, dezelfde frames, dezelfde output"),
+zodat de demo een CI-reproduceerbaar artefact is, geen wegwerpopname. Geen API-sleutels; lokale
+render via headless Chrome + FFmpeg (Node 22+).
+
+Twee manieren waarop het afgaat — beide via het `video_evidence`-uitbreidingspunt (worker
+[`scripts/video_evidence.py`](../scripts/video_evidence.py), contract
+[`references/video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md)):
+
+1. **Op verzoek — de video IS het op te leveren product.** Vraag er rechtstreeks om en de
+   orkestrator routeert het werkitem naar de hyperframes-producent:
+
+   ```text
+   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
+   → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
+   → attach the MP4 to the PR as evidence + close with the link
+   ```
+
+2. **Als bewijs — de video onderbouwt een codewijziging.** Na een UI-wijziging is dezelfde
+   MP4-walkthrough het sterkste "werkt, niet alleen compileert"-bewijsstuk (Stap 4b) en een geldige
+   bewijs-gepoorte `<promise>` voor de lus — een video die nooit gerenderd werd levert **BLOCKED**
+   op, nooit een nep-pass.
+
+De twee bewijsproducenten ketenen: `web_verify` (Playwright) legt de per-stap-screenshots vast,
+`video_evidence` (hyperframes) assembleert ze tot een ondertitelde, deterministische
+MP4-walkthrough. Bewijs is altijd een **bestandspad + booleaans oordeel** — nooit videobytes in
+context (token-economie).
+
+```bash
+# one-shot, outside the loop
+python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py verify  --name checkout-demo \
+    --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
+```
+
 ---
 
 ## 📊 Token-economie
@@ -261,7 +359,36 @@ kost.
 | Simplicio capture-proxy + MCP | 60-95% minder tokens op tool-outputs via een transparante compressiedaemon |
 
 Besparingen tellen alleen bij een geverifieerd-correcte uitkomst. Baseline = het goedkoopste
-verstandige niet-georkestreerde pad naar hetzelfde resultaat. Zie `references/token-economy.md`.
+verstandige niet-georkestreerde pad naar hetzelfde resultaat. **Besparingsrapportage is
+bewijs-gepoort, niet verplicht:** een besparingscijfer wordt alleen getoond wanneer een beurt
+daadwerkelijk een economie-producerend commando heeft uitgevoerd en het getal traceerbaar is naar
+een gemeten bewijsstuk (clamp-tee, signatures-read, cache-hit, `deterministic_edit`,
+`savings_ledger`). Geen gemeten economie → geen besparingsregel; de orkestrator verzint nooit een
+baseline of een percentage. Zie `references/token-economy.md`.
+
+### 🔎 `simplicio-tasks` draaien: economie versus meting (per runtime)
+
+Twee verschillende dingen gebeuren wanneer je **`simplicio-tasks`** aanroept, en ze gedragen zich
+verschillend per runtime:
+
+- **Economie** — compressie, output-clamps, signatures-only leesmodus, `deterministic_edit` — geldt
+  **elke keer dat de skill draait en `simplicio-orient` / `simplicio-compress` laadt, op elke
+  runtime.** Het is het gedrag van de skill plus de hooks (het sterkst waar hooks bestaan:
+  `orient_clamp.py` clamp't automatisch op Claude en Cursor; elders is het instructie-gedreven).
+- **Meting** — de live-getallen van de Token Monitor — telt alleen verkeer dat **door de
+  capture-proxy** stroomt.
+
+| Runtime | Economie (skill) | Meting (monitor) |
+|---|---|---|
+| **Hermes** | ✓ | ✓ **automatisch** — al gerouteerd via de proxy (`base_url → :8788`) |
+| **Claude** | ✓ (skill + hooks) | ✗ standaard — Claude praat rechtstreeks met `api.anthropic.com`; alleen gemeten zodra gerouteerd (`simplicio wrap claude`, of `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
+| **Codex** | ✓ (skill) | ✗ standaard — `simplicio init codex` voegt de MCP-tools toe maar routeert geen LLM-verkeer; gemeten met `simplicio wrap codex` of een OpenAI base-url die naar de proxy wijst |
+
+Dus: de **besparingen gebeuren op elke runtime**; de **monitor telt ze automatisch op Hermes**, en
+op Claude/Codex na een **eenmalige routeringsstap** (`simplicio wrap …` / base-url → `:8788`).
+Zonder routering geldt de economie nog steeds — de monitor telt die tokens alleen niet.
+`scripts/simplicio-economy.sh wire` doet deze routering voor OpenAI-compatibele clients bij de
+installatie.
 
 ### 📈 Simplicio Token Monitor
 
@@ -322,7 +449,7 @@ het eerste gebruik gedownload.
 (Rust↔Python-pariteitsharness). Bouw met `maturin` — de Python-engine werkt volledig zonder hen; de
 crates voegen alleen native snelheid toe.
 
-|---
+---
 
 ## 🏛️ Ontwerppijlers (in detail)
 
@@ -379,6 +506,10 @@ draaien (fail-safe).
 - **Menselijke poort voor onomkeerbare operaties** — force-push, history-herschrijving, prod-deploy,
   data-/schemaverwijdering, massale bestandsverwijdering → stop en vraag het. Headless + geen
   goedkeurder → verwijder de destructieve capaciteit.
+- **Afgedwongen, niet alleen beloofd** — `hooks/action_gate.py` is een **fail-closed**
+  `PreToolUse`-/git-pre-push-hook die het bovenstaande (en commits vol secrets) mechanisch blokkeert
+  *voordat* ze draaien. Het veiligheidscontract houdt stand zelfs als het model het vergeet.
+  `selftest` bewijst de regelset (14/14).
 - **4-status pre-executieoordeel** — optimalisatie mag de risicotier van een commando nooit verhogen.
 - **Trust-before-load** — perceptie-vormende config (clamp-profielen, suppressielijsten) is niet
   vertrouwd totdat een mens haar reviewt en per hash vastpint.
@@ -389,6 +520,42 @@ draaien (fail-safe).
 
 ---
 
+## ✅ Tests & lokale checks (geen betaalde CI)
+
+Claims worden geverifieerd, niet alleen beweerd — en de poort draait **lokaal**, met nul CI-kosten:
+
+```bash
+python3 scripts/check.py            # the whole gate (audit + tests)
+```
+
+- **Testsuite** (`tests/`) — de deterministische `selftest`s van de workers, plus een **e2e van de
+  loop-driver** (`hooks/loop_stop.py`): hij bewijst dat de lus **stopt op bewijs**, **een kale
+  `<promise>` negeert** en **stopt op het plafond** als afzonderlijke uitgangen — en dat de
+  bewijsproducenten **BLOKKEREN** (nooit fake-pass) wanneer hun toolchain afwezig is. Draait onder
+  `pytest` *of*, zonder enige pip, zelf-draaiend op kale python3 (`python3 tests/test_*.py`).
+- **Claims-audit** (`scripts/claims_audit.py`, fail-closed) — elke `scripts/*.py` waar de docs naar
+  verwijzen bestaat · het aantal uitbreidingspunten klopt over alle bestanden · elk geciteerd
+  worker-commando draait daadwerkelijk · de meegeleverde `simplicio_loop/_bundle/`-skills zijn
+  **byte-identiek** aan de bron.
+- **Draad het als git-pre-push-hook** om `main` gratis eerlijk te houden:
+  ```bash
+  printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+  ```
+
+`pip install "simplicio-loop[dev]"` voegt pytest toe voor mooiere output; het is nooit vereist.
+
+---
+
 ## 📄 Licentie
 
 MIT
+
+## 💳 Prijzen
+
+De engine is **gratis en MIT** — volledig zelf te hosten, nooit verminkt. Een voorgesteld
+**open-core gehost niveau** (beheerde 24/7-watcher, gehoste operatoren, behouden
+besparingsdashboard, gedistribueerde `video_evidence`-render) wordt geschetst in
+[`PRICING.md`](../PRICING.md), samen met een deterministische, privacy-bewarende
+facturatie-architectuur gebouwd op de metering-primitieven die de lus toch al produceert
+(`loop-budget.json`-kill-switch + `savings_ledger`). Het is een voorstel — er wordt vandaag niets
+gefactureerd.

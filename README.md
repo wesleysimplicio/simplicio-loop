@@ -145,7 +145,7 @@ The orchestrator discovers work from any source via pluggable adapters. Each exp
 
 See each adapter's reference doc under `.claude/skills/simplicio-tasks/references/`.
 
-|---
+---
 
 ## 🌐 11 runtimes, one protocol
 
@@ -431,7 +431,7 @@ Without the extra, the deterministic stdlib path covers everything; models downl
 (axum reverse proxy), `simplicio-parity` (Rust↔Python parity harness). Build with `maturin` — the Python
 engine works fully without them; the crates only add native speed.
 
-|---
+---
 
 ## 🏛️ Design pillars (in detail)
 

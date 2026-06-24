@@ -1,6 +1,6 @@
 <div dir="rtl">
 
-# 🔁 simplicio-tasks — منسّق الذكاء الاصطناعي العالمي ذو الحلقة المتكررة
+# 🔁 simplicio-tasks — The Universal Looping AI Orchestrator
 
 </div>
 
@@ -10,17 +10,17 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-المهارات-والمسرّعات-العشرة"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-المهارات-والمسرّعات-الـ-11"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
   <a href="#-محوّلات-المصادر"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-بيئة-تشغيل-بروتوكول-واحد"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-نقاط-التوسعة-الـ-43"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
+  <a href="#-نقاط-التوسعة-الـ-44"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
   <a href="#-اقتصاد-الرموز"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-الخلاصة">الخلاصة</a> ·
-  <a href="#-المهارات-والمسرّعات-العشرة">10 مهارات</a> ·
+  <a href="#-المهارات-والمسرّعات-الـ-11">11 مهارة</a> ·
   <a href="#-محوّلات-المصادر">محوّلات المصادر</a> ·
   <a href="#-11-بيئة-تشغيل-بروتوكول-واحد">11 بيئة تشغيل</a> ·
   <a href="#-الحلقة">الحلقة</a> ·
@@ -91,15 +91,40 @@
 
 <div dir="rtl">
 
-## 🧠 المهارات والمسرّعات العشرة
+## 📘 سجلّ القدرات الرسمي (v3.4.0)
 
-نواة المنسّق + خمسة توابع + أربعة مسرّعات. كل تابع **اختياري** — فعند تحميله يفوّض إليه المنسّق
-(أغنى + أرخص)؛ وعند غيابه يغطّي البروتوكول المضمّن 100%. والمسرّعات **تُكتشف تلقائياً** —
+القائمة الكاملة والرسمية لما يشحنه `simplicio-tasks` — كل قدرة في الأسفل **حقيقية وقابلة
+للتشغيل ومُختبَرة** (`python3 scripts/check.py`: تدقيق الادّعاءات 4/4 + 24 اختباراً). ويرتبط
+كلٌّ منها بقسمه التفصيلي وبعامله (worker).
+
+| القدرة | ماذا تفعل | البرهان / العامل | التفاصيل |
+|---|---|---|---|
+| 🎬 **أدلّة الفيديو** (`video_evidence`) | تُصيِّر **MP4 حتميّاً** يعرض شاشة/ميزة عبر [hyperframes](https://github.com/heygen-com/hyperframes) — يُلبّي `/simplicio-tasks faça um vídeo demonstrativo da tela X` ويصلح أيضاً برهاناً قابلاً لإعادة الإنتاج في الـ CI على أن تغييراً في الواجهة يعمل | `scripts/video_evidence.py` · مَحجوب (لا تمرير زائف) دون Node 22+/FFmpeg | [§ أدلّة الفيديو](#-أدلّة-الفيديو--فيديوهات-عرض-عبر-hyperframes) |
+| 🧠 **ذاكرة المحاولات + كاشف التعثّر** | سجلّ تشغيل مُتين (`.orchestrator/loop/journal.jsonl`) + كاشف تعثّر بحيث **تغيّر الحلقة الاستراتيجية بدل أن تتذبذب**؛ فرز تدريجي (`since`) يقرأ الفارق فقط في كل دورة | `scripts/loop_journal.py` · `selftest` 9/9 | [§ مكافحة التذبذب](#-ذاكرة-المحاولات--كاشف-التعثّر-مكافحة-التذبذب) |
+| 🔒 **بوابة أمان تفشل مغلقةً** (`action_gate`) | خطّاف `PreToolUse`/git-pre-push **يحجب آلياً** الدفع القسري، وإعادة كتابة التاريخ، والحذف الجماعي، وعمليات DDL المدمِّرة، وتفكيك البنية التحتية، والـ commits/pushes المحمّلة بالأسرار — الخطوة 5 جُعلت قابلة للتنفيذ لا مجرّد نثر | `hooks/action_gate.py` · `selftest` 15/15 | [§ الأمان](#-الأمان-غير-قابل-للتفاوض) |
+| 🔬 **التحقق المحلي** | مجموعة اختبارات (selftests للعمّال + **اختبار e2e لقائد الحلقة** يُثبت الخروج المرتبط بالأدلة) + **تدقيق ادّعاءات** (السكربتات المُشار إليها موجودة · الأعداد متّسقة · `_bundle ≡ source`) — كله محلي، **بلا CI مدفوع** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ الاختبارات والفحوص المحلية](#-الاختبارات-والفحوص-المحلية-بلا-ci-مدفوع) |
+| ✅ **توفير صادق** | سطر التوفير صار **مرتبطاً بالأدلة لا إلزامياً** — لا يُعرَض رقم إلا مع إيصال مقيس (clamp/signatures/cache/`deterministic_edit`/ledger)؛ ولا يُلفَّق أبداً | عقد اقتصاد الرموز | [§ اقتصاد الرموز](#-اقتصاد-الرموز) |
+| 💳 **فوترة مفتوحة النواة** | عدّاد ← فاتورة حتميّ يحافظ على الخصوصية فوق القياس الذي تنتجه الحلقة أصلاً (مفتاح الإيقاف + `savings_ledger`) — ثلاث فئات (مقعد/تشغيل/مقيس) | `scripts/billing_aggregator.py` · `selftest` 11/11 | [PRICING.md](../PRICING.md) |
+
+ويجعل **وضعان** للحلقة الإنهاء صريحاً: **converge** (مهمة صعبة واحدة — تنتهي عند `<promise>`
+المرتبط بالأدلة أو عند تصعيد تعثّر) مقابل **drain** (طابور — ينتهي حين يبقى استعلام المصدر فارغاً
+K دورات). وكلاهما يبقى خاضعاً للمخارج العالمية (promise+أدلة، `max_iterations`، الميزانية، STOP).
+
+> تقييم الحلقة عبر هذا الخطّ من العمل: **7.5** (تصميم قوي غير مُثبَت) ← **9** (ذاكرة محاولات +
+> مكافحة تذبذب) ← **9.5** (برهان محلي قابل لإعادة الإنتاج) ← **~10** (أمان مفروض + دلالات حلقة
+> مكتملة). وتُمسك بنية التحقق الآن بانحدارات المشروع ذاته مع نموّه.
+
+---
+
+## 🧠 المهارات والمسرّعات الـ 11
+
+نواة المنسّق + خمسة توابع + خمسة مسرّعات/تكاملات. كل تابع **اختياري** — فعند تحميله يفوّض إليه
+المنسّق (أغنى + أرخص)؛ وعند غيابه يغطّي البروتوكول المضمّن 100%. والمسرّعات **تُكتشف تلقائياً** —
 موجودة = تُستخدَم، غائبة = بديل احتياطي بالنموذج اللغوي.
 
 | # | القدرة | ماذا تستوعب | ماذا تفعل | أثر الرموز |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-tasks** | — | حلقة المنسّق: 43 نقطة توسعة، موجِّه ثنائي المسار، تقارب بالتدقيق الذاتي | النواة |
+| 1 | 🔁 **simplicio-tasks** | — | حلقة المنسّق: 44 نقطة توسعة، موجِّه ثنائي المسار، تقارب بالتدقيق الذاتي | النواة |
 | 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | حلقة Ralph المُتينة: خروج بـ`<promise>` مرتبط بالأدلة، سقف max_iterations | محرّك الحلقة |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | تنفيذ مُوجَّه نحو الطرفية أولاً، كتالوج تقليل المُخرَجات، tee-cache، قراءة signatures | L0 حتميّ |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | مراجعة تخاصمية متوازية على معايير متمايزة ← حُكم واحد بلا تكرار | بوابة الجودة |
@@ -109,15 +134,14 @@
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | تحليلات الجلسات، تتبّع التكلفة، اكتشاف الجلسات المتوقّفة | **L1** SQL فقط |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | تخزين KV بين دورات الحلقة — تقليل TTFT بنسبة 40-70% على النماذج المحلية | وقت GPU ↓ |
 | 10 | 🗜️ **محرّك التقاط Simplicio** | `engine/simplicio_engine.py` (أصيل، مكتبة معيارية فقط؛ مخطّط التوفير متوافق مع مشروع [headroom](https://github.com/headroomlabs-ai/headroom) مفتوح المصدر) | وكيل التقاط شفّاف: يمرّر إلى المزوّد الحقيقي، يقيس + يضغط حتميّاً، يكتب `proxy_savings.json` | **حتميّ** |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | تُصيِّر **فيديو MP4 حتميّاً** يعرض شاشة/ميزة — يُلبّي `/simplicio-tasks faça um vídeo demonstrativo da tela X` ويصلح أيضاً برهاناً قابلاً لإعادة الإنتاج في الـ CI على أن تغييراً في الواجهة يعمل | منتج الأدلة |
 
 كل مهارة تقيم ضمن [`.claude/skills/`](../.claude/skills)؛ ولكل مسرّع مستند مرجعي ضمن
-`.claude/skills/simplicio-tasks/references/`.
-
-</div>
+`.claude/skills/simplicio-tasks/references/` (منتج الفيديو:
+[`video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md)، العامل
+[`scripts/video_evidence.py`](../scripts/video_evidence.py)).
 
 ---
-
-<div dir="rtl">
 
 ## 📡 محوّلات المصادر
 
@@ -134,11 +158,7 @@
 
 راجع المستند المرجعي لكل محوّل ضمن `.claude/skills/simplicio-tasks/references/`.
 
-</div>
-
-|---
-
-<div dir="rtl">
+---
 
 ## 🌐 11 بيئة تشغيل، بروتوكول واحد
 
@@ -164,11 +184,7 @@
 إلا السرعة.** ويعمل `orient_clamp.py` (اقتصاد الرموز) على كل بيئة تشغيل دون أي توصيل. راجع
 [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
-</div>
-
 ---
-
-<div dir="rtl">
 
 ## 🗺️ المسار الكامل — من الطلب إلى التسليم
 
@@ -222,7 +238,7 @@ flowchart TD
   subgraph QG["7 · Quality gates"]
     direction LR
     Q1["AC gate = real DoD"]
-    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q2["WORKS not just compiles · web_verify (Playwright) · video_evidence (hyperframes MP4)"]
     Q3["adversarial review · thermos rubrics"]
   end
   QG --> SG
@@ -246,7 +262,7 @@ flowchart TD
     F2["review comments -> adjust"]
     F3["branch behind main -> additive rebase"]
   end
-  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  FB -->|"merged and closed"| DONE(["done + evidence + measured savings (only if a receipt exists)"])
   WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
@@ -270,7 +286,77 @@ flowchart TD
 
 بين الدورات، يخزّن LMCache (حين يتوفّر) حالة KV فتقترب كلفة إعادة التغذية من صفر prefill.
 
+### 🧠 ذاكرة المحاولات + كاشف التعثّر (مكافحة التذبذب)
+
+حلقة إعادة تغذية لا تتذكّر شيئاً تتذبذب — جرّب X، افشل، جرّب X مجدداً — حتى يحترق السقف.
+يحفظ simplicio-loop **سجلّ تشغيل مُتيناً** (`.orchestrator/loop/journal.jsonl`، للإلحاق فقط:
+`iteration · action · hypothesis · gate · error-fingerprint`) و**كاشف تعثّر**
+([`scripts/loop_journal.py`](../scripts/loop_journal.py)، حتميّ + بلا نموذج):
+
+- **بصمة الخطأ** — يُختزَل مُخرَج البوابة الفاشلة إلى تجزئة (hash) مستقرّة بعد تطبيع أرقام
+  الأسطر، والمسارات، والـ hex/uuids، والطوابع الزمنية والمُدد، فيُعرَف *العطل نفسه* عبر الدورات
+  حتى عندما يختلف النصّ العَرَضي.
+- **التعثّر = K حالات فشل ببصمة متطابقة على التوالي** (الافتراضي K=3). فتغيّر البصمة يعني أن
+  الحلقة تتحرّك (PROGRESS)؛ وتطابقها K مرات يعني أنها تدور في مكانها (STALLED).
+- عند STALLED لا تُعيد الحلقة تغذية الهدف نفسه — بل تسمّي **الأفعال المسدودة** كي تتجنّبها، ثم
+  **تبدّل الاستراتيجية** أو **تصعّد إلى البوابة البشرية** مع البصمة.
+- يُقرأ `loop_journal.py resume` في رأس كل دورة، فتواصل عمليةٌ جديدة دون إعادة استنباط المحاولات
+  السابقة (استئناف حقيقي) ولا تعيد أبداً محاولة طريقٍ مسدودٍ معروف.
+
+</div>
+
+```bash
+loop_journal.py resume                       # what was tried + dead-ends to avoid
+loop_journal.py record --iteration N --action "…" --gate fail --gate-output test.log
+loop_journal.py stall --k 3 --exit-code      # PROGRESS → re-feed · STALLED → switch/escalate
+```
+
 ---
+
+<div dir="rtl">
+
+## 🎬 أدلّة الفيديو — فيديوهات عرض عبر hyperframes
+
+تستطيع الحلقة **إنشاء فيديوهات عرض** لشاشة/ميزة عند الطلب، وإعادة استخدام ذلك الفيديو برهاناً
+على أن تغييراً يعمل. والمنتج هو [**hyperframes**](https://github.com/heygen-com/hyperframes)
+(من HeyGen) — يُصيِّر تركيبات HTML/CSS/الوسائط إلى **MP4 حتميّ** ("المدخل نفسه، الإطارات نفسها،
+المُخرَج نفسه")، فيكون العرض أثراً قابلاً لإعادة الإنتاج في الـ CI لا تسجيلاً عابراً. بلا
+مفاتيح API؛ تصيير محلي عبر Chrome بلا واجهة + FFmpeg (Node 22+).
+
+طريقتان لإطلاقه — كلتاهما عبر نقطة التوسعة `video_evidence` (العامل
+[`scripts/video_evidence.py`](../scripts/video_evidence.py)، العقد
+[`references/video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md)):
+
+1. **عند الطلب — الفيديو هو المُسلَّم.** اطلبه مباشرةً فيوجّه المنسّق عنصر العمل إلى منتج
+   hyperframes:
+
+   ```text
+   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
+   → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
+   → attach the MP4 to the PR as evidence + close with the link
+   ```
+
+2. **كبرهان — الفيديو يدعم تغييراً في الشيفرة.** بعد تغيير في الواجهة، يكون نفس عرض الـ MP4
+   أقوى إيصال على "يعمل، لا يُصرَّف فحسب" (الخطوة 4b) و`<promise>` صالحاً مرتبطاً بالأدلة
+   للحلقة — أما فيديو لم يُصيَّر قطّ فيُنتج **BLOCKED**، لا تمريراً زائفاً أبداً.
+
+ويتسلسل منتجا الأدلة: يلتقط `web_verify` (Playwright) لقطات الشاشة لكل خطوة، ويجمعها
+`video_evidence` (hyperframes) في عرض MP4 حتميّ مُعنوَن. والدليل دوماً **مسار ملف + حُكم منطقي
+(boolean)** — لا بايتات فيديو في السياق أبداً (اقتصاد الرموز).
+
+</div>
+
+```bash
+# one-shot, outside the loop
+python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py verify  --name checkout-demo \
+    --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
+```
+
+---
+
+<div dir="rtl">
 
 ## 📊 اقتصاد الرموز
 
@@ -287,7 +373,31 @@ flowchart TD
 | وكيل التقاط Simplicio + MCP | 60-95% رموز أقل على مُخرَجات الأدوات عبر خادم ضغط شفّاف |
 
 التوفير لا يُحتسب إلا عند نتيجة مُتحقَّق من صحتها. والأساس المرجعي = أرخص مسار معقول غير مُنسَّق
-يبلغ النتيجة نفسها. راجع `references/token-economy.md`.
+يبلغ النتيجة نفسها. **والإبلاغ عن التوفير مرتبط بالأدلة لا إلزامي:** لا يُعرَض رقم توفير إلا حين
+تكون دورةٌ ما قد شغّلت فعلاً أمراً مُنتِجاً للاقتصاد وكان الرقم يتتبّع إلى إيصال مقيس (clamp tee،
+قراءة signatures، إصابة cache، `deterministic_edit`، `savings_ledger`). فلا اقتصاد مقيس ← لا
+سطر توفير؛ ولا يلفّق المنسّق أساساً مرجعياً أو نسبة أبداً. راجع `references/token-economy.md`.
+
+### 🔎 تشغيل `simplicio-tasks`: الاقتصاد مقابل القياس (لكل بيئة تشغيل)
+
+يحدث أمران مختلفان عند استدعاء **`simplicio-tasks`**، ويسلكان سلوكاً مختلفاً لكل بيئة تشغيل:
+
+- **الاقتصاد** — الضغط، وتقليم المُخرَجات، وقراءات signatures-only، و`deterministic_edit` — ينطبق
+  **في كل مرة تعمل فيها المهارة وتحمّل `simplicio-orient` / `simplicio-compress`، على أي بيئة
+  تشغيل.** فهو سلوك المهارة إضافةً إلى الخطّافات (أقوى حيث توجد الخطّافات: `orient_clamp.py`
+  يُقلِّم تلقائياً على Claude وCursor؛ وفي غيرها بقيادة التعليمات).
+- **القياس** — أرقام Token Monitor الحيّة — لا يحتسب إلا الحركة التي تمرّ **عبر وكيل الالتقاط.**
+
+| بيئة التشغيل | الاقتصاد (المهارة) | القياس (المراقب) |
+|---|---|---|
+| **Hermes** | ✓ | ✓ **تلقائي** — موجَّه أصلاً عبر الوكيل (`base_url → :8788`) |
+| **Claude** | ✓ (المهارة + الخطّافات) | ✗ افتراضياً — يتحدّث Claude إلى `api.anthropic.com` مباشرةً؛ يُقاس فقط بعد التوجيه (`simplicio wrap claude`، أو `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
+| **Codex** | ✓ (المهارة) | ✗ افتراضياً — يضيف `simplicio init codex` أدوات MCP لكنه لا يوجّه حركة النموذج؛ يُقاس بـ`simplicio wrap codex` أو base-url لـOpenAI يشير إلى الوكيل |
+
+إذن: **التوفير يحدث على كل بيئة تشغيل**؛ و**المراقب يحصيه تلقائياً على Hermes**، وعلى
+Claude/Codex بعد **خطوة توجيه لمرة واحدة** (`simplicio wrap …` / base-url → `:8788`). بدون
+توجيه، يبقى الاقتصاد منطبقاً — لكن المراقب لن يحصي تلك الرموز فحسب. ويقوم
+`scripts/simplicio-economy.sh wire` بهذا التوجيه للعملاء المتوافقين مع OpenAI وقت التثبيت.
 
 ### 📈 مراقب رموز Simplicio (Simplicio Token Monitor)
 
@@ -344,11 +454,7 @@ flowchart TD
 (وكيل عكسيّ axum)، `simplicio-parity` (مِحَكّ تكافؤ Rust↔Python). ابنِها بـ`maturin` — يعمل محرّك
 Python بالكامل دونها؛ والحُزَم تضيف السرعة الأصيلة فحسب.
 
-</div>
-
-|---
-
-<div dir="rtl">
+---
 
 ## 🏛️ ركائز التصميم (بالتفصيل)
 
@@ -417,6 +523,9 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 - **بوابة بشرية للعمليات غير القابلة للتراجع** — الدفع القسري، إعادة كتابة التاريخ، النشر
   للإنتاج، حذف البيانات/المخطّط، حذف الملفات الجماعي ← توقّف واسأل. وفي وضع بلا واجهة + بلا
   مُوافِق ← أزِل القدرة المدمِّرة.
+- **مفروض لا موعود فحسب** — `hooks/action_gate.py` خطّاف `PreToolUse` / git-pre-push
+  **يفشل مغلقاً** يحجب آلياً ما سبق (والـ commits المحمّلة بالأسرار) *قبل* تشغيلها. ويصمد عقد
+  الأمان حتى لو نسيه النموذج. ويُثبت `selftest` مجموعة القواعد (14/14).
 - **حُكم رباعي الحالات قبل التنفيذ** — لا يجوز للتحسين أبداً أن يرفع فئة خطورة أمرٍ ما.
 - **ثقة قبل التحميل** — الإعداد المُشكِّل للإدراك (ملفات التقليم، قوائم الكتم) غير موثوق حتى
   يراجعه إنسان ويثبّته بالبصمة (hash-pin).
@@ -426,8 +535,45 @@ pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
 
 ---
 
+## ✅ الاختبارات والفحوص المحلية (بلا CI مدفوع)
+
+الادّعاءات مُتحقَّق منها لا مُؤكَّدة فحسب — والبوابة تعمل **محلياً**، بتكلفة CI صفرية:
+
+</div>
+
+```bash
+python3 scripts/check.py            # the whole gate (audit + tests)
+```
+
+<div dir="rtl">
+
+- **مجموعة الاختبارات** (`tests/`) — selftests العمّال الحتميّة، إضافةً إلى **اختبار e2e لقائد
+  الحلقة** (`hooks/loop_stop.py`): يُثبت أن الحلقة **تتوقّف عند الأدلة**، و**تتجاهل `<promise>`
+  مجرّداً**، و**تتوقّف عند السقف** كمخارج متمايزة — وأن منتجي الأدلة **يَحجبان** (لا تمرير زائف)
+  عند غياب أدوات سلسلتهما. تعمل تحت `pytest` *أو*، بلا أي pip، تعمل ذاتياً على python3 العاري
+  (`python3 tests/test_*.py`).
+- **تدقيق الادّعاءات** (`scripts/claims_audit.py`، يفشل مغلقاً) — كل `scripts/*.py` تشير إليه
+  الوثائق موجود · عدد نقاط التوسعة متّفق عبر كل الملفات · كل أمر عامل مُستشهَد به يعمل فعلاً ·
+  مهارات `simplicio_loop/_bundle/` المشحونة **متطابقة بايتاً ببايت** مع المصدر.
+- **وصّلها كخطّاف git pre-push** لإبقاء `main` أميناً مجاناً:
+  ```bash
+  printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+  ```
+
+`pip install "simplicio-loop[dev]"` يضيف pytest لمُخرَجات أنظف؛ لكنه غير مطلوب أبداً.
+
+---
+
 ## 📄 الترخيص
 
 MIT
+
+## 💳 التسعير
+
+المحرّك **مجاني وبرخصة MIT** — قابل للاستضافة الذاتية بالكامل، وغير مُعطَّل أبداً. وثمّة **فئة
+مستضافة مفتوحة النواة** مقترحة (مراقب مُدار على مدار الساعة، مُشغِّلون مُستضافون، لوحة توفير
+محفوظة، تصيير `video_evidence` موزَّع) مرسومة في [`PRICING.md`](../PRICING.md)، مع بنية فوترة
+حتميّة تحافظ على الخصوصية مبنية على أوّليات القياس التي تنتجها الحلقة أصلاً (مفتاح إيقاف
+`loop-budget.json` + `savings_ledger`). إنه اقتراح — لا شيء يُفوتَر اليوم.
 
 </div>

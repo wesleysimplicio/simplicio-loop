@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — Uniwersalny zapętlony orkiestrator AI
+# 🔁 simplicio-tasks — The Universal Looping AI Orchestrator
 
 <p align="center">
   <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -6,17 +6,17 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-10-skilli--akceleratorów"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-11-skilli--akceleratorów"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
   <a href="#-adaptery-źródeł"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-środowisk-uruchomieniowych-jeden-protokół"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-43-punkty-rozszerzeń"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
+  <a href="#-44-punkty-rozszerzeń"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
   <a href="#-ekonomia-tokenów"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-10-skilli--akceleratorów">10 skilli</a> ·
+  <a href="#-11-skilli--akceleratorów">11 skilli</a> ·
   <a href="#-adaptery-źródeł">Adaptery źródeł</a> ·
   <a href="#-11-środowisk-uruchomieniowych-jeden-protokół">11 środowisk</a> ·
   <a href="#-pętla">Pętla</a> ·
@@ -79,16 +79,43 @@ uczciwą ekonomią tokenów**.
 
 ---
 
-## 🧠 10 skilli i akceleratorów
+## 📘 Oficjalny rejestr możliwości (v3.4.0)
 
-Rdzeń orkiestratora + pięć satelitów + cztery akceleratory. Każdy satelita jest **opcjonalny** —
-gdy jest załadowany, orkiestrator deleguje do niego (bogaciej + taniej); gdy go brak, wbudowany
-protokół pokrywa 100%. Akceleratory są **wykrywane automatycznie** — obecny = używany, nieobecny =
-ścieżka awaryjna LLM.
+Kompletny, oficjalny spis tego, co dostarcza `simplicio-tasks` — każda możliwość poniżej jest
+**realna, uruchamialna i przetestowana** (`python3 scripts/check.py`: claims-audit 4/4 + 24 testy).
+Każda linkuje do swojej szczegółowej sekcji i swojego workera.
+
+| Możliwość | Co robi | Dowód / worker | Szczegóły |
+|---|---|---|---|
+| 🎬 **Dowód wideo** (`video_evidence`) | Renderuje **deterministyczne MP4** demo ekranu/funkcji z [hyperframes](https://github.com/heygen-com/hyperframes) — realizuje `/simplicio-tasks faça um vídeo demonstrativo da tela X` i jednocześnie służy jako odtwarzalny w CI dowód, że zmiana UI działa | `scripts/video_evidence.py` · BLOKOWANE (nigdy fałszywe zaliczenie) bez Node 22+/FFmpeg | [§ Dowód wideo](#-dowód-wideo--filmy-demonstracyjne-przez-hyperframes) |
+| 🧠 **Pamięć prób + detektor zastoju** | Trwały dziennik przebiegu (`.orchestrator/loop/journal.jsonl`) + detektor zastoju, dzięki czemu pętla **zmienia strategię zamiast oscylować**; przyrostowy triage (`since`) odczytuje tylko deltę w każdej turze | `scripts/loop_journal.py` · `selftest` 9/9 | [§ Anty-oscylacja](#-pamięć-prób--detektor-zastoju-anty-oscylacja) |
+| 🔒 **Bramka bezpieczeństwa fail-closed** (`action_gate`) | Hook `PreToolUse`/git-pre-push, który **mechanicznie blokuje** force-push, przepisanie historii, masowe usunięcie, destrukcyjny DDL, demontaż infrastruktury i commity/pushe z sekretami — Krok 5 zrobiony wykonywalnym, nie prozą | `hooks/action_gate.py` · `selftest` 15/15 | [§ Bezpieczeństwo](#-bezpieczeństwo-nie-podlega-negocjacji) |
+| 🔬 **Lokalna weryfikacja** | Zestaw testów (selftesty workerów + **e2e sterownika pętli** dowodzący wyjścia bramkowanego dowodami) + **claims-audit** (przywoływane skrypty istnieją · liczby spójne · `_bundle ≡ source`) — wszystko lokalnie, **bez płatnego CI** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Testy i lokalne kontrole](#-testy-i-lokalne-kontrole-bez-płatnego-ci) |
+| ✅ **Uczciwe oszczędności** | Linia oszczędności jest teraz **bramkowana dowodami, nie obowiązkowa** — liczba pokazywana jest tylko z mierzonym pokwitowaniem (clamp/sygnatury/cache/`deterministic_edit`/ledger); nigdy fabrykowana | kontrakt ekonomii tokenów | [§ Ekonomia tokenów](#-ekonomia-tokenów) |
+| 💳 **Rozliczanie open-core** | Deterministyczny, chroniący prywatność licznik→faktura w oparciu o pomiary, które pętla już produkuje (kill-switch + `savings_ledger`) — trzy poziomy (seat/run/metered) | `scripts/billing_aggregator.py` · `selftest` 11/11 | [PRICING.md](../PRICING.md) |
+
+Dwa **tryby** pętli czynią zakończenie jednoznacznym: **converge** (pojedyncze twarde zadanie —
+kończy się na bramkowanym dowodami `<promise>` lub eskalacji zastoju) vs **drain** (kolejka —
+kończy się, gdy ponowne zapytanie do źródła pozostaje puste przez K rund). Oba nadal podlegają
+uniwersalnym wyjściom (promise+dowód, `max_iterations`, budżet, STOP).
+
+> Punktacja pętli w tej linii prac: **7.5** (mocny projekt, nieudowodniony) → **9** (pamięć prób +
+> anty-oscylacja) → **9.5** (odtwarzalny lokalny dowód) → **~10** (egzekwowane bezpieczeństwo +
+> kompletna semantyka pętli). Infrastruktura weryfikacji wyłapuje teraz własne regresje projektu w
+> miarę jego rozwoju.
+
+---
+
+## 🧠 11 skilli i akceleratorów
+
+Rdzeń orkiestratora + pięć satelitów + pięć akceleratorów/integracji. Każdy satelita jest
+**opcjonalny** — gdy jest załadowany, orkiestrator deleguje do niego (bogaciej + taniej); gdy go
+brak, wbudowany protokół pokrywa 100%. Akceleratory są **wykrywane automatycznie** — obecny =
+używany, nieobecny = ścieżka awaryjna LLM.
 
 | # | Zdolność | Wchłania | Co robi | Wpływ na tokeny |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-tasks** | — | Pętla orkiestratora: 43 punkty rozszerzeń, router dwuścieżkowy, zbieżność przez autoaudyt | Rdzeń |
+| 1 | 🔁 **simplicio-tasks** | — | Pętla orkiestratora: 44 punkty rozszerzeń, router dwuścieżkowy, zbieżność przez autoaudyt | Rdzeń |
 | 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Utwardzona pętla Ralph: wyjście przez bramkowany dowodami `<promise>`, pułap max_iterations | Napęd pętli |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Wykonanie terminal-first, katalog redukcji wyjścia, tee-cache, odczyt sygnatur | L0 deterministyczny |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Równoległy przegląd adwersarialny na odrębnych rubrykach → zdeduplikowany werdykt | Bramka jakości |
@@ -98,9 +125,12 @@ protokół pokrywa 100%. Akceleratory są **wykrywane automatycznie** — obecny
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Analityka sesji, śledzenie kosztów, wykrywanie zawieszonych sesji | **L1** tylko SQL |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Cache KV między turami pętli — redukcja TTFT o 40-70% na modelach lokalnych | Czas GPU ↓ |
 | 10 | 🗜️ **Silnik przechwytywania Simplicio** | `engine/simplicio_engine.py` (natywny, tylko stdlib; schemat oszczędności zgodny z projektem OSS [headroom](https://github.com/headroomlabs-ai/headroom)) | Przezroczyste proxy przechwytujące: przekazuje do prawdziwego dostawcy, mierzy + deterministycznie kompresuje, zapisuje `proxy_savings.json` | **deterministyczny** |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | Renderuje **deterministyczne MP4** demo ekranu/funkcji — realizuje `/simplicio-tasks faça um vídeo demonstrativo da tela X` ORAZ jednocześnie służy jako odtwarzalny w CI dowód, że zmiana UI działa | Producent dowodów |
 
 Każdy skill mieszka pod [`.claude/skills/`](../.claude/skills); każdy akcelerator ma dokument
-referencyjny pod `.claude/skills/simplicio-tasks/references/`.
+referencyjny pod `.claude/skills/simplicio-tasks/references/` (producent wideo:
+[`video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md), worker
+[`scripts/video_evidence.py`](../scripts/video_evidence.py)).
 
 ---
 
@@ -119,7 +149,7 @@ czasowników: `list_ready`, `get_details`, `claim`, `update_status`, `attach_evi
 
 Zobacz dokument referencyjny każdego adaptera pod `.claude/skills/simplicio-tasks/references/`.
 
-|---
+---
 
 ## 🌐 11 środowisk uruchomieniowych, jeden protokół
 
@@ -199,7 +229,7 @@ flowchart TD
   subgraph QG["7 · Quality gates"]
     direction LR
     Q1["AC gate = real DoD"]
-    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q2["WORKS not just compiles · web_verify (Playwright) · video_evidence (hyperframes MP4)"]
     Q3["adversarial review · thermos rubrics"]
   end
   QG --> SG
@@ -223,7 +253,7 @@ flowchart TD
     F2["review comments -> adjust"]
     F3["branch behind main -> additive rebase"]
   end
-  FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
+  FB -->|"merged and closed"| DONE(["done + evidence + measured savings (only if a receipt exists)"])
   WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
@@ -247,6 +277,75 @@ agent widział własną wcześniejszą pracę. Wyjście następuje WYŁĄCZNIE p
 Między turami LMCache (gdy dostępny) buforuje stan KV, więc ponowne podanie celu kosztuje niemal
 zerowy prefill.
 
+### 🧠 Pamięć prób + detektor zastoju (anty-oscylacja)
+
+Pętla z ponownym podawaniem celu, która niczego nie pamięta, oscyluje — spróbuj X, niepowodzenie,
+spróbuj X ponownie — aż pułap się wypali. simplicio-loop prowadzi **trwały dziennik przebiegu**
+(`.orchestrator/loop/journal.jsonl`, tylko-dopisywanie:
+`iteration · action · hypothesis · gate · error-fingerprint`) i **detektor zastoju**
+([`scripts/loop_journal.py`](../scripts/loop_journal.py), deterministyczny + bez modelu):
+
+- **Odcisk błędu** — wyjście niepowodzenia bramki jest redukowane do stabilnego hasha z
+  numerami linii, ścieżkami, hex/uuidami, znacznikami czasu i czasami trwania znormalizowanymi do
+  pominięcia, tak że *ten sam* błąd jest rozpoznawany w kolejnych turach, nawet gdy poboczny tekst
+  się różni.
+- **Zastój = K kolejnych niepowodzeń o identycznym odcisku** (domyślnie K=3). Zmieniający się
+  odcisk oznacza, że pętla się porusza (PROGRESS); ten sam K razy oznacza, że kręci się w miejscu
+  (STALLED).
+- Przy STALLED pętla **nie** podaje ponownie tego samego celu — nazywa **akcje ślepej uliczki**,
+  których należy unikać, po czym **zmienia strategię** lub **eskaluje do bramki ludzkiej** wraz z
+  odciskiem.
+- `loop_journal.py resume` jest odczytywany na początku każdej tury, więc świeży proces kontynuuje
+  bez ponownego wyprowadzania wcześniejszych prób (prawdziwe wznowienie) i nigdy nie powtarza znanej
+  ślepej uliczki.
+
+```bash
+loop_journal.py resume                       # what was tried + dead-ends to avoid
+loop_journal.py record --iteration N --action "…" --gate fail --gate-output test.log
+loop_journal.py stall --k 3 --exit-code      # PROGRESS → re-feed · STALLED → switch/escalate
+```
+
+---
+
+## 🎬 Dowód wideo — filmy demonstracyjne przez hyperframes
+
+Pętla potrafi **tworzyć filmy demonstracyjne** ekranu/funkcji na żądanie i ponownie wykorzystać taki
+film jako dowód, że zmiana działa. Producentem jest [**hyperframes**](https://github.com/heygen-com/hyperframes)
+(autorstwa HeyGen) — renderuje kompozycje HTML/CSS/media do **deterministycznego MP4** („to samo
+wejście, te same klatki, to samo wyjście"), więc demo jest artefaktem odtwarzalnym w CI, a nie
+jednorazowym nagraniem. Bez kluczy API; lokalne renderowanie przez headless Chrome + FFmpeg (Node 22+).
+
+Uruchamia się na dwa sposoby — oba przez punkt rozszerzenia `video_evidence` (worker
+[`scripts/video_evidence.py`](../scripts/video_evidence.py), kontrakt
+[`references/video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md)):
+
+1. **Na żądanie — wideo JEST produktem.** Poproś o nie wprost, a orkiestrator skieruje element pracy
+   do producenta hyperframes:
+
+   ```text
+   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
+   → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
+   → attach the MP4 to the PR as evidence + close with the link
+   ```
+
+2. **Jako dowód — wideo wspiera zmianę kodu.** Po zmianie UI ten sam przewodnik MP4 jest
+   najmocniejszym pokwitowaniem „działa, nie tylko kompiluje się" (Krok 4b) i prawidłowym
+   bramkowanym dowodami `<promise>` dla pętli — wideo, które nigdy się nie wyrenderowało, daje
+   **BLOKOWANE**, nigdy fałszywe zaliczenie.
+
+Dwaj producenci dowodów łączą się w łańcuch: `web_verify` (Playwright) przechwytuje zrzuty ekranu
+per krok, `video_evidence` (hyperframes) składa je w opatrzony napisami, deterministyczny przewodnik
+MP4. Dowód to zawsze **ścieżka do pliku + werdykt logiczny** — nigdy bajty wideo w kontekście
+(ekonomia tokenów).
+
+```bash
+# one-shot, outside the loop
+python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py verify  --name checkout-demo \
+    --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
+```
+
 ---
 
 ## 📊 Ekonomia tokenów
@@ -264,7 +363,37 @@ zerowy prefill.
 | Proxy przechwytujące Simplicio + MCP | 60-95% mniej tokenów na wyjściach narzędzi przez przezroczysty demon kompresji |
 
 Oszczędności liczą się tylko przy zweryfikowanym poprawnym wyniku. Linia bazowa = najtańsza
-rozsądna nieorkiestrowana ścieżka do tego samego rezultatu. Zobacz `references/token-economy.md`.
+rozsądna nieorkiestrowana ścieżka do tego samego rezultatu. **Raportowanie oszczędności jest
+bramkowane dowodami, nie obowiązkowe:** liczba oszczędności pokazywana jest tylko wtedy, gdy tura
+faktycznie uruchomiła polecenie produkujące ekonomię, a liczba prowadzi do mierzonego pokwitowania
+(clamp tee, odczyt sygnatur, trafienie cache, `deterministic_edit`, `savings_ledger`). Brak
+mierzonej ekonomii → brak linii oszczędności; orkiestrator nigdy nie fabrykuje linii bazowej ani
+procentu. Zobacz `references/token-economy.md`.
+
+### 🔎 Uruchamianie `simplicio-tasks`: ekonomia vs pomiar (per środowisko)
+
+Gdy wywołujesz **`simplicio-tasks`**, dzieją się dwie różne rzeczy, które zachowują się różnie w
+zależności od środowiska:
+
+- **Ekonomia** — kompresja, przycinanie wyjścia, odczyty tylko sygnatur, `deterministic_edit` —
+  obowiązuje **za każdym razem, gdy skill działa i ładuje `simplicio-orient` / `simplicio-compress`,
+  na dowolnym środowisku.** To zachowanie skilla plus hooki (najsilniejsze tam, gdzie hooki istnieją:
+  `orient_clamp.py` automatycznie przycina na Claude i Cursor; gdzie indziej jest sterowane
+  instrukcjami).
+- **Pomiar** — żywe liczby Token Monitora — liczy tylko ruch, który przepływa **przez proxy
+  przechwytujące.**
+
+| Środowisko | Ekonomia (skill) | Pomiar (monitor) |
+|---|---|---|
+| **Hermes** | ✓ | ✓ **automatyczny** — już skierowany przez proxy (`base_url → :8788`) |
+| **Claude** | ✓ (skill + hooki) | ✗ domyślnie — Claude rozmawia bezpośrednio z `api.anthropic.com`; mierzony dopiero po skierowaniu (`simplicio wrap claude`, lub `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
+| **Codex** | ✓ (skill) | ✗ domyślnie — `simplicio init codex` dodaje narzędzia MCP, ale nie kieruje ruchu LLM; mierzony przy `simplicio wrap codex` lub base-url OpenAI wskazującym na proxy |
+
+Zatem: **oszczędności występują na każdym środowisku**; **monitor zlicza je automatycznie na
+Hermes**, a na Claude/Codex po **jednorazowym kroku kierowania** (`simplicio wrap …` / base-url →
+`:8788`). Bez kierowania ekonomia nadal obowiązuje — monitor po prostu nie zliczy tych tokenów.
+`scripts/simplicio-economy.sh wire` wykonuje to kierowanie dla klientów kompatybilnych z OpenAI w
+czasie instalacji.
 
 ### 📈 Simplicio Token Monitor
 
@@ -321,7 +450,7 @@ używa upstream. Bez tego dodatku deterministyczna ścieżka stdlib pokrywa wszy
 (odwrotne proxy axum), `simplicio-parity` (harnesa parzystości Rust↔Python). Buduj przez `maturin` — silnik Pythona
 działa w pełni bez nich; skrzynki dodają tylko natywną szybkość.
 
-|---
+---
 
 ## 🏛️ Filary projektu (szczegółowo)
 
@@ -378,6 +507,10 @@ działania bez nadzoru (fail-safe).
 - **Bramka ludzka dla operacji nieodwracalnych** — force-push, przepisanie historii, deploy na
   prod, usunięcie danych/schematu, masowe usunięcie plików → zatrzymaj się i zapytaj. Headless +
   brak zatwierdzającego → usuń destrukcyjną zdolność.
+- **Egzekwowane, nie tylko obiecane** — `hooks/action_gate.py` to **fail-closed** hook `PreToolUse` /
+  git-pre-push, który mechanicznie blokuje powyższe (oraz commity z sekretami) *zanim* się wykonają.
+  Kontrakt bezpieczeństwa obowiązuje nawet jeśli model o nim zapomni. `selftest` dowodzi zestawu
+  reguł (14/14).
 - **Werdykt 4-stanowy przed wykonaniem** — optymalizacja nigdy nie może podnieść poziomu ryzyka
   polecenia.
 - **Zaufaj-przed-załadowaniem** — konfiguracja kształtująca percepcję (profile przycinania, listy
@@ -389,6 +522,41 @@ działania bez nadzoru (fail-safe).
 
 ---
 
+## ✅ Testy i lokalne kontrole (bez płatnego CI)
+
+Twierdzenia są weryfikowane, nie tylko zapewniane — a bramka działa **lokalnie**, z zerowym kosztem CI:
+
+```bash
+python3 scripts/check.py            # the whole gate (audit + tests)
+```
+
+- **Zestaw testów** (`tests/`) — deterministyczne `selftest`y workerów, plus **e2e sterownika
+  pętli** (`hooks/loop_stop.py`): dowodzi, że pętla **zatrzymuje się na dowodzie**, **ignoruje goły
+  `<promise>`** i **zatrzymuje się na pułapie** jako odrębne wyjścia — oraz że producenci dowodów
+  **BLOKUJĄ** (nigdy fałszywe zaliczenie), gdy ich łańcuch narzędzi jest nieobecny. Działa pod
+  `pytest` *lub*, bez żadnego pip, samodzielnie na gołym python3 (`python3 tests/test_*.py`).
+- **Audyt twierdzeń** (`scripts/claims_audit.py`, fail-closed) — każdy `scripts/*.py`, do którego
+  odwołuje się dokumentacja, istnieje · liczba punktów rozszerzeń zgadza się we wszystkich plikach ·
+  każde przywoływane polecenie workera faktycznie działa · dostarczone skille
+  `simplicio_loop/_bundle/` są **bajt-identyczne** ze źródłem.
+- **Podłącz jako git pre-push hook**, by utrzymać `main` uczciwy za darmo:
+  ```bash
+  printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+  ```
+
+`pip install "simplicio-loop[dev]"` dodaje pytest dla ładniejszego wyjścia; nigdy nie jest wymagany.
+
+---
+
 ## 📄 Licencja
 
 MIT
+
+## 💳 Cennik
+
+Silnik jest **darmowy i na licencji MIT** — w pełni samohostowalny, nigdy okrojony. Proponowany
+**hostowany poziom open-core** (zarządzany obserwator 24/7, hostowani operatorzy, zachowany dashboard
+oszczędności, rozproszony render `video_evidence`) jest naszkicowany w [`PRICING.md`](../PRICING.md),
+wraz z deterministyczną, chroniącą prywatność architekturą rozliczeń zbudowaną na prymitywach
+pomiarowych, które pętla już produkuje (kill-switch `loop-budget.json` + `savings_ledger`). To
+propozycja — dziś nic nie jest rozliczane.
