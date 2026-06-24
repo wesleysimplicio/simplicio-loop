@@ -6,17 +6,17 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-the-10-skills--accelerators"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-the-11-skills--accelerators"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-the-43-extension-points"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
+  <a href="#-the-44-extension-points"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
   <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-the-10-skills--accelerators">10 Skills</a> ·
+  <a href="#-the-11-skills--accelerators">11 Skills</a> ·
   <a href="#-source-adapters">Source Adapters</a> ·
   <a href="#-11-runtimes-one-protocol">11 Runtimes</a> ·
   <a href="#-the-loop">The Loop</a> ·
@@ -76,15 +76,16 @@ protocol on 11 runtimes**, and it does all of this with **aggressive, honest tok
 
 ---
 
-## 🧠 The 10 skills & accelerators
+## 🧠 The 11 skills & accelerators
 
-The orchestrator core + five satellites + four accelerators. Each satellite is **optional** —
-when loaded, the orchestrator delegates to it (richer + cheaper); when absent, the inline protocol
-covers 100%. Accelerators are **auto-detected** — present = used, absent = LLM fallback.
+The orchestrator core + five satellites + five accelerators/integrations. Each satellite is
+**optional** — when loaded, the orchestrator delegates to it (richer + cheaper); when absent, the
+inline protocol covers 100%. Accelerators are **auto-detected** — present = used, absent = LLM
+fallback.
 
 | # | Capability | Absorbs | What it does | Token impact |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-tasks** | — | The orchestrator loop: 43 extension points, dual-path router, self-audit convergence | Core |
+| 1 | 🔁 **simplicio-tasks** | — | The orchestrator loop: 44 extension points, dual-path router, self-audit convergence | Core |
 | 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Hardened Ralph loop: evidence-gated `<promise>` exit, max_iterations cap | Loop drive |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-first execution, output-reduction catalog, tee-cache, signatures-read | L0 deterministic |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Parallel adversarial review on distinct rubrics → deduped verdict | Quality gate |
@@ -94,9 +95,12 @@ covers 100%. Accelerators are **auto-detected** — present = used, absent = LLM
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Session analytics, cost tracking, stalled-session discovery | **L1** SQL only |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV cache between loop turns — 40-70% TTFT reduction on local models | GPU time ↓ |
 | 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (native, stdlib-only; savings-schema compatible with the OSS [headroom](https://github.com/headroomlabs-ai/headroom) project) | Transparent capture proxy: forwards to the real provider, measures + deterministically compresses, writes `proxy_savings.json` | **deterministic** |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | Renders a **deterministic MP4** demo video of a screen/feature — fulfils `/simplicio-tasks faça um vídeo demonstrativo da tela X` AND doubles as CI-reproducible proof a UI change works | Evidence producer |
 
 Each skill lives under [`.claude/skills/`](.claude/skills); each accelerator has a reference doc
-under `.claude/skills/simplicio-tasks/references/`.
+under `.claude/skills/simplicio-tasks/references/` (the video producer:
+[`video-evidence.md`](.claude/skills/simplicio-tasks/references/video-evidence.md), worker
+[`scripts/video_evidence.py`](scripts/video_evidence.py)).
 
 ---
 
@@ -193,7 +197,7 @@ flowchart TD
   subgraph QG["7 · Quality gates"]
     direction LR
     Q1["AC gate = real DoD"]
-    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q2["WORKS not just compiles · web_verify (Playwright) · video_evidence (hyperframes MP4)"]
     Q3["adversarial review · thermos rubrics"]
   end
   QG --> SG
@@ -238,6 +242,45 @@ agent sees its own prior work. Exit is ONLY via:
 4. **STOP signal** — `.orchestrator/STOP` or channel command
 
 Between turns, LMCache (when available) caches the KV state so re-feed costs near-zero prefill.
+
+---
+
+## 🎬 Video evidence — demo videos via hyperframes
+
+The loop can **create demonstration videos** of a screen/feature on request, and reuse that video
+as proof a change works. The producer is [**hyperframes**](https://github.com/heygen-com/hyperframes)
+(by HeyGen) — it renders HTML/CSS/media compositions to a **deterministic MP4** ("same input, same
+frames, same output"), so the demo is a CI-reproducible artifact, not a throwaway recording. No API
+keys; local render via headless Chrome + FFmpeg (Node 22+).
+
+Two ways it fires — both via the `video_evidence` extension point (worker
+[`scripts/video_evidence.py`](scripts/video_evidence.py), contract
+[`references/video-evidence.md`](.claude/skills/simplicio-tasks/references/video-evidence.md)):
+
+1. **On request — the video IS the deliverable.** Ask for it directly and the orchestrator routes
+   the work-item to the hyperframes producer:
+
+   ```text
+   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
+   → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
+   → attach the MP4 to the PR as evidence + close with the link
+   ```
+
+2. **As proof — the video backs a code change.** After a UI change, the same MP4 walkthrough is the
+   strongest "works, not just compiles" receipt (Step 4b) and a valid evidence-gated `<promise>`
+   for the loop — a video that never rendered yields **BLOCKED**, never a fake pass.
+
+The two evidence producers chain: `web_verify` (Playwright) captures the per-step screenshots,
+`video_evidence` (hyperframes) assembles them into a captioned, deterministic MP4 walkthrough.
+Evidence is always a **file path + boolean verdict** — never video bytes in context (token economy).
+
+```bash
+# one-shot, outside the loop
+python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py verify  --name checkout-demo \
+    --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
+```
 
 ---
 
@@ -402,3 +445,12 @@ gate + secret-scan on. With `ceiling = 0` the watcher refuses to run unattended 
 ## 📄 License
 
 MIT
+
+## 💳 Pricing
+
+The engine is **free and MIT** — fully self-hostable, never crippled. A proposed **open-core
+hosted tier** (managed 24/7 watcher, hosted operators, retained savings dashboard, distributed
+`video_evidence` render) is sketched in [`PRICING.md`](PRICING.md), along with a deterministic,
+privacy-preserving billing architecture built on the metering primitives the loop already
+produces (`loop-budget.json` kill-switch + `savings_ledger`). It is a proposal — nothing is billed
+today.

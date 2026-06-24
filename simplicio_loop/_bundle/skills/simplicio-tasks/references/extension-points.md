@@ -1,4 +1,4 @@
-# Extension points — the 43 named binding points
+# Extension points — the 44 named binding points
 
 These are the named points where work happens. For each, if the host runtime exposes a native
 capability, BIND it (deterministic, local-first, near-zero token). If not, the LLM performs the
@@ -6,7 +6,7 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 
 | Extension point | What it does | LLM fallback (always available) |
 |---|---|---|
-| `orient` | Compressed repo/work map | `rg` / `git grep` / `git log --oneline -10`, read few files |
+| `orient` | Compressed repo/work map | `rg` / `git grep` / `git log --oneline -10`, read few files. Also: `.understand-anything/knowledge-graph.json` (Understand Anything) for rich structural graph + semantic search + guided tours |
 | `recall` | Prior decisions / precedents | read ADRs / git history / past PRs |
 | `normalize` | Work-item → canonical schema | LLM maps fields by hand |
 | `deterministic_edit` | Mechanical file writer (zero-token apply of a decided change) | LLM applies edit with file tool |
@@ -22,7 +22,7 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 | `watcher` | Durable scheduler / poller (survives reboot) | OS cron / scheduled task / session loop |
 | `savings_ledger` | REAL token spend tracking per session | estimate `ceil(chars/4)` |
 | `capability_rank` | Rank which skill/tool fits a sub-task | LLM picks |
-| `compress` | Context compression / output clamping | summarize to bullets, head+tail clamp |
+| `compress` | Context compression / output clamping | summarize to bullets, head+tail clamp. Also: headroom proxy (`pip install headroom-ai`) for transparent 6-algorithm compression via daemon |
 | `trajectory` | Record run outcome for self-improvement | manual log |
 | `learn` | Learn from run — update precedents / memory | manual ADR |
 | `human_gate` | Async human approval channel | ask user inline |
@@ -40,13 +40,14 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 | `reuse_precedent` | Match item by fingerprint to a prior SOLVED run → reuse not regenerate → ingest the new solution back | LLM greps past PRs/closed issues/solved-patterns journal for the fingerprint, applies it, appends new solution |
 | `source_adapter` | Uniform source connector contract (list_ready/get_details/claim/update/attach/close) bound per source | LLM calls the source CLI/REST per verb; lockfile/label claim with TTL for cross-session safety |
 | `prompt_budget` | Token-budgeted prompt envelope + prompt-fragment cache: assemble only what fits the per-task ceiling | LLM caps per-subtask context to a fixed budget (chars/4), trims to the few files that matter, small on-disk cache |
-| `model_route` | Pick cheapest viable substrate per sub-task (L0 deterministic→local→mid→reasoning→paid), escalate only on need | LLM applies the tier table: mechanical→L0, mass→local, normal→mid, LARGE/CRITICAL/security→reasoning |
+| `model_route` | Pick cheapest viable substrate per sub-task (L0 deterministic→local→mid→reasoning→paid), escalate only on need. LMCache KV cache (`pip install lmcache`) — acelera inferência local reduzindo TTFT via cache KV entre turnos do loop | LLM applies the tier table: mechanical→L0, mass→local, normal→mid, LARGE/CRITICAL/security→reasoning |
 | `model_preflight` | Probe a usable model substrate is present+healthy before routing generation; else fail-fast or next tier | LLM pings endpoint / confirms local model+runner with a trivial call; on fail picks next tier or stops |
 | `toolchain_detect` | Detect which build/lint/typecheck/test toolchains the repo actually has so validate/diagnostics route right | LLM inspects manifests/lockfiles/config + probes PATH to pick the correct toolchain per stack |
 | `checkpoint_restore` | Snapshot run/repo state before a risky batch; restore to known-good if validation/delivery fails | LLM tags a commit / stashes / copies the journal before destructive ops, restores on failure |
 | `notify` | Push progress/blocker/digest to a human channel + receive inbound approvals (async approval I/O) | LLM writes digest/approval-request to a file or session; no-reply = block the destructive op (headless rule) |
 | `endpoint_compare` | Compare web/API/agent surfaces to detect drift; gaps become follow-up items (full-stack coverage) | LLM lists routes on each side (grep handlers / read OpenAPI) and diffs by hand to flag mismatches |
 | `web_verify` | Drive a real browser (navigate/click/console) to prove a UI/web change works end-to-end; capture screenshot+trace as evidence | Playwright via `playwright-mcp` or headless `npx playwright` / `pytest-playwright`; evidence = artifact path, not pixels (see web-evidence.md) |
+| `video_evidence` | Render a deterministic MP4 demo video of a screen/feature as evidence (and fulfil explicit "make a demo video" requests) | **hyperframes** (`npx hyperframes render` — heygen-com/hyperframes): assemble the `web_verify` screenshots into a captioned MP4 walkthrough; evidence = MP4 path, not bytes (see video-evidence.md). Fallback: stitch the PNGs with `ffmpeg` |
 | `web_research` | Fetch current external knowledge (docs/CVE/version/SDK error), gated behind local-memory-miss, with provenance | LLM uses built-in web search/fetch only after local miss; records source URL as provenance |
 | `transform_guard` | Verify a compaction preserved every code/URL/path/version token (fail-closed to original) | LLM extracts both token sets and compares by hand |
 

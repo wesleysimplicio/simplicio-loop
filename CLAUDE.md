@@ -30,6 +30,18 @@ deps of `pip install simplicio-loop` (the loop BLOCKS if either is absent):
 The AI decides; the operators act. See `.claude/skills/simplicio-loop/SKILL.md` § Bound operators
 and `.claude/skills/simplicio-tasks/references/extension-points.md` § bound operators.
 
+## Video evidence (hyperframes)
+
+The loop can **create demo videos** of a screen/feature on request
+(`/simplicio-tasks faça um vídeo demonstrativo da tela X`) and reuse them as proof a change works.
+The `video_evidence` extension point (#44) binds
+[hyperframes](https://github.com/heygen-com/hyperframes) — deterministic HTML→MP4 render (Node 22+
++ FFmpeg, no API keys). It chains after `web_verify`: Playwright captures the per-step screenshots,
+hyperframes assembles them into a captioned, deterministic MP4 walkthrough attached to the PR.
+Worker: `scripts/video_evidence.py`; contract:
+`.claude/skills/simplicio-tasks/references/video-evidence.md`. A missing toolchain BLOCKS, never a
+fake pass.
+
 ## Install (this or another project)
 
 ```bash
@@ -71,5 +83,5 @@ Claude's native tools satisfy the extension points: sub-agents → `execute`, fi
 
 The same skills run on Codex, VS Code (Copilot), Cursor, Antigravity, Kiro, OpenCode, Gemini,
 Aider, Hermes, and OpenClaw — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
-[`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (43 extension points; the binding
+[`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (44 extension points; the binding
 lives in the host, never in the skill).

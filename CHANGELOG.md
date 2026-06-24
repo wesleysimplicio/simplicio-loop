@@ -3,6 +3,24 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [Unreleased]
+
+### Added — demo-video creation + evidence via hyperframes (`video_evidence`, extension point #44)
+- **`video_evidence` extension point** — binds [hyperframes](https://github.com/heygen-com/hyperframes)
+  (HeyGen): renders HTML/CSS compositions to a **deterministic MP4** ("same input, same frames, same
+  output"). Two jobs: (1) fulfil an explicit request — `/simplicio-tasks faça um vídeo demonstrativo
+  da tela X` routes the work-item to the producer; (2) act as a CI-reproducible "works, not just
+  compiles" proof for a UI change and a valid evidence-gated `<promise>` for the loop.
+- **Worker** `scripts/video_evidence.py` — five verbs (`detect`/`scaffold`/`lint`/`render`/`verify`).
+  `detect` classifies the request in-terminal (EN/PT/ES regex, no LLM); `verify` scaffolds a
+  hyperframes composition from the `web_verify` per-step screenshots and renders the MP4 under
+  `.orchestrator/tee/video/`. Missing toolchain (Node 22+, FFmpeg, hyperframes) → **BLOCKED**, never
+  a fake pass. Chains after `web_verify` (Playwright captures the screens; hyperframes assembles them).
+- **Contract** `.claude/skills/simplicio-tasks/references/video-evidence.md`; wired into
+  `simplicio-tasks` (Step 2b routing + Step 4b evidence) and `simplicio-loop` (in-turn evidence
+  producer). Extension-point count 43 → 44; skills/accelerators 10 → 11. Docs updated: README (EN +
+  pt-BR), AGENTS.md, CLAUDE.md. Bundled skills under `simplicio_loop/_bundle/` synced.
+
 ## [3.3.0] — 2026-06-24
 
 ### Added — automatic capture routing for Claude + Codex (the monitor now measures all three)

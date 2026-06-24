@@ -93,6 +93,33 @@ merge/close gates); the operators do survey + apply:
 One turn: `preflight → survey (mapper) → triage (re-read survey) → DECIDE (AI) → operate
 (simplicio-dev-cli task: apply+test+retry ≤3×) → <promise> only if the operator's gate passed`.
 
+## Video evidence producer (hyperframes) — demo videos as proof
+
+The loop can be asked to **create a demonstration video** of a screen/feature — e.g.
+`/simplicio-tasks faça um vídeo demonstrativo da tela de login` — and it uses that video as
+in-turn evidence that the change works. The producer is **hyperframes**
+(<https://github.com/heygen-com/hyperframes>): it renders HTML/CSS/media compositions to a
+**deterministic MP4** ("same input, same frames, same output"), so the video is a CI-reproducible
+artifact, not a one-off recording. No API keys; local render via headless Chrome + FFmpeg.
+
+This is NOT a bound operator (it never BLOCKS the loop): it fires only when a turn's goal is a
+video request, or when a UI change wants a moving proof. The runnable worker is
+`scripts/video_evidence.py`; the full contract is `references/video-evidence.md`. One turn:
+
+```bash
+# 1. is this turn a video request?  (terminal intent gate, not the LLM)
+python3 scripts/video_evidence.py detect --goal "<the re-fed goal body>"
+# 2. capture the real screen (reuse web_verify — drives the UI, writes per-step PNGs)
+python3 scripts/web_verify.py run --url <URL> --expect "<text>" --issue <N>
+# 3. assemble those PNGs into a deterministic MP4 and attach it to the PR
+python3 scripts/video_evidence.py verify --name <slug> --frames .orchestrator/tee/web \
+    --title "<screen>" --issue <N> [--upload --pr <N>]
+```
+
+The MP4 path + the `video_evidence: PASS …` ledger row is the in-turn evidence the promise gate
+needs; a missing toolchain (Node 22+, FFmpeg, hyperframes) yields **BLOCKED**, never a fake pass —
+so a video that never rendered can never satisfy the promise.
+
 ## State file (single source of truth)
 
 `.orchestrator/loop/scratchpad.md` — human-readable, trivially editable/cancellable:
@@ -141,7 +168,11 @@ only if, in the SAME turn, there is concrete evidence the work is truly done:
 - the run-verification gate passed ("works, not just compiles" — `simplicio-tasks` Step 4b) —
   the `simplicio-dev-cli` operator's passing test+verify pass (its contract step 5/6) satisfies this, or
 - the named acceptance criteria are each checked with a `file:line` or command-output receipt, or
-- for a queue, the source re-query confirms the items are actually closed/merged.
+- for a queue, the source re-query confirms the items are actually closed/merged, or
+- a **demo video** of the change running on screen — a deterministic MP4 rendered with
+  **hyperframes** via the `video_evidence` producer (below) — whose ledger row + MP4 path prove
+  the feature works end-to-end. This is the strongest "works, not just compiles" receipt for a UI
+  change, and is the REQUIRED evidence when the goal was itself "make a demo video of screen X".
 
 A `<promise>` with no evidence in-turn is a **contract violation** — the capture hook ignores
 it (does not raise `done`) and the loop continues. **Never output a false promise to escape

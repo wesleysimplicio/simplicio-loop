@@ -52,11 +52,21 @@ confirm scope in one line only if ambiguous.
 
 ## Extension points (bind native, else fall back)
 
-The skill defines **43 named extension points** (see the Step 1b table in `SKILL.md`).
+The skill defines **44 named extension points** (see the Step 1b table in `SKILL.md`).
 For each point, if this runtime exposes a faster native capability, **bind it** —
 the step becomes deterministic and near-zero-token. If not, perform the documented
 LLM fallback. The skill never requires a specific runtime; the binding lives here in
 the host, not in the skill.
+
+## Video evidence (hyperframes)
+
+The orchestrator can **create demo videos** of a screen/feature on request
+(`/simplicio-tasks faça um vídeo demonstrativo da tela X`) and reuse them as proof a change works.
+The `video_evidence` extension point binds [hyperframes](https://github.com/heygen-com/hyperframes)
+(deterministic HTML→MP4; Node 22+ + FFmpeg, no API keys). Worker: `scripts/video_evidence.py`;
+contract: `.claude/skills/simplicio-tasks/references/video-evidence.md`. It chains after
+`web_verify` (screenshots → captioned, deterministic MP4 walkthrough). Evidence is always a file
+path + verdict; a missing toolchain BLOCKS, never a fake pass.
 
 ## Non-negotiables
 

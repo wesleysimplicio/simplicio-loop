@@ -22,12 +22,13 @@ disclosure keeps this file small while contemplating everything.
 
 | Need depth on… | Read |
 |---|---|
-| the 43 extension points + fallbacks | `references/extension-points.md` |
+| the 44 extension points + fallbacks | `references/extension-points.md` |
 | token economy (catalog, caps, clamp, tee+CCR, terminal table) | `references/token-economy.md` (or skill `simplicio-orient`) |
 | discover / intake / route / autoscale / speed / model-routing | `references/orchestration.md` |
 | quality loop · safety gates · delivery · feedback | `references/quality-safety-delivery.md` |
 | 24/7 standing loop · arming the watcher | `references/standing-loop-247.md` |
 | front-end proof via Playwright | `references/web-evidence.md` |
+| demo-video creation + proof via hyperframes | `references/video-evidence.md` |
 
 ## Step 0 — Auto-arm the loop (FIRST action, EVERY invocation)
 simplicio-tasks **IS a loop by default** — invoking it needs NO separate `/loop` or
@@ -72,6 +73,7 @@ back to the LLM). No heavy preflight for a small job — the router decides dept
      "reset_at": "<next local midnight, UTC ISO-8601>", "state": "running" }
    ```
    `ceiling = 0` → session-only (watcher disabled, fail-safe). BLOCKING for 24/7 if unresolved.
+   - **Agentsview cost check (optional).** If agentsview adapter is installed and `.orchestrator/loop-budget.json` has `"agentsview": {"cost_source": true}`, run `python3 scripts/agentsview_adapter.py cost_summary --days 1` to seed real spend into `spent_usd_today`.
 2. **Source auth.** `gh auth status` (or the source's metadata-only list call). On failure, fix or
    STOP — never proceed on broken auth. Verify scopes (`repo,read:org,workflow`); note expiry.
 3. **Watcher.** The session loop is already auto-armed (Step 0). If `ceiling > 0`, ALSO arm the
@@ -82,7 +84,7 @@ Emit: `Pre-flight: kill-switch ✓ ($<c>/day) · auth ✓ (expires <date>) · wa
 or `Pre-flight: BLOCKED — <reason>` and stop.
 
 ## Step 1b — Extension points (bind native, else LLM fallback)
-Work happens at 43 named points. If the host binds one natively it runs deterministically at
+Work happens at 44 named points. If the host binds one natively it runs deterministically at
 near-zero token cost; otherwise the LLM performs the documented fallback. The skill depends on the
 ABSTRACTION, never a runtime — the INVERTED DEPENDENCY (the skill names no runtime; the runtime
 detects the skill). Full table + fallbacks: `references/extension-points.md`. Core rule: any
@@ -133,6 +135,18 @@ item, do the MANDATORY deep intake: read full body + ALL comments, extract accep
 reads for API surface), then write a short plan with an AC checklist + complexity. Detail:
 `references/orchestration.md`.
 
+> **Understand Anything (optional).** Se `.understand-anything/knowledge-graph.json` existir, use Understand Anything como orientação primária — o grafo já contém a estrutura completa do código, relacionamentos e tours guiados. Consulte-o via semantic search em vez de signatures-only reads.
+
+> **Video-creation work-items (`video_evidence`).** A work-item — or the skill argument itself
+> (e.g. `/simplicio-tasks faça um vídeo demonstrativo da tela de login`) — may ASK for a demo
+> video. Classify it cheaply in the terminal: `python3 scripts/video_evidence.py detect --goal
+> "<text>"`. A match makes the **demo video itself the deliverable AND the evidence** — route it to
+> the `video_evidence` producer (hyperframes): drive the named screen with `web_verify` to capture
+> per-step screenshots, then `video_evidence verify --name <slug> --frames .orchestrator/tee/web`
+> renders the deterministic MP4 and attaches it to the PR. The AC for such an item is "an MP4 of
+> screen X exists, renders deterministically, and is linked on the PR". Full contract:
+> `references/video-evidence.md`.
+
 ## Step 3 — Route (dual-path) + scale
 - **Fast-path** (small queue AND every item ≤ complexity 3): inline, solo, one targeted test → Step 6.
 - **Heavy-path** (large queue OR any medium+ item): fan out a CONTINUOUS WORKER POOL fed by a LIVE
@@ -149,8 +163,11 @@ Never mark done without green gates + evidence; a failure is NOT a blocker — i
 - **4a AC gate (real DoD):** verify EVERY AC explicitly; no placeholder/stub success, no
   `todo!()`/`panic!` in prod paths, reads from context, compiles clean on changed files.
 - **4b WORKS, not just compiles:** RUN it (`--help` + happy path / affected tests). Front-end
-  change → `web_verify` (screenshot + trace, `references/web-evidence.md`). Compiles-but-never-run
-  = PARTIAL.
+  change → `web_verify` (screenshot + trace, `references/web-evidence.md`). For an extra-strong,
+  CI-reproducible proof of a UI change — or when the item itself asks for a demo — chain
+  `video_evidence` (deterministic MP4 via **hyperframes**, `references/video-evidence.md`):
+  `web_verify` captures the per-step screenshots, `video_evidence` assembles them into a demo
+  video attached to the PR. Compiles-but-never-run = PARTIAL.
 - **4c Adversarial verify (MEDIUM+):** 2–3 independent verifiers prompted to REFUTE + check each
   AC; majority-refute → back to fix. Delegate to `simplicio-review` when loaded. Full: `references/quality-safety-delivery.md`.
 

@@ -1,4 +1,4 @@
-# Extension points — the 43 named binding points
+# Extension points — the 44 named binding points
 
 These are the named points where work happens. For each, if the host runtime exposes a native
 capability, BIND it (deterministic, local-first, near-zero token). If not, the LLM performs the
@@ -47,6 +47,7 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 | `notify` | Push progress/blocker/digest to a human channel + receive inbound approvals (async approval I/O) | LLM writes digest/approval-request to a file or session; no-reply = block the destructive op (headless rule) |
 | `endpoint_compare` | Compare web/API/agent surfaces to detect drift; gaps become follow-up items (full-stack coverage) | LLM lists routes on each side (grep handlers / read OpenAPI) and diffs by hand to flag mismatches |
 | `web_verify` | Drive a real browser (navigate/click/console) to prove a UI/web change works end-to-end; capture screenshot+trace as evidence | Playwright via `playwright-mcp` or headless `npx playwright` / `pytest-playwright`; evidence = artifact path, not pixels (see web-evidence.md) |
+| `video_evidence` | Render a deterministic MP4 demo video of a screen/feature as evidence (and fulfil explicit "make a demo video" requests) | **hyperframes** (`npx hyperframes render` — heygen-com/hyperframes): assemble the `web_verify` screenshots into a captioned MP4 walkthrough; evidence = MP4 path, not bytes (see video-evidence.md). Fallback: stitch the PNGs with `ffmpeg` |
 | `web_research` | Fetch current external knowledge (docs/CVE/version/SDK error), gated behind local-memory-miss, with provenance | LLM uses built-in web search/fetch only after local miss; records source URL as provenance |
 | `transform_guard` | Verify a compaction preserved every code/URL/path/version token (fail-closed to original) | LLM extracts both token sets and compares by hand |
 

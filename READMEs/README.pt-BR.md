@@ -6,17 +6,17 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-as-10-skills--aceleradores"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-as-11-skills--aceleradores"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
   <a href="#-adaptadores-de-fonte"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtimes-um-protocolo"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-os-43-pontos-de-extensão"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
+  <a href="#-os-44-pontos-de-extensão"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
   <a href="#-economia-de-tokens"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-as-10-skills--aceleradores">10 Skills</a> ·
+  <a href="#-as-11-skills--aceleradores">11 Skills</a> ·
   <a href="#-adaptadores-de-fonte">Adaptadores de fonte</a> ·
   <a href="#-11-runtimes-um-protocolo">11 Runtimes</a> ·
   <a href="#-o-loop">O Loop</a> ·
@@ -77,15 +77,16 @@ protocolo em 11 runtimes** e faz tudo isso com **economia de tokens agressiva e 
 
 ---
 
-## 🧠 As 10 skills & aceleradores
+## 🧠 As 11 skills & aceleradores
 
-O core do orquestrador + cinco satélites + quatro aceleradores. Cada satélite é **opcional** —
-quando carregado, o orquestrador delega para ele (mais rico + mais barato); quando ausente, o protocolo
-inline cobre 100%. Aceleradores são **autodetectados** — presente = usado, ausente = fallback do LLM.
+O core do orquestrador + cinco satélites + cinco aceleradores/integrações. Cada satélite é
+**opcional** — quando carregado, o orquestrador delega para ele (mais rico + mais barato); quando
+ausente, o protocolo inline cobre 100%. Aceleradores são **autodetectados** — presente = usado,
+ausente = fallback do LLM.
 
 | # | Capacidade | Absorve | O que faz | Impacto em tokens |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-tasks** | — | O loop do orquestrador: 43 pontos de extensão, roteador de caminho duplo, convergência por autoauditoria | Core |
+| 1 | 🔁 **simplicio-tasks** | — | O loop do orquestrador: 44 pontos de extensão, roteador de caminho duplo, convergência por autoauditoria | Core |
 | 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Loop Ralph endurecido: saída por `<promise>` com evidência, limite de max_iterations | Motor do loop |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Execução terminal-first, catálogo de redução de saída, tee-cache, signatures-read | L0 determinístico |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Revisão adversarial paralela em rubricas distintas → veredito deduplicado | Gate de qualidade |
@@ -95,9 +96,12 @@ inline cobre 100%. Aceleradores são **autodetectados** — presente = usado, au
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Analytics de sessão, rastreio de custo, descoberta de sessões paradas | **L1** só SQL |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV cache entre turnos do loop — 40-70% de redução de TTFT em modelos locais | Tempo de GPU ↓ |
 | 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (nativo, só stdlib; schema de savings compatível com o projeto OSS [headroom](https://github.com/headroomlabs-ai/headroom)) | Proxy de captura transparente: encaminha para o provedor real, mede + comprime deterministicamente, escreve `proxy_savings.json` | **determinístico** |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | Renderiza um **MP4 determinístico** demonstrando uma tela/funcionalidade — atende `/simplicio-tasks faça um vídeo demonstrativo da tela X` E serve como prova reproduzível (CI) de que a alteração na UI funciona | Produtor de evidência |
 
 Cada skill vive em [`.claude/skills/`](../.claude/skills); cada acelerador tem um doc de referência
-em `.claude/skills/simplicio-tasks/references/`.
+em `.claude/skills/simplicio-tasks/references/` (o produtor de vídeo:
+[`video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md), worker
+[`scripts/video_evidence.py`](../scripts/video_evidence.py)).
 
 ---
 
@@ -194,7 +198,7 @@ flowchart TD
   subgraph QG["7 · Quality gates"]
     direction LR
     Q1["AC gate = real DoD"]
-    Q2["WORKS not just compiles · web_verify (Playwright)"]
+    Q2["WORKS not just compiles · web_verify (Playwright) · video_evidence (MP4 hyperframes)"]
     Q3["adversarial review · thermos rubrics"]
   end
   QG --> SG
@@ -240,6 +244,40 @@ para que o agente veja seu próprio trabalho anterior. A saída é APENAS via:
 
 Entre turnos, o LMCache (quando disponível) cacheia o estado KV para que a re-alimentação custe um
 prefill próximo de zero.
+
+---
+
+## 🎬 Evidência em vídeo — vídeos demonstrativos via hyperframes
+
+O loop pode **criar vídeos demonstrativos** de uma tela/funcionalidade quando solicitado, e reusar
+esse vídeo como prova de que a alteração funciona. O produtor é
+[**hyperframes**](https://github.com/heygen-com/hyperframes) (da HeyGen) — renderiza composições
+HTML/CSS/mídia para um **MP4 determinístico** ("mesma entrada, mesmos frames, mesma saída"), então o
+demo é um artefato reproduzível em CI, não uma gravação descartável. Sem chaves de API; render local
+via Chrome headless + FFmpeg (Node 22+).
+
+Dispara de duas formas — ambas pelo ponto de extensão `video_evidence` (worker
+[`scripts/video_evidence.py`](../scripts/video_evidence.py), contrato
+[`references/video-evidence.md`](../.claude/skills/simplicio-tasks/references/video-evidence.md)):
+
+1. **Sob demanda — o vídeo É a entrega.** Peça diretamente e o orquestrador roteia o work-item para
+   o produtor hyperframes:
+
+   ```text
+   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   → detect: pedido de criação de vídeo  → dirige a tela com web_verify (screenshots por passo)
+   → monta uma composição hyperframes  → npx hyperframes render → MP4 determinístico
+   → anexa o MP4 ao PR como evidência + fecha com o link
+   ```
+
+2. **Como prova — o vídeo respalda uma alteração de código.** Após uma mudança de UI, o mesmo
+   walkthrough em MP4 é o recibo mais forte de "funciona, não só compila" (Step 4b) e uma `<promise>`
+   válida com gate de evidência para o loop — um vídeo que não renderizou resulta em **BLOCKED**,
+   nunca um falso "passou".
+
+Os dois produtores se encadeiam: `web_verify` (Playwright) captura os screenshots por passo,
+`video_evidence` (hyperframes) os monta num walkthrough MP4 legendado e determinístico. Evidência é
+sempre um **caminho de arquivo + veredito booleano** — nunca os bytes do vídeo no contexto.
 
 ---
 
