@@ -8,6 +8,12 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 ### Added
 - README: a **Join the Simplicio Discord** badge (`https://discord.gg/wM6tr7xVb`) in the top badge row.
 
+### Fixed
+- Reconcile the extension-point count after #53 (44 → **48**): the badge/anchor/table in `README.md`,
+  the runtime-contract line in `CLAUDE.md`, and the depth-table row in `simplicio-tasks/SKILL.md`
+  still said 44 while `extension-points.md`/`AGENTS.md` already said 48. Re-synced the pip bundle
+  (`simplicio_loop/_bundle/skills/*`) to source so `scripts/check.py` is green again (audit 4/4).
+
 ## [3.9.3] — 2026-06-24
 
 ### Fixed — `video_evidence` renders again on the shipped hyperframes (0.7.x)

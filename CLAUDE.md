@@ -97,5 +97,5 @@ Claude's native tools satisfy the extension points: sub-agents → `execute`, fi
 
 The same skills run on Codex, VS Code (Copilot), Cursor, Antigravity, Kiro, OpenCode, Gemini,
 Aider, Hermes, and OpenClaw — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
-[`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (44 extension points; the binding
+[`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (48 extension points; the binding
 lives in the host, never in the skill).

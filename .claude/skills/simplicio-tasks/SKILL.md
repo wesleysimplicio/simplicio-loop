@@ -22,7 +22,7 @@ disclosure keeps this file small while contemplating everything.
 
 | Need depth on… | Read |
 |---|---|
-| the 44 extension points + fallbacks | `references/extension-points.md` |
+| the 48 extension points + fallbacks | `references/extension-points.md` |
 | token economy (catalog, caps, clamp, tee+CCR, terminal table) | `references/token-economy.md` (or skill `simplicio-orient`) |
 | discover / intake / route / autoscale / speed / model-routing | `references/orchestration.md` |
 | quality loop · safety gates · delivery · feedback | `references/quality-safety-delivery.md` |

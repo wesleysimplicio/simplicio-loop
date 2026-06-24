@@ -9,7 +9,7 @@
   <a href="#-the-11-skills--accelerators"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-the-44-extension-points"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
+  <a href="#-the-48-extension-points"><img src="https://img.shields.io/badge/extension%20points-48-00E08A" alt="48 extension points"></a>
   <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
   <a href="https://discord.gg/wM6tr7xVb"><img src="https://img.shields.io/badge/Discord-Join%20Simplicio-5865F2?logo=discord&logoColor=white" alt="Join the Simplicio Discord"></a>
@@ -112,7 +112,7 @@ fallback.
 
 | # | Capability | Absorbs | What it does | Token impact |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-tasks** | — | The orchestrator loop: 44 extension points, dual-path router, self-audit convergence | Core |
+| 1 | 🔁 **simplicio-tasks** | — | The orchestrator loop: 48 extension points, dual-path router, self-audit convergence | Core |
 | 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Hardened Ralph loop: evidence-gated `<promise>` exit, max_iterations cap | Loop drive |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-first execution, output-reduction catalog, tee-cache, signatures-read | L0 deterministic |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Parallel adversarial review on distinct rubrics → deduped verdict | Quality gate |

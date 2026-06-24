@@ -1,4 +1,4 @@
-# Extension points — the 44 named binding points
+# Extension points — the 48 named binding points
 
 These are the named points where work happens. For each, if the host runtime exposes a native
 capability, BIND it (deterministic, local-first, near-zero token). If not, the LLM performs the
@@ -7,6 +7,7 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 | Extension point | What it does | LLM fallback (always available) |
 |---|---|---|
 | `orient` | Compressed repo/work map | `rg` / `git grep` / `git log --oneline -10`, read few files. Also: `.understand-anything/knowledge-graph.json` (Understand Anything) for rich structural graph + semantic search + guided tours |
+| `pattern_match` | Match a bug's root-cause fingerprint against a structured store of past patterns (`.orchestrator/patterns.jsonl`). Each pattern has: `fingerprint` (sha256 of root_cause+file), `root_cause`, `symptom_pattern`, `fix_summary`, `sibling_files`, `hit_count`, `last_seen`. When hit_count > 1, flag the module for structural attention. | LLM searches past PRs/closed-issues for similar error patterns by keyword, extracts root cause and fix from git history, writes a structured entry to `.orchestrator/patterns.jsonl`. |
 | `recall` | Prior decisions / precedents | read ADRs / git history / past PRs |
 | `normalize` | Work-item → canonical schema | LLM maps fields by hand |
 | `deterministic_edit` | Mechanical file writer (zero-token apply of a decided change) | LLM applies edit with file tool |
@@ -37,7 +38,10 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 | `resource_governor` | Dynamic mid-loop throttle: decide when to back off + machine-tier ceilings before scaling a wave | LLM re-probes CPU/RAM/load each tick, reduces fleet / sleeps longer under load, degrades tiers |
 | `delivery_gate` | One DoD gate: AC check + run-verification + regression guard + diff self-review + delivery certificate | LLM walks the AC checklist, runs affected tests, reviews own diff, writes a certificate into the receipt |
 | `action_gate` | Risk-classify every mutation (safe/auto/ask) vs allow/deny + hardline blocklist before it runs | LLM pattern-matches action vs irreversible-op list, secret-scans, proceeds/auto-runs/escalates to `human_gate` |
+| `repo_conventions` | Discover repo-specific conventions: CONTRIBUTING.md branch rules, commit scopes, AGENTS.md dev policies, PR template structure, CI commands beyond toolchain_detect (scripts/run_tests.sh, check-windows-footguns.py), cross-platform checks, supply-chain audit steps. Output structured object before Step 2 begins. | LLM reads CONTRIBUTING.md + AGENTS.md + .github/ + pyproject.toml, emits structured conventions summary that shapes Step 4–6 behavior (branch naming, commit scopes, PR checklist, CI commands, lint/test gates). |
+| `pr_template` | Discover .github/PULL_REQUEST_TEMPLATE.md, parse structured sections (what/why, how to test, checklist), map completed ACs to checklist items, and auto-fill the PR body before creation. Ensures every PR matches the maintainer's expected format on first submission. | LLM reads .github/PULL_REQUEST_TEMPLATE.md, maps completed acceptance criteria to each checklist item, fills in what/why from the item description and the implementation summary, lists changed files with rationale. |
 | `reuse_precedent` | Match item by fingerprint to a prior SOLVED run → reuse not regenerate → ingest the new solution back | LLM greps past PRs/closed issues/solved-patterns journal for the fingerprint, applies it, appends new solution |
+| `sibling_search` | Given a changed file/function/pattern, find all other call sites or implementations with the same pattern across the repo. Enumerate sibling paths so the fix covers the entire bug class, not just one reported instance. Critical for projects where maintainers reject single-site fixes. | LLM uses `grep -rn` / `rg` for the symbol/pattern, traces each candidate with `git log -p -S`, reads each sibling to confirm the same bug class, then includes all confirmed siblings in the fix scope. |
 | `source_adapter` | Uniform source connector contract (list_ready/get_details/claim/update/attach/close) bound per source | LLM calls the source CLI/REST per verb; lockfile/label claim with TTL for cross-session safety |
 | `prompt_budget` | Token-budgeted prompt envelope + prompt-fragment cache: assemble only what fits the per-task ceiling | LLM caps per-subtask context to a fixed budget (chars/4), trims to the few files that matter, small on-disk cache |
 | `model_route` | Pick cheapest viable substrate per sub-task (L0 deterministic→local→mid→reasoning→paid), escalate only on need. LMCache KV cache (`pip install lmcache`) — acelera inferência local reduzindo TTFT via cache KV entre turnos do loop | LLM applies the tier table: mechanical→L0, mass→local, normal→mid, LARGE/CRITICAL/security→reasoning |

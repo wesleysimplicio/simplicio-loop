@@ -22,7 +22,7 @@ disclosure keeps this file small while contemplating everything.
 
 | Need depth on… | Read |
 |---|---|
-| the 44 extension points + fallbacks | `references/extension-points.md` |
+| the 48 extension points + fallbacks | `references/extension-points.md` |
 | token economy (catalog, caps, clamp, tee+CCR, terminal table) | `references/token-economy.md` (or skill `simplicio-orient`) |
 | discover / intake / route / autoscale / speed / model-routing | `references/orchestration.md` |
 | quality loop · safety gates · delivery · feedback | `references/quality-safety-delivery.md` |
@@ -83,8 +83,20 @@ back to the LLM). No heavy preflight for a small job — the router decides dept
 Emit: `Pre-flight: kill-switch ✓ ($<c>/day) · auth ✓ (expires <date>) · watcher ✓ (<mech>)` —
 or `Pre-flight: BLOCKED — <reason>` and stop.
 
+## Step 1a' — Repo conventions (bound, else LLM fallback)
+Scan repo conventions via the `repo_conventions` extension point. Read CONTRIBUTING.md, AGENTS.md,
+.github/PULL_REQUEST_TEMPLATE.md, pyproject.toml, Makefile, and CI workflow files to extract:
+- **Branch rules:** expected branch prefix (`fix/`, `feat/`, `docs/`, etc.)
+- **Commit conventions:** required scope list, conventional-commit types
+- **PR template:** structured sections, checklist items that must be filled
+- **CI commands:** test runner (prefer scripts/run_tests.sh over bare pytest), lint command, typecheck command, cross-platform check scripts
+- **Quality policies:** required tests for bug fixes, no change-detector tests, dependency pinning rules
+
+Emit: `Conventions: branch=<prefix> · commit=<type>(<scope>): · ci=<runner> · checks=<n>`.
+Used by Steps 4–6 to shape branch names, commit messages, PR bodies, and gate checks.
+
 ## Step 1b — Extension points (bind native, else LLM fallback)
-Work happens at 44 named points. If the host binds one natively it runs deterministically at
+Work happens at 48 named points. If the host binds one natively it runs deterministically at
 near-zero token cost; otherwise the LLM performs the documented fallback. The skill depends on the
 ABSTRACTION, never a runtime — the INVERTED DEPENDENCY (the skill names no runtime; the runtime
 detects the skill). Full table + fallbacks: `references/extension-points.md`. Core rule: any
@@ -159,6 +171,8 @@ reads for API surface), then write a short plan with an AC checklist + complexit
 
 ## Step 4 — Quality loop (the Looping principle)
 edit → fmt → lint → targeted tests → analyze → fix → repeat until green or genuinely blocked.
+A bug fix MUST also search for sibling paths via the `sibling_search` extension point before marking done. Fixing one site when the same pattern exists in 3+ locations results in a rejected PR.
+After fixing, record the root cause and fix pattern via `pattern_match` so the same bug class is recognized and fixed faster next time.
 Never mark done without green gates + evidence; a failure is NOT a blocker — investigate.
 - **Attempt memory + stall guard (anti-oscillation).** Each fix iteration, RECORD the attempt
   (`python3 scripts/loop_journal.py record --iteration N --action "<change>" --hypothesis "<why>"
@@ -198,7 +212,7 @@ Never mark done without green gates + evidence; a failure is NOT a blocker — i
 
 ## Step 6 — Deliver + close + self-audit  ·  Step 6b — Feedback loop
 Per completed item: commit (Conventional Commits, English), push, Draft PR, close in-source with a
-short evidence comment (PR link + verification). **Verify reality, never trust self-report** — the
+short evidence comment (PR link + verification). If the `pr_template` extension point is available, use it to auto-fill the PR body from the discovered PULL_REQUEST_TEMPLATE.md and the item's acceptance criteria. Otherwise, read .github/PULL_REQUEST_TEMPLATE.md directly and fill in the sections. **Verify reality, never trust self-report** — the
 final step re-runs the merged build/test + smoke + a source re-query; the run's status = that
 measured state. Then self-audit (score, fix P0/P1, converge). Pursue the feedback loop until
 merge-ready: CI fail → fix root cause; review comments → adjust; branch behind main → additive
