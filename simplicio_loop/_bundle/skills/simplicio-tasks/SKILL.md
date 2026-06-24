@@ -160,6 +160,13 @@ reads for API surface), then write a short plan with an AC checklist + complexit
 ## Step 4 — Quality loop (the Looping principle)
 edit → fmt → lint → targeted tests → analyze → fix → repeat until green or genuinely blocked.
 Never mark done without green gates + evidence; a failure is NOT a blocker — investigate.
+- **Attempt memory + stall guard (anti-oscillation).** Each fix iteration, RECORD the attempt
+  (`python3 scripts/loop_journal.py record --iteration N --action "<change>" --hypothesis "<why>"
+  --gate pass|fail --gate-output <test.log>`) and, before retrying, CHECK for a stall
+  (`loop_journal.py stall`). K consecutive failures with the SAME error fingerprint ⇒ do NOT keep
+  re-trying the same approach: switch strategy, or escalate via the human gate (Step 5) with the
+  fingerprint + dead-ends. Start each turn with `loop_journal.py resume` to avoid known dead-ends.
+  Delegate to `simplicio-loop` when loaded (§ Run-journal + stall detector).
 - **4a AC gate (real DoD):** verify EVERY AC explicitly; no placeholder/stub success, no
   `todo!()`/`panic!` in prod paths, reads from context, compiles clean on changed files.
 - **4b WORKS, not just compiles:** RUN it (`--help` + happy path / affected tests). Front-end

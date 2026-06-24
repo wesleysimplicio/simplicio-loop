@@ -9,7 +9,7 @@ runtimes.
 | Skill | Role |
 |---|---|
 | `simplicio-tasks` | the orchestrator loop (discover → implement → verify → merge → close → watch 24/7) |
-| `simplicio-loop` | hardened Ralph loop — re-feed the goal until an evidence-gated `<promise>` or a cap |
+| `simplicio-loop` | hardened Ralph loop — re-feed the goal until an evidence-gated `<promise>` or a cap; durable run-journal (attempt memory) + stall detector (`scripts/loop_journal.py`) so it switches strategy instead of oscillating |
 | `simplicio-orient` | terminal-first token economy — output-reduction catalog, tee-cache, signatures-read |
 | `simplicio-review` | thermos-style parallel adversarial review on distinct rubrics → deduped verdict |
 | `simplicio-compress` | caveman-style prose + memory compression, byte-preserving, `transform_guard` |

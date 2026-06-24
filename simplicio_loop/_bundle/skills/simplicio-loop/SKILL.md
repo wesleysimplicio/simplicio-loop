@@ -138,6 +138,11 @@ started_at: "<ISO-8601>"
 
 A sibling flag file `.orchestrator/loop/done` is `touch`ed only when the promise is verified.
 
+Alongside it, `.orchestrator/loop/journal.jsonl` is the loop's **durable attempt memory** (one
+append-only record per turn: `iteration`, `action`, `hypothesis`, `gate`, failure `fingerprint`).
+The scratchpad holds the GOAL; the journal holds WHAT WAS TRIED — see § Run-journal + stall
+detector below. It is the difference between a loop that converges and one that oscillates.
+
 ## The loop contract
 
 1. **Write the scratchpad** with the goal, the cap, and the promise text. Always recommend a
@@ -147,18 +152,68 @@ A sibling flag file `.orchestrator/loop/done` is `touch`ed only when the promise
    truth — the **`simplicio-mapper` survey** (`.simplicio/*.json`; refresh it with
    `simplicio-mapper index . --json` if the tree changed), `git status`/`git diff`, the working
    tree, the scratchpad notes, AND the source of record (re-query the open issues/PRs, existing
-   branches, the `.orchestrator/loop/done` flag). Act only on what is still genuinely open; never
-   redo done work or act on a stale picture (idempotency).
+   branches, the `.orchestrator/loop/done` flag). **Also read the attempt memory FIRST**:
+   `python3 scripts/loop_journal.py resume` — it lists what was already tried and the dead-end
+   actions to AVOID, so the turn never re-runs a known-failing approach. Act only on what is still
+   genuinely open; never redo done work or act on a stale picture (idempotency).
 3. **Work the goal** each turn as if fresh, against that triaged state. The model DECIDES the
    AC-scoped change; the **`simplicio-dev-cli` operator APPLIES and verifies it**
    (`simplicio-dev-cli task "<change>" --target <file>`) — do not hand-edit inside the loop. End EVERY
    iteration with a short, concrete verification — the operator's passing test run, or one gate /
-   command / `file:line` receipt. Keep iterations small and verifiable: a turn that only edits
-   without verifying is incomplete.
+   command / `file:line` receipt. **Then RECORD the attempt** in the journal:
+   `loop_journal.py record --iteration N --action "<what you changed>" --hypothesis "<why>"
+   --gate pass|fail --gate-output <test.log>` — on a failure the gate output is fingerprinted so the
+   SAME failure is recognised next turn. Keep iterations small and verifiable: a turn that only
+   edits without verifying is incomplete.
 4. **Re-feed** happens at turn end via the stop-hook (below). Each re-fed turn is prefixed
    `[simplicio-loop iteration N. To finish: output <promise>TEXT</promise> ONLY when genuinely true.]`.
+   Before re-feeding, the stop-hook (or the self-paced tick) runs the **stall check**
+   (`loop_journal.py stall`): if the loop is STALLED, it does NOT blindly re-feed the same goal —
+   it switches strategy or escalates (§ Run-journal + stall detector).
 5. **Exit** by emitting the sentinel `<promise>EXACT TEXT</promise>` — and ONLY when every
    acceptance criterion is met AND a real gate passed **in the SAME turn** (`evidence_required`).
+
+## Run-journal + stall detector (the loop's working memory)
+
+A re-feed loop with no memory of its own attempts has two failure modes the classic Ralph loop
+cannot see: it **re-derives the same triage every turn** (wasted tokens) and it **oscillates** —
+tries X, fails, tries X again — until the cap burns. The journal + stall detector close both. Both
+are deterministic and model-free (`scripts/loop_journal.py`), so a resume is reproducible from disk.
+
+**1. The run-journal — `.orchestrator/loop/journal.jsonl` (append-only attempt memory).** One
+record per turn: `{iteration, action, hypothesis, gate: pass|fail|blocked, fingerprint, ts}`. On a
+failing gate the gate output is reduced to a **stable fingerprint** — line numbers, file paths,
+hex/uuids, timestamps and durations are normalized away, so the SAME bug hashes the SAME across
+turns even when the incidental text differs. This is the loop's memory of WHAT WAS TRIED; the
+scratchpad only holds the goal.
+
+**2. The stall detector — `loop_journal.py stall`.** Reads the journal and returns
+`PROGRESS | STALLED`. STALLED = the last **K** consecutive attempts all failed with the **same
+fingerprint** (default K=3). A different fingerprint each turn = the loop is moving (PROGRESS); the
+same one K times = it is spinning. On STALLED it names the **dead-end actions** (already tried under
+this fingerprint) and recommends `switch-strategy` (K) or `escalate` (>K) — and `--exit-code` exits
+10 for hook/`if:` gating.
+
+**How the loop uses it each turn:**
+```bash
+# triage (step 2) — START here so you never retry a known dead-end
+python3 scripts/loop_journal.py resume
+#   → distinct actions tried + their outcomes + "AVOID (dead-ends): …" + live fingerprint
+# … decide + operate + verify (step 3) …
+python3 scripts/loop_journal.py record --iteration N --action "<change>" \
+    --hypothesis "<why>" --gate pass|fail --gate-output <test.log>
+# re-feed gate (step 4) — before re-feeding the same goal
+python3 scripts/loop_journal.py stall --k 3 --exit-code
+#   PROGRESS → re-feed normally
+#   STALLED  → do NOT re-feed the same goal into the same failure:
+#              switch strategy (change the approach, not just retry), or
+#              escalate to the human_gate with the fingerprint + dead-ends, or
+#              (headless, no approver) stop with a blocked status — never burn the cap spinning
+```
+
+This upgrades invariant 3 (Deterministic continuation): the next iteration re-feeds the goal **and
+the attempt memory** — and a STALLED loop changes course instead of repeating itself. It also makes
+resume real: a fresh process reads the journal and continues without re-deriving prior turns.
 
 ## The promise is evidence-gated (the simplicio hardening)
 
@@ -225,6 +280,9 @@ Delete `.orchestrator/loop/` (the `cancel-ralph` analogue). A single STOP signal
 - **Limit fan-out after timeouts.** If delegating a step (to a companion skill or a sub-agent)
   times out repeatedly, stop fanning out and proceed inline with direct execution — a degraded
   but moving loop beats a stalled swarm.
+- **Never spin on a dead-end.** Record every attempt in the journal and honour the stall detector:
+  K identical-fingerprint failures ⇒ change strategy or escalate, never re-feed the same goal into
+  the same failure (`scripts/loop_journal.py`).
 - Emit the standard savings line each turn (see `simplicio-tasks`).
 
 ## Verifying a good loop (what "good" looks like)
@@ -239,6 +297,9 @@ A correctly-run loop is auditable after the fact:
   first); the loop never ran unbounded.
 - **Clean cancellation.** Deleting `.orchestrator/loop/` (or a STOP signal) leaves no orphaned state
   — the next run starts fresh.
+- **No oscillation.** The journal shows distinct attempts converging (fingerprints changing /
+  getting resolved), not the same fingerprint re-tried past K; any stall ended in a strategy switch
+  or an escalation, not a silent re-feed.
 
 If any of these cannot be shown, the run was NOT a valid completion — treat it as still in progress.
 

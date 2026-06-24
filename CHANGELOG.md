@@ -5,6 +5,21 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+### Added — loop attempt-memory + stall detector (`scripts/loop_journal.py`)
+- **Durable run-journal** `.orchestrator/loop/journal.jsonl` (append-only: `iteration`, `action`,
+  `hypothesis`, `gate`, error `fingerprint`) — the loop's working memory of WHAT WAS TRIED, beside
+  the scratchpad's WHAT (the goal). Closes the two failure modes of a memoryless re-feed loop:
+  re-deriving the same triage every turn, and **oscillation** (try X → fail → try X again).
+- **Stable error fingerprint** — failing gate output is hashed with line numbers, paths, hex/uuids,
+  timestamps and durations normalized away, so the SAME bug is recognized across turns.
+- **Stall detector** — `loop_journal.py stall`: STALLED when the last K consecutive attempts share
+  the same fingerprint (default K=3); names the dead-end actions and recommends `switch-strategy`
+  (K) or `escalate` (>K), `--exit-code` 10 for hook/`if:` gating. `resume` prints the anti-oscillation
+  read at the top of each turn. Deterministic + model-free; `selftest` proves it (9/9, no files).
+- Wired into `simplicio-loop` (loop contract steps 2–4, new § Run-journal + stall detector, the
+  "good loop" criteria) and `simplicio-tasks` (Step 4 quality loop). Docs: README, AGENTS, CLAUDE;
+  `_bundle` synced.
+
 ### Added — billing aggregator for the open-core paid tier (`scripts/billing_aggregator.py`)
 - **Deterministic, model-free, privacy-preserving meter→invoice** over the metering records the loop
   already produces (`loop-budget.json`, `savings/snapshots.jsonl`, `trajectory/*.jsonl`,

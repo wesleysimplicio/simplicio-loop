@@ -18,7 +18,7 @@ token-cheaper behavior (it never requires them):
 
 | Skill | Absorbs | Role |
 |---|---|---|
-| `simplicio-loop` | Ralph Wiggum loop | re-feed the goal until an evidence-gated `<promise>` or a `max_iterations` cap |
+| `simplicio-loop` | Ralph Wiggum loop | re-feed the goal until an evidence-gated `<promise>` or a `max_iterations` cap; durable run-journal (attempt memory) + stall detector so it changes strategy instead of oscillating (`scripts/loop_journal.py`) |
 | `simplicio-orient` | rtk + caveman terminal discipline | terminal-first execution, output-reduction catalog, tee-cache, signatures-read |
 | `simplicio-review` | thermos | parallel adversarial review on distinct rubrics → deduped verdict |
 | `simplicio-compress` | caveman | prose + memory compression, byte-preserving, fail-closed `transform_guard` |

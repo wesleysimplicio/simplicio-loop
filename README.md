@@ -243,6 +243,29 @@ agent sees its own prior work. Exit is ONLY via:
 
 Between turns, LMCache (when available) caches the KV state so re-feed costs near-zero prefill.
 
+### 🧠 Attempt memory + stall detector (anti-oscillation)
+
+A re-feed loop that remembers nothing oscillates — try X, fail, try X again — until the cap burns.
+simplicio-loop keeps a **durable run-journal** (`.orchestrator/loop/journal.jsonl`, append-only:
+`iteration · action · hypothesis · gate · error-fingerprint`) and a **stall detector**
+([`scripts/loop_journal.py`](scripts/loop_journal.py), deterministic + model-free):
+
+- **Error fingerprint** — the failing gate output is reduced to a stable hash with line numbers,
+  paths, hex/uuids, timestamps and durations normalized away, so the *same* bug is recognized
+  across turns even when the incidental text differs.
+- **Stall = K identical-fingerprint failures in a row** (default K=3). A changing fingerprint means
+  the loop is moving (PROGRESS); the same one K times means it is spinning (STALLED).
+- On STALLED the loop does **not** re-feed the same goal — it names the **dead-end actions** to
+  avoid, then **switches strategy** or **escalates to the human gate** with the fingerprint.
+- `loop_journal.py resume` is read at the top of every turn, so a fresh process continues without
+  re-deriving prior attempts (real resume) and never retries a known dead-end.
+
+```bash
+loop_journal.py resume                       # what was tried + dead-ends to avoid
+loop_journal.py record --iteration N --action "…" --gate fail --gate-output test.log
+loop_journal.py stall --k 3 --exit-code      # PROGRESS → re-feed · STALLED → switch/escalate
+```
+
 ---
 
 ## 🎬 Video evidence — demo videos via hyperframes
