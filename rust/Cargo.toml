@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "simplicio-core",
     "simplicio-py",
+    "simplicio-proxy",
+    "simplicio-parity",
 ]
 # simplicio-py is a Python extension module — build it via maturin, not plain
 # cargo (the "extension-module" feature tells pyo3 not to link libpython,
@@ -11,6 +13,8 @@ members = [
 # can dynamically link here for the cdylib used by tests.
 default-members = [
     "simplicio-core",
+    "simplicio-proxy",
+    "simplicio-parity",
 ]
 
 [workspace.package]
@@ -36,6 +40,24 @@ thiserror = "1"
 tracing = { version = "0.1", features = ["log"] }
 pyo3 = { version = "0.24", features = ["abi3-py310"] }
 pyo3-log = "0.12"
+
+# ── simplicio-proxy / simplicio-parity deps (vendored from headroom) ──
+# Pulled from the upstream headroom workspace so the proxy + parity crates
+# resolve their `{ workspace = true }` deps unchanged. Feature flags stay at
+# the crate level (e.g. axum `ws`/`http2`/`macros` in simplicio-proxy).
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+axum = "0.7"
+tower = "0.5"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Phase D PR-D1: AWS SigV4 signing for the native Bedrock InvokeModel route.
+aws-sigv4 = { version = "1", default-features = false, features = ["sign-http", "http1"] }
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio", "sso"] }
+aws-credential-types = { version = "1", default-features = false }
+aws-smithy-runtime-api = { version = "1", default-features = false, features = ["client"] }
+# PR-D4: GCP Application Default Credentials → bearer token for the Vertex route.
+gcp_auth = "0.12"
 
 # ── Release profile — wheel size optimization ───────────────────────
 [profile.release]

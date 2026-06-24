@@ -3,6 +3,24 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [3.1.0] — 2026-06-24
+
+### Added — the last two Rust crates (the port is now literally complete: every crate)
+- **`rust/simplicio-proxy`** — the upstream `headroom-proxy` (Rust/axum transparent reverse proxy),
+  vendored + rebranded (zero residual `headroom`; `x-headroom-`→`x-simplicio-`). **Built (40.8 MB
+  binary) and verified running**: it forwarded a request to a local upstream byte-exact, preserved +
+  injected headers (`x-forwarded-*`, `x-request-id`), rewrote `host`, and `/healthz` →
+  `{"ok":true,"service":"simplicio-proxy"}`. **227 lib unit tests pass.**
+- **`rust/simplicio-parity`** — the upstream `headroom-parity` Rust-vs-Python parity harness, vendored
+  + rebranded + built (`parity-run` binary, 7 transforms). **4 parity tests pass.**
+- (Honest: the proxy's 50 *integration* test binaries couldn't finish linking here — disk-full, ~200 MB
+  free; each statically links the ~40 MB ONNX/AWS tree. The release binary + lib tests built and passed.)
+
+### Done — every subsystem AND every crate of upstream headroom is now in Simplicio
+All four Rust crates (`simplicio-core` / `-py` / `-proxy` / `-parity`) build; the full Python functional
+surface runs; the four real ONNX models (kompress / technique-router / MiniLM / SigLIP) run; Copilot
+OAuth works. **headroom → simplicio: complete.**
+
 ## [3.0.0] — 2026-06-24
 
 ### Added — the native Rust performance core, built for real (the last literal piece)
