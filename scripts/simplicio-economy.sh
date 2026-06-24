@@ -54,10 +54,13 @@ cmd_status() {
   _up "$MONITOR_PORT" && echo "  ● token monitor      :$MONITOR_PORT  http://127.0.0.1:$MONITOR_PORT" || echo "  ○ token monitor      :$MONITOR_PORT  OFFLINE"
   pgrep -f simplicio_tray.py >/dev/null 2>&1 && echo "  ● menu-bar tray      running" || echo "  ○ menu-bar tray      OFFLINE"
   if command -v simplicio-dev-cli >/dev/null 2>&1; then echo "  ● deterministic op   simplicio-dev-cli ready"; else echo "  ○ deterministic op   simplicio-dev-cli MISSING (pip install simplicio-cli)"; fi
-  if grep -qE "^export OPENAI_BASE_URL=http://127.0.0.1:$PROXY_PORT" "$HOME/.zshrc" 2>/dev/null; then
-    echo "  ● auto-capture       OpenAI clients routed through proxy (always-on)"
+  local an="✗" oa="✗"
+  grep -qE "^export ANTHROPIC_BASE_URL=http://127.0.0.1:$PROXY_PORT" "$HOME/.zshrc" 2>/dev/null && an="✓"
+  grep -qE "^export OPENAI_BASE_URL=http://127.0.0.1:$PROXY_PORT" "$HOME/.zshrc" 2>/dev/null && oa="✓"
+  if [ "$an$oa" != "✗✗" ]; then
+    echo "  ● auto-capture       Claude $an · Codex/OpenAI $oa · Hermes ✓ (always-on)"
   else
-    echo "  ○ auto-capture       not wired (run: simplicio-economy wire)"
+    echo "  ○ auto-capture       Claude ✗ · Codex/OpenAI ✗ · Hermes ✓ (run: simplicio-economy wire)"
   fi
   echo "─────────────────────────────────────────────"
   echo "  savings: $(_savings)"
@@ -78,14 +81,20 @@ cmd_up() {
 }
 
 cmd_wire() {
-  # Route OpenAI/Anthropic-compatible clients through the LOCAL capture proxy so every call is
-  # intercepted + saved — same upstream the clients already use, now captured (no model swap).
-  # Reversible via `unwire`. Resilient: the proxy is a KeepAlive launchd service.
-  local zr="$HOME/.zshrc" target="http://127.0.0.1:$PROXY_PORT/v1"
-  cp "$zr" "$zr.simplicio-bak" 2>/dev/null || true
-  python3 - "$zr" "$target" <<'PY'
+  # Route BOTH OpenAI (Codex/Cursor/OpenCode) and Anthropic (Claude) clients through the LOCAL
+  # capture proxy so every call is intercepted + measured — the engine routes each model to its
+  # REAL provider (claude→anthropic, gpt→openai, deepseek→deepseek), no model swap. Hermes is
+  # already routed. Reversible via `unwire`. Resilient: the proxy is a KeepAlive service.
+  # Opt out by setting SIMPLICIO_NO_WIRE=1 before install. NOTE the base-url shapes differ:
+  #   OpenAI clients append /chat/completions  → base needs the /v1 suffix
+  #   Claude appends /v1/messages              → base must NOT carry /v1
+  [ "${SIMPLICIO_NO_WIRE:-0}" = "1" ] && { echo "⬡ wire skipped (SIMPLICIO_NO_WIRE=1)"; return 0; }
+  local zr="$HOME/.zshrc" root="http://127.0.0.1:$PROXY_PORT" target="http://127.0.0.1:$PROXY_PORT/v1"
+  # Back up the ORIGINAL once — a re-wire must not overwrite the pristine backup.
+  [ -f "$zr.simplicio-bak" ] || cp "$zr" "$zr.simplicio-bak" 2>/dev/null || true
+  python3 - "$zr" "$target" "$root" <<'PY'
 import re, sys
-zr, target = sys.argv[1], sys.argv[2]
+zr, target, root = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     txt = open(zr).read()
 except OSError:
@@ -95,34 +104,33 @@ def set_var(txt, var, val):
     if re.search(rf"^export {var}=", txt, re.M):
         return re.sub(rf"^export {var}=.*$", line, txt, flags=re.M)
     return txt + ("\n" if txt and not txt.endswith("\n") else "") + line + "\n"
-# Capture OpenAI-compatible clients through the proxy (was pointing direct → not captured).
-txt = set_var(txt, "OPENAI_BASE_URL", target)
-# Mark capture intent for the monitor.
+txt = set_var(txt, "OPENAI_BASE_URL", target)      # Codex / Cursor / OpenCode / any OpenAI client
+txt = set_var(txt, "ANTHROPIC_BASE_URL", root)     # Claude (no /v1 — it appends /v1/messages)
 txt = set_var(txt, "SIMPLICIO_CAPTURE", "on")
 open(zr, "w").write(txt)
-print(f"  OPENAI_BASE_URL -> {target}")
+print(f"  OPENAI_BASE_URL    -> {target}")
+print(f"  ANTHROPIC_BASE_URL -> {root}")
 PY
-  echo "⬡ Wired: OpenAI-compatible clients now route through the capture proxy (:$PROXY_PORT)."
-  echo "  Every call is intercepted + compressed on the NEXT shell/tool launch. Backup: $zr.simplicio-bak"
-  echo "  Anthropic clients: ANTHROPIC_BASE_URL already routes through the proxy if set in your shell."
-  echo "  Reverse any time: simplicio-economy unwire"
+  echo "⬡ Wired: Claude (Anthropic) + Codex/Cursor (OpenAI) now route through the capture proxy (:$PROXY_PORT)."
+  echo "  Each call forwards to its REAL provider and is measured — effective on the NEXT shell/tool launch."
+  echo "  Backup: $zr.simplicio-bak · reverse any time: simplicio-economy unwire"
 }
 
 cmd_unwire() {
+  # Deterministic removal of the proxy-pointing routing (robust regardless of backup state).
   local zr="$HOME/.zshrc"
-  if [ -f "$zr.simplicio-bak" ]; then
-    cp "$zr.simplicio-bak" "$zr" && echo "⬡ Restored $zr from backup (capture routing removed)."
-  else
-    python3 - "$zr" <<'PY'
+  python3 - "$zr" "$PROXY_PORT" <<'PY'
 import re, sys
-zr = sys.argv[1]
+zr, port = sys.argv[1], sys.argv[2]
 try: txt = open(zr).read()
 except OSError: sys.exit(0)
+for var in ("OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"):
+    txt = re.sub(rf"^export {var}=http://127\.0\.0\.1:{port}.*\n?", "", txt, flags=re.M)
 txt = re.sub(r"^export SIMPLICIO_CAPTURE=.*\n?", "", txt, flags=re.M)
 open(zr, "w").write(txt)
 PY
-    echo "⬡ Removed capture markers (no backup found; OPENAI_BASE_URL left as-is)."
-  fi
+  echo "⬡ Unwired: removed Claude + Codex/OpenAI routing to the proxy (effective next shell)."
+  echo "  Pristine backup (if any): $zr.simplicio-bak"
 }
 
 cmd_capture() {

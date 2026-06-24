@@ -32,7 +32,7 @@ The stack runs on all three:
 |---|---|---|---|
 | services (proxy/monitor/tray) | launchd (`setup_simplicio.sh`) | systemd `--user` | Startup-folder launchers |
 | tray/widget | rumps (menu-bar text) | pystray | pystray |
-| always-capture wire | `~/.zshrc` / `~/.bashrc` | shell profile | `setx OPENAI_BASE_URL` |
+| always-capture wire | `~/.zshrc` / `~/.bashrc` (`ANTHROPIC_BASE_URL` + `OPENAI_BASE_URL`) | shell profile | `setx` both |
 
 One cross-platform entrypoint: `python3 scripts/install_services.py {install|uninstall|status|wire|unwire}`
 detects the OS and does the right thing (resolves the engine binary, registers the three services,
@@ -89,12 +89,30 @@ reboots, and the monitor is always live. Verify any time with `scripts/simplicio
 ```bash
 bash scripts/simplicio-economy.sh status              # capture proxy + monitor + tray + operator + savings
 bash scripts/simplicio-economy.sh up                  # ensure all three services are running
-bash scripts/simplicio-economy.sh capture openai      # transparent proxy → api.openai.com (no model swap)
+bash scripts/simplicio-economy.sh wire                # route Claude + Codex/OpenAI through the proxy (measured)
+bash scripts/simplicio-economy.sh unwire              # reverse the routing
+bash scripts/simplicio-economy.sh capture openai      # ad-hoc transparent proxy → api.openai.com (no model swap)
 bash scripts/simplicio-economy.sh capture anthropic
 ```
 
 `status` reports: capture proxy, token monitor (`:9090`), menu-bar tray, the deterministic operator
-`simplicio-dev-cli`, and lifetime savings. `setup_simplicio.sh` runs it at the end of install.
+`simplicio-dev-cli`, the **auto-capture wiring** (Claude · Codex/OpenAI · Hermes), and lifetime savings.
+
+### `wire` — all three runtimes measured, automatically
+
+`wire` (run by `setup_simplicio.sh` at the end of install) makes the monitor measure **Hermes +
+Claude + Codex** with no manual step. It sets, in the shell profile (cross-platform via
+`install_services.py wire` — `setx` on Windows):
+
+- `OPENAI_BASE_URL = http://127.0.0.1:<port>/v1` → Codex / Cursor / OpenCode / any OpenAI client
+- `ANTHROPIC_BASE_URL = http://127.0.0.1:<port>` → Claude (**no `/v1`** — Claude appends `/v1/messages`)
+
+The engine then **routes each model to its REAL provider** (`claude-*`→Anthropic, `gpt-*`→OpenAI,
+`deepseek-*`→DeepSeek) — verified live: an unauth'd request for each returned that provider's own
+auth error, proving transparent forwarding with **no model swap**. Effective on the next shell/tool
+launch. Idempotent, reversible (`unwire`, plus a one-time `~/.zshrc.simplicio-bak`), and opt-outable
+(`SIMPLICIO_NO_WIRE=1`). Without wiring, the economy still applies — the monitor just won't tally
+Claude/Codex tokens.
 
 ## Verified — transparent capture is real
 

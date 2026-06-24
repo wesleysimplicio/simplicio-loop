@@ -3,6 +3,41 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [3.3.0] — 2026-06-24
+
+### Added — automatic capture routing for Claude + Codex (the monitor now measures all three)
+- **`simplicio-economy.sh wire` now routes Claude (Anthropic) AND Codex/OpenAI through the capture
+  proxy**, not just OpenAI — so the Token Monitor measures **Hermes + Claude + Codex** with no manual
+  step. It sets `ANTHROPIC_BASE_URL` (no `/v1` — Claude appends `/v1/messages`) and `OPENAI_BASE_URL`
+  (`/v1`) in the shell profile; `install_services.py wire` does the same cross-platform (`setx` on
+  Windows). The engine routes each model to its **real** provider (`claude→anthropic`, `gpt→openai`,
+  `deepseek→deepseek`) — **no model swap**. `setup_simplicio.sh` runs `wire` at install, so it is
+  automatic.
+- **Verified live**: through the proxy, an unauth'd `claude-3-5-sonnet` request returned Anthropic's
+  own auth error + `request_id`, and a `gpt-4o-mini` request returned OpenAI's 401 — proving
+  transparent forwarding to the real providers. `status` now shows `Claude ✓ · Codex/OpenAI ✓ · Hermes ✓`.
+- **Idempotent · reversible · opt-outable**: re-running `wire` doesn't duplicate; `unwire` deletes the
+  proxy routing deterministically (fixed a bug where a re-wire could poison the backup); a pristine
+  `~/.zshrc.simplicio-bak` is kept; `SIMPLICIO_NO_WIRE=1` skips wiring entirely.
+
+## [3.2.3] — 2026-06-24
+
+### Changed
+- README: added the "Running `simplicio-tasks`: economy vs measurement (per runtime)" subsection —
+  economy applies on every runtime; measurement only counts traffic routed through the capture proxy.
+
+## [3.2.2] — 2026-06-24
+
+### Changed
+- Synced all 14 translated READMEs to the comprehensive English README (capture-engine commands, ONNX
+  models, Rust core, Token Monitor, corrected token-economy table). Tracked the project `.codex/` config.
+
+## [3.2.1] — 2026-06-24
+
+### Changed
+- Comprehensive, transparent English README: documented the full capture-engine command surface (16
+  commands), the 4 optional ONNX models, and the 4 native Rust crates.
+
 ## [3.2.0] — 2026-06-24
 
 ### Added — the two token-economy techniques the README claimed but didn't implement, now real (2 agents)

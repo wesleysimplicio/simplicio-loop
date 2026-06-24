@@ -141,24 +141,33 @@ def _shell_profile():
 
 
 def cmd_wire(on=True):
-    """Always-capture: route OpenAI-compatible clients through the local capture proxy."""
-    target = f"http://127.0.0.1:{PROXY_PORT}/v1"
+    """Always-capture: route Claude (Anthropic) + Codex/OpenAI clients through the local proxy so
+    the monitor measures them too (Hermes is already routed). The engine routes each model to its
+    REAL provider (no model swap). NOTE: OpenAI clients append /chat/completions so the base needs
+    a /v1 suffix; Claude appends /v1/messages so its base must NOT carry /v1. Opt out: SIMPLICIO_NO_WIRE=1."""
+    if os.environ.get("SIMPLICIO_NO_WIRE") == "1":
+        print("⬡ wire skipped (SIMPLICIO_NO_WIRE=1)")
+        return
+    target = f"http://127.0.0.1:{PROXY_PORT}/v1"   # OpenAI / Codex / Cursor / OpenCode
+    root = f"http://127.0.0.1:{PROXY_PORT}"          # Anthropic / Claude (no /v1)
     if os.name == "nt":
         if on:
             subprocess.run(["setx", "OPENAI_BASE_URL", target], check=False)
-            print(f"✅ OPENAI_BASE_URL -> {target} (new terminals capture; reopen your tools)")
+            subprocess.run(["setx", "ANTHROPIC_BASE_URL", root], check=False)
+            print(f"✅ OPENAI_BASE_URL -> {target} · ANTHROPIC_BASE_URL -> {root} (reopen your tools)")
         else:
             subprocess.run(["setx", "OPENAI_BASE_URL", ""], check=False)
-            print("✅ OPENAI_BASE_URL cleared")
+            subprocess.run(["setx", "ANTHROPIC_BASE_URL", ""], check=False)
+            print("✅ OPENAI_BASE_URL + ANTHROPIC_BASE_URL cleared")
         return
     prof = _shell_profile()
     txt = prof.read_text() if prof.exists() else ""
     import re
-    txt = re.sub(r"(?m)^export OPENAI_BASE_URL=.*$", "", txt).rstrip()
+    txt = re.sub(r"(?m)^export (OPENAI_BASE_URL|ANTHROPIC_BASE_URL|SIMPLICIO_CAPTURE)=.*$", "", txt).rstrip()
     if on:
-        txt += f"\nexport OPENAI_BASE_URL={target}\nexport SIMPLICIO_CAPTURE=on\n"
+        txt += f"\nexport OPENAI_BASE_URL={target}\nexport ANTHROPIC_BASE_URL={root}\nexport SIMPLICIO_CAPTURE=on\n"
     prof.write_text(txt + "\n")
-    print(f"✅ {prof}: OPENAI_BASE_URL {'->' if on else 'cleared;'} {target if on else ''}".rstrip())
+    print(f"✅ {prof}: Claude + Codex/OpenAI {'routed through the proxy (effective next shell)' if on else 'cleared'}")
 
 
 def selftest():

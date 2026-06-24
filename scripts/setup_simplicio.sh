@@ -180,18 +180,16 @@ echo "════════════════════════�
 echo "  Proxy:          http://127.0.0.1:$PORT"
 echo "  Token Monitor:  http://127.0.0.1:$DASH_PORT"
 echo "  Menu-bar tray:  live tokens saved (hexagon icon in the menu bar)"
-echo "  Hermes:         → proxy → DeepSeek"
+echo "  Hermes:         → proxy → DeepSeek (auto-routed)"
 echo "───────────────────────────────────────"
-echo "  Capture more runtimes (transparent, per-client):"
-echo "    bash scripts/simplicio-capture.sh status   # what's intercepting now"
-echo "    bash scripts/simplicio-capture.sh init      # wire Claude/Codex/Copilot/OpenClaw"
-echo "  (init forwards each client to its OWN provider — see"
-echo "   .claude/skills/simplicio-tasks/references/token-capture.md)"
+echo "  Optional MCP tools per client (memory/retrieve/stats — does NOT route traffic):"
+echo "    bash scripts/simplicio-capture.sh init      # Claude/Codex/Copilot/OpenClaw MCP tools"
 echo "═══════════════════════════════════════"
 echo ""
-# Turn on always-capture: route OpenAI-compatible clients through the capture proxy
-# (same upstream, now intercepted). This is the "works after install without using the loop" step.
-echo "🔌 Enabling always-capture (OpenAI-compatible clients → capture proxy)..."
+# Turn on always-capture: route Claude (Anthropic) + Codex/OpenAI clients through the capture
+# proxy so the monitor measures all three. The engine routes each model to its REAL provider
+# (no model swap); effective on the next shell. Opt out with SIMPLICIO_NO_WIRE=1. Reversible.
+echo "🔌 Enabling always-capture (Claude + Codex/OpenAI → capture proxy, measured)..."
 bash "$SCRIPT_DIR/scripts/simplicio-economy.sh" wire 2>/dev/null || \
   echo "  (run 'bash scripts/simplicio-economy.sh wire' to enable always-capture)"
 echo ""
