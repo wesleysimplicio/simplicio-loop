@@ -60,6 +60,9 @@ RUNTIMES = [
     {"name": "Hermes", "load": "native recall", "loop": "native loop", "state": "native", "intercept": "baseurl", "logo": "hermes", "proc": r"hermes", "families": ["deepseek", "openai"]},
     {"name": "Cursor", "load": ".cursor-plugin", "loop": "Stop hook", "state": "full", "intercept": "baseurl", "logo": "cursor", "proc": r"Cursor\.app|Cursor Helper", "families": ["openai", "anthropic"]},
     {"name": "OpenCode", "load": "AGENTS.md", "loop": "self-paced", "state": "partial", "intercept": "baseurl", "logo": "opencode", "proc": r"opencode", "families": ["openai", "anthropic"]},
+    {"name": "Gemini", "load": "GEMINI.md", "loop": "self-paced", "state": "partial", "intercept": "none", "logo": "gemini", "proc": r"\bgemini\b", "families": []},
+    {"name": "Kiro", "load": ".kiro/steering", "loop": "spec tick", "state": "partial", "intercept": "none", "logo": "kiro", "proc": r"\bkiro\b", "families": []},
+    {"name": "Antigravity", "load": "rules", "loop": "self-paced", "state": "partial", "intercept": "none", "logo": "antigravity", "proc": r"antigravity", "families": []},
 ]
 
 # ── Brand badge: faithful inline vector of the Simplicio hexagon-S mark ───────
