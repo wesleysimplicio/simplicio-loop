@@ -247,12 +247,12 @@ Between turns, LMCache (when available) caches the KV state so re-feed costs nea
 |---|---|
 | `deterministic_edit` (L0) | 100% of edit tokens (file written mechanically, never by LLM) |
 | Terminal-first execution | Facts from shell, not LLM hallucination |
-| Output-reduction catalog | Caps per command type (`CAP_ERRORS=20`, `CAP_TREE=100`) |
+| Output-reduction catalog | Caps per command type (`CAP_ERRORS=20`, `CAP_WARNINGS=10`, `CAP_LIST=20`) — `orient_clamp.py` |
 | Tee+CCR cache on failure | Never re-run a failed command — read the cached output |
-| Signatures-only reads | 600-line file → ~40 lines of signatures |
+| Signatures-only reads | `simplicio signatures <file>` — 870-line file → 65 lines (**93% saved**), bodies stripped |
 | `simplicio-compress` | Terse prose + one-time memory compaction |
 | `orient_clamp.py` | Clamp + tee on every shell command, zero wiring |
-| LMCache KV cache | 40-70% TTFT reduction on repeated prompts (local models) |
+| Native response cache | repeated deterministic (temp=0) request → served from cache, skips the LLM call (**100% on hit**) — `simplicio cache`, on by default (`SIMPLICIO_CACHE=0` to disable) |
 | Simplicio capture proxy + MCP | 60-95% fewer tokens on tool outputs via a transparent compression daemon |
 
 Savings only count on a verified-correct outcome. Baseline = the cheapest sensible non-orchestrated

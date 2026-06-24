@@ -3,6 +3,28 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [3.2.0] — 2026-06-24
+
+### Added — the two token-economy techniques the README claimed but didn't implement, now real (2 agents)
+- **Signatures-only reads** — `engine/simplicio_signatures.py` + `simplicio signatures <file>`: an
+  `ast`-based skeleton view (imports, class/def signatures, first docstring line, top-level consts;
+  bodies stripped to `...`), regex fallback for js/ts/go/java/rust/…. Verified: `simplicio_dashboard.py`
+  **870 → 65 lines (93% saved)** with every `def`/`class` preserved and no body leakage. Saves the
+  tokens to read+navigate code.
+- **Native response cache** — `engine/simplicio_cache.py`, wired into the capture proxy: a repeated
+  **deterministic** request (`temperature == 0`, non-streaming) is served byte-exact from disk and the
+  upstream LLM call is **skipped entirely → ~100% token saving on the hit**. Content-addressed key
+  ignores volatile fields (`stream`/`user`/ids); LRU-bounded (500 entries / 50 MB); never caches 4xx or
+  streaming/temp>0. On by default (`SIMPLICIO_CACHE=0` to disable). Verified end-to-end: an identical
+  second request returned `X-Simplicio-Cache: HIT` with **zero** upstream calls. This also makes the
+  dashboard's `cache_hit_pct` real (it was always 0). `simplicio cache stats|clear`.
+
+### Changed
+- README token-economy table corrected to reality: `CAP_TREE=100` → the real caps
+  (`CAP_ERRORS/CAP_WARNINGS/CAP_LIST`); the `LMCache KV cache` row (an *external* optional accelerator,
+  never built-in code) replaced by the now-implemented **native response cache**; signatures listed as
+  the real `simplicio signatures` tool.
+
 ## [3.1.0] — 2026-06-24
 
 ### Added — the last two Rust crates (the port is now literally complete: every crate)

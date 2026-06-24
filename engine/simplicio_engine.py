@@ -361,6 +361,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     upstream = "https://api.openai.com"
     no_optimize = False
     route = True
+    cache = None
 
     def do_POST(self):
         self._proxy()
@@ -386,24 +387,51 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else b""
 
-        model, before, after = "", 0, 0
+        obj, model, before, after = None, "", 0, 0
         out_body = body
         if body:
             try:
                 obj = json.loads(body)
                 model = obj.get("model", "") or ""
-                if not self.no_optimize:
-                    new_obj, before, after = _compress_payload(obj)
-                    if after < before:  # only rewrite if it actually saved
-                        out_body = json.dumps(new_obj).encode()
-                    else:
-                        after = before
+                new_obj, before, after = _compress_payload(obj)  # before = full input tokens
+                if not self.no_optimize and after < before:
+                    out_body = json.dumps(new_obj).encode()
+                else:
+                    after = before
             except (ValueError, TypeError):
                 out_body = body  # fail-open
 
         # Route to the model's real provider (transparent); fall back to default upstream.
         upstream = _route_for(model, self.upstream) if self.route else self.upstream
         provider = _provider_of(urlparse(upstream).netloc)
+
+        # Response cache: a repeated deterministic (temp=0, non-streaming) request is served from
+        # cache, skipping the upstream LLM call entirely → ~100% token saving on the hit.
+        cache, ckey = self.cache, None
+        if cache is not None and obj is not None and cache.cacheable(obj):
+            ckey = cache.key(model, obj)
+            hit = cache.get(ckey)
+            if hit:
+                status, hheaders, hbody = hit
+                try:
+                    self.send_response(status)
+                    for k, v in hheaders.items():
+                        if k.lower() not in ("transfer-encoding", "content-length", "connection", "content-encoding"):
+                            self.send_header(k, v)
+                    self.send_header("Content-Length", str(len(hbody)))
+                    self.send_header("Connection", "close")
+                    self.send_header("X-Simplicio-Cache", "HIT")
+                    self.end_headers()
+                    self.wfile.write(hbody)
+                except OSError:
+                    return
+                if STORE is not None:
+                    tok_out = _extract_output_tokens(hbody)
+                    STORE.record(provider, model or "unknown", before, 0, tok_out)  # whole call saved
+                    _log(f"PERF model={model or 'unknown'} provider={provider} tok_before={before} "
+                         f"tok_after=0 tok_saved={before} tok_out={tok_out} cache_hit_pct=100 cache=HIT")
+                return
+
         try:
             up = urlparse(upstream)
             conn_cls = http.client.HTTPSConnection if up.scheme == "https" else http.client.HTTPConnection
@@ -415,12 +443,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             conn.request(self.command, self.path, body=out_body, headers=headers)
             resp = conn.getresponse()
             self.send_response(resp.status)
+            resp_headers = {}
             for k, v in resp.getheaders():
                 if k.lower() not in ("transfer-encoding", "content-length", "connection", "content-encoding"):
                     self.send_header(k, v)
+                    resp_headers[k] = v
             self.send_header("Connection", "close")
             self.end_headers()
             tail = b""  # keep the last 64KB — the usage block lives at the end (final SSE chunk / JSON)
+            full = bytearray() if ckey else None  # buffer only when this request is cacheable
             while True:
                 chunk = resp.read(8192)
                 if not chunk:
@@ -428,8 +459,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
                 self.wfile.flush()
                 tail = (tail + chunk)[-65536:]
+                if full is not None:
+                    full.extend(chunk)
             conn.close()
             tok_out = _extract_output_tokens(tail)
+            if ckey and full is not None and resp.status < 400:
+                cache.put(ckey, resp.status, resp_headers, bytes(full))
         except Exception as e:  # upstream failure — report, don't crash the proxy
             try:
                 self._json(502, {"error": {"message": f"simplicio proxy upstream error: {e}", "type": "upstream_error"}})
@@ -453,10 +488,20 @@ def cmd_proxy(args):
     Handler.upstream = args.upstream.rstrip("/")
     Handler.no_optimize = args.no_optimize
     Handler.route = not args.no_route
+    # Response cache on by default (only ever caches deterministic temp=0 non-streaming requests);
+    # SIMPLICIO_CACHE=0 disables it.
+    cache_on = os.environ.get("SIMPLICIO_CACHE", "1") != "0"
+    if cache_on:
+        try:
+            from simplicio_cache import ResponseCache
+            Handler.cache = ResponseCache()
+        except Exception:
+            Handler.cache = None
     httpd = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
     mode = "passthrough" if args.no_optimize else "compressing"
     routing = "per-provider routing" if Handler.route else f"fixed → {Handler.upstream}"
-    print(f"⬡ Simplicio capture engine · proxy ({mode}, {routing}) on http://{args.host}:{args.port}")
+    cache_s = "cache on" if Handler.cache is not None else "cache off"
+    print(f"⬡ Simplicio capture engine · proxy ({mode}, {routing}, {cache_s}) on http://{args.host}:{args.port}")
     _log(f"START proxy port={args.port} upstream={Handler.upstream} mode={mode}")
     try:
         httpd.serve_forever()
@@ -538,6 +583,10 @@ def main(argv=None):
     pmcp.add_argument("rest", nargs=argparse.REMAINDER)
     pin = sub.add_parser("init", help="register Simplicio into a client: init <client> [--apply]")
     pin.add_argument("rest", nargs=argparse.REMAINDER)
+    psig = sub.add_parser("signatures", help="signatures-only view of a source file (token-economy read)")
+    psig.add_argument("rest", nargs=argparse.REMAINDER)
+    pca = sub.add_parser("cache", help="response cache: stats | clear")
+    pca.add_argument("rest", nargs=argparse.REMAINDER)
     pwr = sub.add_parser("wrap", help="run a client with capture routing: wrap <client> [-- args]")
     pwr.add_argument("rest", nargs=argparse.REMAINDER)
     prp = sub.add_parser("report", help="savings report (summary/--json/--since/--top)")
@@ -597,6 +646,10 @@ def main(argv=None):
         return _exec_sibling("simplicio_rag.py", rest)
     if args.cmd == "kompress":
         return _exec_sibling("simplicio_kompress.py", _rest)
+    if args.cmd == "signatures":
+        return _exec_sibling("simplicio_signatures.py", _rest)
+    if args.cmd == "cache":
+        return _exec_sibling("simplicio_cache.py", _rest or ["stats"])
     p.print_help()
     return 0
 
