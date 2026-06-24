@@ -78,16 +78,27 @@ loop turn ──> capture proxy (real upstream tokens)
   **prepaid-credit guard** — when credits hit zero, `state: "halted"` already stops the loop
   cleanly (fail-safe), so we never over-serve.
 
-### 3. The aggregator (the only new component)
+### 3. The aggregator (the only new component) — ✅ implemented
 
-A thin, **deterministic, model-free** service — same discipline as `savings_harness score`:
+A thin, **deterministic, model-free** service — same discipline as `savings_harness score`.
+Shipped as [`scripts/billing_aggregator.py`](scripts/billing_aggregator.py) (stdlib-only, fail-open,
+`selftest` proves the arithmetic with zero files):
 
 ```
-scripts/billing_aggregator.py   (proposed)
-  collect   read .orchestrator/{loop-budget.json, savings/snapshots.jsonl, trajectory/*} for a window
-  meter     roll up: usd_spent, tokens_in/out, tokens_saved, items_delivered, render_seconds
-  invoice   apply the tier rule (seat | run | metered) → a line-item JSON (no model call)
-  export    emit to Stripe metered billing / a CSV — usage records only, never customer code
+scripts/billing_aggregator.py
+  collect   read .orchestrator/{loop-budget.json, savings/snapshots.jsonl, trajectory/*, tee/video/ledger.txt}
+            → ONE append-only, text-free usage record (counts the savings TEXT then DISCARDS it)
+  meter     pure roll-up: usd_spent, tokens_spent, tokens_saved, items_delivered, renders, seconds
+  invoice   apply the tier rule (seat | run | metered) → line-item JSON (+ optional --prepaid guard)
+  export    emit Stripe-style metered usage records / CSV — usage counts only, never customer code
+  rates     print the active rate card (DEFAULT_RATES, overridable via .orchestrator/billing/rates.json)
+  selftest  deterministic arithmetic proof — no files (11/11 checks)
+```
+
+```bash
+python3 scripts/billing_aggregator.py collect --seats 3
+python3 scripts/billing_aggregator.py invoice --tier metered --prepaid 100.00
+python3 scripts/billing_aggregator.py selftest      # PASS (11/11)
 ```
 
 Properties (non-negotiable, mirror the existing safety spine):
@@ -123,6 +134,7 @@ Properties (non-negotiable, mirror the existing safety spine):
 3. **Where the control plane lives:** fully managed by us vs. a self-hosted control plane for
    Enterprise (changes the aggregator's deployment, not its logic).
 
-*Next step if approved:* implement `scripts/billing_aggregator.py` (collect/meter/invoice/export)
-against the existing `.orchestrator/` records, with a `selftest` like `savings_harness` so the
-billing math is provably deterministic.
+*Done:* `scripts/billing_aggregator.py` (collect/meter/invoice/export/rates/selftest) is
+implemented against the existing `.orchestrator/` records, with a deterministic `selftest` like
+`savings_harness`. *Next step if approved:* wire `export --format stripe` to a real Stripe metered
+subscription, and set the rate card from the first month of `proxy_savings.json` data.

@@ -5,6 +5,17 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+### Added — billing aggregator for the open-core paid tier (`scripts/billing_aggregator.py`)
+- **Deterministic, model-free, privacy-preserving meter→invoice** over the metering records the loop
+  already produces (`loop-budget.json`, `savings/snapshots.jsonl`, `trajectory/*.jsonl`,
+  `tee/video/ledger.txt`). Verbs: `collect`/`meter`/`invoice`/`export`/`rates`/`selftest`.
+- **Privacy boundary**: the savings snapshots store raw baseline/treatment TEXT; `collect` counts
+  tokens (`ceil(chars/4)`) then **discards** the text — usage records carry counts only, never code,
+  diffs, or rendered videos. **Fail-safe**: `invoice --prepaid` over-balance maps to the existing
+  kill-switch `state: "halted"` (never over-serves). `selftest` proves the arithmetic (11/11, no files).
+- Three price levers: per-seat (Pro), per-run (Team, one delivered+merged item), metered (Cloud:
+  token passthrough + markup, render-minutes, operator-minutes). Implements the `PRICING.md` sketch.
+
 ### Added — demo-video creation + evidence via hyperframes (`video_evidence`, extension point #44)
 - **`video_evidence` extension point** — binds [hyperframes](https://github.com/heygen-com/hyperframes)
   (HeyGen): renders HTML/CSS compositions to a **deterministic MP4** ("same input, same frames, same
