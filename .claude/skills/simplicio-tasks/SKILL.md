@@ -96,7 +96,7 @@ Emit: `Conventions: branch=<prefix> · commit=<type>(<scope>): · ci=<runner> ·
 Used by Steps 4–6 to shape branch names, commit messages, PR bodies, and gate checks.
 
 ## Step 1b — Extension points (bind native, else LLM fallback)
-Work happens at 47 named points. If the host binds one natively it runs deterministically at
+Work happens at 48 named points. If the host binds one natively it runs deterministically at
 near-zero token cost; otherwise the LLM performs the documented fallback. The skill depends on the
 ABSTRACTION, never a runtime — the INVERTED DEPENDENCY (the skill names no runtime; the runtime
 detects the skill). Full table + fallbacks: `references/extension-points.md`. Core rule: any
@@ -172,6 +172,7 @@ reads for API surface), then write a short plan with an AC checklist + complexit
 ## Step 4 — Quality loop (the Looping principle)
 edit → fmt → lint → targeted tests → analyze → fix → repeat until green or genuinely blocked.
 A bug fix MUST also search for sibling paths via the `sibling_search` extension point before marking done. Fixing one site when the same pattern exists in 3+ locations results in a rejected PR.
+After fixing, record the root cause and fix pattern via `pattern_match` so the same bug class is recognized and fixed faster next time.
 Never mark done without green gates + evidence; a failure is NOT a blocker — investigate.
 - **Attempt memory + stall guard (anti-oscillation).** Each fix iteration, RECORD the attempt
   (`python3 scripts/loop_journal.py record --iteration N --action "<change>" --hypothesis "<why>"

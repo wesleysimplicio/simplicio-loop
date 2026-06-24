@@ -1,4 +1,4 @@
-# Extension points — the 47 named binding points
+# Extension points — the 48 named binding points
 
 These are the named points where work happens. For each, if the host runtime exposes a native
 capability, BIND it (deterministic, local-first, near-zero token). If not, the LLM performs the
@@ -7,6 +7,7 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 | Extension point | What it does | LLM fallback (always available) |
 |---|---|---|
 | `orient` | Compressed repo/work map | `rg` / `git grep` / `git log --oneline -10`, read few files. Also: `.understand-anything/knowledge-graph.json` (Understand Anything) for rich structural graph + semantic search + guided tours |
+| `pattern_match` | Match a bug's root-cause fingerprint against a structured store of past patterns (`.orchestrator/patterns.jsonl`). Each pattern has: `fingerprint` (sha256 of root_cause+file), `root_cause`, `symptom_pattern`, `fix_summary`, `sibling_files`, `hit_count`, `last_seen`. When hit_count > 1, flag the module for structural attention. | LLM searches past PRs/closed-issues for similar error patterns by keyword, extracts root cause and fix from git history, writes a structured entry to `.orchestrator/patterns.jsonl`. |
 | `recall` | Prior decisions / precedents | read ADRs / git history / past PRs |
 | `normalize` | Work-item → canonical schema | LLM maps fields by hand |
 | `deterministic_edit` | Mechanical file writer (zero-token apply of a decided change) | LLM applies edit with file tool |

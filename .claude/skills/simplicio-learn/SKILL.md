@@ -31,7 +31,17 @@ Three durable categories — everything else is noise and is dropped:
    error).
 2. **Solved precedents** — a problem fingerprint → the solution shape that worked, so a future
    matching item is REUSED not regenerated. Store fingerprint + PR/commit link + the key edit.
-3. **Stable facts & preferences** — durable workspace facts (build command, test runner, repo
+3. **Bug patterns** — structured root-cause pattern store (`.orchestrator/patterns.jsonl`). Each entry:
+   - `fingerprint`: sha256 of root_cause + file
+   - `root_cause`: the mechanism-level root cause
+   - `symptom_pattern`: observable behavior
+   - `fix_summary`: what fixed it
+   - `sibling_files`: related files changed
+   - `hit_count`: incremented when the same fingerprint is seen again
+   - `last_seen`: ISO timestamp
+   
+   When `hit_count > 1`, flag the module for structural attention — it keeps breaking.
+4. **Stable facts & preferences** — durable workspace facts (build command, test runner, repo
    conventions) and recurring user preferences. Not one-time state.
 
 ## Procedure (incremental, deduped)
