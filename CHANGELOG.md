@@ -5,6 +5,15 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.9.2] — 2026-06-24
+
+### Changed — release sync (no functional changes)
+- Maintenance bump that re-cuts the package so the local and global installs carry a matching
+  version after the 3.9.x Token Monitor rebrand and `simplicio-loop dashboard` work. Keeps the
+  three version sources in lockstep (`pyproject.toml`, `.claude-plugin/plugin.json`, and the
+  `simplicio_loop/__init__` fallback literals) so there is no version drift across the pip
+  artifact, the marketplace plugin, and the bundled skills/hooks.
+
 ## [3.9.1] — 2026-06-24
 
 ### Fixed — `simplicio-loop` is typeable on PATH (so `simplicio-loop dashboard` actually works)
