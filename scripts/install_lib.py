@@ -186,8 +186,17 @@ def ensure_operators(skip_install=False):
                 subprocess.run(base + ["--user", "--break-system-packages"] + pkgs, check=True)
                 log("operators installed (user site) -> %s" % ", ".join(pkgs))
             except Exception as e:
-                log("! pip install of operators failed (%s) — install manually: pip install %s"
-                    % (e, " ".join(pkgs)))
+                # Try uv tool install if pip failed (uv-managed Python)
+                try:
+                    uv_path = shutil.which("uv")
+                    if uv_path:
+                        subprocess.run([uv_path, "tool", "install"] + pkgs, check=True)
+                        log("operators installed (uv tool) -> %s" % ", ".join(pkgs))
+                    else:
+                        raise
+                except Exception as e2:
+                    log("! pip install of operators failed (%s) — install manually: pip install %s"
+                        % (e, " ".join(pkgs)))
     # A --user install can land the console-scripts in a dir not on PATH (e.g. macOS
     # ~/Library/Python/X.Y/bin). Find each operator binary and symlink it into ~/.local/bin.
     _link_operator_bins()
@@ -235,10 +244,87 @@ def _link_operator_bins():
 
 def detect():
     for rt, mark in [("cursor", ".cursor"), ("claude", ".claude"),
-                     ("kiro", ".kiro"), ("vscode", ".github"), ("gemini", ".gemini")]:
+                     ("kiro", ".kiro"), ("vscode", ".github"), ("gemini", ".gemini"),
+                     ("opencode", ".opencode")]:
         if os.path.isdir(os.path.join(os.getcwd(), mark)):
             return rt
+    # Also check for opencode.json in parent dirs
+    try:
+        result = subprocess.run(["opencode", "--version"], capture_output=True, text=True)
+        if result.returncode == 0:
+            return "opencode"
+    except Exception:
+        pass
     return "claude"
+
+
+OPCODE_CONFIG = os.path.join(HOME, ".config", "opencode", "opencode.json")
+OPCODE_SKILLS = os.path.join(HOME, ".config", "opencode", "skills")
+
+
+def copy_skills_opencode():
+    """Copy skills to OpenCode's skill directory (~/.config/opencode/skills/)."""
+    dst_root = OPCODE_SKILLS
+    os.makedirs(dst_root, exist_ok=True)
+    for s in SKILLS:
+        src = os.path.join(SOURCE, ".claude", "skills", s)
+        if not os.path.isdir(src):
+            continue
+        dst = os.path.join(dst_root, s)
+        if os.path.exists(dst):
+            log("opencode skill already exists: %s" % s)
+            continue
+        shutil.copytree(src, dst)
+    log("opencode skills -> %s" % dst_root)
+
+
+def merge_opencode_mcp():
+    """Register simplicio MCP server in opencode.json.
+    Best-effort: any failure logs a warning and prints the manual command."""
+    try:
+        data = {}
+        if os.path.exists(OPCODE_CONFIG):
+            with open(OPCODE_CONFIG, encoding="utf-8") as f:
+                data = json.load(f)
+        mcp = data.setdefault("mcp", {})
+        if "simplicio" in mcp:
+            log("opencode MCP already registered")
+            return
+        # Find simplicio CLI on PATH
+        simplicio_path = shutil.which("simplicio")
+        if not simplicio_path:
+            # If not on PATH, try uv tool
+            import glob
+            uv_tools = os.path.join(HOME, ".local", "share", "uv", "tools")
+            cand = glob.glob(os.path.join(uv_tools, "simplicio-loop", "*", "bin", "simplicio"))
+            cand += glob.glob(os.path.join(uv_tools, "simplicio-loop", "*", "bin", "simplicio.exe"))
+            if cand:
+                simplicio_path = cand[0]
+        if not simplicio_path:
+            # Check for simplicio-loop console script
+            candidates = [os.path.join(HOME, ".local", "bin", "simplicio"),
+                          os.path.join(HOME, ".local", "bin", "simplicio-loop"),
+                          shutil.which("simplicio-loop")]
+            for c in candidates:
+                if c:
+                    simplicio_path = c
+                    break
+        if not simplicio_path:
+            log("! simplicio CLI not found — MCP registration skipped. "
+                "Install: uv tool install simplicio-loop")
+            log("  Then manually add to opencode.json: see adapters/opencode/README.md")
+            return
+        mcp["simplicio"] = {
+            "type": "local",
+            "command": [simplicio_path, "mcp", "serve"],
+            "enabled": True
+        }
+        with open(OPCODE_CONFIG, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+        log("opencode MCP registered -> %s" % OPCODE_CONFIG)
+    except Exception as e:
+        log("! opencode MCP registration failed: %s" % e)
+        log("  manually: simplicio mcp register --client opencode")
 
 
 def _pip(args_):
@@ -400,7 +486,10 @@ def main():
         log("native runtime — extension points bind directly (no shell hooks needed)")
     else:
         log("loop runs self-paced (no stop-hook) — see adapters/%s/README.md" % runtime)
-    if cfg["mcp"]:
+    if runtime == "opencode":
+        copy_skills_opencode()
+        merge_opencode_mcp()
+    if cfg["mcp"] and runtime != "opencode":
         log("optional native bind:  simplicio mcp register --client %s" % cfg["mcp"])
     setup_monitor(not minimal)
     log("verify / repair anytime:  python3 scripts/doctor.py --repair  (optional pieces like Rust never block)")
