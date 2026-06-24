@@ -42,6 +42,15 @@ Worker: `scripts/video_evidence.py`; contract:
 `.claude/skills/simplicio-tasks/references/video-evidence.md`. A missing toolchain BLOCKS, never a
 fake pass.
 
+## Tests & local checks (no paid CI)
+
+`python3 scripts/check.py` runs the whole gate locally: the `tests/` suite (worker `selftest`s + an
+e2e of the loop driver proving it stops on EVIDENCE, ignores a bare `<promise>`, stops on the cap;
++ producers BLOCK, never fake-pass, when a toolchain is absent) and `scripts/claims_audit.py`
+(referenced scripts exist · extension-point count consistent · cited commands run · `_bundle ≡
+source`). Self-runs on bare python3 (no pytest needed); `pip install "simplicio-loop[dev]"` adds
+pytest. Wire as a git pre-push hook to keep work honest with zero CI cost.
+
 ## Install (this or another project)
 
 ```bash

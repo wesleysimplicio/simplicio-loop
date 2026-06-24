@@ -5,6 +5,21 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+### Added — tests + claims-audit + local check runner (turn assertions into proof; no paid CI)
+- **`tests/` suite** — the workers' deterministic `selftest`s, an **e2e of the loop driver**
+  (`hooks/loop_stop.py`) proving it stops on EVIDENCE, ignores a bare `<promise>`, and stops on the
+  cap as *distinct* exits, and smoke tests proving the evidence producers **BLOCK (never fake-pass)**
+  when their toolchain is absent. Runs under `pytest` **or** self-runs on bare python3
+  (`tests/_selfrun.py`) — no pip required. Verified: 12 passed under pytest and the stdlib fallback.
+- **`scripts/claims_audit.py`** (fail-closed) — every `scripts/*.py` referenced in the docs exists ·
+  the extension-point count agrees across all files · each cited worker command runs · the shipped
+  `simplicio_loop/_bundle/` skills are byte-identical to source. **Caught real drift on first run**
+  (the bundle was missing 5 reference files); repaired to an exact mirror.
+- **`scripts/check.py`** — one local gate (`claims_audit` + tests), wireable as a git pre-push hook.
+  Replaces a paid GitHub Action: the verification runs on the dev's machine at zero CI cost.
+- `pyproject.toml` `[dev]` extra adds pytest (convenience only). Docs: README (✅ Tests section),
+  AGENTS, CLAUDE.
+
 ### Changed — savings line is now evidence-gated, not mandatory (honesty fix)
 - **Removed the "end every message with the mandatory savings line" obligation.** That rule forced a
   figure even with no `savings_ledger` bound, which pressured fabricated baselines/percentages.

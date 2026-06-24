@@ -469,6 +469,31 @@ gate + secret-scan on. With `ceiling = 0` the watcher refuses to run unattended 
 
 ---
 
+## ✅ Tests & local checks (no paid CI)
+
+Claims are verified, not just asserted — and the gate runs **locally**, with zero CI cost:
+
+```bash
+python3 scripts/check.py            # the whole gate (audit + tests)
+```
+
+- **Test suite** (`tests/`) — the workers' deterministic `selftest`s, plus an **e2e of the loop
+  driver** (`hooks/loop_stop.py`): it proves the loop **stops on evidence**, **ignores a bare
+  `<promise>`**, and **stops on the cap** as distinct exits — and that the evidence producers
+  **BLOCK** (never fake-pass) when their toolchain is absent. Runs under `pytest` *or*, with no pip
+  at all, self-runs on bare python3 (`python3 tests/test_*.py`).
+- **Claims audit** (`scripts/claims_audit.py`, fail-closed) — every `scripts/*.py` the docs
+  reference exists · the extension-point count agrees across all files · each cited worker command
+  actually runs · the shipped `simplicio_loop/_bundle/` skills are **byte-identical** to source.
+- **Wire it as a git pre-push hook** to keep `main` honest for free:
+  ```bash
+  printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+  ```
+
+`pip install "simplicio-loop[dev]"` adds pytest for nicer output; it is never required.
+
+---
+
 ## 📄 License
 
 MIT

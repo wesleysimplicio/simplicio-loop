@@ -77,3 +77,5 @@ path + verdict; a missing toolchain BLOCKS, never a fake pass.
 - Report token-savings ONLY when a measured receipt backs it (clamp / signatures-read / cache hit /
   `deterministic_edit` / `savings_ledger`); never fabricate a figure. No measured economy → no
   savings line. Credited only on a passing quality gate.
+- Verify claims locally before pushing: `python3 scripts/check.py` (test suite + claims-audit +
+  `_bundle ≡ source` parity). Self-runs on bare python3 — no CI, no pytest required. Keep it green.
