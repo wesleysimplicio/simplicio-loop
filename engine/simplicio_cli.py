@@ -16,7 +16,8 @@ ENGINE = os.path.join(HERE, "simplicio_engine.py")
 
 # commands forwarded verbatim to the engine module
 ENGINE_CMDS = ("proxy", "doctor", "memory", "mcp", "init",
-               "wrap", "report", "verify", "audit", "capture", "evals", "semantic", "rag", "kompress")
+               "wrap", "report", "verify", "audit", "capture", "evals", "semantic", "rag",
+               "kompress", "detect", "router", "embed")
 
 
 def _version():

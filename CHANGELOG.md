@@ -3,6 +3,22 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [2.10.0] — 2026-06-24
+
+### Added — more upstream subsystems ported (3 agents; 2 more REAL headroom models)
+- **`simplicio detect`** (`engine/simplicio_detect.py`, stdlib) — content-type detector (JSON/code/log/
+  markdown/prose) + a **universal smart-compress** that routes each block to the best technique
+  (JSON→minify, log→full pipeline, code/prose left intact). Verified 15/15: JSON 60%, log 95% saved,
+  code/prose byte-preserved.
+- **`simplicio router`** (`engine/simplicio_router.py`) — the **REAL** `chopratejas/technique-router-onnx`
+  model (~32 MB, INT8): tokenize → ONNX → softmax → technique class (transcode/crop/preserve/full_low).
+  Verified running on the real weights. (Note: this router was trained on image-edit *intents*, so raw
+  text blobs tend to route to `preserve` — the model runs correctly; its training domain differs.)
+- **`simplicio embed`** (`engine/simplicio_embed.py`) — the **EXACT** upstream embedder
+  `Qdrant/all-MiniLM-L6-v2-onnx` (~90 MB): masked mean-pooling → 384-dim L2-normalized vectors;
+  embedding RAG over the CCR store. Verified: paraphrase cosine **0.957**, unrelated −0.01, #1 rank.
+- New `[onnx]` optional extra installs onnxruntime + huggingface_hub + tokenizers for `kompress`/`router`/`embed`.
+
 ## [2.9.0] — 2026-06-24
 
 ### Added — the REAL headroom ONNX compression model, integrated (the gap is closed, not substituted)
