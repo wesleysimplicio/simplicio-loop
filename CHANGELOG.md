@@ -5,6 +5,8 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.4.0] — 2026-06-24
+
 ### Added — final loop-orchestrator hardening (the last gaps to 10/10)
 - **`hooks/action_gate.py` — a FAIL-CLOSED safety gate, Step 5 made mechanical.** Runs as a Claude
   `PreToolUse` (Bash) hook AND/OR a git pre-push hook and BLOCKS (exit 2), *before* the command runs:
