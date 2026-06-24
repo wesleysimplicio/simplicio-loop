@@ -258,6 +258,28 @@ Between turns, LMCache (when available) caches the KV state so re-feed costs nea
 Savings only count on a verified-correct outcome. Baseline = the cheapest sensible non-orchestrated
 path to the same result. See `references/token-economy.md`.
 
+### 🔎 Running `simplicio-tasks`: economy vs measurement (per runtime)
+
+Two different things happen when you call **`simplicio-tasks`**, and they behave differently per runtime:
+
+- **Economy** — compression, output clamps, signatures-only reads, `deterministic_edit` — applies **every
+  time the skill runs and loads `simplicio-orient` / `simplicio-compress`, on any runtime.** It is the
+  skill's behavior plus the hooks (strongest where hooks exist: `orient_clamp.py` auto-clamps on Claude and
+  Cursor; elsewhere it is instruction-driven).
+- **Measurement** — the Token Monitor's live numbers — only counts traffic that flows **through the
+  capture proxy.**
+
+| Runtime | Economy (skill) | Measurement (monitor) |
+|---|---|---|
+| **Hermes** | ✓ | ✓ **automatic** — already routed through the proxy (`base_url → :8788`) |
+| **Claude** | ✓ (skill + hooks) | ✗ by default — Claude talks to `api.anthropic.com` directly; measured only once routed (`simplicio wrap claude`, or `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
+| **Codex** | ✓ (skill) | ✗ by default — `simplicio init codex` adds the MCP tools but does not route LLM traffic; measured with `simplicio wrap codex` or an OpenAI base-url pointing at the proxy |
+
+So: the **savings happen on every runtime**; the **monitor tallies them automatically on Hermes**, and on
+Claude/Codex after a **one-time routing step** (`simplicio wrap …` / base-url → `:8788`). Without routing,
+the economy still applies — the monitor just won't count those tokens. `scripts/simplicio-economy.sh wire`
+does this routing for OpenAI-compatible clients at install time.
+
 ### 📈 Simplicio Token Monitor
 
 A live, always-on view of the savings:
