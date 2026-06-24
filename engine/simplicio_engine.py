@@ -268,18 +268,42 @@ def _log(line):
         pass
 
 
+# Per-request provider routing by model family → real provider host. Lets ONE proxy
+# capture many providers transparently (no model swap). Unknown models use the default
+# upstream. Each client forwards its own API key, so auth stays per-provider.
+ROUTES = [
+    ("gpt", "https://api.openai.com"), ("chatgpt", "https://api.openai.com"),
+    ("o1", "https://api.openai.com"), ("o3", "https://api.openai.com"), ("o4", "https://api.openai.com"),
+    ("claude", "https://api.anthropic.com"),
+    ("deepseek", "https://api.deepseek.com"),
+    ("grok", "https://api.x.ai"),
+    ("mistral", "https://api.mistral.ai"), ("mixtral", "https://api.mistral.ai"),
+    ("gemini", "https://generativelanguage.googleapis.com"),
+]
+
+
+def _route_for(model, default):
+    m = (model or "").lower()
+    for pref, host in ROUTES:
+        if pref in m:
+            return host
+    return default
+
+
+def _provider_of(host):
+    h = host.lower()
+    for key in ("deepseek", "anthropic", "openai", "googleapis", "x.ai", "groq", "mistral", "openrouter"):
+        if key in h:
+            return {"googleapis": "google", "x.ai": "xai"}.get(key, key)
+    return "openai"
+
+
 # ── transparent forwarding proxy ─────────────────────────────────────────────
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     upstream = "https://api.openai.com"
     no_optimize = False
-
-    def _provider(self):
-        host = urlparse(self.upstream).netloc.lower()
-        for key in ("deepseek", "anthropic", "openai", "google", "groq", "mistral", "openrouter"):
-            if key in host:
-                return key
-        return "openai"
+    route = True
 
     def do_POST(self):
         self._proxy()
@@ -305,22 +329,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else b""
 
-        model, provider, before, after = "", self._provider(), 0, 0
+        model, before, after = "", 0, 0
         out_body = body
-        if body and not self.no_optimize:
+        if body:
             try:
                 obj = json.loads(body)
                 model = obj.get("model", "") or ""
-                new_obj, before, after = _compress_payload(obj)
-                if after < before:  # only rewrite if it actually saved
-                    out_body = json.dumps(new_obj).encode()
-                else:
-                    after = before
+                if not self.no_optimize:
+                    new_obj, before, after = _compress_payload(obj)
+                    if after < before:  # only rewrite if it actually saved
+                        out_body = json.dumps(new_obj).encode()
+                    else:
+                        after = before
             except (ValueError, TypeError):
                 out_body = body  # fail-open
 
+        # Route to the model's real provider (transparent); fall back to default upstream.
+        upstream = _route_for(model, self.upstream) if self.route else self.upstream
+        provider = _provider_of(urlparse(upstream).netloc)
         try:
-            up = urlparse(self.upstream)
+            up = urlparse(upstream)
             conn_cls = http.client.HTTPSConnection if up.scheme == "https" else http.client.HTTPConnection
             conn = conn_cls(up.netloc, timeout=600)
             headers = {k: v for k, v in self.headers.items()
@@ -365,9 +393,11 @@ def cmd_proxy(args):
     STORE = SavingsStore()
     Handler.upstream = args.upstream.rstrip("/")
     Handler.no_optimize = args.no_optimize
+    Handler.route = not args.no_route
     httpd = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
     mode = "passthrough" if args.no_optimize else "compressing"
-    print(f"⬡ Simplicio capture engine · proxy ({mode}) on http://{args.host}:{args.port} → {Handler.upstream}")
+    routing = "per-provider routing" if Handler.route else f"fixed → {Handler.upstream}"
+    print(f"⬡ Simplicio capture engine · proxy ({mode}, {routing}) on http://{args.host}:{args.port}")
     _log(f"START proxy port={args.port} upstream={Handler.upstream} mode={mode}")
     try:
         httpd.serve_forever()
@@ -409,8 +439,11 @@ def main(argv=None):
     pp = sub.add_parser("proxy", help="run the transparent capture proxy")
     pp.add_argument("--port", type=int, default=int(os.environ.get("SIMPLICIO_PROXY_PORT", "8788")))
     pp.add_argument("--host", default="127.0.0.1")
-    pp.add_argument("--upstream", default=os.environ.get("SIMPLICIO_UPSTREAM", "https://api.openai.com"))
+    pp.add_argument("--upstream", default=os.environ.get("SIMPLICIO_UPSTREAM", "https://api.openai.com"),
+                    help="default/fallback upstream host for unrouted models")
     pp.add_argument("--no-optimize", action="store_true", help="pure passthrough (no compression)")
+    pp.add_argument("--no-route", action="store_true",
+                    help="disable per-provider routing; send everything to --upstream")
 
     pd = sub.add_parser("doctor", help="show proxy + savings status")
     pd.add_argument("--port", type=int, default=int(os.environ.get("SIMPLICIO_PROXY_PORT", "8788")))
