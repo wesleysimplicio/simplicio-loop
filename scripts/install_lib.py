@@ -200,11 +200,34 @@ def detect():
     return "claude"
 
 
+def setup_monitor(enable):
+    """Token monitor = machine-level capture proxy + dashboard + tray (install_services.py).
+
+    Opt-in: a skill install shouldn't silently start system services. With --with-monitor we
+    install the tray dep + register the three services; otherwise we just print how to enable it.
+    """
+    svc = os.path.join(HERE, "install_services.py")
+    if not os.path.exists(svc):
+        return
+    py = sys.executable or "python3"
+    if enable:
+        log("token monitor: installing tray deps + capture proxy + dashboard + tray...")
+        deps = ["rumps"] if sys.platform == "darwin" else ["pystray", "pillow"]
+        for dep in deps:
+            subprocess.run([py, "-m", "pip", "install", "--user", "-q", dep], check=False)
+        subprocess.run([py, svc, "install"], check=False)
+        log("token monitor live -> http://127.0.0.1:9090  (verify: python3 scripts/install_services.py status)")
+    else:
+        log("token monitor (optional, machine-level): python3 scripts/install_services.py install")
+        log("  -> capture proxy + dashboard :9090 + menu-bar tray; then 'wire' to route a client's base_url")
+
+
 def main():
     args = sys.argv[1:]
     is_global = "--global" in args
     skip_operators = "--skip-operators" in args
-    args = [a for a in args if a not in ("--global", "--skip-operators")]
+    with_monitor = "--with-monitor" in args
+    args = [a for a in args if a not in ("--global", "--skip-operators", "--with-monitor")]
     target = None
     if "--target" in args:
         i = args.index("--target")
@@ -237,6 +260,7 @@ def main():
         log("loop runs self-paced (no stop-hook) — see adapters/%s/README.md" % runtime)
     if cfg["mcp"]:
         log("optional native bind:  simplicio mcp register --client %s" % cfg["mcp"])
+    setup_monitor(with_monitor)
     print("done. use:  /simplicio-tasks finish all the open issues")
 
 

@@ -3,6 +3,18 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [2.2.0] — 2026-06-24
+
+### Fixed — the installer now ships the token economy too
+- **The main installer (`install_lib.py`) was disconnected from the token monitor.** It copied the
+  6 skills + hooks but never set up the capture proxy / dashboard / tray, so a fresh user got the
+  loop but **not** the token economy. Now the installer always prints how to enable the monitor, and
+  `--with-monitor` installs the tray dep + registers the three services (`install_services.py install`).
+  Verified on a fresh temp target: skills copied, hooks wired, monitor pointer shown, services
+  selftest PASS.
+- Removed a personal path (`~/Projetos/ai/hermes-agent/...`) from the `simplicio-engine` fallback —
+  it would never resolve for other users.
+
 ## [2.1.0] — 2026-06-24
 
 ### Added
