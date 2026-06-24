@@ -3,6 +3,16 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [2.2.1] — 2026-06-24
+
+### Verified — Linux is now field-tested (not just code-complete)
+- Ran the stack inside a real Linux container (`python:3.12-slim`, py 3.12.13): the **native engine
+  forwards + captures** (savings written), the **dashboard `get_status` + HTML** compose (7 runtimes),
+  `install_services.py selftest` **PASS** (systemd units + Windows launchers), the **tray loads**
+  (headless fallback, no crash), and the generated **systemd unit resolves the Linux Python path**.
+  The honest remaining gap: systemd *daemon activation* (needs a real init host) and Windows *runtime*
+  are still not exercised on those hosts — the software + artifacts are verified, service start-up is not.
+
 ## [2.2.0] — 2026-06-24
 
 ### Fixed — the installer now ships the token economy too
