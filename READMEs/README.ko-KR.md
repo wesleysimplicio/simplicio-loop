@@ -1,4 +1,4 @@
-# 🔁 simplicio-loop — 범용 반복 루프 AI 오케스트레이터
+# 🔁 simplicio-tasks — 범용 반복 루프 AI 오케스트레이터
 
 <p align="center">
   <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -48,7 +48,7 @@
 
 ## ⚡ 요약
 
-**simplicio-loop**는 런타임에 종속되지 않는 **슈퍼 플러그인**입니다 — 자율 반복 루프
+**simplicio-tasks**는 런타임에 종속되지 않는 **슈퍼 플러그인**입니다 — 자율 반복 루프
 오케스트레이터 하나(**`/simplicio-tasks`**로 호출)에 **다섯 개의 위성 스킬**이 더해져, 강력한
 LLM(Claude, Codex, Copilot, Gemini, Cursor, 로컬 모델)을 스스로 굴러가는 워커로 바꿔 줍니다.
 처리할 작업 더미 — *"열린 이슈를 전부 끝내라"*, *"CI 큐를 비워라"*, *"Jira 보드를 비워라"* — 를

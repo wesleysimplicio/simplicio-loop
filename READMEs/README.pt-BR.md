@@ -1,4 +1,4 @@
-# 🔁 simplicio-loop — O Orquestrador de IA Universal em Loop
+# 🔁 simplicio-tasks — O Orquestrador de IA Universal em Loop
 
 <p align="center">
   <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -48,7 +48,7 @@
 
 ## ⚡ TL;DR
 
-O **simplicio-loop** é um **super-plugin** agnóstico de runtime — um orquestrador autônomo em loop
+O **simplicio-tasks** é um **super-plugin** agnóstico de runtime — um orquestrador autônomo em loop
 (invocado como **`/simplicio-tasks`**) mais **cinco skills satélites** — que transforma qualquer
 LLM forte (Claude, Codex, Copilot, Gemini, Cursor, modelos locais) em um worker autônomo. Você
 aponta para um corpo de trabalho — *"finalize todas as issues abertas"*, *"limpe a fila de CI"*, *"esvazie o board do Jira"* — e ele

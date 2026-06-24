@@ -1,4 +1,4 @@
-# 🔁 simplicio-loop — Evrensel Döngülü Yapay Zeka Orkestratörü
+# 🔁 simplicio-tasks — Evrensel Döngülü Yapay Zeka Orkestratörü
 
 <p align="center">
   <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -48,7 +48,7 @@
 
 ## ⚡ TL;DR
 
-**simplicio-loop**, runtime'dan bağımsız bir **süper-eklentidir** — tek bir otonom döngülü
+**simplicio-tasks**, runtime'dan bağımsız bir **süper-eklentidir** — tek bir otonom döngülü
 orkestratör (**`/simplicio-tasks`** olarak çağrılır) artı **beş uydu skill** — ve güçlü herhangi
 bir LLM'i (Claude, Codex, Copilot, Gemini, Cursor, yerel modeller) kendi kendini süren bir işçiye
 dönüştürür. Onu bir iş yığınına yönlendirirsiniz — *"tüm açık issue'ları bitir"*, *"CI kuyruğunu

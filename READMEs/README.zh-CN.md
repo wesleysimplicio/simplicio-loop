@@ -1,4 +1,4 @@
-# 🔁 simplicio-loop —— 通用循环式 AI 编排器
+# 🔁 simplicio-tasks —— 通用循环式 AI 编排器
 
 <p align="center">
   <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -48,7 +48,7 @@
 
 ## ⚡ TL;DR
 
-**simplicio-loop** 是一个与运行时无关的**超级插件** —— 一个自主循环式编排器
+**simplicio-tasks** 是一个与运行时无关的**超级插件** —— 一个自主循环式编排器
 （以 **`/simplicio-tasks`** 调用），外加**五个卫星 skill** —— 它能把任何强大的 LLM
 （Claude、Codex、Copilot、Gemini、Cursor、本地模型）变成一个自动驾驶的工作者。你只需
 把它指向一批工作 —— *“完成所有未关闭的 issue”*、*“清空 CI 队列”*、*“清干净 Jira 看板”* ——
