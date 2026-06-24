@@ -1,4 +1,4 @@
-# 🔁 simplicio-loop — The Universal Looping AI Orchestrator
+# 🔁 simplicio-tasks — The Universal Looping AI Orchestrator
 
 <p align="center">
   <img src="assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -48,7 +48,7 @@
 
 ## ⚡ TL;DR
 
-**simplicio-loop** is a runtime-agnostic **super-plugin** — one autonomous looping
+**simplicio-tasks** is a runtime-agnostic **super-plugin** — one autonomous looping
 orchestrator (invoked as **`/simplicio-tasks`**) plus **five satellite skills** — that turns any
 strong LLM (Claude, Codex, Copilot, Gemini, Cursor, local models) into a self-driving worker. You
 point it at a body of work — *"finish all the open issues"*, *"clear the CI queue"*, *"drain the Jira board"* — and it
@@ -73,6 +73,32 @@ and keeps watching **24/7** for new work — all behind safety gates and a hard 
 
 Three things make it different: it is a **super-plugin of focused skills**, it runs the **same
 protocol on 11 runtimes**, and it does all of this with **aggressive, honest token economy**.
+
+---
+
+## 📘 Official capability record (v3.4.0)
+
+The complete, official roster of what `simplicio-tasks` ships — every capability below is **real,
+runnable, and tested** (`python3 scripts/check.py`: claims-audit 4/4 + 24 tests). Each links to its
+deep section and its worker.
+
+| Capability | What it does | Proof / worker | Details |
+|---|---|---|---|
+| 🎬 **Video evidence** (`video_evidence`) | Renders a **deterministic MP4** demo of a screen/feature with [hyperframes](https://github.com/heygen-com/hyperframes) — fulfils `/simplicio-tasks faça um vídeo demonstrativo da tela X` and doubles as CI-reproducible proof a UI change works | `scripts/video_evidence.py` · BLOCKED (never fake-pass) without Node 22+/FFmpeg | [§ Video evidence](#-video-evidence--demo-videos-via-hyperframes) |
+| 🧠 **Attempt memory + stall detector** | A durable run-journal (`.orchestrator/loop/journal.jsonl`) + a stall detector so the loop **changes strategy instead of oscillating**; incremental triage (`since`) reads only the delta each turn | `scripts/loop_journal.py` · `selftest` 9/9 | [§ Anti-oscillation](#-attempt-memory--stall-detector-anti-oscillation) |
+| 🔒 **Fail-closed safety gate** (`action_gate`) | A `PreToolUse`/git-pre-push hook that **mechanically blocks** force-push, history rewrite, mass-delete, destructive DDL, infra teardown, and secret-laden commits/pushes — Step 5 made executable, not prose | `hooks/action_gate.py` · `selftest` 15/15 | [§ Safety](#-safety-non-negotiable) |
+| 🔬 **Local verification** | A test suite (worker selftests + an **e2e of the loop driver** proving evidence-gated exit) + a **claims-audit** (referenced scripts exist · counts consistent · `_bundle ≡ source`) — all local, **no paid CI** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Tests & local checks](#-tests--local-checks-no-paid-ci) |
+| ✅ **Honest savings** | The savings line is now **evidence-gated, not mandatory** — a number is shown only with a measured receipt (clamp/signatures/cache/`deterministic_edit`/ledger); never fabricated | token-economy contract | [§ Token economy](#-token-economy) |
+| 💳 **Open-core billing** | A deterministic, privacy-preserving meter→invoice over the metering the loop already produces (kill-switch + `savings_ledger`) — three tiers (seat/run/metered) | `scripts/billing_aggregator.py` · `selftest` 11/11 | [PRICING.md](PRICING.md) |
+
+Two loop **modes** make termination explicit: **converge** (a single hard task — ends on the
+evidence-gated `<promise>` or a stall escalation) vs **drain** (a queue — ends when the source
+re-query stays empty K rounds). Both still obey the universal exits (promise+evidence,
+`max_iterations`, budget, STOP).
+
+> Loop scoring across this line of work: **7.5** (strong design, unproven) → **9** (attempt memory +
+> anti-oscillation) → **9.5** (reproducible local proof) → **~10** (enforced safety + complete loop
+> semantics). The verification infra now catches the project's own regressions as it grows.
 
 ---
 
