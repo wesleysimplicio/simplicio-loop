@@ -72,29 +72,63 @@ def _price(model):
     return PRICE_PER_M["default"]
 
 
-# ── deterministic compression (safe, fail-open) ──────────────────────────────
+# ── deterministic compression pipeline (safe, fail-open, multi-algorithm) ─────
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _TRAILING_WS = re.compile(r"[ \t]+$", re.MULTILINE)
 _MANY_BLANKS = re.compile(r"\n{3,}")
+_RULE_RUN = re.compile(r"([=\-_*#.~ ])\1{9,}")  # 10+ repeated rule chars (==== / ---- / ....)
+
+
+def _algo_strip_ansi(t):
+    return _ANSI.sub("", t)
+
+
+def _algo_rule_runs(t):
+    return _RULE_RUN.sub(lambda m: m.group(1) * 6, t)
+
+
+def _algo_dedup_lines(t):
+    out, prev, marked = [], None, False
+    for line in t.split("\n"):
+        if line == prev and line.strip():
+            if not marked:
+                out.append("… (repeated line collapsed)")
+                marked = True
+            continue
+        prev, marked = line, False
+        out.append(line)
+    return "\n".join(out)
+
+
+def _algo_whitespace(t):
+    return _MANY_BLANKS.sub("\n\n", _TRAILING_WS.sub("", t))
+
+
+def _algo_minify_json(t):
+    s = t.strip()
+    if (s[:1], s[-1:]) in (("{", "}"), ("[", "]")) and len(s) > 40:
+        try:
+            return json.dumps(json.loads(s), separators=(",", ":"), ensure_ascii=False)
+        except (ValueError, TypeError):
+            return t
+    return t
+
+
+# Applied in order; each is lossless-ish and reversible-by-construction.
+_PIPELINE = [_algo_strip_ansi, _algo_rule_runs, _algo_dedup_lines, _algo_whitespace, _algo_minify_json]
 
 
 def _compress_text(text):
-    """Whitespace collapse + consecutive-line dedup. Conservative on purpose."""
+    """Run the deterministic compression pipeline; keep result only if it shrank."""
     if not text or len(text) < 80:
         return text
-    text = _TRAILING_WS.sub("", text)
-    out, prev, dups = [], None, 0
-    for line in text.split("\n"):
-        if line == prev and line.strip():
-            dups += 1
-            if dups == 1:
-                out.append("… (repeated line collapsed)")
-            continue
-        dups = 0
-        prev = line
-        out.append(line)
-    text = "\n".join(out)
-    text = _MANY_BLANKS.sub("\n\n", text)
-    return text
+    out = text
+    for algo in _PIPELINE:
+        try:
+            out = algo(out)
+        except (ValueError, TypeError, re.error):
+            pass
+    return out if len(out) < len(text) else text
 
 
 def _compress_content(content):
