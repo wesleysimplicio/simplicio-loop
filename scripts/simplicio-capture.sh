@@ -2,28 +2,27 @@
 # simplicio-capture.sh — wire real token capture across the runtimes Simplicio can intercept.
 #
 # Token capture works by routing a runtime's LLM HTTP traffic through the local Simplicio
-# compression proxy, which logs tokens (before/after) per request. The proxy is powered by
-# the headroom-ai engine; its `init` subcommand installs the engine's *blessed, transparent*
-# integration per client (provider routing that forwards to each client's REAL provider — it
-# does NOT swap the model). Three tiers:
+# capture proxy, which logs tokens (before/after) per request. The engine's `init` subcommand
+# installs its *blessed, transparent* integration per client (provider routing that forwards to
+# each client's REAL provider — it does NOT swap the model). Three tiers:
 #
 #   native   Claude · Codex · VS Code (Copilot) · OpenClaw   → `simplicio capture init <client>`
 #   base-url Hermes · Cursor · OpenCode                       → point OPENAI/ANTHROPIC_BASE_URL at the proxy
 #   none     Gemini · Kiro · Antigravity                      → proprietary API, not interceptable (yet)
 #
 # Usage:
-#   bash scripts/simplicio-capture.sh status      # show capture status (read-only: `headroom doctor`)
+#   bash scripts/simplicio-capture.sh status      # show capture status (read-only engine doctor)
 #   bash scripts/simplicio-capture.sh init        # install durable capture for every INSTALLED native client
 #   bash scripts/simplicio-capture.sh init claude # install for one client
 set -euo pipefail
 
 PORT="${SIMPLICIO_PROXY_PORT:-8788}"
 
-# Resolve the capture engine binary (headroom-ai), wherever it landed.
-ENGINE="$(command -v headroom 2>/dev/null || true)"
-[ -z "$ENGINE" ] && ENGINE="$(find "$HOME" -path '*/bin/headroom' -type f 2>/dev/null | head -1)"
-if [ -z "$ENGINE" ]; then
-  echo "❌ capture engine not installed — run: pip install headroom-ai" >&2
+# Simplicio capture engine — invoked via the single wrapper that resolves the binary.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENGINE="$SCRIPT_DIR/simplicio-engine"
+if ! "$ENGINE" --version >/dev/null 2>&1 && ! "$ENGINE" --help >/dev/null 2>&1; then
+  echo "❌ Simplicio capture engine not available (install it, then retry)" >&2
   exit 1
 fi
 

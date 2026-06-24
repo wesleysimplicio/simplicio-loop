@@ -3,6 +3,31 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [1.4.0] — 2026-06-23
+
+### Added
+- **`scripts/simplicio-engine`** — a single Simplicio-branded wrapper around the capture engine
+  binary, so the dashboard, scripts and docs speak `simplicio-engine` instead of the engine's
+  own name. It is now the *only* place that resolves the underlying binary (fast lookup, no
+  full-`$HOME` scan).
+
+### Changed
+- **Robust proxy detection.** The monitor now checks the proxy with a pure-Python socket connect
+  instead of `lsof`, which the launchd service could not find on its restricted `PATH` (it lives
+  in `/usr/sbin`) — the dashboard was falsely showing the proxy as down. Also added `/usr/sbin`
+  to the generated service `PATH`s. "Always works", regardless of environment.
+- Dashboard + capture script now call the engine through `simplicio-engine`; remaining `headroom`
+  references are isolated to the wrapper's binary resolution, the engine's own data dirs
+  (`~/.headroom`, read-only), and the literal `headroom-ai` package name.
+
+### Notes
+- **Capture activation verified.** `<engine> init <client>` was confirmed to add only a safe MCP
+  integration (memory/retrieve tools) — it does NOT change a client's model or base URL. Real
+  token capture requires routing a client's traffic through the proxy; with the current
+  DeepSeek-pinned proxy that would swap OpenAI clients' model, so transparent multi-provider
+  routing is required before activating Codex/Cursor/OpenCode (see
+  `references/token-capture.md`). Claude (Anthropic format) can capture transparently.
+
 ## [1.3.0] — 2026-06-23
 
 ### Changed

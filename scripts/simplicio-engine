@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# simplicio-engine — Simplicio capture engine entrypoint.
+#
+# Single, isolated wrapper so the rest of Simplicio (dashboard, scripts, docs) speaks
+# `simplicio-engine ...` instead of the underlying binary name. This is the ONLY place
+# that resolves the compiled engine (the open-source capture engine installs its binary
+# under that name); everything else stays Simplicio-branded.
+#
+# Usage: simplicio-engine <proxy|memory|init|doctor|...> [args]   # forwards to the engine
+set -euo pipefail
+
+# Fast resolution only — never scan all of $HOME (the dashboard calls this every refresh).
+_engine="${SIMPLICIO_ENGINE_BIN:-}"
+[ -z "${_engine}" ] && _engine="$(command -v headroom 2>/dev/null || true)"
+if [ -z "${_engine}" ]; then
+  for _p in "${HOME}"/Projetos/ai/hermes-agent/venv/bin/headroom \
+            "${HOME}"/Library/Python/*/bin/headroom \
+            "${HOME}"/.local/bin/headroom \
+            /usr/local/bin/headroom /opt/homebrew/bin/headroom; do
+    [ -x "${_p}" ] && { _engine="${_p}"; break; }
+  done
+fi
+
+if [ -z "${_engine}" ]; then
+  echo "simplicio-engine: capture engine not installed (set SIMPLICIO_ENGINE_BIN or install it)" >&2
+  exit 127
+fi
+
+exec "${_engine}" "$@"

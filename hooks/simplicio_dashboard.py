@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Simplicio Token Monitor — web dashboard + monitor for token savings.
 
-Reads the local compression proxy's structured savings file (proxy_savings.json,
-written by the Simplicio capture engine) plus its log, and renders a data-forward,
-Simplicio-branded dashboard: real-time token chart + which LLMs/runtimes are
-actually interceptable.
+Reads the Simplicio capture proxy's structured savings file (proxy_savings.json)
+plus its log, and renders a data-forward dashboard: real-time token chart + which
+LLMs/runtimes are actually interceptable. The capture engine is invoked only via the
+Simplicio-branded wrapper `scripts/simplicio-engine`.
 
 Usage:
     python3 hooks/simplicio_dashboard.py              # start web server on :9090
@@ -16,6 +16,7 @@ into HTML via placeholder substitution — single-file (deploy-friendly).
 import http.server
 import json
 import os
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -40,6 +41,8 @@ LOGO_CANDIDATES = [
 ]
 PID_FILE = Path("/tmp") / "simplicio-token-monitor.pid"
 PROXY_PORT = os.environ.get("SIMPLICIO_PROXY_PORT", os.environ.get("HEADROOM_PORT", "8788"))
+# Simplicio-branded entrypoint to the capture engine (wraps the real binary in one place).
+ENGINE_BIN = str(REPO_ROOT / "scripts" / "simplicio-engine")
 
 # Each runtime: skills LOAD, loop DRIVE, coverage STATE, and crucially the token
 # INTERCEPT tier — how (or whether) the Simplicio capture engine can really capture it:
@@ -489,7 +492,7 @@ def _read_savings_json():
 
 def get_status():
     port = PROXY_PORT
-    proxy_running = "LISTEN" in _run(["lsof", "-i", f":{port}"], timeout=3).stdout
+    proxy_running = _port_listening(port)  # pure-Python check; no lsof/PATH dependency
     uptime = _proxy_uptime() if proxy_running else "—"
 
     sav = _read_savings_json()
@@ -544,7 +547,7 @@ def get_status():
                         pass
     cache_hit = round(cache_hit / max(cache_count, 1), 1)
 
-    mr = _run(["headroom", "memory", "stats"], timeout=5)  # external accelerator binary
+    mr = _run([ENGINE_BIN, "memory", "stats"], timeout=5)  # Simplicio capture engine
     mem = 0
     for hl in mr.stdout.split("\n"):
         if "Total Memories" in hl:
@@ -593,6 +596,14 @@ def get_status():
     }
 
 
+def _port_listening(port):
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=0.6):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
 def _run(cmd, timeout=5):
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -617,7 +628,7 @@ def _parse_int(value):
 
 
 def _proxy_uptime():
-    r = _run(["pgrep", "-f", "headroom proxy"], timeout=2)  # external accelerator process
+    r = _run(["pgrep", "-f", "proxy --port"], timeout=2)  # the running capture proxy process
     pids = [pid for pid in r.stdout.strip().split("\n") if pid.strip()]
     if not pids:
         return "running"

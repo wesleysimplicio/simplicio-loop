@@ -63,7 +63,7 @@ cat > "$LAUNCHD/$PROXY_SERVICE.plist" << EOF
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>$HOME/Library/Python/3.9/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>$HOME/Library/Python/3.9/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin</string>
     </dict>
 </dict>
 </plist>
@@ -99,7 +99,7 @@ cat > "$LAUNCHD/$MONITOR_SERVICE.plist" << EOF
         <key>SIMPLICIO_PROXY_PORT</key>
         <string>$PORT</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin</string>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin</string>
     </dict>
 </dict>
 </plist>
