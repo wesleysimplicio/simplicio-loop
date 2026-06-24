@@ -6,21 +6,23 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-6つのスキルスーパープラグイン"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
-  <a href="#-11のランタイム1つのプロトコル"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-43個の拡張ポイント"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
-  <a href="#-トークンエコノミー"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
+  <a href="#-the-10-skills--accelerators"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
+  <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
+  <a href="#-the-43-extension-points"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
+  <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-6つのスキルスーパープラグイン">6つのスキル</a> ·
-  <a href="#-11のランタイム1つのプロトコル">11のランタイム</a> ·
-  <a href="#-ループ">ループ</a> ·
-  <a href="#-トークンエコノミー">トークンエコノミー</a> ·
-  <a href="#-巨人の肩の上に">クレジット</a> ·
-  <a href="#-インストールと使い方">インストール</a>
+  <a href="#-the-10-skills--accelerators">10のスキル</a> ·
+  <a href="#-source-adapters">ソースアダプタ</a> ·
+  <a href="#-11-runtimes-one-protocol">11のランタイム</a> ·
+  <a href="#-the-loop">ループ</a> ·
+  <a href="#-token-economy">トークンエコノミー</a> ·
+  <a href="#-token-economy">キャプチャエンジン</a> ·
+  <a href="#-install--use">インストール</a>
 </p>
 
 <p align="center">
@@ -47,17 +49,18 @@
 ## ⚡ TL;DR
 
 **simplicio-loop** はランタイム非依存の**スーパープラグイン**です——自律的にループする
-オーケストレーター1つと、**5つのサテライトスキル**から成り、あらゆる高性能LLM（Claude、Codex、
-Copilot、Gemini、Cursor、ローカルモデル）を自走するワーカーへと変えます。作業のまとまり——
-*「開いているissueを全部片付けて」*、*「CIキューを空にして」*、*「Jiraボードを消化して」*——を
-指定すれば、ライフサイクル全体を自力で回します。
+オーケストレーター1つ（**`/simplicio-tasks`** として起動）と、**5つのサテライトスキル**から成り、
+あらゆる高性能LLM（Claude、Codex、Copilot、Gemini、Cursor、ローカルモデル）を自走する
+ワーカーへと変えます。作業のまとまり——*「開いているissueを全部片付けて」*、*「CIキューを空にして」*、
+*「Jiraボードを消化して」*——を指定すれば、ライフサイクル全体を自力で回します。
 
 > **発見 → 理解 → 決定 → 実行 → 検証 → 修正 → 記録 → 繰り返し**
 
-任意のソースから作業を発見し、重複を排除し、マシンに合わせてエージェント群を自動スケールし、
-**コードをコンパイルするだけでなく実際に実行する**品質ループを通して各項目を実装し、PRを開き、
-CI／レビューのフィードバックを解消し、マージし、新しい作業がないか**24時間365日**監視し続けます——
-そのすべてを安全ゲートと強制的なコストキルスイッチの背後で行います。
+任意のソース（GitHub Issues、Jira、Azure DevOps、agentsviewセッションなど）から作業を発見し、
+重複を排除し、マシンに合わせてエージェント群を自動スケールし、**コードをコンパイルするだけでなく
+実際に実行する**品質ループを通して各項目を実装し、PRを開き、CI／レビューのフィードバックを解消し、
+マージし、新しい作業がないか**24時間365日**監視し続けます——そのすべてを安全ゲートと強制的な
+コストキルスイッチの背後で行います。
 
 ```text
 /simplicio-tasks termine as issues abertas
@@ -75,28 +78,49 @@ CI／レビューのフィードバックを解消し、マージし、新しい
 
 ---
 
-## 🧠 6つのスキル（スーパープラグイン）
+## 🧠 The 10 skills & accelerators
 
-オーケストレーターが中核で、5つのサテライトはそれぞれ、よく知られた技法の長所を取り込み、
-再利用可能なスキルとして公開します。各サテライトは**オプション**です——読み込まれていれば、
-オーケストレーターはそこに委譲し（より豊かで、より安価）、なければオーケストレーターの
-インラインプロトコルが作業の100%をカバーします。同じ逆転した依存関係を、1段上に持ち上げた形です。
+オーケストレーターの中核＋5つのサテライト＋4つのアクセラレーター。各サテライトは**オプション**です——
+読み込まれていれば、オーケストレーターはそこに委譲し（より豊かで、より安価）、なければインライン
+プロトコルが作業の100%をカバーします。アクセラレーターは**自動検出**されます——あれば使われ、
+なければLLMフォールバックになります。
 
-| スキル | 取り込み元 | 何をするか |
-|---|---|---|
-| 🔁 **simplicio-tasks** | — | オーケストレーターのループ：発見 → 実装 → 検証 → マージ → クローズ → 24/7監視。43個の拡張ポイント、デュアルパスルーター、自己監査による収束。 |
-| ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | 強化されたRalphループ：毎ターン同じゴールを再投入し、エージェントが自分の作業を見られるようにし、終了するのは**エビデンスゲートを通った`<promise>`**または`max_iterations`上限のときだけ——偽の「完了」は決して出しません。 |
-| 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | ターミナル優先の実行：事実はLLMではなくシェルで答える。出力削減カタログ、**失敗時のtee-cache**、シグネチャのみ読み込み、オプションの自動書き換えフック。 |
-| 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | 敵対的レビュー：別々のルーブリック（セキュリティ／正しさ＋コード品質）を持つ並列サブエージェントを1つのメッセージで起動し、1つの判定に統合します。 |
-| 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | 出力＋メモリの圧縮：コード／パスをバイト単位で保持する簡潔な散文ティアと、毎ターン元が取れる一回限りのメモリコンパクション。フェイルクローズの`transform_guard`。 |
-| 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) + continual-learning | 振り返り：実行から耐久性のある重複排除済みの教訓を採掘し、次の実行がより安価でより正しくなるようメモリに書き込みます。 |
+| # | 機能 | 取り込み元 | 何をするか | トークンへの影響 |
+|---|---|---|---|---|
+| 1 | 🔁 **simplicio-tasks** | — | オーケストレーターのループ：43個の拡張ポイント、デュアルパスルーター、自己監査による収束 | コア |
+| 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | 強化されたRalphループ：エビデンスゲートを通った `<promise>` 終了、max_iterations 上限 | ループの駆動 |
+| 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | ターミナル優先の実行、出力削減カタログ、tee-cache、シグネチャ読み込み | L0 決定論的 |
+| 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | 別々のルーブリックでの並列敵対的レビュー → 重複排除済み判定 | 品質ゲート |
+| 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | 出力＋メモリの圧縮、フェイルクローズの `transform_guard` | 40〜60%削減 |
+| 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | 実行後の振り返り → 耐久性のある重複排除済みの教訓をメモリへ | 実行ごとに賢く |
+| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | ナレッジグラフによるorient：セマンティック検索、ガイドツアー、依存グラフ | **L0 ゼロトークン** |
+| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | セッション分析、コスト追跡、停滞セッションの発見 | **L1** SQLのみ |
+| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | ループターン間のKVキャッシュ — ローカルモデルでTTFTを40〜70%削減 | GPU時間 ↓ |
+| 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py`（ネイティブ、stdlibのみ；savingsスキーマはOSSの [headroom](https://github.com/headroomlabs-ai/headroom) プロジェクトと互換） | 透過的なキャプチャプロキシ：実プロバイダへ転送し、計測＋決定論的に圧縮し、`proxy_savings.json` を書き込む | **決定論的** |
 
-それぞれ [`.claude/skills/`](../.claude/skills) 配下の通常のスキルフォルダであり——単体でも、
-ループの一部としても使えます。
+各スキルは [`.claude/skills/`](../.claude/skills) 配下にあり、各アクセラレーターは
+`.claude/skills/simplicio-tasks/references/` 配下にリファレンスドキュメントを持ちます。
 
 ---
 
-## 🌐 11のランタイム、1つのプロトコル
+## 📡 Source adapters
+
+オーケストレーターは、差し替え可能なアダプタを通して任意のソースから作業を発見します。各アダプタは
+6つの動詞を公開します：`list_ready`、`get_details`、`claim`、`update_status`、`attach_evidence`、`close`。
+
+| ソース | アダプタ | 目的 |
+|---|---|---|
+| GitHub Issues/PRs | `gh` CLI（ネイティブ） | 主要な作業項目ソース |
+| Jira / Asana / ClickUp / Linear / Notion | host connector | ボード／プロジェクト管理 |
+| Trello / Azure DevOps | `az boards` adapter | Azureの作業追跡 |
+| **agentsview sessions** | `scripts/agentsview_adapter.py` | 停滞セッションの回復＋コスト可観測性 |
+| Local files / CI queue | filesystem / CI API | 内部の作業追跡 |
+
+各アダプタのリファレンスドキュメントは `.claude/skills/simplicio-tasks/references/` 配下を参照してください。
+
+|---
+
+## 🌐 11 runtimes, one protocol
 
 1つの汎用スキルコア＋1セットのフックが、あらゆるランタイムを駆動します。アダプタは薄い層です——
 ランタイムに*どこでスキルを読み込むか*、*どうループを起動するか*、*どうネイティブの高速性に
@@ -105,14 +129,14 @@ CI／レビューのフィードバックを解消し、マージし、新しい
 | ランタイム | スキルの読み込み | ループの駆動 | ネイティブバインド |
 |---|---|---|---|
 | **Claude Code** | `.claude/skills/` + plugin | `Stop` フック | MCP |
-| **Codex** | `AGENTS.md` | 自己ペース | MCP / adapter |
+| **Codex** | `AGENTS.md` | self-paced | MCP / adapter |
 | **VS Code (Copilot)** | `copilot-instructions.md` | tasks | MCP |
 | **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | MCP / rules |
-| **Antigravity** | rules / `AGENTS.md` | 自己ペース | MCP |
+| **Antigravity** | rules / `AGENTS.md` | self-paced | MCP |
 | **Kiro** | `.kiro/steering/` | specs | MCP |
-| **OpenCode** | `AGENTS.md` | 自己ペース | MCP |
-| **Gemini** | `GEMINI.md` | 自己ペース | MCP / adapter |
-| **Aider** | `CONVENTIONS.md` | 自己ペース | —（LLMフォールバック） |
+| **OpenCode** | `AGENTS.md` | self-paced | MCP |
+| **Gemini** | `GEMINI.md` | self-paced | MCP / adapter |
+| **Aider** | `CONVENTIONS.md` | self-paced | —（LLMフォールバック） |
 | **Hermes** | native recall | native loop | **native** |
 | **OpenClaw** | plugin SDK | native scheduler | **native** |
 
@@ -120,30 +144,25 @@ CI／レビューのフィードバックを解消し、マージし、新しい
 `orient_clamp.py`（トークンエコノミー）は配線ゼロであらゆるランタイムで動きます。
 [`adapters/MATRIX.md`](../adapters/MATRIX.md) を参照してください。
 
-<p align="center">
-  <img src="../assets/simplicio-loop-overview.png" alt="simplicio-loop - full system overview" width="760" />
-</p>
-
 ---
 
 ## 🗺️ 全体フロー — 需要から提供まで
 
 オーケストレーターが作用するすべてのレイヤーを順に——需要（issue、タスク、アサイン）を読むところから、
 マージされエビデンスで裏付けられた成果を提供し、その後さらに作業を求めて24時間365日ループするところまで。
-（図はGitHub上でネイティブにレンダリングされます。）
 
 ```mermaid
 flowchart TD
   subgraph SRC["1 · Demand sources (any adapter)"]
     direction LR
     S1["GitHub Issues / PRs / CI"]
-    S2["Jira · Azure DevOps · Linear · ClickUp · Notion"]
-    S3["Assigns · TODO/FIXME · CVE · local files"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion · agentsview · Understand Anything (orient)"]
+    S3["Assigns · TODO/FIXME · CVE · local files · LMCache (inference accelerator)"]
   end
   SRC --> PF
   subgraph PF["2 · Pre-flight gates"]
     direction LR
-    P1["cost kill-switch budget"]
+    P1["cost kill-switch budget · agentsview cost check"]
     P2["source auth + scopes"]
     P3["arm 24/7 watcher"]
   end
@@ -160,7 +179,7 @@ flowchart TD
     direction LR
     I1["body + ALL comments"]
     I2["extract acceptance criteria"]
-    I3["orient code · signatures-only reads"]
+    I3["orient code · signatures-only reads or Understand Anything knowledge graph"]
     I4["plan + AC checklist + complexity"]
   end
   INTK --> RT{"5 · Route"}
@@ -202,253 +221,119 @@ flowchart TD
     F3["branch behind main -> additive rebase"]
   end
   FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
-  WATCH["11 · 24/7 watcher · simplicio-loop<br/>evidence-gated promise · max-iterations cap · cost kill-switch"]
+  WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
   WATCH -. "re-feed the goal" .-> DISC
 ```
 
-**レイヤーごとに — 何が作用し、どのリソースを使うか：**
+---
 
-| # | レイヤー | 何が起きるか | スキル／拡張ポイント · 借用元 |
-|---|---|---|---|
-| 1 | **Demand sources** | あらゆるソースから作業を読む——issue、PR、CI、ボード、アサイン、TODO、CVE | `source_adapter` · `intake` |
-| 2 | **Pre-flight** | `$` キルスイッチを起動し、ソース認証を確認し、24/7 watcherを起動する | `watcher` · コストガバナンス |
-| 3 | **Discover + normalize** | メタデータのみで一覧化し、正規化し、重複排除し、依存DAGを構築する | `normalize` · `dependency_graph` |
-| 4 | **Deep intake** | 本文＋コメント全体を読み、ACを抽出し、コードをorientし、計画を書く | `orient` · signatures-read · **rtk** |
-| 5 | **Route** | ファストパス（些末）対ヘビーパス；マシンに合わせてエージェント群を自動スケール | `autoscale` · デュアルパスルーター |
-| 6 | **Worker pool** | 継続的でコンフリクトを意識したファンアウト；機械的な編集；項目ごとの品質ループ | `execute` · `worktree` · `deterministic_edit` |
-| 7 | **Quality gates** | ACゲート（真のDoD）、実行検証（UI → **Playwright** `web_verify`）、敵対的レビュー | `validate` · **`simplicio-review`** (thermos) |
-| 8 | **Safety gates** | シークレットスキャン、不可逆操作の人間ゲート、4状態判定、アテステーション | `action_gate` · `human_gate` · `security` |
-| 9 | **Deliver** | コミット、プッシュ、Draft PR、エビデンス付きでソース内クローズ；現実を検証 | `pr` / `evidence` · `delivery_gate` |
-| 10 | **Feedback loop** | CI → 修正、レビューコメント → 調整、ブランチ遅れ → 加算的リベース | `diagnostics` · `retry` |
-| 11 | **24/7 watcher** | エビデンスゲートを通った約束まで目標を再投入；空になればアイドル、何かあれば起動 | **`simplicio-loop`** (Ralph) · `watcher` |
-| ↻ | **Cross-cutting** | トークンエコノミー（ターミナル優先 · カタログ · **tee+CCR** · 散文／メモリ圧縮） · モデルルーティング L0→L4 · learn | **`simplicio-orient`** (rtk+caveman) · **`simplicio-compress`** (caveman) · **`simplicio-learn`** (teaching) · **headroom** CCR |
+## 🔁 The loop
 
-すべてのレイヤーには常に機能するLLMフォールバックがあり、ホストが提供する場合はネイティブコマンドに
-バインドします——11すべてのランタイムで同じプロトコル、違うのは速度だけ。
+**エビデンスゲート付きループ**が中核の仕組みです。毎ターン同じゴールを再投入するので、エージェントは
+自分の以前の作業を見られます。終了するのは次のいずれかのときだけです：
+
+1. **エビデンスゲートを通った `<promise>`** — 約束を出すターンは、同時に具体的な証拠（合格した
+   テスト、マージ済みPR、クローズ済み項目の再クエリ）も必ず携えていなければなりません。エビデンスの
+   ない約束＝無視されます。
+2. **`max_iterations` 上限** — 強制的な安全のバックストップ
+3. **予算キルスイッチ** — 支出が `daily_usd_ceiling` に達するとループを停止します
+4. **STOPシグナル** — `.orchestrator/STOP` またはチャネルコマンド
+
+ターンの間、LMCache（利用可能な場合）はKV状態をキャッシュするので、再投入のプレフィルコストは
+ほぼゼロになります。
 
 ---
 
-## 🏛️ 設計の柱（詳細）
+## 📊 Token economy
 
-オーケストレーションの力を担う仕組みは4つあります。それぞれすでにスキルに組み込まれています——ここでは
-それが**どこにあるか**と、どう動くかを、詳細に描きます。
+| 技法 | 節約 |
+|---|---|
+| `deterministic_edit`（L0） | 編集トークンの100%（ファイルは機械的に書かれ、LLMが書くことは決してない） |
+| ターミナル優先の実行 | 事実はLLMの幻覚ではなくシェルから |
+| 出力削減カタログ | コマンド種別ごとの上限（`CAP_ERRORS=20`、`CAP_WARNINGS=10`、`CAP_LIST=20`）— `orient_clamp.py` |
+| 失敗時のTee+CCRキャッシュ | 失敗したコマンドを再実行しない——キャッシュされた出力を読む |
+| シグネチャのみ読み込み | `simplicio signatures <file>` — 870行のファイル → 65行（**93%節約**）、本体は省略 |
+| `simplicio-compress` | 簡潔な散文＋一回限りのメモリコンパクション |
+| `orient_clamp.py` | あらゆるシェルコマンドでクランプ＋tee、配線ゼロ |
+| ネイティブレスポンスキャッシュ | 繰り返される決定論的（temp=0）リクエスト → キャッシュから提供し、LLM呼び出しをスキップ（**ヒット時100%**）— `simplicio cache`、既定で有効（`SIMPLICIO_CACHE=0` で無効化） |
+| Simplicioキャプチャプロキシ + MCP | 透過的な圧縮デーモンによりツール出力のトークンを60〜95%削減 |
 
-| 柱 | 焦点 | 所在 | ラベル |
-|---|---|---|---|
-| **DAG＋パイプライン** | 依存関係による並列性、項目ごとに段階化 | `dependency_graph` · [`references/orchestration.md`](../.claude/skills/simplicio-tasks/references/orchestration.md)（Step 3 プール＋3c パイプライン） | `enhancement` `orchestrator` `performance` `runtime` |
-| **Worktree分離** | ツリーを壊さない並列編集、マージゲート付き | `worktree` · orchestration.md「Conflict-AWARE isolation」＋マージゲート | `enhancement` `orchestrator` `runtime` |
-| **敵対的検証** | 「提供」の前に懐疑者のパネル | [`quality-safety-delivery.md`](../.claude/skills/simplicio-tasks/references/quality-safety-delivery.md) Step 4c · スキル `simplicio-review` | `enhancement` `quality` `runtime` |
-| **ループ予算上限** | 無限ループ防止、二重の出口 | [`standing-loop-247.md`](../.claude/skills/simplicio-tasks/references/standing-loop-247.md) §4 · スキル `simplicio-loop` · `hooks/loop_stop.py` | `enhancement` `coding-loop` `runtime` |
+節約は、検証で正しいと確認された結果に対してのみ加点されます。ベースライン＝同じ結果に至る、
+最も安価で妥当なオーケストレーションなしの経路。`references/token-economy.md` を参照してください。
 
-### 1 · DAG＋パイプライン — 依存関係による並列性、段階化
+### 📈 Simplicio Token Monitor
 
-```mermaid
-flowchart TD
-  subgraph G1["Dependency DAG · resumable · deps gate order"]
-    direction TB
-    a["item A · no deps"]
-    b["item B · no deps"]
-    c["item C · needs A and B"]
-    d["item D · needs C"]
-    a --> c
-    b --> c
-    c --> d
-  end
-  a --> PA
-  b --> PB
-  subgraph G2["Per-item pipeline · no global barrier"]
-    direction LR
-    PA["A implement"] --> PA2["review"] --> PA3["merge"]
-    PB["B implement"] --> PB2["review"] --> PB3["merge"]
-  end
-  PA3 -. "A merged unblocks C" .-> c
-```
+節約を、常時稼働でライブに見られるビューです：
 
-独立した項目（A、B）は一度にファンアウトし、依存する項目（C、D）はDAG上で待ちます。各項目はそれぞれ
-実装 → レビュー → マージと流れるので、Bがまだ構築中でもAはマージされます——**段階化され、グローバルな
-バリアは決してありません**。再実行は完了済みのノードをスキップします（再開可能）。
+- **Webダッシュボード** — `http://127.0.0.1:9090` — リアルタイムのトークンチャート、節約ゲージ、
+  傍受しているLLM／ランタイムと **141/144プロバイダ（98%）**、そしてライブのプロキシログ。
+- **メニューバー／トレイウィジェット** — システムトレイに節約したトークンをライブ表示（macOS rumps · Windows/Linux pystray）。
+- **1つのモジュール** — `scripts/simplicio-economy.sh {status|up|wire}` がキャプチャプロキシ＋モニター＋
+  トレイ＋`simplicio-dev-cli` 決定論的オペレーターを立ち上げ、スタック全体を報告します。
 
-### 2 · Worktree分離 — 並列編集、マージゲート付き
+インストールは、`scripts/setup_simplicio.sh`、またはクロスプラットフォームの
+`python3 scripts/install_services.py install` を介して、3つすべてを自動起動サービス（macOS launchd · Linux systemd · Windows Startup）として登録します。
+インストール後、モニター＋キャプチャは**ループを起動せずに**動作します——`references/token-capture.md` を参照してください。
 
-```mermaid
-flowchart TD
-  Q["items to run in parallel"] --> OV{"touch the same files?"}
-  OV -->|"no · disjoint files"| SH["shared checkout · own branch each · commit sequentially"]
-  OV -->|"yes · overlap"| WT["dedicated git worktree · SERIALIZED"]
-  SH --> MG
-  WT --> MG
-  MG["merge gate · full suite runs ONCE on the composed result"] --> OK{"green?"}
-  OK -->|"yes"| MERGED["merge + close with evidence"]
-  OK -->|"no"| FIX["reject · fix · never corrupt the tree"]
-```
+### 🛠️ The capture engine — one native module, every command
 
-互いに素な項目は1つのチェックアウトを共有します（安価、N×の再リンクなし）。重なり合う項目だけが専用の
-worktreeのコストを払い、直列化されます。高コストなフルスイートは、マージされた結果に対して**一度だけ**
-実行されます——N回の部分的チェックよりも強力なエンドゲートです。
+[`engine/simplicio_engine.py`](../engine/simplicio_engine.py) はネイティブのSimplicioキャプチャエンジンです
+（stdlibのみ、フェイルオープン）——**外部依存なしで上流の
+[headroom](https://github.com/headroomlabs-ai/headroom) サーフェスを完全に再実装したもの**です。任意の
+コマンドを [`scripts/simplicio-engine`](../scripts/simplicio-engine) ラッパー経由で実行します（例：`simplicio-engine doctor`）：
 
-### 3 · 敵対的検証 — 提供の前の懐疑者のパネル
+| コマンド | 何をするか |
+|---|---|
+| `proxy` | 透過的なキャプチャプロキシ——各モデルを**実**プロバイダへルーティングし、圧縮＋計測＋キャッシュ（モデルの差し替えなし） |
+| `doctor` | プロキシの到達性＋累計の節約 |
+| `cache` | ネイティブレスポンスキャッシュ（`stats`/`clear`）——繰り返される決定論的リクエストはキャッシュから提供され、LLM呼び出しをスキップ |
+| `signatures` | ソースファイルのシグネチャのみ表示（本体は省略、コードを読むトークンを約93%削減） |
+| `semantic` | 可逆的な抽出型（セマンティックライト）圧縮 |
+| `kompress` | 実 `kompress-v2-base` モデルによる **ONNX** セマンティックトークンプルーニング |
+| `detect` | コンテンツタイプ検出＋ブロック単位のスマートルーティング |
+| `rag` | CCRメモリストア上でのTF-IDF（または `--ml` 埋め込み）検索 |
+| `memory` | CCR compress-cache-retrieve ストア（`remember`/`recall`/`forget`/`list`/`stats`） |
+| `mcp` | ネイティブstdio MCPサーバー（compress / retrieve / stats ツール） |
+| `init` / `wrap` | Simplicioをクライアント（Claude / Codex / Copilot / OpenClaw）へ登録 · キャプチャルーティング付きでクライアントを実行 |
+| `report` / `audit` / `capture` / `evals` | 節約レポート · 圧縮機会のためのツリー監査 · リクエストのドライラン · 圧縮回帰ゲート |
 
-```mermaid
-flowchart TD
-  IMPL["implementation · diff · run evidence · ACs"] --> PANEL
-  subgraph PANEL["Panel of skeptics (MEDIUM+) · each prompted to REFUTE"]
-    direction LR
-    V1["reviewer 1 · security / correctness"]
-    V2["reviewer 2 · code quality"]
-    V3["reviewer 3 · does-it-reproduce · web_verify"]
-  end
-  PANEL --> VOTE{"majority refute an AC?"}
-  VOTE -->|"yes"| BACK["back to fix"]
-  VOTE -->|"no"| SHIP["pass · deliver"]
-```
+### 🧠 Optional real ML models — `pip install "simplicio-loop[onnx]"`
 
-MEDIUM+の項目では、2〜3人の独立したレビュアーがそれぞれREFUTE（反証）を試みます（不確かなら「未完了」を
-既定とする）。いずれかの受け入れ基準で過半数が反証すれば、差し戻されます。TRIVIAL/SMALLは単一の自己レビューを
-保ちます。（`simplicio-review` に委譲されます。フロントエンドの差分には `web_verify` のエントリが必要です。）
+4つの**実在する**公開（Apache-2.0）ONNXモデルがネイティブで動作します——上流が使うのと同じモデルです。
+このエクストラがなくても、決定論的なstdlibの経路がすべてをカバーします。モデルは初回利用時にダウンロードされます。
 
-### 4 · ループ予算上限 — 無限ループ防止、二重の出口
-
-```mermaid
-flowchart TD
-  TURN["end of turn · stop hook"] --> P{"promise emitted AND evidence in-turn?"}
-  P -->|"yes"| EXIT1["EXIT success · close with evidence"]
-  P -->|"no"| CAP{"iteration over cap, OR budget halted, OR STOP signal?"}
-  CAP -->|"yes"| EXIT2["EXIT safety · stop, never a false done"]
-  CAP -->|"no"| REFEED["re-feed the goal · next iteration"]
-  REFEED --> TURN
-```
-
-ループには**2つの独立した出口**があります。*成功*の出口（本当に真である、エビデンスゲートを通った
-`<promise>`）と、*安全*の出口（`max_iterations` 上限、`$` 予算キルスイッチ、またはSTOPシグナル）です。
-自己申告の「完了」では決して終了せず——永遠に走り続けることもありません。これは `hooks/loop_stop.py` です
-（フェイルオープン：フックのエラーはすべて停止を許可する）。
-
----
-
-## 🔁 ループ
-
-オーケストレーターの下にある駆動力は、**強化されたRalphループ**（`simplicio-loop`）です。
-
-1. ゴールは、単一の人間が読める状態ファイル（`.orchestrator/loop/scratchpad.md`）に書き込まれます
-   ——簡単に検査でき、編集でき、キャンセルできます。
-2. 各ターンの後、**stop-hook**が同じゴールを再投入するので、エージェントは自分の以前の編集を
-   （git＋作業ツリー経由で）見て収束します。サイクルあたりのトークンコストは平坦なまま——
-   コンテキストの詰め込みはありません。
-3. 終了するのは、型付きのセンチネル `<promise>EXACT TEXT</promise>` が出力され、**かつ**それが
-   ターン内の具体的なエビデンス（合格したゲート、マージ済みPRのリンク、AC受領証）で裏付けられた
-   とき**だけ**です。または、強制的な `max_iterations` 上限／コストキルスイッチが発火したとき。
-
-> **偽の約束は決してしない。** エビデンスのない `<promise>` は無視され、ループは続きます。
-> これはループを、リポジトリの厳格なルール——*マージ済みPRまたは具体的なエビデンスなしに作業を
-> 決してクローズしない*——に直接配線します。
-
-フックのないランタイムでは、ループはホストのスケジューラ（cron／`/loop`／ランタイムのタスク
-ランナー）経由で**自己ペース**します——終了条件は同じです。フックはクロスプラットフォームの
-Pythonであり、**フェイルオープン**です：エラーになったフックは常にエージェントが停止することを
-許します。本当のガードは上限と予算であって、フックの小細工ではありません。
-
----
-
-## 📊 トークンエコノミー
-
-最も安価なトークンは、使わなかったトークンです。`simplicio-orient` ＋ `simplicio-compress` は、
-**rtk**（コマンドを圧縮）と **caveman**（会話を圧縮）の長所を安全の背骨へ折り込みます。
-
-- **ターミナル優先の実行** — シェルは事実を正確に知っており、LLMはそれを高コストで近似します。
-  クロスプラットフォームの置換テーブル（Windows／macOS／Linux）が、`git`／`gh`／`rg`／`python3`
-  経由で30以上の事実に答えます。**コマンドを決してシミュレートせず——実行する。**
-- **出力削減カタログ**（データ表） — コマンドごとのレシピ＋期待される節約率%＋
-  `skip-if-structured` ガード。生の `cargo check` は読むのに約2000トークンかかりますが、
-  クランプ後は約80です。
-- **tee-cache＋可逆なretrieve** *（rtk + headroom CCR）* — 積極的な切り詰めは、回復可能な場合にのみ
-  安全です：失敗時には完全な出力が `.orchestrator/tee/…log` に書き込まれ、パスだけが提示されるので、
-  エージェントはコマンドを**再実行せずに** `retrieve <path> [--lines|--grep]` でコンテキストを回復します。
-  クランプは損失ではなく可逆な判断になります。
-- **シグネチャのみ読み込み** *（rtk由来）* — ファイルのAPI表面（宣言、本体は省略）を読みます：
-  600行のファイルが、取り込み時には約40行になります。
-- **シグナル階層化された上限＋成功の集約＋重複排除** — ノイズより誤りを残し、クリーンな実行を
-  1行に集約し、繰り返される行を `line xN` に集約する——常に `unless errors present`。
-- **散文ティア＋メモリコンパクション** *（caveman由来）* — コード／パス／URLを**バイト単位で**
-  保持する簡潔な出力（`transform_guard` は失われたトークンがあればフェイルクローズ）に加え、
-  あらゆる将来のターンにわたって償却される一回限りの常駐メモリのコンパクション。
-- **誠実なベースライン** — 節約は、現実的な*「簡潔に答えよ」*対照群（冗長なわら人形ではない）に
-  対して測られ、**出力**トークンのみを数え（推論は数えない）、**検証で正しいと確認された結果に
-  対してのみ**加点されます。品質ゲートに不合格な圧縮は加点ゼロです。
-
-すべてのメッセージは誠実な一行で終わります：
-
-```
-simplicio-tasks: ~<spent> tokens · baseline ~<control-arm> · saved ~<saved> (<pct>%)
-```
-
-今すぐ試せます、配線不要：
-
-```bash
-python3 hooks/orient_clamp.py -- cargo test      # reduced output + tee log on failure
-python3 hooks/orient_clamp.py --json -- git diff  # machine summary
-```
-
----
-
-## 🏗️ 巨人の肩の上に
-
-simplicio-loop は、GitHub上の最良のループ＋トークンエコノミーの仕事を**深く研究したうえで**
-構築され、それぞれを焦点を絞ったスキルへ折り込んでいます——規律を残し、こけおどしを捨てて。
-
-| プロジェクト | 取り入れたもの | 取り入れなかったもの |
+| モデル | コマンド | 用途 |
 |---|---|---|
-| 🪨 [**caveman**](https://github.com/JuliusBrussee/caveman) | 簡潔な散文ティア、識別子のバイト保持、メモリコンパクション、誠実な*「簡潔に答えよ」*ベースライン | 文法的な単語の省略（コードと確認応答を低下させる） |
-| ⚙️ [**rtk**](https://github.com/rtk-ai/rtk) | コマンド別の削減カタログ、シグナル階層化された上限、**tee-cache**、シグネチャ読み込み、自動書き換えフック＋除外リスト | 言語別レジストリ（ランタイム固有） |
-| ♾️ [**ralph-loop**](https://github.com/cursor/plugins/tree/main/ralph-loop) | 単一ファイルのループ状態、完全一致の約束センチネル、2フックの分割 | モデルを信頼する完了（私たちは**エビデンスゲート付き**にする） |
-| 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | 単一メッセージでの並列レビュアー、別々のルーブリック、統合時の重複排除 | — |
-| 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | 状態を永続化し、次のサイクルが再導出しないようにする振り返り | 人間の学習というドメインそのもの |
-| 🧭 アウトカム指向の実行 | 終了状態へ収束する。計画され、スコープが定められ、可逆な中間的破壊 | — |
-| 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | tee-cache上の**可逆な**compress-cache-retrieve（CCR）、コンテンツタイプのルーティング分類 | 訓練済みモデル＋トラフィックプロキシ（ターミナル優先・ランタイム非依存の設計と矛盾する） |
-| 🎭 [**Playwright**](https://github.com/microsoft/playwright)（＋[mcp](https://github.com/microsoft/playwright-mcp)、[python](https://github.com/microsoft/playwright-python)） | フロントエンドの証明のために実ブラウザを駆動——`web_verify` のエビデンスとしてのスクリーンショット＋トレース | コンテキスト内のDOM／ピクセル（エビデンスはバイトではなくアーティファクトのパス） |
+| `kompress-v2-base` | `simplicio kompress` | セマンティックトークンプルーニング |
+| `technique-router-onnx` | `simplicio router` | 技法ルーティング |
+| `all-MiniLM-L6-v2-onnx` | `simplicio embed` · `rag --ml` | 埋め込み＋セマンティックRAG |
+| `siglip-image-encoder-onnx` | `simplicio image` | 画像圧縮のコンテンツ検証器 |
 
-> 彼らはトークンを削減します。simplicio-loop は**作業を行い**、その過程でトークンを削減します。
+### ⚙️ Native Rust performance core (optional)
 
----
+[`rust/`](../rust) は、上流から移植＋リブランドした4つのクレートを提供します（Apache-2.0；`NOTICE` でクレジット）：
+`simplicio-core`（コンプレッサー＋smart-crusher）、`simplicio-py`（PyO3バインディング）、`simplicio-proxy`
+（axumリバースプロキシ）、`simplicio-parity`（Rust↔Pythonパリティハーネス）。`maturin` でビルドします——Python
+エンジンはそれらなしでも完全に動作し、クレートはネイティブの高速性を加えるだけです。
 
-## 🧩 43個の拡張ポイント
+|---
 
-作業のすべてのステップは**名前付きの拡張ポイント**で行われます。ホストランタイムがネイティブ
-機能を公開していれば、それに**バインド**します（決定論的、ほぼゼロトークン）。そうでなければ、
-LLMが標準ツールで**フォールバック**を実行します。スキルは抽象に依存し、ランタイムには決して
-依存しません。
+## 🏛️ Design pillars (in detail)
 
-<details>
-<summary><strong>オーケストレーションとスケール</strong></summary>
+オーケストレーションの力を担う仕組みは4つあります：
 
-`orient` · `normalize` · `intake` · `source_adapter` · `autoscale` · `plan`/`decide` ·
-`execute` · `issue_factory` · `claim` · `worktree` · `dependency_graph` · `durable_workflow` ·
-`work_queue` · `resource_governor` · `model_route` · `model_preflight`
-</details>
-
-<details>
-<summary><strong>編集、品質、エビデンス</strong></summary>
-
-`deterministic_edit` · `diagnostics` · `toolchain_detect` · `validate`/`smoke` ·
-`delivery_gate` · `endpoint_compare` · `web_verify` · `pr`/`evidence` · `retry` ·
-`reuse_precedent` · `trajectory` · `learn` · `status` · `capability_rank`
-</details>
-
-<details>
-<summary><strong>トークン、コンテキスト、安全性</strong></summary>
-
-`recall` · `compress` · `prompt_budget` · `shell_exec` · `transform_guard` · `action_gate` ·
-`security` · `human_gate` · `notify` · `checkpoint_restore` · `watcher` · `savings_ledger` ·
-`web_research`
-</details>
-
-フォールバックを含む完全な表：
-[`references/extension-points.md`](../.claude/skills/simplicio-tasks/references/extension-points.md)。
+| 柱 | 焦点 | 所在 |
+|---|---|---|
+| **DAG＋パイプライン** | 依存関係による並列性、項目ごとに段階化 | `references/orchestration.md`（Step 3 プール＋パイプライン） |
+| **Worktree分離** | ツリーを壊さない並列編集、マージゲート付き | `references/orchestration.md` |
+| **敵対的検証** | 「提供」の前に懐疑者のパネル | `references/quality-safety-delivery.md` · スキル `simplicio-review` |
+| **ループ予算上限** | 無限ループ防止、二重の出口 | `references/standing-loop-247.md` · スキル `simplicio-loop` |
 
 ---
 
-## 🚀 インストールと使い方
+## 🚀 Install & use
 
 ```bash
 git clone https://github.com/wesleysimplicio/simplicio-loop
@@ -484,7 +369,7 @@ Python）。GitHubソースには、`git` ＋認証済みの `gh`。[`INSTALL.md
 
 ---
 
-## 🔒 安全性（妥協なし）
+## 🔒 Safety (non-negotiable)
 
 - すべての差分を**シークレットスキャン**し、ヒットしたらブロックします。
 - **不可逆操作の人間ゲート** — force-push、履歴の書き換え、本番デプロイ、データ／スキーマの削除、
@@ -499,6 +384,6 @@ Python）。GitHubソースには、`git` ＋認証済みの `gh`。[`INSTALL.md
 
 ---
 
-## 📄 ライセンス
+## 📄 License
 
-MIT — [LICENSE](../LICENSE) を参照してください。[Simplicio](https://github.com/wesleysimplicio) エコシステムの一部です。
+MIT

@@ -6,7 +6,8 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-6-skill-süper-eklenti"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
+  <a href="#-10-skill--hızlandırıcı"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-kaynak-adaptörleri"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtime-tek-protokol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-43-genişletme-noktası"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
   <a href="#-token-ekonomisi"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
@@ -15,11 +16,12 @@
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-6-skill-süper-eklenti">6 Skill</a> ·
+  <a href="#-10-skill--hızlandırıcı">10 Skill</a> ·
+  <a href="#-kaynak-adaptörleri">Kaynak Adaptörleri</a> ·
   <a href="#-11-runtime-tek-protokol">11 Runtime</a> ·
   <a href="#-döngü">Döngü</a> ·
   <a href="#-token-ekonomisi">Token Ekonomisi</a> ·
-  <a href="#-devlerin-omuzlarında">Teşekkürler</a> ·
+  <a href="#-token-ekonomisi">Yakalama Motoru</a> ·
   <a href="#-kurulum--kullanım">Kurulum</a>
 </p>
 
@@ -47,18 +49,18 @@
 ## ⚡ TL;DR
 
 **simplicio-loop**, runtime'dan bağımsız bir **süper-eklentidir** — tek bir otonom döngülü
-orkestratör artı **beş uydu skill** — ve güçlü herhangi bir LLM'i (Claude, Codex, Copilot,
-Gemini, Cursor, yerel modeller) kendi kendini süren bir işçiye dönüştürür. Onu bir iş yığınına
-yönlendirirsiniz — *"tüm açık issue'ları bitir"*, *"CI kuyruğunu boşalt"*, *"Jira board'unu
-temizle"* — ve tüm yaşam döngüsünü kendi başına yürütür:
+orkestratör (**`/simplicio-tasks`** olarak çağrılır) artı **beş uydu skill** — ve güçlü herhangi
+bir LLM'i (Claude, Codex, Copilot, Gemini, Cursor, yerel modeller) kendi kendini süren bir işçiye
+dönüştürür. Onu bir iş yığınına yönlendirirsiniz — *"tüm açık issue'ları bitir"*, *"CI kuyruğunu
+boşalt"*, *"Jira board'unu temizle"* — ve tüm yaşam döngüsünü kendi başına yürütür:
 
 > **keşfet → anla → karar ver → uygula → doğrula → düzelt → kaydet → tekrarla**
 
-İşi herhangi bir kaynaktan keşfeder, yinelenenleri ayıklar, makinenize göre bir ajan filosunu
-otomatik ölçeklendirir, her bir öğeyi **kodu (sadece derlemekle kalmayıp) çalıştıran** bir kalite
-döngüsüyle uygular, PR'lar açar, CI/inceleme geri bildirimlerini çözer, birleştirir ve yeni iş
-için **7/24** izlemeyi sürdürür — hepsi güvenlik kapılarının ve sıkı bir maliyet acil durdurma
-anahtarının arkasında.
+İşi herhangi bir kaynaktan keşfeder (GitHub Issues, Jira, Azure DevOps, agentsview oturumları ve
+dahası), yinelenenleri ayıklar, makinenize göre bir ajan filosunu otomatik ölçeklendirir, her bir
+öğeyi **kodu (sadece derlemekle kalmayıp) çalıştıran** bir kalite döngüsüyle uygular, PR'lar açar,
+CI/inceleme geri bildirimlerini çözer, birleştirir ve yeni iş için **7/24** izlemeyi sürdürür —
+hepsi güvenlik kapılarının ve sıkı bir maliyet acil durdurma anahtarının arkasında.
 
 ```text
 /simplicio-tasks termine as issues abertas
@@ -76,26 +78,46 @@ yapmasıdır.
 
 ---
 
-## 🧠 6 skill (süper-eklenti)
+## 🧠 10 skill & hızlandırıcı
 
-Orkestratör çekirdektir; beş uydunun her biri iyi bilinen bir tekniğin en iyisini özümser ve onu
-yeniden kullanılabilir bir skill olarak sunar. Her uydu **isteğe bağlıdır** — yüklendiğinde
-orkestratör ona devreder (daha zengin + daha ucuz); yokken orkestratörün dahili protokolü işin
-%100'ünü kapsar. Aynı tersine çevrilmiş bağımlılık, bir seviye üstte.
+Orkestratör çekirdeği + beş uydu + dört hızlandırıcı. Her uydu **isteğe bağlıdır** — yüklendiğinde
+orkestratör ona devreder (daha zengin + daha ucuz); yokken dahili protokol işin %100'ünü kapsar.
+Hızlandırıcılar **otomatik algılanır** — mevcut = kullanılır, yok = LLM yedeği.
 
-| Skill | Özümsediği | Ne yapar |
-|---|---|---|
-| 🔁 **simplicio-tasks** | — | Orkestratör döngüsü: discover → implement → verify → merge → close → watch 7/24. 43 genişletme noktası, çift-yollu yönlendirici, öz-denetimle yakınsama. |
-| ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Sertleştirilmiş Ralph döngüsü: her turda aynı hedefi yeniden besler, böylece ajan kendi çalışmasını görür; yalnızca **kanıt-kapılı bir `<promise>`** ile veya bir `max_iterations` tavanıyla çıkar — asla sahte bir "bitti" ile değil. |
-| 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-öncelikli yürütme: olgulara LLM ile değil, kabukla yanıt ver. Çıktı-azaltma kataloğu, **hata anında tee-cache**, yalnızca-imza okuma, isteğe bağlı otomatik-yeniden-yazma hook'u. |
-| 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Çekişmeli inceleme: ayrı rubriklerde (güvenlik/doğruluk + kod-kalitesi) paralel alt-ajanlar, tek bir mesajda başlatılır, tek bir karara deduplike edilir. |
-| 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Çıktı + bellek sıkıştırması: kodu/yolları bayt-bayt koruyan öz düzyazı kademeleri, artı her turda kendini amorti eden tek seferlik bir bellek kompaksiyonu. Fail-closed `transform_guard`. |
-| 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) + continual-learning | Retrospektif: bir koşudan kalıcı, deduplike edilmiş dersler çıkar ve onları belleğe yaz, böylece sonraki koşu daha ucuz ve daha doğru olsun. |
+| # | Yetenek | Özümsediği | Ne yapar | Token etkisi |
+|---|---|---|---|---|
+| 1 | 🔁 **simplicio-tasks** | — | Orkestratör döngüsü: 43 genişletme noktası, çift-yollu yönlendirici, öz-denetimle yakınsama | Çekirdek |
+| 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Sertleştirilmiş Ralph döngüsü: kanıt-kapılı `<promise>` çıkışı, max_iterations tavanı | Döngü sürücüsü |
+| 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-öncelikli yürütme, çıktı-azaltma kataloğu, tee-cache, imza-okuma | L0 deterministik |
+| 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Ayrı rubriklerde paralel çekişmeli inceleme → deduplike edilmiş karar | Kalite kapısı |
+| 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Çıktı + bellek sıkıştırması, fail-closed `transform_guard` | %40-60 daha az |
+| 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | Koşu-sonrası retrospektif → bellekte kalıcı, deduplike dersler | Her koşuda daha akıllı |
+| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Bilgi grafiği yönlendirme: semantik arama, rehberli turlar, bağımlılık grafiği | **L0 sıfır token** |
+| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Oturum analitiği, maliyet takibi, takılı-oturum keşfi | **L1** yalnızca SQL |
+| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Döngü turları arasında KV cache — yerel modellerde %40-70 TTFT azalması | GPU süresi ↓ |
+| 10 | 🗜️ **Simplicio yakalama motoru** | `engine/simplicio_engine.py` (yerel, yalnızca stdlib; OSS [headroom](https://github.com/headroomlabs-ai/headroom) projesiyle savings-schema uyumlu) | Şeffaf yakalama proxy'si: gerçek sağlayıcıya iletir, ölçer + deterministik olarak sıkıştırır, `proxy_savings.json` yazar | **deterministik** |
 
-Her biri [`.claude/skills/`](../.claude/skills) altında normal bir skill klasörüdür — tek başına
-veya döngünün parçası olarak kullanılabilir.
+Her skill [`.claude/skills/`](../.claude/skills) altında yaşar; her hızlandırıcının
+`.claude/skills/simplicio-tasks/references/` altında bir referans dokümanı vardır.
 
 ---
+
+## 📡 Kaynak adaptörleri
+
+Orkestratör, takılabilir adaptörler aracılığıyla işi herhangi bir kaynaktan keşfeder. Her biri altı
+fiil sunar: `list_ready`, `get_details`, `claim`, `update_status`, `attach_evidence`, `close`.
+
+| Kaynak | Adaptör | Amaç |
+|---|---|---|
+| GitHub Issues/PRs | `gh` CLI (yerel) | Birincil iş-öğesi kaynağı |
+| Jira / Asana / ClickUp / Linear / Notion | host connector | Board/proje yönetimi |
+| Trello / Azure DevOps | `az boards` adaptörü | Azure iş takibi |
+| **agentsview oturumları** | `scripts/agentsview_adapter.py` | Takılı oturum kurtarma + maliyet gözlemlenebilirliği |
+| Yerel dosyalar / CI kuyruğu | dosya sistemi / CI API | Dahili iş takibi |
+
+Her adaptörün referans dokümanına `.claude/skills/simplicio-tasks/references/` altında bakın.
+
+|---
 
 ## 🌐 11 runtime, tek protokol
 
@@ -121,30 +143,26 @@ Söz: **aynı protokol, aynı kapılar, 11'inin hepsinde aynı güvenlik — yal
 `orient_clamp.py` (token ekonomisi) sıfır bağlantıyla her runtime'da çalışır. Bkz.
 [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
-<p align="center">
-  <img src="../assets/simplicio-loop-overview.png" alt="simplicio-loop - full system overview" width="760" />
-</p>
-
 ---
 
 ## 🗺️ Tüm akış — talepten teslimata
 
 Orkestratörün üzerinde işlem yaptığı her katman, sırayla — talebi okumaktan (issue'lar, görevler,
-atamalar) birleştirilmiş, kanıtlanmış işi teslim etmeye, ardından daha fazlası için 7/24
-döngüye kadar. (Diyagram GitHub'da yerel olarak işlenir.)
+atamalar) birleştirilmiş, kanıtlanmış işi teslim etmeye, ardından daha fazlası için 7/24 döngüye
+kadar.
 
 ```mermaid
 flowchart TD
   subgraph SRC["1 · Demand sources (any adapter)"]
     direction LR
     S1["GitHub Issues / PRs / CI"]
-    S2["Jira · Azure DevOps · Linear · ClickUp · Notion"]
-    S3["Assigns · TODO/FIXME · CVE · local files"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion · agentsview · Understand Anything (orient)"]
+    S3["Assigns · TODO/FIXME · CVE · local files · LMCache (inference accelerator)"]
   end
   SRC --> PF
   subgraph PF["2 · Pre-flight gates"]
     direction LR
-    P1["cost kill-switch budget"]
+    P1["cost kill-switch budget · agentsview cost check"]
     P2["source auth + scopes"]
     P3["arm 24/7 watcher"]
   end
@@ -161,7 +179,7 @@ flowchart TD
     direction LR
     I1["body + ALL comments"]
     I2["extract acceptance criteria"]
-    I3["orient code · signatures-only reads"]
+    I3["orient code · signatures-only reads or Understand Anything knowledge graph"]
     I4["plan + AC checklist + complexity"]
   end
   INTK --> RT{"5 · Route"}
@@ -203,255 +221,117 @@ flowchart TD
     F3["branch behind main -> additive rebase"]
   end
   FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
-  WATCH["11 · 24/7 watcher · simplicio-loop<br/>evidence-gated promise · max-iterations cap · cost kill-switch"]
+  WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
   WATCH -. "re-feed the goal" .-> DISC
 ```
 
-**Katman katman — ne işlem yapar ve hangi kaynağı kullanır:**
-
-| # | Katman | Ne olur | Skill / genişletme noktası · ödünç alındığı yer |
-|---|---|---|---|
-| 1 | **Demand sources** | İşi HERHANGİ bir kaynaktan oku — issue'lar, PR'lar, CI, board'lar, atamalar, TODO, CVE'ler | `source_adapter` · `intake` |
-| 2 | **Pre-flight** | `$` acil durdurma anahtarını kur, kaynak kimlik doğrulamasını denetle, 7/24 watcher'ı kur | `watcher` · maliyet yönetimi |
-| 3 | **Discover + normalize** | Yalnızca metaveriye göre listele, normalleştir, dedup, bağımlılık DAG'ını oluştur | `normalize` · `dependency_graph` |
-| 4 | **Deep intake** | Tam gövdeyi + yorumları oku, AC'leri çıkar, kodda yönünü bul, bir plan yaz | `orient` · signatures-read · **rtk** |
-| 5 | **Route** | Hızlı yol (önemsiz) vs ağır yol; filoyu makineye göre otomatik ölçeklendir | `autoscale` · çift-yollu yönlendirici |
-| 6 | **Worker pool** | Sürekli, çakışma-farkında fan-out; mekanik düzenlemeler; öğe başına kalite döngüsü | `execute` · `worktree` · `deterministic_edit` |
-| 7 | **Quality gates** | AC kapısı (gerçek DoD), çalıştırma-doğrulaması (UI → **Playwright** `web_verify`), çekişmeli inceleme | `validate` · **`simplicio-review`** (thermos) |
-| 8 | **Safety gates** | Gizli-tarama, geri-alınamaz-işlem insan kapısı, 4-durumlu karar, atestasyon | `action_gate` · `human_gate` · `security` |
-| 9 | **Deliver** | Commit, push, Draft PR, kaynakta kanıtla kapatma; gerçekliği doğrula | `pr` / `evidence` · `delivery_gate` |
-| 10 | **Feedback loop** | CI → düzelt, inceleme yorumları → ayarla, gerideki dal → eklemeli rebase | `diagnostics` · `retry` |
-| 11 | **24/7 watcher** | Kanıt-kapılı bir söze ulaşana dek hedefi yeniden besle; boşaldığında bekle, her şeye uyan | **`simplicio-loop`** (Ralph) · `watcher` |
-| ↻ | **Cross-cutting** | Token ekonomisi (terminal-öncelikli · katalog · **tee+CCR** · düzyazı/bellek sıkıştırma) · model yönlendirme L0→L4 · öğrenme | **`simplicio-orient`** (rtk+caveman) · **`simplicio-compress`** (caveman) · **`simplicio-learn`** (teaching) · **headroom** CCR |
-
-Her katmanın her zaman-çalışan bir LLM yedeği vardır ve host bir komut sağladığında yerel komutu
-bağlar — 11 runtime'ın hepsinde aynı protokol, yalnızca hız farklıdır.
-
----
-
-## 🏛️ Tasarım sütunları (ayrıntılı)
-
-Orkestrasyon gücünü dört mekanizma taşır. Her biri skill'e zaten bağlanmıştır — işte tam olarak
-**nerede yaşadığı** ve nasıl çalıştığı, ayrıntılı çizilmiş.
-
-| Sütun | Odak | Yaşadığı yer | Etiketler |
-|---|---|---|---|
-| **DAG + boru hattı** | bağımlılığa göre paralellik, öğe başına aşamalı | `dependency_graph` · [`references/orchestration.md`](../.claude/skills/simplicio-tasks/references/orchestration.md) (Adım 3 havuz + 3c boru hattı) | `enhancement` `orchestrator` `performance` `runtime` |
-| **Worktree yalıtımı** | ağacı bozmadan paralel düzenlemeler, birleştirme-kapılı | `worktree` · orchestration.md "Conflict-AWARE isolation" + birleştirme kapısı | `enhancement` `orchestrator` `runtime` |
-| **Çekişmeli doğrulama** | "teslim edildi"den önce bir şüpheciler paneli | [`quality-safety-delivery.md`](../.claude/skills/simplicio-tasks/references/quality-safety-delivery.md) Adım 4c · skill `simplicio-review` | `enhancement` `quality` `runtime` |
-| **Döngü bütçesi tavanı** | anti-sonsuz-döngü, çift çıkış | [`standing-loop-247.md`](../.claude/skills/simplicio-tasks/references/standing-loop-247.md) §4 · skill `simplicio-loop` · `hooks/loop_stop.py` | `enhancement` `coding-loop` `runtime` |
-
-### 1 · DAG + boru hattı — bağımlılığa göre paralellik, aşamalı
-
-```mermaid
-flowchart TD
-  subgraph G1["Dependency DAG · resumable · deps gate order"]
-    direction TB
-    a["item A · no deps"]
-    b["item B · no deps"]
-    c["item C · needs A and B"]
-    d["item D · needs C"]
-    a --> c
-    b --> c
-    c --> d
-  end
-  a --> PA
-  b --> PB
-  subgraph G2["Per-item pipeline · no global barrier"]
-    direction LR
-    PA["A implement"] --> PA2["review"] --> PA3["merge"]
-    PB["B implement"] --> PB2["review"] --> PB3["merge"]
-  end
-  PA3 -. "A merged unblocks C" .-> c
-```
-
-Bağımsızlar (A, B) hemen yelpaze gibi açılır; bağımlılar (C, D) DAG'ı bekler. Her öğe kendi başına
-implement → review → merge akışından geçer, böylece B hâlâ inşa edilirken A birleşir — **aşamalı,
-asla küresel bir bariyer değil**. Yeniden koşular biten düğümleri atlar (sürdürülebilir).
-
-### 2 · Worktree yalıtımı — paralel düzenlemeler, birleştirme-kapılı
-
-```mermaid
-flowchart TD
-  Q["items to run in parallel"] --> OV{"touch the same files?"}
-  OV -->|"no · disjoint files"| SH["shared checkout · own branch each · commit sequentially"]
-  OV -->|"yes · overlap"| WT["dedicated git worktree · SERIALIZED"]
-  SH --> MG
-  WT --> MG
-  MG["merge gate · full suite runs ONCE on the composed result"] --> OK{"green?"}
-  OK -->|"yes"| MERGED["merge + close with evidence"]
-  OK -->|"no"| FIX["reject · fix · never corrupt the tree"]
-```
-
-Ayrık öğeler tek bir checkout'u paylaşır (ucuz, N× yeniden-bağlama yok); yalnızca örtüşen öğeler
-özel bir worktree için ödeme yapar ve serileştirilir. Pahalı tam test takımı birleştirilmiş
-sonuçta **bir kez** koşar — N kısmi denetimden daha güçlü bir bitiş kapısı.
-
-### 3 · Çekişmeli doğrulama — teslimattan önce bir şüpheciler paneli
-
-```mermaid
-flowchart TD
-  IMPL["implementation · diff · run evidence · ACs"] --> PANEL
-  subgraph PANEL["Panel of skeptics (MEDIUM+) · each prompted to REFUTE"]
-    direction LR
-    V1["reviewer 1 · security / correctness"]
-    V2["reviewer 2 · code quality"]
-    V3["reviewer 3 · does-it-reproduce · web_verify"]
-  end
-  PANEL --> VOTE{"majority refute an AC?"}
-  VOTE -->|"yes"| BACK["back to fix"]
-  VOTE -->|"no"| SHIP["pass · deliver"]
-```
-
-MEDIUM+ öğeler için 2–3 bağımsız inceleyici her biri ÇÜRÜTMEYE çalışır (emin değilse varsayılan
-"bitmedi"). Herhangi bir kabul kriterinde çoğunluk-çürütmesi öğeyi geri gönderir. TRIVIAL/SMALL
-tek bir öz-inceleme tutar. (`simplicio-review`'e devredilir; ön-yüz diffleri bir `web_verify`
-girdisi gerektirir.)
-
-### 4 · Döngü bütçesi tavanı — anti-sonsuz-döngü, çift çıkış
-
-```mermaid
-flowchart TD
-  TURN["end of turn · stop hook"] --> P{"promise emitted AND evidence in-turn?"}
-  P -->|"yes"| EXIT1["EXIT success · close with evidence"]
-  P -->|"no"| CAP{"iteration over cap, OR budget halted, OR STOP signal?"}
-  CAP -->|"yes"| EXIT2["EXIT safety · stop, never a false done"]
-  CAP -->|"no"| REFEED["re-feed the goal · next iteration"]
-  REFEED --> TURN
-```
-
-Döngünün **iki bağımsız çıkışı** vardır: bir *başarı* çıkışı (gerçekten doğru olan, kanıt-kapılı
-bir `<promise>`) ve bir *güvenlik* çıkışı (`max_iterations` tavanı, `$` bütçe acil durdurma
-anahtarı veya bir STOP sinyali). Asla öz-bildirilen bir "bitti" ile çıkmaz — ve asla sonsuza dek
-çalışmaz. Bu `hooks/loop_stop.py`'dir (fail-open: herhangi bir hook hatası → durmaya izin ver).
-
 ---
 
 ## 🔁 Döngü
 
-Orkestratörün altındaki sürücü, **sertleştirilmiş bir Ralph döngüsüdür** (`simplicio-loop`):
+**Kanıt-Kapılı Döngü** çekirdek mekanizmadır. Her turda aynı hedefi yeniden besler, böylece ajan
+kendi önceki çalışmasını görür. Çıkış YALNIZCA şunlarla olur:
 
-1. Hedef, tek, insan tarafından okunabilir bir durum dosyasına
-   (`.orchestrator/loop/scratchpad.md`) yazılır — son derece kolay incelenebilir, düzenlenebilir,
-   iptal edilebilir.
-2. Her turdan sonra bir **stop-hook** aynı hedefi yeniden besler, böylece ajan kendi önceki
-   düzenlemelerini görür (git + çalışma ağacı aracılığıyla) ve yakınsar. Döngü başına token
-   maliyeti sabit kalır — bağlam tıkıştırması yok.
-3. **Yalnızca** tipli bir `<promise>TAM METİN</promise>` işareti yayıldığında **ve** somut
-   tur-içi kanıtlarla (geçen bir kapı, birleştirilmiş-PR bağlantısı, AC makbuzları) desteklendiğinde
-   veya sıkı bir `max_iterations` tavanı / maliyet acil durdurma anahtarı tetiklendiğinde çıkar.
+1. **Kanıt-kapılı `<promise>`** — sözü yayan tur, AYNI ZAMANDA somut kanıt taşımalıdır (geçen bir
+   test, birleştirilmiş bir PR, kapatılmış-öğe yeniden sorgusu). Kanıtsız bir söz = yok sayılır.
+2. **`max_iterations` tavanı** — sıkı güvenlik desteği
+3. **Bütçe acil durdurma anahtarı** — `daily_usd_ceiling` harcandığında döngüyü durdurur
+4. **STOP sinyali** — `.orchestrator/STOP` veya kanal komutu
 
-> **Asla sahte bir söz.** Kanıtsız bir `<promise>` yok sayılır ve döngü devam eder. Bu, döngüyü
-> doğrudan deponun sıkı kuralına bağlar: *birleştirilmiş bir PR veya somut kanıt olmadan asla işi
-> kapatma.*
-
-Hook'u olmayan runtime'larda döngü, host zamanlayıcısı (cron / `/loop` / runtime'ın görev
-çalıştırıcısı) aracılığıyla **kendi temposunu belirler** — aynı çıkış koşulları. Hook'lar
-platformlar-arası Python'dur ve **fail-open**'dır: hata veren bir hook her zaman ajanın durmasına
-izin verir. Gerçek korumalar, hook hilekârlığı değil, tavan ve bütçedir.
+Turlar arasında, LMCache (mevcut olduğunda) KV durumunu cache'ler, böylece yeniden besleme neredeyse
+sıfır prefill maliyeti tutar.
 
 ---
 
 ## 📊 Token ekonomisi
 
-En ucuz token, harcanmayandır. `simplicio-orient` + `simplicio-compress`, **rtk**'nin
-(komutları sıkıştır) ve **caveman**'in (konuşmayı sıkıştır) en iyilerini güvenlik omurgasına
-katlar:
+| Teknik | Tasarruf |
+|---|---|
+| `deterministic_edit` (L0) | Düzenleme token'larının %100'ü (dosya mekanik olarak yazılır, asla LLM tarafından değil) |
+| Terminal-öncelikli yürütme | Olgular LLM halüsinasyonundan değil, kabuktan |
+| Çıktı-azaltma kataloğu | Komut türü başına tavanlar (`CAP_ERRORS=20`, `CAP_WARNINGS=10`, `CAP_LIST=20`) — `orient_clamp.py` |
+| Hatada tee+CCR cache | Başarısız bir komutu asla yeniden çalıştırma — cache'lenmiş çıktıyı oku |
+| Yalnızca-imza okumaları | `simplicio signatures <file>` — 870 satırlık dosya → 65 satır (**%93 tasarruf**), gövdeler atlanmış |
+| `simplicio-compress` | Öz düzyazı + tek seferlik bellek kompaksiyonu |
+| `orient_clamp.py` | Her kabuk komutunda kırpma + tee, sıfır bağlantı |
+| Yerel yanıt cache'i | tekrarlanan deterministik (temp=0) istek → cache'ten sunulur, LLM çağrısını atlar (**isabet halinde %100**) — `simplicio cache`, varsayılan olarak açık (devre dışı bırakmak için `SIMPLICIO_CACHE=0`) |
+| Simplicio yakalama proxy'si + MCP | Şeffaf bir sıkıştırma daemon'ı aracılığıyla araç çıktılarında %60-95 daha az token |
 
-- **Terminal-öncelikli yürütme** — kabuk olguları tam olarak bilir; LLM onları pahalıya
-  yaklaşıklar. Platformlar-arası bir ikame tablosu (Windows/macOS/Linux) 30+ olguyu
-  `git`/`gh`/`rg`/`python3` aracılığıyla yanıtlar. **Bir komutu asla simüle etme — onu çalıştır.**
-- **Çıktı-azaltma kataloğu** (veri tablosu) — komut başına tarif + beklenen-tasarruf % +
-  `skip-if-structured` koruması. Ham bir `cargo check` okumak ~2000 token tutar; kırpılınca ~80.
-- **tee-cache + tersine çevrilebilir retrieve** *(rtk + headroom CCR)* — agresif kesme yalnızca
-  geri kazanılabilirse güvenlidir: hatada tam çıktı `.orchestrator/tee/…log`'a yazılır ve dışarıya
-  yalnızca yol verilir; ajan bağlamı `retrieve <path> [--lines|--grep]` ile komutu **yeniden
-  çalıştırmadan** geri kazanır. Kırpma, kayıplı değil tersine çevrilebilir bir karara dönüşür.
-- **Yalnızca-imza okumaları** *(rtk'den)* — bir dosyanın API yüzeyini oku (bildirimler, gövdeler
-  atlanmış): 600-satırlık bir dosya, alım sırasında ~40 satır olur.
-- **Sinyal-kademeli tavanlar + başarı-toplama + dedup** — gürültü yerine hataları koru; temiz bir
-  koşuyu tek bir satıra topla; tekrarlanan satırları `line xN` olarak topla — her zaman
-  `unless errors present`.
-- **Düzyazı kademeleri + bellek kompaksiyonu** *(caveman'den)* — kodu/yolları/URL'leri
-  **bayt-bayt** koruyan öz çıktı (`transform_guard`, kaybolan herhangi bir token'da fail-closed
-  olur), artı her gelecek tur boyunca amorti edilen, sabit belleğin tek seferlik bir
-  kompaksiyonu.
-- **Dürüst baz çizgi** — tasarruflar gerçekçi bir *"öz yanıtla"* kontrol koluna göre ölçülür
-  (abartılı bir korkuluğa değil), yalnızca **çıktı** token'larını sayar (akıl yürütmeyi değil) ve
-  **yalnızca doğrulanmış-doğru bir sonuçta** kredilendirilir. Kalite kapısını geçemeyen sıkıştırma
-  sıfır kazanır.
+Tasarruflar yalnızca doğrulanmış-doğru bir sonuçta sayılır. Baz çizgi = aynı sonuca giden en ucuz
+makul orkestrasyonsuz yol. Bkz. `references/token-economy.md`.
 
-Her mesaj dürüst bir satırla biter:
+### 📈 Simplicio Token Monitor
 
-```
-simplicio-tasks: ~<spent> tokens · baseline ~<control-arm> · saved ~<saved> (<pct>%)
-```
+Tasarrufların canlı, her zaman açık bir görünümü:
 
-Şimdi deneyin, hiçbir bağlantı gerekmez:
+- **Web panosu** — `http://127.0.0.1:9090` — gerçek zamanlı token grafiği, tasarruf göstergesi,
+  araya girdiğimiz LLM'ler/runtime'lar ve **141/144 sağlayıcı (%98)** ve canlı bir proxy günlüğü.
+- **Menü-çubuğu / tepsi widget'ı** — sistem tepsisinde canlı kaydedilen token'lar (macOS rumps · Windows/Linux pystray).
+- **Tek modül** — `scripts/simplicio-economy.sh {status|up|wire}` yakalama proxy'sini + monitörü +
+  tepsiyi + `simplicio-dev-cli` deterministik operatörünü çalıştırır ve tüm yığını raporlar.
 
-```bash
-python3 hooks/orient_clamp.py -- cargo test      # reduced output + tee log on failure
-python3 hooks/orient_clamp.py --json -- git diff  # machine summary
-```
+Kurulum, üçünü de otomatik-başlatma servisleri (macOS launchd · Linux systemd · Windows Startup)
+olarak `scripts/setup_simplicio.sh` ya da platformlar-arası `python3 scripts/install_services.py install`
+aracılığıyla kaydeder. Kurulumdan sonra monitör + yakalama **döngüyü çağırmadan** çalışır — bkz.
+`references/token-capture.md`.
 
----
+### 🛠️ Yakalama motoru — tek yerel modül, her komut
 
-## 🏗️ Devlerin omuzlarında
+[`engine/simplicio_engine.py`](../engine/simplicio_engine.py) yerel Simplicio yakalama motorudur
+(yalnızca stdlib, fail-open) — **upstream [headroom](https://github.com/headroomlabs-ai/headroom)
+yüzeyinin harici bağımlılık olmadan tam bir yeniden uygulaması**. Herhangi bir komutu
+[`scripts/simplicio-engine`](../scripts/simplicio-engine) sarmalayıcısı aracılığıyla çalıştırın
+(ör. `simplicio-engine doctor`):
 
-simplicio-loop, GitHub'daki en iyi döngü + token-ekonomisi çalışmalarını **derinlemesine
-inceledikten sonra** geliştirildi ve her birini odaklanmış bir skill'e katlar — disiplini
-koruyup, hileleri bırakarak.
+| Komut | Ne yapar |
+|---|---|
+| `proxy` | şeffaf yakalama proxy'si — her modeli **gerçek** sağlayıcısına yönlendirir, sıkıştırır + ölçer + cache'ler (model değişimi yok) |
+| `doctor` | proxy erişilebilirliği + ömür boyu tasarruflar |
+| `cache` | yerel yanıt cache'i (`stats`/`clear`) — tekrarlanan deterministik bir istek cache'ten sunulur, LLM çağrısını atlar |
+| `signatures` | bir kaynak dosyanın yalnızca-imza görünümü (gövdeler atlanmış, kodu okumak için ~%93 daha az token) |
+| `semantic` | tersine çevrilebilir çıkarımsal (semantic-lite) sıkıştırma |
+| `kompress` | gerçek `kompress-v2-base` modeli aracılığıyla **ONNX** semantik token-budama |
+| `detect` | içerik-türü algılama + blok başına akıllı yönlendirme |
+| `rag` | CCR bellek deposu üzerinde TF-IDF (veya `--ml` gömme) erişimi |
+| `memory` | CCR compress-cache-retrieve deposu (`remember`/`recall`/`forget`/`list`/`stats`) |
+| `mcp` | yerel stdio MCP sunucusu (compress / retrieve / stats araçları) |
+| `init` / `wrap` | Simplicio'yu bir istemciye kaydet (Claude / Codex / Copilot / OpenClaw) · bir istemciyi yakalama yönlendirmesiyle çalıştır |
+| `report` / `audit` / `capture` / `evals` | tasarruf raporu · bir ağacı sıkıştırma fırsatı için denetle · bir isteği kuru-çalıştır · sıkıştırma regresyon kapısı |
 
-| Proje | Aldıklarımız | Bıraktıklarımız |
+### 🧠 İsteğe bağlı gerçek ML modelleri — `pip install "simplicio-loop[onnx]"`
+
+Dört **gerçek**, herkese açık (Apache-2.0) ONNX modeli yerel olarak çalışır — upstream'in kullandığı
+aynı modeller. Ekstra olmadan, deterministik stdlib yolu her şeyi kapsar; modeller ilk kullanımda
+indirilir.
+
+| Model | Komut | Kullanım |
 |---|---|---|
-| 🪨 [**caveman**](https://github.com/JuliusBrussee/caveman) | öz düzyazı kademeleri, tanımlayıcıları bayt-koruma, bellek kompaksiyonu, dürüst *"öz yanıtla"* baz çizgisi | dilbilgisi kelime-atma (kodu ve onayları kötüleştirir) |
-| ⚙️ [**rtk**](https://github.com/rtk-ai/rtk) | komut başına azaltma kataloğu, sinyal-kademeli tavanlar, **tee-cache**, imza-okuma, otomatik-yeniden-yazma hook'u + hariç tutma listesi | dil başına kayıtlar (runtime'a özgü) |
-| ♾️ [**ralph-loop**](https://github.com/cursor/plugins/tree/main/ralph-loop) | tek-dosya döngü durumu, tam-eşleşme söz işareti, iki-hook bölünmesi | modele-güven tamamlaması (biz onu **kanıt-kapılı** yaparız) |
-| 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | tek-mesaj paralel inceleyiciler, ayrı rubrikler, sentezde-dedup | — |
-| 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | durumu kalıcılaştıran retrospektif, böylece sonraki döngü her şeyi yeniden türetmesin | insan-öğrenimi alanının kendisi |
-| 🧭 sonuç-odaklı yürütme | son duruma yakınsa; planlı, kapsamlı, geri-alınabilir ara bozulma | — |
-| 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | tee-cache üzerinde **tersine çevrilebilir** compress-cache-retrieve (CCR); içerik-türü yönlendirme taksonomisi | eğitilmiş model + trafik proxy'si (terminal-öncelikli, runtime'dan bağımsız tasarımla çelişir) |
-| 🎭 [**Playwright**](https://github.com/microsoft/playwright) (+[mcp](https://github.com/microsoft/playwright-mcp), [python](https://github.com/microsoft/playwright-python)) | ön-yüz kanıtı için gerçek bir tarayıcı sür — `web_verify` kanıtı olarak ekran görüntüsü + iz | bağlamdaki DOM/pikseller (kanıt, bayt değil, artefakt yoludur) |
+| `kompress-v2-base` | `simplicio kompress` | semantik token budama |
+| `technique-router-onnx` | `simplicio router` | teknik yönlendirme |
+| `all-MiniLM-L6-v2-onnx` | `simplicio embed` · `rag --ml` | gömmeler + semantik RAG |
+| `siglip-image-encoder-onnx` | `simplicio image` | görüntü-sıkıştırma içerik doğrulayıcısı |
 
-> Onlar token azaltır; simplicio-loop **işi yapar** ve bunu yaparken token'ı azaltır.
+### ⚙️ Yerel Rust performans çekirdeği (isteğe bağlı)
 
----
+[`rust/`](../rust) upstream'den taşınmış + yeniden markalanmış dört crate sunar (Apache-2.0; `NOTICE`
+buna atıfta bulunur): `simplicio-core` (sıkıştırıcılar + smart-crusher), `simplicio-py` (PyO3 bağlamaları),
+`simplicio-proxy` (axum ters proxy), `simplicio-parity` (Rust↔Python parite koşum takımı). `maturin`
+ile derleyin — Python motoru onlar olmadan tam çalışır; crate'ler yalnızca yerel hız ekler.
 
-## 🧩 43 genişletme noktası
+|---
 
-İşin her adımı **adlandırılmış bir genişletme noktasında** gerçekleşir. Bir host runtime yerel
-bir yetenek sunarsa ona **bağlanır** (deterministik, token'a neredeyse sıfır maliyet); aksi halde
-LLM, standart araçlarla **yedeği** yürütür. Skill, soyutlamaya bağımlıdır, asla belirli bir
-runtime'a değil.
+## 🏛️ Tasarım sütunları (ayrıntılı)
 
-<details>
-<summary><strong>Orkestrasyon & ölçek</strong></summary>
+Orkestrasyon gücünü dört mekanizma taşır:
 
-`orient` · `normalize` · `intake` · `source_adapter` · `autoscale` · `plan`/`decide` ·
-`execute` · `issue_factory` · `claim` · `worktree` · `dependency_graph` · `durable_workflow` ·
-`work_queue` · `resource_governor` · `model_route` · `model_preflight`
-</details>
-
-<details>
-<summary><strong>Düzenleme, kalite & kanıt</strong></summary>
-
-`deterministic_edit` · `diagnostics` · `toolchain_detect` · `validate`/`smoke` ·
-`delivery_gate` · `endpoint_compare` · `web_verify` · `pr`/`evidence` · `retry` ·
-`reuse_precedent` · `trajectory` · `learn` · `status` · `capability_rank`
-</details>
-
-<details>
-<summary><strong>Token'lar, bağlam & güvenlik</strong></summary>
-
-`recall` · `compress` · `prompt_budget` · `shell_exec` · `transform_guard` · `action_gate` ·
-`security` · `human_gate` · `notify` · `checkpoint_restore` · `watcher` · `savings_ledger` ·
-`web_research`
-</details>
-
-Yedeklerle birlikte tam tablo:
-[`references/extension-points.md`](../.claude/skills/simplicio-tasks/references/extension-points.md).
+| Sütun | Odak | Yaşadığı yer |
+|---|---|---|
+| **DAG + boru hattı** | bağımlılığa göre paralellik, öğe başına aşamalı | `references/orchestration.md` (Adım 3 havuz + boru hattı) |
+| **Worktree yalıtımı** | ağacı bozmadan paralel düzenlemeler, birleştirme-kapılı | `references/orchestration.md` |
+| **Çekişmeli doğrulama** | "teslim edildi"den önce bir şüpheciler paneli | `references/quality-safety-delivery.md` · skill `simplicio-review` |
+| **Döngü bütçesi tavanı** | anti-sonsuz-döngü, çift çıkış | `references/standing-loop-247.md` · skill `simplicio-loop` |
 
 ---
 
@@ -497,17 +377,15 @@ watcher gözetimsiz çalışmayı reddeder (fail-safe).
 - **Geri-alınamaz-işlem insan kapısı** — force-push, geçmiş yeniden yazma, prod dağıtımı,
   veri/şema silme, toplu-dosya silme → dur ve sor. Headless + onaylayan yok → yıkıcı yeteneği
   kaldır.
-- **4 durumlu yürütme-öncesi karar** — optimizasyon, bir komutun risk kademesini asla
-  yükseltemez.
+- **4 durumlu yürütme-öncesi karar** — optimizasyon, bir komutun risk kademesini asla yükseltemez.
 - **Yüklemeden-önce-güven** — algıyı şekillendiren yapılandırma (kırpma profilleri, bastırma
   listeleri), bir insan onu inceleyip hash ile sabitleyene dek güvenilmezdir.
 - **Prompt-injection sertleştirme** — öğe/PR/yorum içeriği sözleşmeyi asla geçersiz kılamaz.
-- Gözetimsiz koşular için **sıkı $ acil durdurma anahtarı**; **kanıt-kapılı** tamamlama (asla
-  sahte "bitti"); **fail-open** hook'lar (ajanı bir döngüye asla hapsetmez).
+- Gözetimsiz koşular için **sıkı $ acil durdurma anahtarı**; **kanıt-kapılı** tamamlama (asla sahte
+  "bitti"); **fail-open** hook'lar (ajanı bir döngüye asla hapsetmez).
 
 ---
 
 ## 📄 Lisans
 
-MIT — bkz. [LICENSE](../LICENSE). [Simplicio](https://github.com/wesleysimplicio) ekosisteminin
-bir parçasıdır.
+MIT

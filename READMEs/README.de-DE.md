@@ -6,7 +6,8 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-die-6-skills-super-plugin"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
+  <a href="#-die-10-skills--beschleuniger"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-quelladapter"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-laufzeiten-ein-protokoll"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-die-43-erweiterungspunkte"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
   <a href="#-token-ökonomie"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
@@ -15,11 +16,12 @@
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-die-6-skills-super-plugin">6 Skills</a> ·
+  <a href="#-die-10-skills--beschleuniger">10 Skills</a> ·
+  <a href="#-quelladapter">Quelladapter</a> ·
   <a href="#-11-laufzeiten-ein-protokoll">11 Laufzeiten</a> ·
   <a href="#-die-schleife">Die Schleife</a> ·
   <a href="#-token-ökonomie">Token-Ökonomie</a> ·
-  <a href="#-auf-den-schultern-von">Danksagungen</a> ·
+  <a href="#-token-ökonomie">Capture-Engine</a> ·
   <a href="#-installation--nutzung">Installation</a>
 </p>
 
@@ -46,19 +48,20 @@
 
 ## ⚡ TL;DR
 
-**simplicio-loop** ist ein laufzeitunabhängiges **Super-Plugin** — ein einziger autonomer,
-schleifenfähiger Orchestrator plus **fünf Satelliten-Skills** — das jedes starke LLM (Claude, Codex,
-Copilot, Gemini, Cursor, lokale Modelle) in einen selbstfahrenden Worker verwandelt. Du richtest es
-auf einen Arbeitsumfang aus — *„schließe alle offenen Issues ab"*, *„arbeite die CI-Warteschlange ab"*,
-*„leere das Jira-Board"* — und es durchläuft den gesamten Lebenszyklus eigenständig:
+**simplicio-loop** ist ein laufzeitunabhängiges **Super-Plugin** — ein autonomer, schleifenfähiger
+Orchestrator (aufgerufen als **`/simplicio-tasks`**) plus **fünf Satelliten-Skills** — das jedes
+starke LLM (Claude, Codex, Copilot, Gemini, Cursor, lokale Modelle) in einen selbstfahrenden Worker
+verwandelt. Du richtest es auf einen Arbeitsumfang aus — *„schließe alle offenen Issues ab"*,
+*„arbeite die CI-Warteschlange ab"*, *„leere das Jira-Board"* — und es durchläuft den gesamten
+Lebenszyklus eigenständig:
 
 > **entdecken → verstehen → entscheiden → handeln → verifizieren → korrigieren → festhalten → wiederholen**
 
-Es entdeckt Arbeit aus jeder beliebigen Quelle, entfernt Duplikate, skaliert eine Agentenflotte
-automatisch auf deine Maschine, setzt jedes Element über eine Qualitätsschleife um, die **den Code
-ausführt (nicht nur kompiliert)**, eröffnet PRs, löst CI-/Review-Feedback auf, merged und behält
-**rund um die Uhr** neue Arbeit im Blick — alles hinter Sicherheits-Gates und einem harten
-Kostenschalter (Kill-Switch).
+Es entdeckt Arbeit aus jeder beliebigen Quelle (GitHub Issues, Jira, Azure DevOps, agentsview-Sessions
+und mehr), entfernt Duplikate, skaliert eine Agentenflotte automatisch auf deine Maschine, setzt jedes
+Element über eine Qualitätsschleife um, die **den Code ausführt (nicht nur kompiliert)**, eröffnet PRs,
+löst CI-/Review-Feedback auf, merged und behält **rund um die Uhr** neue Arbeit im Blick — alles hinter
+Sicherheits-Gates und einem harten Kostenschalter (Kill-Switch).
 
 ```text
 /simplicio-tasks termine as issues abertas
@@ -75,26 +78,47 @@ Protokoll auf 11 Laufzeiten** aus, und es tut all das mit **aggressiver, ehrlich
 
 ---
 
-## 🧠 Die 6 Skills (Super-Plugin)
+## 🧠 Die 10 Skills & Beschleuniger
 
-Der Orchestrator ist der Kern; fünf Satelliten greifen jeweils das Beste einer bekannten Technik auf
-und stellen es als wiederverwendbare Skill bereit. Jeder Satellit ist **optional** — wenn geladen,
-delegiert der Orchestrator an ihn (reichhaltiger + günstiger); wenn nicht vorhanden, deckt das Inline-
-Protokoll des Orchestrators 100 % der Arbeit ab. Dieselbe umgekehrte Abhängigkeit, eine Ebene höher.
+Der Orchestrator-Kern + fünf Satelliten + vier Beschleuniger. Jeder Satellit ist **optional** — wenn
+geladen, delegiert der Orchestrator an ihn (reichhaltiger + günstiger); wenn nicht vorhanden, deckt das
+Inline-Protokoll 100 % ab. Beschleuniger werden **automatisch erkannt** — vorhanden = genutzt, fehlend
+= LLM-Fallback.
 
-| Skill | Greift auf | Was sie tut |
-|---|---|---|
-| 🔁 **simplicio-tasks** | — | Die Orchestrator-Schleife: entdecken → umsetzen → verifizieren → mergen → schließen → rund um die Uhr beobachten. 43 Erweiterungspunkte, Dual-Path-Router, Selbstaudit-Konvergenz. |
-| ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Die gehärtete Ralph-Schleife: dasselbe Ziel in jeder Runde erneut einspeisen, damit der Agent seine eigene Arbeit sieht, und nur bei einem **nachweis-gegateten `<promise>`** oder einer `max_iterations`-Obergrenze beenden — niemals ein falsches „done". |
-| 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-first-Ausführung: Fakten mit der Shell beantworten, niemals mit dem LLM. Ausgabe-Reduktionskatalog, **tee-Cache bei Fehler**, Signaturen-only-Lesemodus, optionaler Auto-Rewrite-Hook. |
-| 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Adversariale Review: parallele Sub-Agenten auf eigenen Rubriken (Sicherheit/Korrektheit + Code-Qualität), in einer einzigen Nachricht gestartet, zu einem Urteil dedupliziert. |
-| 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Ausgabe- + Memory-Kompression: knappe Prosastufen, die Code/Pfade Byte für Byte bewahren, plus eine einmalige Memory-Verdichtung, die sich in jeder Runde auszahlt. Fail-closed `transform_guard`. |
-| 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) + continual-learning | Retrospektive: dauerhafte, deduplizierte Lektionen aus einem Lauf gewinnen und ins Memory schreiben, damit der nächste Lauf günstiger und korrekter ist. |
+| # | Fähigkeit | Greift auf | Was sie tut | Token-Auswirkung |
+|---|---|---|---|---|
+| 1 | 🔁 **simplicio-tasks** | — | Die Orchestrator-Schleife: 43 Erweiterungspunkte, Dual-Path-Router, Selbstaudit-Konvergenz | Kern |
+| 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Gehärtete Ralph-Schleife: nachweis-gegateter `<promise>`-Ausgang, `max_iterations`-Obergrenze | Schleifenantrieb |
+| 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-first-Ausführung, Ausgabe-Reduktionskatalog, tee-Cache, Signaturen-Lesemodus | L0 deterministisch |
+| 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Parallele adversariale Review auf eigenen Rubriken → dedupliziertes Urteil | Qualitäts-Gate |
+| 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Ausgabe- + Memory-Kompression, fail-closed `transform_guard` | 40–60 % weniger |
+| 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | Post-Run-Retrospektive → dauerhafte, deduplizierte Lektionen im Memory | Klüger pro Lauf |
+| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Knowledge-Graph-Orientierung: semantische Suche, geführte Touren, Abhängigkeitsgraph | **L0 null Tokens** |
+| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Session-Analytik, Kostenverfolgung, Erkennung blockierter Sessions | **L1** nur SQL |
+| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV-Cache zwischen Schleifenrunden — 40–70 % TTFT-Reduktion bei lokalen Modellen | GPU-Zeit ↓ |
+| 10 | 🗜️ **Simplicio-Capture-Engine** | `engine/simplicio_engine.py` (nativ, nur stdlib; savings-schema-kompatibel mit dem OSS-Projekt [headroom](https://github.com/headroomlabs-ai/headroom)) | Transparenter Capture-Proxy: leitet an den echten Provider weiter, misst + komprimiert deterministisch, schreibt `proxy_savings.json` | **deterministisch** |
 
-Jede ist ein normaler Skill-Ordner unter [`.claude/skills/`](../.claude/skills) — eigenständig nutzbar
-oder als Teil der Schleife.
+Jeder Skill liegt unter [`.claude/skills/`](../.claude/skills); jeder Beschleuniger hat ein Referenzdokument
+unter `.claude/skills/simplicio-tasks/references/`.
 
 ---
+
+## 📡 Quelladapter
+
+Der Orchestrator entdeckt Arbeit aus jeder Quelle über einsteckbare Adapter. Jeder bietet sechs Verben:
+`list_ready`, `get_details`, `claim`, `update_status`, `attach_evidence`, `close`.
+
+| Quelle | Adapter | Zweck |
+|---|---|---|
+| GitHub Issues/PRs | `gh` CLI (nativ) | Primäre Arbeitselement-Quelle |
+| Jira / Asana / ClickUp / Linear / Notion | Host-Connector | Board-/Projektverwaltung |
+| Trello / Azure DevOps | `az boards`-Adapter | Azure-Arbeitsverfolgung |
+| **agentsview-Sessions** | `scripts/agentsview_adapter.py` | Wiederherstellung blockierter Sessions + Kostentransparenz |
+| Lokale Dateien / CI-Warteschlange | Dateisystem / CI-API | Interne Arbeitsverfolgung |
+
+Siehe das Referenzdokument jedes Adapters unter `.claude/skills/simplicio-tasks/references/`.
+
+|---
 
 ## 🌐 11 Laufzeiten, ein Protokoll
 
@@ -121,30 +145,25 @@ Das Versprechen: **dasselbe Protokoll, dieselben Gates, dieselbe Sicherheit auf 
 Geschwindigkeit unterscheidet sich.** `orient_clamp.py` (Token-Ökonomie) funktioniert auf jeder
 Laufzeit ohne jegliche Verdrahtung. Siehe [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
-<p align="center">
-  <img src="../assets/simplicio-loop-overview.png" alt="simplicio-loop - full system overview" width="760" />
-</p>
-
 ---
 
 ## 🗺️ Der vollständige Ablauf — von der Anforderung zur Auslieferung
 
 Jede Ebene, auf die der Orchestrator einwirkt, der Reihe nach — vom Lesen der Anforderung (Issues, Tasks,
 Zuweisungen) bis zur Auslieferung gemergter, belegter Arbeit, dann das Schleifen rund um die Uhr für mehr.
-(Das Diagramm wird auf GitHub nativ gerendert.)
 
 ```mermaid
 flowchart TD
   subgraph SRC["1 · Demand sources (any adapter)"]
     direction LR
     S1["GitHub Issues / PRs / CI"]
-    S2["Jira · Azure DevOps · Linear · ClickUp · Notion"]
-    S3["Assigns · TODO/FIXME · CVE · local files"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion · agentsview · Understand Anything (orient)"]
+    S3["Assigns · TODO/FIXME · CVE · local files · LMCache (inference accelerator)"]
   end
   SRC --> PF
   subgraph PF["2 · Pre-flight gates"]
     direction LR
-    P1["cost kill-switch budget"]
+    P1["cost kill-switch budget · agentsview cost check"]
     P2["source auth + scopes"]
     P3["arm 24/7 watcher"]
   end
@@ -161,7 +180,7 @@ flowchart TD
     direction LR
     I1["body + ALL comments"]
     I2["extract acceptance criteria"]
-    I3["orient code · signatures-only reads"]
+    I3["orient code · signatures-only reads or Understand Anything knowledge graph"]
     I4["plan + AC checklist + complexity"]
   end
   INTK --> RT{"5 · Route"}
@@ -203,257 +222,116 @@ flowchart TD
     F3["branch behind main -> additive rebase"]
   end
   FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
-  WATCH["11 · 24/7 watcher · simplicio-loop<br/>evidence-gated promise · max-iterations cap · cost kill-switch"]
+  WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
   WATCH -. "re-feed the goal" .-> DISC
 ```
 
-**Ebene für Ebene — was handelt und welche Ressource es nutzt:**
-
-| # | Ebene | Was passiert | Skill / Erweiterungspunkt · entlehnt von |
-|---|---|---|---|
-| 1 | **Demand sources** | Die Arbeit aus JEDER Quelle lesen — Issues, PRs, CI, Boards, Zuweisungen, TODO, CVEs | `source_adapter` · `intake` |
-| 2 | **Pre-flight** | Den `$`-Kill-Switch scharfschalten, Quellen-Auth prüfen, den 24/7-Watcher scharfschalten | `watcher` · Kostengovernance |
-| 3 | **Discover + normalize** | Nur nach Metadaten auflisten, normalisieren, deduplizieren, den Abhängigkeits-DAG bauen | `normalize` · `dependency_graph` |
-| 4 | **Deep intake** | Vollständigen Body + Kommentare lesen, ACs extrahieren, den Code orientieren, einen Plan schreiben | `orient` · signatures-read · **rtk** |
-| 5 | **Route** | Fast-path (trivial) vs. Heavy-path; die Flotte auf die Maschine autoskalieren | `autoscale` · Dual-Path-Router |
-| 6 | **Worker pool** | Kontinuierlicher, konfliktbewusster Fan-out; mechanische Edits; Qualitätsschleife pro Element | `execute` · `worktree` · `deterministic_edit` |
-| 7 | **Quality gates** | AC-Gate (echte DoD), Run-Verifikation (UI → **Playwright** `web_verify`), adversariale Review | `validate` · **`simplicio-review`** (thermos) |
-| 8 | **Safety gates** | Secret-Scan, Human-Gate für irreversible Operationen, 4-Zustands-Urteil, Attestierung | `action_gate` · `human_gate` · `security` |
-| 9 | **Deliver** | Commit, Push, Draft-PR, in-source mit Belegen schließen; Realität verifizieren | `pr` / `evidence` · `delivery_gate` |
-| 10 | **Feedback loop** | CI → Fix, Review-Kommentare → anpassen, Branch-behind → additiver Rebase | `diagnostics` · `retry` |
-| 11 | **24/7 watcher** | Das Ziel erneut einspeisen bis zu einem nachweis-gegateten Versprechen; im Leerlauf, sobald geleert, bei allem aufwachen | **`simplicio-loop`** (Ralph) · `watcher` |
-| ↻ | **Querschnitt** | Token-Ökonomie (Terminal-first · Katalog · **tee+CCR** · Prosa-/Memory-Kompression) · Modell-Routing L0→L4 · Lernen | **`simplicio-orient`** (rtk+caveman) · **`simplicio-compress`** (caveman) · **`simplicio-learn`** (teaching) · **headroom** CCR |
-
-Jede Ebene hat einen Immer-funktioniert-LLM-Fallback und bindet einen nativen Befehl, wenn der Host einen
-bereitstellt — dasselbe Protokoll auf allen 11 Laufzeiten, nur die Geschwindigkeit unterscheidet sich.
-
----
-
-## 🏛️ Designsäulen (im Detail)
-
-Vier Mechanismen tragen die Orchestrierungskraft. Jeder ist bereits in die Skill verdrahtet — hier steht
-genau, **wo er lebt** und wie er funktioniert, im Detail gezeichnet.
-
-| Säule | Fokus | Lebt in | Labels |
-|---|---|---|---|
-| **DAG + Pipeline** | Parallelität nach Abhängigkeit, gestaffelt pro Element | `dependency_graph` · [`references/orchestration.md`](../.claude/skills/simplicio-tasks/references/orchestration.md) (Schritt 3 Pool + 3c Pipeline) | `enhancement` `orchestrator` `performance` `runtime` |
-| **Worktree-Isolation** | parallele Edits ohne den Baum zu beschädigen, merge-gegatet | `worktree` · orchestration.md „Conflict-AWARE isolation" + Merge-Gate | `enhancement` `orchestrator` `runtime` |
-| **Adversariale Verifikation** | ein Gremium von Skeptikern vor „delivered" | [`quality-safety-delivery.md`](../.claude/skills/simplicio-tasks/references/quality-safety-delivery.md) Schritt 4c · Skill `simplicio-review` | `enhancement` `quality` `runtime` |
-| **Loop-Budget-Obergrenze** | Anti-Endlosschleife, dualer Ausgang | [`standing-loop-247.md`](../.claude/skills/simplicio-tasks/references/standing-loop-247.md) §4 · Skill `simplicio-loop` · `hooks/loop_stop.py` | `enhancement` `coding-loop` `runtime` |
-
-### 1 · DAG + Pipeline — Parallelität nach Abhängigkeit, gestaffelt
-
-```mermaid
-flowchart TD
-  subgraph G1["Dependency DAG · resumable · deps gate order"]
-    direction TB
-    a["item A · no deps"]
-    b["item B · no deps"]
-    c["item C · needs A and B"]
-    d["item D · needs C"]
-    a --> c
-    b --> c
-    c --> d
-  end
-  a --> PA
-  b --> PB
-  subgraph G2["Per-item pipeline · no global barrier"]
-    direction LR
-    PA["A implement"] --> PA2["review"] --> PA3["merge"]
-    PB["B implement"] --> PB2["review"] --> PB3["merge"]
-  end
-  PA3 -. "A merged unblocks C" .-> c
-```
-
-Unabhängige Elemente (A, B) fächern sofort auf; abhängige (C, D) warten auf den DAG. Jedes Element
-durchläuft eigenständig implement → review → merge, sodass A mergt, während B noch gebaut wird —
-**gestaffelt, niemals eine globale Barriere**. Wiederholungsläufe überspringen erledigte Knoten
-(resumable).
-
-### 2 · Worktree-Isolation — parallele Edits, merge-gegatet
-
-```mermaid
-flowchart TD
-  Q["items to run in parallel"] --> OV{"touch the same files?"}
-  OV -->|"no · disjoint files"| SH["shared checkout · own branch each · commit sequentially"]
-  OV -->|"yes · overlap"| WT["dedicated git worktree · SERIALIZED"]
-  SH --> MG
-  WT --> MG
-  MG["merge gate · full suite runs ONCE on the composed result"] --> OK{"green?"}
-  OK -->|"yes"| MERGED["merge + close with evidence"]
-  OK -->|"no"| FIX["reject · fix · never corrupt the tree"]
-```
-
-Disjunkte Elemente teilen sich einen Checkout (günstig, kein N×-Neuverlinken); nur überlappende Elemente
-zahlen für einen dedizierten Worktree und werden serialisiert. Die teure vollständige Suite läuft
-**einmal** auf dem gemergten Ergebnis — ein stärkeres End-Gate als N partielle Prüfungen.
-
-### 3 · Adversariale Verifikation — ein Gremium von Skeptikern vor der Auslieferung
-
-```mermaid
-flowchart TD
-  IMPL["implementation · diff · run evidence · ACs"] --> PANEL
-  subgraph PANEL["Panel of skeptics (MEDIUM+) · each prompted to REFUTE"]
-    direction LR
-    V1["reviewer 1 · security / correctness"]
-    V2["reviewer 2 · code quality"]
-    V3["reviewer 3 · does-it-reproduce · web_verify"]
-  end
-  PANEL --> VOTE{"majority refute an AC?"}
-  VOTE -->|"yes"| BACK["back to fix"]
-  VOTE -->|"no"| SHIP["pass · deliver"]
-```
-
-Für MEDIUM+-Elemente versuchen 2–3 unabhängige Reviewer jeweils zu WIDERLEGEN (im Zweifel
-Standardannahme „nicht erledigt"). Eine Mehrheits-Widerlegung bei irgendeinem Akzeptanzkriterium schickt
-es zurück. TRIVIAL/SMALL behalten eine einzelne Selbstüberprüfung. (Delegiert an `simplicio-review`;
-Front-end-Diffs erfordern einen `web_verify`-Eintrag.)
-
-### 4 · Loop-Budget-Obergrenze — Anti-Endlosschleife, dualer Ausgang
-
-```mermaid
-flowchart TD
-  TURN["end of turn · stop hook"] --> P{"promise emitted AND evidence in-turn?"}
-  P -->|"yes"| EXIT1["EXIT success · close with evidence"]
-  P -->|"no"| CAP{"iteration over cap, OR budget halted, OR STOP signal?"}
-  CAP -->|"yes"| EXIT2["EXIT safety · stop, never a false done"]
-  CAP -->|"no"| REFEED["re-feed the goal · next iteration"]
-  REFEED --> TURN
-```
-
-Die Schleife hat **zwei unabhängige Ausgänge**: einen *Erfolgs*-Ausgang (ein nachweis-gegatetes
-`<promise>`, das wirklich wahr ist) und einen *Sicherheits*-Ausgang (`max_iterations`-Obergrenze, der
-`$`-Budget-Kill-Switch oder ein STOP-Signal). Sie beendet sich niemals bei einem selbstberichteten
-„done" — und läuft niemals ewig. Das ist `hooks/loop_stop.py` (fail-open: jeder Hook-Fehler → Stopp
-erlauben).
-
 ---
 
 ## 🔁 Die Schleife
 
-Der Antrieb unter dem Orchestrator ist eine **gehärtete Ralph-Schleife** (`simplicio-loop`):
+Die **nachweis-gegatete Schleife** ist der Kernmechanismus. Sie speist dasselbe Ziel in jeder Runde
+erneut ein, sodass der Agent seine eigene frühere Arbeit sieht. Der Ausgang erfolgt NUR über:
 
-1. Das Ziel wird in eine einzige, menschenlesbare Zustandsdatei geschrieben
-   (`.orchestrator/loop/scratchpad.md`) — trivial inspizierbar, editierbar, abbrechbar.
-2. Nach jeder Runde speist ein **Stop-Hook** dasselbe Ziel erneut ein, sodass der Agent seine eigenen
-   früheren Edits sieht (über git + den Arbeitsbaum) und konvergiert. Die Tokenkosten pro Zyklus
-   bleiben konstant — kein Context-Stuffing.
-3. Sie beendet sich **nur dann**, wenn ein typisierter Sentinel `<promise>EXAKTER TEXT</promise>`
-   ausgegeben wird **und** durch konkrete Belege innerhalb der Runde gestützt ist (ein bestandenes
-   Gate, ein Merged-PR-Link, AC-Belege), oder wenn eine harte `max_iterations`-Obergrenze / der
-   Kosten-Kill-Switch auslöst.
+1. **Nachweis-gegateter `<promise>`** — die Runde, die das Versprechen ausgibt, MUSS auch konkrete
+   Belege tragen (bestandener Test, gemergter PR, erneute Abfrage des geschlossenen Elements). Ein
+   Versprechen ohne Belege = ignoriert.
+2. **`max_iterations`-Obergrenze** — harter Sicherheitsanschlag
+3. **Budget-Kill-Switch** — `daily_usd_ceiling` hält die Schleife an, wenn ausgegeben
+4. **STOP-Signal** — `.orchestrator/STOP` oder Kanalbefehl
 
-> **Niemals ein falsches Versprechen.** Ein `<promise>` ohne Belege wird ignoriert und die Schleife
-> läuft weiter. Das verdrahtet die Schleife direkt mit der harten Regel des Repos: *niemals Arbeit
-> ohne einen Merged-PR oder konkrete Belege schließen.*
-
-Auf Laufzeiten ohne Hooks **taktet sich die Schleife selbst** über den Host-Scheduler (cron / `/loop`
-/ den Task-Runner der Laufzeit) — dieselben Beendigungsbedingungen. Die Hooks sind plattformübergreifendes
-Python und **fail-open**: ein Hook, der einen Fehler wirft, lässt den Agenten immer stoppen. Die echten
-Wächter sind die Obergrenze und das Budget, niemals Hook-Cleverness.
+Zwischen den Runden cached LMCache (sofern verfügbar) den KV-Zustand, sodass das erneute Einspeisen
+nahezu null Prefill kostet.
 
 ---
 
 ## 📊 Token-Ökonomie
 
-Der günstigste Token ist der nicht ausgegebene. `simplicio-orient` + `simplicio-compress` falten das
-Beste aus **rtk** (die Befehle komprimieren) und **caveman** (die Konversation komprimieren) in das
-Sicherheitsrückgrat:
+| Technik | Einsparung |
+|---|---|
+| `deterministic_edit` (L0) | 100 % der Edit-Tokens (Datei mechanisch geschrieben, niemals vom LLM) |
+| Terminal-first-Ausführung | Fakten aus der Shell, nicht aus LLM-Halluzination |
+| Ausgabe-Reduktionskatalog | Obergrenzen pro Befehlstyp (`CAP_ERRORS=20`, `CAP_WARNINGS=10`, `CAP_LIST=20`) — `orient_clamp.py` |
+| Tee+CCR-Cache bei Fehler | Niemals einen fehlgeschlagenen Befehl erneut ausführen — die gecachte Ausgabe lesen |
+| Signaturen-only-Lesemodus | `simplicio signatures <file>` — 870-Zeilen-Datei → 65 Zeilen (**93 % gespart**), Bodies entfernt |
+| `simplicio-compress` | Knappe Prosa + einmalige Memory-Verdichtung |
+| `orient_clamp.py` | Klemmung + tee bei jedem Shell-Befehl, ohne Verdrahtung |
+| Nativer Response-Cache | wiederholte deterministische (temp=0) Anfrage → aus dem Cache bedient, überspringt den LLM-Aufruf (**100 % bei Treffer**) — `simplicio cache`, standardmäßig aktiv (`SIMPLICIO_CACHE=0` zum Deaktivieren) |
+| Simplicio-Capture-Proxy + MCP | 60–95 % weniger Tokens bei Tool-Ausgaben über einen transparenten Kompressions-Daemon |
 
-- **Terminal-first-Ausführung** — die Shell kennt Fakten exakt; das LLM approximiert sie teuer. Eine
-  plattformübergreifende Substitutionstabelle (Windows/macOS/Linux) beantwortet über 30 Fakten via
-  `git`/`gh`/`rg`/`python3`. **Niemals einen Befehl simulieren — ihn ausführen.**
-- **Ausgabe-Reduktionskatalog** (Datentabelle) — Rezept pro Befehl + erwartete Einsparungs-% +
-  `skip-if-structured`-Schutz. Ein rohes `cargo check` kostet ~2000 Tokens zum Lesen; geklemmt ~80.
-- **tee-Cache + umkehrbares Retrieve** *(rtk + headroom CCR)* — aggressive Kürzung ist nur dann sicher,
-  wenn sie wiederherstellbar ist: bei einem Fehler wird die vollständige Ausgabe nach
-  `.orchestrator/tee/…log` geschrieben und nur der Pfad angezeigt; der Agent stellt den Kontext mit
-  `retrieve <path> [--lines|--grep]` wieder her, **ohne den Befehl erneut auszuführen**. Die Klemmung
-  wird zu einer umkehrbaren Entscheidung, nicht zu einer verlustbehafteten.
-- **Signaturen-only-Lesemodus** *(aus rtk)* — die API-Oberfläche einer Datei lesen (Deklarationen,
-  Bodies ausgelassen): eine 600-Zeilen-Datei wird bei der Aufnahme zu ~40 Zeilen.
-- **Signalgestaffelte Obergrenzen + Success-Collapse + Dedup** — Fehler über Rauschen halten; einen
-  sauberen Lauf auf eine Zeile kollabieren; wiederholte Zeilen auf `line xN` kollabieren — immer
-  `unless errors present`.
-- **Prosastufen + Memory-Verdichtung** *(aus caveman)* — knappe Ausgabe, die Code/Pfade/URLs **Byte
-  für Byte** bewahrt (`transform_guard` schlägt bei jedem verlorenen Token fail-closed an), plus eine
-  einmalige Verdichtung des bestehenden Memorys, die sich über jede künftige Runde amortisiert.
-- **Ehrliche Baseline** — Einsparungen werden gegen einen realistischen *„answer concisely"*-Kontrollarm
-  gemessen (nicht gegen einen weitschweifigen Strohmann), zählen nur **Ausgabe**-Tokens (nicht
-  Reasoning) und werden **nur bei einem verifiziert-korrekten Ergebnis** gutgeschrieben. Kompression,
-  die ihr Qualitäts-Gate nicht besteht, verdient null.
+Einsparungen zählen nur bei einem verifiziert-korrekten Ergebnis. Baseline = der günstigste sinnvolle
+nicht-orchestrierte Weg zum selben Resultat. Siehe `references/token-economy.md`.
 
-Jede Nachricht endet mit einer ehrlichen Zeile:
+### 📈 Simplicio Token Monitor
 
-```
-simplicio-tasks: ~<spent> tokens · baseline ~<control-arm> · saved ~<saved> (<pct>%)
-```
+Eine Live-Ansicht der Einsparungen, immer aktiv:
 
-Probier es jetzt aus, ohne Verdrahtung:
+- **Web-Dashboard** — `http://127.0.0.1:9090` — Echtzeit-Token-Chart, Einsparungs-Anzeige, die
+  LLMs/Laufzeiten und **141/144 Provider (98 %)**, die wir abfangen, plus ein Live-Proxy-Log.
+- **Menüleisten-/Tray-Widget** — live eingesparte Tokens im System-Tray (macOS rumps · Windows/Linux pystray).
+- **Ein Modul** — `scripts/simplicio-economy.sh {status|up|wire}` startet den Capture-Proxy + Monitor +
+  Tray + den deterministischen `simplicio-dev-cli`-Operator und meldet den gesamten Stack.
 
-```bash
-python3 hooks/orient_clamp.py -- cargo test      # reduced output + tee log on failure
-python3 hooks/orient_clamp.py --json -- git diff  # machine summary
-```
+Die Installation registriert alle drei als Autostart-Dienste (macOS launchd · Linux systemd · Windows Startup)
+über `scripts/setup_simplicio.sh` oder das plattformübergreifende `python3 scripts/install_services.py install`.
+Nach der Installation laufen Monitor + Capture **ohne die Schleife aufzurufen** — siehe `references/token-capture.md`.
 
----
+### 🛠️ Die Capture-Engine — ein natives Modul, jeder Befehl
 
-## 🏗️ Auf den Schultern von
+[`engine/simplicio_engine.py`](../engine/simplicio_engine.py) ist die native Simplicio-Capture-Engine
+(nur stdlib, fail-open) — eine **vollständige Neuimplementierung der Upstream-Oberfläche von
+[headroom](https://github.com/headroomlabs-ai/headroom) ohne externe Abhängigkeit**. Führe jeden Befehl
+über den [`scripts/simplicio-engine`](../scripts/simplicio-engine)-Wrapper aus (z. B. `simplicio-engine doctor`):
 
-simplicio-loop wurde **nach gründlichem Studium** der besten Arbeit zu Schleifen + Token-Ökonomie auf
-GitHub gebaut und faltet jede davon in eine fokussierte Skill — die Disziplin behaltend, die Gimmicks
-weglassend.
+| Befehl | Was er tut |
+|---|---|
+| `proxy` | der transparente Capture-Proxy — leitet jedes Modell an seinen **echten** Provider, komprimiert + misst + cached (kein Modellwechsel) |
+| `doctor` | Proxy-Erreichbarkeit + Lebenszeit-Einsparungen |
+| `cache` | nativer Response-Cache (`stats`/`clear`) — eine wiederholte deterministische Anfrage wird aus dem Cache bedient und überspringt den LLM-Aufruf |
+| `signatures` | Signaturen-only-Ansicht einer Quelldatei (Bodies entfernt, ~93 % weniger Tokens zum Lesen von Code) |
+| `semantic` | umkehrbare extraktive (semantic-lite) Kompression |
+| `kompress` | **ONNX** semantisches Token-Pruning über das echte `kompress-v2-base`-Modell |
+| `detect` | Content-Type-Erkennung + intelligentes Routing pro Block |
+| `rag` | TF-IDF (oder `--ml`-Embedding) Retrieval über den CCR-Memory-Store |
+| `memory` | CCR-Compress-Cache-Retrieve-Store (`remember`/`recall`/`forget`/`list`/`stats`) |
+| `mcp` | nativer stdio-MCP-Server (compress / retrieve / stats Tools) |
+| `init` / `wrap` | Simplicio in einen Client registrieren (Claude / Codex / Copilot / OpenClaw) · einen Client mit Capture-Routing ausführen |
+| `report` / `audit` / `capture` / `evals` | Einsparungsbericht · einen Baum auf Kompressionspotenzial prüfen · eine Anfrage als Trockenlauf · Kompressions-Regressions-Gate |
 
-| Projekt | Was wir übernommen haben | Was wir weggelassen haben |
+### 🧠 Optionale echte ML-Modelle — `pip install "simplicio-loop[onnx]"`
+
+Vier **echte**, öffentliche (Apache-2.0) ONNX-Modelle laufen nativ — dieselben Modelle, die der
+Upstream verwendet. Ohne das Extra deckt der deterministische stdlib-Pfad alles ab; Modelle werden bei
+der ersten Nutzung heruntergeladen.
+
+| Modell | Befehl | Verwendung |
 |---|---|---|
-| 🪨 [**caveman**](https://github.com/JuliusBrussee/caveman) | knappe Prosastufen, Byte-bewahrende Identifier, Memory-Verdichtung, ehrliche *„answer concisely"*-Baseline | grammatikalisches Wort-Weglassen (verschlechtert Code & Bestätigungen) |
-| ⚙️ [**rtk**](https://github.com/rtk-ai/rtk) | Reduktionskatalog pro Befehl, signalgestaffelte Obergrenzen, **tee-Cache**, Signaturen-Lesemodus, Auto-Rewrite-Hook + Ausschlussliste | Registries pro Sprache (laufzeitspezifisch) |
-| ♾️ [**ralph-loop**](https://github.com/cursor/plugins/tree/main/ralph-loop) | Einzeldatei-Schleifenzustand, Exact-Match-Promise-Sentinel, Zwei-Hook-Aufteilung | Trust-the-Model-Abschluss (wir machen ihn **nachweis-gegatet**) |
-| 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | Parallele Reviewer in einer einzigen Nachricht, getrennte Rubriken, Dedup bei der Synthese | — |
-| 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | Retrospektive, die den Zustand persistiert, damit der nächste Zyklus nichts neu herleiten muss | die Human-Learning-Domäne selbst |
-| 🧭 ergebnisorientierte Ausführung | auf den Endzustand konvergieren; geplante, abgegrenzte, umkehrbare Zwischenbrüche | — |
-| 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | **umkehrbares** Compress-Cache-Retrieve (CCR) über dem tee-Cache; Taxonomie zum Content-Type-Routing | das trainierte Modell + Traffic-Proxy (widersprechen dem Terminal-first-, laufzeitunabhängigen Design) |
-| 🎭 [**Playwright**](https://github.com/microsoft/playwright) (+[mcp](https://github.com/microsoft/playwright-mcp), [python](https://github.com/microsoft/playwright-python)) | einen echten Browser für Frontend-Nachweise steuern — Screenshot + Trace als `web_verify`-Beleg | DOM/Pixel im Kontext (der Beleg ist der Artefaktpfad, nicht die Bytes) |
+| `kompress-v2-base` | `simplicio kompress` | semantisches Token-Pruning |
+| `technique-router-onnx` | `simplicio router` | Technik-Routing |
+| `all-MiniLM-L6-v2-onnx` | `simplicio embed` · `rag --ml` | Embeddings + semantisches RAG |
+| `siglip-image-encoder-onnx` | `simplicio image` | Content-Verifizierer für Bildkompression |
 
-> Sie reduzieren Tokens; simplicio-loop **erledigt die Arbeit** und reduziert dabei Tokens.
+### ⚙️ Nativer Rust-Performance-Kern (optional)
 
----
+[`rust/`](../rust) liefert vier Crates, portiert + umbenannt aus dem Upstream (Apache-2.0; `NOTICE` würdigt es):
+`simplicio-core` (Kompressoren + Smart-Crusher), `simplicio-py` (PyO3-Bindings), `simplicio-proxy`
+(axum Reverse-Proxy), `simplicio-parity` (Rust↔Python-Paritäts-Harness). Mit `maturin` bauen — die Python-
+Engine funktioniert vollständig ohne sie; die Crates fügen nur native Geschwindigkeit hinzu.
 
-## 🧩 Die 43 Erweiterungspunkte
+|---
 
-Jeder Arbeitsschritt findet an einem **benannten Erweiterungspunkt** statt. Wenn eine Host-Laufzeit
-eine native Fähigkeit bereitstellt, **bindet** sie sich daran (deterministisch, nahezu tokenfrei);
-andernfalls führt das LLM den **Fallback** mit Standardwerkzeugen aus. Die Skill hängt von der
-Abstraktion ab, niemals von einer Laufzeit.
+## 🏛️ Designsäulen (im Detail)
 
-<details>
-<summary><strong>Orchestrierung & Skalierung</strong></summary>
+Vier Mechanismen tragen die Orchestrierungskraft:
 
-`orient` · `normalize` · `intake` · `source_adapter` · `autoscale` · `plan`/`decide` ·
-`execute` · `issue_factory` · `claim` · `worktree` · `dependency_graph` · `durable_workflow` ·
-`work_queue` · `resource_governor` · `model_route` · `model_preflight`
-</details>
-
-<details>
-<summary><strong>Bearbeitung, Qualität & Nachweis</strong></summary>
-
-`deterministic_edit` · `diagnostics` · `toolchain_detect` · `validate`/`smoke` ·
-`delivery_gate` · `endpoint_compare` · `web_verify` · `pr`/`evidence` · `retry` ·
-`reuse_precedent` · `trajectory` · `learn` · `status` · `capability_rank`
-</details>
-
-<details>
-<summary><strong>Tokens, Kontext & Sicherheit</strong></summary>
-
-`recall` · `compress` · `prompt_budget` · `shell_exec` · `transform_guard` · `action_gate` ·
-`security` · `human_gate` · `notify` · `checkpoint_restore` · `watcher` · `savings_ledger` ·
-`web_research`
-</details>
-
-Vollständige Tabelle mit Fallbacks:
-[`references/extension-points.md`](../.claude/skills/simplicio-tasks/references/extension-points.md).
+| Säule | Fokus | Lebt in |
+|---|---|---|
+| **DAG + Pipeline** | Parallelität nach Abhängigkeit, gestaffelt pro Element | `references/orchestration.md` (Schritt 3 Pool + Pipeline) |
+| **Worktree-Isolation** | parallele Edits ohne den Baum zu beschädigen, merge-gegatet | `references/orchestration.md` |
+| **Adversariale Verifikation** | ein Gremium von Skeptikern vor „delivered" | `references/quality-safety-delivery.md` · Skill `simplicio-review` |
+| **Loop-Budget-Obergrenze** | Anti-Endlosschleife, dualer Ausgang | `references/standing-loop-247.md` · Skill `simplicio-loop` |
 
 ---
 
@@ -511,4 +389,4 @@ persistent ist, und halte das Human-Gate für irreversible Operationen + den Sec
 
 ## 📄 Lizenz
 
-MIT — siehe [LICENSE](../LICENSE). Teil des [Simplicio](https://github.com/wesleysimplicio)-Ökosystems.
+MIT

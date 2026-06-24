@@ -6,21 +6,23 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-6개의-스킬슈퍼-플러그인"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
-  <a href="#-11개의-런타임-하나의-프로토콜"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-43개의-확장-지점"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
-  <a href="#-토큰-경제"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
-  <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
+  <a href="#-the-10-skills--accelerators"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
+  <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
+  <a href="#-the-43-extension-points"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
+  <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">요약</a> ·
-  <a href="#-6개의-스킬슈퍼-플러그인">6개의 스킬</a> ·
-  <a href="#-11개의-런타임-하나의-프로토콜">11개의 런타임</a> ·
-  <a href="#-루프">루프</a> ·
-  <a href="#-토큰-경제">토큰 경제</a> ·
-  <a href="#-거인의-어깨-위에서">크레딧</a> ·
-  <a href="#-설치--사용">설치</a>
+  <a href="#-the-10-skills--accelerators">10개의 스킬</a> ·
+  <a href="#-source-adapters">소스 어댑터</a> ·
+  <a href="#-11-runtimes-one-protocol">11개의 런타임</a> ·
+  <a href="#-the-loop">루프</a> ·
+  <a href="#-token-economy">토큰 경제</a> ·
+  <a href="#-token-economy">캡처 엔진</a> ·
+  <a href="#-install--use">설치</a>
 </p>
 
 <p align="center">
@@ -47,17 +49,18 @@
 ## ⚡ 요약
 
 **simplicio-loop**는 런타임에 종속되지 않는 **슈퍼 플러그인**입니다 — 자율 반복 루프
-오케스트레이터 하나에 **다섯 개의 위성 스킬**이 더해져, 강력한 LLM(Claude, Codex, Copilot,
-Gemini, Cursor, 로컬 모델)을 스스로 굴러가는 워커로 바꿔 줍니다. 처리할 작업 더미 —
-*"열린 이슈를 전부 끝내라"*, *"CI 큐를 비워라"*, *"Jira 보드를 비워라"* — 를 가리키기만 하면,
-전체 생애주기를 스스로 실행합니다.
+오케스트레이터 하나(**`/simplicio-tasks`**로 호출)에 **다섯 개의 위성 스킬**이 더해져, 강력한
+LLM(Claude, Codex, Copilot, Gemini, Cursor, 로컬 모델)을 스스로 굴러가는 워커로 바꿔 줍니다.
+처리할 작업 더미 — *"열린 이슈를 전부 끝내라"*, *"CI 큐를 비워라"*, *"Jira 보드를 비워라"* — 를
+가리키기만 하면, 전체 생애주기를 스스로 실행합니다.
 
 > **발견 → 이해 → 결정 → 실행 → 검증 → 수정 → 기록 → 반복**
 
-어떤 소스에서든 작업을 발견하고, 중복을 제거하며, 머신에 맞춰 에이전트 함대를 자동으로
-확장하고, **코드를 단지 컴파일하는 게 아니라 실제로 실행하는** 품질 루프를 통해 각 항목을
-구현하며, PR을 열고, CI/리뷰 피드백을 해결하고, 병합한 뒤, 새 작업을 찾아 **24시간 연중무휴**로
-계속 감시합니다 — 이 모든 것이 안전 게이트와 강력한 비용 킬 스위치의 통제 아래에서 이뤄집니다.
+어떤 소스(GitHub Issues, Jira, Azure DevOps, agentsview 세션 등)에서든 작업을 발견하고, 중복을
+제거하며, 머신에 맞춰 에이전트 함대를 자동으로 확장하고, **코드를 단지 컴파일하는 게 아니라 실제로
+실행하는** 품질 루프를 통해 각 항목을 구현하며, PR을 열고, CI/리뷰 피드백을 해결하고, 병합한 뒤,
+새 작업을 찾아 **24시간 연중무휴**로 계속 감시합니다 — 이 모든 것이 안전 게이트와 강력한 비용 킬
+스위치의 통제 아래에서 이뤄집니다.
 
 ```text
 /simplicio-tasks termine as issues abertas
@@ -75,26 +78,47 @@ Gemini, Cursor, 로컬 모델)을 스스로 굴러가는 워커로 바꿔 줍니
 
 ---
 
-## 🧠 6개의 스킬(슈퍼 플러그인)
+## 🧠 10개의 스킬 & 가속기
 
-오케스트레이터가 핵심이고, 다섯 개의 위성은 각각 잘 알려진 기법의 정수를 흡수해 재사용 가능한
-스킬로 노출합니다. 각 위성은 **선택 사항**입니다 — 로드되면 오케스트레이터가 거기에
-위임하고(더 풍부하고 더 저렴), 없으면 오케스트레이터의 인라인 프로토콜이 작업의 100%를
-커버합니다. 같은 역전된 의존성을, 한 단계 위로 끌어올린 것이죠.
+오케스트레이터 코어 + 다섯 개의 위성 + 네 개의 가속기. 각 위성은 **선택 사항**입니다 — 로드되면
+오케스트레이터가 거기에 위임하고(더 풍부하고 더 저렴), 없으면 인라인 프로토콜이 100%를
+커버합니다. 가속기는 **자동 감지**됩니다 — 있으면 사용하고, 없으면 LLM 폴백.
 
-| 스킬 | 흡수한 것 | 하는 일 |
-|---|---|---|
-| 🔁 **simplicio-tasks** | — | 오케스트레이터 루프: 발견 → 구현 → 검증 → 병합 → 종료 → 24/7 감시. 43개의 확장 지점, 이중 경로 라우터, 자가 감사 수렴. |
-| ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | 강화된 Ralph 루프: 매 턴 같은 목표를 다시 투입해 에이전트가 자신의 작업을 보게 하고, **증거 게이트를 통과한 `<promise>`** 또는 `max_iterations` 상한일 때만 종료합니다 — 거짓 "완료"는 결코 내지 않습니다. |
-| 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | 터미널 우선 실행: 사실은 LLM이 아니라 셸로 답합니다. 출력 축소 카탈로그, **실패 시 tee-cache**, 시그니처 전용 읽기, 선택적 자동 재작성 훅. |
-| 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | 적대적 리뷰: 서로 다른 평가 기준(보안/정확성 + 코드 품질)을 가진 병렬 서브에이전트를 하나의 메시지로 띄우고, 하나의 판정으로 합칩니다. |
-| 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | 출력 + 메모리 압축: 코드/경로를 바이트 단위로 보존하는 간결한 산문 등급과, 매 턴 본전을 뽑는 일회성 메모리 컴팩션. 페일 클로즈 `transform_guard`. |
-| 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) + continual-learning | 회고: 한 번의 실행에서 내구성 있고 중복 제거된 교훈을 캐내 메모리에 기록함으로써, 다음 실행이 더 저렴하고 더 정확해지게 합니다. |
+| # | 기능 | 흡수한 것 | 하는 일 | 토큰 영향 |
+|---|---|---|---|---|
+| 1 | 🔁 **simplicio-tasks** | — | 오케스트레이터 루프: 43개의 확장 지점, 이중 경로 라우터, 자가 감사 수렴 | 코어 |
+| 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | 강화된 Ralph 루프: 증거 게이트를 통과한 `<promise>` 종료, max_iterations 상한 | 루프 구동 |
+| 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | 터미널 우선 실행, 출력 축소 카탈로그, tee-cache, 시그니처 읽기 | L0 결정론적 |
+| 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | 서로 다른 평가 기준의 병렬 적대적 리뷰 → 중복 제거된 판정 | 품질 게이트 |
+| 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | 출력 + 메모리 압축, 페일 클로즈 `transform_guard` | 40-60% 감소 |
+| 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | 실행 후 회고 → 내구성 있고 중복 제거된 교훈을 메모리에 기록 | 실행마다 더 똑똑해짐 |
+| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | 지식 그래프 orient: 시맨틱 검색, 가이드 투어, 의존성 그래프 | **L0 제로 토큰** |
+| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | 세션 분석, 비용 추적, 멈춘 세션 발견 | **L1** SQL만 |
+| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | 루프 턴 사이의 KV 캐시 — 로컬 모델에서 TTFT 40-70% 감소 | GPU 시간 ↓ |
+| 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (네이티브, stdlib 전용; OSS [headroom](https://github.com/headroomlabs-ai/headroom) 프로젝트와 savings-schema 호환) | 투명 캡처 프록시: 실제 프로바이더로 전달하고, 측정 + 결정론적으로 압축하며, `proxy_savings.json`을 기록 | **결정론적** |
 
-각 스킬은 [`.claude/skills/`](../.claude/skills) 아래의 평범한 스킬 폴더이며 — 단독으로도,
-루프의 일부로도 쓸 수 있습니다.
+각 스킬은 [`.claude/skills/`](.claude/skills) 아래에 있고, 각 가속기는
+`.claude/skills/simplicio-tasks/references/` 아래에 참조 문서가 있습니다.
 
 ---
+
+## 📡 소스 어댑터
+
+오케스트레이터는 플러그형 어댑터를 통해 어떤 소스에서든 작업을 발견합니다. 각 어댑터는 여섯 개의
+동사를 노출합니다: `list_ready`, `get_details`, `claim`, `update_status`, `attach_evidence`,
+`close`.
+
+| 소스 | 어댑터 | 목적 |
+|---|---|---|
+| GitHub Issues/PRs | `gh` CLI (네이티브) | 주요 작업 항목 소스 |
+| Jira / Asana / ClickUp / Linear / Notion | host connector | 보드/프로젝트 관리 |
+| Trello / Azure DevOps | `az boards` adapter | Azure 작업 추적 |
+| **agentsview sessions** | `scripts/agentsview_adapter.py` | 멈춘 세션 복구 + 비용 관측 |
+| Local files / CI queue | filesystem / CI API | 내부 작업 추적 |
+
+각 어댑터의 참조 문서는 `.claude/skills/simplicio-tasks/references/` 아래에 있습니다.
+
+|---
 
 ## 🌐 11개의 런타임, 하나의 프로토콜
 
@@ -121,30 +145,25 @@ Gemini, Cursor, 로컬 모델)을 스스로 굴러가는 워커로 바꿔 줍니
 속도뿐.** `orient_clamp.py`(토큰 경제)는 배선 없이 모든 런타임에서 동작합니다.
 [`adapters/MATRIX.md`](../adapters/MATRIX.md)를 참고하세요.
 
-<p align="center">
-  <img src="../assets/simplicio-loop-overview.png" alt="simplicio-loop - full system overview" width="760" />
-</p>
-
 ---
 
 ## 🗺️ 전체 흐름 — 수요에서 제공까지
 
 오케스트레이터가 작용하는 모든 계층을 순서대로 — 수요(이슈, 태스크, 할당)를 읽는 데서 시작해,
 병합되고 증거로 뒷받침된 결과물을 제공하기까지, 그런 다음 더 많은 작업을 찾아 24/7로 루프합니다.
-(다이어그램은 GitHub에서 네이티브로 렌더링됩니다.)
 
 ```mermaid
 flowchart TD
   subgraph SRC["1 · Demand sources (any adapter)"]
     direction LR
     S1["GitHub Issues / PRs / CI"]
-    S2["Jira · Azure DevOps · Linear · ClickUp · Notion"]
-    S3["Assigns · TODO/FIXME · CVE · local files"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion · agentsview · Understand Anything (orient)"]
+    S3["Assigns · TODO/FIXME · CVE · local files · LMCache (inference accelerator)"]
   end
   SRC --> PF
   subgraph PF["2 · Pre-flight gates"]
     direction LR
-    P1["cost kill-switch budget"]
+    P1["cost kill-switch budget · agentsview cost check"]
     P2["source auth + scopes"]
     P3["arm 24/7 watcher"]
   end
@@ -161,7 +180,7 @@ flowchart TD
     direction LR
     I1["body + ALL comments"]
     I2["extract acceptance criteria"]
-    I3["orient code · signatures-only reads"]
+    I3["orient code · signatures-only reads or Understand Anything knowledge graph"]
     I4["plan + AC checklist + complexity"]
   end
   INTK --> RT{"5 · Route"}
@@ -203,247 +222,116 @@ flowchart TD
     F3["branch behind main -> additive rebase"]
   end
   FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
-  WATCH["11 · 24/7 watcher · simplicio-loop<br/>evidence-gated promise · max-iterations cap · cost kill-switch"]
+  WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
   WATCH -. "re-feed the goal" .-> DISC
 ```
 
-**계층별로 — 무엇이 작용하고, 어떤 리소스를 쓰는가:**
-
-| # | 계층 | 무슨 일이 일어나는가 | 스킬 / 확장 지점 · 차용 출처 |
-|---|---|---|---|
-| 1 | **Demand sources** | 어떤 소스에서든 작업을 읽는다 — 이슈, PR, CI, 보드, 할당, TODO, CVE | `source_adapter` · `intake` |
-| 2 | **Pre-flight** | `$` 킬 스위치를 무장하고, 소스 인증을 확인하며, 24/7 watcher를 무장한다 | `watcher` · 비용 거버넌스 |
-| 3 | **Discover + normalize** | 메타데이터만으로 나열하고, 정규화하고, 중복 제거하고, 의존성 DAG를 구축한다 | `normalize` · `dependency_graph` |
-| 4 | **Deep intake** | 본문 + 댓글 전체를 읽고, AC를 추출하고, 코드를 orient하고, 계획을 작성한다 | `orient` · signatures-read · **rtk** |
-| 5 | **Route** | 패스트패스(사소함) 대 헤비패스; 머신에 맞춰 함대를 자동 확장 | `autoscale` · 이중 경로 라우터 |
-| 6 | **Worker pool** | 지속적이고 충돌을 인지하는 팬아웃; 기계적 편집; 항목별 품질 루프 | `execute` · `worktree` · `deterministic_edit` |
-| 7 | **Quality gates** | AC 게이트(진짜 DoD), 실행 검증(UI → **Playwright** `web_verify`), 적대적 리뷰 | `validate` · **`simplicio-review`** (thermos) |
-| 8 | **Safety gates** | 시크릿 스캔, 되돌릴 수 없는 작업의 사람 게이트, 4상태 판정, 증명 | `action_gate` · `human_gate` · `security` |
-| 9 | **Deliver** | 커밋, 푸시, Draft PR, 증거와 함께 소스 내 종료; 현실을 검증 | `pr` / `evidence` · `delivery_gate` |
-| 10 | **Feedback loop** | CI → 수정, 리뷰 댓글 → 조정, 브랜치 뒤처짐 → 가산적 리베이스 | `diagnostics` · `retry` |
-| 11 | **24/7 watcher** | 증거 게이트를 통과한 약속까지 목표를 재투입; 비면 유휴, 무엇이든 생기면 깨어남 | **`simplicio-loop`** (Ralph) · `watcher` |
-| ↻ | **Cross-cutting** | 토큰 경제(터미널 우선 · 카탈로그 · **tee+CCR** · 산문/메모리 압축) · 모델 라우팅 L0→L4 · learn | **`simplicio-orient`** (rtk+caveman) · **`simplicio-compress`** (caveman) · **`simplicio-learn`** (teaching) · **headroom** CCR |
-
-모든 계층에는 언제나 동작하는 LLM 폴백이 있고, 호스트가 제공하면 네이티브 명령에 바인딩합니다
-— 11개 런타임 모두에서 같은 프로토콜, 다른 것은 속도뿐입니다.
-
----
-
-## 🏛️ 설계 기둥(상세)
-
-오케스트레이션의 힘을 떠받치는 메커니즘은 네 가지입니다. 각각은 이미 스킬에 배선되어 있습니다 — 여기서는
-그것이 **어디에 있는지**와 어떻게 동작하는지를 상세히 그립니다.
-
-| 기둥 | 초점 | 위치 | 라벨 |
-|---|---|---|---|
-| **DAG + 파이프라인** | 의존성에 따른 병렬성, 항목별 단계화 | `dependency_graph` · [`references/orchestration.md`](../.claude/skills/simplicio-tasks/references/orchestration.md)(Step 3 풀 + 3c 파이프라인) | `enhancement` `orchestrator` `performance` `runtime` |
-| **Worktree 격리** | 트리를 망가뜨리지 않는 병렬 편집, 병합 게이트 적용 | `worktree` · orchestration.md "Conflict-AWARE isolation" + 병합 게이트 | `enhancement` `orchestrator` `runtime` |
-| **적대적 검증** | "제공" 전에 회의론자 패널 | [`quality-safety-delivery.md`](../.claude/skills/simplicio-tasks/references/quality-safety-delivery.md) Step 4c · 스킬 `simplicio-review` | `enhancement` `quality` `runtime` |
-| **루프 예산 상한** | 무한 루프 방지, 이중 출구 | [`standing-loop-247.md`](../.claude/skills/simplicio-tasks/references/standing-loop-247.md) §4 · 스킬 `simplicio-loop` · `hooks/loop_stop.py` | `enhancement` `coding-loop` `runtime` |
-
-### 1 · DAG + 파이프라인 — 의존성에 따른 병렬성, 단계화
-
-```mermaid
-flowchart TD
-  subgraph G1["Dependency DAG · resumable · deps gate order"]
-    direction TB
-    a["item A · no deps"]
-    b["item B · no deps"]
-    c["item C · needs A and B"]
-    d["item D · needs C"]
-    a --> c
-    b --> c
-    c --> d
-  end
-  a --> PA
-  b --> PB
-  subgraph G2["Per-item pipeline · no global barrier"]
-    direction LR
-    PA["A implement"] --> PA2["review"] --> PA3["merge"]
-    PB["B implement"] --> PB2["review"] --> PB3["merge"]
-  end
-  PA3 -. "A merged unblocks C" .-> c
-```
-
-독립적인 항목(A, B)은 한꺼번에 팬아웃하고, 의존하는 항목(C, D)은 DAG에서 대기합니다. 각 항목은 스스로
-구현 → 리뷰 → 병합으로 흐르므로, B가 아직 빌드 중일 때 A가 병합됩니다 — **단계화되며, 결코 전역
-배리어가 아닙니다**. 재실행은 완료된 노드를 건너뜁니다(재개 가능).
-
-### 2 · Worktree 격리 — 병렬 편집, 병합 게이트 적용
-
-```mermaid
-flowchart TD
-  Q["items to run in parallel"] --> OV{"touch the same files?"}
-  OV -->|"no · disjoint files"| SH["shared checkout · own branch each · commit sequentially"]
-  OV -->|"yes · overlap"| WT["dedicated git worktree · SERIALIZED"]
-  SH --> MG
-  WT --> MG
-  MG["merge gate · full suite runs ONCE on the composed result"] --> OK{"green?"}
-  OK -->|"yes"| MERGED["merge + close with evidence"]
-  OK -->|"no"| FIX["reject · fix · never corrupt the tree"]
-```
-
-서로 겹치지 않는 항목은 하나의 체크아웃을 공유합니다(저렴하며 N× 재링크 없음). 겹치는 항목만 전용
-worktree 비용을 치르고 직렬화됩니다. 비싼 전체 스위트는 병합된 결과에 대해 **한 번** 실행됩니다 — N개의
-부분 검사보다 강력한 엔드 게이트입니다.
-
-### 3 · 적대적 검증 — 제공 전의 회의론자 패널
-
-```mermaid
-flowchart TD
-  IMPL["implementation · diff · run evidence · ACs"] --> PANEL
-  subgraph PANEL["Panel of skeptics (MEDIUM+) · each prompted to REFUTE"]
-    direction LR
-    V1["reviewer 1 · security / correctness"]
-    V2["reviewer 2 · code quality"]
-    V3["reviewer 3 · does-it-reproduce · web_verify"]
-  end
-  PANEL --> VOTE{"majority refute an AC?"}
-  VOTE -->|"yes"| BACK["back to fix"]
-  VOTE -->|"no"| SHIP["pass · deliver"]
-```
-
-MEDIUM+ 항목에서는 2~3명의 독립적인 리뷰어가 각각 REFUTE(반박)를 시도합니다(불확실하면 "미완료"를
-기본값으로 함). 어느 한 수용 기준에서 과반수가 반박하면 되돌려 보냅니다. TRIVIAL/SMALL은 단일 자가
-리뷰를 유지합니다. (`simplicio-review`에 위임됩니다. 프런트엔드 차분에는 `web_verify` 항목이 필요합니다.)
-
-### 4 · 루프 예산 상한 — 무한 루프 방지, 이중 출구
-
-```mermaid
-flowchart TD
-  TURN["end of turn · stop hook"] --> P{"promise emitted AND evidence in-turn?"}
-  P -->|"yes"| EXIT1["EXIT success · close with evidence"]
-  P -->|"no"| CAP{"iteration over cap, OR budget halted, OR STOP signal?"}
-  CAP -->|"yes"| EXIT2["EXIT safety · stop, never a false done"]
-  CAP -->|"no"| REFEED["re-feed the goal · next iteration"]
-  REFEED --> TURN
-```
-
-루프에는 **두 개의 독립적인 출구**가 있습니다. *성공* 출구(진짜로 참인, 증거 게이트를 통과한
-`<promise>`)와 *안전* 출구(`max_iterations` 상한, `$` 예산 킬 스위치, 또는 STOP 신호)입니다. 자가 보고된
-"완료"로는 결코 종료하지 않으며 — 영원히 돌지도 않습니다. 이것이 `hooks/loop_stop.py`입니다(페일 오픈:
-훅 오류는 무엇이든 멈춤을 허용).
-
 ---
 
 ## 🔁 루프
 
-오케스트레이터 아래에 있는 구동력은 **강화된 Ralph 루프**(`simplicio-loop`)입니다.
+**증거 게이트 루프(Evidence-Gated Loop)**가 핵심 메커니즘입니다. 매 턴 같은 목표를 다시 투입해
+에이전트가 자신의 이전 작업을 보게 합니다. 종료는 오직 다음을 통해서만 일어납니다.
 
-1. 목표는 사람이 읽을 수 있는 단일 상태 파일(`.orchestrator/loop/scratchpad.md`)에 기록됩니다
-   — 손쉽게 들여다보고, 편집하고, 취소할 수 있습니다.
-2. 매 턴이 끝나면 **stop-hook**이 같은 목표를 다시 투입하므로, 에이전트는 자신의 이전 편집을
-   (git + 작업 트리를 통해) 보고 수렴합니다. 사이클당 토큰 비용은 평평하게 유지됩니다 —
-   컨텍스트 욱여넣기는 없습니다.
-3. 종료하는 것은, 타입이 있는 센티넬 `<promise>EXACT TEXT</promise>`가 출력되고 **그리고**
-   그것이 턴 내의 구체적 증거(통과한 게이트, 병합된 PR 링크, AC 영수증)로 뒷받침될 때**만**
-   입니다. 또는 강력한 `max_iterations` 상한 / 비용 킬 스위치가 발동할 때입니다.
+1. **증거 게이트를 통과한 `<promise>`** — 약속을 내는 턴은 반드시 구체적 증거(통과한 테스트,
+   병합된 PR, 종료된 항목 재조회)를 함께 실어야 합니다. 증거 없는 약속 = 무시됩니다.
+2. **`max_iterations` 상한** — 강력한 안전 백스톱
+3. **예산 킬 스위치** — `daily_usd_ceiling`이 소진되면 루프를 멈춥니다
+4. **STOP 신호** — `.orchestrator/STOP` 또는 채널 명령
 
-> **거짓 약속은 결코 하지 않습니다.** 증거가 없는 `<promise>`는 무시되고 루프는 계속됩니다.
-> 이것은 루프를 저장소의 강력한 규칙 — *병합된 PR 또는 구체적 증거 없이는 작업을 절대
-> 종료하지 않는다* — 에 곧바로 연결합니다.
-
-훅이 없는 런타임에서는 루프가 호스트 스케줄러(cron / `/loop` / 런타임의 태스크 러너)를 통해
-**자기 페이스**로 진행합니다 — 종료 조건은 동일합니다. 훅은 크로스 플랫폼 Python이며
-**페일 오픈**입니다: 오류가 난 훅은 언제나 에이전트가 멈추도록 허용합니다. 진짜 가드는 상한과
-예산이지, 훅의 잔재주가 아닙니다.
+턴 사이에서, LMCache(사용 가능할 때)는 KV 상태를 캐시해 재투입의 프리필 비용을 거의 0으로
+만듭니다.
 
 ---
 
 ## 📊 토큰 경제
 
-가장 저렴한 토큰은 쓰지 않은 토큰입니다. `simplicio-orient` + `simplicio-compress`는
-**rtk**(명령을 압축)와 **caveman**(대화를 압축)의 정수를 안전의 척추에 접어 넣습니다.
+| 기법 | 절감 |
+|---|---|
+| `deterministic_edit` (L0) | 편집 토큰 100%(파일은 LLM이 아니라 기계적으로 작성됨) |
+| 터미널 우선 실행 | 사실은 LLM 환각이 아니라 셸에서 |
+| 출력 축소 카탈로그 | 명령 유형별 상한(`CAP_ERRORS=20`, `CAP_WARNINGS=10`, `CAP_LIST=20`) — `orient_clamp.py` |
+| 실패 시 Tee+CCR 캐시 | 실패한 명령을 다시 실행하지 않고 — 캐시된 출력을 읽음 |
+| 시그니처 전용 읽기 | `simplicio signatures <file>` — 870줄 파일 → 65줄(**93% 절감**), 본문 제거 |
+| `simplicio-compress` | 간결한 산문 + 일회성 메모리 컴팩션 |
+| `orient_clamp.py` | 모든 셸 명령에 클램프 + tee, 배선 불필요 |
+| 네이티브 응답 캐시 | 반복되는 결정론적(temp=0) 요청 → 캐시에서 제공, LLM 호출 생략(**적중 시 100%**) — `simplicio cache`, 기본 켜짐(`SIMPLICIO_CACHE=0`으로 비활성화) |
+| Simplicio 캡처 프록시 + MCP | 투명 압축 데몬을 통해 도구 출력의 토큰을 60-95% 절감 |
 
-- **터미널 우선 실행** — 셸은 사실을 정확히 알고, LLM은 그것을 비싸게 근사합니다.
-  크로스 플랫폼 치환 테이블(Windows/macOS/Linux)이 `git`/`gh`/`rg`/`python3`을 통해
-  30가지 이상의 사실에 답합니다. **명령을 절대 시뮬레이션하지 말고 — 실행하라.**
-- **출력 축소 카탈로그**(데이터 테이블) — 명령별 레시피 + 예상 절감 % + `skip-if-structured`
-  가드. 원시 `cargo check`는 읽는 데 약 2000 토큰이 들지만, 클램핑하면 약 80입니다.
-- **tee-cache + 되돌릴 수 있는 retrieve** *(rtk + headroom CCR)* — 공격적인 잘라내기는 복구
-  가능할 때만 안전합니다: 실패 시 전체 출력이 `.orchestrator/tee/…log`에 기록되고 경로만 표면에
-  드러나므로, 에이전트는 명령을 **다시 실행하지 않고** `retrieve <path> [--lines|--grep]`로
-  컨텍스트를 복구합니다. 클램프는 손실이 아니라 되돌릴 수 있는 결정이 됩니다.
-- **시그니처 전용 읽기** *(rtk에서)* — 파일의 API 표면(선언, 본문은 생략)을 읽습니다:
-  600줄짜리 파일이 수집 단계에서 약 40줄이 됩니다.
-- **신호 등급별 상한 + 성공 접기 + 중복 제거** — 노이즈보다 오류를 남기고, 깨끗한 실행을
-  한 줄로 접고, 반복되는 줄을 `line xN`으로 접습니다 — 언제나 `unless errors present`.
-- **산문 등급 + 메모리 컴팩션** *(caveman에서)* — 코드/경로/URL을 **바이트 단위로** 보존하는
-  간결한 출력(`transform_guard`는 토큰이 하나라도 사라지면 페일 클로즈)과, 모든 미래의 턴에
-  걸쳐 상각되는 일회성 상시 메모리 컴팩션.
-- **정직한 기준선** — 절감은 현실적인 *"간결하게 답하라"* 대조군(장황한 허수아비가 아님)에
-  대해 측정되고, **출력** 토큰만 세며(추론은 세지 않음), **검증으로 올바름이 확인된 결과에
-  대해서만** 인정됩니다. 품질 게이트를 통과하지 못한 압축은 0점입니다.
+절감은 검증으로 올바름이 확인된 결과에 대해서만 인정됩니다. 기준선 = 같은 결과에 이르는, 가장
+저렴하고 합리적인 비-오케스트레이션 경로. `references/token-economy.md`를 참고하세요.
 
-모든 메시지는 정직한 한 줄로 끝납니다:
+### 📈 Simplicio Token Monitor
 
-```
-simplicio-tasks: ~<spent> tokens · baseline ~<control-arm> · saved ~<saved> (<pct>%)
-```
+절감을 실시간으로, 언제나 켜진 채 보여 줍니다.
 
-지금 바로, 배선 없이 시험해 보세요:
+- **웹 대시보드** — `http://127.0.0.1:9090` — 실시간 토큰 차트, 절감 게이지, 우리가 가로채는
+  LLM/런타임과 **141/144 프로바이더(98%)**, 그리고 실시간 프록시 로그.
+- **메뉴 바 / 트레이 위젯** — 시스템 트레이에 절감된 토큰을 실시간 표시(macOS rumps · Windows/Linux pystray).
+- **하나의 모듈** — `scripts/simplicio-economy.sh {status|up|wire}`가 캡처 프록시 + 모니터 +
+  트레이 + `simplicio-dev-cli` 결정론적 오퍼레이터를 띄우고 전체 스택을 보고합니다.
 
-```bash
-python3 hooks/orient_clamp.py -- cargo test      # reduced output + tee log on failure
-python3 hooks/orient_clamp.py --json -- git diff  # machine summary
-```
+설치 시 `scripts/setup_simplicio.sh`(또는 크로스 플랫폼 `python3 scripts/install_services.py install`)를
+통해 세 가지 모두를 자동 시작 서비스로 등록합니다(macOS launchd · Linux systemd · Windows Startup).
+설치 후에는 모니터 + 캡처가 **루프를 호출하지 않고도** 동작합니다 — `references/token-capture.md`를 참고하세요.
 
----
+### 🛠️ 캡처 엔진 — 하나의 네이티브 모듈, 모든 명령
 
-## 🏗️ 거인의 어깨 위에서
+[`engine/simplicio_engine.py`](engine/simplicio_engine.py)는 네이티브 Simplicio 캡처
+엔진(stdlib 전용, 페일 오픈)입니다 — **외부 의존성 없이 업스트림
+[headroom](https://github.com/headroomlabs-ai/headroom) 서피스를 완전히 재구현**한 것입니다.
+어떤 명령이든 [`scripts/simplicio-engine`](scripts/simplicio-engine) 래퍼를 통해 실행하세요
+(예: `simplicio-engine doctor`).
 
-simplicio-loop는 GitHub에서 가장 뛰어난 루프 + 토큰 경제 작업을 **깊이 연구한 후**
-만들어졌고, 각각을 초점이 분명한 스킬로 접어 넣었습니다 — 원칙은 남기고, 잔재주는 버리면서.
+| 명령 | 하는 일 |
+|---|---|
+| `proxy` | 투명 캡처 프록시 — 각 모델을 그 **실제** 프로바이더로 라우팅하고, 압축 + 측정 + 캐시(모델 교체 없음) |
+| `doctor` | 프록시 도달 가능성 + 누적 절감 |
+| `cache` | 네이티브 응답 캐시(`stats`/`clear`) — 반복되는 결정론적 요청은 캐시에서 제공되어 LLM 호출을 생략 |
+| `signatures` | 소스 파일의 시그니처 전용 보기(본문 제거, 코드를 읽는 데 토큰 약 93% 감소) |
+| `semantic` | 되돌릴 수 있는 추출적(semantic-lite) 압축 |
+| `kompress` | 실제 `kompress-v2-base` 모델을 통한 **ONNX** 시맨틱 토큰 가지치기 |
+| `detect` | 콘텐츠 타입 감지 + 블록별 스마트 라우팅 |
+| `rag` | CCR 메모리 저장소에 대한 TF-IDF(또는 `--ml` 임베딩) 검색 |
+| `memory` | CCR compress-cache-retrieve 저장소(`remember`/`recall`/`forget`/`list`/`stats`) |
+| `mcp` | 네이티브 stdio MCP 서버(compress / retrieve / stats 도구) |
+| `init` / `wrap` | Simplicio를 클라이언트(Claude / Codex / Copilot / OpenClaw)에 등록 · 캡처 라우팅으로 클라이언트 실행 |
+| `report` / `audit` / `capture` / `evals` | 절감 리포트 · 트리의 압축 기회 감사 · 요청 드라이런 · 압축 회귀 게이트 |
 
-| 프로젝트 | 우리가 가져온 것 | 우리가 버린 것 |
+### 🧠 선택적 실제 ML 모델 — `pip install "simplicio-loop[onnx]"`
+
+네 개의 **실제**, 공개(Apache-2.0) ONNX 모델이 네이티브로 동작합니다 — 업스트림이 쓰는 것과
+같은 모델입니다. 이 추가 옵션 없이도 결정론적 stdlib 경로가 모든 것을 커버하며, 모델은 최초
+사용 시 다운로드됩니다.
+
+| 모델 | 명령 | 용도 |
 |---|---|---|
-| 🪨 [**caveman**](https://github.com/JuliusBrussee/caveman) | 간결한 산문 등급, 식별자 바이트 보존, 메모리 컴팩션, 정직한 *"간결하게 답하라"* 기준선 | 문법 단어 누락(코드와 확인 문구를 저하시킴) |
-| ⚙️ [**rtk**](https://github.com/rtk-ai/rtk) | 명령별 축소 카탈로그, 신호 등급별 상한, **tee-cache**, 시그니처 읽기, 자동 재작성 훅 + 제외 목록 | 언어별 레지스트리(런타임 종속) |
-| ♾️ [**ralph-loop**](https://github.com/cursor/plugins/tree/main/ralph-loop) | 단일 파일 루프 상태, 정확 일치 약속 센티넬, 두 훅 분할 | 모델을 믿는 완료(우리는 **증거 게이트 방식**으로 만듦) |
-| 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | 단일 메시지 병렬 리뷰어, 분리된 평가 기준, 합성 시 중복 제거 | — |
-| 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | 상태를 영속화해 다음 사이클이 다시 도출하지 않게 하는 회고 | 인간 학습이라는 도메인 그 자체 |
-| 🧭 결과 지향 실행 | 종료 상태로 수렴; 계획되고, 범위가 정해지고, 되돌릴 수 있는 중간 단계의 파손 | — |
-| 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | tee-cache 위의 **되돌릴 수 있는** compress-cache-retrieve(CCR), 콘텐츠 타입 라우팅 분류 체계 | 학습된 모델 + 트래픽 프록시(터미널 우선·런타임 비종속 설계와 상충) |
-| 🎭 [**Playwright**](https://github.com/microsoft/playwright) (+[mcp](https://github.com/microsoft/playwright-mcp), [python](https://github.com/microsoft/playwright-python)) | 프런트엔드 증명을 위해 실제 브라우저를 구동 — `web_verify` 증거로서의 스크린샷 + 트레이스 | 컨텍스트 속 DOM/픽셀(증거는 바이트가 아니라 아티팩트 경로) |
+| `kompress-v2-base` | `simplicio kompress` | 시맨틱 토큰 가지치기 |
+| `technique-router-onnx` | `simplicio router` | 기법 라우팅 |
+| `all-MiniLM-L6-v2-onnx` | `simplicio embed` · `rag --ml` | 임베딩 + 시맨틱 RAG |
+| `siglip-image-encoder-onnx` | `simplicio image` | 이미지 압축 콘텐츠 검증기 |
 
-> 그들은 토큰을 줄입니다. simplicio-loop는 **일을 해내면서** 동시에 토큰을 줄입니다.
+### ⚙️ 네이티브 Rust 성능 코어(선택)
 
----
+[`rust/`](rust)는 업스트림에서 포팅 + 리브랜딩한 네 개의 크레이트를 제공합니다(Apache-2.0; `NOTICE`가
+이를 명시): `simplicio-core`(압축기 + smart-crusher), `simplicio-py`(PyO3 바인딩), `simplicio-proxy`
+(axum 리버스 프록시), `simplicio-parity`(Rust↔Python 패리티 하니스). `maturin`으로 빌드합니다 — Python
+엔진은 이들 없이도 완전히 동작하며, 크레이트는 네이티브 속도만 더합니다.
 
-## 🧩 43개의 확장 지점
+|---
 
-작업의 모든 단계는 **명명된 확장 지점**에서 일어납니다. 호스트 런타임이 네이티브 기능을
-노출하면 거기에 **바인딩**되고(결정론적이며 거의 토큰을 쓰지 않음), 그렇지 않으면 LLM이 표준
-도구로 **폴백**을 수행합니다. 스킬은 추상화에 의존하며, 런타임에는 절대 의존하지 않습니다.
+## 🏛️ 설계 기둥(상세)
 
-<details>
-<summary><strong>오케스트레이션 & 확장</strong></summary>
+오케스트레이션의 힘을 떠받치는 메커니즘은 네 가지입니다.
 
-`orient` · `normalize` · `intake` · `source_adapter` · `autoscale` · `plan`/`decide` ·
-`execute` · `issue_factory` · `claim` · `worktree` · `dependency_graph` · `durable_workflow` ·
-`work_queue` · `resource_governor` · `model_route` · `model_preflight`
-</details>
-
-<details>
-<summary><strong>편집, 품질 & 증거</strong></summary>
-
-`deterministic_edit` · `diagnostics` · `toolchain_detect` · `validate`/`smoke` ·
-`delivery_gate` · `endpoint_compare` · `web_verify` · `pr`/`evidence` · `retry` ·
-`reuse_precedent` · `trajectory` · `learn` · `status` · `capability_rank`
-</details>
-
-<details>
-<summary><strong>토큰, 컨텍스트 & 안전성</strong></summary>
-
-`recall` · `compress` · `prompt_budget` · `shell_exec` · `transform_guard` · `action_gate` ·
-`security` · `human_gate` · `notify` · `checkpoint_restore` · `watcher` · `savings_ledger` ·
-`web_research`
-</details>
-
-폴백을 포함한 전체 표:
-[`references/extension-points.md`](../.claude/skills/simplicio-tasks/references/extension-points.md).
+| 기둥 | 초점 | 위치 |
+|---|---|---|
+| **DAG + 파이프라인** | 의존성에 따른 병렬성, 항목별 단계화 | `references/orchestration.md`(Step 3 풀 + 파이프라인) |
+| **Worktree 격리** | 트리를 망가뜨리지 않는 병렬 편집, 병합 게이트 적용 | `references/orchestration.md` |
+| **적대적 검증** | "제공" 전에 회의론자 패널 | `references/quality-safety-delivery.md` · 스킬 `simplicio-review` |
+| **루프 예산 상한** | 무한 루프 방지, 이중 출구 | `references/standing-loop-247.md` · 스킬 `simplicio-loop` |
 
 ---
 
@@ -498,4 +386,4 @@ Python). GitHub 소스의 경우 `git` + 인증된 `gh`. [`INSTALL.md`](../INSTA
 
 ## 📄 라이선스
 
-MIT — [LICENSE](../LICENSE) 참고. [Simplicio](https://github.com/wesleysimplicio) 생태계의 일부입니다.
+MIT

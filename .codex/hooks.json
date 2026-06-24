@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/wesleysimplicio/Projetos/ai/hermes-agent/venv/bin/python3.11 -m headroom.cli init hook ensure --profile init-simplicio-loop-99abfd85 --marker headroom-init-codex",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/wesleysimplicio/Projetos/ai/hermes-agent/venv/bin/python3.11 -m headroom.cli init hook ensure --profile init-simplicio-loop-99abfd85 --marker headroom-init-codex",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

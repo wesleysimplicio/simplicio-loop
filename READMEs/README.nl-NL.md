@@ -6,7 +6,8 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-de-6-skills-super-plugin"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
+  <a href="#-de-10-skills--accelerators"><img src="https://img.shields.io/badge/skills-10-7C3AED" alt="10 skills"></a>
+  <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtimes-één-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-de-43-uitbreidingspunten"><img src="https://img.shields.io/badge/extension%20points-43-00E08A" alt="43 extension points"></a>
   <a href="#-token-economie"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
@@ -15,11 +16,12 @@
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-de-6-skills-super-plugin">6 Skills</a> ·
+  <a href="#-de-10-skills--accelerators">10 Skills</a> ·
+  <a href="#-source-adapters">Source Adapters</a> ·
   <a href="#-11-runtimes-één-protocol">11 Runtimes</a> ·
   <a href="#-de-lus">De lus</a> ·
   <a href="#-token-economie">Token-economie</a> ·
-  <a href="#-op-de-schouders-van">Met dank aan</a> ·
+  <a href="#-token-economie">Capture Engine</a> ·
   <a href="#-installeren--gebruiken">Installeren</a>
 </p>
 
@@ -46,17 +48,18 @@
 
 ## ⚡ TL;DR
 
-**simplicio-loop** is een runtime-onafhankelijk **super-plugin** — één autonome lussende orkestrator
-plus **vijf satelliet-skills** — dat elke sterke LLM (Claude, Codex, Copilot, Gemini, Cursor, lokale
-modellen) verandert in een zelfsturende worker. Je wijst hem op een hoeveelheid werk — *"maak alle open
-issues af"*, *"werk de CI-wachtrij weg"*, *"leeg het Jira-board"* — en hij draait de hele levenscyclus
-helemaal zelf:
+**simplicio-loop** is een runtime-onafhankelijk **super-plugin** — één autonome lussende
+orkestrator (aangeroepen als **`/simplicio-tasks`**) plus **vijf satelliet-skills** — dat elke
+sterke LLM (Claude, Codex, Copilot, Gemini, Cursor, lokale modellen) verandert in een zelfsturende
+worker. Je wijst hem op een hoeveelheid werk — *"maak alle open issues af"*, *"werk de CI-wachtrij
+weg"*, *"leeg het Jira-board"* — en hij draait de hele levenscyclus helemaal zelf:
 
 > **ontdekken → begrijpen → beslissen → handelen → verifiëren → corrigeren → vastleggen → herhalen**
 
-Hij ontdekt werk uit elke bron, ontdubbelt, schaalt automatisch een agentvloot op naar jouw machine,
-implementeert elk item via een kwaliteitslus die **de code uitvoert (niet alleen compileert)**, opent
-PR's, verwerkt CI-/reviewfeedback, merget, en blijft **24/7** speuren naar nieuw werk — allemaal achter
+Hij ontdekt werk uit elke bron (GitHub Issues, Jira, Azure DevOps, agentsview-sessies, en meer),
+ontdubbelt, schaalt automatisch een agentvloot op naar jouw machine, implementeert elk item via een
+kwaliteitslus die **de code uitvoert (niet alleen compileert)**, opent PR's, verwerkt
+CI-/reviewfeedback, merget, en blijft **24/7** speuren naar nieuw werk — allemaal achter
 veiligheidspoorten en een harde kostennoodstop.
 
 ```text
@@ -75,32 +78,53 @@ token-economie**.
 
 ---
 
-## 🧠 De 6 skills (super-plugin)
+## 🧠 De 10 skills & accelerators
 
-De orkestrator is de kern; vijf satellieten nemen elk het beste van een bekende techniek over en stellen
-het beschikbaar als herbruikbare skill. Elke satelliet is **optioneel** — wanneer geladen, delegeert de
-orkestrator eraan (rijker + goedkoper); wanneer afwezig, dekt het inline-protocol van de orkestrator 100%
-van het werk. Dezelfde omgekeerde afhankelijkheid, een niveau hoger.
+De orkestrator-kern + vijf satellieten + vier accelerators. Elke satelliet is **optioneel** —
+wanneer geladen, delegeert de orkestrator eraan (rijker + goedkoper); wanneer afwezig, dekt het
+inline-protocol 100%. Accelerators worden **automatisch gedetecteerd** — aanwezig = gebruikt,
+afwezig = LLM-fallback.
 
-| Skill | Neemt over van | Wat het doet |
-|---|---|---|
-| 🔁 **simplicio-tasks** | — | De orkestrator-lus: ontdekken → implementeren → verifiëren → mergen → sluiten → 24/7 bewaken. 43 uitbreidingspunten, dual-path-router, zelfaudit-convergentie. |
-| ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | De geharde Ralph-lus: voer hetzelfde doel elke beurt opnieuw in zodat de agent zijn eigen werk ziet, en stop alleen bij een **bewijs-gepoorte `<promise>`** of een `max_iterations`-plafond — nooit een vals "done". |
-| 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-first uitvoering: beantwoord feiten met de shell, nooit met de LLM. Output-reductiecatalogus, **tee-cache bij falen**, signatures-only leesmodus, optionele auto-rewrite-hook. |
-| 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Adversariële review: parallelle sub-agents op afzonderlijke rubrieken (veiligheid/correctheid + codekwaliteit), gestart in één bericht, gededupliceerd tot één oordeel. |
-| 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Output- + geheugencompressie: beknopte prozatiers die code/paden byte voor byte behouden, plus een eenmalige geheugencompactie die elke beurt terugbetaalt. Fail-closed `transform_guard`. |
-| 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) + continual-learning | Retrospectief: win duurzame, gededupliceerde lessen uit een run en schrijf ze naar het geheugen zodat de volgende run goedkoper en correcter is. |
+| # | Capaciteit | Neemt over van | Wat het doet | Token-impact |
+|---|---|---|---|---|
+| 1 | 🔁 **simplicio-tasks** | — | De orkestrator-lus: 43 uitbreidingspunten, dual-path-router, zelfaudit-convergentie | Kern |
+| 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Geharde Ralph-lus: bewijs-gepoorte `<promise>`-uitgang, max_iterations-plafond | Lusaandrijving |
+| 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-first uitvoering, output-reductiecatalogus, tee-cache, signatures-read | L0 deterministisch |
+| 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Parallelle adversariële review op afzonderlijke rubrieken → gededupliceerd oordeel | Kwaliteitspoort |
+| 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Output- + geheugencompressie, fail-closed `transform_guard` | 40-60% minder |
+| 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | Post-run-retrospectief → duurzame, gededupliceerde lessen in het geheugen | Slimmer per run |
+| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Kennisgrafiek-oriëntatie: semantisch zoeken, geleide tours, afhankelijkheidsgrafiek | **L0 nul tokens** |
+| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Sessie-analyse, kostenregistratie, ontdekking van vastgelopen sessies | **L1** alleen SQL |
+| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV-cache tussen lusbeurten — 40-70% TTFT-reductie op lokale modellen | GPU-tijd ↓ |
+| 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (native, alleen-stdlib; savings-schema compatibel met het OSS-project [headroom](https://github.com/headroomlabs-ai/headroom)) | Transparante capture-proxy: stuurt door naar de echte provider, meet + comprimeert deterministisch, schrijft `proxy_savings.json` | **deterministisch** |
 
-Elk is een gewone skill-map onder [`.claude/skills/`](../.claude/skills) — bruikbaar op zichzelf of als
-onderdeel van de lus.
+Elke skill leeft onder [`.claude/skills/`](../.claude/skills); elke accelerator heeft een
+referentiedocument onder `.claude/skills/simplicio-tasks/references/`.
 
 ---
 
+## 📡 Source adapters
+
+De orkestrator ontdekt werk uit elke bron via pluggable adapters. Elke biedt zes werkwoorden:
+`list_ready`, `get_details`, `claim`, `update_status`, `attach_evidence`, `close`.
+
+| Bron | Adapter | Doel |
+|---|---|---|
+| GitHub Issues/PR's | `gh` CLI (native) | Primaire bron voor werkitems |
+| Jira / Asana / ClickUp / Linear / Notion | host-connector | Board-/projectbeheer |
+| Trello / Azure DevOps | `az boards`-adapter | Azure work tracking |
+| **agentsview-sessies** | `scripts/agentsview_adapter.py` | Herstel van vastgelopen sessies + kostenzichtbaarheid |
+| Lokale bestanden / CI-wachtrij | filesystem / CI API | Intern werkbeheer |
+
+Zie het referentiedocument van elke adapter onder `.claude/skills/simplicio-tasks/references/`.
+
+|---
+
 ## 🌐 11 runtimes, één protocol
 
-Eén universele skill-kern + één set hooks drijft elke runtime aan. Een adapter is dun: hij vertelt een
-runtime *waar de skills te laden*, *hoe de lus scherp te stellen* en *hoe de native snelheid te binden*.
-**De skill noemt geen enkele runtime; de runtime detecteert de skill.**
+Eén universele skill-kern + één set hooks drijft elke runtime aan. Een adapter is dun: hij vertelt
+een runtime *waar de skills te laden*, *hoe de lus scherp te stellen* en *hoe de native snelheid te
+binden*. **De skill noemt geen enkele runtime; de runtime detecteert de skill.**
 
 | Runtime | Skill-laden | Lusaandrijving | Native binding |
 |---|---|---|---|
@@ -116,34 +140,29 @@ runtime *waar de skills te laden*, *hoe de lus scherp te stellen* en *hoe de nat
 | **Hermes** | native recall | native lus | **native** |
 | **OpenClaw** | plugin SDK | native scheduler | **native** |
 
-De belofte: **hetzelfde protocol, dezelfde poorten, dezelfde veiligheid op alle 11 — alleen de snelheid
-verschilt.** `orient_clamp.py` (token-economie) werkt op elke runtime zonder enige bedrading. Zie
-[`adapters/MATRIX.md`](../adapters/MATRIX.md).
-
-<p align="center">
-  <img src="../assets/simplicio-loop-overview.png" alt="simplicio-loop - full system overview" width="760" />
-</p>
+De belofte: **hetzelfde protocol, dezelfde poorten, dezelfde veiligheid op alle 11 — alleen de
+snelheid verschilt.** `orient_clamp.py` (token-economie) werkt op elke runtime zonder enige
+bedrading. Zie [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
 ---
 
 ## 🗺️ De volledige flow — van vraag tot oplevering
 
 Elke laag waarop de orkestrator inwerkt, op volgorde — van het lezen van de vraag (issues, taken,
-toewijzingen) tot het opleveren van gemerged, onderbouwd werk, en dan 24/7 lussen voor meer. (Het diagram
-wordt native gerenderd op GitHub.)
+toewijzingen) tot het opleveren van gemerged, onderbouwd werk, en dan 24/7 lussen voor meer.
 
 ```mermaid
 flowchart TD
   subgraph SRC["1 · Demand sources (any adapter)"]
     direction LR
     S1["GitHub Issues / PRs / CI"]
-    S2["Jira · Azure DevOps · Linear · ClickUp · Notion"]
-    S3["Assigns · TODO/FIXME · CVE · local files"]
+    S2["Jira · Azure DevOps · Linear · ClickUp · Notion · agentsview · Understand Anything (orient)"]
+    S3["Assigns · TODO/FIXME · CVE · local files · LMCache (inference accelerator)"]
   end
   SRC --> PF
   subgraph PF["2 · Pre-flight gates"]
     direction LR
-    P1["cost kill-switch budget"]
+    P1["cost kill-switch budget · agentsview cost check"]
     P2["source auth + scopes"]
     P3["arm 24/7 watcher"]
   end
@@ -160,7 +179,7 @@ flowchart TD
     direction LR
     I1["body + ALL comments"]
     I2["extract acceptance criteria"]
-    I3["orient code · signatures-only reads"]
+    I3["orient code · signatures-only reads or Understand Anything knowledge graph"]
     I4["plan + AC checklist + complexity"]
   end
   INTK --> RT{"5 · Route"}
@@ -202,251 +221,119 @@ flowchart TD
     F3["branch behind main -> additive rebase"]
   end
   FB -->|"merged and closed"| DONE(["done + evidence + savings line"])
-  WATCH["11 · 24/7 watcher · simplicio-loop<br/>evidence-gated promise · max-iterations cap · cost kill-switch"]
+  WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
   WATCH -. "re-feed the goal" .-> DISC
 ```
 
-**Laag voor laag — wat handelt, en de resource die het gebruikt:**
-
-| # | Laag | Wat er gebeurt | Skill / uitbreidingspunt · ontleend aan |
-|---|---|---|---|
-| 1 | **Demand sources** | Lees het werk uit ELKE bron — issues, PR's, CI, boards, toewijzingen, TODO, CVE's | `source_adapter` · `intake` |
-| 2 | **Pre-flight** | Schakel de `$`-kill-switch scherp, controleer bron-auth, schakel de 24/7-watcher scherp | `watcher` · kostenbeheer |
-| 3 | **Discover + normalize** | Lijst alleen op metadata, normaliseer, ontdubbel, bouw de afhankelijkheids-DAG | `normalize` · `dependency_graph` |
-| 4 | **Deep intake** | Lees volledige body + commentaren, extraheer ACs, oriënteer de code, schrijf een plan | `orient` · signatures-read · **rtk** |
-| 5 | **Route** | Fast-path (triviaal) vs heavy-path; autoscale de vloot naar de machine | `autoscale` · dual-path-router |
-| 6 | **Worker pool** | Continue, conflictbewuste fan-out; mechanische edits; kwaliteitslus per item | `execute` · `worktree` · `deterministic_edit` |
-| 7 | **Quality gates** | AC-gate (echte DoD), run-verificatie (UI → **Playwright** `web_verify`), adversariële review | `validate` · **`simplicio-review`** (thermos) |
-| 8 | **Safety gates** | Secret-scan, human-gate voor onomkeerbare operaties, 4-status-oordeel, attestatie | `action_gate` · `human_gate` · `security` |
-| 9 | **Deliver** | Commit, push, Draft PR, in-source sluiten met bewijs; verifieer de realiteit | `pr` / `evidence` · `delivery_gate` |
-| 10 | **Feedback loop** | CI → fix, reviewcommentaren → aanpassen, branch-achter → additieve rebase | `diagnostics` · `retry` |
-| 11 | **24/7 watcher** | Voer het doel opnieuw in tot een bewijs-gepoorte belofte; inactief wanneer geleegd, ontwaak bij alles | **`simplicio-loop`** (Ralph) · `watcher` |
-| ↻ | **Dwarsdoorsnijdend** | Token-economie (terminal-first · catalogus · **tee+CCR** · proza-/geheugencompressie) · modelroutering L0→L4 · leren | **`simplicio-orient`** (rtk+caveman) · **`simplicio-compress`** (caveman) · **`simplicio-learn`** (teaching) · **headroom** CCR |
-
-Elke laag heeft een altijd-werkende LLM-fallback en bindt een native commando wanneer de host er een levert
-— hetzelfde protocol op alle 11 runtimes, alleen de snelheid verschilt.
-
----
-
-## 🏛️ Ontwerppijlers (in detail)
-
-Vier mechanismen dragen de orkestratiekracht. Elk is al in de skill bedraad — hier staat precies **waar
-het leeft** en hoe het werkt, in detail getekend.
-
-| Pijler | Focus | Leeft in | Labels |
-|---|---|---|---|
-| **DAG + pipeline** | parallellisme per afhankelijkheid, gefaseerd per item | `dependency_graph` · [`references/orchestration.md`](../.claude/skills/simplicio-tasks/references/orchestration.md) (Stap 3 pool + 3c pipeline) | `enhancement` `orchestrator` `performance` `runtime` |
-| **Worktree-isolatie** | parallelle edits zonder de boom te corrumperen, merge-gepoort | `worktree` · orchestration.md "Conflict-AWARE isolation" + merge-gate | `enhancement` `orchestrator` `runtime` |
-| **Adversariële verificatie** | een panel van sceptici vóór "delivered" | [`quality-safety-delivery.md`](../.claude/skills/simplicio-tasks/references/quality-safety-delivery.md) Stap 4c · skill `simplicio-review` | `enhancement` `quality` `runtime` |
-| **Lusbudgetplafond** | anti-oneindige-lus, dubbele uitgang | [`standing-loop-247.md`](../.claude/skills/simplicio-tasks/references/standing-loop-247.md) §4 · skill `simplicio-loop` · `hooks/loop_stop.py` | `enhancement` `coding-loop` `runtime` |
-
-### 1 · DAG + pipeline — parallellisme per afhankelijkheid, gefaseerd
-
-```mermaid
-flowchart TD
-  subgraph G1["Dependency DAG · resumable · deps gate order"]
-    direction TB
-    a["item A · no deps"]
-    b["item B · no deps"]
-    c["item C · needs A and B"]
-    d["item D · needs C"]
-    a --> c
-    b --> c
-    c --> d
-  end
-  a --> PA
-  b --> PB
-  subgraph G2["Per-item pipeline · no global barrier"]
-    direction LR
-    PA["A implement"] --> PA2["review"] --> PA3["merge"]
-    PB["B implement"] --> PB2["review"] --> PB3["merge"]
-  end
-  PA3 -. "A merged unblocks C" .-> c
-```
-
-Onafhankelijke items (A, B) waaieren meteen uit; afhankelijke (C, D) wachten op de DAG. Elk item doorloopt
-implement → review → merge op zichzelf, dus A merget terwijl B nog wordt gebouwd — **gefaseerd, nooit een
-globale barrière**. Herhaalde runs slaan voltooide knopen over (resumable).
-
-### 2 · Worktree-isolatie — parallelle edits, merge-gepoort
-
-```mermaid
-flowchart TD
-  Q["items to run in parallel"] --> OV{"touch the same files?"}
-  OV -->|"no · disjoint files"| SH["shared checkout · own branch each · commit sequentially"]
-  OV -->|"yes · overlap"| WT["dedicated git worktree · SERIALIZED"]
-  SH --> MG
-  WT --> MG
-  MG["merge gate · full suite runs ONCE on the composed result"] --> OK{"green?"}
-  OK -->|"yes"| MERGED["merge + close with evidence"]
-  OK -->|"no"| FIX["reject · fix · never corrupt the tree"]
-```
-
-Disjuncte items delen één checkout (goedkoop, geen N×-herlinken); alleen overlappende items betalen voor
-een toegewijde worktree en worden geserialiseerd. De dure volledige suite draait **één keer** op het
-gemergede resultaat — een sterkere eindpoort dan N gedeeltelijke controles.
-
-### 3 · Adversariële verificatie — een panel van sceptici vóór oplevering
-
-```mermaid
-flowchart TD
-  IMPL["implementation · diff · run evidence · ACs"] --> PANEL
-  subgraph PANEL["Panel of skeptics (MEDIUM+) · each prompted to REFUTE"]
-    direction LR
-    V1["reviewer 1 · security / correctness"]
-    V2["reviewer 2 · code quality"]
-    V3["reviewer 3 · does-it-reproduce · web_verify"]
-  end
-  PANEL --> VOTE{"majority refute an AC?"}
-  VOTE -->|"yes"| BACK["back to fix"]
-  VOTE -->|"no"| SHIP["pass · deliver"]
-```
-
-Voor MEDIUM+-items proberen 2–3 onafhankelijke reviewers elk te WEERLEGGEN (bij twijfel standaard op "niet
-af"). Een meerderheidsweerlegging op enig acceptatiecriterium stuurt het terug. TRIVIAL/SMALL houden een
-enkele zelfreview. (Gedelegeerd aan `simplicio-review`; front-end-diffs vereisen een `web_verify`-vermelding.)
-
-### 4 · Lusbudgetplafond — anti-oneindige-lus, dubbele uitgang
-
-```mermaid
-flowchart TD
-  TURN["end of turn · stop hook"] --> P{"promise emitted AND evidence in-turn?"}
-  P -->|"yes"| EXIT1["EXIT success · close with evidence"]
-  P -->|"no"| CAP{"iteration over cap, OR budget halted, OR STOP signal?"}
-  CAP -->|"yes"| EXIT2["EXIT safety · stop, never a false done"]
-  CAP -->|"no"| REFEED["re-feed the goal · next iteration"]
-  REFEED --> TURN
-```
-
-De lus heeft **twee onafhankelijke uitgangen**: een *succes*-uitgang (een bewijs-gepoorte `<promise>` die
-echt waar is) en een *veiligheids*-uitgang (het `max_iterations`-plafond, de `$`-budgetnoodstop of een
-STOP-signaal). Hij stopt nooit op een zelfgerapporteerd "done" — en draait nooit eeuwig. Dit is
-`hooks/loop_stop.py` (fail-open: elke hookfout → stoppen toestaan).
-
 ---
 
 ## 🔁 De lus
 
-De aandrijving onder de orkestrator is een **geharde Ralph-lus** (`simplicio-loop`):
+De **bewijs-gepoorte lus** is het kernmechanisme. Hij voert hetzelfde doel elke beurt opnieuw in
+zodat de agent zijn eigen eerdere werk ziet. Uitgang is ALLEEN via:
 
-1. Het doel wordt naar één enkel, mensleesbaar toestandsbestand geschreven
-   (`.orchestrator/loop/scratchpad.md`) — triviaal te inspecteren, te bewerken, te annuleren.
-2. Na elke beurt voert een **stop-hook** hetzelfde doel opnieuw in, zodat de agent zijn eigen eerdere
-   edits ziet (via git + de working tree) en convergeert. De tokenkosten per cyclus blijven vlak — geen
-   context stuffing.
-3. Hij stopt **alleen** wanneer een getypeerd sentinel `<promise>EXACTE TEKST</promise>` wordt
-   uitgezonden **én** wordt gestaafd door concreet bewijs binnen de beurt (een geslaagde poort, een link
-   naar een gemergede PR, AC-bewijzen), of wanneer een hard `max_iterations`-plafond / de
-   kostennoodstop afgaat.
+1. **Bewijs-gepoorte `<promise>`** — de beurt die de belofte uitzendt MOET ook concreet bewijs
+   dragen (geslaagde test, gemergede PR, herbevraging van gesloten item). Een belofte zonder bewijs
+   = genegeerd.
+2. **`max_iterations`-plafond** — harde veiligheidsbackstop
+3. **Budgetnoodstop** — `daily_usd_ceiling` legt de lus stil zodra het besteed is
+4. **STOP-signaal** — `.orchestrator/STOP` of kanaalcommando
 
-> **Nooit een valse belofte.** Een `<promise>` zonder bewijs wordt genegeerd en de lus gaat door. Dit
-> verbindt de lus rechtstreeks met de harde regel van de repo: *sluit werk nooit zonder een gemergede PR
-> of concreet bewijs.*
-
-Op runtimes zonder hooks **timet de lus zichzelf** via de host-scheduler (cron / `/loop` / de task runner
-van de runtime) — dezelfde stopvoorwaarden. De hooks zijn cross-platform Python en **fail-open**: een
-hook die een fout geeft, laat de agent altijd stoppen. De echte bewakers zijn het plafond en het budget,
-nooit slimmigheid van hooks.
+Tussen beurten cachet LMCache (indien beschikbaar) de KV-toestand zodat herinvoer bijna-nul prefill
+kost.
 
 ---
 
 ## 📊 Token-economie
 
-De goedkoopste token is degene die niet wordt uitgegeven. `simplicio-orient` + `simplicio-compress`
-vouwen het beste van **rtk** (de commando's comprimeren) en **caveman** (het gepraat comprimeren) samen
-in de veiligheidsruggengraat:
+| Techniek | Besparing |
+|---|---|
+| `deterministic_edit` (L0) | 100% van de edit-tokens (bestand mechanisch geschreven, nooit door de LLM) |
+| Terminal-first uitvoering | Feiten uit de shell, geen LLM-hallucinatie |
+| Output-reductiecatalogus | Plafonds per commandotype (`CAP_ERRORS=20`, `CAP_WARNINGS=10`, `CAP_LIST=20`) — `orient_clamp.py` |
+| Tee+CCR-cache bij falen | Voer een gefaald commando nooit opnieuw uit — lees de gecachete output |
+| Signatures-only leesmodus | `simplicio signatures <file>` — bestand van 870 regels → 65 regels (**93% bespaard**), bodies weggelaten |
+| `simplicio-compress` | Beknopte proza + eenmalige geheugencompactie |
+| `orient_clamp.py` | Clamp + tee op elk shell-commando, zonder bedrading |
+| Native response-cache | herhaald deterministisch (temp=0) verzoek → bediend vanuit de cache, slaat de LLM-call over (**100% bij hit**) — `simplicio cache`, standaard aan (`SIMPLICIO_CACHE=0` om uit te zetten) |
+| Simplicio capture-proxy + MCP | 60-95% minder tokens op tool-outputs via een transparante compressiedaemon |
 
-- **Terminal-first uitvoering** — de shell kent feiten exact; de LLM benadert ze duur. Een cross-platform
-  substitutietabel (Windows/macOS/Linux) beantwoordt 30+ feiten via `git`/`gh`/`rg`/`python3`. **Simuleer
-  nooit een commando — voer het uit.**
-- **Output-reductiecatalogus** (datatabel) — recept per commando + verwachte-besparing % +
-  `skip-if-structured`-bewaking. Een rauwe `cargo check` kost ~2000 tokens om te lezen; geclampt ~80.
-- **tee-cache + omkeerbare retrieve** *(rtk + headroom CCR)* — agressieve afkapping is alleen veilig als ze
-  herstelbaar is: bij falen wordt de volledige output naar `.orchestrator/tee/…log` geschreven en wordt
-  alleen het pad getoond; de agent herstelt context met `retrieve <path> [--lines|--grep]` **zonder** het
-  commando opnieuw uit te voeren. De clamp wordt een omkeerbare beslissing, geen verliesgevende.
-- **Signatures-only leesmodus** *(uit rtk)* — lees het API-oppervlak van een bestand (declaraties,
-  bodies weggelaten): een bestand van 600 regels wordt ~40 regels tijdens de intake.
-- **Signaal-getrapte plafonds + success-collapse + dedup** — houd fouten boven ruis; collapse een schone
-  run tot één regel; collapse herhaalde regels tot `line xN` — altijd `unless errors present`.
-- **Prozatiers + geheugencompactie** *(uit caveman)* — beknopte output die code/paden/URL's **byte voor
-  byte** behoudt (`transform_guard` gaat fail-closed bij elke verloren token), plus een eenmalige
-  compactie van het permanente geheugen die over elke toekomstige beurt wordt afgeschreven.
-- **Eerlijke baseline** — besparingen worden gemeten tegen een realistische *"answer concisely"*-controlearm
-  (geen breedsprakige stroman), tellen alleen **output**-tokens (geen reasoning) en worden **alleen
-  gecrediteerd bij een geverifieerd-correcte uitkomst**. Compressie die haar kwaliteitspoort niet haalt,
-  verdient nul.
+Besparingen tellen alleen bij een geverifieerd-correcte uitkomst. Baseline = het goedkoopste
+verstandige niet-georkestreerde pad naar hetzelfde resultaat. Zie `references/token-economy.md`.
 
-Elk bericht eindigt met een eerlijke regel:
+### 📈 Simplicio Token Monitor
 
-```
-simplicio-tasks: ~<spent> tokens · baseline ~<control-arm> · saved ~<saved> (<pct>%)
-```
+Een live, altijd-aan zicht op de besparingen:
 
-Probeer het nu, zonder bedrading:
+- **Web-dashboard** — `http://127.0.0.1:9090` — realtime token-grafiek, besparingsmeter, de
+  LLMs/runtimes en **141/144 providers (98%)** die we onderscheppen, en een live proxy-log.
+- **Menubalk- / tray-widget** — live bespaarde tokens in de systeemtray (macOS rumps · Windows/Linux pystray).
+- **Eén module** — `scripts/simplicio-economy.sh {status|up|wire}` brengt de capture-proxy + monitor
+  + tray + de deterministische `simplicio-dev-cli`-operator op en rapporteert de hele stack.
 
-```bash
-python3 hooks/orient_clamp.py -- cargo test      # reduced output + tee log on failure
-python3 hooks/orient_clamp.py --json -- git diff  # machine summary
-```
+De installatie registreert alle drie als auto-start-services (macOS launchd · Linux systemd ·
+Windows Startup) via `scripts/setup_simplicio.sh`, of de cross-platform
+`python3 scripts/install_services.py install`. Na installatie draaien de monitor + capture **zonder
+de lus aan te roepen** — zie `references/token-capture.md`.
 
----
+### 🛠️ De capture engine — één native module, elk commando
 
-## 🏗️ Op de schouders van
+[`engine/simplicio_engine.py`](../engine/simplicio_engine.py) is de native Simplicio capture engine
+(alleen-stdlib, fail-open) — een **volledige herimplementatie van het upstream
+[headroom](https://github.com/headroomlabs-ai/headroom)-oppervlak zonder externe afhankelijkheid**.
+Voer elk commando uit via de [`scripts/simplicio-engine`](../scripts/simplicio-engine)-wrapper
+(bijv. `simplicio-engine doctor`):
 
-simplicio-loop is gebouwd **na een grondige studie** van het beste werk rond lussen + token-economie op
-GitHub, en vouwt elk daarvan samen in een toegespitste skill — met behoud van de discipline, met
-weglating van de trucjes.
+| Commando | Wat het doet |
+|---|---|
+| `proxy` | de transparante capture-proxy — routeert elk model naar zijn **echte** provider, comprimeert + meet + cachet (geen model-swap) |
+| `doctor` | bereikbaarheid van de proxy + levenslange besparingen |
+| `cache` | native response-cache (`stats`/`clear`) — een herhaald deterministisch verzoek wordt vanuit de cache bediend en slaat de LLM-call over |
+| `signatures` | signatures-only weergave van een bronbestand (bodies weggelaten, ~93% minder tokens om code te lezen) |
+| `semantic` | omkeerbare extractieve (semantic-lite) compressie |
+| `kompress` | **ONNX** semantisch token-snoeien via het echte `kompress-v2-base`-model |
+| `detect` | content-type-detectie + slimme routering per blok |
+| `rag` | TF-IDF (of `--ml` embedding) retrieval over de CCR-geheugenopslag |
+| `memory` | CCR compress-cache-retrieve-opslag (`remember`/`recall`/`forget`/`list`/`stats`) |
+| `mcp` | native stdio MCP-server (compress / retrieve / stats tools) |
+| `init` / `wrap` | registreer Simplicio in een client (Claude / Codex / Copilot / OpenClaw) · draai een client met capture-routering |
+| `report` / `audit` / `capture` / `evals` | besparingsrapport · audit een boom op compressiekansen · dry-run van een verzoek · compressie-regressiepoort |
 
-| Project | Wat we overnamen | Wat we lieten liggen |
+### 🧠 Optionele echte ML-modellen — `pip install "simplicio-loop[onnx]"`
+
+Vier **echte**, publieke (Apache-2.0) ONNX-modellen draaien native — dezelfde modellen die de
+upstream gebruikt. Zonder de extra dekt het deterministische stdlib-pad alles; modellen worden bij
+het eerste gebruik gedownload.
+
+| Model | Commando | Gebruik |
 |---|---|---|
-| 🪨 [**caveman**](https://github.com/JuliusBrussee/caveman) | beknopte prozatiers, byte-behoudende identifiers, geheugencompactie, eerlijke *"answer concisely"*-baseline | grammaticaal woorden weglaten (verslechtert code & bevestigingen) |
-| ⚙️ [**rtk**](https://github.com/rtk-ai/rtk) | reductiecatalogus per commando, signaal-getrapte plafonds, **tee-cache**, signatures-leesmodus, auto-rewrite-hook + exclusielijst | registers per taal (runtime-specifiek) |
-| ♾️ [**ralph-loop**](https://github.com/cursor/plugins/tree/main/ralph-loop) | lustoestand in één bestand, exact-match-promise-sentinel, split in twee hooks | trust-the-model-voltooiing (wij maken het **bewijs-gepoort**) |
-| 🔥 [**thermos**](https://github.com/cursor/plugins/tree/main/thermos) | parallelle reviewers in één bericht, gescheiden rubrieken, dedup bij de synthese | — |
-| 🎓 [**teaching**](https://github.com/cursor/plugins/tree/main/teaching) | retrospectief dat de toestand persisteert zodat de volgende cyclus niets opnieuw hoeft af te leiden | het domein van menselijk leren zelf |
-| 🧭 op de uitkomst gerichte uitvoering | convergeer op de eindtoestand; geplande, afgebakende, omkeerbare tussentijdse breuk | — |
-| 🧠 [**headroom**](https://github.com/headroomlabs-ai/headroom) | **omkeerbare** compress-cache-retrieve (CCR) bovenop de tee-cache; taxonomie voor content-type-routering | het getrainde model + de traffic-proxy (in tegenspraak met het terminal-first, runtime-onafhankelijke ontwerp) |
-| 🎭 [**Playwright**](https://github.com/microsoft/playwright) (+[mcp](https://github.com/microsoft/playwright-mcp), [python](https://github.com/microsoft/playwright-python)) | een echte browser aansturen voor front-end-bewijs — screenshot + trace als `web_verify`-bewijs | DOM/pixels in de context (het bewijs is het artefactpad, niet de bytes) |
+| `kompress-v2-base` | `simplicio kompress` | semantisch token-snoeien |
+| `technique-router-onnx` | `simplicio router` | techniekroutering |
+| `all-MiniLM-L6-v2-onnx` | `simplicio embed` · `rag --ml` | embeddings + semantische RAG |
+| `siglip-image-encoder-onnx` | `simplicio image` | content-verifier voor beeldcompressie |
 
-> Zij verminderen tokens; simplicio-loop **doet het werk** en vermindert tokens terwijl het dat doet.
+### ⚙️ Native Rust performance-kern (optioneel)
 
----
+[`rust/`](../rust) levert vier crates die geport + omgedoopt zijn vanuit de upstream (Apache-2.0;
+`NOTICE` crediteert het): `simplicio-core` (compressors + smart-crusher), `simplicio-py`
+(PyO3-bindingen), `simplicio-proxy` (axum reverse proxy), `simplicio-parity`
+(Rust↔Python-pariteitsharness). Bouw met `maturin` — de Python-engine werkt volledig zonder hen; de
+crates voegen alleen native snelheid toe.
 
-## 🧩 De 43 uitbreidingspunten
+|---
 
-Elke werkstap gebeurt op een **benoemd uitbreidingspunt**. Als een host-runtime een native capaciteit
-aanbiedt, **bindt** het zich daaraan (deterministisch, bijna-zero-token); anders voert de LLM de
-**fallback** uit met standaardgereedschap. De skill leunt op de abstractie, nooit op een runtime.
+## 🏛️ Ontwerppijlers (in detail)
 
-<details>
-<summary><strong>Orkestratie & schaal</strong></summary>
+Vier mechanismen dragen de orkestratiekracht:
 
-`orient` · `normalize` · `intake` · `source_adapter` · `autoscale` · `plan`/`decide` ·
-`execute` · `issue_factory` · `claim` · `worktree` · `dependency_graph` · `durable_workflow` ·
-`work_queue` · `resource_governor` · `model_route` · `model_preflight`
-</details>
-
-<details>
-<summary><strong>Bewerken, kwaliteit & bewijs</strong></summary>
-
-`deterministic_edit` · `diagnostics` · `toolchain_detect` · `validate`/`smoke` ·
-`delivery_gate` · `endpoint_compare` · `web_verify` · `pr`/`evidence` · `retry` ·
-`reuse_precedent` · `trajectory` · `learn` · `status` · `capability_rank`
-</details>
-
-<details>
-<summary><strong>Tokens, context & veiligheid</strong></summary>
-
-`recall` · `compress` · `prompt_budget` · `shell_exec` · `transform_guard` · `action_gate` ·
-`security` · `human_gate` · `notify` · `checkpoint_restore` · `watcher` · `savings_ledger` ·
-`web_research`
-</details>
-
-Volledige tabel met fallbacks:
-[`references/extension-points.md`](../.claude/skills/simplicio-tasks/references/extension-points.md).
+| Pijler | Focus | Leeft in |
+|---|---|---|
+| **DAG + pipeline** | parallellisme per afhankelijkheid, gefaseerd per item | `references/orchestration.md` (Stap 3 pool + pipeline) |
+| **Worktree-isolatie** | parallelle edits zonder de boom te corrumperen, merge-gepoort | `references/orchestration.md` |
+| **Adversariële verificatie** | een panel van sceptici vóór "delivered" | `references/quality-safety-delivery.md` · skill `simplicio-review` |
+| **Lusbudgetplafond** | anti-oneindige-lus, dubbele uitgang | `references/standing-loop-247.md` · skill `simplicio-loop` |
 
 ---
 
@@ -475,14 +362,14 @@ Dan:
 /simplicio-tasks finish all the open issues
 ```
 
-De enige vereiste is **python3** op het PATH (skills, hooks en installer zijn cross-platform Python). Voor
-GitHub-bronnen, `git` + een geauthenticeerde `gh`. Zie [`INSTALL.md`](../INSTALL.md) en
-[`adapters/MATRIX.md`](../adapters/MATRIX.md).
+De enige vereiste is **python3** op het PATH (skills, hooks en installer zijn cross-platform
+Python). Voor GitHub-bronnen, `git` + een geauthenticeerde `gh`. Zie [`INSTALL.md`](../INSTALL.md)
+en [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
 **Vóór een onbewaakte 24/7-run:** stel een kostenplafond in in `.orchestrator/loop-budget.json`
-(`daily_usd_ceiling > 0`), bevestig dat bronauthenticatie persistent is, en houd de menselijke poort voor
-onomkeerbare operaties + de secret-scan aan. Met `ceiling = 0` weigert de watcher onbewaakt te draaien
-(fail-safe).
+(`daily_usd_ceiling > 0`), bevestig dat bronauthenticatie persistent is, en houd de menselijke poort
+voor onomkeerbare operaties + de secret-scan aan. Met `ceiling = 0` weigert de watcher onbewaakt te
+draaien (fail-safe).
 
 ---
 
@@ -490,8 +377,8 @@ onomkeerbare operaties + de secret-scan aan. Met `ceiling = 0` weigert de watche
 
 - **Secret-scan** van elke diff; blokkeer bij een treffer.
 - **Menselijke poort voor onomkeerbare operaties** — force-push, history-herschrijving, prod-deploy,
-  data-/schemaverwijdering, massale bestandsverwijdering → stop en vraag het. Headless + geen goedkeurder
-  → verwijder de destructieve capaciteit.
+  data-/schemaverwijdering, massale bestandsverwijdering → stop en vraag het. Headless + geen
+  goedkeurder → verwijder de destructieve capaciteit.
 - **4-status pre-executieoordeel** — optimalisatie mag de risicotier van een commando nooit verhogen.
 - **Trust-before-load** — perceptie-vormende config (clamp-profielen, suppressielijsten) is niet
   vertrouwd totdat een mens haar reviewt en per hash vastpint.
@@ -504,4 +391,4 @@ onomkeerbare operaties + de secret-scan aan. Met `ceiling = 0` weigert de watche
 
 ## 📄 Licentie
 
-MIT — zie [LICENSE](../LICENSE). Onderdeel van het [Simplicio](https://github.com/wesleysimplicio)-ecosysteem.
+MIT
