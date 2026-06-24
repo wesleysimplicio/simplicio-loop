@@ -5,6 +5,17 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.8.0] — 2026-06-24
+
+### Changed — release hygiene + PyPI publish
+- **Published to PyPI** (`pip install -U simplicio-loop` now resolves this version). Re-synced the
+  shipped bundle (`simplicio_loop/_bundle/hooks/simplicio_dashboard.py`) so the pip artifact carries
+  the current 10-runtime neon dashboard byte-for-byte (`bundle ≡ source`, audited by
+  `scripts/claims_audit.py`).
+- **Fixed the plugin manifest version drift:** `.claude-plugin/plugin.json` was stuck at `3.3.0`
+  while `pyproject.toml` advanced — both are now synced at the release version.
+- `build/` (setuptools build artifacts) is git-ignored.
+
 ## [3.7.0] — 2026-06-24
 
 ### Added — `scripts/doctor.py` (verify + `--repair`); optional pieces never block
