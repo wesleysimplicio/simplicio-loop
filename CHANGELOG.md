@@ -3,6 +3,17 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [1.5.0] — 2026-06-23
+
+### Added
+- **Desktop menu-bar app (`app/simplicio_tray.py`).** A macOS tray + widget that lives in the
+  menu bar showing live tokens saved (brand hexagon icon + compact count, e.g. `⬡ 102.9K`). The
+  dropdown is the widget: lifetime tokens/$ saved, reduction %, requests, current-session savings,
+  capture-proxy status, and "Open Token Monitor". Reads `proxy_savings.json` directly — no traffic
+  of its own. Auto-starts as the `ai.simplicio.tray` launchd service; `setup_simplicio.sh` installs
+  `rumps` and registers it.
+- Brand `assets/tray-icon.png` for the menu-bar item.
+
 ## [1.4.0] — 2026-06-23
 
 ### Added
