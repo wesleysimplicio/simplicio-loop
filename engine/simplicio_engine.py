@@ -55,6 +55,10 @@ try:
     from simplicio_compress import compress as _ext_compress
 except Exception:
     _ext_compress = None
+try:
+    from simplicio_compress_extra import compress_extra as _ext_compress_extra
+except Exception:
+    _ext_compress_extra = None
 
 
 def _exec_sibling(name, rest):
@@ -142,7 +146,10 @@ def _compress_text(text):
         return text
     if _ext_compress is not None:
         try:
-            return _ext_compress(text)
+            out = _ext_compress(text)
+            if _ext_compress_extra is not None:
+                out = _ext_compress_extra(out)
+            return out if len(out) <= len(text) else text
         except Exception:
             pass
     out = text
@@ -477,6 +484,12 @@ def main(argv=None):
     pmcp.add_argument("rest", nargs=argparse.REMAINDER)
     pin = sub.add_parser("init", help="register Simplicio into a client: init <client> [--apply]")
     pin.add_argument("rest", nargs=argparse.REMAINDER)
+    pwr = sub.add_parser("wrap", help="run a client with capture routing: wrap <client> [-- args]")
+    pwr.add_argument("rest", nargs=argparse.REMAINDER)
+    prp = sub.add_parser("report", help="savings report (summary/--json/--since/--top)")
+    prp.add_argument("rest", nargs=argparse.REMAINDER)
+    pvf = sub.add_parser("verify", help="self-check the whole token-economy stack")
+    pvf.add_argument("rest", nargs=argparse.REMAINDER)
 
     args = p.parse_args(argv)
     if args.cmd == "proxy":
@@ -492,6 +505,12 @@ def main(argv=None):
         return _exec_sibling("simplicio_mcp.py", [])  # the MCP server reads stdin; ignore 'serve'
     if args.cmd == "init":
         return _exec_sibling("simplicio_init.py", getattr(args, "rest", []))
+    if args.cmd == "wrap":
+        return _exec_sibling("simplicio_wrap.py", getattr(args, "rest", []))
+    if args.cmd == "report":
+        return _exec_sibling("simplicio_report.py", getattr(args, "rest", []))
+    if args.cmd == "verify":
+        return _exec_sibling("simplicio_verify.py", getattr(args, "rest", []))
     p.print_help()
     return 0
 

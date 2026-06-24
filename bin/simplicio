@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Thin launcher for the unified simplicio CLI.
+# Resolves the repo root from this script's own location, then runs the
+# Python dispatcher with all forwarded args.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+exec python3 "$REPO_ROOT/engine/simplicio_cli.py" "$@"

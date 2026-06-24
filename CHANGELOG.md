@@ -3,6 +3,23 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [2.4.0] — 2026-06-24
+
+### Added — unified CLI + more engine commands (5 more parallel agents, each self-tested)
+- **Unified `simplicio` command** (`engine/simplicio_cli.py` + `bin/simplicio`): one entry that dispatches
+  `simplicio proxy|doctor|memory|mcp|init|wrap|report|verify|compress|version`.
+- **`simplicio wrap <client>`** (`engine/simplicio_wrap.py`): run a client (claude/codex/cursor/opencode/aider)
+  with capture routing injected for that run (OPENAI/ANTHROPIC_BASE_URL → proxy), warns if the proxy is down.
+- **`simplicio report`** (`engine/simplicio_report.py`): savings report — lifetime/session totals + per-model
+  and per-provider breakdown (deltas from the cumulative history), `--json`, `--since`, `--top`.
+- **`simplicio verify`** (`engine/simplicio_verify.py`): one-command self-check of the whole stack
+  (proxy, monitor, savings file, engine, compression, memory, MCP, operator) → PASS/WARN/FAIL table.
+  Verified **8/8 PASS** on the dev machine.
+- **`engine/simplicio_compress_extra.py`** — 4 more safe deterministic algorithms (markdown-table
+  whitespace, repeated multi-line block fold, long-token elision, numbered-noise fold), chained after the
+  base pipeline. Meaning-preserving + idempotent (prose/code byte-identical).
+- `wrap`/`report`/`verify` are also reachable as `simplicio_engine` subcommands.
+
 ## [2.3.0] — 2026-06-24
 
 ### Added — native engine grows toward feature parity (built by 5 parallel agents, each self-tested)
