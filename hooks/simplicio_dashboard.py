@@ -21,6 +21,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -42,7 +43,8 @@ LOGO_CANDIDATES = [
     REPO_ROOT / "assets" / "simplicio-loop-logo.png",
     Path(HOME) / "Projetos" / "ai" / "simplicio-runtime" / "site" / "assets" / "img" / "simplicio-logo.png",
 ]
-PID_FILE = Path("/tmp") / "simplicio-token-monitor.pid"
+# Cross-platform temp dir (Windows has no /tmp) — must match simplicio_loop/cli.py PID_FILE.
+PID_FILE = Path(tempfile.gettempdir()) / "simplicio-token-monitor.pid"
 PROXY_PORT = os.environ.get("SIMPLICIO_PROXY_PORT", os.environ.get("HEADROOM_PORT", "8788"))
 # Engine call: the native Simplicio engine module, invoked cross-platform via this interpreter.
 ENGINE_CMD = [sys.executable or "python3", str(REPO_ROOT / "engine" / "simplicio_engine.py")]
@@ -857,8 +859,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 def main():
     port = int(os.environ.get("PORT", "9090"))
     srv = http.server.HTTPServer(("127.0.0.1", port), Handler)
-    with open(PID_FILE, "w") as f:
-        f.write(str(os.getpid()))
+    try:  # the PID file lets `simplicio-loop dashboard --stop` find us; never fatal if it can't be written
+        PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PID_FILE.write_text(str(os.getpid()))
+    except OSError:
+        pass
     print(f"⬡ Simplicio Token Monitor · http://127.0.0.1:{port}")
     print(f"   api: /api/status · refresh: 3s")
     try:

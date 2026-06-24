@@ -383,15 +383,20 @@ A view of the savings you open when you want — only the capture is always-on:
 - **Capture proxy** — **always-on** (the one auto-started service; the wired clients need it
   reachable). It silently captures + measures Claude + Codex + Hermes in the background.
 - **Web dashboard** — `http://127.0.0.1:9090` — real-time token chart, savings gauge, the LLMs/runtimes
-  and **141/144 providers (98%)** we intercept, a live proxy log. **On-demand:**
-  `bash scripts/simplicio-economy.sh monitor` (opens the browser) · `… monitor stop` to close.
+  and **141/144 providers (98%)** we intercept, a live proxy log. **Opens once on the first install**
+  so you see it works, then it's **on-demand** — re-open it any of these ways:
+  - `simplicio-loop dashboard` — works from anywhere after the pip install (no repo path needed);
+    `simplicio-loop dashboard --stop` to close, `--no-browser` to just start the server.
+  - `bash scripts/simplicio-economy.sh monitor` (repo checkout) · `… monitor stop` to close.
+  - just **ask the agent** — "open the token dashboard".
 - **Menu-bar / tray widget** — live tokens saved in the system tray (macOS rumps · Windows/Linux pystray).
   **On-demand:** `bash scripts/simplicio-economy.sh tray` · `… tray stop`.
 
-Install auto-starts **only the capture proxy** (macOS launchd · Linux systemd · Windows Startup); the
-dashboard + tray never open by themselves. Manage the stack: `scripts/simplicio-economy.sh
-{status|up|monitor|tray|wire}`. After install, capture runs **without invoking the loop** — see
-`references/token-capture.md`.
+Install auto-starts **only the capture proxy** (macOS launchd · Linux systemd · Windows Startup). The
+dashboard opens **once** on a fresh install (marker-guarded — a re-install/update never reopens it; opt
+out with `SIMPLICIO_NO_DASHBOARD=1`), and the tray never opens by itself — nothing is forced to stay
+open. Manage the stack: `scripts/simplicio-economy.sh {status|up|monitor|tray|wire}`. After install,
+capture runs **without invoking the loop** — see `references/token-capture.md`.
 
 ### 🛠️ The capture engine — one native module, every command
 
@@ -466,8 +471,9 @@ the two loop operators (`simplicio-mapper` + `simplicio-cli`, auto-handling PEP 
 Python and symlinking the binaries onto `PATH`), the **full Python stack** (the package + the `[onnx]`
 models backend: onnxruntime + huggingface_hub + tokenizers + pillow, so `simplicio kompress/router/embed/image`
 work), the **6 skills + hooks** with the loop's Stop hook wired, and the **always-on capture proxy**
-with Claude + Codex + Hermes **routed and measured** in the background. The **dashboard + menu-bar tray
-never open by themselves** — open them when you want with `simplicio-economy.sh monitor` / `tray`.
+with Claude + Codex + Hermes **routed and measured** in the background. The **dashboard opens once** on a
+fresh install, then it's on-demand (`simplicio-loop dashboard` / `simplicio-economy.sh monitor`); the
+**menu-bar tray never opens by itself** — nothing is forced to stay open.
 Pass **`--minimal`** only for headless/CI to skip the heavy deps + the machine services. Verify any time:
 `bash scripts/simplicio-economy.sh status`.
 

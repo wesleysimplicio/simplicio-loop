@@ -261,12 +261,78 @@ def install_all_deps():
     _pip(tray)
 
 
+def _open_dashboard_first_run():
+    """Open the Token Monitor dashboard ONCE, on the first install, so the user sees it works.
+
+    Guarded by a marker (~/.simplicio/.dashboard_shown): a re-install/update does NOT reopen it —
+    the dashboard is on-demand, never forced open. Opt out entirely with SIMPLICIO_NO_DASHBOARD=1
+    (headless/CI). Best-effort: any failure (no browser, no display) is swallowed — never blocks.
+    """
+    if os.environ.get("SIMPLICIO_NO_DASHBOARD") == "1":
+        return
+    marker = os.path.join(HOME, ".simplicio", ".dashboard_shown")
+    if os.path.exists(marker):
+        log("dashboard already shown once — open it any time:  simplicio-loop dashboard")
+        return
+    # Headless box (no GUI)? Don't auto-open: there's nothing to show, and webbrowser.open() on
+    # headless Linux can BLOCK forever. Mark first-run done so we never retry; print the reopen line.
+    gui = sys.platform == "darwin" or os.name == "nt" \
+        or bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    if not gui:
+        try:
+            os.makedirs(os.path.dirname(marker), exist_ok=True)
+            open(marker, "w").close()
+        except OSError:
+            pass
+        log("headless — dashboard not auto-opened. Open it any time:  simplicio-loop dashboard")
+        return
+    import socket as _socket
+    import time as _time
+    import webbrowser as _wb
+    port = int(os.environ.get("SIMPLICIO_MONITOR_PORT", "9090"))
+    dash = os.path.join(SOURCE, "hooks", "simplicio_dashboard.py")
+    url = "http://127.0.0.1:%d" % port
+
+    def _up():
+        try:
+            with _socket.create_connection(("127.0.0.1", port), 0.5):
+                return True
+        except OSError:
+            return False
+
+    try:
+        if not _up() and os.path.exists(dash):
+            logdir = os.path.join(HOME, ".simplicio", "logs")
+            os.makedirs(logdir, exist_ok=True)
+            env = {**os.environ, "PORT": str(port)}
+            kw = {"start_new_session": True} if os.name != "nt" else {"creationflags": 0x208}
+            with open(os.path.join(logdir, "token-monitor.log"), "ab") as lf:
+                subprocess.Popen([sys.executable or "python3", dash], env=env,
+                                 stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, **kw)
+            for _ in range(25):
+                if _up():
+                    break
+                _time.sleep(0.2)
+        if _up():
+            if os.environ.get("SIMPLICIO_NO_BROWSER") != "1":
+                try:
+                    _wb.open(url)
+                except Exception:
+                    pass
+            log("Token Monitor opened once → %s" % url)
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").close()   # mark first-run done so we never auto-open again
+    except Exception:
+        pass
+
+
 def setup_monitor(enable):
     """Token monitor = machine-level capture proxy + dashboard + tray + always-capture wiring.
 
-    Default-on (the install is complete by default; `--minimal` disables it). Registers the three
-    services (launchd via setup_simplicio.sh on macOS · systemd/Startup via install_services.py
-    elsewhere) and routes Claude + Codex + Hermes through the proxy so the monitor measures them.
+    Default-on (the install is complete by default; `--minimal` disables it). Registers the
+    always-on capture proxy (launchd via setup_simplicio.sh on macOS · systemd/Startup via
+    install_services.py elsewhere) and routes Claude + Codex + Hermes through the proxy. The
+    dashboard opens ONCE on the first install (then on-demand); the tray is on-demand.
     """
     svc = os.path.join(HERE, "install_services.py")
     setup_sh = os.path.join(HERE, "setup_simplicio.sh")
@@ -280,8 +346,10 @@ def setup_monitor(enable):
     elif os.path.exists(svc):
         subprocess.run([py, svc, "install"], check=False)
         subprocess.run([py, svc, "wire"], check=False)
-    log("capture proxy always-on · Claude+Codex+Hermes measured. Open the UI when you want:")
-    log("  dashboard: bash scripts/simplicio-economy.sh monitor   ·   tray: bash scripts/simplicio-economy.sh tray")
+    _open_dashboard_first_run()   # show the dashboard once on a fresh install (marker-guarded)
+    log("capture proxy always-on · Claude+Codex+Hermes measured. Re-open the UI any time:")
+    log("  dashboard: simplicio-loop dashboard   (or: bash scripts/simplicio-economy.sh monitor)")
+    log("  tray:      bash scripts/simplicio-economy.sh tray   ·   or just ask the agent to open it")
 
 
 def main():

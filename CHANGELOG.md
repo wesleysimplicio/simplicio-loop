@@ -5,6 +5,38 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.9.0] — 2026-06-24
+
+### Added — `simplicio-loop dashboard` (open the Token Monitor from anywhere)
+- **`simplicio-loop dashboard`** — a console subcommand that starts the bundled Token Monitor server
+  (detached, if it isn't already up) and opens the browser. Works from anywhere after a `pip install`
+  — no repo checkout or path needed. Flags: `--port` (default 9090), `--no-browser` (start the server
+  only), `--stop` (close a running monitor). This is the easy way to re-open the dashboard — type the
+  command, or just ask the agent ("open the token dashboard").
+
+### Changed — dashboard opens once on install, then stays on-demand (never forced open)
+- A **fresh install opens the dashboard once** so you see it works, then it's on-demand. Guarded by a
+  marker (`~/.simplicio/.dashboard_shown`): a re-install/update **never reopens** it. Opt out with
+  `SIMPLICIO_NO_DASHBOARD=1` (and `SIMPLICIO_NO_BROWSER=1` to skip just the browser). The first-run open
+  is best-effort and **never blocks the install** (detached, headless-safe). Only the capture proxy stays
+  always-on; nothing is forced to stay open.
+
+### Fixed — package `__version__` drift
+- `simplicio_loop.__version__` was hardcoded at `1.0.3` while the package shipped 3.x — `simplicio-loop
+  --version` now reads the real version from the installed package metadata (single source of truth).
+
+### Fixed — cross-platform correctness (macOS · Windows · Linux), adversarially reviewed
+- **Windows:** the dashboard PID file no longer hardcodes `/tmp` (which doesn't exist on Windows and
+  crashed the server on start) — both `simplicio_loop/cli.py` and `hooks/simplicio_dashboard.py` use
+  `tempfile.gettempdir()` (→ `%TEMP%` on Windows, `/tmp`/`$TMPDIR` on Linux, `/var/folders/…` on macOS),
+  and the PID write is now defensive (creates the dir, never fatal). `--stop` works on all three OS
+  (PID-file `os.kill` everywhere; `pkill` is an extra fallback only where it exists).
+- **Headless Linux:** `webbrowser.open()` is only called when a GUI is actually present
+  (`DISPLAY`/`WAYLAND_DISPLAY`, or macOS/Windows) — on a headless box it would otherwise launch a
+  text browser that inherits stdin and **blocks forever** (a hang `try/except` can't catch). Install
+  now never blocks on a headless/CI machine; the first-run open is simply skipped there.
+- Hardened `sys.executable or "python3"` consistently so a `None` interpreter can't crash the launcher.
+
 ## [3.8.0] — 2026-06-24
 
 ### Changed — release hygiene + PyPI publish
