@@ -3,6 +3,18 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [2.6.0] — 2026-06-24
+
+### Added — output token capture (input + output now complete)
+- The proxy was only counting **input** (prompt) tokens; it now also captures **output/completion**
+  tokens by reading the upstream response's `usage` (OpenAI `completion_tokens` / Anthropic
+  `output_tokens`) from a bounded 64 KB response tail — **without breaking streaming** (chunks are
+  written through immediately; only a small tail is kept). Honest: if the upstream doesn't report
+  usage, output is 0 (no fabricated estimate). Recorded as `total_output_tokens` (lifetime + session)
+  and `tok_out=` in the PERF log. Verified isolated: a response with `completion_tokens:42` → captured 42.
+- Dashboard shows a **tokens out** KPI (replacing the always-zero "cache hit" card — the native engine
+  doesn't cache).
+
 ## [2.5.0] — 2026-06-24
 
 ### Added — more native commands + quality gates (5 more parallel agents, each self-tested)

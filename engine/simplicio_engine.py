@@ -239,15 +239,16 @@ class SavingsStore:
     @staticmethod
     def _empty_totals():
         return {"requests": 0, "tokens_saved": 0, "compression_savings_usd": 0.0,
-                "total_input_tokens": 0, "total_input_cost_usd": 0.0}
+                "total_input_tokens": 0, "total_input_cost_usd": 0.0, "total_output_tokens": 0}
 
     def _empty_session(self):
         t = self._empty_totals()
         t.update({"savings_percent": 0.0, "started_at": _iso_now(), "last_activity_at": _iso_now()})
         return t
 
-    def record(self, provider, model, before, after):
+    def record(self, provider, model, before, after, out=0):
         saved = max(before - after, 0)
+        out = max(int(out or 0), 0)
         rate = _price(model)
         usd_saved = saved / 1_000_000 * rate
         in_cost = after / 1_000_000 * rate
@@ -259,6 +260,7 @@ class SavingsStore:
             L["compression_savings_usd"] = round(L["compression_savings_usd"] + usd_saved, 6)
             L["total_input_tokens"] += after
             L["total_input_cost_usd"] = round(L["total_input_cost_usd"] + in_cost, 6)
+            L["total_output_tokens"] = L.get("total_output_tokens", 0) + out
 
             S = self.data["display_session"]
             last = _parse_iso(S.get("last_activity_at"))
@@ -270,6 +272,7 @@ class SavingsStore:
             S["compression_savings_usd"] = round(S["compression_savings_usd"] + usd_saved, 6)
             S["total_input_tokens"] += after
             S["total_input_cost_usd"] = round(S["total_input_cost_usd"] + in_cost, 6)
+            S["total_output_tokens"] = S.get("total_output_tokens", 0) + out
             S["last_activity_at"] = now
             denom = S["tokens_saved"] + S["total_input_tokens"]
             S["savings_percent"] = round(S["tokens_saved"] / denom * 100, 2) if denom else 0.0
@@ -339,6 +342,19 @@ def _provider_of(host):
     return "openai"
 
 
+def _extract_output_tokens(data):
+    """Pull completion/output token count from a response tail (OpenAI completion_tokens or
+    Anthropic output_tokens). Returns 0 if the upstream didn't report usage (honest, no estimate)."""
+    if not data:
+        return 0
+    try:
+        text = data.decode("utf-8", "replace")
+    except Exception:
+        return 0
+    m = re.findall(r'"(?:completion_tokens|output_tokens)"\s*:\s*(\d+)', text)
+    return int(m[-1]) if m else 0
+
+
 # ── transparent forwarding proxy ─────────────────────────────────────────────
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -404,13 +420,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self.send_header(k, v)
             self.send_header("Connection", "close")
             self.end_headers()
+            tail = b""  # keep the last 64KB — the usage block lives at the end (final SSE chunk / JSON)
             while True:
                 chunk = resp.read(8192)
                 if not chunk:
                     break
                 self.wfile.write(chunk)
                 self.wfile.flush()
+                tail = (tail + chunk)[-65536:]
             conn.close()
+            tok_out = _extract_output_tokens(tail)
         except Exception as e:  # upstream failure — report, don't crash the proxy
             try:
                 self._json(502, {"error": {"message": f"simplicio proxy upstream error: {e}", "type": "upstream_error"}})
@@ -420,10 +439,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if STORE is not None and before:
-            saved = STORE.record(provider, model or "unknown", before, after)
-            cache = max(after, 0)
+            saved = STORE.record(provider, model or "unknown", before, after, tok_out)
             _log(f"PERF model={model or 'unknown'} provider={provider} tok_before={before} "
-                 f"tok_after={after} tok_saved={saved} cache_hit_pct=0")
+                 f"tok_after={after} tok_saved={saved} tok_out={tok_out} cache_hit_pct=0")
 
     def log_message(self, *a):
         pass

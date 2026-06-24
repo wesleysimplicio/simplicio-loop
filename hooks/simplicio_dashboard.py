@@ -511,7 +511,7 @@ async function refresh(){
       card('tokens after',fmt(d.tokens_after),'blue','sent to model',d.tokens_after>0?Math.min(100,Math.round(d.tokens_after/1000000*100)):0,'blue'),
       card('tokens saved',fmt(d.tokens_saved),d.tokens_saved>0?'green':'amber',d.savings_pct+'% reduction',pct,'green'),
       card('$ saved',(d.usd_saved||0).toFixed(3),'yellow','compression cost',0,'yellow'),
-      card('cache hit',d.cache_hit_pct+'%',d.cache_hit_pct>50?'green':'amber','engine reuse',d.cache_hit_pct,'green'),
+      card('tokens out',fmt(d.tokens_out),'blue','model completions',d.tokens_out>0?Math.min(100,Math.round(d.tokens_out/1000000*100)):0,'blue'),
       card('interceptable',d.intercept_ready+'/'+(d.runtimes||[]).length,'green',d.intercept_none+' not yet',Math.round(d.intercept_ready/(d.runtimes||[]).length*100),'green'),
     ].join('');
 
@@ -634,6 +634,7 @@ def get_status():
     tok_after = int(life.get("total_input_tokens", 0) or 0)   # what actually reached the model
     tok_before = tok_after + tok_saved                          # raw, pre-compression
     usd_saved = float(life.get("compression_savings_usd", 0) or 0)
+    tokens_out = int(life.get("total_output_tokens", 0) or 0)
 
     # Real-time series from history (each entry is one intercepted request).
     series = []
@@ -743,6 +744,7 @@ def get_status():
         "tokens_after": tok_after,
         "tokens_saved": tok_saved,
         "usd_saved": usd_saved,
+        "tokens_out": tokens_out,
         "savings_pct": savings_pct,
         "cache_hit_pct": cache_hit,
         "memories": mem,
