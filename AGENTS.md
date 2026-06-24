@@ -52,7 +52,7 @@ confirm scope in one line only if ambiguous.
 
 ## Extension points (bind native, else fall back)
 
-The skill defines **44 named extension points** (see the Step 1b table in `SKILL.md`).
+The skill defines **45 named extension points** (see the Step 1b table in `SKILL.md`).
 For each point, if this runtime exposes a faster native capability, **bind it** —
 the step becomes deterministic and near-zero-token. If not, perform the documented
 LLM fallback. The skill never requires a specific runtime; the binding lives here in

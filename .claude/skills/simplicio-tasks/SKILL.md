@@ -83,8 +83,20 @@ back to the LLM). No heavy preflight for a small job — the router decides dept
 Emit: `Pre-flight: kill-switch ✓ ($<c>/day) · auth ✓ (expires <date>) · watcher ✓ (<mech>)` —
 or `Pre-flight: BLOCKED — <reason>` and stop.
 
+## Step 1a' — Repo conventions (bound, else LLM fallback)
+Scan repo conventions via the `repo_conventions` extension point. Read CONTRIBUTING.md, AGENTS.md,
+.github/PULL_REQUEST_TEMPLATE.md, pyproject.toml, Makefile, and CI workflow files to extract:
+- **Branch rules:** expected branch prefix (`fix/`, `feat/`, `docs/`, etc.)
+- **Commit conventions:** required scope list, conventional-commit types
+- **PR template:** structured sections, checklist items that must be filled
+- **CI commands:** test runner (prefer scripts/run_tests.sh over bare pytest), lint command, typecheck command, cross-platform check scripts
+- **Quality policies:** required tests for bug fixes, no change-detector tests, dependency pinning rules
+
+Emit: `Conventions: branch=<prefix> · commit=<type>(<scope>): · ci=<runner> · checks=<n>`.
+Used by Steps 4–6 to shape branch names, commit messages, PR bodies, and gate checks.
+
 ## Step 1b — Extension points (bind native, else LLM fallback)
-Work happens at 44 named points. If the host binds one natively it runs deterministically at
+Work happens at 45 named points. If the host binds one natively it runs deterministically at
 near-zero token cost; otherwise the LLM performs the documented fallback. The skill depends on the
 ABSTRACTION, never a runtime — the INVERTED DEPENDENCY (the skill names no runtime; the runtime
 detects the skill). Full table + fallbacks: `references/extension-points.md`. Core rule: any
