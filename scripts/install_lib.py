@@ -200,33 +200,37 @@ def ensure_operators(skip_install=False):
         log("operators verified on PATH: %s" % ", ".join(b for _, b in OPERATORS))
 
 
-def _link_operator_bins():
-    """Symlink operator console-scripts into ~/.local/bin (commonly on PATH) when a --user
-    install dropped them somewhere off PATH. Idempotent; best-effort (never raises)."""
+def _link_console_script(name, kind="bin"):
+    """Symlink a console-script into ~/.local/bin (commonly on PATH) when a --user install dropped
+    it somewhere off PATH (macOS ~/Library/Python/X.Y/bin · Windows %APPDATA%/Python/*/Scripts).
+    Idempotent; best-effort (never raises). Returns True if it's reachable afterward."""
     import glob
+    if shutil.which(name):
+        return True  # already on PATH
     local_bin = os.path.join(HOME, ".local", "bin")
-    cand_dirs = [
-        os.path.join(HOME, ".local", "bin"),
-        os.path.join(os.path.dirname(sys.executable), ""),  # interpreter's bin
-    ]
+    cand_dirs = [local_bin, os.path.dirname(sys.executable)]
     cand_dirs += glob.glob(os.path.join(HOME, "Library", "Python", "*", "bin"))   # macOS user scheme
     cand_dirs += glob.glob(os.path.join(HOME, "AppData", "Roaming", "Python", "*", "Scripts"))  # Windows
+    for d in cand_dirs:
+        src = os.path.join(d, name + (".exe" if os.name == "nt" else ""))
+        if os.path.isfile(src):
+            try:
+                os.makedirs(local_bin, exist_ok=True)
+                dst = os.path.join(local_bin, os.path.basename(src))
+                if os.path.islink(dst) or os.path.exists(dst):
+                    os.remove(dst)
+                os.symlink(src, dst)
+                log("%s %s -> linked into ~/.local/bin" % (kind, name))
+            except OSError:
+                pass
+            return os.path.isfile(os.path.join(local_bin, os.path.basename(src)))
+    return False
+
+
+def _link_operator_bins():
+    """Symlink the two operator console-scripts into ~/.local/bin (best-effort)."""
     for _, b in OPERATORS:
-        if shutil.which(b):
-            continue
-        for d in cand_dirs:
-            src = os.path.join(d, b + (".exe" if os.name == "nt" else ""))
-            if os.path.isfile(src):
-                try:
-                    os.makedirs(local_bin, exist_ok=True)
-                    dst = os.path.join(local_bin, os.path.basename(src))
-                    if os.path.islink(dst) or os.path.exists(dst):
-                        os.remove(dst)
-                    os.symlink(src, dst)
-                    log("operator %s -> linked into ~/.local/bin" % b)
-                except OSError:
-                    pass
-                break
+        _link_console_script(b, kind="operator")
 
 
 def detect():
@@ -382,6 +386,9 @@ def main():
     ensure_operators(skip_install=skip_operators)
     if not minimal:
         install_all_deps()
+    # Make the `simplicio-loop` console-script typeable on PATH (so `simplicio-loop dashboard` works);
+    # a --user install can drop it in a dir off PATH (macOS ~/Library/Python/*/bin). Best-effort.
+    _link_console_script("simplicio-loop", kind="cli")
     copy_skills(target)
     copy_hooks(target, is_global)
     ensure_entry(target, cfg["entry"])

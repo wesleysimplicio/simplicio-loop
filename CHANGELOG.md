@@ -5,6 +5,15 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.9.1] — 2026-06-24
+
+### Fixed — `simplicio-loop` is typeable on PATH (so `simplicio-loop dashboard` actually works)
+- A `--user` pip install can drop the `simplicio-loop` console-script in a dir that isn't on PATH
+  (macOS `~/Library/Python/X.Y/bin`, Windows `%APPDATA%/Python/*/Scripts`). The installer now symlinks
+  it into `~/.local/bin` (same treatment the two loop operators already get), so the documented
+  re-open command `simplicio-loop dashboard` is typeable on all three OS — not just runnable by full
+  path. Generalized `_link_operator_bins` → `_link_console_script(name)`; best-effort, idempotent.
+
 ## [3.9.0] — 2026-06-24
 
 ### Added — `simplicio-loop dashboard` (open the Token Monitor from anywhere)
