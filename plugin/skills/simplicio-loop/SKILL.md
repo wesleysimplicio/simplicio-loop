@@ -1,6 +1,6 @@
 ---
 name: simplicio-loop
-description: Iterate on a task autonomously until a typed completion-promise is genuinely true or a max-iteration cap is hit — the Ralph Wiggum loop, hardened. Use when the user says "ralph loop", "keep iterating until done", "loop on this until it passes", or when simplicio-tasks needs a self-referential drive that re-feeds the same goal each turn and sees its own prior work. Runtime-agnostic: binds a real stop-hook where the host supports hooks (Claude, Cursor); otherwise self-paces via the host scheduler. Never escapes the loop with a false promise.
+description: "Iterate on a task autonomously until a typed completion-promise is genuinely true or a max-iteration cap is hit — the Ralph Wiggum loop, hardened. Use when the user says \"ralph loop\", \"keep iterating until done\", \"loop on this until it passes\", or when simplicio-tasks needs a self-referential drive that re-feeds the same goal each turn and sees its own prior work. Runtime-agnostic: binds a real stop-hook where the host supports hooks (Claude, Cursor); otherwise self-paces via the host scheduler. Never escapes the loop with a false promise."
 ---
 
 # simplicio-loop — the hardened Ralph loop

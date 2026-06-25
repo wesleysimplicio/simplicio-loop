@@ -1,6 +1,6 @@
 ---
 name: simplicio-learn
-description: Persist what a run taught you so the next run is cheaper and more correct — mine high-signal lessons from the trajectory, dedup them, and write them back to AGENTS.md / memory so they're applied not re-derived. Use after a run or at session end, when the user says "remember this", "do a retrospective", "learn from this run", or when simplicio-tasks closes its self-audit. Keeps memory lean: durable, reusable bullets only — no transcripts, no one-offs.
+description: "Persist what a run taught you so the next run is cheaper and more correct — mine high-signal lessons from the trajectory, dedup them, and write them back to AGENTS.md / memory so they're applied not re-derived. Use after a run or at session end, when the user says \"remember this\", \"do a retrospective\", \"learn from this run\", or when simplicio-tasks closes its self-audit. Keeps memory lean: durable, reusable bullets only — no transcripts, no one-offs."
 ---
 
 # simplicio-learn — retrospective & continual memory
