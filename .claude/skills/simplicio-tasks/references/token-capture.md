@@ -43,7 +43,7 @@ elsewhere, with a headless print fallback.
 
 | Tier | Runtimes | How capture is wired | Notes |
 |---|---|---|---|
-| **native** | Claude · Codex · VS Code (Copilot) · OpenClaw | `simplicio capture init <client>` (engine's durable hooks + **transparent** provider routing) | Forwards to the client's REAL provider — does not change the model. |
+| **native** | Claude · Codex · VS Code (Copilot) · OpenClaw | `simplicio-cli capture init <client>` (engine's durable hooks + **transparent** provider routing) | Forwards to the client's REAL provider — does not change the model. |
 | **base-url** | Hermes · Cursor · OpenCode | point the client's model `base_url` at `http://127.0.0.1:<port>` (OpenAI/Anthropic-compatible) | Hermes is wired this way today (→ DeepSeek). |
 | **none** | Gemini · Kiro · Antigravity | — | Proprietary Google/AWS APIs the proxy can't speak; not interceptable yet. |
 
@@ -57,7 +57,7 @@ DeepSeek (for Hermes). If you route a *different* client (e.g. Codex) through th
 requests also go to DeepSeek — that's a **model swap, not transparent capture**.
 
 For real multi-runtime capture you want the engine's **transparent provider routing** (each client
-forwarded to its own real provider). That is exactly what `simplicio capture init <client>` sets up.
+forwarded to its own real provider). That is exactly what `simplicio-cli capture init <client>` sets up.
 Wire each client through `init`; don't hand-point everything at the DeepSeek proxy.
 
 ## Commands

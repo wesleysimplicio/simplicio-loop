@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simplicio-loop"
-version = "3.9.3"
+version = "3.10.0"
 description = "The Universal Looping AI Orchestrator — a runtime-agnostic super-plugin (6 skills) that drains any queue of work end-to-end on any LLM/runtime."
 readme = "PYPI.md"
 requires-python = ">=3.8"
@@ -29,7 +29,7 @@ dependencies = [
   "simplicio-cli",
 ]
 
-# Optional: the real embedding backend for `simplicio semantic --ml` / `simplicio rag --ml`.
+# Optional: the real embedding backend for `simplicio-cli semantic --ml` / `simplicio-cli rag --ml`.
 # The native engine itself is stdlib-only; this only enables embedding-based semantic dedup +
 # meaning retrieval. `pip install "simplicio-loop[ml]"`.
 [project.optional-dependencies]

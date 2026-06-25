@@ -20,7 +20,7 @@ original bytes are forwarded unchanged.
 # 1. start the proxy (default port 8788)
 python3 engine/simplicio_engine.py proxy --port 8788 --upstream https://api.openai.com
 # …or via the unified launcher:
-bin/simplicio proxy --port 8788 --upstream https://api.openai.com
+bin/simplicio-cli proxy --port 8788 --upstream https://api.openai.com
 
 # 2. point a client at it (the proxy forwards the client's own API key)
 export OPENAI_BASE_URL="http://127.0.0.1:8788/v1"
@@ -33,17 +33,17 @@ python3 engine/simplicio_report.py            # text report
 python3 engine/simplicio_engine.py doctor     # one-line status
 ```
 
-The `simplicio wrap` command does step 2 for you — it injects those env vars and
+The `simplicio-cli wrap` command does step 2 for you — it injects those env vars and
 execs the client (see the commands table).
 
 ## Two entry points
 
 | Launcher | Reaches | Notes |
 |---|---|---|
-| `bin/simplicio` → `simplicio_cli.py` | `proxy`, `doctor`, `memory`, `mcp`, `init`, `wrap`, `report`, `verify`, `audit`, `capture`, `evals`, `compress`, `version`, `help` | unified CLI; `compress` reads stdin |
+| `bin/simplicio-cli` → `simplicio_cli.py` | `proxy`, `doctor`, `memory`, `mcp`, `init`, `wrap`, `report`, `verify`, `audit`, `capture`, `evals`, `compress`, `version`, `help` | unified CLI; `compress` reads stdin |
 | `python3 engine/simplicio_engine.py` | same set (minus the inline `compress`/`version`/`help`) | full subcommand set; hands off to sibling modules |
 
-All engine subcommands are routed by `bin/simplicio` (the dispatcher forwards anything in
+All engine subcommands are routed by `bin/simplicio-cli` (the dispatcher forwards anything in
 `ENGINE_CMDS` to the engine via process replacement).
 
 ## Commands
@@ -57,11 +57,11 @@ All engine subcommands are routed by `bin/simplicio` (the dispatcher forwards an
 | `init` | Register the Simplicio MCP server into a client config. **Dry-run by default**; `--apply` writes. | `simplicio_engine.py init claude --apply` |
 | `wrap` | Launch a client with its LLM traffic routed through the local proxy (injects base-URL env, execs the binary). | `simplicio_engine.py wrap codex --require-proxy -- chat` |
 | `report` | Savings report from the ledger: lifetime + session + per-model/provider breakdown. | `simplicio_report.py --since 120 --top 5` |
-| `verify` | Self-check the whole token-economy stack (8 checks → PASS/WARN/FAIL table). | `simplicio verify --json` |
-| `audit` | Scan files/dirs and rank how many tokens compression would save. | `simplicio audit ./logs --top 10` |
-| `capture` | Dry-run: show what a request payload would compress/save, without sending it. | `simplicio capture --file body.json` |
-| `evals` | Compression eval + regression gate (corpus → %saved, asserts no corruption). | `simplicio evals --json` |
-| `compress` | Read stdin, print deterministically compressed text to stdout. | `cat noisy.log \| simplicio compress` |
+| `verify` | Self-check the whole token-economy stack (8 checks → PASS/WARN/FAIL table). | `simplicio-cli verify --json` |
+| `audit` | Scan files/dirs and rank how many tokens compression would save. | `simplicio-cli audit ./logs --top 10` |
+| `capture` | Dry-run: show what a request payload would compress/save, without sending it. | `simplicio-cli capture --file body.json` |
+| `evals` | Compression eval + regression gate (corpus → %saved, asserts no corruption). | `simplicio-cli evals --json` |
+| `compress` | Read stdin, print deterministically compressed text to stdout. | `cat noisy.log \| simplicio-cli compress` |
 
 Module-level helpers that back these commands:
 
@@ -88,7 +88,7 @@ Module-level helpers that back these commands:
 ## How capture works
 
 ```
-client ──HTTP──▶ simplicio proxy ──HTTP──▶ real provider ──▶ proxy ──stream──▶ client
+client ──HTTP──▶ simplicio-cli proxy ──HTTP──▶ real provider ──▶ proxy ──stream──▶ client
                       │
                       └── records → ~/.simplicio/proxy_savings.json (schema v3)
 ```

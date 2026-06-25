@@ -65,7 +65,7 @@ contente pas de le compiler)**, ouvre des PR, résout les retours CI/revue, fusi
 coût strict.
 
 ```text
-/simplicio-tasks termine as issues abertas
+/simplicio-tasks finish all open issues
 → identity + pre-flight (kill-switch, auth, watcher)
 → discover 50 issues · dedup · build dependency DAG
 → autoscale fleet = 14 · pipeline implement→review→merge
@@ -82,12 +82,12 @@ protocole sur 11 runtimes**, et il fait tout cela avec une **économie de tokens
 ## 📘 Registre officiel des capacités (v3.4.0)
 
 Le palmarès complet et officiel de ce que `simplicio-tasks` embarque — chaque capacité ci-dessous est
-**réelle, exécutable et testée** (`python3 scripts/check.py` : claims-audit 4/4 + 24 tests). Chacune
+**réelle, exécutable et testée** (`python3 scripts/check.py` : claims-audit 4/4 + 27 tests). Chacune
 renvoie à sa section détaillée et à son worker.
 
 | Capacité | Ce qu'elle fait | Preuve / worker | Détails |
 |---|---|---|---|
-| 🎬 **Preuve vidéo** (`video_evidence`) | Rend une démo **MP4 déterministe** d'un écran/d'une fonctionnalité avec [hyperframes](https://github.com/heygen-com/hyperframes) — remplit `/simplicio-tasks faça um vídeo demonstrativo da tela X` et fait aussi office de preuve reproductible en CI qu'un changement d'UI fonctionne | `scripts/video_evidence.py` · BLOQUÉ (jamais de faux pass) sans Node 22+/FFmpeg | [§ Preuve vidéo](#-preuve-vidéo--vidéos-de-démo-via-hyperframes) |
+| 🎬 **Preuve vidéo** (`video_evidence`) | Rend une démo **MP4 déterministe** d'un écran/d'une fonctionnalité avec [hyperframes](https://github.com/heygen-com/hyperframes) — remplit `/simplicio-tasks make a demo video of screen X` et fait aussi office de preuve reproductible en CI qu'un changement d'UI fonctionne | `scripts/video_evidence.py` · BLOQUÉ (jamais de faux pass) sans Node 22+/FFmpeg | [§ Preuve vidéo](#-preuve-vidéo--vidéos-de-démo-via-hyperframes) |
 | 🧠 **Mémoire des tentatives + détecteur de blocage** | Un run-journal durable (`.orchestrator/loop/journal.jsonl`) + un détecteur de blocage pour que la boucle **change de stratégie au lieu d'osciller** ; un triage incrémental (`since`) ne lit que le delta à chaque tour | `scripts/loop_journal.py` · `selftest` 9/9 | [§ Anti-oscillation](#-mémoire-des-tentatives--détecteur-de-blocage-anti-oscillation) |
 | 🔒 **Gate de sécurité fail-closed** (`action_gate`) | Un hook `PreToolUse`/git-pre-push qui **bloque mécaniquement** le force-push, la réécriture d'historique, la suppression de masse, le DDL destructeur, le démantèlement d'infra et les commits/pushes chargés de secrets — l'Étape 5 rendue exécutable, pas en prose | `hooks/action_gate.py` · `selftest` 15/15 | [§ Sécurité](#-sécurité-non-négociable) |
 | 🔬 **Vérification locale** | Une suite de tests (selftests des workers + un **e2e du driver de boucle** prouvant la sortie adossée à la preuve) + un **claims-audit** (les scripts référencés existent · les compteurs sont cohérents · `_bundle ≡ source`) — tout en local, **sans CI payante** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Tests & vérifications locales](#-tests--vérifications-locales-sans-ci-payante) |
@@ -125,7 +125,7 @@ présent = utilisé, absent = repli LLM.
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Analytique de session, suivi des coûts, découverte de sessions bloquées | **L1** SQL uniquement |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Cache KV entre tours de boucle — réduction de 40-70 % du TTFT sur les modèles locaux | Temps GPU ↓ |
 | 10 | 🗜️ **Moteur de capture Simplicio** | `engine/simplicio_engine.py` (natif, stdlib uniquement ; schéma d'économies compatible avec le projet OSS [headroom](https://github.com/headroomlabs-ai/headroom)) | Proxy de capture transparent : transmet au vrai fournisseur, mesure + compresse de façon déterministe, écrit `proxy_savings.json` | **déterministe** |
-| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | Rend une vidéo de démo **MP4 déterministe** d'un écran/d'une fonctionnalité — remplit `/simplicio-tasks faça um vídeo demonstrativo da tela X` ET fait aussi office de preuve reproductible en CI qu'un changement d'UI fonctionne | Producteur de preuve |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | Rend une vidéo de démo **MP4 déterministe** d'un écran/d'une fonctionnalité — remplit `/simplicio-tasks make a demo video of screen X` ET fait aussi office de preuve reproductible en CI qu'un changement d'UI fonctionne | Producteur de preuve |
 
 Chaque skill vit sous [`.claude/skills/`](../.claude/skills) ; chaque accélérateur dispose d'un document
 de référence sous `.claude/skills/simplicio-tasks/references/` (le producteur vidéo :
@@ -321,7 +321,7 @@ Deux façons de la déclencher — toutes deux via le point d'extension `video_e
    l'élément de travail vers le producteur hyperframes :
 
    ```text
-   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   /simplicio-tasks make a demo video of the system login screen
    → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
    → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
    → attach the MP4 to the PR as evidence + close with the link
@@ -339,7 +339,7 @@ contexte (économie de tokens).
 
 ```bash
 # one-shot, outside the loop
-python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py detect  --goal "record a video of the checkout screen"
 python3 scripts/video_evidence.py verify  --name checkout-demo \
     --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
 ```
@@ -354,10 +354,10 @@ python3 scripts/video_evidence.py verify  --name checkout-demo \
 | Exécution terminal-first | Les faits viennent du shell, pas d'une hallucination du LLM |
 | Catalogue de réduction de sortie | Plafonds par type de commande (`CAP_ERRORS=20`, `CAP_WARNINGS=10`, `CAP_LIST=20`) — `orient_clamp.py` |
 | Cache Tee+CCR en cas d'échec | Ne jamais réexécuter une commande échouée — lire la sortie en cache |
-| Lectures signatures seules | `simplicio signatures <file>` — fichier de 870 lignes → 65 lignes (**93 % économisés**), corps élidés |
+| Lectures signatures seules | `simplicio-cli signatures <file>` — fichier de 870 lignes → 65 lignes (**93 % économisés**), corps élidés |
 | `simplicio-compress` | Prose concise + compaction unique de la mémoire |
 | `orient_clamp.py` | Bride + tee sur chaque commande shell, sans câblage |
-| Cache natif de réponses | requête déterministe (temp=0) répétée → servie depuis le cache, saute l'appel LLM (**100 % en cas de hit**) — `simplicio cache`, activé par défaut (`SIMPLICIO_CACHE=0` pour désactiver) |
+| Cache natif de réponses | requête déterministe (temp=0) répétée → servie depuis le cache, saute l'appel LLM (**100 % en cas de hit**) — `simplicio-cli cache`, activé par défaut (`SIMPLICIO_CACHE=0` pour désactiver) |
 | Proxy de capture Simplicio + MCP | 60-95 % de tokens en moins sur les sorties d'outils via un démon de compression transparent |
 
 Les économies ne comptent que sur un résultat vérifié-correct. La baseline = le chemin non orchestré le
@@ -384,11 +384,11 @@ différemment selon le runtime :
 | Runtime | Économie (skill) | Mesure (moniteur) |
 |---|---|---|
 | **Hermes** | ✓ | ✓ **automatique** — déjà routé via le proxy (`base_url → :8788`) |
-| **Claude** | ✓ (skill + hooks) | ✗ par défaut — Claude parle directement à `api.anthropic.com` ; mesuré uniquement une fois routé (`simplicio wrap claude`, ou `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
-| **Codex** | ✓ (skill) | ✗ par défaut — `simplicio init codex` ajoute les outils MCP mais ne route pas le trafic LLM ; mesuré avec `simplicio wrap codex` ou une base-url OpenAI pointant vers le proxy |
+| **Claude** | ✓ (skill + hooks) | ✗ par défaut — Claude parle directement à `api.anthropic.com` ; mesuré uniquement une fois routé (`simplicio-cli wrap claude`, ou `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
+| **Codex** | ✓ (skill) | ✗ par défaut — `simplicio-cli init codex` ajoute les outils MCP mais ne route pas le trafic LLM ; mesuré avec `simplicio-cli wrap codex` ou une base-url OpenAI pointant vers le proxy |
 
 Donc : les **économies se produisent sur chaque runtime** ; le **moniteur les comptabilise
-automatiquement sur Hermes**, et sur Claude/Codex après une **étape de routage unique** (`simplicio wrap
+automatiquement sur Hermes**, et sur Claude/Codex après une **étape de routage unique** (`simplicio-cli wrap
 …` / base-url → `:8788`). Sans routage, l'économie s'applique tout de même — le moniteur ne comptera
 simplement pas ces tokens. `scripts/simplicio-economy.sh wire` effectue ce routage pour les clients
 compatibles OpenAI au moment de l'installation.
@@ -442,10 +442,10 @@ la première utilisation.
 
 | Modèle | Commande | Usage |
 |---|---|---|
-| `kompress-v2-base` | `simplicio kompress` | élagage sémantique de tokens |
-| `technique-router-onnx` | `simplicio router` | routage des techniques |
-| `all-MiniLM-L6-v2-onnx` | `simplicio embed` · `rag --ml` | embeddings + RAG sémantique |
-| `siglip-image-encoder-onnx` | `simplicio image` | vérificateur de contenu pour la compression d'image |
+| `kompress-v2-base` | `simplicio-cli kompress` | élagage sémantique de tokens |
+| `technique-router-onnx` | `simplicio-cli router` | routage des techniques |
+| `all-MiniLM-L6-v2-onnx` | `simplicio-cli embed` · `rag --ml` | embeddings + RAG sémantique |
+| `siglip-image-encoder-onnx` | `simplicio-cli image` | vérificateur de contenu pour la compression d'image |
 
 ### ⚙️ Cœur de performance natif en Rust (optionnel)
 

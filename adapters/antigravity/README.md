@@ -27,7 +27,7 @@ routes heavy build/test/diff commands through it.
 ## Native bind — MCP
 
 ```bash
-simplicio mcp register --client antigravity
+simplicio-cli mcp register --client antigravity
 # or add to the IDE's MCP config:  { "simplicio": { "command": "simplicio", "args": ["mcp","serve"] } }
 ```
 

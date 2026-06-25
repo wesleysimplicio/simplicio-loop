@@ -10,8 +10,8 @@ and `numpy`. If they're absent it reports so and the caller falls back to the st
 `simplicio_semantic` / `simplicio_rag`. Default Simplicio stays zero-dependency.
 
     pip install model2vec numpy        # enable the ML backend
-    simplicio semantic --ml            # embedding semantic-dedup compression of stdin
-    simplicio rag --ml "<query>"       # embedding retrieval over the CCR memory store
+    simplicio-cli semantic --ml            # embedding semantic-dedup compression of stdin
+    simplicio-cli rag --ml "<query>"       # embedding retrieval over the CCR memory store
 
 Compression is reversible: dropped lines are returned in a restore map (lossless round-trip).
 """
@@ -141,7 +141,7 @@ def _load_memories():
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="simplicio semantic --ml", description="Simplicio ML semantic backend")
+    p = argparse.ArgumentParser(prog="simplicio-cli semantic --ml", description="Simplicio ML semantic backend")
     sub = p.add_subparsers(dest="cmd")
     pc = sub.add_parser("compress", help="embedding semantic-dedup of stdin")
     pc.add_argument("--threshold", type=float, default=0.75)

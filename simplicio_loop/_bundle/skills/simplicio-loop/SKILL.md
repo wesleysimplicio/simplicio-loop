@@ -67,7 +67,7 @@ re-pulls `simplicio-mapper` + `simplicio-cli`). This requirement is scoped to th
 **Survey step (each loop start + on any structural change).** Run
 `simplicio-mapper index . --json` (add `--watch` for long runs) to (re)build `.simplicio/`. Read
 the survey artifacts — never re-scan the tree by hand when a fresh map exists. For a multi-repo
-levantamento, run the mapper per repo root and aggregate the JSON.
+survey, run the mapper per repo root and aggregate the JSON.
 
 **Operate step (every turn that mutates code).** Once the AC and the change are DECIDED, delegate
 the mutation to the operator, one decided change at a time:
@@ -96,7 +96,7 @@ One turn: `preflight → survey (mapper) → triage (re-read survey) → DECIDE 
 ## Video evidence producer (hyperframes) — demo videos as proof
 
 The loop can be asked to **create a demonstration video** of a screen/feature — e.g.
-`/simplicio-tasks faça um vídeo demonstrativo da tela de login` — and it uses that video as
+`/simplicio-tasks make a demo video of the login screen` — and it uses that video as
 in-turn evidence that the change works. The producer is **hyperframes**
 (<https://github.com/heygen-com/hyperframes>): it renders HTML/CSS/media compositions to a
 **deterministic MP4** ("same input, same frames, same output"), so the video is a CI-reproducible

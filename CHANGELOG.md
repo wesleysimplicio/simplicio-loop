@@ -5,10 +5,37 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.10.0] — 2026-06-25
+
 ### Added
+- **`repo_conventions` worker** (`scripts/repo_conventions.py`; verbs `learn`/`show`/`branch`/`commit`/`selftest`):
+  learns the repo's OWN playbook by mining git history (branch scheme, commit convention + the real
+  scope list, ticket pattern — by frequency) + merged PRs via `gh` + static config (CONTRIBUTING/AGENTS/
+  pyproject for a Conventional-Commits hint, PR template for section structure) into a hash-pinned
+  `.orchestrator/conventions.json`. Confidence-gated: a sparse/inconsistent history degrades to an honest
+  Conventional-Commits default, never an over-fit guess. Steps 4–6 shape branch/commit/PR names
+  deterministically from it. Wired into `simplicio-tasks` Step 1a'/Step 3/Step 6,
+  `references/extension-points.md`, `references/orchestration.md`; added to `claims_audit`
+  `SELFTEST_SCRIPTS` + `tests/test_worker_smoke.py` (selftest 19/19).
+- **Worktree-per-item isolation is now the DEFAULT** (one `git worktree` per item → zero cross-item
+  conflict); a shared checkout is the opt-out for big compiled crates.
+- **Genuine fast-path:** a single interactive item no longer auto-arms the loop (no scratchpad → the
+  stop-hook lets the turn end). The loop engages only for a real body of work (queue / drain / 24-7).
+- **Stop-hook background-gate awareness** (`hooks/loop_stop.py`): a fresh `.orchestrator/loop/gate.lock`
+  marks "waiting on a background gate (verification workflow / CI / long task)" so the hook does NOT
+  re-fire as an idle turn; the lock is TTL-bounded (30 min) so a stale lock can never trap the loop
+  (fail-open).
 - README: a **Join the Simplicio Discord** badge (`https://discord.gg/wM6tr7xVb`) in the top badge row.
 
 ### Changed
+- **i18n:** every user-facing usage example / command string translated from Portuguese to English
+  across the 6 skills, the `_bundle` mirror, `README.md` + 15 translated READMEs, `CLAUDE.md`/`AGENTS.md`,
+  `scripts/video_evidence.py`, and tests. Localized PROSE inside the translated READMEs is intentionally
+  kept in-language; the `video_evidence` detector stays multilingual (EN/PT/ES).
+- **CLI naming:** the unified CLI is now invoked as **`simplicio-cli <command>`** instead of the bare,
+  colliding `simplicio` — all doc/skill references plus the `bin/simplicio` launcher (→ `bin/simplicio-cli`)
+  and the engine help/branding were updated. (The PATH-binary rename itself lives in the separate
+  `simplicio-cli` package.)
 - README (all 15 languages): the **Claude Code / Cursor** install path no longer uses the
   marketplace plugin (`/plugin marketplace add` … `/plugin install simplicio-loop@simplicio`). It now
   installs **straight from the latest GitHub release** — `gh release download --archive tar.gz` → `tar
@@ -243,8 +270,8 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 ### Added — demo-video creation + evidence via hyperframes (`video_evidence`, extension point #44)
 - **`video_evidence` extension point** — binds [hyperframes](https://github.com/heygen-com/hyperframes)
   (HeyGen): renders HTML/CSS compositions to a **deterministic MP4** ("same input, same frames, same
-  output"). Two jobs: (1) fulfil an explicit request — `/simplicio-tasks faça um vídeo demonstrativo
-  da tela X` routes the work-item to the producer; (2) act as a CI-reproducible "works, not just
+  output"). Two jobs: (1) fulfil an explicit request — `/simplicio-tasks make a demo video of screen
+  X` routes the work-item to the producer; (2) act as a CI-reproducible "works, not just
   compiles" proof for a UI change and a valid evidence-gated `<promise>` for the loop.
 - **Worker** `scripts/video_evidence.py` — five verbs (`detect`/`scaffold`/`lint`/`render`/`verify`).
   `detect` classifies the request in-terminal (EN/PT/ES regex, no LLM); `verify` scaffolds a

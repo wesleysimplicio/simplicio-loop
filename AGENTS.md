@@ -61,7 +61,7 @@ the host, not in the skill.
 ## Video evidence (hyperframes)
 
 The orchestrator can **create demo videos** of a screen/feature on request
-(`/simplicio-tasks faça um vídeo demonstrativo da tela X`) and reuse them as proof a change works.
+(`/simplicio-tasks make a demo video of screen X`) and reuse them as proof a change works.
 The `video_evidence` extension point binds [hyperframes](https://github.com/heygen-com/hyperframes)
 (deterministic HTML→MP4; Node 22+ + FFmpeg, no API keys). Worker: `scripts/video_evidence.py`;
 contract: `.claude/skills/simplicio-tasks/references/video-evidence.md`. It chains after

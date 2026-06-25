@@ -356,7 +356,7 @@ def render_text(report):
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="simplicio_report",
-        description="Report token/$ savings from the simplicio proxy ledger.",
+        description="Report token/$ savings from the simplicio-cli proxy ledger.",
     )
     parser.add_argument(
         "command",

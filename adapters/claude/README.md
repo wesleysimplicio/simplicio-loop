@@ -47,7 +47,7 @@ the `max_iterations` cap, or the budget kill-switch. `orient_rewrite` (Bash matc
 If `simplicio-runtime` is installed, register it so the extension points bind natively:
 
 ```bash
-simplicio mcp register --client claude-code
+simplicio-cli mcp register --client claude-code
 ```
 
 ## Use

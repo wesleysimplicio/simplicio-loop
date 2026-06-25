@@ -82,8 +82,14 @@ failure: discard the transform, keep the original byte-identical. Heading/bullet
 On hard failure issue ONE targeted fix on the flagged tokens (≤2 retries); else abort to original.
 
 ## Step 6 — Deliver + close + self-audit
-For each completed item: commit (Conventional Commits, English), push, Draft PR, close the item in
-its source with a short evidence comment (PR link + verification summary).
+For each completed item, shape every artifact to the LEARNED `repo_conventions` profile (Step 1a',
+`.orchestrator/conventions.json`) — don't hand-guess the format: branch name via
+`repo_conventions.py branch --type <item-type> --slug <title> [--ticket <id>]`, commit subject via
+`repo_conventions.py commit --type <t> [--scope <s>] --subject <s>` (Conventional Commits when the
+repo uses them, plain when it doesn't; English), and fill the PR body from the profile's PR-template
+sections + label vocabulary. Then push, Draft PR, close the item in its source with a short evidence
+comment (PR link + verification summary). When the profile is `source=default` (no clear repo
+history), fall back to Conventional Commits and say so.
 
 **Verify in the workflow, never trust self-report.** When a fan-out drove the run, its FINAL step
 re-verifies reality: the merged build/test, the `smoke` gate, and a source re-query confirming

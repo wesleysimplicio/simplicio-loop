@@ -24,7 +24,7 @@ deps of `pip install simplicio-loop` (the loop BLOCKS if either is absent):
 
 | Operator | Binary | pip pkg | Binds | Role |
 |---|---|---|---|---|
-| [simplicio-mapper](https://github.com/wesleysimplicio/simplicio-mapper) | `simplicio-mapper` | `simplicio-mapper` | `orient` | **survey** the repo → `.simplicio/*.json` (the levantamento that feeds the goal) |
+| [simplicio-mapper](https://github.com/wesleysimplicio/simplicio-mapper) | `simplicio-mapper` | `simplicio-mapper` | `orient` | **survey** the repo → `.simplicio/*.json` (the survey that feeds the goal) |
 | [simplicio-dev-cli](https://github.com/wesleysimplicio/simplicio-dev-cli) | `simplicio-dev-cli` | `simplicio-cli` | `execute`/`deterministic_edit` | **operate** — apply+verify each decided change via its 6-layer contract, instead of the AI hand-editing |
 
 The AI decides; the operators act. See `.claude/skills/simplicio-loop/SKILL.md` § Bound operators
@@ -33,7 +33,7 @@ and `.claude/skills/simplicio-tasks/references/extension-points.md` § bound ope
 ## Video evidence (hyperframes)
 
 The loop can **create demo videos** of a screen/feature on request
-(`/simplicio-tasks faça um vídeo demonstrativo da tela X`) and reuse them as proof a change works.
+(`/simplicio-tasks make a demo video of screen X`) and reuse them as proof a change works.
 The `video_evidence` extension point (#44) binds
 [hyperframes](https://github.com/heygen-com/hyperframes) — deterministic HTML→MP4 render (Node 22+
 + FFmpeg, no API keys). It chains after `web_verify`: Playwright captures the per-step screenshots,
@@ -91,7 +91,7 @@ mass-delete, destructive DDL, infra teardown) and secret-laden commits/pushes be
 
 Claude's native tools satisfy the extension points: sub-agents → `execute`, file tools →
 `deterministic_edit`, the scheduler → `watcher`. Where `simplicio-runtime` is installed,
-`simplicio mcp register --client claude-code` binds them deterministically.
+`simplicio-cli mcp register --client claude-code` binds them deterministically.
 
 ## Other runtimes
 

@@ -324,7 +324,7 @@ def merge_opencode_mcp():
         log("opencode MCP registered -> %s" % OPCODE_CONFIG)
     except Exception as e:
         log("! opencode MCP registration failed: %s" % e)
-        log("  manually: simplicio mcp register --client opencode")
+        log("  manually: simplicio-cli mcp register --client opencode")
 
 
 def _pip(args_):
@@ -342,7 +342,7 @@ def _pip(args_):
 def install_all_deps():
     """MANDATORY full install — every capability in simplicio-loop, not opt-in. Installs the package
     with ALL extras (the ONNX models backend: onnxruntime + huggingface_hub + tokenizers + pillow) so
-    `simplicio kompress/router/embed/image` work, plus the menu-bar tray dep. Heavy but complete;
+    `simplicio-cli kompress/router/embed/image` work, plus the menu-bar tray dep. Heavy but complete;
     `--minimal` skips it. Best-effort: a single heavy dep failing won't abort the install."""
     spec = ".[onnx]" if os.path.exists(os.path.join(SOURCE, "pyproject.toml")) else "simplicio-loop[onnx]"
     log("full install: package + ONNX models backend (%s)..." % spec)
@@ -490,7 +490,7 @@ def main():
         copy_skills_opencode()
         merge_opencode_mcp()
     if cfg["mcp"] and runtime != "opencode":
-        log("optional native bind:  simplicio mcp register --client %s" % cfg["mcp"])
+        log("optional native bind:  simplicio-cli mcp register --client %s" % cfg["mcp"])
     setup_monitor(not minimal)
     log("verify / repair anytime:  python3 scripts/doctor.py --repair  (optional pieces like Rust never block)")
     print("done. use:  /simplicio-tasks finish all the open issues")

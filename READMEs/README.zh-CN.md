@@ -62,7 +62,7 @@
 安全门控和一个硬性成本急停开关的背后进行。
 
 ```text
-/simplicio-tasks termine as issues abertas
+/simplicio-tasks finish all open issues
 → identity + pre-flight (kill-switch, auth, watcher)
 → discover 50 issues · dedup · build dependency DAG
 → autoscale fleet = 14 · pipeline implement→review→merge
@@ -79,12 +79,12 @@
 ## 📘 官方能力清单（v3.4.0）
 
 `simplicio-tasks` 所交付内容的完整、官方名册 —— 下面的每一项能力都是**真实、可运行、
-经过测试的**（`python3 scripts/check.py`：claims-audit 4/4 + 24 项测试）。每一项都链接到它的
+经过测试的**（`python3 scripts/check.py`：claims-audit 4/4 + 27 项测试）。每一项都链接到它的
 深入小节与它的 worker。
 
 | 能力 | 它做什么 | 证明 / worker | 详情 |
 |---|---|---|---|
-| 🎬 **视频证据**（`video_evidence`） | 用 [hyperframes](https://github.com/heygen-com/hyperframes) 渲染某个屏幕/功能的**确定性 MP4** 演示 —— 满足 `/simplicio-tasks faça um vídeo demonstrativo da tela X`，并兼作 CI 可复现的证明，表明某个 UI 改动确实可用 | `scripts/video_evidence.py` · 缺少 Node 22+/FFmpeg 时 BLOCKED（绝不假装通过） | [§ 视频证据](#-视频证据--通过-hyperframes-生成演示视频) |
+| 🎬 **视频证据**（`video_evidence`） | 用 [hyperframes](https://github.com/heygen-com/hyperframes) 渲染某个屏幕/功能的**确定性 MP4** 演示 —— 满足 `/simplicio-tasks make a demo video of screen X`，并兼作 CI 可复现的证明，表明某个 UI 改动确实可用 | `scripts/video_evidence.py` · 缺少 Node 22+/FFmpeg 时 BLOCKED（绝不假装通过） | [§ 视频证据](#-视频证据--通过-hyperframes-生成演示视频) |
 | 🧠 **尝试记忆 + 停滞检测器** | 一份耐久的运行日志（`.orchestrator/loop/journal.jsonl`）+ 一个停滞检测器，让循环**改变策略而非来回振荡**；增量分诊（`since`）每轮只读取增量部分 | `scripts/loop_journal.py` · `selftest` 9/9 | [§ 防振荡](#-尝试记忆--停滞检测器防振荡) |
 | 🔒 **失败即关闭的安全门**（`action_gate`） | 一个 `PreToolUse`/git-pre-push 钩子，**以机械方式阻断** force-push、历史重写、批量删除、破坏性 DDL、基础设施拆除以及携带密钥的提交/推送 —— 把第 5 步从散文变成可执行 | `hooks/action_gate.py` · `selftest` 15/15 | [§ 安全](#-安全不可妥协) |
 | 🔬 **本地验证** | 一套测试套件（worker selftest + 一个证明经证据门控退出的**循环驱动器 e2e**）+ 一份 **claims-audit**（被引用的脚本存在 · 计数一致 · `_bundle ≡ source`）—— 全部本地、**无需付费 CI** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ 测试与本地检查](#-测试与本地检查无需付费-ci) |
@@ -119,7 +119,7 @@
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | 会话分析、成本追踪、停滞会话发现 | **L1** 仅 SQL |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | 循环各轮之间的 KV 缓存 —— 本地模型 TTFT 降低 40-70% | GPU 时间 ↓ |
 | 10 | 🗜️ **Simplicio 捕获引擎** | `engine/simplicio_engine.py`（原生，仅依赖标准库；savings-schema 与开源 [headroom](https://github.com/headroomlabs-ai/headroom) 项目兼容） | 透明捕获代理：转发到真实供应商，度量 + 确定性压缩，写入 `proxy_savings.json` | **确定性** |
-| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | 渲染某个屏幕/功能的**确定性 MP4** 演示视频 —— 满足 `/simplicio-tasks faça um vídeo demonstrativo da tela X`，并兼作 CI 可复现的证明，表明某个 UI 改动确实可用 | 证据生产者 |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | 渲染某个屏幕/功能的**确定性 MP4** 演示视频 —— 满足 `/simplicio-tasks make a demo video of screen X`，并兼作 CI 可复现的证明，表明某个 UI 改动确实可用 | 证据生产者 |
 
 每个 skill 都位于 [`.claude/skills/`](../.claude/skills) 下；每个加速器在
 `.claude/skills/simplicio-tasks/references/` 下都有一份参考文档（视频生产者：
@@ -306,7 +306,7 @@ CI 可复现的产物，而不是用完即弃的录屏。无需 API 密钥；通
    生产者：
 
    ```text
-   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   /simplicio-tasks make a demo video of the system login screen
    → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
    → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
    → attach the MP4 to the PR as evidence + close with the link
@@ -322,7 +322,7 @@ CI 可复现的产物，而不是用完即弃的录屏。无需 API 密钥；通
 
 ```bash
 # one-shot, outside the loop
-python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py detect  --goal "record a video of the checkout screen"
 python3 scripts/video_evidence.py verify  --name checkout-demo \
     --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
 ```
@@ -337,10 +337,10 @@ python3 scripts/video_evidence.py verify  --name checkout-demo \
 | 终端优先执行 | 事实来自 shell，而非 LLM 臆造 |
 | 输出缩减目录 | 按命令类型设上限（`CAP_ERRORS=20`、`CAP_WARNINGS=10`、`CAP_LIST=20`）—— `orient_clamp.py` |
 | 失败时 Tee+CCR 缓存 | 绝不重跑失败的命令 —— 读取已缓存的输出 |
-| 仅签名读取 | `simplicio signatures <file>` —— 870 行文件 → 65 行（**节省 93%**），剥离函数体 |
+| 仅签名读取 | `simplicio-cli signatures <file>` —— 870 行文件 → 65 行（**节省 93%**），剥离函数体 |
 | `simplicio-compress` | 精简散文 + 一次性记忆压实 |
 | `orient_clamp.py` | 对每条 shell 命令钳制 + tee，零接线 |
-| 原生响应缓存 | 重复的确定性（temp=0）请求 → 从缓存返回，跳过 LLM 调用（**命中即 100%**）—— `simplicio cache`，默认开启（`SIMPLICIO_CACHE=0` 可禁用） |
+| 原生响应缓存 | 重复的确定性（temp=0）请求 → 从缓存返回，跳过 LLM 调用（**命中即 100%**）—— `simplicio-cli cache`，默认开启（`SIMPLICIO_CACHE=0` 可禁用） |
 | Simplicio 捕获代理 + MCP | 通过一个透明压缩守护进程，工具输出 token 减少 60-95% |
 
 只有在结果经验证为正确时才计入节省。基线 = 通向同一结果的最便宜、合理且未经编排的路径。
@@ -362,11 +362,11 @@ python3 scripts/video_evidence.py verify  --name checkout-demo \
 | 运行时 | 经济（skill） | 度量（监视器） |
 |---|---|---|
 | **Hermes** | ✓ | ✓ **自动** —— 已经经由代理路由（`base_url → :8788`） |
-| **Claude** | ✓（skill + 钩子） | ✗ 默认 —— Claude 直接与 `api.anthropic.com` 通信；只有在路由之后才被度量（`simplicio wrap claude`，或 `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`） |
-| **Codex** | ✓（skill） | ✗ 默认 —— `simplicio init codex` 会添加 MCP 工具但不路由 LLM 流量；用 `simplicio wrap codex` 或一个指向代理的 OpenAI base-url 来度量 |
+| **Claude** | ✓（skill + 钩子） | ✗ 默认 —— Claude 直接与 `api.anthropic.com` 通信；只有在路由之后才被度量（`simplicio-cli wrap claude`，或 `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`） |
+| **Codex** | ✓（skill） | ✗ 默认 —— `simplicio-cli init codex` 会添加 MCP 工具但不路由 LLM 流量；用 `simplicio-cli wrap codex` 或一个指向代理的 OpenAI base-url 来度量 |
 
 所以：**节省在每个运行时上都会发生**；**监视器在 Hermes 上会自动统计它们**，并在 Claude/Codex 上
-经过一次**一次性路由步骤**（`simplicio wrap …` / base-url → `:8788`）后统计。没有路由，经济
+经过一次**一次性路由步骤**（`simplicio-cli wrap …` / base-url → `:8788`）后统计。没有路由，经济
 依然生效 —— 只是监视器不会统计那些 token。`scripts/simplicio-economy.sh wire` 会在安装时为
 OpenAI 兼容客户端完成这一路由。
 
@@ -415,10 +415,10 @@ OpenAI 兼容客户端完成这一路由。
 
 | 模型 | 命令 | 用途 |
 |---|---|---|
-| `kompress-v2-base` | `simplicio kompress` | 语义 token 剪枝 |
-| `technique-router-onnx` | `simplicio router` | 技术路由 |
-| `all-MiniLM-L6-v2-onnx` | `simplicio embed` · `rag --ml` | 嵌入 + 语义 RAG |
-| `siglip-image-encoder-onnx` | `simplicio image` | 图像压缩内容校验器 |
+| `kompress-v2-base` | `simplicio-cli kompress` | 语义 token 剪枝 |
+| `technique-router-onnx` | `simplicio-cli router` | 技术路由 |
+| `all-MiniLM-L6-v2-onnx` | `simplicio-cli embed` · `rag --ml` | 嵌入 + 语义 RAG |
+| `siglip-image-encoder-onnx` | `simplicio-cli image` | 图像压缩内容校验器 |
 
 ### ⚙️ 原生 Rust 性能核心（可选）
 

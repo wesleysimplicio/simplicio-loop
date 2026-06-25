@@ -23,6 +23,8 @@ DONE_FLAG = os.path.join(LOOP_DIR, "done")
 LAST_RESP = os.path.join(LOOP_DIR, "last_response.txt")
 STOP_SIGNAL = os.path.join(".orchestrator", "STOP")
 BUDGET = os.path.join(".orchestrator", "loop-budget.json")
+GATE_LOCK = os.path.join(LOOP_DIR, "gate.lock")
+GATE_TTL_SEC = 1800  # 30 min — a stale lock must NEVER permanently trap the loop (fail-open)
 
 EVIDENCE_RE = re.compile(
     r"(https?://\S+/pull/\d+)"          # a PR URL
@@ -108,6 +110,23 @@ def last_assistant_text(stdin):
     return ""
 
 
+def gate_running():
+    """True when a background gate (verification workflow / CI / long task) is in flight + fresh.
+
+    The orchestrator touches `.orchestrator/loop/gate.lock` before launching a background gate and
+    removes it on completion. While present AND fresh, the turn ended because we are WAITING on that
+    gate — not because the loop is idle — so the Stop hook must NOT re-feed the goal. A stale lock
+    (older than the TTL) is ignored so a leftover file can never trap the agent (fail-open).
+    """
+    try:
+        if not os.path.exists(GATE_LOCK):
+            return False
+        import time
+        return (time.time() - os.path.getmtime(GATE_LOCK)) < GATE_TTL_SEC
+    except Exception:
+        return False
+
+
 def budget_halted():
     try:
         if not os.path.exists(BUDGET):
@@ -139,6 +158,11 @@ def main():
         # Explicit STOP signal beats everything.
         if os.path.exists(STOP_SIGNAL):
             cleanup_and_stop()
+        # Waiting on a background gate (workflow / CI / long task)? Let the turn end WITHOUT
+        # consuming an iteration or re-feeding — we are blocked on that gate, not idle. The gate's
+        # completion re-invokes the agent; the loop resumes then (lock is gone). Preserves state.
+        if gate_running():
+            allow_stop()
         # (1) No active loop.
         if not os.path.exists(SCRATCHPAD):
             allow_stop()
