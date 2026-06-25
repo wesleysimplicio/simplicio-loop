@@ -33,7 +33,7 @@ What the installer does (all reversible — copies + a config edit):
 - wires the loop (`Stop`/`stop` hook) where the runtime supports it; else the loop self-paces,
 - ensures the runtime's entry file (`AGENTS.md` / `GEMINI.md` / `.github/copilot-instructions.md`
   / `.kiro/steering/…` / `CONVENTIONS.md`) references the protocol — idempotently,
-- prints `simplicio mcp register --client <runtime>` for optional native binding.
+- prints `simplicio-cli mcp register --client <runtime>` for optional native binding.
 
 See [`adapters/MATRIX.md`](adapters/MATRIX.md) and `adapters/<runtime>/README.md` for details.
 

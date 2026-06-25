@@ -5,7 +5,7 @@ demonstration video of a screen/feature with **hyperframes** and record it as ev
 change works. Two jobs, one producer:
 
 1. **On request** — when a work-item or the skill argument asks for a demo video
-   (`/simplicio-tasks faça um vídeo demonstrativo da tela X`), this is the producer that fulfils it.
+   (`/simplicio-tasks make a demo video of screen X`), this is the producer that fulfils it.
 2. **As evidence** — the north star from Step 4b ("works, not just compiles") taken one step past a
    screenshot: a reproducible MP4 walkthrough of the change actually running on screen.
 

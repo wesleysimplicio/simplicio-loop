@@ -26,6 +26,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MCP_SERVER = str(REPO_ROOT / "engine" / "simplicio_mcp.py")
 
+# Stable across versions — used to detect an existing install for idempotent re-init. Do NOT
+# rename (a changed marker makes an upgrade append a duplicate block instead of replacing).
 MARK_BEGIN = "# --- simplicio mcp ---"
 MARK_END = "# --- end simplicio mcp ---"
 

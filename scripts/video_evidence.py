@@ -14,7 +14,7 @@ of "works, not just compiles" (Step 4b). No API keys; local render via headless 
 Five verbs:
 
   detect    Cheap intent gate (no toolchain). Decide whether a goal/work-item is a
-            video-creation request (e.g. `/simplicio-tasks faça um vídeo demonstrativo da tela X`).
+            video-creation request (e.g. `/simplicio-tasks make a demo video of screen X`).
             Pass the request text via --goal. Exit 0 + "video-task" when it is; exit 0 + "skip"
             otherwise. Pass --exit-code to instead exit 10 when it IS a video task (for CI `if:`).
   scaffold  `npx hyperframes init <project>` then write a composition that turns the captured
@@ -30,7 +30,7 @@ Pairs with web_verify.py: web_verify drives the real UI and captures per-step sc
 deterministic MP4 walkthrough — the demo video the user asked for AND the on-screen proof.
 
 Usage:
-    python3 scripts/video_evidence.py detect --goal "faça um vídeo demonstrativo da tela de login" [--exit-code]
+    python3 scripts/video_evidence.py detect --goal "make a demo video of the login screen" [--exit-code]
     python3 scripts/video_evidence.py scaffold --name login-demo \\
         --frames .orchestrator/tee/web --title "Login screen" [--seconds 2.0]
     python3 scripts/video_evidence.py render --name login-demo [--issue 12]

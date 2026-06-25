@@ -34,7 +34,7 @@ rewrite in your Cursor hooks pointing at `orient_rewrite.py` (opt-in; conservati
 ## Native bind — MCP / rules
 
 ```bash
-simplicio mcp register --client cursor
+simplicio-cli mcp register --client cursor
 ```
 
 A `.cursor/rules/` entry can pin model-per-role choices (pstack-style) if you use the

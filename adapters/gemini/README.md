@@ -27,7 +27,7 @@ No stop-hook → self-pace via cron / CI tick:
 ## Native bind — MCP / native adapter
 
 ```bash
-simplicio mcp register --client gemini
+simplicio-cli mcp register --client gemini
 # or use simplicio-runtime/agent/gemini_native_adapter.py for the native REST path
 ```
 

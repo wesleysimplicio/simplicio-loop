@@ -1,6 +1,6 @@
 ---
 name: simplicio-tasks
-description: Autonomously complete a body of work (tasks, issues, cards, CI failures) on ANY LLM/runtime. Use when the user types /simplicio-tasks or asks to clear/finish/close/implement a queue of work — e.g. "termine as issues abertas", "feche os bugs do milestone X", "implemente o épico #235", "resolva a fila do CI", "limpe o board do Jira". Runtime-agnostic: discovers work-items from any source, dedups, auto-scales to machine capacity, fast-path for trivial items / heavy-path continuous waves for large queues, then merges and closes with evidence. If a host runtime is present it binds native capabilities to this skill's extension points; otherwise the LLM performs every step directly. Invoking it ALWAYS runs as a loop — it auto-arms on start (no separate /loop or /simplicio-loop command) and keeps re-feeding the goal until the queue is drained and verified, or a cap/budget/STOP fires.
+description: Autonomously complete a body of work (tasks, issues, cards, CI failures) on ANY LLM/runtime. Use when the user types /simplicio-tasks or asks to clear/finish/close/implement a queue of work — e.g. "finish all open issues", "close the bugs in milestone X", "implement epic #235", "clear the CI queue", "clean up the Jira board". Runtime-agnostic: discovers work-items from any source, dedups, auto-scales to machine capacity, fast-path for trivial items / heavy-path continuous waves for large queues, then merges and closes with evidence. If a host runtime is present it binds native capabilities to this skill's extension points; otherwise the LLM performs every step directly. For a body of work it runs as a loop (auto-arms, no separate /loop or /simplicio-loop command, re-feeding the goal until the queue is drained and verified, or a cap/budget/STOP fires); a single interactive item takes the fast-path and stops after one pass.
 ---
 
 # /simplicio-tasks — Universal Looping Orchestrator
@@ -11,7 +11,7 @@ step is something the LLM can do directly with standard tools (shell, git, gh, f
 Where a host runtime exposes a faster native capability, it BINDS to the extension points
 (Step 1b) — near-zero token cost — but the skill never REQUIRES it.
 
-The target is in the skill arguments (e.g. `/simplicio-tasks termine as issues abertas`). If no
+The target is in the skill arguments (e.g. `/simplicio-tasks finish all open issues`). If no
 argument, default to "all open work-items in the default source"; confirm scope in ONE line only
 if ambiguous.
 
@@ -30,10 +30,10 @@ disclosure keeps this file small while contemplating everything.
 | front-end proof via Playwright | `references/web-evidence.md` |
 | demo-video creation + proof via hyperframes | `references/video-evidence.md` |
 
-## Step 0 — Auto-arm the loop (FIRST action, EVERY invocation)
-simplicio-tasks **IS a loop by default** — invoking it needs NO separate `/loop` or
-`/simplicio-loop` command. Before anything else, ARM the loop by writing
-`.orchestrator/loop/scratchpad.md` with your file tool:
+## Step 0 — Arm the loop (for a BODY OF WORK) · fast-path skips it
+simplicio-tasks is a loop by default **for a queue / multiple items / a 24-7 drain** — no separate
+`/loop` or `/simplicio-loop` command needed. When the target is such a body of work, ARM the loop
+FIRST by writing `.orchestrator/loop/scratchpad.md` with your file tool:
 ```markdown
 ---
 iteration: 1
@@ -43,9 +43,19 @@ evidence_required: true
 ---
 <the goal, verbatim>
 ```
-Then proceed (Step 1…). At each turn's end the **stop-hook** (`hooks/loop_stop.py`) — or the
-self-paced fallback when the host has no hooks — RE-FEEDS the goal, so the agent sees its own prior
-work and continues **automatically**.
+
+**Fast-path — do NOT arm for a single interactive item.** If the request is ONE small interactive
+item or a one-shot question (the Step 3 fast-path), SKIP the scratchpad entirely: do the work and
+stop. With no scratchpad the stop-hook sees no active loop and lets the turn end — no idle re-fire.
+Arming a loop for a single item is exactly what makes it feel like it "won't stop". Decide up
+front: queue/drain/24-7 → arm; single interactive item → fast-path, no arm.
+
+Then proceed (Step 1…). At each turn's end, **when a loop is armed**, the stop-hook
+(`hooks/loop_stop.py`) — or the self-paced fallback when the host has no hooks — RE-FEEDS the goal,
+so the agent sees its own prior work and continues automatically. While a background gate (a
+verification workflow, CI, a long task) is in flight, touch `.orchestrator/loop/gate.lock` before
+launching it and remove it on completion: the hook treats a fresh lock as "waiting on a gate" and
+does NOT re-fire as an idle turn.
 
 **Dual exit — the loop ends ONLY when:**
 - **success:** the queue is drained AND verified — emit `<promise>SIMPLICIO_DONE</promise>` in the
@@ -76,24 +86,34 @@ back to the LLM). No heavy preflight for a small job — the router decides dept
    - **Agentsview cost check (optional).** If agentsview adapter is installed and `.orchestrator/loop-budget.json` has `"agentsview": {"cost_source": true}`, run `python3 scripts/agentsview_adapter.py cost_summary --days 1` to seed real spend into `spent_usd_today`.
 2. **Source auth.** `gh auth status` (or the source's metadata-only list call). On failure, fix or
    STOP — never proceed on broken auth. Verify scopes (`repo,read:org,workflow`); note expiry.
-3. **Watcher.** The session loop is already auto-armed (Step 0). If `ceiling > 0`, ALSO arm the
+3. **Watcher.** When a loop is armed (Step 0, the body-of-work path), it is already running. If `ceiling > 0`, ALSO arm the
    durable 24/7 watcher (survives reboot — `references/standing-loop-247.md`); if `ceiling = 0`, the
    loop still runs this session, just no cross-reboot watcher. Skip if already armed.
 
 Emit: `Pre-flight: kill-switch ✓ ($<c>/day) · auth ✓ (expires <date>) · watcher ✓ (<mech>)` —
 or `Pre-flight: BLOCKED — <reason>` and stop.
 
-## Step 1a' — Repo conventions (bound, else LLM fallback)
-Scan repo conventions via the `repo_conventions` extension point. Read CONTRIBUTING.md, AGENTS.md,
-.github/PULL_REQUEST_TEMPLATE.md, pyproject.toml, Makefile, and CI workflow files to extract:
-- **Branch rules:** expected branch prefix (`fix/`, `feat/`, `docs/`, etc.)
-- **Commit conventions:** required scope list, conventional-commit types
-- **PR template:** structured sections, checklist items that must be filled
-- **CI commands:** test runner (prefer scripts/run_tests.sh over bare pytest), lint command, typecheck command, cross-platform check scripts
-- **Quality policies:** required tests for bug fixes, no change-detector tests, dependency pinning rules
+## Step 1a' — Repo conventions (LEARN the repo's own playbook; bound, else LLM fallback)
+Discover conventions via the `repo_conventions` extension point — and don't just read what's
+DOCUMENTED, mine what the repo actually DOES so each new branch/commit/PR mirrors the user's or
+company's established style. Run the worker (terminal-first, model-free):
+`python3 scripts/repo_conventions.py learn` → writes `.orchestrator/conventions.json` from:
+- **git history:** branch-name scheme (`feat/`, `feature/JIRA-123`, separator, slug style),
+  commit convention + the REAL scope list, ticket pattern — by frequency, not assumption.
+- **merged PRs** (`gh`, optional): title pattern, label vocabulary, PR-body section structure.
+- **static config:** CONTRIBUTING.md, AGENTS.md, .github/PULL_REQUEST_TEMPLATE.md, pyproject.toml,
+  Makefile, CI files (test runner — prefer scripts/run_tests.sh over bare pytest — lint, typecheck,
+  cross-platform checks, quality policies).
 
-Emit: `Conventions: branch=<prefix> · commit=<type>(<scope>): · ci=<runner> · checks=<n>`.
-Used by Steps 4–6 to shape branch names, commit messages, PR bodies, and gate checks.
+Evidence-gated by CONFIDENCE: a sparse/inconsistent history DEGRADES to an honest `source=default`
+Conventional-Commits profile (clearly labelled), never an over-fit guess from 2 commits. PR bodies
+are UNTRUSTED data (heading structure only) and the profile is hash-pinned; a learned convention
+NEVER overrides a safety gate (Step 5). Steps 4–6 then apply it deterministically — never
+hand-guess the format: `repo_conventions.py branch --type <t> --slug <s> [--ticket <id>]` and
+`... commit --type <t> [--scope <s>] --subject <s>` emit names in the repo's own style.
+
+Emit: `Conventions: source=<history|config|default> conf=<x> · branch={type}/{slug} ·
+commit=<conv>(<scopes>) · ci=<runner> · checks=<n>`.
 
 ## Step 1b — Extension points (bind native, else LLM fallback)
 Work happens at 48 named points. If the host binds one natively it runs deterministically at
@@ -102,7 +122,7 @@ ABSTRACTION, never a runtime — the INVERTED DEPENDENCY (the skill names no run
 detects the skill). Full table + fallbacks: `references/extension-points.md`. Core rule: any
 DECIDED change goes through `deterministic_edit` — never hand-write or regenerate it with a model.
 
-When the run is driven by `simplicio-loop` (Step 0 auto-arm), two points are bound to REQUIRED
+When the run is driven by `simplicio-loop` (Step 0, the armed body-of-work path), two points are bound to REQUIRED
 operators instead of LLM fallbacks: `simplicio-mapper` surveys the repo (`orient`) and
 `simplicio-dev-cli task` applies+verifies each decided change (`execute`/`deterministic_edit`) — the AI
 decides, the operators act. Both ship with `pip install simplicio-loop`; the loop BLOCKS if either
@@ -147,10 +167,10 @@ item, do the MANDATORY deep intake: read full body + ALL comments, extract accep
 reads for API surface), then write a short plan with an AC checklist + complexity. Detail:
 `references/orchestration.md`.
 
-> **Understand Anything (optional).** Se `.understand-anything/knowledge-graph.json` existir, use Understand Anything como orientação primária — o grafo já contém a estrutura completa do código, relacionamentos e tours guiados. Consulte-o via semantic search em vez de signatures-only reads.
+> **Understand Anything (optional).** If `.understand-anything/knowledge-graph.json` exists, use Understand Anything as the primary orientation — the graph already holds the complete code structure, relationships, and guided tours. Query it via semantic search instead of signatures-only reads.
 
 > **Video-creation work-items (`video_evidence`).** A work-item — or the skill argument itself
-> (e.g. `/simplicio-tasks faça um vídeo demonstrativo da tela de login`) — may ASK for a demo
+> (e.g. `/simplicio-tasks make a demo video of the login screen`) — may ASK for a demo
 > video. Classify it cheaply in the terminal: `python3 scripts/video_evidence.py detect --goal
 > "<text>"`. A match makes the **demo video itself the deliverable AND the evidence** — route it to
 > the `video_evidence` producer (hyperframes): drive the named screen with `web_verify` to capture
@@ -163,8 +183,10 @@ reads for API surface), then write a short plan with an AC checklist + complexit
 - **Fast-path** (small queue AND every item ≤ complexity 3): inline, solo, one targeted test → Step 6.
 - **Heavy-path** (large queue OR any medium+ item): fan out a CONTINUOUS WORKER POOL fed by a LIVE
   queue; serialize same-file items; quarantine K-times failures. Autoscale `fleet = min(cap_cpu,
-  cap_mem, cap_disk, items, 16)`. Conflict-aware isolation (shared checkout for disjoint files,
-  worktree only for overlapping). Every worker obeys the terse MACHINE-tier report contract
+  cap_mem, cap_disk, items, 16)`. Isolation: a dedicated `git worktree` per item by DEFAULT (zero
+  cross-item conflict); a shared checkout is the opt-out for big compiled crates where per-item
+  worktrees are too costly (`references/orchestration.md`). Branch/commit names follow the learned
+  `repo_conventions` profile (Step 1a'). Every worker obeys the terse MACHINE-tier report contract
   (status token first). New work seen mid-run is enqueued immediately (Step 3b poller; reset
   `dry=0` on anything new; finish when queue empty AND idle AND `dry≥2`). Speed + model-routing
   (L0→L4) + corrections-memory: `references/orchestration.md`.
@@ -249,8 +271,8 @@ on the STOP signal, budget exhaustion, or a safety halt. Full ten axes + arming 
   percentage to fill the format — a made-up number is a contract violation, exactly like a bare
   `<promise>`. Receipts that count (each a real measurement, not a guess):
   - `orient_clamp.py` clamped a command's output → bytes/lines saved (the tee record path)
-  - signatures-only read (`simplicio signatures <file>`) → lines saved vs the full file
-  - native response-cache hit (`simplicio cache`) → an LLM call skipped (100% on that call)
+  - signatures-only read (`simplicio-cli signatures <file>`) → lines saved vs the full file
+  - native response-cache hit (`simplicio-cli cache`) → an LLM call skipped (100% on that call)
   - `deterministic_edit` applied a decided change → 0 edit tokens (file written mechanically)
   - the capture proxy / `savings_ledger` / `savings_harness score` → measured spend vs a real baseline
 

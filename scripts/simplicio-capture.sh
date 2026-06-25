@@ -6,7 +6,7 @@
 # installs its *blessed, transparent* integration per client (provider routing that forwards to
 # each client's REAL provider — it does NOT swap the model). Three tiers:
 #
-#   native   Claude · Codex · VS Code (Copilot) · OpenClaw   → `simplicio capture init <client>`
+#   native   Claude · Codex · VS Code (Copilot) · OpenClaw   → `simplicio-cli capture init <client>`
 #   base-url Hermes · Cursor · OpenCode                       → point OPENAI/ANTHROPIC_BASE_URL at the proxy
 #   none     Gemini · Kiro · Antigravity                      → proprietary API, not interceptable (yet)
 #

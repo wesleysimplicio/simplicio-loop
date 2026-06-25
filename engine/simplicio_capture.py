@@ -186,7 +186,7 @@ def analyze_payload(obj: dict) -> dict:
 # ---------------------------------------------------------------------------
 def render_text(result: dict) -> str:
     lines: list[str] = []
-    lines.append("simplicio capture (dry-run — nothing was sent)")
+    lines.append("simplicio-cli capture (dry-run — nothing was sent)")
     lines.append("model: %s   tokenizer: %s" % (
         result.get("model") or "(unset)", result.get("tokenizer", "")))
     lines.append("")

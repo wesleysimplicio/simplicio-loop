@@ -4,7 +4,7 @@ local Simplicio capture proxy for that run (mirrors `headroom wrap <client>`).
 
 It does NOT patch the client: it just injects the proxy base-URL env vars into the
 child process environment and execs the client binary. The proxy (run separately via
-`simplicio proxy` / `simplicio_engine proxy`) measures + compresses the traffic.
+`simplicio-cli proxy` / `simplicio_engine proxy`) measures + compresses the traffic.
 
 Env injected into the client:
   OPENAI_BASE_URL = http://127.0.0.1:<port>/v1
@@ -134,7 +134,7 @@ def main(argv=None):
     try:
         client, port_override, require_proxy, extra = _parse_args(argv)
     except ValueError as e:
-        print(f"simplicio wrap: {e}", file=sys.stderr)
+        print(f"simplicio-cli wrap: {e}", file=sys.stderr)
         return 2
 
     if client == "--version":
@@ -151,7 +151,7 @@ def main(argv=None):
     binary = resolve_binary(client)
     if not binary:
         print(
-            f"simplicio wrap: client '{client}' not found on PATH "
+            f"simplicio-cli wrap: client '{client}' not found on PATH "
             f"(looked for '{CLIENT_BINS.get(client, client)}'). "
             f"Set $SIMPLICIO_WRAP_BIN to override.",
             file=sys.stderr,
@@ -161,13 +161,13 @@ def main(argv=None):
     up = proxy_listening(port)
     if not up:
         msg = (
-            f"simplicio wrap: capture proxy not running on :{port} — run: simplicio proxy"
+            f"simplicio-cli wrap: capture proxy not running on :{port} — run: simplicio-cli proxy"
         )
         if require_proxy:
             print(msg + " (aborting: --require-proxy)", file=sys.stderr)
             return 3
         print(msg, file=sys.stderr)
-        print("simplicio wrap: launching anyway (traffic will NOT be captured).", file=sys.stderr)
+        print("simplicio-cli wrap: launching anyway (traffic will NOT be captured).", file=sys.stderr)
 
     env = build_capture_env(client, port)
     cmd = [binary] + extra
@@ -175,7 +175,7 @@ def main(argv=None):
     try:
         return subprocess.run(cmd, env=env).returncode
     except FileNotFoundError:
-        print(f"simplicio wrap: failed to exec '{binary}'", file=sys.stderr)
+        print(f"simplicio-cli wrap: failed to exec '{binary}'", file=sys.stderr)
         return 127
     except KeyboardInterrupt:
         return 130

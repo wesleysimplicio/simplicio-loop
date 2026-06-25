@@ -17,7 +17,7 @@ Three capabilities decide how rich an adapter is:
 
 | # | Runtime | Skill load | Loop drive | Hooks | Native bind | Adapter |
 |---|---|---|---|---|---|---|
-| 1 | **Claude Code** | `.claude/skills/` + `.claude-plugin/` | `Stop` hook | ✅ full | MCP (`simplicio mcp register`) | [claude](claude/README.md) |
+| 1 | **Claude Code** | `.claude/skills/` + `.claude-plugin/` | `Stop` hook | ✅ full | MCP (`simplicio-cli mcp register`) | [claude](claude/README.md) |
 | 2 | **Codex** | `AGENTS.md` → `SKILL.md` | self-paced | ⚠️ partial | MCP / Python adapter | [codex](codex/README.md) |
 | 3 | **VS Code (Copilot)** | `.github/copilot-instructions.md` | self-paced (tasks) | ⚠️ tasks | MCP (VS Code MCP) | [vscode](vscode/README.md) |
 | 4 | **Cursor** | `.cursor-plugin/` + `.claude/skills/` | `stop` + `afterAgentResponse` | ✅ full | MCP / rules | [cursor](cursor/README.md) |

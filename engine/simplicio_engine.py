@@ -467,7 +467,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 cache.put(ckey, resp.status, resp_headers, bytes(full))
         except Exception as e:  # upstream failure — report, don't crash the proxy
             try:
-                self._json(502, {"error": {"message": f"simplicio proxy upstream error: {e}", "type": "upstream_error"}})
+                self._json(502, {"error": {"message": f"simplicio-cli proxy upstream error: {e}", "type": "upstream_error"}})
             except OSError:
                 return
             _log(f"UPSTREAM_ERROR {e}")

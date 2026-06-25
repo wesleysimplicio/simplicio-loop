@@ -35,7 +35,7 @@ python3 hooks/orient_clamp.py -- <build/test/diff command>
 ## Native bind (optional)
 
 ```bash
-simplicio mcp register --client codex     # MCP binding
+simplicio-cli mcp register --client codex     # MCP binding
 # or use the Python adapter at simplicio-runtime/agent/codex_responses_adapter.py
 ```
 

@@ -28,11 +28,20 @@ def test_video_evidence_blocks_without_composition(tmp_path):
     assert "done" not in r.stdout.lower(), "fake-pass! render claimed done:\n%s" % r.stdout
 
 
-def test_video_evidence_detect_intent_pt():
+def test_video_evidence_detect_intent():
     r = _run(["video_evidence.py", "detect", "--goal",
-              "faça um vídeo demonstrativo da tela de login"], cwd=REPO)
+              "make a demo video of the login screen"], cwd=REPO)
     assert r.returncode == 0, r.stderr
     assert "video-task" in r.stdout, r.stdout
+
+
+def test_video_evidence_detect_intent_multilingual():
+    # The intent matcher is intentionally EN/PT/ES — keep coverage for non-English goals.
+    for goal in ("faça um vídeo demonstrativo da tela de login",
+                 "crea un video demo de la pantalla de inicio de sesión"):
+        r = _run(["video_evidence.py", "detect", "--goal", goal], cwd=REPO)
+        assert r.returncode == 0, r.stderr
+        assert "video-task" in r.stdout, "%s -> %s" % (goal, r.stdout)
 
 
 def test_video_evidence_detect_skips_code_task():
@@ -56,6 +65,26 @@ def test_web_verify_blocks_without_toolchain(tmp_path):
     else:
         # toolchain present: a connection to port 0 cannot succeed → must be fail, never done
         assert "done" not in out, "web_verify claimed done against an unreachable URL:\n%s" % r.stdout
+
+
+def test_repo_conventions_selftest():
+    # The history-mining inference + formatters are model-free; the selftest proves them.
+    r = _run(["repo_conventions.py", "selftest"], cwd=REPO)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_repo_conventions_formatters_default():
+    # With no learned profile, formatters must produce a sane Conventional-Commits default and
+    # map an item-type alias ('bug' -> 'fix') deterministically.
+    b = _run(["repo_conventions.py", "branch", "--type", "bug", "--slug", "Null Token Crash",
+              "--out", "no-such-conventions.json"], cwd=REPO)
+    assert b.returncode == 0, b.stderr
+    assert b.stdout.strip() == "fix/null-token-crash", b.stdout
+    c = _run(["repo_conventions.py", "commit", "--type", "feature", "--scope", "auth",
+              "--subject", "add SSO", "--out", "no-such-conventions.json"], cwd=REPO)
+    assert c.returncode == 0, c.stderr
+    assert c.stdout.strip() == "feat(auth): add SSO", c.stdout
 
 
 if __name__ == "__main__":

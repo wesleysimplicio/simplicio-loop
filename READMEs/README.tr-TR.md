@@ -63,7 +63,7 @@ CI/inceleme geri bildirimlerini çözer, birleştirir ve yeni iş için **7/24**
 hepsi güvenlik kapılarının ve sıkı bir maliyet acil durdurma anahtarının arkasında.
 
 ```text
-/simplicio-tasks termine as issues abertas
+/simplicio-tasks finish all open issues
 → identity + pre-flight (kill-switch, auth, watcher)
 → discover 50 issues · dedup · build dependency DAG
 → autoscale fleet = 14 · pipeline implement→review→merge
@@ -81,12 +81,12 @@ yapmasıdır.
 ## 📘 Resmi yetenek kaydı (v3.4.0)
 
 `simplicio-tasks`'in sunduklarının eksiksiz, resmi listesi — aşağıdaki her yetenek **gerçek,
-çalıştırılabilir ve test edilmiştir** (`python3 scripts/check.py`: claims-audit 4/4 + 24 test). Her
+çalıştırılabilir ve test edilmiştir** (`python3 scripts/check.py`: claims-audit 4/4 + 27 test). Her
 biri kendi derin bölümüne ve worker'ına bağlanır.
 
 | Yetenek | Ne yapar | Kanıt / worker | Ayrıntılar |
 |---|---|---|---|
-| 🎬 **Video kanıtı** (`video_evidence`) | Bir ekranın/özelliğin **deterministik MP4** demosunu [hyperframes](https://github.com/heygen-com/hyperframes) ile render eder — `/simplicio-tasks faça um vídeo demonstrativo da tela X` isteğini karşılar ve bir UI değişikliğinin çalıştığına dair CI'da yeniden üretilebilir bir kanıt olarak da iş görür | `scripts/video_evidence.py` · Node 22+/FFmpeg olmadan BLOCKED (asla sahte-geçiş) | [§ Video kanıtı](#-video-kanıtı--hyperframes-ile-demo-videoları) |
+| 🎬 **Video kanıtı** (`video_evidence`) | Bir ekranın/özelliğin **deterministik MP4** demosunu [hyperframes](https://github.com/heygen-com/hyperframes) ile render eder — `/simplicio-tasks make a demo video of screen X` isteğini karşılar ve bir UI değişikliğinin çalıştığına dair CI'da yeniden üretilebilir bir kanıt olarak da iş görür | `scripts/video_evidence.py` · Node 22+/FFmpeg olmadan BLOCKED (asla sahte-geçiş) | [§ Video kanıtı](#-video-kanıtı--hyperframes-ile-demo-videoları) |
 | 🧠 **Deneme belleği + takılma dedektörü** | Kalıcı bir koşu-günlüğü (`.orchestrator/loop/journal.jsonl`) + bir takılma dedektörü, böylece döngü **salınım yapmak yerine strateji değiştirir**; artımlı triaj (`since`) her turda yalnızca farkı okur | `scripts/loop_journal.py` · `selftest` 9/9 | [§ Anti-salınım](#-deneme-belleği--takılma-dedektörü-anti-salınım) |
 | 🔒 **Fail-closed güvenlik kapısı** (`action_gate`) | force-push, geçmiş yeniden yazma, toplu-silme, yıkıcı DDL, altyapı sökme ve gizli-yüklü commit/push'ları **mekanik olarak engelleyen** bir `PreToolUse`/git-pre-push hook'u — Adım 5 düzyazı değil, çalıştırılabilir hale getirildi | `hooks/action_gate.py` · `selftest` 15/15 | [§ Güvenlik](#-güvenlik-pazarlığa-kapalı) |
 | 🔬 **Yerel doğrulama** | Bir test paketi (worker selftest'leri + kanıt-kapılı çıkışı kanıtlayan bir **döngü sürücüsü e2e'si**) + bir **claims-audit** (referans verilen scriptler var · sayımlar tutarlı · `_bundle ≡ source`) — hepsi yerel, **ücretli CI yok** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Testler & yerel kontroller](#-testler--yerel-kontroller-ücretli-ci-yok) |
@@ -122,7 +122,7 @@ yüklendiğinde orkestratör ona devreder (daha zengin + daha ucuz); yokken dahi
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Oturum analitiği, maliyet takibi, takılı-oturum keşfi | **L1** yalnızca SQL |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Döngü turları arasında KV cache — yerel modellerde %40-70 TTFT azalması | GPU süresi ↓ |
 | 10 | 🗜️ **Simplicio yakalama motoru** | `engine/simplicio_engine.py` (yerel, yalnızca stdlib; OSS [headroom](https://github.com/headroomlabs-ai/headroom) projesiyle savings-schema uyumlu) | Şeffaf yakalama proxy'si: gerçek sağlayıcıya iletir, ölçer + deterministik olarak sıkıştırır, `proxy_savings.json` yazar | **deterministik** |
-| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | Bir ekranın/özelliğin **deterministik MP4** demo videosunu render eder — `/simplicio-tasks faça um vídeo demonstrativo da tela X` isteğini karşılar VE bir UI değişikliğinin çalıştığına dair CI'da yeniden üretilebilir bir kanıt olarak da iş görür | Kanıt üreticisi |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | Bir ekranın/özelliğin **deterministik MP4** demo videosunu render eder — `/simplicio-tasks make a demo video of screen X` isteğini karşılar VE bir UI değişikliğinin çalıştığına dair CI'da yeniden üretilebilir bir kanıt olarak da iş görür | Kanıt üreticisi |
 
 Her skill [`.claude/skills/`](../.claude/skills) altında yaşar; her hızlandırıcının
 `.claude/skills/simplicio-tasks/references/` altında bir referans dokümanı vardır (video üreticisi:
@@ -316,7 +316,7 @@ anahtarı yok; headless Chrome + FFmpeg ile yerel render (Node 22+).
    hyperframes üreticisine yönlendirir:
 
    ```text
-   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   /simplicio-tasks make a demo video of the system login screen
    → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
    → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
    → attach the MP4 to the PR as evidence + close with the link
@@ -334,7 +334,7 @@ ekonomisi).
 
 ```bash
 # one-shot, outside the loop
-python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py detect  --goal "record a video of the checkout screen"
 python3 scripts/video_evidence.py verify  --name checkout-demo \
     --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
 ```
@@ -349,10 +349,10 @@ python3 scripts/video_evidence.py verify  --name checkout-demo \
 | Terminal-öncelikli yürütme | Olgular LLM halüsinasyonundan değil, kabuktan |
 | Çıktı-azaltma kataloğu | Komut türü başına tavanlar (`CAP_ERRORS=20`, `CAP_WARNINGS=10`, `CAP_LIST=20`) — `orient_clamp.py` |
 | Hatada tee+CCR cache | Başarısız bir komutu asla yeniden çalıştırma — cache'lenmiş çıktıyı oku |
-| Yalnızca-imza okumaları | `simplicio signatures <file>` — 870 satırlık dosya → 65 satır (**%93 tasarruf**), gövdeler atlanmış |
+| Yalnızca-imza okumaları | `simplicio-cli signatures <file>` — 870 satırlık dosya → 65 satır (**%93 tasarruf**), gövdeler atlanmış |
 | `simplicio-compress` | Öz düzyazı + tek seferlik bellek kompaksiyonu |
 | `orient_clamp.py` | Her kabuk komutunda kırpma + tee, sıfır bağlantı |
-| Yerel yanıt cache'i | tekrarlanan deterministik (temp=0) istek → cache'ten sunulur, LLM çağrısını atlar (**isabet halinde %100**) — `simplicio cache`, varsayılan olarak açık (devre dışı bırakmak için `SIMPLICIO_CACHE=0`) |
+| Yerel yanıt cache'i | tekrarlanan deterministik (temp=0) istek → cache'ten sunulur, LLM çağrısını atlar (**isabet halinde %100**) — `simplicio-cli cache`, varsayılan olarak açık (devre dışı bırakmak için `SIMPLICIO_CACHE=0`) |
 | Simplicio yakalama proxy'si + MCP | Şeffaf bir sıkıştırma daemon'ı aracılığıyla araç çıktılarında %60-95 daha az token |
 
 Tasarruflar yalnızca doğrulanmış-doğru bir sonuçta sayılır. Baz çizgi = aynı sonuca giden en ucuz
@@ -376,11 +376,11 @@ ya da yüzde uydurmaz. Bkz. `references/token-economy.md`.
 | Runtime | Ekonomi (skill) | Ölçüm (monitör) |
 |---|---|---|
 | **Hermes** | ✓ | ✓ **otomatik** — zaten proxy üzerinden yönlendirilmiş (`base_url → :8788`) |
-| **Claude** | ✓ (skill + hook'lar) | ✗ varsayılan olarak — Claude doğrudan `api.anthropic.com` ile konuşur; yalnızca yönlendirildiğinde ölçülür (`simplicio wrap claude` ya da `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
-| **Codex** | ✓ (skill) | ✗ varsayılan olarak — `simplicio init codex` MCP araçlarını ekler ama LLM trafiğini yönlendirmez; `simplicio wrap codex` ya da proxy'ye işaret eden bir OpenAI base-url ile ölçülür |
+| **Claude** | ✓ (skill + hook'lar) | ✗ varsayılan olarak — Claude doğrudan `api.anthropic.com` ile konuşur; yalnızca yönlendirildiğinde ölçülür (`simplicio-cli wrap claude` ya da `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
+| **Codex** | ✓ (skill) | ✗ varsayılan olarak — `simplicio-cli init codex` MCP araçlarını ekler ama LLM trafiğini yönlendirmez; `simplicio-cli wrap codex` ya da proxy'ye işaret eden bir OpenAI base-url ile ölçülür |
 
 Yani: **tasarruflar her runtime'da gerçekleşir**; **monitör bunları Hermes'te otomatik olarak
-toplar** ve Claude/Codex'te bir **tek-seferlik yönlendirme adımından** sonra (`simplicio wrap …` /
+toplar** ve Claude/Codex'te bir **tek-seferlik yönlendirme adımından** sonra (`simplicio-cli wrap …` /
 base-url → `:8788`). Yönlendirme olmadan ekonomi yine de geçerlidir — monitör yalnızca o token'ları
 saymaz. `scripts/simplicio-economy.sh wire`, kurulum sırasında OpenAI-uyumlu istemciler için bu
 yönlendirmeyi yapar.
@@ -431,10 +431,10 @@ indirilir.
 
 | Model | Komut | Kullanım |
 |---|---|---|
-| `kompress-v2-base` | `simplicio kompress` | semantik token budama |
-| `technique-router-onnx` | `simplicio router` | teknik yönlendirme |
-| `all-MiniLM-L6-v2-onnx` | `simplicio embed` · `rag --ml` | gömmeler + semantik RAG |
-| `siglip-image-encoder-onnx` | `simplicio image` | görüntü-sıkıştırma içerik doğrulayıcısı |
+| `kompress-v2-base` | `simplicio-cli kompress` | semantik token budama |
+| `technique-router-onnx` | `simplicio-cli router` | teknik yönlendirme |
+| `all-MiniLM-L6-v2-onnx` | `simplicio-cli embed` · `rag --ml` | gömmeler + semantik RAG |
+| `siglip-image-encoder-onnx` | `simplicio-cli image` | görüntü-sıkıştırma içerik doğrulayıcısı |
 
 ### ⚙️ Yerel Rust performans çekirdeği (isteğe bağlı)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""simplicio — unified command-line dispatcher.
+"""simplicio-cli — unified command-line dispatcher.
 
-Single entry point so users type `simplicio <cmd>` instead of
+Single entry point so users type `simplicio-cli <cmd>` instead of
 `python3 engine/simplicio_engine.py <cmd>`. Stdlib only.
 
 Engine-backed commands (proxy, doctor, memory, mcp, init) are forwarded to the
@@ -33,9 +33,9 @@ def _version():
 
 def _help():
     return (
-        "simplicio — unified CLI for the simplicio-loop engine\n"
+        "simplicio-cli — unified CLI for the simplicio-loop engine\n"
         "\n"
-        "Usage: simplicio <command> [args...]\n"
+        "Usage: simplicio-cli <command> [args...]\n"
         "\n"
         "Commands:\n"
         "  proxy [...]    run the transparent capture proxy\n"
@@ -69,7 +69,7 @@ def main(argv=None):
     cmd, rest = argv[0], argv[1:]
 
     if cmd in ("version", "--version", "-V"):
-        sys.stdout.write("simplicio %s\n" % _version())
+        sys.stdout.write("simplicio-cli %s\n" % _version())
         return 0
 
     if cmd == "compress":
@@ -81,7 +81,7 @@ def main(argv=None):
         # os.execv never returns on success
         return 0
 
-    sys.stderr.write("simplicio: unknown command %r\n\n" % cmd)
+    sys.stderr.write("simplicio-cli: unknown command %r\n\n" % cmd)
     sys.stderr.write(_help())
     return 2
 

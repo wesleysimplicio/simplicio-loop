@@ -63,7 +63,7 @@ loop that **runs the code (not just compiles it)**, opens PRs, resolves CI/revie
 and keeps watching **24/7** for new work — all behind safety gates and a hard cost kill-switch.
 
 ```text
-/simplicio-tasks termine as issues abertas
+/simplicio-tasks finish all open issues
 → identity + pre-flight (kill-switch, auth, watcher)
 → discover 50 issues · dedup · build dependency DAG
 → autoscale fleet = 14 · pipeline implement→review→merge
@@ -81,16 +81,17 @@ protocol on 11 runtimes**, and it does all of this with **aggressive, honest tok
 
 ---
 
-## 📘 Official capability record (v3.9.3)
+## 📘 Official capability record (v3.10.0)
 
 The complete, official roster of what `simplicio-tasks` ships — every capability below is **real,
-runnable, and tested** (`python3 scripts/check.py`: claims-audit 4/4 + 24 tests). Each links to its
+runnable, and tested** (`python3 scripts/check.py`: claims-audit 4/4 + 27 tests). Each links to its
 deep section and its worker.
 
 | Capability | What it does | Proof / worker | Details |
 |---|---|---|---|
-| 🎬 **Video evidence** (`video_evidence`) | Renders a **deterministic MP4** demo of a screen/feature with [hyperframes](https://github.com/heygen-com/hyperframes) — fulfils `/simplicio-tasks faça um vídeo demonstrativo da tela X` and doubles as CI-reproducible proof a UI change works | `scripts/video_evidence.py` · BLOCKED (never fake-pass) without Node 22+/FFmpeg | [§ Video evidence](#-video-evidence--demo-videos-via-hyperframes) |
+| 🎬 **Video evidence** (`video_evidence`) | Renders a **deterministic MP4** demo of a screen/feature with [hyperframes](https://github.com/heygen-com/hyperframes) — fulfils `/simplicio-tasks make a demo video of screen X` and doubles as CI-reproducible proof a UI change works | `scripts/video_evidence.py` · BLOCKED (never fake-pass) without Node 22+/FFmpeg | [§ Video evidence](#-video-evidence--demo-videos-via-hyperframes) |
 | 🧠 **Attempt memory + stall detector** | A durable run-journal (`.orchestrator/loop/journal.jsonl`) + a stall detector so the loop **changes strategy instead of oscillating**; incremental triage (`since`) reads only the delta each turn | `scripts/loop_journal.py` · `selftest` 9/9 | [§ Anti-oscillation](#-attempt-memory--stall-detector-anti-oscillation) |
+| 🧭 **Repo conventions** (`repo_conventions`) | **Learns the repo's own playbook** — mines git history + merged PRs + static config into `.orchestrator/conventions.json` so every new branch/commit/PR mirrors the team's established style; worktree-per-item isolation is the default | `scripts/repo_conventions.py` · `selftest` 19/19 | [§ The full flow](#️-the-full-flow--from-demand-to-delivery) |
 | 🔒 **Fail-closed safety gate** (`action_gate`) | A `PreToolUse`/git-pre-push hook that **mechanically blocks** force-push, history rewrite, mass-delete, destructive DDL, infra teardown, and secret-laden commits/pushes — Step 5 made executable, not prose | `hooks/action_gate.py` · `selftest` 15/15 | [§ Safety](#-safety-non-negotiable) |
 | 🔬 **Local verification** | A test suite (worker selftests + an **e2e of the loop driver** proving evidence-gated exit) + a **claims-audit** (referenced scripts exist · counts consistent · `_bundle ≡ source`) — all local, **no paid CI** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Tests & local checks](#-tests--local-checks-no-paid-ci) |
 | ✅ **Honest savings** | The savings line is now **evidence-gated, not mandatory** — a number is shown only with a measured receipt (clamp/signatures/cache/`deterministic_edit`/ledger); never fabricated | token-economy contract | [§ Token economy](#-token-economy) |
@@ -126,7 +127,7 @@ fallback.
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Session analytics, cost tracking, stalled-session discovery | **L1** SQL only |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV cache between loop turns — 40-70% TTFT reduction on local models | GPU time ↓ |
 | 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (native, stdlib-only; savings-schema compatible with the OSS [headroom](https://github.com/headroomlabs-ai/headroom) project) | Transparent capture proxy: forwards to the real provider, measures + deterministically compresses, writes `proxy_savings.json` | **deterministic** |
-| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | Renders a **deterministic MP4** demo video of a screen/feature — fulfils `/simplicio-tasks faça um vídeo demonstrativo da tela X` AND doubles as CI-reproducible proof a UI change works | Evidence producer |
+| 11 | 🎬 **video_evidence (hyperframes)** | [hyperframes](https://github.com/heygen-com/hyperframes) | Renders a **deterministic MP4** demo video of a screen/feature — fulfils `/simplicio-tasks make a demo video of screen X` AND doubles as CI-reproducible proof a UI change works | Evidence producer |
 
 Each skill lives under [`.claude/skills/`](.claude/skills); each accelerator has a reference doc
 under `.claude/skills/simplicio-tasks/references/` (the video producer:
@@ -315,7 +316,7 @@ Two ways it fires — both via the `video_evidence` extension point (worker
    the work-item to the hyperframes producer:
 
    ```text
-   /simplicio-tasks faça um vídeo demonstrativo da tela de login do sistema
+   /simplicio-tasks make a demo video of the system login screen
    → detect: video-creation request  → drive the screen with web_verify (per-step screenshots)
    → scaffold a hyperframes composition  → npx hyperframes render → deterministic MP4
    → attach the MP4 to the PR as evidence + close with the link
@@ -331,7 +332,7 @@ Evidence is always a **file path + boolean verdict** — never video bytes in co
 
 ```bash
 # one-shot, outside the loop
-python3 scripts/video_evidence.py detect  --goal "grave um vídeo da tela de checkout"
+python3 scripts/video_evidence.py detect  --goal "record a video of the checkout screen"
 python3 scripts/video_evidence.py verify  --name checkout-demo \
     --frames .orchestrator/tee/web --title "Checkout" --issue 42 [--upload --pr 42]
 ```
@@ -346,10 +347,10 @@ python3 scripts/video_evidence.py verify  --name checkout-demo \
 | Terminal-first execution | Facts from shell, not LLM hallucination |
 | Output-reduction catalog | Caps per command type (`CAP_ERRORS=20`, `CAP_WARNINGS=10`, `CAP_LIST=20`) — `orient_clamp.py` |
 | Tee+CCR cache on failure | Never re-run a failed command — read the cached output |
-| Signatures-only reads | `simplicio signatures <file>` — 870-line file → 65 lines (**93% saved**), bodies stripped |
+| Signatures-only reads | `simplicio-cli signatures <file>` — 870-line file → 65 lines (**93% saved**), bodies stripped |
 | `simplicio-compress` | Terse prose + one-time memory compaction |
 | `orient_clamp.py` | Clamp + tee on every shell command, zero wiring |
-| Native response cache | repeated deterministic (temp=0) request → served from cache, skips the LLM call (**100% on hit**) — `simplicio cache`, on by default (`SIMPLICIO_CACHE=0` to disable) |
+| Native response cache | repeated deterministic (temp=0) request → served from cache, skips the LLM call (**100% on hit**) — `simplicio-cli cache`, on by default (`SIMPLICIO_CACHE=0` to disable) |
 | Simplicio capture proxy + MCP | 60-95% fewer tokens on tool outputs via a transparent compression daemon |
 
 Savings only count on a verified-correct outcome. Baseline = the cheapest sensible non-orchestrated
@@ -373,11 +374,11 @@ Two different things happen when you call **`simplicio-tasks`**, and they behave
 | Runtime | Economy (skill) | Measurement (monitor) |
 |---|---|---|
 | **Hermes** | ✓ | ✓ **automatic** — already routed through the proxy (`base_url → :8788`) |
-| **Claude** | ✓ (skill + hooks) | ✗ by default — Claude talks to `api.anthropic.com` directly; measured only once routed (`simplicio wrap claude`, or `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
-| **Codex** | ✓ (skill) | ✗ by default — `simplicio init codex` adds the MCP tools but does not route LLM traffic; measured with `simplicio wrap codex` or an OpenAI base-url pointing at the proxy |
+| **Claude** | ✓ (skill + hooks) | ✗ by default — Claude talks to `api.anthropic.com` directly; measured only once routed (`simplicio-cli wrap claude`, or `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
+| **Codex** | ✓ (skill) | ✗ by default — `simplicio-cli init codex` adds the MCP tools but does not route LLM traffic; measured with `simplicio-cli wrap codex` or an OpenAI base-url pointing at the proxy |
 
 So: the **savings happen on every runtime**; the **monitor tallies them automatically on Hermes**, and on
-Claude/Codex after a **one-time routing step** (`simplicio wrap …` / base-url → `:8788`). Without routing,
+Claude/Codex after a **one-time routing step** (`simplicio-cli wrap …` / base-url → `:8788`). Without routing,
 the economy still applies — the monitor just won't count those tokens. `scripts/simplicio-economy.sh wire`
 does this routing for OpenAI-compatible clients at install time.
 
@@ -432,10 +433,10 @@ Without the extra, the deterministic stdlib path covers everything; models downl
 
 | Model | Command | Use |
 |---|---|---|
-| `kompress-v2-base` | `simplicio kompress` | semantic token pruning |
-| `technique-router-onnx` | `simplicio router` | technique routing |
-| `all-MiniLM-L6-v2-onnx` | `simplicio embed` · `rag --ml` | embeddings + semantic RAG |
-| `siglip-image-encoder-onnx` | `simplicio image` | image-compression content verifier |
+| `kompress-v2-base` | `simplicio-cli kompress` | semantic token pruning |
+| `technique-router-onnx` | `simplicio-cli router` | technique routing |
+| `all-MiniLM-L6-v2-onnx` | `simplicio-cli embed` · `rag --ml` | embeddings + semantic RAG |
+| `siglip-image-encoder-onnx` | `simplicio-cli image` | image-compression content verifier |
 
 ### ⚙️ Native Rust performance core (optional)
 
@@ -474,7 +475,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]                    # Windows
 **Install is complete by default — it installs everything.** One command sets up the whole stack:
 the two loop operators (`simplicio-mapper` + `simplicio-cli`, auto-handling PEP 668 / externally-managed
 Python and symlinking the binaries onto `PATH`), the **full Python stack** (the package + the `[onnx]`
-models backend: onnxruntime + huggingface_hub + tokenizers + pillow, so `simplicio kompress/router/embed/image`
+models backend: onnxruntime + huggingface_hub + tokenizers + pillow, so `simplicio-cli kompress/router/embed/image`
 work), the **6 skills + hooks** with the loop's Stop hook wired, and the **always-on capture proxy**
 with Claude + Codex + Hermes **routed and measured** in the background. The **dashboard opens once** on a
 fresh install, then it's on-demand (`simplicio-loop dashboard` / `simplicio-economy.sh monitor`); the
