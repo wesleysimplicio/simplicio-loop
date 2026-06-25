@@ -79,7 +79,7 @@ uczciwą ekonomią tokenów**.
 
 ---
 
-## 📘 Oficjalny rejestr możliwości (v3.10.1)
+## 📘 Oficjalny rejestr możliwości (v3.10.2)
 
 Kompletny, oficjalny spis tego, co dostarcza `simplicio-tasks` — każda możliwość poniżej jest
 **realna, uruchamialna i przetestowana** (`python3 scripts/check.py`: claims-audit 4/4 + 28 testów).

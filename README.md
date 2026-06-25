@@ -81,7 +81,7 @@ protocol on 11 runtimes**, and it does all of this with **aggressive, honest tok
 
 ---
 
-## 📘 Official capability record (v3.10.1)
+## 📘 Official capability record (v3.10.2)
 
 The complete, official roster of what `simplicio-tasks` ships — every capability below is **real,
 runnable, and tested** (`python3 scripts/check.py`: claims-audit 4/4 + 28 tests). Each links to its

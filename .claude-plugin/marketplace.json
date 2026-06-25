@@ -11,6 +11,7 @@
     {
       "name": "simplicio-loop",
       "source": "./plugin",
+      "category": "developer-tools",
       "description": "Super-plugin: autonomous looping orchestrator + 5 satellite skills. Drains any queue of work end-to-end on any runtime, 24/7, behind safety gates and a cost kill-switch."
     }
   ]

@@ -5,7 +5,16 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
-## [3.10.1] — 2026-06-25
+## [3.10.2] — 2026-06-25
+
+### Fixed
+- **Skill frontmatter now parses under strict YAML** — `simplicio-learn` and `simplicio-loop` had a
+  bare `: ` (colon-space, e.g. `memory lean: durable`, `Runtime-agnostic: binds`) inside an unquoted
+  `description:` scalar, so `claude plugin validate --strict` (Anthropic's submission validator)
+  rejected them and a strict parser dropped all metadata. Both descriptions are now double-quoted
+  (text unchanged). `claude plugin validate ./plugin --strict` and `… validate . --strict` both PASS.
+- Moved the `category` field from `plugin.json` to the `marketplace.json` plugin entry (where the
+  validator expects it) — clears the last strict-validation warning.
 
 ### Added
 - **`video_evidence` Playwright engine (now the DEFAULT)** — the normal evidence flow records the

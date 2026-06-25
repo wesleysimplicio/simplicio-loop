@@ -78,7 +78,7 @@ token-economie**.
 
 ---
 
-## 📘 Officieel capaciteitsregister (v3.10.1)
+## 📘 Officieel capaciteitsregister (v3.10.2)
 
 Het complete, officiële overzicht van wat `simplicio-tasks` levert — elke capaciteit hieronder is
 **echt, uitvoerbaar en getest** (`python3 scripts/check.py`: claims-audit 4/4 + 28 tests). Elk
