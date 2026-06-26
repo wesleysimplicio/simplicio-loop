@@ -78,7 +78,7 @@ yapmasıdır.
 
 ---
 
-## 📘 Resmi yetenek kaydı (v3.10.2)
+## 📘 Resmi yetenek kaydı
 
 `simplicio-tasks`'in sunduklarının eksiksiz, resmi listesi — aşağıdaki her yetenek **gerçek,
 çalıştırılabilir ve test edilmiştir** (`python3 scripts/check.py`: claims-audit 4/4 + 28 test). Her

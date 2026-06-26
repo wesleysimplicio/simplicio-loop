@@ -77,7 +77,7 @@ runtime** e fa tutto questo con un'**economia dei token aggressiva e onesta**.
 
 ---
 
-## 📘 Registro ufficiale delle capacità (v3.10.2)
+## 📘 Registro ufficiale delle capacità
 
 Il roster completo e ufficiale di ciò che `simplicio-tasks` offre — ogni capacità qui sotto è **reale,
 eseguibile e testata** (`python3 scripts/check.py`: claims-audit 4/4 + 28 test). Ciascuna rimanda alla

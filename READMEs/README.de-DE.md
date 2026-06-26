@@ -78,7 +78,7 @@ Protokoll auf 11 Laufzeiten** aus, und es tut all das mit **aggressiver, ehrlich
 
 ---
 
-## 📘 Offizielles Fähigkeitenverzeichnis (v3.10.2)
+## 📘 Offizielles Fähigkeitenverzeichnis
 
 Das vollständige, offizielle Verzeichnis dessen, was `simplicio-tasks` mitbringt — jede Fähigkeit unten ist
 **real, ausführbar und getestet** (`python3 scripts/check.py`: Claims-Audit 4/4 + 28 Tests). Jede verlinkt

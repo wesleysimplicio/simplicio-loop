@@ -77,7 +77,7 @@ protocolo em 11 runtimes** e faz tudo isso com **economia de tokens agressiva e 
 
 ---
 
-## 📘 Registro oficial de capacidades (v3.10.2)
+## 📘 Registro oficial de capacidades
 
 O roster completo e oficial do que o `simplicio-tasks` entrega — toda capacidade abaixo é **real,
 executável e testada** (`python3 scripts/check.py`: claims-audit 4/4 + 28 testes). Cada uma linka
