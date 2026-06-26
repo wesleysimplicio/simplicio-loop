@@ -1,10 +1,7 @@
 # Simplicio capture engine
 
 A native, **stdlib-only**, transparent token-capture proxy and deterministic
-compression engine. It is the native core that replaces the external `headroom`
-binary in Simplicio's active path. Apache-licensed `headroom` inspired the savings
-schema and the proxy/wrap/init/report shape; this is a clean native
-reimplementation — no third-party dependencies, no network beyond the upstream you
+compression engine — no third-party dependencies, no network beyond the upstream you
 point it at.
 
 The engine sits **in the HTTP path** as an OpenAI/Anthropic-compatible proxy. It
@@ -143,8 +140,8 @@ spacing inside code lines is never touched.
 The proxy uses the base + extra modules when present, falling back to a small inline
 pipeline otherwise.
 
-**Honest scope.** This is **deterministic compression only**. It does **not** do the
-upstream's ONNX/semantic compression or any RAG. It removes machine-shaped noise
+**Honest scope.** This is **deterministic compression only**. It does **not** do any
+ONNX/semantic compression or any RAG. It removes machine-shaped noise
 (whitespace, dedup, ANSI, hex dumps, log spam, oversized blobs) — it does not rewrite
 or summarize meaning.
 

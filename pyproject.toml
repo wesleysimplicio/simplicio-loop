@@ -37,11 +37,6 @@ dependencies = [
 # only a convenience for nicer output / IDE integration — never required.
 dev = ["pytest>=7"]
 ml = ["model2vec>=0.3", "numpy>=1.21"]
-# ONNX model commands (the REAL headroom models, downloaded on first use):
-#   kompress -> chopratejas/kompress-v2-base (~274MB) · router -> chopratejas/technique-router-onnx (~32MB)
-#   embed    -> Qdrant/all-MiniLM-L6-v2-onnx (~90MB). `pip install "simplicio-loop[onnx]"`.
-onnx = ["onnxruntime>=1.16", "huggingface_hub>=0.20", "tokenizers>=0.15", "numpy>=1.21", "pillow>=9"]
-kompress = ["onnxruntime>=1.16", "huggingface_hub>=0.20", "tokenizers>=0.15", "numpy>=1.21"]
 
 [project.urls]
 Homepage = "https://github.com/wesleysimplicio/simplicio-loop"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simplicio client-integration writer — native `headroom init <client>` analog.
+"""Simplicio client-integration writer.
 
 Durably register the Simplicio MCP server into a coding client's config so the client
 can call Simplicio's tools. Stdlib only (json, os, sys, pathlib, tempfile).

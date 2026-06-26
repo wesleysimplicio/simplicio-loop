@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Simplicio wrap — launch a coding client with its LLM traffic routed through the
-local Simplicio capture proxy for that run (mirrors `headroom wrap <client>`).
+local Simplicio capture proxy for that run.
 
 It does NOT patch the client: it just injects the proxy base-URL env vars into the
 child process environment and execs the client binary. The proxy (run separately via

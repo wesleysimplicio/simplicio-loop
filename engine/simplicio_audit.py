@@ -1,6 +1,6 @@
 """audit-reads — scan files/dirs and estimate token savings from compression.
 
-Mirrors headroom's audit-reads: walk the given paths, run the deterministic
+Audit-reads: walk the given paths, run the deterministic
 `simplicio_compress` pipeline over each readable text file, and rank files by how
 many tokens compression would save (tokens ~= chars / 4). Helps decide which
 read-side context is worth compressing before it floods the LLM.

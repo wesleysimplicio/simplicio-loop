@@ -46,7 +46,7 @@ clamp a SKIP-if row; report the catalog's expected-% in the savings receipt.
 | package / image inventory | keep ≤50 rows | ~50% | — |
 | format / passthrough | run raw | 0% | always |
 
-Content-type routing (headroom taxonomy): route by detected type — JSON → keep
+Content-type routing: route by detected type — JSON → keep
 errors/anomalies/boundaries; code → keep signatures, collapse bodies; logs → keep failures, drop
 passing noise; diff → stat+hunks. Same intent as the rows above, articulated by content type.
 
@@ -67,7 +67,7 @@ re-reads it lazily only if needed — recovering full context WITHOUT re-running
 tokens and may be non-deterministic). Config `.orchestrator/orient.toml` → `tee.mode =
 failures|always|never` (default `failures`).
 
-**CCR (compress-cache-retrieve), folded from headroom:** make the clamp REVERSIBLE, not lossy.
+**CCR (compress-cache-retrieve):** make the clamp REVERSIBLE, not lossy.
 Every clamped blob gets a stable handle = the tee path. Surface a retrieve convention so a worker
 pulls the original on demand instead of re-running:
 ```

@@ -26,9 +26,8 @@ REPO = Path(__file__).resolve().parents[1]
 ICON = str(REPO / "assets" / "tray-icon.png")
 SAVINGS_CANDIDATES = [
     Path(HOME) / ".simplicio" / "proxy_savings.json",
-    Path(HOME) / ".headroom" / "proxy_savings.json",
 ]
-PROXY_PORT = int(os.environ.get("SIMPLICIO_PROXY_PORT", os.environ.get("HEADROOM_PORT", "8788")))
+PROXY_PORT = int(os.environ.get("SIMPLICIO_PROXY_PORT", "8788"))
 MONITOR_PORT = os.environ.get("SIMPLICIO_MONITOR_PORT", "9090")
 DASH_URL = f"http://127.0.0.1:{MONITOR_PORT}"
 

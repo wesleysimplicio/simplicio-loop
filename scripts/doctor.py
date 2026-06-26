@@ -4,10 +4,10 @@
 Two tiers, and the distinction is the whole point:
   • REQUIRED   — the orchestrator + token capture need these (python3, the two loop operators, the
                  6 skills, the loop hooks, the always-on capture proxy). `--repair` installs/wires them.
-  • OPTIONAL   — nice-to-have accelerators (the ONNX models backend, the native Rust core, the
-                 menu-bar tray dep). **Missing them is NOT a failure** — the Python engine + the
-                 deterministic path cover everything. `--repair` installs them best-effort and never
-                 fails the run because an optional piece (e.g. Rust) is absent.
+  • OPTIONAL   — nice-to-have accelerators (the menu-bar tray dep). **Missing them is NOT a
+                 failure** — the Python engine + the deterministic path cover everything.
+                 `--repair` installs them best-effort and never fails the run because an
+                 optional piece is absent.
 
 Exit code: 0 if every REQUIRED item is healthy (after repair), else 1. Cross-platform, stdlib only.
 
@@ -181,19 +181,6 @@ def chk_wire():
                 msg=msg, repair=repair)
 
 
-def chk_onnx():
-    mods = ["onnxruntime", "huggingface_hub", "tokenizers", "PIL"]
-    missing = [m for m in mods if not _importable(m)]
-
-    def repair():
-        _pip([".[onnx]" if (REPO / "pyproject.toml").exists() else "simplicio-loop[onnx]"])
-        return not [m for m in mods if not _importable(m)]
-
-    return dict(name="ONNX models backend", tier="OPTIONAL", status=OK if not missing else WARN,
-                msg="kompress/router/embed/image ready" if not missing else "not installed (optional): " + ", ".join(missing),
-                repair=repair)
-
-
 def chk_tray_dep():
     dep = "rumps" if DARWIN else "pystray"
     ok = _importable(dep)
@@ -206,15 +193,6 @@ def chk_tray_dep():
                 msg="%s ready (tray on-demand)" % dep if ok else "%s not installed (optional)" % dep, repair=repair)
 
 
-def chk_rust():
-    # The native Rust core is OPTIONAL — the Python engine works fully without it. Never a failure.
-    built = bool(glob.glob(str(REPO / "rust" / "target" / "release" / "*simplicio*"))) \
-        or _importable("simplicio._core")
-    return dict(name="native Rust core", tier="OPTIONAL", status=OK if built else WARN,
-                msg="built" if built else "not built (optional — `cd rust && maturin build --release` for native speed)",
-                repair=None)  # never auto-built: heavy + needs a Rust toolchain; absence must not block
-
-
 def _importable(mod):
     import importlib.util
     try:
@@ -224,7 +202,7 @@ def _importable(mod):
 
 
 CHECKS = [chk_python, chk_operators, chk_skills, chk_hooks, chk_proxy,
-          chk_wire, chk_onnx, chk_tray_dep, chk_rust]
+          chk_wire, chk_tray_dep]
 
 
 def main(argv=None):

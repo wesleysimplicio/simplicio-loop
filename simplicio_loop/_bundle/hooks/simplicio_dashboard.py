@@ -30,14 +30,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Structured savings file written by the capture engine — the primary data source.
 SAVINGS_JSON_CANDIDATES = [
     Path(HOME) / ".simplicio" / "proxy_savings.json",
-    Path(HOME) / ".headroom" / "proxy_savings.json",
 ]
-# Raw proxy log (Simplicio-named first; engine dir + legacy paths kept for back-compat).
+# Raw proxy log (Simplicio-named first; engine dir kept for back-compat).
 LOG_CANDIDATES = [
     Path(HOME) / ".simplicio" / "logs" / "proxy.log",
     Path(HOME) / ".hermes" / "logs" / "simplicio-proxy.log",
-    Path(HOME) / ".headroom" / "logs" / "proxy.log",
-    Path(HOME) / ".hermes" / "logs" / "headroom.log",
 ]
 LOGO_CANDIDATES = [
     REPO_ROOT / "assets" / "simplicio-loop-logo.png",
@@ -45,7 +42,7 @@ LOGO_CANDIDATES = [
 ]
 # Cross-platform temp dir (Windows has no /tmp) — must match simplicio_loop/cli.py PID_FILE.
 PID_FILE = Path(tempfile.gettempdir()) / "simplicio-token-monitor.pid"
-PROXY_PORT = os.environ.get("SIMPLICIO_PROXY_PORT", os.environ.get("HEADROOM_PORT", "8788"))
+PROXY_PORT = os.environ.get("SIMPLICIO_PROXY_PORT", "8788")
 # Engine call: the native Simplicio engine module, invoked cross-platform via this interpreter.
 ENGINE_CMD = [sys.executable or "python3", str(REPO_ROOT / "engine" / "simplicio_engine.py")]
 

@@ -72,7 +72,7 @@ Or as a marketplace plugin:
 
 The marketplace install carries only the **lean `plugin/` subdirectory** (the 6 skills + the 5
 wired hooks) — `.claude-plugin/marketplace.json` `source` points at `./plugin`, so the pip-only
-assets (capture proxy `engine/`, token-monitor dashboard, `rust/`) are NOT copied into a user's
+assets (capture proxy `engine/`, token-monitor dashboard) are NOT copied into a user's
 plugin cache. `plugin/` is generated from source by `python3 scripts/sync_plugin.py` (run it after
 editing skills or a wired hook); `scripts/check.py` fails if `plugin/` drifts from source.
 

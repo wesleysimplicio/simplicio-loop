@@ -125,7 +125,7 @@ fallback.
 | 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Knowledge graph orient: semantic search, guided tours, dependency graph | **L0 zero tokens** |
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Session analytics, cost tracking, stalled-session discovery | **L1** SQL only |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV cache between loop turns — 40-70% TTFT reduction on local models | GPU time ↓ |
-| 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (native, stdlib-only; savings-schema compatible with the OSS [headroom](https://github.com/headroomlabs-ai/headroom) project) | Transparent capture proxy: forwards to the real provider, measures + deterministically compresses, writes `proxy_savings.json` | **deterministic** |
+| 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (native, stdlib-only) | Transparent capture proxy: forwards to the real provider, measures + deterministically compresses, writes `proxy_savings.json` | **deterministic** |
 | 11 | 🎬 **video_evidence** | Playwright (default) · [hyperframes](https://github.com/heygen-com/hyperframes) (on request) | Records the **real session** as moving proof of a UI change (Playwright); renders a **deterministic captioned MP4** explainer with hyperframes when the video IS the deliverable | Evidence producer |
 
 Each skill lives under [`.claude/skills/`](.claude/skills); each accelerator has a reference doc
@@ -400,8 +400,8 @@ capture runs **without invoking the loop** — see `references/token-capture.md`
 ### 🛠️ The capture engine — one native module, every command
 
 [`engine/simplicio_engine.py`](engine/simplicio_engine.py) is the native Simplicio capture engine
-(stdlib-only, fail-open) — a **full reimplementation of the upstream
-[headroom](https://github.com/headroomlabs-ai/headroom) surface with no external dependency**. Run any
+(stdlib-only, fail-open) — a **native, transparent capture proxy + deterministic compression engine
+with no external dependency**. Run any
 command via the [`scripts/simplicio-engine`](scripts/simplicio-engine) wrapper (e.g. `simplicio-engine doctor`):
 
 | Command | What it does |
@@ -411,32 +411,12 @@ command via the [`scripts/simplicio-engine`](scripts/simplicio-engine) wrapper (
 | `cache` | native response cache (`stats`/`clear`) — a repeated deterministic request is served from cache, skipping the LLM call |
 | `signatures` | signatures-only view of a source file (bodies stripped, ~93% fewer tokens to read code) |
 | `semantic` | reversible extractive (semantic-lite) compression |
-| `kompress` | **ONNX** semantic token-pruning via the real `kompress-v2-base` model |
 | `detect` | content-type detection + smart per-block routing |
 | `rag` | TF-IDF (or `--ml` embedding) retrieval over the CCR memory store |
 | `memory` | CCR compress-cache-retrieve store (`remember`/`recall`/`forget`/`list`/`stats`) |
 | `mcp` | native stdio MCP server (compress / retrieve / stats tools) |
 | `init` / `wrap` | register Simplicio into a client (Claude / Codex / Copilot / OpenClaw) · run a client with capture routing |
 | `report` / `audit` / `capture` / `evals` | savings report · audit a tree for compression opportunity · dry-run a request · compression regression gate |
-
-### 🧠 Optional real ML models — `pip install "simplicio-loop[onnx]"`
-
-Four **real**, public (Apache-2.0) ONNX models run natively — the same models the upstream uses.
-Without the extra, the deterministic stdlib path covers everything; models download on first use.
-
-| Model | Command | Use |
-|---|---|---|
-| `kompress-v2-base` | `simplicio-cli kompress` | semantic token pruning |
-| `technique-router-onnx` | `simplicio-cli router` | technique routing |
-| `all-MiniLM-L6-v2-onnx` | `simplicio-cli embed` · `rag --ml` | embeddings + semantic RAG |
-| `siglip-image-encoder-onnx` | `simplicio-cli image` | image-compression content verifier |
-
-### ⚙️ Native Rust performance core (optional)
-
-[`rust/`](rust) ships four crates ported + rebranded from the upstream (Apache-2.0; `NOTICE` credits it):
-`simplicio-core` (compressors + smart-crusher), `simplicio-py` (PyO3 bindings), `simplicio-proxy`
-(axum reverse proxy), `simplicio-parity` (Rust↔Python parity harness). Build with `maturin` — the Python
-engine works fully without them; the crates only add native speed.
 
 ---
 
@@ -467,9 +447,8 @@ pwsh scripts/install.ps1 <runtime> [-Global]                    # Windows
 
 **Install is complete by default — it installs everything.** One command sets up the whole stack:
 the two loop operators (`simplicio-mapper` + `simplicio-cli`, auto-handling PEP 668 / externally-managed
-Python and symlinking the binaries onto `PATH`), the **full Python stack** (the package + the `[onnx]`
-models backend: onnxruntime + huggingface_hub + tokenizers + pillow, so `simplicio-cli kompress/router/embed/image`
-work), the **6 skills + hooks** with the loop's Stop hook wired, and the **always-on capture proxy**
+Python and symlinking the binaries onto `PATH`), the **full Python stack** (the package itself),
+the **6 skills + hooks** with the loop's Stop hook wired, and the **always-on capture proxy**
 with Claude + Codex + Hermes **routed and measured** in the background. The **dashboard opens once** on a
 fresh install, then it's on-demand (`simplicio-loop dashboard` / `simplicio-economy.sh monitor`); the
 **menu-bar tray never opens by itself** — nothing is forced to stay open.
@@ -494,8 +473,8 @@ python3 scripts/doctor.py --repair   # install/wire what's fixable; make everyth
 ```
 
 `doctor` separates **REQUIRED** (python3, the two loop operators, the 6 skills, the loop hooks, the
-capture proxy — `--repair` installs/wires them) from **OPTIONAL** accelerators (the ONNX models
-backend, the native **Rust** core, the tray dep). **Missing an optional piece is never a failure and
+capture proxy — `--repair` installs/wires them) from **OPTIONAL** accelerators (the tray dep).
+**Missing an optional piece is never a failure and
 never blocks** — the Python engine + the deterministic path cover everything; the exit code is 0 as
 long as every REQUIRED item is healthy.
 

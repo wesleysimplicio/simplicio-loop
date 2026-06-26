@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """simplicio-loop — sync the LEAN marketplace plugin tree (`plugin/`) from source.
 
-The repo doubles as a pip package (engine + proxy + token-monitor dashboard + rust) AND a Claude
+The repo doubles as a pip package (engine + proxy + token-monitor dashboard) AND a Claude
 marketplace plugin. A marketplace install copies the WHOLE plugin source to the user's cache, so the
 plugin must NOT carry the heavy pip-only assets. `plugin/` is therefore a SLIM mirror containing only
 what the plugin actually loads:
@@ -11,7 +11,7 @@ what the plugin actually loads:
 
 Excluded by design (pip-only, never wired into the plugin): the capture proxy (`engine/`), the
 token-monitor dashboard (`hooks/simplicio_dashboard.py`), the 24/7 watcher (`hooks/simplicio_watch.py`),
-the Cursor-only `loop_capture.py`/`hooks.json`, `rust/`, `scripts/`. Run this after editing skills or
+the Cursor-only `loop_capture.py`/`hooks.json`, `scripts/`. Run this after editing skills or
 a wired hook; `scripts/claims_audit.py` (check 5) fails if `plugin/` drifts from source.
 
 Usage:  python3 scripts/sync_plugin.py        # rewrite plugin/skills + plugin/hooks from source
