@@ -41,6 +41,34 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
+
+def _project_relevant():
+    """Project-relevance gate for the PreToolUse path ONLY.
+
+    The plugin's Bash gate must not impose itself on every repo on the machine — it acts
+    only inside an active simplicio-loop project. Relevant when the opt-in env var
+    SIMPLICIO_LOOP (or SIMPLICIO_ORCHESTRATOR) is set, or when a `.orchestrator/` marker
+    dir (the orchestrator's state dir, created when the loop runs) exists in the current
+    working directory or an ancestor. Outside such a project the PreToolUse hook no-ops.
+    The explicit CLI / git-hook entry points (check / scan-diff / selftest) are NOT gated —
+    they are invoked deliberately and always run.
+    """
+    if os.environ.get("SIMPLICIO_LOOP") or os.environ.get("SIMPLICIO_ORCHESTRATOR"):
+        return True
+    home = os.path.realpath(os.path.expanduser("~"))
+    d = os.path.realpath(os.getcwd())
+    for _ in range(40):  # depth backstop so an off-home tree can't climb forever
+        parent = os.path.dirname(d)
+        # Never treat the home dir or a drive/filesystem root as a project marker location:
+        # a stray ~/.orchestrator, or a marker at a drive root, must not widen the scope.
+        if d == home or parent == d:
+            return False
+        if os.path.isdir(os.path.join(d, ".orchestrator")):
+            return True
+        d = parent
+    return False
+
+
 # Irreversible / history-rewriting / destructive ops → BLOCK and route to a human (Step 5).
 # High-precision patterns: each is genuinely hard to undo; benign commands never match.
 IRREVERSIBLE = [
@@ -193,6 +221,12 @@ def cmd_scan_diff(opts):
 
 def from_pretooluse():
     """Claude PreToolUse mode: read tool call JSON on stdin, gate the Bash command."""
+    try:
+        relevant = _project_relevant()
+    except Exception:
+        relevant = True  # safety gate: can't prove irrelevant → still run the gate (fail-closed)
+    if not relevant:
+        sys.exit(0)  # outside a simplicio-loop project → no-op (project-relevance gate)
     try:
         raw = sys.stdin.read()
         data = json.loads(raw) if raw.strip() else {}

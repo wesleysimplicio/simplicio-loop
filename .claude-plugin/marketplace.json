@@ -11,8 +11,8 @@
     {
       "name": "simplicio-loop",
       "source": "./plugin",
-      "category": "developer-tools",
-      "description": "Super-plugin: autonomous looping orchestrator + 5 satellite skills. Drains any queue of work end-to-end on any runtime, 24/7, behind safety gates and a cost kill-switch."
+      "category": "development",
+      "description": "Not a chatbot — a worker. An autonomous orchestrator of 6 composable skills that drives a whole backlog end-to-end on any LLM or runtime: discover, implement, verify, review, merge, close. A hardened Ralph loop exits only when a typed completion-promise is genuinely true — never on a false done. Project-scoped fail-closed Bash safety-gate, adversarial pre-merge review, and a hard cost kill-switch. Runs 100% locally — zero network calls, zero telemetry. Start a run with /simplicio-tasks. MIT."
     }
   ]
 }

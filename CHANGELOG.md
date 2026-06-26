@@ -7,6 +7,22 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [3.10.3] — 2026-06-26
 
+### Changed
+- **`PreToolUse` (Bash) hooks are now project-scoped** — `action_gate.py` and `orient_rewrite.py`
+  fire only inside an active simplicio-loop project (an `.orchestrator/` marker in cwd/an ancestor,
+  or `SIMPLICIO_LOOP=1`); elsewhere they no-op so the command runs unchanged. The home directory is
+  never treated as a project, so a stray `~/.orchestrator` cannot widen the scope. This clears the
+  marketplace-scanner `has_broad_scope_hooks` finding (the gate no longer intercepts Bash globally)
+  while preserving the full fail-closed behavior inside a real run. Verified: outside a project a
+  `git push --force` is a no-op (exit 0); inside, it is BLOCKED (exit 2).
+- **Honest, behavior-matching descriptions** — `plugin.json` and the marketplace entry now disclose
+  both project-scoped PreToolUse Bash hooks (the fail-closed safety-gate and the opt-in read-only
+  output-clamp/rewrite) plus the Stop loop/learn hook, and that it runs 100% locally with no telemetry
+  or network calls. Removed the unverifiable "up to 96% fewer tokens" headline from the plugin copy
+  (that figure is the capture proxy's, which the plugin does not ship); the savings line remains
+  evidence-gated. Clears the scanner `description_matches_behavior` finding.
+- **Marketplace `category` corrected** `developer-tools` → `development` (a valid directory category).
+
 ### Fixed
 - **Capture wiring no longer breaks the `claude` CLI.** The economy installer wired
   `ANTHROPIC_BASE_URL=http://127.0.0.1:<proxy>` into the shell profile unconditionally. Claude Code /

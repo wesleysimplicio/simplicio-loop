@@ -26,6 +26,28 @@ CLAMP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "orient_clamp.p
 CONFIG = os.path.join(".orchestrator", "orient.toml")
 DEFAULT_EXCLUDES = ["curl", "wget", "playwright", "ssh", "vim", "less", "top", "htop"]
 
+
+def _project_relevant():
+    """Project-relevance gate: this PreToolUse hook acts ONLY inside an active
+    simplicio-loop project, never on unrelated repos. Relevant when the opt-in env var
+    SIMPLICIO_LOOP (or SIMPLICIO_ORCHESTRATOR) is set, or a `.orchestrator/` marker dir
+    exists in the current working directory or an ancestor. Outside such a project the
+    hook no-ops and the command runs raw."""
+    if os.environ.get("SIMPLICIO_LOOP") or os.environ.get("SIMPLICIO_ORCHESTRATOR"):
+        return True
+    home = os.path.realpath(os.path.expanduser("~"))
+    d = os.path.realpath(os.getcwd())
+    for _ in range(40):  # depth backstop so an off-home tree can't climb forever
+        parent = os.path.dirname(d)
+        # Never treat the home dir or a drive/filesystem root as a project marker location:
+        # a stray ~/.orchestrator, or a marker at a drive root, must not widen the scope.
+        if d == home or parent == d:
+            return False
+        if os.path.isdir(os.path.join(d, ".orchestrator")):
+            return True
+        d = parent
+    return False
+
 # read-only, output-heavy commands worth clamping (prefix match on the first token(s))
 ALLOW = [
     "git status", "git log", "git diff", "git show", "git branch",
@@ -61,6 +83,8 @@ def load_excludes():
 
 def main():
     try:
+        if not _project_relevant():
+            allow_unchanged()  # outside a simplicio-loop project → no-op (project-relevance gate)
         raw = sys.stdin.read()
         data = json.loads(raw) if raw.strip() else {}
         ti = data.get("tool_input", data.get("toolInput", {})) or {}
