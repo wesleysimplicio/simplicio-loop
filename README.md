@@ -10,7 +10,7 @@
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-the-48-extension-points"><img src="https://img.shields.io/badge/extension%20points-48-00E08A" alt="48 extension points"></a>
-  <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
+  <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 90% fewer tokens"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
   <a href="https://discord.gg/wM6tr7xVb"><img src="https://img.shields.io/badge/Discord-Join%20Simplicio-5865F2?logo=discord&logoColor=white" alt="Join the Simplicio Discord"></a>
 </p>
@@ -76,7 +76,7 @@ Three things make it different: it is a **super-plugin of focused skills**, it r
 protocol on 11 runtimes**, and it does all of this with **aggressive, honest token economy**.
 
 <p align="center">
-  <img src="assets/simplicio-loop-infographic.png" alt="simplicio-loop — the whole system at a glance: 6 core skills, 5 satellites, 5 accelerators, 48 extension points, 11 runtimes, up to 96% fewer tokens" width="920" />
+  <img src="assets/simplicio-loop-infographic.png" alt="simplicio-loop — the whole system at a glance: 6 core skills, 5 satellites, 5 accelerators, 48 extension points, 11 runtimes, up to 90% fewer tokens" width="920" />
 </p>
 
 ---
