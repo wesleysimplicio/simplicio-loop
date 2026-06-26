@@ -58,7 +58,7 @@ simplicio-mapper --version   # survey operator
 simplicio-dev-cli --help     # action operator (pkg simplicio-cli; exposes `simplicio-dev-cli`)
 ```
 The action binary is `simplicio-dev-cli` (from `pip install simplicio-cli`) — NOT the bare
-`simplicio`, which is reserved for the compiled Rust `simplicio-runtime` and is not what this loop
+`simplicio`, which is reserved for the separate `simplicio-runtime` and is not what this loop
 binds. `simplicio-dev-cli` has no `--version` subcommand; `--help` exiting 0 is the readiness
 proof. If either operator is missing, do NOT fall back to LLM survey/editing — STOP and emit
 `simplicio-loop: BLOCKED — missing operator <name>; run: pip install simplicio-loop` (the install

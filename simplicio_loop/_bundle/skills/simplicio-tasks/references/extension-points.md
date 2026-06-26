@@ -16,7 +16,7 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 | `execute` | Local agent fan-out for mass/mechanical work | LLM does it or spawns host sub-agents |
 | `issue_factory` | Full orchestrator loop: discover→claim→implement→PR | manual pipeline (Steps 2–6) |
 | `claim` | Atomic claim on a work-item (cross-session safe) | `gh label "in-progress"` + lockfile |
-| `worktree` | Per-item isolated checkout — the DEFAULT isolation mode (one worktree per item → zero cross-item conflict); opt out to a shared checkout only for big compiled crates where a fresh target dir per item is too costly | `git worktree add` per item; prune on teardown. Fallback: conflict-aware sharing of one checkout (disjoint files parallel, overlapping serialized) |
+| `worktree` | Per-item isolated checkout — the DEFAULT isolation mode (one worktree per item → zero cross-item conflict); opt out to a shared checkout only for big compiled projects where a fresh build/target dir per item is too costly | `git worktree add` per item; prune on teardown. Fallback: conflict-aware sharing of one checkout (disjoint files parallel, overlapping serialized) |
 | `diagnostics` | Parse build/test output → structured errors → iterate-until-green | run the test, read the log, fix |
 | `validate` / `smoke` | Run-verification ("works, not just compiles") | invoke binary directly, run affected tests |
 | `pr` / `evidence` | PR open/update + verifiable evidence ledger | `gh pr` + receipt file |

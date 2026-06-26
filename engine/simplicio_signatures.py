@@ -35,7 +35,6 @@ _LANG_BY_EXT = {
     ".tsx": "ts",
     ".go": "go",
     ".java": "java",
-    ".rs": "rs",
     ".rb": "rb",
     ".php": "php",
     ".c": "c",
@@ -251,7 +250,7 @@ _SIG_PATTERNS = [
     # class / interface / struct / enum / type / trait / impl
     r"^\s*(?:export\s+)?(?:default\s+)?(?:public\s+|private\s+|protected\s+|internal\s+|abstract\s+|final\s+|sealed\s+|static\s+|pub\s+)*"
     r"(?:class|interface|struct|enum|trait|impl|type|namespace|module|record)\b",
-    # function declarations (js/ts/php) and go/rust funcs
+    # function declarations (js/ts/php) and go funcs
     r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*\w*\s*\(",
     r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+",
     r"^\s*func\s+(?:\([^)]*\)\s*)?\w+\s*\(",

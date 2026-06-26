@@ -19,7 +19,7 @@ not spent: deterministic first, terminal for facts, model only where it pays.
   API/SDK error is undocumented locally, or the source demands current information.
 
 ## EXECUTE via terminal — NEVER simulate
-Every git, cargo, gh, az, or shell command MUST run via a real terminal call. Never reason about
+Every git, gh, az, or shell command MUST run via a real terminal call. Never reason about
 what a command "would return". Priority: (1) host native `shell_exec` if bound; (2) shell tool
 with output clamping; (3) NEVER LLM-simulated output.
 
@@ -94,12 +94,12 @@ Every reduction step is additive and removable. On ANY error/missing dep/unparse
 unknown command, run the original command unchanged and propagate its REAL exit status. A bad
 profile degrades to "slightly more tokens", never "task dead".
 
-A raw `cargo check` costs ~2000 tokens to read; catalog-clamped
-(`--message-format json | grep '"level":"error"'`) costs ~80.
+A raw `tsc --noEmit` costs ~2000 tokens to read; catalog-clamped
+(error lines only) costs ~80.
 
 ## Terminal substitution table — use the terminal, NOT the LLM
 Detect platform once: `python3 -c "import platform; print(platform.system())"` →
-`Windows | Darwin | Linux`. Prefer cross-platform (`git`,`gh`,`rg`,`python3`,`cargo`) first.
+`Windows | Darwin | Linux`. Prefer cross-platform (`git`,`gh`,`rg`,`python3`) first.
 
 ### filesystem / system facts
 | need | cross-platform | Windows | Linux/macOS |
@@ -141,15 +141,15 @@ Detect platform once: `python3 -c "import platform; print(platform.system())"` �
 | Comment / close | `gh issue comment N --body "…"` · `gh issue close N` |
 | Workflow dispatch | `gh api repos/{owner}/{repo}/dispatches -f event_type=X` |
 
-### node (vscode, openclaw, claude-code) / python (hermes) / rust (codex)
+### node (vscode, openclaw, claude-code) / python (hermes)
 | intent | command |
 |---|---|
 | Deterministic install | `npm ci` · `pnpm install --frozen-lockfile` · `uv sync --locked` |
-| Build | `npm run build` · `cargo build -p <crate>` |
-| Test (clamp: failures-only) | `npm test` · `pytest -q` · `cargo test` |
-| Lint (clamp: findings-only) | `eslint .` · `ruff check --fix` · `cargo clippy --all-targets` |
+| Build | `npm run build` |
+| Test (clamp: failures-only) | `npm test` · `pytest -q` |
+| Lint (clamp: findings-only) | `eslint .` · `ruff check --fix` |
 | Typecheck | `tsc --noEmit` · `mypy` |
-| Dep inventory | `cargo metadata --no-deps --format-version 1` · `npm ls --depth=0` |
+| Dep inventory | `npm ls --depth=0` |
 
 ### docker / azure
 | intent | command |

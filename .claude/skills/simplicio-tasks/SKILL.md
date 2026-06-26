@@ -149,7 +149,7 @@ The cheapest token is the one not spent. Full mechanism: `references/token-econo
   architecture, security/release risk.
 - **INTERNET OFF** unless current external facts (CVE, recent version, undocumented SDK error) are
   genuinely required.
-- **EXECUTE via terminal — NEVER simulate.** Run every git/gh/az/cargo/shell command for real;
+- **EXECUTE via terminal — NEVER simulate.** Run every git/gh/az/shell command for real;
   the terminal answers facts exactly, the LLM approximates them expensively.
 - **Clamp output:** consult the output-reduction catalog → success-collapse / dedup / signal-tiered
   caps (`CAP_ERRORS=20…`), each `unless errors present`. On failure write full output to
@@ -184,7 +184,7 @@ reads for API surface), then write a short plan with an AC checklist + complexit
 - **Heavy-path** (large queue OR any medium+ item): fan out a CONTINUOUS WORKER POOL fed by a LIVE
   queue; serialize same-file items; quarantine K-times failures. Autoscale `fleet = min(cap_cpu,
   cap_mem, cap_disk, items, 16)`. Isolation: a dedicated `git worktree` per item by DEFAULT (zero
-  cross-item conflict); a shared checkout is the opt-out for big compiled crates where per-item
+  cross-item conflict); a shared checkout is the opt-out for big compiled projects where per-item
   worktrees are too costly (`references/orchestration.md`). Branch/commit names follow the learned
   `repo_conventions` profile (Step 1a'). Every worker obeys the terse MACHINE-tier report contract
   (status token first). New work seen mid-run is enqueued immediately (Step 3b poller; reset

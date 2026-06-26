@@ -88,11 +88,11 @@ ZERO cross-item conflict — the simplest model to reason about. Each item's bra
 learned `repo_conventions` profile (Step 1a' — `repo_conventions.py branch --type <t> --slug
 <title>`), not a generic `agent/{id}` name, so the delivered branches match the repo's own style.
 
-The one **opt-out** is cost: a worktree is expensive for a big COMPILED crate (fresh target dir +
+The one **opt-out** is cost: a worktree is expensive for a big COMPILED project (fresh build/target dir +
 disk per item). When the toolchain is heavy-compile AND items are many, fall back to conflict-AWARE
 sharing: predict the file-overlap graph; items in DISJOINT files share ONE checkout, committing
 sequentially on their own branches; only OVERLAPPING items serialize. Select the mode up front
-(`isolation=worktree` default · `isolation=shared` for the compiled-crate case) and state which.
+(`isolation=worktree` default · `isolation=shared` for the compiled-project case) and state which.
 Per item: isolated branch, its own evidence, a wall-clock timeout. Per wave: implement →
 review+autofix → collect. After all waves: merge + close. Prune worktrees on teardown (Step 7).
 

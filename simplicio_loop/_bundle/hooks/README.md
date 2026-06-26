@@ -39,7 +39,7 @@ the ruleset (14/14).
 `orient_clamp.py` is a plain wrapper — use it anywhere, any runtime, no hooks:
 
 ```bash
-python3 hooks/orient_clamp.py -- cargo test          # reduced output, tee log on failure
+python3 hooks/orient_clamp.py -- go test ./...          # reduced output, tee log on failure
 python3 hooks/orient_clamp.py --json -- git diff      # machine summary
 ```
 

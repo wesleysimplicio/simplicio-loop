@@ -69,10 +69,6 @@ _LANG_KEYWORDS = {
         r"\bfunc\b", r"\bpackage\b", r"\bimport\b", r":=", r"\bdefer\b",
         r"\bchan\b", r"\bgo\s+\w",
     ),
-    "rust": (
-        r"\bfn\b", r"\blet\s+mut\b", r"\bimpl\b", r"\bpub\b", r"::",
-        r"\bmatch\b", r"\b->\s*\w", r"\buse\b",
-    ),
     "java": (
         r"\bpublic\b", r"\bprivate\b", r"\bclass\b", r"\bvoid\b", r"\bstatic\b",
         r"\bimport\b", r"\bnew\b", r";\s*$",

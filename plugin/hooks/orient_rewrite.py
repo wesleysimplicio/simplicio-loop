@@ -52,7 +52,6 @@ def _project_relevant():
 ALLOW = [
     "git status", "git log", "git diff", "git show", "git branch",
     "ls", "ll", "dir", "rg ", "grep ", "cat ", "type ", "tree",
-    "cargo check", "cargo test", "cargo clippy", "cargo build",
     "npm test", "npm run", "pnpm test", "yarn test", "jest", "vitest",
     "go test", "go build", "go vet", "pytest", "python -m pytest",
     "mvn ", "gradle ", "tsc", "eslint", "ruff", "golangci-lint",

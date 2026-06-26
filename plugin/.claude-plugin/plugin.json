@@ -1,7 +1,7 @@
 {
   "name": "simplicio-loop",
   "displayName": "simplicio-loop — Universal Looping AI Orchestrator",
-  "version": "3.10.3",
+  "version": "3.11.0",
   "description": "Autonomous looping orchestrator + 5 satellite skills (6 total) that drains a backlog end-to-end on any LLM/runtime: discover, implement, verify, review, merge, close. Hardened Ralph loop that exits only when a typed completion-promise is genuinely true, adversarial pre-merge review, token-economy clamp, and a hard cost kill-switch. Installs two project-scoped PreToolUse Bash hooks — a fail-closed safety-gate that blocks dangerous/irreversible commands and secret-leaking commits, and an opt-in output-clamp that rewrites only whitelisted read-only commands (fail-open) to cut tokens — plus a Stop loop/learn hook. Runs 100% locally with no telemetry and no network calls. Start a run with /simplicio-tasks. MIT.",
   "author": {
     "name": "Wesley Simplicio",

@@ -38,7 +38,7 @@ command works everywhere; fall back to OS-specific only when there is no alterna
 | File exists? | `python3 -c "import os,sys;sys.exit(0 if os.path.exists('<p>') else 1)"` | `Test-Path <p>` | `test -f <p>` |
 | Find in code | `rg "<pat>" --json` | same | same |
 | Count matches | `rg -c "<pat>" <file>` | same | same |
-| List files by glob | `rg --files -g "*.rs"` | same | same |
+| List files by glob | `rg --files -g "*.ts"` | same | same |
 | Current branch | `git rev-parse --abbrev-ref HEAD` | same | same |
 | Ahead of main? | `git rev-list --count main..HEAD` | same | same |
 | Files changed in branch | `git diff --name-only main...HEAD` | same | same |
@@ -52,8 +52,8 @@ command works everywhere; fall back to OS-specific only when there is no alterna
 | Sort + dedup | `python3 -c "import sys;print('\n'.join(sorted(set(sys.stdin.read().split()))))"` | same | `sort -u` |
 | Replace in file | bound `deterministic_edit` (host) | same | `sed -i` |
 
-A raw `cargo check` costs ~2000 tokens to read; clamped (`--message-format json | grep
-'"level":"error"'`) costs ~80. Terminal-first + the catalog below is the single
+A raw `tsc --noEmit` costs ~2000 tokens to read; clamped (error lines only) costs ~80.
+Terminal-first + the catalog below is the single
 highest-leverage token rule.
 
 ## Output-reduction catalog (data table — drives clamp routing)
@@ -98,7 +98,7 @@ command (re-running re-burns tokens and may be non-deterministic). So:
   unfiltered output to `.orchestrator/tee/<ts>_<cmd-slug>.log` and surface only the path:
   ```
   FAILED: 2/15 tests
-  [full output: .orchestrator/tee/1707753600_cargo_test.log]
+  [full output: .orchestrator/tee/1707753600_npm_test.log]
   ```
 - Config knob (in `.orchestrator/orient.toml`): `tee.mode = failures | always | never`
   (default `failures`). The agent reads the file lazily only if it needs more than the kept

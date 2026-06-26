@@ -79,8 +79,12 @@ def test_push_without_git_is_failclosed(tmp_path):
 
 
 def test_pretooluse_json_blocks_force_push():
+    # The PreToolUse (Bash) hook is project-scoped since v3.10.3 — it fires only inside an active
+    # simplicio-loop project (an `.orchestrator/` marker or SIMPLICIO_LOOP=1); elsewhere it no-ops so
+    # the command runs unchanged. Exercise the in-project path so the block is deterministic.
     r = subprocess.run([sys.executable, GATE], input='{"tool_input":{"command":"git push -f"}}',
-                       capture_output=True, text=True, cwd=REPO)
+                       capture_output=True, text=True, cwd=REPO,
+                       env={**os.environ, "SIMPLICIO_LOOP": "1"})
     assert r.returncode == 2, r.stdout + r.stderr
 
 

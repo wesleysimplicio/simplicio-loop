@@ -34,7 +34,7 @@ SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
 # The simplicio-loop drive REQUIRES two operators (see simplicio-loop/SKILL.md § Bound operators):
 #   simplicio-mapper -> repo survey (binds `orient`); binary: simplicio-mapper
 #   simplicio-cli    -> action operator (binds `execute`/`deterministic_edit`); binary: simplicio-dev-cli
-# (the bare `simplicio` command is reserved for the Rust simplicio-runtime, not this operator.)
+# (the bare `simplicio` command is reserved for the separate `simplicio-runtime`, not this operator.)
 OPERATORS = [("simplicio-mapper", "simplicio-mapper"), ("simplicio-cli", "simplicio-dev-cli")]
 MARK_A, MARK_B = "<!-- simplicio-tasks:begin -->", "<!-- simplicio-tasks:end -->"
 ENTRY_BLOCK = (

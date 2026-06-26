@@ -39,7 +39,7 @@ the `max_iterations` cap, or the budget kill-switch. `orient_rewrite` (Bash matc
 
 ## Token economy
 
-`orient_clamp.py` works immediately: `python3 hooks/orient_clamp.py -- cargo test`. The
+`orient_clamp.py` works immediately: `python3 hooks/orient_clamp.py -- go test ./...`. The
 `PreToolUse` hook makes it automatic for read-only commands.
 
 ## Native bind (optional, near-zero token)

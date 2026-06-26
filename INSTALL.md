@@ -48,7 +48,7 @@ See [`adapters/MATRIX.md`](adapters/MATRIX.md) and `adapters/<runtime>/README.md
 ## 4. Token economy (no wiring needed)
 
 ```bash
-python3 hooks/orient_clamp.py -- cargo test     # reduced output, tee log on failure
+python3 hooks/orient_clamp.py -- go test ./...     # reduced output, tee log on failure
 ```
 
 ## 5. (Optional) Before an unattended 24/7 run

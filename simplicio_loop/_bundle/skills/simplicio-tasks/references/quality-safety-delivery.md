@@ -1,6 +1,6 @@
 # Quality, safety, delivery & feedback (Steps 4–6b full detail)
 
-> Stack-agnostic: examples use Rust/`cargo` for concreteness, but every build/lint/typecheck/test
+> Stack-agnostic: examples use Go/`go build` for concreteness, but every build/lint/typecheck/test
 > command MUST be the one `toolchain_detect` resolved for this repo (`tsc`/`vitest`, `go build`,
 > `pytest`, `mvn`, …). The gates are identical; only the commands differ.
 
