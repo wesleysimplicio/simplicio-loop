@@ -117,7 +117,7 @@
 | 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | 知识图谱定向：语义搜索、引导式游览、依赖图 | **L0 零 token** |
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | 会话分析、成本追踪、停滞会话发现 | **L1** 仅 SQL |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | 循环各轮之间的 KV 缓存 —— 本地模型 TTFT 降低 40-70% | GPU 时间 ↓ |
-| 10 | 🗜️ **Simplicio 捕获引擎** | `engine/simplicio_engine.py`（原生，仅依赖标准库；savings-schema 与开源 [headroom](https://github.com/headroomlabs-ai/headroom) 项目兼容） | 透明捕获代理：转发到真实供应商，度量 + 确定性压缩，写入 `proxy_savings.json` | **确定性** |
+| 10 | 🗜️ **Simplicio 捕获引擎** | `engine/simplicio_engine.py`（原生，仅依赖标准库） | 透明捕获代理：转发到真实供应商，度量 + 确定性压缩，写入 `proxy_savings.json` | **确定性** |
 | 11 | 🎬 **video_evidence** | Playwright（默认）· [hyperframes](https://github.com/heygen-com/hyperframes)（应请求） | 录制**真实会话**，作为 UI 改动的动态证明（Playwright）；当视频本身就是交付物时，用 hyperframes 渲染一段**确定性带字幕 MP4** 讲解视频 | 证据生产者 |
 
 每个 skill 都位于 [`.claude/skills/`](../.claude/skills) 下；每个加速器在
@@ -381,8 +381,7 @@ OpenAI 兼容客户端完成这一路由。
 ### 🛠️ 捕获引擎 —— 一个原生模块，覆盖每条命令
 
 [`engine/simplicio_engine.py`](../engine/simplicio_engine.py) 是原生的 Simplicio 捕获引擎
-（仅依赖标准库、fail-open）—— 是上游 [headroom](https://github.com/headroomlabs-ai/headroom)
-能力面的**完整重新实现，无任何外部依赖**。通过
+（仅依赖标准库、fail-open、无任何外部依赖）。通过
 [`scripts/simplicio-engine`](../scripts/simplicio-engine) 包装器运行任意命令
 （例如 `simplicio-engine doctor`）：
 
@@ -393,32 +392,12 @@ OpenAI 兼容客户端完成这一路由。
 | `cache` | 原生响应缓存（`stats`/`clear`）—— 重复的确定性请求从缓存返回，跳过 LLM 调用 |
 | `signatures` | 源文件的仅签名视图（剥离函数体，读代码所需 token 减少约 93%） |
 | `semantic` | 可逆的抽取式（semantic-lite）压缩 |
-| `kompress` | 通过真实的 `kompress-v2-base` 模型进行 **ONNX** 语义 token 剪枝 |
 | `detect` | 内容类型检测 + 按块的智能路由 |
 | `rag` | 在 CCR 记忆库上进行 TF-IDF（或 `--ml` 嵌入）检索 |
 | `memory` | CCR compress-cache-retrieve 库（`remember`/`recall`/`forget`/`list`/`stats`） |
 | `mcp` | 原生 stdio MCP 服务器（compress / retrieve / stats 工具） |
 | `init` / `wrap` | 把 Simplicio 注册进客户端（Claude / Codex / Copilot / OpenClaw）· 以捕获路由运行客户端 |
 | `report` / `audit` / `capture` / `evals` | 节省报告 · 审计一棵树的压缩机会 · 干跑一个请求 · 压缩回归门控 |
-
-### 🧠 可选的真实 ML 模型 —— `pip install "simplicio-loop[onnx]"`
-
-四个**真实**、公开（Apache-2.0）的 ONNX 模型原生运行 —— 与上游使用的模型相同。
-没有该附加项时，确定性的标准库路径覆盖一切；模型在首次使用时下载。
-
-| 模型 | 命令 | 用途 |
-|---|---|---|
-| `kompress-v2-base` | `simplicio-cli kompress` | 语义 token 剪枝 |
-| `technique-router-onnx` | `simplicio-cli router` | 技术路由 |
-| `all-MiniLM-L6-v2-onnx` | `simplicio-cli embed` · `rag --ml` | 嵌入 + 语义 RAG |
-| `siglip-image-encoder-onnx` | `simplicio-cli image` | 图像压缩内容校验器 |
-
-### ⚙️ 原生 Rust 性能核心（可选）
-
-[`rust/`](../rust) 提供从上游移植 + 重新品牌化的四个 crate（Apache-2.0；`NOTICE` 中已致谢）：
-`simplicio-core`（压缩器 + smart-crusher）、`simplicio-py`（PyO3 绑定）、`simplicio-proxy`
-（axum 反向代理）、`simplicio-parity`（Rust↔Python 一致性校验工具）。用 `maturin` 构建 ——
-Python 引擎在没有它们时也能完整工作；这些 crate 只是额外增加原生速度。
 
 ---
 

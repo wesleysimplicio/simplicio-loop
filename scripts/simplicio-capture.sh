@@ -32,8 +32,7 @@ NATIVE_CLIENTS="claude codex copilot openclaw"
 cmd_status() {
   echo "⬡ Simplicio capture status (engine: $ENGINE, proxy port $PORT)"
   echo ""
-  # `doctor` reads the port from HEADROOM_PORT (no --port flag).
-  HEADROOM_PORT="$PORT" "$ENGINE" doctor 2>&1 || true
+  "$ENGINE" doctor --port "$PORT" 2>&1 || true
 }
 
 cmd_init() {

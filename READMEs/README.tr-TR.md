@@ -120,7 +120,7 @@ yüklendiğinde orkestratör ona devreder (daha zengin + daha ucuz); yokken dahi
 | 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Bilgi grafiği yönlendirme: semantik arama, rehberli turlar, bağımlılık grafiği | **L0 sıfır token** |
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Oturum analitiği, maliyet takibi, takılı-oturum keşfi | **L1** yalnızca SQL |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Döngü turları arasında KV cache — yerel modellerde %40-70 TTFT azalması | GPU süresi ↓ |
-| 10 | 🗜️ **Simplicio yakalama motoru** | `engine/simplicio_engine.py` (yerel, yalnızca stdlib; OSS [headroom](https://github.com/headroomlabs-ai/headroom) projesiyle savings-schema uyumlu) | Şeffaf yakalama proxy'si: gerçek sağlayıcıya iletir, ölçer + deterministik olarak sıkıştırır, `proxy_savings.json` yazar | **deterministik** |
+| 10 | 🗜️ **Simplicio yakalama motoru** | `engine/simplicio_engine.py` (yerel, yalnızca stdlib) | Şeffaf yakalama proxy'si: gerçek sağlayıcıya iletir, ölçer + deterministik olarak sıkıştırır, `proxy_savings.json` yazar | **deterministik** |
 | 11 | 🎬 **video_evidence** | Playwright (varsayılan) · [hyperframes](https://github.com/heygen-com/hyperframes) (istek üzerine) | Bir UI değişikliğinin hareketli kanıtı olarak **gerçek oturumu** kaydeder (Playwright); video teslimatın KENDİSİ olduğunda hyperframes ile **deterministik, başlıklı bir MP4** açıklayıcı render eder | Kanıt üreticisi |
 
 Her skill [`.claude/skills/`](../.claude/skills) altında yaşar; her hızlandırıcının
@@ -396,8 +396,7 @@ aracılığıyla kaydeder. Kurulumdan sonra monitör + yakalama **döngüyü ça
 ### 🛠️ Yakalama motoru — tek yerel modül, her komut
 
 [`engine/simplicio_engine.py`](../engine/simplicio_engine.py) yerel Simplicio yakalama motorudur
-(yalnızca stdlib, fail-open) — **upstream [headroom](https://github.com/headroomlabs-ai/headroom)
-yüzeyinin harici bağımlılık olmadan tam bir yeniden uygulaması**. Herhangi bir komutu
+(yalnızca stdlib, fail-open, harici bağımlılık yok). Herhangi bir komutu
 [`scripts/simplicio-engine`](../scripts/simplicio-engine) sarmalayıcısı aracılığıyla çalıştırın
 (ör. `simplicio-engine doctor`):
 
@@ -408,33 +407,12 @@ yüzeyinin harici bağımlılık olmadan tam bir yeniden uygulaması**. Herhangi
 | `cache` | yerel yanıt cache'i (`stats`/`clear`) — tekrarlanan deterministik bir istek cache'ten sunulur, LLM çağrısını atlar |
 | `signatures` | bir kaynak dosyanın yalnızca-imza görünümü (gövdeler atlanmış, kodu okumak için ~%93 daha az token) |
 | `semantic` | tersine çevrilebilir çıkarımsal (semantic-lite) sıkıştırma |
-| `kompress` | gerçek `kompress-v2-base` modeli aracılığıyla **ONNX** semantik token-budama |
 | `detect` | içerik-türü algılama + blok başına akıllı yönlendirme |
 | `rag` | CCR bellek deposu üzerinde TF-IDF (veya `--ml` gömme) erişimi |
 | `memory` | CCR compress-cache-retrieve deposu (`remember`/`recall`/`forget`/`list`/`stats`) |
 | `mcp` | yerel stdio MCP sunucusu (compress / retrieve / stats araçları) |
 | `init` / `wrap` | Simplicio'yu bir istemciye kaydet (Claude / Codex / Copilot / OpenClaw) · bir istemciyi yakalama yönlendirmesiyle çalıştır |
 | `report` / `audit` / `capture` / `evals` | tasarruf raporu · bir ağacı sıkıştırma fırsatı için denetle · bir isteği kuru-çalıştır · sıkıştırma regresyon kapısı |
-
-### 🧠 İsteğe bağlı gerçek ML modelleri — `pip install "simplicio-loop[onnx]"`
-
-Dört **gerçek**, herkese açık (Apache-2.0) ONNX modeli yerel olarak çalışır — upstream'in kullandığı
-aynı modeller. Ekstra olmadan, deterministik stdlib yolu her şeyi kapsar; modeller ilk kullanımda
-indirilir.
-
-| Model | Komut | Kullanım |
-|---|---|---|
-| `kompress-v2-base` | `simplicio-cli kompress` | semantik token budama |
-| `technique-router-onnx` | `simplicio-cli router` | teknik yönlendirme |
-| `all-MiniLM-L6-v2-onnx` | `simplicio-cli embed` · `rag --ml` | gömmeler + semantik RAG |
-| `siglip-image-encoder-onnx` | `simplicio-cli image` | görüntü-sıkıştırma içerik doğrulayıcısı |
-
-### ⚙️ Yerel Rust performans çekirdeği (isteğe bağlı)
-
-[`rust/`](../rust) upstream'den taşınmış + yeniden markalanmış dört crate sunar (Apache-2.0; `NOTICE`
-buna atıfta bulunur): `simplicio-core` (sıkıştırıcılar + smart-crusher), `simplicio-py` (PyO3 bağlamaları),
-`simplicio-proxy` (axum ters proxy), `simplicio-parity` (Rust↔Python parite koşum takımı). `maturin`
-ile derleyin — Python motoru onlar olmadan tam çalışır; crate'ler yalnızca yerel hız ekler.
 
 ---
 

@@ -1,6 +1,6 @@
 """Compression-quality eval + regression harness for simplicio-loop.
 
-Mirrors the "evals" idea from headroom: a built-in labeled corpus spanning the
+A built-in labeled corpus spanning the
 content types the compression pipeline is meant to handle, run end-to-end
 (``compress`` then ``compress_extra``), with a set of hard INVARIANTS that act
 as a CI regression gate. If a future change corrupts prose/code or stops saving

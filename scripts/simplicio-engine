@@ -1,30 +1,21 @@
 #!/usr/bin/env bash
-# simplicio-engine — Simplicio capture engine entrypoint (native-first).
+# simplicio-engine — Simplicio capture engine entrypoint (native, self-contained).
 #
-# Prefers the self-contained native engine (engine/simplicio_engine.py — proxy + doctor +
-# memory stats, no external dependency). Falls back to an installed upstream engine binary
-# only if the native module is missing. This is the single place that resolves the engine.
+# Runs the self-contained native engine (engine/simplicio_engine.py — proxy + doctor +
+# memory stats, no external dependency). This is the single place that resolves the engine.
 set -euo pipefail
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _native="$_here/../engine/simplicio_engine.py"
 _py="${SIMPLICIO_PYTHON:-python3}"
 
+# Honor an explicit override; otherwise run the native module that ships with the repo.
+_engine="${SIMPLICIO_ENGINE_BIN:-}"
+if [ -n "${_engine}" ]; then
+  exec "${_engine}" "$@"
+fi
 if [ -f "$_native" ]; then
   exec "$_py" "$_native" "$@"
 fi
-
-# Fallback only if the native engine module isn't present (it ships with the repo, so this
-# rarely runs). Honor an explicit override or a compatible binary on PATH.
-_engine="${SIMPLICIO_ENGINE_BIN:-}"
-[ -z "${_engine}" ] && _engine="$(command -v headroom 2>/dev/null || true)"
-if [ -z "${_engine}" ]; then
-  for _p in "${HOME}"/.local/bin/headroom /usr/local/bin/headroom /opt/homebrew/bin/headroom; do
-    [ -x "${_p}" ] && { _engine="${_p}"; break; }
-  done
-fi
-if [ -z "${_engine}" ]; then
-  echo "simplicio-engine: native engine missing and no fallback found" >&2
-  exit 127
-fi
-exec "${_engine}" "$@"
+echo "simplicio-engine: native engine module missing ($_native)" >&2
+exit 127

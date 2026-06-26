@@ -106,7 +106,7 @@ command (re-running re-burns tokens and may be non-deterministic). So:
 
 This de-risks success-collapse: the bytes an agent needs on failure are never thrown away.
 
-### CCR — make the clamp reversible (folded from headroom)
+### CCR — make the clamp reversible
 
 The tee file IS the cache; add a **stable handle + retrieve** so clamping is reversible, not
 lossy. The handle is the tee path; surface a retrieve convention so a worker pulls the original on
@@ -119,8 +119,8 @@ retrieve <tee-path> [--lines a-b] [--grep PATTERN]
 This turns "lossy by policy" into a "compress-cache-retrieve" decision point: clamp to a
 summary/signature in context, keep the full original on disk keyed by the handle, fetch by handle
 ONLY when the kept lines aren't enough — removing the main risk of aggressive clamping (losing the
-one line that mattered) at zero up-front token cost. (We fold in headroom's CCR pattern and its
-content-type routing taxonomy — JSON/code/log/diff — but NOT its trained model or traffic proxy:
+one line that mattered) at zero up-front token cost. (We use a CCR (compress-cache-retrieve)
+pattern and content-type routing — JSON/code/log/diff — but NOT a trained model or traffic proxy:
 those contradict the terminal-first, zero-extra-process design.)
 
 ## Signatures-only reads (folded from rtk `read -l aggressive`)

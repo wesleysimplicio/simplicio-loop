@@ -123,7 +123,7 @@ présent = utilisé, absent = repli LLM.
 | 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Orientation par graphe de connaissances : recherche sémantique, visites guidées, graphe de dépendances | **L0 zéro token** |
 | 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Analytique de session, suivi des coûts, découverte de sessions bloquées | **L1** SQL uniquement |
 | 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Cache KV entre tours de boucle — réduction de 40-70 % du TTFT sur les modèles locaux | Temps GPU ↓ |
-| 10 | 🗜️ **Moteur de capture Simplicio** | `engine/simplicio_engine.py` (natif, stdlib uniquement ; schéma d'économies compatible avec le projet OSS [headroom](https://github.com/headroomlabs-ai/headroom)) | Proxy de capture transparent : transmet au vrai fournisseur, mesure + compresse de façon déterministe, écrit `proxy_savings.json` | **déterministe** |
+| 10 | 🗜️ **Moteur de capture Simplicio** | `engine/simplicio_engine.py` (natif, stdlib uniquement) | Proxy de capture transparent : transmet au vrai fournisseur, mesure + compresse de façon déterministe, écrit `proxy_savings.json` | **déterministe** |
 | 11 | 🎬 **video_evidence** | Playwright (par défaut) · [hyperframes](https://github.com/heygen-com/hyperframes) (à la demande) | Enregistre la **session réelle** comme preuve animée d'un changement d'UI (Playwright) ; rend une vidéo explicative **MP4 déterministe et sous-titrée** avec hyperframes quand la vidéo EST le livrable | Producteur de preuve |
 
 Chaque skill vit sous [`.claude/skills/`](../.claude/skills) ; chaque accélérateur dispose d'un document
@@ -406,8 +406,7 @@ systemd · Windows Startup) via `scripts/setup_simplicio.sh`, ou via le multipla
 ### 🛠️ Le moteur de capture — un module natif, chaque commande
 
 [`engine/simplicio_engine.py`](../engine/simplicio_engine.py) est le moteur de capture natif Simplicio
-(stdlib uniquement, fail-open) — une **réimplémentation complète de la surface amont
-[headroom](https://github.com/headroomlabs-ai/headroom) sans aucune dépendance externe**. Exécutez
+(natif, stdlib uniquement, fail-open, sans aucune dépendance externe). Exécutez
 n'importe quelle commande via le wrapper [`scripts/simplicio-engine`](../scripts/simplicio-engine) (par
 ex. `simplicio-engine doctor`) :
 
@@ -418,34 +417,12 @@ ex. `simplicio-engine doctor`) :
 | `cache` | cache natif de réponses (`stats`/`clear`) — une requête déterministe répétée est servie depuis le cache, sautant l'appel LLM |
 | `signatures` | vue signatures seules d'un fichier source (corps élidés, ~93 % de tokens en moins pour lire le code) |
 | `semantic` | compression extractive réversible (semantic-lite) |
-| `kompress` | élagage sémantique de tokens **ONNX** via le vrai modèle `kompress-v2-base` |
 | `detect` | détection du type de contenu + routage intelligent par bloc |
 | `rag` | récupération TF-IDF (ou embedding `--ml`) sur le store mémoire CCR |
 | `memory` | store CCR compress-cache-retrieve (`remember`/`recall`/`forget`/`list`/`stats`) |
 | `mcp` | serveur MCP stdio natif (outils compress / retrieve / stats) |
 | `init` / `wrap` | enregistrer Simplicio dans un client (Claude / Codex / Copilot / OpenClaw) · exécuter un client avec routage de capture |
 | `report` / `audit` / `capture` / `evals` | rapport d'économies · auditer un arbre pour les occasions de compression · simuler une requête (dry-run) · gate de régression de compression |
-
-### 🧠 Modèles ML réels optionnels — `pip install "simplicio-loop[onnx]"`
-
-Quatre modèles ONNX **réels**, publics (Apache-2.0) s'exécutent nativement — les mêmes modèles que ceux
-de l'amont. Sans l'extra, le chemin déterministe en stdlib couvre tout ; les modèles se téléchargent à
-la première utilisation.
-
-| Modèle | Commande | Usage |
-|---|---|---|
-| `kompress-v2-base` | `simplicio-cli kompress` | élagage sémantique de tokens |
-| `technique-router-onnx` | `simplicio-cli router` | routage des techniques |
-| `all-MiniLM-L6-v2-onnx` | `simplicio-cli embed` · `rag --ml` | embeddings + RAG sémantique |
-| `siglip-image-encoder-onnx` | `simplicio-cli image` | vérificateur de contenu pour la compression d'image |
-
-### ⚙️ Cœur de performance natif en Rust (optionnel)
-
-[`rust/`](../rust) embarque quatre crates portés + rebrandés de l'amont (Apache-2.0 ; `NOTICE` le
-crédite) : `simplicio-core` (compresseurs + smart-crusher), `simplicio-py` (bindings PyO3),
-`simplicio-proxy` (reverse proxy axum), `simplicio-parity` (harnais de parité Rust↔Python). Construire
-avec `maturin` — le moteur Python fonctionne pleinement sans eux ; les crates n'ajoutent que la vitesse
-native.
 
 ---
 

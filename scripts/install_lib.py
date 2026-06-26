@@ -492,7 +492,7 @@ def main():
     if cfg["mcp"] and runtime != "opencode":
         log("optional native bind:  simplicio-cli mcp register --client %s" % cfg["mcp"])
     setup_monitor(not minimal)
-    log("verify / repair anytime:  python3 scripts/doctor.py --repair  (optional pieces like Rust never block)")
+    log("verify / repair anytime:  python3 scripts/doctor.py --repair  (optional pieces never block)")
     print("done. use:  /simplicio-tasks finish all the open issues")
 
 

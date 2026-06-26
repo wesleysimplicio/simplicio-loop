@@ -29,8 +29,7 @@ _up() { python3 -c "import socket,sys; socket.create_connection(('127.0.0.1',int
 _savings() {
   python3 - "$@" <<'PY' 2>/dev/null || true
 import json, os, sys
-for p in (os.path.expanduser("~/.simplicio/proxy_savings.json"),
-          os.path.expanduser("~/.headroom/proxy_savings.json")):
+for p in (os.path.expanduser("~/.simplicio/proxy_savings.json"),):
     if os.path.exists(p):
         try:
             d = json.load(open(p)); life = d.get("lifetime", {})
@@ -193,7 +192,7 @@ cmd_capture() {
   esac
   echo "⬡ Starting TRANSPARENT capture proxy for $provider on :$port → $url"
   echo "  (forwards each call to the REAL provider — captures tokens, does NOT swap the model)"
-  HEADROOM_PORT="$port" nohup "$ENGINE" proxy --port "$port" --openai-api-url "$url" --host 127.0.0.1 \
+  SIMPLICIO_PROXY_PORT="$port" nohup "$ENGINE" proxy --port "$port" --openai-api-url "$url" --host 127.0.0.1 \
     > "$HOME/.hermes/logs/simplicio-transparent-$provider.log" 2>&1 &
   sleep 4
   if _up "$port"; then

@@ -1,6 +1,6 @@
 """Dry-run capture inspector for an LLM request payload.
 
-Mirrors the headroom "capture/compare" idea: take an OpenAI/Anthropic-shaped
+Capture/compare: take an OpenAI/Anthropic-shaped
 request body (`model`, `messages`, optional `system`) and show *exactly* what
 Simplicio would compress and how many tokens it would save — WITHOUT sending
 anything anywhere. This is a pure local analyzer: no network, ever.

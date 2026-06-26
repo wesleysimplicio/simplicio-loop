@@ -5,6 +5,18 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+### Removed
+- **The vendored native Rust performance core and all its crates** (`simplicio-core` / `-py` /
+  `-proxy` / `-parity`) — removed in full, along with their build/parity tooling.
+- **The ported ONNX model engine modules and their subcommands** — `kompress`, `router`, `embed`,
+  and `image` (`engine/simplicio_kompress.py`, `engine/simplicio_router.py`,
+  `engine/simplicio_embed.py`, `engine/simplicio_image.py`) — plus the **GitHub Copilot OAuth port**
+  (`copilot`, `engine/simplicio_copilot.py`).
+- **The `[onnx]` and `[kompress]` optional-dependency extras** and the ONNX-model `doctor` checks
+  (onnxruntime / huggingface_hub / tokenizers / pillow are no longer pulled in or probed).
+- **All references to and integration with the external compression tool.** The native, stdlib-only
+  Simplicio capture engine (deterministic compression) is now the sole engine.
+
 ## [3.10.3] — 2026-06-26
 
 ### Changed
@@ -408,26 +420,26 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 ## [3.1.0] — 2026-06-24
 
 ### Added — the last two Rust crates (the port is now literally complete: every crate)
-- **`rust/simplicio-proxy`** — the upstream `headroom-proxy` (Rust/axum transparent reverse proxy),
-  vendored + rebranded (zero residual `headroom`; `x-headroom-`→`x-simplicio-`). **Built (40.8 MB
+- **`rust/simplicio-proxy`** — the upstream engine's Rust/axum transparent reverse proxy,
+  vendored + rebranded (zero residual upstream branding). **Built (40.8 MB
   binary) and verified running**: it forwarded a request to a local upstream byte-exact, preserved +
   injected headers (`x-forwarded-*`, `x-request-id`), rewrote `host`, and `/healthz` →
   `{"ok":true,"service":"simplicio-proxy"}`. **227 lib unit tests pass.**
-- **`rust/simplicio-parity`** — the upstream `headroom-parity` Rust-vs-Python parity harness, vendored
+- **`rust/simplicio-parity`** — the upstream engine's Rust-vs-Python parity harness, vendored
   + rebranded + built (`parity-run` binary, 7 transforms). **4 parity tests pass.**
 - (Honest: the proxy's 50 *integration* test binaries couldn't finish linking here — disk-full, ~200 MB
   free; each statically links the ~40 MB ONNX/AWS tree. The release binary + lib tests built and passed.)
 
-### Done — every subsystem AND every crate of upstream headroom is now in Simplicio
+### Done — every subsystem AND every crate of the upstream compression project is now in Simplicio
 All four Rust crates (`simplicio-core` / `-py` / `-proxy` / `-parity`) build; the full Python functional
 surface runs; the four real ONNX models (kompress / technique-router / MiniLM / SigLIP) run; Copilot
-OAuth works. **headroom → simplicio: complete.**
+OAuth works. **the upstream port: complete.**
 
 ## [3.0.0] — 2026-06-24
 
 ### Added — the native Rust performance core, built for real (the last literal piece)
-- **`rust/simplicio-core` + `rust/simplicio-py`** — the upstream headroom Rust crates
-  (`headroom-core` + the PyO3 bindings `headroom-py`), **vendored and rebranded** headroom→simplicio
+- **`rust/simplicio-core` + `rust/simplicio-py`** — the upstream engine's Rust crates
+  (the core + the PyO3 bindings), **vendored and rebranded** to simplicio
   (~70 source files: smart_crusher, diff/log/search compressors, tokenizer, relevance, CCR, content
   detection), Apache-2.0 with `NOTICE` crediting upstream. The rebrand is baked into the compiled
   binary, not cosmetic (`hello()` → `simplicio-core`, tag sentinel `{{SIMPLICIO_TAG_…}}`, env
@@ -437,13 +449,13 @@ OAuth works. **headroom → simplicio: complete.**
   (`LogCompressor` 5700→566 bytes, `SmartCrusher`, `DiffCompressor`, `detect_content_type` via magika).
   **843 Rust tests pass.** Built with rustc/cargo 1.95.0 + maturin 1.14.1.
 
-### Milestone — the headroom port is complete (capability + the native layer)
-Every subsystem of the upstream headroom repository is now in Simplicio: the full Python functional
+### Milestone — the upstream port is complete (capability + the native layer)
+Every subsystem of the upstream compression project is now in Simplicio: the full Python functional
 surface (deterministic + extractive compression, the **four real ONNX models** kompress /
 technique-router / MiniLM embedder / SigLIP image, content detection + smart routing, RAG, input+output
 capture, per-provider routing, MCP, CCR memory, init/wrap/report/verify/audit/capture/evals, copilot
-OAuth) **and** the native Rust performance core. headroom→simplicio: done. (Skipped only `headroom-proxy`
-— a Rust axum passthrough that duplicates the working Python proxy — and `headroom-parity` — a test
+OAuth) **and** the native Rust performance core. The upstream port: done. (Skipped only the upstream's
+Rust axum passthrough that duplicates the working Python proxy — and its parity test
 harness; both are non-capability.)
 
 ## [2.12.0] — 2026-06-24
@@ -458,40 +470,40 @@ harness; both are non-capability.)
   Copilot account; the code path mirrors upstream exactly.)
 
 ### Milestone — capability-complete
-With Copilot auth, **every functional subsystem of the upstream headroom repo is now ported to
+With Copilot auth, **every functional subsystem of the upstream compression project is now ported to
 Simplicio** and verified: all deterministic + extractive compression, the **four real ONNX models**
 (kompress / technique-router / MiniLM embedder / SigLIP image), content detection + smart routing, RAG
 (TF-IDF + embedding), input+output capture, per-provider routing, MCP, CCR memory, client init, wrap,
 report, verify, audit, capture, evals, and copilot-auth. The **only** thing not reimplemented is the
-upstream's Rust `crates/` — a pyo3 **performance** re-implementation of the Python (`headroom-parity`
+upstream's Rust `crates/` — a pyo3 **performance** re-implementation of the Python (its parity harness
 asserts Rust == Python), which adds **no new capability**, only native speed.
 
 ## [2.11.0] — 2026-06-24
 
-### Added — image compression (the 4th and last real headroom model)
+### Added — image compression (the 4th and last real upstream model)
 - **`simplicio image <path>`** (`engine/simplicio_image.py`) — vision-LLM image compression ported from
-  headroom's `image/` subsystem (techniques preserve/full_low/crop/transcode = aspect-preserving LANCZOS
-  downscale + efficient re-encode), using the **REAL** `chopratejas/siglip-image-encoder-onnx` (~94 MB)
+  the upstream engine's `image/` subsystem (techniques preserve/full_low/crop/transcode = aspect-preserving LANCZOS
+  downscale + efficient re-encode), using the **REAL** SigLIP image-encoder ONNX model (~94 MB)
   as a content-similarity verifier so compression never destroys content. Verified: 1600×1200 → 768×576,
   90.6% bytes saved, SigLIP cosine ~0.997; a 512px tier cuts OpenAI vision tokens ~67%. Pillow-only
   fallback works without the model. (`[onnx]` extra now includes pillow.)
-- **All four real headroom ONNX models now run inside Simplicio**: kompress-v2-base (compression),
+- **All four real upstream ONNX models now run inside Simplicio**: kompress-v2-base (compression),
   technique-router-onnx (routing), all-MiniLM-L6-v2-onnx (embeddings), siglip-image-encoder-onnx (image).
 
 ### Scope note — the Rust crates
-The upstream's `crates/` (headroom-core/proxy/py) are a **pyo3 performance re-implementation** of the
-Python — `headroom-parity` literally asserts Rust == Python. They add **no new capability** (just native
+The upstream's `crates/` (the core/proxy/py crates) are a **pyo3 performance re-implementation** of the
+Python — its parity harness literally asserts Rust == Python. They add **no new capability** (just native
 speed). The functional surface they cover is already in Simplicio's Python engine, so there is no
 *capability* gap there — only an optional native-speed rewrite, which is out of scope for the token monitor.
 
 ## [2.10.0] — 2026-06-24
 
-### Added — more upstream subsystems ported (3 agents; 2 more REAL headroom models)
+### Added — more upstream subsystems ported (3 agents; 2 more REAL upstream models)
 - **`simplicio detect`** (`engine/simplicio_detect.py`, stdlib) — content-type detector (JSON/code/log/
   markdown/prose) + a **universal smart-compress** that routes each block to the best technique
   (JSON→minify, log→full pipeline, code/prose left intact). Verified 15/15: JSON 60%, log 95% saved,
   code/prose byte-preserved.
-- **`simplicio router`** (`engine/simplicio_router.py`) — the **REAL** `chopratejas/technique-router-onnx`
+- **`simplicio router`** (`engine/simplicio_router.py`) — the **REAL** technique-router ONNX
   model (~32 MB, INT8): tokenize → ONNX → softmax → technique class (transcode/crop/preserve/full_low).
   Verified running on the real weights. (Note: this router was trained on image-edit *intents*, so raw
   text blobs tend to route to `preserve` — the model runs correctly; its training domain differs.)
@@ -502,9 +514,9 @@ speed). The functional surface they cover is already in Simplicio's Python engin
 
 ## [2.9.0] — 2026-06-24
 
-### Added — the REAL headroom ONNX compression model, integrated (the gap is closed, not substituted)
+### Added — the REAL upstream ONNX compression model, integrated (the gap is closed, not substituted)
 - **`simplicio kompress`** (`engine/simplicio_kompress.py`) runs the **actual upstream model**
-  `chopratejas/kompress-v2-base` — the real ONNX semantic token-pruning model headroom uses. Turns out
+  `kompress-v2-base` — the real ONNX semantic token-pruning model the upstream engine uses. Turns out
   its weights are **public on HuggingFace** (Apache-2.0), not proprietary: so this is the genuine
   article, not a look-alike. It tokenizes (ModernBERT), runs the ONNX session
   (`input_ids`/`attention_mask` → per-token `final_scores` keep probability), keeps the top
@@ -521,7 +533,7 @@ speed). The functional surface they cover is already in Simplicio's Python engin
 ### Scope — now honestly complete on the implementable + the model
 With the real `kompress-v2-base` integrated, the upstream's ONNX semantic compression is no longer a
 gap — it's the same model, in Simplicio. Combined with the deterministic 12-algo + extractive
-compression, the model2vec embedding backend, and TF-IDF/embedding RAG, the headroom compression+RAG
+compression, the model2vec embedding backend, and TF-IDF/embedding RAG, the upstream compression+RAG
 surface is covered (deterministic core stdlib-only; the heavy models are optional extras).
 
 ## [2.8.0] — 2026-06-24
@@ -623,7 +635,7 @@ require ML models, not stdlib code) — and are not faked.
 - **`engine/simplicio_compress.py`** — 8-algorithm deterministic compression (ANSI strip, trailing ws,
   blank collapse, line dedup, JSON minify, rule-run cap, hex-dump fold, fenced-log fold), idempotent and
   meaning-preserving. The proxy now uses it (verbose logs ~89-94% saved; clean prose/code untouched).
-- **`engine/simplicio_init.py`** — native client integration writer (mirrors `headroom init`): registers
+- **`engine/simplicio_init.py`** — native client integration writer (mirrors the upstream engine's `init`): registers
   the Simplicio MCP server into codex/claude/copilot/openclaw configs. **Dry-run by default**, `--apply`
   to write, idempotent. `simplicio_engine init <client>`.
 
@@ -681,7 +693,7 @@ require ML models, not stdlib code) — and are not faked.
 
 ### Added — native Simplicio capture engine (no external dependency)
 - **`engine/simplicio_engine.py`** — a self-contained, stdlib-only capture proxy that **replaces the
-  external `headroom-ai` binary** for the core capture path. It transparently forwards each request to
+  external compression binary** for the core capture path. It transparently forwards each request to
   the real upstream (**no model swap**), measures prompt tokens, applies **deterministic** compression
   (whitespace collapse, consecutive-line dedup, oversized-output capping), streams the response back,
   and writes `~/.simplicio/proxy_savings.json` in the same schema-v3 the Token Monitor reads. It is
@@ -692,12 +704,12 @@ require ML models, not stdlib code) — and are not faked.
 - **The live capture proxy is now the native engine.** Verified end-to-end: a request through it
   reached DeepSeek's real API and returned DeepSeek's own auth error (proving transparent forwarding);
   a compressible payload was deduped 575→54 chars and recorded as real savings. Lifetime history was
-  migrated `~/.headroom` → `~/.simplicio` for continuity (401,925 tokens preserved).
+  migrated from the legacy data dir → `~/.simplicio` for continuity (401,925 tokens preserved).
 - `scripts/simplicio-engine` is **native-first** (falls back to an external binary only if the module
   is absent). `setup_simplicio.sh` and `install_services.py` run the native engine — `setup` no longer
-  installs `headroom-ai`.
+  installs the external compression binary.
 - README accelerator row + `token-capture.md` describe the native engine (schema-compatible with the
-  OSS headroom project, credited).
+  upstream compression project, credited).
 
 ### Honest scope
 - The native engine is the **core** (transparent capture + measurement + deterministic compression).
@@ -742,7 +754,7 @@ require ML models, not stdlib code) — and are not faked.
 ### Honest caveats
 - Verified end-to-end on **macOS** (dashboard, rumps + pystray trays, launchd, real capture). The
   **Linux systemd and Windows Startup service activation are NOT yet run on those OSes** — only their
-  generated artifacts are validated. The capture engine is the third-party `headroom-ai` binary.
+  generated artifacts are validated. The capture engine is the third-party upstream compression binary.
   Provider interceptability (141/144) is a catalog estimate, not verified per provider.
 
 ## [1.8.0] — 2026-06-23
@@ -813,9 +825,9 @@ require ML models, not stdlib code) — and are not faked.
   instead of `lsof`, which the launchd service could not find on its restricted `PATH` (it lives
   in `/usr/sbin`) — the dashboard was falsely showing the proxy as down. Also added `/usr/sbin`
   to the generated service `PATH`s. "Always works", regardless of environment.
-- Dashboard + capture script now call the engine through `simplicio-engine`; remaining `headroom`
+- Dashboard + capture script now call the engine through `simplicio-engine`; remaining upstream
   references are isolated to the wrapper's binary resolution, the engine's own data dirs
-  (`~/.headroom`, read-only), and the literal `headroom-ai` package name.
+  (read-only), and the literal upstream package name.
 
 ### Notes
 - **Capture activation verified.** `<engine> init <client>` was confirmed to add only a safe MCP
@@ -846,17 +858,17 @@ require ML models, not stdlib code) — and are not faked.
 ## [1.2.0] — 2026-06-23
 
 ### Changed
-- **Rebranded the token monitor from "headroom" to Simplicio.** The localhost dashboard is now
+- **Rebranded the token monitor from the upstream branding to Simplicio.** The localhost dashboard is now
   the **Simplicio Token Monitor** (header + footer brand lockup rendered green + yellow).
-  Our hooks/services/files were renamed: `hooks/headroom_dashboard.py` → `hooks/simplicio_dashboard.py`,
-  `hooks/headroom_watch.py` → `hooks/simplicio_watch.py`, `scripts/setup_headroom.sh` →
-  `scripts/setup_simplicio.sh`; launchd services `ai.simplicio.headroom` → `ai.simplicio.proxy`
-  and `ai.simplicio.headroom-dashboard` → `ai.simplicio.token-monitor`; env var
-  `HEADROOM_PORT` → `SIMPLICIO_PROXY_PORT` (old name still honored as fallback); proxy log
+  Our hooks/services/files were renamed to the `simplicio_*` scheme: the dashboard hook, the watch
+  hook, and the setup script became `hooks/simplicio_dashboard.py`, `hooks/simplicio_watch.py`,
+  `scripts/setup_simplicio.sh`; launchd services were renamed to `ai.simplicio.proxy`
+  and `ai.simplicio.token-monitor`; the proxy-port env var → `SIMPLICIO_PROXY_PORT`
+  (old name still honored as fallback); proxy log
   targets → `~/.hermes/logs/simplicio-proxy*.log`.
-- **Carve-out:** the underlying compression accelerator is the third-party **headroom-ai**
-  product, so its real binary/install names are kept functional (`pip install headroom-ai`,
-  `headroom proxy`, `headroom memory stats`) and its OSS attribution is preserved — only
+- **Carve-out:** the underlying compression accelerator is the third-party upstream
+  product, so its real binary/install names are kept functional (its `pip install`,
+  its `proxy` and `memory stats` commands) and its OSS attribution is preserved — only
   Simplicio-owned naming was changed.
 
 ### Added
@@ -891,7 +903,7 @@ require ML models, not stdlib code) — and are not faked.
 
 ## [1.0.5] — 2026-06-23
 
-- Headroom integration: live web dashboard + monitor on `:9090`, context-compression proxy,
+- Upstream compression integration: live web dashboard + monitor on `:9090`, context-compression proxy,
   MCP accelerator, setup script and launchd services.
 - LMCache inference accelerator, agentsview session-observability source adapter.
 - 11 runtime adapters + universal installer; hardened Ralph loop with bound operators

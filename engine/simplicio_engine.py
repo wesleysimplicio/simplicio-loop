@@ -541,9 +541,7 @@ def main(argv=None):
     raw = list(sys.argv[1:] if argv is None else argv)
     _PASS = {"init": "simplicio_init.py", "wrap": "simplicio_wrap.py", "report": "simplicio_report.py",
              "verify": "simplicio_verify.py", "audit": "simplicio_audit.py", "capture": "simplicio_capture.py",
-             "evals": "simplicio_evals.py", "kompress": "simplicio_kompress.py", "detect": "simplicio_detect.py",
-             "router": "simplicio_router.py", "embed": "simplicio_embed.py", "image": "simplicio_image.py",
-             "copilot": "simplicio_copilot.py"}
+             "evals": "simplicio_evals.py", "detect": "simplicio_detect.py"}
     if raw:
         cmd, rest = raw[0], raw[1:]
         if cmd == "memory" and rest and rest[0] != "stats":
@@ -603,8 +601,6 @@ def main(argv=None):
     pse.add_argument("rest", nargs=argparse.REMAINDER)
     prg = sub.add_parser("rag", help="TF-IDF retrieval over the CCR memory store")
     prg.add_argument("rest", nargs=argparse.REMAINDER)
-    pko = sub.add_parser("kompress", help="ONNX semantic token-pruning via the real kompress-v2-base model")
-    pko.add_argument("rest", nargs=argparse.REMAINDER)
 
     # parse_known_args so leading passthrough flags (e.g. `semantic --ml`) reach the sibling
     args, _extra = p.parse_known_args(argv)
@@ -644,8 +640,6 @@ def main(argv=None):
         if "--ml" in rest:
             return _exec_sibling("simplicio_semantic_ml.py", ["search"] + [a for a in rest if a != "--ml"])
         return _exec_sibling("simplicio_rag.py", rest)
-    if args.cmd == "kompress":
-        return _exec_sibling("simplicio_kompress.py", _rest)
     if args.cmd == "signatures":
         return _exec_sibling("simplicio_signatures.py", _rest)
     if args.cmd == "cache":

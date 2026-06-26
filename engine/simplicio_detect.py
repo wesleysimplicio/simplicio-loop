@@ -6,9 +6,9 @@ classifies a piece of content (JSON / CODE / LOG / MARKDOWN / PROSE) with cheap
 deterministic heuristics, then routes it to the BEST available lossless
 compressor for that type.
 
-It mirrors headroom's ``compression/detector.py`` ``ContentType`` categories and
-its universal-router idea, but uses rule-based detection (no ML / Magika
-dependency) so it stays stdlib-only and offline.
+Content-type categories for routing compression, paired with a universal-router
+idea, using rule-based detection (no ML / Magika dependency) so it stays
+stdlib-only and offline.
 
 Public API:
     ContentType            -- str constants: json, code, log, markdown, prose
@@ -181,7 +181,7 @@ def detect(text: str) -> "tuple[str, float, dict]":
     of the ``ContentType`` constants, ``confidence`` is a 0..1 float, and
     ``meta`` may carry signal details (e.g. detected code ``language``).
 
-    Detection order mirrors headroom: JSON first (parse / leading bracket),
+    Detection order: JSON first (parse / leading bracket),
     then CODE, LOG, MARKDOWN, else PROSE. Deterministic for a given input.
     """
     meta: dict = {}
