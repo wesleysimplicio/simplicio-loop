@@ -77,7 +77,7 @@ echo "✅ token monitor + tray: on-demand (open with simplicio-economy monitor /
 
 # 5. Add env vars to .zshrc (idempotent)
 echo "🔧 Configuring shell environment..."
-for VAR in 'export ANTHROPIC_BASE_URL=http://127.0.0.1:'"$PORT" 'export OPENAI_BASE_URL=https://api.deepseek.com/v1' 'export SIMPLICIO_PROXY_PORT='"$PORT"; do
+for VAR in 'export OPENAI_BASE_URL=https://api.deepseek.com/v1' 'export SIMPLICIO_PROXY_PORT='"$PORT"; do
   KEY=$(echo "$VAR" | cut -d= -f1 | cut -d' ' -f2)
   if grep -q "$KEY" ~/.zshrc 2>/dev/null; then
     echo "  $KEY already in .zshrc"
@@ -87,6 +87,17 @@ for VAR in 'export ANTHROPIC_BASE_URL=http://127.0.0.1:'"$PORT" 'export OPENAI_B
   fi
   eval "$VAR"
 done
+# Claude (Anthropic) auth via OAuth, which 401s through the proxy — only route it with a static key.
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  if grep -q "ANTHROPIC_BASE_URL" ~/.zshrc 2>/dev/null; then
+    echo "  ANTHROPIC_BASE_URL already in .zshrc"
+  else
+    echo 'export ANTHROPIC_BASE_URL=http://127.0.0.1:'"$PORT" >> ~/.zshrc
+    echo "  ✅ ANTHROPIC_BASE_URL added to .zshrc (static key present)"
+  fi
+else
+  echo "  ⊘ ANTHROPIC_BASE_URL skipped (OAuth claude; set ANTHROPIC_API_KEY to capture Claude)"
+fi
 
 # 6. Configure Hermes base_url
 echo "🔧 Configuring Hermes base_url..."

@@ -162,11 +162,15 @@ def cmd_wire(on=True):
         return
     target = f"http://127.0.0.1:{PROXY_PORT}/v1"   # OpenAI / Codex / Cursor / OpenCode
     root = f"http://127.0.0.1:{PROXY_PORT}"          # Anthropic / Claude (no /v1)
+    # Claude Code / the `claude` CLI auth via OAuth, which 401s through the proxy. Only route Anthropic
+    # when a static ANTHROPIC_API_KEY is set — otherwise wiring it would break the user's claude CLI.
+    wire_anthropic = on and bool(os.environ.get("ANTHROPIC_API_KEY"))
     if os.name == "nt":
         if on:
             subprocess.run(["setx", "OPENAI_BASE_URL", target], check=False)
-            subprocess.run(["setx", "ANTHROPIC_BASE_URL", root], check=False)
-            print(f"✅ OPENAI_BASE_URL -> {target} · ANTHROPIC_BASE_URL -> {root} (reopen your tools)")
+            subprocess.run(["setx", "ANTHROPIC_BASE_URL", root if wire_anthropic else ""], check=False)
+            extra = f" · ANTHROPIC_BASE_URL -> {root}" if wire_anthropic else " · ANTHROPIC skipped (OAuth claude; set ANTHROPIC_API_KEY)"
+            print(f"✅ OPENAI_BASE_URL -> {target}{extra} (reopen your tools)")
         else:
             subprocess.run(["setx", "OPENAI_BASE_URL", ""], check=False)
             subprocess.run(["setx", "ANTHROPIC_BASE_URL", ""], check=False)
@@ -177,9 +181,13 @@ def cmd_wire(on=True):
     import re
     txt = re.sub(r"(?m)^export (OPENAI_BASE_URL|ANTHROPIC_BASE_URL|SIMPLICIO_CAPTURE)=.*$", "", txt).rstrip()
     if on:
-        txt += f"\nexport OPENAI_BASE_URL={target}\nexport ANTHROPIC_BASE_URL={root}\nexport SIMPLICIO_CAPTURE=on\n"
+        txt += f"\nexport OPENAI_BASE_URL={target}\nexport SIMPLICIO_CAPTURE=on\n"
+        if wire_anthropic:
+            txt += f"export ANTHROPIC_BASE_URL={root}\n"
     prof.write_text(txt + "\n")
-    print(f"✅ {prof}: Claude + Codex/OpenAI {'routed through the proxy (effective next shell)' if on else 'cleared'}")
+    routed = ("Claude + " if wire_anthropic else "") + "Codex/OpenAI"
+    print(f"✅ {prof}: {routed} {'routed through the proxy (effective next shell)' if on else 'cleared'}"
+          + ("" if wire_anthropic or not on else " · Claude skipped (OAuth — set ANTHROPIC_API_KEY to capture it)"))
 
 
 def selftest():

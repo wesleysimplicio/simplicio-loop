@@ -5,6 +5,21 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.10.3] — 2026-06-26
+
+### Fixed
+- **Capture wiring no longer breaks the `claude` CLI.** The economy installer wired
+  `ANTHROPIC_BASE_URL=http://127.0.0.1:<proxy>` into the shell profile unconditionally. Claude Code /
+  the `claude` CLI authenticate via OAuth, and the proxy cannot relay that token — Anthropic returns
+  `401 Invalid authentication credentials`, so every terminal `claude` call failed (the proxy still
+  *captured* the request, but the call broke). `ANTHROPIC_BASE_URL` is now wired **only when a static
+  `ANTHROPIC_API_KEY` is present** (the one case the proxy can forward); otherwise it is skipped and
+  any stale proxy-pointing value is removed on the next `wire`. Fixed consistently in
+  `scripts/simplicio-economy.sh`, `scripts/install_services.py`, and `scripts/setup_simplicio.sh`.
+- **`doctor.py` no longer false-WARNs on OAuth setups.** The `always-capture wire` check required
+  `ANTHROPIC_BASE_URL` to point at the proxy; it now requires that only when a static
+  `ANTHROPIC_API_KEY` is set, and treats "OpenAI wired + Anthropic absent" as healthy for OAuth users.
+
 ## [3.10.2] — 2026-06-25
 
 ### Fixed

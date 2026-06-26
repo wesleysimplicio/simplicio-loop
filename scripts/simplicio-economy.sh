@@ -131,9 +131,13 @@ cmd_wire() {
   local zr="$HOME/.zshrc" root="http://127.0.0.1:$PROXY_PORT" target="http://127.0.0.1:$PROXY_PORT/v1"
   # Back up the ORIGINAL once — a re-wire must not overwrite the pristine backup.
   [ -f "$zr.simplicio-bak" ] || cp "$zr" "$zr.simplicio-bak" 2>/dev/null || true
-  python3 - "$zr" "$target" "$root" <<'PY'
+  # Claude Code / the `claude` CLI auth via OAuth, which the proxy can't relay (Anthropic 401s the
+  # forwarded token — capture works but the call fails). Only wire ANTHROPIC_BASE_URL when a STATIC
+  # ANTHROPIC_API_KEY is present; otherwise routing it would break the user's claude CLI.
+  local wire_anthropic=0; [ -n "${ANTHROPIC_API_KEY:-}" ] && wire_anthropic=1
+  python3 - "$zr" "$target" "$root" "$wire_anthropic" <<'PY'
 import re, sys
-zr, target, root = sys.argv[1], sys.argv[2], sys.argv[3]
+zr, target, root, wire_anthropic = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 try:
     txt = open(zr).read()
 except OSError:
@@ -144,13 +148,21 @@ def set_var(txt, var, val):
         return re.sub(rf"^export {var}=.*$", line, txt, flags=re.M)
     return txt + ("\n" if txt and not txt.endswith("\n") else "") + line + "\n"
 txt = set_var(txt, "OPENAI_BASE_URL", target)      # Codex / Cursor / OpenCode / any OpenAI client
-txt = set_var(txt, "ANTHROPIC_BASE_URL", root)     # Claude (no /v1 — it appends /v1/messages)
+if wire_anthropic:
+    txt = set_var(txt, "ANTHROPIC_BASE_URL", root)  # Claude with a static key (no /v1 — appends /v1/messages)
+else:
+    # never leave a proxy-pointing ANTHROPIC_BASE_URL — it would 401 an OAuth `claude` CLI
+    txt = re.sub(r"^export ANTHROPIC_BASE_URL=http://127\.0\.0\.1:.*$\n?", "", txt, flags=re.M)
 txt = set_var(txt, "SIMPLICIO_CAPTURE", "on")
 open(zr, "w").write(txt)
 print(f"  OPENAI_BASE_URL    -> {target}")
-print(f"  ANTHROPIC_BASE_URL -> {root}")
+print("  ANTHROPIC_BASE_URL -> " + (root if wire_anthropic else "skipped (OAuth claude; set ANTHROPIC_API_KEY to capture Claude)"))
 PY
-  echo "⬡ Wired: Claude (Anthropic) + Codex/Cursor (OpenAI) now route through the capture proxy (:$PROXY_PORT)."
+  if [ "$wire_anthropic" = "1" ]; then
+    echo "⬡ Wired: Claude (static key) + Codex/Cursor (OpenAI) now route through the capture proxy (:$PROXY_PORT)."
+  else
+    echo "⬡ Wired: Codex/Cursor (OpenAI) route through the capture proxy (:$PROXY_PORT). Claude skipped (OAuth — set ANTHROPIC_API_KEY to capture it)."
+  fi
   echo "  Each call forwards to its REAL provider and is measured — effective on the NEXT shell/tool launch."
   echo "  Backup: $zr.simplicio-bak · reverse any time: simplicio-economy unwire"
 }

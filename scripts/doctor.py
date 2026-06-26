@@ -163,16 +163,22 @@ def chk_wire():
     txt = prof.read_text(errors="replace") if prof.is_file() else ""
     has_a = ("ANTHROPIC_BASE_URL=http://127.0.0.1:%d" % PROXY_PORT) in txt
     has_o = ("OPENAI_BASE_URL=http://127.0.0.1:%d" % PROXY_PORT) in txt
-    ok = has_a and has_o
+    # Claude is only routable through the proxy with a static key (OAuth 401s). With OAuth the correct
+    # state is OPENAI wired + ANTHROPIC absent — so require ANTHROPIC only when a static key is set.
+    want_a = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    ok = has_o and (has_a if want_a else not has_a)
 
     def repair():
         _run(["bash", str(REPO / "scripts" / "simplicio-economy.sh"), "wire"])
         t = prof.read_text(errors="replace") if prof.is_file() else ""
-        return ("ANTHROPIC_BASE_URL=http://127.0.0.1:%d" % PROXY_PORT) in t
+        return ("OPENAI_BASE_URL=http://127.0.0.1:%d" % PROXY_PORT) in t
 
+    if want_a:
+        msg = "Claude (static key) + Codex/OpenAI + Hermes routed" if ok else "not wired (Claude/Codex not measured)"
+    else:
+        msg = "Codex/OpenAI + Hermes routed (Claude uses OAuth — not proxied)" if ok else "OpenAI not wired (Codex not measured)"
     return dict(name="always-capture wire", tier="RECOMMENDED", status=OK if ok else WARN,
-                msg="Claude + Codex/OpenAI + Hermes routed" if ok else "not wired (Claude/Codex not measured)",
-                repair=repair)
+                msg=msg, repair=repair)
 
 
 def chk_onnx():
