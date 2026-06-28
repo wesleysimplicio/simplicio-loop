@@ -157,8 +157,12 @@ detector below. It is the difference between a loop that converges and one that 
    `python3 scripts/loop_journal.py resume` — it lists what was already tried and the dead-end
    actions to AVOID, so the turn never re-runs a known-failing approach. For **incremental triage**
    (don't re-scan the whole tree every turn), `loop_journal.py since` shows only the delta since the
-   last recorded turn's commit. Act only on what is still genuinely open; never redo done work or
-   act on a stale picture (idempotency).
+   last recorded turn's commit. **And re-read the task anchor** — `python3 scripts/task_anchor.py
+   check --goal "<the goal worked this turn>" --exit-code` — so the turn stays on the SAME frozen
+   acceptance criteria and cannot drift: a `DRIFT` verdict (exit 11) means the goal moved; STOP and
+   re-anchor explicitly (`--force`), never wander silently. The journal is the loop's memory for
+   ATTEMPTS; the anchor is its memory for SCOPE. Act only on what is still genuinely open; never redo
+   done work or act on a stale picture (idempotency).
 3. **Work the goal** each turn as if fresh, against that triaged state. The model DECIDES the
    AC-scoped change; the **`simplicio-dev-cli` operator APPLIES and verifies it**
    (`simplicio-dev-cli task "<change>" --target <file>`) — do not hand-edit inside the loop. End EVERY
@@ -245,7 +249,11 @@ only if, in the SAME turn, there is concrete evidence the work is truly done:
 
 - the run-verification gate passed ("works, not just compiles" — `simplicio-tasks` Step 4b) —
   the `simplicio-dev-cli` operator's passing test+verify pass (its contract step 5/6) satisfies this, or
-- the named acceptance criteria are each checked with a `file:line` or command-output receipt, or
+- the named acceptance criteria are each checked with a `file:line` or command-output receipt —
+  mechanically enforced by the task anchor: `python3 scripts/task_anchor.py gate --exit-code` must
+  return READY (every anchored AC `done` with a receipt; exit 12 = still pending) before the promise
+  is allowed. An anchor with pending criteria makes the `<promise>` a contract violation, exactly
+  like missing evidence, or
 - for a queue, the source re-query confirms the items are actually closed/merged, or
 - a **demo video** of the change running on screen — a deterministic MP4 rendered with
   **hyperframes** via the `video_evidence` producer (below) — whose ledger row + MP4 path prove

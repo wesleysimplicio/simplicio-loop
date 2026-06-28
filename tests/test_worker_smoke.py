@@ -97,6 +97,75 @@ def test_repo_conventions_formatters_default():
     assert c.stdout.strip() == "feat(auth): add SSO", c.stdout
 
 
+def _run_anchor(args, env):
+    return subprocess.run([sys.executable, os.path.join(REPO, "scripts", "task_anchor.py")] + args,
+                          capture_output=True, text=True, cwd=REPO, env=env)
+
+
+def test_task_anchor_gate_and_drift(tmp_path):
+    # The anti-deviation guard: a freshly anchored task must BLOCK the done-gate (nothing verified),
+    # flag a CHANGED goal as DRIFT, and only go READY once every AC is marked with a receipt.
+    env = dict(os.environ, SIMPLICIO_ANCHOR_FILE=str(tmp_path / "anchor.json"))
+    s = _run_anchor(["set", "--item", "9", "--goal", "Add SSO login",
+                     "--ac", "Renders an SSO button", "--ac", "Redirects to the IdP"], env)
+    assert s.returncode == 0, s.stdout + s.stderr
+
+    g = _run_anchor(["gate", "--exit-code"], env)
+    assert g.returncode == 12, "expected BLOCKED exit 12, got %d:\n%s" % (g.returncode, g.stdout)
+    assert "blocked" in g.stdout.lower(), g.stdout
+
+    d = _run_anchor(["check", "--goal", "refactor the database layer", "--exit-code"], env)
+    assert d.returncode == 11, "expected DRIFT exit 11, got %d:\n%s" % (d.returncode, d.stdout)
+    assert "drift" in d.stdout.lower(), d.stdout
+
+    # marking done WITHOUT a receipt must be refused (no fake "done") and not record progress
+    nm = _run_anchor(["mark", "--id", "AC1", "--status", "done"], env)
+    assert nm.returncode == 12, nm.stdout
+    assert "blocked" in nm.stdout.lower() and "requires --evidence" in nm.stdout.lower(), nm.stdout
+    # the refused mark must NOT have advanced the gate
+    still = _run_anchor(["gate", "--exit-code"], env)
+    assert still.returncode == 12, "refused mark leaked progress:\n%s" % still.stdout
+
+    _run_anchor(["mark", "--id", "AC1", "--status", "done", "--evidence", "a.png"], env)
+    _run_anchor(["mark", "--id", "AC2", "--status", "done", "--evidence", "b.png"], env)
+    ok = _run_anchor(["gate", "--exit-code"], env)
+    assert ok.returncode == 0, "expected READY, got %d:\n%s" % (ok.returncode, ok.stdout)
+    assert "ready" in ok.stdout.lower(), ok.stdout
+
+
+def test_pr_evidence_blocks_without_evidence(tmp_path):
+    # The "PR sem evidência" fix: with --require-evidence and neither a checklist nor a print,
+    # building the PR body MUST block (exit 3) and never emit a body / claim done.
+    env = dict(os.environ, SIMPLICIO_ANCHOR_FILE=str(tmp_path / "none.json"))
+    r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "pr_evidence.py"), "build",
+                        "--require-evidence", "--anchor", str(tmp_path / "none.json"),
+                        "--shots-dir", str(tmp_path / "empty")],
+                       capture_output=True, text=True, cwd=REPO, env=env)
+    assert r.returncode == 3, "expected BLOCKED exit 3, got %d:\n%s" % (r.returncode, r.stdout)
+    assert "blocked" in r.stdout.lower(), r.stdout
+    assert "# " not in r.stdout, "leaked a PR body while blocked:\n%s" % r.stdout
+
+
+def test_pr_evidence_builds_with_checklist_and_prints(tmp_path):
+    # With an anchor + a captured print, the body MUST contain the item-by-item checklist and embed
+    # the screenshot — the two things the client said were missing.
+    anchor = str(tmp_path / "anchor.json")
+    env = dict(os.environ, SIMPLICIO_ANCHOR_FILE=anchor)
+    _run_anchor(["set", "--item", "9", "--goal", "Add SSO login",
+                 "--ac", "Renders an SSO button"], env)
+    _run_anchor(["mark", "--id", "AC1", "--status", "done", "--evidence", "login.png"], env)
+    shots = tmp_path / "shots"
+    shots.mkdir()
+    (shots / "login.png").write_bytes(b"PNG")
+    r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "pr_evidence.py"), "build",
+                        "--title", "Add SSO login", "--item", "9", "--require-evidence",
+                        "--anchor", anchor, "--shots-dir", str(shots)],
+                       capture_output=True, text=True, cwd=REPO, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "[x] **AC1**" in r.stdout, "missing item-by-item checklist:\n%s" % r.stdout
+    assert "login.png" in r.stdout, "missing embedded print:\n%s" % r.stdout
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module

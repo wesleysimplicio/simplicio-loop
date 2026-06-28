@@ -164,7 +164,11 @@ List candidates by METADATA only; normalize to the canonical schema; dedup by so
 normalized-title + fingerprint AND by existing branch/PR (idempotency). Before implementing an
 item, do the MANDATORY deep intake: read full body + ALL comments, extract acceptance criteria
 (an obvious-but-missing AC is a BLOCKER — ask once), orient the existing code (signatures-only
-reads for API surface), then write a short plan with an AC checklist + complexity. Detail:
+reads for API surface), then write a short plan with an AC checklist + complexity. **FREEZE the
+acceptance criteria as the task anchor** (`python3 scripts/task_anchor.py set --item <id> --goal
+"<verbatim>" --ac "<AC>" …`) — this is the loop's memory for SCOPE (sibling to `loop_journal`'s
+memory for ATTEMPTS): it is what every later turn re-checks so the run cannot silently narrow or
+wander off the task (the "desvio de tarefas" fix, Step 4 drift guard). Detail:
 `references/orchestration.md`.
 
 > **Understand Anything (optional).** If `.understand-anything/knowledge-graph.json` exists, use Understand Anything as the primary orientation — the graph already holds the complete code structure, relationships, and guided tours. Query it via semantic search instead of signatures-only reads.
@@ -203,8 +207,19 @@ Never mark done without green gates + evidence; a failure is NOT a blocker — i
   re-trying the same approach: switch strategy, or escalate via the human gate (Step 5) with the
   fingerprint + dead-ends. Start each turn with `loop_journal.py resume` to avoid known dead-ends.
   Delegate to `simplicio-loop` when loaded (§ Run-journal + stall detector).
+- **AC anchor + drift guard (anti-deviation).** Every turn, BEFORE acting, re-read the frozen
+  anchor and verify you are still on the SAME task: `python3 scripts/task_anchor.py check --goal
+  "<the goal you are working now>" --exit-code` (verdict `DRIFT` ⇒ exit 11 — the goal moved; STOP
+  and re-anchor explicitly with `--force`, never drift silently). As each AC is genuinely met,
+  record its receipt — `task_anchor.py mark --id ACk --status done --evidence "<file:line / cmd /
+  screenshot>"` (a `done` with no evidence is REFUSED). The anchor is the runnable form of
+  "never narrow the task": it makes the orchestrator's working memory for SCOPE durable, exactly as
+  `loop_journal` does for ATTEMPTS.
 - **4a AC gate (real DoD):** verify EVERY AC explicitly; no placeholder/stub success, no
-  `todo!()`/`panic!` in prod paths, reads from context, compiles clean on changed files.
+  `todo!()`/`panic!` in prod paths, reads from context, compiles clean on changed files. The gate
+  is mechanical: `python3 scripts/task_anchor.py gate --exit-code` (exit 12 = criteria still
+  pending) MUST pass before you declare done or open the PR — "done" requires every anchored AC
+  verified with a receipt.
 - **4b WORKS, not just compiles:** RUN it (`--help` + happy path / affected tests). Front-end
   change → `web_verify` (screenshot + trace, `references/web-evidence.md`). For moving proof of a UI
   change, `video_evidence verify --url <url>` records the **real session with Playwright** (default
@@ -234,7 +249,16 @@ Never mark done without green gates + evidence; a failure is NOT a blocker — i
 
 ## Step 6 — Deliver + close + self-audit  ·  Step 6b — Feedback loop
 Per completed item: commit (Conventional Commits, English), push, Draft PR, close in-source with a
-short evidence comment (PR link + verification). If the `pr_template` extension point is available, use it to auto-fill the PR body from the discovered PULL_REQUEST_TEMPLATE.md and the item's acceptance criteria. Otherwise, read .github/PULL_REQUEST_TEMPLATE.md directly and fill in the sections. **Verify reality, never trust self-report** — the
+short evidence comment (PR link + verification). **Assemble the PR body mechanically so it ALWAYS
+carries prints + an item-by-item AC check** — `python3 scripts/pr_evidence.py build --item <id>
+--title "<t>" --summary "<s>" --require-evidence --out .orchestrator/pr_body.md` pulls the
+item-by-item acceptance-criteria checklist from the task anchor (Step 2b/4) AND embeds the
+screenshots/recordings captured by `web_verify`/`video_evidence` under `.orchestrator/tee/web`; with
+`--require-evidence` it EXITS 3 (blocked) rather than open a PR with no prints and no checklist (the
+"PR sem evidência" fix). It honors the discovered `.github/PULL_REQUEST_TEMPLATE.md` (the
+`pr_template` extension point) — appending the checklist + prints under the maintainer's sections —
+and `pr_evidence.py comment --item <id> --pr <N>` emits the matching in-source evidence comment.
+**Verify reality, never trust self-report** — the
 final step re-runs the merged build/test + smoke + a source re-query; the run's status = that
 measured state. Then self-audit (score, fix P0/P1, converge). Pursue the feedback loop until
 merge-ready: CI fail → fix root cause; review comments → adjust; branch behind main → additive

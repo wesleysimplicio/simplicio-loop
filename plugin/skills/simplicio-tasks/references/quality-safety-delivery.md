@@ -24,6 +24,16 @@ DoD per item:
 ```
 Done only when fully green. "N/A" on a real AC → mark `partial`, note what's missing.
 
+**Anchor the ACs — don't re-derive them (anti-deviation).** The acceptance criteria are frozen
+ONCE at intake as the task anchor (`task_anchor.py set`, Step 2b) and re-checked every turn so the
+run cannot silently narrow or wander off the task. Per turn: `task_anchor.py check --goal "<goal
+worked now>" --exit-code` (verdict `DRIFT`/exit 11 ⇒ the goal moved — STOP, re-anchor with `--force`
+only if the task genuinely changed). As each AC is met: `task_anchor.py mark --id ACk --status done
+--evidence "<file:line / command output / screenshot path>"` (a `done` with no receipt is REFUSED).
+The DoD gate is then mechanical: `task_anchor.py gate --exit-code` (exit 12 = criteria still
+pending) MUST pass before "done" or PR-open. This is the loop's durable working memory for SCOPE,
+the sibling of `loop_journal`'s working memory for ATTEMPTS.
+
 ### 4b — WORKS, not just compiles (run-verification, mandatory)
 "Compiles" ≠ "done". Before done it must RUN:
 - New/changed command → invoke for real: `--help` returns 0 AND a minimal happy-path produces the
@@ -90,6 +100,19 @@ repo uses them, plain when it doesn't; English), and fill the PR body from the p
 sections + label vocabulary. Then push, Draft PR, close the item in its source with a short evidence
 comment (PR link + verification summary). When the profile is `source=default` (no clear repo
 history), fall back to Conventional Commits and say so.
+
+**Every PR carries prints + an item-by-item AC check (the `pr_evidence` worker).** Do NOT hand-write
+the PR body and risk forgetting the proof — assemble it mechanically:
+`python3 scripts/pr_evidence.py build --item <id> --title "<t>" --summary "<s>" --require-evidence
+--out .orchestrator/pr_body.md`. It pulls the item-by-item checklist from the task anchor (one line
+per AC, with its status + the receipt that verified it) AND embeds every screenshot/recording
+captured by `web_verify`/`video_evidence` under `.orchestrator/tee/web`. With `--require-evidence`
+it FAILS CLOSED — exit 3 (`blocked`), never a body — when there is neither a checklist nor a single
+print, so an evidence-less PR cannot be opened by accident. It honors a discovered
+`.github/PULL_REQUEST_TEMPLATE.md` (keeps the maintainer's sections, appends the checklist + prints
+below). `pr_evidence.py comment --item <id> --pr <N>` emits the matching in-source evidence comment
+(PR link + per-AC check + a count of attached prints). Write surrounding comment PROSE in the user's
+language; keep paths/identifiers in English.
 
 **Verify in the workflow, never trust self-report.** When a fan-out drove the run, its FINAL step
 re-verifies reality: the merged build/test, the `smoke` gate, and a source re-query confirming

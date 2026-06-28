@@ -45,6 +45,7 @@ COUNT_RES = [
 # worker/hook scripts whose `selftest` proves them; others just need to be invokable
 SELFTEST_SCRIPTS = ["scripts/loop_journal.py", "scripts/billing_aggregator.py",
                     "scripts/savings_harness.py", "scripts/repo_conventions.py",
+                    "scripts/task_anchor.py", "scripts/pr_evidence.py",
                     "hooks/action_gate.py"]
 
 

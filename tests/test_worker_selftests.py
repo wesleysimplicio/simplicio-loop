@@ -15,6 +15,8 @@ SELFTESTS = [
     ("scripts/loop_journal.py", "selftest"),
     ("scripts/billing_aggregator.py", "selftest"),
     ("scripts/savings_harness.py", "selftest"),
+    ("scripts/task_anchor.py", "selftest"),
+    ("scripts/pr_evidence.py", "selftest"),
 ]
 
 
@@ -40,6 +42,18 @@ def test_savings_harness_selftest():
     assert r.returncode == 0, "savings_harness selftest failed:\n%s%s" % (r.stdout, r.stderr)
     # savings_harness prints "selftest passed" / "OK"; accept either a 0 exit with no FAIL
     assert "FAIL" not in r.stdout.upper() or "PASS" in r.stdout.upper(), r.stdout
+
+
+def test_task_anchor_selftest():
+    r = _run("scripts/task_anchor.py", "selftest")
+    assert r.returncode == 0, "task_anchor selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_pr_evidence_selftest():
+    r = _run("scripts/pr_evidence.py", "selftest")
+    assert r.returncode == 0, "pr_evidence selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
 
 
 if __name__ == "__main__":

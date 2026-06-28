@@ -9,7 +9,7 @@ runtimes.
 | Skill | Role |
 |---|---|
 | `simplicio-tasks` | the orchestrator loop (discover → implement → verify → merge → close → watch 24/7) |
-| `simplicio-loop` | hardened Ralph loop — re-feed the goal until an evidence-gated `<promise>` or a cap; durable run-journal (attempt memory) + stall detector (`scripts/loop_journal.py`) so it switches strategy instead of oscillating |
+| `simplicio-loop` | hardened Ralph loop — re-feed the goal until an evidence-gated `<promise>` or a cap; durable run-journal (attempt memory) + stall detector (`scripts/loop_journal.py`) so it switches strategy instead of oscillating, plus a **task anchor** (`scripts/task_anchor.py`) — durable memory for SCOPE that freezes the acceptance criteria and blocks drift / "done" while any AC is unverified |
 | `simplicio-orient` | terminal-first token economy — output-reduction catalog, tee-cache, signatures-read |
 | `simplicio-review` | thermos-style parallel adversarial review on distinct rubrics → deduped verdict |
 | `simplicio-compress` | caveman-style prose + memory compression, byte-preserving, `transform_guard` |
@@ -42,6 +42,19 @@ captioned slideshow of the `web_verify` screenshots
 `scripts/video_evidence.py`; contract:
 `.claude/skills/simplicio-tasks/references/video-evidence.md`. A missing toolchain BLOCKS, never a
 fake pass.
+
+## PR evidence (prints + item-by-item AC check on every PR)
+
+The PR body is **assembled mechanically**, never hand-written, so it always shows the proof. Worker
+`scripts/pr_evidence.py build --require-evidence` pulls the **item-by-item acceptance-criteria
+checklist** from the task anchor (`scripts/task_anchor.py`, frozen at intake) AND embeds the
+screenshots/recordings captured by `web_verify`/`video_evidence` under `.orchestrator/tee/web`. With
+`--require-evidence` it FAILS CLOSED (exit 3, `blocked`) rather than open a PR that has neither a
+checklist nor a print — the executable answer to "the PR opened without prints / without an
+item-by-item check of the task". It honors a discovered `.github/PULL_REQUEST_TEMPLATE.md` (keeps the
+maintainer's sections, appends checklist + prints below). The **task anchor** is the same worker that
+stops task deviation: every turn re-checks the frozen goal (`task_anchor.py check`) and the DoD gate
+(`task_anchor.py gate`) blocks "done" while any AC is unverified.
 
 ## Tests & local checks (no paid CI)
 
