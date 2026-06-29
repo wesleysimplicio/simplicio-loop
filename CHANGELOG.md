@@ -5,6 +5,36 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.12.0] — 2026-06-29
+
+### Added
+- **Task anchor — durable working memory for SCOPE (`scripts/task_anchor.py`), the anti-deviation
+  guard.** The loop already remembered its ATTEMPTS (`loop_journal.py`, the stall detector); it now
+  also remembers what the TASK ACTUALLY IS. The anchor freezes the acceptance criteria once at
+  intake and makes three things deterministic and model-free: `check` flags goal-drift each turn
+  (exit 11 when the goal worked ≠ the frozen goal), `mark` records a per-AC receipt (a `done` with
+  no evidence is refused), and `gate` (exit 12) blocks "done"/PR-open while any criterion is still
+  unverified. Closes the "desvio de tarefas" complaint: the run can no longer silently narrow or
+  wander off the task.
+- **`pr_evidence` worker (`scripts/pr_evidence.py`) — every PR carries prints + an item-by-item AC
+  check.** Assembles the PR body mechanically (never hand-written): the item-by-item
+  acceptance-criteria checklist from the task anchor PLUS the screenshots/recordings captured by
+  `web_verify`/`video_evidence` under `.orchestrator/tee/web`. With `--require-evidence` it FAILS
+  CLOSED (exit 3) rather than open a PR that has neither a checklist nor a print, and it honors a
+  discovered `.github/PULL_REQUEST_TEMPLATE.md`. Closes the "PR opened without prints / without an
+  item-by-item check of the task" complaint.
+
+### Changed
+- **The anti-drift gate is now ENFORCED, not just documented.** `hooks/loop_stop.py` and
+  `hooks/loop_capture.py` read the task anchor directly (self-contained — no dependency on
+  `scripts/`, which the lean plugin does not ship) and reject a completion `<promise>` while any
+  acceptance criterion is still unverified, exactly as they already reject a promise with no
+  in-turn evidence. Fail-open: a missing/unreadable/empty anchor never blocks, and any rejection
+  stays bounded by `max_iterations` + the budget kill-switch. The re-feed header now names the open
+  criteria so the next turn knows what blocks "done".
+- Wired both workers into the skills (`simplicio-tasks` Steps 2b/4/6, `simplicio-loop` triage +
+  evidence-gated promise) and the `delivery_gate` / `pr_template` extension points.
+
 ## [3.11.0] — 2026-06-26
 
 ### Removed

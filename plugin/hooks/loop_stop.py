@@ -21,6 +21,7 @@ LOOP_DIR = os.path.join(".orchestrator", "loop")
 SCRATCHPAD = os.path.join(LOOP_DIR, "scratchpad.md")
 DONE_FLAG = os.path.join(LOOP_DIR, "done")
 LAST_RESP = os.path.join(LOOP_DIR, "last_response.txt")
+ANCHOR = os.path.join(LOOP_DIR, "anchor.json")
 STOP_SIGNAL = os.path.join(".orchestrator", "STOP")
 BUDGET = os.path.join(".orchestrator", "loop-budget.json")
 GATE_LOCK = os.path.join(LOOP_DIR, "gate.lock")
@@ -127,6 +128,27 @@ def gate_running():
         return False
 
 
+def anchor_pending():
+    """Return the unverified acceptance-criteria ids from the task anchor, or [].
+
+    The mechanical anti-drift gate: a `<promise>` must not end the loop while the frozen task anchor
+    still has criteria that are not `done`. Read the anchor JSON DIRECTLY (no dependency on
+    `scripts/task_anchor.py`, which the lean marketplace plugin does not ship — the hook must stay
+    self-contained). FAIL-OPEN: a missing / unreadable / empty anchor, or one with no criteria,
+    returns [] so the gate never blocks — a buggy anchor must never trap the loop, and the rejection
+    it does cause is still bounded by `max_iterations` + the budget. Only a cleanly-parsed anchor
+    with ≥1 criterion that is not `done` reports pending.
+    """
+    try:
+        with open(ANCHOR, encoding="utf-8") as f:
+            data = json.load(f)
+        crit = data.get("criteria") or []
+        return [c.get("id") for c in crit
+                if isinstance(c, dict) and c.get("status") != "done"]
+    except Exception:
+        return []  # fail-open: anchor unreadable ≠ trap
+
+
 def budget_halted():
     try:
         if not os.path.exists(BUDGET):
@@ -189,9 +211,12 @@ def main():
             m = PROMISE_RE.search(resp)
             if m and m.group(1).strip() == promise.strip():
                 has_evidence = bool(EVIDENCE_RE.search(resp))
-                if (not evidence_required) or has_evidence:
+                # The promise is honored only with evidence AND no acceptance criterion still open
+                # in the task anchor — the mechanical anti-drift gate. Pending ACs ⇒ ignore the
+                # promise and keep looping (still bounded by max_iter), never a false "done".
+                if ((not evidence_required) or has_evidence) and not anchor_pending():
                     cleanup_and_stop()  # (3) promise fulfilled → stop
-                # promise without evidence → ignore, keep looping
+                # promise without evidence, or anchor still has open ACs → ignore, keep looping
         # (3') Cursor capture may have raised the flag.
         if os.path.exists(DONE_FLAG):
             cleanup_and_stop()
@@ -219,7 +244,16 @@ def main():
             if promise
             else ""
         )
-        header = "[simplicio-loop iteration %d.%s]" % (nxt, promise_hint)
+        # Surface the still-open acceptance criteria so the next turn knows exactly what blocks
+        # "done" — the anchor gate is why a promise would be ignored, so name the gap.
+        pending = anchor_pending()
+        ac_hint = (
+            " Open acceptance criteria (verify each before the promise): %s."
+            % ", ".join(p for p in pending if p)
+            if pending
+            else ""
+        )
+        header = "[simplicio-loop iteration %d.%s%s]" % (nxt, promise_hint, ac_hint)
         emit_refeed(header + "\n\n" + (body or ""))
     except Exception:
         allow_stop()  # fail-open, always

@@ -18,12 +18,29 @@ LOOP_DIR = os.path.join(".orchestrator", "loop")
 SCRATCHPAD = os.path.join(LOOP_DIR, "scratchpad.md")
 DONE_FLAG = os.path.join(LOOP_DIR, "done")
 LAST_RESP = os.path.join(LOOP_DIR, "last_response.txt")
+ANCHOR = os.path.join(LOOP_DIR, "anchor.json")
 
 PROMISE_RE = re.compile(r"<promise>\s*(.*?)\s*</promise>", re.IGNORECASE | re.DOTALL)
 EVIDENCE_RE = re.compile(
     r"(https?://\S+/pull/\d+)|(\b(pass|passed|passing|green|ok)\b)|([\w./-]+:\d+)|([✓✅])",
     re.IGNORECASE,
 )
+
+
+def anchor_pending():
+    """Unverified acceptance-criteria ids from the task anchor, or [] (fail-open).
+
+    Mirror of loop_stop.anchor_pending: the done flag is raised only when every anchored AC is
+    `done`. Reads the anchor JSON directly (no dependency on scripts/, which the lean plugin omits);
+    a missing/unreadable/empty anchor returns [] so it never blocks completion.
+    """
+    try:
+        with open(ANCHOR, encoding="utf-8") as f:
+            data = json.load(f)
+        return [c.get("id") for c in (data.get("criteria") or [])
+                if isinstance(c, dict) and c.get("status") != "done"]
+    except Exception:
+        return []
 
 
 def main():
@@ -53,7 +70,9 @@ def main():
         evidence_required = "evidence_required: false" not in content.lower()
         m = PROMISE_RE.search(resp)
         if m and m.group(1).strip() == promise:
-            if (not evidence_required) or EVIDENCE_RE.search(resp):
+            # Evidence-gated AND anchor-gated: raise `done` only with in-turn evidence and no
+            # acceptance criterion still open in the task anchor (mechanical anti-drift).
+            if ((not evidence_required) or EVIDENCE_RE.search(resp)) and not anchor_pending():
                 try:
                     open(DONE_FLAG, "w").close()  # raise the flag; stop hook acts
                 except OSError:

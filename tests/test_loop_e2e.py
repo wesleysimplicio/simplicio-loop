@@ -5,6 +5,8 @@ the loop stops on **evidence**, not on a bare promise, and not by accident. We d
 
   • promise + evidence            → STOP (state cleaned up)        ← the success exit
   • promise WITHOUT evidence       → CONTINUE (re-feed, ignored)   ← the anti-false-done guard
+  • promise + evidence, AC pending → CONTINUE (re-feed, ignored)   ← the anti-DRIFT anchor gate
+  • promise + evidence, ACs done   → STOP                          ← anchor satisfied
   • no promise, under cap          → CONTINUE (iteration bumped)
   • iteration >= max_iterations    → STOP by cap                   ← distinct from the evidence exit
   • .orchestrator/STOP signal      → STOP immediately
@@ -77,6 +79,40 @@ def test_bare_promise_without_evidence_continues(tmp_path):
         "a bare promise must be ignored, not honored:\n%s" % r.stdout
     assert os.path.exists(_scratchpad(root)), "loop wrongly stopped on a bare promise"
     assert _iteration(root) == 2
+
+
+def _write_anchor(root, criteria):
+    loop = os.path.join(root, ".orchestrator", "loop")
+    os.makedirs(loop, exist_ok=True)
+    with open(os.path.join(loop, "anchor.json"), "w", encoding="utf-8") as f:
+        json.dump({"item": "1", "goal": "g", "goal_fp": "x", "criteria": criteria}, f)
+
+
+def test_promise_with_evidence_but_pending_anchor_continues(tmp_path):
+    # The mechanical anti-drift gate: even WITH evidence, a promise must NOT stop the loop while the
+    # task anchor still has an unverified acceptance criterion — it re-feeds instead, naming the gap.
+    root = str(tmp_path)
+    _arm(root, iteration=1, max_iter=5)
+    _write_anchor(root, [{"id": "AC1", "status": "done"}, {"id": "AC2", "status": "pending"}])
+    r = _tick(root, "Looks done. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
+                    "https://github.com/o/r/pull/9")
+    assert r.returncode == 0
+    assert "followup_message" in r.stdout or "block" in r.stdout, \
+        "a promise with an open AC must be ignored, not honored:\n%s" % r.stdout
+    assert os.path.exists(_scratchpad(root)), "loop wrongly stopped with an open AC"
+    assert "AC2" in r.stdout, "re-feed should name the open acceptance criterion:\n%s" % r.stdout
+
+
+def test_promise_with_evidence_all_acs_done_stops(tmp_path):
+    # Once every anchored AC is verified, the evidence-backed promise stops the loop as before.
+    root = str(tmp_path)
+    _arm(root, iteration=1, max_iter=5)
+    _write_anchor(root, [{"id": "AC1", "status": "done"}, {"id": "AC2", "status": "done"}])
+    r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
+                    "https://github.com/o/r/pull/9")
+    assert r.returncode == 0
+    assert r.stdout.strip() == "", "expected STOP (every AC verified), got: %s" % r.stdout
+    assert not os.path.exists(_scratchpad(root)), "state should be cleaned up on a verified stop"
 
 
 def test_no_promise_continues_and_bumps_iteration(tmp_path):
