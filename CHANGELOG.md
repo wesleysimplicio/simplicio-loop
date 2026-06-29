@@ -5,6 +5,15 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.14.1] — 2026-06-29
+
+### Changed
+- **Declared the operator version floors required by the loop.** `simplicio-loop` now requires
+  `simplicio-mapper>=0.11.0` and `simplicio-cli>=0.7.1` in `pyproject.toml`, matching the current
+  first-party operator releases that the loop already expects for the async mapper survey and the
+  current dev-cli/runtime contract. This makes fresh installs deterministic even before the
+  preflight auto-update step runs.
+
 ## [3.14.0] — 2026-06-29
 
 ### Changed
