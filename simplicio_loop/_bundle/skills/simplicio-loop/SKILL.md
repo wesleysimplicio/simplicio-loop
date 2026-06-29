@@ -49,7 +49,7 @@ hard dependencies of the `simplicio-loop` package (`pip install simplicio-loop` 
 
 | Operator | CLI (binary) | Binds | Role in the loop |
 |---|---|---|---|
-| **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
+| **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). Two-tier (v0.9+): `macro` is an instant shallow skeleton (no content reads), `scan` returns that skeleton now and runs the deep index in the background, `status` reports the deep-pass phase. This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
 | **simplicio-dev-cli** | `simplicio-dev-cli` | `execute` / `deterministic_edit` / `validate` / `diagnostics` | **Operate** — applies a DECIDED change through its 6-layer contract (mapper context → precedent → prompt → diff → test → verify, ≤3 retries). The CLI edits and verifies; the AI does not hand-write the diff. |
 
 **Preflight (MANDATORY, BLOCKING).** Before iteration 1, confirm both operators are on PATH:
@@ -64,10 +64,15 @@ proof. If either operator is missing, do NOT fall back to LLM survey/editing —
 `simplicio-loop: BLOCKED — missing operator <name>; run: pip install simplicio-loop` (the install
 re-pulls `simplicio-mapper` + `simplicio-cli`). This requirement is scoped to the loop drive.
 
-**Survey step (each loop start + on any structural change).** Run
-`simplicio-mapper index . --json` (add `--watch` for long runs) to (re)build `.simplicio/`. Read
-the survey artifacts — never re-scan the tree by hand when a fresh map exists. For a multi-repo
-survey, run the mapper per repo root and aggregate the JSON.
+**Survey step (each loop start + on any structural change).** Prefer the two-tier flow (v0.9+):
+`simplicio-mapper scan . --json` returns an instant `macro` skeleton AND kicks the deep index off in
+the background — the loop starts working immediately instead of blocking on a full crawl. Poll
+`simplicio-mapper status . --json` (`phase`: `deep_running` → terminal) before relying on the deep
+artifacts; pass `--await [--timeout <s>]` to block until terminal, or `scan --sync` (forced when
+`CI=true`) for the old single-shot behavior. `simplicio-mapper index . --json` (add `--watch` for
+long runs) remains the synchronous full (re)build of `.simplicio/`. Read the survey artifacts —
+never re-scan the tree by hand when a fresh map exists. For a multi-repo survey, run the mapper per
+repo root and aggregate the JSON.
 
 **Operate step (every turn that mutates code).** Once the AC and the change are DECIDED, delegate
 the mutation to the operator, one decided change at a time:
@@ -85,8 +90,8 @@ merge/close gates); the operators do survey + apply:
 | Phase | Operator | Command |
 |---|---|---|
 | Preflight (before iteration 1) | both | `simplicio-mapper --version` · `simplicio-dev-cli --help` → BLOCK if missing |
-| Survey (loop start; multi-repo: per root) | mapper | `simplicio-mapper index . --json` → `.simplicio/*.json` |
-| Loop contract step 2 — Triage (every turn) | mapper | re-read `.simplicio/*.json`; `simplicio-mapper index . --json` to refresh if the tree changed |
+| Survey (loop start; multi-repo: per root) | mapper | `simplicio-mapper scan . --json` (instant macro + deep index in background; `--sync`/`--await` to block) → `.simplicio/*.json`. `index . --json` for a forced synchronous build |
+| Loop contract step 2 — Triage (every turn) | mapper | re-read `.simplicio/*.json`; `simplicio-mapper macro . --json` for an instant skeleton, or `scan`/`status` to refresh if the tree changed |
 | Loop contract step 3 — Work the goal | dev-cli | `simplicio-dev-cli task "<decided change>" --target <file> [--json]` |
 | Evidence-gated `<promise>` / `simplicio-tasks` Step 4b | dev-cli | the operator's passing test+verify pass = in-turn evidence |
 
@@ -151,7 +156,8 @@ detector below. It is the difference between a loop that converges and one that 
    `.orchestrator/loop-budget.json` $ kill-switch (see `simplicio-tasks` Step 1a/7).
 2. **Triage the live state FIRST (mandatory).** Before any action each turn, re-read the ground
    truth — the **`simplicio-mapper` survey** (`.simplicio/*.json`; refresh it with
-   `simplicio-mapper index . --json` if the tree changed), `git status`/`git diff`, the working
+   `simplicio-mapper macro . --json` for an instant skeleton or `scan . --json` if the tree changed),
+   `git status`/`git diff`, the working
    tree, the scratchpad notes, AND the source of record (re-query the open issues/PRs, existing
    branches, the `.orchestrator/loop/done` flag). **Also read the attempt memory FIRST**:
    `python3 scripts/loop_journal.py resume` — it lists what was already tried and the dead-end

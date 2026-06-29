@@ -38,7 +38,7 @@ file — no LLM invocation, no re-scan. The full analysis is re-run only intenti
 
 | Extension point | Default (`simplicio-mapper`) | Understand Anything adapter |
 |---|---|---|
-| `orient` | `simplicio-mapper index . --json` → `.simplicio/*.json` | Read `.understand-anything/knowledge-graph.json` + `jq` queries |
+| `orient` | `simplicio-mapper scan . --json` (or `index . --json` synchronous) → `.simplicio/*.json` | Read `.understand-anything/knowledge-graph.json` + `jq` queries |
 | `recall` | `.simplicio/precedent-index.json` (past resolutions) | Guided tours + semantic search over the graph + prior `/understand-diff` snapshots |
 
 ### When to use which

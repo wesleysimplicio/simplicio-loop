@@ -5,6 +5,17 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.13.0] — 2026-06-29
+
+### Changed
+- **Wired the `simplicio-mapper` two-tier async survey (v0.9+) into the loop.** The `orient` /
+  survey step now prefers `simplicio-mapper scan . --json` (instant `macro` skeleton + deep index
+  in the background) over the blocking `index` crawl, polls `simplicio-mapper status . --json` for
+  the deep-pass phase, and uses `macro . --json` for instant triage. `index . --json` is retained
+  as the forced-synchronous build (`scan --sync`/`--await` for blocking waits). Updated
+  `simplicio-loop/SKILL.md`, `simplicio-tasks/references/extension-points.md`, and the
+  understand-anything adapter; mirrored into `plugin/` and `_bundle/`.
+
 ## [3.12.0] — 2026-06-29
 
 ### Added
