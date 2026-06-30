@@ -35,6 +35,8 @@ STOP_SIGNAL = os.path.join(".orchestrator", "STOP")
 BUDGET = os.path.join(".orchestrator", "loop-budget.json")
 GATE_LOCK = os.path.join(LOOP_DIR, "gate.lock")
 GATE_TTL_SEC = 1800  # 30 min — a stale lock must NEVER permanently trap the loop (fail-open)
+WATCHER_STATE = os.path.join(LOOP_DIR, "watcher_state.json")
+SPINDLE_STATE = os.path.join(LOOP_DIR, "spindle.json")
 
 EVIDENCE_RE = re.compile(
     r"(https?://\S+/pull/\d+)"          # a PR URL
@@ -52,7 +54,7 @@ def allow_stop():
 
 
 def cleanup_and_stop():
-    for p in (SCRATCHPAD, DONE_FLAG, LAST_RESP):
+    for p in (SCRATCHPAD, DONE_FLAG, LAST_RESP, WATCHER_STATE):
         try:
             if os.path.exists(p):
                 os.remove(p)
@@ -284,6 +286,65 @@ def budget_halted():
         return False  # fail-open: budget unreadable ≠ trap
 
 
+def watcher_verify():
+    """Run pre-promise watcher verification per Asolaria N-Nest Corrective Gate pattern.
+
+    Reads `.orchestrator/loop/watcher_state.json` written by the watcher process (a separate
+    agent/PID that independently re-executes the work and compares results against the agent's
+    reported output). Gate: `reported == watcher.recomputed_truth`.
+
+    Returns (passed: bool, tag: str) where tag is "MEASURED" (verified) or "UNVERIFIED" (not
+    verified or mismatch). If no watcher state exists → UNVERIFIED (gate fails). Fail-open:
+    a corrupt or missing watcher state NEVER traps the loop — it simply gates the promise.
+    """
+    try:
+        if not os.path.exists(WATCHER_STATE):
+            return False, "UNVERIFIED"
+        with open(WATCHER_STATE, encoding="utf-8") as f:
+            state = json.load(f)
+        match = bool(state.get("match", False))
+        status = str(state.get("status", "UNVERIFIED"))
+        if match and status == "MEASURED":
+            return True, "MEASURED"
+        return False, "UNVERIFIED"
+    except Exception:
+        return False, "UNVERIFIED"
+
+
+def spindle_latched():
+    """True when a spindle handoff exists with an unreleased latch.
+
+    A latched handoff means agent A handed off to agent B and is waiting for B to
+    confirm receipt. When latched, the loop must NOT re-feed the goal — the handoff
+    target will pick up. Fail-open: unreadable/missing file → False (never trap).
+    """
+    try:
+        if not os.path.exists(SPINDLE_STATE):
+            return False
+        with open(SPINDLE_STATE, encoding="utf-8") as f:
+            s = json.load(f)
+        return bool(s.get("latch", False))
+    except Exception:
+        return False
+
+
+def spindle_active():
+    """True when a spindle handoff exists and IS confirmed (current agent is processing).
+
+    An active (confirmed) handoff means the receiving agent confirmed receipt and is
+    working. The loop can continue normally for this agent. Fail-open: unreadable/missing
+    file → False (never trap).
+    """
+    try:
+        if not os.path.exists(SPINDLE_STATE):
+            return False
+        with open(SPINDLE_STATE, encoding="utf-8") as f:
+            s = json.load(f)
+        return bool(s.get("current_agent")) and not bool(s.get("latch", False))
+    except Exception:
+        return False
+
+
 def emit_refeed(followup):
     """Emit the re-feed in BOTH schemas; each runtime reads its own key."""
     out = {
@@ -333,17 +394,24 @@ def main():
         stdin = read_stdin_json()
         resp = last_assistant_text(stdin)
 
+        # Pre-promise: watcher-gate — independent verification before any promise is honored.
+        # Per Asolaria N-Nest Corrective Gate: each agent PID has a watcher PID that
+        # independently re-computes the truth. Gate: reported == watcher.recomputed_truth.
+        watcher_pass, watcher_tag = watcher_verify()
+
         # Completion detection (capture folded in for single-hook runtimes like Claude).
         if promise and resp:
             m = PROMISE_RE.search(resp)
             if m and m.group(1).strip() == promise.strip():
                 has_evidence = bool(EVIDENCE_RE.search(resp))
-                # The promise is honored only with evidence AND no acceptance criterion still open
-                # in the task anchor — the mechanical anti-drift gate. Pending ACs ⇒ ignore the
-                # promise and keep looping (still bounded by max_iter), never a false "done".
-                if ((not evidence_required) or has_evidence) and not anchor_pending():
+                # The promise is honored only with evidence AND watcher verification AND no
+                # acceptance criterion still open in the task anchor. The watcher-gate ensures
+                # the agent's result was independently re-executed and matched before the
+                # promise is accepted — corrective gate per Asolaria.
+                if ((not evidence_required) or has_evidence) and watcher_pass and not anchor_pending():
                     cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
-                # promise without evidence, or anchor still has open ACs → ignore, keep looping
+                # promise without evidence, or watcher disagrees, or anchor still has open ACs
+                # → ignore, keep looping
         # (3') Cursor capture may have raised the flag.
         if os.path.exists(DONE_FLAG):
             cleanup_and_stop()
@@ -355,6 +423,17 @@ def main():
         # case: a different agent must be able to pick this up cold.
         if budget_halted():
             write_handoff("budget halted", meta, body)
+            cleanup_and_stop()
+        # (5b) Spindle handoff — latched handoff overrides re-feed.
+        if spindle_latched():
+            next_agent = "?"
+            try:
+                with open(SPINDLE_STATE, encoding="utf-8") as _f:
+                    _s = json.load(_f)
+                    next_agent = _s.get("next_agent", "?")
+            except Exception:
+                pass
+            write_handoff("spindle handoff (latched — waiting for '%s')" % next_agent, meta, body)
             cleanup_and_stop()
         # (6) Continue: bump iteration in place, re-feed the goal body.
         nxt = iteration + 1
@@ -385,7 +464,7 @@ def main():
             if pending
             else ""
         )
-        header = "[simplicio-loop iteration %d.%s%s]" % (nxt, promise_hint, ac_hint)
+        header = "[simplicio-loop iteration %d.%s%s %s]" % (nxt, promise_hint, ac_hint, watcher_tag)
         emit_refeed(header + "\n\n" + (body or ""))
     except Exception:
         allow_stop()  # fail-open, always
