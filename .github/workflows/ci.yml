@@ -1,0 +1,23 @@
+# simplicio-loop — CI gate (claims-audit + worker selftests/smoke).
+# Runs scripts/check.py on every push/PR to main so a broken claim or a regressed worker can't
+# land silently — the gate already exists locally (`python3 scripts/check.py`) but nothing ran
+# it automatically before this workflow.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: scripts/check.py (claims-audit + worker selftests/smoke)
+        run: python3 scripts/check.py

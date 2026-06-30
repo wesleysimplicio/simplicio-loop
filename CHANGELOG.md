@@ -5,6 +5,11 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+### Added
+- `.github/workflows/ci.yml` — runs `python3 scripts/check.py` (claims-audit + worker
+  selftests/smoke) on every push/PR to `main`. The gate already existed locally; nothing ran it
+  automatically before this — flagged as the highest-confidence finding of an ecosystem audit.
+
 ## [3.18.1] — 2026-06-30
 
 ### Fixed
