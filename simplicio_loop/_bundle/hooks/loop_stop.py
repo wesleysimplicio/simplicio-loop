@@ -21,6 +21,7 @@ the dead-end attempts. A successful (promise-fulfilled) stop needs no handoff.
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -286,6 +287,63 @@ def budget_halted():
         return False  # fail-open: budget unreadable ≠ trap
 
 
+def _discover_simplicio_cli():
+    """Probe for simplicio CLI in priority order. Returns (binary, sub) or (None, None).
+    Silent-fail: any probe error returns (None, None) — never blocks.
+    """
+    candidates = [
+        ("simplicio", "claims"),
+        ("simplicio-py", "claims"),
+        ("python3", ["-m", "simplicio.cli", "claims"]),
+    ]
+    for binary, sub in candidates:
+        try:
+            args = [binary] + (sub if isinstance(sub, list) else [sub, "--help"])
+            subprocess.run(args, capture_output=True, timeout=5)
+            return binary, sub
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return None, None
+
+
+def _call_simplicio_claims():
+    """Run ``simplicio claims check`` silently. Fail-open."""
+    binary, _ = _discover_simplicio_cli()
+    if not binary:
+        return
+    try:
+        subprocess.run(
+            [binary, "claims", "check"],
+            capture_output=True, timeout=15,
+        )
+    except Exception:
+        pass
+
+
+def _call_simplicio_nest():
+    """Run ``simplicio nest verify`` silently. Fail-open."""
+    candidates = [
+        ("simplicio", "nest"),
+        ("simplicio-py", "nest"),
+        ("python3", ["-m", "simplicio.cli", "nest"]),
+    ]
+    for binary, sub in candidates:
+        try:
+            args = [binary] + (sub if isinstance(sub, list) else [sub, "--help"])
+            subprocess.run(args, capture_output=True, timeout=5)
+            nest_binary = binary
+            try:
+                subprocess.run(
+                    [nest_binary, "nest", "verify"],
+                    capture_output=True, timeout=15,
+                )
+            except Exception:
+                pass
+            return
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+
+
 def watcher_verify():
     """Run pre-promise watcher verification per Asolaria N-Nest Corrective Gate pattern.
 
@@ -365,6 +423,13 @@ def main():
                     meta, body = parse_frontmatter(f.read())
             except OSError:
                 meta, body = None, None
+
+        # Fire-and-forget simplicio CLI callout: verify claims and nest tree.
+        # Disabled when no scratchpad exists (no active loop). Silent failure
+        # if the CLI is not installed — the loop proceeds either way.
+        if os.path.exists(SCRATCHPAD):
+            _call_simplicio_claims()
+            _call_simplicio_nest()
 
         # Explicit STOP signal beats everything — but still hand off if there was live state.
         if os.path.exists(STOP_SIGNAL):
