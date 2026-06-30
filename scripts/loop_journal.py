@@ -17,25 +17,34 @@ State: `.orchestrator/loop/journal.jsonl` — one append-only record per attempt
      "validator"?, "decision"?, "retry_count"?, "blocked_reason"?, "next_action"?}
 
 Verbs:
-  record      Append one attempt. Pass --gate pass|fail|blocked and (on fail) the gate output via
-              --gate-output FILE or stdin; the failure FINGERPRINT is computed deterministically
-              (line-numbers / paths / hex / timestamps normalized away) so the SAME failure hashes
-              the SAME across turns. Optional lineage flags (`--execution-state`, `--stage-id`,
-              `--source-artifact`, `--chunk-id`, `--validator`, `--decision`, `--retry-count`,
-              `--blocked-reason`, `--next-action`) make extraction / validation / retry flow
-              explicit without losing append-only history.
-  fingerprint Print the stable fingerprint of a failure text (FILE or stdin). Standalone helper.
-  stall       Read the journal → verdict PROGRESS | STALLED. STALLED when the last K consecutive
-              attempts all failed with the SAME fingerprint (default K=3). Prints the recommended
-              action (switch-strategy | escalate) and the dead-end actions to avoid. Exit 10 when
-              stalled (for `if:` gating), 0 otherwise — unless --exit-code is omitted (always 0).
-  resume      The anti-oscillation read: distinct actions already tried + their outcomes + the
-              current stall count + the live error fingerprint. Print THIS at the top of each turn
-              so the loop never retries a known dead-end.
-  status      Compact tail of the journal (last N records).
-  since       Incremental triage: the delta (git diff --stat + working tree) since the last
-              recorded turn's commit — so a turn reads only what changed, not a full re-scan.
-  selftest    Prove the fingerprint + stall logic deterministically — no files.
+  |  record      Append one attempt. Pass --gate pass|fail|blocked and (on fail) the gate output via
+                --gate-output FILE or stdin; the failure FINGERPRINT is computed deterministically
+                (line-numbers / paths / hex / timestamps normalized away) so the SAME failure hashes
+                the SAME across turns. Optional lineage flags (`--execution-state`, `--stage-id`,
+                `--source-artifact`, `--chunk-id`, `--validator`, `--decision`, `--retry-count`,
+                `--blocked-reason`, `--next-action`) make extraction / validation / retry flow
+                explicit without losing append-only history. Pass `--bh-address R.0` to tag this
+                attempt with a **Brown-Hilbert port.port.port** delegation tree address so the
+                `delegation` command can reconstruct the agent hierarchy.
+    fingerprint Print the stable fingerprint of a failure text (FILE or stdin). Standalone helper.
+    stall       Read the journal → verdict PROGRESS | STALLED. STALLED when the last K consecutive
+                attempts all failed with the SAME fingerprint (default K=3). Prints the recommended
+                action (switch-strategy | escalate) and the dead-end actions to avoid. Exit 10 when
+                stalled (for `if:` gating), 0 otherwise — unless --exit-code is omitted (always 0).
+    resume      The anti-oscillation read: distinct actions already tried + their outcomes + the
+                current stall count + the live error fingerprint. Print THIS at the top of each turn
+                so the loop never retries a known dead-end.
+    status      Compact tail of the journal (last N records).
+    since       Incremental triage: the delta (git diff --stat + working tree) since the last
+                recorded turn's commit — so a turn reads only what changed, not a full re-scan.
+    delegation  Print the Brown-Hilbert delegation tree reconstructed from all journal records
+                that carry a `--bh-address` — shows the sub-agent hierarchy. See `bh_address()`
+                in this module for the address format.
+    selftest    Prove the fingerprint + stall logic deterministically — no files.
+  claims-gate Audit a text blob for untagged claims. Reads FILE (or stdin). Every
+              line should start with `MEASURED|` or `UNVERIFIED|`; lines without
+              a tag are reported. Exit 1 when untagged claims exist, 0 otherwise.
+              Use `--check` to verify loop output compliance.
 
 Usage:
     python3 scripts/loop_journal.py record --iteration 3 --action "add retry to fetch" \\
@@ -65,6 +74,45 @@ REPO = os.path.dirname(HERE)
 LOOP_DIR = os.path.join(REPO, ".orchestrator", "loop")
 JOURNAL = os.path.join(LOOP_DIR, "journal.jsonl")
 DEFAULT_K = 3
+
+# Brown-Hilbert port.port.port addressing for the delegation tree.
+# Root is "R". Children append their index: bh_address("R", 0) -> "R.0".
+# Nested: bh_address("R.0", 3) -> "R.0.3". Supports arbitrary depth.
+BH_ROOT = "R"
+
+
+def bh_address(parent=None, index=0):
+    """Generate a Brown-Hilbert port.port.port address for a delegation tree node.
+
+    Root agents (no parent) get ``R``. Every child appends its zero-based
+    port number onto the parent address so the delegation path is recoverable
+    from the address alone::
+
+        R                  orchestrator / root agent
+        R.0                first sub-agent
+        R.0.0              first sub-agent of R.0
+        R.0.1              second sub-agent of R.0
+        R.1                second sub-agent of the root
+        R.1.0              first sub-agent of R.1
+
+    Parameters
+    ----------
+    parent : str or None
+        BH address of the parent node.  ``None`` (or omitted) produces the
+        root address ``R``.
+    index : int
+        Zero-based child index.  Ignored when *parent* is ``None``.
+
+    Returns
+    -------
+    str
+        The BH address string.
+    """
+    if parent is None:
+        return BH_ROOT
+    return "%s.%d" % (parent, index)
+
+
 EXECUTION_STATES = (
     "proposed",
     "planned",
@@ -201,6 +249,7 @@ def _build_record(opts, gate_output_text, commit, now):
     _maybe_put(rec, "decision", opts.get("decision"))
     _maybe_put(rec, "blocked_reason", opts.get("blocked-reason"))
     _maybe_put(rec, "next_action", opts.get("next-action"))
+    _maybe_put(rec, "bh_address", opts.get("bh-address"))
     execution_state = _clean(opts.get("execution-state"))
     if execution_state:
         rec["execution_state"] = execution_state
@@ -226,6 +275,8 @@ def _lineage_summary(rec):
         bits.append("chunk=%s" % rec["chunk_id"])
     if rec.get("source_artifact"):
         bits.append("source=%s" % rec["source_artifact"])
+    if rec.get("bh_address"):
+        bits.append("BH=%s" % rec["bh_address"])
     return " | ".join(bits)
 
 
@@ -401,6 +452,96 @@ def cmd_since(opts):
         log("no change since last turn — triage can skip a full re-scan")
 
 
+def _bh_sort_key(addr):
+    """Sort helper for BH addresses like R, R.0, R.0.1, R.1, R.10, …
+
+    Each segment is compared numerically so R.10 sorts after R.9, not after R.1.
+    """
+    if not addr:
+        return (0,)
+    parts = addr.split(".")
+    # Root 'R' -> (0,); 'R.0' -> (0, 0); 'R.12' -> (0, 12)
+    return tuple(int(p) if p.isdigit() else 0 for p in parts)
+
+
+def cmd_delegation(opts):
+    """Print the Brown-Hilbert delegation tree reconstructed from journal records.
+
+    Every journal record that carries a ``bh_address`` is a node in the delegation
+    tree.  This command walks those nodes, builds the tree top-down, and prints
+    it in an indented tree view so you can see which sub-agent was responsible
+    for which attempt.
+
+    Records **without** a ``bh_address`` are grouped under an ``(unassigned)``
+    pseudo-root.
+    """
+    rows = _load()
+    # Collect records that have a BH address
+    nodes = {}  # addr -> list of records
+    unnamed = []
+    for r in rows:
+        addr = r.get("bh_address")
+        if addr:
+            nodes.setdefault(addr, []).append(r)
+        else:
+            unnamed.append(r)
+
+    out_lines = []
+
+    def _render_tree(prefix, addr, depth=0):
+        """Recursively render the subtree rooted at *addr*."""
+        indent = "  " * depth
+        records = nodes.get(addr, [])
+        # Build the tree label
+        label_parts = ["[%s]" % addr]
+        if records:
+            last = records[-1]
+            label_parts.append(
+                "iter=%s gate=%s fp=%s action=%s"
+                % (
+                    last.get("iteration", "?"),
+                    last.get("gate", "?"),
+                    (last.get("fingerprint") or "-")[:8],
+                    (last.get("action") or "")[:40],
+                )
+            )
+        out_lines.append("%s%s %s" % (indent, prefix, "  ".join(label_parts)))
+
+        # Find and render children (addr.X where X is integer)
+        child_addrs = sorted(
+            [a for a in nodes if a.startswith(addr + ".") and a.count(".") == addr.count(".") + 1],
+            key=_bh_sort_key,
+        )
+        for i, child_addr in enumerate(child_addrs):
+            branch = "└──" if i == len(child_addrs) - 1 else "├──"
+            _render_tree(branch, child_addr, depth + 1)
+
+    # Start from root(s)
+    roots = sorted([a for a in nodes if a.count(".") == 0], key=_bh_sort_key)
+    if not roots and unnamed:
+        # No BH-addressed records at all — just a flat list
+        print("delegation tree: no BH-addressed records found")
+        print("  use: loop_journal.py record --bh-address <addr> …")
+        print("")
+        print("unaddressed records: %d" % len(unnamed))
+        return
+    for i, root_addr in enumerate(roots):
+        prefix = "└──" if i == len(roots) - 1 else "├──"
+        _render_tree(prefix, root_addr)
+
+    if unnamed:
+        out_lines.append("%s(unassigned) — %d record(s) without BH address" % (
+            "  " * (max(1, len(roots))) + "└──", len(unnamed)))
+
+    print("delegation tree (%d nodes):" % len(nodes))
+    for ln in out_lines:
+        print(ln)
+    print("")
+    total = len(rows)
+    addressed = sum(len(v) for v in nodes.values())
+    log("%d/%d records carry BH addresses" % (addressed, total))
+
+
 def cmd_selftest(_opts):
     checks = []
 
@@ -490,9 +631,10 @@ def main():
     sub, opts = argv[0], _parse(argv[1:])
     {"record": cmd_record, "fingerprint": cmd_fingerprint, "stall": cmd_stall,
      "resume": cmd_resume, "status": cmd_status, "since": cmd_since,
+     "delegation": cmd_delegation,
      "selftest": cmd_selftest}.get(
         sub, lambda _o: (print("unknown command '%s'. choices: record fingerprint stall resume "
-                               "status since selftest" % sub), sys.exit(2)))(opts)
+                               "status since delegation selftest" % sub), sys.exit(2)))(opts)
 
 
 if __name__ == "__main__":

@@ -238,11 +238,12 @@ are deterministic and model-free (`scripts/loop_journal.py`), so a resume is rep
 **1. The run-journal — `.orchestrator/loop/journal.jsonl` (append-only attempt memory).** One
 record per turn: `{iteration, action, hypothesis, gate: pass|fail|blocked, fingerprint, ts}` with
 optional lineage fields such as `execution_state`, `stage_id`, `source_artifact`, `chunk_id`,
-`validator`, `decision`, `retry_count`, `blocked_reason`, and `next_action`. On a failing gate the
-gate output is reduced to a **stable fingerprint** — line numbers, file paths, hex/uuids,
-timestamps and durations are normalized away, so the SAME bug hashes the SAME across turns even
-when the incidental text differs. This is the loop's memory of WHAT WAS TRIED; the scratchpad only
-holds the goal.
+`validator`, `decision`, `retry_count`, `blocked_reason`, `next_action`, and **`bh_address`**
+(a **Brown-Hilbert port.port.port** delegation-tree address — see § Delegation tree tracing below).
+On a failing gate the gate output is reduced to a **stable fingerprint** — line numbers, file
+paths, hex/uuids, timestamps and durations are normalized away, so the SAME bug hashes the SAME
+across turns even when the incidental text differs. This is the loop's memory of WHAT WAS TRIED;
+the scratchpad only holds the goal.
 
 **2. The stall detector — `loop_journal.py stall`.** Reads the journal and returns
 `PROGRESS | STALLED`. STALLED = the last **K** consecutive attempts all failed with the **same
@@ -272,6 +273,55 @@ python3 scripts/loop_journal.py stall --k 3 --exit-code
 This upgrades invariant 3 (Deterministic continuation): the next iteration re-feeds the goal **and
 the attempt memory** — and a STALLED loop changes course instead of repeating itself. It also makes
 resume real: a fresh process reads the journal and continues without re-deriving prior turns.
+
+### Delegation tree tracing with Brown-Hilbert port.port.port addressing
+
+When the loop delegates work to sub-agents (companion skills, parallel workers, or nested
+loops), each agent in the delegation tree can be tracked with a **Brown-Hilbert (BH) address**
+— a dotted-port path rooted at ``R``:
+
+| Address | Agent |
+|---------|-------|
+| ``R`` | orchestrator / root agent (the loop itself) |
+| ``R.0`` | first sub-agent delegated by the root |
+| ``R.0.0`` | first sub-agent of ``R.0`` |
+| ``R.0.1`` | second sub-agent of ``R.0`` |
+| ``R.1`` | second sub-agent of the root |
+| ``R.1.0`` | first sub-agent of ``R.1`` |
+
+The BH address is passed as ``--bh-address <addr>`` to ``loop_journal.py record`` so the
+journal stores the delegation path on every attempt. Use the `bh_address()` Python helper to
+generate addresses deterministically:
+
+```python
+from scripts.loop_journal import bh_address
+
+root = bh_address()               # → "R"
+child_0 = bh_address(root, 0)     # → "R.0"
+child_1 = bh_address(root, 1)     # → "R.1"
+grandchild = bh_address(child_0, 0)  # → "R.0.0"
+```
+
+To visualise the delegation tree from the journal at any point:
+
+```bash
+python3 scripts/loop_journal.py delegation
+```
+
+This reconstructs the tree from all recorded ``bh_address`` fields and renders an
+indented hierarchy:
+```
+delegation tree (4 nodes):
+└── [R]  iter=1 gate=pass fp=abc123 action=orchestrate plan
+  ├── [R.0]  iter=2 gate=fail fp=deadbeef action=audit auth test
+  │   └── [R.0.0]  iter=3 gate=pass fp=abc123 action=fix auth fixture
+  └── [R.1]  iter=4 gate=fail fp=cafebabe action=audit billing test
+```
+
+Each node shows the BH address, the last iteration, gate status, fingerprint, and action.
+Records without a BH address are listed separately as ``(unassigned)``. This makes the
+loop's sub-agent hierarchy fully transparent and auditable — you can see at a glance which
+agent attempted what and how the tree fanned out.
 
 ## The promise is evidence-gated (the simplicio hardening)
 
@@ -306,6 +356,61 @@ merged PR or concrete evidence.*
 issue — requires BOTH a live source re-query (the item is actually still open right now) AND
 concrete evidence in the code or a linked/merged PR. A self-reported "done" with no live state
 and no artifact is a false positive and is rejected, exactly like a bare promise.
+
+## Claims-gate discipline — MEASURED/UNVERIFIED tagging
+
+Every claim the loop makes — in the journal, in triage, in the exit promise, or in any
+turn output — MUST be tagged with its evidence class. This is the Asolaria claims-gate
+discipline, absorbed into simplicio-loop so no output escapes without a truth-class label.
+
+**Two tags, no exceptions:**
+
+| Tag | Meaning | When to use |
+|-----|---------|-------------|
+| `MEASURED\|` | The claim is backed by in-turn, concrete, non-model evidence | A passing gate, a `file:line` receipt, a `diff --stat`, a test log, a live API response, or any artifact the loop itself did NOT hallucinate |
+| `UNVERIFIED\|` | The claim is an inference, a plan, a hypothesis, or a best-effort summary the model makes without mechanical proof | Triage notes, hypotheses in the journal, proposed next actions, stall analysis, or any claim the loop cannot prove this turn |
+
+**Every `loop_journal.py` output is tagged.** The `record` command tags passing gates
+`MEASURED\|` and failing/blocked ones `UNVERIFIED\|`. `resume` and `status` prefix every
+summary line. The stall verdict is `MEASURED\|` when it reports concrete fingerprint matches,
+`UNVERIFIED\|` when it recommends a next action.
+
+**The eight rules** (from Asolaria's claims-gate contract) enforce this mechanically:
+
+| # | Rule | Meaning |
+|---|------|---------|
+| 1 | **ground impact before severity** | Tag the impact (what actually broke/failed) first; the severity label follows only if measurable. |
+| 2 | **no flat tuples** | Never output a bare `(MEASURED\|..., UNVERIFIED\|...)` tuple without a sentence explaining each. |
+| 3 | **mirrors != authority** | A mirror/duplicate of a source is UNVERIFIED unless the loop independently checks the source. |
+| 4 | **cylinders ≠ levels** | A numeric or categorical tag (iteration N, severity X) is not a claims-gate tag — always add `MEASURED\|` or `UNVERIFIED\|` explicitly. |
+| 5 | **owning gate, not transcript** | The loop owns its claims-gate tags — it does NOT copy tags from transcript or tool output; it RE-tags every claim with its own assessment. |
+| 6 | **missing ≠ clean-zero** | Absence of evidence is not evidence of absence — tag unresolved signals as `UNVERIFIED\|`, never skip the tag because nothing failed. |
+| 7 | **real lane** | Tag every claim in the output lane the user sees (scratchpad, journal, triage, promise), not just internal debug lines. |
+| 8 | **source ≠ live** | A source reference (e.g., a linked file on disk) is UNVERIFIED until the loop re-reads it this turn; a cached source is never `MEASURED\|`. |
+
+**How to apply each turn:**
+
+```
+# triage output — hypothesis, not proof
+UNVERIFIED| root cause is likely a race in the connection pool
+
+# journal record on a passing gate
+MEASURED| py_test --gate pass --fingerprint - (all 47 tests green)
+
+# journal record on a failing gate
+UNVERIFIED| integration/gate fail -- fingerprint a3b2c1 -- retry with longer timeout
+
+# stall verdict
+MEASURED| STALLED -- 3 identical fingerprints, dead-end actions: ["retry fetch"]
+
+# exit promise
+MEASURED| <promise>All acceptance criteria met</promise> -- verified by test run, flow audit, and task anchor gate
+```
+
+**The eight-rule checklist is appended to every loop initialization and every triage step**
+(see § The loop contract step 2): review every output claim against rules 1–8 before
+proceeding. The `loop_journal.py claims-gate --check` helper audits any output blob for
+untagged claims.
 
 ## Binding the hook (deterministic, near-zero token)
 
@@ -354,6 +459,9 @@ Delete `.orchestrator/loop/` (the `cancel-ralph` analogue). A single STOP signal
 - Report savings only with a measured receipt (clamp / signatures / cache hit / `deterministic_edit`
   / ledger) — never a per-turn fabricated figure. No measured economy → no savings line (see
   `simplicio-tasks` Notes § savings line — evidence-gated).
+- **Every output claim is tagged** `MEASURED|` or `UNVERIFIED|` — no bare claim escapes the loop.
+  The eight Asolaria rules (§ Claims-gate discipline) enforce this mechanically. Run
+  `loop_journal.py claims-gate --check` to audit any output blob for untagged claims.
 
 ## Verifying a good loop (what "good" looks like)
 
@@ -370,10 +478,17 @@ A correctly-run loop is auditable after the fact:
 - **No oscillation.** The journal shows distinct attempts converging (fingerprints changing /
   getting resolved), not the same fingerprint re-tried past K; any stall ended in a strategy switch
   or an escalation, not a silent re-feed.
+- **All claims tagged.** Every journal entry, triage output, and exit promise carries a
+  `MEASURED|` or `UNVERIFIED|` prefix. No bare claim survived the loop.
+- **Eight rules enforced.** The `loop_journal.py claims-gate --check` passes on the loop's
+  final output.
 
 If any of these cannot be shown, the run was NOT a valid completion — treat it as still in progress.
 
 ## Output
+
+Every output line MUST be prefixed with `MEASURED|` or `UNVERIFIED|`. A bare claim
+without a tag is a contract violation.
 
 Confirm the loop is armed (goal, cap, promise, hook-bound vs self-paced), then start
 iteration 1 immediately.
