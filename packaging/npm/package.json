@@ -1,6 +1,6 @@
 {
   "name": "simplicio-loop",
-  "version": "3.19.0",
+  "version": "3.20.0",
   "description": "npm wrapper for the simplicio-loop PyPI package.",
   "bin": {
     "simplicio-loop": "./bin/simplicio-loop.js"

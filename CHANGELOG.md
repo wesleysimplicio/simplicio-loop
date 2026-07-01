@@ -10,7 +10,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   selftests/smoke) on every push/PR to `main`. The gate already existed locally; nothing ran it
   automatically before this — flagged as the highest-confidence finding of an ecosystem audit.
 
-## [3.19.0] — 2026-07-01
+## [3.20.0] — 2026-07-01
 
 ### Added
 - **Cross-agent wiki now surfaces blockers and next actions** (`scripts/cross_agent_wiki.py` +
