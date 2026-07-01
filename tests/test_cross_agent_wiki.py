@@ -27,6 +27,8 @@ def _seed_loop(root):
             "action": "add regression test",
             "gate": "fail",
             "fingerprint": "abc123deadbe",
+            "blocked_reason": "failing fingerprint unresolved",
+            "next_action": "compare dead-end attempts before retrying",
         }) + "\n")
         f.write(json.dumps({
             "iteration": 2,
@@ -67,6 +69,10 @@ def test_capture_summary_and_handoff_materialize_cross_agent_artifacts(tmp_path)
         assert "Watcher verification" in summary_body
         assert "Watcher state:** verified" in summary_body
         assert "debug" in summary_body
+        assert "Open questions / blockers" in summary_body
+        assert "Suggested next actions" in summary_body
+        assert "failing fingerprint unresolved" in summary_body
+        assert "compare dead-end attempts before retrying" in handoff_body
         assert "tighten watcher gate" in handoff_body
         assert "Resume instructions for the next agent" in handoff_body
     finally:

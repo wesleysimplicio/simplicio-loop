@@ -86,6 +86,12 @@ coordination patterns instead of creating a separate task semantics.
 
 ---
 
+## 🤖 LLM front door
+
+If you are an agent/runtime entering this repo cold, read `llms.txt` first for the short operational contract, then `AGENTS.md`, then `.claude/skills/simplicio-tasks/SKILL.md`.
+
+---
+
 ## 📘 Official capability record
 
 The complete, official roster of what `simplicio-tasks` ships — every capability below is **real,

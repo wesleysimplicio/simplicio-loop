@@ -1,0 +1,36 @@
+# simplicio-loop / simplicio-tasks — LLM quick orientation
+
+Start here, in order:
+1. `AGENTS.md`
+2. `.claude/skills/simplicio-tasks/SKILL.md`
+3. `README.md`
+
+What this repo is:
+- Runtime-agnostic autonomous looping orchestrator (`/simplicio-tasks`)
+- Current reference task flow for the Simplicio line
+- Evidence-gated loop: never exit on a fake “done”
+
+Non-negotiables:
+- Run commands for real; never simulate output.
+- Never mark work done without green gates + evidence.
+- Verify claims locally before push with `python3 scripts/check.py`.
+- Keep `_bundle` and source in parity; `scripts/check.py` audits this.
+- On Claude/Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Hermes, `simplicio-runtime` binding is required before driving the loop.
+
+Key loop artifacts:
+- `.orchestrator/loop/scratchpad.md` — single source of truth for loop state
+- `.orchestrator/loop/journal.jsonl` — durable attempt memory / stall detector input
+- `.orchestrator/loop/phase.json` — current HRM phase
+- `.orchestrator/loop/HANDOFF.md` — resume note for the next agent/runtime
+- `.orchestrator/wiki/SUMMARY.md` — cross-agent persistent summary
+
+Key commands:
+- `python3 scripts/check.py`
+- `python3 scripts/loop_journal.py resume`
+- `python3 scripts/cross_agent_wiki.py summary`
+- `python3 scripts/hierarchical_planner.py status`
+
+If you are an LLM agent:
+- Prefer deterministic edits / local verification.
+- Read the journal before retrying a failed approach.
+- Treat blocker receipts and next-action hints in the wiki/handoff as first-class context.

@@ -157,6 +157,28 @@ def _read_watcher_state():
     }
 
 
+def _distinct_recent(items, limit=5):
+    out = []
+    seen = set()
+    for item in items:
+        text = (item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _journal_blockers(journal, limit=5):
+    return _distinct_recent((r.get("blocked_reason", "") for r in reversed(journal)), limit)
+
+
+def _journal_next_actions(journal, limit=5):
+    return _distinct_recent((r.get("next_action", "") for r in reversed(journal)), limit)
+
+
 def _git_log(age=5):
     try:
         r = subprocess.run(
@@ -345,6 +367,22 @@ def cmd_summary():
                 summary.append("  - %s" % a)
             summary.append("")
 
+        blockers = _journal_blockers(journal)
+        if blockers:
+            summary.append("## Open questions / blockers")
+            summary.append("")
+            for item in blockers:
+                summary.append("- %s" % item[:160])
+            summary.append("")
+
+        next_actions = _journal_next_actions(journal)
+        if next_actions:
+            summary.append("## Suggested next actions")
+            summary.append("")
+            for item in next_actions:
+                summary.append("- %s" % item[:160])
+            summary.append("")
+
     if journal_files:
         summary.append("## Recent journal files")
         summary.append("")
@@ -422,6 +460,20 @@ def cmd_handoff():
         lines.append("## Last distinct actions attempted")
         for a in last_actions:
             lines.append("- %s" % a[:100])
+
+    blockers = _journal_blockers(journal)
+    if blockers:
+        lines.append("")
+        lines.append("## Open questions / blockers")
+        for item in blockers:
+            lines.append("- %s" % item[:160])
+
+    next_actions = _journal_next_actions(journal)
+    if next_actions:
+        lines.append("")
+        lines.append("## Suggested next actions")
+        for item in next_actions:
+            lines.append("- %s" % item[:160])
 
     lines.append("")
     lines.append("## Resume instructions for the next agent")
