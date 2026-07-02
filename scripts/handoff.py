@@ -304,6 +304,69 @@ def cmd_clear():
         sys.exit(1)
 
 
+# ── selftest ─────────────────────────────────────────────────────────────────
+
+
+def cmd_selftest():
+    """Prove the spindle/latch round-trip, legacy migration, and event log — no external state.
+
+    Regression coverage for the 685600b bug class (a state-file rename that leaves loop_stop.py
+    and handoff.py disagreeing about the shared spindle_state.json path/schema, #73). Runs in a
+    throwaway temp directory (handoff.py's state paths are CWD-relative) and restores the caller's
+    CWD in `finally` even on assertion failure.
+    """
+    import io
+    import contextlib
+    import tempfile
+
+    origin = os.getcwd()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+
+            # round-trip: handoff -> latched -> confirm -> active
+            cmd_handoff("agent-b", {"done": ["phase1"]}, note="phase 1 complete")
+            spindle = _read_spindle()
+            assert spindle is not None, "handoff should write spindle_state.json"
+            assert spindle["latch"] is True, "a fresh handoff must be latched"
+            assert spindle["next_agent"] == "agent-b"
+            assert os.path.exists(HANDOFF_FILE), "handoff should write HANDOFF.md"
+            handoff_body = open(HANDOFF_FILE, encoding="utf-8").read()
+            assert "agent-b" in handoff_body
+            assert "phase 1 complete" in handoff_body
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cmd_confirm()
+            spindle = _read_spindle()
+            assert spindle["latch"] is False, "confirm must release the latch"
+            assert spindle["current_agent"] == "agent-b"
+
+            # events log: handoff + confirm both recorded, in order
+            events_path = os.path.join(HANDOFFS_DIR, "events.jsonl")
+            with open(events_path, encoding="utf-8") as f:
+                events = [json.loads(ln) for ln in f if ln.strip()]
+            assert [e["event"] for e in events] == ["handoff", "confirm"], events
+
+            # legacy spindle.json migration: an old-format file (pre-rename) is still read
+            os.remove(SPINDLE_STATE)
+            with open(LEGACY_SPINDLE_STATE, "w", encoding="utf-8") as f:
+                json.dump({"latch": True, "next_agent": "legacy-agent"}, f)
+            legacy = _read_spindle()
+            assert legacy is not None and legacy["next_agent"] == "legacy-agent", \
+                "legacy spindle.json must still be read for an in-flight handoff from an older version"
+
+            # clear resets to idle
+            os.remove(LEGACY_SPINDLE_STATE)
+            cmd_handoff("agent-c", {})
+            cmd_clear()
+            assert _read_spindle() is None, "clear should remove the spindle state"
+
+            print("handoff selftest: PASS")
+    finally:
+        os.chdir(origin)
+
+
 # ── CLI entry ────────────────────────────────────────────────────────────────
 
 
@@ -337,6 +400,9 @@ def main(argv=None):
     # clear
     sub.add_parser("clear", help="Clear spindle state (manual reset)")
 
+    # selftest
+    sub.add_parser("selftest", help="Prove the spindle/latch round-trip deterministically — no external state")
+
     args = parser.parse_args(argv)
 
     if args.command == "handoff":
@@ -368,6 +434,9 @@ def main(argv=None):
 
     elif args.command == "clear":
         cmd_clear()
+
+    elif args.command == "selftest":
+        cmd_selftest()
 
 
 if __name__ == "__main__":

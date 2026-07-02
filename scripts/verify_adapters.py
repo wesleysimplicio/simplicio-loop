@@ -37,9 +37,18 @@ REPO = os.path.dirname(HERE)
 
 
 def _install(runtime, target):
-    """Invoke the real installer CLI (true e2e), isolated to `target`."""
+    """Invoke the real installer CLI (true e2e), isolated to `target`.
+
+    Always passes `--skip-operators`: `install_lib.py`'s operator step does a REAL, system-wide
+    `pip install simplicio-mapper simplicio-cli` regardless of `--target` (it verifies PATH, not a
+    target-scoped install) — running it here would silently mutate the host's real Python
+    environment on every verification run, contradicting this script's own "no risk to your real
+    config" contract. This harness verifies the skills/entry/hooks contract, not the operator
+    pip install, so it is out of scope here.
+    """
     return subprocess.run(
-        [sys.executable, os.path.join(HERE, "install_lib.py"), runtime, "--target", target],
+        [sys.executable, os.path.join(HERE, "install_lib.py"), runtime,
+         "--target", target, "--skip-operators"],
         capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 

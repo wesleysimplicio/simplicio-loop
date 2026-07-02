@@ -27,6 +27,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+from mirror_manifest import LEAN_HOOKS, LEAN_SCRIPTS, LEAN_TESTS  # noqa: E402 — single source of truth (#74)
+
 SRC_SKILLS = os.path.join(REPO, ".claude", "skills")
 DST_SKILLS = os.path.join(REPO, "plugin", "skills")
 SRC_HOOKS = os.path.join(REPO, "hooks")
@@ -35,16 +39,6 @@ SRC_SCRIPTS = os.path.join(REPO, "scripts")
 DST_SCRIPTS = os.path.join(REPO, "plugin", "scripts")
 SRC_TESTS = os.path.join(REPO, "tests")
 DST_TESTS = os.path.join(REPO, "plugin", "tests")
-
-# The ONLY hook files the marketplace plugin ships: those wired in hooks.claude.json + their deps.
-# loop_stop (Stop) · action_gate/orient_rewrite (PreToolUse) · orient_clamp (orient_rewrite
-# shells out to it) · hooks.claude.json (the wiring) · README.md (lean doc).
-LEAN_HOOKS = ["loop_stop.py", "action_gate.py", "orient_rewrite.py",
-              "orient_clamp.py", "hooks.claude.json"]
-# Runtime helpers now transitively required by the shipped loop hook.
-LEAN_SCRIPTS = ["hierarchical_planner.py", "cross_agent_wiki.py"]
-# Minimal parity coverage for the shipped loop/runtime helpers.
-LEAN_TESTS = ["_selfrun.py", "test_loop_e2e.py", "test_cross_agent_wiki.py"]
 
 
 def _read(p):

@@ -2,23 +2,51 @@
 # Runs scripts/check.py on every push/PR to main so a broken claim or a regressed worker can't
 # land silently — the gate already exists locally (`python3 scripts/check.py`) but nothing ran
 # it automatically before this workflow.
+#
+# Matrix + tag gate (#71): the repo claims cross-platform / stdlib-only ("runs on bare python3"),
+# a Windows install path (scripts/install.ps1), and no minimum Python beyond `requires-python` in
+# pyproject.toml — none of that was exercised in CI before. The full OS x Python matrix runs on
+# every push/PR; a release (tag push) additionally builds and validates the wheel, since the
+# wheel's content depends on `simplicio_loop/_bundle/` parity (see the bundle-parity check).
 
 name: ci
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
   workflow_dispatch: {}
 
 jobs:
   check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.8", "3.x"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: scripts/check.py (claims-audit + worker selftests/smoke)
+        run: python3 scripts/check.py
+
+  package:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
-      - name: scripts/check.py (claims-audit + worker selftests/smoke)
-        run: python3 scripts/check.py
+      - name: Install build tooling
+        run: python3 -m pip install --upgrade build twine
+      - name: Build sdist + wheel
+        run: python3 -m build
+      - name: Validate distribution metadata
+        run: python3 -m twine check dist/*
