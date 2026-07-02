@@ -5,6 +5,8 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.21.0] — 2026-07-02
+
 ### Added
 - The survey step now exercises the full mapper 0.13 surface: `simplicio-mapper inspect . --json`
   is the survey's own evidence gate (artifacts proven on disk before the loop trusts them) and
@@ -14,6 +16,11 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   `plugin`/`_bundle` mirrors).
 - `scripts/doctor.py` gains an OPTIONAL `mapper inspect/handoff` capability check (WARN + `pip -U`
   repair when the installed mapper predates 0.13; never a FAIL).
+
+### Changed
+- Dependency floors raised to the current releases of the two bound operators:
+  `simplicio-mapper>=0.14.0` and `simplicio-cli>=0.9.1` in `pyproject.toml`, so a fresh
+  `pip install simplicio-loop` resolves the operators this release was verified against.
 
 ## [3.20.1] — 2026-07-02
 
