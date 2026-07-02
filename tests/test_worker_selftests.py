@@ -70,6 +70,30 @@ def test_impact_audit_selftest():
     assert "PASS" in r.stdout, r.stdout
 
 
+def test_watcher_verify_selftest():
+    r = _run("scripts/watcher_verify.py", "selftest")
+    assert r.returncode == 0, "watcher_verify selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_handoff_selftest():
+    r = _run("scripts/handoff.py", "selftest")
+    assert r.returncode == 0, "handoff selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_install_services_selftest():
+    r = _run("scripts/install_services.py", "selftest")
+    assert r.returncode == 0, "install_services selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_mirror_manifest_selftest():
+    r = _run("scripts/mirror_manifest.py", "selftest")
+    assert r.returncode == 0, "mirror_manifest selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module

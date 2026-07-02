@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-the-11-skills--accelerators"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
+  <a href="#-the-6-skills--5-accelerators"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-the-48-extension-points"><img src="https://img.shields.io/badge/extension%20points-48-00E08A" alt="48 extension points"></a>
@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-the-11-skills--accelerators">11 Skills</a> ·
+  <a href="#-the-6-skills--5-accelerators">6 Skills</a> ·
   <a href="#-source-adapters">Source Adapters</a> ·
   <a href="#-11-runtimes-one-protocol">11 Runtimes</a> ·
   <a href="#-the-loop">The Loop</a> ·
@@ -120,7 +120,7 @@ re-query stays empty K rounds). Both still obey the universal exits (promise+evi
 
 ---
 
-## 🧠 The 11 skills & accelerators
+## 🧠 The 6 skills + 5 accelerators
 
 The orchestrator core + five satellites + five accelerators/integrations. Each satellite is
 **optional** — when loaded, the orchestrator delegates to it (richer + cheaper); when absent, the

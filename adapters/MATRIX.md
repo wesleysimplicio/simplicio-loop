@@ -73,12 +73,16 @@ that on 8 of the 11 the native bind itself is mandatory, not a speed-only nicety
 
 The installer's contract (skills copied · entry file marked · hooks present/wired) is verified
 end-to-end per runtime by `scripts/verify_adapters.py`, which installs into a throwaway target and
-asserts each promise — no risk to your real config, runnable in CI:
+asserts each promise — no risk to your real config:
 
 ```bash
-python3 scripts/verify_adapters.py                 # all 11
+python3 scripts/verify_adapters.py                 # all 11 (~45s/runtime — run manually or in a slower CI job)
 python3 scripts/verify_adapters.py antigravity kiro opencode aider   # a subset
 ```
+
+`scripts/claims_audit.py` (check 7, part of `python3 scripts/check.py`) runs the fast, single-runtime
+form (`verify_adapters.py claude`, ~15s) on every gate so the install contract is never dead
+assurance — it does NOT run the full 11-runtime sweep above; run that manually before a release.
 
 That covers everything up to launching the runtime itself. The final manual smoke — open the
 runtime, run `/simplicio-tasks <small task>`, confirm the loop drives and the gates fire — is the
