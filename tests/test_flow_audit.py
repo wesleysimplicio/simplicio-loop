@@ -49,6 +49,37 @@ def login():
     assert "backend_endpoint_stub" in r.stdout, r.stdout
 
 
+def test_flow_audit_flags_write_endpoint_without_persistence_call(tmp_path):
+    # #79: an endpoint that never reaches its repository/ORM/SQL is a real integration defect —
+    # scoped to non-GET (write) endpoints; medium (not high) since it's heuristic.
+    _write(tmp_path / "backend" / "routes.py", """
+@app.post("/api/orders")
+def create_order():
+    order = Order(item=request.json["item"])
+    return {"ok": True}
+""")
+    r = _run(["audit", str(tmp_path), "--json"], cwd=REPO)
+    assert r.returncode == 0, r.stdout  # medium-only findings don't fail the default (high) gate
+    assert "backend_endpoint_without_persistence_call" in r.stdout, r.stdout
+
+    r_medium = _run(["audit", str(tmp_path), "--fail-on", "medium"], cwd=REPO)
+    assert r_medium.returncode == 1, r_medium.stdout
+    assert "backend_endpoint_without_persistence_call" in r_medium.stdout, r_medium.stdout
+
+
+def test_flow_audit_does_not_flag_write_endpoint_with_persistence_call(tmp_path):
+    _write(tmp_path / "backend" / "routes.py", """
+@app.post("/api/orders")
+def create_order():
+    order = Order(item=request.json["item"])
+    db.session.add(order)
+    db.session.commit()
+    return {"ok": True}
+""")
+    r = _run(["audit", str(tmp_path), "--json"], cwd=REPO)
+    assert "backend_endpoint_without_persistence_call" not in r.stdout, r.stdout
+
+
 def test_flow_audit_passes_matched_non_stub_flow(tmp_path):
     _write(tmp_path / "frontend" / "Login.tsx", """
 export function Login() {

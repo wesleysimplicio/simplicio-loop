@@ -170,8 +170,9 @@ history), fall back to Conventional Commits and say so.
 the PR body and risk forgetting the proof — assemble it mechanically:
 `python3 scripts/pr_evidence.py build --item <id> --title "<t>" --summary "<s>" --require-evidence
 --out .orchestrator/pr_body.md`. It pulls the item-by-item checklist from the task anchor (one line
-per AC, with its status + the receipt that verified it) AND embeds every screenshot/recording
-captured by `web_verify`/`video_evidence` under `.orchestrator/tee/web`. With `--require-evidence`
+per AC, with its status + the receipt that verified it) AND embeds every screenshot
+(`web_verify`, under `.orchestrator/tee/web`) and recording (`video_evidence`, under
+`.orchestrator/tee/video`). With `--require-evidence`
 it FAILS CLOSED — exit 3 (`blocked`), never a body — when there is neither a checklist nor a single
 print, so an evidence-less PR cannot be opened by accident. It honors a discovered
 `.github/PULL_REQUEST_TEMPLATE.md` (keeps the maintainer's sections, appends the checklist + prints
