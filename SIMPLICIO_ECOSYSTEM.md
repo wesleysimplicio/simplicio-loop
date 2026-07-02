@@ -4,14 +4,15 @@
 Nenhum outro repositório Simplicio (consumido como super-plugin por runtimes externos).
 
 ## De quem este repo depende
-- [simplicio-dev-cli](https://github.com/wesleysimplicio/simplicio-dev-cli) — uso opcional (preflight)
+- [simplicio-mapper](https://github.com/wesleysimplicio/simplicio-mapper) >=0.13.0 — hard dep (binds `orient`)
+- [simplicio-dev-cli](https://github.com/wesleysimplicio/simplicio-dev-cli) >=0.9.0 (pip pkg `simplicio-cli`) — hard dep (binds `execute`/`deterministic_edit`)
 
 ## Versão atual
-3.18.1 (pyproject.toml)
+3.20.0 (pyproject.toml)
 
 ## Versão mínima esperada pelos dependentes
 Nenhuma — este repo não é dependência formal de outros Simplicios.
 
 ---
 
-_Last updated: 2026-06-30_
+_Last updated: 2026-07-02_
