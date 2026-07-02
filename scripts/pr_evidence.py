@@ -8,9 +8,10 @@ skippable. This worker makes the PR body deterministic and model-free, gathering
 
   • the **item-by-item acceptance-criteria checklist** from the task anchor (`task_anchor.py`) —
     one line per AC, with its status + the receipt that verified it;
-  • the **prints / screenshots** captured by `web_verify.py` (and any demo video from
-    `video_evidence.py`) under `.orchestrator/tee/web` — embedded as markdown image links / a video
-    link (paths + a count, never the bytes — token economy);
+  • the **prints / screenshots** captured by `web_verify.py` under `.orchestrator/tee/web`
+    (`--shots-dir`) AND any demo video from `video_evidence.py` under `.orchestrator/tee/video`
+    (`--video-dir`) — embedded as markdown image links / a video link (paths + a count, never the
+    bytes — token economy);
   • the gate receipts / ledger rows already on disk.
 
 It honors `.github/PULL_REQUEST_TEMPLATE.md` when present (fills its sections), else a clear default
@@ -48,6 +49,12 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 DEFAULT_SHOTS = os.path.join(REPO, ".orchestrator", "tee", "web")
+# video_evidence.py's REAL default output dir (see its DEFAULT_OUT) — a separate directory from
+# DEFAULT_SHOTS. #81 found this drift: docs claimed recordings land under tee/web too, but the
+# producer actually writes tee/video, so a demo video was silently never picked up by
+# `build`/`comment` unless the caller manually widened --shots-dir. Scanned in ADDITION to
+# --shots-dir by default so the evidence chain connects without extra flags.
+DEFAULT_VIDEO_SHOTS = os.path.join(REPO, ".orchestrator", "tee", "video")
 DEFAULT_TEMPLATE = os.path.join(REPO, ".github", "PULL_REQUEST_TEMPLATE.md")
 
 IMG_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")
@@ -118,6 +125,19 @@ def collect_prints(shots_dir):
     return sorted(images), sorted(videos)
 
 
+def collect_all_evidence(opts):
+    """Merge prints from --shots-dir (default tee/web) AND --video-dir (default tee/video, the
+    real video_evidence.py output dir — #81) into one deduped (images, videos) pair."""
+    shots_dir = opts.get("shots-dir") if isinstance(opts.get("shots-dir"), str) else DEFAULT_SHOTS
+    video_dir = opts.get("video-dir") if isinstance(opts.get("video-dir"), str) else DEFAULT_VIDEO_SHOTS
+    images, videos = collect_prints(shots_dir)
+    if os.path.abspath(video_dir) != os.path.abspath(shots_dir):
+        more_images, more_videos = collect_prints(video_dir)
+        images = sorted(set(images) | set(more_images))
+        videos = sorted(set(videos) | set(more_videos))
+    return images, videos
+
+
 def render_evidence(images, videos, heading="Evidence — prints & recordings"):
     """Markdown block embedding each print as an image and each recording as a link."""
     lines = ["### %s" % heading]
@@ -151,8 +171,7 @@ def build_body(opts):
     """Assemble the PR body. Returns (markdown, has_evidence)."""
     anchor = _load_anchor(opts)
     criteria = anchor.get("criteria", [])
-    shots_dir = opts.get("shots-dir") if isinstance(opts.get("shots-dir"), str) else DEFAULT_SHOTS
-    images, videos = collect_prints(shots_dir)
+    images, videos = collect_all_evidence(opts)
     has_evidence = bool(criteria) or bool(images) or bool(videos)
 
     title = opts.get("title") or anchor.get("goal") or "Untitled change"
@@ -207,8 +226,7 @@ def cmd_comment(opts):
     anchor = _load_anchor(opts)
     criteria = anchor.get("criteria", [])
     done, total, pending = coverage(criteria)
-    shots_dir = opts.get("shots-dir") if isinstance(opts.get("shots-dir"), str) else DEFAULT_SHOTS
-    images, videos = collect_prints(shots_dir)
+    images, videos = collect_all_evidence(opts)
     pr = opts.get("pr")
     lines = []
     if pr:

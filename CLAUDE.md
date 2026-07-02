@@ -48,7 +48,8 @@ fake pass.
 The PR body is **assembled mechanically**, never hand-written, so it always shows the proof. Worker
 `scripts/pr_evidence.py build --require-evidence` pulls the **item-by-item acceptance-criteria
 checklist** from the task anchor (`scripts/task_anchor.py`, frozen at intake) AND embeds the
-screenshots/recordings captured by `web_verify`/`video_evidence` under `.orchestrator/tee/web`. With
+screenshots (`web_verify`, under `.orchestrator/tee/web`) and recordings (`video_evidence`, under
+`.orchestrator/tee/video`). With
 `--require-evidence` it FAILS CLOSED (exit 3, `blocked`) rather than open a PR that has neither a
 checklist nor a print — the executable answer to "the PR opened without prints / without an
 item-by-item check of the task". It honors a discovered `.github/PULL_REQUEST_TEMPLATE.md` (keeps the

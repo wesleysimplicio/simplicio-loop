@@ -153,6 +153,24 @@ STUB_RE = re.compile(
     re.I,
 )
 
+# The persistence layer (#79): flow_audit previously stopped at the HTTP boundary — an endpoint
+# that never reaches its repository/ORM/SQL, a dead DB call, a service method that swallows the
+# write, was invisible. These patterns cover raw SQL plus the common ORM/driver call shapes across
+# languages; intentionally broad (a persistence check is inherently heuristic, same spirit as the
+# endpoint/call regexes above) rather than an exhaustive per-ORM grammar.
+DB_PATTERNS = [
+    re.compile(r"\b(?:SELECT\s+.+?\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b", re.I),
+    re.compile(r"\bprisma\.\w+\.(?:findMany|findUnique|findFirst|create|update|delete|upsert|count)\s*\("),
+    re.compile(r"\b(?:sequelize|Model|\w+Model)\.(?:findAll|findOne|findByPk|create|update|destroy|bulkCreate)\s*\("),
+    re.compile(r"\bgetRepository\s*\(|@Entity\b|@Repository\b|\.createQueryBuilder\s*\("),
+    re.compile(r"\bDB::table\s*\(|::class\)\s*->|Model::(?:find|create|where|all)\s*\(|->save\s*\(\s*\)"),
+    re.compile(r"\bsession\.query\s*\(|db\.session\.(?:add|commit|query)\s*\("),
+    re.compile(r"\.objects\.(?:filter|all|get|create|update|get_or_create)\s*\("),
+    re.compile(r"\bmongoose\.model\s*\(|\.findOne\s*\(|\.insertOne\s*\(|\.updateOne\s*\(|\.deleteOne\s*\("),
+    re.compile(r"\b(?:psycopg2|pymysql|sqlite3)\.connect\s*\(|mongoose\.connect\s*\(|createConnection\s*\("),
+    re.compile(r"\bcursor\.execute\s*\(|\.query\s*\(\s*[\"'`]|\brepository\.\w+\s*\("),
+]
+
 
 @dataclass
 class Ref:
@@ -339,6 +357,22 @@ def endpoint_has_stub(text: str, line: int) -> bool:
     return bool(STUB_RE.search(window))
 
 
+def endpoint_has_persistence(text: str, line: int, radius: int = 30, next_endpoint_line: int | None = None) -> bool:
+    """A wider window than the stub check: the persistence call is often deeper in the handler
+    body, or delegated to a same-file service/repository function a few lines below.
+
+    Bounded by `next_endpoint_line` (the next endpoint's start line in the SAME file, if any) so
+    the window never leaks into a neighboring handler's body — two closely-defined endpoints would
+    otherwise let one handler's real DB call falsely "cover" its stub-free-but-DB-free neighbor.
+    """
+    lines = text.splitlines()
+    end = min(len(lines), line + radius)
+    if next_endpoint_line is not None:
+        end = min(end, next_endpoint_line - 1)
+    window = "\n".join(lines[max(0, line - 1): max(line, end)])
+    return any(rx.search(window) for rx in DB_PATTERNS)
+
+
 def has_matching_endpoint(call: Ref, endpoints: list[Ref]) -> bool:
     return any(paths_match(call.path, ep.path) and methods_match(call.method, ep.method) for ep in endpoints)
 
@@ -380,12 +414,42 @@ def audit(root: Path) -> dict:
                 method=call.method,
             ))
 
+    endpoint_lines_by_file: dict[str, list[int]] = {}
+    for ep in endpoints:
+        endpoint_lines_by_file.setdefault(ep.file, []).append(ep.line)
+    for lines_ in endpoint_lines_by_file.values():
+        lines_.sort()
+
+    def _next_endpoint_line(ep: Ref) -> int | None:
+        siblings = endpoint_lines_by_file.get(ep.file, [])
+        later = [ln for ln in siblings if ln > ep.line]
+        return min(later) if later else None
+
     for ep in endpoints:
         if endpoint_has_stub(texts.get(ep.file, ""), ep.line):
             issues.append(Issue(
                 severity="high",
                 code="backend_endpoint_stub",
                 message="Backend endpoint appears to be incomplete or stubbed.",
+                file=ep.file,
+                line=ep.line,
+                path=ep.path,
+                method=ep.method,
+            ))
+        elif ep.method.upper() != "GET" and not endpoint_has_persistence(
+                texts.get(ep.file, ""), ep.line, next_endpoint_line=_next_endpoint_line(ep)):
+            # #79: the persistence-layer link of the flow (endpoint -> repository/ORM/SQL) is
+            # otherwise invisible. Scoped to non-GET (write) endpoints only — a read-only GET with
+            # no observed DB call is common and not inherently suspicious (cache, proxy, static/
+            # health-check response); a mutating endpoint with no observed persistence call is the
+            # "dead write" defect this closes. Medium, not high: heuristic, same as the other
+            # loose-end findings below — a genuine defect needs human/agent confirmation, not an
+            # automatic hard fail.
+            issues.append(Issue(
+                severity="medium",
+                code="backend_endpoint_without_persistence_call",
+                message="Backend endpoint has no observed repository/ORM/SQL call nearby; verify "
+                        "whether the write actually persists or the call is delegated elsewhere.",
                 file=ep.file,
                 line=ep.line,
                 path=ep.path,
@@ -437,6 +501,7 @@ def audit(root: Path) -> dict:
         "issues": len(issues),
         "high_issues": sum(1 for i in issues if i.severity == "high"),
         "medium_issues": sum(1 for i in issues if i.severity == "medium"),
+        "persistence_gaps": sum(1 for i in issues if i.code == "backend_endpoint_without_persistence_call"),
     }
     return {
         "schema": "simplicio.flow-audit/v1",
@@ -509,6 +574,18 @@ def login():
 @app.get("/api/users")
 def users():
     return []
+
+@app.post("/api/orders")
+def create_order():
+    order = Order(item=request.json["item"])
+    return {"ok": True}
+
+@app.post("/api/orders2")
+def create_order_persisted():
+    order = Order(item=request.json["item"])
+    db.session.add(order)
+    db.session.commit()
+    return {"ok": True}
 """.strip(),
             encoding="utf-8",
         )
@@ -517,7 +594,12 @@ def users():
         assert "frontend_call_without_backend_endpoint" in codes, result
         assert "backend_endpoint_stub" in codes, result
         assert "ui_action_without_observed_backend_call" in codes, result
-        assert result["counts"]["endpoints"] == 2, result
+        assert "backend_endpoint_without_persistence_call" in codes, result
+        assert result["counts"]["endpoints"] == 4, result
+        assert result["counts"]["persistence_gaps"] == 1, result
+        persistence_issues = [i for i in result["issues"]
+                              if i["code"] == "backend_endpoint_without_persistence_call"]
+        assert len(persistence_issues) == 1 and persistence_issues[0]["path"] == "/api/orders", result
         assert result["counts"]["frontend_calls"] == 2, result
     print("flow_audit selftest: PASS")
     return 0

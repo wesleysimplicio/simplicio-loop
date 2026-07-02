@@ -298,7 +298,8 @@ short evidence comment (PR link + verification). **Assemble the PR body mechanic
 carries prints + an item-by-item AC check** — `python3 scripts/pr_evidence.py build --item <id>
 --title "<t>" --summary "<s>" --require-evidence --out .orchestrator/pr_body.md` pulls the
 item-by-item acceptance-criteria checklist from the task anchor (Step 2b/4) AND embeds the
-screenshots/recordings captured by `web_verify`/`video_evidence` under `.orchestrator/tee/web`; with
+screenshots (`web_verify`, under `.orchestrator/tee/web`) and recordings (`video_evidence`, under
+`.orchestrator/tee/video`); with
 `--require-evidence` it EXITS 3 (blocked) rather than open a PR with no prints and no checklist (the
 "PR sem evidência" fix). It honors the discovered `.github/PULL_REQUEST_TEMPLATE.md` (the
 `pr_template` extension point) — appending the checklist + prints under the maintainer's sections —
