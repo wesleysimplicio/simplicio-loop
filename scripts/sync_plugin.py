@@ -37,9 +37,9 @@ SRC_TESTS = os.path.join(REPO, "tests")
 DST_TESTS = os.path.join(REPO, "plugin", "tests")
 
 # The ONLY hook files the marketplace plugin ships: those wired in hooks.claude.json + their deps.
-# loop_stop/learn_stop (Stop) · action_gate/orient_rewrite (PreToolUse) · orient_clamp (orient_rewrite
+# loop_stop (Stop) · action_gate/orient_rewrite (PreToolUse) · orient_clamp (orient_rewrite
 # shells out to it) · hooks.claude.json (the wiring) · README.md (lean doc).
-LEAN_HOOKS = ["loop_stop.py", "learn_stop.py", "action_gate.py", "orient_rewrite.py",
+LEAN_HOOKS = ["loop_stop.py", "action_gate.py", "orient_rewrite.py",
               "orient_clamp.py", "hooks.claude.json"]
 # Runtime helpers now transitively required by the shipped loop hook.
 LEAN_SCRIPTS = ["hierarchical_planner.py", "cross_agent_wiki.py"]

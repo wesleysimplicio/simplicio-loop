@@ -126,7 +126,8 @@ def _read_watcher_state():
     except FileNotFoundError:
         return {
             "state": "missing",
-            "line": "UNVERIFIED|watcher: no receipt (.orchestrator/loop/watcher_state.json missing)",
+            "line": "UNVERIFIED|watcher: no receipt (producer: `python3 scripts/watcher_verify.py "
+                    "verify` — not yet run this turn, or the challenge hasn't been issued yet)",
         }
     except (OSError, json.JSONDecodeError):
         return {

@@ -99,8 +99,8 @@ editing skills or a wired hook); `scripts/check.py` fails if `plugin/` drifts fr
 
 `hooks/` ships cross-platform Python hooks (fail-open): `loop_stop.py` (re-feed/exit),
 `loop_capture.py` (promise detect), `orient_clamp.py` (clamp any command's output, tee on
-failure), `orient_rewrite.py` (opt-in auto-clamp), `learn_stop.py` (queue retrospective). See
-[`hooks/README.md`](hooks/README.md) for Claude `settings.json` wiring (the installer does it).
+failure), `orient_rewrite.py` (opt-in auto-clamp). See [`hooks/README.md`](hooks/README.md) for
+Claude `settings.json` wiring (the installer does it).
 
 `orient_clamp.py` needs no wiring — `python3 hooks/orient_clamp.py -- <cmd>` anywhere.
 

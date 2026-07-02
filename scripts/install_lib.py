@@ -162,7 +162,6 @@ def merge_claude_hooks(target, is_global):
     if not has("Stop", "loop_stop.py"):
         hooks.setdefault("Stop", []).append({"hooks": [
             {"type": "command", "command": cmd("loop_stop.py")},
-            {"type": "command", "command": cmd("learn_stop.py")},
         ]})
     wired = "Stop"
     # orient_rewrite rewrites Bash calls; only wire it project-locally (opt-in), never

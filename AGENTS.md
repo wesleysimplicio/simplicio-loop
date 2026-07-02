@@ -29,7 +29,7 @@ token-cheaper behavior (it never requires them):
 `hooks/` makes the loop + token economy deterministic where the runtime supports hooks:
 `loop_stop.py` / `loop_capture.py` (the loop), `orient_clamp.py` (clamp any command's output +
 tee-on-failure — works with NO wiring on every runtime), `orient_rewrite.py` (opt-in
-auto-clamp), `learn_stop.py` (queue a retrospective). See [`hooks/README.md`](hooks/README.md).
+auto-clamp). See [`hooks/README.md`](hooks/README.md).
 
 ## Runtimes
 
