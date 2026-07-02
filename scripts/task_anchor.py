@@ -35,6 +35,11 @@ Verbs:
   checklist  Emit the markdown item-by-item checklist (for the PR body / evidence comment).
   check      Drift verdict for THIS turn: pass --goal "<goal worked now>"; ANCHORED (all verified) |
              INCOMPLETE (criteria pending) | DRIFT (goal changed / no anchor). --exit-code → 11 on DRIFT.
+             --format text (default) | json | toon — `toon` renders the SAME verdict payload as
+             `--json` in TOON (Token-Oriented Object Notation, github.com/toon-format/toon) instead
+             of JSON, for the per-turn re-feed into the LLM's prompt (this is the "check every turn"
+             call — quality-safety-delivery.md Step 4a). The on-disk anchor.json itself is unaffected
+             — only this prompt-facing render can switch encoding.
   gate       The done/PR-open gate: READY only when every criterion is verified; else BLOCKED with
              the pending list. --exit-code → 12 when BLOCKED. Closing/opening a PR must pass this.
   selftest   Prove freeze/preserve/drift/coverage/gate/checklist deterministically — no files.
@@ -44,6 +49,7 @@ Usage:
         --ac "Login page renders an SSO button" --ac "Clicking it redirects to the IdP"
     python3 scripts/task_anchor.py mark --id AC1 --status done --evidence "web_verify .orchestrator/tee/web/login.png"
     python3 scripts/task_anchor.py check --goal "Add SSO login" --exit-code
+    python3 scripts/task_anchor.py check --goal "Add SSO login" --format toon
     python3 scripts/task_anchor.py gate --exit-code
     python3 scripts/task_anchor.py checklist
 """
@@ -63,6 +69,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 LOOP_DIR = os.path.join(REPO, ".orchestrator", "loop")
 ANCHOR = os.environ.get("SIMPLICIO_ANCHOR_FILE") or os.path.join(LOOP_DIR, "anchor.json")
+
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+from toon_codec import encode_toon  # noqa: E402 — prompt-facing render only, never the on-disk format
 
 STATUSES = ("pending", "partial", "done")
 _MD_CHECK = re.compile(r"^\s*[-*]\s*\[(?P<box>[ xX])\]\s*(?P<text>.+?)\s*$")
@@ -305,7 +315,13 @@ def cmd_check(opts):
     anchor = _load()
     goal_now = opts.get("goal")
     v = drift_verdict(anchor, goal_now if isinstance(goal_now, str) else None)
-    if opts.get("json"):
+    fmt = (opts.get("format") or ("json" if opts.get("json") else "text")).strip().lower()
+    if fmt == "toon":
+        # TOON (Token-Oriented Object Notation, github.com/toon-format/toon): same verdict payload
+        # as --format json, rendered leaner for the per-turn prompt re-feed. The on-disk anchor.json
+        # stays plain JSON — only this prompt-facing render switches encoding (#88).
+        print(encode_toon(v))
+    elif fmt == "json":
         print(json.dumps(v, indent=2, ensure_ascii=False))
     else:
         print(v["verdict"].lower())
