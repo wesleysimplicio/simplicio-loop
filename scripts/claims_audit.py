@@ -88,6 +88,7 @@ SELFTEST_SCRIPTS = [
     "scripts/handoff.py",
     "scripts/install_services.py",
     "scripts/mirror_manifest.py",
+    "scripts/toon_codec.py",
     "hooks/action_gate.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a

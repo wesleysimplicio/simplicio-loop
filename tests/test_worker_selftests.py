@@ -19,6 +19,7 @@ SELFTESTS = [
     ("scripts/pr_evidence.py", "selftest"),
     ("scripts/flow_audit.py", "selftest"),
     ("scripts/impact_audit.py", "selftest"),
+    ("scripts/toon_codec.py", "selftest"),
 ]
 
 
@@ -91,6 +92,12 @@ def test_install_services_selftest():
 def test_mirror_manifest_selftest():
     r = _run("scripts/mirror_manifest.py", "selftest")
     assert r.returncode == 0, "mirror_manifest selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_toon_codec_selftest():
+    r = _run("scripts/toon_codec.py", "selftest")
+    assert r.returncode == 0, "toon_codec selftest failed:\n%s%s" % (r.stdout, r.stderr)
     assert "PASS" in r.stdout, r.stdout
 
 
