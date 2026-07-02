@@ -190,11 +190,17 @@ detector below. It is the difference between a loop that converges and one that 
    AC-scoped change; the **`simplicio-dev-cli` operator APPLIES and verifies it**
    (`simplicio-dev-cli task "<change>" --target <file>`) — do not hand-edit inside the loop. End EVERY
    iteration with a short, concrete verification — the operator's passing test run, or one gate /
-   command / `file:line` receipt. **After the operator passes, the watcher-gate re-runs
-   independently** — a separate agent/PID re-executes the work and writes
-   `.orchestrator/loop/watcher_state.json` with `{"match": true, "status": "MEASURED"}` only when
-   `reported == watcher.recomputed_truth`. A `match: false` or missing watcher state is treated as
-   `UNVERIFIED` and gates the promise. If the actual edit surface expands, rerun `impact_audit.py` with
+   command / `file:line` receipt. **After the operator passes, run the watcher producer**:
+   `python3 scripts/watcher_verify.py verify` — it reads the per-iteration challenge the stop-hook
+   issued (`.orchestrator/loop/watcher_challenge.json`) and independently recomputes the frozen
+   anchor's done/pending state from disk (never trusting anything asserted in-context), then
+   writes `.orchestrator/loop/watcher_state.json` with `{"match": true, "status": "MEASURED",
+   "challenge": ..., "goal_fp": ...}` only when `reported == watcher.recomputed_truth` AND the
+   receipt echoes the current challenge. **Never hand-write `watcher_state.json` directly** — a
+   hand-written receipt cannot know the current challenge and will be rejected by the gate; this is
+   the mechanical fix for the plain-unauthenticated-JSON self-attestation gap. A `match: false`,
+   missing, or unchallenged watcher state is treated as `UNVERIFIED` and gates the promise. If the
+   actual edit surface expands, rerun `impact_audit.py` with
    the new seeds/cover and treat uncovered reverse dependents as failed verification; use
    `--fail-on medium` for shared/public contracts or signature changes. If the change crosses
    UI/API/service boundaries, rerun
@@ -363,15 +369,20 @@ The classic Ralph loop trusts the model to be honest. We do not. A `<promise>` i
 only if, in the SAME turn, there is concrete evidence the work is truly done, AND the
 **watcher-gate** has independently verified the result:
 
-- the **watcher-gate** itself (Asolaria N-Nest Corrective Gate) — a separate agent/PID
-  re-executes the work and compares results; `.orchestrator/loop/watcher_state.json` is written
-  with `{"match": true, "status": "MEASURED"}` only when `reported == watcher.recomputed_truth`,
-  or
+- the **watcher-gate** itself (Asolaria N-Nest Corrective Gate) — `python3
+  scripts/watcher_verify.py verify` independently re-executes the anchor's recompute and writes
+  `.orchestrator/loop/watcher_state.json` with `{"match": true, "status": "MEASURED", "challenge":
+  ..., "goal_fp": ...}` only when `reported == watcher.recomputed_truth`; the receipt must ALSO
+  echo the current per-iteration challenge the stop-hook issued (`watcher_challenge.json`) — a
+  receipt that doesn't, or predates the challenge, is rejected even if `match: true` (closes the
+  plain-unauthenticated-JSON self-attestation gap — never hand-write this file), or
 - the run-verification gate passed ("works, not just compiles" — `simplicio-tasks` Step 4b) —
   the `simplicio-dev-cli` operator's passing test+verify pass (its contract step 5/6) satisfies this, or
 - the flow coverage gate passed for a mixed front/back/service change —
   `python3 scripts/flow_audit.py audit <root> --fail-on high` (or `--fail-on medium` for ACs that
-  promise backend integration) found no unhandled UI/API/service gaps, or
+  promise backend integration) found no unhandled UI/API/service gaps — the stop-hook mechanically
+  requires a fresh, green `.orchestrator/flow-audit.json` receipt before honoring the promise
+  whenever the diff touches web-surface files, so this is enforced, not prose-only, or
 - the scope/impact gate passed for the changed shared files —
   `python3 scripts/impact_audit.py audit <root> --file <seed> ...` found no uncovered reverse
   dependents (and, for shared/public contracts, no uncovered local deps/tests under `--fail-on medium`), or
@@ -463,7 +474,7 @@ Where the host runtime supports lifecycle hooks, bind the two cross-platform hoo
 | Hook | Fires | Job |
 |---|---|---|
 | `afterAgentResponse` → `loop_capture.py` | after every turn | extract `<promise>…</promise>`; if it exactly equals `completion_promise` AND in-turn evidence exists → `touch .orchestrator/loop/done`. Fire-and-forget, `exit 0`. Never stops the loop itself. |
-| `stop` → `loop_stop.py` | when the turn ends | guard clauses, each ends the loop cleanly (remove state, `exit 0`): (1) no scratchpad → stop; (2) corrupt frontmatter → stop; (3) `done` flag present → stop (promise fulfilled); (4) `iteration >= max_iterations > 0` → write `HANDOFF.md`, then stop (cap); (5) budget halted → write `HANDOFF.md` (frozen goal + AC status + last attempts) for a different agent to resume, then stop; (6) **spindle handoff latched** → write `HANDOFF.md` and stop (the next agent will pick up); **before promise check: runs watcher-gate** — reads `.orchestrator/loop/watcher_state.json` and rejects the promise if `match: false` or `status: UNVERIFIED`; the re-feed header is tagged with `MEASURED`/`UNVERIFIED` accordingly; else increment `iteration` in place and emit `{"followup_message": "<header>\\n\\n<goal body>"}` to re-feed. |
+| `stop` → `loop_stop.py` | when the turn ends | guard clauses, each ends the loop cleanly (remove state, `exit 0`): (1) no scratchpad → stop; (2) corrupt frontmatter → stop; (2b) **bound operator missing** (when this repo ships `simplicio-loop`, `simplicio-mapper`/`simplicio-dev-cli` absent from PATH) → write `HANDOFF.md`, then stop (never silently degrade to LLM hand-survey/hand-edit); (3) `done` flag present → stop (promise fulfilled); (4) `iteration >= max_iterations > 0` → write `HANDOFF.md`, then stop (cap); (5) budget halted → write `HANDOFF.md` (frozen goal + AC status + last attempts) for a different agent to resume, then stop; (6) **spindle handoff latched** → write `HANDOFF.md` and stop (the next agent will pick up); **before promise check: runs watcher-gate** — reads `.orchestrator/loop/watcher_state.json` and rejects the promise if `match: false`, `status: UNVERIFIED`, or the receipt doesn't echo the current `watcher_challenge.json` nonce/goal_fp; also runs the **flow-audit gate** — a web-touching diff with no fresh, green `.orchestrator/flow-audit.json` rejects the promise too; the re-feed header is tagged with `MEASURED`/`UNVERIFIED` and names any flow-audit gap; a fallback `loop_journal.py record` fires if the agent didn't record one manually this turn, so the phase planner is never blind; a fresh watcher challenge is written before the re-feed; else increment `iteration` in place and emit `{"followup_message": "<header>\\n\\n<goal body>"}` to re-feed. |
 
 Detection (`capture`) and termination (`stop`) are split on purpose — neither parses the
 other's inline state. Iteration carries forward through git history + the working tree, not

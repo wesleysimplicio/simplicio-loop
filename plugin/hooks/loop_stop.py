@@ -21,9 +21,11 @@ the dead-end attempts. A successful (promise-fulfilled) stop needs no handoff.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 LOOP_DIR = os.path.join(".orchestrator", "loop")
 SCRATCHPAD = os.path.join(LOOP_DIR, "scratchpad.md")
@@ -38,8 +40,13 @@ BUDGET = os.path.join(".orchestrator", "loop-budget.json")
 GATE_LOCK = os.path.join(LOOP_DIR, "gate.lock")
 GATE_TTL_SEC = 1800  # 30 min — a stale lock must NEVER permanently trap the loop (fail-open)
 WATCHER_STATE = os.path.join(LOOP_DIR, "watcher_state.json")
+WATCHER_CHALLENGE = os.path.join(LOOP_DIR, "watcher_challenge.json")
 SPINDLE_STATE = os.path.join(LOOP_DIR, "spindle_state.json")
 PHASE_FILE = os.path.join(LOOP_DIR, "phase.json")
+FLOW_AUDIT_RECEIPT = os.path.join(".orchestrator", "flow-audit.json")
+SIMPLICIO_LOOP_SKILL_MARKER = os.path.join(".claude", "skills", "simplicio-loop", "SKILL.md")
+BOUND_OPERATORS = ("simplicio-mapper", "simplicio-dev-cli")
+WEB_EXTS = {".tsx", ".jsx", ".vue", ".svelte", ".html"}
 
 EVIDENCE_RE = re.compile(
     r"(https?://\S+/pull/\d+)"          # a PR URL
@@ -57,7 +64,7 @@ def allow_stop():
 
 
 def cleanup_and_stop():
-    for p in (SCRATCHPAD, DONE_FLAG, LEGACY_DONE_FLAG, LAST_RESP, WATCHER_STATE):
+    for p in (SCRATCHPAD, DONE_FLAG, LEGACY_DONE_FLAG, LAST_RESP, WATCHER_STATE, WATCHER_CHALLENGE):
         try:
             if os.path.exists(p):
                 os.remove(p)
@@ -270,7 +277,12 @@ def write_handoff(reason, meta=None, body=None):
         with open(tmp, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
         os.replace(tmp, HANDOFF)
-        refresh_cross_agent_wiki(include_handoff=True)
+        # include_handoff=False: this function just wrote the RICH handoff (frozen goal + AC
+        # checklist + last attempts) directly above. cross_agent_wiki.py's own `handoff` command
+        # writes the SAME path with a thinner layout — calling it here would immediately clobber
+        # what we just wrote (the three-writer bug, #68). Only capture + summary run; HANDOFF.md
+        # keeps a single owner for an INCOMPLETE stop.
+        refresh_cross_agent_wiki(include_handoff=False)
     except Exception:
         pass  # fail-open: a broken handoff write must never block the stop
 
@@ -288,6 +300,160 @@ def budget_halted():
         return ceiling > 0 and spent >= ceiling
     except Exception:
         return False  # fail-open: budget unreadable ≠ trap
+
+
+def missing_bound_operators():
+    """Return the bound-operator binaries missing from PATH, or [] if not applicable.
+
+    CLAUDE.md / `simplicio-loop` SKILL.md: when a body-of-work loop is driven by the
+    `simplicio-loop` companion skill, `simplicio-mapper` (survey) and `simplicio-dev-cli`
+    (operate) are REQUIRED — "the loop BLOCKS if either is absent". That contract was previously
+    enforced only at install/doctor time (#83); the running driver never checked it, so a
+    marketplace install, a PATH mismatch, or an operator uninstalled after setup silently
+    degraded to LLM hand-survey/hand-edit — exactly what the operators exist to prevent.
+
+    Scoped to repos that actually ship the `simplicio-loop` skill (its SKILL.md is the marker) —
+    a bare `simplicio-tasks` loop with no `simplicio-loop` companion has no operator requirement.
+    Fail-open: any probe error is treated as "present" (never trap the loop over a probe bug).
+    """
+    try:
+        if not os.path.exists(SIMPLICIO_LOOP_SKILL_MARKER):
+            return []
+        return [b for b in BOUND_OPERATORS if shutil.which(b) is None]
+    except Exception:
+        return []
+
+
+def _flow_audit_module():
+    """Best-effort import of scripts/flow_audit.py for its FRONT_HINTS/BACK_HINTS. None on failure."""
+    try:
+        repo_root = os.getcwd()
+        scripts_dir = os.path.join(repo_root, "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import flow_audit as _fa  # noqa: local import, optional dependency
+        return _fa
+    except Exception:
+        return None
+
+
+def _changed_files():
+    """Best-effort set of files touched in the working tree (uncommitted + untracked + last
+    commit). A heuristic, not a precise "since loop start" diff — fail-open: {} on any error.
+
+    Excludes `.orchestrator/` (the loop's own state files — never source, and would otherwise
+    make the receipt's own write, or a sibling state write, look like a "later" source change)
+    and build/cache noise (`__pycache__`, `.pyc`) that this very check's own module import can
+    create — that self-inflicted false-positive is exactly why both are filtered here.
+    """
+    out = set()
+    for args in (
+        ["git", "diff", "--name-only", "HEAD"],
+        ["git", "diff", "--name-only", "HEAD~1", "HEAD"],
+        ["git", "ls-files", "--others", "--exclude-standard"],
+    ):
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                out.update(ln.strip() for ln in r.stdout.splitlines() if ln.strip())
+        except Exception:
+            continue
+    return {
+        f for f in out
+        if not f.startswith(".orchestrator/") and "__pycache__" not in f and not f.endswith((".pyc", ".pyo"))
+    }
+
+
+def _touches_web_surface(files):
+    fa = _flow_audit_module()
+    front = tuple(getattr(fa, "FRONT_HINTS", ()) or ())
+    back = tuple(getattr(fa, "BACK_HINTS", ()) or ())
+    for f in files:
+        ext = os.path.splitext(f)[1].lower()
+        if ext in WEB_EXTS:
+            return True
+        fl = "/" + f.replace(os.sep, "/").lower()
+        if any(h in fl for h in front) or any(h in fl for h in back):
+            return True
+    return False
+
+
+def flow_audit_gap():
+    """Return a human-readable gap string when a web-touching diff lacks a fresh, passing
+    `.orchestrator/flow-audit.json` receipt; None when there is nothing to require (#80).
+
+    Mechanizes what was previously prose-only (SKILL.md instructions the agent could skip under
+    context pressure): the anchor gate, watcher gate, cap, and budget are all enforced IN this
+    hook — the front→back integration gate now is too. Fail-open only when `flow_audit.py` itself
+    is absent (a bare `simplicio-tasks` repo with no flow_audit worker) or the diff/receipt can't
+    be read — never trap the loop over an audit-plumbing error.
+    """
+    try:
+        fa = _flow_audit_module()
+        if fa is None:
+            return None
+        files = _changed_files()
+        if not _touches_web_surface(files):
+            return None
+        if not os.path.exists(FLOW_AUDIT_RECEIPT):
+            return ("flow audit missing — run `python3 scripts/flow_audit.py audit . "
+                     "--fail-on high --json > .orchestrator/flow-audit.json`")
+        receipt_mtime = os.path.getmtime(FLOW_AUDIT_RECEIPT)
+        for f in files:
+            try:
+                if os.path.getmtime(f) > receipt_mtime:
+                    return ("flow audit stale — re-run `python3 scripts/flow_audit.py audit . "
+                             "--fail-on high --json > .orchestrator/flow-audit.json`")
+            except OSError:
+                continue
+        with open(FLOW_AUDIT_RECEIPT, encoding="utf-8") as f:
+            receipt = json.load(f)
+        if not receipt.get("ok", False):
+            high = receipt.get("counts", {}).get("high_issues", "?")
+            return "flow audit failing (%s high issue(s)) — fix and re-run flow_audit.py" % high
+        return None
+    except Exception:
+        return None  # fail-open: a broken audit read must never trap the loop
+
+
+def auto_record_journal(iteration, has_evidence):
+    """Fallback journal record so the hierarchical planner is never blind (#67).
+
+    `scripts/hierarchical_planner.py` derives `iterations_run` from
+    `.orchestrator/loop/journal.jsonl` — but nothing auto-writes that file; only the manual
+    `loop_journal.py record` call (SKILL.md Step 4) does. An agent that forgets it leaves the
+    planner permanently frozen at "no history". This writes a minimal fallback record for THIS
+    iteration if — and only if — the agent hasn't already recorded one itself this turn (checked
+    by inspecting the last row), so a rich manual record is never overwritten or double-counted.
+    Gate is intentionally "blocked", never "fail": this is a presence signal for phase timing, not
+    a substitute for the real attempt-memory the agent records on a genuine failure. Fail-open.
+    """
+    try:
+        if os.path.exists(JOURNAL):
+            with open(JOURNAL, encoding="utf-8") as f:
+                lines = [ln for ln in f if ln.strip()]
+            if lines:
+                try:
+                    last = json.loads(lines[-1])
+                    if int(last.get("iteration", -1)) == iteration:
+                        return  # agent already recorded this turn manually
+                except Exception:
+                    pass
+        repo_root = os.getcwd()
+        script = os.path.join(repo_root, "scripts", "loop_journal.py")
+        if not os.path.exists(script):
+            return
+        gate = "pass" if has_evidence else "blocked"
+        subprocess.run(
+            [sys.executable, script, "record",
+             "--iteration", str(iteration),
+             "--action", "auto: turn %d (no manual loop_journal record)" % iteration,
+             "--gate", gate,
+             "--note", "auto-recorded fallback"],
+            capture_output=True, timeout=10, cwd=repo_root,
+        )
+    except Exception:
+        pass
 
 
 def _discover_simplicio_cli():
@@ -347,12 +513,56 @@ def _call_simplicio_nest():
             continue
 
 
+def read_watcher_challenge():
+    """Return the current per-iteration watcher challenge dict, or None. Fail-open."""
+    try:
+        with open(WATCHER_CHALLENGE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def write_watcher_challenge(iteration):
+    """Issue a fresh per-iteration nonce the watcher receipt must echo (#82 challenge binding).
+
+    Written at the END of a turn that re-feeds (so it is on disk BEFORE the next turn's agent
+    acts, letting `scripts/watcher_verify.py` — run mid-turn, before the Stop hook fires — read
+    and echo it). A promise turn's receipt is checked against whatever challenge is on disk when
+    THIS Stop hook runs; a receipt that predates the challenge, or answers a different one, fails
+    the gate. This is what makes the watcher gate more than a plain unauthenticated JSON write:
+    the agent would have to notice, read, and correctly echo a value it does not control the
+    timing of — a visible, journaled action, not a silent one-call spoof. Fail-open: any write
+    error must never block the re-feed itself.
+    """
+    try:
+        anchor = read_anchor() or {}
+        os.makedirs(LOOP_DIR, exist_ok=True)
+        payload = {
+            "challenge": uuid.uuid4().hex[:20],
+            "iteration": iteration,
+            "goal_fp": anchor.get("goal_fp", ""),
+            "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        tmp = WATCHER_CHALLENGE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp, WATCHER_CHALLENGE)
+    except Exception:
+        pass
+
+
 def watcher_verify():
     """Run pre-promise watcher verification per Asolaria N-Nest Corrective Gate pattern.
 
     Reads `.orchestrator/loop/watcher_state.json` written by the watcher process (a separate
     agent/PID that independently re-executes the work and compares results against the agent's
     reported output). Gate: `reported == watcher.recomputed_truth`.
+
+    Challenge binding (#82): a receipt must additionally echo the CURRENT per-iteration
+    `watcher_challenge.json` nonce (and the frozen anchor's `goal_fp`, when an anchor exists) —
+    otherwise it is rejected even if `match: true`. This closes the plain self-attestation gap: a
+    receipt hand-written once at iteration 1 (or copied from a stale run) can no longer satisfy the
+    gate on a later, different iteration/goal.
 
     Returns (passed: bool, tag: str) where tag is "MEASURED" (verified) or "UNVERIFIED" (not
     verified or mismatch). If no watcher state exists → UNVERIFIED (gate fails). Fail-open:
@@ -365,9 +575,21 @@ def watcher_verify():
             state = json.load(f)
         match = bool(state.get("match", False))
         status = str(state.get("status", "UNVERIFIED"))
-        if match and status == "MEASURED":
-            return True, "MEASURED"
-        return False, "UNVERIFIED"
+        if not (match and status == "MEASURED"):
+            return False, "UNVERIFIED"
+        challenge = read_watcher_challenge()
+        if not challenge:
+            return False, "UNVERIFIED"  # no challenge on disk — nothing valid to echo yet
+        if state.get("challenge") != challenge.get("challenge"):
+            return False, "UNVERIFIED"
+        expected_fp = challenge.get("goal_fp") or ""
+        if expected_fp and state.get("goal_fp") != expected_fp:
+            return False, "UNVERIFIED"
+        checked_at = state.get("checked_at") or ""
+        written_at = challenge.get("written_at") or ""
+        if checked_at and written_at and checked_at < written_at:
+            return False, "UNVERIFIED"  # receipt predates the challenge it claims to answer
+        return True, "MEASURED"
     except Exception:
         return False, "UNVERIFIED"
 
@@ -510,8 +732,23 @@ def main():
         promise = None if promise in (None, "null", "") else promise
         evidence_required = str(meta.get("evidence_required", "true")).lower() != "false"
 
+        # (2b) Bound operators required (#83) — when this repo ships the simplicio-loop
+        # companion skill, `simplicio-mapper`/`simplicio-dev-cli` are hard deps of the running
+        # loop, not just the installer. A genuine BLOCK (handoff + stop), mirroring the cap and
+        # budget gates, so a marketplace install / PATH gap can never silently degrade to LLM
+        # hand-survey/hand-edit.
+        missing_ops = missing_bound_operators()
+        if missing_ops:
+            write_handoff("bound operator missing: %s" % ", ".join(missing_ops), meta, body)
+            cleanup_and_stop()
+
         stdin = read_stdin_json()
         resp = last_assistant_text(stdin)
+        has_evidence = bool(resp and EVIDENCE_RE.search(resp))
+
+        # Fallback attempt-memory record (#67) so the hierarchical planner is never blind to
+        # this turn even if the agent forgot the manual `loop_journal.py record` call.
+        auto_record_journal(iteration, has_evidence)
 
         # HRM-style hierarchical planner: re-assess phase on stall or every N iterations.
         # Runs BEFORE the promise gate so the phase context is available.
@@ -522,20 +759,23 @@ def main():
         # independently re-computes the truth. Gate: reported == watcher.recomputed_truth.
         watcher_pass, watcher_tag = watcher_verify()
 
+        # Pre-promise: front→back flow-audit gate (#80) — mechanical, not prose-only.
+        flow_gap = flow_audit_gap()
+
         # Completion detection (capture folded in for single-hook runtimes like Claude).
         if promise and resp:
             m = PROMISE_RE.search(resp)
             if m and m.group(1).strip() == promise.strip():
-                has_evidence = bool(EVIDENCE_RE.search(resp))
                 # The promise is honored only with evidence AND watcher verification AND no
-                # acceptance criterion still open in the task anchor. The watcher-gate ensures
-                # the agent's result was independently re-executed and matched before the
-                # promise is accepted — corrective gate per Asolaria.
-                if ((not evidence_required) or has_evidence) and watcher_pass and not anchor_pending():
+                # acceptance criterion still open in the task anchor AND no open flow-audit gap.
+                # The watcher-gate ensures the agent's result was independently re-executed and
+                # matched before the promise is accepted — corrective gate per Asolaria.
+                if (((not evidence_required) or has_evidence) and watcher_pass
+                        and not anchor_pending() and not flow_gap):
                     refresh_cross_agent_wiki(include_handoff=False)
                     cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
-                # promise without evidence, or watcher disagrees, or anchor still has open ACs
-                # → ignore, keep looping
+                # promise without evidence, or watcher disagrees, or anchor still has open ACs,
+                # or a flow-audit gap remains → ignore, keep looping
         # (3') Cursor capture may have raised the flag.
         if os.path.exists(DONE_FLAG) or os.path.exists(LEGACY_DONE_FLAG):
             cleanup_and_stop()
@@ -588,9 +828,14 @@ def main():
             if pending
             else ""
         )
-        header = "[simplicio-loop iteration %d.%s%s%s %s]" % (
-            nxt, promise_hint, ac_hint, phase_header_hint(), watcher_tag
+        flow_hint = " Flow-audit gap: %s." % flow_gap if flow_gap else ""
+        header = "[simplicio-loop iteration %d.%s%s%s%s %s]" % (
+            nxt, promise_hint, ac_hint, flow_hint, phase_header_hint(), watcher_tag
         )
+        # Issue the NEXT iteration's watcher challenge before re-feeding (#82) — must be on disk
+        # before the next turn's agent acts, so a mid-turn `watcher_verify.py` run can read and
+        # echo it.
+        write_watcher_challenge(nxt)
         refresh_cross_agent_wiki(include_handoff=False)
         emit_refeed(header + "\n\n" + (body or ""))
     except Exception:

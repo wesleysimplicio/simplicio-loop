@@ -26,8 +26,7 @@ Add to `.claude/settings.json` (the installer does this for you):
 ```json
 { "hooks": {
   "Stop": [ { "hooks": [
-    { "type": "command", "command": "python3 ./hooks/loop_stop.py" },
-    { "type": "command", "command": "python3 ./hooks/learn_stop.py" }
+    { "type": "command", "command": "python3 ./hooks/loop_stop.py" }
   ] } ],
   "PreToolUse": [ { "matcher": "Bash",
     "hooks": [ { "type": "command", "command": "python3 ./hooks/orient_rewrite.py" } ] } ]

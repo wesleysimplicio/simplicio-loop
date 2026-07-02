@@ -55,7 +55,7 @@ Each step buys a concrete gain in **quality**, **token economy**, or **delivery 
 
 | Event | Hooks |
 |---|---|
-| `Stop` | `loop_stop.py` (re-feed / evidence-gated exit) · `learn_stop.py` (queue retrospective) |
+| `Stop` | `loop_stop.py` (re-feed / evidence-gated exit) |
 | `PreToolUse` (Bash) | `action_gate.py` (fail-closed safety gate) · `orient_rewrite.py` (opt-in output clamp, shells out to `orient_clamp.py`) |
 
 **Project-scoped by design.** The two `PreToolUse` (Bash) hooks act **only inside an active

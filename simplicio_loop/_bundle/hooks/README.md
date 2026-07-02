@@ -15,7 +15,6 @@ not a pass. It still lets every benign command through, so it never bricks norma
 | `action_gate.py` | safety: **fail-closed** — block irreversible ops + secret-laden commits/pushes BEFORE they run | `PreToolUse` (Bash) / git pre-push |
 | `orient_clamp.py` | simplicio-orient: **wrapper** — run a command, return reduced output + tee-on-failure | called directly, any runtime |
 | `orient_rewrite.py` | simplicio-orient: auto-route heavy read-only commands through the clamp (opt-in) | `PreToolUse` |
-| `learn_stop.py` | simplicio-learn: queue the finished run for a retrospective | `stop` / `SubagentStop` |
 
 ## The safety gate (`action_gate.py`)
 
@@ -65,8 +64,7 @@ Add (paths relative to the repo root, or absolute):
   "hooks": {
     "Stop": [
       { "hooks": [
-        { "type": "command", "command": "python3 ./hooks/loop_stop.py" },
-        { "type": "command", "command": "python3 ./hooks/learn_stop.py" }
+        { "type": "command", "command": "python3 ./hooks/loop_stop.py" }
       ] }
     ],
     "PreToolUse": [

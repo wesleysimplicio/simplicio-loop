@@ -74,12 +74,24 @@ def _install_runtime_scripts(root):
         shutil.copy2(os.path.join(REPO, "scripts", name), os.path.join(scripts_dir, name))
 
 
-def _write_watcher_pass(root):
-    """Write a passing watcher state (Asolaria N-Nest Corrective Gate)."""
+def _write_watcher_challenge(root, challenge="chal-1", goal_fp="", written_at="2026-07-01T00:00:00Z"):
+    """Simulate a challenge already issued by a prior turn's re-feed (#82)."""
     loop = os.path.join(root, ".orchestrator", "loop")
     os.makedirs(loop, exist_ok=True)
+    with open(os.path.join(loop, "watcher_challenge.json"), "w", encoding="utf-8") as f:
+        json.dump({"challenge": challenge, "goal_fp": goal_fp, "written_at": written_at}, f)
+
+
+def _write_watcher_pass(root, challenge="chal-1", goal_fp="", checked_at="2026-07-01T00:00:01Z"):
+    """Write a passing watcher state (Asolaria N-Nest Corrective Gate) that echoes the current
+    per-iteration challenge (#82) — a receipt written without a matching challenge on disk must
+    NOT satisfy the gate; see test_watcher_receipt_without_challenge_does_not_stop."""
+    loop = os.path.join(root, ".orchestrator", "loop")
+    os.makedirs(loop, exist_ok=True)
+    _write_watcher_challenge(root, challenge=challenge, goal_fp=goal_fp, written_at="2026-07-01T00:00:00Z")
     with open(os.path.join(loop, "watcher_state.json"), "w", encoding="utf-8") as f:
-        json.dump({"match": True, "status": "MEASURED", "checked_at": "2026-07-01T00:00:00Z"}, f)
+        json.dump({"match": True, "status": "MEASURED", "checked_at": checked_at,
+                    "challenge": challenge, "goal_fp": goal_fp}, f)
 
 
 def _write_phase(root, phase="implement", strategy="Ship the smallest verified increment", guard="Do not refactor unrelated code"):
@@ -296,6 +308,156 @@ def test_spindle_latched_writes_handoff_and_stops(tmp_path):
     handoff = os.path.join(root, HANDOFF)
     assert os.path.exists(handoff), "latched spindle should write HANDOFF.md"
     assert "codex" in open(handoff, encoding="utf-8").read()
+
+
+def test_watcher_receipt_without_challenge_does_not_stop(tmp_path):
+    # #82: a plain, unauthenticated watcher_state.json (no challenge on disk at all) must NOT
+    # satisfy the gate — this is exactly the one-Write-call spoof the challenge binding closes.
+    root = str(tmp_path)
+    _arm(root, iteration=1, max_iter=5)
+    loop = os.path.join(root, ".orchestrator", "loop")
+    os.makedirs(loop, exist_ok=True)
+    with open(os.path.join(loop, "watcher_state.json"), "w", encoding="utf-8") as f:
+        json.dump({"match": True, "status": "MEASURED", "checked_at": "2026-07-01T00:00:00Z"}, f)
+    r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
+                    "https://github.com/o/r/pull/9")
+    assert "followup_message" in r.stdout or "block" in r.stdout, \
+        "an unchallenged watcher receipt must not honor the promise:\n%s" % r.stdout
+    assert os.path.exists(_scratchpad(root)), "loop wrongly stopped on an unchallenged receipt"
+
+
+def test_watcher_receipt_wrong_challenge_does_not_stop(tmp_path):
+    # A receipt that echoes the WRONG (stale/foreign) challenge must not satisfy the gate either.
+    root = str(tmp_path)
+    _arm(root, iteration=1, max_iter=5)
+    _write_watcher_challenge(root, challenge="real-challenge")
+    loop = os.path.join(root, ".orchestrator", "loop")
+    with open(os.path.join(loop, "watcher_state.json"), "w", encoding="utf-8") as f:
+        json.dump({"match": True, "status": "MEASURED", "checked_at": "2026-07-01T00:00:01Z",
+                    "challenge": "guessed-or-stale-challenge"}, f)
+    r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
+                    "https://github.com/o/r/pull/9")
+    assert "followup_message" in r.stdout or "block" in r.stdout, \
+        "a receipt echoing the wrong challenge must not honor the promise:\n%s" % r.stdout
+    assert os.path.exists(_scratchpad(root)), "loop wrongly stopped on a mismatched challenge"
+
+
+def test_watcher_receipt_matching_challenge_stops(tmp_path):
+    # The positive path: a receipt that correctly echoes the CURRENT challenge still stops the loop.
+    root = str(tmp_path)
+    _arm(root, iteration=1, max_iter=5)
+    _write_watcher_pass(root, challenge="issued-this-turn")
+    with open(os.path.join(root, ".orchestrator", "loop", "watcher_state.json"), "w", encoding="utf-8") as f:
+        json.dump({"match": True, "status": "MEASURED", "checked_at": "2026-07-01T00:00:01Z",
+                    "challenge": "issued-this-turn", "goal_fp": ""}, f)
+    r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
+                    "https://github.com/o/r/pull/9")
+    assert r.stdout.strip() == "", "a correctly-challenged receipt should stop the loop:\n%s" % r.stdout
+    assert not os.path.exists(_scratchpad(root))
+
+
+def test_bound_operator_missing_blocks_when_simplicio_loop_shipped(tmp_path):
+    # #83: when the repo ships the simplicio-loop companion skill, a missing bound operator
+    # (simplicio-mapper / simplicio-dev-cli — never installed in this sandboxed test env) must
+    # BLOCK the loop (handoff + stop), not silently continue with LLM hand-survey/hand-edit.
+    root = str(tmp_path)
+    _arm(root, iteration=1, max_iter=5)
+    skill_dir = os.path.join(root, ".claude", "skills", "simplicio-loop")
+    os.makedirs(skill_dir, exist_ok=True)
+    open(os.path.join(skill_dir, "SKILL.md"), "w").close()
+    r = _tick(root, "still working, no promise yet")
+    assert r.stdout.strip() == "", "missing bound operator must BLOCK (stop), not re-feed:\n%s" % r.stdout
+    assert not os.path.exists(_scratchpad(root)), "operator-missing block should clean up loop state"
+    handoff = os.path.join(root, HANDOFF)
+    assert os.path.exists(handoff), "operator-missing block should write HANDOFF.md"
+    assert "bound operator missing" in open(handoff, encoding="utf-8").read()
+
+
+def test_no_simplicio_loop_skill_skips_operator_check(tmp_path):
+    # A bare simplicio-tasks loop (no simplicio-loop companion skill shipped) has no operator
+    # requirement — the check must be a no-op and the loop continues normally.
+    root = str(tmp_path)
+    _arm(root, iteration=2, max_iter=5)
+    r = _tick(root, "still working, no promise yet")
+    assert "followup_message" in r.stdout
+    assert _iteration(root) == 3
+
+
+def _write_web_file(root, rel="frontend/Login.tsx"):
+    path = os.path.join(root, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("export function Login() { return <button onClick={()=>fetch('/api/login')}/> }\n")
+    subprocess.run(["git", "init", "-q"], cwd=root)
+
+
+def _install_flow_audit(root):
+    scripts_dir = os.path.join(root, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    shutil.copy2(os.path.join(REPO, "scripts", "flow_audit.py"), os.path.join(scripts_dir, "flow_audit.py"))
+
+
+def test_flow_audit_gap_blocks_promise_on_web_diff(tmp_path):
+    # #80: a web-touching diff with no flow-audit receipt must not honor the promise, even with
+    # evidence + watcher pass + no open ACs — the front→back gate is mechanical now.
+    root = str(tmp_path)
+    _arm(root, iteration=1, max_iter=5)
+    _install_flow_audit(root)
+    _write_web_file(root)
+    _write_watcher_pass(root)
+    r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
+                    "https://github.com/o/r/pull/9")
+    assert "followup_message" in r.stdout or "block" in r.stdout, \
+        "a web-touching diff with no flow-audit receipt must not honor the promise:\n%s" % r.stdout
+    assert os.path.exists(_scratchpad(root)), "loop wrongly stopped without a flow-audit receipt"
+    assert "flow audit" in r.stdout.lower()
+
+
+def test_flow_audit_gap_absent_for_non_web_diff(tmp_path):
+    # A non-web diff is unaffected — no new friction.
+    root = str(tmp_path)
+    _arm(root, iteration=1, max_iter=5)
+    _install_flow_audit(root)
+    path = os.path.join(root, "server.py")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("print('hi')\n")
+    subprocess.run(["git", "init", "-q"], cwd=root)
+    _write_watcher_pass(root)
+    r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
+                    "https://github.com/o/r/pull/9")
+    assert r.stdout.strip() == "", "non-web diff must not be gated by flow-audit:\n%s" % r.stdout
+
+
+def test_flow_audit_green_receipt_allows_stop(tmp_path):
+    # A fresh, green flow-audit receipt lets the promise stop the loop as usual.
+    root = str(tmp_path)
+    _arm(root, iteration=1, max_iter=5)
+    _install_flow_audit(root)
+    _write_web_file(root)
+    _write_watcher_pass(root)
+    orch = os.path.join(root, ".orchestrator")
+    os.makedirs(orch, exist_ok=True)
+    with open(os.path.join(orch, "flow-audit.json"), "w", encoding="utf-8") as f:
+        json.dump({"ok": True, "counts": {"high_issues": 0}}, f)
+    r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
+                    "https://github.com/o/r/pull/9")
+    assert r.stdout.strip() == "", "green flow-audit receipt should allow the stop:\n%s" % r.stdout
+
+
+def test_handoff_not_clobbered_by_wiki_on_cap_stop(tmp_path):
+    # #68: loop_stop's rich handoff (frozen goal + AC checklist) must survive the cap stop — it
+    # must NOT be immediately overwritten by cross_agent_wiki's thinner layout.
+    root = str(tmp_path)
+    _arm(root, iteration=5, max_iter=5)
+    _install_runtime_scripts(root)
+    r = _tick(root, "still going, no promise here")
+    assert r.stdout.strip() == ""
+    handoff = os.path.join(root, HANDOFF)
+    assert os.path.exists(handoff)
+    body = open(handoff, encoding="utf-8").read()
+    assert body.startswith("# simplicio-loop handoff"), \
+        "rich loop_stop handoff must not be clobbered by cross_agent_wiki:\n%s" % body[:200]
+    assert "(cross-agent wiki)" not in body.splitlines()[0]
 
 
 if __name__ == "__main__":

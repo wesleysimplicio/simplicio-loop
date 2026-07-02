@@ -504,12 +504,11 @@
       { "file": "action_gate.py", "role": "safety FAIL-CLOSED: bloqueia force-push, history rewrite (filter-branch), remote-ref delete, mass-delete (rm -rf /), DDL destrutivo (DROP DATABASE), infra teardown (terraform destroy), e qualquer commit/push com segredo no diff (AWS/GitHub/Slack/OpenAI keys, private keys, creds hardcoded — placeholder-aware). selftest prova a ruleset (14/14).", "event": "PreToolUse (Bash) / git pre-push", "fail_mode": "fail-CLOSED" },
       { "file": "orient_clamp.py", "role": "simplicio-orient WRAPPER: roda comando, retorna saída reduzida + tee-on-failure. Zero wiring, qualquer runtime.", "event": "chamado direto", "fail_mode": "fail-open" },
       { "file": "orient_rewrite.py", "role": "simplicio-orient: auto-roteia comandos read-only pesados pelo clamp (opt-in). Nunca reescreve writes/excluded/compound.", "event": "PreToolUse", "fail_mode": "fail-open" },
-      { "file": "learn_stop.py", "role": "simplicio-learn: enfileira o run finalizado p/ retrospectiva", "event": "stop / SubagentStop", "fail_mode": "fail-open" },
       { "file": "simplicio_dashboard.py", "role": "Dashboard server (token monitor web em :9090)", "event": "auxiliar", "fail_mode": "—" },
       { "file": "simplicio_watch.py", "role": "Watcher de token monitor", "event": "auxiliar", "fail_mode": "—" }
     ],
     "manifests": ["hooks/hooks.json (formato Cursor)", "hooks/hooks.claude.json (formato Claude usado pelo plugin)"],
-    "claude_wiring": { "Stop": ["python3 ./hooks/loop_stop.py", "python3 ./hooks/learn_stop.py"], "PreToolUse(Bash)": ["python3 ./hooks/action_gate.py", "python3 ./hooks/orient_rewrite.py"] },
+    "claude_wiring": { "Stop": ["python3 ./hooks/loop_stop.py"], "PreToolUse(Bash)": ["python3 ./hooks/action_gate.py", "python3 ./hooks/orient_rewrite.py"] },
     "git_pre_push": "printf '#!/bin/sh\\npython3 hooks/action_gate.py check --staged\\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push"
   },
 
