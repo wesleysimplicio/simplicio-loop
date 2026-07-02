@@ -66,7 +66,7 @@ them to two installed CLIs (hard deps of `pip install simplicio-loop`) and BLOCK
 
 | Point(s) | Bound CLI | What replaces the LLM fallback |
 |---|---|---|
-| `orient` / `recall` | `simplicio-mapper` (`simplicio-mapper scan . --json`; `macro` for an instant skeleton, `status` for the deep-pass phase, `index . --json` for a forced synchronous build) | the repo SURVEY — `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph) instead of ad-hoc LLM reads |
+| `orient` / `recall` | `simplicio-mapper` (`simplicio-mapper scan . --json`; `macro` for an instant skeleton, `status` for the deep-pass phase, `index . --json` for a forced synchronous build; v0.13+: `inspect . --json` as the artifact evidence gate, `handoff . --json` for the compact context-pack that feeds the goal) | the repo SURVEY — `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph) instead of ad-hoc LLM reads |
 | `execute` / `deterministic_edit` / `validate` / `diagnostics` | `simplicio-dev-cli task` (binary `simplicio-dev-cli`, pkg `simplicio-cli`) | the OPERATOR — applies a decided change via its 6-layer contract (mapper→precedent→prompt→diff→test→verify, ≤3 retries); the AI never hand-writes the diff inside the loop |
 
 This is the one place the abstraction is realized by a REQUIRED binding rather than an optional
