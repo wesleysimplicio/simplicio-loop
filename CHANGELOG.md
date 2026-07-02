@@ -5,6 +5,16 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+### Added
+- The survey step now exercises the full mapper 0.13 surface: `simplicio-mapper inspect . --json`
+  is the survey's own evidence gate (artifacts proven on disk before the loop trusts them) and
+  `simplicio-mapper handoff . --json` feeds the goal with the compact context-pack
+  (files/symbols/deps/`pack_hash` + `llm_directives`) instead of re-reading the tree
+  (`.claude/skills/simplicio-loop/SKILL.md`, `simplicio-tasks` extension-points reference,
+  `plugin`/`_bundle` mirrors).
+- `scripts/doctor.py` gains an OPTIONAL `mapper inspect/handoff` capability check (WARN + `pip -U`
+  repair when the installed mapper predates 0.13; never a FAIL).
+
 ## [3.20.1] — 2026-07-02
 
 ### Added

@@ -109,6 +109,30 @@ def chk_operators():
                 repair=repair)
 
 
+def chk_mapper_capabilities():
+    """mapper >=0.13 surface: `inspect` (evidence gate) + `handoff` (context-pack).
+
+    The survey step relies on both; an older mapper still surveys, so this is a
+    WARN (repair = pip -U), never a FAIL.
+    """
+    if not shutil.which("simplicio-mapper"):
+        return dict(name="mapper inspect/handoff", tier="OPTIONAL", status=WARN,
+                    msg="mapper missing (see loop operators)", repair=lambda: False)
+    helptext = _run(["simplicio-mapper", "--help"], timeout=30).stdout
+    has = all(cmd in helptext for cmd in ("inspect", "handoff"))
+
+    def repair():
+        _pip(["simplicio-mapper"])
+        out = _run(["simplicio-mapper", "--help"], timeout=30).stdout
+        return all(cmd in out for cmd in ("inspect", "handoff"))
+
+    return dict(name="mapper inspect/handoff", tier="OPTIONAL",
+                status=OK if has else WARN,
+                msg="survey evidence gate + context-pack available" if has
+                else "mapper <0.13 — no inspect/handoff; pip install -U simplicio-mapper",
+                repair=repair)
+
+
 def chk_skills():
     root = HOME / ".claude" / "skills"
     present = [s for s in SKILLS if (root / s).is_dir()]
@@ -201,8 +225,8 @@ def _importable(mod):
         return False
 
 
-CHECKS = [chk_python, chk_operators, chk_skills, chk_hooks, chk_proxy,
-          chk_wire, chk_tray_dep]
+CHECKS = [chk_python, chk_operators, chk_mapper_capabilities, chk_skills,
+          chk_hooks, chk_proxy, chk_wire, chk_tray_dep]
 
 
 def main(argv=None):
