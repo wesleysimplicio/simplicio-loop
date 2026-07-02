@@ -6,8 +6,10 @@
 # Matrix + tag gate (#71): the repo claims cross-platform / stdlib-only ("runs on bare python3"),
 # a Windows install path (scripts/install.ps1), and no minimum Python beyond `requires-python` in
 # pyproject.toml — none of that was exercised in CI before. The full OS x Python matrix runs on
-# every push/PR; a release (tag push) additionally builds and validates the wheel, since the
-# wheel's content depends on `simplicio_loop/_bundle/` parity (see the bundle-parity check).
+# every push/PR; a release (tag push) additionally builds, validates, and installs the wheel (a
+# clean-venv smoke import), since the wheel's content depends on `simplicio_loop/_bundle/` parity
+# (see the bundle-parity check) and a broken `[tool.setuptools.package-data]` glob would only
+# surface at install time, never at build time.
 
 name: ci
 
@@ -50,3 +52,10 @@ jobs:
         run: python3 -m build
       - name: Validate distribution metadata
         run: python3 -m twine check dist/*
+      - name: Wheel install smoke test
+        run: |
+          python3 -m venv /tmp/wheel-smoke-venv
+          /tmp/wheel-smoke-venv/bin/python -m pip install --upgrade pip
+          /tmp/wheel-smoke-venv/bin/python -m pip install dist/*.whl
+          /tmp/wheel-smoke-venv/bin/python -c "import simplicio_loop; print(simplicio_loop.__file__)"
+          /tmp/wheel-smoke-venv/bin/simplicio-loop --help
