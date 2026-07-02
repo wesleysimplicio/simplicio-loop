@@ -109,27 +109,31 @@ def chk_operators():
                 repair=repair)
 
 
-def chk_mapper_capabilities():
-    """mapper >=0.13 surface: `inspect` (evidence gate) + `handoff` (context-pack).
+# mapper >=0.13 (inspect/handoff: evidence gate + context-pack) and >=0.14
+# (ask/sync/drift: structured queries + docs gates). The survey step uses all
+# of them; an older mapper still surveys, so this is a WARN, never a FAIL.
+MAPPER_CAPABILITY_VERBS = ("inspect", "handoff", "ask", "sync", "drift")
 
-    The survey step relies on both; an older mapper still surveys, so this is a
-    WARN (repair = pip -U), never a FAIL.
-    """
+
+def chk_mapper_capabilities():
     if not shutil.which("simplicio-mapper"):
-        return dict(name="mapper inspect/handoff", tier="OPTIONAL", status=WARN,
+        return dict(name="mapper 0.13/0.14 surface", tier="OPTIONAL", status=WARN,
                     msg="mapper missing (see loop operators)", repair=lambda: False)
-    helptext = _run(["simplicio-mapper", "--help"], timeout=30).stdout
-    has = all(cmd in helptext for cmd in ("inspect", "handoff"))
+
+    def _missing():
+        helptext = _run(["simplicio-mapper", "--help"], timeout=30).stdout
+        return [v for v in MAPPER_CAPABILITY_VERBS if v not in helptext]
+
+    missing = _missing()
 
     def repair():
         _pip(["simplicio-mapper"])
-        out = _run(["simplicio-mapper", "--help"], timeout=30).stdout
-        return all(cmd in out for cmd in ("inspect", "handoff"))
+        return not _missing()
 
-    return dict(name="mapper inspect/handoff", tier="OPTIONAL",
-                status=OK if has else WARN,
-                msg="survey evidence gate + context-pack available" if has
-                else "mapper <0.13 — no inspect/handoff; pip install -U simplicio-mapper",
+    return dict(name="mapper 0.13/0.14 surface", tier="OPTIONAL",
+                status=OK if not missing else WARN,
+                msg="inspect/handoff + ask/sync/drift available" if not missing
+                else "mapper missing verbs (%s) — pip install -U simplicio-mapper" % ", ".join(missing),
                 repair=repair)
 
 
