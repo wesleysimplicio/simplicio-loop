@@ -6,6 +6,14 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 ## [Unreleased]
 
 ### Added
+- Survey step upgraded to the mapper 0.14 flow-docs engine: `ask . <verb> <arg> --json` for
+  low-token structured queries during triage (`impact` feeds dependency widening, `tests-for`
+  picks affected tests, `callers` aids review), `sync . --check` + `drift . --check` as
+  docs-staleness/spec-drift gates in the DoD pass, and `flows`/`survey`/`business`/`history`/`diff`
+  as the producers for documentation tasks. Dependency floor raised to `simplicio-mapper>=0.14.0`;
+  doctor's mapper capability probe now checks the full inspect/handoff/ask/sync/drift surface.
+
+### Added
 - The survey step now exercises the full mapper 0.13 surface: `simplicio-mapper inspect . --json`
   is the survey's own evidence gate (artifacts proven on disk before the loop trusts them) and
   `simplicio-mapper handoff . --json` feeds the goal with the compact context-pack
