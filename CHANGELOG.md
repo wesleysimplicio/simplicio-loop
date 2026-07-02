@@ -5,10 +5,17 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.20.1] — 2026-07-02
+
 ### Added
 - `.github/workflows/ci.yml` — runs `python3 scripts/check.py` (claims-audit + worker
   selftests/smoke) on every push/PR to `main`. The gate already existed locally; nothing ran it
   automatically before this — flagged as the highest-confidence finding of an ecosystem audit.
+
+### Changed
+- Dependency floors raised to the current releases of the two bound operators:
+  `simplicio-mapper>=0.13.0` and `simplicio-cli>=0.9.0` in `pyproject.toml`, so a fresh
+  `pip install simplicio-loop` resolves the operators this release was verified against.
 
 ## [3.20.0] — 2026-07-01
 
