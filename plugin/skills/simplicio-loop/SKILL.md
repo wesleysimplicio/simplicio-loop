@@ -87,11 +87,17 @@ artifact (project-map, precedent-index, symbol-index, call-graph, index-state, m
 context-cache), whether the file **exists on disk** with size + mtime, plus `warnings`. An artifact
 the inspection says is missing must be treated as absent — re-run `scan`/`index`, don't guess its
 content. This is the same evidence-not-claims discipline the promise gate applies, applied to the
-survey itself. Then feed the goal from `simplicio-mapper handoff . --json [--await]`
-(`simplicio.map-handoff/v1`): its `context_pack` carries the relevant files with symbols, imports,
-dependencies, `recent_changes` and a `pack_hash` — a pre-compressed orientation bundle that
-substitutes for re-reading the tree (token economy: pack first, raw `Read` only for the few files
-the pack points at). Honor `context_pack.llm_directives` (no-think / no-internet / minimal tools)
+survey itself. Then feed the goal from `simplicio-mapper handoff . --for-llm toon [--await]`
+(`simplicio.map-handoff/v1`, TOON-rendered — same discipline as `task_anchor.py check --format
+toon` / `loop_journal.py stall --format toon`, #92): its `context_pack` carries the relevant files
+with symbols, imports, dependencies, `recent_changes` and a `pack_hash` — a pre-compressed
+orientation bundle that substitutes for re-reading the tree (token economy: pack first, raw `Read`
+only for the few files the pack points at). If `simplicio-mapper handoff --help` doesn't list
+`--for-llm` (older install; the preflight auto-update above should already prevent this), fall back
+to `handoff . --json` and record WHY, machine-readably, so the gap is visible in the journal, not
+just silently absorbed: `python3 scripts/loop_journal.py record --iteration N --action "mapper
+handoff" --gate pass --decision fallback-json --next-action "upgrade simplicio-mapper for
+--for-llm toon"`. Honor `context_pack.llm_directives` (no-think / no-internet / minimal tools)
 for the mechanical steps, and use `needs_broader_context` as the signal that the pack alone is not
 enough.
 
@@ -129,8 +135,8 @@ merge/close gates); the operators do survey + apply:
 | Phase | Operator | Command |
 |---|---|---|
 | Preflight (before iteration 1) | both | `python3 -m pip install -qU simplicio-mapper simplicio-cli` (auto-update to latest, fail-open) → `simplicio-mapper --version` · `simplicio-dev-cli --help` → BLOCK if missing |
-| Survey (loop start; multi-repo: per root) | mapper | `simplicio-mapper scan . --json` (instant macro + deep index in background; `--sync`/`--await` to block) → `.simplicio/*.json`. `index . --json` for a forced synchronous build. Gate: `inspect . --json` (artifacts exist on disk) → feed goal: `handoff . --json` (context-pack) |
-| Loop contract step 2 — Triage (every turn) | mapper | `simplicio-mapper handoff . --json` → work from the `context_pack` (symbols/deps/recent_changes); `ask . impact\|tests-for\|callers <arg> --json` for targeted questions; `macro . --json` for an instant skeleton, or `scan`/`status` + `inspect` to refresh/re-gate if the tree changed |
+| Survey (loop start; multi-repo: per root) | mapper | `simplicio-mapper scan . --json` (instant macro + deep index in background; `--sync`/`--await` to block) → `.simplicio/*.json`. `index . --json` for a forced synchronous build. Gate: `inspect . --json` (artifacts exist on disk) → feed goal: `handoff . --for-llm toon` (context-pack, TOON-rendered; `--json` fallback + logged reason if the installed mapper predates `--for-llm`) |
+| Loop contract step 2 — Triage (every turn) | mapper | `simplicio-mapper handoff . --for-llm toon` → work from the `context_pack` (symbols/deps/recent_changes); `ask . impact\|tests-for\|callers <arg> --json` for targeted questions; `macro . --json` for an instant skeleton, or `scan`/`status` + `inspect` to refresh/re-gate if the tree changed |
 | Verify / DoD pass | mapper | `simplicio-mapper sync . --check --json` (stale generated docs) + `drift . --check --json` (spec↔code drift) — findings go in the turn report; BLOCK only when the AC itself is documentation |
 | Loop contract step 3 — Work the goal | dev-cli | `simplicio-dev-cli task "<decided change>" --target <file> [--json]` |
 | Evidence-gated `<promise>` / `simplicio-tasks` Step 4b | dev-cli | the operator's passing test+verify pass = in-turn evidence |

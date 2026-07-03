@@ -108,6 +108,12 @@ def test_autoresearch_selftest():
     assert "PASS" in r.stdout, r.stdout
 
 
+def test_e2e_demo_selftest():
+    r = _run("scripts/e2e_demo.py", "selftest")
+    assert r.returncode == 0, "e2e_demo selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module

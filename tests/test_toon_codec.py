@@ -153,6 +153,27 @@ def test_drift_verdict_shaped_payload_roundtrips():
     assert toon.decode_toon(text) == value
 
 
+def test_unquoted_bracket_looking_string_documented_ambiguity():
+    # Documented, deliberate limitation (module docstring + #92 scope item 6): an unquoted string
+    # scalar that happens to look like array/object JSON syntax with no comma inside — e.g. the
+    # literal string "[1]" — is ambiguous with the array/object JSON-fallback form and decodes as
+    # THAT structure instead of the original string. This is a REGRESSION GUARD, not a fix: if
+    # this behavior ever silently changes (e.g. someone "fixes" the ambiguity without updating the
+    # docstring), this test fails and flags the drift instead of it going unnoticed.
+    value = {"weird": "[1]"}
+    text = toon.encode_toon(value)
+    assert text == "weird: [1]"  # NOT quoted — _needs_quote() doesn't special-case this shape
+    decoded = toon.decode_toon(text)
+    assert decoded == {"weird": [1]}  # round-trip is LOSSY here: string -> list, by design gap
+    assert decoded != value
+    # same gap for the plain-brace case ("{}"-looking unquoted string)
+    value2 = {"weird": "{}"}
+    text2 = toon.encode_toon(value2)
+    assert text2 == "weird: {}"
+    assert toon.decode_toon(text2) == {"weird": {}}
+    assert toon.decode_toon(text2) != value2
+
+
 def test_selftest_subcommand_passes():
     import subprocess
     r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "toon_codec.py"), "selftest"],
