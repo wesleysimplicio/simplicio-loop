@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-the-6-skills--5-accelerators"><img src="https://img.shields.io/badge/skills-6-7C3AED" alt="6 skills"></a>
+  <a href="#-the-7-skills--5-accelerators"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
   <a href="#-the-48-extension-points"><img src="https://img.shields.io/badge/extension%20points-48-00E08A" alt="48 extension points"></a>
@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-the-6-skills--5-accelerators">6 Skills</a> ·
+  <a href="#-the-7-skills--5-accelerators">7 Skills</a> ·
   <a href="#-source-adapters">Source Adapters</a> ·
   <a href="#-11-runtimes-one-protocol">11 Runtimes</a> ·
   <a href="#-the-loop">The Loop</a> ·
@@ -120,9 +120,9 @@ re-query stays empty K rounds). Both still obey the universal exits (promise+evi
 
 ---
 
-## 🧠 The 6 skills + 5 accelerators
+## 🧠 The 7 skills + 5 accelerators
 
-The orchestrator core + five satellites + five accelerators/integrations. Each satellite is
+The orchestrator core + six satellites + five accelerators/integrations. Each satellite is
 **optional** — when loaded, the orchestrator delegates to it (richer + cheaper); when absent, the
 inline protocol covers 100%. Accelerators are **auto-detected** — present = used, absent = LLM
 fallback.
@@ -135,11 +135,12 @@ fallback.
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Parallel adversarial review on distinct rubrics → deduped verdict | Quality gate |
 | 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Output + memory compression, fail-closed `transform_guard` | 40-60% fewer |
 | 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | Post-run retrospective → durable, deduped lessons in memory | Smarter each run |
-| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Knowledge graph orient: semantic search, guided tours, dependency graph | **L0 zero tokens** |
-| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Session analytics, cost tracking, stalled-session discovery | **L1** SQL only |
-| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV cache between loop turns — 40-70% TTFT reduction on local models | GPU time ↓ |
-| 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (native, stdlib-only) | Transparent capture proxy: forwards to the real provider, measures + deterministically compresses, writes `proxy_savings.json` | **deterministic** |
-| 11 | 🎬 **video_evidence** | Playwright (default) · [hyperframes](https://github.com/heygen-com/hyperframes) (on request) | Records the **real session** as moving proof of a UI change (Playwright); renders a **deterministic captioned MP4** explainer with hyperframes when the video IS the deliverable | Evidence producer |
+| 7 | 🧪 **simplicio-autoresearch** | Karpathy [autoresearch](https://github.com/balukosuri/Andrej-Karpathy-s-Autoresearch-As-a-Universal-Skill) + ECC `autoresearch-agent` | Evolutionary mutate/eval/keep-revert loop: yool-guardrailed caps, git-isolated branch, anti-Goodhart gate-first eval, `savings-event` receipt | Auto-optimize |
+| 8 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Knowledge graph orient: semantic search, guided tours, dependency graph | **L0 zero tokens** |
+| 9 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Session analytics, cost tracking, stalled-session discovery | **L1** SQL only |
+| 10 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV cache between loop turns — 40-70% TTFT reduction on local models | GPU time ↓ |
+| 11 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (native, stdlib-only) | Transparent capture proxy: forwards to the real provider, measures + deterministically compresses, writes `proxy_savings.json` | **deterministic** |
+| 12 | 🎬 **video_evidence** | Playwright (default) · [hyperframes](https://github.com/heygen-com/hyperframes) (on request) | Records the **real session** as moving proof of a UI change (Playwright); renders a **deterministic captioned MP4** explainer with hyperframes when the video IS the deliverable | Evidence producer |
 
 Each skill lives under [`.claude/skills/`](.claude/skills); each accelerator has a reference doc
 under `.claude/skills/simplicio-tasks/references/` (the video producer:
@@ -488,7 +489,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]                    # Windows
 **Install is complete by default — it installs everything.** One command sets up the whole stack:
 the two loop operators (`simplicio-mapper` + `simplicio-cli`, auto-handling PEP 668 / externally-managed
 Python and symlinking the binaries onto `PATH`), the **full Python stack** (the package itself),
-the **6 skills + hooks** with the loop's Stop hook wired, and the **always-on capture proxy**
+the **7 skills + hooks** with the loop's Stop hook wired, and the **always-on capture proxy**
 with Claude + Codex + Hermes **routed and measured** in the background. The **dashboard opens once** on a
 fresh install, then it's on-demand (`simplicio-loop dashboard` / `simplicio-economy.sh monitor`); the
 **menu-bar tray never opens by itself** — nothing is forced to stay open.
@@ -512,7 +513,7 @@ python3 scripts/doctor.py --repair   # install/wire what's fixable; make everyth
 # also: bash scripts/simplicio-economy.sh doctor [--repair]
 ```
 
-`doctor` separates **REQUIRED** (python3, the two loop operators, the 6 skills, the loop hooks, the
+`doctor` separates **REQUIRED** (python3, the two loop operators, the 7 skills, the loop hooks, the
 capture proxy — `--repair` installs/wires them) from **OPTIONAL** accelerators (the tray dep).
 **Missing an optional piece is never a failure and
 never blocks** — the Python engine + the deterministic path cover everything; the exit code is 0 as

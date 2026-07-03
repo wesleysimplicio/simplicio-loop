@@ -1,6 +1,6 @@
 # simplicio-loop
 
-**The Universal Looping AI Orchestrator** — a runtime-agnostic **super-plugin** (6 skills) that
+**The Universal Looping AI Orchestrator** — a runtime-agnostic **super-plugin** (7 skills) that
 drains any queue of work end-to-end on **any LLM / runtime**:
 `discover → implement → verify → merge → close → watch 24/7`, behind safety gates and a hard cost
 kill-switch, at up to **96% fewer tokens**. Not a chatbot. A worker.
@@ -26,7 +26,7 @@ Now invoke it from your agent runtime (Claude Code, Cursor, Codex, Gemini, …):
 /simplicio-tasks finish all the open issues
 ```
 
-## What you get — 6 skills
+## What you get — 7 skills
 
 | Skill | What it does |
 |---|---|
@@ -35,6 +35,7 @@ Now invoke it from your agent runtime (Claude Code, Cursor, Codex, Gemini, …):
 | `simplicio-orient` | Terminal-first token economy — output-reduction catalog, tee-cache, signatures-read. |
 | `simplicio-review` | Adversarial review — parallel subagents on distinct rubrics, deduped into one verdict. |
 | `simplicio-compress` | Output + memory compression, byte-preserving identifiers. |
+| `simplicio-autoresearch` | Evolutionary mutate/eval/keep-revert optimizer — yool-guardrailed caps, git-isolated branch, anti-Goodhart gate-first eval. |
 | `simplicio-learn` | Retrospective — durable, deduped lessons written back to memory. |
 
 ## Highlights

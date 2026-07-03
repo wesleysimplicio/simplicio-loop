@@ -89,6 +89,7 @@ SELFTEST_SCRIPTS = [
     "scripts/install_services.py",
     "scripts/mirror_manifest.py",
     "scripts/toon_codec.py",
+    "scripts/autoresearch.py",
     "scripts/e2e_demo.py",
     "hooks/action_gate.py",
 ]

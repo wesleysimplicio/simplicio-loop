@@ -1,10 +1,10 @@
 # CLAUDE.md — simplicio-loop (Claude Code)
 
 This repo ships **simplicio-loop**, a runtime-agnostic **super-plugin**: an autonomous
-looping orchestrator (the `/simplicio-tasks` skill) plus five satellite skills, packaged for 11
+looping orchestrator (the `/simplicio-tasks` skill) plus six satellite skills, packaged for 11
 runtimes.
 
-## The 6 skills
+## The 7 skills
 
 | Skill | Role |
 |---|---|
@@ -14,6 +14,7 @@ runtimes.
 | `simplicio-review` | thermos-style parallel adversarial review on distinct rubrics → deduped verdict |
 | `simplicio-compress` | caveman-style prose + memory compression, byte-preserving, `transform_guard` |
 | `simplicio-learn` | retrospective → durable, deduped lessons written to memory |
+| `simplicio-autoresearch` | evolutionary mutate/eval/keep-revert optimizer (Karpathy `autoresearch`) — yool-guardrailed caps, git-isolated branch, anti-Goodhart gate-first eval, `savings-event` receipt (`scripts/autoresearch.py`) |
 
 They live in `.claude/skills/` and load automatically in this repo.
 
@@ -84,7 +85,7 @@ Or as a marketplace plugin:
 /plugin install simplicio-loop@simplicio
 ```
 
-The marketplace install carries only the **lean `plugin/` subdirectory** (the 6 skills + the 5
+The marketplace install carries only the **lean `plugin/` subdirectory** (the 7 skills + the 5
 wired hooks) — `.claude-plugin/marketplace.json` `source` points at `./plugin`, so the pip-only
 assets (capture proxy `engine/`, token-monitor dashboard) are NOT copied into a user's
 plugin cache. `plugin/` is generated from source by `python3 scripts/sync_plugin.py` (run it after
