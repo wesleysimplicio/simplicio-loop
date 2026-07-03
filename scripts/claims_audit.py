@@ -89,6 +89,7 @@ SELFTEST_SCRIPTS = [
     "scripts/install_services.py",
     "scripts/mirror_manifest.py",
     "scripts/toon_codec.py",
+    "scripts/autoresearch.py",
     "hooks/action_gate.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a

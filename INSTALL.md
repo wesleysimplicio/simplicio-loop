@@ -1,7 +1,7 @@
 # Install — simplicio-loop
 
 simplicio-loop is a **super-plugin** made of skills (markdown) + cross-platform Python hooks.
-There is nothing to compile. One installer copies the 6 skills into your runtime, wires the
+There is nothing to compile. One installer copies the 7 skills into your runtime, wires the
 loop where supported, and prints the optional native-bind line.
 
 ## 1. Get it
@@ -28,7 +28,7 @@ The only requirement is **python3** on PATH (the skills, hooks, and installer ar
 cross-platform Python). For GitHub sources you also want `git` + an authenticated `gh`.
 
 What the installer does (all reversible — copies + a config edit):
-- copies `.claude/skills/simplicio-*` (6 skills) into the runtime's skills location,
+- copies `.claude/skills/simplicio-*` (7 skills) into the runtime's skills location,
 - copies `hooks/` so hook paths resolve,
 - wires the loop (`Stop`/`stop` hook) where the runtime supports it; else the loop self-paces,
 - ensures the runtime's entry file (`AGENTS.md` / `GEMINI.md` / `.github/copilot-instructions.md`
