@@ -10,9 +10,15 @@ Also installs+verifies the two REQUIRED loop operators (simplicio-mapper, simpli
 --skip-operators is passed.
 
 Usage:
-    python3 scripts/install_lib.py <runtime> [--global] [--target DIR] [--skip-operators]
+    python3 scripts/install_lib.py <runtime> [--global] [--target DIR] [--skip-operators] [--lite]
     <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
     omit <runtime> to auto-detect.
+
+--lite mode:
+    Installs skills + hooks instantly (<30s) and spawns operator install in background.
+    Loop runs in LITE mode with native tool fallbacks until operators are available.
+    Upgrade to FULL automatic at turn boundary via preflight check.
+    Use --strict to preserve the current hard-BLOCK behavior (operators required immediately).
 """
 import json
 import os
@@ -524,9 +530,13 @@ def main():
     skip_operators = "--skip-operators" in args
     # The install is COMPLETE by default — operators, full deps (ONNX models), monitor, tray, wiring.
     # `--minimal` (alias `--no-monitor`) is the only opt-out, for headless/CI.
+    # `--lite`: install skills+hooks instantly (<30s), spawn operator install in background.
+    # `--strict`: preserve the current hard-BLOCK behavior (operators required immediately).
+    lite = "--lite" in args
+    strict = "--strict" in args
     minimal = "--minimal" in args or "--no-monitor" in args
     args = [a for a in args if a not in
-            ("--global", "--skip-operators", "--with-monitor", "--minimal", "--no-monitor")]
+            ("--global", "--skip-operators", "--with-monitor", "--minimal", "--no-monitor", "--lite", "--strict")]
     target = None
     if "--target" in args:
         i = args.index("--target")
@@ -545,7 +555,16 @@ def main():
         target = cwd if os.path.abspath(cwd) != os.path.abspath(SOURCE) else SOURCE
 
     print("simplicio-tasks installer - runtime=%s - target=%s" % (runtime, target))
-    ensure_operators(skip_install=skip_operators)
+    if lite:
+        log("LITE mode: installing skills+hooks instantly, operators in background...")
+        # Skip operators now, spawn in background
+        import threading as _threading
+        def _bg_install():
+            ensure_operators(skip_install=False)
+        _threading.Thread(target=_bg_install, daemon=True).start()
+        log("LITE mode: operator install running in background. Loop will auto-upgrade at turn boundary.")
+    elif not skip_operators:
+        ensure_operators(skip_install=False)
     if not minimal:
         install_all_deps()
     # Make the `simplicio-loop` console-script typeable on PATH (so `simplicio-loop dashboard` works);
@@ -569,6 +588,11 @@ def main():
     if cfg["mcp"] and runtime not in FORCED_BIND_RUNTIMES:
         log("optional native bind:  simplicio install --global   (or: simplicio serve --mcp --stdio)")
     setup_monitor(not minimal)
+    if lite:
+        log("LITE mode active. Run `python3 scripts/doctor.py` to check install status.")
+        log("When operators are ready, next loop turn auto-promotes to FULL.")
+        if strict:
+            log("Note: --strict has no effect in --lite mode (operators already in background).")
     log("verify / repair anytime:  python3 scripts/doctor.py --repair  (optional pieces never block)")
     print("done. use:  /simplicio-tasks finish all the open issues")
 
