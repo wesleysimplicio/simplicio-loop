@@ -416,6 +416,27 @@ out with `SIMPLICIO_NO_DASHBOARD=1`), and the tray never opens by itself — not
 open. Manage the stack: `scripts/simplicio-economy.sh {status|up|monitor|tray|wire}`. After install,
 capture runs **without invoking the loop** — see `references/token-capture.md`.
 
+### 🧪 e2e savings demo — one task, four hops, a receipt at every one
+
+`scripts/e2e_demo.py` is the capstone acceptance test for this program: it drives ONE task through
+**MAP → RECALL → EDIT → VERIFY** and writes a `simplicio.savings-event/v1`-shaped receipt per hop,
+never a bare percentage.
+
+```bash
+python3 scripts/e2e_demo.py run         # live: real simplicio-mapper + task_anchor.py calls
+python3 scripts/e2e_demo.py selftest    # offline: proves the receipt/report math, no external tools
+```
+
+`run` writes `.orchestrator/savings/e2e-demo.md` (the report), `e2e-demo-events.jsonl` (one receipt
+per hop), and feeds the same `snapshots.jsonl` store `savings_harness.py score` and
+`billing_aggregator.py collect`/`meter` already read — so this demo's numbers roll up into the
+existing aggregation with no new code. MAP and VERIFY call real live tools
+(`simplicio-mapper handoff`, `task_anchor.py check --format json|toon`); RECALL and EDIT
+honestly label a local stand-in where an upstream dependency (mapper's native `--for-llm toon`,
+dev-cli's `SIMPLICIO_PROMPT_TOON`) isn't shipped yet — every hop's `note` says exactly which.
+`selftest` is fully offline (no subprocess to `simplicio-mapper`/`simplicio-cli`, no network, no
+API key) and is what `scripts/check.py` runs.
+
 ### 🛠️ The capture engine — one native module, every command
 
 [`engine/simplicio_engine.py`](engine/simplicio_engine.py) is the native Simplicio capture engine
