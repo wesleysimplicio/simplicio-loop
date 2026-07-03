@@ -27,7 +27,9 @@ Done only when fully green. "N/A" on a real AC → mark `partial`, note what's m
 **Anchor the ACs — don't re-derive them (anti-deviation).** The acceptance criteria are frozen
 ONCE at intake as the task anchor (`task_anchor.py set`, Step 2b) and re-checked every turn so the
 run cannot silently narrow or wander off the task. Per turn: `task_anchor.py check --goal "<goal
-worked now>" --exit-code` (verdict `DRIFT`/exit 11 ⇒ the goal moved — STOP, re-anchor with `--force`
+worked now>" --format toon --exit-code` (leaner TOON render of the same verdict payload for the
+per-turn prompt re-feed, `--format json` for a machine consumer) — verdict `DRIFT`/exit 11 ⇒ the
+goal moved — STOP, re-anchor with `--force`
 only if the task genuinely changed). As each AC is met: `task_anchor.py mark --id ACk --status done
 --evidence "<file:line / command output / screenshot path>"` (a `done` with no receipt is REFUSED).
 The DoD gate is then mechanical: `task_anchor.py gate --exit-code` (exit 12 = criteria still
