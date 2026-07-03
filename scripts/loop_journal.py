@@ -33,7 +33,11 @@ Verbs:
   |             action (switch-strategy | escalate) and the dead-end actions to avoid. Exit 10 when
   |             stalled (for `if:` gating), 0 otherwise — unless --exit-code is omitted (always 0).
   |             Every output line is prefixed `MEASURED|` (concrete fingerprint data) or
-  |             `UNVERIFIED|` (recommendations).
+  |             `UNVERIFIED|` (recommendations). --format text (default) | json | toon — `toon`
+  |             renders the SAME verdict payload as `--json` in TOON (Token-Oriented Object
+  |             Notation, github.com/toon-format/toon) for the per-turn prompt re-feed (#92,
+  |             mirrors `task_anchor.py check --format toon`). `--json` remains a working alias
+  |             for `--format json`.
     resume      The anti-oscillation read: distinct actions already tried + their outcomes + the
   |             current stall count + the live error fingerprint. Print THIS at the top of each turn
   |             so the loop never retries a known dead-end. Every line tagged MEASURED| or
@@ -56,7 +60,7 @@ Usage:
         --hypothesis "timeout is transient" --gate fail --gate-output test.log \\
         --execution-state planned --stage-id validate --validator pytest \\
         --decision retry --retry-count 1 --next-action "split provider adapter"
-    python3 scripts/loop_journal.py stall  [--k 3] [--exit-code]
+    python3 scripts/loop_journal.py stall  [--k 3] [--format text|json|toon] [--exit-code]
     python3 scripts/loop_journal.py resume
     python3 scripts/loop_journal.py status [--n 10]
     python3 scripts/loop_journal.py claims-gate --check <FILE>
@@ -80,6 +84,10 @@ REPO = os.path.dirname(HERE)
 LOOP_DIR = os.path.join(REPO, ".orchestrator", "loop")
 JOURNAL = os.path.join(LOOP_DIR, "journal.jsonl")
 DEFAULT_K = 3
+
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+from toon_codec import encode_toon, decode_toon  # noqa: E402 — prompt-facing render only, same pattern as task_anchor.py
 
 # Brown-Hilbert port.port.port addressing for the delegation tree.
 # Root is "R". Children append their index: bh_address("R", 0) -> "R.0".
@@ -363,7 +371,13 @@ def analyze(rows, k=DEFAULT_K):
 def cmd_stall(opts):
     k = int(opts.get("k", DEFAULT_K))
     a = analyze(_load(), k)
-    if opts.get("json"):
+    fmt = (opts.get("format") or ("json" if opts.get("json") else "text")).strip().lower()
+    if fmt == "toon":
+        # TOON (Token-Oriented Object Notation, github.com/toon-format/toon): same verdict payload
+        # as --format json, rendered leaner for the per-turn prompt re-feed (#92, mirrors
+        # task_anchor.py check --format toon, #88/#91). Never changes the on-disk journal itself.
+        print(encode_toon(a))
+    elif fmt == "json":
         print(json.dumps(a, indent=2))
     else:
         # verdict is MEASURED (concrete fingerprint data from the journal)
@@ -620,6 +634,9 @@ def cmd_selftest(_opts):
     chk("stall.detected", v["verdict"], "STALLED")
     chk("stall.count", v["stall_count"], 3)
     chk("stall.deadend", v["dead_ends"], ["retry fetch"])
+    # --format toon (#92): the stall verdict must round-trip through TOON exactly like --format
+    # json, since it's the same payload rendered leaner for the per-turn prompt re-feed.
+    chk("stall.toon_roundtrip", decode_toon(encode_toon(v)) == v, True)
     # a pass on the latest turn -> PROGRESS, streak resets
     rows2 = rows + [dict(base, iteration=4, action="fix root cause", gate="pass", fingerprint="")]
     chk("progress.after_pass", analyze(rows2, 3)["verdict"], "PROGRESS")

@@ -5,6 +5,29 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+### Added
+- The loop now actually consumes TOON per-turn (#92, follow-up to #88/PR #91): the
+  `simplicio-tasks` prose (`SKILL.md`, `references/quality-safety-delivery.md`) documents
+  `task_anchor.py check --format toon` and `loop_journal.py stall --format toon`, and
+  `loop_journal.py stall` gained a `--format text|json|toon` flag (`--json` remains a working
+  alias). `simplicio-loop`'s orient step now documents `simplicio-mapper handoff . --for-llm
+  toon` with a `--json` fallback + a machine-readable, journaled reason when the installed
+  mapper predates `--for-llm`.
+- First `savings_harness.py` snapshots committed at `.orchestrator/savings/snapshots.jsonl`
+  (`.gitignore` now carries a scoped exception for this one file) — a real JSON-vs-TOON pair for
+  a `task_anchor.py check` verdict and a `loop_journal.py stall` verdict, closing the open
+  benchmark box from #88 with measured numbers instead of an estimate.
+- `savings_harness.py score` now reports a labeled dual-tokenizer estimate (`tokenizers.chars4` /
+  `tokenizers.bpe_estimate`, the latter backed by `engine/simplicio_tokens.py` when importable)
+  instead of a single fixed `ceil(chars/4)` figure, since the two estimators disagree
+  systematically on dense JSON/TOON payloads. Top-level `tokenizer`/`items`/`overall` keys stay
+  `chars4` for backward compatibility.
+- `simplicio-orient`'s output-reduction catalog gained a row for structured-JSON-payload → TOON
+  encoding, with the documented exception (nested/non-uniform arrays fall back to compact JSON).
+- A regression test locks in the documented `toon_codec.py` ambiguity for an unquoted
+  bracket/brace-looking string scalar (e.g. the literal string `"[1]"`), so a future accidental
+  behavior change is caught instead of silently drifting.
+
 ## [3.21.0] — 2026-07-02
 
 ### Added

@@ -26,8 +26,15 @@ Usage:
     # self-check the math (no files needed)
     python3 scripts/savings_harness.py selftest
 
-Tokenizer: fixed cl100k-style estimate `ceil(chars / 4)` — the same baseline the orchestrator
-documents. Deterministic and model-free so two runs of `score` on one snapshot always agree.
+Tokenizer: reports TWO estimators side by side, labeled, rather than picking one winner (#92) —
+`chars4`, the fixed cl100k-style `ceil(chars / 4)` baseline the orchestrator documents, always
+runs; `bpe_estimate`, the sibling `engine/simplicio_tokens.py` heuristic (~3.2 chars/token on
+dense JSON/code vs `chars4`'s flat 4.0), runs when that module is importable, else its report is
+`null` and the CLI prints a note instead of silently omitting it. Both are deterministic and
+model-free so two runs of `score` on one snapshot always agree — the split exists because the two
+estimators disagree systematically on dense JSON, and `chars4` alone understates savings there.
+The TOP-LEVEL `tokenizer`/`items`/`overall` keys stay `chars4` for backward compatibility; the new
+`tokenizers` key carries both, explicitly labeled.
 """
 import json
 import math
@@ -47,6 +54,19 @@ REPO = os.path.dirname(HERE)
 DEFAULT_STORE = os.path.join(REPO, ".orchestrator", "savings")
 SNAPSHOTS = "snapshots.jsonl"
 
+# Optional, more accurate token estimator (~3.2 chars/token on dense JSON vs chars4's flat 4.0).
+# Fails open: engine/simplicio_tokens.py is a sibling module, not a hard dependency of this
+# worker — an absent/broken import degrades to "bpe_estimate: null" in the report, never a crash.
+_ENGINE_DIR = os.path.join(REPO, "engine")
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+try:
+    from simplicio_tokens import count_tokens as _bpe_count_tokens  # noqa: E402
+    _BPE_AVAILABLE = True
+except Exception:  # pragma: no cover - exercised only when the sibling module is absent/broken
+    _bpe_count_tokens = None
+    _BPE_AVAILABLE = False
+
 
 def log(msg):
     print("  " + msg)
@@ -55,6 +75,16 @@ def log(msg):
 def count_tokens(text):
     """Fixed, model-free tokenizer: ceil(chars / 4). Deterministic by design."""
     return math.ceil(len(text) / 4) if text else 0
+
+
+def count_tokens_bpe(text):
+    """The `engine/simplicio_tokens.py` heuristic estimator, when importable; 0 otherwise.
+
+    Callers should check `_BPE_AVAILABLE` (or the `bpe_estimate` report being non-None) before
+    trusting a 0 as a real measurement rather than "estimator absent"."""
+    if not text or _bpe_count_tokens is None:
+        return 0
+    return int(_bpe_count_tokens(text))
 
 
 def _read_source(spec):
@@ -121,12 +151,12 @@ def _stats(values):
     }
 
 
-def score(rows):
-    """Pure function: snapshot rows -> report dict. No I/O, so selftest can call it directly."""
+def _score_with(rows, count_fn, tokenizer_label):
+    """Pure function: snapshot rows + ONE tokenizer -> report dict for that tokenizer alone."""
     by_item = {}
     for r in rows:
-        base = count_tokens(r.get("baseline_text", ""))
-        treat = count_tokens(r.get("treatment_text", ""))
+        base = count_fn(r.get("baseline_text", ""))
+        treat = count_fn(r.get("treatment_text", ""))
         saved = base - treat
         pct = round(100.0 * saved / base, 1) if base else 0.0
         s = by_item.setdefault(r["item"], {"label": r.get("label", ""), "samples": []})
@@ -154,13 +184,29 @@ def score(rows):
     overall_saved = tot_base - tot_treat
     overall_pct = round(100.0 * overall_saved / tot_base, 1) if tot_base else 0.0
     return {
-        "tokenizer": "ceil(chars/4)",
+        "tokenizer": tokenizer_label,
         "items": items,
         "overall": {
             "baseline": tot_base, "treatment": tot_treat,
             "saved": overall_saved, "pct": overall_pct,
         },
     }
+
+
+def score(rows):
+    """Pure function: snapshot rows -> report dict. No I/O, so selftest can call it directly.
+
+    Labeled dual-report (#92): scores with BOTH tokenizers so the two never get silently
+    conflated. Top-level `tokenizer`/`items`/`overall` mirror the `chars4` estimator for backward
+    compatibility with existing callers/docs; `tokenizers.chars4` and `tokenizers.bpe_estimate`
+    carry both explicitly. `tokenizers.bpe_estimate` is `None` (not a crash, not a silent zero)
+    when `engine/simplicio_tokens.py` isn't importable."""
+    chars4 = _score_with(rows, count_tokens, "ceil(chars/4)")
+    bpe = _score_with(rows, count_tokens_bpe, "simplicio_tokens (stdlib BPE heuristic)") \
+        if _BPE_AVAILABLE else None
+    report = dict(chars4)
+    report["tokenizers"] = {"chars4": chars4, "bpe_estimate": bpe}
+    return report
 
 
 def _print_report(report):
@@ -180,6 +226,13 @@ def _print_report(report):
     print("-" * 78)
     print("OVERALL  baseline=%.1f  treatment=%.1f  saved=%.1f  (%.1f%%)  [tokenizer=%s]" % (
         o["baseline"], o["treatment"], o["saved"], o["pct"], report["tokenizer"]))
+    bpe = report.get("tokenizers", {}).get("bpe_estimate")
+    if bpe:
+        bo = bpe["overall"]
+        print("OVERALL  baseline=%.1f  treatment=%.1f  saved=%.1f  (%.1f%%)  [tokenizer=%s]" % (
+            bo["baseline"], bo["treatment"], bo["saved"], bo["pct"], bpe["tokenizer"]))
+    else:
+        log("bpe_estimate: unavailable (engine/simplicio_tokens.py not importable) — chars4 only")
 
 
 def cmd_score(opts):
@@ -211,7 +264,22 @@ def cmd_selftest(opts):
     assert r["overall"]["baseline"] == 300 and r["overall"]["treatment"] == 137.5, r["overall"]
     assert r["overall"]["saved"] == 162.5, r["overall"]
     assert count_tokens("") == 0 and count_tokens("abcd") == 1 and count_tokens("abcde") == 2
-    log("selftest OK — tokenizer + per-item stats + overall roll-up verified")
+
+    # labeled dual-report (#92): tokenizers.chars4 mirrors the top-level (back-compat) report
+    assert r["tokenizers"]["chars4"] == {
+        "tokenizer": r["tokenizer"], "items": r["items"], "overall": r["overall"],
+    }, r["tokenizers"]["chars4"]
+    # bpe_estimate is either a real report (engine/simplicio_tokens.py importable) or an honest
+    # None — never a silent 0 masquerading as a measurement
+    bpe = r["tokenizers"]["bpe_estimate"]
+    if _BPE_AVAILABLE:
+        assert bpe is not None and bpe["tokenizer"] != r["tokenizer"], bpe
+        assert bpe["overall"]["baseline"] > 0, bpe["overall"]
+        assert count_tokens_bpe("") == 0
+        assert count_tokens_bpe("x" * 400) > 0
+    else:
+        assert bpe is None, bpe
+    log("selftest OK — tokenizer + per-item stats + overall roll-up + labeled dual-report verified")
 
 
 def _parse(args):

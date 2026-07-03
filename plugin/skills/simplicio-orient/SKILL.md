@@ -72,6 +72,7 @@ write/confirm op). Tune per repo.
 | PR / list view | counts + titles only | ~87% | `--json`/`--jq` present |
 | package/image inventory | keep ≤50 rows | ~50% | — |
 | format / passthrough | run raw | 0% | always |
+| structured JSON payload → prompt (verdict-shaped, e.g. `task_anchor.py check`, `loop_journal.py stall`, mapper `handoff`) | encode via `toon_codec.encode_toon` (TOON — Token-Oriented Object Notation, lossless, `scripts/toon_codec.py`) | ~21–33% (chars4) / ~38–45% (bpe_estimate) measured on the first two real verdict payloads (`.orchestrator/savings/snapshots.jsonl`, #92); up to ~40%+ on an ideal uniform tabular array of objects, per the toon-format benchmark — real non-tabular verdict payloads (few scalar keys, no row-shaped array) measure lower; snapshot more items before trusting a number outside this range | payload is empty / non-uniform (differing keys, mixed types, nested arrays-or-objects per element) — the codec auto-falls-back to compact JSON for THAT value, never lossy-compact; measure, don't assume the ideal-case number |
 
 ## Signal-tiered truncation caps (one shared set)
 

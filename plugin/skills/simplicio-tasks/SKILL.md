@@ -232,7 +232,8 @@ Never mark done without green gates + evidence; a failure is NOT a blocker — i
 - **Attempt memory + stall guard (anti-oscillation).** Each fix iteration, RECORD the attempt
   (`python3 scripts/loop_journal.py record --iteration N --action "<change>" --hypothesis "<why>"
   --gate pass|fail --gate-output <test.log>`) and, before retrying, CHECK for a stall
-  (`loop_journal.py stall`). K consecutive failures with the SAME error fingerprint ⇒ do NOT keep
+  (`loop_journal.py stall --format toon`, leaner TOON render of the same verdict for the per-turn
+  re-feed; `--format json` for a machine consumer). K consecutive failures with the SAME error fingerprint ⇒ do NOT keep
   re-trying the same approach: switch strategy, or escalate via the human gate (Step 5) with the
   fingerprint + dead-ends. Start each turn with `loop_journal.py resume` to avoid known dead-ends.
   When the lane itself has stage lineage that matters, also stamp `--execution-state`,
@@ -242,8 +243,10 @@ Never mark done without green gates + evidence; a failure is NOT a blocker — i
   Delegate to `simplicio-loop` when loaded (§ Run-journal + stall detector).
 - **AC anchor + drift guard (anti-deviation).** Every turn, BEFORE acting, re-read the frozen
   anchor and verify you are still on the SAME task: `python3 scripts/task_anchor.py check --goal
-  "<the goal you are working now>" --exit-code` (verdict `DRIFT` ⇒ exit 11 — the goal moved; STOP
-  and re-anchor explicitly with `--force`, never drift silently). As each AC is genuinely met,
+  "<the goal you are working now>" --format toon --exit-code` (TOON render of the same verdict
+  payload for the per-turn prompt re-feed; `--format json` for a machine consumer): verdict
+  `DRIFT` ⇒ exit 11 — the goal moved; STOP
+  and re-anchor explicitly with `--force`, never drift silently. As each AC is genuinely met,
   record its receipt — `task_anchor.py mark --id ACk --status done --evidence "<file:line / cmd /
   screenshot>"` (a `done` with no evidence is REFUSED). The anchor is the runnable form of
   "never narrow the task": it makes the orchestrator's working memory for SCOPE durable, exactly as
