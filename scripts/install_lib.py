@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""simplicio-tasks — universal installer (one logic, all runtimes).
+"""simplicio-loop — universal installer (one logic, all runtimes).
 
 Copies the 6 skills + hooks into a target, wires the loop where the runtime supports it,
 ensures the runtime's entry/instructions file references the skill, and prints the MCP-bind
@@ -42,7 +42,8 @@ SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
 #   simplicio-cli    -> action operator (binds `execute`/`deterministic_edit`); binary: simplicio-dev-cli
 # (the bare `simplicio` command is reserved for the separate `simplicio-runtime`, not this operator.)
 OPERATORS = [("simplicio-mapper", "simplicio-mapper"), ("simplicio-cli", "simplicio-dev-cli")]
-MARK_A, MARK_B = "<!-- simplicio-tasks:begin -->", "<!-- simplicio-tasks:end -->"
+LEGACY_MARK_A, LEGACY_MARK_B = "<!-- simplicio-tasks:begin -->", "<!-- simplicio-tasks:end -->"
+MARK_A, MARK_B = "<!-- simplicio-loop:begin -->", "<!-- simplicio-loop:end -->"
 
 
 def entry_block(runtime=None):
@@ -51,13 +52,14 @@ def entry_block(runtime=None):
     states the native-bind + full-protocol requirement, not just an installer-side log line."""
     body = (
         MARK_A + "\n"
-        "## simplicio-tasks — Universal Looping Orchestrator\n\n"
-        "Load and follow the protocol in `.claude/skills/simplicio-tasks/SKILL.md` and its "
-        "companion skills (`simplicio-loop`, `simplicio-orient`, `simplicio-review`, "
-        "`simplicio-compress`, `simplicio-learn`) IN FULL — every step, no partial subset. Run "
+        "## simplicio-loop — Unified Core + Loop\n\n"
+        "Load and follow the protocol in `.claude/skills/simplicio-loop/SKILL.md` and its "
+        "companion skills (`simplicio-tasks` as legacy alias, `simplicio-orient`, "
+        "`simplicio-review`, `simplicio-compress`, `simplicio-learn`) IN FULL — every step, "
+        "no partial subset. Run "
         "commands for real; clamp heavy output via `python3 hooks/orient_clamp.py -- <cmd>`; "
-        "never close work without a merged PR or concrete evidence; honor the cost kill-switch "
-        "and the irreversible-op human gate.\n"
+        "never close work without a merged PR or concrete evidence; honor the irreversible-op "
+        "human gate and explicit STOP/cancel path.\n"
     )
     if runtime in FORCED_BIND_RUNTIMES:
         body += (
@@ -66,7 +68,7 @@ def entry_block(runtime=None):
             "STOP and report the gap rather than silently degrading to the unbound LLM-only "
             "path (install: `pip install -U simplicio-installer && simplicio install --global`).\n"
         )
-    body += "\nInvoke with: `/simplicio-tasks <the body of work>`\n" + MARK_B
+    body += "\nInvoke with: `/simplicio-loop <the body of work>`\n" + MARK_B
     return body
 
 # entry file + MCP client id per runtime; None entry = no instructions file needed
@@ -76,7 +78,7 @@ RUNTIMES = {
     "vscode":      {"entry": ".github/copilot-instructions.md", "mcp": "vscode",      "hooks": None},
     "cursor":      {"entry": None,                              "mcp": "cursor",      "hooks": "cursor"},
     "antigravity": {"entry": "AGENTS.md",                       "mcp": "antigravity", "hooks": None},
-    "kiro":        {"entry": ".kiro/steering/simplicio-tasks.md","mcp": "kiro",       "hooks": None},
+    "kiro":        {"entry": ".kiro/steering/simplicio-loop.md", "mcp": "kiro",       "hooks": None},
     "opencode":    {"entry": "AGENTS.md",                       "mcp": "opencode",    "hooks": None},
     "gemini":      {"entry": "GEMINI.md",                       "mcp": "gemini",      "hooks": None},
     "aider":       {"entry": "CONVENTIONS.md",                  "mcp": None,          "hooks": None},
@@ -126,10 +128,15 @@ def ensure_entry(target, rel, runtime=None):
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             existing = f.read()
-    if MARK_A in existing:
-        # refresh the block in place
-        pre = existing.split(MARK_A)[0]
-        post = existing.split(MARK_B, 1)[1] if MARK_B in existing else ""
+    begin = end = None
+    if MARK_A in existing and MARK_B in existing:
+        begin, end = MARK_A, MARK_B
+    elif LEGACY_MARK_A in existing and LEGACY_MARK_B in existing:
+        begin, end = LEGACY_MARK_A, LEGACY_MARK_B
+    if begin and end:
+        # refresh the block in place, migrating legacy markers to the new public command block
+        pre = existing.split(begin)[0]
+        post = existing.split(end, 1)[1]
         new = pre.rstrip() + "\n\n" + block + post
     else:
         new = (existing.rstrip() + "\n\n" if existing.strip() else "") + block + "\n"
@@ -320,7 +327,7 @@ def ensure_runtime_bind(runtime, cfg):
                 "the native bind (no safe auto-write for this host's config format)." % (runtime, runtime))
         else:
             log("! simplicio doctor did not report healthy for '%s' — native bind is REQUIRED "
-                "here; fix it (simplicio doctor --repair) before relying on simplicio-tasks." % runtime)
+                "here; fix it (simplicio doctor --repair) before relying on simplicio-loop." % runtime)
 
 
 def detect():
@@ -554,7 +561,7 @@ def main():
         cwd = os.getcwd()
         target = cwd if os.path.abspath(cwd) != os.path.abspath(SOURCE) else SOURCE
 
-    print("simplicio-tasks installer - runtime=%s - target=%s" % (runtime, target))
+    print("simplicio-loop installer - runtime=%s - target=%s" % (runtime, target))
     if lite:
         log("LITE mode: installing skills+hooks instantly, operators in background...")
         # Skip operators now, spawn in background
@@ -594,7 +601,7 @@ def main():
         if strict:
             log("Note: --strict has no effect in --lite mode (operators already in background).")
     log("verify / repair anytime:  python3 scripts/doctor.py --repair  (optional pieces never block)")
-    print("done. use:  /simplicio-tasks finish all the open issues")
+    print("done. use:  /simplicio-loop finish all the open issues")
 
 
 if __name__ == "__main__":

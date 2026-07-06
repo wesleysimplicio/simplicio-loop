@@ -8,7 +8,7 @@ Issues, fallos de CI, tableros de Jira: colas que nunca se vacían. Y cada pasad
 
 3
 00:00:18,000 --> 00:00:25,900
-Primero, el pre-vuelo. Un kill-switch de costo, autenticación de la fuente y un watcher veinticuatro-siete: todo en verde antes de una sola línea de código.
+Primero, el pre-vuelo. La autenticación de la fuente, las herramientas runtime y una ruta STOP explícita están en verde antes de una sola línea de código.
 
 4
 00:00:26,000 --> 00:00:37,900

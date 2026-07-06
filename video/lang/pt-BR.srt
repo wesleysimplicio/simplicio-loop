@@ -8,7 +8,7 @@ Issues, falhas de CI, boards do Jira: filas que nunca esvaziam. E cada passada q
 
 3
 00:00:18,000 --> 00:00:25,900
-Primeiro, o pre-flight. Um kill-switch de custo, autenticação da fonte e um watcher vinte e quatro por sete: tudo verde antes de uma única linha de código.
+Primeiro, o pre-flight. Autenticação da fonte, ferramentas de runtime e um STOP path explícito ficam verdes antes de uma única linha de código.
 
 4
 00:00:26,000 --> 00:00:37,900

@@ -90,7 +90,7 @@ touching that surface — the rubric runs always, its expensive evidence require
   Quarantine items that fail K times to a dead-letter list.
 
 **Worker report contract (every worker MUST follow).** A worker result is re-injected into the
-orchestrator context verbatim and costs budget on EVERY delegation. Forbid narration; mandate the
+orchestrator context verbatim and consumes context on EVERY delegation. Forbid narration; mandate the
 terse MACHINE-tier schema:
 ```
 <status>          # FIRST line, one token: done | blocked | too-big | needs-human | regressed | ambiguous
@@ -125,7 +125,7 @@ ZERO cross-item conflict — the simplest model to reason about. Each item's bra
 learned `repo_conventions` profile (Step 1a' — `repo_conventions.py branch --type <t> --slug
 <title>`), not a generic `agent/{id}` name, so the delivered branches match the repo's own style.
 
-The one **opt-out** is cost: a worktree is expensive for a big COMPILED project (fresh build/target dir +
+The one **opt-out** is resource pressure: a worktree is expensive for a big COMPILED project (fresh build/target dir +
 disk per item). When the toolchain is heavy-compile AND items are many, fall back to conflict-AWARE
 sharing: predict the file-overlap graph; items in DISJOINT files share ONE checkout, committing
 sequentially on their own branches; only OVERLAPPING items serialize. Select the mode up front
@@ -139,7 +139,7 @@ review+autofix → collect. After all waves: merge + close. Prune worktrees on t
 queue; the pool pulls as a slot frees. ALSO poll this run's open PRs (failed checks, new
 review/requested-changes, branches behind main) → reopen the feedback loop (Step 6b). **Reset
 `dry=0` whenever the poll finds anything new.** The run FINISHES only when queue empty AND no
-worker busy AND `dry >= 2` consecutive empty polls (plus hard stops: time-box, budget, scope).
+worker busy AND `dry >= 2` consecutive empty polls (plus hard stops: time-box, scope, STOP).
 
 **agentsview (optional).** If configured (`scripts/agentsview_adapter.py` authed), poll
 agentsview for stalled sessions each cycle and convert them into work-items of type 'resume

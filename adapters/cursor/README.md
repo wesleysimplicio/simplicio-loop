@@ -22,7 +22,7 @@ The root `.cursor-plugin/plugin.json` declares the skills (`./.claude/skills/`) 
 
 `hooks/hooks.json` wires:
 - `afterAgentResponse` → `loop_capture.py` (raise `done` on an evidence-backed `<promise>`)
-- `stop` → `loop_stop.py` (re-feed the goal, or exit on promise/cap/budget)
+- `stop` → `loop_stop.py` (re-feed the goal, or exit on promise/cap/STOP)
 
 Detection and termination are decoupled — neither parses the other's state inline.
 

@@ -24,14 +24,14 @@ points its `source` at this `plugin/` subdirectory, so the install carries only 
 
 ## Quick start
 
-After install, **start every run with `/simplicio-tasks`** — that is the entry command for the
+After install, **start every run with `/simplicio-loop`** — that is the entry command for the
 orchestrator. It reads your queue of work (open issues, a milestone, CI failures, kanban cards) and
 drives it end-to-end. The other five skills are called automatically by the orchestrator, or on their
 own when you only need that one piece.
 
 ```
-/simplicio-tasks              # start: drain the whole queue end-to-end
-/simplicio-tasks #123 #124    # scope the run to specific issues
+/simplicio-loop              # start: drain the whole queue end-to-end
+/simplicio-loop #123 #124    # scope the run to specific issues
 ```
 
 ### Flow and gains

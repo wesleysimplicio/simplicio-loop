@@ -84,9 +84,9 @@ def test_install_codex_writes_agents_md_entry_block(tmp_path):
     agents_md = target / "AGENTS.md"
     assert agents_md.is_file()
     text = agents_md.read_text()
-    assert "<!-- simplicio-tasks:begin -->" in text
-    assert "<!-- simplicio-tasks:end -->" in text
-    assert "/simplicio-tasks" in text
+    assert "<!-- simplicio-loop:begin -->" in text
+    assert "<!-- simplicio-loop:end -->" in text
+    assert "/simplicio-loop" in text
 
 
 def test_install_idempotent_no_duplicate_hook_entries(tmp_path):

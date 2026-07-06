@@ -1,4 +1,4 @@
-# 🔁 simplicio-tasks — The Universal Looping AI Orchestrator
+# 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
   <img src="assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
@@ -49,8 +49,8 @@
 
 ## ⚡ TL;DR
 
-**simplicio-tasks** is a runtime-agnostic **super-plugin** — one autonomous looping
-orchestrator (invoked as **`/simplicio-tasks`**) plus **five satellite skills** — that turns any
+**simplicio-loop** is a runtime-agnostic **super-plugin** — one autonomous looping
+orchestrator (invoked as **`/simplicio-loop`**) plus **five satellite skills** — that turns any
 strong LLM (Claude, Codex, Copilot, Gemini, Cursor, local models) into a self-driving worker. You
 point it at a body of work — *"finish all the open issues"*, *"clear the CI queue"*, *"drain the Jira board"* — and it
 runs the whole lifecycle on its own:
@@ -60,11 +60,11 @@ runs the whole lifecycle on its own:
 It discovers work from any source (GitHub Issues, Jira, Azure DevOps, agentsview sessions, and
 more), dedups, auto-scales an agent fleet to your machine, implements each item through a quality
 loop that **runs the code (not just compiles it)**, opens PRs, resolves CI/review feedback, merges,
-and keeps watching **24/7** for new work — all behind safety gates and a hard cost kill-switch.
+and keeps watching **24/7** for new work — all behind safety gates and evidence checks.
 
 ```text
-/simplicio-tasks finish all open issues
-→ identity + pre-flight (kill-switch, auth, watcher)
+/simplicio-loop finish all open issues
+→ identity + pre-flight (auth, watcher, STOP path)
 → discover 50 issues · dedup · build dependency DAG
 → autoscale fleet = 14 · pipeline implement→review→merge
 → each item: read body+ACs → orient code → plan → edit → run → verify → PR
@@ -92,19 +92,19 @@ coordination patterns instead of creating a separate task semantics.
 
 ## 🤖 LLM front door
 
-If you are an agent/runtime entering this repo cold, read `llms.txt` first for the short operational contract, then `AGENTS.md`, then `.claude/skills/simplicio-tasks/SKILL.md`.
+If you are an agent/runtime entering this repo cold, read `llms.txt` first for the short operational contract, then `AGENTS.md`, then `.claude/skills/simplicio-loop/SKILL.md`.
 
 ---
 
 ## 📘 Official capability record
 
-The complete, official roster of what `simplicio-tasks` ships — every capability below is **real,
+The complete, official roster of what `simplicio-loop` ships — every capability below is **real,
 runnable, and tested** (`python3 scripts/check.py`: claims-audit 9/9 + 245 passed). Each links to its
 deep section and its worker.
 
 | Capability | What it does | Proof / worker | Details |
 |---|---|---|---|
-| 🎬 **Video evidence** (`video_evidence`) | Records the **real browser session** as moving proof a UI change works (Playwright, default); renders a **deterministic captioned MP4** with [hyperframes](https://github.com/heygen-com/hyperframes) for an explicit explainer request (`/simplicio-tasks make a video of screen X`) | `scripts/video_evidence.py` · BLOCKED (never fake-pass) without the toolchain | [§ Video evidence](#-video-evidence--playwright-by-default-hyperframes-on-request) |
+| 🎬 **Video evidence** (`video_evidence`) | Records the **real browser session** as moving proof a UI change works (Playwright, default); renders a **deterministic captioned MP4** with [hyperframes](https://github.com/heygen-com/hyperframes) for an explicit explainer request (`/simplicio-loop make a video of screen X`) | `scripts/video_evidence.py` · BLOCKED (never fake-pass) without the toolchain | [§ Video evidence](#-video-evidence--playwright-by-default-hyperframes-on-request) |
 | 🧠 **Attempt memory + stall detector** | A durable run-journal (`.orchestrator/loop/journal.jsonl`) + a stall detector so the loop **changes strategy instead of oscillating**; incremental triage (`since`) reads only the delta each turn, and optional stage lineage makes retries/governance explicit | `scripts/loop_journal.py` · `selftest` 13/13 | [§ Anti-oscillation](#-attempt-memory--stall-detector-anti-oscillation) |
 | 🧭 **Repo conventions** (`repo_conventions`) | **Learns the repo's own playbook** — mines git history + merged PRs + static config into `.orchestrator/conventions.json` so every new branch/commit/PR mirrors the team's established style; worktree-per-item isolation is the default | `scripts/repo_conventions.py` · `selftest` 19/19 | [§ The full flow](#️-the-full-flow--from-demand-to-delivery) |
 | 🧩 **Scope reflection** (`dependency_graph`) | Maps local dependencies, reverse dependents, and related tests from the planned touched files; blocks task plans that ignore callers, sibling files, or proof points before the edit starts | `scripts/impact_audit.py` · `selftest` | [§ Tests & local checks](#-tests--local-checks-no-paid-ci) |
@@ -116,7 +116,7 @@ deep section and its worker.
 Two loop **modes** make termination explicit: **converge** (a single hard task — ends on the
 evidence-gated `<promise>` or a stall escalation) vs **drain** (a queue — ends when the source
 re-query stays empty K rounds). Both still obey the universal exits (promise+evidence,
-`max_iterations`, budget, STOP).
+`max_iterations`, STOP).
 
 > Loop scoring across this line of work: **7.5** (strong design, unproven) → **9** (attempt memory +
 > anti-oscillation) → **9.5** (reproducible local proof) → **~10** (enforced safety + complete loop
@@ -133,8 +133,8 @@ fallback.
 
 | # | Capability | Absorbs | What it does | Token impact |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-tasks** | — | The orchestrator loop: 48 extension points, dual-path router, self-audit convergence | Core |
-| 2 | ♾️ **simplicio-loop** | [ralph-loop](https://github.com/cursor/plugins/tree/main/ralph-loop) | Hardened Ralph loop: evidence-gated `<promise>` exit, max_iterations cap | Loop drive |
+| 1 | 🔁 **simplicio-loop** | — | Unified public entrypoint: orchestrator core + hardened loop behind one command | Core + loop |
+| 2 | ↩️ **simplicio-tasks** | legacy alias | Compatibility shim for older installs and saved prompts | Legacy alias |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Terminal-first execution, output-reduction catalog, tee-cache, signatures-read | L0 deterministic |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Parallel adversarial review on distinct rubrics → deduped verdict | Quality gate |
 | 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Output + memory compression, fail-closed `transform_guard` | 40-60% fewer |
@@ -147,8 +147,8 @@ fallback.
 | 12 | 🎬 **video_evidence** | Playwright (default) · [hyperframes](https://github.com/heygen-com/hyperframes) (on request) | Records the **real session** as moving proof of a UI change (Playwright); renders a **deterministic captioned MP4** explainer with hyperframes when the video IS the deliverable | Evidence producer |
 
 Each skill lives under [`.claude/skills/`](.claude/skills); each accelerator has a reference doc
-under `.claude/skills/simplicio-tasks/references/` (the video producer:
-[`video-evidence.md`](.claude/skills/simplicio-tasks/references/video-evidence.md), worker
+under `.claude/skills/simplicio-loop/references/` (the video producer:
+[`video-evidence.md`](.claude/skills/simplicio-loop/references/video-evidence.md), worker
 [`scripts/video_evidence.py`](scripts/video_evidence.py)).
 
 ---
@@ -166,7 +166,7 @@ The orchestrator discovers work from any source via pluggable adapters. Each exp
 | **agentsview sessions** | `scripts/agentsview_adapter.py` | Stalled session recovery + cost observability |
 | Local files / CI queue | filesystem / CI API | Internal work tracking |
 
-See each adapter's reference doc under `.claude/skills/simplicio-tasks/references/`.
+See each adapter's reference doc under `.claude/skills/simplicio-loop/references/`.
 
 ---
 
@@ -219,9 +219,9 @@ flowchart TD
   SRC --> PF
   subgraph PF["2 · Pre-flight gates"]
     direction LR
-    P1["cost kill-switch budget · agentsview cost check"]
-    P2["source auth + scopes"]
-    P3["arm 24/7 watcher"]
+    P1["source auth + scopes"]
+    P2["runtime/tools ready"]
+    P3["arm 24/7 watcher + STOP path"]
   end
   PF --> DISC
   subgraph DISC["3 · Discover + normalize"]
@@ -278,7 +278,7 @@ flowchart TD
     F3["branch behind main -> additive rebase"]
   end
   FB -->|"merged and closed"| DONE(["done + evidence + measured savings (only if a receipt exists)"])
-  WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · cost kill-switch · LMCache KV cache warm"]
+  WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · STOP path · LMCache KV cache warm"]
   FB -. "poll new work / comments / checks" .-> WATCH
   DONE -. "idle until new work" .-> WATCH
   WATCH -. "re-feed the goal" .-> DISC
@@ -294,8 +294,7 @@ agent sees its own prior work. Exit is ONLY via:
 1. **Evidence-gated `<promise>`** — the turn that emits the promise MUST also carry concrete
    proof (passing test, merged PR, closed-item re-query). A promise with no evidence = ignored.
 2. **`max_iterations` cap** — hard safety backstop
-3. **Budget kill-switch** — `daily_usd_ceiling` halts the loop when spent
-4. **STOP signal** — `.orchestrator/STOP` or channel command
+3. **STOP signal** — `.orchestrator/STOP` or channel command
 
 Between turns, LMCache (when available) caches the KV state so re-feed costs near-zero prefill.
 
@@ -334,7 +333,7 @@ loop_journal.py stall --k 3 --exit-code      # PROGRESS → re-feed · STALLED �
 
 The loop produces **demo videos** as proof a change works — **two engines**, one `video_evidence`
 extension point (worker [`scripts/video_evidence.py`](scripts/video_evidence.py), contract
-[`references/video-evidence.md`](.claude/skills/simplicio-tasks/references/video-evidence.md)):
+[`references/video-evidence.md`](.claude/skills/simplicio-loop/references/video-evidence.md)):
 
 1. **Default — the normal evidence flow uses Playwright.** After a UI change, `video_evidence`
    records the **real browser session** driving the screen (Playwright native video → `.webm`, →
@@ -353,7 +352,7 @@ extension point (worker [`scripts/video_evidence.py`](scripts/video_evidence.py)
    frames, same output", CI-reproducible, no API keys, local render via headless Chrome + FFmpeg).
 
    ```text
-   /simplicio-tasks make an explainer video of the system login screen
+   /simplicio-loop make an explainer video of the system login screen
    → detect: video-creation request → web_verify captures the screens
    → video_evidence verify --engine hyperframes → deterministic MP4 → attached to the PR
    ```
@@ -386,9 +385,9 @@ No measured economy → no savings line; the orchestrator never fabricates a bas
 exists in `.orchestrator/savings/snapshots.jsonl`. See `references/token-economy.md` and
 `scripts/claims_manifest.py`.
 
-### 🔎 Running `simplicio-tasks`: economy vs measurement (per runtime)
+### 🔎 Running `simplicio-loop`: economy vs measurement (per runtime)
 
-Two different things happen when you call **`simplicio-tasks`**, and they behave differently per runtime:
+Two different things happen when you call **`simplicio-loop`**, and they behave differently per runtime:
 
 - **Economy** — compression, output clamps, signatures-only reads, `deterministic_edit` — applies **every
   time the skill runs and loads `simplicio-orient` / `simplicio-compress`, on any runtime.** It is the
@@ -483,7 +482,7 @@ Four mechanisms sustain the orchestration power:
 | **DAG + pipeline** | parallelism by dependency, staged per item | `references/orchestration.md` (Step 3 pool + pipeline) |
 | **Isolation by worktree** | parallel edits without corrupting the tree, merge-gated | `references/orchestration.md` |
 | **Adversarial verify** | panel of skeptics before "delivered" | `references/quality-safety-delivery.md` · skill `simplicio-review` |
-| **Loop budget cap** | anti-infinite-loop, dual exit | `references/standing-loop-247.md` · skill `simplicio-loop` |
+| **Bounded loop cap** | anti-infinite-loop, evidence-gated exit | `references/standing-loop-247.md` · skill `simplicio-loop` |
 
 ---
 
@@ -558,16 +557,15 @@ bash scripts/install.sh claude    # or: bash scripts/install.sh cursor
 Then:
 
 ```
-/simplicio-tasks finish all the open issues
+/simplicio-loop finish all the open issues
 ```
 
 For the standalone skill install, the only requirement is **python3** on PATH. For the repo
 installer and GitHub-backed sources, you also want `git` + an authenticated `gh`. See [`INSTALL.md`](INSTALL.md) and
 [`adapters/MATRIX.md`](adapters/MATRIX.md).
 
-**Before an unattended 24/7 run:** set a cost ceiling in `.orchestrator/loop-budget.json`
-(`daily_usd_ceiling > 0`), confirm source auth is persistent, and keep the irreversible-op human
-gate + secret-scan on. With `ceiling = 0` the watcher refuses to run unattended (fail-safe).
+**Before an unattended 24/7 run:** confirm source auth is persistent, keep the irreversible-op
+human gate + secret-scan on, and ensure a reachable STOP/cancel path is configured.
 
 ---
 
@@ -583,8 +581,8 @@ gate + secret-scan on. With `ceiling = 0` the watcher refuses to run unattended 
 - **Trust-before-load** — perception-shaping config (clamp profiles, suppression lists) is
   untrusted until a human reviews and hash-pins it.
 - **Prompt-injection hardening** — item/PR/comment content can never override the contract.
-- **Hard $ kill-switch** for unattended runs; **evidence-gated** completion (never a false
-  "done"); **fail-open** hooks (never trap the agent in a loop).
+- **Evidence-gated** completion (never a false "done"); **fail-open** hooks (never trap the agent
+  in a loop); explicit STOP/cancel path for unattended runs.
 
 ---
 

@@ -20,8 +20,8 @@ Drive ticks headlessly on a schedule:
 */2 * * * *  cd /repo && opencode run "/simplicio-tasks continue the open queue"
 ```
 
-`simplicio-loop` advances the scratchpad and exits on the evidence-gated promise, the cap, or
-the budget kill-switch.
+`simplicio-loop` advances the scratchpad and exits on the evidence-gated promise, the cap,
+spindle handoff, or explicit STOP.
 
 ## Token economy
 

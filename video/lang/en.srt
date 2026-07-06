@@ -8,7 +8,7 @@ Issues, CI failures, Jira boards — queues that never empty. And every pass bur
 
 3
 00:00:18,000 --> 00:00:25,900
-First, pre-flight. A hard cost kill-switch, source auth, and a twenty-four-seven watcher — all green before a single line of code.
+First, pre-flight. Source auth, runtime tools, and an explicit STOP path are all green before a single line of code.
 
 4
 00:00:26,000 --> 00:00:37,900

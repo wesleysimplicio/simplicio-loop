@@ -14,14 +14,12 @@ Non-negotiable properties (mirror the loop's safety spine):
     counts). Customer code, diffs, prompts, and the captured screenshots/MP4s are NEVER read into
     a usage record. The savings snapshots store raw baseline/treatment TEXT; `collect` counts its
     tokens with the fixed `ceil(chars/4)` tokenizer and then DISCARDS the text.
-  • Fail-safe — the prepaid guard reuses the existing kill-switch: a zero/over balance maps to
-    `loop-budget.json` `state: "halted"`, so the loop already stops cleanly. `invoice --prepaid`
-    flags an over-balance; it never silently over-serves.
+  • Fail-safe — `invoice --prepaid` flags an over-balance as billing state only; it never writes
+    runtime loop state or stops the orchestrator.
   • Auditable — every `collect`ed usage record is immutable (append-only JSONL) and timestamped,
     so an invoice line always traces back to a snapshot, like the loop's `<promise>` evidence.
 
 Inputs (all optional — a missing source contributes 0, fail-open):
-  .orchestrator/loop-budget.json        → usd_spent (spent_usd_today), ceiling, state
   .orchestrator/savings/snapshots.jsonl → tokens_spent (treatment) + tokens_saved (baseline−treatment)
   .orchestrator/trajectory/*.jsonl      → items_delivered (records with status merged|closed|delivered)
   .orchestrator/tee/video/ledger.txt    → renders (one per `video_evidence: PASS` line)
@@ -98,18 +96,6 @@ def _now():
 # ---------------------------------------------------------------------------------------------
 # collect — read the loop's existing records, emit ONE text-free usage record (privacy boundary)
 # ---------------------------------------------------------------------------------------------
-def _usd_spent():
-    b = _read_json(os.path.join(ORCH, "loop-budget.json"), {})
-    try:
-        return round(float(b.get("spent_usd_today", 0) or 0), 6)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _budget_state():
-    return _read_json(os.path.join(ORCH, "loop-budget.json"), {}).get("state", "unknown")
-
-
 def _tokens_from_savings():
     """(tokens_spent, tokens_saved). Counts tokens then DISCARDS the raw text (privacy)."""
     path = os.path.join(ORCH, "savings", "snapshots.jsonl")
@@ -174,8 +160,7 @@ def cmd_collect(opts):
         "window": opts.get("window", time.strftime("%Y-%m", time.gmtime())),
         "collected_at": opts.get("_now") or _now(),
         "seats": int(opts.get("seats", 0)),
-        "usd_spent": _usd_spent(),
-        "budget_state": _budget_state(),
+        "usd_spent": 0.0,
         "tokens_spent": tokens_spent,
         "tokens_saved": tokens_saved,
         "items_delivered": _items_delivered(),
@@ -264,8 +249,7 @@ def invoice(totals, tier, rates, seats=None, prepaid=None):
     if prepaid is not None:
         bal = round(float(prepaid) - out["total_usd"], 4)
         out["prepaid_balance_usd"] = bal
-        # fail-safe: an over-balance maps to the existing kill-switch halt (never over-serve)
-        out["prepaid_state"] = "halted" if bal < 0 else "running"
+        out["prepaid_state"] = "over_balance" if bal < 0 else "ok"
     return out
 
 
@@ -363,9 +347,9 @@ def cmd_selftest(_opts):
     #        = 4.025 + 0.20 + 0.30 + 87 = 91.525 -> round 91.525
     metered = invoice(t, "metered", rates)["total_usd"]
     chk("invoice.metered", metered, 91.525)
-    # prepaid fail-safe: balance under 0 -> halted
+    # prepaid fail-safe: balance under 0 is a billing state only
     inv_over = invoice(t, "seat", rates, seats=100, prepaid=50.0)
-    chk("prepaid.halted", inv_over["prepaid_state"], "halted")
+    chk("prepaid.over_balance", inv_over["prepaid_state"], "over_balance")
     chk("count_tokens", count_tokens("12345678"), 2)  # 8 chars / 4
 
     ok = all(checks)

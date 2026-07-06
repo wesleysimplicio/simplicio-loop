@@ -17,7 +17,8 @@ that on every run.
 
 Codex has no stop-hook, so `simplicio-loop` self-paces: each run does one iteration, checks the
 evidence-gated promise, and reschedules itself via the host scheduler until the promise is true,
-the cap is hit, or the budget halts. Drive ticks with `codex exec` on a cron / CI schedule:
+the cap is hit, spindle handoff is latched, or STOP is signaled. Drive ticks with `codex exec`
+on a cron / CI schedule:
 
 ```bash
 */2 * * * *  cd /repo && codex exec "/simplicio-tasks continue the open queue"

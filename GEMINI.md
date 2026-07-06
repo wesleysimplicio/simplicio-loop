@@ -1,6 +1,6 @@
-# GEMINI.md — simplicio-tasks (Gemini / other runtimes)
+# GEMINI.md — simplicio-loop (Gemini / other runtimes)
 
-The **simplicio-tasks** skill is runtime-agnostic. Gemini, Codex, Copilot, Grok, or
+The **simplicio-loop** skill is runtime-agnostic. Gemini, Codex, Copilot, Grok, or
 any local agent can run it from the same source file.
 
 ## Load
@@ -8,7 +8,7 @@ any local agent can run it from the same source file.
 Point your agent at:
 
 ```
-.claude/skills/simplicio-tasks/SKILL.md
+.claude/skills/simplicio-loop/SKILL.md
 ```
 
 The folder name is `.claude/` for convention, but nothing in the skill is
@@ -17,7 +17,7 @@ Claude-specific — it uses only shell, git, gh, file edit, and web.
 ## Use
 
 ```
-simplicio-tasks: finish all the open issues
+simplicio-loop: finish all the open issues
 ```
 
 The orchestrator delegates, when loaded, to five satellite skills — `simplicio-loop`

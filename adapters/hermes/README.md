@@ -16,7 +16,7 @@ bindings are active.
 ## Loop drive — native loop
 
 Hermes drives the loop natively (its scheduler IS the watcher). `simplicio-loop` binds to the
-native durable scheduler; the evidence-gated completion-promise and the cap/budget guards are
+native durable scheduler; the evidence-gated completion-promise, cap, and STOP guards are
 enforced by the runtime, not a shell hook.
 
 ## Native bind — extension points (the whole point, REQUIRED)

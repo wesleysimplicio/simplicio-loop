@@ -3,7 +3,7 @@
 
 A concrete binding of the `source_adapter` extension point for agentsview (kenn-io).
 Connects to agentsview's local SQLite database or HTTP API to discover stalled agent sessions
-and feed cost data into the loop budget.
+and report cost data for billing/observability.
 
 Usage:
     python3 scripts/agentsview_adapter.py list_ready [--dry-run]
@@ -197,7 +197,7 @@ def close(mode, db, session_id, dry_run=False):
 
 
 def cost_summary(mode, db, days=7, dry_run=False):
-    """Daily cost summary for budget calibration."""
+    """Daily cost summary for billing/observability."""
     if dry_run:
         if mode == "sqlite":
             print(f"[DRY-RUN] SQL: daily cost summary for last {days} days")

@@ -27,7 +27,7 @@ No hooks. Drive the loop with Aider's non-interactive mode on a tick:
 ```
 
 `simplicio-loop` runs in self-paced mode: one iteration per invocation, exit on the
-evidence-gated promise, the cap, or the budget kill-switch. Keep `--yes-always` OFF for
+evidence-gated promise, the cap, spindle handoff, or explicit STOP. Keep `--yes-always` OFF for
 irreversible-op safety unless a human gate is otherwise wired.
 
 ## Token economy

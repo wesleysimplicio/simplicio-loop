@@ -15,7 +15,7 @@ The installer writes an `AGENTS.md` / rules entry that loads
 ## Loop drive — self-paced
 
 No stop-hook → `simplicio-loop` self-paces via the IDE's task runner or an OS cron tick that
-re-invokes the agent. Same exit conditions (evidence-gated promise, cap, budget). In
+re-invokes the agent. Same exit conditions (evidence-gated promise, cap, STOP). In
 interactive use, keep the agent going with "continue" — the protocol is idempotent and
 resumes from the journal.
 

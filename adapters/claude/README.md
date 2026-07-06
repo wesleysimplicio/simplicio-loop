@@ -34,7 +34,7 @@ Add to `.claude/settings.json` (the installer does this for you):
 ```
 
 `loop_stop.py` re-feeds the goal each turn and exits only on an evidence-backed `<promise>`,
-the `max_iterations` cap, or the budget kill-switch. `orient_rewrite` (Bash matcher) is opt-in.
+the `max_iterations` cap, spindle handoff, or explicit STOP. `orient_rewrite` (Bash matcher) is opt-in.
 
 ## Token economy
 

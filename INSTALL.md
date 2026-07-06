@@ -40,7 +40,7 @@ See [`adapters/MATRIX.md`](adapters/MATRIX.md) and `adapters/<runtime>/README.md
 ## 3. Run it
 
 ```
-/simplicio-tasks finish all the open issues
+/simplicio-loop finish all the open issues
 ```
 
 (or `codex exec`, `gemini -p`, `aider --message`, etc. — see your runtime's adapter.)
@@ -53,22 +53,10 @@ python3 hooks/orient_clamp.py -- go test ./...     # reduced output, tee log on 
 
 ## 5. (Optional) Before an unattended 24/7 run
 
-Create a cost kill-switch so the watcher is allowed to run while you sleep. Create
-`.orchestrator/loop-budget.json` with your editor (cross-platform):
-
-```json
-{
-  "daily_usd_ceiling": 5.00,
-  "per_run_token_ceiling": 0,
-  "spent_usd_today": 0,
-  "reset_at": "<next local midnight, UTC ISO-8601, e.g. 2026-06-23T00:00:00Z>",
-  "state": "running"
-}
-```
-
-Set `reset_at` to the next midnight (not a past date). With `daily_usd_ceiling = 0` (or no
-file) the watcher **refuses** to run unattended — that is the intentional fail-safe. The loop
-also stops on its `max_iterations` cap, an evidence-gated `<promise>`, or `.orchestrator/STOP`.
+Confirm source auth is persistent, keep the irreversible-op human gate + secret-scan on, and make
+sure the operator has a reachable STOP/cancel path (`.orchestrator/STOP` or the runtime's native
+cancel command). The loop stops on its `max_iterations` cap, an evidence-gated `<promise>`,
+spindle handoff, or explicit STOP.
 
 ## Requirements
 

@@ -78,7 +78,7 @@ def scene_problem(sid, t, d, cap, chip):
 
 
 def scene_preflight(sid, t, d, cap, chip):
-    rows = ["kill-switch  $5/day", "source auth  gh", "watcher  24/7"]
+    rows = ["source auth  gh", "runtime/tools  ready", "STOP path  armed"]
     html = '<div class="checks">' + "".join(
         '<div class="crow" id="r%d_%d"><span class="ck" id="ck%d_%d">&#10003;</span>%s</div>'
         % (sid, i, sid, i, r) for i, r in enumerate(rows)) + "</div>"

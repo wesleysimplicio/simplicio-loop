@@ -7,16 +7,16 @@ Ralph loop) or let the agent STOP. Works under Claude Code (Stop hook) and Curso
 
 SAFETY: fail-open. On ANY error, ambiguity, or missing state, ALLOW STOP — a buggy
 hook must never trap the agent in an endless loop. The real guards are the
-`max_iterations` cap and the $ budget kill-switch, never this script's cleverness.
+`max_iterations` cap, explicit STOP, and evidence gates, never this script's cleverness.
 
 State (single source of truth): .orchestrator/loop/scratchpad.md  (+ sibling `done` flag)
 Reads stdin JSON from the host (Claude: {transcript_path,...}; Cursor: {text,...}).
 
-Cross-agent handoff: an INCOMPLETE stop (budget halted, iteration cap, manual STOP
-signal) writes `.orchestrator/loop/HANDOFF.md` before clearing the scratchpad, so a
-different agent/runtime picking up this repo cold — because the first one ran out of
-budget — can resume without re-deriving the goal, the verified acceptance criteria, or
-the dead-end attempts. A successful (promise-fulfilled) stop needs no handoff.
+Cross-agent handoff: an INCOMPLETE stop (iteration cap, manual STOP signal, or spindle
+handoff) writes `.orchestrator/loop/HANDOFF.md` before clearing the scratchpad, so a
+different agent/runtime picking up this repo cold can resume without re-deriving the
+goal, the verified acceptance criteria, or the dead-end attempts. A successful
+(promise-fulfilled) stop needs no handoff.
 """
 import json
 import os
@@ -36,7 +36,6 @@ ANCHOR = os.path.join(LOOP_DIR, "anchor.json")
 JOURNAL = os.path.join(LOOP_DIR, "journal.jsonl")
 HANDOFF = os.path.join(LOOP_DIR, "HANDOFF.md")
 STOP_SIGNAL = os.path.join(".orchestrator", "STOP")
-BUDGET = os.path.join(".orchestrator", "loop-budget.json")
 GATE_LOCK = os.path.join(LOOP_DIR, "gate.lock")
 GATE_TTL_SEC = 1800  # 30 min — a stale lock must NEVER permanently trap the loop (fail-open)
 WATCHER_STATE = os.path.join(LOOP_DIR, "watcher_state.json")
@@ -270,7 +269,7 @@ def write_handoff(reason, meta=None, body=None):
             "1. `python3 scripts/task_anchor.py status` (or `gate --exit-code`) — verified vs open.",
             "2. `python3 scripts/loop_journal.py resume` — dead-end actions to avoid.",
             "3. `git log --oneline -10` / `git diff` — what already landed.",
-            "4. Re-arm the loop once the stop cause (budget/cap/manual) is resolved.",
+            "4. Re-arm the loop once the stop cause (cap/manual/spindle) is resolved.",
             "",
         ]
         tmp = HANDOFF + ".tmp"
@@ -285,21 +284,6 @@ def write_handoff(reason, meta=None, body=None):
         refresh_cross_agent_wiki(include_handoff=False)
     except Exception:
         pass  # fail-open: a broken handoff write must never block the stop
-
-
-def budget_halted():
-    try:
-        if not os.path.exists(BUDGET):
-            return False
-        with open(BUDGET, encoding="utf-8") as f:
-            b = json.load(f)
-        if str(b.get("state", "")).lower() == "halted":
-            return True
-        ceiling = float(b.get("daily_usd_ceiling", 0) or 0)
-        spent = float(b.get("spent_usd_today", 0) or 0)
-        return ceiling > 0 and spent >= ceiling
-    except Exception:
-        return False  # fail-open: budget unreadable ≠ trap
 
 
 def missing_bound_operators():
@@ -383,7 +367,7 @@ def flow_audit_gap():
     `.orchestrator/flow-audit.json` receipt; None when there is nothing to require (#80).
 
     Mechanizes what was previously prose-only (SKILL.md instructions the agent could skip under
-    context pressure): the anchor gate, watcher gate, cap, and budget are all enforced IN this
+    context pressure): the anchor gate, watcher gate, and cap are all enforced IN this
     hook — the front→back integration gate now is too. Fail-open only when `flow_audit.py` itself
     is absent (a bare `simplicio-tasks` repo with no flow_audit worker) or the diff/receipt can't
     be read — never trap the loop over an audit-plumbing error.
@@ -734,8 +718,8 @@ def main():
 
         # (2b) Bound operators required (#83) — when this repo ships the simplicio-loop
         # companion skill, `simplicio-mapper`/`simplicio-dev-cli` are hard deps of the running
-        # loop, not just the installer. A genuine BLOCK (handoff + stop), mirroring the cap and
-        # budget gates, so a marketplace install / PATH gap can never silently degrade to LLM
+        # loop, not just the installer. A genuine BLOCK (handoff + stop), mirroring the cap gate,
+        # so a marketplace install / PATH gap can never silently degrade to LLM
         # hand-survey/hand-edit.
         missing_ops = missing_bound_operators()
         if missing_ops:
@@ -783,12 +767,7 @@ def main():
         if max_iter > 0 and iteration >= max_iter:
             write_handoff("max_iterations cap reached", meta, body)
             cleanup_and_stop()
-        # (5) Budget halted — incomplete stop, hand off. This is the exact "ran out of tokens/$"
-        # case: a different agent must be able to pick this up cold.
-        if budget_halted():
-            write_handoff("budget halted", meta, body)
-            cleanup_and_stop()
-        # (5b) Spindle handoff — latched handoff overrides re-feed.
+        # (5) Spindle handoff — latched handoff overrides re-feed.
         if spindle_latched():
             next_agent = "?"
             try:

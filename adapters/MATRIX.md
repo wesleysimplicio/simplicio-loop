@@ -1,4 +1,4 @@
-# Runtime adapter matrix — simplicio-tasks super-plugin
+# Runtime adapter matrix — simplicio-loop super-plugin
 
 One universal skill core (`.claude/skills/`, 6 skills) + one set of hooks (`hooks/`) drives
 **every** runtime. An adapter is thin: it tells a runtime *where to load the skills*, *how to
@@ -88,7 +88,7 @@ does is a copy + a config edit — reversible, no build.
 ## What degrades gracefully — and what does not
 
 - **No stop-hook** → the loop self-paces via the host scheduler (`simplicio-loop` "No-hook
-  fallback"). Same exit conditions (evidence-gated promise, cap, budget). This degradation is
+  fallback"). Same exit conditions (evidence-gated promise, cap, STOP). This degradation is
   always allowed — it's a drive-mechanism choice, not a policy violation.
 - **No native bind, on Tier 2 only (Gemini/Aider/OpenClaw)** → the LLM performs every extension point
   with shell/git/gh/file tools. This is the one allowed bind-fallback; it does NOT apply to the
@@ -118,5 +118,5 @@ form (`verify_adapters.py claude`, ~15s) on every gate so the Tier-1 install con
 assurance — it does NOT run the full 11-runtime sweep above; run that manually before a release.
 
 That covers everything up to launching the runtime itself. The final manual smoke — open the
-runtime, run `/simplicio-tasks <small task>`, confirm the loop drives and the gates fire — is the
+runtime, run `/simplicio-loop <small task>`, confirm the loop drives and the gates fire — is the
 one step a file-level harness can't do; do it once per runtime per the adapter's README.

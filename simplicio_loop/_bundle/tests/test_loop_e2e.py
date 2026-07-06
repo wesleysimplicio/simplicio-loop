@@ -285,18 +285,6 @@ def test_gate_lock_stale_refeeds_again(tmp_path):
     assert _iteration(root) == 3, "stale gate lock should stop blocking and re-feed"
 
 
-def test_budget_halted_writes_handoff_and_stops(tmp_path):
-    root = str(tmp_path)
-    _arm(root, iteration=2, max_iter=5)
-    os.makedirs(os.path.join(root, ".orchestrator"), exist_ok=True)
-    with open(os.path.join(root, ".orchestrator", "loop-budget.json"), "w", encoding="utf-8") as f:
-        json.dump({"state": "halted"}, f)
-    r = _tick(root, "budget exhausted")
-    assert r.stdout.strip() == ""
-    assert not os.path.exists(_scratchpad(root))
-    assert os.path.exists(os.path.join(root, HANDOFF)), "budget halt should write HANDOFF.md"
-
-
 def test_spindle_latched_writes_handoff_and_stops(tmp_path):
     root = str(tmp_path)
     loop = _arm(root, iteration=2, max_iter=5)
