@@ -1,4 +1,4 @@
-# AGENTS.md — simplicio-tasks
+# AGENTS.md — simplicio-loop
 
 This repository ships a runtime-agnostic **super-plugin**: the Universal Looping AI
 Orchestrator plus five satellite skills, packaged for 11 runtimes. Any agent runtime that
@@ -9,7 +9,7 @@ reads `AGENTS.md` / skill folders can run it.
 The orchestrator IS the protocol — load it and follow it end-to-end:
 
 ```
-.claude/skills/simplicio-tasks/SKILL.md
+.claude/skills/simplicio-loop/SKILL.md
 ```
 
 It is self-contained and uses only standard tools (shell, git, gh, file edit, web), so it
@@ -42,9 +42,9 @@ Antigravity · Kiro · OpenCode · Gemini · Aider · Hermes · OpenClaw.
 The user invokes it with a target body of work:
 
 ```
-/simplicio-tasks finish all the open issues
-/simplicio-tasks clear the CI queue
-/simplicio-tasks drain the Jira board
+/simplicio-loop finish all the open issues
+/simplicio-loop clear the CI queue
+/simplicio-loop drain the Jira board
 ```
 
 If no argument is given, default to "all open work-items in the default source" and
@@ -66,10 +66,10 @@ the plain LLM/native-by-design path silently.
 ## Video evidence (hyperframes)
 
 The orchestrator can **create demo videos** of a screen/feature on request
-(`/simplicio-tasks make a demo video of screen X`) and reuse them as proof a change works.
+(`/simplicio-loop make a demo video of screen X`) and reuse them as proof a change works.
 The `video_evidence` extension point binds [hyperframes](https://github.com/heygen-com/hyperframes)
 (deterministic HTML→MP4; Node 22+ + FFmpeg, no API keys). Worker: `scripts/video_evidence.py`;
-contract: `.claude/skills/simplicio-tasks/references/video-evidence.md`. It chains after
+contract: `.claude/skills/simplicio-loop/references/video-evidence.md`. It chains after
 `web_verify` (screenshots → captioned, deterministic MP4 walkthrough). Evidence is always a file
 path + verdict; a missing toolchain BLOCKS, never a fake pass.
 
@@ -79,7 +79,8 @@ path + verdict; a missing toolchain BLOCKS, never a fake pass.
 - Never mark an item done without green gates + evidence ("works, not just compiles").
 - Secret-scan every diff; route irreversible ops through the human gate. Where hooks exist this is
   ENFORCED fail-closed by `hooks/action_gate.py` (PreToolUse/pre-push) — not left to the model.
-- Unattended 24/7 runs require a cost kill-switch (`ceiling > 0`).
+- Unattended 24/7 runs require persistent source auth, human gate + secret scan, and a reachable
+  STOP/cancel path.
 - Report token-savings ONLY when a measured receipt backs it (clamp / signatures-read / cache hit /
   `deterministic_edit` / `savings_ledger`); never fabricate a figure. No measured economy → no
   savings line. Credited only on a passing quality gate.

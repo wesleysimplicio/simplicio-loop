@@ -435,7 +435,7 @@ JSON
 )
 ```
 
-### Loop budget integration
+### Token economy report integration
 
 Append LMCache savings to the token economy report:
 

@@ -2,8 +2,8 @@
 
 A concrete binding of the `source_adapter` extension point for the **agentsview** local-first
 session search / analytics system. Connects to agentsview's SQLite database (or HTTP API) to
-discover stalled/incomplete agent sessions, feed real token-cost data into the loop budget, and
-track orchestrator effectiveness over time.
+discover stalled/incomplete agent sessions, report aggregate token-cost data, and track
+orchestrator effectiveness over time.
 
 **agentsview** (kenn-io) supports 20+ coding agents: Claude Code, Codex, Aider, Cursor, Gemini,
 Copilot, OpenCode, and more. See https://agentsview.io and https://github.com/kenn-io/agentsview.
@@ -13,7 +13,7 @@ Copilot, OpenCode, and more. See https://agentsview.io and https://github.com/ke
 | Use case | What it enables |
 |---|---|
 | **Discover abandoned work** | Find sessions that were started but never completed by any agent, convert to simplicio-loop items |
-| **Budget calibration** | Feed real historical cost per session into the `daily_usd_ceiling` kill-switch |
+| **Cost observability** | Report real historical cost per session for dashboards and billing rollups |
 | **Fleet observability** | Monitor fleet use (which agents, which projects, which patterns) to inform autoscale |
 | **Effectiveness tracking** | Compare token spend, session count, completion rate before vs after simplicio-loop adoption |
 
@@ -81,7 +81,7 @@ WHERE s.id = '<session-id>'
 ORDER BY m.created_at ASC;
 ```
 
-### Daily cost summary (for budget calibration)
+### Daily cost summary (for billing/observability)
 
 ```sql
 SELECT DATE(m.created_at) AS day,
@@ -119,7 +119,7 @@ ORDER BY total_cost DESC;
 
 ## Integration points in simplicio-loop
 
-### 1. Loop budget calibration (`action_gate` / `pre-flight`)
+### 1. Cost observability (`pre-flight` / dashboard)
 
 Before each loop iteration, run:
 
@@ -135,20 +135,8 @@ agentsview_daily_cost=$(sqlite3 "$AGENTSVIEW_DB" "
 agentsview_daily_cost=$(curl -s "$AGENTSVIEW_API/api/v1/usage/daily" | jq '.[0].total_cost // 0')
 ```
 
-Inject into the kill-switch comparison: `loop_spend + agentsview_spend <= ceiling`.
-
-Add to `.orchestrator/loop-budget.json`:
-```json
-{
-  "daily_usd_ceiling": 5.0,
-  "agentsview": {
-    "cost_source": true,
-    "mode": "sqlite",
-    "db_path": "$HOME/.agentsview/data.db",
-    "api_url": "http://127.0.0.1:8080"
-  }
-}
-```
+Use this value only for reporting, billing rollups, or operator dashboards. It does not stop or
+gate the loop.
 
 ### 2. Demand discovery (Step 3 — Discover + normalize)
 

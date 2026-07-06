@@ -1,12 +1,12 @@
-# simplicio-loop / simplicio-tasks — LLM quick orientation
+# simplicio-loop — LLM quick orientation
 
 Start here, in order:
 1. `AGENTS.md`
-2. `.claude/skills/simplicio-tasks/SKILL.md`
+2. `.claude/skills/simplicio-loop/SKILL.md`
 3. `README.md`
 
 What this repo is:
-- Runtime-agnostic autonomous looping orchestrator (`/simplicio-tasks`)
+- Runtime-agnostic autonomous looping orchestrator (`/simplicio-loop`)
 - Current reference task flow for the Simplicio line
 - Evidence-gated loop: never exit on a fake “done”
 

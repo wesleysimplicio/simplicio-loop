@@ -11,7 +11,7 @@
     {
       "name": "simplicio-loop",
       "source": ".",
-      "description": "Super-plugin: autonomous looping orchestrator + 5 satellite skills (loop, orient, review, compress, learn). Drains any queue of work end-to-end, 24/7, behind safety gates and a cost kill-switch."
+      "description": "Super-plugin: /simplicio-loop is the unified public entrypoint for core + hardened loop. It drains any queue of work end-to-end, 24/7, behind evidence gates, bounded iterations, and an explicit STOP/cancel path."
     }
   ]
 }

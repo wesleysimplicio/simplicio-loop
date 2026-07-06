@@ -1,215 +1,296 @@
 <!doctype html>
 <html lang="es">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=1920, height=1080" />
-  <title>simplicio-loop — El orquestador de IA en bucle universal</title>
-  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
-  <style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    html, body { width:1920px; height:1080px; overflow:hidden; background:#0B0E14 (near-black) com grade sutil + glow radial;
-      font-family:Arial,Helvetica,sans-serif; color:#E6EDF3; }
-    body::before { content:""; position:absolute; inset:0;
-      background:
-        radial-gradient(1200px 700px at 50% 30%, rgba(124,58,237,.18), transparent 60%),
-        radial-gradient(900px 600px at 80% 90%, rgba(0,224,138,.12), transparent 60%);
-      background-image:
-        linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
-      background-size:100% 100%, 64px 64px, 64px 64px; }
-    .clip { position:absolute; inset:0; display:flex; flex-direction:column;
-      align-items:center; justify-content:center; gap:26px; padding:0 140px; opacity:0; }
-    .glow { position:absolute; width:760px; height:760px; border-radius:50%;
-      background:radial-gradient(circle, color-mix(in srgb, var(--c) 38%, transparent), transparent 62%);
-      filter:blur(18px); z-index:0; }
-    .glyph { position:relative; z-index:1; font-size:150px; font-weight:800; line-height:1;
-      color:var(--c); text-shadow:0 0 50px color-mix(in srgb, var(--c) 60%, transparent); }
-    .num { position:relative; z-index:1; font-family:"Courier New",monospace;
-      font-size:20px; letter-spacing:4px; opacity:.55; }
-    .cap { position:relative; z-index:1; font-size:58px; font-weight:700; line-height:1.12;
-      text-align:center; max-width:1400px; }
-    .chip { position:relative; z-index:1; font-family:"Courier New",monospace; font-size:24px;
-      line-height:1.5; text-align:center; max-width:1500px; color:#00E08A; opacity:0;
-      background:rgba(0,224,138,.07); border:1px solid rgba(0,224,138,.22);
-      border-radius:14px; padding:14px 26px; }
-    .scene-problem .chip { color:#FF8A8A; background:rgba(255,92,92,.08);
-      border-color:rgba(255,92,92,.25); }
-    .scene-runtimes .chip, .scene-discover_dag .chip, .scene-video_evidence .chip {
-      color:#7FB2FF; background:rgba(37,99,235,.10); border-color:rgba(37,99,235,.28); }
-    .brand { position:absolute; left:46px; bottom:34px; z-index:2;
-      font-family:"Courier New",monospace; font-size:18px; opacity:.5; }
-    .loopmark { position:absolute; right:48px; bottom:30px; z-index:2; font-size:40px;
-      color:#7C3AED; opacity:.8; }
-    .logo { position:absolute; left:44px; top:30px; z-index:2; height:46px; opacity:.92; }
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=1920, height=1080"/>
+<title>simplicio-loop — El orquestador de IA en bucle universal</title>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1920px;height:1080px;overflow:hidden;background:#0B0E14;
+  font-family:Arial,Helvetica,sans-serif;color:#E6EDF3}
+.bg{position:absolute;inset:0;z-index:0;
+  background:
+    radial-gradient(1300px 800px at 50% 22%,rgba(124,58,237,.20),transparent 60%),
+    radial-gradient(1000px 700px at 82% 92%,rgba(0,224,138,.14),transparent 60%);}
+.bg::after{content:"";position:absolute;inset:0;opacity:.5;
+  background-image:linear-gradient(rgba(255,255,255,.04) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,.04) 1px,transparent 1px);
+  background-size:66px 66px,66px 66px}
+.pf{position:absolute;width:6px;height:6px;border-radius:50%;background:#00E08A;
+  box-shadow:0 0 12px #00E08A;z-index:0}
+.clip{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:26px;padding:0 130px;opacity:0;z-index:1;text-align:center}
+.cap{font-size:54px;font-weight:700;line-height:1.12;max-width:1500px}
+.cap.big{font-size:74px}
+.chip{font-family:"Courier New",monospace;font-size:22px;line-height:1.5;max-width:1500px;
+  color:#7CF3C0;background:rgba(0,224,138,.07);border:1px solid rgba(0,224,138,.22);
+  border-radius:14px;padding:12px 24px;opacity:0}
+.scene-problem .chip{color:#FF9A9A;background:rgba(255,92,92,.08);border-color:rgba(255,92,92,.25)}
+.scene-runtimes .chip,.scene-discover_dag .chip,.scene-video_evidence .chip{
+  color:#9DC1FF;background:rgba(37,99,235,.10);border-color:rgba(37,99,235,.28)}
+.bignum{font-family:"Courier New",monospace;font-weight:700;color:#00E08A}
+.biginf{font-size:230px;font-weight:800;color:#7C3AED;line-height:1;
+  text-shadow:0 0 70px rgba(124,58,237,.7)}
+.ring{position:absolute;width:520px;height:520px;border:3px solid rgba(124,58,237,.5);border-radius:50%}
+/* problem */
+.stack{display:flex;flex-direction:column;gap:12px}
+.qcard{font-family:"Courier New",monospace;font-size:30px;padding:14px 30px;border-radius:12px;
+  background:rgba(255,92,92,.10);border:1px solid rgba(255,92,92,.35);min-width:520px}
+.costbar{position:absolute;right:160px;bottom:200px;width:60px;height:300px;
+  background:rgba(255,255,255,.05);border-radius:8px;overflow:hidden;display:flex;align-items:flex-end}
+.costfill{width:100%;height:100%;background:linear-gradient(#FF5C5C,#7a0000)}
+.costnum{position:absolute;right:120px;bottom:240px;font-family:"Courier New",monospace;
+  font-size:46px;color:#FF7A7A;font-weight:700}
+/* preflight */
+.checks{display:flex;flex-direction:column;gap:18px}
+.crow{font-family:"Courier New",monospace;font-size:38px;display:flex;align-items:center;gap:18px}
+.ck{display:inline-flex;width:54px;height:54px;align-items:center;justify-content:center;border-radius:50%;
+  background:rgba(0,224,138,.15);color:#00E08A;border:2px solid #00E08A;font-size:30px}
+/* dag */
+.dag{width:900px;height:320px}
+.stats{font-family:"Courier New",monospace;font-size:34px}
+/* cycle */
+.pipe{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
+.pipe>div{font-family:"Courier New",monospace;font-size:28px;padding:14px 22px;border-radius:12px;
+  background:rgba(0,224,138,.08);border:1px solid rgba(0,224,138,.3)}
+.pipe>.run{background:rgba(124,58,237,.18);border-color:#7C3AED;color:#C9B6FF;font-weight:700}
+.stamp{font-size:60px;font-weight:800;color:#00E08A;border:5px solid #00E08A;border-radius:14px;
+  padding:8px 26px;transform:rotate(-8deg);display:flex;flex-direction:column;line-height:1}
+.stamp span{font-size:20px;font-weight:600;letter-spacing:2px;color:#7CF3C0}
+/* quality */
+.panels{display:flex;gap:20px}
+.rpanel{width:300px;padding:22px;border-radius:14px;background:rgba(255,255,255,.04);
+  border:1px solid rgba(255,255,255,.12);display:flex;flex-direction:column;gap:10px}
+.rpanel b{font-size:28px;color:#9DC1FF}.rpanel span{font-family:"Courier New",monospace;color:#FF9A9A}
+.lock{font-size:96px;color:#FF5C5C;display:flex;flex-direction:column;align-items:center;
+  text-shadow:0 0 40px rgba(255,92,92,.6)}
+.lock span{font-size:26px;font-weight:700;letter-spacing:3px}
+/* tokens */
+.bars{display:flex;align-items:flex-end;gap:34px}
+.barbox{display:flex;flex-direction:column;align-items:center;gap:10px}
+.bar{width:90px;background:linear-gradient(#00E08A,#066b45);border-radius:8px}
+.b870{height:300px}.b65{height:60px}
+.blab{font-family:"Courier New",monospace;font-size:28px}
+.arrow{font-size:60px;color:#00E08A}
+.toks{position:absolute;left:50%;top:48%;width:0;height:0}
+.tok{position:absolute;width:10px;height:10px;border-radius:50%;background:#00E08A;
+  box-shadow:0 0 10px #00E08A}
+.gauge{margin-top:8px}.gn{font-size:88px}
+/* evidence */
+.gate{position:relative;width:760px;height:200px;display:flex;align-items:center;justify-content:center}
+.barrier{position:absolute;left:50%;top:0;width:8px;height:200px;background:#FF5C5C;border-radius:6px;
+  box-shadow:0 0 24px rgba(255,92,92,.7)}
+.promise{font-family:"Courier New",monospace;font-size:40px;padding:14px 26px;border-radius:12px;
+  background:rgba(124,58,237,.18);border:1px solid #7C3AED}
+.xmark{position:absolute;left:54%;font-size:90px;color:#FF5C5C;opacity:0}
+.okmark{position:absolute;right:40px;font-size:90px;color:#00E08A;opacity:0}
+/* video */
+.filmstrip{display:flex;gap:14px}
+.frm{width:150px;height:96px;border-radius:10px;background:rgba(37,99,235,.14);
+  border:1px solid rgba(37,99,235,.4);display:flex;align-items:center;justify-content:center;font-size:46px;color:#9DC1FF}
+.renderbar{width:640px;height:18px;background:rgba(255,255,255,.06);border-radius:10px;overflow:hidden}
+.renderfill{width:100%;height:100%;background:linear-gradient(90deg,#2563EB,#00E08A);transform-origin:left}
+.prcard{font-family:"Courier New",monospace;font-size:30px;padding:12px 24px;border-radius:12px;
+  background:rgba(0,224,138,.10);border:1px solid rgba(0,224,138,.35)}
+/* runtimes */
+.orbit{position:relative;width:560px;height:560px;display:flex;align-items:center;justify-content:center}
+.hub{width:150px;height:150px;border-radius:50%;background:rgba(124,58,237,.2);border:2px solid #7C3AED;
+  display:flex;align-items:center;justify-content:center;text-align:center;font-weight:700;font-size:24px}
+.rt{position:absolute;left:50%;top:50%;font-family:"Courier New",monospace;font-size:22px;
+  padding:8px 14px;border-radius:10px;background:rgba(37,99,235,.14);border:1px solid rgba(37,99,235,.4);
+  transform:translate(-50%,-50%) rotate(var(--a)) translateX(250px) rotate(calc(-1*var(--a)))}
+/* always on */
+.biginf.pulse{font-size:200px}
+.newcard{font-family:"Courier New",monospace;font-size:30px;padding:12px 26px;border-radius:12px;
+  background:rgba(0,224,138,.1);border:1px solid rgba(0,224,138,.35)}
+/* cta */
+.finlogo{height:120px}
+.cmds{display:flex;flex-direction:column;gap:12px}
+.cmd{font-family:"Courier New",monospace;font-size:30px;padding:12px 24px;border-radius:10px;
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12)}
+.badges{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
+.badge{font-family:"Courier New",monospace;font-size:22px;padding:8px 18px;border-radius:20px;
+  background:rgba(124,58,237,.18);border:1px solid #7C3AED;color:#C9B6FF}
+.brand{position:absolute;left:46px;bottom:32px;z-index:3;font-family:"Courier New",monospace;font-size:18px;opacity:.55}
+.loopmark{position:absolute;right:46px;bottom:26px;z-index:3;font-size:44px;color:#7C3AED;opacity:.85}
+.logo{position:absolute;left:42px;top:28px;z-index:3;height:48px;opacity:.92}
+</style>
 </head>
 <body>
-  <div id="root" data-composition-id="main" data-start="0" data-duration="123"
-       data-width="1920" data-height="1080">
-      <div class="clip scene-hook" id="s1" data-start="0" data-duration="8" data-track-index="1">
-        <div class="glow" style="--c:#7C3AED"></div>
-        <div class="glyph" id="g1" style="--c:#7C3AED">∞</div>
-        <div class="num">01 / 12</div>
-        <div class="cap" id="c1">No es un chatbot. Es un trabajador.</div>
-        <div class="chip" id="d1">Não é um chatbot. É um trabalhador.</div>
-      </div>
-      <div class="clip scene-problem" id="s2" data-start="8" data-duration="10" data-track-index="1">
-        <div class="glow" style="--c:#FF5C5C"></div>
-        <div class="glyph" id="g2" style="--c:#FF5C5C">≢</div>
-        <div class="num">02 / 12</div>
-        <div class="cap" id="c2">Colas que nunca se vacían. Tokens que no paran.</div>
-        <div class="chip" id="d2">Filas que nunca esvaziam + custo de tokens explodindo</div>
-      </div>
-      <div class="clip scene-preflight" id="s3" data-start="18" data-duration="8" data-track-index="1">
-        <div class="glow" style="--c:#00E08A"></div>
-        <div class="glyph" id="g3" style="--c:#00E08A">✓✓✓</div>
-        <div class="num">03 / 12</div>
-        <div class="cap" id="c3">Pre-vuelo: kill-switch ✓ · auth ✓ · watcher ✓</div>
-        <div class="chip" id="d3">Pre-flight: kill-switch ✓ ($5/day) · auth ✓ · watcher ✓</div>
-      </div>
-      <div class="clip scene-discover_dag" id="s4" data-start="26" data-duration="12" data-track-index="1">
-        <div class="glow" style="--c:#2563EB"></div>
-        <div class="glyph" id="g4" style="--c:#2563EB">⬡</div>
-        <div class="num">04 / 12</div>
-        <div class="cap" id="c4">Descubre 50 · deduplica · DAG · flota = 14</div>
-        <div class="chip" id="d4">discover 50 issues · dedup · dependency DAG · autoscale fleet = 14</div>
-      </div>
-      <div class="clip scene-cycle" id="s5" data-start="38" data-duration="15" data-track-index="1">
-        <div class="glow" style="--c:#00E08A"></div>
-        <div class="glyph" id="g5" style="--c:#00E08A">▸▸▸</div>
-        <div class="num">05 / 12</div>
-        <div class="cap" id="c5">leer → orientar → planificar → editar → EJECUTAR → verificar → PR</div>
-        <div class="chip" id="d5">read body+ACs → orient → plan → deterministic_edit → run → verify → PR — WORKS, not just compiles</div>
-      </div>
-      <div class="clip scene-quality_safety" id="s6" data-start="53" data-duration="12" data-track-index="1">
-        <div class="glow" style="--c:#FF5C5C"></div>
-        <div class="glyph" id="g6" style="--c:#FF5C5C">🔒</div>
-        <div class="num">06 / 12</div>
-        <div class="cap" id="c6">Revisión adversarial · action_gate FAIL-CLOSED</div>
-        <div class="chip" id="d6">AC gate · adversarial review (3 rubricas) · action_gate FAIL-CLOSED bloqueia force-push/segredo</div>
-      </div>
-      <div class="clip scene-token_economy" id="s7" data-start="65" data-duration="12" data-track-index="1">
-        <div class="glow" style="--c:#00E08A"></div>
-        <div class="glyph" id="g7" style="--c:#00E08A">96%</div>
-        <div class="num">07 / 12</div>
-        <div class="cap" id="c7">870 → 65 líneas (93%) · hasta 96% menos tokens</div>
-        <div class="chip" id="d7">signatures 870→65 linhas (93%) · clamp + tee cache · dashboard :9090 · até 96% menos tokens</div>
-      </div>
-      <div class="clip scene-evidence_loop" id="s8" data-start="77" data-duration="10" data-track-index="1">
-        <div class="glow" style="--c:#7C3AED"></div>
-        <div class="glyph" id="g8" style="--c:#7C3AED">⟳</div>
-        <div class="num">08 / 12</div>
-        <div class="cap" id="c8">&lt;promise&gt; solo con prueba · nunca un falso 'listo'</div>
-        <div class="chip" id="d8">&lt;promise&gt; só sai COM prova · stall detector troca estratégia · nunca um falso 'done'</div>
-      </div>
-      <div class="clip scene-video_evidence" id="s9" data-start="87" data-duration="10" data-track-index="1">
-        <div class="glow" style="--c:#2563EB"></div>
-        <div class="glyph" id="g9" style="--c:#2563EB">🎬</div>
-        <div class="num">09 / 12</div>
-        <div class="cap" id="c9">web_verify → hyperframes → MP4 determinista en el PR</div>
-        <div class="chip" id="d9">'faça um vídeo demonstrativo da tela X' → web_verify → hyperframes → MP4 determinístico no PR</div>
-      </div>
-      <div class="clip scene-runtimes" id="s10" data-start="97" data-duration="10" data-track-index="1">
-        <div class="glow" style="--c:#2563EB"></div>
-        <div class="glyph" id="g10" style="--c:#2563EB">11</div>
-        <div class="num">10 / 12</div>
-        <div class="cap" id="c10">11 runtimes, un protocolo — solo cambia la velocidad</div>
-        <div class="chip" id="d10">11 runtimes, um protocolo — só a velocidade difere</div>
-      </div>
-      <div class="clip scene-always_on" id="s11" data-start="107" data-duration="8" data-track-index="1">
-        <div class="glow" style="--c:#00E08A"></div>
-        <div class="glyph" id="g11" style="--c:#00E08A">24/7</div>
-        <div class="num">11 / 12</div>
-        <div class="cap" id="c11">fusiona · cierra · reposo · despierta — 24/7</div>
-        <div class="chip" id="d11">merge · close · idle · acorda com novo trabalho — 24/7</div>
-      </div>
-      <div class="clip scene-cta" id="s12" data-start="115" data-duration="8" data-track-index="1">
-        <div class="glow" style="--c:#7C3AED"></div>
-        <div class="glyph" id="g12" style="--c:#7C3AED">∞</div>
-        <div class="num">12 / 12</div>
-        <div class="cap" id="c12">pip install simplicio-loop · MIT · GitHub ⭐ · Discord</div>
-        <div class="chip" id="d12">pip install simplicio-loop · bash scripts/install.sh claude · MIT · Discord · GitHub ⭐</div>
-      </div>
-    <img class="logo" src="assets/logo.png" alt="simplicio-loop" />
-    <div class="brand">github.com/wesleysimplicio/simplicio-loop</div>
-    <div class="loopmark">&#8734;</div>
-  </div>
-  <script>
-    window.__timelines = window.__timelines || {};
-    var tl = gsap.timeline({ paused: true });
-    tl.fromTo("#s1", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 0);
-    tl.fromTo("#g1", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 0.1);
-    tl.fromTo("#c1", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 0.25);
-    tl.fromTo("#d1", {opacity:0}, {opacity:0.92, duration:0.5}, 0.45);
-    tl.to("#s1", {opacity:0, duration:0.4, ease:"power1.in"}, 7.6);
-    tl.set("#s1", {opacity:0}, 8);
-    tl.fromTo("#s2", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 8);
-    tl.fromTo("#g2", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 8.1);
-    tl.fromTo("#c2", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 8.25);
-    tl.fromTo("#d2", {opacity:0}, {opacity:0.92, duration:0.5}, 8.45);
-    tl.to("#s2", {opacity:0, duration:0.4, ease:"power1.in"}, 17.6);
-    tl.set("#s2", {opacity:0}, 18);
-    tl.fromTo("#s3", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 18);
-    tl.fromTo("#g3", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 18.1);
-    tl.fromTo("#c3", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 18.25);
-    tl.fromTo("#d3", {opacity:0}, {opacity:0.92, duration:0.5}, 18.45);
-    tl.to("#s3", {opacity:0, duration:0.4, ease:"power1.in"}, 25.6);
-    tl.set("#s3", {opacity:0}, 26);
-    tl.fromTo("#s4", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 26);
-    tl.fromTo("#g4", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 26.1);
-    tl.fromTo("#c4", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 26.25);
-    tl.fromTo("#d4", {opacity:0}, {opacity:0.92, duration:0.5}, 26.45);
-    tl.to("#s4", {opacity:0, duration:0.4, ease:"power1.in"}, 37.6);
-    tl.set("#s4", {opacity:0}, 38);
-    tl.fromTo("#s5", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 38);
-    tl.fromTo("#g5", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 38.1);
-    tl.fromTo("#c5", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 38.25);
-    tl.fromTo("#d5", {opacity:0}, {opacity:0.92, duration:0.5}, 38.45);
-    tl.to("#s5", {opacity:0, duration:0.4, ease:"power1.in"}, 52.6);
-    tl.set("#s5", {opacity:0}, 53);
-    tl.fromTo("#s6", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 53);
-    tl.fromTo("#g6", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 53.1);
-    tl.fromTo("#c6", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 53.25);
-    tl.fromTo("#d6", {opacity:0}, {opacity:0.92, duration:0.5}, 53.45);
-    tl.to("#s6", {opacity:0, duration:0.4, ease:"power1.in"}, 64.6);
-    tl.set("#s6", {opacity:0}, 65);
-    tl.fromTo("#s7", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 65);
-    tl.fromTo("#g7", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 65.1);
-    tl.fromTo("#c7", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 65.25);
-    tl.fromTo("#d7", {opacity:0}, {opacity:0.92, duration:0.5}, 65.45);
-    tl.to("#s7", {opacity:0, duration:0.4, ease:"power1.in"}, 76.6);
-    tl.set("#s7", {opacity:0}, 77);
-    tl.fromTo("#s8", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 77);
-    tl.fromTo("#g8", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 77.1);
-    tl.fromTo("#c8", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 77.25);
-    tl.fromTo("#d8", {opacity:0}, {opacity:0.92, duration:0.5}, 77.45);
-    tl.to("#s8", {opacity:0, duration:0.4, ease:"power1.in"}, 86.6);
-    tl.set("#s8", {opacity:0}, 87);
-    tl.fromTo("#s9", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 87);
-    tl.fromTo("#g9", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 87.1);
-    tl.fromTo("#c9", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 87.25);
-    tl.fromTo("#d9", {opacity:0}, {opacity:0.92, duration:0.5}, 87.45);
-    tl.to("#s9", {opacity:0, duration:0.4, ease:"power1.in"}, 96.6);
-    tl.set("#s9", {opacity:0}, 97);
-    tl.fromTo("#s10", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 97);
-    tl.fromTo("#g10", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 97.1);
-    tl.fromTo("#c10", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 97.25);
-    tl.fromTo("#d10", {opacity:0}, {opacity:0.92, duration:0.5}, 97.45);
-    tl.to("#s10", {opacity:0, duration:0.4, ease:"power1.in"}, 106.6);
-    tl.set("#s10", {opacity:0}, 107);
-    tl.fromTo("#s11", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 107);
-    tl.fromTo("#g11", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 107.1);
-    tl.fromTo("#c11", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 107.25);
-    tl.fromTo("#d11", {opacity:0}, {opacity:0.92, duration:0.5}, 107.45);
-    tl.to("#s11", {opacity:0, duration:0.4, ease:"power1.in"}, 114.6);
-    tl.set("#s11", {opacity:0}, 115);
-    tl.fromTo("#s12", {opacity:0, y:36}, {opacity:1, y:0, duration:0.5, ease:"power2.out"}, 115);
-    tl.fromTo("#g12", {scale:0.4, opacity:0}, {scale:1, opacity:1, duration:0.6, ease:"back.out(2)"}, 115.1);
-    tl.fromTo("#c12", {opacity:0, y:18}, {opacity:1, y:0, duration:0.5}, 115.25);
-    tl.fromTo("#d12", {opacity:0}, {opacity:0.92, duration:0.5}, 115.45);
-    tl.to("#s12", {opacity:0, duration:0.4, ease:"power1.in"}, 122.6);
-    tl.set("#s12", {opacity:0}, 123);
-    window.__timelines["main"] = tl;
-  </script>
+<div id="root" data-composition-id="main" data-start="0" data-duration="123" data-width="1920" data-height="1080">
+  <div class="bg"><div class="pf" id="pf0" style="left:0%;top:0%"></div><div class="pf" id="pf1" style="left:53%;top:37%"></div><div class="pf" id="pf2" style="left:6%;top:74%"></div><div class="pf" id="pf3" style="left:59%;top:11%"></div><div class="pf" id="pf4" style="left:12%;top:48%"></div><div class="pf" id="pf5" style="left:65%;top:85%"></div><div class="pf" id="pf6" style="left:18%;top:22%"></div><div class="pf" id="pf7" style="left:71%;top:59%"></div><div class="pf" id="pf8" style="left:24%;top:96%"></div><div class="pf" id="pf9" style="left:77%;top:33%"></div><div class="pf" id="pf10" style="left:30%;top:70%"></div><div class="pf" id="pf11" style="left:83%;top:7%"></div><div class="pf" id="pf12" style="left:36%;top:44%"></div><div class="pf" id="pf13" style="left:89%;top:81%"></div><div class="pf" id="pf14" style="left:42%;top:18%"></div><div class="pf" id="pf15" style="left:95%;top:55%"></div><div class="pf" id="pf16" style="left:48%;top:92%"></div><div class="pf" id="pf17" style="left:1%;top:29%"></div><div class="pf" id="pf18" style="left:54%;top:66%"></div><div class="pf" id="pf19" style="left:7%;top:3%"></div><div class="pf" id="pf20" style="left:60%;top:40%"></div><div class="pf" id="pf21" style="left:13%;top:77%"></div><div class="pf" id="pf22" style="left:66%;top:14%"></div><div class="pf" id="pf23" style="left:19%;top:51%"></div><div class="pf" id="pf24" style="left:72%;top:88%"></div><div class="pf" id="pf25" style="left:25%;top:25%"></div><div class="pf" id="pf26" style="left:78%;top:62%"></div><div class="pf" id="pf27" style="left:31%;top:99%"></div></div>
+      <div class="clip scene-hook" id="s1" data-start="0" data-duration="8" data-track-index="1"><div class="ring" id="ring1"></div><div class="biginf" id="inf1">&#8734;</div><div class="cap big" id="c1">No es un chatbot. Es un trabajador.</div><div class="chip" id="d1">Não é um chatbot. É um trabalhador.</div></div>
+      <div class="clip scene-problem" id="s2" data-start="8" data-duration="10" data-track-index="1"><div class="stack" id="st2"><div class="qcard" id="q2_0">GitHub Issues</div><div class="qcard" id="q2_1">CI failures</div><div class="qcard" id="q2_2">Jira</div><div class="qcard" id="q2_3">Azure DevOps</div></div><div class="costbar"><div class="costfill" id="cf2"></div><div class="costnum" id="cn2">$0</div></div><div class="cap" id="c2">Colas que nunca se vacían. Tokens que no paran.</div><div class="chip" id="d2">Filas que nunca esvaziam + custo de tokens explodindo</div></div>
+      <div class="clip scene-preflight" id="s3" data-start="18" data-duration="8" data-track-index="1"><div class="checks"><div class="crow" id="r3_0"><span class="ck" id="ck3_0">&#10003;</span>source auth  gh</div><div class="crow" id="r3_1"><span class="ck" id="ck3_1">&#10003;</span>runtime/tools  ready</div><div class="crow" id="r3_2"><span class="ck" id="ck3_2">&#10003;</span>STOP path  armed</div></div><div class="cap" id="c3">Pre-vuelo: auth ✓ · runtime/tools ✓ · STOP path ✓</div><div class="chip" id="d3">Pre-flight: auth ✓ · runtime/tools ✓ · STOP path ✓</div></div>
+      <div class="clip scene-discover_dag" id="s4" data-start="26" data-duration="12" data-track-index="1"><svg class="dag" viewBox="0 0 900 320" id="dag4"><line id="e4_0" x1="180" y1="120" x2="360" y2="60" stroke="#2563EB" stroke-width="3"/><line id="e4_1" x1="180" y1="120" x2="360" y2="200" stroke="#2563EB" stroke-width="3"/><line id="e4_2" x1="360" y1="60" x2="560" y2="110" stroke="#2563EB" stroke-width="3"/><line id="e4_3" x1="360" y1="200" x2="560" y2="240" stroke="#2563EB" stroke-width="3"/><line id="e4_4" x1="560" y1="110" x2="740" y2="170" stroke="#2563EB" stroke-width="3"/><line id="e4_5" x1="560" y1="240" x2="740" y2="170" stroke="#2563EB" stroke-width="3"/><circle id="n4_0" cx="180" cy="120" r="20" fill="#0B0E14" stroke="#00E08A" stroke-width="3"/><circle id="n4_1" cx="360" cy="60" r="20" fill="#0B0E14" stroke="#00E08A" stroke-width="3"/><circle id="n4_2" cx="360" cy="200" r="20" fill="#0B0E14" stroke="#00E08A" stroke-width="3"/><circle id="n4_3" cx="560" cy="110" r="20" fill="#0B0E14" stroke="#00E08A" stroke-width="3"/><circle id="n4_4" cx="560" cy="240" r="20" fill="#0B0E14" stroke="#00E08A" stroke-width="3"/><circle id="n4_5" cx="740" cy="170" r="20" fill="#0B0E14" stroke="#00E08A" stroke-width="3"/></svg><div class="stats"><span class="bignum" id="iss4">0</span> issues &#183; dedup &#183; fleet <span class="bignum" id="fl4">0</span></div><div class="cap" id="c4">Descubre 50 · deduplica · DAG · flota = 14</div><div class="chip" id="d4">discover 50 issues · dedup · dependency DAG · autoscale fleet = 14</div></div>
+      <div class="clip scene-cycle" id="s5" data-start="38" data-duration="15" data-track-index="1"><div class="pipe"><div class="pstage" id="p5_0">read</div><div class="pstage" id="p5_1">orient</div><div class="pstage" id="p5_2">plan</div><div class="pstage" id="p5_3">edit</div><div class="pstage run" id="p5_4">RUN</div><div class="pstage" id="p5_5">verify</div><div class="pstage" id="p5_6">PR</div></div><div class="stamp" id="stmp5">WORKS<span>not just compiles</span></div><div class="cap" id="c5">leer → orientar → planificar → editar → EJECUTAR → verificar → PR</div><div class="chip" id="d5">read body+ACs → orient → plan → deterministic_edit → run → verify → PR — WORKS, not just compiles</div></div>
+      <div class="clip scene-quality_safety" id="s6" data-start="53" data-duration="12" data-track-index="1"><div class="panels"><div class="rpanel" id="rp6_0"><b>security</b><span>refute</span></div><div class="rpanel" id="rp6_1"><b>quality</b><span>refute</span></div><div class="rpanel" id="rp6_2"><b>runtime</b><span>verify</span></div></div><div class="lock" id="lk6">&#128274;<span>FAIL-CLOSED</span></div><div class="cap" id="c6">Revisión adversarial · action_gate FAIL-CLOSED</div><div class="chip" id="d6">AC gate · adversarial review (3 rubricas) · action_gate FAIL-CLOSED bloqueia force-push/segredo</div></div>
+      <div class="clip scene-token_economy" id="s7" data-start="65" data-duration="12" data-track-index="1"><div class="bars"><div class="barbox"><div class="bar b870" id="bA7"></div><div class="blab">870</div></div><div class="arrow">&#8594;</div><div class="barbox"><div class="bar b65" id="bB7"></div><div class="blab">65</div></div></div><div class="toks"><div class="tok" id="tk7_0"></div><div class="tok" id="tk7_1"></div><div class="tok" id="tk7_2"></div><div class="tok" id="tk7_3"></div><div class="tok" id="tk7_4"></div><div class="tok" id="tk7_5"></div><div class="tok" id="tk7_6"></div><div class="tok" id="tk7_7"></div><div class="tok" id="tk7_8"></div><div class="tok" id="tk7_9"></div><div class="tok" id="tk7_10"></div><div class="tok" id="tk7_11"></div><div class="tok" id="tk7_12"></div><div class="tok" id="tk7_13"></div></div><div class="gauge"><span class="bignum gn" id="gn7">0%</span></div><div class="cap" id="c7">870 → 65 líneas (93%) · hasta 96% menos tokens</div><div class="chip" id="d7">signatures 870→65 linhas (93%) · clamp + tee cache · dashboard :9090 · até 96% menos tokens</div></div>
+      <div class="clip scene-evidence_loop" id="s8" data-start="77" data-duration="10" data-track-index="1"><div class="gate"><div class="barrier" id="bar8"></div><div class="promise" id="pr8">&lt;promise&gt;</div><div class="xmark" id="xm8">&#10007;</div><div class="okmark" id="ok8">&#10003;</div></div><div class="cap" id="c8">&lt;promise&gt; solo con prueba · nunca un falso 'listo'</div><div class="chip" id="d8">&lt;promise&gt; só sai COM prova · stall detector troca estratégia · nunca um falso 'done'</div></div>
+      <div class="clip scene-video_evidence" id="s9" data-start="87" data-duration="10" data-track-index="1"><div class="filmstrip" id="film9"><div class="frm" id="fr9_0">&#9636;</div><div class="frm" id="fr9_1">&#9636;</div><div class="frm" id="fr9_2">&#9636;</div><div class="frm" id="fr9_3">&#9636;</div></div><div class="renderbar"><div class="renderfill" id="rf9"></div></div><div class="prcard" id="pc9">PR #42 &#127916; MP4</div><div class="cap" id="c9">web_verify → hyperframes → MP4 determinista en el PR</div><div class="chip" id="d9">'faça um vídeo demonstrativo da tela X' → web_verify → hyperframes → MP4 determinístico no PR</div></div>
+      <div class="clip scene-runtimes" id="s10" data-start="97" data-duration="10" data-track-index="1"><div class="orbit" id="orb10"><div class="hub">simplicio<br>tasks</div><div class="rt" id="rt10_0" style="--a:0deg">Claude</div><div class="rt" id="rt10_1" style="--a:32deg">Codex</div><div class="rt" id="rt10_2" style="--a:65deg">Copilot</div><div class="rt" id="rt10_3" style="--a:98deg">Cursor</div><div class="rt" id="rt10_4" style="--a:130deg">Antigravity</div><div class="rt" id="rt10_5" style="--a:163deg">Kiro</div><div class="rt" id="rt10_6" style="--a:196deg">OpenCode</div><div class="rt" id="rt10_7" style="--a:229deg">Gemini</div><div class="rt" id="rt10_8" style="--a:261deg">Aider</div><div class="rt" id="rt10_9" style="--a:294deg">Hermes</div><div class="rt" id="rt10_10" style="--a:327deg">OpenClaw</div></div><div class="cap" id="c10">11 runtimes, un protocolo — solo cambia la velocidad</div><div class="chip" id="d10">11 runtimes, um protocolo — só a velocidade difere</div></div>
+      <div class="clip scene-always_on" id="s11" data-start="107" data-duration="8" data-track-index="1"><div class="biginf pulse" id="inf11">&#8734;</div><div class="newcard" id="nc11">new work &#8594;</div><div class="cap" id="c11">fusiona · cierra · reposo · despierta — 24/7</div><div class="chip" id="d11">merge · close · idle · acorda com novo trabalho — 24/7</div></div>
+      <div class="clip scene-cta" id="s12" data-start="115" data-duration="8" data-track-index="1"><img class="finlogo" id="fl12" src="assets/logo.png" alt="logo"/><div class="cmds"><div class="cmd" id="cm12_0">pip install simplicio-loop</div><div class="cmd" id="cm12_1">bash scripts/install.sh claude</div><div class="cmd" id="cm12_2">/simplicio-tasks finish all the open issues</div></div><div class="badges"><div class="badge" id="bd12_0">MIT</div><div class="badge" id="bd12_1">11 runtimes</div><div class="badge" id="bd12_2">48 ext-points</div><div class="badge" id="bd12_3">96% fewer tokens</div></div><div class="cap" id="c12">pip install simplicio-loop · MIT · GitHub ⭐ · Discord</div></div>
+  <img class="logo" src="assets/logo.png" alt="simplicio-loop"/>
+  <div class="brand">github.com/wesleysimplicio/simplicio-loop</div>
+  <div class="loopmark">&#8734;</div>
+</div>
+<script>
+  window.cnt = window.cnt || {};
+  window.__timelines = window.__timelines || {};
+  var tl = gsap.timeline({ paused: true });
+    gsap.set("#pf0",{opacity:0.18});tl.to("#pf0",{y:-300,x:-60,duration:123,ease:"none"},0);gsap.set("#pf1",{opacity:0.18});tl.to("#pf1",{y:-420,x:0,duration:123,ease:"none"},0);gsap.set("#pf2",{opacity:0.18});tl.to("#pf2",{y:-540,x:60,duration:123,ease:"none"},0);gsap.set("#pf3",{opacity:0.18});tl.to("#pf3",{y:-660,x:-60,duration:123,ease:"none"},0);gsap.set("#pf4",{opacity:0.18});tl.to("#pf4",{y:-780,x:0,duration:123,ease:"none"},0);gsap.set("#pf5",{opacity:0.18});tl.to("#pf5",{y:-300,x:60,duration:123,ease:"none"},0);gsap.set("#pf6",{opacity:0.18});tl.to("#pf6",{y:-420,x:-60,duration:123,ease:"none"},0);gsap.set("#pf7",{opacity:0.18});tl.to("#pf7",{y:-540,x:0,duration:123,ease:"none"},0);gsap.set("#pf8",{opacity:0.18});tl.to("#pf8",{y:-660,x:60,duration:123,ease:"none"},0);gsap.set("#pf9",{opacity:0.18});tl.to("#pf9",{y:-780,x:-60,duration:123,ease:"none"},0);gsap.set("#pf10",{opacity:0.18});tl.to("#pf10",{y:-300,x:0,duration:123,ease:"none"},0);gsap.set("#pf11",{opacity:0.18});tl.to("#pf11",{y:-420,x:60,duration:123,ease:"none"},0);gsap.set("#pf12",{opacity:0.18});tl.to("#pf12",{y:-540,x:-60,duration:123,ease:"none"},0);gsap.set("#pf13",{opacity:0.18});tl.to("#pf13",{y:-660,x:0,duration:123,ease:"none"},0);gsap.set("#pf14",{opacity:0.18});tl.to("#pf14",{y:-780,x:60,duration:123,ease:"none"},0);gsap.set("#pf15",{opacity:0.18});tl.to("#pf15",{y:-300,x:-60,duration:123,ease:"none"},0);gsap.set("#pf16",{opacity:0.18});tl.to("#pf16",{y:-420,x:0,duration:123,ease:"none"},0);gsap.set("#pf17",{opacity:0.18});tl.to("#pf17",{y:-540,x:60,duration:123,ease:"none"},0);gsap.set("#pf18",{opacity:0.18});tl.to("#pf18",{y:-660,x:-60,duration:123,ease:"none"},0);gsap.set("#pf19",{opacity:0.18});tl.to("#pf19",{y:-780,x:0,duration:123,ease:"none"},0);gsap.set("#pf20",{opacity:0.18});tl.to("#pf20",{y:-300,x:60,duration:123,ease:"none"},0);gsap.set("#pf21",{opacity:0.18});tl.to("#pf21",{y:-420,x:-60,duration:123,ease:"none"},0);gsap.set("#pf22",{opacity:0.18});tl.to("#pf22",{y:-540,x:0,duration:123,ease:"none"},0);gsap.set("#pf23",{opacity:0.18});tl.to("#pf23",{y:-660,x:60,duration:123,ease:"none"},0);gsap.set("#pf24",{opacity:0.18});tl.to("#pf24",{y:-780,x:-60,duration:123,ease:"none"},0);gsap.set("#pf25",{opacity:0.18});tl.to("#pf25",{y:-300,x:0,duration:123,ease:"none"},0);gsap.set("#pf26",{opacity:0.18});tl.to("#pf26",{y:-420,x:60,duration:123,ease:"none"},0);gsap.set("#pf27",{opacity:0.18});tl.to("#pf27",{y:-540,x:-60,duration:123,ease:"none"},0);
+    tl.fromTo("#s1",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},0);
+    tl.fromTo("#inf1",{scale:0,rotation:-90,opacity:0},{scale:1,rotation:0,opacity:1,duration:0.9,ease:"back.out(2)"},0.1);
+    tl.to("#inf1",{rotation:360,duration:7.6,ease:"none"},0.2);
+    tl.fromTo("#ring1",{scale:0.2,opacity:0},{scale:1.4,opacity:0.0,duration:2.2,ease:"power1.out",repeat:4},0.2);
+    tl.fromTo("#c1",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},0.5);
+    tl.fromTo("#d1",{opacity:0,y:14},{opacity:0.95,y:0,duration:0.5},0.8);
+    tl.to("#s1",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},7.6);tl.set("#s1",{opacity:0},8);
+    tl.fromTo("#s2",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},8);
+    tl.fromTo("#q2_0",{y:-120,opacity:0},{y:0,opacity:1,duration:0.4,ease:"bounce.out"},8.2);
+    tl.fromTo("#q2_1",{y:-120,opacity:0},{y:0,opacity:1,duration:0.4,ease:"bounce.out"},8.38);
+    tl.fromTo("#q2_2",{y:-120,opacity:0},{y:0,opacity:1,duration:0.4,ease:"bounce.out"},8.56);
+    tl.fromTo("#q2_3",{y:-120,opacity:0},{y:0,opacity:1,duration:0.4,ease:"bounce.out"},8.74);
+    tl.fromTo("#cf2",{scaleY:0},{scaleY:1,duration:8.5,ease:"power1.in",transformOrigin:"bottom"},8.6);
+    var cp2=window.cnt_2_9999={v:0};tl.to(cp2,{v:9999,duration:8.5,ease:"power1.out",onUpdate:function(){document.querySelector("#cn2").textContent="$"+Math.round(cp2.v)+"";}},8.6);
+    tl.fromTo("#c2",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},8.4);
+    tl.fromTo("#d2",{opacity:0,y:14},{opacity:0.95,y:0,duration:0.5},8.9);
+    tl.to("#s2",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},17.6);tl.set("#s2",{opacity:0},18);
+    tl.fromTo("#s3",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},18);
+    tl.fromTo("#r3_0",{x:-80,opacity:0},{x:0,opacity:1,duration:0.4},18.3);
+    tl.fromTo("#ck3_0",{scale:0},{scale:1,duration:0.4,ease:"back.out(3)"},18.5);
+    tl.fromTo("#r3_1",{x:-80,opacity:0},{x:0,opacity:1,duration:0.4},18.8);
+    tl.fromTo("#ck3_1",{scale:0},{scale:1,duration:0.4,ease:"back.out(3)"},19);
+    tl.fromTo("#r3_2",{x:-80,opacity:0},{x:0,opacity:1,duration:0.4},19.3);
+    tl.fromTo("#ck3_2",{scale:0},{scale:1,duration:0.4,ease:"back.out(3)"},19.5);
+    tl.fromTo("#c3",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},18.2);
+    tl.fromTo("#d3",{opacity:0,y:14},{opacity:0.95,y:0,duration:0.5},20);
+    tl.to("#s3",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},25.6);tl.set("#s3",{opacity:0},26);
+    tl.fromTo("#s4",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},26);
+    tl.fromTo("#n4_0",{scale:0,transformOrigin:"center"},{scale:1,duration:0.3,ease:"back.out(3)"},26.3);
+    tl.fromTo("#n4_1",{scale:0,transformOrigin:"center"},{scale:1,duration:0.3,ease:"back.out(3)"},26.42);
+    tl.fromTo("#n4_2",{scale:0,transformOrigin:"center"},{scale:1,duration:0.3,ease:"back.out(3)"},26.54);
+    tl.fromTo("#n4_3",{scale:0,transformOrigin:"center"},{scale:1,duration:0.3,ease:"back.out(3)"},26.66);
+    tl.fromTo("#n4_4",{scale:0,transformOrigin:"center"},{scale:1,duration:0.3,ease:"back.out(3)"},26.78);
+    tl.fromTo("#n4_5",{scale:0,transformOrigin:"center"},{scale:1,duration:0.3,ease:"back.out(3)"},26.9);
+    gsap.set("#e4_0",{strokeDasharray:189,strokeDashoffset:189});
+    tl.to("#e4_0",{strokeDashoffset:0,duration:0.5,ease:"power1.inOut"},27);
+    gsap.set("#e4_1",{strokeDasharray:196,strokeDashoffset:196});
+    tl.to("#e4_1",{strokeDashoffset:0,duration:0.5,ease:"power1.inOut"},27.1);
+    gsap.set("#e4_2",{strokeDasharray:206,strokeDashoffset:206});
+    tl.to("#e4_2",{strokeDashoffset:0,duration:0.5,ease:"power1.inOut"},27.2);
+    gsap.set("#e4_3",{strokeDasharray:203,strokeDashoffset:203});
+    tl.to("#e4_3",{strokeDashoffset:0,duration:0.5,ease:"power1.inOut"},27.3);
+    gsap.set("#e4_4",{strokeDasharray:189,strokeDashoffset:189});
+    tl.to("#e4_4",{strokeDashoffset:0,duration:0.5,ease:"power1.inOut"},27.4);
+    gsap.set("#e4_5",{strokeDasharray:193,strokeDashoffset:193});
+    tl.to("#e4_5",{strokeDashoffset:0,duration:0.5,ease:"power1.inOut"},27.5);
+    var cp4=window.cnt_4_50={v:0};tl.to(cp4,{v:50,duration:1.6,ease:"power1.out",onUpdate:function(){document.querySelector("#iss4").textContent=""+Math.round(cp4.v)+"";}},26.4);
+    var fp4={v:0};tl.to(fp4,{v:14,duration:1.4,ease:"power1.out",onUpdate:function(){document.getElementById("fl4").textContent=Math.round(fp4.v);}},27.6);
+    tl.fromTo("#c4",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},26.3);
+    tl.fromTo("#d4",{opacity:0,y:14},{opacity:0.95,y:0,duration:0.5},28.4);
+    tl.to("#s4",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},37.6);tl.set("#s4",{opacity:0},38);
+    tl.fromTo("#s5",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},38);
+    tl.fromTo("#p5_0",{scale:0.6,opacity:0.25,y:20},{scale:1,opacity:1,y:0,duration:0.35,ease:"back.out(2)"},38.4);
+    tl.fromTo("#p5_1",{scale:0.6,opacity:0.25,y:20},{scale:1,opacity:1,y:0,duration:0.35,ease:"back.out(2)"},38.9);
+    tl.fromTo("#p5_2",{scale:0.6,opacity:0.25,y:20},{scale:1,opacity:1,y:0,duration:0.35,ease:"back.out(2)"},39.4);
+    tl.fromTo("#p5_3",{scale:0.6,opacity:0.25,y:20},{scale:1,opacity:1,y:0,duration:0.35,ease:"back.out(2)"},39.9);
+    tl.fromTo("#p5_4",{scale:0.6,opacity:0.25,y:20},{scale:1,opacity:1,y:0,duration:0.35,ease:"back.out(2)"},40.4);
+    tl.fromTo("#p5_5",{scale:0.6,opacity:0.25,y:20},{scale:1,opacity:1,y:0,duration:0.35,ease:"back.out(2)"},40.9);
+    tl.fromTo("#p5_6",{scale:0.6,opacity:0.25,y:20},{scale:1,opacity:1,y:0,duration:0.35,ease:"back.out(2)"},41.4);
+    tl.fromTo("#stmp5",{scale:2.4,rotation:-12,opacity:0},{scale:1,rotation:-8,opacity:1,duration:0.5,ease:"back.out(2.5)"},41.9);
+    tl.fromTo("#c5",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},38.2);
+    tl.fromTo("#d5",{opacity:0,y:14},{opacity:0.95,y:0,duration:0.5},39);
+    tl.to("#s5",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},52.6);tl.set("#s5",{opacity:0},53);
+    tl.fromTo("#s6",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},53);
+    tl.fromTo("#rp6_0",{y:50,opacity:0},{y:0,opacity:1,duration:0.4,ease:"power2.out"},53.3);
+    tl.fromTo("#rp6_1",{y:50,opacity:0},{y:0,opacity:1,duration:0.4,ease:"power2.out"},53.5);
+    tl.fromTo("#rp6_2",{y:50,opacity:0},{y:0,opacity:1,duration:0.4,ease:"power2.out"},53.7);
+    tl.fromTo("#lk6",{scale:0,rotation:-20},{scale:1,rotation:0,duration:0.45,ease:"back.out(3)"},54.4);
+    tl.to("#lk6",{x:"+=14",duration:0.06,repeat:6,yoyo:true},54.85);
+    tl.fromTo("#c6",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},53.2);
+    tl.fromTo("#d6",{opacity:0,y:14},{opacity:0.95,y:0,duration:0.5},55);
+    tl.to("#s6",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},64.6);tl.set("#s6",{opacity:0},65);
+    tl.fromTo("#s7",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},65);
+    tl.fromTo("#bA7",{scaleY:0,transformOrigin:"bottom"},{scaleY:1,duration:0.5},65.4);
+    tl.fromTo("#bB7",{scaleY:0,transformOrigin:"bottom"},{scaleY:1,duration:0.5},65.7);
+    var cp7=window.cnt_7_96={v:0};tl.to(cp7,{v:96,duration:1.8,ease:"power1.out",onUpdate:function(){document.querySelector("#gn7").textContent=""+Math.round(cp7.v)+"%";}},66);
+    tl.fromTo("#tk7_0",{y:0,opacity:1},{y:-220,opacity:0,duration:1.4,ease:"power1.in"},66);
+    tl.fromTo("#tk7_1",{y:0,opacity:1},{y:-220,opacity:0,duration:1.6,ease:"power1.in"},66.12);
+    tl.fromTo("#tk7_2",{y:0,opacity:1},{y:-220,opacity:0,duration:1.8,ease:"power1.in"},66.24);
+    tl.fromTo("#tk7_3",{y:0,opacity:1},{y:-220,opacity:0,duration:2,ease:"power1.in"},66.36);
+    tl.fromTo("#tk7_4",{y:0,opacity:1},{y:-220,opacity:0,duration:2.2,ease:"power1.in"},66.48);
+    tl.fromTo("#tk7_5",{y:0,opacity:1},{y:-220,opacity:0,duration:1.4,ease:"power1.in"},66.6);
+    tl.fromTo("#tk7_6",{y:0,opacity:1},{y:-220,opacity:0,duration:1.6,ease:"power1.in"},66.72);
+    tl.fromTo("#tk7_7",{y:0,opacity:1},{y:-220,opacity:0,duration:1.8,ease:"power1.in"},66);
+    tl.fromTo("#tk7_8",{y:0,opacity:1},{y:-220,opacity:0,duration:2,ease:"power1.in"},66.12);
+    tl.fromTo("#tk7_9",{y:0,opacity:1},{y:-220,opacity:0,duration:2.2,ease:"power1.in"},66.24);
+    tl.fromTo("#tk7_10",{y:0,opacity:1},{y:-220,opacity:0,duration:1.4,ease:"power1.in"},66.36);
+    tl.fromTo("#tk7_11",{y:0,opacity:1},{y:-220,opacity:0,duration:1.6,ease:"power1.in"},66.48);
+    tl.fromTo("#tk7_12",{y:0,opacity:1},{y:-220,opacity:0,duration:1.8,ease:"power1.in"},66.6);
+    tl.fromTo("#tk7_13",{y:0,opacity:1},{y:-220,opacity:0,duration:2,ease:"power1.in"},66.72);
+    tl.fromTo("#c7",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},65.2);
+    tl.fromTo("#d7",{opacity:0,y:14},{opacity:0.95,y:0,duration:0.5},67.6);
+    tl.to("#s7",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},76.6);tl.set("#s7",{opacity:0},77);
+    tl.fromTo("#s8",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},77);
+    tl.fromTo("#pr8",{x:-260,opacity:0},{x:-40,opacity:1,duration:0.6},77.4);
+    tl.to("#pr8",{x:-130,duration:0.25,ease:"power3.out"},78.1);
+    tl.fromTo("#xm8",{scale:0},{scale:1,duration:0.3,ease:"back.out(3)"},78.35);
+    tl.to("#xm8",{opacity:0,duration:0.3},79.6);
+    tl.to("#pr8",{x:160,opacity:1,duration:0.7,ease:"power2.in"},79.8);
+    tl.fromTo("#ok8",{scale:0},{scale:1,duration:0.4,ease:"back.out(3)"},80);
+    tl.fromTo("#c8",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},77.2);
+    tl.fromTo("#d8",{opacity:0,y:14},{opacity:0.95,y:0,duration:0.5},78);
+    tl.to("#s8",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},86.6);tl.set("#s8",{opacity:0},87);
+    tl.fromTo("#s9",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},87);
+    tl.fromTo("#film9",{x:300,opacity:0},{x:0,opacity:1,duration:0.6,ease:"power2.out"},87.3);
+    tl.fromTo("#fr9_0",{scale:0.4,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},87.6);
+    tl.fromTo("#fr9_1",{scale:0.4,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},87.78);
+    tl.fromTo("#fr9_2",{scale:0.4,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},87.96);
+    tl.fromTo("#fr9_3",{scale:0.4,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},88.14);
+    tl.fromTo("#rf9",{scaleX:0,transformOrigin:"left"},{scaleX:1,duration:1.2,ease:"power1.inOut"},88.6);
+    tl.fromTo("#pc9",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.4,ease:"back.out(2.5)"},90);
+    tl.fromTo("#c9",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},87.2);
+    tl.fromTo("#d9",{opacity:0,y:14},{opacity:0.95,y:0,duration:0.5},88);
+    tl.to("#s9",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},96.6);tl.set("#s9",{opacity:0},97);
+    tl.fromTo("#s10",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},97);
+    tl.fromTo("#rt10_0",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},97.4);
+    tl.fromTo("#rt10_1",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},97.47);
+    tl.fromTo("#rt10_2",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},97.54);
+    tl.fromTo("#rt10_3",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},97.61);
+    tl.fromTo("#rt10_4",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},97.68);
+    tl.fromTo("#rt10_5",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},97.75);
+    tl.fromTo("#rt10_6",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},97.82);
+    tl.fromTo("#rt10_7",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},97.89);
+    tl.fromTo("#rt10_8",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},97.96);
+    tl.fromTo("#rt10_9",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},98.03);
+    tl.fromTo("#rt10_10",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(2)"},98.1);
+    tl.to("#orb10",{rotation:360,duration:10,ease:"none",transformOrigin:"center"},97);
+    tl.to("#orb10 .rt",{rotation:-360,duration:10,ease:"none"},97);
+    tl.fromTo("#c10",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},97.2);
+    tl.fromTo("#d10",{opacity:0,y:14},{opacity:0.95,y:0,duration:0.5},98.2);
+    tl.to("#s10",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},106.6);tl.set("#s10",{opacity:0},107);
+    tl.fromTo("#s11",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},107);
+    tl.fromTo("#inf11",{scale:0.6,opacity:0},{scale:1,opacity:1,duration:0.5,ease:"back.out(2)"},107.2);
+    tl.to("#inf11",{scale:1.12,duration:0.8,repeat:4,yoyo:true,ease:"sine.inOut"},107.7);
+    tl.fromTo("#nc11",{x:260,opacity:0},{x:0,opacity:1,duration:0.5,ease:"power2.out"},112);
+    tl.fromTo("#c11",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},107.2);
+    tl.fromTo("#d11",{opacity:0,y:14},{opacity:0.95,y:0,duration:0.5},108);
+    tl.to("#s11",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},114.6);tl.set("#s11",{opacity:0},115);
+    tl.fromTo("#s12",{opacity:0,x:160},{opacity:1,x:0,duration:0.5,ease:"power3.out"},115);
+    tl.fromTo("#fl12",{scale:0.5,opacity:0},{scale:1,opacity:1,duration:0.6,ease:"back.out(2)"},115.2);
+    tl.fromTo("#cm12_0",{x:-60,opacity:0},{x:0,opacity:1,duration:0.35},115.7);
+    tl.fromTo("#cm12_1",{x:-60,opacity:0},{x:0,opacity:1,duration:0.35},116);
+    tl.fromTo("#cm12_2",{x:-60,opacity:0},{x:0,opacity:1,duration:0.35},116.3);
+    tl.fromTo("#bd12_0",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(3)"},116.8);
+    tl.fromTo("#bd12_1",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(3)"},116.98);
+    tl.fromTo("#bd12_2",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(3)"},117.16);
+    tl.fromTo("#bd12_3",{scale:0,opacity:0},{scale:1,opacity:1,duration:0.3,ease:"back.out(3)"},117.34);
+    tl.fromTo("#c12",{opacity:0,y:24},{opacity:1,y:0,duration:0.5,ease:"power2.out"},115.4);
+    tl.to("#s12",{opacity:0,x:-160,duration:0.4,ease:"power2.in"},122.6);tl.set("#s12",{opacity:0},123);
+  window.__timelines["main"] = tl;
+</script>
 </body>
 </html>

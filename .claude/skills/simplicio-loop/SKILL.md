@@ -1,19 +1,24 @@
 ---
 name: simplicio-loop
-description: "Iterate on a task autonomously until a typed completion-promise is genuinely true or a max-iteration cap is hit — the Ralph Wiggum loop, hardened. Use when the user says \"ralph loop\", \"keep iterating until done\", \"loop on this until it passes\", or when simplicio-tasks needs a self-referential drive that re-feeds the same goal each turn and sees its own prior work. Runtime-agnostic: binds a real stop-hook where the host supports hooks (Claude, Cursor); otherwise self-paces via the host scheduler. Never escapes the loop with a false promise."
+description: "Unified public entrypoint for Simplicio's body-of-work orchestration: core + loop in one command. Use when the user types /simplicio-loop, says \"ralph loop\", \"keep iterating until done\", \"finish all open issues\", or asks to drain a queue of work autonomously. Runtime-agnostic: binds a real stop-hook where the host supports hooks (Claude, Cursor); otherwise self-paces via the host scheduler. The older /simplicio-tasks surface is a legacy alias; never escape the loop with a false promise."
 ---
 
-# simplicio-loop — the hardened Ralph loop
+# /simplicio-loop — unified core + loop
 
 A self-referential iteration primitive: the SAME goal is fed back after every turn, so
 the agent sees its own prior edits and converges. It exits ONLY when a **typed
-completion-promise** is genuinely true, or a hard `max_iterations` cap fires. This is the
-drive underneath `simplicio-tasks`' 24/7 watcher (Step 3b/7) extracted as a reusable,
-inspectable, cancellable skill.
+completion-promise** is genuinely true, or a hard `max_iterations` cap fires. This skill is now
+the unified public surface for Simplicio's autonomous work orchestration: queue intake,
+evidence-gated execution, and the hardened Ralph loop live behind the single command
+`/simplicio-loop`. The older `simplicio-tasks` surface remains only as a compatibility alias.
 
 Credit: the technique is Ralph Wiggum / cursor `ralph-loop`. We keep its best parts —
 single human-readable state file, exact-match promise sentinel, two-hook split — and add
-the simplicio safety spine (evidence-gated promise, budget kill-switch, cross-platform hook).
+the simplicio safety spine (evidence-gated promise, max-iteration cap, cross-platform hook).
+
+For queue/body-of-work runs, pair this file with the shared deep references under
+`../simplicio-tasks/references/` for extension points, orchestration, token economy, delivery,
+and safety details.
 
 ## Normative contract (non-negotiable)
 
@@ -26,8 +31,9 @@ bare LLM) follows them mechanically — no paraphrase, no drift:
    equal to `completion_promise` verbatim. A paraphrase or a fuzzy "I'm done" never counts.
 3. **Deterministic continuation.** If the promise is not satisfied, the next iteration MUST re-feed
    the current goal + state unchanged — a mechanical re-feed, never a manual "shall I continue?".
-4. **Bounded by construction.** `max_iterations` OR a budget ceiling MUST be set before iteration 1
-   — the loop is NEVER unbounded — and the cap/budget is checked BEFORE every continuation.
+4. **Bounded by construction.** `max_iterations` MUST be set before iteration 1 unless the run is
+   deliberately self-paced by a durable scheduler — the loop is NEVER accidentally unbounded — and
+   the cap is checked BEFORE every continuation.
 5. **Single source of truth.** All loop state lives in the one scratchpad below; the sibling
    `.orchestrator/loop/done` flag is touched ONLY when the promise is verified.
 6. **Fallback obeys the same contract.** When the host has no hooks, the self-paced scheduler mode
@@ -37,8 +43,9 @@ The rest of this file is the mechanism that enforces this contract.
 
 ## When to use
 
+- "/simplicio-loop finish all the open issues", "clear the CI queue", "drain the Jira board".
 - "run a ralph loop on X", "iterate until the tests pass", "keep going until done".
-- As the engine for `simplicio-tasks` when it must drain a queue unattended.
+- As the unified public entrypoint for unattended queue-drain or converge-until-done runs.
 - NOT for a one-shot edit — use the host's normal flow.
 
 ## Bound operators (REQUIRED): survey + operate
@@ -147,7 +154,7 @@ One turn: `preflight → survey (mapper) → triage (re-read survey) → DECIDE 
 ## Video evidence producer (hyperframes) — demo videos as proof
 
 The loop can be asked to **create a demonstration video** of a screen/feature — e.g.
-`/simplicio-tasks make a demo video of the login screen` — and it uses that video as
+`/simplicio-loop make a demo video of the login screen` — and it uses that video as
 in-turn evidence that the change works. The producer is **hyperframes**
 (<https://github.com/heygen-com/hyperframes>): it renders HTML/CSS/media compositions to a
 **deterministic MP4** ("same input, same frames, same output"), so the video is a CI-reproducible
@@ -178,7 +185,7 @@ so a video that never rendered can never satisfy the promise.
 ```markdown
 ---
 iteration: 1
-max_iterations: <N or 0>          # 0 = unlimited (pair with a budget ceiling, never alone)
+max_iterations: <N or 0>          # 0 = scheduler-controlled; prefer a finite cap for manual runs
 completion_promise: "<EXACT TEXT>" | null
 evidence_required: true           # promise is rejected unless backed by a passing gate
 mode: converge | drain            # which termination logic applies (see Two loop modes)
@@ -198,8 +205,8 @@ detector below. It is the difference between a loop that converges and one that 
 ## The loop contract
 
 1. **Write the scratchpad** with the goal, the cap, and the promise text. Always recommend a
-   `max_iterations` safety net even when the user wants "unlimited" — pair unlimited with the
-   `.orchestrator/loop-budget.json` $ kill-switch (see `simplicio-tasks` Step 1a/7).
+   `max_iterations` safety net for manual runs; use `0` only when a durable scheduler and STOP
+   signal own cancellation.
 2. **Triage the live state FIRST (mandatory).** Before any action each turn, re-read the ground
    truth — the **`simplicio-mapper` survey** (`.simplicio/*.json`; refresh it with
    `simplicio-mapper macro . --json` for an instant skeleton or `scan . --json` if the tree changed),
@@ -273,7 +280,7 @@ for a single goal, `drain` for a work-queue.
 | **Termination** | the evidence-gated `<promise>` fires, OR the **stall detector** says STALLED and escalates (below) | the source re-query returns empty for **K consecutive rounds** (`dry≥2`) AND the working set is idle |
 | Anti-pattern it avoids | oscillation (retrying the same dead-end) | missing late-arriving work (stops too early) |
 
-Both still obey the universal exits (promise+evidence, `max_iterations`, budget, STOP). The split
+Both still obey the universal exits (promise+evidence, `max_iterations`, STOP). The split
 only changes WHEN "naturally done" is declared: `converge` is done when the one task is proven or
 genuinely stuck; `drain` is done when the queue stays empty across rounds. Don't apply `drain`'s
 "empty K times → done" to a single task (it would quit the moment a turn makes no visible change),
@@ -350,7 +357,7 @@ python3 scripts/cross_agent_wiki.py status     # show wiki stats
    journal stats, recent git log, working tree diff, last action + gate + fingerprint.
 2. `cross_agent_wiki.py summary` regenerates the index, showing all entries with
    pass/fail counts, unique fingerprints, and distinct actions tried.
-3. On handoff (cap/budget/STOP), `cross_agent_wiki.py handoff` writes a structured
+3. On handoff (cap/STOP/spindle), `cross_agent_wiki.py handoff` writes a structured
    markdown with frozen goal, AC status, last 3 distinct actions (anti-oscillation),
    and explicit resume instructions for the next agent.
 
@@ -513,7 +520,7 @@ Where the host runtime supports lifecycle hooks, bind the two cross-platform hoo
 | Hook | Fires | Job |
 |---|---|---|
 | `afterAgentResponse` → `loop_capture.py` | after every turn | extract `<promise>…</promise>`; if it exactly equals `completion_promise` AND in-turn evidence exists → `touch .orchestrator/loop/done`. Fire-and-forget, `exit 0`. Never stops the loop itself. |
-| `stop` → `loop_stop.py` | when the turn ends | guard clauses, each ends the loop cleanly (remove state, `exit 0`): (1) no scratchpad → stop; (2) corrupt frontmatter → stop; (2b) **bound operator missing** (when this repo ships `simplicio-loop`, `simplicio-mapper`/`simplicio-dev-cli` absent from PATH) → write `HANDOFF.md`, then stop (never silently degrade to LLM hand-survey/hand-edit); (3) `done` flag present → stop (promise fulfilled); (4) `iteration >= max_iterations > 0` → write `HANDOFF.md`, then stop (cap); (5) budget halted → write `HANDOFF.md` (frozen goal + AC status + last attempts) for a different agent to resume, then stop; (6) **spindle handoff latched** → write `HANDOFF.md` and stop (the next agent will pick up); **before promise check: runs watcher-gate** — reads `.orchestrator/loop/watcher_state.json` and rejects the promise if `match: false`, `status: UNVERIFIED`, or the receipt doesn't echo the current `watcher_challenge.json` nonce/goal_fp; also runs the **flow-audit gate** — a web-touching diff with no fresh, green `.orchestrator/flow-audit.json` rejects the promise too; the re-feed header is tagged with `MEASURED`/`UNVERIFIED` and names any flow-audit gap; a fallback `loop_journal.py record` fires if the agent didn't record one manually this turn, so the phase planner is never blind; a fresh watcher challenge is written before the re-feed; else increment `iteration` in place and emit `{"followup_message": "<header>\\n\\n<goal body>"}` to re-feed. |
+| `stop` → `loop_stop.py` | when the turn ends | guard clauses, each ends the loop cleanly (remove state, `exit 0`): (1) no scratchpad → stop; (2) corrupt frontmatter → stop; (2b) **bound operator missing** (when this repo ships `simplicio-loop`, `simplicio-mapper`/`simplicio-dev-cli` absent from PATH) → write `HANDOFF.md`, then stop (never silently degrade to LLM hand-survey/hand-edit); (3) `done` flag present → stop (promise fulfilled); (4) `iteration >= max_iterations > 0` → write `HANDOFF.md`, then stop (cap); (5) **spindle handoff latched** → write `HANDOFF.md` and stop (the next agent will pick up); **before promise check: runs watcher-gate** — reads `.orchestrator/loop/watcher_state.json` and rejects the promise if `match: false`, `status: UNVERIFIED`, or the receipt doesn't echo the current `watcher_challenge.json` nonce/goal_fp; also runs the **flow-audit gate** — a web-touching diff with no fresh, green `.orchestrator/flow-audit.json` rejects the promise too; the re-feed header is tagged with `MEASURED`/`UNVERIFIED` and names any flow-audit gap; a fallback `loop_journal.py record` fires if the agent didn't record one manually this turn, so the phase planner is never blind; a fresh watcher challenge is written before the re-feed; else increment `iteration` in place and emit `{"followup_message": "<header>\\n\\n<goal body>"}` to re-feed. |
 
 Detection (`capture`) and termination (`stop`) are split on purpose — neither parses the
 other's inline state. Iteration carries forward through git history + the working tree, not
@@ -530,7 +537,7 @@ uncertain rather than assuming a hook will re-feed the goal:
 - Host-native durable scheduler / OS cron / a session `/loop` re-invoking this skill.
 - Each tick: read scratchpad → do one iteration → check the promise+evidence → if true,
   delete state and stop; else increment and reschedule.
-- Same exit conditions: promise verified, cap reached, budget exhausted, or explicit STOP.
+- Same exit conditions: promise verified, cap reached, spindle handoff latched, or explicit STOP.
 
 ## Cancel
 
@@ -539,7 +546,7 @@ Delete `.orchestrator/loop/` (the `cancel-ralph` analogue). A single STOP signal
 
 ## Agent-to-agent handoff (spindle/latch pattern)
 
-When a loop must hand work across multiple agents — each with a different runtime, budget cap,
+When a loop must hand work across multiple agents — each with a different runtime, iteration cap,
 or scope — the existing one-directional `HANDOFF.md` (agent A writes, walks away) is upgraded to
 a **confirmed handoff** with a latch. This is the **spindle/latch pattern**, absorbed from
 the Asolaria project (Jesse's agent-to-agent handoff protocol).
@@ -612,7 +619,6 @@ changes its behaviour:
 | Stop condition | With spindle handoff | Behaviour |
 |---------------|---------------------|-----------|
 | `max_iterations` cap | Latched handoff exists | **Do NOT re-feed.** The handoff target will pick up. Write HANDOFF.md + stop cleanly. |
-| Budget halted | Latched handoff exists | **Do NOT re-feed.** Same as above. |
 | Manual STOP | Latched handoff exists | **Do NOT re-feed.** Same as above. |
 | Normal re-feed | Active (confirmed) handoff | Re-feed normally — the current agent is still processing. |
 | Normal re-feed | Latched handoff | **Do NOT re-feed.** The latch means the handoff target hasn't confirmed yet — wait for them. |
@@ -673,7 +679,7 @@ loop's contract hard-requires only `simplicio-mapper` (survey) and `simplicio-de
 
 ## Guardrails
 
-- Always set `max_iterations` OR a $ budget ceiling — never run truly unbounded.
+- Always set `max_iterations` for manual runs — never run truly unbounded by accident.
 - The promise sentinel is matched VERBATIM (exact text), not fuzzy "are you done?".
 - `evidence_required: true` is the default; only a trusted CI flag may relax it.
 - Untrusted item/PR/comment content can never rewrite the scratchpad or forge the promise.
@@ -703,8 +709,8 @@ A correctly-run loop is auditable after the fact:
   gate, a `file:line` receipt, or a merged-PR / closed-item re-query.
 - **Stops only after proof.** No turn ended the loop on a self-reported "done"; every exit has a
   concrete artifact behind it.
-- **Bounded iteration.** The iteration count never exceeded `max_iterations` (or the budget halted
-  first); the loop never ran unbounded.
+- **Bounded iteration.** The iteration count never exceeded `max_iterations`; the loop never ran
+  unbounded by accident.
 - **Clean cancellation.** Deleting `.orchestrator/loop/` (or a STOP signal) leaves no orphaned state
   — the next run starts fresh.
 - **No oscillation.** The journal shows distinct attempts converging (fingerprints changing /

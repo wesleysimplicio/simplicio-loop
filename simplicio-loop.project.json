@@ -8,7 +8,7 @@
     "skill_brand_name": "simplicio-tasks",
     "display_name": "simplicio-loop — Universal Looping AI Orchestrator",
     "tagline": "The Universal Looping AI Orchestrator",
-    "one_liner": "Super-plugin runtime-agnóstico (6 skills) que drena qualquer fila de trabalho de ponta a ponta em QUALQUER LLM/runtime — discover → implement → verify → merge → close → watch 24/7 — atrás de safety gates e um kill-switch de custo, com até 96% menos tokens. Não é um chatbot. É um trabalhador (a worker).",
+    "one_liner": "Super-plugin runtime-agnóstico (6 skills) que drena qualquer fila de trabalho de ponta a ponta em QUALQUER LLM/runtime — discover → implement → verify → merge → close → watch 24/7 — atrás de safety gates e evidence checks, com até 96% menos tokens. Não é um chatbot. É um trabalhador (a worker).",
     "version": "3.9.3",
     "version_sources_in_lockstep": ["pyproject.toml", ".claude-plugin/plugin.json", "simplicio_loop/__init__ (fallback literals)"],
     "version_note": "O bloco 'Official capability record (v3.4.0)' no README está desatualizado; a versão canônica do pacote é 3.9.3.",
@@ -67,7 +67,7 @@
     ],
     "example_run_trace": [
       "/simplicio-tasks termine as issues abertas",
-      "→ identity + pre-flight (kill-switch, auth, watcher)",
+      "→ identity + pre-flight (auth, watcher, STOP path)",
       "→ discover 50 issues · dedup · build dependency DAG",
       "→ autoscale fleet = 14 · pipeline implement→review→merge",
       "→ each item: read body+ACs → orient code → plan → edit → run → verify → PR",
@@ -89,7 +89,7 @@
       "steps": [
         "Step 0 — Auto-arm the loop (escreve .orchestrator/loop/scratchpad.md)",
         "Step 1 — Identity + environment",
-        "Step 1a — Pre-flight (kill-switch budget, source auth, watcher)",
+        "Step 1a — Pre-flight (source auth, watcher, STOP path)",
         "Step 1a' — Repo conventions (branch/commit/PR/CI)",
         "Step 1b — Extension points (bind native, else LLM fallback)",
         "Step 1b' — Companion skills (satélites)",
@@ -121,7 +121,7 @@
         "1. Evidence-gated exit — sem evidência no MESMO turno, sem saída",
         "2. Exact promise — sentinela <promise>EXACT TEXT</promise> idêntico ao completion_promise",
         "3. Deterministic continuation — re-feed mecânico do goal+estado",
-        "4. Bounded by construction — max_iterations OU teto de budget antes da iteração 1",
+        "4. Bounded by construction — max_iterations antes da iteração 1",
         "5. Single source of truth — estado no scratchpad; flag done só quando verificado",
         "6. Fallback obeys the same contract — modo self-paced honra invariantes 1-5"
       ],
@@ -238,7 +238,7 @@
     "description": "Cada camada que o orquestrador atua, em ordem — da leitura da demanda à entrega de trabalho mergeado e evidenciado, depois loop 24/7. (Extraído do mermaid flowchart do README.)",
     "layers": [
       { "n": 1, "name": "Demand sources (any adapter)", "items": ["GitHub Issues/PRs/CI", "Jira · Azure DevOps · Linear · ClickUp · Monday · Notion · agentsview · Understand Anything (orient)", "Assigns · TODO/FIXME · CVE · local files · LMCache (inference accelerator)"] },
-      { "n": 2, "name": "Pre-flight gates", "items": ["cost kill-switch budget · agentsview cost check", "source auth + scopes", "arm 24/7 watcher"] },
+      { "n": 2, "name": "Pre-flight gates", "items": ["source auth + scopes", "runtime/tools ready", "arm 24/7 watcher + STOP path"] },
       { "n": 3, "name": "Discover + normalize", "items": ["source_adapter: list metadata only", "normalize to canonical schema", "dedup id+title+fingerprint+branch/PR", "dependency DAG"] },
       { "n": 4, "name": "Deep intake (per item)", "items": ["body + ALL comments", "extract acceptance criteria", "orient code · signatures-only reads or Understand Anything knowledge graph", "plan + AC checklist + complexity"] },
       { "n": 5, "name": "Route", "items": ["Fast-path: solo, one targeted test (small AND every item complexity ≤3)", "Heavy-path: continuous worker pool (large queue OR any medium+)"] },
@@ -247,7 +247,7 @@
       { "n": 8, "name": "Safety gates (non-negotiable)", "items": ["secret-scan", "irreversible-op human gate", "4-state verdict · attestation"] },
       { "n": 9, "name": "Deliver", "items": ["commit · push · Draft PR", "close in-source + evidence", "verify reality, not self-report"] },
       { "n": 10, "name": "Feedback loop to merge-ready", "items": ["CI fail → fix root cause", "review comments → adjust", "branch behind main → additive rebase"] },
-      { "n": 11, "name": "24/7 watcher", "items": ["simplicio-loop evidence-gated promise", "max-iterations cap", "cost kill-switch", "LMCache KV cache warm", "re-feed the goal → DISCOVER"] }
+      { "n": 11, "name": "24/7 watcher", "items": ["simplicio-loop evidence-gated promise", "max-iterations cap", "STOP path", "LMCache KV cache warm", "re-feed the goal → DISCOVER"] }
     ]
   },
 
@@ -256,8 +256,7 @@
     "core": "Re-alimenta o mesmo goal a cada turno para o agente ver seu próprio trabalho anterior.",
     "exit_conditions": [
       "Evidence-gated <promise> — o turno que emite o promise DEVE carregar prova concreta (teste passando, PR mergeado, re-query de item fechado). Promise sem evidência = ignorado.",
-      "max_iterations cap — backstop de segurança (default: 3× item-count, min 10; ou 0 só quando há teto de budget $)",
-      "Budget kill-switch — daily_usd_ceiling para o loop quando gasto",
+      "max_iterations cap — backstop de segurança (default: 3× item-count, min 10; 0 só quando scheduler durável + STOP path controlam a execução)",
       "STOP signal — .orchestrator/STOP ou comando de canal"
     ],
     "between_turns": "Quando disponível, LMCache cacheia o estado KV para re-feed com prefill near-zero.",
@@ -271,7 +270,7 @@
     },
     "hooks": {
       "afterAgentResponse → loop_capture.py": "Extrai <promise>; se == completion_promise E há evidência in-turn → touch .orchestrator/loop/done. Fire-and-forget, exit 0.",
-      "stop → loop_stop.py": "Guard clauses: (1) sem scratchpad → stop; (2) frontmatter corrompido → stop; (3) flag done → stop; (4) iteration>=max_iterations>0 → stop (cap); (5) budget halted → stop; senão incrementa iteration e emite followup_message para re-feed."
+      "stop → loop_stop.py": "Guard clauses: (1) sem scratchpad → stop; (2) frontmatter corrompido → stop; (3) flag done → stop; (4) iteration>=max_iterations>0 → stop (cap); (5) spindle latched → stop; senão incrementa iteration e emite followup_message para re-feed."
     },
     "cancel": "Apagar .orchestrator/loop/ (análogo cancel-ralph). Flag .orchestrator/STOP ou comando de canal para entre iterações."
   },
@@ -492,14 +491,14 @@
     { "file": "scripts/billing_aggregator.py", "role": "Engine de billing determinístico, model-free, privacy-preserving sobre o metering existente. Verbs: collect, meter, invoice, export, rates, selftest (11/11)." },
     { "file": "scripts/video_evidence.py", "role": "Produz MP4 demonstrativo determinístico via hyperframes. Evidence = path + verdict. Verbs: detect, scaffold, render, lint, verify." },
     { "file": "scripts/web_verify.py", "role": "Dirige Chromium headless p/ provar front-end (screenshot + trace). Backends: npx (Playwright) ou pytest (playwright-python). Verbs: detect, run, verify." },
-    { "file": "scripts/agentsview_adapter.py", "role": "Conecta ao agentsview (SQLite local ou HTTP API) p/ descobrir sessões paradas e alimentar custo no budget. Verbs: list_ready, get_details, claim, update_status, attach_evidence, close, cost_summary, agent_breakdown." },
+    { "file": "scripts/agentsview_adapter.py", "role": "Conecta ao agentsview (SQLite local ou HTTP API) p/ descobrir sessões paradas e reportar custo observado. Verbs: list_ready, get_details, claim, update_status, attach_evidence, close, cost_summary, agent_breakdown." },
     { "file": "scripts/az_boards_adapter.py", "role": "Binding p/ Azure DevOps (az boards/repos/pipelines). Verbs: list_ready, get_details, claim, update_status, attach_evidence, close, open_pr, pr_status, run_pipeline, pipeline_status." }
   ],
 
   "hooks": {
     "note": "hooks/ traz hooks cross-platform Python 3 (idênticos em Win/macOS/Linux). A maioria é fail-open (erro/incerteza → deixa parar e o comando rodar). A EXCEÇÃO é action_gate.py: fail-CLOSED (exit 2 em op irreversível ou segredo no diff staged).",
     "list": [
-      { "file": "loop_stop.py", "role": "simplicio-loop: re-feed do goal ou exit (promise evidence-gated + cap + budget)", "event": "stop / Claude Stop", "fail_mode": "fail-open" },
+      { "file": "loop_stop.py", "role": "simplicio-loop: re-feed do goal ou exit (promise evidence-gated + cap + STOP)", "event": "stop / Claude Stop", "fail_mode": "fail-open" },
       { "file": "loop_capture.py", "role": "simplicio-loop: levanta a flag done quando um <promise> com evidência é visto", "event": "Cursor afterAgentResponse", "fail_mode": "fail-open" },
       { "file": "action_gate.py", "role": "safety FAIL-CLOSED: bloqueia force-push, history rewrite (filter-branch), remote-ref delete, mass-delete (rm -rf /), DDL destrutivo (DROP DATABASE), infra teardown (terraform destroy), e qualquer commit/push com segredo no diff (AWS/GitHub/Slack/OpenAI keys, private keys, creds hardcoded — placeholder-aware). selftest prova a ruleset (14/14).", "event": "PreToolUse (Bash) / git pre-push", "fail_mode": "fail-CLOSED" },
       { "file": "orient_clamp.py", "role": "simplicio-orient WRAPPER: roda comando, retorna saída reduzida + tee-on-failure. Zero wiring, qualquer runtime.", "event": "chamado direto", "fail_mode": "fail-open" },
@@ -599,7 +598,7 @@
     { "pillar": "DAG + pipeline", "focus": "Paralelismo por dependência, staged por item", "lives_in": "references/orchestration.md (Step 3 pool + pipeline)" },
     { "pillar": "Isolation by worktree", "focus": "Edits paralelos sem corromper a árvore, merge-gated", "lives_in": "references/orchestration.md" },
     { "pillar": "Adversarial verify", "focus": "Painel de céticos antes de 'delivered'", "lives_in": "references/quality-safety-delivery.md · skill simplicio-review" },
-    { "pillar": "Loop budget cap", "focus": "Anti-infinite-loop, dual exit", "lives_in": "references/standing-loop-247.md · skill simplicio-loop" }
+    { "pillar": "Bounded loop cap", "focus": "Anti-infinite-loop, evidence-gated exit", "lives_in": "references/standing-loop-247.md · skill simplicio-loop" }
   ],
 
   "safety": {
@@ -610,7 +609,7 @@
       "4-state pre-execution verdict — otimização NUNCA pode subir o risk tier de um comando",
       "Trust-before-load — config perception-shaping (clamp profiles, suppression lists) é untrusted até review humano + hash-pin",
       "Prompt-injection hardening — conteúdo de item/PR/comment nunca sobrepõe o contrato",
-      "Hard $ kill-switch p/ runs unattended; evidence-gated completion; fail-open hooks"
+      "STOP/cancel path p/ runs unattended; evidence-gated completion; fail-open hooks"
     ],
     "four_state_verdict": {
       "OPTIMIZE_AND_RUN": "clamp encontrado, sem policy block → auto-run compactado",
@@ -629,7 +628,7 @@
       "1. Durable driver — scheduler durável (cron host-native/OS) que sobrevive reboot; tick ~2min: load state → poll all sources → dispatch within capacity → persist → sleep",
       "2. Total coverage matrix — toda SOURCE × todo WORK-TYPE drenado por tick (feature/bug, CI failure, PR review/requested change, PR behind main, CVE/Dependabot, flaky test, stale PR, TODO/FIXME, failed scheduled job)",
       "3. Durable state — journal JSONL/SQLite: seen set, idempotency keys, in-flight claims, dead-letter, dry counter, lessons",
-      "4. Cost & resource governance — HARD $ kill-switch (.orchestrator/loop-budget.json), shared token bucket, re-probe CPU/RAM/disk, disk hygiene",
+      "4. Resource governance — shared token bucket, re-probe CPU/RAM/disk, disk hygiene",
       "5. Unattended safety — irreversible ops enfileiram a canal async e BLOCK; headless rule remove capacidade destrutiva; secret-scan; blast-radius cap",
       "6. Self-healing + intelligent retry by failure class — compile (3×), test (3×), merge conflict (3×), static-analysis (2×), timeout (backoff 2×), missing dep (suspend), security gate (1× + rotate). Circuit breakers + watchdog",
       "7. Prioritization & WIP — security/prod-broken → blockers → CI failures → high-impact/low-effort → deadlines → bugs → features → docs",
@@ -637,9 +636,7 @@
       "9. Self-improvement — trajectory + simplicio-learn; reuse de precedentes; daily meta-review",
       "10. Coordination & clean stop — multi-instance atomic claims (lease/heartbeat/TTL) + STOP signal limpo entre ticks"
     ],
-    "kill_switch_file": ".orchestrator/loop-budget.json",
-    "kill_switch_schema": { "daily_usd_ceiling": "0 = UNSET (watcher recusa rodar unattended, fail-safe)", "per_run_token_ceiling": 0, "spent_usd_today": 0, "reset_at": "ISO-8601 (próxima meia-noite local em UTC)", "state": "running | halted" },
-    "mandatory_before_24_7": ["cost ceiling configurado", "source auth persistente", "irreversible-op human gate ON", "secret-scan gate blocking"]
+    "mandatory_before_24_7": ["source auth persistente", "irreversible-op human gate ON", "secret-scan gate blocking", "STOP/cancel path reachable"]
   },
 
   "install_and_ops": {
@@ -688,8 +685,8 @@
       { "tier": "Team / Cloud", "price": "usage-based", "who": "orgs", "gets": "Multi-repo fleets, SSO, audit log, render video_evidence distribuído (Lambda), per-seat + per-run metering, SLA" },
       { "tier": "Enterprise", "price": "custom", "who": "regulados", "gets": "Control plane self-hosted, on-prem operators, licença comercial/indenidade, support" }
     ],
-    "billing_meters": ["Cost kill-switch (.orchestrator/loop-budget.json)", "Savings ledger (savings_harness.py / proxy_savings.json)", "Capture proxy (engine/simplicio_engine.py)", "Run outcomes (trajectory)"],
-    "aggregator": "scripts/billing_aggregator.py — collect/meter/invoice/export/rates/selftest (11/11). Determinístico, model-free, privacy (só counts saem), fail-safe (prepaid guard reusa o kill-switch), auditável.",
+    "billing_meters": ["Savings ledger (savings_harness.py / proxy_savings.json)", "Capture proxy (engine/simplicio_engine.py)", "Run outcomes (trajectory)"],
+    "aggregator": "scripts/billing_aggregator.py — collect/meter/invoice/export/rates/selftest (11/11). Determinístico, model-free, privacy (só counts saem), prepaid guard billing-only, auditável.",
     "suggested_rates": { "managed_run": "$0.50–$2.00 por item delivered+merged", "tokens_passthrough": "cost + 15% por 1M upstream tokens", "video_render": "$0.10 por render-minute (Lambda)", "operator_time": "$0.02 por compute-minute" }
   },
 
@@ -705,7 +702,7 @@
     "bin": "bin/simplicio (entry da engine)",
     "pip_bundle": "simplicio_loop/ (__init__.py, cli.py, _bundle/{hooks,skills} byte-idênticos à source)",
     "plugin_manifests": [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", ".cursor-plugin/", ".codex/config.toml + hooks.json"],
-    "runtime_state_dirs": [".orchestrator/{loop,tee,learn,STOP,loop-budget.json,patterns.jsonl,orient.toml}", ".simplicio/{*.json survey artifacts}", "~/.simplicio/{proxy_savings.json,memory.json,cache,logs,copilot_oauth.json}"],
+    "runtime_state_dirs": [".orchestrator/{loop,tee,learn,STOP,patterns.jsonl,orient.toml}", ".simplicio/{*.json survey artifacts}", "~/.simplicio/{proxy_savings.json,memory.json,cache,logs,copilot_oauth.json}"],
     "assets": ["assets/simplicio-loop-hero.jpg (213KB)", "assets/simplicio-loop-logo.png (504KB)", "assets/simplicio-loop-overview.png (1.9MB)", "assets/tray-icon.png"],
     "ci": ".github/workflows/web-verify.yml"
   },
@@ -744,14 +741,14 @@
       "Pipeline horizontal de 11 camadas (demand sources → 24/7 watcher) com a seta de re-feed voltando ao início",
       "Tabela 11 runtimes × 3 capacidades (skill load / loop drive / native bind) com semáforos ✅⚠️❌",
       "Gauge de economia 'até 96% menos tokens' + catálogo de clamp",
-      "Diagrama do evidence-gated loop: <promise> só sai com prova (teste/PR/re-query) + cap + budget + STOP",
+      "Diagrama do evidence-gated loop: <promise> só sai com prova (teste/PR/re-query) + cap + STOP",
       "Stack de operadores: AI DECIDE → simplicio-mapper (survey) → simplicio-dev-cli (operate 6-layer) → evidence",
       "Selo de segurança fail-closed (action_gate bloqueia force-push/secret) vs fail-open (resto)"
     ],
     "suggested_video_storyboard": [
       { "scene": 1, "title": "Hook", "beats": ["'Não é um chatbot. É um trabalhador.'", "Mostra '/simplicio-tasks termine as issues abertas' sendo digitado", "Loop ♾️ acende"], "duration_s": 8 },
       { "scene": 2, "title": "O problema", "beats": ["Fila de issues/CI/Jira acumulando", "Custo de tokens explodindo num gráfico vermelho"], "duration_s": 10 },
-      { "scene": 3, "title": "Pre-flight", "beats": ["kill-switch ✓ ($5/day)", "auth ✓", "watcher armado"], "duration_s": 8 },
+      { "scene": 3, "title": "Pre-flight", "beats": ["auth ✓", "STOP path ✓", "watcher armado"], "duration_s": 8 },
       { "scene": 4, "title": "Discover + DAG", "beats": ["50 issues descobertas", "dedup", "dependency DAG montado", "autoscale fleet = 14"], "duration_s": 12 },
       { "scene": 5, "title": "O ciclo por item", "beats": ["read body+ACs → orient code → plan → deterministic_edit → run → verify → PR", "destaque: 'WORKS, not just compiles'"], "duration_s": 15 },
       { "scene": 6, "title": "Quality + Safety gates", "beats": ["AC gate", "adversarial review (thermos, 3 rubricas)", "action_gate fail-closed bloqueia force-push/segredo"], "duration_s": 12 },

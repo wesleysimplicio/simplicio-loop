@@ -28,7 +28,7 @@ A fonte de TODOS os dados técnicos exibidos no vídeo é o
 |---|---|---|
 | 1 | hook | "Não é um chatbot. É um trabalhador." + loop ♾️ |
 | 2 | problem | filas (Issues/CI/Jira) + custo de tokens explodindo |
-| 3 | preflight | kill-switch ✓ · auth ✓ · watcher ✓ |
+| 3 | preflight | auth ✓ · runtime/tools ✓ · STOP path ✓ |
 | 4 | discover_dag | 50 issues · dedup · DAG · fleet=14 |
 | 5 | cycle | read→orient→plan→edit→RUN→verify→PR (WORKS not just compiles) |
 | 6 | quality_safety | review adversarial (3 rubricas) · action_gate FAIL-CLOSED |

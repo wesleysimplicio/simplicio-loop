@@ -25,23 +25,11 @@ Persist on disk (journal, JSONL/SQLite): `seen` set, idempotency keys, in-flight
 dead-letter quarantine, `dry` counter, lessons. Each tick, reconcile state with reality (which PRs
 merged, which items closed) before acting.
 
-### 4. Cost & resource governance
-- **HARD $ kill-switch**: stop all spend when the daily budget is exceeded; resume next window.
-  Unattended runs MUST have a ceiling.
+### 4. Resource governance
 - Shared token/quota bucket across agents (no 429 storms); re-probe provider quota each tick.
 - Re-probe CPU/RAM/disk/load each tick → degrade tiers as resources tighten.
 - Disk hygiene: prune old worktrees, rotate logs, GC build artifacts + old receipts. Time-box
   every item and every tick.
-
-**Kill-switch — concrete.** `.orchestrator/loop-budget.json`:
-```json
-{ "daily_usd_ceiling": 0, "per_run_token_ceiling": 0,
-  "spent_usd_today": 0, "reset_at": "ISO-8601", "state": "running|halted" }
-```
-Every tick + before every dispatch: read it; compute real spend via `savings_ledger` (or
-estimate). `spent >= ceiling` (ceiling > 0) → `state=halted`, stop dispatch, alert, idle until
-`reset_at`. `ceiling = 0` = UNSET → the loop refuses to run unattended (fail-safe). On `reset_at`,
-zero spend, resume.
 
 ### 5. Unattended safety (no human at the keyboard)
 - Irreversible ops queue to an async approval channel and BLOCK. Never auto-proceed.
@@ -95,14 +83,14 @@ per item. Daily meta-review: scan escapes/blocks → propose protocol tweaks, ba
 ### 10. Coordination & clean stop
 Multiple loop instances: atomic claims (tuple-space/labels/lockfile) + lease/heartbeat/TTL so a
 dead worker's items are reclaimed, never stolen while live. A single `STOP` signal (flag file
-`.orchestrator/STOP` or channel command) halts cleanly between ticks. Daily budget resets on schedule.
+`.orchestrator/STOP` or channel command) halts cleanly between ticks.
 
 **Exit condition: none by design** — idle when drained, wake on any new item/comment/check. Only
-STOPS on the explicit stop signal, budget exhaustion, or a safety halt.
+STOPS on the explicit stop signal, iteration cap, spindle handoff, or a safety halt.
 
 ## Arming the watcher (idle, between runs)
-Cadence configurable (default ~2 min). The user chooses always-on vs session-only via the
-kill-switch ceiling (`ceiling > 0` arms the 24/7 watcher, `ceiling = 0` runs once and stops).
+Cadence configurable (default ~2 min). The user chooses always-on vs session-only by the scheduler
+they bind: host-native durable scheduler / OS cron for always-on, session loop for session-only.
 
 Mechanisms (prefer the most durable):
 - **Host-native durable scheduler** (if bound): a 2-minute tick that discovers + dispatches.
@@ -113,5 +101,5 @@ Mechanisms (prefer the most durable):
   passing gate. Wires the watcher into the hard rule: never close work without a merged PR or
   concrete evidence.
 
-MANDATORY before arming 24/7: a cost ceiling configured; persistent source auth; the irreversible-op
-human gate ON; the secret-scan gate blocking any commit with a secret.
+MANDATORY before arming 24/7: persistent source auth; the irreversible-op human gate ON; the
+secret-scan gate blocking any commit with a secret; a reachable STOP/cancel path.

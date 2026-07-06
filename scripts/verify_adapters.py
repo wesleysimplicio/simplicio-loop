@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""simplicio-tasks — adapter install-contract verifier (per-runtime e2e).
+"""simplicio-loop — adapter install-contract verifier (per-runtime e2e).
 
 Runs the universal installer into a throwaway target for each runtime and asserts the adapter's
 contract actually lands: the 6 skills are copied, the runtime's entry/instructions file exists and
@@ -9,7 +9,7 @@ proves the installer + thin adapters end-to-end on THIS machine, in isolation, w
 the user's real config (always `--target <tmpdir>`, never `--global`).
 
 What it does NOT cover: launching the actual runtime binary (antigravity / kiro / opencode /
-aider) and running `/simplicio-tasks` inside it. That manual smoke step is listed per-runtime in
+aider) and running `/simplicio-loop` inside it. That manual smoke step is listed per-runtime in
 adapters/MATRIX.md and the per-adapter READMEs; this harness gates everything up to that point.
 
 Usage:

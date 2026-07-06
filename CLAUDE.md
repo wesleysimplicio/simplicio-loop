@@ -1,15 +1,15 @@
 # CLAUDE.md — simplicio-loop (Claude Code)
 
 This repo ships **simplicio-loop**, a runtime-agnostic **super-plugin**: an autonomous
-looping orchestrator (the `/simplicio-tasks` skill) plus six satellite skills, packaged for 11
+looping orchestrator (the `/simplicio-loop` skill) plus six satellite skills, packaged for 11
 runtimes.
 
 ## The 7 skills
 
 | Skill | Role |
 |---|---|
-| `simplicio-tasks` | the orchestrator loop (discover → implement → verify → merge → close → watch 24/7) |
-| `simplicio-loop` | hardened Ralph loop — re-feed the goal until an evidence-gated `<promise>` or a cap; durable run-journal (attempt memory) + stall detector (`scripts/loop_journal.py`) so it switches strategy instead of oscillating, plus a **task anchor** (`scripts/task_anchor.py`) — durable memory for SCOPE that freezes the acceptance criteria and blocks drift / "done" while any AC is unverified |
+| `simplicio-loop` | unified public entrypoint: orchestrator core + hardened Ralph loop — re-feed the goal until an evidence-gated `<promise>` or a cap; durable run-journal (attempt memory) + stall detector (`scripts/loop_journal.py`) so it switches strategy instead of oscillating, plus a **task anchor** (`scripts/task_anchor.py`) — durable memory for SCOPE that freezes the acceptance criteria and blocks drift / "done" while any AC is unverified |
+| `simplicio-tasks` | legacy alias kept only for compatibility with older installs and saved prompts |
 | `simplicio-orient` | terminal-first token economy — output-reduction catalog, tee-cache, signatures-read |
 | `simplicio-review` | thermos-style parallel adversarial review on distinct rubrics → deduped verdict |
 | `simplicio-compress` | caveman-style prose + memory compression, byte-preserving, `transform_guard` |
@@ -29,7 +29,7 @@ deps of `pip install simplicio-loop` (the loop BLOCKS if either is absent):
 | [simplicio-dev-cli](https://github.com/wesleysimplicio/simplicio-dev-cli) | `simplicio-dev-cli` | `simplicio-cli` | `execute`/`deterministic_edit` | **operate** — apply+verify each decided change via its 6-layer contract, instead of the AI hand-editing |
 
 The AI decides; the operators act. See `.claude/skills/simplicio-loop/SKILL.md` § Bound operators
-and `.claude/skills/simplicio-tasks/references/extension-points.md` § bound operators.
+and `.claude/skills/simplicio-loop/references/extension-points.md` § bound operators.
 
 ## Video evidence (Playwright by default · hyperframes on request)
 
@@ -41,7 +41,7 @@ explicit custom request** — *"make an explainer video of screen X"* — render
 captioned slideshow of the `web_verify` screenshots
 ([hyperframes](https://github.com/heygen-com/hyperframes), Node 22+ + FFmpeg, no API keys). Worker:
 `scripts/video_evidence.py`; contract:
-`.claude/skills/simplicio-tasks/references/video-evidence.md`. A missing toolchain BLOCKS, never a
+`.claude/skills/simplicio-loop/references/video-evidence.md`. A missing toolchain BLOCKS, never a
 fake pass.
 
 ## PR evidence (prints + item-by-item AC check on every PR)
@@ -94,7 +94,7 @@ editing skills or a wired hook); `scripts/check.py` fails if `plugin/` drifts fr
 ## Use
 
 ```
-/simplicio-tasks finish all the open issues
+/simplicio-loop finish all the open issues
 ```
 
 ## Hooks (the loop + token economy)

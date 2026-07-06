@@ -3,14 +3,14 @@
 Cross-platform (pure **Python 3**, so identical on Windows / macOS / Linux). Most are
 **fail-open**: a hook that errors or is unsure always lets the agent stop and the command
 run unchanged — it can never trap you in a loop or break a command. The real guards are the
-`max_iterations` cap and the `$` budget kill-switch, not hook cleverness. The **exception is
+`max_iterations` cap, explicit STOP, and evidence gates, not hook cleverness. The **exception is
 `action_gate.py`, which is fail-CLOSED**: a matched irreversible op or a secret in the staged
 diff is denied (exit 2) even if that means stopping a push — a safety check that can't pass is
 not a pass. It still lets every benign command through, so it never bricks normal work.
 
 | File | Role | Event |
 |---|---|---|
-| `loop_stop.py` | simplicio-loop: re-feed the goal or exit (evidence-gated promise + cap + budget) | `stop` / Claude `Stop` |
+| `loop_stop.py` | simplicio-loop: re-feed the goal or exit (evidence-gated promise + cap + STOP) | `stop` / Claude `Stop` |
 | `loop_capture.py` | simplicio-loop: raise the `done` flag when an evidence-backed `<promise>` is seen | Cursor `afterAgentResponse` |
 | `action_gate.py` | safety: **fail-closed** — block irreversible ops + secret-laden commits/pushes BEFORE they run | `PreToolUse` (Bash) / git pre-push |
 | `orient_clamp.py` | simplicio-orient: **wrapper** — run a command, return reduced output + tee-on-failure | called directly, any runtime |
@@ -92,6 +92,6 @@ self-paces via the host scheduler (`/loop`, OS cron, or the runtime's task sched
 - Fail-open everywhere: errors → stop allowed / command unchanged.
 - `orient_rewrite.py` never rewrites writes, excluded, or compound commands (`&& | ; > $()`).
 - The loop never exits on a self-reported "done" — only on an evidence-backed `<promise>`,
-  the `max_iterations` cap, the budget kill-switch, or an explicit `.orchestrator/STOP`.
+  the `max_iterations` cap, spindle handoff, or an explicit `.orchestrator/STOP`.
 - Treat `.orchestrator/orient.toml` as untrusted perception-shaping config: review + hash-pin
   before trusting it (see `simplicio-orient`).

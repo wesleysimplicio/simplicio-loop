@@ -5,6 +5,24 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.22.2] — 2026-07-06
+
+### Changed
+- Unified the public command contract around `/simplicio-loop`: the core orchestrator and hardened
+  loop now ship behind one public entrypoint, while `/simplicio-tasks` remains documented only as a
+  compatibility alias for older installs and saved prompts.
+- Removed the deprecated runtime cost/budget stop contract from code, skills, docs, adapters, pricing
+  material, plugin mirrors, bundle mirrors, translated READMEs, and the generated project metadata.
+  Loop exits are now evidence-gated completion, `max_iterations`, spindle handoff, or explicit
+  STOP/cancel path.
+- Rebuilt the detailed README infographic (`assets/simplicio-loop-infographic.svg` and PNG) without
+  budget/cost steps and with the current standalone-install contract: installing the skill bundle
+  does not require a mandatory runtime dependency.
+
+### Fixed
+- Synchronized the translated READMEs with the English README so every locale presents
+  `simplicio-loop` as the core + loop command and keeps `simplicio-tasks` only as a legacy alias.
+
 ## [3.22.1] — 2026-07-06
 
 ### Added
@@ -188,7 +206,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 ## [3.16.0] — 2026-06-30
 
 ### Added
-- **Cross-agent handoff on incomplete stop (`hooks/loop_stop.py`).** A budget-halted or
+- **Cross-agent handoff on incomplete stop (`hooks/loop_stop.py`).** A manual-stop or
   iteration-cap stop now writes `.orchestrator/loop/HANDOFF.md` before clearing the scratchpad —
   the frozen goal/acceptance criteria from `task_anchor.py`, the last attempts from
   `loop_journal.py`, and concrete resume steps. Previously these stops deleted the scratchpad with
@@ -275,7 +293,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   `scripts/`, which the lean plugin does not ship) and reject a completion `<promise>` while any
   acceptance criterion is still unverified, exactly as they already reject a promise with no
   in-turn evidence. Fail-open: a missing/unreadable/empty anchor never blocks, and any rejection
-  stays bounded by `max_iterations` + the budget kill-switch. The re-feed header now names the open
+  stays bounded by `max_iterations` + the explicit STOP/cancel path. The re-feed header now names the open
   criteria so the next turn knows what blocks "done".
 - Wired both workers into the skills (`simplicio-tasks` Steps 2b/4/6, `simplicio-loop` triage +
   evidence-gated promise) and the `delivery_gate` / `pr_template` extension points.
@@ -617,12 +635,12 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ### Added — billing aggregator for the open-core paid tier (`scripts/billing_aggregator.py`)
 - **Deterministic, model-free, privacy-preserving meter→invoice** over the metering records the loop
-  already produces (`loop-budget.json`, `savings/snapshots.jsonl`, `trajectory/*.jsonl`,
+  already produces (`savings/snapshots.jsonl`, `trajectory/*.jsonl`,
   `tee/video/ledger.txt`). Verbs: `collect`/`meter`/`invoice`/`export`/`rates`/`selftest`.
 - **Privacy boundary**: the savings snapshots store raw baseline/treatment TEXT; `collect` counts
   tokens (`ceil(chars/4)`) then **discards** the text — usage records carry counts only, never code,
-  diffs, or rendered videos. **Fail-safe**: `invoice --prepaid` over-balance maps to the existing
-  kill-switch `state: "halted"` (never over-serves). `selftest` proves the arithmetic (11/11, no files).
+  diffs, or rendered videos. **Fail-safe**: `invoice --prepaid` flags over-balance in billing output
+  without stopping the runtime loop. `selftest` proves the arithmetic (11/11, no files).
 - Three price levers: per-seat (Pro), per-run (Team, one delivered+merged item), metered (Cloud:
   token passthrough + markup, render-minutes, operator-minutes). Implements the `PRICING.md` sketch.
 

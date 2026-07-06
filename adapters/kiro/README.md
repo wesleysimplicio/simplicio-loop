@@ -17,7 +17,7 @@ and registers the MCP server in `.kiro/settings/mcp.json`.
 
 No stop-hook. Use a Kiro **spec** as the durable goal, and let `simplicio-loop` self-pace each
 execution against the spec's acceptance criteria (which map directly onto the skill's AC gate).
-Exit conditions unchanged (evidence-gated promise, cap, budget).
+Exit conditions unchanged (evidence-gated promise, cap, STOP).
 
 ## Token economy
 

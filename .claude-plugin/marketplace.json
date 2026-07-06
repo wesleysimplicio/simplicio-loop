@@ -12,7 +12,7 @@
       "name": "simplicio-loop",
       "source": "./plugin",
       "category": "development",
-      "description": "Not a chatbot — a worker. An autonomous orchestrator of 6 composable skills that drives a whole backlog end-to-end on any LLM or runtime: discover, implement, verify, review, merge, close. A hardened Ralph loop exits only when a typed completion-promise is genuinely true — never on a false done. Project-scoped fail-closed Bash safety-gate, adversarial pre-merge review, and a hard cost kill-switch. Runs 100% locally — zero network calls, zero telemetry. Start a run with /simplicio-tasks. MIT."
+      "description": "Not a chatbot — a worker. /simplicio-loop is the unified public entrypoint for core + hardened loop, driving a whole backlog end-to-end on any LLM or runtime: discover, implement, verify, review, merge, close. It exits only on evidence-gated completion, bounded iteration, or an explicit STOP/cancel path. Runs locally with no telemetry. MIT."
     }
   ]
 }

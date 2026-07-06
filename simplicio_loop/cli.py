@@ -59,7 +59,7 @@ def install(target: Path, globally: bool) -> int:
     print(f"  hooks  -> {hooks_dst}  ({n_hooks} files)")
     print("")
     print("Use it in your agent runtime (Claude Code, Cursor, ...):")
-    print("  /simplicio-tasks finish all the open issues")
+    print("  /simplicio-loop finish all the open issues")
     return 0
 
 
@@ -139,7 +139,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="simplicio-loop",
         description=(
-            "Install the simplicio-loop super-plugin (6 AI-orchestration skills + "
+            "Install the simplicio-loop super-plugin (bundled skills + "
             "loop/token-economy hooks) into a runtime's skills location, or open the "
             "Token Monitor dashboard."
         ),

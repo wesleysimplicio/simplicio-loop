@@ -46,11 +46,10 @@ fleet), which is exactly the part that costs us compute.
 The good news: the metering primitives **already exist** in the repo. Billing is mostly a matter
 of aggregating what the loop already records, never a new measurement layer.
 
-### 1. The two meters we already produce
+### 1. The meters we already produce
 
 | Primitive | File / source | What it gives billing |
 |---|---|---|
-| **Cost kill-switch** | `.orchestrator/loop-budget.json` | per-run / per-day USD ceiling, `spent_usd_today`, `reset_at`, `state` — the spend ledger the loop already enforces |
 | **Savings ledger** | `savings_ledger` ext-point · `scripts/savings_harness.py` · `proxy_savings.json` | REAL token spend per session (snapshot→score, fixed `ceil(chars/4)` tokenizer) + tokens saved |
 | **Capture proxy** | `engine/simplicio_engine.py` (`proxy`) · `scripts/simplicio-economy.sh` | actual upstream token usage per provider call (already intercepted) |
 | **Run outcomes** | `trajectory` ext-point | per-run records → unit of "a delivered item" for per-run pricing |
@@ -58,7 +57,6 @@ of aggregating what the loop already records, never a new measurement layer.
 ```text
 loop turn ──> capture proxy (real upstream tokens)
           ──> savings_ledger (spent + saved, deterministic score)
-          ──> loop-budget.json (USD spend vs ceiling, kill-switch)
                          │
                          ▼
               billing aggregator (NEW, thin)
@@ -73,10 +71,9 @@ loop turn ──> capture proxy (real upstream tokens)
 - **Per-seat (Pro):** flat; the aggregator only checks an active-seat count. No new metering.
 - **Per-run (Team):** one `trajectory` record = one billable "delivered item". Count
   closed/merged items from the source re-query the loop already does at delivery (Step 6).
-- **Metered usage (Cloud):** sum `spent_usd_today` across the org's runs from `loop-budget.json`,
-  plus managed-operator minutes and Lambda render seconds. The kill-switch doubles as the
-  **prepaid-credit guard** — when credits hit zero, `state: "halted"` already stops the loop
-  cleanly (fail-safe), so we never over-serve.
+- **Metered usage (Cloud):** sum usage from the capture proxy/savings ledger, plus managed-operator
+  minutes and Lambda render seconds. The prepaid-credit guard is billing-only: it flags
+  over-balance but never writes runtime stop state.
 
 ### 3. The aggregator (the only new component) — ✅ implemented
 
@@ -86,7 +83,7 @@ Shipped as [`scripts/billing_aggregator.py`](scripts/billing_aggregator.py) (std
 
 ```
 scripts/billing_aggregator.py
-  collect   read .orchestrator/{loop-budget.json, savings/snapshots.jsonl, trajectory/*, tee/video/ledger.txt}
+  collect   read .orchestrator/{savings/snapshots.jsonl, trajectory/*, tee/video/ledger.txt}
             → ONE append-only, text-free usage record (counts the savings TEXT then DISCARDS it)
   meter     pure roll-up: usd_spent, tokens_spent, tokens_saved, items_delivered, renders, seconds
   invoice   apply the tier rule (seat | run | metered) → line-item JSON (+ optional --prepaid guard)
@@ -106,8 +103,7 @@ Properties (non-negotiable, mirror the existing safety spine):
   records, exactly like `savings_harness score`).
 - **Privacy** — only usage *counts* leave the box (tokens, USD, item-ids, seconds); **never**
   customer code, diffs, prompts, or the captured screenshots/MP4s.
-- **Fail-safe** — the prepaid guard reuses the kill-switch: zero balance ⇒ `state: "halted"` ⇒
-  loop stops. No silent overage.
+- **Fail-safe** — prepaid over-balance is flagged in billing output. No runtime halt is written.
 - **Auditable** — every invoice line traces to an immutable snapshot record (the same audit
   property the loop requires of its `<promise>` evidence).
 

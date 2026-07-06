@@ -54,8 +54,8 @@
     },
     {
       "id": 3, "key": "preflight", "start_s": 18, "duration_s": 8,
-      "headline_data": "Pre-flight: kill-switch ✓ ($5/day) · auth ✓ · watcher ✓",
-      "on_screen": ["3 checkboxes acendendo em verde", "arquivo .orchestrator/loop-budget.json aparecendo"],
+      "headline_data": "Pre-flight: auth ✓ · runtime/tools ✓ · STOP path ✓",
+      "on_screen": ["3 checkboxes acendendo em verde", "auth da fonte, bind runtime/tools e STOP path prontos"],
       "effects": { "in": "radial-wipe", "anim": ["checkmarks pop com success-chime", "json materializa com type-on"], "camera": "static lock", "out": "whip-pan" },
       "sound": { "music": "steady pulse", "sfx": ["success-chime x3", "click"] }
     },

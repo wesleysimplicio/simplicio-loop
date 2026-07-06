@@ -1,0 +1,319 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1350" viewBox="0 0 2400 1350" role="img" aria-labelledby="title desc">
+  <title id="title">simplicio-loop infographic</title>
+  <desc id="desc">A detailed workflow infographic showing the simplicio-loop core plus loop flow from invocation through delivery, evidence, safety gates, and watcher re-feed.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#061116"/>
+      <stop offset="48%" stop-color="#0b1f28"/>
+      <stop offset="100%" stop-color="#111815"/>
+    </linearGradient>
+    <linearGradient id="engine" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0fd4c5"/>
+      <stop offset="52%" stop-color="#2f8cff"/>
+      <stop offset="100%" stop-color="#f7b955"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#102833"/>
+      <stop offset="100%" stop-color="#0b1a20"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M 48 0 H 0 V 48" fill="none" stroke="#ffffff" stroke-opacity="0.045" stroke-width="1"/>
+    </pattern>
+    <marker id="arrowBlue" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M 2 2 L 12 7 L 2 12 Z" fill="#4aa3ff"/>
+    </marker>
+    <marker id="arrowTeal" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M 2 2 L 12 7 L 2 12 Z" fill="#19d8c3"/>
+    </marker>
+    <marker id="arrowAmber" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M 2 2 L 12 7 L 2 12 Z" fill="#f6bd5a"/>
+    </marker>
+    <style>
+      .font { font-family: "IBM Plex Sans", "Aptos", "Segoe UI", sans-serif; }
+      .mono { font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace; }
+      .title { font-size: 74px; font-weight: 800; fill: #f7fbff; letter-spacing: 0; }
+      .subtitle { font-size: 29px; font-weight: 500; fill: #b7cad4; }
+      .micro { font-size: 18px; font-weight: 650; fill: #a8c1cb; }
+      .badge { font-size: 20px; font-weight: 800; fill: #eaf6fb; }
+      .stageNo { font-size: 18px; font-weight: 900; fill: #061116; }
+      .stageTitle { font-size: 24px; font-weight: 800; fill: #f4fbff; }
+      .stageBody { font-size: 18px; font-weight: 520; fill: #b8ccd4; }
+      .stageCode { font-size: 17px; font-weight: 700; fill: #9eece4; }
+      .sectionTitle { font-size: 25px; font-weight: 850; fill: #f6fbff; }
+      .sectionBody { font-size: 18px; font-weight: 540; fill: #b8ccd4; }
+      .railTitle { font-size: 22px; font-weight: 850; fill: #fff8e9; }
+      .railBody { font-size: 17px; font-weight: 520; fill: #ddcda8; }
+      .lineIcon { fill: none; stroke: #dffaff; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+      .thinIcon { fill: none; stroke: #dffaff; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+    <symbol id="i-terminal" viewBox="0 0 64 64">
+      <rect x="7" y="11" width="50" height="42" rx="7" class="thinIcon"/>
+      <path d="M 17 25 l 9 7 l -9 7 M 31 40 h 15" class="lineIcon"/>
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 64 64">
+      <path d="M 32 7 l 22 8 v 15 c 0 15 -9 24 -22 29 C 19 54 10 45 10 30 V 15 z" class="thinIcon"/>
+      <path d="M 22 32 l 7 7 l 15 -17" class="lineIcon"/>
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 64 64">
+      <circle cx="28" cy="28" r="17" class="thinIcon"/>
+      <path d="M 41 41 l 13 13 M 18 28 h 20 M 28 18 v 20" class="lineIcon"/>
+    </symbol>
+    <symbol id="i-checklist" viewBox="0 0 64 64">
+      <rect x="12" y="8" width="40" height="48" rx="6" class="thinIcon"/>
+      <path d="M 22 22 l 4 4 l 8 -9 M 22 38 l 4 4 l 8 -9 M 39 24 h 6 M 39 40 h 6" class="lineIcon"/>
+    </symbol>
+    <symbol id="i-map" viewBox="0 0 64 64">
+      <path d="M 10 17 l 14 -6 l 16 6 l 14 -6 v 36 l -14 6 l -16 -6 l -14 6 z M 24 11 v 36 M 40 17 v 36" class="thinIcon"/>
+      <circle cx="32" cy="31" r="5" fill="#dffaff"/>
+    </symbol>
+    <symbol id="i-dag" viewBox="0 0 64 64">
+      <circle cx="16" cy="18" r="7" class="thinIcon"/>
+      <circle cx="48" cy="18" r="7" class="thinIcon"/>
+      <circle cx="32" cy="46" r="7" class="thinIcon"/>
+      <path d="M 22 21 l 19 19 M 42 24 l -7 15 M 20 22 l 8 17" class="lineIcon"/>
+    </symbol>
+    <symbol id="i-edit" viewBox="0 0 64 64">
+      <path d="M 14 47 l 3 -13 l 28 -28 l 13 13 l -28 28 z M 39 12 l 13 13 M 16 47 l 13 -3" class="thinIcon"/>
+      <path d="M 11 56 h 42" class="lineIcon"/>
+    </symbol>
+    <symbol id="i-test" viewBox="0 0 64 64">
+      <path d="M 24 8 h 16 M 28 8 v 16 L 14 49 c -2 4 1 7 5 7 h 26 c 4 0 7 -3 5 -7 L 36 24 V 8" class="thinIcon"/>
+      <path d="M 20 42 h 24 M 25 30 h 14" class="lineIcon"/>
+    </symbol>
+    <symbol id="i-review" viewBox="0 0 64 64">
+      <path d="M 12 13 h 40 v 31 H 27 L 16 54 V 44 h -4 z" class="thinIcon"/>
+      <path d="M 22 25 h 20 M 22 34 h 12 M 42 34 l 5 5 l 9 -13" class="lineIcon"/>
+    </symbol>
+    <symbol id="i-git" viewBox="0 0 64 64">
+      <circle cx="18" cy="16" r="7" class="thinIcon"/>
+      <circle cx="18" cy="48" r="7" class="thinIcon"/>
+      <circle cx="48" cy="32" r="7" class="thinIcon"/>
+      <path d="M 18 23 v 18 M 24 19 c 12 0 11 13 17 13" class="lineIcon"/>
+    </symbol>
+    <symbol id="i-watch" viewBox="0 0 64 64">
+      <circle cx="32" cy="32" r="22" class="thinIcon"/>
+      <path d="M 32 18 v 15 l 10 6 M 17 12 l -7 7 M 47 12 l 7 7" class="lineIcon"/>
+    </symbol>
+    <symbol id="i-video" viewBox="0 0 64 64">
+      <rect x="8" y="18" width="34" height="28" rx="5" class="thinIcon"/>
+      <path d="M 42 27 l 14 -8 v 26 l -14 -8 z M 20 28 h 8" class="lineIcon"/>
+    </symbol>
+    <symbol id="i-file" viewBox="0 0 64 64">
+      <path d="M 17 8 h 22 l 10 10 v 38 H 17 z M 39 8 v 11 h 10 M 24 31 h 18 M 24 41 h 14" class="thinIcon"/>
+    </symbol>
+    <symbol id="i-loop" viewBox="0 0 64 64">
+      <path d="M 16 26 a 18 18 0 0 1 30 -10 l 5 5 M 48 38 a 18 18 0 0 1 -30 10 l -5 -5" class="thinIcon"/>
+      <path d="M 51 11 v 10 H 41 M 13 53 V 43 h 10" class="lineIcon"/>
+    </symbol>
+  </defs>
+
+  <rect width="2400" height="1350" fill="url(#bg)"/>
+  <rect width="2400" height="1350" fill="url(#grid)"/>
+  <path d="M90 225C420 75 840 105 1110 235c245 118 440 130 682 10 238-118 408-84 526 26" fill="none" stroke="#19d8c3" stroke-opacity="0.12" stroke-width="4"/>
+  <path d="M83 1110c385-135 655-138 928-20 308 133 550 112 800-18 215-112 395-91 508 31" fill="none" stroke="#4aa3ff" stroke-opacity="0.12" stroke-width="4"/>
+
+  <g class="font">
+    <text x="94" y="105" class="title">simplicio-loop</text>
+    <text x="98" y="150" class="subtitle">Core + loop: one command to drain work with evidence</text>
+    <text x="101" y="192" class="mono micro">/simplicio-loop finish all open work</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <g transform="translate(1395 70)" class="font">
+      <rect x="0" y="0" width="154" height="42" rx="21" fill="#102833" stroke="#19d8c3" stroke-opacity="0.55"/>
+      <text x="24" y="28" class="badge">11 runtimes</text>
+      <rect x="170" y="0" width="205" height="42" rx="21" fill="#102833" stroke="#4aa3ff" stroke-opacity="0.55"/>
+      <text x="194" y="28" class="badge">48 extension pts</text>
+      <rect x="391" y="0" width="116" height="42" rx="21" fill="#102833" stroke="#f6bd5a" stroke-opacity="0.65"/>
+      <text x="416" y="28" class="badge">7 skills</text>
+      <rect x="523" y="0" width="168" height="42" rx="21" fill="#102833" stroke="#19d8c3" stroke-opacity="0.55"/>
+      <text x="548" y="28" class="badge">5 accelerators</text>
+      <rect x="707" y="0" width="205" height="42" rx="21" fill="#102833" stroke="#ffffff" stroke-opacity="0.22"/>
+      <text x="731" y="28" class="badge">standalone install</text>
+    </g>
+  </g>
+
+  <g id="engine-core" transform="translate(910 418)" filter="url(#softShadow)">
+    <circle cx="290" cy="240" r="210" fill="#07161d" stroke="url(#engine)" stroke-width="9"/>
+    <circle cx="290" cy="240" r="156" fill="#0d2631" stroke="#ffffff" stroke-opacity="0.13" stroke-width="2"/>
+    <use href="#i-loop" x="246" y="95" width="88" height="88" filter="url(#glow)"/>
+    <text x="290" y="230" text-anchor="middle" class="font sectionTitle">Evidence-Gated Loop</text>
+    <text x="290" y="266" text-anchor="middle" class="font sectionBody">re-feed goal until proven true</text>
+    <text x="290" y="306" text-anchor="middle" class="mono stageCode">&lt;promise&gt; only with receipts</text>
+    <path d="M151 362c86 73 188 78 279 0" fill="none" stroke="#19d8c3" stroke-width="5" stroke-linecap="round" marker-end="url(#arrowTeal)"/>
+    <text x="290" y="392" text-anchor="middle" class="font micro">journal + watcher prevent false done</text>
+  </g>
+
+  <g id="stages" class="font" filter="url(#softShadow)">
+    <g transform="translate(90 270)">
+      <rect width="365" height="150" rx="16" fill="url(#card)" stroke="#19d8c3" stroke-opacity="0.48"/>
+      <circle cx="35" cy="36" r="20" fill="#19d8c3"/><text x="35" y="43" text-anchor="middle" class="stageNo">1</text>
+      <use href="#i-terminal" x="284" y="22" width="58" height="58"/>
+      <text x="64" y="42" class="stageTitle">Invoke</text>
+      <text x="28" y="85" class="mono stageCode">/simplicio-loop</text>
+      <text x="28" y="118" class="stageBody">single command, scoped goal</text>
+    </g>
+    <g transform="translate(500 270)">
+      <rect width="365" height="150" rx="16" fill="url(#card)" stroke="#f6bd5a" stroke-opacity="0.55"/>
+      <circle cx="35" cy="36" r="20" fill="#f6bd5a"/><text x="35" y="43" text-anchor="middle" class="stageNo">2</text>
+      <use href="#i-shield" x="284" y="22" width="58" height="58"/>
+      <text x="64" y="42" class="stageTitle">Pre-flight</text>
+      <text x="28" y="85" class="stageBody">auth, runtime bind, tools</text>
+      <text x="28" y="118" class="stageBody">operators checked up front</text>
+    </g>
+    <g transform="translate(1535 270)">
+      <rect width="365" height="150" rx="16" fill="url(#card)" stroke="#4aa3ff" stroke-opacity="0.55"/>
+      <circle cx="35" cy="36" r="20" fill="#4aa3ff"/><text x="35" y="43" text-anchor="middle" class="stageNo">3</text>
+      <use href="#i-search" x="284" y="22" width="58" height="58"/>
+      <text x="64" y="42" class="stageTitle">Discover Work</text>
+      <text x="28" y="85" class="stageBody">GitHub, Jira, CI, local files</text>
+      <text x="28" y="118" class="stageBody">dedup by source + branch</text>
+    </g>
+    <g transform="translate(1945 270)">
+      <rect width="365" height="150" rx="16" fill="url(#card)" stroke="#19d8c3" stroke-opacity="0.48"/>
+      <circle cx="35" cy="36" r="20" fill="#19d8c3"/><text x="35" y="43" text-anchor="middle" class="stageNo">4</text>
+      <use href="#i-checklist" x="284" y="22" width="58" height="58"/>
+      <text x="64" y="42" class="stageTitle">Deep Intake</text>
+      <text x="28" y="85" class="stageBody">comments, ACs, blockers</text>
+      <text x="28" y="118" class="stageBody">scope anchor freezes intent</text>
+    </g>
+
+    <g transform="translate(90 520)">
+      <rect width="365" height="150" rx="16" fill="url(#card)" stroke="#4aa3ff" stroke-opacity="0.55"/>
+      <circle cx="35" cy="36" r="20" fill="#4aa3ff"/><text x="35" y="43" text-anchor="middle" class="stageNo">5</text>
+      <use href="#i-map" x="284" y="22" width="58" height="58"/>
+      <text x="64" y="42" class="stageTitle">Orient Repo</text>
+      <text x="28" y="85" class="stageBody">mapper, context pack, impact</text>
+      <text x="28" y="118" class="stageBody">read artifacts before files</text>
+    </g>
+    <g transform="translate(500 520)">
+      <rect width="365" height="150" rx="16" fill="url(#card)" stroke="#19d8c3" stroke-opacity="0.48"/>
+      <circle cx="35" cy="36" r="20" fill="#19d8c3"/><text x="35" y="43" text-anchor="middle" class="stageNo">6</text>
+      <use href="#i-dag" x="284" y="22" width="58" height="58"/>
+      <text x="64" y="42" class="stageTitle">Decide Plan</text>
+      <text x="28" y="85" class="stageBody">DAG, route, complexity</text>
+      <text x="28" y="118" class="stageBody">fast path or worker pool</text>
+    </g>
+    <g transform="translate(1535 520)">
+      <rect width="365" height="150" rx="16" fill="url(#card)" stroke="#f6bd5a" stroke-opacity="0.55"/>
+      <circle cx="35" cy="36" r="20" fill="#f6bd5a"/><text x="35" y="43" text-anchor="middle" class="stageNo">7</text>
+      <use href="#i-edit" x="284" y="22" width="58" height="58"/>
+      <text x="64" y="42" class="stageTitle">Operate</text>
+      <text x="28" y="85" class="stageBody">deterministic edit + dev-cli</text>
+      <text x="28" y="118" class="stageBody">small AC-scoped changes</text>
+    </g>
+    <g transform="translate(1945 520)">
+      <rect width="365" height="150" rx="16" fill="url(#card)" stroke="#19d8c3" stroke-opacity="0.48"/>
+      <circle cx="35" cy="36" r="20" fill="#19d8c3"/><text x="35" y="43" text-anchor="middle" class="stageNo">8</text>
+      <use href="#i-test" x="284" y="22" width="58" height="58"/>
+      <text x="64" y="42" class="stageTitle">Verify</text>
+      <text x="28" y="85" class="stageBody">tests, web, flow, impact</text>
+      <text x="28" y="118" class="stageBody">works, not just compiles</text>
+    </g>
+
+    <g transform="translate(500 770)">
+      <rect width="365" height="150" rx="16" fill="url(#card)" stroke="#4aa3ff" stroke-opacity="0.55"/>
+      <circle cx="35" cy="36" r="20" fill="#4aa3ff"/><text x="35" y="43" text-anchor="middle" class="stageNo">9</text>
+      <use href="#i-review" x="284" y="22" width="58" height="58"/>
+      <text x="64" y="42" class="stageTitle">Review</text>
+      <text x="28" y="85" class="stageBody">adversarial rubrics</text>
+      <text x="28" y="118" class="stageBody">refute before merge</text>
+    </g>
+    <g transform="translate(910 820)">
+      <rect width="365" height="150" rx="16" fill="url(#card)" stroke="#19d8c3" stroke-opacity="0.48"/>
+      <circle cx="35" cy="36" r="20" fill="#19d8c3"/><text x="35" y="43" text-anchor="middle" class="stageNo">10</text>
+      <use href="#i-git" x="284" y="22" width="58" height="58"/>
+      <text x="72" y="42" class="stageTitle">Deliver</text>
+      <text x="28" y="85" class="stageBody">commit, PR, merge, close</text>
+      <text x="28" y="118" class="stageBody">attach proof to the work item</text>
+    </g>
+    <g transform="translate(1320 770)">
+      <rect width="365" height="150" rx="16" fill="url(#card)" stroke="#f6bd5a" stroke-opacity="0.55"/>
+      <circle cx="35" cy="36" r="20" fill="#f6bd5a"/><text x="35" y="43" text-anchor="middle" class="stageNo">11</text>
+      <use href="#i-watch" x="284" y="22" width="58" height="58"/>
+      <text x="72" y="42" class="stageTitle">Watch</text>
+      <text x="28" y="85" class="stageBody">re-query source, dry rounds</text>
+      <text x="28" y="118" class="stageBody">re-feed until queue is dry</text>
+    </g>
+  </g>
+
+  <g id="arrows" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M455 345h45" stroke="#19d8c3" stroke-width="5" marker-end="url(#arrowTeal)"/>
+    <path d="M865 345c115 0 190 65 245 142" stroke="#f6bd5a" stroke-width="5" marker-end="url(#arrowAmber)"/>
+    <path d="M1407 520c45-85 80-175 128-175" stroke="#4aa3ff" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M1900 345h45" stroke="#19d8c3" stroke-width="5" marker-end="url(#arrowTeal)"/>
+    <path d="M1945 595h-45" stroke="#19d8c3" stroke-width="5" marker-end="url(#arrowTeal)"/>
+    <path d="M1535 595c-115 0-158 38-220 92" stroke="#f6bd5a" stroke-width="5" marker-end="url(#arrowAmber)"/>
+    <path d="M1088 804c-88 23-153 41-223 41" stroke="#4aa3ff" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M865 845h45" stroke="#4aa3ff" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M1275 895h45" stroke="#19d8c3" stroke-width="5" marker-end="url(#arrowTeal)"/>
+    <path d="M1500 770c-40-82-87-124-146-157" stroke="#f6bd5a" stroke-width="5" marker-end="url(#arrowAmber)"/>
+    <path d="M1320 822c-205 80-429 19-502-164" stroke="#19d8c3" stroke-width="4" stroke-dasharray="11 12" marker-end="url(#arrowTeal)"/>
+    <path d="M1945 670c-85 82-220 152-360 154" stroke="#4aa3ff" stroke-width="4" stroke-dasharray="11 12" marker-end="url(#arrowBlue)"/>
+  </g>
+
+  <g id="evidence-stack" transform="translate(1716 750)" class="font" filter="url(#softShadow)">
+    <rect x="0" y="0" width="594" height="245" rx="18" fill="#091820" stroke="#4aa3ff" stroke-opacity="0.42"/>
+    <text x="28" y="45" class="sectionTitle">Evidence stack</text>
+    <text x="28" y="78" class="sectionBody">A promise is accepted only with current receipts.</text>
+    <g transform="translate(28 105)">
+      <use href="#i-file" x="0" y="-4" width="34" height="34"/><text x="48" y="20" class="sectionBody">test logs + command output</text>
+      <use href="#i-video" x="0" y="37" width="34" height="34"/><text x="48" y="61" class="sectionBody">screenshots + video proof</text>
+      <use href="#i-git" x="0" y="78" width="34" height="34"/><text x="48" y="102" class="sectionBody">PR links + re-query</text>
+    </g>
+    <g transform="translate(324 105)">
+      <use href="#i-checklist" x="0" y="-4" width="34" height="34"/><text x="48" y="20" class="sectionBody">AC checklist receipts</text>
+      <use href="#i-map" x="0" y="37" width="34" height="34"/><text x="48" y="61" class="sectionBody">impact + flow reports</text>
+      <use href="#i-loop" x="0" y="78" width="34" height="34"/><text x="48" y="102" class="mono sectionBody">journal.jsonl</text>
+    </g>
+  </g>
+
+  <g id="safety-rails" transform="translate(90 1070)" class="font" filter="url(#softShadow)">
+    <text x="0" y="-34" class="sectionTitle">Safety rails enforced before closure</text>
+    <g>
+      <rect x="0" y="0" width="690" height="150" rx="18" fill="#211b11" stroke="#f6bd5a" stroke-opacity="0.58"/>
+      <use href="#i-shield" x="26" y="34" width="68" height="68"/>
+      <text x="118" y="54" class="railTitle">No false done</text>
+      <text x="118" y="91" class="railBody">completion requires evidence in the same turn</text>
+      <text x="118" y="122" class="railBody">watcher gate rejects unverifiable promises</text>
+    </g>
+    <g transform="translate(735 0)">
+      <rect x="0" y="0" width="690" height="150" rx="18" fill="#211b11" stroke="#f6bd5a" stroke-opacity="0.58"/>
+      <use href="#i-search" x="26" y="34" width="68" height="68"/>
+      <text x="118" y="54" class="railTitle">Secret scan + human gate</text>
+      <text x="118" y="91" class="railBody">destructive or irreversible ops stop for review</text>
+      <text x="118" y="122" class="railBody">unsafe diffs are blocked before push</text>
+    </g>
+    <g transform="translate(1470 0)">
+      <rect x="0" y="0" width="690" height="150" rx="18" fill="#211b11" stroke="#f6bd5a" stroke-opacity="0.58"/>
+      <use href="#i-watch" x="26" y="34" width="68" height="68"/>
+      <text x="118" y="54" class="railTitle">Bounded loop</text>
+      <text x="118" y="91" class="railBody">max iterations, STOP file, and watcher gate</text>
+      <text x="118" y="122" class="railBody">stall detector changes strategy before spinning</text>
+    </g>
+  </g>
+
+  <g id="operator-callouts" transform="translate(90 725)" class="font">
+    <rect x="0" y="0" width="365" height="245" rx="18" fill="#071820" stroke="#19d8c3" stroke-opacity="0.35"/>
+    <text x="28" y="45" class="sectionTitle">Native operators</text>
+    <text x="28" y="86" class="sectionBody">mapper surveys the repo</text>
+    <text x="28" y="122" class="sectionBody">dev-cli applies decided edits</text>
+    <text x="28" y="158" class="sectionBody">runtime bind accelerates gates</text>
+    <text x="28" y="205" class="mono stageCode">fallback: standard tools + evidence</text>
+  </g>
+
+  <g class="font">
+    <text x="2124" y="1268" text-anchor="end" class="micro">Standalone install: no mandatory runtime dependency for the skill bundle</text>
+    <text x="2124" y="1300" text-anchor="end" class="micro">Public command: /simplicio-loop  |  Legacy alias: /simplicio-tasks</text>
+  </g>
+</svg>
