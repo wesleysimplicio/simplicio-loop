@@ -141,6 +141,8 @@ def run_worker(task: Task, workdir: str, dry_run: bool = False) -> WorkerResult:
 
 def main() -> int:
     argv = sys.argv[1:]
+    if argv[:1] == ["selftest"]:
+        return selftest()
     opts: Dict[str, str] = {}
     i = 0
     while i < len(argv):

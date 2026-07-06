@@ -70,9 +70,10 @@ def parse_diff(diff_text: str) -> Dict[str, Any]:
         if line.startswith("+") and not line.startswith("+++"):
             stripped = line.lstrip("+").strip()
 
-            # SQL column references
+            # SQL column references — SELECT (group 1) only reads existing columns, so it must
+            # not count as "added"; only INSERT/UPDATE (groups 2, 3) write a column value.
             for m in SQL_COLUMN_RE.finditer(stripped):
-                for g in m.groups():
+                for g in m.groups()[1:]:
                     if g:
                         cols = [c.strip().split()[-1] for c in g.split(",") if c.strip()]
                         added_cols.update(c for c in cols if c and c != "*")
@@ -139,6 +140,8 @@ def live_verify(db_url: str, added_columns: List[str], table: Optional[str] = No
 
 def main() -> int:
     argv = sys.argv[1:]
+    if argv[:1] == ["selftest"]:
+        return selftest()
     opts: Dict[str, str] = {}
     i = 0
     while i < len(argv):
@@ -235,7 +238,7 @@ def selftest() -> int:
     print(f"selftest: PASS (no unmatched: {result})")
 
     failing_diff = """\
-+    SELECT id, name, new_column FROM users
++    INSERT INTO users (new_column) VALUES ('x')
 """
     result = parse_diff(failing_diff)
     assert "new_column" in result["unmatched"], f"Expected new_column unmatched, got {result}"

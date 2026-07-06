@@ -44,10 +44,10 @@ def _arm(root, iteration=1, max_iter=5):
     return loop
 
 
-def _tick(root, response_text):
+def _tick(root, response_text, env=None):
     """Run loop_stop.py exactly as the host would: cwd=root, stdin = {text:...}."""
     return subprocess.run([sys.executable, HOOK], input=json.dumps({"text": response_text}),
-                          capture_output=True, text=True, cwd=root)
+                          capture_output=True, text=True, cwd=root, env=env)
 
 
 def _scratchpad(root):
@@ -358,14 +358,19 @@ def test_watcher_receipt_matching_challenge_stops(tmp_path):
 
 def test_bound_operator_missing_blocks_when_simplicio_loop_shipped(tmp_path):
     # #83: when the repo ships the simplicio-loop companion skill, a missing bound operator
-    # (simplicio-mapper / simplicio-dev-cli — never installed in this sandboxed test env) must
-    # BLOCK the loop (handoff + stop), not silently continue with LLM hand-survey/hand-edit.
+    # (simplicio-mapper / simplicio-dev-cli) must BLOCK the loop (handoff + stop), not silently
+    # continue with LLM hand-survey/hand-edit. PATH is scrubbed to an empty dir so the assertion
+    # holds even on a machine that has the operators installed globally (they bind via PATH
+    # lookup — `shutil.which`), not just in a sandbox that happens to lack them.
     root = str(tmp_path)
     _arm(root, iteration=1, max_iter=5)
     skill_dir = os.path.join(root, ".claude", "skills", "simplicio-loop")
     os.makedirs(skill_dir, exist_ok=True)
     open(os.path.join(skill_dir, "SKILL.md"), "w").close()
-    r = _tick(root, "still working, no promise yet")
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    env = dict(os.environ, PATH=str(empty_path))
+    r = _tick(root, "still working, no promise yet", env=env)
     assert r.stdout.strip() == "", "missing bound operator must BLOCK (stop), not re-feed:\n%s" % r.stdout
     assert not os.path.exists(_scratchpad(root)), "operator-missing block should clean up loop state"
     handoff = os.path.join(root, HANDOFF)

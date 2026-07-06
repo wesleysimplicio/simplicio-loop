@@ -211,6 +211,96 @@ def _md_headings(text):
     return out
 
 
+ARCHITECTURE_DOC_CANDIDATES = [
+    "ARCHITECTURE.md", "DESIGN.md", os.path.join("docs", "ARCHITECTURE.md"),
+    os.path.join("docs", "DESIGN.md"), os.path.join(".specs", "architecture", "DESIGN.md"),
+    os.path.join(".specs", "architecture", "PATTERNS.md"), os.path.join(".specs", "README.md"),
+    "CONTRIBUTING.md", "AGENTS.md",
+]
+ARCHITECTURE_DOC_GLOBS = [
+    os.path.join(".specs", "architecture", "ADR-*.md"),
+    os.path.join("docs", "adr", "*.md"),
+    os.path.join("docs", "architecture", "*.md"),
+]
+# Makefile/package.json/pyproject.toml targets that name the project's OWN test/lint/typecheck
+# command — so generated code is checked with the tool the maintainers actually use, not a guess.
+TEST_RUNNER_CANDIDATES = [
+    (os.path.join("scripts", "check.py"), "python3 scripts/check.py"),
+    (os.path.join("scripts", "run_tests.sh"), "bash scripts/run_tests.sh"),
+    ("Makefile", None),  # parsed for a `test:` target below
+    ("package.json", None),  # parsed for scripts.test below
+    ("pyproject.toml", "pytest"),
+]
+LINT_CANDIDATES = [
+    ("Makefile", None),  # parsed for a `lint:` target below
+    ("package.json", None),  # parsed for scripts.lint below
+    (".eslintrc.json", "eslint ."), (".eslintrc.js", "eslint ."), (".eslintrc", "eslint ."),
+    ("ruff.toml", "ruff check ."), (".ruff.toml", "ruff check ."),
+    ("setup.cfg", "flake8"),
+]
+
+
+def _makefile_target(repo_root, target):
+    mk = os.path.join(repo_root, "Makefile")
+    if not os.path.exists(mk):
+        return None
+    try:
+        with open(mk, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    if re.search(r"^%s:" % re.escape(target), text, re.M):
+        return "make %s" % target
+    return None
+
+
+def _package_json_script(repo_root, script):
+    pj = os.path.join(repo_root, "package.json")
+    if not os.path.exists(pj):
+        return None
+    try:
+        with open(pj, encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(data, dict) and script in (data.get("scripts") or {}):
+        return "npm run %s" % script
+    return None
+
+
+def discover_architecture(repo_root=REPO):
+    """Find the repo's OWN architecture docs + test/lint command — mined, not guessed.
+
+    Pure I/O-only (no git needed), so it degrades honestly to empty lists/None on a repo with
+    none of these — never fabricates a doc or command that isn't actually there.
+    """
+    import glob as _glob
+
+    docs = []
+    for rel in ARCHITECTURE_DOC_CANDIDATES:
+        if os.path.isfile(os.path.join(repo_root, rel)):
+            docs.append(rel.replace(os.sep, "/"))
+    for pattern in ARCHITECTURE_DOC_GLOBS:
+        for hit in sorted(_glob.glob(os.path.join(repo_root, pattern))):
+            docs.append(os.path.relpath(hit, repo_root).replace(os.sep, "/"))
+
+    test_runner = _makefile_target(repo_root, "test") or _package_json_script(repo_root, "test")
+    if not test_runner:
+        for rel, cmd in TEST_RUNNER_CANDIDATES:
+            if cmd and os.path.isfile(os.path.join(repo_root, rel)):
+                test_runner = cmd
+                break
+
+    lint_cmd = _makefile_target(repo_root, "lint") or _package_json_script(repo_root, "lint")
+    if not lint_cmd:
+        for rel, cmd in LINT_CANDIDATES:
+            if cmd and os.path.isfile(os.path.join(repo_root, rel)):
+                lint_cmd = cmd
+                break
+
+    return {"docs": docs, "test_runner": test_runner, "lint_cmd": lint_cmd}
+
+
 def infer_pr(prs):
     """Merged-PR records -> title convention + label vocab + body section structure. Pure."""
     titles = [(p.get("title") or "") for p in prs]
@@ -231,7 +321,8 @@ def infer_pr(prs):
     }
 
 
-def build_profile(branch_names, subjects, prs, config_hint=False, pr_template_sections=None):
+def build_profile(branch_names, subjects, prs, config_hint=False, pr_template_sections=None,
+                  architecture=None):
     """Aggregate the three signals into one profile + decide source/confidence. Pure."""
     b = infer_branch(branch_names)
     c = infer_commit(subjects)
@@ -280,12 +371,13 @@ def build_profile(branch_names, subjects, prs, config_hint=False, pr_template_se
         "pr": p,
         "item_type_to_branch": item_map,
         "samples": {"branches": b["samples"], "commits": c["samples"], "prs": p["samples"]},
+        "architecture": architecture or {"docs": [], "test_runner": None, "lint_cmd": None},
         "inputs_sha256": hashlib.sha256(blob).hexdigest(),
     }
 
 
 def default_profile():
-    return build_profile([], [], [])
+    return build_profile([], [], [], architecture=discover_architecture())
 
 
 # ---- formatters (deterministic apply — Steps 4-6 call these, never an LLM) ------------------
@@ -389,8 +481,9 @@ def cmd_learn(opts):
             if tmpl_sections:
                 break
 
+    architecture = discover_architecture()
     profile = build_profile(branches, subjects, prs, config_hint=config_hint,
-                            pr_template_sections=tmpl_sections)
+                            pr_template_sections=tmpl_sections, architecture=architecture)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(profile, f, indent=2, ensure_ascii=False)
@@ -406,6 +499,9 @@ def cmd_learn(opts):
         "{type}", b["prefix_sep"], c["convention"], scopes, ticket,
         len(p["body_sections"]), profile["samples"]["branches"],
         profile["samples"]["commits"], profile["samples"]["prs"]))
+    log("architecture: docs=%d test=%s lint=%s" % (
+        len(architecture["docs"]), architecture["test_runner"] or "-",
+        architecture["lint_cmd"] or "-"))
 
 
 def cmd_show(opts):
@@ -419,6 +515,9 @@ def cmd_show(opts):
         "{type}", b["prefix_sep"], ",".join(b["types"]) or "-", b["ticket_pattern"] or "-"))
     log("commit: %s  scopes=%s  subject_max=%d" % (
         c["convention"], ",".join(list(c["scopes"])[:6]) or "-", c["subject_max"]))
+    arch = profile.get("architecture") or {"docs": [], "test_runner": None, "lint_cmd": None}
+    log("architecture: docs=%s test=%s lint=%s" % (
+        ",".join(arch["docs"]) or "-", arch["test_runner"] or "-", arch["lint_cmd"] or "-"))
 
 
 def cmd_branch(opts):
@@ -490,6 +589,25 @@ def cmd_selftest(_opts):
     chk("null_title.safe",
         build_profile([], [], [{"title": None, "body": None, "labels": None}])["source"],
         "default")
+
+    # architecture discovery: an empty dir has no signal (honest empty, never fabricated)
+    import tempfile
+    with tempfile.TemporaryDirectory() as empty_dir:
+        arch = discover_architecture(empty_dir)
+        chk("architecture.empty_docs", arch["docs"], [])
+        chk("architecture.empty_test_runner", arch["test_runner"], None)
+        chk("architecture.empty_lint_cmd", arch["lint_cmd"], None)
+
+    # architecture discovery: a repo carrying its own docs + Makefile targets is found, not guessed
+    with tempfile.TemporaryDirectory() as fixture_dir:
+        with open(os.path.join(fixture_dir, "ARCHITECTURE.md"), "w") as f:
+            f.write("# Architecture\n")
+        with open(os.path.join(fixture_dir, "Makefile"), "w") as f:
+            f.write("test:\n\tpytest\nlint:\n\truff check .\n")
+        arch = discover_architecture(fixture_dir)
+        chk("architecture.found_doc", arch["docs"], ["ARCHITECTURE.md"])
+        chk("architecture.found_test_runner", arch["test_runner"], "make test")
+        chk("architecture.found_lint_cmd", arch["lint_cmd"], "make lint")
 
     ok = all(checks)
     print("repo_conventions selftest: %s (%d/%d)" % (

@@ -5,7 +5,38 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.22.0] — 2026-07-06
+
 ### Added
+- Full unit/integration/contract/flow/system test coverage for the four scripts that shipped
+  without any (`fan_out.py`, `schema_verify.py`, `claims_manifest.py`, `verify_adapters.py`):
+  `test_fan_out_unit.py` + `test_fan_out_flow.py`, `test_schema_verify_unit.py` +
+  `test_schema_verify_integration.py`, `test_claims_manifest_unit.py`,
+  `test_verify_adapters_integration.py`. Added `test_worker_cli_contract.py` (contract tests —
+  every worker with a `selftest` verb honors the same CLI shape: exit 0 + PASS/OK marker, no
+  uncaught traceback on an unknown verb) and `test_system_check.py` (system tests — the whole
+  local gate, `scripts/check.py`, run as a black box; nested-recursion-safe since the suite
+  includes itself).
+- `repo_conventions.py` gained `discover_architecture()`: mines the repo's OWN architecture/design
+  docs (ARCHITECTURE.md, DESIGN.md, `.specs/architecture/*.md` + `ADR-*.md`, `docs/adr/*.md`) plus
+  its OWN test-runner and lint command (Makefile `test:`/`lint:` targets, `package.json`
+  `scripts.test`/`scripts.lint`, `scripts/check.py`, pytest/eslint/ruff/flake8 config) into the
+  `.orchestrator/conventions.json` profile (`architecture: {docs, test_runner, lint_cmd}`),
+  degrading to an honest empty result rather than guessing. `simplicio-tasks` Step 1a' now mines
+  it and Step 4 requires reading every listed doc and running the discovered test/lint command
+  before any edit, so generated code follows the project's own architecture and quality gates
+  instead of a generic default. New unit tests: `test_repo_conventions_architecture.py`.
+
+### Fixed
+- `schema_verify.py selftest`'s failing-diff case asserted against a `SELECT` statement, which the
+  parser correctly never treats as an added column (SELECT only reads) — the assertion never
+  matched current behavior. Rewrote it to use an `INSERT` (an actual write) so the selftest proves
+  what it claims to prove.
+- `claims_manifest.py` was missing two quantitative claims actually present in `README.md`
+  (`'11%'` — a false-positive badge-URL match, and `'90%'` — the infographic's "up to 90% fewer
+  tokens" claim), which failed check 8 of `scripts/check.py`'s audit. Both are now registered
+  (documented false positive / marked unverified respectively).
+
 - The loop now actually consumes TOON per-turn (#92, follow-up to #88/PR #91): the
   `simplicio-tasks` prose (`SKILL.md`, `references/quality-safety-delivery.md`) documents
   `task_anchor.py check --format toon` and `loop_journal.py stall --format toon`, and

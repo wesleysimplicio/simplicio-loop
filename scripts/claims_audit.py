@@ -100,6 +100,8 @@ SELFTEST_SCRIPTS = [
     "scripts/autoresearch.py",
     "scripts/e2e_demo.py",
     "scripts/claims_manifest.py",
+    "scripts/fan_out.py",
+    "scripts/schema_verify.py",
     "hooks/action_gate.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a

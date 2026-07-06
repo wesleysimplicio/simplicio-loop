@@ -126,6 +126,30 @@ CLAIMS = [
             "Kept in manifest for completeness; labelled unverified."
         ),
     },
+    {
+        "id": "runtimes-badge-11pct",
+        "doc": "README.md",
+        "text_glob": "11%",
+        "status": "unverified",
+        "receipt": None,
+        "note": (
+            "False-positive match: the shields.io badge URL "
+            "'runtimes-11%20(3%20garantidos...)' has '11' followed by the URL-encoded space "
+            "'%20', not a percentage — the '11' is the runtime count. Kept in manifest so the "
+            "extractor's known false positive is documented rather than silently ignored."
+        ),
+    },
+    {
+        "id": "infographic-90pct-fewer-tokens",
+        "doc": "README.md",
+        "text_glob": "90%",
+        "status": "unverified",
+        "receipt": None,
+        "note": (
+            "Claim: infographic alt text 'up to 90% fewer tokens'. No receipt snapshot exists. "
+            "Marked unverified."
+        ),
+    },
 ]
 
 # Docs to scan for quantitative claims
