@@ -26,6 +26,11 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   it and Step 4 requires reading every listed doc and running the discovered test/lint command
   before any edit, so generated code follows the project's own architecture and quality gates
   instead of a generic default. New unit tests: `test_repo_conventions_architecture.py`.
+- The README now has a standalone install path up front (`pip install simplicio-loop` +
+  `simplicio-loop install`), making it explicit that the core skill bundle needs only `python3`;
+  native runtime binds, operators, capture services, and the wider Simplicio stack remain optional
+  accelerators. The stale at-a-glance infographic was removed from the README and the hero art was
+  refreshed to match the new positioning.
 
 ### Fixed
 - `schema_verify.py selftest`'s failing-diff case asserted against a `SELECT` statement, which the
@@ -36,6 +41,11 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   (`'11%'` — a false-positive badge-URL match, and `'90%'` — the infographic's "up to 90% fewer
   tokens" claim), which failed check 8 of `scripts/check.py`'s audit. Both are now registered
   (documented false positive / marked unverified respectively).
+- `pr_evidence.py --describe-cli` now advertises the full flag surface used by the skills/docs
+  (`--item`, `--title`, `--summary`, `--pr`, `--anchor`, `--template`, `--how`), so the local
+  prose-command audit validates the documented worker invocations instead of flagging false drift.
+- The shipped `_bundle/` mirror is back in parity with source for the bundled pre-push helper and
+  the loop e2e parity test, restoring a green local claims-audit gate before release.
 
 - The loop now actually consumes TOON per-turn (#92, follow-up to #88/PR #91): the
   `simplicio-tasks` prose (`SKILL.md`, `references/quality-safety-delivery.md`) documents

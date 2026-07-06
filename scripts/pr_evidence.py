@@ -300,7 +300,20 @@ def main():
         import json
         print(json.dumps({
             "verbs": ["build", "comment", "selftest"],
-            "flags": ["--out", "--require-evidence", "--shots-dir", "--video-dir", "--help"],
+            "flags": [
+                "--anchor",
+                "--help",
+                "--how",
+                "--item",
+                "--out",
+                "--pr",
+                "--require-evidence",
+                "--shots-dir",
+                "--summary",
+                "--template",
+                "--title",
+                "--video-dir",
+            ],
         }))
         sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])
