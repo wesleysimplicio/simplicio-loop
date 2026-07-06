@@ -435,6 +435,21 @@ Quatro mecanismos sustentam o poder de orquestração:
 
 ## 🚀 Instalação & uso
 
+**Caminho rápido: instalar só a skill.** Se você só quer usar o `simplicio-loop`, isso já basta —
+**não existe nenhuma dependência obrigatória do runtime nativo**:
+
+```bash
+pip install simplicio-loop
+simplicio-loop install            # projeto atual
+simplicio-loop install --global   # usuário inteiro
+```
+
+Isso instala apenas skills + hooks. Binds nativos, operadores e o restante da stack Simplicio são
+**aceleradores opcionais**, não pré-requisitos.
+
+**Caminho full-stack: instalador do repositório.** Use quando você também quiser a stack local mais
+ampla (operadores, capture proxy, dashboards, serviços e wiring do runtime):
+
 ```bash
 git clone https://github.com/wesleysimplicio/simplicio-loop
 cd simplicio-loop
@@ -459,8 +474,9 @@ Depois:
 /simplicio-tasks finish all the open issues
 ```
 
-O único requisito é **python3** no PATH (skills, hooks e instalador são Python multiplataforma).
-Para fontes GitHub, `git` + um `gh` autenticado. Veja [`INSTALL.md`](../INSTALL.md) e
+Para a instalação standalone da skill, o único requisito é **python3** no PATH. Para o instalador
+do repo e fontes GitHub, você também vai querer `git` + um `gh` autenticado. Veja
+[`INSTALL.md`](../INSTALL.md) e
 [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
 **Antes de uma run 24/7 não supervisionada:** defina um teto de custo em `.orchestrator/loop-budget.json`

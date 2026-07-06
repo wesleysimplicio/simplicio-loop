@@ -75,14 +75,14 @@ and keeps watching **24/7** for new work — all behind safety gates and a hard 
 Three things make it different: it is a **super-plugin of focused skills**, it runs the **same
 protocol on 11 runtimes**, and it does all of this with **aggressive, honest token economy**.
 
+The skill installs **standalone** too: you do **not** need `simplicio-runtime` or any mandatory
+runtime-native component just to use `simplicio-loop`. Native binds, operators, capture services,
+and the wider Simplicio runtime stack are optional accelerators on top of the core skill bundle.
+
 Within the Simplicio product line, this repo is also the **current reference task flow** for
 company work. `simplicio-runtime` is the unified entrypoint going forward, but it is expected to
 reuse this loop's evidence-gated converge/drain discipline, durable attempt journal, and worker
 coordination patterns instead of creating a separate task semantics.
-
-<p align="center">
-  <img src="assets/simplicio-loop-infographic.png" alt="simplicio-loop — the whole system at a glance: 6 core skills, 5 satellites, 5 accelerators, 48 extension points, 11 runtimes, up to 90% fewer tokens" width="920" />
-</p>
 
 ---
 
@@ -485,6 +485,21 @@ Four mechanisms sustain the orchestration power:
 
 ## 🚀 Install & use
 
+**Fast path: standalone skill install.** If you only want the `simplicio-loop` skill bundle, this
+is enough — **no native runtime dependency is required**:
+
+```bash
+pip install simplicio-loop
+simplicio-loop install            # current project
+simplicio-loop install --global   # user-wide
+```
+
+That installs the skills + hooks only. If your runtime can bind native helpers, they are an
+**optional speed-up**, not a prerequisite.
+
+**Full-stack path: repo installer.** Use this when you also want the broader Simplicio local stack
+(operators, capture proxy, dashboards, services, runtime wiring):
+
 ```bash
 git clone https://github.com/wesleysimplicio/simplicio-loop
 cd simplicio-loop
@@ -495,7 +510,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]                    # Windows
 # <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
 ```
 
-**Install is complete by default — it installs everything.** One command sets up the whole stack:
+**The repo installer is full-stack by default — it installs everything.** One command sets up the whole stack:
 the two loop operators (`simplicio-mapper` + `simplicio-cli`, auto-handling PEP 668 / externally-managed
 Python and symlinking the binaries onto `PATH`), the **full Python stack** (the package itself),
 the **7 skills + hooks** with the loop's Stop hook wired, and the **always-on capture proxy**
@@ -542,8 +557,8 @@ Then:
 /simplicio-tasks finish all the open issues
 ```
 
-The only requirement is **python3** on PATH (skills, hooks, and installer are cross-platform
-Python). For GitHub sources, `git` + an authenticated `gh`. See [`INSTALL.md`](INSTALL.md) and
+For the standalone skill install, the only requirement is **python3** on PATH. For the repo
+installer and GitHub-backed sources, you also want `git` + an authenticated `gh`. See [`INSTALL.md`](INSTALL.md) and
 [`adapters/MATRIX.md`](adapters/MATRIX.md).
 
 **Before an unattended 24/7 run:** set a cost ceiling in `.orchestrator/loop-budget.json`
