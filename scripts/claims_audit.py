@@ -6,7 +6,7 @@ the code. Deterministic, stdlib-only, no network. Exits 0 when every check passe
 so it can gate a commit/push (`scripts/check.py`, or a git pre-push hook). NOT a GitHub Action;
 runs locally, free.
 
-Seven checks:
+Nine checks:
   1. referenced-scripts-exist  Every `scripts/<name>.py` mentioned in the docs actually exists.
   2. extension-point-count      Every "<N> extension points / named (binding) points" figure agrees
                                 with EACH OTHER *and* with the actual row count of the extension-points
@@ -30,6 +30,13 @@ Seven checks:
                                 args) — proves the install contract isn't dead assurance. Run the
                                 full sweep manually / in a slower CI job; it is too slow (~45s per
                                 runtime) for this fast local gate.
+  8. quantitative-claims        Every quantitative number in README/SKILLs has a corresponding entry
+                                in `scripts/claims_manifest.py` with a receipt or "unverified" label.
+                                Unknown/missing numbers => check red.
+  9. prose-commands-valid       Every doc-cited worker invocation (flags + verbs) is validated against
+                                the worker's real CLI via `--describe-cli`. Workers that emit
+                                `--describe-cli` JSON are checked for flag existence; divergences are
+                                reported with file:line.
 
 Usage:
     python3 scripts/claims_audit.py [--json] [--only 1,2,3,4]
@@ -51,6 +58,7 @@ REPO = os.path.dirname(HERE)
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 from mirror_manifest import LEAN_SCRIPTS, LEAN_TESTS  # noqa: E402 — single source of truth (#74)
+from claims_manifest import CLAIMS, extract_claims, QUANT_RE  # noqa: E402 — quantitative claims (#96)
 
 DOC_GLOBS = ["README.md", "AGENTS.md", "CLAUDE.md", "INSTALL.md", "PYPI.md"]
 DOC_DIRS = [os.path.join(".claude", "skills")]
@@ -91,6 +99,7 @@ SELFTEST_SCRIPTS = [
     "scripts/toon_codec.py",
     "scripts/autoresearch.py",
     "scripts/e2e_demo.py",
+    "scripts/claims_manifest.py",
     "hooks/action_gate.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a
@@ -326,6 +335,125 @@ def check_adapter_contract():
     return ok, ("adapter install-contract verified (claude)" if ok else "; ".join(detail[-8:]))
 
 
+def check_quantitative_claims():
+    """#96: every quantitative number in README/SKILLs must cite a receipt or be 'unverified'.
+
+    Checks:
+      a) All claims in CLAIMS manifest have valid status.
+      b) Unknown quantitative numbers in scanned docs are flagged.
+    """
+    failures = []
+    # a) Manifest integrity
+    for c in CLAIMS:
+        if c["status"] not in ("verified", "unverified"):
+            failures.append("claim %s: invalid status '%s'" % (c["id"], c["status"]))
+        if c["receipt"] is not None:
+            rpath = os.path.join(REPO, c["receipt"])
+            if not os.path.exists(rpath):
+                failures.append("claim %s: receipt missing: %s" % (c["id"], c["receipt"]))
+    # Manifest must not be empty
+    if not CLAIMS:
+        failures.append("claims_manifest.CLAIMS is empty — no claims registered")
+    # b) Unknown claims found in docs
+    unknown = extract_claims()
+    for doc_rel, match_text in unknown:
+        failures.append(
+            "quantitative claim '%s' in %s is not in claims_manifest.py — "
+            "add it or mark as 'unverified'" % (match_text, doc_rel)
+        )
+    ok = not failures
+    return ok, ("all quantitative claims registered in manifest (%d total)" % len(CLAIMS)
+                if ok else "; ".join(failures))
+
+
+def check_prose_commands():
+    """#97: validate doc-cited worker invocations against the real CLI via --describe-cli.
+
+    Extracts code blocks and inline commands from SKILL.md and references/*.md,
+    parses the invoked flags/verbs, and checks each against the worker's real
+    `--describe-cli` output (JSON of accepted verbs + flags).
+
+    Workers that do NOT support --describe-cli are silently skipped.
+    """
+    failures = []
+    # Documents to scan
+    prose_docs = [os.path.join(REPO, "README.md"), os.path.join(REPO, "AGENTS.md")]
+    skills_dir = os.path.join(REPO, ".claude", "skills")
+    if os.path.isdir(skills_dir):
+        for sname in os.listdir(skills_dir):
+            sdir = os.path.join(skills_dir, sname)
+            smd = os.path.join(sdir, "SKILL.md")
+            if os.path.isfile(smd):
+                prose_docs.append(smd)
+            refs_dir = os.path.join(sdir, "references")
+            if os.path.isdir(refs_dir):
+                for rname in os.listdir(refs_dir):
+                    if rname.endswith(".md"):
+                        prose_docs.append(os.path.join(refs_dir, rname))
+
+    # Regex: python3 scripts/some_worker.py <verb> [--flags ...]
+    INVOCATION_RE = re.compile(
+        r"(?:python3\s+)?(scripts/([a-zA-Z0-9_]+)\.py)\s+([a-z_]+)"
+        r"(?:\s+((?:-{1,2}[a-zA-Z0-9_-]+(?:\s+\S+)?\s*)*))?",
+        re.I,
+    )
+
+    for doc_path in prose_docs:
+        if not os.path.exists(doc_path):
+            continue
+        doc_rel = os.path.relpath(doc_path, REPO)
+        with open(doc_path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        for m in INVOCATION_RE.finditer(text):
+            script_rel = m.group(1)  # e.g. "scripts/task_anchor.py"
+            script_name = m.group(2)  # e.g. "task_anchor"
+            verb = m.group(3)
+            flags_str = m.group(4) or ""
+            script_path = os.path.join(REPO, script_rel)
+
+            if not os.path.exists(script_path):
+                continue  # caught by check 1
+
+            # Try --describe-cli
+            r = subprocess.run(
+                [sys.executable, script_path, "--describe-cli"],
+                capture_output=True, text=True, timeout=15, cwd=REPO,
+            )
+            if r.returncode != 0:
+                continue  # worker doesn't support --describe-cli; skip
+
+            try:
+                cli_spec = json.loads(r.stdout)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+            accepted_verbs = cli_spec.get("verbs", [])
+            accepted_flags = cli_spec.get("flags", [])
+
+            # Check verb
+            if verb not in accepted_verbs:
+                failures.append(
+                    "%s:%d: verb '%s' not in --describe-cli for %s (accepted: %s)" %
+                    (doc_rel, text[:m.start()].count("\n") + 1,
+                     verb, script_rel, accepted_verbs)
+                )
+
+            # Check flags (crude: extract flag names only, not values)
+            for token in flags_str.split():
+                if token.startswith("--") or token.startswith("-"):
+                    flag_name = token.split("=")[0]
+                    if flag_name not in accepted_flags and flag_name not in ("--help",):
+                        failures.append(
+                            "%s:%d: flag '%s' not in --describe-cli for %s (accepted: %s)" %
+                            (doc_rel, text[:m.start()].count("\n") + 1,
+                             flag_name, script_rel, accepted_flags)
+                        )
+
+    ok = not failures
+    return ok, ("all doc-cited commands validated against --describe-cli"
+                if ok else "; ".join(failures))
+
+
 CHECKS = [
     ("1 referenced-scripts-exist", check_scripts_exist),
     ("2 extension-point-count", check_extension_count),
@@ -334,6 +462,8 @@ CHECKS = [
     ("5 plugin-parity", check_plugin_sync),
     ("6 skill-count", check_skill_count),
     ("7 adapter-install-contract", check_adapter_contract),
+    ("8 quantitative-claims", check_quantitative_claims),
+    ("9 prose-commands-valid", check_prose_commands),
 ]
 
 

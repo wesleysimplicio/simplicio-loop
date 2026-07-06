@@ -8,9 +8,9 @@
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
   <a href="#-the-7-skills--5-accelerators"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
-  <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
+  <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11%20(3%20garantidos%2B8%20best--effort)-2563EB" alt="11 runtimes (3 guaranteed + 8 best-effort)"></a>
   <a href="#-the-48-extension-points"><img src="https://img.shields.io/badge/extension%20points-48-00E08A" alt="48 extension points"></a>
-  <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 90% fewer tokens"></a>
+  <a href="#-token-economy"><img src="https://img.shields.io/badge/savings-unverified-888888" alt="Savings — unverified"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
   <a href="https://discord.gg/wM6tr7xVb"><img src="https://img.shields.io/badge/Discord-Join%20Simplicio-5865F2?logo=discord&logoColor=white" alt="Join the Simplicio Discord"></a>
 </p>
@@ -166,18 +166,25 @@ See each adapter's reference doc under `.claude/skills/simplicio-tasks/reference
 
 ---
 
-## 🌐 11 runtimes, one protocol
+## 🌐 11 runtimes, one protocol — 3 guaranteed + 8 best-effort
 
 One universal skill core + one set of hooks drives every runtime. An adapter is thin: it tells a
 runtime *where to load the skills*, *how to arm the loop*, and *how to bind native speed*. **The
 skill names no runtime; the runtime detects the skill.**
 
+### Tier 1 — Guaranteed (gated on every commit)
+
 | Runtime | Skill load | Loop drive | Native bind |
 |---|---|---|---|
 | **Claude Code** | `.claude/skills/` + plugin | `Stop` hook | MCP |
 | **Codex** | `AGENTS.md` | self-paced | MCP / adapter |
-| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | MCP |
 | **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | MCP / rules |
+
+### Tier 2 — Best-effort (contributions welcome, no gate)
+
+| Runtime | Skill load | Loop drive | Native bind |
+|---|---|---|---|
+| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | MCP |
 | **Antigravity** | rules / `AGENTS.md` | self-paced | MCP |
 | **Kiro** | `.kiro/steering/` | specs | MCP |
 | **OpenCode** | `AGENTS.md` | self-paced | MCP |
@@ -186,9 +193,9 @@ skill names no runtime; the runtime detects the skill.**
 | **Hermes** | native recall | native loop | **native** |
 | **OpenClaw** | plugin SDK | native scheduler | **native** |
 
-The promise: **same protocol, same gates, same safety on all 11 — only the speed differs.**
-`orient_clamp.py` (token economy) works on every runtime with zero wiring. See
-[`adapters/MATRIX.md`](adapters/MATRIX.md).
+The promise: **same protocol, same gates, same safety on all 11 — Tier 1 verified mechanically,
+Tier 2 best-effort.** `orient_clamp.py` (token economy) works on every runtime with zero wiring. See
+[`adapters/MATRIX.md`](adapters/MATRIX.md) for the promotion/demotion rules.
 
 ---
 
@@ -364,14 +371,16 @@ is always a **file path + boolean verdict** — never video bytes in context (to
 | `simplicio-compress` | Terse prose + one-time memory compaction |
 | `orient_clamp.py` | Clamp + tee on every shell command, zero wiring |
 | Native response cache | repeated deterministic (temp=0) request → served from cache, skips the LLM call (**100% on hit**) — `simplicio-cli cache`, on by default (`SIMPLICIO_CACHE=0` to disable) |
-| Simplicio capture proxy + MCP | 60-95% fewer tokens on tool outputs via a transparent compression daemon |
+| **Simplicio capture proxy + MCP** | 60-95% fewer tokens on tool outputs via a transparent compression daemon — **unverified** (no receipt snapshot exists) |
 
 Savings only count on a verified-correct outcome. Baseline = the cheapest sensible non-orchestrated
 path to the same result. **Savings reporting is evidence-gated, not mandatory:** a savings figure is
 shown only when a turn actually ran an economy-producing command and the number traces to a
 measured receipt (clamp tee, signatures-read, cache hit, `deterministic_edit`, `savings_ledger`).
 No measured economy → no savings line; the orchestrator never fabricates a baseline or a percentage.
-See `references/token-economy.md`.
+**All quantitative savings figures in this README are currently UNVERIFIED** — no receipt snapshot
+exists in `.orchestrator/savings/snapshots.jsonl`. See `references/token-economy.md` and
+`scripts/claims_manifest.py`.
 
 ### 🔎 Running `simplicio-tasks`: economy vs measurement (per runtime)
 

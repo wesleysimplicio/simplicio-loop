@@ -109,6 +109,13 @@ def verify(runtime):
 
 def main():
     runtimes = sys.argv[1:] or list(install_lib.RUNTIMES)
+    # Support "tier1" shortcut (#99): runtime Tier 1 = claude, codex, cursor
+    tier1 = {"claude", "codex", "cursor"}
+    if "tier1" in runtimes:
+        runtimes.remove("tier1")
+        for r in tier1:
+            if r not in runtimes:
+                runtimes.append(r)
     unknown = [r for r in runtimes if r not in install_lib.RUNTIMES]
     if unknown:
         print("unknown runtime(s): %s" % " ".join(unknown))

@@ -438,6 +438,16 @@ def main():
     if not argv:
         print(__doc__)
         sys.exit(2)
+    # --describe-cli: emit JSON spec of accepted verbs + flags
+    if argv[0] == "--describe-cli":
+        import json
+        print(json.dumps({
+            "verbs": ["set", "mark", "status", "checklist", "check", "gate", "selftest"],
+            "flags": ["--item", "--goal", "--ac", "--ac-file", "--force", "--id", "--status",
+                      "--evidence", "--format", "--exit-code", "--require-evidence",
+                      "--out", "--help"],
+        }))
+        sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])
     {"set": cmd_set, "mark": cmd_mark, "status": cmd_status, "checklist": cmd_checklist,
      "check": cmd_check, "gate": cmd_gate, "selftest": cmd_selftest}.get(

@@ -1,0 +1,23 @@
+# Example: Runtime tiers (#99)
+
+This directory demonstrates the two-tier runtime matrix.
+
+## Usage
+
+```bash
+# Verify tier-1 runtimes (Claude Code, Codex, Cursor)
+python3 scripts/verify_adapters.py claude codex cursor
+
+# Verify all 11 runtimes (slow — ~45s/runtime)
+python3 scripts/verify_adapters.py
+
+# The claims-audit check 7 runs `verify_adapters.py claude` on every gate
+python3 scripts/check.py
+```
+
+## Structure
+
+- Tier 1 (guaranteed, gated): Claude Code, Codex, Cursor
+- Tier 2 (best-effort, ungate): VS Code, Antigravity, Kiro, OpenCode, Gemini, Aider, Hermes, OpenClaw
+
+See `adapters/MATRIX.md` for the full rules, including promotion/demotion criteria.

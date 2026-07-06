@@ -306,6 +306,15 @@ def main():
     if not argv:
         print(__doc__)
         sys.exit(2)
+    # --describe-cli: emit JSON spec of accepted verbs + flags
+    if argv[0] == "--describe-cli":
+        import json
+        print(json.dumps({
+            "verbs": ["snapshot", "score", "selftest"],
+            "flags": ["--item", "--label", "--baseline", "--treatment", "--sample",
+                      "--store", "--json", "--help"],
+        }))
+        sys.exit(0)
     sub, rest = argv[0], argv[1:]
     opts = _parse(rest)
     if sub == "snapshot":

@@ -295,6 +295,14 @@ def main():
     if not argv:
         print(__doc__)
         sys.exit(2)
+    # --describe-cli: emit JSON spec of accepted verbs + flags
+    if argv[0] == "--describe-cli":
+        import json
+        print(json.dumps({
+            "verbs": ["build", "comment", "selftest"],
+            "flags": ["--out", "--require-evidence", "--shots-dir", "--video-dir", "--help"],
+        }))
+        sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])
     {"build": cmd_build, "comment": cmd_comment, "selftest": cmd_selftest}.get(
         sub, lambda _o: (print("unknown command '%s'. choices: build comment selftest" % sub),

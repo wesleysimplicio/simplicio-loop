@@ -38,6 +38,12 @@ Verbs:
   |             Notation, github.com/toon-format/toon) for the per-turn prompt re-feed (#92,
   |             mirrors `task_anchor.py check --format toon`). `--json` remains a working alias
   |             for `--format json`.
+    suggest     Consult simplicio-learn lessons for strategy recommendations.
+  |             Reads `.orchestrator/lessons.jsonl` and `.orchestrator/patterns.jsonl`,
+  |             filters by repo/task-type tags, and emits discouraged strategies (with
+  |             lesson citations) and untried strategies. Deterministic and model-free.
+  |             Fail-open: if lesson files don't exist, emits empty suggestions.
+  |             Output: MEASURED| for concrete lesson data, UNVERIFIED| for recommendations.
     resume      The anti-oscillation read: distinct actions already tried + their outcomes + the
   |             current stall count + the live error fingerprint. Print THIS at the top of each turn
   |             so the loop never retries a known dead-end. Every line tagged MEASURED| or
@@ -72,6 +78,7 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
 
 try:  # Windows consoles default to cp1252 and choke on non-ASCII — force UTF-8.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -608,6 +615,84 @@ def cmd_claims_gate(opts):
         print("MEASURED|claims-gate: all lines properly tagged — PASS")
 
 
+def cmd_suggest(opts):
+    """Consult simplicio-learn lessons for strategy recommendations.
+
+    Reads `.orchestrator/lessons.jsonl` and `.orchestrator/patterns.jsonl`,
+    filters by repo/task-type tags, and emits discouraged strategies.
+    Fail-open: if files don't exist, emits empty suggestions.
+    """
+    import json as _json
+
+    root = opts.get("root", ".")
+    repo_tag = opts.get("repo", "")
+    task_type = opts.get("task-type", "")
+
+    lessons_file = Path(root) / ".orchestrator" / "lessons.jsonl"
+    patterns_file = Path(root) / ".orchestrator" / "patterns.jsonl"
+
+    discouraged: list[dict] = []
+    strategies_failed: set[str] = set()
+
+    # Read lessons
+    if lessons_file.exists():
+        try:
+            for line in lessons_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                lesson = _json.loads(line)
+                strategy = lesson.get("strategy", "").lower().strip()
+                if strategy:
+                    strategies_failed.add(strategy)
+                    discouraged.append({
+                        "strategy": strategy,
+                        "reason": lesson.get("note", lesson.get("root_cause", "failed in previous run")),
+                        "source": f"lessons.jsonl@{lesson.get('fingerprint', '?')[:12]}",
+                    })
+        except Exception:
+            log("UNVERIFIED|suggest: error reading lessons.jsonl — skipping")
+    else:
+        log("UNVERIFIED|suggest: no lessons.jsonl found — no prior learn data")
+
+    # Read patterns
+    if patterns_file.exists():
+        try:
+            for line in patterns_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                pattern = _json.loads(line)
+                if pattern.get("hit_count", 0) > 1:
+                    strategy = pattern.get("root_cause", "").lower().strip()
+                    if strategy and strategy not in strategies_failed:
+                        strategies_failed.add(strategy)
+                        discouraged.append({
+                            "strategy": strategy,
+                            "reason": f"recurring bug pattern (hit_count={pattern['hit_count']})",
+                            "source": f"patterns.jsonl@{pattern.get('fingerprint', '?')[:12]}",
+                        })
+        except Exception:
+            log("UNVERIFIED|suggest: error reading patterns.jsonl — skipping")
+
+    # Build output
+    if discouraged:
+        log("MEASURED|suggest: %d discouraged strategies from prior learning" % len(discouraged))
+        for d in discouraged:
+            log("MEASURED|  avoid '%s': %s [%s]" % (d["strategy"], d["reason"], d["source"]))
+    else:
+        log("UNVERIFIED|suggest: no discouraged strategies found — all options available")
+
+    # Emit JSON for programmatic consumption
+    if opts.get("format", "").lower() in ("json", "toon"):
+        payload = {
+            "verdict": "SUGGEST",
+            "discouraged": discouraged,
+            "count": len(discouraged),
+        }
+        print(_json.dumps(payload, indent=2) if opts.get("format") == "json" else _json.dumps(payload))
+
+
 def cmd_selftest(_opts):
     checks = []
 
@@ -724,13 +809,27 @@ def main():
     if not argv:
         print(__doc__)
         sys.exit(2)
+    # --describe-cli: emit JSON spec of accepted verbs + flags
+    if argv[0] == "--describe-cli":
+        import json
+        print(json.dumps({
+            "verbs": ["record", "fingerprint", "stall", "resume", "status", "since",
+                      "delegation", "claims-gate", "suggest", "selftest"],
+            "flags": ["--iteration", "--action", "--hypothesis", "--gate", "--gate-output",
+                      "--note", "--k", "--exit-code", "--execution-state", "--stage-id",
+                      "--source-artifact", "--chunk-id", "--validator", "--decision",
+                      "--retry-count", "--blocked-reason", "--next-action", "--bh-address",
+                      "--json", "--format", "--help"],
+        }))
+        sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])
     {"record": cmd_record, "fingerprint": cmd_fingerprint, "stall": cmd_stall,
      "resume": cmd_resume, "status": cmd_status, "since": cmd_since,
      "delegation": cmd_delegation, "claims-gate": cmd_claims_gate,
+     "suggest": cmd_suggest,
      "selftest": cmd_selftest}.get(
         sub, lambda _o: (print("unknown command '%s'. choices: record fingerprint stall resume "
-                               "status since delegation claims-gate selftest" % sub), sys.exit(2)))(opts)
+                               "status since delegation claims-gate suggest selftest" % sub), sys.exit(2)))(opts)
 
 
 if __name__ == "__main__":
