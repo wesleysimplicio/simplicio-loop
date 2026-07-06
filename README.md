@@ -79,6 +79,10 @@ The skill installs **standalone** too: you do **not** need `simplicio-runtime` o
 runtime-native component just to use `simplicio-loop`. Native binds, operators, capture services,
 and the wider Simplicio runtime stack are optional accelerators on top of the core skill bundle.
 
+<p align="center">
+  <img src="assets/simplicio-loop-infographic.png" alt="simplicio-loop detailed infographic: standalone install, optional native binds, 7 skills, 5 accelerators, 11 runtimes, 5 source adapters, and proof gates" width="920" />
+</p>
+
 Within the Simplicio product line, this repo is also the **current reference task flow** for
 company work. `simplicio-runtime` is the unified entrypoint going forward, but it is expected to
 reuse this loop's evidence-gated converge/drain discipline, durable attempt journal, and worker
@@ -95,7 +99,7 @@ If you are an agent/runtime entering this repo cold, read `llms.txt` first for t
 ## 📘 Official capability record
 
 The complete, official roster of what `simplicio-tasks` ships — every capability below is **real,
-runnable, and tested** (`python3 scripts/check.py`: claims-audit 5/5 + local test suite). Each links to its
+runnable, and tested** (`python3 scripts/check.py`: claims-audit 9/9 + 245 passed). Each links to its
 deep section and its worker.
 
 | Capability | What it does | Proof / worker | Details |

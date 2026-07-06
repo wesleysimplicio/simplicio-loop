@@ -8,7 +8,7 @@ Nenhum outro repositório Simplicio (consumido como super-plugin por runtimes ex
 - [simplicio-dev-cli](https://github.com/wesleysimplicio/simplicio-dev-cli) >=0.9.1 (pip pkg `simplicio-cli`) — hard dep (binds `execute`/`deterministic_edit`)
 
 ## Versão atual
-3.22.0 (pyproject.toml)
+3.22.1 (pyproject.toml)
 
 ## Versão mínima esperada pelos dependentes
 Nenhuma — este repo não é dependência formal de outros Simplicios.

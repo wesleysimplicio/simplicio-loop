@@ -75,12 +75,16 @@ de custo rígido.
 Três coisas o tornam diferente: ele é um **super-plugin de skills focadas**, ele roda o **mesmo
 protocolo em 11 runtimes** e faz tudo isso com **economia de tokens agressiva e honesta**.
 
+<p align="center">
+  <img src="../assets/simplicio-loop-infographic.png" alt="simplicio-loop infográfico detalhado: instalação standalone, binds nativos opcionais, 7 skills, 5 aceleradores, 11 runtimes, 5 adaptadores de fonte e gates de prova" width="920" />
+</p>
+
 ---
 
 ## 📘 Registro oficial de capacidades
 
 O roster completo e oficial do que o `simplicio-tasks` entrega — toda capacidade abaixo é **real,
-executável e testada** (`python3 scripts/check.py`: claims-audit 4/4 + 28 testes). Cada uma linka
+executável e testada** (`python3 scripts/check.py`: claims-audit 9/9 + 245 testes verdes). Cada uma linka
 para sua seção detalhada e seu worker.
 
 | Capacidade | O que faz | Prova / worker | Detalhes |

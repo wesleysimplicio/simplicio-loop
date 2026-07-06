@@ -5,6 +5,17 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.22.1] — 2026-07-06
+
+### Added
+- A new item-by-item README infographic at `assets/simplicio-loop-infographic.png`, rebuilt to
+  match the current product contract instead of the removed stale overview: standalone install with
+  `python3` only, native binds optional, the 7 shipped skills, the 5 accelerators, the 11 runtime
+  surfaces, the 5 source adapters, and the local proof gates (`claims_audit` 9/9 and
+  `scripts/check.py` 245 passed).
+- The detailed infographic is linked again from both the English and pt-BR READMEs so the visual
+  product map is back in the primary docs instead of living only as an orphaned asset.
+
 ## [3.22.0] — 2026-07-06
 
 ### Added
