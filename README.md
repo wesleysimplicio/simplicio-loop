@@ -5,6 +5,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/wesleysimplicio/simplicio-loop/actions/workflows/ci.yml"><img src="https://github.com/wesleysimplicio/simplicio-loop/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
   <a href="#-the-7-skills--5-accelerators"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>

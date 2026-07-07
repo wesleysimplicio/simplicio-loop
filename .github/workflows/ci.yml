@@ -10,6 +10,20 @@
 # clean-venv smoke import), since the wheel's content depends on `simplicio_loop/_bundle/` parity
 # (see the bundle-parity check) and a broken `[tool.setuptools.package-data]` glob would only
 # surface at install time, never at build time.
+#
+# #120 — this workflow IS the "run scripts/check.py in CI" gate the issue asked for (kept the
+# existing `ci.yml` name instead of adding a second, duplicate `check.yml` — running the same gate
+# twice per push/PR would double the OS x Python matrix minutes for no benefit; see the PR body).
+#
+# Optional toolchains (Node 22, FFmpeg, Playwright) are deliberately NOT installed here: no test in
+# `scripts/check.py`'s suite requires them to exercise its logic — `video_evidence.py`,
+# `web_verify.py`, etc. already have selftests that assert they BLOCK (never fake-pass) when their
+# toolchain is missing, and that fail-closed behavior is exactly what this CI matrix exercises. Add
+# a toolchain here only if a future test needs to prove the toolchain-PRESENT path.
+#
+# Cost controls: pip is cached per (OS, Python) cell via actions/setup-python's built-in cache, and
+# the concurrency group below cancels a PR's superseded runs so pushing twice in a row doesn't burn
+# double the matrix.
 
 name: ci
 
@@ -20,6 +34,10 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -34,6 +52,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: "pip"
       - name: scripts/check.py (claims-audit + worker selftests/smoke)
         run: python3 scripts/check.py
 
@@ -46,6 +65,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+          cache: "pip"
       - name: Install build tooling
         run: python3 -m pip install --upgrade build twine
       - name: Build sdist + wheel
