@@ -8,8 +8,8 @@
     },
     "AGENTS.md": {
       "label": "AGENTS.md",
-      "tokens": 1655,
-      "words": 942
+      "tokens": 1694,
+      "words": 964
     },
     "CLAUDE.md": {
       "label": "CLAUDE.md",
@@ -18,8 +18,8 @@
     },
     "scripts/check.py": {
       "label": "check.py",
-      "tokens": 1174,
-      "words": 488
+      "tokens": 1703,
+      "words": 679
     },
     "scripts/claims_audit.py": {
       "label": "claims_audit.py",
@@ -48,6 +48,6 @@
     }
   },
   "estimator": "heuristic:chars-div-4",
-  "generated_at": "2026-07-07T05:10:54Z",
+  "generated_at": "2026-07-07T05:29:21Z",
   "threshold_growth": 0.25
 }

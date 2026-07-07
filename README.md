@@ -607,8 +607,15 @@ human gate + secret-scan on, and ensure a reachable STOP/cancel path is configur
 Claims are verified, not just asserted — and the gate runs **locally**, with zero CI cost:
 
 ```bash
-python3 scripts/check.py            # the whole gate (audit + tests)
+python3 scripts/check.py            # the whole gate (audit + tests + loop-contract + token-budget)
+python3 scripts/check.py --core-gate # fast/mandatory core only — skips satellite-only tests (#118)
 ```
+
+`scripts/` has grown into ~39 files; [`docs/SCRIPTS_INVENTORY.md`](docs/SCRIPTS_INVENTORY.md)
+classifies every one of them **core** (required for the loop drive or this gate) vs **satellite**
+(an opt-in/advanced capability — source adapters, `simplicio-autoresearch`, the economy/dashboard
+stack, `repo_conventions`, `schema_verify`). Lead with the core; treat the rest as advanced,
+opt-in capabilities you reach for when the task calls for them.
 
 - **Test suite** (`tests/`) — the workers' deterministic `selftest`s, plus an **e2e of the loop
   driver** (`hooks/loop_stop.py`): it proves the loop **stops on evidence**, **ignores a bare

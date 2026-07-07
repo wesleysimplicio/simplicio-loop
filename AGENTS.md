@@ -78,6 +78,7 @@ file and let secondary docs (`GEMINI.md`, `PYPI.md`, `llms.txt`, etc.) stay shor
 | Loop mechanics (protocol, exit gates) | `.claude/skills/simplicio-loop/SKILL.md` + `references/*.md` | `AGENTS.md` § Video evidence links in rather than re-describing |
 | PyPI package listing copy | `PYPI.md` (wired as `readme` in `pyproject.toml`) | — (this is itself the PyPI-rendered page, so it necessarily carries its own condensed pitch) |
 | LLM quick-orientation index | `llms.txt` | — |
+| `scripts/*.py` core vs satellite classification | `docs/SCRIPTS_INVENTORY.md` (#118) | `README.md` § Tests & local checks links in rather than re-listing |
 
 ## Video evidence (hyperframes)
 
