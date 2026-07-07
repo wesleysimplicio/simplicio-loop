@@ -24,6 +24,17 @@ LEAN_SCRIPTS = ["hierarchical_planner.py", "cross_agent_wiki.py"]
 # plugin/tests/ and simplicio_loop/_bundle/tests/.
 LEAN_TESTS = ["_selfrun.py", "test_loop_e2e.py", "test_cross_agent_wiki.py"]
 
+# Source directories `hooks/pre-commit.py` watches for auto-sync (#98): a staged change under
+# any of these triggers `scripts/sync_plugin.py` (writes `plugin/`) and `scripts/sync_bundle.py`
+# (writes `simplicio_loop/_bundle/`). This is the ONLY place the watched-path list is declared —
+# pre-commit.py imports it rather than hard-coding its own copy, so there is exactly one list to
+# keep in sync with what the two syncers actually mirror. Directory-level (not the individual
+# LEAN_* filenames) on purpose: `.claude/skills/` and `hooks/` are mirrored as full subtrees, and
+# watching the whole `scripts/`/`tests/` directories (rather than enumerating just the LEAN_*
+# filenames again here) is the conservative choice — it can only over-trigger a redundant sync,
+# never under-trigger and miss a real drift.
+WATCHED_SOURCE_DIRS = [".claude/skills", "hooks", "scripts", "tests"]
+
 
 def selftest():
     checks = [
@@ -33,6 +44,9 @@ def selftest():
         ("LEAN_HOOKS has no dupes", len(LEAN_HOOKS) == len(set(LEAN_HOOKS))),
         ("LEAN_SCRIPTS has no dupes", len(LEAN_SCRIPTS) == len(set(LEAN_SCRIPTS))),
         ("LEAN_TESTS has no dupes", len(LEAN_TESTS) == len(set(LEAN_TESTS))),
+        ("WATCHED_SOURCE_DIRS non-empty", bool(WATCHED_SOURCE_DIRS)),
+        ("WATCHED_SOURCE_DIRS has no dupes",
+         len(WATCHED_SOURCE_DIRS) == len(set(WATCHED_SOURCE_DIRS))),
     ]
     ok = all(v for _, v in checks)
     for name, v in checks:

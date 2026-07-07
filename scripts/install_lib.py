@@ -118,6 +118,55 @@ def copy_hooks(target, is_global):
         log("hooks -> %s" % dst)
 
 
+def install_git_precommit_hook(target):
+    """Wire `hooks/pre-commit.py` as the target repo's git pre-commit hook (#98).
+
+    Auto-syncs `plugin/` + `simplicio_loop/_bundle/` from source on every commit that touches a
+    watched path (`scripts/mirror_manifest.py` WATCHED_SOURCE_DIRS is the single source of truth
+    for which paths). Project-local concept only — `.git/hooks/` lives per-repo, so this is a
+    no-op for a `--global` install (target has no `.git`) or a target that isn't a git repo at
+    all. Fail-open, like every other hook in this repo: never raises, never aborts the install;
+    an existing foreign `pre-commit` hook is left untouched (logged instead of clobbered).
+    """
+    git_dir = os.path.join(target, ".git")
+    if not os.path.isdir(git_dir):
+        return  # not a git repo (or a --global target) — nothing to wire
+    src_hook = os.path.join(hooks_dir(target, False), "pre-commit.py")
+    if not os.path.exists(src_hook):
+        src_hook = os.path.join(SOURCE, "hooks", "pre-commit.py")  # fallback: this repo's copy
+    if not os.path.exists(src_hook):
+        return
+    try:
+        hooks_out = os.path.join(git_dir, "hooks")
+        os.makedirs(hooks_out, exist_ok=True)
+        dst = os.path.join(hooks_out, "pre-commit")
+        if os.path.exists(dst):
+            existing = ""
+            try:
+                with open(dst, encoding="utf-8", errors="replace") as f:
+                    existing = f.read()
+            except OSError:
+                pass
+            if "simplicio-loop" not in existing and "pre-commit.py" not in existing:
+                log("! .git/hooks/pre-commit already exists and isn't ours — leaving it alone. "
+                    "Wire manually: see hooks/README.md")
+                return
+        shebang = "#!/bin/sh\n" if os.name != "nt" else "#!/usr/bin/env sh\n"
+        body = shebang + (
+            "# simplicio-loop: auto-sync plugin/ + simplicio_loop/_bundle/ on commit (#98)\n"
+            'exec python3 "%s" "$@"\n' % os.path.abspath(src_hook).replace("\\", "/")
+        )
+        with open(dst, "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+        try:
+            os.chmod(dst, 0o755)
+        except OSError:
+            pass  # e.g. some Windows filesystems — git only needs the file to be runnable via sh
+        log("git pre-commit hook installed -> %s (auto-syncs plugin/+_bundle/, #98)" % dst)
+    except OSError as e:
+        log("! could not install git pre-commit hook (fail-open, non-fatal): %s" % e)
+
+
 def ensure_entry(target, rel, runtime=None):
     if not rel:
         return
@@ -579,6 +628,7 @@ def main():
     _link_console_script("simplicio-loop", kind="cli")
     copy_skills(target)
     copy_hooks(target, is_global)
+    install_git_precommit_hook(target)
     ensure_entry(target, cfg["entry"], runtime)
     if cfg["hooks"] == "claude":
         merge_claude_hooks(target, is_global)

@@ -172,6 +172,32 @@ def chk_hooks():
                 repair=repair)
 
 
+def chk_git_precommit_hook():
+    """Verify this repo's own git pre-commit hook auto-syncs plugin/+_bundle/ (#98).
+
+    RECOMMENDED, not REQUIRED: the hook is a convenience that saves a manual
+    `sync_plugin.py`/`sync_bundle.py` run before committing — `scripts/claims_audit.py` (run by
+    `scripts/check.py`) is the fail-closed backstop that catches drift regardless, so a missing
+    hook never blocks the loop.
+    """
+    hook_path = REPO / ".git" / "hooks" / "pre-commit"
+    txt = hook_path.read_text(errors="replace") if hook_path.is_file() else ""
+    ok = "pre-commit.py" in txt
+
+    def repair():
+        sys.path.insert(0, str(REPO / "scripts"))
+        import install_lib
+        install_lib.install_git_precommit_hook(str(REPO))
+        t = hook_path.read_text(errors="replace") if hook_path.is_file() else ""
+        return "pre-commit.py" in t
+
+    return dict(name="git pre-commit hook (auto-sync #98)", tier="RECOMMENDED",
+                status=OK if ok else WARN,
+                msg="wired -> auto-syncs plugin/+_bundle/ on commit" if ok
+                    else "not installed — `python3 scripts/install.sh claude` wires it, or --repair",
+                repair=repair)
+
+
 def chk_proxy():
     up = _port_up(PROXY_PORT)
 
@@ -230,7 +256,7 @@ def _importable(mod):
 
 
 CHECKS = [chk_python, chk_operators, chk_mapper_capabilities, chk_skills,
-          chk_hooks, chk_proxy, chk_wire, chk_tray_dep]
+          chk_hooks, chk_git_precommit_hook, chk_proxy, chk_wire, chk_tray_dep]
 
 
 def main(argv=None):
