@@ -3,7 +3,7 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
-## [Unreleased]
+## [3.23.0] — 2026-07-07
 
 ### Added
 - **Phase 0 — intake & decomposition + genesis mode** (`scripts/task_backlog.py`):
