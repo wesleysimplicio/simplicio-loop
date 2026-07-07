@@ -63,6 +63,22 @@ On Claude Code, Codex, Cursor, VS Code, Antigravity, Kiro, OpenCode, and Hermes,
 condition (verify with `simplicio doctor --json`); only Gemini, Aider, and OpenClaw fall back to
 the plain LLM/native-by-design path silently.
 
+## Canonical source per topic (#119 — avoid re-stating the same pitch in N docs)
+
+Each topic below has exactly ONE canonical doc; every other file that touches the topic should
+link to it instead of repeating the content. When editing one of these topics, edit the canonical
+file and let secondary docs (`GEMINI.md`, `PYPI.md`, `llms.txt`, etc.) stay short pointers.
+
+| Topic | Canonical doc | Secondary docs that point here instead of repeating it |
+|---|---|---|
+| Elevator pitch / what this repo is | `README.md` | `GEMINI.md`, `llms.txt` (one-line summary + link) |
+| Runtime-agnostic contract (extension points, non-negotiables) | `AGENTS.md` (this file) | `CLAUDE.md` (Claude-specific overlay only), `GEMINI.md`, `.windsurf/rules/agents.md`, `.kiro/steering/agents.md` (symlinks) |
+| Ecosystem / cross-repo dependencies | `SIMPLICIO_ECOSYSTEM.md` | — |
+| Pricing / monetization | `PRICING.md` | — |
+| Loop mechanics (protocol, exit gates) | `.claude/skills/simplicio-loop/SKILL.md` + `references/*.md` | `AGENTS.md` § Video evidence links in rather than re-describing |
+| PyPI package listing copy | `PYPI.md` (wired as `readme` in `pyproject.toml`) | — (this is itself the PyPI-rendered page, so it necessarily carries its own condensed pitch) |
+| LLM quick-orientation index | `llms.txt` | — |
+
 ## Video evidence (hyperframes)
 
 The orchestrator can **create demo videos** of a screen/feature on request
