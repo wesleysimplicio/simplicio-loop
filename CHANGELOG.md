@@ -5,6 +5,31 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+### Added
+- **Phase 0 — intake & decomposition + genesis mode** (`scripts/task_backlog.py`):
+  a new deterministic worker that freezes, orders and gates a vague goal's
+  LLM-brainstormed multi-item decomposition ABOVE the per-item task anchor
+  (state: `.orchestrator/backlog/backlog.jsonl`, override
+  `$SIMPLICIO_BACKLOG_FILE`). Fail-closed `init` (refuses an empty plan, a
+  zero-AC item, unknown/cyclic `depends_on`; a changed master goal needs
+  `--force`; re-`init` with the same goal preserves per-item progress);
+  a standalone `genesis` detector (exit 10 on a no-code repo) with enforcement
+  — on a genesis repo `init` demands `--genesis` plus exactly one
+  `scaffold`-tagged item, reorders it to T1 and makes every other item depend
+  on it; `next` claims one item at a time (honoring `depends_on`) and prints
+  the ready `task_anchor.py set` arming command; `done` refuses (exit 12)
+  unless the armed anchor IS that item with every AC verified; `skip`
+  quarantines with a mandatory reason; an exact `empty` from `next` is the
+  drain-mode dry signal. Fingerprints reuse `task_anchor.goal_fingerprint`, so
+  the `done`↔anchor coupling is byte-exact. Covered by
+  `tests/test_task_backlog.py` (8 e2e cases) + a pure `selftest`; registered
+  in `claims_audit.py` `SELFTEST_SCRIPTS`, `tests/test_worker_selftests.py`,
+  `tests/test_worker_cli_contract.py`, and `docs/SCRIPTS_INVENTORY.md`.
+  Docs: SKILL.md § Phase 0 — intake & decomposition, `orchestration.md`
+  (vague-goal source row + Step 2b branch), `extension-points.md`
+  (`plan`/`decide`, `intake`, `work_queue`, `dependency_graph` cells + the
+  `backlog.jsonl` state-file owner row — the 48-point count is unchanged).
+
 ## [3.22.6] — 2026-07-07
 
 ### Added

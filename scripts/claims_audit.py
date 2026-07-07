@@ -87,6 +87,7 @@ SELFTEST_SCRIPTS = [
     "scripts/savings_harness.py",
     "scripts/repo_conventions.py",
     "scripts/task_anchor.py",
+    "scripts/task_backlog.py",
     "scripts/pr_evidence.py",
     "scripts/flow_audit.py",
     "scripts/impact_audit.py",

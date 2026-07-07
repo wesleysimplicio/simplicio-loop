@@ -19,6 +19,7 @@ WORKERS_WITH_SELFTEST = [
     "loop_journal.py",
     "billing_aggregator.py",
     "task_anchor.py",
+    "task_backlog.py",
     "pr_evidence.py",
     "flow_audit.py",
     "impact_audit.py",
