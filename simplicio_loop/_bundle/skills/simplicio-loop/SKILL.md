@@ -52,101 +52,43 @@ The rest of this file is the mechanism that enforces this contract.
 
 This loop does NOT survey the repo with the LLM, and it does NOT hand-edit files with the LLM.
 Two installed CLIs are the operators; the model only DECIDES, the operators DO. Both ship as
-hard dependencies of the `simplicio-loop` package (`pip install simplicio-loop` pulls them):
+hard dependencies of the `simplicio-loop` package (`pip install simplicio-loop` pulls them).
+Full mechanics (two-tier survey, evidence gate, context-pack, structured queries, docs-drift
+gates, the operator dispatch table): **`references/bound-operators.md`**.
 
 | Operator | CLI (binary) | Binds | Role in the loop |
 |---|---|---|---|
-| **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). Two-tier (v0.9+): `macro` is an instant shallow skeleton (no content reads), `scan` returns that skeleton now and runs the deep index in the background, `status` reports the deep-pass phase. v0.13+ adds `inspect` (machine-readable evidence that the artifacts actually exist — the survey's own evidence gate) and `handoff` (a compact context-pack — files, symbols, deps, `pack_hash` — that feeds the goal instead of re-reading the tree). v0.14+ adds the flow-docs engine: `ask` (low-token structured queries over the artifacts), `sync --check`/`drift --check` (docs-staleness + spec-drift gates), `flows`/`survey`/`business`/`history`/`diff` (flow inventory, onboarding report, business rules, architecture history). This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
+| **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
 | **simplicio-dev-cli** | `simplicio-dev-cli` | `execute` / `deterministic_edit` / `validate` / `diagnostics` | **Operate** — applies a DECIDED change through its 6-layer contract (mapper context → precedent → prompt → diff → test → verify, ≤3 retries). The CLI edits and verifies; the AI does not hand-write the diff. |
 
-**Preflight (MANDATORY, BLOCKING).** Before iteration 1, auto-update both operators to their latest
-release (so every run uses the newest `simplicio-mapper`/`simplicio-cli`), then confirm both are on
-PATH:
+**Preflight (MANDATORY, BLOCKING).** Before iteration 1, auto-update both operators to their
+latest release, then confirm both are on PATH:
 ```bash
-# Always run the loop on the latest operators. FAIL-OPEN: offline / no-pip / a pin keeps the
-# currently-installed build; this never blocks. Runs ONCE per loop preflight, not per turn.
 python3 -m pip install -qU simplicio-mapper simplicio-cli 2>/dev/null \
   || python3 -m pip install -qU --user --break-system-packages simplicio-mapper simplicio-cli 2>/dev/null || true
 simplicio-mapper --version   # survey operator (now latest)
 simplicio-dev-cli --help     # action operator (pkg simplicio-cli; exposes `simplicio-dev-cli`)
 ```
-The auto-update is best-effort and offline-safe — a network/pip failure leaves the working version
-in place and the loop proceeds. The action binary is `simplicio-dev-cli` (from `pip install simplicio-cli`) — NOT the bare
-`simplicio`, which is reserved for the separate `simplicio-runtime` and is not what this loop
-binds. `simplicio-dev-cli` has no `--version` subcommand; `--help` exiting 0 is the readiness
-proof. If either operator is missing, do NOT fall back to LLM survey/editing — STOP and emit
-`simplicio-loop: BLOCKED — missing operator <name>; run: pip install simplicio-loop` (the install
-re-pulls `simplicio-mapper` + `simplicio-cli`). This requirement is scoped to the loop drive.
+Best-effort and offline-safe — a network/pip failure leaves the working version in place. The
+action binary is `simplicio-dev-cli` (from `pip install simplicio-cli`) — NOT the bare `simplicio`
+(that's the separate `simplicio-runtime`). If either operator is missing, do NOT fall back to LLM
+survey/editing — STOP and emit `simplicio-loop: BLOCKED — missing operator <name>; run: pip
+install simplicio-loop`.
 
-**Survey step (each loop start + on any structural change).** Prefer the two-tier flow (v0.9+):
-`simplicio-mapper scan . --json` returns an instant `macro` skeleton AND kicks the deep index off in
-the background — the loop starts working immediately instead of blocking on a full crawl. Poll
-`simplicio-mapper status . --json` (`phase`: `deep_running` → terminal) before relying on the deep
-artifacts; pass `--await [--timeout <s>]` to block until terminal, or `scan --sync` (forced when
-`CI=true`) for the old single-shot behavior. `simplicio-mapper index . --json` (add `--watch` for
-long runs) remains the synchronous full (re)build of `.simplicio/`. Read the survey artifacts —
-never re-scan the tree by hand when a fresh map exists. For a multi-repo survey, run the mapper per
-repo root and aggregate the JSON.
+**Survey step (each loop start).** `simplicio-mapper scan . --json` (instant macro skeleton +
+background deep index) → gate with `inspect . --json` (artifacts exist on disk) → feed the goal
+from `handoff . --for-llm toon` (a pre-compressed context-pack: files/symbols/deps/`pack_hash`,
+substitutes for re-reading the tree). For triage questions the map alone doesn't answer,
+`simplicio-mapper ask . <impact|tests-for|callers|...> <arg> --json`. Verify-side docs gates:
+`sync . --check --json` / `drift . --check --json` (BLOCK only when the AC itself is docs).
 
-**Survey evidence gate + context-pack (v0.13+).** Before trusting the deep artifacts, gate on
-`simplicio-mapper inspect . --json [--await]` (`simplicio.map-inspection/v1`): it reports, per
-artifact (project-map, precedent-index, symbol-index, call-graph, index-state, map-job,
-context-cache), whether the file **exists on disk** with size + mtime, plus `warnings`. An artifact
-the inspection says is missing must be treated as absent — re-run `scan`/`index`, don't guess its
-content. This is the same evidence-not-claims discipline the promise gate applies, applied to the
-survey itself. Then feed the goal from `simplicio-mapper handoff . --for-llm toon [--await]`
-(`simplicio.map-handoff/v1`, TOON-rendered — same discipline as `task_anchor.py check --format
-toon` / `loop_journal.py stall --format toon`, #92): its `context_pack` carries the relevant files
-with symbols, imports, dependencies, `recent_changes` and a `pack_hash` — a pre-compressed
-orientation bundle that substitutes for re-reading the tree (token economy: pack first, raw `Read`
-only for the few files the pack points at). If `simplicio-mapper handoff --help` doesn't list
-`--for-llm` (older install; the preflight auto-update above should already prevent this), fall back
-to `handoff . --json` and record WHY, machine-readably, so the gap is visible in the journal, not
-just silently absorbed: `python3 scripts/loop_journal.py record --iteration N --action "mapper
-handoff" --gate pass --decision fallback-json --next-action "upgrade simplicio-mapper for
---for-llm toon"`. Honor `context_pack.llm_directives` (no-think / no-internet / minimal tools)
-for the mechanical steps, and use `needs_broader_context` as the signal that the pack alone is not
-enough.
-
-**Structured queries + docs gates (v0.14+).** For triage questions the map alone doesn't answer,
-query the built artifacts instead of grepping the tree:
-`simplicio-mapper ask . <callers|callees|reaches|impact|flows|rules|tests-for|term> <arg> --json`
-(`simplicio.ask/v1`) — e.g. `ask . impact src/api.py` before an edit (which flows/dependents does
-this touch — feeds the `dependency_graph` widening), `ask . tests-for <symbol>` to pick the
-affected tests to run, `ask . callers <symbol>` during review. Two mechanical verify-side gates
-join the DoD pass: `simplicio-mapper sync . --check --json` (`simplicio.docs-sync/v1`) reports
-generated docs now stale relative to the diff, and `simplicio-mapper drift . --check --json`
-(`simplicio.spec-drift/v1`) reports spec↔code drift (orphan spec refs, unresolved placeholders,
-stale docs) — surface their findings in the turn report; they BLOCK only when the task's own AC is
-documentation. For an explicit docs/onboarding task, the producers are `flows` (end-to-end flow
-inventory), `survey` (new-developer onboarding report), `business` (observable business rules +
-glossary), and `history`/`diff` (architecture snapshots + semantic deltas).
-
-If the installed mapper predates 0.13 (`inspect`/`handoff` absent from `--help`), the
-preflight auto-update already pulls a current build; offline, fall back to `status` + reading
-`.simplicio/*.json` directly — the gate is then the file-existence check you do by hand.
-
-**Operate step (every turn that mutates code).** Once the AC and the change are DECIDED, delegate
-the mutation to the operator, one decided change at a time:
+**Operate step (every turn that mutates code).** Delegate the DECIDED, AC-scoped change to the
+operator — never hand-edit inside the loop:
 ```bash
 simplicio-dev-cli task "<the decided, AC-scoped change>" --target <file> [--json]
 ```
 The operator applies the diff, runs the tests, and self-corrects up to 3× — its passing
-verification IS the in-turn evidence the promise gate needs (below). The AI never edits the file
-directly inside the loop; if `simplicio-dev-cli` cannot complete a change after its retries, treat that
-as a genuine blocker to investigate, not a reason to hand-edit around it.
-
-**Where each operator fires.** The AI only DECIDES (triage, AC extraction, choosing the change,
-merge/close gates); the operators do survey + apply:
-
-| Phase | Operator | Command |
-|---|---|---|
-| Preflight (before iteration 1) | both | `python3 -m pip install -qU simplicio-mapper simplicio-cli` (auto-update to latest, fail-open) → `simplicio-mapper --version` · `simplicio-dev-cli --help` → BLOCK if missing |
-| Survey (loop start; multi-repo: per root) | mapper | `simplicio-mapper scan . --json` (instant macro + deep index in background; `--sync`/`--await` to block) → `.simplicio/*.json`. `index . --json` for a forced synchronous build. Gate: `inspect . --json` (artifacts exist on disk) → feed goal: `handoff . --for-llm toon` (context-pack, TOON-rendered; `--json` fallback + logged reason if the installed mapper predates `--for-llm`) |
-| Loop contract step 2 — Triage (every turn) | mapper | `simplicio-mapper handoff . --for-llm toon` → work from the `context_pack` (symbols/deps/recent_changes); `ask . impact\|tests-for\|callers <arg> --json` for targeted questions; `macro . --json` for an instant skeleton, or `scan`/`status` + `inspect` to refresh/re-gate if the tree changed |
-| Verify / DoD pass | mapper | `simplicio-mapper sync . --check --json` (stale generated docs) + `drift . --check --json` (spec↔code drift) — findings go in the turn report; BLOCK only when the AC itself is documentation |
-| Loop contract step 3 — Work the goal | dev-cli | `simplicio-dev-cli task "<decided change>" --target <file> [--json]` |
-| Evidence-gated `<promise>` / `simplicio-tasks` Step 4b | dev-cli | the operator's passing test+verify pass = in-turn evidence |
+verification IS the in-turn evidence the promise gate needs (below).
 
 One turn: `preflight → survey (mapper) → triage (re-read survey) → DECIDE (AI) → operate
 (simplicio-dev-cli task: apply+test+retry ≤3×) → watcher-gate (independent re-execution) → <promise> only if all gates passed`.
@@ -208,54 +150,29 @@ detector below. It is the difference between a loop that converges and one that 
    `max_iterations` safety net for manual runs; use `0` only when a durable scheduler and STOP
    signal own cancellation.
 2. **Triage the live state FIRST (mandatory).** Before any action each turn, re-read the ground
-   truth — the **`simplicio-mapper` survey** (`.simplicio/*.json`; refresh it with
-   `simplicio-mapper macro . --json` for an instant skeleton or `scan . --json` if the tree changed),
-   `git status`/`git diff`, the working
-   tree, the scratchpad notes, AND the source of record (re-query the open issues/PRs, existing
-   branches, the `.orchestrator/loop/done` flag). **Also read the attempt memory FIRST**:
-   `python3 scripts/loop_journal.py resume` — it lists what was already tried and the dead-end
-   actions to AVOID, so the turn never re-runs a known-failing approach. For **incremental triage**
-   (don't re-scan the whole tree every turn), `loop_journal.py since` shows only the delta since the
-   last recorded turn's commit. **And re-read the task anchor** — `python3 scripts/task_anchor.py
-   check --goal "<the goal worked this turn>" --exit-code` — so the turn stays on the SAME frozen
-   acceptance criteria and cannot drift: a `DRIFT` verdict (exit 11) means the goal moved; STOP and
-   re-anchor explicitly (`--force`), never wander silently. Before deciding the next code change,
-   refresh the local impact map for the planned seed files with
-   `python3 scripts/impact_audit.py audit <root> --file <seed> --cover <known-reviewed-file> --json
-   > .orchestrator/impact-audit.json` so the turn sees callers, neighboring dependencies, and
-   related tests before it edits. For shared/public contracts or signature changes, tighten that gate
-   to `--fail-on medium`. For mixed front/back/service workspaces or any cross-surface user flow,
-   also refresh the flow map with
-   `python3 scripts/flow_audit.py audit <root> --fail-on high --json > .orchestrator/flow-audit.json`
-   so triage sees UI actions, frontend calls, backend endpoints, and service calls before deciding
-   the next move. The journal is the loop's memory for ATTEMPTS; the anchor is its memory for SCOPE;
-   the impact audit is its memory for BLAST RADIUS; the flow audit is its memory for INTEGRATION.
-   Act only on what is still genuinely open; never redo done work or act on a stale picture
-   (idempotency).
-3. **Work the goal** each turn as if fresh, against that triaged state. The model DECIDES the
-   AC-scoped change; the **`simplicio-dev-cli` operator APPLIES and verifies it**
-   (`simplicio-dev-cli task "<change>" --target <file>`) — do not hand-edit inside the loop. End EVERY
-   iteration with a short, concrete verification — the operator's passing test run, or one gate /
-   command / `file:line` receipt. **After the operator passes, run the watcher producer**:
-   `python3 scripts/watcher_verify.py verify` — it reads the per-iteration challenge the stop-hook
-   issued (`.orchestrator/loop/watcher_challenge.json`) and independently recomputes the frozen
-   anchor's done/pending state from disk (never trusting anything asserted in-context), then
-   writes `.orchestrator/loop/watcher_state.json` with `{"match": true, "status": "MEASURED",
-   "challenge": ..., "goal_fp": ...}` only when `reported == watcher.recomputed_truth` AND the
-   receipt echoes the current challenge. **Never hand-write `watcher_state.json` directly** — a
-   hand-written receipt cannot know the current challenge and will be rejected by the gate; this is
-   the mechanical fix for the plain-unauthenticated-JSON self-attestation gap. A `match: false`,
-   missing, or unchallenged watcher state is treated as `UNVERIFIED` and gates the promise. If the
-   actual edit surface expands, rerun `impact_audit.py` with
-   the new seeds/cover and treat uncovered reverse dependents as failed verification; use
-   `--fail-on medium` for shared/public contracts or signature changes. If the change crosses
-   UI/API/service boundaries, rerun
-   `flow_audit.py` after the edit and treat high gaps as failed verification; use `--fail-on medium`
-   when the AC promises backend integration for that UI flow. **Then RECORD the attempt** in the journal:
-   `loop_journal.py record --iteration N --action "<what you changed>" --hypothesis "<why>"
-   --gate pass|fail --gate-output <test.log>` — on a failure the gate output is fingerprinted so the
-   SAME failure is recognised next turn. Keep iterations small and verifiable: a turn that only
-   edits without verifying is incomplete.
+   truth — the **`simplicio-mapper` survey**, `git status`/`git diff`, the scratchpad, AND the
+   source of record (issues/PRs, branches, `.orchestrator/loop/done`). **Read the attempt memory
+   FIRST**: `python3 scripts/loop_journal.py resume` (dead-ends to AVOID; `since` for incremental
+   triage). **Re-read the task anchor**: `python3 scripts/task_anchor.py check --goal "<goal>"
+   --exit-code` (a `DRIFT` verdict, exit 11, means STOP and re-anchor with `--force`, never wander).
+   Before deciding the change, refresh the impact map (`python3 scripts/impact_audit.py audit <root>
+   --file <seed> --cover <known-file> --json`, `--fail-on medium` for shared/public contracts) and,
+   for cross-surface flows, the flow map (`python3 scripts/flow_audit.py audit <root> --fail-on
+   high --json`). Journal = memory for ATTEMPTS; anchor = SCOPE; impact audit = BLAST RADIUS; flow
+   audit = INTEGRATION. Act only on what's still genuinely open (idempotency). Full rationale +
+   extra flags: **`references/triage-verify-detail.md`**.
+3. **Work the goal** each turn against that triaged state. The model DECIDES the AC-scoped change;
+   the **`simplicio-dev-cli` operator APPLIES and verifies it** — never hand-edit inside the loop.
+   End EVERY iteration with a concrete verification. **After the operator passes, run the watcher
+   producer**: `python3 scripts/watcher_verify.py verify` — independently recomputes the frozen
+   anchor's done/pending state from disk and writes `.orchestrator/loop/watcher_state.json` with
+   `{"match": true, "status": "MEASURED"}` only when it agrees AND echoes the current challenge.
+   **Never hand-write `watcher_state.json`** — a missing/unchallenged/mismatched state is
+   `UNVERIFIED` and gates the promise. Re-run `impact_audit.py`/`flow_audit.py` if the edit surface
+   expands. **Then RECORD the attempt**: `loop_journal.py record --iteration N --action "<change>"
+   --hypothesis "<why>" --gate pass|fail --gate-output <test.log>` (failure output is fingerprinted
+   so the same failure is recognised next turn). A turn that only edits without verifying is
+   incomplete. Full detail: **`references/triage-verify-detail.md`**.
 4. **Re-feed** happens at turn end via the stop-hook (below). Each re-fed turn is prefixed
    `[simplicio-loop iteration N. To finish: output <promise>TEXT</promise> ONLY when genuinely true.]`.
    Before re-feeding, the stop-hook (or the self-paced tick) runs the **stall check**
@@ -289,125 +206,46 @@ halt the whole drain). `simplicio-tasks` Step 3 routes fast-path/heavy-path on t
 
 ## HRM-style hierarchical planner (two-level reasoning loop)
 
-Inspired by the **Hierarchical Reasoning Model** (arXiv:2506.21734, JesseBrown1980/HRM),
-the loop now operates at TWO levels instead of one:
-
-| Level | Speed | Runs | Job |
-|-------|-------|------|-----|
-| **High-level planner** (`scripts/hierarchical_planner.py`) | Slow (every N turns or on stall) | `plan` subcommand called by `loop_stop.py` before each re-feed | Re-assess abstract strategy; MAY write a new **phase** (`.orchestrator/loop/phase.json`) that changes direction |
-| **Low-level executor** (the loop itself) | Fast (every turn) | The normal Ralph re-feed within the current phase | Execute one AC-scoped change, verify, record to journal — never change the phase |
-
-**Phase states** (ordered escalation):
-
-| Phase | When | Strategy | Tactical guard |
-|-------|------|----------|----------------|
-| `explore` | First stall, or fresh complex bug | Survey codebase, read logs — DO NOT mutate | No edits — only read/grep/log analysis |
-| `debug` | After explore, or known bug | Add instrumentation, narrow failure, prove root cause | Do not fix yet — isolate first |
-| `harden` | Working code that needs safety | Add tests, edge cases, error handling | Do not add features — only safety nets |
-| `refactor` | Code quality debt | Restructure without changing behavior | Zero behavior change — tests pass before AND after |
-| `implement` | Default / fresh goal | Write new code against frozen ACs | One AC at a time, verify each |
-| `escalate` | Deep stall (>K identical failures) | STOP mutations — gather context for human handoff | Zero mutations — only HANDOFF.md |
-
-The planner is **deterministic and model-free** — same rules apply regardless of
-LLM provider. State lives in `.orchestrator/loop/phase.json`. The loop runs in
-flat mode if the planner script is missing.
-
-**Usage:**
-```bash
-# Before deciding the next action each turn, read the current phase
-python3 scripts/hierarchical_planner.py status
-# → MEASURED|phase: debug — started at iter 3, strategy: "Add instrumentation..."
-
-# Force replan manually (normally automatic)
-python3 scripts/hierarchical_planner.py plan
-
-# Reset to flat mode
-python3 scripts/hierarchical_planner.py clear
-```
+Inspired by the **Hierarchical Reasoning Model** (arXiv:2506.21734, JesseBrown1980/HRM), the loop
+runs a slow **high-level planner** (`scripts/hierarchical_planner.py plan`, called by
+`loop_stop.py` before each re-feed) that MAY write a new **phase**
+(`.orchestrator/loop/phase.json`: `explore → debug → harden → refactor → implement → escalate`)
+on top of the fast **low-level executor** (the normal per-turn re-feed, which executes one
+AC-scoped change within the current phase and never changes it itself). Deterministic and
+model-free; the loop runs flat if the planner script is missing. `hierarchical_planner.py status`
+reads the current phase before deciding the next action; `plan` forces a replan; `clear` resets to
+flat mode. Full phase table + usage: **`references/hierarchical-planner.md`**.
 
 ## Cross-agent persistent wiki (`.orchestrator/wiki/`)
 
-Evolved from the one-shot `HANDOFF.md` pattern (inspired by JesseBrown1980/ai-memory).
-Every turn's key decisions, findings, and dead-ends are captured into a persistent
-markdown wiki at `.orchestrator/wiki/` — a per-project, cross-agent, zero-friction
-knowledge base that survives across agent vendors (Hermes → Claude Code → Codex).
-
-A fresh agent arriving in the repo reads the wiki and sees "where we left off"
-without needing the prior conversation transcript.
-
-**Structure:**
-```
-.orchestrator/wiki/
-  SUMMARY.md          — regenerated each turn; full index of all entries
-  journal/            — per-turn captures (YYYY-MM-DD_HH-MM-SS.md)
-  decisions/          — accepted ACs, rejected approaches, settled facts
-  artifacts/          — links to evidence files, PRs, run IDs
-```
-
-**Commands:**
-```bash
-python3 scripts/cross_agent_wiki.py capture    # capture this turn's state
-python3 scripts/cross_agent_wiki.py summary    # regenerate SUMMARY.md
-python3 scripts/cross_agent_wiki.py handoff    # write HANDOFF.md for next agent
-python3 scripts/cross_agent_wiki.py status     # show wiki stats
-```
-
-**How it works per turn:**
-1. After each iteration, `cross_agent_wiki.py capture` saves the turn: goal, phase,
-   journal stats, recent git log, working tree diff, last action + gate + fingerprint.
-2. `cross_agent_wiki.py summary` regenerates the index, showing all entries with
-   pass/fail counts, unique fingerprints, and distinct actions tried.
-3. On handoff (cap/STOP/spindle), `cross_agent_wiki.py handoff` writes a structured
-   markdown with frozen goal, AC status, last 3 distinct actions (anti-oscillation),
-   and explicit resume instructions for the next agent.
-
-The wiki is plain markdown — `grep`-able by any agent, editable by any editor,
-backup-able with `rsync`. No vector DB, no `write_note` ceremony.
+Every turn's key decisions, findings, and dead-ends are captured into a persistent markdown wiki
+at `.orchestrator/wiki/` (`scripts/cross_agent_wiki.py capture|summary|handoff|status`) — a
+per-project, cross-agent, zero-friction knowledge base that survives across agent vendors (Hermes
+→ Claude Code → Codex): a fresh agent reads it and sees "where we left off" with no transcript.
+Plain markdown, no vector DB. Full structure + per-turn mechanics:
+**`references/cross-agent-wiki.md`**.
 
 ## Run-journal + stall detector (the loop's working memory)
 
-A re-feed loop with no memory of its own attempts has two failure modes the classic Ralph loop
-cannot see: it **re-derives the same triage every turn** (wasted tokens) and it **oscillates** —
-tries X, fails, tries X again — until the cap burns. The journal + stall detector close both. Both
-are deterministic and model-free (`scripts/loop_journal.py`), so a resume is reproducible from disk.
+A re-feed loop with no memory of its own attempts **re-derives the same triage every turn** and
+**oscillates** (tries X, fails, tries X again until the cap burns). `scripts/loop_journal.py`
+closes both, deterministically: the **run-journal** (`.orchestrator/loop/journal.jsonl`,
+append-only, one record per turn with a normalized failure **fingerprint**) is the loop's memory
+of WHAT WAS TRIED; the **stall detector** (`loop_journal.py stall`) returns `PROGRESS | STALLED` —
+STALLED means the last **K** (default 3) attempts share the same fingerprint, and names the
+dead-end actions to avoid. Full mechanics: **`references/run-journal-stall-detector.md`**.
 
-**1. The run-journal — `.orchestrator/loop/journal.jsonl` (append-only attempt memory).** One
-record per turn: `{iteration, action, hypothesis, gate: pass|fail|blocked, fingerprint, ts}` with
-optional lineage fields such as `execution_state`, `stage_id`, `source_artifact`, `chunk_id`,
-`validator`, `decision`, `retry_count`, `blocked_reason`, and `next_action`. On a failing gate the
-gate output is reduced to a **stable fingerprint** — line numbers, file paths, hex/uuids,
-timestamps and durations are normalized away, so the SAME bug hashes the SAME across turns even
-when the incidental text differs. This is the loop's memory of WHAT WAS TRIED; the scratchpad only
-holds the goal.
-
-**2. The stall detector — `loop_journal.py stall`.** Reads the journal and returns
-`PROGRESS | STALLED`. STALLED = the last **K** consecutive attempts all failed with the **same
-fingerprint** (default K=3). A different fingerprint each turn = the loop is moving (PROGRESS); the
-same one K times = it is spinning. On STALLED it names the **dead-end actions** (already tried under
-this fingerprint) and recommends `switch-strategy` (K) or `escalate` (>K) — and `--exit-code` exits
-10 for hook/`if:` gating.
-
-**How the loop uses it each turn:**
 ```bash
-# triage (step 2) — START here so you never retry a known dead-end
-python3 scripts/loop_journal.py resume
-#   → distinct actions tried + their outcomes + "AVOID (dead-ends): …" + live fingerprint
-# … decide + operate + verify (step 3) …
+python3 scripts/loop_journal.py resume            # triage: distinct actions tried + AVOID list
 python3 scripts/loop_journal.py record --iteration N --action "<change>" \
-    --hypothesis "<why>" --gate pass|fail --gate-output <test.log> \
-    --execution-state planned --stage-id validate --validator pytest --decision retry
-# re-feed gate (step 4) — before re-feeding the same goal
-python3 scripts/loop_journal.py stall --k 3 --exit-code
-#   PROGRESS → re-feed normally
-#   STALLED  → do NOT re-feed the same goal into the same failure:
-#              switch strategy (change the approach, not just retry), or
-#              escalate to the human_gate with the fingerprint + dead-ends, or
-#              (headless, no approver) stop with a blocked status — never burn the cap spinning
+    --hypothesis "<why>" --gate pass|fail --gate-output <test.log>
+python3 scripts/loop_journal.py stall --k 3 --exit-code   # before re-feeding: PROGRESS or STALLED
 ```
 
-This upgrades invariant 3 (Deterministic continuation): the next iteration re-feeds the goal **and
-the attempt memory** — and a STALLED loop changes course instead of repeating itself. It also makes
-resume real: a fresh process reads the journal and continues without re-deriving prior turns.
+STALLED means do NOT re-feed the same goal into the same failure — switch strategy, escalate to
+the human_gate with the fingerprint + dead-ends, or (headless) stop blocked. This upgrades
+invariant 3 (Deterministic continuation): the next iteration re-feeds the goal **and** the attempt
+memory.
 
 ## The promise is evidence-gated (the simplicio hardening) + watcher-gate (pre-promise)
 
@@ -415,33 +253,24 @@ The classic Ralph loop trusts the model to be honest. We do not. A `<promise>` i
 only if, in the SAME turn, there is concrete evidence the work is truly done, AND the
 **watcher-gate** has independently verified the result:
 
-- the **watcher-gate** itself (Asolaria N-Nest Corrective Gate) — `python3
-  scripts/watcher_verify.py verify` independently re-executes the anchor's recompute and writes
-  `.orchestrator/loop/watcher_state.json` with `{"match": true, "status": "MEASURED", "challenge":
-  ..., "goal_fp": ...}` only when `reported == watcher.recomputed_truth`; the receipt must ALSO
-  echo the current per-iteration challenge the stop-hook issued (`watcher_challenge.json`) — a
-  receipt that doesn't, or predates the challenge, is rejected even if `match: true` (closes the
-  plain-unauthenticated-JSON self-attestation gap — never hand-write this file), or
-- the run-verification gate passed ("works, not just compiles" — `simplicio-tasks` Step 4b) —
-  the `simplicio-dev-cli` operator's passing test+verify pass (its contract step 5/6) satisfies this, or
+- the **watcher-gate** — `python3 scripts/watcher_verify.py verify` independently recomputes the
+  anchor's done/pending state and writes `.orchestrator/loop/watcher_state.json` with `{"match":
+  true, "status": "MEASURED"}` only when it agrees AND echoes the current per-iteration challenge
+  (`watcher_challenge.json`) — never hand-write this file, or
+- the run-verification gate passed ("works, not just compiles") — the `simplicio-dev-cli`
+  operator's passing test+verify satisfies this, or
 - the flow coverage gate passed for a mixed front/back/service change —
-  `python3 scripts/flow_audit.py audit <root> --fail-on high` (or `--fail-on medium` for ACs that
-  promise backend integration) found no unhandled UI/API/service gaps — the stop-hook mechanically
-  requires a fresh, green `.orchestrator/flow-audit.json` receipt before honoring the promise
-  whenever the diff touches web-surface files, so this is enforced, not prose-only, or
-- the scope/impact gate passed for the changed shared files —
-  `python3 scripts/impact_audit.py audit <root> --file <seed> ...` found no uncovered reverse
-  dependents (and, for shared/public contracts, no uncovered local deps/tests under `--fail-on medium`), or
-- the named acceptance criteria are each checked with a `file:line` or command-output receipt —
-  mechanically enforced by the task anchor: `python3 scripts/task_anchor.py gate --exit-code` must
-  return READY (every anchored AC `done` with a receipt; exit 12 = still pending) before the promise
-  is allowed. An anchor with pending criteria makes the `<promise>` a contract violation, exactly
-  like missing evidence, or
+  `python3 scripts/flow_audit.py audit <root> --fail-on high` found no unhandled UI/API/service
+  gaps (mechanically required by the stop-hook whenever the diff touches web-surface files), or
+- the scope/impact gate passed for changed shared files — `impact_audit.py audit <root> --file
+  <seed> ...` found no uncovered reverse dependents, or
+- each named acceptance criterion has a `file:line`/command-output receipt — mechanically
+  enforced by `python3 scripts/task_anchor.py gate --exit-code` (must return READY; exit 12 =
+  still pending, a contract violation exactly like missing evidence), or
 - for a queue, the source re-query confirms the items are actually closed/merged, or
-- a **demo video** of the change running on screen — a deterministic MP4 rendered with
-  **hyperframes** via the `video_evidence` producer (below) — whose ledger row + MP4 path prove
-  the feature works end-to-end. This is the strongest "works, not just compiles" receipt for a UI
-  change, and is the REQUIRED evidence when the goal was itself "make a demo video of screen X".
+- a **demo video** — a deterministic MP4 via the `video_evidence` producer (above) whose ledger
+  row + MP4 path prove the feature works end-to-end; REQUIRED when the goal itself was "make a
+  demo video of screen X".
 
 A `<promise>` with no evidence in-turn — OR with a failing watcher-gate — is a **contract
 violation**: the capture hook ignores it (does not raise `done`) and the loop continues.
@@ -455,62 +284,14 @@ and no artifact is a false positive and is rejected, exactly like a bare promise
 
 ## Claims-gate discipline — MEASURED/UNVERIFIED tagging
 
-Every claim the loop makes — in the journal, in triage, in the exit promise, or in any
-turn output — MUST be tagged with its evidence class. This is the Asolaria claims-gate
-discipline, absorbed into simplicio-loop so no output escapes without a truth-class label.
-
-**Two tags, no exceptions:**
-
-| Tag | Meaning | When to use |
-|-----|---------|-------------|
-| `MEASURED\|` | The claim is backed by in-turn, concrete, non-model evidence | A passing gate, a `file:line` receipt, a `diff --stat`, a test log, a live API response, or any artifact the loop itself did NOT hallucinate |
-| `UNVERIFIED\|` | The claim is an inference, a plan, a hypothesis, or a best-effort summary the model makes without mechanical proof | Triage notes, hypotheses in the journal, proposed next actions, stall analysis, or any claim the loop cannot prove this turn |
-
-**Every `loop_journal.py` output is tagged.** The `record` command tags passing gates
-`MEASURED\|` and failing/blocked ones `UNVERIFIED\|`. `resume` and `status` prefix every
-summary line. The stall verdict is `MEASURED\|` when it reports concrete fingerprint matches,
-`UNVERIFIED\|` when it recommends a next action.
-
-**The eight rules** (from Asolaria's claims-gate contract) enforce this mechanically:
-
-| # | Rule | Meaning |
-|---|------|---------|
-| 1 | **ground impact before severity** | Tag the impact (what actually broke/failed) first; the severity label follows only if measurable. |
-| 2 | **no flat tuples** | Never output a bare `(MEASURED\|..., UNVERIFIED\|...)` tuple without a sentence explaining each. |
-| 3 | **mirrors != authority** | A mirror/duplicate of a source is UNVERIFIED unless the loop independently checks the source. |
-| 4 | **cylinders ≠ levels** | A numeric or categorical tag (iteration N, severity X) is not a claims-gate tag — always add `MEASURED\|` or `UNVERIFIED\|` explicitly. |
-| 5 | **owning gate, not transcript** | The loop owns its claims-gate tags — it does NOT copy tags from transcript or tool output; it RE-tags every claim with its own assessment. |
-| 6 | **missing ≠ clean-zero** | Absence of evidence is not evidence of absence — tag unresolved signals as `UNVERIFIED\|`, never skip the tag because nothing failed. |
-| 7 | **real lane** | Tag every claim in the output lane the user sees (scratchpad, journal, triage, promise), not just internal debug lines. |
-| 8 | **source ≠ live** | A source reference (e.g., a linked file on disk) is UNVERIFIED until the loop re-reads it this turn; a cached source is never `MEASURED\|`. |
-
-**How to apply each turn:**
-
-```
-# triage output — hypothesis, not proof
-UNVERIFIED| root cause is likely a race in the connection pool
-
-# journal record on a passing gate
-MEASURED| py_test --gate pass --fingerprint - (all 47 tests green)
-
-# journal record on a failing gate
-UNVERIFIED| integration/gate fail -- fingerprint a3b2c1 -- retry with longer timeout
-
-# stall verdict
-MEASURED| STALLED -- 3 identical fingerprints, dead-end actions: ["retry fetch"]
-
-# exit promise
-MEASURED| <promise>All acceptance criteria met</promise> -- verified by test run, flow audit, and task anchor gate
-
-# watcher-gate (pre-promise verification)
-MEASURED| watcher_state.json match:true -- agent PID result == watcher PID recomputed truth
-UNVERIFIED| watcher_state.json missing or match:false -- watcher disagrees, promise rejected
-```
-
-**The eight-rule checklist is appended to every loop initialization and every triage step**
-(see § The loop contract step 2): review every output claim against rules 1–8 before
-proceeding. The `loop_journal.py claims-gate --check` helper audits any output blob for
-untagged claims.
+Every claim the loop makes — in the journal, in triage, in the exit promise, or in any turn
+output — MUST be tagged `MEASURED\|` (backed by in-turn, concrete, non-model evidence: a passing
+gate, a `file:line` receipt, a test log) or `UNVERIFIED\|` (an inference, hypothesis, or
+best-effort summary with no mechanical proof this turn). This is the Asolaria claims-gate
+discipline (eight enforcement rules — ground-impact-first, no bare tuples, mirrors≠authority,
+etc.), so no output escapes without a truth-class label. `loop_journal.py record`/`resume`/
+`status`/`stall` all auto-tag their output; `loop_journal.py claims-gate --check` audits any blob
+for untagged claims. Full eight-rule table + worked examples: **`references/claims-gate.md`**.
 
 ## Binding the hook (deterministic, near-zero token)
 
@@ -520,7 +301,7 @@ Where the host runtime supports lifecycle hooks, bind the two cross-platform hoo
 | Hook | Fires | Job |
 |---|---|---|
 | `afterAgentResponse` → `loop_capture.py` | after every turn | extract `<promise>…</promise>`; if it exactly equals `completion_promise` AND in-turn evidence exists → `touch .orchestrator/loop/done`. Fire-and-forget, `exit 0`. Never stops the loop itself. |
-| `stop` → `loop_stop.py` | when the turn ends | guard clauses, each ends the loop cleanly (remove state, `exit 0`): (1) no scratchpad → stop; (2) corrupt frontmatter → stop; (2b) **bound operator missing** (when this repo ships `simplicio-loop`, `simplicio-mapper`/`simplicio-dev-cli` absent from PATH) → write `HANDOFF.md`, then stop (never silently degrade to LLM hand-survey/hand-edit); (3) `done` flag present → stop (promise fulfilled); (4) `iteration >= max_iterations > 0` → write `HANDOFF.md`, then stop (cap); (5) **spindle handoff latched** → write `HANDOFF.md` and stop (the next agent will pick up); **before promise check: runs watcher-gate** — reads `.orchestrator/loop/watcher_state.json` and rejects the promise if `match: false`, `status: UNVERIFIED`, or the receipt doesn't echo the current `watcher_challenge.json` nonce/goal_fp; also runs the **flow-audit gate** — a web-touching diff with no fresh, green `.orchestrator/flow-audit.json` rejects the promise too; the re-feed header is tagged with `MEASURED`/`UNVERIFIED` and names any flow-audit gap; a fallback `loop_journal.py record` fires if the agent didn't record one manually this turn, so the phase planner is never blind; a fresh watcher challenge is written before the re-feed; else increment `iteration` in place and emit `{"followup_message": "<header>\\n\\n<goal body>"}` to re-feed. |
+| `stop` → `loop_stop.py` | when the turn ends | guard clauses that each end the loop cleanly: no/corrupt scratchpad → stop; bound operator missing → write `HANDOFF.md`, stop (never silently hand-survey/hand-edit); `done` flag present → stop; `iteration >= max_iterations` → `HANDOFF.md` + stop (cap); spindle handoff latched → `HANDOFF.md` + stop. Before the promise check it runs the **watcher-gate** (rejects on `match: false`/stale challenge) and the **flow-audit gate** (rejects a web-touching diff with no fresh green `flow-audit.json`); a fallback journal record fires if the turn forgot one. Else increments `iteration` and re-feeds `{"followup_message": "<header>\n\n<goal body>"}`. |
 
 Detection (`capture`) and termination (`stop`) are split on purpose — neither parses the
 other's inline state. Iteration carries forward through git history + the working tree, not
@@ -546,136 +327,22 @@ Delete `.orchestrator/loop/` (the `cancel-ralph` analogue). A single STOP signal
 
 ## Agent-to-agent handoff (spindle/latch pattern)
 
-When a loop must hand work across multiple agents — each with a different runtime, iteration cap,
-or scope — the existing one-directional `HANDOFF.md` (agent A writes, walks away) is upgraded to
-a **confirmed handoff** with a latch. This is the **spindle/latch pattern**, absorbed from
-the Asolaria project (Jesse's agent-to-agent handoff protocol).
-
-### Terminology
-
-| Term | Meaning |
-|------|---------|
-| **Spindle** | A pipeline of agents: A → B → C → ... each doing one phase and passing the state forward. |
-| **Latch** | A boolean flag (`spindle.json: latch: true`) that blocks the next stage until the receiving agent confirms receipt. The latch ensures delivery — the handoff is NOT final until the next agent ACKs. |
-| **Handoff** | `handoff(next_agent, state)` — pass the accumulated state and set the latch. |
-| **Confirm** | `handoff confirm` — the receiving agent ACKs; the latch is released. |
-
-### State machine
-
-```
-IDLE ──handoff──→ LATCHED ──confirm──→ ACTIVE ──handoff──→ LATCHED ──...
-                    ↑                      │
-                    └─────── clear ────────┘
-```
-
-- **IDLE**: no active handoff. A fresh loop start.
-- **LATCHED**: a handoff was made but NOT yet confirmed by the next agent. The spindle is stalled.
-- **ACTIVE**: the handoff was confirmed; the current agent is processing.
-
-### Protocol
-
-The canonical flow for a multi-agent pipeline:
-
-```bash
-# ── Agent A does its phase, then passes to Agent B ──
-python3 scripts/handoff.py handoff --next "agent-b" \
-    --state '{"done_phases": ["phase1"], "artifacts": {"build": "./dist"}, "meta": {"issue": 42}}' \
-    --note "Phase 1 complete. Build is in ./dist. Tests pass."
-
-# Agent A can now stop cleanly. The latch holds until Agent B confirms.
-# The loop_stop.py hook will NOT re-feed the goal when a latched handoff exists.
-
-# ── Agent B arrives (new session, possibly different runtime) ──
-
-# 1. Check what's pending
-python3 scripts/handoff.py status
-# → State: LATCHED (handoff pending confirmation)
-#   Next agent: agent-b
-#   Transferred state: { ... }
-
-# 2. Confirm receipt (releases the latch)
-python3 scripts/handoff.py confirm
-# → ✓ Handoff confirmed. You are now the active agent.
-
-# Or in one step:
-python3 scripts/handoff.py receive
-# → confirm + status in one command
-
-# 3. Use the transferred state to resume
-#    (reads from spindle.json or the --state passed earlier)
-
-# 4. Process phase 2...
-
-# 5. Hand off to the next agent
-python3 scripts/handoff.py handoff --next "agent-c" \
-    --state '{"done_phases": ["phase1", "phase2"], ...}'
-```
-
-### Integration with the loop stop hook
-
-When the `loop_stop.py` hook detects an active (latched or confirmed) spindle handoff, it
-changes its behaviour:
-
-| Stop condition | With spindle handoff | Behaviour |
-|---------------|---------------------|-----------|
-| `max_iterations` cap | Latched handoff exists | **Do NOT re-feed.** The handoff target will pick up. Write HANDOFF.md + stop cleanly. |
-| Manual STOP | Latched handoff exists | **Do NOT re-feed.** Same as above. |
-| Normal re-feed | Active (confirmed) handoff | Re-feed normally — the current agent is still processing. |
-| Normal re-feed | Latched handoff | **Do NOT re-feed.** The latch means the handoff target hasn't confirmed yet — wait for them. |
-
-A spindle handoff **overrides** the normal re-feed logic: if the state file shows a latched
-handoff, the stop hook does NOT increment the iteration counter or re-feed the goal, because
-the next agent will handle it from here.
-
-### Guardrails specific to spindle handoffs
-
-- The latch is fail-open: if `spindle.json` is unreadable, treat it as if no handoff exists
-  (never trap the loop on a corrupt file).
-- The `handoff.py` script is fail-open on all I/O — a write error never blocks the stop.
-- `handoff confirm` is idempotent: confirming an already-released latch is a no-op (exit 0).
-- Handoff events are logged to `.orchestrator/loop/handoffs/events.jsonl` (append-only) for
-  auditability — each handoff, confirm, and clear is timestamped.
+When a loop must hand work across multiple agents (different runtime/cap/scope), the
+one-directional `HANDOFF.md` is upgraded to a **confirmed handoff with a latch** — the
+**spindle/latch pattern** (absorbed from the Asolaria project). `scripts/handoff.py handoff
+--next <agent> --state '{...}'` sets a latch that blocks the next stage until
+`handoff.py confirm` (or `receive` = confirm+status) releases it; `loop_stop.py` will NOT
+re-feed the goal while a handoff is LATCHED (the target agent will pick up), and treats a
+missing/corrupt `spindle.json` as fail-open (no handoff). Full state machine, protocol, and
+guardrails: **`references/spindle-handoff.md`**.
 
 ## Cross-repo dependencies
 
-The simplicio-loop can optionally call out to the **simplicio CLI** (`simplicio`) when
-it is available on PATH. This is an optional, silent integration — the loop never blocks
-or changes behaviour when the CLI is absent.
-
-### What the loop calls
-
-| CLI command | Where | When | Effect |
-|---|---|---|---|
-| `simplicio gate check <reported> <watcher>` | `scripts/handoff.py` | On handoff to the next agent | Best-effort gate verification before transferring state |
-| `simplicio claims check` | `hooks/loop_stop.py` | Every stop-hook invocation during an active loop | Verifies claim tags (`MEASURED|`/`UNVERIFIED|`) on the turn output |
-| `simplicio nest verify` | `hooks/loop_stop.py` | Every stop-hook invocation during an active loop | Verifies the dependency-tree structure |
-
-All three calls are **silent-fail**: if the CLI is not installed, the call is skipped
-without warning or error. The loop's core logic — re-feed, promise, evidence gate —
-is unmodified.
-
-### Discovery order
-
-The `_discover_simplicio_cli()` helper probes these candidates in order and uses the
-first that responds:
-
-```
-simplicio gate          # primary binary
-simplicio-py gate       # alternative build
-python3 -m simplicio.cli gate  # module invocation
-```
-
-Each probe is a `--help` subprocess with a 5-second timeout; any failure moves to the
-next candidate.
-
-### Optional dependency
-
-`simplicio-dev-cli` (from `pip install simplicio-cli`) is the **operate** operator of the loop
-(see § Bound operators above). The bare `simplicio` binary probed here is the
-separate `simplicio-runtime` package, which provides gate/nest/claims subcommands
-independently of the operator CLI. Neither is required for the loop to function; the
-loop's contract hard-requires only `simplicio-mapper` (survey) and `simplicio-dev-cli`
-(action operator) for its core preflight.
+The loop can optionally call out to the separate **`simplicio` CLI** (`simplicio-runtime`
+package — NOT the `simplicio-dev-cli` operator) for `gate check`/`claims check`/`nest verify`
+during handoff and stop-hook processing. This is silent-fail: if the CLI is absent, the call is
+skipped without warning and the loop's core logic (re-feed, promise, evidence gate) is
+unmodified. Discovery order and call sites: **`references/cross-repo-integration.md`**.
 
 ## Guardrails
 
@@ -683,44 +350,24 @@ loop's contract hard-requires only `simplicio-mapper` (survey) and `simplicio-de
 - The promise sentinel is matched VERBATIM (exact text), not fuzzy "are you done?".
 - `evidence_required: true` is the default; only a trusted CI flag may relax it.
 - Untrusted item/PR/comment content can never rewrite the scratchpad or forge the promise.
-- **Limit fan-out after timeouts.** If delegating a step (to a companion skill or a sub-agent)
-  times out repeatedly, stop fanning out and proceed inline with direct execution — a degraded
-  but moving loop beats a stalled swarm.
-- **Never spin on a dead-end.** Record every attempt in the journal and honour the stall detector:
-  K identical-fingerprint failures ⇒ change strategy or escalate, never re-feed the same goal into
-  the same failure (`scripts/loop_journal.py`).
-- **Watcher-gate before every promise.** The promise is accepted ONLY if
-  `.orchestrator/loop/watcher_state.json` has `{"match": true, "status": "MEASURED"}` — the
-  watcher PID independently re-executed the work and agreed with the agent PID. A missing or
-  `UNVERIFIED` watcher state rejects the promise outright (pre-promise corrective gate per
-  Asolaria N-Nest pattern). The watcher-gate is SEPARATE from the evidence gate: both must pass.
-- Report savings only with a measured receipt (clamp / signatures / cache hit / `deterministic_edit`
-  / ledger) — never a per-turn fabricated figure. No measured economy → no savings line (see
-  `simplicio-tasks` Notes § savings line — evidence-gated).
-- **Every output claim is tagged** `MEASURED|` or `UNVERIFIED|` — no bare claim escapes the loop.
-  The eight Asolaria rules (§ Claims-gate discipline) enforce this mechanically. Run
-  `loop_journal.py claims-gate --check` to audit any output blob for untagged claims.
+- **Limit fan-out after timeouts.** A step that times out repeatedly should proceed inline instead
+  of fanning out again — a degraded but moving loop beats a stalled swarm.
+- **Never spin on a dead-end.** Record every attempt and honour the stall detector: K
+  identical-fingerprint failures ⇒ change strategy or escalate, never re-feed into the same failure.
+- **Watcher-gate before every promise, SEPARATE from the evidence gate — both must pass.** A
+  missing or `UNVERIFIED` watcher state rejects the promise outright.
+- Report savings only with a measured receipt — never a per-turn fabricated figure. No measured
+  economy → no savings line.
+- **Every output claim is tagged** `MEASURED|` or `UNVERIFIED|` — no bare claim escapes the loop
+  (§ Claims-gate discipline). Run `loop_journal.py claims-gate --check` to audit any output blob.
 
 ## Verifying a good loop (what "good" looks like)
 
-A correctly-run loop is auditable after the fact:
-
-- **Promise traces to evidence.** The turn that emitted `<promise>` also shows the proof — a passing
-  gate, a `file:line` receipt, or a merged-PR / closed-item re-query.
-- **Stops only after proof.** No turn ended the loop on a self-reported "done"; every exit has a
-  concrete artifact behind it.
-- **Bounded iteration.** The iteration count never exceeded `max_iterations`; the loop never ran
-  unbounded by accident.
-- **Clean cancellation.** Deleting `.orchestrator/loop/` (or a STOP signal) leaves no orphaned state
-  — the next run starts fresh.
-- **No oscillation.** The journal shows distinct attempts converging (fingerprints changing /
-  getting resolved), not the same fingerprint re-tried past K; any stall ended in a strategy switch
-  or an escalation, not a silent re-feed.
-- **All claims tagged.** Every journal entry, triage output, and exit promise carries a
-  `MEASURED|` or `UNVERIFIED|` prefix. No bare claim survived the loop.
-- **Eight rules enforced.** The `loop_journal.py claims-gate --check` passes on the loop's
-  final output.
-
+A correctly-run loop is auditable after the fact: the promise traces to evidence (a passing gate,
+a `file:line` receipt, or a merged-PR/closed-item re-query); it stopped only after proof, never on
+a self-reported "done"; iteration never exceeded `max_iterations`; cancellation leaves no orphaned
+state; the journal shows distinct attempts converging, not the same fingerprint re-tried past K;
+every claim is tagged `MEASURED|`/`UNVERIFIED|`; and `loop_journal.py claims-gate --check` passes.
 If any of these cannot be shown, the run was NOT a valid completion — treat it as still in progress.
 
 ## Output

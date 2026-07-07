@@ -12,6 +12,10 @@ Runs the whole verification gate locally — deterministic, stdlib-only, cross-p
                     `simplicio.loop-execution/v1` converge/drain fixtures
                     (`contracts/loop-execution/v1/`) against the real `hooks/loop_stop.py` /
                     `scripts/loop_journal.py` producers (#115).
+  4. token-budget   `scripts/token_budget.py` (#121) — estimates tokens for SKILL.md/AGENTS.md/
+                    CLAUDE.md/the largest scripts and FAILS on a regression past the committed
+                    baseline (`scripts/token_budget_baseline.json`), so a doc/script that quietly
+                    balloons in size gets caught the same way a broken test would.
 
 Exit 0 only when everything passes — so it gates a commit/push. Wire it as a git pre-push hook to
 keep `main` honest with zero CI cost:
@@ -20,10 +24,18 @@ keep `main` honest with zero CI cost:
     chmod +x .git/hooks/pre-push
 
 Usage:
-    python3 scripts/check.py              # audit + tests + loop-contract
+    python3 scripts/check.py              # audit + tests + loop-contract + token-budget
     python3 scripts/check.py --audit-only
     python3 scripts/check.py --tests-only
     python3 scripts/check.py --loop-contract-only
+    python3 scripts/check.py --token-budget   # token-budget guard only
+    python3 scripts/check.py --core-gate      # mandatory/fast gate only (#118): audit + loop-
+                                               # contract + token-budget + CORE tests, skipping
+                                               # satellite-only tests (adapters, autoresearch,
+                                               # repo_conventions, schema_verify, fan_out, the
+                                               # token-monitor dashboard). See
+                                               # docs/SCRIPTS_INVENTORY.md for the core/satellite
+                                               # classification this filters on.
 """
 import os
 import subprocess
@@ -37,6 +49,22 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+
+# #118 — test files that exercise a SATELLITE (opt-in/advanced) script or capability, not the
+# mandatory loop drive. `--core-gate` skips these so the fast/mandatory path never waits on an
+# adapter or an economy-stack test. Full classification + rationale: docs/SCRIPTS_INVENTORY.md.
+SATELLITE_TEST_STEMS = frozenset([
+    "test_agentsview_adapter",
+    "test_autoresearch",
+    "test_az_boards_adapter",
+    "test_dashboard_hook",
+    "test_fan_out_flow",
+    "test_fan_out_unit",
+    "test_learn_pipeline_removed",
+    "test_repo_conventions_architecture",
+    "test_schema_verify_integration",
+    "test_schema_verify_unit",
+])
 
 
 def _hr(title):
@@ -54,19 +82,31 @@ def _have_pytest():
                           capture_output=True).returncode == 0
 
 
-def run_tests():
+def _core_test_files(tests_dir):
+    return sorted(
+        tf for tf in glob.glob(os.path.join(tests_dir, "test_*.py"))
+        if os.path.splitext(os.path.basename(tf))[0] not in SATELLITE_TEST_STEMS)
+
+
+def run_tests(only_core=False):
     tests_dir = os.path.join(REPO, "tests")
     if not os.path.isdir(tests_dir):
         print("no tests/ dir — skipping")
         return True
+    if only_core:
+        test_files = _core_test_files(tests_dir)
+        label = "tests/ (core-gate — satellite tests skipped)"
+    else:
+        test_files = sorted(glob.glob(os.path.join(tests_dir, "test_*.py")))
+        label = "tests/"
     if _have_pytest():
-        _hr("pytest tests/")
-        r = subprocess.run([sys.executable, "-m", "pytest", "-q", "tests/"], cwd=REPO)
+        _hr("pytest %s" % label)
+        r = subprocess.run([sys.executable, "-m", "pytest", "-q"] + test_files, cwd=REPO)
         return r.returncode == 0
     # zero-dependency fallback: each test file self-runs on bare python3
-    _hr("tests/ (stdlib self-run — pytest not installed)")
+    _hr("%s (stdlib self-run — pytest not installed)" % label)
     ok = True
-    for tf in sorted(glob.glob(os.path.join(tests_dir, "test_*.py"))):
+    for tf in test_files:
         r = subprocess.run([sys.executable, tf], cwd=REPO)
         ok = ok and r.returncode == 0
     return ok
@@ -82,21 +122,38 @@ def run_loop_contract():
     return r.returncode == 0
 
 
+def run_token_budget():
+    _hr("token-budget (#121)")
+    path = os.path.join(HERE, "token_budget.py")
+    if not os.path.exists(path):
+        print("scripts/token_budget.py not found — skipping")
+        return True
+    r = subprocess.run([sys.executable, path], cwd=REPO)
+    return r.returncode == 0
+
+
 def main():
     args = sys.argv[1:]
-    only_flags = {"--audit-only", "--tests-only", "--loop-contract-only"}
-    any_only = any(a in args for a in only_flags)
-    audit_ok = tests_ok = contract_ok = True
-    if not any_only or "--audit-only" in args:
+    core_gate = "--core-gate" in args
+    only_flags = {"--audit-only", "--tests-only", "--loop-contract-only", "--token-budget"}
+    any_only = any(a in args for a in only_flags) or core_gate
+    audit_ok = tests_ok = contract_ok = budget_ok = True
+    if not any_only or "--audit-only" in args or core_gate:
         audit_ok = run_audit()
-    if not any_only or "--tests-only" in args:
-        tests_ok = run_tests()
-    if not any_only or "--loop-contract-only" in args:
+    if not any_only or "--tests-only" in args or core_gate:
+        tests_ok = run_tests(only_core=core_gate)
+    if not any_only or "--loop-contract-only" in args or core_gate:
         contract_ok = run_loop_contract()
-    ok = audit_ok and tests_ok and contract_ok
-    print("\ncheck: %s  (audit=%s · tests=%s · loop-contract=%s)" % (
+    if not any_only or "--token-budget" in args or core_gate:
+        budget_ok = run_token_budget()
+    ok = audit_ok and tests_ok and contract_ok and budget_ok
+    if core_gate:
+        print("\ncore-gate: %s  (audit=%s · core-tests=%s · loop-contract=%s · token-budget=%s)" % (
+            "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if tests_ok else "FAIL",
+            "ok" if contract_ok else "FAIL", "ok" if budget_ok else "FAIL"))
+    print("\ncheck: %s  (audit=%s · tests=%s · loop-contract=%s · token-budget=%s)" % (
         "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if tests_ok else "FAIL",
-        "ok" if contract_ok else "FAIL"))
+        "ok" if contract_ok else "FAIL", "ok" if budget_ok else "FAIL"))
     sys.exit(0 if ok else 1)
 
 

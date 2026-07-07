@@ -20,7 +20,19 @@ video/
 ```
 
 A fonte de TODOS os dados técnicos exibidos no vídeo é o
-[`simplicio-loop.project.json`](../simplicio-loop.project.json).
+[`simplicio-loop.project.json`](../simplicio-loop.project.json) — um artefato de dados
+**curado manualmente** (não gerado por nenhum script deste repo; ver `$schema_note` no próprio
+arquivo), por isso permanece versionado como fonte.
+
+## `video/out/` é efêmero (#116)
+
+`video/out/` (MP4s renderizados) e qualquer `**/_audio_tmp/` (WAV/AIFF intermediários do mux de
+áudio) são **saída regenerável, não fonte** — estão no `.gitignore` e não devem ser commitados.
+Recrie-os localmente com `bash video/render.sh` (ou `bash video/render.sh <lang>` /
+`bash video/render.sh reel`); nada no restante do repo (`scripts/check.py`, os workers de
+evidência) lê esses arquivos do git, então removê-los do tracking não quebra validação nenhuma.
+Um `git filter-repo` para apagar esses blobs do histórico antigo é uma decisão separada, que
+requer aprovação explícita do mantenedor — não foi feita automaticamente aqui.
 
 ## As 12 cenas
 
