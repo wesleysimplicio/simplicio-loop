@@ -18,4 +18,12 @@ build/
 
 # Rust build artifacts
 rust/target/
-video/
+
+# Generated media (#116): video/ SOURCE (build_*.py, storyboard.master.json, lang/*, hyperframes
+# HTML composition sources, render.sh, README) stays tracked; only the rendered/ephemeral OUTPUT
+# is ignored — regenerate it with `bash video/render.sh` (see video/README.md).
+video/out/
+**/_audio_tmp/
+
+# Packaged deliverables zip (generated artifact, not source) — see #116.
+simplicio-loop_deliverables.zip
