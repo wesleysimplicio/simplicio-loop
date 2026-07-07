@@ -518,6 +518,42 @@ def _call_simplicio_checkpoint(iteration):
         pass
 
 
+def _call_simplicio_hbp_append(iteration, promise, watcher_tag):
+    """Record the promise-verification decision into the runtime's HBP
+    tamper-evident hash chain (`simplicio hbp append`), when the native
+    `simplicio` binary is on PATH. Fail-open, best-effort, `simplicio`-only.
+
+    This is what makes "evidence-gated exit" auditable rather than
+    self-reported: the watcher already independently recomputed the truth
+    (`watcher_verify()`) before this is ever called (only on the honored-
+    promise path) — appending it here means a later `simplicio hbp verify`
+    can prove this exact iteration/promise/watcher-tag combination was
+    recorded in order, without trusting this process's own say-so after the
+    fact. Absent binary or any failure: silent no-op, never blocks the stop.
+    """
+    binary = shutil.which("simplicio")
+    if not binary:
+        return
+    try:
+        anchor = read_anchor() or {}
+        payload = json.dumps({
+            "iteration": iteration,
+            "promise": promise,
+            "watcher_tag": watcher_tag,
+            "goal_fp": anchor.get("goal_fp", ""),
+        })
+        subprocess.run(
+            [binary, "hbp", "append",
+             "--topic", "loop-promise-verified",
+             "--payload", payload,
+             "--provenance", "simplicio-loop",
+             "--json"],
+            capture_output=True, timeout=15,
+        )
+    except Exception:
+        pass
+
+
 def read_watcher_challenge():
     """Return the current per-iteration watcher challenge dict, or None. Fail-open."""
     try:
@@ -778,6 +814,7 @@ def main():
                 # matched before the promise is accepted — corrective gate per Asolaria.
                 if (((not evidence_required) or has_evidence) and watcher_pass
                         and not anchor_pending() and not flow_gap):
+                    _call_simplicio_hbp_append(iteration, promise, watcher_tag)
                     refresh_cross_agent_wiki(include_handoff=False)
                     cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
                 # promise without evidence, or watcher disagrees, or anchor still has open ACs,

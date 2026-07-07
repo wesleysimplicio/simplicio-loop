@@ -5,6 +5,21 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.22.6] — 2026-07-07
+
+### Added
+- **`hooks/loop_stop.py`**: when the honored-promise path is taken (evidence
+  required and present, watcher-gate passed, no pending acceptance criteria,
+  no flow-audit gap), records the verified promise into the `simplicio`
+  runtime's HBP tamper-evident hash chain (`simplicio hbp append --topic
+  loop-promise-verified --payload '{"iteration":...,"promise":...,
+  "watcher_tag":...,"goal_fp":...}' --json`) before stopping. Closes the last
+  piece of "evidence-gated exit should be auditable, not self-reported": a
+  later `simplicio hbp verify` can now prove this exact
+  iteration/promise/watcher-tag combination was recorded in order. Fail-open,
+  `simplicio`-only, silent no-op when the binary is absent or the append
+  subcommand isn't available yet (older runtime versions).
+
 ## [3.22.5] — 2026-07-07
 
 ### Changed
