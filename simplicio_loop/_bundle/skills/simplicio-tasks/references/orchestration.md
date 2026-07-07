@@ -11,6 +11,7 @@ and authed, then use it. Never claim a source works without a live connector.
 | Trello / Azure DevOps | host connector, else the `az boards` adapter (`scripts/az_boards_adapter.py`, see `azure-devops-adapter.md`) |
 | agentsview sessions | `scripts/agentsview_adapter.py` (see `agentsview-adapter.md`) | session observability, recovery of stalled sessions |
 | local files / CI queue | filesystem / CI API |
+| vague goal / no reachable board | the LOCAL BACKLOG — `scripts/task_backlog.py` (the frozen LLM decomposition, `.orchestrator/backlog/`; SKILL.md § Phase 0) |
 
 If the target source has no reachable adapter, STOP and report it as a blocker (do not silently
 fall back to GitHub). Each adapter exposes: list_ready (metadata-only), get_details, claim,
@@ -30,7 +31,10 @@ Triage is metadata-only; implementation is NOT. An agent that skips this produce
 assignees, milestone, acceptance_criteria, comments, linked_prs, linked_items.
 - Extract explicit **acceptance criteria** (numbered, checklists, "done when…"). If none stated,
   derive + record them. An item that obviously should have ACs but has none is a BLOCKER — ask
-  ONE line, don't guess.
+  ONE line, don't guess. With a VAGUE goal and no source at all, decompose first (brainstorm the
+  subtasks + per-item ACs + `depends_on`) and freeze the plan with `python3
+  scripts/task_backlog.py init --goal "<goal>" --items-file plan.json` (SKILL.md § Phase 0); a
+  GENESIS repo (`task_backlog.py genesis --exit-code` exits 10) leads with the `scaffold` item.
 - Extract design decisions/constraints/rejections from comments ("don't use X", "must integrate
   with Y", reviewer requests) — these override naive title reading.
 - Note linked items/PRs and check status — a blocked dependency is flagged, not ignored.
