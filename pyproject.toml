@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simplicio-loop"
-version = "3.22.4"
+version = "3.22.5"
 description = "The Universal Looping AI Orchestrator — a runtime-agnostic super-plugin (7 skills) that drains any queue of work end-to-end on any LLM/runtime."
 readme = "PYPI.md"
 requires-python = ">=3.8"
@@ -25,8 +25,8 @@ classifiers = [
 #   simplicio-mapper -> the repo-survey step (binds `orient`)
 #   simplicio-cli    -> the operator that applies+verifies changes (binds `execute`/`deterministic_edit`)
 dependencies = [
-  "simplicio-mapper>=0.16.0",
-  "simplicio-cli>=0.9.3",
+  "simplicio-mapper>=0.17.0",
+  "simplicio-cli>=0.9.5",
 ]
 
 # Optional: the real embedding backend for `simplicio-cli semantic --ml` / `simplicio-cli rag --ml`.

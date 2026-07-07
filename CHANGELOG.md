@@ -5,6 +5,17 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.22.5] — 2026-07-07
+
+### Changed
+- Bumped the two REQUIRED loop-operator dependency floors to their latest
+  published releases: `simplicio-mapper>=0.16.0` → `>=0.17.0` (adds the
+  native-first `ask precedent` verb) and `simplicio-cli>=0.9.3` → `>=0.9.5`
+  (native `simplicio edit` delegation for mechanical-edit plans now
+  genuinely activates against the installed `simplicio` binary, plus its own
+  native-first precedent delegation). Both are additive releases — no
+  capability the loop already depends on was removed or changed shape.
+
 ## [3.22.4] — 2026-07-07
 
 ### Added
