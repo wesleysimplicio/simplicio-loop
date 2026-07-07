@@ -15,6 +15,38 @@ not a pass. It still lets every benign command through, so it never bricks norma
 | `action_gate.py` | safety: **fail-closed** — block irreversible ops + secret-laden commits/pushes BEFORE they run | `PreToolUse` (Bash) / git pre-push |
 | `orient_clamp.py` | simplicio-orient: **wrapper** — run a command, return reduced output + tee-on-failure | called directly, any runtime |
 | `orient_rewrite.py` | simplicio-orient: auto-route heavy read-only commands through the clamp (opt-in) | `PreToolUse` |
+| `pre-commit.py` | packaging: auto-sync `plugin/` + `simplicio_loop/_bundle/` from source when a watched path is staged (#98) | git pre-commit |
+
+## Mirror auto-sync (`pre-commit.py`, #98)
+
+`plugin/` (the lean marketplace plugin tree) and `simplicio_loop/_bundle/` (the pip package
+bundle) must both stay byte-identical mirrors of source (`.claude/skills/`, the lean `hooks/`/
+`scripts/`/`tests/` subsets — see `scripts/mirror_manifest.py`). Previously this was **detected**
+(`scripts/claims_audit.py` checks 4/5) but synced **by hand** — editing a skill meant remembering
+to run `scripts/sync_plugin.py` yourself, or the drift only surfaced later at `check.py` time.
+
+`hooks/pre-commit.py` closes that gap: installed as the repo's `git` pre-commit hook, it inspects
+`git diff --cached --name-only` against the watched directories declared in
+`scripts/mirror_manifest.py`'s `WATCHED_SOURCE_DIRS` (the single source of truth for that list —
+the hook imports it rather than hard-coding its own copy). A staged change under any of them runs
+BOTH syncers — `scripts/sync_plugin.py` (writes `plugin/`) and `scripts/sync_bundle.py` (writes
+`simplicio_loop/_bundle/`) — and `git add`s whatever they regenerate into the SAME commit.
+
+**Fail-open, per syncer:** either script erroring (missing `python3`, a bug, anything) only logs
+a warning — the commit proceeds either way, and a failure in one syncer does not skip the other.
+`scripts/claims_audit.py` (run by `python3 scripts/check.py`) remains the fail-closed backstop
+that catches any resulting drift on the next local check or CI run, for commits made without the
+hook installed (or where it failed open).
+
+Install: `bash scripts/install.sh <runtime>` wires it automatically for a project-local install
+(a no-op for `--global`, since git hooks are per-repo); `python3 scripts/doctor.py` reports it
+under the `RECOMMENDED` tier (missing it never fails the gate — `claims_audit.py` still catches
+drift). Manual install:
+
+```bash
+cp hooks/pre-commit.py .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
 
 ## The safety gate (`action_gate.py`)
 
