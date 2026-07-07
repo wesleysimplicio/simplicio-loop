@@ -1,0 +1,3 @@
+{
+  "text": "Fixed the IdP callback host mismatch (app/auth.py:88). e2e suite: 4 passed, 0 failed. ✅\n\n<promise>DONE: SSO login shipped</promise>"
+}

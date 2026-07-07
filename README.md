@@ -327,6 +327,21 @@ loop_journal.py record --iteration N --action "…" --gate fail --gate-output te
 loop_journal.py stall --k 3 --exit-code      # PROGRESS → re-feed · STALLED → switch/escalate
 ```
 
+### 📦 Exported contract for other runtimes — `simplicio.loop-execution/v1`
+
+`simplicio-loop` is the reference implementation of this converge/drain discipline. So that
+`simplicio-runtime` (or any other consumer) reuses this semantics instead of inventing a second,
+incompatible execution contract (#115), the discipline is published as versioned, testable fixtures
+under [`contracts/loop-execution/v1/`](contracts/loop-execution/v1/SCHEMA.md): converge success,
+stall + escalation, drain with empty rounds, the STOP path, evidence-gated completion, and the
+minimal append-only journal shape. `python3 scripts/check_loop_contract.py` (wired into
+`scripts/check.py`) validates every fixture against the REAL producers (`hooks/loop_stop.py`,
+`scripts/loop_journal.py`) by actually running them in an isolated temp directory — not a
+re-description of them — so a runtime implementing its own executor can diff its behavior against
+each fixture's `expected.json` instead of re-deriving the rules from prose. See
+[`contracts/loop-execution/v1/SCHEMA.md`](contracts/loop-execution/v1/SCHEMA.md) for the full
+contract and how to consume it.
+
 ---
 
 ## 🎬 Video evidence — Playwright by default, hyperframes on request

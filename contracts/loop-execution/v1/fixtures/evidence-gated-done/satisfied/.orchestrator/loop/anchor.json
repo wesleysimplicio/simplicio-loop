@@ -1,0 +1,15 @@
+{
+  "item": "77",
+  "goal": "Add CSV export to the reports page and verify it end-to-end.",
+  "goal_fp": "fp-csv-export-0003",
+  "frozen_at": "2026-07-03T08:00:05Z",
+  "criteria": [
+    {
+      "id": "AC1",
+      "text": "Export button downloads a CSV with the visible rows",
+      "status": "done",
+      "evidence": "tests/test_reports_export.py:31",
+      "verified_at": "2026-07-03T08:20:00Z"
+    }
+  ]
+}

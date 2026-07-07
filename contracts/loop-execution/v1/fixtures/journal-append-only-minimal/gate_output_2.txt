@@ -1,0 +1,1 @@
+FAILED test_cache_perf at app/cache.py:201  (0x9abc0001, 2026-07-06T14:22:10Z) 0.7s

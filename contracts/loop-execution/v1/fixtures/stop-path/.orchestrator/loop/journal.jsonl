@@ -1,0 +1,3 @@
+{"iteration": 1, "action": "add token-bucket struct", "hypothesis": "simple bucket suffices", "gate": "pass", "fingerprint": "", "note": "unit test green", "commit": "dddddd01", "ts": "2026-07-02T09:10:00Z"}
+{"iteration": 2, "action": "wire 429 response", "hypothesis": "middleware order matters", "gate": "fail", "fingerprint": "1a2b3c4d5e6f", "note": "middleware ran after handler", "commit": "dddddd02", "ts": "2026-07-02T09:20:00Z"}
+{"iteration": 3, "action": "reorder middleware", "hypothesis": "fix ordering bug", "gate": "pass", "fingerprint": "", "note": "AC1 verified", "commit": "dddddd03", "ts": "2026-07-02T09:30:00Z"}

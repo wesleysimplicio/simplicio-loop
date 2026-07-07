@@ -1,0 +1,21 @@
+{
+  "fixture": "converge-stall-escalation",
+  "mode": "converge",
+  "description": "Four consecutive attempts fail with the SAME fingerprint (the real underlying bug is never fixed — only the surrounding strategy changes). At k=3 this crosses the stall threshold, and because the streak (4) is >= k+1 the verdict escalates rather than just recommending a strategy switch. One action ('retry network call') was tried twice under this fingerprint — a dead end the next turn must avoid.",
+  "harness": "scripts/loop_journal.py:analyze(rows, k) — the same pure function hooks/loop_stop.py and the hierarchical planner call; no subprocess needed since it is side-effect-free.",
+  "harness_invocation": {
+    "k": 3,
+    "rows_source": "journal.jsonl (parsed exactly like loop_journal._load())"
+  },
+  "expected": {
+    "verdict": "STALLED",
+    "stall_count": 4,
+    "fingerprint": "aa11bb22cc33",
+    "recommend": "escalate",
+    "dead_ends": ["retry network call"]
+  },
+  "notes": [
+    "STALLED does not by itself stop the loop (hooks/loop_stop.py never calls analyze()) — it is the signal the hierarchical planner (scripts/hierarchical_planner.py) and the agent's own per-turn read (`loop_journal.py resume`) use to move phase to `escalate` (zero further mutations, gather context for a human handoff) instead of continuing to oscillate.",
+    "switch-strategy vs escalate is threshold-sensitive: streak==k recommends switch-strategy, streak>=k+1 recommends escalate. This fixture is deliberately at streak=4 (k+1) to exercise the escalate branch, not just the stall branch."
+  ]
+}

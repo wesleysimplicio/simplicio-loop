@@ -1,0 +1,1 @@
+FAILED test_cache_perf at app/cache.py:14  (0x55ff1234, 2026-07-05T09:00:00Z) 2.1s

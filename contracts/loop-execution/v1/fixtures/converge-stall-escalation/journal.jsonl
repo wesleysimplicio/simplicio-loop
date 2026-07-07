@@ -1,0 +1,4 @@
+{"iteration": 1, "action": "retry network call", "hypothesis": "transient network blip", "gate": "fail", "fingerprint": "aa11bb22cc33", "note": "ECONNRESET on upstream call", "commit": "eeeeeee1", "ts": "2026-07-04T11:00:00Z"}
+{"iteration": 2, "action": "add sleep before retry", "hypothesis": "server needs cooldown", "gate": "fail", "fingerprint": "aa11bb22cc33", "note": "same ECONNRESET after sleep", "commit": "eeeeeee2", "ts": "2026-07-04T11:05:00Z"}
+{"iteration": 3, "action": "retry network call", "hypothesis": "maybe it was a fluke", "gate": "fail", "fingerprint": "aa11bb22cc33", "note": "same ECONNRESET, re-tried the same fix", "commit": "eeeeeee3", "ts": "2026-07-04T11:10:00Z"}
+{"iteration": 4, "action": "increase timeout", "hypothesis": "timeout too aggressive", "gate": "fail", "fingerprint": "aa11bb22cc33", "note": "same ECONNRESET, timeout was not the cause", "commit": "eeeeeee4", "ts": "2026-07-04T11:15:00Z"}

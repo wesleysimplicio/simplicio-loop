@@ -1,0 +1,29 @@
+{
+  "mode": "drain",
+  "k": 2,
+  "seen": ["issue-101", "issue-102", "issue-103"],
+  "idempotency_keys": ["issue-101@aaaaaaa1", "issue-102@bbbbbbb1", "issue-103@ccccccc1"],
+  "dead_letter": [],
+  "rounds": [
+    {
+      "round": 1,
+      "claimed": ["issue-101"],
+      "in_flight": []
+    },
+    {
+      "round": 2,
+      "claimed": ["issue-102", "issue-103"],
+      "in_flight": ["issue-101"]
+    },
+    {
+      "round": 3,
+      "claimed": [],
+      "in_flight": []
+    },
+    {
+      "round": 4,
+      "claimed": [],
+      "in_flight": []
+    }
+  ]
+}

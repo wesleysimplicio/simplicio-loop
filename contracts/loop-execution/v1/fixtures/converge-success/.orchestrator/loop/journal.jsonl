@@ -1,0 +1,3 @@
+{"iteration": 1, "action": "add SSO button to login page", "hypothesis": "IdP config is the missing piece", "gate": "fail", "fingerprint": "9f1c2b3a4d5e", "note": "redirect 404s", "commit": "aaaaaaa1", "ts": "2026-07-01T10:05:00Z"}
+{"iteration": 2, "action": "fix IdP callback URL", "hypothesis": "callback URL mismatch", "gate": "fail", "fingerprint": "7c8d9e0f1a2b", "note": "callback registered wrong host", "commit": "bbbbbbb2", "ts": "2026-07-01T10:15:00Z"}
+{"iteration": 3, "action": "correct callback host + add e2e test", "hypothesis": "host mismatch was root cause", "gate": "pass", "fingerprint": "", "note": "e2e green, watcher verified", "commit": "ccccccc3", "ts": "2026-07-01T10:29:00Z"}

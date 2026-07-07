@@ -1,0 +1,29 @@
+{
+  "fixture": "stop-path",
+  "mode": "converge",
+  "description": "An explicit .orchestrator/STOP signal beats everything, mid-loop, with one acceptance criterion still pending. The loop must halt cleanly and hand off, never re-feed.",
+  "harness": "hooks/loop_stop.py",
+  "harness_invocation": {
+    "cwd": "this fixture's .orchestrator/ tree copied into an isolated temp dir",
+    "stdin": "stdin.json"
+  },
+  "expected": {
+    "returncode": 0,
+    "stdout": "",
+    "files_after": {
+      ".orchestrator/loop/scratchpad.md": "absent",
+      ".orchestrator/loop/HANDOFF.md": "present",
+      ".orchestrator/loop/done.flag": "absent"
+    },
+    "handoff_contains": [
+      "Stop reason: manual STOP signal",
+      "[x] 429 returned once the bucket is empty (done)",
+      "[ ] Bucket refills at the configured rate (pending)"
+    ]
+  },
+  "notes": [
+    "STOP is checked before the promise/evidence/anchor gates, so it wins even mid-task with open acceptance criteria.",
+    "write_handoff() runs BEFORE cleanup_and_stop(), so HANDOFF.md captures the frozen goal, the AC checklist (including the still-pending AC2), and the last journal attempts before the scratchpad is deleted.",
+    "STOP always triggers a handoff when scratchpad meta existed — a STOPped loop is an INCOMPLETE stop by definition."
+  ]
+}

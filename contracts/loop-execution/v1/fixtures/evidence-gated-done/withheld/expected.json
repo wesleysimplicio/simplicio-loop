@@ -1,0 +1,25 @@
+{
+  "fixture": "evidence-gated-done/withheld",
+  "mode": "converge",
+  "description": "The promise text matches EXACTLY and the watcher/anchor would both pass, but the turn's own text carries NO evidence marker (no PR link, no pass/green/ok, no file:line, no checkmark). evidence_required defaults true, so the promise MUST be ignored and the loop re-feeds instead of stopping. Only the evidence variable changed vs. evidence-gated-done/satisfied.",
+  "harness": "hooks/loop_stop.py",
+  "harness_invocation": {
+    "cwd": "this fixture's .orchestrator/ tree copied into an isolated temp dir",
+    "stdin": "stdin.json"
+  },
+  "expected": {
+    "returncode": 0,
+    "stdout_is_json": true,
+    "stdout_json_contains": {
+      "decision": "block"
+    },
+    "files_after": {
+      ".orchestrator/loop/scratchpad.md": "present"
+    },
+    "scratchpad_iteration_after": 3
+  },
+  "notes": [
+    "A bare <promise>...</promise> with no in-turn evidence is exactly the case the loop is designed to ignore — the classic 'the agent just says done' failure mode this contract exists to prevent.",
+    "The re-fed header must NOT claim completion; it re-feeds the goal body with the next iteration number."
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "fixture": "drain-empty-after-k-rounds",
+  "mode": "drain",
+  "description": "A drain-mode queue that had real work in rounds 1-2 (claims + one still in flight), then two consecutive rounds (3, 4) where the source re-query returns nothing AND the working set is idle (no claimed items, nothing in flight). At k=2 dry rounds this is DRAINED — per SKILL.md 'Two loop modes': drain terminates when 'the source re-query returns empty for K consecutive rounds (dry>=2) AND the working set is idle'.",
+  "harness": "scripts/check_loop_contract.py:analyze_drain(rounds, k) — a REFERENCE algorithm this contract defines from the documented drain semantics (SKILL.md § Two loop modes, references/standing-loop-247.md §3). IMPORTANT: unlike the converge fixtures, there is no existing executable drain implementation in this repo to call — the 24/7 standing loop's scheduler tick is host-provided (cron / durable scheduler), and only its CONTRACT is documented in prose today. This fixture is the target shape simplicio-runtime should implement against, not an extraction from running code.",
+  "harness_invocation": {
+    "k": 2,
+    "rounds_source": "queue_state.json:rounds"
+  },
+  "expected": {
+    "verdict": "DRAINED",
+    "dry_streak": 2,
+    "recommend": "idle-cheaply-wake-on-new-item"
+  },
+  "notes": [
+    "A round counts as dry only when BOTH claimed and in_flight are empty — an item still in flight from a prior round (like issue-101 after round 2) means the working set is not yet idle even if THAT round claimed nothing new.",
+    "DRAINED is an idle state, not a hard stop: standing-loop-247.md is explicit that 'Exit condition: none by design — idle when drained, wake on any new item/comment/check.' Only an explicit STOP signal, the iteration cap, or a spindle handoff produce a real termination in drain mode, same as converge.",
+    "Do not apply this K-empty-rounds rule to a converge-mode loop (a single hard task can go several turns without a visible external change and would quit prematurely) — see fixtures/converge-stall-escalation for the mechanism converge actually uses instead (stall detection on repeated failure fingerprints)."
+  ]
+}
