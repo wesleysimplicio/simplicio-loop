@@ -1,0 +1,34 @@
+{
+  "fixture": "journal-append-only-minimal",
+  "mode": "both",
+  "description": "The smallest legal journal record shape (iteration, action, hypothesis, gate, fingerprint, note, ts — the core fields the loop_journal.py module docstring documents, without any of the optional lineage fields) and the invariant that makes appending meaningful instead of just noisy: the SAME underlying bug, recurring a day later at a different line/hex/timestamp/duration, still fingerprints to the SAME value. That stability is why a new attempt is APPENDED, never rewriting record 1 — the fingerprint carries the identity of the failure across appends, not the line number.",
+  "harness": "scripts/loop_journal.py:fingerprint(text) — the same pure function cmd_record() calls before appending.",
+  "checks": [
+    {
+      "name": "jsonl_parses",
+      "detail": "every non-blank line of journal.jsonl is valid JSON"
+    },
+    {
+      "name": "minimal_required_keys",
+      "detail": "every record has iteration, action, hypothesis, gate, fingerprint, note, ts",
+      "gate_enum": ["pass", "fail", "blocked"]
+    },
+    {
+      "name": "iteration_monotonic",
+      "detail": "iteration values are non-decreasing top to bottom (append-only order)"
+    },
+    {
+      "name": "fingerprint_stable_across_recurrence",
+      "detail": "fingerprint(gate_output_1.txt) == fingerprint(gate_output_2.txt) == the fingerprint field recorded in BOTH journal rows, even though line number/hex/timestamp/duration all differ between the two raw failures"
+    }
+  ],
+  "expected": {
+    "fingerprint_gate_output_1": "e90b23a22c16",
+    "fingerprint_gate_output_2": "e90b23a22c16",
+    "journal_fingerprints": ["e90b23a22c16", "e90b23a22c16"]
+  },
+  "notes": [
+    "Real records also carry a `commit` field (stamped by cmd_record for the `since` incremental-triage command) plus optional lineage fields (execution_state, stage_id, decision, retry_count, ...) — this fixture deliberately omits them to show the MINIMUM legal shape, not the full one (see fixtures/converge-success/.orchestrator/loop/journal.jsonl for a record with `commit`).",
+    "This file is genuinely append-only in production: cmd_record() only ever opens the journal with mode 'a' (scripts/loop_journal.py:cmd_record) — there is no update/rewrite verb in the CLI at all."
+  ]
+}

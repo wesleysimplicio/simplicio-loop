@@ -1,0 +1,24 @@
+{
+  "fixture": "converge-success",
+  "mode": "converge",
+  "description": "Promise text matches, in-turn evidence present, watcher independently verified, task-anchor fully done -> the loop stops cleanly (no re-feed, no handoff).",
+  "harness": "hooks/loop_stop.py",
+  "harness_invocation": {
+    "cwd": "this fixture's .orchestrator/ tree copied into an isolated temp dir",
+    "stdin": "stdin.json"
+  },
+  "expected": {
+    "returncode": 0,
+    "stdout": "",
+    "files_after": {
+      ".orchestrator/loop/scratchpad.md": "absent",
+      ".orchestrator/loop/watcher_state.json": "absent",
+      ".orchestrator/loop/watcher_challenge.json": "absent",
+      ".orchestrator/loop/HANDOFF.md": "absent"
+    }
+  },
+  "notes": [
+    "cleanup_and_stop() removes the scratchpad + done flags + watcher files and exits 0 with no stdout — this IS the converge success signal, not a printed verdict.",
+    "No HANDOFF.md is written on a fulfilled promise: a successful stop needs no cross-agent continuation artifact."
+  ]
+}

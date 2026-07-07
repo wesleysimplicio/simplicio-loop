@@ -1,0 +1,2 @@
+{"iteration": 1, "action": "add cache layer", "hypothesis": "cold cache is slow", "gate": "fail", "fingerprint": "e90b23a22c16", "note": "perf regression on cache miss", "ts": "2026-07-05T09:00:05Z"}
+{"iteration": 2, "action": "warm cache on boot", "hypothesis": "boot-time warmup avoids the miss", "gate": "fail", "fingerprint": "e90b23a22c16", "note": "same perf regression resurfaced a day later", "ts": "2026-07-06T14:22:15Z"}

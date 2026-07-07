@@ -1,0 +1,22 @@
+{
+  "item": "12",
+  "goal": "Add SSO login and verify it end-to-end.",
+  "goal_fp": "fp-sso-login-0001",
+  "frozen_at": "2026-07-01T10:00:05Z",
+  "criteria": [
+    {
+      "id": "AC1",
+      "text": "Login page renders an SSO button",
+      "status": "done",
+      "evidence": "web_verify .orchestrator/tee/web/login.png",
+      "verified_at": "2026-07-01T10:20:00Z"
+    },
+    {
+      "id": "AC2",
+      "text": "Clicking it redirects to the IdP",
+      "status": "done",
+      "evidence": "web_verify .orchestrator/tee/web/redirect.png",
+      "verified_at": "2026-07-01T10:25:00Z"
+    }
+  ]
+}

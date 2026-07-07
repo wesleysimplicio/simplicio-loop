@@ -1,7 +1,13 @@
 # simplicio-loop no Ecossistema Simplicio
 
 ## Quem depende deste repo
-Nenhum outro repositório Simplicio (consumido como super-plugin por runtimes externos).
+Nenhum outro repositório Simplicio consome este repo como pacote/plugin. A partir do #115,
+`simplicio-loop` também publica um **contrato exportável** — `simplicio.loop-execution/v1`
+(`contracts/loop-execution/v1/`) — para que **`simplicio-runtime`** (ou qualquer outro consumidor)
+reutilize a disciplina de execução converge/drain já validada aqui em vez de criar um segundo
+contrato de execução incompatível. Ainda não é uma dependência formal (nenhum código deste repo
+importa `simplicio-runtime` de volta, e o runtime ainda não consome o contrato) — é a superfície
+publicada para essa reutilização acontecer. Ver `contracts/loop-execution/v1/SCHEMA.md`.
 
 ## De quem este repo depende
 - [simplicio-mapper](https://github.com/wesleysimplicio/simplicio-mapper) >=0.14.0 — hard dep (binds `orient`)

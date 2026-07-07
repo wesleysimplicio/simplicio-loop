@@ -1,0 +1,110 @@
+{
+  "contract": "simplicio.loop-execution/v1",
+  "$comment": "Single source of truth for the required shape of every on-disk state object the simplicio-loop converge/drain mechanism reads or writes. scripts/check_loop_contract.py loads this file and cross-checks every fixture's structural shape against it before running the per-fixture semantic assertions in each fixture's expected.json. Consumers (e.g. simplicio-runtime) should treat this file, not prose, as the field-level contract.",
+  "modes": ["converge", "drain"],
+  "artifacts": {
+    "scratchpad_frontmatter": {
+      "path": ".orchestrator/loop/scratchpad.md",
+      "format": "markdown with a --- delimited YAML-ish frontmatter block (key: value per line) followed by the free-text goal body",
+      "producer": "the agent/skill, written once when the loop is armed; iteration is rewritten in place by hooks/loop_stop.py on every re-feed",
+      "required_fields": [
+        "iteration", "max_iterations", "completion_promise", "evidence_required", "mode", "started_at"
+      ],
+      "field_types": {
+        "iteration": "integer >= 1, as text",
+        "max_iterations": "integer >= 0, as text (0 = scheduler-controlled, no cap)",
+        "completion_promise": "quoted exact string, or the literal null",
+        "evidence_required": "true|false, as text (default true)",
+        "mode": "converge|drain",
+        "started_at": "ISO-8601 UTC timestamp string"
+      }
+    },
+    "journal_record": {
+      "path": ".orchestrator/loop/journal.jsonl",
+      "format": "append-only JSON Lines — one JSON object per line, never rewritten, only appended",
+      "producer": "scripts/loop_journal.py record (and a fallback auto-record from hooks/loop_stop.py when the agent forgot to)",
+      "required_fields": ["iteration", "action", "hypothesis", "gate", "fingerprint", "note", "ts"],
+      "optional_fields": [
+        "commit", "execution_state", "stage_id", "source_artifact", "chunk_id",
+        "validator", "decision", "retry_count", "blocked_reason", "next_action", "bh_address"
+      ],
+      "field_types": {
+        "iteration": "integer",
+        "gate": "enum: pass | fail | blocked",
+        "fingerprint": "12-hex-char stable hash of the failure signature, or empty string when gate == pass",
+        "ts": "ISO-8601 UTC timestamp string",
+        "execution_state": "enum: proposed | planned | dry_run | authorized | executed | verified | rejected"
+      },
+      "invariants": [
+        "iteration values are non-decreasing top to bottom",
+        "the SAME underlying failure always fingerprints to the SAME value, even when line numbers / hex addresses / timestamps / durations differ between occurrences (scripts/loop_journal.py:fingerprint)",
+        "no verb in scripts/loop_journal.py's CLI ever opens the file in a mode other than append ('a')"
+      ]
+    },
+    "anchor": {
+      "path": ".orchestrator/loop/anchor.json",
+      "format": "single JSON object, overwritten in place by scripts/task_anchor.py (frozen at intake, then per-criterion status updates)",
+      "producer": "scripts/task_anchor.py set / mark",
+      "required_fields": ["item", "goal", "goal_fp", "frozen_at", "criteria"],
+      "criterion_required_fields": ["id", "text", "status"],
+      "criterion_optional_fields": ["evidence", "verified_at"],
+      "field_types": {
+        "status": "enum: pending | partial | done"
+      },
+      "invariants": [
+        "a promise is honored only when every criterion.status == done (hooks/loop_stop.py:anchor_pending)"
+      ]
+    },
+    "watcher_challenge": {
+      "path": ".orchestrator/loop/watcher_challenge.json",
+      "format": "single JSON object, overwritten each re-feed",
+      "producer": "hooks/loop_stop.py:write_watcher_challenge, at the END of a turn that re-feeds (before the next turn's agent acts)",
+      "required_fields": ["challenge", "iteration", "goal_fp", "written_at"]
+    },
+    "watcher_state": {
+      "path": ".orchestrator/loop/watcher_state.json",
+      "format": "single JSON object",
+      "producer": "scripts/watcher_verify.py verify (a separate, independent re-computation of the anchor's done/pending state — must NOT trust anything the calling agent asserts)",
+      "required_fields": ["match", "status", "challenge", "goal_fp", "checked_at"],
+      "field_types": {
+        "status": "enum: MEASURED | UNVERIFIED",
+        "match": "boolean"
+      },
+      "invariants": [
+        "a receipt is accepted only when match == true AND status == 'MEASURED' AND challenge == the CURRENT watcher_challenge.json's challenge AND (no goal_fp expected, or goal_fp matches) AND checked_at >= written_at (hooks/loop_stop.py:watcher_verify)"
+      ]
+    },
+    "done_flag": {
+      "path": ".orchestrator/loop/done.flag (legacy alias: .orchestrator/loop/done)",
+      "format": "empty marker file",
+      "producer": "hooks/loop_capture.py on runtimes with a separate post-response hook (e.g. Cursor); on Claude Code this is folded into hooks/loop_stop.py directly instead"
+    },
+    "stop_signal": {
+      "path": ".orchestrator/STOP",
+      "format": "any file (content is not parsed — presence is the signal)",
+      "producer": "a human or an external channel command",
+      "invariants": [
+        "checked BEFORE the promise/evidence/anchor/cap/spindle gates — STOP always wins, in either mode",
+        "if scratchpad meta existed when STOP fired, a HANDOFF.md is written first — a STOPped loop is always an INCOMPLETE stop"
+      ]
+    },
+    "handoff": {
+      "path": ".orchestrator/loop/HANDOFF.md",
+      "format": "free-text markdown (not JSON) — frozen goal, per-criterion checklist, last journal attempts, resume steps",
+      "producer": "hooks/loop_stop.py:write_handoff, called only on an INCOMPLETE stop (STOP signal, max_iterations cap, spindle handoff, missing bound operator) — never on a fulfilled promise"
+    },
+    "drain_queue_state": {
+      "path": "runtime-defined (this contract does not mandate a path — no code in this repo persists this shape yet; see notes below)",
+      "format": "single JSON object",
+      "status": "REFERENCE ONLY — target shape for a drain executor to implement, not an extraction from running code in this repo. The 24/7 standing loop's actual scheduler tick is host-provided (cron / durable scheduler); only its termination RULE is documented today (.claude/skills/simplicio-loop/SKILL.md § Two loop modes, .claude/skills/simplicio-loop/references/standing-loop-247.md § 3).",
+      "required_fields": ["mode", "k", "rounds"],
+      "round_required_fields": ["round", "claimed", "in_flight"],
+      "optional_fields": ["seen", "idempotency_keys", "dead_letter"],
+      "invariants": [
+        "a round is 'dry' iff claimed == [] AND in_flight == [] for that round",
+        "DRAINED iff the trailing dry-round streak >= k (K consecutive empty rounds, dry>=2 per the documented default)",
+        "DRAINED is an idle state, not a termination: 'idle when drained, wake on any new item/comment/check' (standing-loop-247.md)"
+      ]
+    }
+  }
+}
