@@ -12,6 +12,10 @@ Runs the whole verification gate locally — deterministic, stdlib-only, cross-p
                     `simplicio.loop-execution/v1` converge/drain fixtures
                     (`contracts/loop-execution/v1/`) against the real `hooks/loop_stop.py` /
                     `scripts/loop_journal.py` producers (#115).
+  4. token-budget   `scripts/token_budget.py` (#121) — estimates tokens for SKILL.md/AGENTS.md/
+                    CLAUDE.md/the largest scripts and FAILS on a regression past the committed
+                    baseline (`scripts/token_budget_baseline.json`), so a doc/script that quietly
+                    balloons in size gets caught the same way a broken test would.
 
 Exit 0 only when everything passes — so it gates a commit/push. Wire it as a git pre-push hook to
 keep `main` honest with zero CI cost:
@@ -20,10 +24,11 @@ keep `main` honest with zero CI cost:
     chmod +x .git/hooks/pre-push
 
 Usage:
-    python3 scripts/check.py              # audit + tests + loop-contract
+    python3 scripts/check.py              # audit + tests + loop-contract + token-budget
     python3 scripts/check.py --audit-only
     python3 scripts/check.py --tests-only
     python3 scripts/check.py --loop-contract-only
+    python3 scripts/check.py --token-budget   # token-budget guard only
 """
 import os
 import subprocess
@@ -82,21 +87,33 @@ def run_loop_contract():
     return r.returncode == 0
 
 
+def run_token_budget():
+    _hr("token-budget (#121)")
+    path = os.path.join(HERE, "token_budget.py")
+    if not os.path.exists(path):
+        print("scripts/token_budget.py not found — skipping")
+        return True
+    r = subprocess.run([sys.executable, path], cwd=REPO)
+    return r.returncode == 0
+
+
 def main():
     args = sys.argv[1:]
-    only_flags = {"--audit-only", "--tests-only", "--loop-contract-only"}
+    only_flags = {"--audit-only", "--tests-only", "--loop-contract-only", "--token-budget"}
     any_only = any(a in args for a in only_flags)
-    audit_ok = tests_ok = contract_ok = True
+    audit_ok = tests_ok = contract_ok = budget_ok = True
     if not any_only or "--audit-only" in args:
         audit_ok = run_audit()
     if not any_only or "--tests-only" in args:
         tests_ok = run_tests()
     if not any_only or "--loop-contract-only" in args:
         contract_ok = run_loop_contract()
-    ok = audit_ok and tests_ok and contract_ok
-    print("\ncheck: %s  (audit=%s · tests=%s · loop-contract=%s)" % (
+    if not any_only or "--token-budget" in args:
+        budget_ok = run_token_budget()
+    ok = audit_ok and tests_ok and contract_ok and budget_ok
+    print("\ncheck: %s  (audit=%s · tests=%s · loop-contract=%s · token-budget=%s)" % (
         "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if tests_ok else "FAIL",
-        "ok" if contract_ok else "FAIL"))
+        "ok" if contract_ok else "FAIL", "ok" if budget_ok else "FAIL"))
     sys.exit(0 if ok else 1)
 
 

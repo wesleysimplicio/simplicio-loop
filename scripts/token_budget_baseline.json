@@ -1,0 +1,53 @@
+{
+  "$schema_note": "simplicio-loop token/context budget baseline (#121). Regenerate with `python3 scripts/token_budget.py --update-baseline` after a deliberate, reviewed size change to a tracked artifact -- never to silence a regression you haven't looked at.",
+  "artifacts": {
+    ".claude/skills/simplicio-loop/SKILL.md": {
+      "label": "SKILL.md (simplicio-loop)",
+      "tokens": 6520,
+      "words": 3693
+    },
+    "AGENTS.md": {
+      "label": "AGENTS.md",
+      "tokens": 1655,
+      "words": 942
+    },
+    "CLAUDE.md": {
+      "label": "CLAUDE.md",
+      "tokens": 2016,
+      "words": 1036
+    },
+    "scripts/check.py": {
+      "label": "check.py",
+      "tokens": 1174,
+      "words": 488
+    },
+    "scripts/claims_audit.py": {
+      "label": "claims_audit.py",
+      "tokens": 5693,
+      "words": 2359
+    },
+    "scripts/loop_journal.py": {
+      "label": "loop_journal.py",
+      "tokens": 8634,
+      "words": 3626
+    },
+    "scripts/task_anchor.py": {
+      "label": "task_anchor.py",
+      "tokens": 4937,
+      "words": 2213
+    },
+    "scripts/video_evidence.py": {
+      "label": "video_evidence.py",
+      "tokens": 5068,
+      "words": 2335
+    },
+    "simplicio_loop/cli.py": {
+      "label": "cli.py",
+      "tokens": 1693,
+      "words": 721
+    }
+  },
+  "estimator": "heuristic:chars-div-4",
+  "generated_at": "2026-07-07T05:10:54Z",
+  "threshold_growth": 0.25
+}

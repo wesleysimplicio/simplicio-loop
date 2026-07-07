@@ -62,10 +62,16 @@ stops task deviation: every turn re-checks the frozen goal (`task_anchor.py chec
 
 `python3 scripts/check.py` runs the whole gate locally: the `tests/` suite (worker `selftest`s + an
 e2e of the loop driver proving it stops on EVIDENCE, ignores a bare `<promise>`, stops on the cap;
-+ producers BLOCK, never fake-pass, when a toolchain is absent) and `scripts/claims_audit.py`
++ producers BLOCK, never fake-pass, when a toolchain is absent), `scripts/claims_audit.py`
 (referenced scripts exist · extension-point count consistent · cited commands run · `_bundle ≡
-source`). Self-runs on bare python3 (no pytest needed); `pip install "simplicio-loop[dev]"` adds
-pytest. Wire as a git pre-push hook to keep work honest with zero CI cost.
+source`), and the **token/context budget guard** (`scripts/token_budget.py`, #121) — estimates
+tokens for SKILL.md/AGENTS.md/CLAUDE.md/the largest scripts and FAILS on a regression past the
+committed baseline (`scripts/token_budget_baseline.json`), so a doc/script that quietly balloons
+in size on a big refactor is caught the same way a broken test would (`--token-budget` runs it
+alone; `--update-baseline` regenerates the baseline after a deliberate, reviewed size change).
+Self-runs on bare python3 (no pytest needed, no `tiktoken` needed — a stdlib chars/4 heuristic is
+the default estimator); `pip install "simplicio-loop[dev]"` adds pytest. Wire as a git pre-push
+hook to keep work honest with zero CI cost.
 
 ## Install (this or another project)
 

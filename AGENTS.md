@@ -101,7 +101,10 @@ path + verdict; a missing toolchain BLOCKS, never a fake pass.
   `deterministic_edit` / `savings_ledger`); never fabricate a figure. No measured economy → no
   savings line. Credited only on a passing quality gate.
 - Verify claims locally before pushing: `python3 scripts/check.py` (test suite + claims-audit +
-  `_bundle ≡ source` parity). Self-runs on bare python3 — no CI, no pytest required. Keep it green.
+  `_bundle ≡ source` parity + the token/context budget guard, `scripts/token_budget.py`, #121).
+  Self-runs on bare python3 — no CI, no pytest required. Keep it green.
+- **Big refactors/doc rewrites:** run `python3 scripts/check.py --token-budget` and treat a FAIL
+  as a real regression to justify or trim, not to silence with `--update-baseline` unreviewed.
 - On Claude/Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Hermes, the `simplicio-runtime` native
   bind (MCP or CLI) is REQUIRED before driving the loop — `simplicio doctor --json` must report
   the runtime reachable. An unbound run on one of these 8 is a blocker to fix
