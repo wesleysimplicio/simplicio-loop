@@ -5,6 +5,24 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.22.3] — 2026-07-07
+
+### Changed
+- Bumped the two REQUIRED loop-operator dependency floors to their latest published releases:
+  `simplicio-mapper>=0.14.0` → `>=0.16.0` and `simplicio-cli>=0.9.1` → `>=0.9.3`. Both are additive
+  releases (TOON encoding on `inspect`/`ask`, tagged-confidence/geometry flags on `index`,
+  `simplicio-cli`'s own floor bump to mirror the same mapper version) — no capability the loop
+  already depends on (`inspect`/`handoff`/`ask`/`sync`/`drift`) was removed or changed shape.
+
+### Fixed
+- The architecture/practices gate added in 3.22.0 (`discover_architecture()` + the Step 4 directive
+  to read `architecture.docs` and run `architecture.test_runner`/`lint_cmd` before editing) was
+  dropped from the loop's live protocol when the `/simplicio-loop` consolidation (3.22.2) rewrote
+  `.claude/skills/simplicio-tasks/SKILL.md` into a legacy stub — the code (`repo_conventions.py`,
+  its tests) and the `extension-points.md` description survived, but the actionable gate in the
+  Step 4 quality loop did not. Restored it in the new canonical location,
+  `.claude/skills/simplicio-loop/references/quality-safety-delivery.md` § Step 4.
+
 ## [3.22.2] — 2026-07-06
 
 ### Changed

@@ -10,6 +10,16 @@ blocked. Never mark done without green gates + evidence. Code failure is NOT a b
 investigate first. Drive with `diagnostics` (parse build/test output → fix root cause); apply each
 fix via `deterministic_edit` with its assertion so fix + verification are one step.
 
+**Architecture + practices gate (before the first edit):** re-read `.orchestrator/conventions.json`
+`architecture.docs` (mined by `repo_conventions` — see `extension-points.md`) for the layer/module
+boundaries, naming, and patterns this repo actually uses (e.g. hexagonal vs layered, where a new
+endpoint/service/model belongs) — new code MUST land in the place and shape that the discovered
+docs + existing sibling files (via `sibling_search`) establish, not a generic default. Run
+`lint`/`typecheck`/`test` with `architecture.test_runner`/`lint_cmd` when the repo declares one
+(never a bare `pytest`/`eslint` guess that skips the project's own gate); targeted tests below
+still means unit + integration + contract + flow + system as applicable to the change, discovered
+by the project's own test convention (e.g. `tests/test_*.py`), not invented ad hoc.
+
 ### 4a — Acceptance-criteria gate (the real DoD)
 ```
 DoD per item:
