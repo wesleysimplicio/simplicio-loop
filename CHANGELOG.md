@@ -5,6 +5,32 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ## [Unreleased]
 
+## [3.22.4] — 2026-07-07
+
+### Added
+- **`hooks/action_gate.py`**: an additive, best-effort consult of the `simplicio` Rust
+  runtime's own risk classifier (`simplicio gate classify --action "<cmd>" --gate ask
+  --json`) alongside this file's own hardcoded IRREVERSIBLE/secret checks. Only escalates
+  on the runtime's `decision == "block"` (its hardline/denylist floor — catches things this
+  file's own regex list doesn't, e.g. pipe-to-shell) — a `"confirm"` decision is
+  deliberately NOT treated as a block signal, since under `--gate ask`/`auto` the runtime
+  returns `"confirm"` for essentially every ordinary mutation and a PreToolUse hook has no
+  way to actually pause for human confirmation (only allow/block). Verified against the
+  live binary before shipping: an earlier draft using `--gate safe` classified normal
+  commands like `git push`, `rm -f`, and `npm install` as blocked outright. Fail-open:
+  binary absent, timeout, or malformed JSON all leave the existing gate behavior unchanged.
+- **`hooks/loop_stop.py`**: at each loop boundary (alongside the existing
+  `simplicio claims`/`simplicio nest` callouts), also fires `simplicio checkpoint save
+  --desc "simplicio-loop iteration <n>" --json` when the native `simplicio` binary is on
+  PATH — a real, restorable (`simplicio checkpoint restore`) snapshot the loop's own
+  scratchpad-only state doesn't provide on its own. Fail-open, `simplicio`-only (no
+  dev-cli/mapper fallback candidate, since neither has a checkpoint equivalent).
+- Both additions are opt-in/fail-open: with no `simplicio` binary on PATH, behavior is
+  byte-for-byte identical to before. Not implemented: recording the loop's own
+  evidence/promise-verification into the runtime's HBP hash chain — `simplicio hbp` is
+  currently a read-only CLI surface (`verify|head|len|count|status`, no `append`/`record`),
+  so an external process has no way to write new evidence into it yet.
+
 ## [3.22.3] — 2026-07-07
 
 ### Changed

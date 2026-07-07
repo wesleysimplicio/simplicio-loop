@@ -29,6 +29,7 @@ Usage:
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -155,6 +156,57 @@ def _verdict(allow, reason=""):
     return {"action": "allow" if allow else "block", "reason": reason}
 
 
+def _runtime_gate_escalation(cmd):
+    """Best-effort consult of the `simplicio` runtime's own risk classifier for an
+    ADDITIONAL block signal — never a replacement for the checks above.
+
+    Purely additive: this can only turn an otherwise-allowed command into a block, never
+    the reverse. The hardcoded IRREVERSIBLE/secret checks remain the fail-closed floor
+    regardless of this function's outcome. Any failure — binary absent, timeout,
+    non-JSON output, unexpected shape — returns None (no additional signal), so a broken
+    or missing runtime NEVER weakens or breaks the existing gate.
+
+    Only escalates on `decision == "block"` (the runtime's hardline/denylist floor —
+    catastrophic ops like pipe-to-shell or mkfs that this file's own IRREVERSIBLE list
+    doesn't cover). A "confirm" decision is deliberately NOT treated as a block signal:
+    under `--gate ask`/`auto` the runtime returns "confirm" for essentially every ordinary
+    mutation (a plain `git push`, `rm -f`, `npm install`, ...) — a PreToolUse hook has no
+    way to actually pause for human confirmation (only allow/block), so escalating on
+    "confirm" would silently turn this into "block nearly all real work", not a genuine
+    extra safety signal. Verified against the live binary before shipping this — see
+    tests/test_action_gate.py for the exact commands checked.
+    """
+    if not cmd:
+        return None
+    binary = shutil.which("simplicio")
+    if not binary:
+        return None
+    try:
+        # cwd=os.getcwd(), not REPO: the gate must classify against the project the
+        # command is about to run in (same reasoning as _staged_diff() above).
+        result = _run(
+            [binary, "gate", "classify", "--action", cmd, "--gate", "ask", "--json"],
+            cwd=os.getcwd(),
+            timeout=5,
+        )
+    except Exception:
+        return None
+    if result is None:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("decision") == "block":
+        reason = payload.get("reason") or "simplicio runtime gate classified this as %s risk" % (
+            payload.get("risk_class") or "elevated"
+        )
+        return reason
+    return None
+
+
 def gate_command(cmd, staged=False):
     """The core decision. Returns a verdict dict; BLOCK is fail-closed."""
     # 1) irreversible op → block
@@ -174,6 +226,11 @@ def gate_command(cmd, staged=False):
         if hits:
             labels = ", ".join(sorted({h[0] for h in hits}))
             return _verdict(False, "secret in staged diff (%s) — remove it before commit/push" % labels)
+    # 3) additional signal from the simplicio runtime's own risk classifier, when installed
+    #    (best-effort, additive-only — see _runtime_gate_escalation).
+    runtime_reason = _runtime_gate_escalation(cmd)
+    if runtime_reason:
+        return _verdict(False, "simplicio runtime gate: " + runtime_reason)
     return _verdict(True)
 
 

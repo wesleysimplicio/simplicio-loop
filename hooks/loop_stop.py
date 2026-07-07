@@ -497,6 +497,27 @@ def _call_simplicio_nest():
             continue
 
 
+def _call_simplicio_checkpoint(iteration):
+    """Snapshot a `simplicio checkpoint` (git-stash-backed, restorable) at this loop
+    boundary, when the native `simplicio` Rust runtime is on PATH. Fail-open, best-effort:
+    unlike claims/nest above, this is `simplicio`-only (dev-cli has no checkpoint
+    equivalent), so it silently no-ops when the binary is absent — no fallback candidate
+    list, no error surfaced. Gives the loop real undo (`simplicio checkpoint restore`)
+    that its own scratchpad-only state doesn't provide on its own.
+    """
+    binary = shutil.which("simplicio")
+    if not binary:
+        return
+    try:
+        subprocess.run(
+            [binary, "checkpoint", "save", "--desc", "simplicio-loop iteration %s" % iteration,
+             "--json"],
+            capture_output=True, timeout=15,
+        )
+    except Exception:
+        pass
+
+
 def read_watcher_challenge():
     """Return the current per-iteration watcher challenge dict, or None. Fail-open."""
     try:
@@ -684,12 +705,13 @@ def main():
             except OSError:
                 meta, body = None, None
 
-        # Fire-and-forget simplicio CLI callout: verify claims and nest tree.
-        # Disabled when no scratchpad exists (no active loop). Silent failure
-        # if the CLI is not installed — the loop proceeds either way.
+        # Fire-and-forget simplicio CLI callout: verify claims and nest tree, and
+        # checkpoint this loop boundary. Disabled when no scratchpad exists (no active
+        # loop). Silent failure if the CLI is not installed — the loop proceeds either way.
         if os.path.exists(SCRATCHPAD):
             _call_simplicio_claims()
             _call_simplicio_nest()
+            _call_simplicio_checkpoint((meta or {}).get("iteration", "?"))
 
         # Explicit STOP signal beats everything — but still hand off if there was live state.
         if os.path.exists(STOP_SIGNAL):
