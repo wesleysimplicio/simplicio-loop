@@ -3,6 +3,37 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [3.24.0] — 2026-07-09
+
+### Added
+- **Cross-process locking for shared JSONL logs** (`scripts/_locked_append.py`, #127): the one
+  place any worker in this repo appends a line to a shared JSONL log (`scripts/loop_journal.py`'s
+  run journal, `scripts/handoff.py`'s event log). POSIX `fcntl.flock` / Windows `msvcrt.locking`
+  on a sidecar `<path>.lock` file, `flush()` + `os.fsync()` before releasing the lock, bounded
+  acquisition (default 2000ms) that fails OPEN on timeout (write skipped, never partial, a
+  one-line degrade note on stderr) so a stuck/leaked lock never wedges a caller. Paired
+  tolerant-reader helper `count_jsonl_lines` counts valid vs. corrupt/truncated lines instead of
+  silently dropping them; `loop_journal.py` and `handoff.py` now surface a corrupt-line count
+  warning instead of swallowing torn writes. Covered by `tests/test_locked_append.py`.
+- **Run-journal consumes dev-cli events + three new HBP evidence topics** (#128):
+  `scripts/loop_journal.py stall` now optionally folds in the dev-cli's own
+  `.simplicio/events.jsonl` (schema `simplicio.dev-cli-event/v1`, `--events-root DIR` override) —
+  a repeated `validation_fail` on the same target streaks like a repeated journal failure;
+  `edit_applied`/`task_complete` reset the streak. Read-only, fail-open (no events file = behavior
+  unchanged), no import of dev-cli code. The HBP evidence chain gains three new topics:
+  `loop-stall-detected` (a 3-deep same-fingerprint streak), `loop-run-blocked` (cap-reached stop or
+  a missing bound operator), and `loop-gate-blocked` (a gate BLOCK verdict). Covered by
+  `tests/test_hbp_topics.py`.
+
+### Fixed
+- `_changed_files` no longer includes `.simplicio/` runtime state (dev-cli's own event/ledger
+  writes) when computing what a turn changed — those are the operator's own bookkeeping, not
+  agent-authored diff.
+
+### Changed
+- Operator dependency floors raised to match the paired releases: `simplicio-mapper>=0.19.0`,
+  `simplicio-cli>=0.11.0`.
+
 ## [3.23.0] — 2026-07-07
 
 ### Added
