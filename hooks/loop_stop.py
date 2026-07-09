@@ -326,9 +326,12 @@ def _changed_files():
     commit). A heuristic, not a precise "since loop start" diff — fail-open: {} on any error.
 
     Excludes `.orchestrator/` (the loop's own state files — never source, and would otherwise
-    make the receipt's own write, or a sibling state write, look like a "later" source change)
-    and build/cache noise (`__pycache__`, `.pyc`) that this very check's own module import can
-    create — that self-inflicted false-positive is exactly why both are filtered here.
+    make the receipt's own write, or a sibling state write, look like a "later" source change),
+    `.simplicio/` (the simplicio runtime/dev-cli's own state — checkpoints, events.jsonl, survey
+    artifacts — written by this very hook's fire-and-forget CLI callouts mid-turn, the same
+    self-inflicted false-positive class), and build/cache noise (`__pycache__`, `.pyc`) that this
+    very check's own module import can create — those false-positives are exactly why all three
+    are filtered here.
     """
     out = set()
     for args in (
@@ -344,7 +347,8 @@ def _changed_files():
             continue
     return {
         f for f in out
-        if not f.startswith(".orchestrator/") and "__pycache__" not in f and not f.endswith((".pyc", ".pyo"))
+        if not f.startswith((".orchestrator/", ".simplicio/"))
+        and "__pycache__" not in f and not f.endswith((".pyc", ".pyo"))
     }
 
 
