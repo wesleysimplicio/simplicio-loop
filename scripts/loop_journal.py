@@ -29,7 +29,12 @@ Verbs:
   |              Output is tagged `MEASURED|` on --gate pass, `UNVERIFIED|` on fail/blocked.
     fingerprint Print the stable fingerprint of a failure text (FILE or stdin). Standalone helper.
     stall       Read the journal -> verdict PROGRESS | STALLED. STALLED when the last K consecutive
-  |             attempts all failed with the SAME fingerprint (default K=3). Prints the recommended
+  |             attempts all failed with the SAME fingerprint (default K=3). Also folds in the
+  |             dev-cli's own `.simplicio/events.jsonl` (schema `simplicio.dev-cli-event/v1`,
+  |             `--events-root DIR` overrides the repo root) — a repeated `validation_fail` on the
+  |             same target streaks like a repeated journal failure; `edit_applied`/`task_complete`
+  |             reset the streak. Fail-open: no events file = behavior unchanged (#128).
+  |             Prints the recommended
   |             action (switch-strategy | escalate) and the dead-end actions to avoid. Exit 10 when
   |             stalled (for `if:` gating), 0 otherwise — unless --exit-code is omitted (always 0).
   |             Every output line is prefixed `MEASURED|` (concrete fingerprint data) or
@@ -92,9 +97,22 @@ LOOP_DIR = os.path.join(REPO, ".orchestrator", "loop")
 JOURNAL = os.path.join(LOOP_DIR, "journal.jsonl")
 DEFAULT_K = 3
 
+# The dev-cli's own structured event log (#128) — `<repo>/.simplicio/events.jsonl`, schema
+# `simplicio.dev-cli-event/v1`, written by `simplicio/observability.py:emit_event` in the
+# separate `simplicio-cli` pip package. This module does NOT import dev-cli code — it only reads
+# the documented JSONL shape, optionally and fail-open, so a repo without the dev-cli installed
+# (or with no events recorded yet) behaves exactly as before.
+DEV_CLI_EVENTS_SCHEMA = "simplicio.dev-cli-event/v1"
+# Event types folded into the attempt fingerprint + stall detector: a target the dev-cli's OWN
+# verify loop keeps failing (`validation_fail`) is a stall signal even when the agent never
+# called `loop_journal.py record` for those turns; `edit_applied`/`task_complete` count as
+# progress and reset the streak the same way a `record --gate pass` would.
+DEV_CLI_STALL_EVENTS = frozenset(["validation_fail", "edit_applied", "task_complete"])
+
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 from toon_codec import encode_toon, decode_toon  # noqa: E402 — prompt-facing render only, same pattern as task_anchor.py
+from _locked_append import locked_append_line  # noqa: E402 — cross-process safe append (#127)
 
 # Brown-Hilbert port.port.port addressing for the delegation tree.
 # Root is "R". Children append their index: bh_address("R", 0) -> "R.0".
@@ -211,10 +229,15 @@ def _git_head():
 
 
 def _load():
+    """Return (rows, corrupt_count). A truncated/illegible line (e.g. a torn write from a
+    pre-lock era, or a foreign writer) is COUNTED, never silently dropped — callers surface
+    `corrupt_count` in their summary output instead of pretending the journal is pristine (#127).
+    """
     rows = []
+    corrupt = 0
     if not os.path.exists(JOURNAL):
-        return rows
-    with open(JOURNAL, encoding="utf-8") as f:
+        return rows, corrupt
+    with open(JOURNAL, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -222,8 +245,111 @@ def _load():
             try:
                 rows.append(json.loads(line))
             except ValueError:
-                continue  # one corrupt record must not lose the journal
-    return rows
+                corrupt += 1  # one corrupt record must not lose the journal
+    return rows, corrupt
+
+
+def _warn_corrupt(corrupt):
+    """Fail-open stderr warning when the journal has corrupt lines — never silent, never fatal."""
+    if corrupt:
+        log("UNVERIFIED|journal: %d corrupt/truncated line(s) skipped (see stderr)" % corrupt)
+        try:
+            sys.stderr.write(
+                "loop_journal: WARNING — %d corrupt/truncated journal line(s) skipped\n" % corrupt
+            )
+        except Exception:
+            pass
+
+
+def load_dev_cli_events(root=None):
+    """Optional, fail-open, read-only consumption of the dev-cli's own event log (#128).
+
+    Returns (events, corrupt_count) — `events` are the raw `simplicio.dev-cli-event/v1` records
+    whose `event` is in DEV_CLI_STALL_EVENTS, oldest-first. `corrupt_count` mirrors `_load()`'s
+    tolerant-reader contract (#127): a truncated/illegible line is counted, never silently
+    dropped.
+
+    Fail-open in every direction: missing file, unreadable directory, or a record that isn't a
+    dict / doesn't carry the expected schema is simply skipped (not counted as corrupt — a
+    foreign or future-schema line is not a torn write) — this integration must never make the
+    journal/stall detector less reliable than it was before dev-cli events existed.
+    """
+    path = os.path.join(root or REPO, ".simplicio", "events.jsonl")
+    events, corrupt = [], 0
+    if not os.path.exists(path):
+        return events, corrupt
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    corrupt += 1
+                    continue
+                if not isinstance(rec, dict) or rec.get("schema") != DEV_CLI_EVENTS_SCHEMA:
+                    continue  # not a dev-cli event (old/foreign format) — ignore, not corrupt
+                if rec.get("event") in DEV_CLI_STALL_EVENTS:
+                    events.append(rec)
+    except OSError:
+        return [], 0
+    return events, corrupt
+
+
+def _dev_cli_fingerprint(rec):
+    """Stable fingerprint for a dev-cli event, reusing the SAME normalized-signature hash as a
+    journal failure — same target + same warning signature -> same hash, so a target repeatedly
+    failing the dev-cli's own verify loop streaks exactly like a repeated journal failure would.
+    """
+    payload = rec.get("payload") or {}
+    target = str(payload.get("target", "")).strip()
+    warnings = payload.get("warnings") or []
+    text = "\n".join(["dev-cli validation_fail target=%s" % target] + [str(w) for w in warnings])
+    return fingerprint(text)
+
+
+def _dev_cli_to_attempt(rec):
+    """Adapt one dev-cli event into a journal-row-shaped dict `analyze()` consumes directly,
+    so the stall/progress math never grows a second code path (#128)."""
+    event = rec.get("event", "")
+    payload = rec.get("payload") or {}
+    gate = "fail" if event == "validation_fail" else "pass"
+    return {
+        "iteration": payload.get("attempt") or payload.get("attempts") or 0,
+        "action": "dev-cli:%s target=%s" % (event, payload.get("target", "?")),
+        "gate": gate,
+        "fingerprint": _dev_cli_fingerprint(rec) if gate != "pass" else "",
+        "note": "",
+        "ts": rec.get("ts", ""),
+        "source": "dev-cli",
+    }
+
+
+def merge_dev_cli(rows, dev_cli_events):
+    """Merge journal rows with dev-cli-derived synthetic attempts, chronologically by `ts` (both
+    sides use the same `%Y-%m-%dT%H:%M:%SZ` format, lexically sortable) — so a repeated
+    `validation_fail` on one target counts toward the SAME trailing stall streak as a repeated
+    journal failure, whichever side recorded it (#128). Stable sort: ties keep journal rows
+    before the events appended after them, preserving today's ordering when timestamps repeat.
+    """
+    if not dev_cli_events:
+        return rows
+    merged = list(rows) + [_dev_cli_to_attempt(r) for r in dev_cli_events]
+    merged.sort(key=lambda r: r.get("ts") or "")
+    return merged
+
+
+def _rows_with_dev_cli(opts):
+    """(merged rows, journal corrupt, events corrupt) honoring --events-root; fail-open."""
+    rows, corrupt = _load()
+    try:
+        root = opts.get("events-root")
+        events, ev_corrupt = load_dev_cli_events(root if isinstance(root, str) else None)
+    except Exception:
+        events, ev_corrupt = [], 0
+    return merge_dev_cli(rows, events), corrupt, ev_corrupt
 
 
 def _clean(value):
@@ -310,8 +436,12 @@ def cmd_record(opts):
         opts.get("_now") or _now(),
     )
     tag = "MEASURED|" if rec["gate"] == "pass" else "UNVERIFIED|"
-    with open(JOURNAL, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    # locked, cross-process-safe append (#127): flush+fsync before the lock releases, so a
+    # concurrent reader never observes a half-written line. FAIL-OPEN on a lock timeout — the
+    # write is SKIPPED (never partial, never unlocked), never silently pretended to have happened.
+    wrote = locked_append_line(JOURNAL, json.dumps(rec, ensure_ascii=False))
+    if not wrote:
+        log("UNVERIFIED|record: SKIPPED — could not acquire the journal lock in time")
     log("%srecorded iter=%d gate=%s fp=%s action=%r" % (
         tag, rec["iteration"], rec["gate"], rec["fingerprint"] or "-", rec["action"][:50]))
     lineage = _lineage_summary(rec)
@@ -321,7 +451,7 @@ def cmd_record(opts):
         log("%sblocked: %s" % (tag, rec["blocked_reason"][:96]))
     if rec.get("next_action"):
         log("%snext: %s" % (tag, rec["next_action"][:96]))
-    print("%srecorded" % tag)
+    print("%srecorded" % tag if wrote else "UNVERIFIED|record-skipped")
 
 
 def cmd_fingerprint(opts):
@@ -377,15 +507,17 @@ def analyze(rows, k=DEFAULT_K):
 
 def cmd_stall(opts):
     k = int(opts.get("k", DEFAULT_K))
-    a = analyze(_load(), k)
+    rows, corrupt, _ = _rows_with_dev_cli(opts)  # dev-cli events fold into the streak (#128)
+    a = analyze(rows, k)
     fmt = (opts.get("format") or ("json" if opts.get("json") else "text")).strip().lower()
+    display = dict(a, corrupt_lines=corrupt)  # display-only copy — analyze()'s own contract is untouched
     if fmt == "toon":
         # TOON (Token-Oriented Object Notation, github.com/toon-format/toon): same verdict payload
         # as --format json, rendered leaner for the per-turn prompt re-feed (#92, mirrors
         # task_anchor.py check --format toon, #88/#91). Never changes the on-disk journal itself.
-        print(encode_toon(a))
+        print(encode_toon(display))
     elif fmt == "json":
-        print(json.dumps(a, indent=2))
+        print(json.dumps(display, indent=2))
     else:
         # verdict is MEASURED (concrete fingerprint data from the journal)
         print("MEASURED|%s" % a["verdict"].lower())
@@ -395,15 +527,17 @@ def cmd_stall(opts):
             log("UNVERIFIED|recommend: %s — do NOT re-feed the same goal into the same failure" % a["recommend"])
             if a["dead_ends"]:
                 log("MEASURED|dead-end actions (already tried, same failure): %s" % "; ".join(a["dead_ends"]))
+        _warn_corrupt(corrupt)
     if opts.get("exit-code") and a["verdict"] == "STALLED":
         sys.exit(10)
 
 
 def cmd_resume(opts):
     """The read every turn should START with — what was tried, so we never repeat a dead-end."""
-    rows = _load()
+    rows, corrupt, _ = _rows_with_dev_cli(opts)  # dev-cli events fold into the streak (#128)
     if not rows:
         print("UNVERIFIED|resume: fresh loop — no prior attempts")
+        _warn_corrupt(corrupt)
         return
     a = analyze(rows, int(opts.get("k", DEFAULT_K)))
     passed = [r for r in rows if r.get("gate") == "pass"]
@@ -430,15 +564,19 @@ def cmd_resume(opts):
         log("MEASURED|AVOID (dead-ends): %s" % "; ".join(a["dead_ends"]))
     if passed:
         log("MEASURED|resolved fingerprints so far: %d" % len({r.get("fingerprint") for r in passed}))
+    _warn_corrupt(corrupt)
 
 
 def cmd_status(opts):
-    rows = _load()
+    rows, corrupt = _load()
     n = int(opts.get("n", 10))
     if not rows:
         print("UNVERIFIED|journal empty")
+        _warn_corrupt(corrupt)
         return
-    print("MEASURED|journal: %d records (last %d):" % (len(rows), min(n, len(rows))))
+    print("MEASURED|journal: %d records (last %d)%s:" % (
+        len(rows), min(n, len(rows)),
+        " · %d corrupt line(s) skipped" % corrupt if corrupt else ""))
     for r in rows[-n:]:
         suffix = _lineage_summary(r)
         if r.get("next_action"):
@@ -460,7 +598,8 @@ def cmd_since(opts):
     The last journal record stamped the HEAD commit; `since` diffs that commit -> now plus the
     working-tree changes. A turn reads this instead of re-surveying the whole tree every time.
     """
-    rows = _load()
+    rows, corrupt = _load()
+    _warn_corrupt(corrupt)
     base = ""
     for r in reversed(rows):
         if r.get("commit"):
@@ -507,7 +646,8 @@ def cmd_delegation(opts):
     Records **without** a ``bh_address`` are grouped under an ``(unassigned)``
     pseudo-root.
     """
-    rows = _load()
+    rows, corrupt = _load()
+    _warn_corrupt(corrupt)
     # Collect records that have a BH address
     nodes = {}  # addr -> list of records
     unnamed = []
@@ -758,6 +898,23 @@ def cmd_selftest(_opts):
     chk("claims_gate.clean", cmd_claims_gate_selftest_ok(), True)
     chk("claims_gate.dirty", cmd_claims_gate_selftest_fail(), True)
 
+    # dev-cli event adapter (#128): repeated validation_fail on ONE target streaks to STALLED;
+    # a task_complete resets it. Pure — no files, the fixture is in-memory records.
+    def _ev(event, target, ts, warnings=None):
+        return {"schema": DEV_CLI_EVENTS_SCHEMA, "ts": ts, "event": event, "level": "info",
+                "payload": {"target": target, "attempt": 1, "warnings": warnings or []}}
+    fails = [_ev("validation_fail", "src/app.py", "2026-07-09T00:00:0%dZ" % i,
+                 ["tests failed"]) for i in (1, 2, 3)]
+    merged = merge_dev_cli([], fails)
+    chk("devcli.stall", analyze(merged, 3)["verdict"], "STALLED")
+    fp1 = _dev_cli_fingerprint(fails[0])
+    chk("devcli.fp_stable", fp1 == _dev_cli_fingerprint(fails[1]) and fp1 != "", True)
+    chk("devcli.fp_distinct",
+        fp1 != _dev_cli_fingerprint(_ev("validation_fail", "other.py", "t", ["boom"])), True)
+    done = merged + [_dev_cli_to_attempt(_ev("task_complete", "src/app.py", "2026-07-09T00:00:04Z"))]
+    chk("devcli.reset_on_complete", analyze(done, 3)["verdict"], "PROGRESS")
+    chk("devcli.merge_noop", merge_dev_cli(rows, []) == rows, True)
+
     ok = all(checks)
     print("selftest: %s (%d/%d)" % ("PASS" if ok else "FAIL", sum(checks), len(checks)))
     sys.exit(0 if ok else 1)
@@ -819,7 +976,7 @@ def main():
                       "--note", "--k", "--exit-code", "--execution-state", "--stage-id",
                       "--source-artifact", "--chunk-id", "--validator", "--decision",
                       "--retry-count", "--blocked-reason", "--next-action", "--bh-address",
-                      "--json", "--format", "--help"],
+                      "--json", "--format", "--events-root", "--help"],
         }))
         sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])

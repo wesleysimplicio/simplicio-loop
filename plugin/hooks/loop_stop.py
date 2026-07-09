@@ -326,9 +326,12 @@ def _changed_files():
     commit). A heuristic, not a precise "since loop start" diff — fail-open: {} on any error.
 
     Excludes `.orchestrator/` (the loop's own state files — never source, and would otherwise
-    make the receipt's own write, or a sibling state write, look like a "later" source change)
-    and build/cache noise (`__pycache__`, `.pyc`) that this very check's own module import can
-    create — that self-inflicted false-positive is exactly why both are filtered here.
+    make the receipt's own write, or a sibling state write, look like a "later" source change),
+    `.simplicio/` (the simplicio runtime/dev-cli's own state — checkpoints, events.jsonl, survey
+    artifacts — written by this very hook's fire-and-forget CLI callouts mid-turn, the same
+    self-inflicted false-positive class), and build/cache noise (`__pycache__`, `.pyc`) that this
+    very check's own module import can create — those false-positives are exactly why all three
+    are filtered here.
     """
     out = set()
     for args in (
@@ -344,7 +347,8 @@ def _changed_files():
             continue
     return {
         f for f in out
-        if not f.startswith(".orchestrator/") and "__pycache__" not in f and not f.endswith((".pyc", ".pyo"))
+        if not f.startswith((".orchestrator/", ".simplicio/"))
+        and "__pycache__" not in f and not f.endswith((".pyc", ".pyo"))
     }
 
 
@@ -518,6 +522,31 @@ def _call_simplicio_checkpoint(iteration):
         pass
 
 
+def _call_simplicio_hbp_append_topic(topic, payload_dict):
+    """Generic fail-open append into the runtime's HBP tamper-evident hash chain
+    (`simplicio hbp append`), when the native `simplicio` binary is on PATH (#128).
+
+    Same contract as the promise-verified append below: `simplicio`-only, best-effort — absent
+    binary or any failure is a silent no-op that never blocks the caller's own decision. Every
+    new HBP point in this hook family (stall detected, gate blocked, run blocked) goes through
+    here so the topics all carry the same provenance and failure discipline.
+    """
+    binary = shutil.which("simplicio")
+    if not binary:
+        return
+    try:
+        subprocess.run(
+            [binary, "hbp", "append",
+             "--topic", topic,
+             "--payload", json.dumps(payload_dict),
+             "--provenance", "simplicio-loop",
+             "--json"],
+            capture_output=True, timeout=15,
+        )
+    except Exception:
+        pass
+
+
 def _call_simplicio_hbp_append(iteration, promise, watcher_tag):
     """Record the promise-verification decision into the runtime's HBP
     tamper-evident hash chain (`simplicio hbp append`), when the native
@@ -531,27 +560,42 @@ def _call_simplicio_hbp_append(iteration, promise, watcher_tag):
     recorded in order, without trusting this process's own say-so after the
     fact. Absent binary or any failure: silent no-op, never blocks the stop.
     """
-    binary = shutil.which("simplicio")
-    if not binary:
-        return
     try:
         anchor = read_anchor() or {}
-        payload = json.dumps({
+        _call_simplicio_hbp_append_topic("loop-promise-verified", {
             "iteration": iteration,
             "promise": promise,
             "watcher_tag": watcher_tag,
             "goal_fp": anchor.get("goal_fp", ""),
         })
-        subprocess.run(
-            [binary, "hbp", "append",
-             "--topic", "loop-promise-verified",
-             "--payload", payload,
-             "--provenance", "simplicio-loop",
-             "--json"],
-            capture_output=True, timeout=15,
-        )
     except Exception:
         pass
+
+
+def _journal_stall(k=3):
+    """Trailing same-fingerprint failure streak from the journal — (fingerprint, streak).
+
+    Mirrors `scripts/loop_journal.py`'s `analyze()` trailing-streak math over the tail of the
+    journal, locally and fail-open (("", 0) on any error) — the hook must never import the
+    worker to decide whether to emit the `loop-stall-detected` HBP record (#128).
+    """
+    try:
+        rows = tail_journal(n=max(k * 3, 12))
+        if not rows:
+            return "", 0
+        last = rows[-1]
+        fp = last.get("fingerprint", "")
+        if last.get("gate") == "pass" or not fp:
+            return "", 0
+        streak = 0
+        for r in reversed(rows):
+            if r.get("gate") != "pass" and r.get("fingerprint") == fp:
+                streak += 1
+            else:
+                break
+        return fp, streak
+    except Exception:
+        return "", 0
 
 
 def read_watcher_challenge():
@@ -781,7 +825,11 @@ def main():
         # hand-survey/hand-edit.
         missing_ops = missing_bound_operators()
         if missing_ops:
-            write_handoff("bound operator missing: %s" % ", ".join(missing_ops), meta, body)
+            reason = "bound operator missing: %s" % ", ".join(missing_ops)
+            _call_simplicio_hbp_append_topic("loop-run-blocked", {
+                "fingerprint": _journal_stall()[0], "attempt": iteration, "reason": reason,
+            })
+            write_handoff(reason, meta, body)
             cleanup_and_stop()
 
         stdin = read_stdin_json()
@@ -791,6 +839,15 @@ def main():
         # Fallback attempt-memory record (#67) so the hierarchical planner is never blind to
         # this turn even if the agent forgot the manual `loop_journal.py record` call.
         auto_record_journal(iteration, has_evidence)
+
+        # HBP point: stall detected (#128) — when the trailing journal streak crosses the same
+        # K=3 threshold the stall detector/planner use, record it into the tamper-evident chain
+        # so a later `simplicio hbp verify` can prove WHEN the loop knew it was stuck. Fail-open.
+        stall_fp, stall_streak = _journal_stall()
+        if stall_streak >= 3:
+            _call_simplicio_hbp_append_topic("loop-stall-detected", {
+                "fingerprint": stall_fp, "attempt": iteration, "streak": stall_streak,
+            })
 
         # HRM-style hierarchical planner: re-assess phase on stall or every N iterations.
         # Runs BEFORE the promise gate so the phase context is available.
@@ -824,6 +881,10 @@ def main():
             cleanup_and_stop()
         # (4) Iteration cap — incomplete stop, hand off.
         if max_iter > 0 and iteration >= max_iter:
+            _call_simplicio_hbp_append_topic("loop-run-blocked", {
+                "fingerprint": _journal_stall()[0], "attempt": iteration,
+                "reason": "max_iterations cap reached",
+            })
             write_handoff("max_iterations cap reached", meta, body)
             cleanup_and_stop()
         # (5) Spindle handoff — latched handoff overrides re-feed.
