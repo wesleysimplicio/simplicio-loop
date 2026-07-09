@@ -95,6 +95,7 @@ DEFAULT_K = 3
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 from toon_codec import encode_toon, decode_toon  # noqa: E402 — prompt-facing render only, same pattern as task_anchor.py
+from _locked_append import locked_append_line  # noqa: E402 — cross-process safe append (#127)
 
 # Brown-Hilbert port.port.port addressing for the delegation tree.
 # Root is "R". Children append their index: bh_address("R", 0) -> "R.0".
@@ -211,10 +212,15 @@ def _git_head():
 
 
 def _load():
+    """Return (rows, corrupt_count). A truncated/illegible line (e.g. a torn write from a
+    pre-lock era, or a foreign writer) is COUNTED, never silently dropped — callers surface
+    `corrupt_count` in their summary output instead of pretending the journal is pristine (#127).
+    """
     rows = []
+    corrupt = 0
     if not os.path.exists(JOURNAL):
-        return rows
-    with open(JOURNAL, encoding="utf-8") as f:
+        return rows, corrupt
+    with open(JOURNAL, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -222,8 +228,20 @@ def _load():
             try:
                 rows.append(json.loads(line))
             except ValueError:
-                continue  # one corrupt record must not lose the journal
-    return rows
+                corrupt += 1  # one corrupt record must not lose the journal
+    return rows, corrupt
+
+
+def _warn_corrupt(corrupt):
+    """Fail-open stderr warning when the journal has corrupt lines — never silent, never fatal."""
+    if corrupt:
+        log("UNVERIFIED|journal: %d corrupt/truncated line(s) skipped (see stderr)" % corrupt)
+        try:
+            sys.stderr.write(
+                "loop_journal: WARNING — %d corrupt/truncated journal line(s) skipped\n" % corrupt
+            )
+        except Exception:
+            pass
 
 
 def _clean(value):
@@ -310,8 +328,12 @@ def cmd_record(opts):
         opts.get("_now") or _now(),
     )
     tag = "MEASURED|" if rec["gate"] == "pass" else "UNVERIFIED|"
-    with open(JOURNAL, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    # locked, cross-process-safe append (#127): flush+fsync before the lock releases, so a
+    # concurrent reader never observes a half-written line. FAIL-OPEN on a lock timeout — the
+    # write is SKIPPED (never partial, never unlocked), never silently pretended to have happened.
+    wrote = locked_append_line(JOURNAL, json.dumps(rec, ensure_ascii=False))
+    if not wrote:
+        log("UNVERIFIED|record: SKIPPED — could not acquire the journal lock in time")
     log("%srecorded iter=%d gate=%s fp=%s action=%r" % (
         tag, rec["iteration"], rec["gate"], rec["fingerprint"] or "-", rec["action"][:50]))
     lineage = _lineage_summary(rec)
@@ -321,7 +343,7 @@ def cmd_record(opts):
         log("%sblocked: %s" % (tag, rec["blocked_reason"][:96]))
     if rec.get("next_action"):
         log("%snext: %s" % (tag, rec["next_action"][:96]))
-    print("%srecorded" % tag)
+    print("%srecorded" % tag if wrote else "UNVERIFIED|record-skipped")
 
 
 def cmd_fingerprint(opts):
@@ -377,15 +399,17 @@ def analyze(rows, k=DEFAULT_K):
 
 def cmd_stall(opts):
     k = int(opts.get("k", DEFAULT_K))
-    a = analyze(_load(), k)
+    rows, corrupt = _load()
+    a = analyze(rows, k)
     fmt = (opts.get("format") or ("json" if opts.get("json") else "text")).strip().lower()
+    display = dict(a, corrupt_lines=corrupt)  # display-only copy — analyze()'s own contract is untouched
     if fmt == "toon":
         # TOON (Token-Oriented Object Notation, github.com/toon-format/toon): same verdict payload
         # as --format json, rendered leaner for the per-turn prompt re-feed (#92, mirrors
         # task_anchor.py check --format toon, #88/#91). Never changes the on-disk journal itself.
-        print(encode_toon(a))
+        print(encode_toon(display))
     elif fmt == "json":
-        print(json.dumps(a, indent=2))
+        print(json.dumps(display, indent=2))
     else:
         # verdict is MEASURED (concrete fingerprint data from the journal)
         print("MEASURED|%s" % a["verdict"].lower())
@@ -395,15 +419,17 @@ def cmd_stall(opts):
             log("UNVERIFIED|recommend: %s — do NOT re-feed the same goal into the same failure" % a["recommend"])
             if a["dead_ends"]:
                 log("MEASURED|dead-end actions (already tried, same failure): %s" % "; ".join(a["dead_ends"]))
+        _warn_corrupt(corrupt)
     if opts.get("exit-code") and a["verdict"] == "STALLED":
         sys.exit(10)
 
 
 def cmd_resume(opts):
     """The read every turn should START with — what was tried, so we never repeat a dead-end."""
-    rows = _load()
+    rows, corrupt = _load()
     if not rows:
         print("UNVERIFIED|resume: fresh loop — no prior attempts")
+        _warn_corrupt(corrupt)
         return
     a = analyze(rows, int(opts.get("k", DEFAULT_K)))
     passed = [r for r in rows if r.get("gate") == "pass"]
@@ -430,15 +456,19 @@ def cmd_resume(opts):
         log("MEASURED|AVOID (dead-ends): %s" % "; ".join(a["dead_ends"]))
     if passed:
         log("MEASURED|resolved fingerprints so far: %d" % len({r.get("fingerprint") for r in passed}))
+    _warn_corrupt(corrupt)
 
 
 def cmd_status(opts):
-    rows = _load()
+    rows, corrupt = _load()
     n = int(opts.get("n", 10))
     if not rows:
         print("UNVERIFIED|journal empty")
+        _warn_corrupt(corrupt)
         return
-    print("MEASURED|journal: %d records (last %d):" % (len(rows), min(n, len(rows))))
+    print("MEASURED|journal: %d records (last %d)%s:" % (
+        len(rows), min(n, len(rows)),
+        " · %d corrupt line(s) skipped" % corrupt if corrupt else ""))
     for r in rows[-n:]:
         suffix = _lineage_summary(r)
         if r.get("next_action"):
@@ -460,7 +490,8 @@ def cmd_since(opts):
     The last journal record stamped the HEAD commit; `since` diffs that commit -> now plus the
     working-tree changes. A turn reads this instead of re-surveying the whole tree every time.
     """
-    rows = _load()
+    rows, corrupt = _load()
+    _warn_corrupt(corrupt)
     base = ""
     for r in reversed(rows):
         if r.get("commit"):
@@ -507,7 +538,8 @@ def cmd_delegation(opts):
     Records **without** a ``bh_address`` are grouped under an ``(unassigned)``
     pseudo-root.
     """
-    rows = _load()
+    rows, corrupt = _load()
+    _warn_corrupt(corrupt)
     # Collect records that have a BH address
     nodes = {}  # addr -> list of records
     unnamed = []

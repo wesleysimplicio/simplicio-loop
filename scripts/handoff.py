@@ -31,6 +31,11 @@ import subprocess
 import sys
 import time
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+from _locked_append import locked_append_line  # noqa: E402 — cross-process safe append (#127)
+
 LOOP_DIR = os.path.join(".orchestrator", "loop")
 SPINDLE_STATE = os.path.join(LOOP_DIR, "spindle_state.json")
 LEGACY_SPINDLE_STATE = os.path.join(LOOP_DIR, "spindle.json")
@@ -104,13 +109,18 @@ def _write_spindle(spindle: dict):
 
 
 def _append_event(event: dict):
-    """Append one event to the handoffs/ log (append-only, JSONL)."""
+    """Append one event to the handoffs/ log (append-only, JSONL).
+
+    Locked, cross-process-safe append (#127): concurrent handoff/confirm calls from different
+    agents/workers can no longer interleave into a torn line. FAIL-OPEN on a lock timeout — the
+    event is skipped (never partially written), which matches this function's existing contract
+    ("logging must never block").
+    """
     _ensure_dirs()
     log_path = os.path.join(HANDOFFS_DIR, "events.jsonl")
     event["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, sort_keys=True) + "\n")
+        locked_append_line(log_path, json.dumps(event, sort_keys=True))
     except OSError:
         pass  # fail-open: logging must never block
 
@@ -270,7 +280,9 @@ def cmd_status(verbose: bool = True):
 
 
 def cmd_events(limit: int = 20):
-    """Show the recent handoff event log."""
+    """Show the recent handoff event log. Tolerant reader (#127): a truncated/illegible line
+    (e.g. a torn write from a pre-lock era, or a foreign writer) is COUNTED and warned about,
+    never silently dropped."""
     log_path = os.path.join(HANDOFFS_DIR, "events.jsonl")
     if not os.path.exists(log_path):
         print("No handoff events recorded yet.")
@@ -278,13 +290,18 @@ def cmd_events(limit: int = 20):
     try:
         with open(log_path, encoding="utf-8") as f:
             lines = [ln for ln in f if ln.strip()]
+        corrupt = 0
         for ln in lines[-limit:]:
             try:
                 ev = json.loads(ln)
                 ts = ev.pop("ts", "?")
                 sys.stdout.write("[%s] %s\n" % (ts, json.dumps(ev)))
             except Exception:
-                sys.stdout.write(ln)
+                corrupt += 1
+        if corrupt:
+            sys.stderr.write(
+                "handoff: WARNING — %d corrupt/truncated event line(s) skipped\n" % corrupt
+            )
     except OSError:
         print("error: could not read event log", file=sys.stderr)
         sys.exit(1)
