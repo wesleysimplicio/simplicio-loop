@@ -225,6 +225,54 @@ def test_backlog_next_reclaims_stale_lease_for_other_worker(tmp_path):
     assert first2["status"] == "claimed"
 
 
+def test_backlog_next_serializes_same_plan_file_conflicts(tmp_path):
+    item_file = tmp_path / "items.json"
+    item_file.write_text(json.dumps([
+        {"id": "T1", "goal": "Edit shared module", "acs": ["A real criterion"], "priority": 10,
+         "plan_files": ["src/shared.py"]},
+        {"id": "T2", "goal": "Also edit shared module", "acs": ["Another real criterion"], "priority": 20,
+         "plan_files": ["src/shared.py"]},
+        {"id": "T3", "goal": "Independent file", "acs": ["Third real criterion"], "priority": 30,
+         "plan_files": ["src/other.py"]},
+    ]), encoding="utf-8")
+    env = {"SIMPLICIO_BACKLOG_FILE": str(tmp_path / "backlog.jsonl")}
+    r = _run(["init", "--goal", "Drain Phase 0", "--item-file", str(item_file)], str(tmp_path), env)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    first = _run(["next", "--worker", "w1", "--lease-ttl", "120"], str(tmp_path), env)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert first.stdout.startswith("T1\t"), first.stdout
+
+    second = _run(["next", "--worker", "w2", "--lease-ttl", "120"], str(tmp_path), env)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert second.stdout.startswith("T3\t"), second.stdout
+
+    third = _run(["next", "--worker", "w3", "--lease-ttl", "120"], str(tmp_path), env)
+    assert third.returncode == 0, third.stdout + third.stderr
+    assert "no ready items" in third.stdout, third.stdout
+
+
+def test_backlog_next_allows_parallel_claim_for_independent_plan_files(tmp_path):
+    item_file = tmp_path / "items.json"
+    item_file.write_text(json.dumps([
+        {"id": "T1", "goal": "Edit file A", "acs": ["A real criterion"], "priority": 10,
+         "plan_files": ["src/a.py"]},
+        {"id": "T2", "goal": "Edit file B", "acs": ["Another real criterion"], "priority": 20,
+         "plan_files": ["src/b.py"]},
+    ]), encoding="utf-8")
+    env = {"SIMPLICIO_BACKLOG_FILE": str(tmp_path / "backlog.jsonl")}
+    r = _run(["init", "--goal", "Drain Phase 0", "--item-file", str(item_file)], str(tmp_path), env)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    first = _run(["next", "--worker", "w1", "--lease-ttl", "120"], str(tmp_path), env)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert first.stdout.startswith("T1\t"), first.stdout
+
+    second = _run(["next", "--worker", "w2", "--lease-ttl", "120"], str(tmp_path), env)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert second.stdout.startswith("T2\t"), second.stdout
+
+
 def test_backlog_fail_moves_to_dead_letter_after_distinct_failures(tmp_path):
     item_file = tmp_path / "items.json"
     item_file.write_text(json.dumps([
