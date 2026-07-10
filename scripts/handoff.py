@@ -37,6 +37,11 @@ try:
 except Exception:
     pass
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+from _locked_append import locked_append_line  # noqa: E402 — cross-process safe append (#127)
+
 LOOP_DIR = os.path.join(".orchestrator", "loop")
 SPINDLE_STATE = os.path.join(LOOP_DIR, "spindle_state.json")
 LEGACY_SPINDLE_STATE = os.path.join(LOOP_DIR, "spindle.json")
@@ -110,13 +115,18 @@ def _write_spindle(spindle: dict):
 
 
 def _append_event(event: dict):
-    """Append one event to the handoffs/ log (append-only, JSONL)."""
+    """Append one event to the handoffs/ log (append-only, JSONL).
+
+    Locked, cross-process-safe append (#127): concurrent handoff/confirm calls from different
+    agents/workers can no longer interleave into a torn line. FAIL-OPEN on a lock timeout — the
+    event is skipped (never partially written), which matches this function's existing contract
+    ("logging must never block").
+    """
     _ensure_dirs()
     log_path = os.path.join(HANDOFFS_DIR, "events.jsonl")
     event["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, sort_keys=True) + "\n")
+        locked_append_line(log_path, json.dumps(event, sort_keys=True))
     except OSError:
         pass  # fail-open: logging must never block
 

@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOK = os.path.join(REPO, "hooks", "loop_stop.py")
@@ -70,8 +71,27 @@ def _append_attempt(root, record):
 def _install_runtime_scripts(root):
     scripts_dir = os.path.join(root, "scripts")
     os.makedirs(scripts_dir, exist_ok=True)
-    for name in ("cross_agent_wiki.py", "hierarchical_planner.py"):
+    for name in ("cross_agent_wiki.py", "hierarchical_planner.py", "completion_oracle.py"):
         shutil.copy2(os.path.join(REPO, "scripts", name), os.path.join(scripts_dir, name))
+
+
+def _tick_hook(root, hook_path, response_text, mode="cursor", env=None):
+    full_env = dict(os.environ)
+    if env:
+        full_env.update(env)
+    current_py = full_env.get("PYTHONPATH", "").strip()
+    full_env["PYTHONPATH"] = REPO if not current_py else f"{REPO}{os.pathsep}{current_py}"
+    if mode == "cursor":
+        return subprocess.run([sys.executable, hook_path], input=json.dumps({"text": response_text}),
+                              capture_output=True, text=True, cwd=root, env=full_env)
+    transcript = Path(root) / "transcript.jsonl"
+    transcript.write_text(json.dumps({
+        "role": "assistant",
+        "message": {"content": [{"text": response_text}]}
+    }) + "\n", encoding="utf-8")
+    return subprocess.run([sys.executable, hook_path],
+                          input=json.dumps({"transcript_path": str(transcript)}),
+                          capture_output=True, text=True, cwd=root, env=full_env)
 
 
 def _write_watcher_challenge(root, challenge="chal-1", goal_fp="", written_at="2026-07-01T00:00:00Z"):
@@ -367,6 +387,62 @@ def test_handoff_includes_completion_oracle_reason_when_present(tmp_path):
     body = open(handoff, encoding="utf-8").read()
     assert "## Completion oracle" in body
     assert "reason_code: promise_not_exact" in body
+
+
+def test_completion_parity_between_source_bundle_and_cursor_claude_success(tmp_path):
+    hook_paths = [
+        os.path.join(REPO, "hooks", "loop_stop.py"),
+        os.path.join(REPO, "simplicio_loop", "_bundle", "hooks", "loop_stop.py"),
+    ]
+    results = []
+    for idx, hook_path in enumerate(hook_paths):
+        for mode in ("cursor", "claude"):
+            root = str(tmp_path / f"case-{idx}-{mode}")
+            os.makedirs(root, exist_ok=True)
+            _install_runtime_scripts(root)
+            _arm(root)
+            _write_watcher_pass(root, challenge="same-fixture")
+            _write_anchor(root, [{"id": "AC1", "status": "done"}])
+            run_dir = _seed_verified_run(root)
+            result = _tick_hook(
+                root,
+                hook_path,
+                "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ https://github.com/o/r/pull/9",
+                mode=mode,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            results.append({
+                "stdout": result.stdout.strip(),
+                "scratchpad_exists": os.path.exists(_scratchpad(root)),
+                "completion_receipt": os.path.exists(os.path.join(run_dir, "completion-receipt.json")),
+            })
+    assert all(item["stdout"] == "" for item in results)
+    assert all(item["scratchpad_exists"] is False for item in results)
+    assert all(item["completion_receipt"] is True for item in results)
+
+
+def test_completion_parity_between_source_bundle_and_cursor_claude_rejects_bare_done_flag(tmp_path):
+    hook_paths = [
+        os.path.join(REPO, "hooks", "loop_stop.py"),
+        os.path.join(REPO, "simplicio_loop", "_bundle", "hooks", "loop_stop.py"),
+    ]
+    results = []
+    for idx, hook_path in enumerate(hook_paths):
+        for mode in ("cursor", "claude"):
+            root = str(tmp_path / f"reject-{idx}-{mode}")
+            os.makedirs(root, exist_ok=True)
+            _install_runtime_scripts(root)
+            loop = _arm(root)
+            open(os.path.join(loop, "done.flag"), "w").close()
+            result = _tick_hook(root, hook_path, "anything", mode=mode)
+            assert result.returncode == 0, result.stdout + result.stderr
+            results.append({
+                "scratchpad_exists": os.path.exists(_scratchpad(root)),
+                "followup": "followup_message" in result.stdout,
+                "block": '"decision": "block"' in result.stdout or '"decision":"block"' in result.stdout,
+            })
+    assert all(item["scratchpad_exists"] is True for item in results)
+    assert all(item["followup"] or item["block"] for item in results)
 
 
 def test_watcher_receipt_without_challenge_does_not_stop(tmp_path):

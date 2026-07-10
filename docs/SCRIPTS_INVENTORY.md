@@ -30,6 +30,7 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 | `update.sh` | manual update entrypoint (re-runs the install flow against a newer release) | active |
 | `loop_journal.py` | SKILL.md § The loop contract / § Run-journal + stall detector; `hooks/loop_stop.py` | active |
 | `task_anchor.py` | SKILL.md § The loop contract step 2; `hooks/loop_stop.py` (DoD gate) | active |
+| `task_backlog.py` | SKILL.md § Phase 0 — intake & decomposition (frozen multi-item backlog above the anchor; genesis guard; `next`/`done` drain gate) | active |
 | `watcher_verify.py` | SKILL.md § The loop contract step 3 (watcher-gate); `hooks/loop_stop.py` | active |
 | `hierarchical_planner.py` | SKILL.md § HRM-style hierarchical planner; `hooks/loop_stop.py` (`plan` before re-feed) | active |
 | `cross_agent_wiki.py` | SKILL.md § Cross-agent persistent wiki (per-turn capture) | active |

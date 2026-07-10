@@ -8,7 +8,7 @@ runtimes.
 
 | Skill | Role |
 |---|---|
-| `simplicio-loop` | unified public entrypoint: orchestrator core + hardened Ralph loop — re-feed the goal until an evidence-gated `<promise>` or a cap; durable run-journal (attempt memory) + stall detector (`scripts/loop_journal.py`) so it switches strategy instead of oscillating, plus a **task anchor** (`scripts/task_anchor.py`) — durable memory for SCOPE that freezes the acceptance criteria and blocks drift / "done" while any AC is unverified |
+| `simplicio-loop` | unified public entrypoint: orchestrator core + hardened Ralph loop — re-feed the goal until an evidence-gated `<promise>` or a cap; durable run-journal (attempt memory) + stall detector (`scripts/loop_journal.py`) so it switches strategy instead of oscillating, plus a **task anchor** (`scripts/task_anchor.py`) — durable memory for SCOPE that freezes the acceptance criteria and blocks drift / "done" while any AC is unverified — and, above it, a **task backlog** (`scripts/task_backlog.py`, SKILL.md § Phase 0): the frozen multi-item LLM decomposition (per-item ACs + `depends_on`), genesis-aware (an empty repo leads with a `scaffold` item), whose `done` is gated on the verified anchor |
 | `simplicio-tasks` | legacy alias kept only for compatibility with older installs and saved prompts |
 | `simplicio-orient` | terminal-first token economy — output-reduction catalog, tee-cache, signatures-read |
 | `simplicio-review` | thermos-style parallel adversarial review on distinct rubrics → deduped verdict |

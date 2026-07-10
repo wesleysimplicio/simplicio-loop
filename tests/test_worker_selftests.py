@@ -60,6 +60,12 @@ def test_task_anchor_selftest():
     assert "PASS" in r.stdout, r.stdout
 
 
+def test_task_backlog_selftest():
+    r = _run("scripts/task_backlog.py", "selftest")
+    assert r.returncode == 0, "task_backlog selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
 def test_pr_evidence_selftest():
     r = _run("scripts/pr_evidence.py", "selftest")
     assert r.returncode == 0, "pr_evidence selftest failed:\n%s%s" % (r.stdout, r.stderr)

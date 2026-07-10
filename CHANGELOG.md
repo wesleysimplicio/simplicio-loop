@@ -3,7 +3,63 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
-## [Unreleased]
+## [3.24.0] — 2026-07-09
+
+### Added
+- **Cross-process locking for shared JSONL logs** (`scripts/_locked_append.py`, #127): the one
+  place any worker in this repo appends a line to a shared JSONL log (`scripts/loop_journal.py`'s
+  run journal, `scripts/handoff.py`'s event log). POSIX `fcntl.flock` / Windows `msvcrt.locking`
+  on a sidecar `<path>.lock` file, `flush()` + `os.fsync()` before releasing the lock, bounded
+  acquisition (default 2000ms) that fails OPEN on timeout (write skipped, never partial, a
+  one-line degrade note on stderr) so a stuck/leaked lock never wedges a caller. Paired
+  tolerant-reader helper `count_jsonl_lines` counts valid vs. corrupt/truncated lines instead of
+  silently dropping them; `loop_journal.py` and `handoff.py` now surface a corrupt-line count
+  warning instead of swallowing torn writes. Covered by `tests/test_locked_append.py`.
+- **Run-journal consumes dev-cli events + three new HBP evidence topics** (#128):
+  `scripts/loop_journal.py stall` now optionally folds in the dev-cli's own
+  `.simplicio/events.jsonl` (schema `simplicio.dev-cli-event/v1`, `--events-root DIR` override) —
+  a repeated `validation_fail` on the same target streaks like a repeated journal failure;
+  `edit_applied`/`task_complete` reset the streak. Read-only, fail-open (no events file = behavior
+  unchanged), no import of dev-cli code. The HBP evidence chain gains three new topics:
+  `loop-stall-detected` (a 3-deep same-fingerprint streak), `loop-run-blocked` (cap-reached stop or
+  a missing bound operator), and `loop-gate-blocked` (a gate BLOCK verdict). Covered by
+  `tests/test_hbp_topics.py`.
+
+### Fixed
+- `_changed_files` no longer includes `.simplicio/` runtime state (dev-cli's own event/ledger
+  writes) when computing what a turn changed — those are the operator's own bookkeeping, not
+  agent-authored diff.
+
+### Changed
+- Operator dependency floors raised to match the paired releases: `simplicio-mapper>=0.19.0`,
+  `simplicio-cli>=0.11.0`.
+
+## [3.23.0] — 2026-07-07
+
+### Added
+- **Phase 0 — intake & decomposition + genesis mode** (`scripts/task_backlog.py`):
+  a new deterministic worker that freezes, orders and gates a vague goal's
+  LLM-brainstormed multi-item decomposition ABOVE the per-item task anchor
+  (state: `.orchestrator/backlog/backlog.jsonl`, override
+  `$SIMPLICIO_BACKLOG_FILE`). Fail-closed `init` (refuses an empty plan, a
+  zero-AC item, unknown/cyclic `depends_on`; a changed master goal needs
+  `--force`; re-`init` with the same goal preserves per-item progress);
+  a standalone `genesis` detector (exit 10 on a no-code repo) with enforcement
+  — on a genesis repo `init` demands `--genesis` plus exactly one
+  `scaffold`-tagged item, reorders it to T1 and makes every other item depend
+  on it; `next` claims one item at a time (honoring `depends_on`) and prints
+  the ready `task_anchor.py set` arming command; `done` refuses (exit 12)
+  unless the armed anchor IS that item with every AC verified; `skip`
+  quarantines with a mandatory reason; an exact `empty` from `next` is the
+  drain-mode dry signal. Fingerprints reuse `task_anchor.goal_fingerprint`, so
+  the `done`↔anchor coupling is byte-exact. Covered by
+  `tests/test_task_backlog.py` (8 e2e cases) + a pure `selftest`; registered
+  in `claims_audit.py` `SELFTEST_SCRIPTS`, `tests/test_worker_selftests.py`,
+  `tests/test_worker_cli_contract.py`, and `docs/SCRIPTS_INVENTORY.md`.
+  Docs: SKILL.md § Phase 0 — intake & decomposition, `orchestration.md`
+  (vague-goal source row + Step 2b branch), `extension-points.md`
+  (`plan`/`decide`, `intake`, `work_queue`, `dependency_graph` cells + the
+  `backlog.jsonl` state-file owner row — the 48-point count is unchanged).
 
 ## [3.23.1] — 2026-07-07
 
