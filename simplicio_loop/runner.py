@@ -89,7 +89,7 @@ def _operator_env() -> Dict[str, str]:
 
 
 def _operator_timeout(kind: str) -> int:
-    default = 300 if kind == "dry_run" else 600
+    default = 60 if kind == "dry_run" else 600
     raw = os.environ.get("SIMPLICIO_LOOP_OPERATOR_TIMEOUT_SEC", "").strip()
     if not raw:
         return default

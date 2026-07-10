@@ -80,7 +80,7 @@ def test_operator_env_preserves_explicit_outer_configuration(monkeypatch):
 
 def test_operator_timeout_defaults_and_override(monkeypatch):
     monkeypatch.delenv("SIMPLICIO_LOOP_OPERATOR_TIMEOUT_SEC", raising=False)
-    assert runner_mod._operator_timeout("dry_run") == 300
+    assert runner_mod._operator_timeout("dry_run") == 60
     assert runner_mod._operator_timeout("execute") == 600
 
     monkeypatch.setenv("SIMPLICIO_LOOP_OPERATOR_TIMEOUT_SEC", "450")
