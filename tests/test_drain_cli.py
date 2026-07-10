@@ -125,3 +125,12 @@ def test_drain_cli_semantically_invalid_receipt_is_fail_closed_json(tmp_path):
     assert payload["verdict"] == "CONTINUE"
     assert payload["ready"] is False
     assert payload["reason_code"] == "receipt_invalid"
+
+
+def test_drain_cli_unknown_or_missing_action_is_fail_closed_json():
+    for args in (("unknown",), tuple()):
+        result, payload = _run("drain", *args)
+        assert result.returncode != 0
+        assert payload["verdict"] == "CONTINUE"
+        assert payload["ready"] is False
+        assert payload["reason_code"] == "action_invalid"
