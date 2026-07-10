@@ -1254,7 +1254,10 @@ def _prepare_worktree_contexts(normalized: List[Dict[str, Any]], worktree_queue:
         # Worktree workers get their own run tree; shared mode intentionally retains the
         # original path and is serialized by the isolation key below.
         if context["mode"] == "worktree" and context["path"]:
-            _persist_isolated_run_context(item, context)
+            try:
+                _persist_isolated_run_context(item, context)
+            except Exception as exc:
+                item["worktree_error"] = f"{type(exc).__name__}: {exc}"
             item["repo"] = context["path"]
             item["isolation_key"] = context["path"]
         else:
