@@ -1160,19 +1160,24 @@ def _worktree_task_spec(item: Mapping[str, Any]) -> Any:
 
 def _allocation_context(allocation: Any, item: Mapping[str, Any]) -> Dict[str, Any]:
     """Reduce an Allocation to JSON-safe, persisted operator context."""
+    def value(name: str, default: Any = "") -> Any:
+        if isinstance(allocation, Mapping):
+            return allocation.get(name, default)
+        return getattr(allocation, name, default)
+
     context = {
         "schema": "simplicio.operator-worktree-context/v1",
-        "task_id": str(getattr(allocation, "task_id", item.get("task_id") or "")),
-        "run_id": str(getattr(allocation, "run_id", item.get("run_id") or "")),
-        "mode": str(getattr(allocation, "mode", "worktree") or "worktree"),
-        "path": str(getattr(allocation, "path", "") or ""),
-        "branch": str(getattr(allocation, "branch", "") or ""),
-        "base_sha": str(getattr(allocation, "base_sha", "") or ""),
-        "head_sha": str(getattr(allocation, "head_sha", "") or ""),
-        "tree_sha": str(getattr(allocation, "tree_sha", "") or ""),
-        "lane": str(getattr(allocation, "lane", "") or ""),
-        "reattached": bool(getattr(allocation, "reattached", False)),
-        "lock_receipt": str(getattr(allocation, "lock_receipt", "") or ""),
+        "task_id": str(value("task_id", item.get("task_id") or "")),
+        "run_id": str(value("run_id", item.get("run_id") or "")),
+        "mode": str(value("mode", "worktree") or "worktree"),
+        "path": str(value("path", "") or ""),
+        "branch": str(value("branch", "") or ""),
+        "base_sha": str(value("base_sha", "") or ""),
+        "head_sha": str(value("head_sha", "") or ""),
+        "tree_sha": str(value("tree_sha", "") or ""),
+        "lane": str(value("lane", "") or ""),
+        "reattached": bool(value("reattached", False)),
+        "lock_receipt": str(value("lock_receipt", "") or ""),
         "source_repo": str(item.get("source_repo") or item.get("repo") or ""),
         "source_run_id": str(item.get("source_run_id") or item.get("run_id") or ""),
     }
