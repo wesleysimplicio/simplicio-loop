@@ -1169,7 +1169,7 @@ def _allocation_context(allocation: Any, item: Mapping[str, Any]) -> Dict[str, A
         "schema": "simplicio.operator-worktree-context/v1",
         "task_id": str(value("task_id", item.get("task_id") or "")),
         "run_id": str(value("run_id", item.get("run_id") or "")),
-        "mode": str(value("mode", "worktree") or "worktree"),
+        "mode": str(value("mode", item.get("isolation", "worktree")) or item.get("isolation", "worktree")),
         "path": str(value("path", "") or ""),
         "branch": str(value("branch", "") or ""),
         "base_sha": str(value("base_sha", "") or ""),
