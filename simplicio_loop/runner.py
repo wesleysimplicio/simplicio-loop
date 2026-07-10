@@ -1235,11 +1235,15 @@ def _prepare_worktree_contexts(normalized: List[Dict[str, Any]], worktree_queue:
         if isolation not in {"worktree", "shared"}:
             item["worktree_error"] = "ValueError: unsupported worktree isolation mode"
             continue
+        if isolation == "shared":
+            # WorktreeQueue intentionally holds one shared-checkout lock.  Defer allocation
+            # until this item reaches the serial worker lane so the next item can acquire it
+            # only after ``_release_shared_context`` runs.
+            item["worktree_deferred"] = True
+            item["isolation_key"] = "%s:%s" % (item.get("repo"), item.get("run_id"))
+            continue
         try:
-            if isolation == "shared":
-                allocation = worktree_queue.allocate(spec, isolation="shared", shared_policy=True)
-            else:
-                allocation = worktree_queue.allocate(spec)
+            allocation = worktree_queue.allocate(spec)
         except Exception as exc:
             item["worktree_error"] = f"{type(exc).__name__}: {exc}"
             continue
@@ -1263,6 +1267,25 @@ def _prepare_worktree_contexts(normalized: List[Dict[str, Any]], worktree_queue:
                 # Context persistence is a safety gate: do not run an unreceipted isolated
                 # worker.  This preserves fail-closed behavior without changing the API.
                 item["worktree_error"] = f"{type(exc).__name__}: {exc}"
+
+
+def _ensure_deferred_worktree_context(item: Dict[str, Any], worktree_queue: Any) -> None:
+    """Acquire one deferred shared-checkout lease immediately before execution."""
+    if not item.get("worktree_deferred") or item.get("worktree_context") or item.get("worktree_error"):
+        return
+    try:
+        spec = _worktree_task_spec(item)
+        allocation = worktree_queue.allocate(spec, isolation="shared", shared_policy=True)
+        context = _allocation_context(allocation, item)
+        item["worktree_context"] = context
+        item["source_repo"] = str(item.get("repo") or "")
+        item["source_run_id"] = str(item.get("run_id") or "")
+        _persist_isolated_run_context(item, context)
+        recorder = getattr(worktree_queue, "record_context", None)
+        if callable(recorder):
+            recorder(context["task_id"], context)
+    except Exception as exc:
+        item["worktree_error"] = f"{type(exc).__name__}: {exc}"
 
 
 def _release_shared_context(item: Mapping[str, Any], worktree_queue: Any) -> None:
@@ -1464,6 +1487,7 @@ def dispatch_operator_batch(
     def _run_item(item: Dict[str, Any]) -> List[Dict[str, Any]]:
         attempts: List[Dict[str, Any]] = []
         previous_fingerprint = ""
+        _ensure_deferred_worktree_context(item, worktree_queue)
         try:
             for attempt_no in range(1, retry_budget + 2):
                 record = _operator_dispatch_attempt(item)

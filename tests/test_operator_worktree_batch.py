@@ -13,12 +13,17 @@ class FakeQueue:
         self.allocations = []
         self.contexts = {}
         self.cleaned = []
+        self.shared_active = False
 
     def register_tasks(self, specs):
         self.registered = list(specs)
 
     def allocate(self, spec, isolation="worktree", shared_policy=False):
         assert isolation in ("worktree", "shared")
+        if isolation == "shared":
+            if self.shared_active:
+                raise RuntimeError("shared checkout already owned")
+            self.shared_active = True
         path = self.root if isolation == "shared" else self.root / spec.id
         if isolation == "worktree":
             path.mkdir(parents=True, exist_ok=True)
@@ -43,6 +48,7 @@ class FakeQueue:
 
     def teardown(self, task_id):
         self.cleaned.append(task_id)
+        self.shared_active = False
 
 
 def _success(repo, run_id, task_index):
@@ -134,4 +140,3 @@ def test_dispatch_queue_context_error_fails_closed(monkeypatch, tmp_path):
     assert not calls
     assert result["failed_task_indices"] == [1]
     assert result["workers"][0]["reason_code"] == "worktree_context_unpersisted"
-
