@@ -106,3 +106,22 @@ def test_drain_cli_missing_receipt_is_fail_closed_json(tmp_path):
     assert payload["ready"] is False
     assert payload["reason_code"] == "receipt_missing"
 
+
+def test_drain_cli_semantically_invalid_receipt_is_fail_closed_json(tmp_path):
+    receipt = tmp_path / "invalid.json"
+    receipt.write_text(
+        json.dumps({
+            "schema": "simplicio.drain-receipt/v1",
+            "verdict": "DRAINED",
+            "ready": True,
+            # Missing tag and evidence fields must not be exposed as success.
+        }),
+        encoding="utf-8",
+    )
+
+    result, payload = _run("drain", "load", "--receipt", str(receipt))
+
+    assert result.returncode != 0
+    assert payload["verdict"] == "CONTINUE"
+    assert payload["ready"] is False
+    assert payload["reason_code"] == "receipt_invalid"

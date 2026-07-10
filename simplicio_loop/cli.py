@@ -274,6 +274,19 @@ def _read_drain_snapshot(path: str):
     return payload, None
 
 
+def _valid_drain_result(payload) -> bool:
+    """Check the minimum result envelope before exposing a loaded receipt."""
+    if not isinstance(payload, dict) or payload.get("schema") != DRAIN_SCHEMA:
+        return False
+    if payload.get("verdict") not in {"DRAINED", "CONTINUE", "BLOCKED"}:
+        return False
+    if not isinstance(payload.get("ready"), bool):
+        return False
+    if payload.get("tag") not in {"MEASURED", "UNVERIFIED"}:
+        return False
+    return not (payload["ready"] and payload["verdict"] != "DRAINED")
+
+
 def drain(action: str, snapshot_path: str, receipt_path: str, polls_required: int) -> int:
     """Evaluate, persist, or load a drain receipt and emit exactly one JSON value.
 
@@ -326,6 +339,10 @@ def drain(action: str, snapshot_path: str, receipt_path: str, polls_required: in
             return 2
         if result is None:
             print(json.dumps(_drain_cli_failure("receipt_missing", "drain receipt does not exist"),
+                             ensure_ascii=False, sort_keys=True))
+            return 2
+        if not _valid_drain_result(result):
+            print(json.dumps(_drain_cli_failure("receipt_invalid", "drain receipt has an invalid result envelope"),
                              ensure_ascii=False, sort_keys=True))
             return 2
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
