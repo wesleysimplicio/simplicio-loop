@@ -349,6 +349,26 @@ def test_spindle_latched_writes_handoff_and_stops(tmp_path):
     assert "codex" in open(handoff, encoding="utf-8").read()
 
 
+def test_handoff_includes_completion_oracle_reason_when_present(tmp_path):
+    root = str(tmp_path)
+    _arm(root, iteration=5, max_iter=5)
+    run_dir = _seed_verified_run(root)
+    with open(os.path.join(run_dir, "completion-receipt.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "schema": "simplicio.completion-receipt/v1",
+            "ready": False,
+            "verdict": "DELIVERY_PENDING",
+            "reason_code": "watcher_mismatch",
+            "tag": "UNVERIFIED",
+        }, f)
+    r = _tick(root, "still going, no promise here")
+    assert r.stdout.strip() == ""
+    handoff = os.path.join(root, HANDOFF)
+    body = open(handoff, encoding="utf-8").read()
+    assert "## Completion oracle" in body
+    assert "reason_code: promise_not_exact" in body
+
+
 def test_watcher_receipt_without_challenge_does_not_stop(tmp_path):
     # #82: a plain, unauthenticated watcher_state.json (no challenge on disk at all) must NOT
     # satisfy the gate — this is exactly the one-Write-call spoof the challenge binding closes.

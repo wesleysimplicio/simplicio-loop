@@ -56,6 +56,32 @@ def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _default_completion_state() -> Dict[str, Any]:
+    return {
+        "ready": False,
+        "receipt": "",
+        "verdict": "DELIVERY_PENDING",
+        "reason_code": "oracle_incomplete",
+        "tag": "UNVERIFIED",
+    }
+
+
+def _completion_state(run_dir: Path, current: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    state = dict(current or _default_completion_state())
+    receipt_path = run_dir / "completion-receipt.json"
+    if not receipt_path.exists():
+        return state
+    payload = _load_json(receipt_path)
+    state.update({
+        "ready": bool(payload.get("ready", False)),
+        "receipt": str(receipt_path),
+        "verdict": payload.get("verdict", state.get("verdict", "DELIVERY_PENDING")),
+        "reason_code": payload.get("reason_code", state.get("reason_code", "oracle_incomplete")),
+        "tag": payload.get("tag", state.get("tag", "UNVERIFIED")),
+    })
+    return state
+
+
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -85,6 +111,9 @@ def _operator_env() -> Dict[str, str]:
         "SIMPLICIO_CODEX_EFFORT",
         os.environ.get("SIMPLICIO_LOOP_OPERATOR_EFFORT", "medium"),
     )
+    loop_test_cmd = os.environ.get("SIMPLICIO_LOOP_TEST_CMD", "").strip()
+    if loop_test_cmd and not env.get("SIMPLICIO_TEST_CMD", "").strip():
+        env["SIMPLICIO_TEST_CMD"] = loop_test_cmd
     return env
 
 
@@ -750,6 +779,7 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         "current_action": "task_contract_compiled",
         "next_action": "mapper_scan_required",
         "delivery": {"target": delivery, "current_state": "planned", "ready": False, "receipt": ""},
+        "completion": _default_completion_state(),
         "mapper": {"ready": False, "receipt": "", "targets": []},
         "operator": {"ready": False, "receipt": "", "target": "", "execution_state": "proposed"},
         "evidence": {"ready": False, "receipt": "", "status": "UNVERIFIED"},
@@ -1007,6 +1037,7 @@ def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:
         chosen = candidates[-1]
     manifest = _load_json(chosen / "manifest.json")
     state = _load_json(chosen / "state.json")
+    state["completion"] = _completion_state(chosen, state.get("completion"))
     return {
         "run_dir": str(chosen),
         "manifest": manifest,
@@ -1108,6 +1139,7 @@ def apply_human_decision(repo: str, run_id: str, decision_id: str, answer: str,
     state["operator"] = {"ready": False, "receipt": "", "target": "", "execution_state": "invalidated"}
     state["evidence"] = {"ready": False, "receipt": "", "status": "INVALIDATED"}
     state["delivery"] = {"target": state.get("delivery_target"), "current_state": "planned", "ready": False, "receipt": ""}
+    state["completion"] = _default_completion_state()
     state["blockers"] = []
     _write_json(run_dir / "state.json", state)
     _transition(run_dir, state, "awaiting_decision", "human decision applied; dependent artifacts invalidated",

@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from simplicio_loop import runner as runner_mod
+from simplicio_loop.oracle import persist_completion_receipt
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLI = [sys.executable, "-m", "simplicio_loop.cli"]
@@ -86,6 +87,15 @@ def test_operator_timeout_defaults_and_override(monkeypatch):
     monkeypatch.setenv("SIMPLICIO_LOOP_OPERATOR_TIMEOUT_SEC", "450")
     assert runner_mod._operator_timeout("dry_run") == 450
     assert runner_mod._operator_timeout("execute") == 450
+
+
+def test_operator_env_promotes_loop_test_cmd_when_test_cmd_missing(monkeypatch):
+    monkeypatch.delenv("SIMPLICIO_TEST_CMD", raising=False)
+    monkeypatch.setenv("SIMPLICIO_LOOP_TEST_CMD", "python -m pytest tests/python/test_task_spec.py -q")
+
+    env = runner_mod._operator_env()
+
+    assert env["SIMPLICIO_TEST_CMD"] == "python -m pytest tests/python/test_task_spec.py -q"
 
 
 def test_devcli_cmd_prefers_repo_checkout(tmp_path):
@@ -231,6 +241,7 @@ def test_run_arms_persisted_state_and_status_resume_cancel(tmp_path):
     assert status_payload["state"]["mapper"]["receipt"].endswith("mapper-context.json")
     assert status_payload["state"]["operator"]["receipt"].endswith("operator-receipt.json")
     assert status_payload["state"]["delivery"]["receipt"].endswith("delivery-receipt.json")
+    assert status_payload["state"]["completion"]["reason_code"] == "oracle_incomplete"
 
     resumed = _run(CLI + ["resume", "--repo", str(repo), run_id], REPO)
     assert resumed.returncode == 0, resumed.stdout + resumed.stderr
@@ -296,6 +307,58 @@ def test_cancel_rejects_terminal_cancelled_run(tmp_path):
     cancelled_again = _run(CLI + ["cancel", "--repo", str(repo), run_id], REPO)
     assert cancelled_again.returncode != 0, cancelled_again.stdout + cancelled_again.stderr
     assert "run already terminal" in cancelled_again.stderr or "run already terminal" in cancelled_again.stdout
+
+
+def test_status_surfaces_completion_receipt_reason_code(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src = repo / "src"
+    src.mkdir()
+    (src / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
+    task = tmp_path / "task.md"
+    task.write_text(TASK, encoding="utf-8")
+    fake_operator = json.dumps({
+        "execution_state": "dry_run",
+        "returncode": 0,
+        "stdout": {"kind": "operator-proposal", "ok": True},
+        "stderr": "",
+        "argv": ["simplicio-dev-cli", "task", "demo"]
+    })
+    fake_mapper_preflight = json.dumps({
+        "version_stdout": "simplicio-mapper 0.14.2",
+        "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
+        "version_returncode": 0,
+        "help_returncode": 0
+    })
+    fake_devcli_preflight = json.dumps({
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_returncode": 0
+    })
+    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
+                          "--delivery", "verified", "--max-iterations", "9"], REPO,
+                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
+                        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
+                        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight})
+    assert started.returncode == 0, started.stdout + started.stderr
+    payload = json.loads(started.stdout)
+    run_id = payload["manifest"]["run_id"]
+    run_dir = repo / ".orchestrator" / "runs" / run_id
+    loop_dir = run_dir / "loop"
+    receipt_payload = {
+        "ready": False,
+        "verdict": "DELIVERY_PENDING",
+        "reason_code": "watcher_mismatch",
+        "reason": "watcher receipt is not MEASURED/matching",
+        "tag": "UNVERIFIED",
+        "gates": [],
+    }
+    persist_completion_receipt(receipt_payload, str(loop_dir), str(run_dir))
+
+    status = _run(CLI + ["status", "--repo", str(repo), "--run-id", run_id], REPO)
+    assert status.returncode == 0, status.stdout + status.stderr
+    status_payload = json.loads(status.stdout)
+    assert status_payload["state"]["completion"]["receipt"].endswith("completion-receipt.json")
+    assert status_payload["state"]["completion"]["reason_code"] == "watcher_mismatch"
 
 
 def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path):

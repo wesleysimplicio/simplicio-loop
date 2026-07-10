@@ -223,6 +223,7 @@ def write_handoff(reason, meta=None, body=None):
         anchor = read_anchor() or {}
         criteria = anchor.get("criteria") or []
         attempts = tail_journal()
+        completion = latest_completion_receipt() or {}
         lines = [
             "# simplicio-loop handoff",
             "",
@@ -263,6 +264,16 @@ def write_handoff(reason, meta=None, body=None):
                         attempt_suffix(a),
                     )
                 )
+        if completion:
+            lines += [
+                "",
+                "## Completion oracle",
+                "",
+                "- verdict: %s" % completion.get("verdict", "DELIVERY_PENDING"),
+                "- reason_code: %s" % completion.get("reason_code", "oracle_incomplete"),
+                "- tag: %s" % completion.get("tag", "UNVERIFIED"),
+                "- receipt: %s" % completion.get("_path", "(unknown)"),
+            ]
         lines += [
             "",
             "## Resume",
@@ -650,6 +661,22 @@ def latest_run_dir():
         return str(candidates[-1]) if candidates else ""
     except Exception:
         return ""
+
+
+def latest_completion_receipt():
+    try:
+        run_dir = latest_run_dir()
+        if not run_dir:
+            return None
+        path = Path(run_dir) / "completion-receipt.json"
+        if not path.exists():
+            return None
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        payload["_path"] = str(path)
+        return payload
+    except Exception:
+        return None
 
 
 def completion_oracle_payload(response_text="", flow_gap=""):
