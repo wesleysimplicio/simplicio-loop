@@ -244,6 +244,60 @@ def test_run_arms_persisted_state_and_status_resume_cancel(tmp_path):
     assert cancelled_payload["state"]["phase"] == "cancelled"
 
 
+def test_resume_rejects_terminal_cancelled_run(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src = repo / "src"
+    src.mkdir()
+    (src / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
+    task = tmp_path / "task.md"
+    task.write_text(TASK, encoding="utf-8")
+    fake_operator = json.dumps({
+        "execution_state": "dry_run",
+        "returncode": 0,
+        "stdout": {"kind": "operator-proposal", "ok": True},
+        "stderr": "",
+        "argv": ["simplicio-dev-cli", "task", "demo"]
+    })
+    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task)], REPO,
+                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator})
+    assert started.returncode == 0, started.stdout + started.stderr
+    run_id = json.loads(started.stdout)["manifest"]["run_id"]
+    cancelled = _run(CLI + ["cancel", "--repo", str(repo), run_id], REPO)
+    assert cancelled.returncode == 0, cancelled.stdout + cancelled.stderr
+
+    resumed = _run(CLI + ["resume", "--repo", str(repo), run_id], REPO)
+    assert resumed.returncode != 0, resumed.stdout + resumed.stderr
+    assert "run already terminal" in resumed.stderr or "run already terminal" in resumed.stdout
+
+
+def test_cancel_rejects_terminal_cancelled_run(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src = repo / "src"
+    src.mkdir()
+    (src / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
+    task = tmp_path / "task.md"
+    task.write_text(TASK, encoding="utf-8")
+    fake_operator = json.dumps({
+        "execution_state": "dry_run",
+        "returncode": 0,
+        "stdout": {"kind": "operator-proposal", "ok": True},
+        "stderr": "",
+        "argv": ["simplicio-dev-cli", "task", "demo"]
+    })
+    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task)], REPO,
+                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator})
+    assert started.returncode == 0, started.stdout + started.stderr
+    run_id = json.loads(started.stdout)["manifest"]["run_id"]
+    cancelled = _run(CLI + ["cancel", "--repo", str(repo), run_id], REPO)
+    assert cancelled.returncode == 0, cancelled.stdout + cancelled.stderr
+
+    cancelled_again = _run(CLI + ["cancel", "--repo", str(repo), run_id], REPO)
+    assert cancelled_again.returncode != 0, cancelled_again.stdout + cancelled_again.stderr
+    assert "run already terminal" in cancelled_again.stderr or "run already terminal" in cancelled_again.stdout
+
+
 def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
