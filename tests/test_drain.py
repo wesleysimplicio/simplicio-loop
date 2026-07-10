@@ -16,12 +16,17 @@ def _task(task_id="T1", state="done", delivered=True, evidence=None):
             "watcher_status": "MEASURED",
             "watcher_match": True,
             "oracle_verdict": "COMPLETE",
+            "fresh": True,
+            "checked_at": "2026-07-10T20:00:00Z",
+            "contract_hash": "contract-T1",
+            "receipt_id": "receipt-T1",
+            "challenge": "challenge-1",
         },
     }
 
 
 def _snapshot(tasks, polls=("empty:1", "empty:1"), leases=0):
-    return {"tasks": tasks, "polls": list(polls), "active_leases": leases}
+    return {"tasks": tasks, "polls": list(polls), "active_leases": leases, "challenge": "challenge-1"}
 
 
 def test_drain_requires_two_identical_empty_polls():
@@ -33,6 +38,11 @@ def test_drain_requires_two_identical_empty_polls():
 def test_late_arrival_or_changed_source_keeps_queue_open():
     result = evaluate_drain(_snapshot([_task()], polls=("empty:1", "empty:2")))
     assert result["verdict"] == "CONTINUE"
+    assert result["reason_code"] == "source_not_quiet"
+
+
+def test_identical_non_empty_polls_cannot_drain():
+    result = evaluate_drain(_snapshot([_task()], polls=({"ready": 1}, {"ready": 1})))
     assert result["reason_code"] == "source_not_quiet"
 
 
@@ -51,6 +61,13 @@ def test_ready_blocked_dead_letter_and_running_tasks_never_count_as_drained():
 def test_done_task_requires_measured_watcher_oracle_and_delivery():
     stale = _task(evidence={"watcher_status": "UNVERIFIED", "watcher_match": False, "oracle_verdict": "CONTINUE"})
     result = evaluate_drain(_snapshot([stale]))
+    assert result["reason_code"] == "evidence_pending"
+
+    unbound = _task(evidence={
+        "watcher_status": "MEASURED", "watcher_match": True, "oracle_verdict": "COMPLETE",
+        "fresh": True, "checked_at": "2026-07-10T20:00:00Z", "contract_hash": "x",
+    })
+    result = evaluate_drain(_snapshot([unbound]))
     assert result["reason_code"] == "evidence_pending"
 
     undelivered = _task(delivered=False)
