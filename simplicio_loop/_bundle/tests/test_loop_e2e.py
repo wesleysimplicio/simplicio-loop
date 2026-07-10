@@ -304,12 +304,14 @@ def test_done_flag_with_valid_oracle_halts(tmp_path):
     with open(os.path.join(loop, "watcher_state.json"), "w", encoding="utf-8") as f:
         json.dump({"match": True, "status": "MEASURED", "checked_at": "2026-07-10T00:00:01Z",
                    "challenge": "done-ok", "goal_fp": ""}, f)
-    _seed_verified_run(root)
+    run_dir = _seed_verified_run(root)
     with open(os.path.join(loop, "last_response.txt"), "w", encoding="utf-8") as f:
         f.write("<promise>SIMPLICIO_DONE</promise>")
     r = _tick(root, "anything")
     assert r.stdout.strip() == ""
     assert not os.path.exists(_scratchpad(root)), "done.flag should stop only when oracle is green"
+    receipt = os.path.join(run_dir, "completion-receipt.json")
+    assert os.path.exists(receipt), "cleanup must happen only after the completion receipt is persisted"
 
 
 def test_gate_lock_fresh_allows_stop_without_consuming_iteration(tmp_path):

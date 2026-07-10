@@ -669,6 +669,8 @@ def completion_oracle_payload(response_text="", flow_gap=""):
             cmd += ["--response-text", response_text]
         if flow_gap:
             cmd += ["--flow-gap", flow_gap]
+        if run_dir:
+            cmd += ["--write-receipt"]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=repo_root)
         payload = json.loads(r.stdout) if (r.stdout or "").strip() else {}
         if isinstance(payload, dict):
@@ -852,13 +854,14 @@ def main():
         # on its own.
         if promise and resp:
             oracle = completion_oracle_payload(resp, flow_gap or "")
-            if oracle.get("ready"):
+            if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
                 _call_simplicio_hbp_append(iteration, promise, watcher_tag)
                 refresh_cross_agent_wiki(include_handoff=False)
                 cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
         # (3') Cursor capture may have raised the flag.
         if os.path.exists(DONE_FLAG) or os.path.exists(LEGACY_DONE_FLAG):
-            if completion_oracle_payload(flow_gap=flow_gap or "").get("ready"):
+            oracle = completion_oracle_payload(flow_gap=flow_gap or "")
+            if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
                 cleanup_and_stop()
         # (4) Iteration cap — incomplete stop, hand off.
         if max_iter > 0 and iteration >= max_iter:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -9,6 +10,7 @@ from .delivery import validate_delivery_receipt
 from .evidence import watcher_truth_from_receipt
 
 PROMISE_RE = re.compile(r"<promise>\s*(.*?)\s*</promise>", re.IGNORECASE | re.DOTALL)
+COMPLETION_SCHEMA = "simplicio.completion-receipt/v1"
 
 
 def _gate(name: str, ok: bool, reason_code: str, detail: str) -> Dict[str, Any]:
@@ -123,6 +125,48 @@ def _run_artifacts_gate(run_dir: Path) -> Tuple[bool, List[Dict[str, Any]], Dict
     if not validation["ok"]:
         return False, gates, loaded
     return True, gates, loaded
+
+
+def completion_receipt_path(run_dir: str) -> Path:
+    return Path(run_dir) / "completion-receipt.json"
+
+
+def persist_completion_receipt(payload: Dict[str, Any], loop_dir: str, run_dir: str = "") -> str:
+    loop = Path(loop_dir)
+    run = Path(run_dir) if run_dir else None
+    challenge = _load_json(loop / "watcher_challenge.json") or {}
+    watcher_state = _load_json(loop / "watcher_state.json") or {}
+    anchor = _load_json(loop / "anchor.json") or {}
+    out = {
+        "schema": COMPLETION_SCHEMA,
+        "ready": bool(payload.get("ready")),
+        "verdict": payload.get("verdict", "DELIVERY_PENDING"),
+        "reason_code": payload.get("reason_code", "oracle_incomplete"),
+        "reason": payload.get("reason", "completion gates not satisfied"),
+        "tag": payload.get("tag", "UNVERIFIED"),
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "loop_dir": str(loop),
+        "run_dir": str(run) if run else "",
+        "run_id": run.name if run else "",
+        "challenge": challenge.get("challenge", ""),
+        "goal_fp": challenge.get("goal_fp") or anchor.get("goal_fp") or "",
+        "watcher_status": watcher_state.get("status", "UNVERIFIED"),
+        "watcher_match": bool(watcher_state.get("match", False)),
+        "gates": payload.get("gates", []),
+    }
+    if run:
+        out["artifacts"] = {
+            "manifest": str(run / "manifest.json"),
+            "evidence_receipt": str(run / "evidence-receipt.json"),
+            "delivery_receipt": str(run / "delivery-receipt.json"),
+        }
+        path = completion_receipt_path(str(run))
+    else:
+        path = loop / "completion-receipt.json"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return str(path)
 
 
 def evaluate_completion(loop_dir: str, run_dir: str = "", response_text: str = "",

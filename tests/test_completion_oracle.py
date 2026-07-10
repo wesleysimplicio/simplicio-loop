@@ -273,6 +273,46 @@ def test_oracle_requires_release_proofs_for_released_target(tmp_path):
     assert payload["reason_code"] == "install_smoke_failed"
 
 
+def test_oracle_writes_completion_receipt_bound_to_run_and_challenge(tmp_path):
+    loop = tmp_path / ".orchestrator" / "loop"
+    loop.mkdir(parents=True)
+    run_dir = tmp_path / ".orchestrator" / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    _seed_loop(loop)
+    _seed_run(run_dir)
+    (run_dir / "evidence-receipt.json").write_text(json.dumps({
+        "schema": "simplicio.evidence-receipt/v1",
+        "status": "VERIFIED",
+        "criteria": [{"id": "AC1", "verification_state": "verified"}],
+        "summary": {"criteria_total": 1, "criteria_verified": 1,
+                    "scenario_total": 1, "scenario_verified": 1, "rule_total": 1, "rule_verified": 1}
+    }), encoding="utf-8")
+    (run_dir / "delivery-receipt.json").write_text(json.dumps({
+        "schema": "simplicio.delivery-receipt/v1",
+        "target": "verified",
+        "current_state": "verified",
+        "ready": True,
+        "source_kind": "local",
+        "source_payload": {
+            "evidence_receipt": "evidence-receipt.json",
+            "criteria_verified": 1
+        }
+    }), encoding="utf-8")
+    ok = _run(["--loop-dir", str(loop), "--run-dir", str(run_dir),
+               "--response-text", "<promise>SIMPLICIO_DONE</promise>", "--write-receipt"], str(tmp_path))
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    payload = json.loads(ok.stdout)
+    receipt_path = run_dir / "completion-receipt.json"
+    assert payload["receipt_path"] == str(receipt_path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["schema"] == "simplicio.completion-receipt/v1"
+    assert receipt["ready"] is True
+    assert receipt["verdict"] == "COMPLETE"
+    assert receipt["run_id"] == "r1"
+    assert receipt["challenge"] == "abc"
+    assert receipt["artifacts"]["delivery_receipt"].endswith("delivery-receipt.json")
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module
