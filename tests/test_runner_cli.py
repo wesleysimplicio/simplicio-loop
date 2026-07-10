@@ -396,6 +396,9 @@ def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path):
     receipt = json.loads((repo / ".orchestrator" / "runs" / run_id / "operator-receipt.json").read_text(encoding="utf-8"))
     assert receipt["mode"] == "execute"
     assert receipt["execution_state"] == "applied"
+    assert receipt["attempt"] == 1
+    assert receipt["retry_budget"] == 3
+    assert receipt["failure_fingerprint"] == ""
     assert receipt["task_contract_hash"]
     assert receipt["plan_hash"]
     assert receipt["target_within_repo"] is True
@@ -440,6 +443,9 @@ def test_tick_rolls_back_failed_operator_when_change_stays_within_authorized_tar
     assert payload["state"]["phase"] == "blocked"
     assert target.read_text(encoding="utf-8") == original
     receipt = json.loads((repo / ".orchestrator" / "runs" / run_id / "operator-receipt.json").read_text(encoding="utf-8"))
+    assert receipt["attempt"] == 1
+    assert receipt["retry_budget"] == 3
+    assert receipt["failure_fingerprint"]
     assert receipt["rollback"]["attempted"] is True
     assert receipt["rollback"]["restored"] is True
     assert receipt["changed_paths"] == []

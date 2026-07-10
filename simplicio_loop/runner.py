@@ -943,6 +943,19 @@ def _restore_operator_checkpoint(checkpoint: Dict[str, Any], repo_path: Path, ch
     return {"attempted": True, "restored": True, "reason": "restored_checkpoint"}
 
 
+def _operator_failure_fingerprint(returncode: int | None, stderr: str, stdout: Any) -> str:
+    parts = [f"returncode={returncode}"]
+    if stderr:
+        parts.append(f"stderr={stderr}")
+    if stdout:
+        if isinstance(stdout, dict):
+            parts.append("stdout=" + json.dumps(stdout, ensure_ascii=False, sort_keys=True))
+        else:
+            parts.append(f"stdout={stdout}")
+    blob = " | ".join(parts)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
 def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, Any]:
     """Execute one planned task through the real dev-cli and persist an immutable receipt.
 
@@ -968,6 +981,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
     if planned_state and not _repo_state_equivalent(planned_state, current):
         raise RuntimeError("repository changed after planning; re-run mapper before execution")
     task = tasks[task_index - 1]
+    attempt = int((status["state"] or {}).get("attempts", 0)) + 1
     targets = (plan.get("steps") or [])[task_index - 1].get("candidate_targets") or []
     target = targets[0] if targets else status["state"].get("operator", {}).get("target", "")
     if not target:
@@ -1042,6 +1056,8 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         "mode": "execute",
         "tool": "simplicio-dev-cli",
         "execution_state": "applied" if returncode == 0 else "blocked",
+        "attempt": attempt,
+        "retry_budget": 3,
         "target": target,
         "authorized_targets": targets,
         "target_within_repo": True,
@@ -1057,6 +1073,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         "provider_config": provider_config,
         "checkpoint": checkpoint,
         "rollback": rollback,
+        "failure_fingerprint": "" if returncode == 0 else _operator_failure_fingerprint(returncode, stderr, stdout),
         "task_contract_hash": contract.get("collection_hash", ""),
         "plan_hash": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
         "mapper_pack_hash": plan.get("mapper_pack_hash", ""),
