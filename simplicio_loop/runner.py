@@ -9,8 +9,10 @@ import subprocess
 import string
 import sys
 import time
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .delivery import build_delivery_receipt, normalize_delivery_target, write_delivery_receipt
 from .evidence import build_evidence_receipt, redact_sensitive_text
@@ -37,6 +39,8 @@ PHASES = [
 MAPPER_MIN_VERSION = (0, 14, 0)
 MAPPER_REQUIRED_VERBS = ("inspect", "handoff", "ask", "sync", "drift")
 DEVCLI_REQUIRED_TOKENS = (" task", "--dry-run-task", "--json")
+DEFAULT_OPERATOR_WORKERS = 6
+BATCH_SCHEMA = "simplicio.operator-batch/v1"
 
 
 def _now() -> str:
@@ -1104,6 +1108,306 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         state["evidence"] = {"ready": False, "receipt": str(run_dir / "evidence-receipt.json"), "status": evidence.get("status", "UNVERIFIED")}
         _write_json(run_dir / "state.json", state)
     return read_status(repo, run_id)
+
+
+def _operator_worker_limit(requested: Optional[int], item_count: int) -> int:
+    """Resolve a bounded worker count without silently creating an empty pool."""
+    if item_count <= 0:
+        return 0
+    if requested is None or requested <= 0:
+        raw = os.environ.get("SIMPLICIO_LOOP_OPERATOR_WORKERS", "").strip()
+        try:
+            requested = int(raw) if raw else min(DEFAULT_OPERATOR_WORKERS, os.cpu_count() or 1)
+        except ValueError:
+            requested = min(DEFAULT_OPERATOR_WORKERS, os.cpu_count() or 1)
+    return max(1, min(int(requested), item_count))
+
+
+def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
+    """Normalize one typed operator dispatch item.
+
+    The adapter deliberately accepts only the real ``execute_operator`` boundary.  In
+    particular, it has no command/echo fallback: callers that need a dry run must arm a
+    run first and use that run's normal preflight receipts.
+    """
+    repo = str(item.get("repo") or "").strip()
+    run_id = str(item.get("run_id") or "").strip()
+    try:
+        task_index = int(item.get("task_index"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("operator dispatch task_index must be an integer") from exc
+    if not repo or not run_id or task_index < 1:
+        raise ValueError("operator dispatch items require repo, run_id, and a positive task_index")
+    normalized = {
+        "repo": str(Path(repo).resolve()),
+        "run_id": run_id,
+        "task_index": task_index,
+        "worker_id": str(item.get("worker_id") or f"operator-{task_index}"),
+    }
+    # An isolation key is intentionally explicit.  Two tasks in one run share state.json,
+    # operator-receipt.json, and the working tree and therefore cannot safely overlap until
+    # the worktree adapter supplies separate contexts.
+    normalized["isolation_key"] = str(item.get("isolation_key") or normalized["repo"])
+    return normalized
+
+
+def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
+    """Call the production operator and reduce its status to a durable worker record."""
+    started = _now()
+    try:
+        payload = execute_operator(item["repo"], item["run_id"], task_index=item["task_index"])
+        state = payload.get("state") or {}
+        operator = state.get("operator") or {}
+        execution_state = str(operator.get("execution_state") or "")
+        success = execution_state == "applied"
+        receipt = str(operator.get("receipt") or "")
+        failure_fingerprint = ""
+        if receipt:
+            try:
+                failure_fingerprint = str(_load_json(Path(receipt)).get("failure_fingerprint") or "")
+            except (OSError, ValueError, TypeError):
+                # The worker result remains useful even when a crashed operator did not leave
+                # a readable receipt; the scheduler will use the bounded exception path.
+                failure_fingerprint = ""
+        return {
+            "schema": "simplicio.operator-worker/v1",
+            "worker_id": item["worker_id"],
+            "repo": item["repo"],
+            "run_id": item["run_id"],
+            "task_index": item["task_index"],
+            "status": "succeeded" if success else "failed",
+            "phase": str(state.get("phase") or "blocked"),
+            "execution_state": execution_state or "unknown",
+            "receipt": receipt,
+            "attempt": int(state.get("attempts") or 0),
+            "failure_fingerprint": failure_fingerprint,
+            "started_at": started,
+            "finished_at": _now(),
+        }
+    except Exception as exc:  # worker failures are receipts, not scheduler crashes
+        return {
+            "schema": "simplicio.operator-worker/v1",
+            "worker_id": item["worker_id"],
+            "repo": item["repo"],
+            "run_id": item["run_id"],
+            "task_index": item["task_index"],
+            "status": "failed",
+            "phase": "blocked",
+            "execution_state": "error",
+            "receipt": "",
+            "attempt": 0,
+            "error": f"{type(exc).__name__}: {exc}",
+            "failure_fingerprint": hashlib.sha256(
+                f"{type(exc).__name__}: {exc}".encode("utf-8", "replace")
+            ).hexdigest()[:16],
+            "started_at": started,
+            "finished_at": _now(),
+        }
+
+
+def dispatch_operator_batch(
+    items: Iterable[Mapping[str, Any]],
+    *,
+    max_workers: Optional[int] = None,
+    retry_budget: int = 3,
+    journal_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Continuously dispatch real operator workers and refill freed slots.
+
+    ``items`` is the typed bridge between a scheduler (DAG/leases/worktrees) and the
+    existing mapper → plan → ``execute_operator`` boundary.  It is intentionally agnostic
+    about claiming: callers pass only ready, atomically claimed nodes.  Items with the same
+    ``isolation_key`` are forced onto one lane so a shared run state cannot be corrupted;
+    distinct worktree/run contexts overlap in the pool.  A JSONL journal records each attempt
+    before the next slot is refilled, so a process restart can safely resubmit only work that
+    has no successful receipt.
+    """
+    normalized = [_operator_dispatch_item(item) for item in items]
+    keys = {(item["repo"], item["run_id"], item["task_index"]) for item in normalized}
+    if len(keys) != len(normalized):
+        raise ValueError("operator dispatch contains duplicate repo/run/task items")
+    requested_workers = max_workers
+    effective_workers = _operator_worker_limit(max_workers, len(normalized))
+    isolation_keys = {item["isolation_key"] for item in normalized}
+    serial_fallback_reason = ""
+    if effective_workers > 1 and len(isolation_keys) < len(normalized):
+        effective_workers = 1
+        serial_fallback_reason = "shared_run_state"
+    retry_budget = max(0, int(retry_budget))
+
+    journal_path: Optional[Path] = None
+    if journal_dir:
+        journal_path = Path(journal_dir).resolve() / "operator-batch.jsonl"
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+    prior: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+    if journal_path and journal_path.exists():
+        for line in journal_path.read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(line)
+                key = (str(rec.get("repo")), str(rec.get("run_id")), int(rec.get("task_index")))
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+            prior[key] = rec
+    pending = deque(
+        item for item in normalized
+        if prior.get((item["repo"], item["run_id"], item["task_index"]), {}).get("status") != "succeeded"
+    )
+    skipped = len(normalized) - len(pending)
+    started = _now()
+    records: Dict[Tuple[str, str, int], Dict[str, Any]] = dict(prior)
+    completed: List[Dict[str, Any]] = []
+    refill_count = 0
+
+    def _persist_attempt(record: Dict[str, Any]) -> None:
+        if journal_path:
+            _append_jsonl(journal_path, record)
+        records[(record["repo"], record["run_id"], record["task_index"])] = record
+
+    def _run_item(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+        attempts: List[Dict[str, Any]] = []
+        previous_fingerprint = ""
+        for attempt_no in range(1, retry_budget + 2):
+            record = _operator_dispatch_attempt(item)
+            record["dispatch_attempt"] = attempt_no
+            if previous_fingerprint and record.get("failure_fingerprint") == previous_fingerprint:
+                record["retry_strategy"] = "same_fingerprint_bounded"
+            elif attempt_no > 1:
+                record["retry_strategy"] = "alternate_strategy"
+            else:
+                record["retry_strategy"] = "initial"
+            attempts.append(record)
+            if record["status"] == "succeeded":
+                break
+            previous_fingerprint = str(record.get("failure_fingerprint") or "")
+        attempts[-1]["dead_letter"] = attempts[-1]["status"] != "succeeded"
+        return attempts
+
+    if pending and effective_workers:
+        with ThreadPoolExecutor(max_workers=effective_workers, thread_name_prefix="simplicio-operator") as pool:
+            active = {}
+            while pending and len(active) < effective_workers:
+                item = pending.popleft()
+                active[pool.submit(_run_item, item)] = item
+            while active:
+                done, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
+                for future in done:
+                    item = active.pop(future)
+                    try:
+                        attempts = future.result()
+                    except Exception as exc:  # defensive: _run_item already receipts exceptions
+                        attempts = [{
+                            "schema": "simplicio.operator-worker/v1",
+                            "worker_id": item["worker_id"], "repo": item["repo"],
+                            "run_id": item["run_id"], "task_index": item["task_index"],
+                            "status": "failed", "phase": "blocked", "execution_state": "error",
+                            "error": f"{type(exc).__name__}: {exc}", "dead_letter": True,
+                            "started_at": _now(), "finished_at": _now(),
+                        }]
+                    for record in attempts:
+                        _persist_attempt(record)
+                    final = attempts[-1]
+                    completed.append(final)
+                    # Refill as soon as this worker exits; there is no frozen wave barrier.
+                    if pending:
+                        next_item = pending.popleft()
+                        active[pool.submit(_run_item, next_item)] = next_item
+                        refill_count += 1
+
+    final_records = []
+    for item in normalized:
+        key = (item["repo"], item["run_id"], item["task_index"])
+        final_records.append(records.get(key, {
+            "schema": "simplicio.operator-worker/v1", "worker_id": item["worker_id"],
+            "repo": item["repo"], "run_id": item["run_id"], "task_index": item["task_index"],
+            "status": "pending", "phase": "queued", "execution_state": "pending",
+        }))
+    result = {
+        "schema": BATCH_SCHEMA,
+        "run_id": normalized[0]["run_id"] if normalized and len({i["run_id"] for i in normalized}) == 1 else "",
+        "requested_tasks": [item["task_index"] for item in normalized],
+        "skipped_completed": skipped,
+        "max_workers_requested": requested_workers,
+        "max_workers": effective_workers,
+        "active_workers": 0,
+        "worker_count": len(final_records),
+        "queue_depth": 0,
+        "refill_count": refill_count,
+        "serial_fallback_reason": serial_fallback_reason,
+        "leases": [],
+        "blockers": [
+            {
+                "task_index": record["task_index"],
+                "reason_code": "operator_failed",
+                "error": record.get("error", ""),
+                "failure_fingerprint": record.get("failure_fingerprint", ""),
+            }
+            for record in final_records
+            if record.get("status") == "failed"
+        ],
+        "attempts": {
+            str(record["task_index"]): int(record.get("dispatch_attempt") or 0)
+            for record in final_records
+        },
+        "started_at": started,
+        "finished_at": _now(),
+        "workers": final_records,
+        "completed_task_indices": sorted(r["task_index"] for r in final_records if r.get("status") == "succeeded"),
+        "failed_task_indices": sorted(r["task_index"] for r in final_records if r.get("status") == "failed"),
+        "dead_letter_task_indices": sorted(r["task_index"] for r in final_records if r.get("dead_letter")),
+        "journal": str(journal_path) if journal_path else "",
+    }
+    if journal_path:
+        _write_json(journal_path.with_suffix(".json"), result)
+    return result
+
+
+def execute_operator_batch(
+    repo: str,
+    run_id: str,
+    task_indices: Optional[Sequence[int]] = None,
+    *,
+    max_workers: Optional[int] = None,
+    retry_budget: int = 3,
+    isolated_contexts: Optional[Mapping[int, Mapping[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Dispatch all (or selected) tasks from one run through the real operator bridge.
+
+    A normal run shares one state/working tree and is therefore deliberately serialized.  A
+    scheduler that has provisioned worktrees can pass ``isolated_contexts`` (one distinct
+    ``repo``/``run_id`` per task) to unlock parallel execution while retaining the same API.
+    """
+    status = read_status(repo, run_id)
+    contract = _load_json(Path(status["run_dir"]) / "task-contract.json")
+    task_count = len(contract.get("tasks") or [])
+    if task_indices is None:
+        indices = list(range(1, task_count + 1))
+    else:
+        indices = [int(index) for index in task_indices]
+    if any(index < 1 or index > task_count for index in indices):
+        raise ValueError("task index out of range")
+    contexts = isolated_contexts or {}
+    items = []
+    for index in indices:
+        context = dict(contexts.get(index) or {})
+        item = {
+            "repo": context.get("repo", repo),
+            "run_id": context.get("run_id", run_id),
+            "task_index": index,
+            "worker_id": context.get("worker_id", f"operator-{index}"),
+            "isolation_key": context.get("isolation_key"),
+        }
+        items.append(item)
+    result = dispatch_operator_batch(
+        items,
+        max_workers=max_workers,
+        retry_budget=retry_budget,
+        journal_dir=str(Path(status["run_dir"])),
+    )
+    if not contexts and len(items) > 1:
+        # dispatch_operator_batch derives this from the shared isolation key; retain a clear
+        # contract-level marker for callers inspecting the convenience API.
+        result["serial_fallback_reason"] = result.get("serial_fallback_reason") or "shared_run_state"
+    return result
 
 
 def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:

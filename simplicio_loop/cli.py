@@ -14,7 +14,16 @@ import json
 from pathlib import Path
 
 from . import __version__
-from .runner import arm_run, apply_human_decision, change_phase, execute_operator, read_status, reconcile_delivery, sync_source_state
+from .runner import (
+    arm_run,
+    apply_human_decision,
+    change_phase,
+    execute_operator,
+    execute_operator_batch,
+    read_status,
+    reconcile_delivery,
+    sync_source_state,
+)
 from .task_contract import compile_many, main as task_contract_main, preview_contract
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
@@ -182,6 +191,25 @@ def tick(repo: str, run_id: str, task_index: int) -> int:
     return 0
 
 
+def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_budget: int) -> int:
+    """Run selected ready tasks through the durable real-operator pool."""
+    indices = None
+    if task_indices.strip():
+        try:
+            indices = [int(value.strip()) for value in task_indices.split(",") if value.strip()]
+        except ValueError as exc:
+            raise ValueError("--task-indices must be a comma-separated list of integers") from exc
+    payload = execute_operator_batch(
+        repo,
+        run_id,
+        indices,
+        max_workers=max_workers or None,
+        retry_budget=retry_budget,
+    )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cancel(repo: str, run_id: str) -> int:
     payload = change_phase(repo, run_id, "cancelled", "cancel requested from CLI")
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
@@ -260,6 +288,22 @@ def main(argv=None) -> int:
     p_tick.add_argument("run_id", help="run id to tick")
     p_tick.add_argument("--task-index", type=int, default=1, help="1-based task index")
 
+    p_batch = sub.add_parser("batch", help="continuously dispatch ready tasks through simplicio-dev-cli")
+    p_batch.add_argument("--repo", default=".", help="repository root")
+    p_batch.add_argument("run_id", help="run id to dispatch")
+    p_batch.add_argument(
+        "--task-indices",
+        default="",
+        help="comma-separated 1-based task indices (default: every task in the contract)",
+    )
+    p_batch.add_argument(
+        "--max-workers",
+        type=int,
+        default=0,
+        help="maximum live operator workers (default: SIMPLICIO_LOOP_OPERATOR_WORKERS/6)",
+    )
+    p_batch.add_argument("--retry-budget", type=int, default=3, help="retries after the first attempt")
+
     p_cancel = sub.add_parser("cancel", help="cancel a non-terminal run")
     p_cancel.add_argument("--repo", default=".", help="repository root")
     p_cancel.add_argument("run_id", help="run id to cancel")
@@ -305,6 +349,8 @@ def main(argv=None) -> int:
         return resume(args.repo, args.run_id)
     if command == "tick":
         return tick(args.repo, args.run_id, args.task_index)
+    if command == "batch":
+        return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget)
     if command == "cancel":
         return cancel(args.repo, args.run_id)
     if command == "deliver":
