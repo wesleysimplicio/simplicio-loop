@@ -35,6 +35,11 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
+try:
+    from worktree_queue import TaskSpec, WorktreeQueue
+except ImportError:  # pragma: no cover - package/module execution fallback
+    from scripts.worktree_queue import TaskSpec, WorktreeQueue
+
 
 @dataclass
 class Task:
@@ -50,6 +55,11 @@ class Task:
     resources: Dict[str, float] = field(default_factory=dict)
     retries: int = 0
     timeout_seconds: Optional[float] = None
+    # Optional impact dimensions consumed by WorktreeQueue.  Existing task
+    # files remain valid and the scheduler still uses its resource policy.
+    symbols: List[str] = field(default_factory=list)
+    public_contracts: List[str] = field(default_factory=list)
+    migrations: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -61,6 +71,12 @@ class WorkerResult:
     duration_ms: float = 0.0
     attempts: int = 1
     reason_code: Optional[str] = None
+    worktree_path: Optional[str] = None
+    branch: Optional[str] = None
+    lane: Optional[str] = None
+    base_sha: Optional[str] = None
+    head_sha: Optional[str] = None
+    tree_sha: Optional[str] = None
 
 
 @dataclass
@@ -265,16 +281,48 @@ def build_independence_graph(tasks: List[Task]) -> List[List[Task]]:
     return groups
 
 
-def run_worker(task: Task, workdir: str, dry_run: bool = False) -> WorkerResult:
+def _task_spec(task: Task) -> TaskSpec:
+    """Translate the scheduler task into the durable isolation contract."""
+    return TaskSpec(
+        id=task.id,
+        goal=task.goal,
+        files_affected=task.files_affected,
+        symbols=task.symbols,
+        public_contracts=task.public_contracts,
+        migrations=task.migrations,
+    )
+
+
+def build_conflict_graph(tasks: List[Task]) -> Dict[str, List[str]]:
+    """Expose durable path/symbol/contract/migration conflict metadata."""
+    return WorktreeQueue.conflict_graph([_task_spec(task) for task in tasks])
+
+
+def build_conflict_lanes(tasks: List[Task]) -> Dict[str, str]:
+    """Return deterministic persisted lane keys for report consumers."""
+    return WorktreeQueue.conflict_lanes([_task_spec(task) for task in tasks])
+
+
+def run_worker(
+    task: Task,
+    workdir: str,
+    dry_run: bool = False,
+    queue: Optional[WorktreeQueue] = None,
+) -> WorkerResult:
     """Run a single task in its own worktree/branch."""
     start = time.time()
     task_id = task.id
     branch_name = f"feat/{task_id}-{uuid.uuid4().hex[:8]}"
+    allocation = None
 
     try:
         if dry_run:
             output = json.dumps({"task": task_id, "branch": branch_name, "dry_run": True})
         else:
+            if queue is not None:
+                # Allocate ownership before the operator handoff, but keep the
+                # existing fail-closed behavior when no operator is bound.
+                allocation = queue.allocate(_task_spec(task))
             # Never manufacture a successful receipt.  A real operator bridge
             # (simplicio-dev-cli/Runtime) must be injected as ``worker`` by the
             # caller; worktree/branch setup is owned by #153.
@@ -284,6 +332,12 @@ def run_worker(task: Task, workdir: str, dry_run: bool = False) -> WorkerResult:
                 error="operator backend is not configured",
                 reason_code="operator_unbound",
                 duration_ms=round((time.time() - start) * 1000, 1),
+                worktree_path=allocation.path if allocation else None,
+                branch=allocation.branch if allocation else None,
+                lane=allocation.lane if allocation else None,
+                base_sha=allocation.base_sha if allocation else None,
+                head_sha=allocation.head_sha if allocation else None,
+                tree_sha=allocation.tree_sha if allocation else None,
             )
 
         duration = (time.time() - start) * 1000
@@ -334,6 +388,7 @@ class WorkConservingScheduler:
         dry_run: bool = False,
         governor: Optional[ResourceGovernor] = None,
         worker: Optional[Callable[[Task, str, bool], WorkerResult]] = None,
+        worktree_queue: Optional[WorktreeQueue] = None,
         retry_limit: int = 0,
         poll_interval: float = 0.01,
         idle_grace_seconds: float = 0.05,
@@ -350,6 +405,7 @@ class WorkConservingScheduler:
         # requested, even when it was built from a larger host capacity probe.
         self.governor.workers = min(self.governor.workers, self.max_workers)
         self.worker = worker or run_worker
+        self.worktree_queue = worktree_queue
         self.retry_limit = max(0, int(retry_limit))
         self.poll_interval = max(0.0, float(poll_interval))
         self.idle_grace_seconds = max(0.0, float(idle_grace_seconds))
@@ -464,7 +520,12 @@ class WorkConservingScheduler:
             self._active_files.update(files)
             attempt = self.attempts.get(task.id, 0) + 1
             self.attempts[task.id] = attempt
-            future = executor.submit(self.worker, task, self.workdir, self.dry_run)
+            if self.worktree_queue is not None and self.worker is run_worker:
+                future = executor.submit(
+                    run_worker, task, self.workdir, self.dry_run, self.worktree_queue
+                )
+            else:
+                future = executor.submit(self.worker, task, self.workdir, self.dry_run)
             self._active[future] = (task, files, request)
             if task.timeout_seconds is not None:
                 try:
@@ -627,6 +688,7 @@ def run_scheduler(
     dry_run: bool = False,
     capacity: Optional[Dict[str, Any]] = None,
     worker: Optional[Callable[[Task, str, bool], WorkerResult]] = None,
+    worktree_queue: Optional[WorktreeQueue] = None,
     retry_limit: int = 0,
     idle_grace_seconds: float = 0.05,
 ) -> Tuple[List[WorkerResult], WorkConservingScheduler]:
@@ -640,6 +702,7 @@ def run_scheduler(
         dry_run=dry_run,
         governor=governor,
         worker=worker or run_worker,
+        worktree_queue=worktree_queue,
         retry_limit=retry_limit,
         idle_grace_seconds=idle_grace_seconds,
     )
@@ -726,6 +789,18 @@ def main() -> int:
     # Event-driven dispatch: only safe admitted tasks are submitted and every
     # completed task immediately refills its slot.
     workdir = os.getcwd()
+    worktree_queue = None
+    if not dry_run:
+        try:
+            worktree_queue = WorktreeQueue(
+                workdir, run_id=os.environ.get("SIMPLICIO_RUN_ID")
+            )
+            worktree_queue.register_tasks([_task_spec(task) for task in tasks])
+        except Exception as exc:
+            # Preserve the existing fail-closed operator receipt when the
+            # caller is outside a Git checkout; no fake isolation is claimed.
+            print(f"[fan-out] worktree queue unavailable: {exc}", file=sys.stderr)
+            worktree_queue = None
     total_start = time.time()
     try:
         retry_limit = max(0, int(opts.get("retry-limit", opts.get("retry_limit", "0"))))
@@ -738,6 +813,7 @@ def main() -> int:
         dry_run=dry_run,
         capacity=capacity,
         retry_limit=retry_limit,
+        worktree_queue=worktree_queue,
     )
     for result in all_results:
         status = "OK" if result.success else "FAIL"
@@ -753,6 +829,9 @@ def main() -> int:
         "total_tasks": len(tasks),
         "total_duration_ms": round(total_duration, 1),
         "workers": [asdict(r) for r in all_results],
+        "conflict_graph": build_conflict_graph(tasks),
+        "conflict_lanes": build_conflict_lanes(tasks),
+        "isolation": "worktree" if worktree_queue is not None else "unbound",
         "scheduler": scheduler.report(),
         "savings": {
             "source": "fan-out",
