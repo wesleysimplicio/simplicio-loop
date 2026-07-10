@@ -12,7 +12,7 @@ import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, TypedDict
 
 from .delivery import build_delivery_receipt, normalize_delivery_target, write_delivery_receipt
 from .evidence import build_evidence_receipt, redact_sensitive_text
@@ -41,6 +41,14 @@ MAPPER_REQUIRED_VERBS = ("inspect", "handoff", "ask", "sync", "drift")
 DEVCLI_REQUIRED_TOKENS = (" task", "--dry-run-task", "--json")
 DEFAULT_OPERATOR_WORKERS = 6
 BATCH_SCHEMA = "simplicio.operator-batch/v1"
+class OperatorDispatchItem(TypedDict, total=False):
+    """Typed input contract for :func:`dispatch_operator_batch`."""
+
+    repo: str
+    run_id: str
+    task_index: int
+    worker_id: str
+    isolation_key: str
 
 
 def _now() -> str:
