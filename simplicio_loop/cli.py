@@ -14,6 +14,13 @@ import json
 from pathlib import Path
 
 from . import __version__
+from .drain import (
+    SCHEMA as DRAIN_SCHEMA,
+    DrainReceiptError,
+    evaluate_drain,
+    load_drain_receipt,
+    persist_drain_receipt,
+)
 from .runner import (
     arm_run,
     apply_human_decision,
@@ -237,6 +244,100 @@ def sync_source(repo: str, run_id: str, source: str, external_repo: str, pr: int
     return 0
 
 
+def _drain_cli_failure(reason_code: str, reason: str, **extra) -> dict:
+    """Return a safe, JSON-serializable drain result for CLI input failures.
+
+    The drain CLI is an evidence boundary: malformed or missing input must never
+    look like a successful drain.  Keep the shape compatible with
+    ``evaluate_drain`` while marking the result explicitly unverified.
+    """
+    payload = {
+        "schema": DRAIN_SCHEMA,
+        "verdict": "CONTINUE",
+        "ready": False,
+        "reason_code": reason_code,
+        "reason": reason,
+        "tag": "UNVERIFIED",
+    }
+    payload.update(extra)
+    return payload
+
+
+def _read_drain_snapshot(path: str):
+    try:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return None, _drain_cli_failure("snapshot_invalid", "could not read drain snapshot", error=str(exc))
+    if not isinstance(payload, dict):
+        return None, _drain_cli_failure("snapshot_invalid", "drain snapshot must be a JSON object")
+    return payload, None
+
+
+def drain(action: str, snapshot_path: str, receipt_path: str, polls_required: int) -> int:
+    """Evaluate, persist, or load a drain receipt and emit exactly one JSON value.
+
+    ``CONTINUE`` is a valid fail-closed verdict for a well-formed snapshot; a
+    non-zero exit is reserved for unusable CLI input or a corrupt/missing receipt.
+    """
+    if action in {"evaluate", "persist"}:
+        if not snapshot_path:
+            print(json.dumps(_drain_cli_failure("snapshot_required", "--snapshot is required"),
+                             ensure_ascii=False, sort_keys=True))
+            return 2
+        snapshot, failure = _read_drain_snapshot(snapshot_path)
+        if failure is not None:
+            print(json.dumps(failure, ensure_ascii=False, sort_keys=True))
+            return 2
+        try:
+            result = evaluate_drain(snapshot, polls_required=polls_required)
+        except (TypeError, ValueError, KeyError) as exc:
+            result = _drain_cli_failure("snapshot_invalid", "drain snapshot could not be evaluated",
+                                        error=str(exc))
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 2
+        if action == "evaluate":
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0
+        if not receipt_path:
+            print(json.dumps(_drain_cli_failure("receipt_required", "--receipt is required"),
+                             ensure_ascii=False, sort_keys=True))
+            return 2
+        try:
+            result = persist_drain_receipt(receipt_path, result=result)
+        except (DrainReceiptError, OSError, TypeError, ValueError) as exc:
+            result = _drain_cli_failure("receipt_persist_failed", "could not persist drain receipt",
+                                        error=str(exc))
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 2
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    if action == "load":
+        if not receipt_path:
+            print(json.dumps(_drain_cli_failure("receipt_required", "--receipt is required"),
+                             ensure_ascii=False, sort_keys=True))
+            return 2
+        try:
+            result = load_drain_receipt(receipt_path)
+        except (DrainReceiptError, OSError, TypeError, ValueError) as exc:
+            result = _drain_cli_failure("receipt_invalid", "could not load drain receipt", error=str(exc))
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 2
+        if result is None:
+            print(json.dumps(_drain_cli_failure("receipt_missing", "drain receipt does not exist"),
+                             ensure_ascii=False, sort_keys=True))
+            return 2
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    # ``argparse`` constrains this in normal use, but keeping the fallback
+    # fail-closed makes direct calls to ``main`` safe as well.
+    print(json.dumps(_drain_cli_failure("action_invalid", "unknown drain action"),
+                     ensure_ascii=False, sort_keys=True))
+    return 2
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="simplicio-loop",
@@ -330,6 +431,16 @@ def main(argv=None) -> int:
     p_sync.add_argument("--pr", type=int, default=0, help="pull request number")
     p_sync.add_argument("--tag", default="", help="release tag")
 
+    p_drain = sub.add_parser("drain", help="evaluate, persist, or load a queue-drain receipt")
+    p_drain.add_argument("action", choices=("evaluate", "persist", "load"),
+                          help="operation to perform")
+    p_drain.add_argument("--snapshot", dest="snapshot_path", default="",
+                         help="JSON scheduler/source snapshot (evaluate and persist)")
+    p_drain.add_argument("--receipt", dest="receipt_path", default="",
+                         help="receipt JSON path (persist and load)")
+    p_drain.add_argument("--polls-required", type=int, default=2,
+                         help="identical empty polls required (default: %(default)s)")
+
     args = parser.parse_args(argv)
     command = args.command or "install"
     if command == "dashboard":
@@ -359,6 +470,8 @@ def main(argv=None) -> int:
         return decide(args.repo, args.run_id, args.decision_id, args.answer, args.impact)
     if command == "sync-source":
         return sync_source(args.repo, args.run_id, args.source, args.external_repo, args.pr, args.tag)
+    if command == "drain":
+        return drain(args.action, args.snapshot_path, args.receipt_path, args.polls_required)
     return install(Path(args.target).resolve(), args.globally)
 
 
