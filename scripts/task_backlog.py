@@ -12,16 +12,21 @@ Verbs:
              --task-file FILE (Markdown task description(s) compiled via task_contract).
              Default lint rejects vague ACs; `--lint` also rejects short ACs (<3 words) unless
              they declare `:: verify: ...`.
-  next       Claim the next ready item deterministically and print its id + goal.
+  next       Claim the next ready item deterministically and print id, goal and a fencing token.
   done       Mark an item done from the current anchor when the anchor is READY and its goal_fp
              matches the item; copies the anchor receipts into the backlog so PR evidence can still
              show them after the anchor is cleared for the next drain turn.
   skip       Mark an item skipped with a reason.
   block      Mark an item blocked with a reason code.
   fail       Record a failed attempt; distinct failures can escalate to dead-letter.
+  transition Apply a compare-and-swap task-state transition with the current lease fence.
   status     Show queue counts, dependency blockers and active leases.
   checklist  Emit the body-of-work table. With no backlog, prints `backlog: none frozen`.
   selftest   Prove linting, claim/done propagation, and table rendering deterministically.
+
+Lock tuning:
+  --lock-timeout SECONDS and --lock-retry SECONDS override
+  SIMPLICIO_BACKLOG_LOCK_TIMEOUT / SIMPLICIO_BACKLOG_LOCK_RETRY for one command.
 
 Usage:
     python3 scripts/task_backlog.py init --goal "Drain Phase 0" --item-file backlog.json
@@ -35,6 +40,10 @@ import sys
 import time
 import calendar
 import hashlib
+import tempfile
+import uuid
+from contextlib import contextmanager
+from functools import wraps
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -46,6 +55,31 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 BACKLOG = (os.environ.get("SIMPLICIO_BACKLOG_FILE") or
            os.path.join(REPO, ".orchestrator", "backlog", "backlog.jsonl"))
+
+# The Windows CRT lock API can report a transient ``PermissionError`` (and on
+# some Python/CRT combinations a plain ``OSError``) while another process
+# owns the one-byte lock range.  Keep the retry policy explicit and tunable so
+# a busy host does not either spin forever or fail on the first transient
+# collision.  CLI flags override these environment defaults per transaction.
+_LOCK_TIMEOUT_ENV = "SIMPLICIO_BACKLOG_LOCK_TIMEOUT"
+_LOCK_RETRY_ENV = "SIMPLICIO_BACKLOG_LOCK_RETRY"
+_DEFAULT_LOCK_TIMEOUT = 30.0
+_DEFAULT_LOCK_RETRY = 0.05
+
+
+class BacklogLockTimeout(TimeoutError):
+    """Raised when a backlog transaction cannot acquire its sidecar lock."""
+
+
+def _lock_seconds(value, default, minimum=0.0):
+    """Parse a finite lock duration, falling back safely on bad input."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = float(default)
+    if number != number or number in (float("inf"), float("-inf")):
+        number = float(default)
+    return max(float(minimum), number)
 
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
@@ -88,6 +122,154 @@ def _lease_expires(ttl_seconds):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + max(1, ttl_seconds)))
 
 
+@contextmanager
+def _state_lock(path=None, timeout=None, retry=None):
+    """Serialize backlog state transitions across processes.
+
+    JSONL remains the portable interchange format, but every command that can
+    mutate the graph holds this sidecar lock for its complete read/modify/write
+    transaction.  The lock implementation is deliberately stdlib-only so it
+    works on Windows (the primary supported host) and POSIX runners alike.
+    """
+    path = path or BACKLOG
+    lock_path = path + ".lock"
+    directory = os.path.dirname(lock_path) or "."
+    os.makedirs(directory, exist_ok=True)
+    timeout = _lock_seconds(
+        timeout if timeout is not None else os.environ.get(_LOCK_TIMEOUT_ENV),
+        _DEFAULT_LOCK_TIMEOUT,
+    )
+    retry = _lock_seconds(
+        retry if retry is not None else os.environ.get(_LOCK_RETRY_ENV),
+        _DEFAULT_LOCK_RETRY,
+        minimum=0.001,
+    )
+    with open(lock_path, "a+b") as stream:
+        if os.name == "nt":
+            import msvcrt
+            # msvcrt.locking requires at least one byte in the locked range.
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write(b"0")
+                stream.flush()
+            # LK_NBLCK is deliberately used in a bounded loop.  LK_LOCK has
+            # implementation-defined retries and can surface WinError 6/50
+            # without giving callers a way to bound the wait.
+            deadline = time.monotonic() + timeout
+            acquired = False
+            while True:
+                try:
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                    break
+                except (OSError, IOError) as exc:
+                    if time.monotonic() >= deadline:
+                        detail = " (%s)" % exc if exc else ""
+                        raise BacklogLockTimeout(
+                            "timeout acquiring backlog lock after %.3fs%s" %
+                            (timeout, detail)
+                        )
+                    time.sleep(min(retry, max(0.001, deadline - time.monotonic())))
+            try:
+                yield
+            finally:
+                if acquired:
+                    try:
+                        stream.seek(0)
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                    except (OSError, IOError):
+                        # Do not mask the command's real exception while
+                        # releasing a lock whose handle is already closing.
+                        pass
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _transactional(func):
+    """Run one CLI command under the cross-process backlog transaction lock."""
+    @wraps(func)
+    def wrapped(opts):
+        try:
+            with _state_lock(
+                timeout=(opts or {}).get("lock-timeout"),
+                retry=(opts or {}).get("lock-retry"),
+            ):
+                return func(opts)
+        except BacklogLockTimeout as exc:
+            print("backlog: BLOCKED — %s" % exc)
+            sys.exit(12)
+    return wrapped
+
+
+def _bump_revision(master):
+    master["revision"] = int(master.get("revision", 0)) + 1
+    master["updated_at"] = _now()
+    return master["revision"]
+
+
+def _new_fencing_token(master):
+    """Issue a never-reused lease fence while holding the state lock."""
+    generation = int(master.get("fence_counter", 0)) + 1
+    master["fence_counter"] = generation
+    _bump_revision(master)
+    return "fence-%d-%s" % (generation, uuid.uuid4().hex)
+
+
+def _lease_fence(lease):
+    lease = lease or {}
+    return str(lease.get("fencing_token") or lease.get("fence") or "")
+
+
+def _lease_matches(item, worker="", fence="", require=False):
+    """Validate owner/fence credentials and reject expired leases.
+
+    A missing or malformed expiry is fail-closed.  This matters during crash
+    recovery: an old worker must not renew or close an item simply because its
+    worker id still matches the record.
+    """
+    worker = (worker or "").strip()
+    fence = (fence or "").strip()
+    lease = item.get("lease") or {}
+    if require and (not worker or not fence):
+        return False
+    if worker and lease.get("worker") != worker:
+        return False
+    if fence and _lease_fence(lease) != fence:
+        return False
+    expires_at = str(lease.get("expires_at") or "").strip()
+    if not expires_at or _parse_utc(expires_at) <= int(time.time()):
+        return False
+    return True
+
+
+def _check_expected_revision(master, opts):
+    """Compare the caller's graph revision while holding the state lock."""
+    raw = (opts or {}).get("expected-revision")
+    if raw is None or raw is True or str(raw).strip() == "":
+        return
+    try:
+        expected = int(raw)
+    except (TypeError, ValueError):
+        print("backlog: --expected-revision must be an integer")
+        sys.exit(2)
+    actual = int(master.get("revision", 0))
+    if expected != actual:
+        print("backlog: BLOCKED — expected revision %d, found %d" % (expected, actual))
+        sys.exit(12)
+
+
+def _lease_error(worker, item_id):
+    label = worker or "worker"
+    print("backlog: BLOCKED — %s does not hold item %s (stale lease/fence)" % (label, item_id))
+    sys.exit(12)
+
+
 def _load(path=None):
     path = path or BACKLOG
     if not os.path.exists(path):
@@ -112,11 +294,25 @@ def _load(path=None):
 
 def _save(master, items, path=None):
     path = path or BACKLOG
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(master, ensure_ascii=False) + "\n")
-        for item in items:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    # Replace atomically so readers never observe a partially-written JSONL
+    # document.  The command-level lock above provides writer serialization.
+    fd, tmp_path = tempfile.mkstemp(prefix=".backlog-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(master, ensure_ascii=False) + "\n")
+            for item in items:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def _load_anchor(path=None):
@@ -595,6 +791,7 @@ def _collect_items(opts):
     return out
 
 
+@_transactional
 def cmd_init(opts):
     goal = (opts.get("goal") or "").strip()
     if not goal:
@@ -619,8 +816,9 @@ def cmd_init(opts):
             for err in errors:
                 print("backlog: item %s — %s" % (item["id"], err))
             sys.exit(2)
-    master = {"kind": "master", "goal": goal, "goal_fp": goal_fingerprint(goal), "frozen_at": _now(),
-              "empty_polls": 0}
+    master = {"kind": "master", "schema": "simplicio.backlog/v2",
+              "goal": goal, "goal_fp": goal_fingerprint(goal), "frozen_at": _now(),
+              "empty_polls": 0, "revision": 0, "fence_counter": 0, "updated_at": _now()}
     _refresh_ready_states(items)
     for item in items:
         _freeze_item_workspace(item, master)
@@ -628,6 +826,7 @@ def cmd_init(opts):
     print("frozen %d item(s)" % len(items))
 
 
+@_transactional
 def cmd_next(_opts):
     opts = _opts or {}
     master, items = _load()
@@ -639,27 +838,37 @@ def cmd_next(_opts):
     if worker:
         for item in items:
             lease = item.get("lease") or {}
-            if item.get("status") in ("claimed", "running", "verification", "delivery") and lease.get("worker") == worker:
+            active_lease = item.get("status") in ("claimed", "running", "verification", "delivery")
+            not_expired = (not lease.get("expires_at") or
+                           _parse_utc(lease.get("expires_at")) > int(time.time()))
+            if active_lease and not_expired and lease.get("worker") == worker:
                 lease["heartbeat_at"] = _now()
                 lease["expires_at"] = _lease_expires(ttl)
                 item["lease"] = lease
+                _bump_revision(master)
                 _save(master, items)
-                print("%s\t%s" % (item.get("id"), item.get("goal")))
+                print("%s\t%s\t%s" % (item.get("id"), item.get("goal"), _lease_fence(lease)))
                 return
     item = _pick_next_ready(items)
     if item:
         master["empty_polls"] = 0
         item["status"] = "claimed"
         item["claimed_at"] = _now()
+        fence = _new_fencing_token(master)
         item["lease"] = {
             "worker": worker or "__anonymous__",
             "claimed_at": item["claimed_at"],
             "heartbeat_at": item["claimed_at"],
             "ttl_seconds": ttl,
             "expires_at": _lease_expires(ttl),
+            # Keep both names during the v1/v2 transition; consumers should
+            # send either value back on every mutating transition.
+            "fencing_token": fence,
+            "fence": fence,
+            "generation": int(master.get("fence_counter", 0)),
         }
         _save(master, items)
-        print("%s\t%s" % (item.get("id"), item.get("goal")))
+        print("%s\t%s\t%s" % (item.get("id"), item.get("goal"), fence))
         return
     _refresh_ready_states(items)
     if master:
@@ -668,6 +877,7 @@ def cmd_next(_opts):
     print("backlog: no ready items")
 
 
+@_transactional
 def cmd_done(opts):
     item_id = (opts.get("item") or "").strip()
     if not item_id:
@@ -677,6 +887,7 @@ def cmd_done(opts):
     if not master or not items:
         print("backlog: none frozen")
         sys.exit(2)
+    _check_expected_revision(master, opts)
     anchor = _load_anchor(opts.get("anchor") if isinstance(opts.get("anchor"), str) else None)
     if not anchor.get("goal_fp"):
         print("backlog: BLOCKED — no anchor set for this item")
@@ -689,6 +900,12 @@ def cmd_done(opts):
     if not hit:
         print("backlog: no such item %r" % item_id)
         sys.exit(2)
+    worker = (opts.get("worker") or "").strip()
+    fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
+    # Closing an item is irreversible at the backlog layer: require both the
+    # current owner and its lease fence, and fail closed on an expired lease.
+    if not _lease_matches(hit, worker=worker, fence=fence, require=True):
+        _lease_error(worker, item_id)
     if hit.get("goal_fp") != anchor.get("goal_fp"):
         print("backlog: BLOCKED — anchor goal does not match item %s" % item_id)
         sys.exit(12)
@@ -703,6 +920,7 @@ def cmd_done(opts):
     hit["total_criteria"] = total
     hit["evidence"] = [c.get("evidence", "").strip() for c in anchor.get("criteria", [])
                        if c.get("status") == "done" and c.get("evidence")]
+    _bump_revision(master)
     state_path = os.path.join(hit.get("run_dir") or _item_run_dir(hit), "state.json")
     if os.path.exists(state_path):
         _write_json(state_path, {
@@ -716,9 +934,12 @@ def cmd_done(opts):
     print("done %s" % item_id)
 
 
+@_transactional
 def cmd_skip(opts):
     item_id = (opts.get("item") or "").strip()
     reason = (opts.get("reason") or "").strip()
+    worker = (opts.get("worker") or "").strip()
+    fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
     if not item_id or not reason:
         print("backlog: --item and --reason are required")
         sys.exit(2)
@@ -728,10 +949,13 @@ def cmd_skip(opts):
         sys.exit(2)
     for item in items:
         if item.get("id") == item_id:
+            if (worker or fence) and not _lease_matches(item, worker=worker, fence=fence):
+                _lease_error(worker, item_id)
             item["status"] = "skipped"
             item["skip_reason"] = reason
             item["lease"] = {}
             item["skipped_at"] = _now()
+            _bump_revision(master)
             _save(master, items)
             print("skipped %s" % item_id)
             return
@@ -739,10 +963,13 @@ def cmd_skip(opts):
     sys.exit(2)
 
 
+@_transactional
 def cmd_block(opts):
     item_id = (opts.get("item") or "").strip()
     reason = (opts.get("reason") or "").strip()
     code = (opts.get("code") or "").strip()
+    worker = (opts.get("worker") or "").strip()
+    fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
     if not item_id or not reason or not code:
         print("backlog: --item, --reason and --code are required")
         sys.exit(2)
@@ -752,11 +979,14 @@ def cmd_block(opts):
         sys.exit(2)
     for item in items:
         if item.get("id") == item_id:
+            if (worker or fence) and not _lease_matches(item, worker=worker, fence=fence):
+                _lease_error(worker, item_id)
             item["status"] = "blocked"
             item["blocked_reason"] = reason
             item["reason_code"] = code
             item["lease"] = {}
             item["blocked_at"] = _now()
+            _bump_revision(master)
             _save(master, items)
             print("blocked %s" % item_id)
             return
@@ -764,12 +994,14 @@ def cmd_block(opts):
     sys.exit(2)
 
 
+@_transactional
 def cmd_fail(opts):
     item_id = (opts.get("item") or "").strip()
     reason = (opts.get("reason") or "").strip()
     code = (opts.get("code") or "").strip()
     fingerprint = (opts.get("fingerprint") or "").strip()
     worker = (opts.get("worker") or "").strip()
+    fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
     max_failures = int(opts.get("max-failures") or 3)
     if not item_id or not reason or not code or not fingerprint:
         print("backlog: --item, --reason, --code and --fingerprint are required")
@@ -782,9 +1014,8 @@ def cmd_fail(opts):
         if item.get("id") != item_id:
             continue
         lease = item.get("lease") or {}
-        if worker and lease.get("worker") not in ("", worker):
-            print("backlog: BLOCKED — worker %s does not hold item %s" % (worker, item_id))
-            sys.exit(12)
+        if (worker or fence) and not _lease_matches(item, worker=worker, fence=fence):
+            _lease_error(worker, item_id)
         failures = item.setdefault("failures", [])
         if not any(f.get("fingerprint") == fingerprint for f in failures):
             failures.append({
@@ -799,6 +1030,7 @@ def cmd_fail(opts):
             item["reason_code"] = "dead-letter"
             item["blocked_reason"] = "distinct failure threshold reached"
             item["dead_letter_at"] = _now()
+            _bump_revision(master)
             _save(master, items)
             print("dead-letter %s" % item_id)
             return
@@ -806,6 +1038,7 @@ def cmd_fail(opts):
         item["blocked_reason"] = ""
         item["reason_code"] = code
         item["failed_at"] = _now()
+        _bump_revision(master)
         _save(master, items)
         print("failed %s (%d/%d)" % (item_id, len(failures), max_failures))
         return
@@ -813,6 +1046,7 @@ def cmd_fail(opts):
     sys.exit(2)
 
 
+@_transactional
 def cmd_checklist(opts):
     master, items = _load()
     if not master or not items:
@@ -823,6 +1057,7 @@ def cmd_checklist(opts):
     print(render_backlog_table(master, items, anchor=anchor))
 
 
+@_transactional
 def cmd_status(_opts):
     master, items = _load()
     if not master or not items:
@@ -843,6 +1078,7 @@ def _active_workers(items):
     return len(seen)
 
 
+@_transactional
 def cmd_poll(opts):
     master, items = _load()
     if not master or not items:
@@ -868,9 +1104,11 @@ def cmd_poll(opts):
     print("empty %d/%d" % (int(master.get("empty_polls", 0)), max(1, k)))
 
 
+@_transactional
 def cmd_heartbeat(opts):
     item_id = (opts.get("item") or "").strip()
     worker = (opts.get("worker") or "").strip()
+    fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
     ttl = int(opts.get("lease-ttl") or 900)
     if not item_id or not worker:
         print("backlog: --item and --worker are required")
@@ -879,23 +1117,90 @@ def cmd_heartbeat(opts):
     if not master or not items:
         print("backlog: none frozen")
         sys.exit(2)
+    _check_expected_revision(master, opts)
     _refresh_ready_states(items)
     for item in items:
         if item.get("id") != item_id:
             continue
         lease = item.get("lease") or {}
-        if item.get("status") not in ("claimed", "running", "verification", "delivery") or lease.get("worker") != worker:
-            print("backlog: BLOCKED — worker %s does not hold item %s" % (worker, item_id))
-            sys.exit(12)
+        if (item.get("status") not in ("claimed", "running", "verification", "delivery") or
+                not _lease_matches(item, worker=worker, fence=fence)):
+            _lease_error(worker, item_id)
         lease["heartbeat_at"] = _now()
         lease["ttl_seconds"] = ttl
         lease["expires_at"] = _lease_expires(ttl)
         item["lease"] = lease
+        _bump_revision(master)
         _save(master, items)
         print("heartbeat %s" % item_id)
         return
     print("backlog: no such item %r" % item_id)
     sys.exit(2)
+
+
+# State transitions accepted by the durable task graph.  Terminal `done` is
+# intentionally handled by `done`, which performs the independent anchor/AC
+# gate before closing an item.
+_TRANSITIONS = {
+    "ready": {"claimed", "blocked", "cancelled"},
+    "claimed": {"running", "verification", "delivery", "ready", "failed", "blocked", "cancelled"},
+    "running": {"verification", "delivery", "ready", "failed", "blocked", "cancelled"},
+    "verification": {"delivery", "running", "ready", "failed", "blocked", "cancelled"},
+    "delivery": {"verification", "running", "ready", "failed", "blocked", "cancelled"},
+    "blocked": {"ready", "cancelled"},
+    "failed": {"ready", "dead-letter", "cancelled"},
+}
+
+
+@_transactional
+def cmd_transition(opts):
+    """Apply one fenced task-state transition as a compare-and-swap."""
+    item_id = (opts.get("item") or "").strip()
+    target = (opts.get("to") or opts.get("status") or "").strip().lower()
+    expected = (opts.get("from") or "").strip().lower()
+    worker = (opts.get("worker") or "").strip()
+    fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
+    if not item_id or not target:
+        print("backlog: --item and --to/--status are required")
+        sys.exit(2)
+    if target == "done":
+        print("backlog: BLOCKED — use done after the verified anchor gate")
+        sys.exit(12)
+    master, items = _load()
+    if not master or not items:
+        print("backlog: none frozen")
+        sys.exit(2)
+    _check_expected_revision(master, opts)
+    hit = next((item for item in items if item.get("id") == item_id), None)
+    if hit is None:
+        print("backlog: no such item %r" % item_id)
+        sys.exit(2)
+    current = (hit.get("status") or "").lower()
+    if expected and current != expected:
+        print("backlog: BLOCKED — compare-and-swap expected %s, found %s" % (expected, current))
+        sys.exit(12)
+    if target not in _TRANSITIONS.get(current, set()):
+        print("backlog: BLOCKED — invalid transition %s -> %s" % (current, target))
+        sys.exit(12)
+    active = {"claimed", "running", "verification", "delivery"}
+    # Every transition out of an active lease is fenced.  For compatibility,
+    # legacy callers may omit credentials only while transitioning an unleased
+    # item; a claimed/running item cannot be mutated anonymously.
+    if current in active and not _lease_matches(hit, worker=worker, fence=fence, require=True):
+        _lease_error(worker, item_id)
+    if target in active and not _lease_matches(hit, worker=worker, fence=fence, require=True):
+        _lease_error(worker, item_id)
+    hit["status"] = target
+    hit["transitioned_at"] = _now()
+    if opts.get("reason"):
+        hit["blocked_reason"] = str(opts.get("reason"))
+    if opts.get("code"):
+        hit["reason_code"] = str(opts.get("code"))
+    if target not in active:
+        hit["lease"] = {}
+    _bump_revision(master)
+    _save(master, items)
+    print("transitioned %s %s -> %s" % (item_id, current, target))
 
 
 def cmd_selftest(_opts):
@@ -978,16 +1283,18 @@ def main():
         sys.exit(2)
     if argv[0] == "--describe-cli":
         print(json.dumps({
-            "verbs": ["init", "next", "done", "skip", "block", "fail", "heartbeat", "status", "poll", "checklist", "selftest"],
+            "verbs": ["init", "next", "done", "skip", "block", "fail", "heartbeat", "transition", "status", "poll", "checklist", "selftest"],
             "flags": ["--anchor", "--code", "--goal", "--help", "--item", "--item-file", "--lint",
-                      "--reason", "--task-file", "--worker", "--lease-ttl", "--fingerprint", "--max-failures", "--empty-polls"],
+                      "--reason", "--task-file", "--worker", "--fence", "--fencing-token", "--from", "--to", "--status", "--expected-revision",
+                      "--lease-ttl", "--fingerprint", "--max-failures", "--empty-polls",
+                      "--lock-timeout", "--lock-retry"],
         }))
         sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])
     {"init": cmd_init, "next": cmd_next, "done": cmd_done, "skip": cmd_skip, "block": cmd_block,
-     "fail": cmd_fail, "heartbeat": cmd_heartbeat, "status": cmd_status, "poll": cmd_poll,
+     "fail": cmd_fail, "heartbeat": cmd_heartbeat, "transition": cmd_transition, "status": cmd_status, "poll": cmd_poll,
      "checklist": cmd_checklist, "selftest": cmd_selftest}.get(
-        sub, lambda _o: (print("unknown command '%s'. choices: init next done skip block fail heartbeat status poll checklist "
+        sub, lambda _o: (print("unknown command '%s'. choices: init next done skip block fail heartbeat transition status poll checklist "
                                "selftest" % sub), sys.exit(2)))(opts)
 
 

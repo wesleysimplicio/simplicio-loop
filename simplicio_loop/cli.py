@@ -14,8 +14,33 @@ import json
 from pathlib import Path
 
 from . import __version__
-from .runner import arm_run, apply_human_decision, change_phase, execute_operator, read_status, reconcile_delivery, sync_source_state
+from .drain import (
+    SCHEMA as DRAIN_SCHEMA,
+    DrainReceiptError,
+    evaluate_drain,
+    load_drain_receipt,
+    persist_drain_receipt,
+)
+from .runner import (
+    arm_run,
+    apply_human_decision,
+    change_phase,
+    execute_operator,
+    execute_operator_batch,
+    read_status,
+    reconcile_delivery,
+    sync_source_state,
+)
 from .task_contract import compile_many, main as task_contract_main, preview_contract
+from .ops_ledger import (
+    CONTEXT_SCHEMA,
+    HANDSHAKE_SCHEMA,
+    LEGACY_COMPATIBILITY,
+    REQUIRED_CONTEXT_FIELDS,
+    EventLedger,
+    LedgerError,
+    validate_handshake,
+)
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -182,6 +207,25 @@ def tick(repo: str, run_id: str, task_index: int) -> int:
     return 0
 
 
+def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_budget: int) -> int:
+    """Run selected ready tasks through the durable real-operator pool."""
+    indices = None
+    if task_indices.strip():
+        try:
+            indices = [int(value.strip()) for value in task_indices.split(",") if value.strip()]
+        except ValueError as exc:
+            raise ValueError("--task-indices must be a comma-separated list of integers") from exc
+    payload = execute_operator_batch(
+        repo,
+        run_id,
+        indices,
+        max_workers=max_workers or None,
+        retry_budget=retry_budget,
+    )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cancel(repo: str, run_id: str) -> int:
     payload = change_phase(repo, run_id, "cancelled", "cancel requested from CLI")
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
@@ -207,6 +251,176 @@ def sync_source(repo: str, run_id: str, source: str, external_repo: str, pr: int
     payload = sync_source_state(repo, run_id, source, external_repo=external_repo, pr=pr or None, tag=tag)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def _drain_cli_failure(reason_code: str, reason: str, **extra) -> dict:
+    """Return a safe, JSON-serializable drain result for CLI input failures.
+
+    The drain CLI is an evidence boundary: malformed or missing input must never
+    look like a successful drain.  Keep the shape compatible with
+    ``evaluate_drain`` while marking the result explicitly unverified.
+    """
+    payload = {
+        "schema": DRAIN_SCHEMA,
+        "verdict": "CONTINUE",
+        "ready": False,
+        "reason_code": reason_code,
+        "reason": reason,
+        "tag": "UNVERIFIED",
+    }
+    payload.update(extra)
+    return payload
+
+
+def _read_drain_snapshot(path: str):
+    try:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return None, _drain_cli_failure("snapshot_invalid", "could not read drain snapshot", error=str(exc))
+    if not isinstance(payload, dict):
+        return None, _drain_cli_failure("snapshot_invalid", "drain snapshot must be a JSON object")
+    return payload, None
+
+
+def _valid_drain_result(payload) -> bool:
+    """Check the minimum result envelope before exposing a loaded receipt."""
+    if not isinstance(payload, dict) or payload.get("schema") != DRAIN_SCHEMA:
+        return False
+    if payload.get("verdict") not in {"DRAINED", "CONTINUE", "BLOCKED"}:
+        return False
+    if not isinstance(payload.get("ready"), bool):
+        return False
+    if payload.get("tag") not in {"MEASURED", "UNVERIFIED"}:
+        return False
+    return not (payload["ready"] and payload["verdict"] != "DRAINED")
+
+
+def drain(action: str, snapshot_path: str, receipt_path: str, polls_required: int) -> int:
+    """Evaluate, persist, or load a drain receipt and emit exactly one JSON value.
+
+    ``CONTINUE`` is a valid fail-closed verdict for a well-formed snapshot; a
+    non-zero exit is reserved for unusable CLI input or a corrupt/missing receipt.
+    """
+    if action in {"evaluate", "persist"}:
+        if not snapshot_path:
+            print(json.dumps(_drain_cli_failure("snapshot_required", "--snapshot is required"),
+                             ensure_ascii=False, sort_keys=True))
+            return 2
+        snapshot, failure = _read_drain_snapshot(snapshot_path)
+        if failure is not None:
+            print(json.dumps(failure, ensure_ascii=False, sort_keys=True))
+            return 2
+        try:
+            result = evaluate_drain(snapshot, polls_required=polls_required)
+        except (TypeError, ValueError, KeyError) as exc:
+            result = _drain_cli_failure("snapshot_invalid", "drain snapshot could not be evaluated",
+                                        error=str(exc))
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 2
+        if action == "evaluate":
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0
+        if not receipt_path:
+            print(json.dumps(_drain_cli_failure("receipt_required", "--receipt is required"),
+                             ensure_ascii=False, sort_keys=True))
+            return 2
+        try:
+            result = persist_drain_receipt(receipt_path, result=result)
+        except (DrainReceiptError, OSError, TypeError, ValueError) as exc:
+            result = _drain_cli_failure("receipt_persist_failed", "could not persist drain receipt",
+                                        error=str(exc))
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 2
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    if action == "load":
+        if not receipt_path:
+            print(json.dumps(_drain_cli_failure("receipt_required", "--receipt is required"),
+                             ensure_ascii=False, sort_keys=True))
+            return 2
+        try:
+            result = load_drain_receipt(receipt_path)
+        except (DrainReceiptError, OSError, TypeError, ValueError) as exc:
+            result = _drain_cli_failure("receipt_invalid", "could not load drain receipt", error=str(exc))
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 2
+        if result is None:
+            print(json.dumps(_drain_cli_failure("receipt_missing", "drain receipt does not exist"),
+                             ensure_ascii=False, sort_keys=True))
+            return 2
+        if not _valid_drain_result(result):
+            print(json.dumps(_drain_cli_failure("receipt_invalid", "drain receipt has an invalid result envelope"),
+                             ensure_ascii=False, sort_keys=True))
+            return 2
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    # ``argparse`` constrains this in normal use, but keeping the fallback
+    # fail-closed makes direct calls to ``main`` safe as well.
+    print(json.dumps(_drain_cli_failure("action_invalid", "unknown drain action"),
+                     ensure_ascii=False, sort_keys=True))
+    return 2
+def _load_handshake(handshake_json: str, handshake_file: str):
+    if handshake_json and handshake_file:
+        raise ValueError("--handshake-json and --handshake-file are mutually exclusive")
+    if not handshake_json and not handshake_file:
+        return None
+    raw = (Path(handshake_file).read_text(encoding="utf-8")
+           if handshake_file else handshake_json)
+    try:
+        return validate_handshake(json.loads(raw))
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        if isinstance(exc, LedgerError):
+            raise
+        raise LedgerError("executor handshake JSON must be an object") from exc
+
+
+def ledger_replay(path: str, compatibility: bool, recover_trailing: bool,
+                  handshake_json: str, handshake_file: str, command: str = "replay") -> int:
+    """Replay and validate a ledger through a deterministic, read-only JSON surface."""
+    requested_path = str(path)
+    try:
+        handshake = _load_handshake(handshake_json, handshake_file)
+        # Strict mode requires both hash-bound event context and the executor
+        # handshake.  Legacy mode is an explicit escape hatch for pre-context
+        # ledgers and is surfaced in the result so callers cannot confuse it
+        # with a strict replay.
+        if not compatibility and handshake is None:
+            raise LedgerError(
+                "strict ledger replay requires --handshake-json or --handshake-file"
+            )
+        events = EventLedger(path, compatibility=compatibility).replay(
+            recover_trailing=recover_trailing
+        )
+        result = {
+            "command": "ledger.%s" % command,
+            "compatibility": bool(compatibility),
+            "context_schema": CONTEXT_SCHEMA,
+            "event_count": len(events),
+            "events": events,
+            "handshake": handshake,
+            "handshake_schema": HANDSHAKE_SCHEMA if handshake is not None else None,
+            "ok": True,
+            "path": requested_path,
+            "required_context": list(REQUIRED_CONTEXT_FIELDS),
+            "schema": "simplicio.ledger-replay/v1",
+        }
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return 0
+    except (LedgerError, OSError, ValueError, json.JSONDecodeError) as exc:
+        result = {
+            "command": "ledger.%s" % command,
+            "compatibility": bool(compatibility),
+            "error": {"kind": exc.__class__.__name__, "message": str(exc)},
+            "handshake": None,
+            "ok": False,
+            "path": requested_path,
+            "schema": "simplicio.ledger-replay/v1",
+        }
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return 2
 
 
 def main(argv=None) -> int:
@@ -260,6 +474,22 @@ def main(argv=None) -> int:
     p_tick.add_argument("run_id", help="run id to tick")
     p_tick.add_argument("--task-index", type=int, default=1, help="1-based task index")
 
+    p_batch = sub.add_parser("batch", help="continuously dispatch ready tasks through simplicio-dev-cli")
+    p_batch.add_argument("--repo", default=".", help="repository root")
+    p_batch.add_argument("run_id", help="run id to dispatch")
+    p_batch.add_argument(
+        "--task-indices",
+        default="",
+        help="comma-separated 1-based task indices (default: every task in the contract)",
+    )
+    p_batch.add_argument(
+        "--max-workers",
+        type=int,
+        default=0,
+        help="maximum live operator workers (default: SIMPLICIO_LOOP_OPERATOR_WORKERS/6)",
+    )
+    p_batch.add_argument("--retry-budget", type=int, default=3, help="retries after the first attempt")
+
     p_cancel = sub.add_parser("cancel", help="cancel a non-terminal run")
     p_cancel.add_argument("--repo", default=".", help="repository root")
     p_cancel.add_argument("run_id", help="run id to cancel")
@@ -286,6 +516,45 @@ def main(argv=None) -> int:
     p_sync.add_argument("--pr", type=int, default=0, help="pull request number")
     p_sync.add_argument("--tag", default="", help="release tag")
 
+    p_drain = sub.add_parser("drain", help="evaluate, persist, or load a queue-drain receipt")
+    p_drain.add_argument("action", nargs="?", default="",
+                          help="operation to perform: evaluate, persist, or load")
+    p_drain.add_argument("--snapshot", "--snapshot-file", dest="snapshot_path", default="",
+                         help="JSON scheduler/source snapshot (evaluate and persist)")
+    p_drain.add_argument("--receipt", "--receipt-file", dest="receipt_path", default="",
+                         help="receipt JSON path (persist and load)")
+    p_drain.add_argument("--polls-required", type=int, default=2,
+                         help="identical empty polls required (default: %(default)s)")
+    p_ledger = sub.add_parser("ledger", help="validate/replay the operational event ledger")
+    ledger_sub = p_ledger.add_subparsers(dest="ledger_command", required=True)
+    for ledger_command in ("replay", "validate"):
+        p_ledger_action = ledger_sub.add_parser(
+            ledger_command,
+            help="%s events with hash-chain and context validation" % ledger_command,
+        )
+        p_ledger_action.add_argument("--path", required=True, help="JSONL EventLedger path")
+        p_ledger_action.add_argument(
+            "--compatibility",
+            action="store_true",
+            help="explicitly allow legacy v1 rows without context/handshake",
+        )
+        p_ledger_action.add_argument(
+            "--recover-trailing",
+            action="store_true",
+            help="drop one corrupt trailing JSONL row under the ledger lock",
+        )
+        handshake = p_ledger_action.add_mutually_exclusive_group()
+        handshake.add_argument(
+            "--handshake-json",
+            default="",
+            help="inline executor handshake JSON (strict mode requires it)",
+        )
+        handshake.add_argument(
+            "--handshake-file",
+            default="",
+            help="file containing executor handshake JSON (strict mode requires it)",
+        )
+
     args = parser.parse_args(argv)
     command = args.command or "install"
     if command == "dashboard":
@@ -305,6 +574,8 @@ def main(argv=None) -> int:
         return resume(args.repo, args.run_id)
     if command == "tick":
         return tick(args.repo, args.run_id, args.task_index)
+    if command == "batch":
+        return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget)
     if command == "cancel":
         return cancel(args.repo, args.run_id)
     if command == "deliver":
@@ -313,6 +584,17 @@ def main(argv=None) -> int:
         return decide(args.repo, args.run_id, args.decision_id, args.answer, args.impact)
     if command == "sync-source":
         return sync_source(args.repo, args.run_id, args.source, args.external_repo, args.pr, args.tag)
+    if command == "drain":
+        return drain(args.action, args.snapshot_path, args.receipt_path, args.polls_required)
+    if command == "ledger":
+        return ledger_replay(
+            args.path,
+            args.compatibility,
+            args.recover_trailing,
+            args.handshake_json,
+            args.handshake_file,
+            args.ledger_command,
+        )
     return install(Path(args.target).resolve(), args.globally)
 
 

@@ -185,6 +185,9 @@ def test_backlog_table_is_embedded_before_anchor_checklist(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     r = _run(TASK_BACKLOG, ["next"], cwd=str(tmp_path), env=env)
     assert r.returncode == 0 and "T1" in r.stdout, r.stdout + r.stderr
+    claim_fields = r.stdout.strip().split("\t")
+    assert len(claim_fields) >= 3 and claim_fields[2].startswith("fence-"), r.stdout
+    claim_fence = claim_fields[2]
 
     r = _run(TASK_ANCHOR, ["set", "--item", "T1", "--goal", "Add SSO login",
                            "--ac", "Login page renders an SSO button"], cwd=str(tmp_path), env=env)
@@ -192,7 +195,8 @@ def test_backlog_table_is_embedded_before_anchor_checklist(tmp_path):
     r = _run(TASK_ANCHOR, ["mark", "--id", "AC1", "--status", "done",
                            "--evidence", "web_verify screenshot"], cwd=str(tmp_path), env=env)
     assert r.returncode == 0, r.stdout + r.stderr
-    r = _run(TASK_BACKLOG, ["done", "--item", "T1", "--anchor", anchor_path],
+    r = _run(TASK_BACKLOG, ["done", "--item", "T1", "--anchor", anchor_path,
+                            "--worker", "__anonymous__", "--fence", claim_fence],
              cwd=str(tmp_path), env=env)
     assert r.returncode == 0, r.stdout + r.stderr
     os.remove(anchor_path)  # end of drain turn: the next item can re-arm a fresh anchor

@@ -6,13 +6,13 @@ Usage:
 
 Preflight:
     1. Detect available capacity (local worktrees)
-    2. Build independence graph using impact_audit data
-    3. Partition into groups of disjoint tasks
-    4. Spawn one worker per task in each group
+    2. Admit ready tasks through the resource governor
+    3. Keep conflicting paths in serial lanes
+    4. Refill each slot immediately after completion
 
 Guardrails:
     - max_workers: cap concurrent workers (default: 4, from env: FAN_OUT_MAX_WORKERS)
-    - Each worker gets its own worktree/branch
+    - Worktree provisioning is delegated to the isolated backend (#153)
     - One worker failure does not bring down others
     - Fallback to serial when cap==1 or no extra capacity
 
@@ -26,16 +26,19 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
-import tempfile
+import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+
+try:
+    from worktree_queue import TaskSpec, WorktreeQueue
+except ImportError:  # pragma: no cover - package/module execution fallback
+    from scripts.worktree_queue import TaskSpec, WorktreeQueue
 
 
 @dataclass
@@ -44,6 +47,19 @@ class Task:
     goal: str
     target: Optional[str] = None
     files_affected: List[str] = field(default_factory=list)
+    # These fields are optional so task files written for the original fan-out
+    # contract remain valid.  They make the scheduler useful as an in-memory
+    # task graph until the durable claims store lands in #151.
+    dependencies: List[str] = field(default_factory=list)
+    priority: int = 0
+    resources: Dict[str, float] = field(default_factory=dict)
+    retries: int = 0
+    timeout_seconds: Optional[float] = None
+    # Optional impact dimensions consumed by WorktreeQueue.  Existing task
+    # files remain valid and the scheduler still uses its resource policy.
+    symbols: List[str] = field(default_factory=list)
+    public_contracts: List[str] = field(default_factory=list)
+    migrations: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -53,20 +69,194 @@ class WorkerResult:
     output: str = ""
     error: Optional[str] = None
     duration_ms: float = 0.0
+    attempts: int = 1
+    reason_code: Optional[str] = None
+    worktree_path: Optional[str] = None
+    branch: Optional[str] = None
+    lane: Optional[str] = None
+    base_sha: Optional[str] = None
+    head_sha: Optional[str] = None
+    tree_sha: Optional[str] = None
+
+
+@dataclass
+class SchedulerEvent:
+    """A machine-readable scheduling decision or worker lifecycle event."""
+
+    event: str
+    task_id: Optional[str] = None
+    reason_code: Optional[str] = None
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    details: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ResourceGovernor:
+    """Small, deterministic resource admission governor.
+
+    Resource values are abstract units supplied by the task graph.  A task may
+    request ``cpu``, ``memory_mb``, ``disk_mb``, ``processes`` and ``quota``.
+    The governor never admits a task when adding its request would exceed a
+    configured cap.  Unknown resource names are deliberately ignored so a
+    newer producer can interoperate with an older scheduler without silently
+    changing the hard caps enforced here.
+    """
+
+    workers: int
+    cpu: float
+    memory_mb: Optional[float] = None
+    disk_mb: Optional[float] = None
+    processes: Optional[float] = None
+    quota: Optional[float] = None
+    used: Dict[str, float] = field(default_factory=dict)
+
+    _RESOURCE_NAMES = ("cpu", "memory_mb", "disk_mb", "processes", "quota")
+
+    def __post_init__(self) -> None:
+        self.workers = max(0, int(self.workers))
+        self.cpu = max(0.0, float(self.cpu))
+        for name in self._RESOURCE_NAMES:
+            if name not in self.used:
+                self.used[name] = 0.0
+
+    @classmethod
+    def from_capacity(cls, capacity: Dict[str, Any], workers: Optional[int] = None) -> "ResourceGovernor":
+        limits = capacity.get("resources", {}) if isinstance(capacity, dict) else {}
+        selected_workers = capacity.get("workers_local", 0) if workers is None else workers
+        return cls(
+            workers=selected_workers,
+            cpu=limits.get("cpu", capacity.get("cpu_units", capacity.get("cpu", selected_workers))),
+            memory_mb=limits.get("memory_mb", capacity.get("memory_mb")),
+            disk_mb=limits.get("disk_mb", capacity.get("disk_mb")),
+            processes=limits.get("processes", capacity.get("processes", selected_workers)),
+            quota=limits.get("quota", capacity.get("quota")),
+        )
+
+    def request(self, task: Task) -> Dict[str, float]:
+        request = {name: 0.0 for name in self._RESOURCE_NAMES}
+        # One worker/process slot is always consumed by a running task.  This
+        # keeps the scheduler work-conserving while still enforcing process caps.
+        request["processes"] = 1.0
+        aliases = {
+            "ram": "memory_mb",
+            "ram_mb": "memory_mb",
+            "memory": "memory_mb",
+            "process": "processes",
+            "cpu_units": "cpu",
+        }
+        for raw_name, value in (task.resources or {}).items():
+            name = aliases.get(raw_name, raw_name)
+            if name in request:
+                try:
+                    request[name] = max(0.0, float(value))
+                except (TypeError, ValueError):
+                    # Invalid requests are denied by ``admit`` with a stable
+                    # reason instead of leaking an exception from a worker.
+                    request[name] = float("inf")
+        if request["cpu"] <= 0:
+            request["cpu"] = 1.0
+        return request
+
+    def _limit(self, name: str) -> Optional[float]:
+        if name == "cpu":
+            return self.cpu
+        if name == "memory_mb":
+            return self.memory_mb
+        if name == "disk_mb":
+            return self.disk_mb
+        if name == "processes":
+            return self.processes if self.processes is not None else float(self.workers)
+        if name == "quota":
+            return self.quota
+        return None
+
+    def admission(self, task: Task, active_workers: int = 0) -> Tuple[bool, str, Dict[str, float]]:
+        """Return ``(allowed, reason_code, request)`` without mutating usage."""
+        request = self.request(task)
+        if active_workers >= self.workers:
+            return False, "resource", request
+        for name, amount in request.items():
+            if amount == float("inf"):
+                return False, "resource_invalid", request
+            limit = self._limit(name)
+            if limit is not None and self.used.get(name, 0.0) + amount > limit:
+                return False, "resource", request
+        return True, "admitted", request
+
+    def acquire(self, request: Dict[str, float]) -> None:
+        for name, amount in request.items():
+            self.used[name] = self.used.get(name, 0.0) + amount
+
+    def release(self, request: Dict[str, float]) -> None:
+        for name, amount in request.items():
+            self.used[name] = max(0.0, self.used.get(name, 0.0) - amount)
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "limits": {
+                "workers": self.workers,
+                "cpu": self.cpu,
+                "memory_mb": self.memory_mb,
+                "disk_mb": self.disk_mb,
+                "processes": self.processes,
+                "quota": self.quota,
+            },
+            "used": dict(self.used),
+        }
 
 
 def detect_capacity() -> Dict[str, Any]:
-    """Detect available execution backends."""
-    capacity = {
-        "workers_local": 1,  # always at least ourselves
-        "backends": ["local"],
-    }
+    """Detect safe local capacity and optional operator-provided hard caps.
+
+    The probe is intentionally stdlib-only and conservative.  Environment
+    values are *caps*, never an invitation to oversubscribe the host.  A value
+    of zero is meaningful and causes the scheduler to report ``BLOCKED``;
+    capacity is never fabricated to make a report look productive.
+    """
     max_workers_env = os.environ.get("FAN_OUT_MAX_WORKERS", "4")
     try:
-        capacity["workers_local"] = min(int(max_workers_env), os.cpu_count() or 2)
-    except ValueError:
-        capacity["workers_local"] = 4
-    return capacity
+        worker_cap = max(0, int(max_workers_env))
+    except (TypeError, ValueError):
+        worker_cap = 4
+    cpu_count = os.cpu_count() or 1
+    workers = min(worker_cap, cpu_count) if worker_cap else 0
+
+    def _optional_float(name: str) -> Optional[float]:
+        raw = os.environ.get(name)
+        if raw is None or raw == "":
+            return None
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return None
+
+    memory_mb = _optional_float("FAN_OUT_MAX_MEMORY_MB")
+    disk_mb = _optional_float("FAN_OUT_MAX_DISK_MB")
+    quota = _optional_float("FAN_OUT_MAX_QUOTA")
+    # FAN_OUT_MAX_PROCESSES defaults to the worker cap, so process accounting
+    # remains a hard limit even when no explicit resource policy is configured.
+    processes = _optional_float("FAN_OUT_MAX_PROCESSES")
+    if processes is None:
+        processes = float(workers)
+    cpu_cap = _optional_float("FAN_OUT_MAX_CPU")
+    if cpu_cap is None:
+        cpu_cap = float(workers)
+    return {
+        "workers_local": workers,
+        "cpu_units": cpu_cap,
+        "memory_mb": memory_mb,
+        "disk_mb": disk_mb,
+        "processes": processes,
+        "quota": quota,
+        "backends": ["local"] if workers else [],
+        "resources": {
+            "cpu": cpu_cap,
+            "memory_mb": memory_mb,
+            "disk_mb": disk_mb,
+            "processes": processes,
+            "quota": quota,
+        },
+    }
 
 
 def build_independence_graph(tasks: List[Task]) -> List[List[Task]]:
@@ -91,36 +281,64 @@ def build_independence_graph(tasks: List[Task]) -> List[List[Task]]:
     return groups
 
 
-def run_worker(task: Task, workdir: str, dry_run: bool = False) -> WorkerResult:
+def _task_spec(task: Task) -> TaskSpec:
+    """Translate the scheduler task into the durable isolation contract."""
+    return TaskSpec(
+        id=task.id,
+        goal=task.goal,
+        files_affected=task.files_affected,
+        symbols=task.symbols,
+        public_contracts=task.public_contracts,
+        migrations=task.migrations,
+    )
+
+
+def build_conflict_graph(tasks: List[Task]) -> Dict[str, List[str]]:
+    """Expose durable path/symbol/contract/migration conflict metadata."""
+    return WorktreeQueue.conflict_graph([_task_spec(task) for task in tasks])
+
+
+def build_conflict_lanes(tasks: List[Task]) -> Dict[str, str]:
+    """Return deterministic persisted lane keys for report consumers."""
+    return WorktreeQueue.conflict_lanes([_task_spec(task) for task in tasks])
+
+
+def run_worker(
+    task: Task,
+    workdir: str,
+    dry_run: bool = False,
+    queue: Optional[WorktreeQueue] = None,
+) -> WorkerResult:
     """Run a single task in its own worktree/branch."""
     start = time.time()
     task_id = task.id
     branch_name = f"feat/{task_id}-{uuid.uuid4().hex[:8]}"
+    allocation = None
 
     try:
         if dry_run:
             output = json.dumps({"task": task_id, "branch": branch_name, "dry_run": True})
         else:
-            result = subprocess.run(
-                ["git", "checkout", "-b", branch_name],
-                cwd=workdir,
-                capture_output=True,
-                text=True,
-                timeout=30,
+            if queue is not None:
+                # Allocate ownership before the operator handoff, but keep the
+                # existing fail-closed behavior when no operator is bound.
+                allocation = queue.allocate(_task_spec(task))
+            # Never manufacture a successful receipt.  A real operator bridge
+            # (simplicio-dev-cli/Runtime) must be injected as ``worker`` by the
+            # caller; worktree/branch setup is owned by #153.
+            return WorkerResult(
+                task_id=task_id,
+                success=False,
+                error="operator backend is not configured",
+                reason_code="operator_unbound",
+                duration_ms=round((time.time() - start) * 1000, 1),
+                worktree_path=allocation.path if allocation else None,
+                branch=allocation.branch if allocation else None,
+                lane=allocation.lane if allocation else None,
+                base_sha=allocation.base_sha if allocation else None,
+                head_sha=allocation.head_sha if allocation else None,
+                tree_sha=allocation.tree_sha if allocation else None,
             )
-            if result.returncode != 0:
-                # branch may already exist or we're in detached
-                pass
-
-            # Simulate task execution — in production this would run the full
-            # orient→execute→verify→PR loop
-            result = subprocess.run(
-                ["echo", f"Running task {task_id}: {task.goal}"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            output = result.stdout
 
         duration = (time.time() - start) * 1000
         return WorkerResult(
@@ -136,7 +354,359 @@ def run_worker(task: Task, workdir: str, dry_run: bool = False) -> WorkerResult:
             success=False,
             error=str(e),
             duration_ms=round(duration, 1),
+            reason_code="worker_exception",
         )
+
+
+def _path_key(path: str) -> str:
+    """Normalize a task impact path for conflict-lane admission."""
+    # ``normcase`` is a no-op on POSIX, while repository impact paths remain
+    # case-insensitive across the supported Windows/POSIX checkout adapters.
+    return os.path.normcase(str(path).replace("\\", "/")).strip().lower()
+
+
+def _task_files(task: Task) -> Set[str]:
+    return {_path_key(path) for path in (task.files_affected or []) if str(path).strip()}
+
+
+class WorkConservingScheduler:
+    """Event-driven, conflict-aware worker pool.
+
+    Only admitted tasks are submitted to the executor.  As soon as one future
+    completes, its resources and conflict lane are released and the scheduler
+    scans the pending queue again, so an unrelated task can refill that slot
+    without waiting for a wave/barrier.  Every non-dispatch decision is
+    recorded with a reason code for truthful status/evidence output.
+    """
+
+    def __init__(
+        self,
+        tasks: Iterable[Task],
+        workdir: str,
+        max_workers: int,
+        *,
+        dry_run: bool = False,
+        governor: Optional[ResourceGovernor] = None,
+        worker: Optional[Callable[[Task, str, bool], WorkerResult]] = None,
+        worktree_queue: Optional[WorktreeQueue] = None,
+        retry_limit: int = 0,
+        poll_interval: float = 0.01,
+        idle_grace_seconds: float = 0.05,
+    ) -> None:
+        self.workdir = workdir
+        self.dry_run = dry_run
+        self.max_workers = max(0, int(max_workers))
+        self.governor = governor or ResourceGovernor(
+            workers=self.max_workers,
+            cpu=float(self.max_workers),
+            processes=float(self.max_workers),
+        )
+        # Keep a governor from admitting more execution slots than the CLI
+        # requested, even when it was built from a larger host capacity probe.
+        self.governor.workers = min(self.governor.workers, self.max_workers)
+        self.worker = worker or run_worker
+        self.worktree_queue = worktree_queue
+        self.retry_limit = max(0, int(retry_limit))
+        self.poll_interval = max(0.0, float(poll_interval))
+        self.idle_grace_seconds = max(0.0, float(idle_grace_seconds))
+        self.pending: List[Task] = list(tasks)
+        self.events: List[SchedulerEvent] = []
+        self.results: List[WorkerResult] = []
+        self.attempts: Dict[str, int] = {}
+        self._active_files: Set[str] = set()
+        self._active: Dict[Any, Tuple[Task, Set[str], Dict[str, float]]] = {}
+        self._completed: Set[str] = set()
+        self._failed: Set[str] = set()
+        self._cancelled = threading.Event()
+        self._lock = threading.RLock()
+        self._run_started: Optional[float] = None
+        self._run_finished: Optional[float] = None
+        self._task_queued_at: Dict[str, float] = {task.id: time.monotonic() for task in self.pending}
+        self._wait_seconds = 0.0
+        self._busy_seconds = 0.0
+        self._deadlines: Dict[Any, float] = {}
+        self._timed_out: Set[Any] = set()
+        self._closed = False
+
+    def cancel(self) -> None:
+        """Stop admitting new work; already-running tasks finish safely."""
+        self._cancelled.set()
+        self.events.append(SchedulerEvent("cancel_requested", reason_code="cancel"))
+
+    def close(self) -> None:
+        """Close the arrival window and allow ``run`` to finish immediately.
+
+        Without an explicit close, ``run`` keeps a short idle grace window so
+        work arriving from a producer thread is claimed before the completion
+        verdict.  A caller with a durable queue should call ``close`` after
+        its producer has observed the queue drained.
+        """
+        with self._lock:
+            self._closed = True
+            self.events.append(SchedulerEvent("arrival_window_closed", reason_code="delivery"))
+
+    def add_task(self, task: Task) -> None:
+        """Add late work before/while a run is draining (thread-safe)."""
+        with self._lock:
+            self.pending.append(task)
+            self._task_queued_at[task.id] = time.monotonic()
+            self.events.append(SchedulerEvent("task_arrived", task.id, "late_arrival"))
+
+    def _dependencies(self, task: Task) -> Tuple[bool, Optional[str]]:
+        deps = set(task.dependencies or [])
+        if not deps:
+            return True, None
+        if deps & self._failed:
+            return False, "dependency_failed"
+        if not deps <= self._completed:
+            return False, "dependency"
+        return True, None
+
+    def _select_ready(self, active_workers: int) -> Optional[Tuple[int, Task, Set[str], Dict[str, float]]]:
+        # Priority is descending, then input order for deterministic fairness.
+        ranked = sorted(enumerate(self.pending), key=lambda item: (-item[1].priority, item[0]))
+        saw_resource_denial = False
+        saw_dependency = False
+        saw_conflict = False
+        for index, task in ranked:
+            ready, dependency_reason = self._dependencies(task)
+            if not ready:
+                if dependency_reason == "dependency_failed":
+                    # Failure is terminal for this dependent, but does not
+                    # cancel unrelated work.
+                    self.events.append(SchedulerEvent("blocked", task.id, dependency_reason))
+                else:
+                    saw_dependency = True
+                continue
+            files = _task_files(task)
+            if files & self._active_files:
+                saw_conflict = True
+                continue
+            allowed, reason, request = self.governor.admission(task, active_workers)
+            if not allowed:
+                saw_resource_denial = True
+                continue
+            return index, task, files, request
+        if self.pending:
+            if saw_resource_denial:
+                reason = "resource"
+            elif saw_conflict:
+                reason = "conflict"
+            elif saw_dependency:
+                reason = "dependency"
+            else:
+                reason = "delivery"
+            self.events.append(SchedulerEvent("idle", reason_code=reason, details={"queue_depth": len(self.pending)}))
+        return None
+
+    def _dispatch(self, executor: ThreadPoolExecutor) -> None:
+        if len(self._active) >= self.max_workers and self.pending:
+            # A full pool is not idle, but a pending conflicting lane is still
+            # an observable scheduling decision.  Keep it in the timeline so
+            # status consumers can explain why that item was deferred.
+            if any(_task_files(task) & self._active_files for task in self.pending):
+                self.events.append(SchedulerEvent("deferred", reason_code="conflict"))
+            return
+        while not self._cancelled.is_set() and len(self._active) < self.max_workers:
+            selected = self._select_ready(len(self._active))
+            if selected is None:
+                return
+            index, task, files, request = selected
+            # Remove only after admission; this makes a conflict/resource
+            # denial visible without losing the task from the queue.
+            self.pending.pop(index)
+            self._wait_seconds += max(0.0, time.monotonic() - self._task_queued_at.pop(task.id, time.monotonic()))
+            self.governor.acquire(request)
+            self._active_files.update(files)
+            attempt = self.attempts.get(task.id, 0) + 1
+            self.attempts[task.id] = attempt
+            if self.worktree_queue is not None and self.worker is run_worker:
+                future = executor.submit(
+                    run_worker, task, self.workdir, self.dry_run, self.worktree_queue
+                )
+            else:
+                future = executor.submit(self.worker, task, self.workdir, self.dry_run)
+            self._active[future] = (task, files, request)
+            if task.timeout_seconds is not None:
+                try:
+                    timeout = float(task.timeout_seconds)
+                except (TypeError, ValueError):
+                    timeout = 0.0
+                if timeout > 0:
+                    self._deadlines[future] = time.monotonic() + timeout
+            self.events.append(SchedulerEvent(
+                "started", task.id, "admitted", details={"attempt": attempt, "active": len(self._active)}
+            ))
+        if len(self._active) >= self.max_workers and self.pending:
+            if any(_task_files(task) & self._active_files for task in self.pending):
+                self.events.append(SchedulerEvent("deferred", reason_code="conflict"))
+
+    def _finish(self, future: Any) -> None:
+        task, files, request = self._active.pop(future)
+        timed_out = future in self._timed_out
+        self._deadlines.pop(future, None)
+        self._timed_out.discard(future)
+        self.governor.release(request)
+        self._active_files.difference_update(files)
+        try:
+            result = future.result()
+        except Exception as exc:  # worker isolation: one crash is one failure
+            result = WorkerResult(task.id, False, error=str(exc), reason_code="worker_exception")
+        if timed_out:
+            # A running thread cannot be force-killed safely.  Keep its lane
+            # and resources held until it exits, then fence its late success as
+            # a timeout receipt; unrelated lanes continue in parallel.
+            result = WorkerResult(task.id, False, error="worker timeout", reason_code="timeout")
+        result.attempts = self.attempts.get(task.id, 1)
+        started_event = next((event for event in reversed(self.events)
+                              if event.event == "started" and event.task_id == task.id), None)
+        if started_event is not None:
+            try:
+                started_at = datetime.fromisoformat(started_event.timestamp).timestamp()
+                self._busy_seconds += max(0.0, time.time() - started_at)
+            except (TypeError, ValueError, OSError):
+                pass
+        if result.success:
+            self._completed.add(task.id)
+            self.results.append(result)
+            self.events.append(SchedulerEvent("completed", task.id, "success", details={"attempt": result.attempts}))
+            return
+        if result.attempts <= max(self.retry_limit, int(task.retries or 0)) and not self._cancelled.is_set():
+            self.pending.append(task)
+            self.events.append(SchedulerEvent("requeued", task.id, "retry", details={"attempt": result.attempts}))
+            return
+        self._failed.add(task.id)
+        self.results.append(result)
+        self.events.append(SchedulerEvent("failed", task.id, result.reason_code or "worker_failure"))
+
+    def run(self, *, close: bool = False) -> List[WorkerResult]:
+        """Drain all currently known work and return final worker receipts."""
+        if close:
+            self.close()
+        if self._run_started is None:
+            self._run_started = time.monotonic()
+        if self.max_workers <= 0 or self.governor.workers <= 0:
+            if self.pending:
+                self.events.append(SchedulerEvent("blocked", reason_code="resource"))
+            self._run_finished = time.monotonic()
+            return []
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            while self.pending or self._active:
+                self._dispatch(executor)
+                if not self._active:
+                    # No task can be admitted.  Dependencies may be waiting on
+                    # a missing/failed node; preserve them in the queue and
+                    # report the truthful reason instead of spinning forever.
+                    if self.pending:
+                        for task in list(self.pending):
+                            ready, reason = self._dependencies(task)
+                            if not ready and reason == "dependency_failed":
+                                self.pending.remove(task)
+                                self._failed.add(task.id)
+                                self.results.append(WorkerResult(
+                                    task.id, False, error="dependency failed", reason_code=reason
+                                ))
+                            elif not ready and reason == "dependency":
+                                # Missing dependency is a terminal blocked
+                                # receipt; a live dependency would be active.
+                                missing = set(task.dependencies or []) - self._completed - self._failed
+                                if missing and not any(p.id in missing for p in self.pending):
+                                    self.pending.remove(task)
+                                    self._failed.add(task.id)
+                                    self.results.append(WorkerResult(
+                                        task.id, False, error="dependency unavailable", reason_code=reason
+                                    ))
+                        if self.pending and not self._active:
+                            break
+                    if not self.pending and not self._closed and self.idle_grace_seconds > 0:
+                        # Poll briefly for producer-side late arrivals.  This
+                        # is bounded and observable, not an unbounded wait.
+                        deadline = time.monotonic() + self.idle_grace_seconds
+                        while time.monotonic() < deadline and not self.pending and not self._closed:
+                            time.sleep(self.poll_interval)
+                        if self.pending:
+                            continue
+                    # No pending work after the bounded arrival window (or
+                    # the producer explicitly closed it): complete honestly.
+                    break
+                # ``wait(FIRST_COMPLETED)`` avoids a wave barrier and returns
+                # immediately when any slot is free for refill.
+                done = []
+                while not done:
+                    now = time.monotonic()
+                    for future, deadline in list(self._deadlines.items()):
+                        if now >= deadline and not future.done() and future not in self._timed_out:
+                            self._timed_out.add(future)
+                            task = self._active[future][0]
+                            self.events.append(SchedulerEvent("timeout", task.id, "timeout"))
+                    done = [future for future in list(self._active) if future.done()]
+                    if not done:
+                        time.sleep(self.poll_interval)
+                for future in done:
+                    self._finish(future)
+        if self._cancelled.is_set():
+            for task in self.pending:
+                self.results.append(WorkerResult(task.id, False, error="cancelled", reason_code="cancel"))
+            self.pending.clear()
+        self._run_finished = time.monotonic()
+        return self.results
+
+    def report(self) -> Dict[str, Any]:
+        now = self._run_finished or time.monotonic()
+        started = self._run_started or now
+        wall_clock_ms = max(0.0, (now - started) * 1000.0)
+        utilization = 0.0
+        if wall_clock_ms > 0 and self.max_workers > 0:
+            utilization = min(1.0, self._busy_seconds / ((wall_clock_ms / 1000.0) * self.max_workers))
+        runnable = 0
+        blocked = 0
+        for task in self.pending:
+            ready, _ = self._dependencies(task)
+            if ready and not (_task_files(task) & self._active_files):
+                runnable += 1
+            else:
+                blocked += 1
+        return {
+            "queue_depth": len(self.pending),
+            "runnable": runnable,
+            "blocked": blocked,
+            "active": len(self._active),
+            "slots": self.max_workers,
+            "wall_clock_ms": round(wall_clock_ms, 1),
+            "wait_ms": round(self._wait_seconds * 1000.0, 1),
+            "utilization": round(utilization, 4),
+            "resources": self.governor.snapshot(),
+            "events": [asdict(event) for event in self.events],
+        }
+
+
+def run_scheduler(
+    tasks: Iterable[Task],
+    workdir: str,
+    max_workers: int,
+    *,
+    dry_run: bool = False,
+    capacity: Optional[Dict[str, Any]] = None,
+    worker: Optional[Callable[[Task, str, bool], WorkerResult]] = None,
+    worktree_queue: Optional[WorktreeQueue] = None,
+    retry_limit: int = 0,
+    idle_grace_seconds: float = 0.05,
+) -> Tuple[List[WorkerResult], WorkConservingScheduler]:
+    """Convenience entry point used by the CLI and focused scheduler tests."""
+    capacity = capacity or detect_capacity()
+    governor = ResourceGovernor.from_capacity(capacity, workers=min(max_workers, capacity.get("workers_local", 0)))
+    scheduler = WorkConservingScheduler(
+        tasks,
+        workdir,
+        max_workers=min(max_workers, capacity.get("workers_local", 0)),
+        dry_run=dry_run,
+        governor=governor,
+        worker=worker or run_worker,
+        worktree_queue=worktree_queue,
+        retry_limit=retry_limit,
+        idle_grace_seconds=idle_grace_seconds,
+    )
+    return scheduler.run(), scheduler
 
 
 def main() -> int:
@@ -187,57 +757,98 @@ def main() -> int:
     capacity = detect_capacity()
     effective_workers = min(max_workers, capacity["workers_local"], len(tasks))
 
-    if effective_workers <= 1:
+    if effective_workers <= 0:
+        print(json.dumps({
+            "verdict": "BLOCKED (no capacity)",
+            "capacity": capacity,
+            "max_workers": max_workers,
+            "workers": [],
+            "reason_code": "resource",
+        }))
+        return 1
+
+    if effective_workers == 1:
+        # With only one safe slot the CLI reports a truthful serial decision.
+        # It does not invoke the unbound default operator or fabricate a
+        # success receipt; callers that provide a real worker can use the
+        # ``run_scheduler`` API directly.
         print(json.dumps({
             "verdict": "SERIAL (no extra capacity)",
             "capacity": capacity,
             "max_workers": max_workers,
+            "effective_workers": 1,
+            "total_tasks": len(tasks),
             "workers": [],
+            "reason_code": "resource",
+            "savings": {"source": "fan-out", "description": "serial execution; no parallel savings"},
         }))
         return 0
 
-    # Build independence graph
-    groups = build_independence_graph(tasks)
-    print(f"[fan-out] capacity: {capacity}, workers: {effective_workers}, groups: {len(groups)}", file=sys.stderr)
+    print(f"[fan-out] capacity: {capacity}, workers: {effective_workers}, mode={'SERIAL' if effective_workers == 1 else 'FAN_OUT'}", file=sys.stderr)
 
-    # Run tasks in parallel within each group
+    # Event-driven dispatch: only safe admitted tasks are submitted and every
+    # completed task immediately refills its slot.
     workdir = os.getcwd()
-    all_results: List[WorkerResult] = []
+    worktree_queue = None
+    if not dry_run:
+        try:
+            worktree_queue = WorktreeQueue(
+                workdir, run_id=os.environ.get("SIMPLICIO_RUN_ID")
+            )
+            worktree_queue.register_tasks([_task_spec(task) for task in tasks])
+        except Exception as exc:
+            # Preserve the existing fail-closed operator receipt when the
+            # caller is outside a Git checkout; no fake isolation is claimed.
+            print(f"[fan-out] worktree queue unavailable: {exc}", file=sys.stderr)
+            worktree_queue = None
     total_start = time.time()
-
-    with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-        futures = {}
-        for group in groups:
-            for task in group:
-                future = executor.submit(run_worker, task, workdir, dry_run)
-                futures[future] = task.id
-
-        for future in as_completed(futures):
-            result = future.result()
-            all_results.append(result)
-            status = "OK" if result.success else "FAIL"
-            print(f"[fan-out] task {result.task_id}: {status} ({result.duration_ms}ms)", file=sys.stderr)
+    try:
+        retry_limit = max(0, int(opts.get("retry-limit", opts.get("retry_limit", "0"))))
+    except ValueError:
+        retry_limit = 0
+    all_results, scheduler = run_scheduler(
+        tasks,
+        workdir,
+        effective_workers,
+        dry_run=dry_run,
+        capacity=capacity,
+        retry_limit=retry_limit,
+        worktree_queue=worktree_queue,
+    )
+    for result in all_results:
+        status = "OK" if result.success else "FAIL"
+        print(f"[fan-out] task {result.task_id}: {status} ({result.duration_ms}ms)", file=sys.stderr)
 
     total_duration = (time.time() - total_start) * 1000
 
     # Aggregate
     report = {
-        "verdict": "FAN_OUT",
+        "verdict": "SERIAL" if effective_workers == 1 else "FAN_OUT",
         "capacity": capacity,
         "effective_workers": effective_workers,
         "total_tasks": len(tasks),
         "total_duration_ms": round(total_duration, 1),
         "workers": [asdict(r) for r in all_results],
+        "conflict_graph": build_conflict_graph(tasks),
+        "conflict_lanes": build_conflict_lanes(tasks),
+        "isolation": "worktree" if worktree_queue is not None else "unbound",
+        "scheduler": scheduler.report(),
         "savings": {
             "source": "fan-out",
-            "description": f"fanned {len(tasks)} tasks across {effective_workers} workers",
+            "description": f"dispatched {len(tasks)} tasks across {effective_workers} worker(s)",
             "estimated_serial_ms": round(total_duration * effective_workers, 1),
             "actual_ms": round(total_duration, 1),
         },
     }
 
+    if effective_workers == 1:
+        # A serial run is useful and honest, but must not claim parallel
+        # savings.  Keep the key for backwards-compatible consumers while
+        # making its value explicit.
+        report["savings"] = {"source": "fan-out", "description": "serial execution; no parallel savings", "actual_ms": round(total_duration, 1)}
+
     print(json.dumps(report, indent=2))
-    return 0 if all(r.success for r in all_results) else 1
+    return 0 if len(all_results) == len(tasks) and all(r.success for r in all_results) else 1
 
 
 def selftest() -> int:

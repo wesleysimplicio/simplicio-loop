@@ -5,6 +5,7 @@ the logic that decides how many workers run and which tasks may run concurrently
 """
 import os
 import sys
+from types import SimpleNamespace
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
@@ -87,6 +88,51 @@ def test_run_worker_dry_run_never_touches_git(tmp_path):
     assert result.success is True
     assert result.task_id == "1"
     assert '"dry_run": true' in result.output
+
+
+def test_run_worker_without_operator_fails_closed(tmp_path):
+    result = fan_out.run_worker(fan_out.Task("1", "real task"), str(tmp_path), dry_run=False)
+    assert result.success is False
+    assert result.reason_code == "operator_unbound"
+
+
+def test_worktree_queue_wiring_is_optional_and_still_fails_closed(tmp_path):
+    seen = []
+
+    class Queue:
+        def allocate(self, spec):
+            seen.append(spec)
+            return SimpleNamespace(
+                path=str(tmp_path / "worker"),
+                branch="simplicio/run/task",
+                lane="lane-1",
+                base_sha="base",
+                head_sha="head",
+                tree_sha="tree",
+            )
+
+    task = fan_out.Task(
+        "task", "real task", files_affected=["src/a.py"],
+        symbols=["run"], public_contracts=["api.v1"], migrations=["m1"],
+    )
+    result = fan_out.run_worker(task, str(tmp_path), dry_run=False, queue=Queue())
+
+    assert result.success is False
+    assert result.reason_code == "operator_unbound"
+    assert result.worktree_path == str(tmp_path / "worker")
+    assert seen and seen[0].id == "task"
+    assert seen[0].symbols == ["run"]
+
+
+def test_conflict_metadata_includes_non_path_impact_dimensions():
+    tasks = [
+        fan_out.Task("a", "a", symbols=["shared"]),
+        fan_out.Task("b", "b", symbols=["shared"]),
+    ]
+    graph = fan_out.build_conflict_graph(tasks)
+    lanes = fan_out.build_conflict_lanes(tasks)
+    assert graph == {"a": ["b"], "b": ["a"]}
+    assert lanes["a"] == lanes["b"]
 
 
 if __name__ == "__main__":
