@@ -67,16 +67,20 @@ class EventLedger:
         else:  # pragma: no cover
             raise LedgerError("no cross-process locking primitive is available")
 
-    def _read_unlocked(self) -> List[Dict[str, Any]]:
+    def _read_unlocked(self, recover_trailing: bool = False) -> List[Dict[str, Any]]:
         if not self.path.exists():
             return []
         events: List[Dict[str, Any]] = []
-        for line_number, raw in enumerate(self.path.read_text(encoding="utf-8").splitlines(), 1):
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        for line_number, raw in enumerate(lines, 1):
             if not raw.strip():
                 continue
             try:
                 value = json.loads(raw)
             except ValueError as exc:
+                if recover_trailing and line_number == len(lines):
+                    self.path.write_text("\n".join(lines[:-1]) + ("\n" if lines[:-1] else ""), encoding="utf-8")
+                    break
                 raise LedgerError("invalid JSON at ledger line %d" % line_number) from exc
             if not isinstance(value, dict):
                 raise LedgerError("ledger line %d is not an object" % line_number)
@@ -97,9 +101,9 @@ class EventLedger:
                 raise LedgerError("ledger event hash mismatch at %s" % event.get("event_id", "?"))
             previous = recorded
 
-    def replay(self) -> List[Dict[str, Any]]:
+    def replay(self, recover_trailing: bool = False) -> List[Dict[str, Any]]:
         with self._lock():
-            events = self._read_unlocked()
+            events = self._read_unlocked(recover_trailing=recover_trailing)
             self._verify(events)
             return events
 
@@ -112,7 +116,9 @@ class EventLedger:
             event_id = event_id or "%d-%s" % (time.time_ns(), os.getpid())
             for existing in events:
                 if existing.get("event_id") == event_id:
-                    return existing
+                    if existing.get("kind") == kind and existing.get("payload") == dict(payload):
+                        return existing
+                    raise LedgerError("event_id already exists with a different payload: %s" % event_id)
             body: Dict[str, Any] = {
                 "schema": SCHEMA,
                 "sequence": len(events) + 1,

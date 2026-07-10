@@ -21,9 +21,20 @@ def test_ledger_append_replay_is_hash_chained(tmp_path):
 def test_duplicate_event_id_is_idempotent(tmp_path):
     ledger = EventLedger(tmp_path / "events.jsonl")
     first = ledger.append("heartbeat", {"worker": "w1"}, event_id="same")
-    again = ledger.append("heartbeat", {"worker": "changed"}, event_id="same")
+    again = ledger.append("heartbeat", {"worker": "w1"}, event_id="same")
     assert again == first
     assert len(ledger.replay()) == 1
+
+
+def test_duplicate_event_id_with_different_payload_is_rejected(tmp_path):
+    ledger = EventLedger(tmp_path / "events.jsonl")
+    ledger.append("heartbeat", {"worker": "w1"}, event_id="same")
+    try:
+        ledger.append("heartbeat", {"worker": "w2"}, event_id="same")
+    except LedgerError as exc:
+        assert "different payload" in str(exc)
+    else:
+        raise AssertionError("conflicting duplicate event was accepted")
 
 
 def test_tampering_fails_closed(tmp_path):
@@ -39,6 +50,23 @@ def test_tampering_fails_closed(tmp_path):
         assert "hash" in str(exc)
     else:
         raise AssertionError("tampered ledger unexpectedly replayed")
+
+
+def test_recover_torn_trailing_line_and_continue(tmp_path):
+    path = tmp_path / "events.jsonl"
+    ledger = EventLedger(path)
+    ledger.append("claimed", {"task": "T1"}, event_id="e1")
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"schema":"simplicio.ops-event/v1"')
+    try:
+        ledger.replay()
+    except LedgerError:
+        pass
+    else:
+        raise AssertionError("torn tail unexpectedly passed strict replay")
+    assert len(ledger.replay(recover_trailing=True)) == 1
+    ledger.append("completed", {"task": "T1"}, event_id="e2")
+    assert len(ledger.replay()) == 2
 
 
 def test_concurrent_append_preserves_sequence(tmp_path):
