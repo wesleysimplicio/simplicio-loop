@@ -100,6 +100,44 @@ def _git_meta(root: Path) -> Dict[str, str]:
     }
 
 
+def _changed_paths(root: Path) -> List[str]:
+    out: List[str] = []
+
+    def _run(*args: str) -> List[str]:
+        try:
+            done = subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True, timeout=15)
+            if done.returncode != 0:
+                return []
+            return [line.strip() for line in (done.stdout or "").splitlines() if line.strip()]
+        except Exception:
+            return []
+
+    out.extend(_run("diff", "--name-only", "HEAD"))
+    for line in _run("status", "--porcelain=v1", "--untracked-files=all"):
+        if len(line) > 3:
+            out.append(line[3:].strip())
+    return sorted({
+        path for path in out
+        if path
+        and not path.startswith(".orchestrator/")
+        and not path.startswith(".simplicio/")
+        and "__pycache__" not in path
+        and not path.endswith((".pyc", ".pyo"))
+    })
+
+
+def _operator_diff_coverage(root: Path, operator: Dict[str, Any]) -> Dict[str, Any]:
+    changed = _changed_paths(root)
+    covered = sorted(set(str(path) for path in (operator.get("changed_paths") or []) if str(path)))
+    uncovered = [path for path in changed if path not in covered]
+    return {
+        "changed_paths": changed,
+        "covered_paths": covered,
+        "uncovered_paths": uncovered,
+        "coverage_ok": not uncovered,
+    }
+
+
 def build_evidence_receipt(run_dir: str) -> Dict[str, Any]:
     root = Path(run_dir)
     repo_root = root.parents[2] if len(root.parents) >= 3 else root
@@ -172,6 +210,7 @@ def build_evidence_receipt(run_dir: str) -> Dict[str, Any]:
         )
 
     git_meta = _git_meta(repo_root)
+    diff_coverage = _operator_diff_coverage(repo_root, operator)
     receipt = {
         "schema": SCHEMA,
         "run_id": manifest.get("run_id"),
@@ -192,6 +231,10 @@ def build_evidence_receipt(run_dir: str) -> Dict[str, Any]:
             "execution_state": operator.get("execution_state"),
             "target": operator.get("target"),
             "receipt_path": str(operator_path),
+            "changed_paths": diff_coverage["changed_paths"],
+            "covered_paths": diff_coverage["covered_paths"],
+            "uncovered_paths": diff_coverage["uncovered_paths"],
+            "coverage_ok": diff_coverage["coverage_ok"],
         },
         "mapper": {
             "receipt_path": str(mapper_path),

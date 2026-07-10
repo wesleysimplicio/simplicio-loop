@@ -235,8 +235,46 @@ def gate_command(cmd, staged=False):
 
 
 # ---------------------------------------------------------------------------------------------
-def _emit_and_exit(verdict, pretooluse=False):
+def _hbp_append_gate_blocked(reason, cmd=""):
+    """Record a gate BLOCK into the runtime's HBP tamper-evident hash chain (#128) — fail-open,
+    `simplicio`-only, mirrors `hooks/loop_stop.py`'s `_call_simplicio_hbp_append*` family. A
+    blocked mutation is exactly the kind of decision that should be provable later (a later
+    `simplicio hbp verify` can show this exact command/reason was recorded in order), not just
+    printed to stderr and forgotten. Absent binary or any failure: silent no-op, never blocks
+    the gate's own allow/block decision (that decision already happened before this is called).
+    """
+    binary = shutil.which("simplicio")
+    if not binary:
+        return
+    try:
+        import hashlib
+        # minimal payload contract shared by the #128 topics: fingerprint + attempt id.
+        fp = hashlib.sha1((reason or "").encode("utf-8", "replace")).hexdigest()[:12]
+        attempt = None
+        try:  # attempt id = live loop iteration from the scratchpad frontmatter, when armed
+            with open(os.path.join(".orchestrator", "loop", "scratchpad.md"),
+                      encoding="utf-8") as f:
+                m = re.search(r"^iteration:\s*(\d+)", f.read(), re.M)
+            attempt = int(m.group(1)) if m else None
+        except Exception:
+            attempt = None
+        payload = json.dumps({"fingerprint": fp, "attempt": attempt,
+                              "reason": (reason or "")[:200], "command": (cmd or "")[:200]})
+        subprocess.run(
+            [binary, "hbp", "append",
+             "--topic", "loop-gate-blocked",
+             "--payload", payload,
+             "--provenance", "simplicio-loop",
+             "--json"],
+            capture_output=True, timeout=15,
+        )
+    except Exception:
+        pass
+
+
+def _emit_and_exit(verdict, pretooluse=False, cmd=""):
     if verdict["action"] == "block":
+        _hbp_append_gate_blocked(verdict.get("reason", ""), cmd)
         if pretooluse:
             # Claude PreToolUse: exit 2 blocks the call; reason on stderr is fed back to the model.
             sys.stderr.write("action_gate BLOCK — " + verdict["reason"] + "\n")
@@ -251,7 +289,7 @@ def _emit_and_exit(verdict, pretooluse=False):
 
 def cmd_check(opts):
     cmd = opts.get("command", "")
-    _emit_and_exit(gate_command(cmd, staged=bool(opts.get("staged"))))
+    _emit_and_exit(gate_command(cmd, staged=bool(opts.get("staged"))), cmd=cmd)
 
 
 def cmd_scan_diff(opts):
@@ -271,6 +309,8 @@ def cmd_scan_diff(opts):
         for label, n in hits:
             print("  secret: %s (line %d)" % (label, n))
         print("block")
+        _hbp_append_gate_blocked("secret in diff (%s)" % ", ".join(sorted({h[0] for h in hits})),
+                                  "scan-diff %s" % (src or "-"))
         sys.exit(2)
     print("allow")
     sys.exit(0)
@@ -292,7 +332,7 @@ def from_pretooluse():
     cmd = (data.get("tool_input", {}) or {}).get("command", "")
     if not cmd:
         sys.exit(0)
-    _emit_and_exit(gate_command(cmd), pretooluse=True)
+    _emit_and_exit(gate_command(cmd), pretooluse=True, cmd=cmd)
 
 
 def cmd_selftest(_opts):

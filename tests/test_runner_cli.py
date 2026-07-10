@@ -396,9 +396,60 @@ def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path):
     receipt = json.loads((repo / ".orchestrator" / "runs" / run_id / "operator-receipt.json").read_text(encoding="utf-8"))
     assert receipt["mode"] == "execute"
     assert receipt["execution_state"] == "applied"
+    assert receipt["attempt"] == 1
+    assert receipt["retry_budget"] == 3
+    assert receipt["failure_fingerprint"] == ""
     assert receipt["task_contract_hash"]
     assert receipt["plan_hash"]
     assert receipt["target_within_repo"] is True
+
+
+def test_tick_rolls_back_failed_operator_when_change_stays_within_authorized_target(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src = repo / "src"
+    src.mkdir()
+    target = src / "app.py"
+    target.write_text("def main():\n    return 'ok'\n", encoding="utf-8")
+    original = target.read_text(encoding="utf-8")
+    task = tmp_path / "task.md"
+    task.write_text(TASK, encoding="utf-8")
+    env = {
+        "SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": json.dumps({
+            "execution_state": "dry_run", "returncode": 0,
+            "stdout": {"kind": "operator-proposal", "ok": True}, "stderr": "",
+        }),
+        "SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON": json.dumps({
+            "returncode": 1,
+            "stdout": {"kind": "operator-applied", "ok": False},
+            "stderr": "validation failed",
+            "write_files": {"src/app.py": "def main():\n    return 'broken'\n"},
+        }),
+        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": json.dumps({
+            "version_stdout": "simplicio-mapper 0.14.2",
+            "help_stdout": "inspect handoff ask sync drift", "version_returncode": 0,
+            "help_returncode": 0,
+        }),
+        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": json.dumps({
+            "help_stdout": "task --dry-run-task --json", "help_returncode": 0,
+        }),
+    }
+    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task)], REPO, env=env)
+    assert started.returncode == 0, started.stdout + started.stderr
+    run_id = json.loads(started.stdout)["manifest"]["run_id"]
+    ticked = _run(CLI + ["tick", "--repo", str(repo), run_id], REPO, env=env)
+    assert ticked.returncode == 0, ticked.stdout + ticked.stderr
+    payload = json.loads(ticked.stdout)
+    assert payload["state"]["phase"] == "blocked"
+    assert target.read_text(encoding="utf-8") == original
+    receipt = json.loads((repo / ".orchestrator" / "runs" / run_id / "operator-receipt.json").read_text(encoding="utf-8"))
+    assert receipt["attempt"] == 1
+    assert receipt["retry_budget"] == 3
+    assert receipt["failure_fingerprint"]
+    assert receipt["rollback"]["attempted"] is True
+    assert receipt["rollback"]["restored"] is True
+    assert receipt["changed_paths"] == []
+    assert receipt["checkpoint"]["safe_targets"] == ["src/app.py"]
 
 
 def test_deliver_reconciles_external_delivery_state(tmp_path):
