@@ -1324,7 +1324,7 @@ def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
 def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Call the production operator and reduce its status to a durable worker record."""
     started = _now()
-    context = dict(item.get("worktree_context") or {})
+    context = dict(item.get("worktree_context") or item.get("operator_context") or {})
     common = {
         "schema": "simplicio.operator-worker/v1",
         "worker_id": item["worker_id"],
