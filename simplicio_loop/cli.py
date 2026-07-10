@@ -253,7 +253,6 @@ def sync_source(repo: str, run_id: str, source: str, external_repo: str, pr: int
     return 0
 
 
-<<<<<<< HEAD
 def _drain_cli_failure(reason_code: str, reason: str, **extra) -> dict:
     """Return a safe, JSON-serializable drain result for CLI input failures.
 
@@ -363,7 +362,6 @@ def drain(action: str, snapshot_path: str, receipt_path: str, polls_required: in
     print(json.dumps(_drain_cli_failure("action_invalid", "unknown drain action"),
                      ensure_ascii=False, sort_keys=True))
     return 2
-=======
 def _load_handshake(handshake_json: str, handshake_file: str):
     if handshake_json and handshake_file:
         raise ValueError("--handshake-json and --handshake-file are mutually exclusive")
@@ -423,7 +421,6 @@ def ledger_replay(path: str, compatibility: bool, recover_trailing: bool,
         }
         print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
         return 2
->>>>>>> 98e2e00 (feat(ledger): expose deterministic replay CLI)
 
 
 def main(argv=None) -> int:
