@@ -32,6 +32,15 @@ from .runner import (
     sync_source_state,
 )
 from .task_contract import compile_many, main as task_contract_main, preview_contract
+from .ops_ledger import (
+    CONTEXT_SCHEMA,
+    HANDSHAKE_SCHEMA,
+    LEGACY_COMPATIBILITY,
+    REQUIRED_CONTEXT_FIELDS,
+    EventLedger,
+    LedgerError,
+    validate_handshake,
+)
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -244,6 +253,7 @@ def sync_source(repo: str, run_id: str, source: str, external_repo: str, pr: int
     return 0
 
 
+<<<<<<< HEAD
 def _drain_cli_failure(reason_code: str, reason: str, **extra) -> dict:
     """Return a safe, JSON-serializable drain result for CLI input failures.
 
@@ -353,6 +363,67 @@ def drain(action: str, snapshot_path: str, receipt_path: str, polls_required: in
     print(json.dumps(_drain_cli_failure("action_invalid", "unknown drain action"),
                      ensure_ascii=False, sort_keys=True))
     return 2
+=======
+def _load_handshake(handshake_json: str, handshake_file: str):
+    if handshake_json and handshake_file:
+        raise ValueError("--handshake-json and --handshake-file are mutually exclusive")
+    if not handshake_json and not handshake_file:
+        return None
+    raw = (Path(handshake_file).read_text(encoding="utf-8")
+           if handshake_file else handshake_json)
+    try:
+        return validate_handshake(json.loads(raw))
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        if isinstance(exc, LedgerError):
+            raise
+        raise LedgerError("executor handshake JSON must be an object") from exc
+
+
+def ledger_replay(path: str, compatibility: bool, recover_trailing: bool,
+                  handshake_json: str, handshake_file: str, command: str = "replay") -> int:
+    """Replay and validate a ledger through a deterministic, read-only JSON surface."""
+    requested_path = str(path)
+    try:
+        handshake = _load_handshake(handshake_json, handshake_file)
+        # Strict mode requires both hash-bound event context and the executor
+        # handshake.  Legacy mode is an explicit escape hatch for pre-context
+        # ledgers and is surfaced in the result so callers cannot confuse it
+        # with a strict replay.
+        if not compatibility and handshake is None:
+            raise LedgerError(
+                "strict ledger replay requires --handshake-json or --handshake-file"
+            )
+        events = EventLedger(path, compatibility=compatibility).replay(
+            recover_trailing=recover_trailing
+        )
+        result = {
+            "command": "ledger.%s" % command,
+            "compatibility": bool(compatibility),
+            "context_schema": CONTEXT_SCHEMA,
+            "event_count": len(events),
+            "events": events,
+            "handshake": handshake,
+            "handshake_schema": HANDSHAKE_SCHEMA if handshake is not None else None,
+            "ok": True,
+            "path": requested_path,
+            "required_context": list(REQUIRED_CONTEXT_FIELDS),
+            "schema": "simplicio.ledger-replay/v1",
+        }
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return 0
+    except (LedgerError, OSError, ValueError, json.JSONDecodeError) as exc:
+        result = {
+            "command": "ledger.%s" % command,
+            "compatibility": bool(compatibility),
+            "error": {"kind": exc.__class__.__name__, "message": str(exc)},
+            "handshake": None,
+            "ok": False,
+            "path": requested_path,
+            "schema": "simplicio.ledger-replay/v1",
+        }
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return 2
+>>>>>>> 98e2e00 (feat(ledger): expose deterministic replay CLI)
 
 
 def main(argv=None) -> int:
@@ -457,6 +528,35 @@ def main(argv=None) -> int:
                          help="receipt JSON path (persist and load)")
     p_drain.add_argument("--polls-required", type=int, default=2,
                          help="identical empty polls required (default: %(default)s)")
+    p_ledger = sub.add_parser("ledger", help="validate/replay the operational event ledger")
+    ledger_sub = p_ledger.add_subparsers(dest="ledger_command", required=True)
+    for ledger_command in ("replay", "validate"):
+        p_ledger_action = ledger_sub.add_parser(
+            ledger_command,
+            help="%s events with hash-chain and context validation" % ledger_command,
+        )
+        p_ledger_action.add_argument("--path", required=True, help="JSONL EventLedger path")
+        p_ledger_action.add_argument(
+            "--compatibility",
+            action="store_true",
+            help="explicitly allow legacy v1 rows without context/handshake",
+        )
+        p_ledger_action.add_argument(
+            "--recover-trailing",
+            action="store_true",
+            help="drop one corrupt trailing JSONL row under the ledger lock",
+        )
+        handshake = p_ledger_action.add_mutually_exclusive_group()
+        handshake.add_argument(
+            "--handshake-json",
+            default="",
+            help="inline executor handshake JSON (strict mode requires it)",
+        )
+        handshake.add_argument(
+            "--handshake-file",
+            default="",
+            help="file containing executor handshake JSON (strict mode requires it)",
+        )
 
     args = parser.parse_args(argv)
     command = args.command or "install"
@@ -489,6 +589,15 @@ def main(argv=None) -> int:
         return sync_source(args.repo, args.run_id, args.source, args.external_repo, args.pr, args.tag)
     if command == "drain":
         return drain(args.action, args.snapshot_path, args.receipt_path, args.polls_required)
+    if command == "ledger":
+        return ledger_replay(
+            args.path,
+            args.compatibility,
+            args.recover_trailing,
+            args.handshake_json,
+            args.handshake_file,
+            args.ledger_command,
+        )
     return install(Path(args.target).resolve(), args.globally)
 
 

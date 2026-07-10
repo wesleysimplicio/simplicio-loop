@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover
 
 SCHEMA = "simplicio.ops-event/v1"
 CONTEXT_SCHEMA = "simplicio.ops-context/v1"
+HANDSHAKE_SCHEMA = "simplicio.executor-handshake/v1"
 LEGACY_COMPATIBILITY = "legacy-v1"
 REQUIRED_CONTEXT_FIELDS = (
     "run_id",
@@ -32,10 +33,46 @@ REQUIRED_CONTEXT_FIELDS = (
     "session",
     "reason_code",
 )
+REQUIRED_HANDSHAKE_FIELDS = (
+    "executor_id",
+    "executor_version",
+    "protocol",
+    "concurrency_budget",
+    "context",
+)
 
 
 class LedgerError(ValueError):
     """Raised when the ledger is corrupt or cannot be safely updated."""
+
+
+def validate_handshake(handshake: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate and copy the executor handshake used by read-only surfaces.
+
+    The handshake is deliberately independent from an event payload: a viewer
+    may replay a ledger without mutating it, while still proving which executor
+    contract and concurrency budget it is interpreting.  Keeping the complete
+    context object in the handshake also makes the CLI output self-contained.
+    """
+    if not isinstance(handshake, Mapping):
+        raise LedgerError("executor handshake must be an object")
+    normalized = dict(handshake)
+    if normalized.get("schema") != HANDSHAKE_SCHEMA:
+        raise LedgerError("executor handshake schema must be %s" % HANDSHAKE_SCHEMA)
+    missing = [name for name in REQUIRED_HANDSHAKE_FIELDS if name not in normalized]
+    if missing:
+        raise LedgerError("executor handshake missing required fields: %s" %
+                          ", ".join(missing))
+    for name in ("executor_id", "executor_version", "protocol"):
+        if not isinstance(normalized[name], str) or not normalized[name].strip():
+            raise LedgerError("executor handshake %s must be a non-empty string" % name)
+    budget = normalized["concurrency_budget"]
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+        raise LedgerError("executor handshake concurrency_budget must be a positive integer")
+    normalized["context"] = _validate_context(
+        normalized["context"], kind="executor_handshake", payload={}
+    )
+    return normalized
 
 
 def _canonical(payload: Mapping[str, Any]) -> str:
@@ -236,8 +273,11 @@ class EventLedger:
 __all__ = [
     "CONTEXT_SCHEMA",
     "EventLedger",
+    "HANDSHAKE_SCHEMA",
     "LEGACY_COMPATIBILITY",
     "LedgerError",
     "REQUIRED_CONTEXT_FIELDS",
+    "REQUIRED_HANDSHAKE_FIELDS",
     "SCHEMA",
+    "validate_handshake",
 ]
