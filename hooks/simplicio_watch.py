@@ -40,9 +40,9 @@ def status():
     out, _ = run([*ENGINE_CMD, "doctor", "--port", PROXY_PORT])
     running = "running" in out.lower() and "not reachable" not in out.lower()
     if running:
-        log(f"✅ Simplicio proxy — RUNNING (port {PROXY_PORT})")
+        log(f"Simplicio proxy - RUNNING (port {PROXY_PORT})")
     else:
-        log("❌ Simplicio proxy — NOT RUNNING")
+        log("Simplicio proxy - NOT RUNNING")
     for line in out.split("\n"):
         if line.strip().startswith(("proxy:", "savings:")):
             log(f"  {line.strip()}")
@@ -54,8 +54,8 @@ def status():
     ledger = REPO_ROOT / ".simplicio" / "ledger" / "savings-events.jsonl"
     if ledger.is_file():
         total = sum(1 for _ in ledger.open(errors="replace"))
-        log(f"  💰 Savings ledger: {total} events")
-    log(f"  🪵 Logs: {LOGS}/proxy.log")
+        log(f"  Savings ledger: {total} events")
+    log(f"  Logs: {LOGS}/proxy.log")
     return 0 if running else 1
 
 

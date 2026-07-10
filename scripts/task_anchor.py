@@ -23,13 +23,16 @@ is reproducible from the on-disk anchor (same discipline as `loop_journal.py`).
 
 State: `.orchestrator/loop/anchor.json` (override with $SIMPLICIO_ANCHOR_FILE):
     {"item", "goal", "goal_fp", "frozen_at",
-     "criteria": [{"id","text","status":"pending|partial|done","evidence","verified_at"}]}
+     "criteria": [{"id","text","verify","status":"pending|partial|done","evidence","verified_at"}]}
 
 Verbs:
   set        Freeze the goal + criteria. Criteria from --ac "text" (repeatable), --ac-file FILE
              (one per line; markdown `- [ ]`/`- [x]` lists understood), or stdin. RE-SET is
              idempotent: same goal → existing per-AC status/evidence are PRESERVED (progress is not
              reset). A CHANGED goal is refused unless --force (a silent goal swap IS drift).
+             Inline verification can be declared as `--ac "text :: verify: <command or artifact>"`.
+             Default lint rejects vague ACs like "works"; `--lint` also rejects short ACs (<3 words)
+             unless a `verify:` method is declared.
   mark       Record progress on one criterion: --id ACk --status done|partial [--evidence "..."].
   status     Print the criteria table + coverage summary (e.g. "3/5 verified").
   checklist  Emit the markdown item-by-item checklist (for the PR body / evidence comment).
@@ -78,6 +81,16 @@ STATUSES = ("pending", "partial", "done")
 _MD_CHECK = re.compile(r"^\s*[-*]\s*\[(?P<box>[ xX])\]\s*(?P<text>.+?)\s*$")
 _MD_BULLET = re.compile(r"^\s*[-*]\s+(?P<text>.+?)\s*$")
 _WS = re.compile(r"\s+")
+VERIFY_RE = re.compile(r"^(?P<text>.*?)(?:\s*::\s*verify:\s*(?P<verify>.+))?$", re.I)
+WORD_RE = re.compile(r"[A-Za-z0-9À-ÿ]+")
+VAGUE_AC_RES = [
+    re.compile(r"^(?:it\s+)?works$", re.I),
+    re.compile(r"^properly$", re.I),
+    re.compile(r"^ok(?:ay)?$", re.I),
+    re.compile(r"^done$", re.I),
+    re.compile(r"^(?:tudo\s+)?funciona(?:\s+corretamente)?$", re.I),
+    re.compile(r"^est[aá]\s+(?:bom|ok)$", re.I),
+]
 
 
 def log(msg):
@@ -99,6 +112,14 @@ def goal_fingerprint(goal):
     return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:12]
 
 
+def split_verify(raw):
+    """Split `text :: verify: ...` into (text, verify). Missing suffix -> ('text', '')."""
+    m = VERIFY_RE.match((raw or "").strip())
+    text = (m.group("text") if m else (raw or "")).strip()
+    verify = (m.group("verify") if m and m.group("verify") else "").strip()
+    return text, verify
+
+
 def parse_criteria(lines):
     """Turn raw lines (plain, or markdown checklist/bullets) into AC texts, in order, deduped."""
     out, seen = [], set()
@@ -109,7 +130,10 @@ def parse_criteria(lines):
         text = (m.group("text") if m else raw).strip()
         if not text:
             continue
-        key = _WS.sub(" ", text.lower())
+        bare, _verify = split_verify(text)
+        if not bare:
+            continue
+        key = _WS.sub(" ", bare.lower())
         if key in seen:
             continue
         seen.add(key)
@@ -117,10 +141,33 @@ def parse_criteria(lines):
     return out
 
 
+def lint_criteria(texts, strict=False):
+    """Return a list of lint errors for AC text. Default rejects vague ACs; strict also rejects
+    short ACs (<3 words) unless a verify method is declared."""
+    failures = []
+    for raw in texts or []:
+        text, verify = split_verify(raw)
+        norm = text.strip().rstrip(".!?").strip()
+        if not norm:
+            continue
+        if any(rx.match(norm) for rx in VAGUE_AC_RES):
+            failures.append("vague acceptance criterion refused: %r" % text)
+            continue
+        words = WORD_RE.findall(norm)
+        if strict and len(words) < 3 and not verify:
+            failures.append("strict lint refused short acceptance criterion without verify: %r" %
+                            text)
+    return failures
+
+
 def freeze_criteria(texts):
     """Build the criteria list with stable AC ids and a pending status each."""
-    return [{"id": "AC%d" % (i + 1), "text": t, "status": "pending",
-             "evidence": "", "verified_at": ""} for i, t in enumerate(texts)]
+    out = []
+    for i, raw in enumerate(texts):
+        text, verify = split_verify(raw)
+        out.append({"id": "AC%d" % (i + 1), "text": text, "verify": verify, "status": "pending",
+                    "evidence": "", "verified_at": ""})
+    return out
 
 
 def merge_preserving(old, new_texts):
@@ -130,15 +177,18 @@ def merge_preserving(old, new_texts):
     """
     by_text = {_WS.sub(" ", c.get("text", "").lower()): c for c in (old or [])}
     merged = []
-    for i, t in enumerate(new_texts):
-        prev = by_text.get(_WS.sub(" ", t.lower()))
+    for i, raw in enumerate(new_texts):
+        text, verify = split_verify(raw)
+        prev = by_text.get(_WS.sub(" ", text.lower()))
         if prev:
-            merged.append({"id": "AC%d" % (i + 1), "text": t,
+            merged.append({"id": "AC%d" % (i + 1), "text": text,
+                           "verify": verify or prev.get("verify", ""),
                            "status": prev.get("status", "pending"),
                            "evidence": prev.get("evidence", ""),
                            "verified_at": prev.get("verified_at", "")})
         else:
-            merged.append({"id": "AC%d" % (i + 1), "text": t, "status": "pending",
+            merged.append({"id": "AC%d" % (i + 1), "text": text, "verify": verify,
+                           "status": "pending",
                            "evidence": "", "verified_at": ""})
     return merged
 
@@ -183,6 +233,9 @@ def render_checklist(criteria, heading="Acceptance criteria (item-by-item)"):
     for c in criteria:
         box = mark.get(c.get("status"), " ")
         line = "- [%s] **%s** %s" % (box, c.get("id"), c.get("text"))
+        verify = (c.get("verify") or "").strip()
+        if verify:
+            line += " — _verify:_ %s" % verify
         ev = (c.get("evidence") or "").strip()
         if ev:
             line += " — _evidence:_ %s" % ev
@@ -242,6 +295,11 @@ def cmd_set(opts):
         print("anchor: refusing to freeze — no acceptance criteria given "
               "(--ac / --ac-file / stdin). An item with no AC is itself a drift risk.")
         sys.exit(2)
+    lint_errors = lint_criteria(texts, strict=bool(opts.get("lint")))
+    if lint_errors:
+        for msg in lint_errors:
+            print("anchor: %s" % msg)
+        sys.exit(2)
     fp = goal_fingerprint(goal)
     existing = _load()
     if existing and existing.get("goal_fp") and existing["goal_fp"] != fp and not opts.get("force"):
@@ -300,8 +358,12 @@ def cmd_status(opts):
     print("anchor: item=%s · goal_fp=%s · frozen=%s" % (
         anchor.get("item") or "-", anchor.get("goal_fp"), anchor.get("frozen_at")))
     for c in anchor["criteria"]:
-        log("[%-7s] %-4s %s%s" % (c.get("status"), c.get("id"), c.get("text"),
-            ("  <%s>" % c["evidence"]) if c.get("evidence") else ""))
+        detail = c.get("text")
+        if c.get("verify"):
+            detail += " [verify: %s]" % c.get("verify")
+        if c.get("evidence"):
+            detail += "  <%s>" % c["evidence"]
+        log("[%-7s] %-4s %s" % (c.get("status"), c.get("id"), detail))
     done, total, pending = coverage(anchor["criteria"])
     log("coverage: %d/%d verified%s" % (
         done, total, ("" if not pending else " · pending: " + ", ".join(pending))))
@@ -373,6 +435,9 @@ def cmd_selftest(_opts):
     crit = freeze_criteria(texts)
     chk("freeze.ids", [c["id"] for c in crit], ["AC1", "AC2", "AC3", "AC4"])
     chk("freeze.pending", all(c["status"] == "pending" for c in crit), True)
+    chk("split.basic", split_verify("Works :: verify: python3 scripts/check.py"),
+        ("Works", "python3 scripts/check.py"))
+    chk("split.none", split_verify("One AC"), ("One AC", ""))
 
     # coverage + gate logic
     crit[0]["status"] = "done"
@@ -393,15 +458,22 @@ def cmd_selftest(_opts):
 
     # merge preserves progress across a re-set that adds an AC
     old = [{"id": "AC1", "text": "Renders a button", "status": "done", "evidence": "e",
-            "verified_at": "t"}]
-    merged = merge_preserving(old, ["Renders a button", "A new criterion"])
+            "verified_at": "t", "verify": ""}]
+    merged = merge_preserving(old, ["Renders a button :: verify: shot.png", "A new criterion"])
     chk("merge.preserve", merged[0]["status"], "done")
     chk("merge.new_pending", merged[1]["status"], "pending")
+    chk("merge.verify_preserved", merged[0]["verify"], "shot.png")
+    chk("freeze.verify_carried", freeze_criteria(["A :: verify: cmd"])[0]["verify"], "cmd")
 
     # checklist renders boxes + coverage
     cl = render_checklist(crit)
     chk("checklist.box", "[x]" in cl, True)
     chk("checklist.coverage", "Coverage:" in cl, True)
+    chk("lint.vague_refused", bool(lint_criteria(["works"])), True)
+    chk("lint.default_allows_short", lint_criteria(["a1"]), [])
+    chk("lint.strict_refuses_short", bool(lint_criteria(["a1"], strict=True)), True)
+    chk("lint.strict_allows_short_with_verify", lint_criteria(["a1 :: verify: shot.png"],
+                                                              strict=True), [])
 
     ok = all(checks)
     print("selftest: %s (%d/%d)" % ("PASS" if ok else "FAIL", sum(checks), len(checks)))
@@ -444,7 +516,7 @@ def main():
         print(json.dumps({
             "verbs": ["set", "mark", "status", "checklist", "check", "gate", "selftest"],
             "flags": ["--item", "--goal", "--ac", "--ac-file", "--force", "--id", "--status",
-                      "--evidence", "--format", "--exit-code", "--require-evidence",
+                      "--evidence", "--format", "--exit-code", "--lint", "--require-evidence",
                       "--out", "--help"],
         }))
         sys.exit(0)

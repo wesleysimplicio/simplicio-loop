@@ -15,8 +15,17 @@ def _run_hook(name, args=None, stdin_data=None, cwd=None, env=None):
     full_env = dict(os.environ)
     if env:
         full_env.update(env)
-    return subprocess.run(cmd, input=stdin_data, capture_output=True, text=True,
-                          cwd=cwd or REPO, env=full_env)
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+        "cwd": cwd or REPO,
+        "env": full_env,
+    }
+    if stdin_data is None:
+        kwargs["stdin"] = subprocess.DEVNULL
+    else:
+        kwargs["input"] = stdin_data
+    return subprocess.run(cmd, **kwargs)
 
 
 # ── orient_clamp.py ─────────────────────────────────────────────────────────
@@ -147,7 +156,7 @@ def _done_flag_exists(root):
     return os.path.exists(os.path.join(root, ".orchestrator", "loop", "done"))
 
 
-def test_loop_capture_raises_done_flag_with_evidence(tmp_path):
+def test_loop_capture_does_not_raise_done_flag_with_evidence(tmp_path):
     root = str(tmp_path)
     _arm_capture(root)
     r = _run_hook("loop_capture.py",
@@ -155,7 +164,7 @@ def test_loop_capture_raises_done_flag_with_evidence(tmp_path):
                                                   "tests pass ✓ https://github.com/o/r/pull/1"}),
                   cwd=root)
     assert r.returncode == 0
-    assert _done_flag_exists(root)
+    assert not _done_flag_exists(root), "capture hook must only stash the response, never decide completion"
 
 
 def test_loop_capture_no_flag_without_evidence(tmp_path):
@@ -179,7 +188,7 @@ def test_loop_capture_no_flag_with_pending_anchor(tmp_path):
                                                   "https://github.com/o/r/pull/1"}),
                   cwd=root)
     assert r.returncode == 0
-    assert not _done_flag_exists(root), "an open AC must block the done flag"
+    assert not _done_flag_exists(root), "capture hook must not raise done even when an anchor exists"
 
 
 def test_loop_capture_noop_without_scratchpad(tmp_path):

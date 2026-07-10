@@ -6,7 +6,7 @@ the code. Deterministic, stdlib-only, no network. Exits 0 when every check passe
 so it can gate a commit/push (`scripts/check.py`, or a git pre-push hook). NOT a GitHub Action;
 runs locally, free.
 
-Nine checks:
+Ten checks:
   1. referenced-scripts-exist  Every `scripts/<name>.py` mentioned in the docs actually exists.
   2. extension-point-count      Every "<N> extension points / named (binding) points" figure agrees
                                 with EACH OTHER *and* with the actual row count of the extension-points
@@ -37,6 +37,10 @@ Nine checks:
                                 the worker's real CLI via `--describe-cli`. Workers that emit
                                 `--describe-cli` JSON are checked for flag existence; divergences are
                                 reported with file:line.
+  10. skill-pair-parity         Shared references under `.claude/skills/simplicio-loop/` and
+                                `.claude/skills/simplicio-tasks/` are byte-identical for every file
+                                that exists in BOTH `references/` trees (the tasks tree is a
+                                deliberate subset; `SKILL.md` differs by design and is excluded).
 
 Usage:
     python3 scripts/claims_audit.py [--json] [--only 1,2,3,4]
@@ -87,6 +91,7 @@ SELFTEST_SCRIPTS = [
     "scripts/savings_harness.py",
     "scripts/repo_conventions.py",
     "scripts/task_anchor.py",
+    "scripts/task_backlog.py",
     "scripts/pr_evidence.py",
     "scripts/flow_audit.py",
     "scripts/impact_audit.py",
@@ -99,10 +104,15 @@ SELFTEST_SCRIPTS = [
     "scripts/toon_codec.py",
     "scripts/autoresearch.py",
     "scripts/e2e_demo.py",
+    "scripts/check_e2e_demo_contract.py",
+    "scripts/check_e2e_installed.py",
+    "scripts/clean_env_contract.py",
+    "scripts/completion_oracle.py",
+    "scripts/mirror_parity.py",
+    "scripts/run_state.py",
     "scripts/claims_manifest.py",
     "scripts/fan_out.py",
     "scripts/schema_verify.py",
-    "scripts/check_loop_contract.py",
     "hooks/action_gate.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a
@@ -457,6 +467,49 @@ def check_prose_commands():
                 if ok else "; ".join(failures))
 
 
+def check_skill_pair_parity():
+    """Compare ONLY the shared `references/` files between simplicio-loop and simplicio-tasks.
+
+    `SKILL.md` is intentionally excluded: `simplicio-tasks` is a compatibility alias and differs
+    from `simplicio-loop` by design. Missing dirs pass so fixture repos can exercise the check in
+    isolation without mirroring the full skill tree.
+    """
+    loop_refs = os.path.join(REPO, ".claude", "skills", "simplicio-loop", "references")
+    tasks_refs = os.path.join(REPO, ".claude", "skills", "simplicio-tasks", "references")
+    if not os.path.isdir(loop_refs) or not os.path.isdir(tasks_refs):
+        return True, "skill pair parity skipped — references/ dir absent"
+
+    def _walk(root):
+        out = set()
+        for r, dirs, names in os.walk(root):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            for n in names:
+                rel = os.path.relpath(os.path.join(r, n), root)
+                if rel == "SKILL.md":
+                    continue
+                out.add(rel)
+        return out
+
+    shared = _walk(loop_refs) & _walk(tasks_refs)
+    drift = []
+    for rel in sorted(shared):
+        lp = os.path.join(loop_refs, rel)
+        tp = os.path.join(tasks_refs, rel)
+        try:
+            with open(lp, "rb") as f:
+                lbytes = f.read()
+            with open(tp, "rb") as f:
+                tbytes = f.read()
+        except OSError as e:
+            drift.append("%s: read failed (%s)" % (rel, e))
+            continue
+        if lbytes != tbytes:
+            drift.append(rel)
+    ok = not drift
+    return ok, ("shared skill references are byte-identical"
+                if ok else "skill-pair drift: %s" % ", ".join(drift))
+
+
 CHECKS = [
     ("1 referenced-scripts-exist", check_scripts_exist),
     ("2 extension-point-count", check_extension_count),
@@ -467,6 +520,7 @@ CHECKS = [
     ("7 adapter-install-contract", check_adapter_contract),
     ("8 quantitative-claims", check_quantitative_claims),
     ("9 prose-commands-valid", check_prose_commands),
+    ("10 skill-pair-parity", check_skill_pair_parity),
 ]
 
 

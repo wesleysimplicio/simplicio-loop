@@ -1,0 +1,995 @@
+#!/usr/bin/env python3
+"""simplicio-loop — Phase-0 backlog freeze for body-of-work runs.
+
+Freezes a body-of-work backlog once, lets the loop claim the next item deterministically, and
+renders a markdown checklist table that can be embedded in PR evidence. The backlog lives at
+`.orchestrator/backlog/backlog.jsonl` (override with $SIMPLICIO_BACKLOG_FILE) as one master record
+plus one record per item; `task_anchor.py` remains the per-item source of truth for AC receipts.
+
+Verbs:
+  init       Freeze the master goal plus backlog items. Items come from --item JSON (repeatable),
+             --item-file FILE (JSON array or JSONL of {"id","goal","acs"} objects), or
+             --task-file FILE (Markdown task description(s) compiled via task_contract).
+             Default lint rejects vague ACs; `--lint` also rejects short ACs (<3 words) unless
+             they declare `:: verify: ...`.
+  next       Claim the next ready item deterministically and print its id + goal.
+  done       Mark an item done from the current anchor when the anchor is READY and its goal_fp
+             matches the item; copies the anchor receipts into the backlog so PR evidence can still
+             show them after the anchor is cleared for the next drain turn.
+  skip       Mark an item skipped with a reason.
+  block      Mark an item blocked with a reason code.
+  fail       Record a failed attempt; distinct failures can escalate to dead-letter.
+  status     Show queue counts, dependency blockers and active leases.
+  checklist  Emit the body-of-work table. With no backlog, prints `backlog: none frozen`.
+  selftest   Prove linting, claim/done propagation, and table rendering deterministically.
+
+Usage:
+    python3 scripts/task_backlog.py init --goal "Drain Phase 0" --item-file backlog.json
+    python3 scripts/task_backlog.py next
+    python3 scripts/task_backlog.py done --item T1
+    python3 scripts/task_backlog.py checklist
+"""
+import json
+import os
+import sys
+import time
+import calendar
+import hashlib
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+BACKLOG = (os.environ.get("SIMPLICIO_BACKLOG_FILE") or
+           os.path.join(REPO, ".orchestrator", "backlog", "backlog.jsonl"))
+
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+try:
+    from task_anchor import ANCHOR as ANCHOR_DEFAULT, coverage, goal_fingerprint, lint_criteria
+except Exception:  # pragma: no cover
+    ANCHOR_DEFAULT = os.path.join(REPO, ".orchestrator", "loop", "anchor.json")
+
+    def goal_fingerprint(goal):
+        return (goal or "").strip().lower()
+
+    def coverage(criteria):
+        total = len(criteria)
+        done = sum(1 for c in criteria if c.get("status") == "done")
+        return done, total, [c.get("id") for c in criteria if c.get("status") != "done"]
+
+    def lint_criteria(texts, strict=False):
+        return []
+
+try:
+    from simplicio_loop.task_contract import compile_many
+except Exception:  # pragma: no cover
+    compile_many = None
+
+
+def _now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _parse_utc(value):
+    try:
+        return int(calendar.timegm(time.strptime((value or "").strip(), "%Y-%m-%dT%H:%M:%SZ")))
+    except Exception:
+        return 0
+
+
+def _lease_expires(ttl_seconds):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + max(1, ttl_seconds)))
+
+
+def _load(path=None):
+    path = path or BACKLOG
+    if not os.path.exists(path):
+        return None, []
+    master = None
+    items = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                s = line.strip()
+                if not s:
+                    continue
+                obj = json.loads(s)
+                if obj.get("kind") == "master":
+                    master = obj
+                elif obj.get("kind") == "item":
+                    items.append(obj)
+    except (OSError, ValueError):
+        return None, []
+    return master, items
+
+
+def _save(master, items, path=None):
+    path = path or BACKLOG
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(master, ensure_ascii=False) + "\n")
+        for item in items:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
+def _load_anchor(path=None):
+    path = path or ANCHOR_DEFAULT
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _sha1_file(path):
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _backlog_root(path=None):
+    path = path or BACKLOG
+    return os.path.dirname(path)
+
+
+def _item_run_dir(item, path=None):
+    return os.path.join(_backlog_root(path), "items", item.get("id", ""), "run")
+
+
+def _source_snapshot(paths):
+    out = []
+    for raw in paths or []:
+        ref = str(raw or "").strip()
+        if not ref:
+            continue
+        abs_path = ref if os.path.isabs(ref) else os.path.abspath(ref)
+        entry = {"path": ref, "abs_path": abs_path, "exists": os.path.exists(abs_path)}
+        if entry["exists"]:
+            try:
+                st = os.stat(abs_path)
+                entry["size"] = int(st.st_size)
+                entry["mtime"] = int(st.st_mtime)
+                entry["sha1"] = _sha1_file(abs_path)
+            except OSError:
+                entry["exists"] = False
+        out.append(entry)
+    return out
+
+
+def _source_changed(item):
+    refs = item.get("source_refs") or []
+    if not refs:
+        return False, []
+    changed = []
+    for ref in refs:
+        abs_path = ref.get("abs_path") or ref.get("path") or ""
+        exists_now = os.path.exists(abs_path)
+        if bool(ref.get("exists")) != bool(exists_now):
+            changed.append(ref.get("path") or abs_path)
+            continue
+        if not exists_now:
+            continue
+        try:
+            st = os.stat(abs_path)
+            size_now = int(st.st_size)
+            mtime_now = int(st.st_mtime)
+            sha_now = _sha1_file(abs_path)
+        except OSError:
+            changed.append(ref.get("path") or abs_path)
+            continue
+        if (size_now != int(ref.get("size", -1)) or
+                mtime_now != int(ref.get("mtime", -1)) or
+                sha_now != ref.get("sha1")):
+            changed.append(ref.get("path") or abs_path)
+    return bool(changed), changed
+
+
+def _write_json(path, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def _write_jsonl(path, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _freeze_item_workspace(item, master, path=None):
+    run_dir = _item_run_dir(item, path=path)
+    loop_dir = os.path.join(run_dir, "loop")
+    os.makedirs(loop_dir, exist_ok=True)
+    acs = item.get("acs") or []
+    criteria = [{"id": "AC%d" % (i + 1), "text": text, "verify": "", "status": "pending",
+                 "evidence": "", "verified_at": ""} for i, text in enumerate(acs)]
+    anchor = {
+        "item": item.get("id"),
+        "goal": item.get("goal"),
+        "goal_fp": item.get("goal_fp"),
+        "frozen_at": item.get("frozen_at") or _now(),
+        "criteria": criteria,
+    }
+    contract = {
+        "schema": "simplicio.backlog-item-contract/v1",
+        "item_id": item.get("id"),
+        "goal": item.get("goal"),
+        "goal_fp": item.get("goal_fp"),
+        "acs": acs,
+        "depends_on": item.get("depends_on") or [],
+        "plan_files": item.get("plan_files") or [],
+        "source_refs": item.get("source_refs") or [],
+        "frozen_at": item.get("frozen_at") or _now(),
+    }
+    manifest = {
+        "schema": "simplicio.backlog-item-run/v1",
+        "item_id": item.get("id"),
+        "goal": item.get("goal"),
+        "goal_fp": item.get("goal_fp"),
+        "created_at": _now(),
+        "master_goal_fp": master.get("goal_fp"),
+        "source_refs": item.get("source_refs") or [],
+    }
+    state = {
+        "schema": "simplicio.backlog-item-state/v1",
+        "item_id": item.get("id"),
+        "phase": "frozen",
+        "status": item.get("status"),
+        "updated_at": _now(),
+    }
+    _write_json(os.path.join(run_dir, "manifest.json"), manifest)
+    _write_json(os.path.join(run_dir, "state.json"), state)
+    _write_json(os.path.join(run_dir, "task-contract.json"), contract)
+    _write_json(os.path.join(loop_dir, "anchor.json"), anchor)
+    _write_jsonl(os.path.join(loop_dir, "journal.jsonl"), [])
+    for name, payload in (
+        ("operator-receipt.json", {"schema": "simplicio.operator-receipt/v0", "status": "pending"}),
+        ("evidence-receipt.json", {"schema": "simplicio.evidence-receipt/v1", "status": "UNVERIFIED"}),
+        ("delivery-receipt.json", {"schema": "simplicio.delivery-receipt/v1", "target": "verified",
+                                   "current_state": "planned", "ready": False,
+                                   "source_kind": "backlog-item", "source_payload": {}}),
+    ):
+        _write_json(os.path.join(run_dir, name), payload)
+    item["run_dir"] = run_dir
+
+
+def _invalidate_item_workspace(item, changed_paths):
+    run_dir = item.get("run_dir") or _item_run_dir(item)
+    for name in ("operator-receipt.json", "evidence-receipt.json", "delivery-receipt.json"):
+        target = os.path.join(run_dir, name)
+        if os.path.exists(target):
+            try:
+                os.remove(target)
+            except OSError:
+                pass
+    state_path = os.path.join(run_dir, "state.json")
+    if os.path.exists(state_path):
+        _write_json(state_path, {
+            "schema": "simplicio.backlog-item-state/v1",
+            "item_id": item.get("id"),
+            "phase": "awaiting_refresh",
+            "status": "invalidated",
+            "updated_at": _now(),
+            "changed_paths": changed_paths,
+        })
+    item["status"] = "invalidated"
+    item["lease"] = {}
+    item["blocked_reason"] = "source changed after freeze: %s" % ", ".join(changed_paths)
+    item["reason_code"] = "source-changed"
+    item["invalidated_at"] = _now()
+
+
+def _escape_cell(text):
+    return (text or "").replace("|", r"\|").replace("\n", " ").strip()
+
+
+def _truncate(text, limit=80):
+    text = _escape_cell(text)
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _criterion_total(item):
+    return len(item.get("acs") or [])
+
+
+def _coverage_for_item(item, anchor=None):
+    if item.get("status") == "done":
+        return item.get("done_criteria", 0), item.get("total_criteria", _criterion_total(item))
+    if anchor and anchor.get("goal_fp") == item.get("goal_fp"):
+        done, total, _pending = coverage(anchor.get("criteria", []))
+        return done, total
+    return 0, _criterion_total(item)
+
+
+def _evidence_snippet(item, anchor=None):
+    if item.get("status") == "skipped":
+        return "skipped: %s" % (item.get("skip_reason") or "no reason recorded")
+    if item.get("status") == "done":
+        snippets = item.get("evidence") or []
+        return "; ".join(snippets) if snippets else "done via anchor"
+    if anchor and anchor.get("goal_fp") == item.get("goal_fp"):
+        ev = [c.get("evidence", "").strip() for c in anchor.get("criteria", [])
+              if c.get("status") == "done" and c.get("evidence")]
+        return "; ".join(ev[:2]) if ev else "live anchor"
+    return "—"
+
+
+def render_backlog_table(master, items, anchor=None, heading="Body of work (Phase 0 backlog)"):
+    """Render the master goal plus one markdown table row per backlog item."""
+    lines = ["### %s" % heading]
+    if master and master.get("goal"):
+        lines += ["", "**Master goal:** %s" % _truncate(master.get("goal"), 160), ""]
+    lines += ["| Item | State | Goal | ACs verified | Evidence |",
+              "|---|---|---|---|---|"]
+    done_items = skipped = 0
+    for item in items:
+        state = item.get("status", "open")
+        if state == "done":
+            done_items += 1
+        elif state == "skipped":
+            skipped += 1
+        done, total = _coverage_for_item(item, anchor=anchor)
+        cov = "%d/%d" % (done, total)
+        lines.append("| %s | %s | %s | %s | %s |" % (
+            _escape_cell(item.get("id", "")),
+            _escape_cell(state),
+            _truncate(item.get("goal", "")),
+            _escape_cell(cov),
+            _truncate(_evidence_snippet(item, anchor=anchor), 120),
+        ))
+    lines += ["", "**%d/%d items done · %d skipped.**" % (done_items, len(items), skipped)]
+    return "\n".join(lines)
+
+
+def render_backlog_status(master, items):
+    counts = {}
+    leases = []
+    chains = []
+    for item in items:
+        state = item.get("status", "unknown")
+        counts[state] = counts.get(state, 0) + 1
+        lease = item.get("lease") or {}
+        if lease.get("worker"):
+            leases.append("%s:%s→%s" % (item.get("id"), lease.get("worker"), lease.get("expires_at", "")))
+        chain = _dependency_chain(item)
+        if chain and item.get("status") == "blocked":
+            chains.append(chain)
+    lines = [
+        "items: %d" % len(items),
+        "ready: %d" % counts.get("ready", 0),
+        "claimed: %d" % counts.get("claimed", 0),
+        "blocked: %d" % counts.get("blocked", 0),
+        "invalidated: %d" % counts.get("invalidated", 0),
+        "dead-letter: %d" % counts.get("dead-letter", 0),
+        "done: %d" % counts.get("done", 0),
+    ]
+    if master:
+        lines.append("empty-polls: %d" % int(master.get("empty_polls", 0)))
+    if leases:
+        lines.append("leases: " + "; ".join(sorted(leases)))
+    if chains:
+        lines.append("blocked-chains: " + "; ".join(sorted(chains)))
+    return "\n".join(lines)
+
+
+def _parse_item_obj(obj):
+    if not isinstance(obj, dict):
+        raise ValueError("item must be a JSON object")
+    iid = str(obj.get("id") or "").strip()
+    goal = str(obj.get("goal") or "").strip()
+    acs = obj.get("acs") or []
+    depends_on = obj.get("depends_on") or []
+    related = obj.get("related") or []
+    blocks = obj.get("blocks") or []
+    plan_files = obj.get("plan_files") or []
+    if (not iid or not goal or not isinstance(acs, list) or not isinstance(depends_on, list)
+            or not isinstance(related, list) or not isinstance(blocks, list)
+            or not isinstance(plan_files, list)):
+        raise ValueError("item must contain id, goal, acs[] and optional list fields")
+    return {"kind": "item", "id": iid, "goal": goal, "goal_fp": goal_fingerprint(goal),
+            "acs": [str(a) for a in acs], "status": "ready", "skip_reason": "",
+            "blocked_reason": "", "reason_code": "", "evidence": [], "done_criteria": 0,
+            "total_criteria": len(acs), "depends_on": [str(x) for x in depends_on],
+            "related": [str(x) for x in related], "blocks": [str(x) for x in blocks],
+            "priority": int(obj.get("priority", 100)),
+            "plan_files": [str(x) for x in plan_files], "lease": {}, "failures": [], "frozen_at": _now(),
+            "source_refs": _source_snapshot(plan_files)}
+
+
+def _dependency_chain(item):
+    deps = item.get("depends_on") or []
+    if not deps:
+        return ""
+    return "%s <- %s" % (item.get("id"), ", ".join(deps))
+
+
+def _contract_goal(contract, index):
+    identity = contract.get("identity") or {}
+    story = contract.get("story") or {}
+    title = (identity.get("title") or identity.get("feature") or identity.get("system") or
+             "Task %d" % index).strip()
+    desire = (story.get("desire") or "").strip().rstrip(".")
+    if desire and desire.lower() not in title.lower():
+        return "%s — %s" % (title, desire)
+    return title
+
+
+def _contract_acs(contract):
+    acs = []
+    for scenario in contract.get("scenarios") or []:
+        then_parts = [part.strip() for part in (scenario.get("then") or []) if part.strip()]
+        summary = " ".join(then_parts).strip()
+        if summary:
+            label = " ".join(part for part in [
+                (scenario.get("id") or "").strip(),
+                (scenario.get("title") or "").strip(),
+            ] if part).strip()
+            acs.append("%s: %s" % (label or "SCN", summary))
+    if acs:
+        return acs
+    for rule in contract.get("rules") or []:
+        text = (rule.get("text") or "").strip()
+        if text:
+            acs.append("%s: %s" % ((rule.get("id") or "RULE").strip(), text))
+    return acs
+
+
+def _items_from_task_markdown(path):
+    if compile_many is None:
+        raise ValueError("task contract compiler unavailable")
+    if not os.path.exists(path):
+        raise ValueError("task file not found: %s" % path)
+    with open(path, encoding="utf-8", errors="replace") as f:
+        raw = f.read()
+    payload = compile_many(raw, source_path=path)
+    tasks = payload.get("tasks") or []
+    out = []
+    for idx, contract in enumerate(tasks, start=1):
+        goal = _contract_goal(contract, idx)
+        acs = _contract_acs(contract)
+        obj = {
+            "id": "T%d" % idx,
+            "goal": goal,
+            "acs": acs,
+            "priority": idx * 10,
+            "plan_files": [path],
+        }
+        out.append(_parse_item_obj(obj))
+    return out
+
+
+def _item_index(items):
+    return {item.get("id"): item for item in items}
+
+
+def _detect_cycles(items):
+    graph = {item.get("id"): list(item.get("depends_on") or []) for item in items}
+    seen = set()
+    active = []
+
+    def visit(node):
+        if node in active:
+            return active[active.index(node):] + [node]
+        if node in seen:
+            return []
+        seen.add(node)
+        active.append(node)
+        for dep in graph.get(node, []):
+            if dep not in graph:
+                continue
+            cycle = visit(dep)
+            if cycle:
+                return cycle
+        active.pop()
+        return []
+
+    for node in graph:
+        cycle = visit(node)
+        if cycle:
+            return cycle
+    return []
+
+
+def _blocked_by_dependencies(item, items_by_id):
+    pending = []
+    for dep in item.get("depends_on") or []:
+        other = items_by_id.get(dep)
+        if not other or other.get("status") != "done":
+            pending.append(dep)
+    return pending
+
+
+def _conflicts(a, b):
+    left = set(a.get("plan_files") or [])
+    right = set(b.get("plan_files") or [])
+    return bool(left and right and left.intersection(right))
+
+
+def _refresh_ready_states(items):
+    items_by_id = _item_index(items)
+    now_ts = int(time.time())
+    for item in items:
+        if item.get("status") in ("done", "skipped", "cancelled", "failed", "dead-letter"):
+            continue
+        changed, changed_paths = _source_changed(item)
+        if changed:
+            _invalidate_item_workspace(item, changed_paths)
+            continue
+        lease = item.get("lease") or {}
+        lease_expires = _parse_utc(lease.get("expires_at"))
+        if item.get("status") in ("claimed", "running", "verification", "delivery"):
+            if not lease.get("worker"):
+                item["status"] = "ready"
+            elif lease_expires and lease_expires <= now_ts:
+                item["status"] = "ready"
+                item["lease"] = {}
+        pending = _blocked_by_dependencies(item, items_by_id)
+        if pending:
+            item["status"] = "blocked"
+            item["blocked_reason"] = "waiting on dependencies: %s" % ", ".join(pending)
+            item["reason_code"] = "dependency-pending"
+        elif item.get("status") == "blocked" and item.get("reason_code") == "dependency-pending":
+            item["status"] = "ready"
+            item["blocked_reason"] = ""
+            item["reason_code"] = ""
+        elif item.get("status") in ("open", "invalidated") and item.get("reason_code") != "source-changed":
+            item["status"] = "ready"
+
+
+def _pick_next_ready(items):
+    _refresh_ready_states(items)
+    ready = [item for item in items if item.get("status") == "ready"]
+    ready.sort(key=lambda item: (int(item.get("priority", 100)), item.get("id", "")))
+    claimed = [item for item in items if item.get("status") in ("claimed", "running", "verification", "delivery")]
+    for candidate in ready:
+        if any(_conflicts(candidate, other) for other in claimed):
+            continue
+        return candidate
+    return None
+
+
+def _collect_items(opts):
+    raw_items = []
+    one = opts.get("item")
+    if isinstance(one, list):
+        raw_items.extend(one)
+    elif isinstance(one, str):
+        raw_items.append(one)
+    item_file = opts.get("item-file")
+    if isinstance(item_file, str) and os.path.exists(item_file):
+        with open(item_file, encoding="utf-8", errors="replace") as f:
+            blob = f.read().strip()
+        if blob:
+            if blob[0] == "[":
+                raw_items.extend(json.loads(blob))
+            else:
+                for line in blob.splitlines():
+                    s = line.strip()
+                    if s:
+                        raw_items.append(json.loads(s))
+    task_file = opts.get("task-file")
+    task_items = []
+    if isinstance(task_file, str):
+        task_items.extend(_items_from_task_markdown(task_file))
+    out = []
+    for raw in raw_items:
+        obj = json.loads(raw) if isinstance(raw, str) else raw
+        out.append(_parse_item_obj(obj))
+    out.extend(task_items)
+    return out
+
+
+def cmd_init(opts):
+    goal = (opts.get("goal") or "").strip()
+    if not goal:
+        print("backlog: refusing to freeze — --goal is required")
+        sys.exit(2)
+    items = _collect_items(opts)
+    if not items:
+        print("backlog: refusing to freeze — provide --item JSON or --item-file")
+        sys.exit(2)
+    ids = [item["id"] for item in items]
+    if len(set(ids)) != len(ids):
+        print("backlog: refusing to freeze — duplicate item ids detected")
+        sys.exit(2)
+    cycle = _detect_cycles(items)
+    if cycle:
+        print("backlog: refusing to freeze — dependency cycle detected: %s" % " -> ".join(cycle))
+        sys.exit(2)
+    strict = bool(opts.get("lint"))
+    for item in items:
+        errors = lint_criteria(item.get("acs", []), strict=strict)
+        if errors:
+            for err in errors:
+                print("backlog: item %s — %s" % (item["id"], err))
+            sys.exit(2)
+    master = {"kind": "master", "goal": goal, "goal_fp": goal_fingerprint(goal), "frozen_at": _now(),
+              "empty_polls": 0}
+    _refresh_ready_states(items)
+    for item in items:
+        _freeze_item_workspace(item, master)
+    _save(master, items)
+    print("frozen %d item(s)" % len(items))
+
+
+def cmd_next(_opts):
+    opts = _opts or {}
+    master, items = _load()
+    if not master or not items:
+        print("backlog: none frozen")
+        return
+    worker = (opts.get("worker") or "").strip()
+    ttl = int(opts.get("lease-ttl") or 900)
+    if worker:
+        for item in items:
+            lease = item.get("lease") or {}
+            if item.get("status") in ("claimed", "running", "verification", "delivery") and lease.get("worker") == worker:
+                lease["heartbeat_at"] = _now()
+                lease["expires_at"] = _lease_expires(ttl)
+                item["lease"] = lease
+                _save(master, items)
+                print("%s\t%s" % (item.get("id"), item.get("goal")))
+                return
+    item = _pick_next_ready(items)
+    if item:
+        master["empty_polls"] = 0
+        item["status"] = "claimed"
+        item["claimed_at"] = _now()
+        item["lease"] = {
+            "worker": worker or "__anonymous__",
+            "claimed_at": item["claimed_at"],
+            "heartbeat_at": item["claimed_at"],
+            "ttl_seconds": ttl,
+            "expires_at": _lease_expires(ttl),
+        }
+        _save(master, items)
+        print("%s\t%s" % (item.get("id"), item.get("goal")))
+        return
+    _refresh_ready_states(items)
+    if master:
+        master["empty_polls"] = int(master.get("empty_polls", 0))
+    _save(master, items)
+    print("backlog: no ready items")
+
+
+def cmd_done(opts):
+    item_id = (opts.get("item") or "").strip()
+    if not item_id:
+        print("backlog: --item is required")
+        sys.exit(2)
+    master, items = _load()
+    if not master or not items:
+        print("backlog: none frozen")
+        sys.exit(2)
+    anchor = _load_anchor(opts.get("anchor") if isinstance(opts.get("anchor"), str) else None)
+    if not anchor.get("goal_fp"):
+        print("backlog: BLOCKED — no anchor set for this item")
+        sys.exit(12)
+    hit = None
+    for item in items:
+        if item.get("id") == item_id:
+            hit = item
+            break
+    if not hit:
+        print("backlog: no such item %r" % item_id)
+        sys.exit(2)
+    if hit.get("goal_fp") != anchor.get("goal_fp"):
+        print("backlog: BLOCKED — anchor goal does not match item %s" % item_id)
+        sys.exit(12)
+    done, total, pending = coverage(anchor.get("criteria", []))
+    if total == 0 or pending:
+        print("backlog: BLOCKED — anchor is not READY for item %s" % item_id)
+        sys.exit(12)
+    hit["status"] = "done"
+    hit["done_at"] = _now()
+    hit["lease"] = {}
+    hit["done_criteria"] = done
+    hit["total_criteria"] = total
+    hit["evidence"] = [c.get("evidence", "").strip() for c in anchor.get("criteria", [])
+                       if c.get("status") == "done" and c.get("evidence")]
+    state_path = os.path.join(hit.get("run_dir") or _item_run_dir(hit), "state.json")
+    if os.path.exists(state_path):
+        _write_json(state_path, {
+            "schema": "simplicio.backlog-item-state/v1",
+            "item_id": hit.get("id"),
+            "phase": "done",
+            "status": "done",
+            "updated_at": _now(),
+        })
+    _save(master, items)
+    print("done %s" % item_id)
+
+
+def cmd_skip(opts):
+    item_id = (opts.get("item") or "").strip()
+    reason = (opts.get("reason") or "").strip()
+    if not item_id or not reason:
+        print("backlog: --item and --reason are required")
+        sys.exit(2)
+    master, items = _load()
+    if not master or not items:
+        print("backlog: none frozen")
+        sys.exit(2)
+    for item in items:
+        if item.get("id") == item_id:
+            item["status"] = "skipped"
+            item["skip_reason"] = reason
+            item["lease"] = {}
+            item["skipped_at"] = _now()
+            _save(master, items)
+            print("skipped %s" % item_id)
+            return
+    print("backlog: no such item %r" % item_id)
+    sys.exit(2)
+
+
+def cmd_block(opts):
+    item_id = (opts.get("item") or "").strip()
+    reason = (opts.get("reason") or "").strip()
+    code = (opts.get("code") or "").strip()
+    if not item_id or not reason or not code:
+        print("backlog: --item, --reason and --code are required")
+        sys.exit(2)
+    master, items = _load()
+    if not master or not items:
+        print("backlog: none frozen")
+        sys.exit(2)
+    for item in items:
+        if item.get("id") == item_id:
+            item["status"] = "blocked"
+            item["blocked_reason"] = reason
+            item["reason_code"] = code
+            item["lease"] = {}
+            item["blocked_at"] = _now()
+            _save(master, items)
+            print("blocked %s" % item_id)
+            return
+    print("backlog: no such item %r" % item_id)
+    sys.exit(2)
+
+
+def cmd_fail(opts):
+    item_id = (opts.get("item") or "").strip()
+    reason = (opts.get("reason") or "").strip()
+    code = (opts.get("code") or "").strip()
+    fingerprint = (opts.get("fingerprint") or "").strip()
+    worker = (opts.get("worker") or "").strip()
+    max_failures = int(opts.get("max-failures") or 3)
+    if not item_id or not reason or not code or not fingerprint:
+        print("backlog: --item, --reason, --code and --fingerprint are required")
+        sys.exit(2)
+    master, items = _load()
+    if not master or not items:
+        print("backlog: none frozen")
+        sys.exit(2)
+    for item in items:
+        if item.get("id") != item_id:
+            continue
+        lease = item.get("lease") or {}
+        if worker and lease.get("worker") not in ("", worker):
+            print("backlog: BLOCKED — worker %s does not hold item %s" % (worker, item_id))
+            sys.exit(12)
+        failures = item.setdefault("failures", [])
+        if not any(f.get("fingerprint") == fingerprint for f in failures):
+            failures.append({
+                "at": _now(),
+                "reason": reason,
+                "reason_code": code,
+                "fingerprint": fingerprint,
+            })
+        item["lease"] = {}
+        if len(failures) >= max_failures:
+            item["status"] = "dead-letter"
+            item["reason_code"] = "dead-letter"
+            item["blocked_reason"] = "distinct failure threshold reached"
+            item["dead_letter_at"] = _now()
+            _save(master, items)
+            print("dead-letter %s" % item_id)
+            return
+        item["status"] = "ready"
+        item["blocked_reason"] = ""
+        item["reason_code"] = code
+        item["failed_at"] = _now()
+        _save(master, items)
+        print("failed %s (%d/%d)" % (item_id, len(failures), max_failures))
+        return
+    print("backlog: no such item %r" % item_id)
+    sys.exit(2)
+
+
+def cmd_checklist(opts):
+    master, items = _load()
+    if not master or not items:
+        print("backlog: none frozen")
+        return
+    anchor = _load_anchor(opts.get("anchor") if isinstance(opts.get("anchor"), str) else None)
+    _refresh_ready_states(items)
+    print(render_backlog_table(master, items, anchor=anchor))
+
+
+def cmd_status(_opts):
+    master, items = _load()
+    if not master or not items:
+        print("backlog: none frozen")
+        return
+    _refresh_ready_states(items)
+    _save(master, items)
+    print(render_backlog_status(master, items))
+
+
+def _active_workers(items):
+    seen = set()
+    for item in items:
+        if item.get("status") in ("claimed", "running", "verification", "delivery"):
+            worker = ((item.get("lease") or {}).get("worker") or "").strip()
+            if worker:
+                seen.add(worker)
+    return len(seen)
+
+
+def cmd_poll(opts):
+    master, items = _load()
+    if not master or not items:
+        print("backlog: none frozen")
+        return
+    k = int(opts.get("empty-polls") or 2)
+    _refresh_ready_states(items)
+    ready = [item for item in items if item.get("status") == "ready"]
+    workers = _active_workers(items)
+    if ready or workers:
+        master["empty_polls"] = 0
+        _save(master, items)
+        if ready:
+            print("ready")
+        else:
+            print("busy")
+        return
+    master["empty_polls"] = int(master.get("empty_polls", 0)) + 1
+    _save(master, items)
+    if int(master.get("empty_polls", 0)) >= max(1, k):
+        print("drained")
+        return
+    print("empty %d/%d" % (int(master.get("empty_polls", 0)), max(1, k)))
+
+
+def cmd_heartbeat(opts):
+    item_id = (opts.get("item") or "").strip()
+    worker = (opts.get("worker") or "").strip()
+    ttl = int(opts.get("lease-ttl") or 900)
+    if not item_id or not worker:
+        print("backlog: --item and --worker are required")
+        sys.exit(2)
+    master, items = _load()
+    if not master or not items:
+        print("backlog: none frozen")
+        sys.exit(2)
+    _refresh_ready_states(items)
+    for item in items:
+        if item.get("id") != item_id:
+            continue
+        lease = item.get("lease") or {}
+        if item.get("status") not in ("claimed", "running", "verification", "delivery") or lease.get("worker") != worker:
+            print("backlog: BLOCKED — worker %s does not hold item %s" % (worker, item_id))
+            sys.exit(12)
+        lease["heartbeat_at"] = _now()
+        lease["ttl_seconds"] = ttl
+        lease["expires_at"] = _lease_expires(ttl)
+        item["lease"] = lease
+        _save(master, items)
+        print("heartbeat %s" % item_id)
+        return
+    print("backlog: no such item %r" % item_id)
+    sys.exit(2)
+
+
+def cmd_selftest(_opts):
+    checks = []
+
+    def chk(name, cond):
+        checks.append(bool(cond))
+        print("  [%s] %s" % ("ok" if cond else "XX", name))
+
+    master = {"kind": "master", "goal": "Drain Phase 0"}
+    items = [
+        {"kind": "item", "id": "T1", "goal": "Fix pipes | safely", "goal_fp": "fp1",
+         "acs": ["One AC"], "status": "done", "evidence": ["shot.png"], "done_criteria": 1,
+         "total_criteria": 1, "skip_reason": "", "depends_on": [], "related": [], "blocks": [],
+         "priority": 20, "plan_files": []},
+        {"kind": "item", "id": "T2", "goal": "Skip me", "goal_fp": "fp2", "acs": ["Another AC"],
+         "status": "skipped", "evidence": [], "done_criteria": 0, "total_criteria": 1,
+         "skip_reason": "out of scope", "depends_on": ["T1"], "related": [], "blocks": [],
+         "priority": 10, "plan_files": []},
+    ]
+    table = render_backlog_table(master, items, anchor={})
+    chk("heading", "Body of work" in table)
+    chk("one-row-per-item", table.count("| T") >= 2)
+    chk("counts", "**1/2 items done · 1 skipped.**" in table)
+    chk("escaping", r"Fix pipes \| safely" in table)
+    chk("skip-reason", "out of scope" in table)
+    chk("lint.shared_helper", bool(lint_criteria(["works"])))
+    chk("cycle.detected", bool(_detect_cycles([
+        {"id": "A", "depends_on": ["B"]},
+        {"id": "B", "depends_on": ["A"]},
+    ])))
+    ready = _pick_next_ready([
+        {"id": "A", "status": "ready", "priority": 20, "depends_on": [], "plan_files": []},
+        {"id": "B", "status": "ready", "priority": 10, "depends_on": [], "plan_files": []},
+    ])
+    chk("priority.pick", ready and ready.get("id") == "B")
+    lease_items = [
+        {"id": "A", "status": "claimed", "priority": 20, "depends_on": [], "plan_files": [],
+         "lease": {"worker": "w1", "expires_at": "2000-01-01T00:00:00Z"}},
+        {"id": "B", "status": "ready", "priority": 10, "depends_on": [], "plan_files": [], "lease": {}},
+    ]
+    _refresh_ready_states(lease_items)
+    chk("stale.claim.released", lease_items[0]["status"] == "ready")
+    poll_master = {"kind": "master", "goal": "Drain", "empty_polls": 1}
+    chk("status.empty_polls", "empty-polls: 1" in render_backlog_status(poll_master, items))
+
+    ok = all(checks)
+    print("selftest: %s (%d/%d)" % ("PASS" if ok else "FAIL", sum(checks), len(checks)))
+    sys.exit(0 if ok else 1)
+
+
+def _parse(args):
+    opts = {}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--"):
+            key = a[2:]
+            if i + 1 < len(args) and not args[i + 1].startswith("--"):
+                val = args[i + 1]
+                if key in opts:
+                    if not isinstance(opts[key], list):
+                        opts[key] = [opts[key]]
+                    opts[key].append(val)
+                else:
+                    opts[key] = val
+                i += 2
+            else:
+                opts[key] = True
+                i += 1
+        else:
+            i += 1
+    return opts
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        print(__doc__)
+        sys.exit(2)
+    if argv[0] == "--describe-cli":
+        print(json.dumps({
+            "verbs": ["init", "next", "done", "skip", "block", "fail", "heartbeat", "status", "poll", "checklist", "selftest"],
+            "flags": ["--anchor", "--code", "--goal", "--help", "--item", "--item-file", "--lint",
+                      "--reason", "--task-file", "--worker", "--lease-ttl", "--fingerprint", "--max-failures", "--empty-polls"],
+        }))
+        sys.exit(0)
+    sub, opts = argv[0], _parse(argv[1:])
+    {"init": cmd_init, "next": cmd_next, "done": cmd_done, "skip": cmd_skip, "block": cmd_block,
+     "fail": cmd_fail, "heartbeat": cmd_heartbeat, "status": cmd_status, "poll": cmd_poll,
+     "checklist": cmd_checklist, "selftest": cmd_selftest}.get(
+        sub, lambda _o: (print("unknown command '%s'. choices: init next done skip block fail heartbeat status poll checklist "
+                               "selftest" % sub), sys.exit(2)))(opts)
+
+
+if __name__ == "__main__":
+    main()

@@ -18,11 +18,27 @@ DOCTOR = os.path.join(REPO, "scripts", "doctor.py")
 def _run_doctor(args, tmp_path, extra_env=None):
     env = dict(os.environ)
     env["HOME"] = str(tmp_path)
+    # pathlib.Path.home() on Windows follows USERPROFILE/HOMEDRIVE/HOMEPATH,
+    # not only HOME. Override all home selectors so the fresh-home fixture is
+    # deterministic on every supported host.
+    env["USERPROFILE"] = str(tmp_path)
+    env["HOMEDRIVE"] = str(tmp_path.drive or "C:")
+    env["HOMEPATH"] = str(tmp_path)[len(str(tmp_path.drive or "C:")):]
+    env["PYTHONIOENCODING"] = "utf-8"
     env.pop("ANTHROPIC_API_KEY", None)
     if extra_env:
         env.update(extra_env)
-    return subprocess.run([sys.executable, DOCTOR] + args, capture_output=True, text=True,
-                          cwd=str(tmp_path), env=env, timeout=60)
+    return subprocess.run(
+        [sys.executable, DOCTOR] + args,
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+        env=env,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 def test_doctor_json_mode_is_well_formed_and_never_crashes(tmp_path):

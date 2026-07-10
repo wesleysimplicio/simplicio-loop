@@ -167,6 +167,50 @@ def test_bundle_parity_catches_orphan_in_bundle():
             restore()
 
 
+def test_skill_pair_parity_passes_for_identical_shared_reference():
+    with tempfile.TemporaryDirectory() as tmp:
+        rel = os.path.join("quality-safety-delivery.md")
+        content = "same bytes\n"
+        _write(os.path.join(tmp, ".claude", "skills", "simplicio-loop", "references", rel), content)
+        _write(os.path.join(tmp, ".claude", "skills", "simplicio-tasks", "references", rel), content)
+        restore = _patched(tmp)
+        try:
+            ok, detail = claims_audit.check_skill_pair_parity()
+            assert ok, detail
+        finally:
+            restore()
+
+
+def test_skill_pair_parity_flags_divergent_shared_reference():
+    with tempfile.TemporaryDirectory() as tmp:
+        rel = os.path.join("quality-safety-delivery.md")
+        _write(os.path.join(tmp, ".claude", "skills", "simplicio-loop", "references", rel),
+               "loop bytes\n")
+        _write(os.path.join(tmp, ".claude", "skills", "simplicio-tasks", "references", rel),
+               "tasks bytes\n")
+        restore = _patched(tmp)
+        try:
+            ok, detail = claims_audit.check_skill_pair_parity()
+            assert not ok, "shared reference drift must fail: %s" % detail
+            assert "quality-safety-delivery.md" in detail
+        finally:
+            restore()
+
+
+def test_skill_pair_parity_ignores_unilateral_files_and_skill_md():
+    with tempfile.TemporaryDirectory() as tmp:
+        _write(os.path.join(tmp, ".claude", "skills", "simplicio-loop", "references", "only-loop.md"),
+               "exists only here\n")
+        _write(os.path.join(tmp, ".claude", "skills", "simplicio-loop", "SKILL.md"), "loop skill\n")
+        _write(os.path.join(tmp, ".claude", "skills", "simplicio-tasks", "SKILL.md"), "tasks skill drift\n")
+        restore = _patched(tmp)
+        try:
+            ok, detail = claims_audit.check_skill_pair_parity()
+            assert ok, detail
+        finally:
+            restore()
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module

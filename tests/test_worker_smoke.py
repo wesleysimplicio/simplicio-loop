@@ -15,8 +15,16 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _run(args, cwd):
-    return subprocess.run([sys.executable, os.path.join(REPO, "scripts", args[0])] + args[1:],
-                          capture_output=True, text=True, cwd=cwd)
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return subprocess.run(
+        [sys.executable, os.path.join(REPO, "scripts", args[0])] + args[1:],
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+    )
 
 
 def test_video_evidence_blocks_without_composition(tmp_path):
@@ -98,8 +106,17 @@ def test_repo_conventions_formatters_default():
 
 
 def _run_anchor(args, env):
-    return subprocess.run([sys.executable, os.path.join(REPO, "scripts", "task_anchor.py")] + args,
-                          capture_output=True, text=True, cwd=REPO, env=env)
+    full_env = dict(os.environ)
+    full_env["PYTHONIOENCODING"] = "utf-8"
+    full_env.update(env)
+    return subprocess.run(
+        [sys.executable, os.path.join(REPO, "scripts", "task_anchor.py")] + args,
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+        env=full_env,
+        stdin=subprocess.DEVNULL,
+    )
 
 
 def test_task_anchor_gate_and_drift(tmp_path):
@@ -107,8 +124,13 @@ def test_task_anchor_gate_and_drift(tmp_path):
     # flag a CHANGED goal as DRIFT, and only go READY once every AC is marked with a receipt.
     env = dict(os.environ, SIMPLICIO_ANCHOR_FILE=str(tmp_path / "anchor.json"))
     s = _run_anchor(["set", "--item", "9", "--goal", "Add SSO login",
-                     "--ac", "Renders an SSO button", "--ac", "Redirects to the IdP"], env)
+                     "--ac", "Renders an SSO button :: verify: login.png",
+                     "--ac", "Redirects to the IdP"], env)
     assert s.returncode == 0, s.stdout + s.stderr
+    st = _run_anchor(["status"], env)
+    assert "verify: login.png" in st.stdout, st.stdout
+    cl = _run_anchor(["checklist"], env)
+    assert "_verify:_ login.png" in cl.stdout, cl.stdout
 
     g = _run_anchor(["gate", "--exit-code"], env)
     assert g.returncode == 12, "expected BLOCKED exit 12, got %d:\n%s" % (g.returncode, g.stdout)
@@ -132,15 +154,62 @@ def test_task_anchor_gate_and_drift(tmp_path):
     assert ok.returncode == 0, "expected READY, got %d:\n%s" % (ok.returncode, ok.stdout)
     assert "ready" in ok.stdout.lower(), ok.stdout
 
+    # re-setting the SAME goal with no new verify suffix must preserve the prior done status/verify
+    rs = _run_anchor(["set", "--item", "9", "--goal", "Add SSO login",
+                      "--ac", "Renders an SSO button", "--ac", "Redirects to the IdP"], env)
+    assert rs.returncode == 0, rs.stdout + rs.stderr
+    cl2 = _run_anchor(["checklist"], env)
+    assert "[x] **AC1**" in cl2.stdout, cl2.stdout
+
+
+def test_task_anchor_lint_modes(tmp_path):
+    env = dict(os.environ, SIMPLICIO_ANCHOR_FILE=str(tmp_path / "anchor.json"))
+    vague = _run_anchor(["set", "--item", "1", "--goal", "g", "--ac", "works"], env)
+    assert vague.returncode == 2, vague.stdout
+    assert "vague acceptance criterion refused" in vague.stdout, vague.stdout
+    short = _run_anchor(["set", "--item", "1", "--goal", "g", "--ac", "a1", "--lint"], env)
+    assert short.returncode == 2, short.stdout
+    assert "strict lint refused short acceptance criterion" in short.stdout, short.stdout
+
+
+def test_task_anchor_old_schema_still_marks_and_renders(tmp_path):
+    anchor = tmp_path / "anchor.json"
+    anchor.write_text("""{
+  "item": "9",
+  "goal": "Add SSO login",
+  "goal_fp": "x",
+  "frozen_at": "2026-07-07T00:00:00Z",
+  "criteria": [
+    {"id": "AC1", "text": "Renders an SSO button", "status": "pending", "evidence": "", "verified_at": ""}
+  ]
+}""", encoding="utf-8")
+    env = dict(os.environ, SIMPLICIO_ANCHOR_FILE=str(anchor))
+    m = _run_anchor(["mark", "--id", "AC1", "--status", "done", "--evidence", "a.png"], env)
+    assert m.returncode == 0, m.stdout + m.stderr
+    g = _run_anchor(["gate", "--exit-code"], env)
+    assert g.returncode == 0, g.stdout
+    cl = _run_anchor(["checklist"], env)
+    assert "_verify:_" not in cl.stdout, cl.stdout
+
 
 def test_pr_evidence_blocks_without_evidence(tmp_path):
     # The "PR sem evidência" fix: with --require-evidence and neither a checklist nor a print,
     # building the PR body MUST block (exit 3) and never emit a body / claim done.
-    env = dict(os.environ, SIMPLICIO_ANCHOR_FILE=str(tmp_path / "none.json"))
-    r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "pr_evidence.py"), "build",
-                        "--require-evidence", "--anchor", str(tmp_path / "none.json"),
-                        "--shots-dir", str(tmp_path / "empty")],
-                       capture_output=True, text=True, cwd=REPO, env=env)
+    env = dict(os.environ, SIMPLICIO_ANCHOR_FILE=str(tmp_path / "none.json"),
+               PYTHONIOENCODING="utf-8")
+    r = subprocess.run(
+        [sys.executable, os.path.join(REPO, "scripts", "pr_evidence.py"), "build",
+         "--require-evidence", "--anchor", str(tmp_path / "none.json"),
+         "--shots-dir", str(tmp_path / "empty"),
+         "--backlog", str(tmp_path / "missing-backlog.jsonl")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=REPO,
+        env=env,
+        stdin=subprocess.DEVNULL,
+    )
     assert r.returncode == 3, "expected BLOCKED exit 3, got %d:\n%s" % (r.returncode, r.stdout)
     assert "blocked" in r.stdout.lower(), r.stdout
     assert "# " not in r.stdout, "leaked a PR body while blocked:\n%s" % r.stdout
@@ -150,17 +219,25 @@ def test_pr_evidence_builds_with_checklist_and_prints(tmp_path):
     # With an anchor + a captured print, the body MUST contain the item-by-item checklist and embed
     # the screenshot — the two things the client said were missing.
     anchor = str(tmp_path / "anchor.json")
-    env = dict(os.environ, SIMPLICIO_ANCHOR_FILE=anchor)
+    env = dict(os.environ, SIMPLICIO_ANCHOR_FILE=anchor, PYTHONIOENCODING="utf-8")
     _run_anchor(["set", "--item", "9", "--goal", "Add SSO login",
                  "--ac", "Renders an SSO button"], env)
     _run_anchor(["mark", "--id", "AC1", "--status", "done", "--evidence", "login.png"], env)
     shots = tmp_path / "shots"
     shots.mkdir()
     (shots / "login.png").write_bytes(b"PNG")
-    r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "pr_evidence.py"), "build",
-                        "--title", "Add SSO login", "--item", "9", "--require-evidence",
-                        "--anchor", anchor, "--shots-dir", str(shots)],
-                       capture_output=True, text=True, cwd=REPO, env=env)
+    r = subprocess.run(
+        [sys.executable, os.path.join(REPO, "scripts", "pr_evidence.py"), "build",
+         "--title", "Add SSO login", "--item", "9", "--require-evidence",
+         "--anchor", anchor, "--shots-dir", str(shots)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=REPO,
+        env=env,
+        stdin=subprocess.DEVNULL,
+    )
     assert r.returncode == 0, r.stdout + r.stderr
     assert "[x] **AC1**" in r.stdout, "missing item-by-item checklist:\n%s" % r.stdout
     assert "login.png" in r.stdout, "missing embedded print:\n%s" % r.stdout

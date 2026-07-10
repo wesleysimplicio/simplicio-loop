@@ -110,6 +110,8 @@ def test_promise_with_evidence_stops(tmp_path):
     root = str(tmp_path)
     _arm(root)
     _write_watcher_pass(root)  # watcher-gate must pass before promise is honored
+    _write_anchor(root, [{"id": "AC1", "status": "done"}])
+    _seed_verified_run(root)
     r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
                     "https://github.com/o/r/pull/9")
     assert r.returncode == 0
@@ -136,6 +138,35 @@ def _write_anchor(root, criteria):
         json.dump({"item": "1", "goal": "g", "goal_fp": "x", "criteria": criteria}, f)
 
 
+def _seed_verified_run(root, run_id="r1"):
+    run_dir = os.path.join(root, ".orchestrator", "runs", run_id)
+    os.makedirs(run_dir, exist_ok=True)
+    with open(os.path.join(run_dir, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema": "simplicio.run-manifest/v1", "run_id": run_id,
+                   "delivery_target": "verified"}, f)
+    with open(os.path.join(run_dir, "task-contract.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema": "simplicio.task-contract-collection/v1", "task_count": 1}, f)
+    with open(os.path.join(run_dir, "mapper-context.json"), "w", encoding="utf-8") as f:
+        json.dump({"handoff": {"stdout": {"context_pack": {"files": []}}}}, f)
+    with open(os.path.join(run_dir, "operator-receipt.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema": "simplicio.operator-receipt/v0", "execution_state": "verified"}, f)
+    with open(os.path.join(run_dir, "evidence-receipt.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema": "simplicio.evidence-receipt/v1", "status": "VERIFIED",
+                   "criteria": [{"id": "AC1", "verification_state": "verified"}],
+                   "summary": {"criteria_total": 1, "criteria_verified": 1,
+                               "scenario_total": 1, "scenario_verified": 1,
+                               "rule_total": 1, "rule_verified": 1}}, f)
+    with open(os.path.join(run_dir, "delivery-receipt.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema": "simplicio.delivery-receipt/v1", "target": "verified",
+                   "current_state": "verified", "ready": True,
+                   "source_kind": "local",
+                   "source_payload": {
+                       "evidence_receipt": "evidence-receipt.json",
+                       "criteria_verified": 1,
+                   }}, f)
+    return run_dir
+
+
 def test_promise_with_evidence_but_pending_anchor_continues(tmp_path):
     # The mechanical anti-drift gate: even WITH evidence, a promise must NOT stop the loop while the
     # task anchor still has an unverified acceptance criterion — it re-feeds instead, naming the gap.
@@ -157,6 +188,7 @@ def test_promise_with_evidence_all_acs_done_stops(tmp_path):
     _arm(root, iteration=1, max_iter=5)
     _write_watcher_pass(root)  # watcher-gate must pass
     _write_anchor(root, [{"id": "AC1", "status": "done"}, {"id": "AC2", "status": "done"}])
+    _seed_verified_run(root)
     r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
                     "https://github.com/o/r/pull/9")
     assert r.returncode == 0
@@ -250,8 +282,8 @@ def test_done_flag_halts(tmp_path):
     loop = _arm(root)
     open(os.path.join(loop, "done.flag"), "w").close()
     r = _tick(root, "anything")
-    assert r.stdout.strip() == ""
-    assert not os.path.exists(_scratchpad(root)), "done.flag should stop and clean state"
+    assert "followup_message" in r.stdout
+    assert os.path.exists(_scratchpad(root)), "done.flag alone must not bypass the oracle"
 
 
 def test_legacy_done_file_halts(tmp_path):
@@ -259,8 +291,25 @@ def test_legacy_done_file_halts(tmp_path):
     loop = _arm(root)
     open(os.path.join(loop, "done"), "w").close()
     r = _tick(root, "anything")
+    assert "followup_message" in r.stdout
+    assert os.path.exists(_scratchpad(root)), "legacy done file alone must not bypass the oracle"
+
+
+def test_done_flag_with_valid_oracle_halts(tmp_path):
+    root = str(tmp_path)
+    loop = _arm(root)
+    open(os.path.join(loop, "done.flag"), "w").close()
+    _write_watcher_challenge(root, challenge="done-ok", written_at="2026-07-10T00:00:00Z")
+    _write_anchor(root, [{"id": "AC1", "status": "done"}])
+    with open(os.path.join(loop, "watcher_state.json"), "w", encoding="utf-8") as f:
+        json.dump({"match": True, "status": "MEASURED", "checked_at": "2026-07-10T00:00:01Z",
+                   "challenge": "done-ok", "goal_fp": ""}, f)
+    _seed_verified_run(root)
+    with open(os.path.join(loop, "last_response.txt"), "w", encoding="utf-8") as f:
+        f.write("<promise>SIMPLICIO_DONE</promise>")
+    r = _tick(root, "anything")
     assert r.stdout.strip() == ""
-    assert not os.path.exists(_scratchpad(root)), "legacy done file should still stop and clean state"
+    assert not os.path.exists(_scratchpad(root)), "done.flag should stop only when oracle is green"
 
 
 def test_gate_lock_fresh_allows_stop_without_consuming_iteration(tmp_path):
@@ -335,6 +384,8 @@ def test_watcher_receipt_matching_challenge_stops(tmp_path):
     root = str(tmp_path)
     _arm(root, iteration=1, max_iter=5)
     _write_watcher_pass(root, challenge="issued-this-turn")
+    _write_anchor(root, [{"id": "AC1", "status": "done"}])
+    _seed_verified_run(root)
     with open(os.path.join(root, ".orchestrator", "loop", "watcher_state.json"), "w", encoding="utf-8") as f:
         json.dump({"match": True, "status": "MEASURED", "checked_at": "2026-07-01T00:00:01Z",
                     "challenge": "issued-this-turn", "goal_fp": ""}, f)
@@ -416,6 +467,8 @@ def test_flow_audit_gap_absent_for_non_web_diff(tmp_path):
         f.write("print('hi')\n")
     subprocess.run(["git", "init", "-q"], cwd=root)
     _write_watcher_pass(root)
+    _write_anchor(root, [{"id": "AC1", "status": "done"}])
+    _seed_verified_run(root)
     r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
                     "https://github.com/o/r/pull/9")
     assert r.stdout.strip() == "", "non-web diff must not be gated by flow-audit:\n%s" % r.stdout
@@ -428,10 +481,15 @@ def test_flow_audit_green_receipt_allows_stop(tmp_path):
     _install_flow_audit(root)
     _write_web_file(root)
     _write_watcher_pass(root)
+    _write_anchor(root, [{"id": "AC1", "status": "done"}])
+    _seed_verified_run(root)
     orch = os.path.join(root, ".orchestrator")
     os.makedirs(orch, exist_ok=True)
-    with open(os.path.join(orch, "flow-audit.json"), "w", encoding="utf-8") as f:
+    receipt = os.path.join(orch, "flow-audit.json")
+    with open(receipt, "w", encoding="utf-8") as f:
         json.dump({"ok": True, "counts": {"high_issues": 0}}, f)
+    future = __import__("time").time() + 2
+    os.utime(receipt, (future, future))
     r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
                     "https://github.com/o/r/pull/9")
     assert r.stdout.strip() == "", "green flow-audit receipt should allow the stop:\n%s" % r.stdout

@@ -44,6 +44,8 @@ Verbs:
               .orchestrator/savings/e2e-demo.md            (the human-readable report)
             A hop whose live tool is missing/failing is BLOCKED and reported as such — never a
             fake pass.
+  audit     Read an existing e2e-demo events file and fail closed when any hop is still
+            `simulated` or missing.
   selftest  Prove the event/report assembly + token math deterministically, fully offline (no
             subprocess to simplicio-mapper/simplicio-cli, no network, no API key) — this is what
             `scripts/check.py` runs, so the gate is green with zero external dependencies.
@@ -407,6 +409,62 @@ def render_report(events, repo, item):
     return "\n".join(lines)
 
 
+def audit_events(events, require_measured=False):
+    hops_present = []
+    duplicates = []
+    malformed = []
+    for idx, ev in enumerate(events):
+        hop = ev.get("hop")
+        if hop in hops_present and hop not in duplicates:
+            duplicates.append(hop)
+        hops_present.append(hop)
+        proof = ev.get("proof") or {}
+        tokens = ev.get("tokens") or {}
+        base = tokens.get("baseline")
+        treat = tokens.get("treatment")
+        saved = tokens.get("saved")
+        pct = tokens.get("saved_pct")
+        expected_saved = None if base is None or treat is None else base - treat
+        expected_pct = 0.0 if not base else round(100.0 * expected_saved / base, 1)
+        problems = []
+        if ev.get("schema") != SCHEMA:
+            problems.append("schema")
+        if hop not in HOPS:
+            problems.append("hop")
+        if proof.get("kind") not in ("measured", "simulated"):
+            problems.append("proof.kind")
+        if proof.get("tokenizer") != "ceil(chars/4)":
+            problems.append("proof.tokenizer")
+        if not proof.get("methodology"):
+            problems.append("proof.methodology")
+        if not isinstance(proof.get("sources"), list) or not proof.get("sources"):
+            problems.append("proof.sources")
+        if not ev.get("note"):
+            problems.append("note")
+        if not isinstance(base, int):
+            problems.append("tokens.baseline")
+        if not isinstance(treat, int):
+            problems.append("tokens.treatment")
+        if not isinstance(saved, int) or expected_saved != saved:
+            problems.append("tokens.saved")
+        if not isinstance(pct, (int, float)) or expected_pct != round(float(pct), 1):
+            problems.append("tokens.saved_pct")
+        if problems:
+            malformed.append({"index": idx, "hop": hop, "problems": problems})
+    hops_present = set(hops_present)
+    missing = [hop for hop in HOPS if hop not in hops_present]
+    simulated = [ev.get("hop") for ev in events if (ev.get("proof") or {}).get("kind") != "measured"]
+    ok = not missing and not duplicates and not malformed and (not require_measured or not simulated)
+    return {
+        "ok": ok,
+        "missing": missing,
+        "duplicates": duplicates,
+        "malformed": malformed,
+        "simulated": simulated,
+        "events": len(events),
+    }
+
+
 # ---------------------------------------------------------------------------------------------
 # run / selftest
 # ---------------------------------------------------------------------------------------------
@@ -471,12 +529,36 @@ def cmd_run(opts):
 
     log("wrote %s" % events_path)
     log("wrote %s" % report_path)
+    audit = audit_events(events, require_measured=bool(opts.get("require-measured")))
     if opts.get("json"):
         print(json.dumps({"events": len(events), "blocked": [h for h, _ in blockers],
-                          "report": report_path, "events_file": events_path}, indent=2))
+                          "report": report_path, "events_file": events_path,
+                          "audit": audit}, indent=2))
     else:
         print(report)
-    return 0 if not blockers else 1
+    if blockers:
+        return 1
+    if opts.get("require-measured") and not audit["ok"]:
+        return 2
+    return 0
+
+
+def cmd_audit(opts):
+    events_path = opts.get("events") or os.path.join(opts.get("out", DEFAULT_STORE), EVENTS_FILE)
+    if not os.path.exists(events_path):
+        print(json.dumps({"ok": False, "reason": "events file missing", "events_file": events_path},
+                         ensure_ascii=False, indent=2))
+        return 2
+    events = []
+    with open(events_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            s = line.strip()
+            if s:
+                events.append(json.loads(s))
+    payload = audit_events(events, require_measured=bool(opts.get("require-measured")))
+    payload["events_file"] = events_path
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if payload["ok"] else 2
 
 
 def cmd_selftest(_opts):
@@ -528,6 +610,10 @@ def cmd_selftest(_opts):
     chk("report labels proof.kind for every hop",
         report_md.count("`measured`") + report_md.count("`simulated`") >= len(HOPS))
     chk("report has an OVERALL line", "OVERALL" in report_md)
+    audit_soft = audit_events(synth_events, require_measured=False)
+    chk("audit soft passes complete hop set", audit_soft["ok"] is True)
+    audit_strict = audit_events(synth_events, require_measured=True)
+    chk("audit strict rejects simulated hops", audit_strict["ok"] is False and "edit" in audit_strict["simulated"])
 
     # 5) TOON round-trips the map hop's payload shape (encode_toon is what MAP/EDIT depend on)
     sample_pack = {"schema": "simplicio.context-pack/v1", "files": [
@@ -571,18 +657,20 @@ def main():
     if argv[0] == "--describe-cli":
         import json
         print(json.dumps({
-            "verbs": ["run", "selftest"],
-            "flags": ["--help"],
+            "verbs": ["run", "audit", "selftest"],
+            "flags": ["--events", "--help", "--json", "--out", "--require-measured"],
         }))
         sys.exit(0)
     sub, rest = argv[0], argv[1:]
     opts = _parse(rest)
     if sub == "run":
         sys.exit(cmd_run(opts))
+    elif sub == "audit":
+        sys.exit(cmd_audit(opts))
     elif sub == "selftest":
         sys.exit(cmd_selftest(opts))
     else:
-        print("unknown command %r. choices: run selftest" % sub)
+        print("unknown command %r. choices: run audit selftest" % sub)
         sys.exit(2)
 
 
