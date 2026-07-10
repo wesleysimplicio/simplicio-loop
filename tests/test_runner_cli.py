@@ -88,6 +88,19 @@ def test_operator_timeout_defaults_and_override(monkeypatch):
     assert runner_mod._operator_timeout("execute") == 450
 
 
+def test_devcli_cmd_prefers_repo_checkout(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "simplicio").mkdir(parents=True)
+    (repo / "simplicio" / "cli.py").write_text("print('ok')\n", encoding="utf-8")
+
+    cmd = runner_mod._devcli_cmd(repo, "task", "--help")
+    env = runner_mod._devcli_env(repo, {"PYTHONPATH": "BASE"})
+
+    assert cmd[:3] == [sys.executable, "-m", "simplicio.cli"]
+    assert cmd[3:] == ["task", "--help"]
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(repo)
+
+
 def test_build_plan_uses_filtered_candidate_targets(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

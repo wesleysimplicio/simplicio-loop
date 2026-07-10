@@ -905,11 +905,11 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         "--bound-paths",
         target,
     )
-    provider_config = {
-        "model": os.environ.get("SIMPLICIO_MODEL", ""),
-        "effort": os.environ.get("SIMPLICIO_CODEX_EFFORT", ""),
-    }
     op_env = _devcli_env(repo_path, _operator_env())
+    provider_config = {
+        "model": op_env.get("SIMPLICIO_MODEL", ""),
+        "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
+    }
     fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON", "").strip()
     if fake:
         payload = json.loads(fake)
