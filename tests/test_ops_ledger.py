@@ -97,12 +97,22 @@ def test_concurrent_append_preserves_sequence(tmp_path):
 
 
 def test_strict_context_is_hash_bound_and_replayable(tmp_path):
-    ledger = EventLedger(tmp_path / "events.jsonl")
+    path = tmp_path / "events.jsonl"
+    ledger = EventLedger(path)
     event = ledger.append("claimed", {"task": "T1"}, event_id="strict-1",
                           context=_context())
     assert event["context_schema"] == CONTEXT_SCHEMA
     assert event["context"]["run_id"] == "run-1"
     assert ledger.replay() == [event]
+    tampered = json.loads(path.read_text(encoding="utf-8"))
+    tampered["context"]["run_id"] = "run-evil"
+    path.write_text(json.dumps(tampered) + "\n", encoding="utf-8")
+    try:
+        ledger.replay()
+    except LedgerError as exc:
+        assert "hash" in str(exc)
+    else:
+        raise AssertionError("tampered context unexpectedly replayed")
 
 
 def test_strict_context_rejects_missing_required_fields(tmp_path):
