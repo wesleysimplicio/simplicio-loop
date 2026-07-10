@@ -7,6 +7,7 @@ import random
 import re
 import subprocess
 import string
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -97,6 +98,20 @@ def _operator_timeout(kind: str) -> int:
     except ValueError:
         return default
     return max(30, value)
+
+
+def _devcli_env(repo_path: Path, base_env: Dict[str, str] | None = None) -> Dict[str, str]:
+    env = dict(base_env or os.environ)
+    repo_str = str(repo_path)
+    current = env.get("PYTHONPATH", "").strip()
+    env["PYTHONPATH"] = repo_str if not current else f"{repo_str}{os.pathsep}{current}"
+    return env
+
+
+def _devcli_cmd(repo_path: Path, *args: str) -> List[str]:
+    if (repo_path / "simplicio" / "cli.py").exists():
+        return [sys.executable, "-m", "simplicio.cli", *args]
+    return ["simplicio-dev-cli", *args]
 
 
 def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
@@ -339,8 +354,23 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         task_help_stdout = str(override.get("task_help_stdout", help_stdout))
         task_help_rc = int(override.get("task_help_returncode", help_rc))
     else:
-        help_result = _run_cmd(["simplicio-dev-cli", "--help"], repo_path)
-        task_help_result = _run_cmd(["simplicio-dev-cli", "task", "--help"], repo_path)
+        env = _devcli_env(repo_path)
+        help_result = subprocess.run(
+            _devcli_cmd(repo_path, "--help"),
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=env,
+        )
+        task_help_result = subprocess.run(
+            _devcli_cmd(repo_path, "task", "--help"),
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=env,
+        )
         help_stdout = (help_result.stdout or "").strip()
         help_rc = help_result.returncode
         task_help_stdout = (task_help_result.stdout or "").strip()
@@ -589,8 +619,8 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
         _write_json(run_root / "operator-receipt.json", receipt)
         return receipt
 
-    argv = [
-        "simplicio-dev-cli",
+    argv = _devcli_cmd(
+        repo_path,
         "task",
         _task_goal(task),
         "--root",
@@ -603,11 +633,11 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
         _constraints_text(task),
         "--dry-run-task",
         "--json",
-    ]
+    )
     for bound in [target]:
         argv.extend(["--bound-paths", bound])
     try:
-        op_env = _operator_env()
+        op_env = _devcli_env(repo_path, _operator_env())
         result = subprocess.run(
             argv,
             cwd=str(repo_path),
@@ -859,17 +889,27 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
     if not target:
         raise RuntimeError("plan has no authorized operator target")
     _preflight_operator(repo_path, run_dir)
-    argv = [
-        "simplicio-dev-cli", "task", _task_goal(task),
-        "--root", str(repo_path), "--target", target,
-        "--criteria", _criteria_text(task), "--constraints", _constraints_text(task),
-        "--json", "--bound-paths", target,
-    ]
+    argv = _devcli_cmd(
+        repo_path,
+        "task",
+        _task_goal(task),
+        "--root",
+        str(repo_path),
+        "--target",
+        target,
+        "--criteria",
+        _criteria_text(task),
+        "--constraints",
+        _constraints_text(task),
+        "--json",
+        "--bound-paths",
+        target,
+    )
     provider_config = {
         "model": os.environ.get("SIMPLICIO_MODEL", ""),
         "effort": os.environ.get("SIMPLICIO_CODEX_EFFORT", ""),
     }
-    op_env = _operator_env()
+    op_env = _devcli_env(repo_path, _operator_env())
     fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON", "").strip()
     if fake:
         payload = json.loads(fake)
