@@ -132,6 +132,61 @@ def test_zero_capacity_is_blocked_without_fake_receipts(tmp_path):
     assert any(event.event == "blocked" and event.reason_code == "resource" for event in scheduler.events)
 
 
+def test_timeout_is_fenced_and_does_not_cancel_unrelated_lane(tmp_path):
+    def worker(task, _workdir, _dry_run):
+        time.sleep(task.resources.get("sleep", 0.01))
+        return fan_out.WorkerResult(task.id, True)
+
+    tasks = [
+        fan_out.Task("late", "late", files_affected=["late.py"],
+                     resources={"sleep": 0.06}, timeout_seconds=0.01),
+        fan_out.Task("healthy", "healthy", files_affected=["healthy.py"],
+                     resources={"sleep": 0.01}),
+    ]
+    results, scheduler = fan_out.run_scheduler(tasks, str(tmp_path), 2,
+                                                capacity=_capacity(2), worker=worker)
+    by_id = {result.task_id: result for result in results}
+    assert by_id["late"].success is False
+    assert by_id["late"].reason_code == "timeout"
+    assert by_id["healthy"].success is True
+    assert any(event.event == "timeout" and event.reason_code == "timeout"
+               for event in scheduler.events)
+
+
+def test_late_arrival_is_polled_before_completion(tmp_path):
+    scheduler_ref = []
+
+    def worker(task, _workdir, _dry_run):
+        if task.id == "first":
+            # The scheduler is idle after this receipt; enqueue a new item
+            # during its bounded arrival grace window.
+            time.sleep(0.01)
+            scheduler_ref[0].add_task(fan_out.Task("late", "late"))
+        return fan_out.WorkerResult(task.id, True)
+
+    scheduler_ref.append(fan_out.WorkConservingScheduler(
+        [fan_out.Task("first", "first")], str(tmp_path), 1,
+        governor=fan_out.ResourceGovernor(1, 1, processes=1), worker=worker,
+        idle_grace_seconds=0.05,
+    ))
+    results = scheduler_ref[0].run()
+    assert {result.task_id for result in results} == {"first", "late"}
+    assert any(event.event == "task_arrived" and event.reason_code == "late_arrival"
+               for event in scheduler_ref[0].events)
+
+
+def test_hundred_task_soak_has_no_starvation(tmp_path):
+    tasks = [fan_out.Task(str(i), "soak", files_affected=["%s.py" % i]) for i in range(100)]
+    results, scheduler = fan_out.run_scheduler(tasks, str(tmp_path), 2,
+                                                capacity=_capacity(2),
+                                                worker=lambda task, _workdir, _dry_run:
+                                                fan_out.WorkerResult(task.id, True),
+                                                idle_grace_seconds=0)
+    assert len(results) == 100
+    assert {result.task_id for result in results} == {str(i) for i in range(100)}
+    assert scheduler.report()["queue_depth"] == 0
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module

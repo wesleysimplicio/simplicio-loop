@@ -26,16 +26,13 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 
@@ -52,6 +49,7 @@ class Task:
     priority: int = 0
     resources: Dict[str, float] = field(default_factory=dict)
     retries: int = 0
+    timeout_seconds: Optional[float] = None
 
 
 @dataclass
@@ -277,22 +275,16 @@ def run_worker(task: Task, workdir: str, dry_run: bool = False) -> WorkerResult:
         if dry_run:
             output = json.dumps({"task": task_id, "branch": branch_name, "dry_run": True})
         else:
-            # The old implementation checked out a branch in the shared
-            # process cwd.  Concurrent workers could therefore move one
-            # another's HEAD (and corrupt a caller's checkout).  Worktree
-            # provisioning belongs to #153; this worker only runs the
-            # operator command in the caller's directory and reports the
-            # deterministic branch identity for the future isolated backend.
-            # Simulate task execution — in production this invokes the full
-            # orient→execute→verify→PR loop.
-            result = subprocess.run(
-                [sys.executable, "-c", "import sys; print(sys.argv[1])",
-                 f"Running task {task_id}: {task.goal}"],
-                capture_output=True,
-                text=True,
-                timeout=30,
+            # Never manufacture a successful receipt.  A real operator bridge
+            # (simplicio-dev-cli/Runtime) must be injected as ``worker`` by the
+            # caller; worktree/branch setup is owned by #153.
+            return WorkerResult(
+                task_id=task_id,
+                success=False,
+                error="operator backend is not configured",
+                reason_code="operator_unbound",
+                duration_ms=round((time.time() - start) * 1000, 1),
             )
-            output = result.stdout
 
         duration = (time.time() - start) * 1000
         return WorkerResult(
@@ -344,6 +336,7 @@ class WorkConservingScheduler:
         worker: Optional[Callable[[Task, str, bool], WorkerResult]] = None,
         retry_limit: int = 0,
         poll_interval: float = 0.01,
+        idle_grace_seconds: float = 0.05,
     ) -> None:
         self.workdir = workdir
         self.dry_run = dry_run
@@ -359,6 +352,7 @@ class WorkConservingScheduler:
         self.worker = worker or run_worker
         self.retry_limit = max(0, int(retry_limit))
         self.poll_interval = max(0.0, float(poll_interval))
+        self.idle_grace_seconds = max(0.0, float(idle_grace_seconds))
         self.pending: List[Task] = list(tasks)
         self.events: List[SchedulerEvent] = []
         self.results: List[WorkerResult] = []
@@ -374,11 +368,26 @@ class WorkConservingScheduler:
         self._task_queued_at: Dict[str, float] = {task.id: time.monotonic() for task in self.pending}
         self._wait_seconds = 0.0
         self._busy_seconds = 0.0
+        self._deadlines: Dict[Any, float] = {}
+        self._timed_out: Set[Any] = set()
+        self._closed = False
 
     def cancel(self) -> None:
         """Stop admitting new work; already-running tasks finish safely."""
         self._cancelled.set()
         self.events.append(SchedulerEvent("cancel_requested", reason_code="cancel"))
+
+    def close(self) -> None:
+        """Close the arrival window and allow ``run`` to finish immediately.
+
+        Without an explicit close, ``run`` keeps a short idle grace window so
+        work arriving from a producer thread is claimed before the completion
+        verdict.  A caller with a durable queue should call ``close`` after
+        its producer has observed the queue drained.
+        """
+        with self._lock:
+            self._closed = True
+            self.events.append(SchedulerEvent("arrival_window_closed", reason_code="delivery"))
 
     def add_task(self, task: Task) -> None:
         """Add late work before/while a run is draining (thread-safe)."""
@@ -457,6 +466,13 @@ class WorkConservingScheduler:
             self.attempts[task.id] = attempt
             future = executor.submit(self.worker, task, self.workdir, self.dry_run)
             self._active[future] = (task, files, request)
+            if task.timeout_seconds is not None:
+                try:
+                    timeout = float(task.timeout_seconds)
+                except (TypeError, ValueError):
+                    timeout = 0.0
+                if timeout > 0:
+                    self._deadlines[future] = time.monotonic() + timeout
             self.events.append(SchedulerEvent(
                 "started", task.id, "admitted", details={"attempt": attempt, "active": len(self._active)}
             ))
@@ -466,12 +482,20 @@ class WorkConservingScheduler:
 
     def _finish(self, future: Any) -> None:
         task, files, request = self._active.pop(future)
+        timed_out = future in self._timed_out
+        self._deadlines.pop(future, None)
+        self._timed_out.discard(future)
         self.governor.release(request)
         self._active_files.difference_update(files)
         try:
             result = future.result()
         except Exception as exc:  # worker isolation: one crash is one failure
             result = WorkerResult(task.id, False, error=str(exc), reason_code="worker_exception")
+        if timed_out:
+            # A running thread cannot be force-killed safely.  Keep its lane
+            # and resources held until it exits, then fence its late success as
+            # a timeout receipt; unrelated lanes continue in parallel.
+            result = WorkerResult(task.id, False, error="worker timeout", reason_code="timeout")
         result.attempts = self.attempts.get(task.id, 1)
         started_event = next((event for event in reversed(self.events)
                               if event.event == "started" and event.task_id == task.id), None)
@@ -494,8 +518,10 @@ class WorkConservingScheduler:
         self.results.append(result)
         self.events.append(SchedulerEvent("failed", task.id, result.reason_code or "worker_failure"))
 
-    def run(self) -> List[WorkerResult]:
+    def run(self, *, close: bool = False) -> List[WorkerResult]:
         """Drain all currently known work and return final worker receipts."""
+        if close:
+            self.close()
         if self._run_started is None:
             self._run_started = time.monotonic()
         if self.max_workers <= 0 or self.governor.workers <= 0:
@@ -531,11 +557,27 @@ class WorkConservingScheduler:
                                     ))
                         if self.pending and not self._active:
                             break
-                    continue
+                    if not self.pending and not self._closed and self.idle_grace_seconds > 0:
+                        # Poll briefly for producer-side late arrivals.  This
+                        # is bounded and observable, not an unbounded wait.
+                        deadline = time.monotonic() + self.idle_grace_seconds
+                        while time.monotonic() < deadline and not self.pending and not self._closed:
+                            time.sleep(self.poll_interval)
+                        if self.pending:
+                            continue
+                    # No pending work after the bounded arrival window (or
+                    # the producer explicitly closed it): complete honestly.
+                    break
                 # ``wait(FIRST_COMPLETED)`` avoids a wave barrier and returns
                 # immediately when any slot is free for refill.
                 done = []
                 while not done:
+                    now = time.monotonic()
+                    for future, deadline in list(self._deadlines.items()):
+                        if now >= deadline and not future.done() and future not in self._timed_out:
+                            self._timed_out.add(future)
+                            task = self._active[future][0]
+                            self.events.append(SchedulerEvent("timeout", task.id, "timeout"))
                     done = [future for future in list(self._active) if future.done()]
                     if not done:
                         time.sleep(self.poll_interval)
@@ -586,6 +628,7 @@ def run_scheduler(
     capacity: Optional[Dict[str, Any]] = None,
     worker: Optional[Callable[[Task, str, bool], WorkerResult]] = None,
     retry_limit: int = 0,
+    idle_grace_seconds: float = 0.05,
 ) -> Tuple[List[WorkerResult], WorkConservingScheduler]:
     """Convenience entry point used by the CLI and focused scheduler tests."""
     capacity = capacity or detect_capacity()
@@ -598,6 +641,7 @@ def run_scheduler(
         governor=governor,
         worker=worker or run_worker,
         retry_limit=retry_limit,
+        idle_grace_seconds=idle_grace_seconds,
     )
     return scheduler.run(), scheduler
 
@@ -659,6 +703,23 @@ def main() -> int:
             "reason_code": "resource",
         }))
         return 1
+
+    if effective_workers == 1:
+        # With only one safe slot the CLI reports a truthful serial decision.
+        # It does not invoke the unbound default operator or fabricate a
+        # success receipt; callers that provide a real worker can use the
+        # ``run_scheduler`` API directly.
+        print(json.dumps({
+            "verdict": "SERIAL (no extra capacity)",
+            "capacity": capacity,
+            "max_workers": max_workers,
+            "effective_workers": 1,
+            "total_tasks": len(tasks),
+            "workers": [],
+            "reason_code": "resource",
+            "savings": {"source": "fan-out", "description": "serial execution; no parallel savings"},
+        }))
+        return 0
 
     print(f"[fan-out] capacity: {capacity}, workers: {effective_workers}, mode={'SERIAL' if effective_workers == 1 else 'FAN_OUT'}", file=sys.stderr)
 

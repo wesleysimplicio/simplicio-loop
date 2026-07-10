@@ -89,6 +89,12 @@ def test_run_worker_dry_run_never_touches_git(tmp_path):
     assert '"dry_run": true' in result.output
 
 
+def test_run_worker_without_operator_fails_closed(tmp_path):
+    result = fan_out.run_worker(fan_out.Task("1", "real task"), str(tmp_path), dry_run=False)
+    assert result.success is False
+    assert result.reason_code == "operator_unbound"
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module
