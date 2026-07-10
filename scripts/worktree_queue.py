@@ -436,6 +436,30 @@ class WorktreeQueue:
             self._write(state)
             return self._allocation_from_entry(entry, reattached=False)
 
+    def record_context(self, task_id: str, context: Mapping[str, Any]) -> Dict[str, Any]:
+        """Persist the operator context that was handed to an allocated worker.
+
+        The queue owns the durable allocation record, so operator receipts must not rely on
+        an in-memory scheduler map.  Recording context is idempotent for the same task and
+        replaces only the context envelope; allocation, lane, and merge metadata remain
+        untouched.
+        """
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            raise ValueError("task_id is required")
+        payload = dict(context or {})
+        payload.setdefault("schema", "simplicio.operator-worktree-context/v1")
+        payload.setdefault("task_id", task_id)
+        with self._lock():
+            state = self._read()
+            entry = state.setdefault("tasks", {}).get(task_id)
+            if not entry:
+                raise KeyError("unknown task: %s" % task_id)
+            entry["operator_context"] = payload
+            entry["context_recorded_at"] = _now()
+            self._write(state)
+        return payload
+
     # ---- composed merge queue ---------------------------------------
     def enqueue_merge(self, task_id: str, target_ref: str = "HEAD") -> Dict[str, Any]:
         with self._lock():

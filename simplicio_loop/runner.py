@@ -5,6 +5,7 @@ import hashlib
 import os
 import random
 import re
+import shutil
 import subprocess
 import string
 import sys
@@ -49,6 +50,10 @@ class OperatorDispatchItem(TypedDict, total=False):
     task_index: int
     worker_id: str
     isolation_key: str
+    task_id: str
+    task_spec: Mapping[str, Any]
+    isolation: str
+    operator_context: Mapping[str, Any]
 
 
 def _now() -> str:
@@ -1131,6 +1136,149 @@ def _operator_worker_limit(requested: Optional[int], item_count: int) -> int:
     return max(1, min(int(requested), item_count))
 
 
+def _worktree_task_spec(item: Mapping[str, Any]) -> Any:
+    """Build the queue's impact contract without importing it at module load time.
+
+    ``runner`` is also shipped as a standalone bundle, so importing the scripts package
+    eagerly would make the existing operator API fail in installations that do not ship the
+    optional isolation adapter.  The late import keeps that adapter genuinely optional while
+    still passing the real ``TaskSpec`` to ``WorktreeQueue`` when it is available.
+    """
+    try:
+        from scripts.worktree_queue import TaskSpec
+    except ImportError:  # pragma: no cover - direct scripts/ execution fallback
+        from worktree_queue import TaskSpec
+    raw = item.get("task_spec")
+    if isinstance(raw, TaskSpec):
+        return raw
+    payload = dict(raw or {}) if isinstance(raw, Mapping) else {}
+    task_id = str(item.get("task_id") or "task-%s-%s" % (item.get("run_id"), item.get("task_index")))
+    payload.setdefault("id", task_id)
+    payload.setdefault("goal", str(item.get("goal") or ""))
+    return TaskSpec.from_mapping(payload)
+
+
+def _allocation_context(allocation: Any, item: Mapping[str, Any]) -> Dict[str, Any]:
+    """Reduce an Allocation to JSON-safe, persisted operator context."""
+    context = {
+        "schema": "simplicio.operator-worktree-context/v1",
+        "task_id": str(getattr(allocation, "task_id", item.get("task_id") or "")),
+        "run_id": str(getattr(allocation, "run_id", item.get("run_id") or "")),
+        "mode": str(getattr(allocation, "mode", "worktree") or "worktree"),
+        "path": str(getattr(allocation, "path", "") or ""),
+        "branch": str(getattr(allocation, "branch", "") or ""),
+        "base_sha": str(getattr(allocation, "base_sha", "") or ""),
+        "head_sha": str(getattr(allocation, "head_sha", "") or ""),
+        "tree_sha": str(getattr(allocation, "tree_sha", "") or ""),
+        "lane": str(getattr(allocation, "lane", "") or ""),
+        "reattached": bool(getattr(allocation, "reattached", False)),
+        "lock_receipt": str(getattr(allocation, "lock_receipt", "") or ""),
+        "source_repo": str(item.get("source_repo") or item.get("repo") or ""),
+        "source_run_id": str(item.get("source_run_id") or item.get("run_id") or ""),
+    }
+    return context
+
+
+def _persist_isolated_run_context(item: Dict[str, Any], context: Dict[str, Any]) -> None:
+    """Persist queue context and clone run receipts into an isolated checkout.
+
+    The copy is filesystem-only (no Git subprocess), making this path deterministic in unit
+    tests and safe for callers that provide a fake queue.  If the source run is unavailable,
+    the context receipt is still written; the operator then fails closed at its normal
+    preflight boundary rather than manufacturing a success.
+    """
+    path = str(context.get("path") or "")
+    source_repo = Path(str(context.get("source_repo") or item.get("repo") or "")).resolve()
+    run_id = str(item.get("run_id") or context.get("source_run_id") or "")
+    if not path:
+        return
+    target_root = Path(path).resolve()
+    target_root.mkdir(parents=True, exist_ok=True)
+    context_dir = target_root / ".orchestrator" / "dispatch-context"
+    context_dir.mkdir(parents=True, exist_ok=True)
+    context_path = context_dir / (str(context.get("task_id") or item.get("task_index")) + ".json")
+    context["context_path"] = str(context_path)
+    _write_json(context_path, context)
+
+    source_run = source_repo / ".orchestrator" / "runs" / run_id
+    target_run = target_root / ".orchestrator" / "runs" / run_id
+    if source_run.is_dir() and target_root != source_repo and not target_run.exists():
+        target_run.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source_run, target_run)
+    manifest_path = target_run / "manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = _load_json(manifest_path)
+            manifest["repo"] = str(target_root)
+            manifest["run_id"] = run_id
+            _write_json(manifest_path, manifest)
+        except (OSError, ValueError, TypeError):
+            # The operator's ordinary preflight will emit a durable failure receipt.
+            pass
+
+
+def _prepare_worktree_contexts(normalized: List[Dict[str, Any]], worktree_queue: Any) -> None:
+    """Allocate/persist optional worktree contexts before any worker starts."""
+    if worktree_queue is None or not normalized:
+        return
+    specs = [_worktree_task_spec(item) for item in normalized]
+    register = getattr(worktree_queue, "register_tasks", None)
+    if callable(register):
+        try:
+            register(specs)
+        except Exception as exc:
+            for item in normalized:
+                item["worktree_error"] = f"{type(exc).__name__}: {exc}"
+            return
+    for item, spec in zip(normalized, specs):
+        isolation = str(item.get("isolation") or "worktree").strip().lower()
+        if isolation not in {"worktree", "shared"}:
+            item["worktree_error"] = "ValueError: unsupported worktree isolation mode"
+            continue
+        try:
+            if isolation == "shared":
+                allocation = worktree_queue.allocate(spec, isolation="shared", shared_policy=True)
+            else:
+                allocation = worktree_queue.allocate(spec)
+        except Exception as exc:
+            item["worktree_error"] = f"{type(exc).__name__}: {exc}"
+            continue
+        context = _allocation_context(allocation, item)
+        item["worktree_context"] = context
+        item["source_repo"] = str(item.get("repo") or "")
+        item["source_run_id"] = str(item.get("run_id") or "")
+        # Worktree workers get their own run tree; shared mode intentionally retains the
+        # original path and is serialized by the isolation key below.
+        if context["mode"] == "worktree" and context["path"]:
+            _persist_isolated_run_context(item, context)
+            item["repo"] = context["path"]
+            item["isolation_key"] = context["path"]
+        else:
+            item["isolation_key"] = "%s:%s" % (item.get("repo"), item.get("run_id"))
+        recorder = getattr(worktree_queue, "record_context", None)
+        if callable(recorder):
+            try:
+                recorder(context["task_id"], context)
+            except Exception as exc:
+                # Context persistence is a safety gate: do not run an unreceipted isolated
+                # worker.  This preserves fail-closed behavior without changing the API.
+                item["worktree_error"] = f"{type(exc).__name__}: {exc}"
+
+
+def _release_shared_context(item: Mapping[str, Any], worktree_queue: Any) -> None:
+    context = item.get("worktree_context") or {}
+    if str(context.get("mode") or "") != "shared":
+        return
+    teardown = getattr(worktree_queue, "teardown", None)
+    task_id = str(context.get("task_id") or item.get("task_id") or "")
+    if callable(teardown) and task_id:
+        try:
+            teardown(task_id)
+        except Exception:
+            # Never mask the operator receipt with cleanup noise.
+            pass
+
+
 def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Normalize one typed operator dispatch item.
 
@@ -1151,17 +1299,58 @@ def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
         "run_id": run_id,
         "task_index": task_index,
         "worker_id": str(item.get("worker_id") or f"operator-{task_index}"),
+        "task_id": str(item.get("task_id") or f"task-{run_id}-{task_index}"),
     }
     # An isolation key is intentionally explicit.  Two tasks in one run share state.json,
     # operator-receipt.json, and the working tree and therefore cannot safely overlap until
     # the worktree adapter supplies separate contexts.
     normalized["isolation_key"] = str(item.get("isolation_key") or normalized["repo"])
+    normalized["isolation"] = str(item.get("isolation") or "worktree")
+    if isinstance(item.get("task_spec"), Mapping):
+        normalized["task_spec"] = dict(item["task_spec"])
+    if isinstance(item.get("operator_context"), Mapping):
+        normalized["operator_context"] = dict(item["operator_context"])
+    if item.get("source_repo"):
+        normalized["source_repo"] = str(item["source_repo"])
+    if item.get("source_run_id"):
+        normalized["source_run_id"] = str(item["source_run_id"])
+    if item.get("worktree_context"):
+        normalized["worktree_context"] = dict(item["worktree_context"])
+    if item.get("worktree_error"):
+        normalized["worktree_error"] = str(item["worktree_error"])
     return normalized
 
 
 def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Call the production operator and reduce its status to a durable worker record."""
     started = _now()
+    context = dict(item.get("worktree_context") or {})
+    common = {
+        "schema": "simplicio.operator-worker/v1",
+        "worker_id": item["worker_id"],
+        "repo": item["repo"],
+        "source_repo": str(item.get("source_repo") or item["repo"]),
+        "run_id": item["run_id"],
+        "task_index": item["task_index"],
+        "task_id": str(item.get("task_id") or ""),
+        "worktree_context": context,
+    }
+    if item.get("worktree_error"):
+        return {
+            **common,
+            "status": "failed",
+            "phase": "blocked",
+            "execution_state": "error",
+            "reason_code": "worktree_context_unpersisted",
+            "receipt": "",
+            "attempt": 0,
+            "error": str(item["worktree_error"]),
+            "failure_fingerprint": hashlib.sha256(
+                str(item["worktree_error"]).encode("utf-8", "replace")
+            ).hexdigest()[:16],
+            "started_at": started,
+            "finished_at": _now(),
+        }
     try:
         payload = execute_operator(item["repo"], item["run_id"], task_index=item["task_index"])
         state = payload.get("state") or {}
@@ -1182,11 +1371,7 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
                 # a readable receipt; the scheduler will use the bounded exception path.
                 failure_fingerprint = ""
         return {
-            "schema": "simplicio.operator-worker/v1",
-            "worker_id": item["worker_id"],
-            "repo": item["repo"],
-            "run_id": item["run_id"],
-            "task_index": item["task_index"],
+            **common,
             "status": "succeeded" if success else "failed",
             "phase": str(state.get("phase") or "blocked"),
             "execution_state": execution_state or "unknown",
@@ -1200,17 +1385,14 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         }
     except Exception as exc:  # worker failures are receipts, not scheduler crashes
         return {
-            "schema": "simplicio.operator-worker/v1",
-            "worker_id": item["worker_id"],
-            "repo": item["repo"],
-            "run_id": item["run_id"],
-            "task_index": item["task_index"],
+            **common,
             "status": "failed",
             "phase": "blocked",
             "execution_state": "error",
             "receipt": "",
             "attempt": 0,
             "error": f"{type(exc).__name__}: {exc}",
+            "reason_code": "operator_exception",
             "failure_fingerprint": hashlib.sha256(
                 f"{type(exc).__name__}: {exc}".encode("utf-8", "replace")
             ).hexdigest()[:16],
@@ -1225,6 +1407,7 @@ def dispatch_operator_batch(
     max_workers: Optional[int] = None,
     retry_budget: int = 3,
     journal_dir: Optional[str] = None,
+    worktree_queue: Any = None,
 ) -> Dict[str, Any]:
     """Continuously dispatch real operator workers and refill freed slots.
 
@@ -1240,6 +1423,7 @@ def dispatch_operator_batch(
     keys = {(item["repo"], item["run_id"], item["task_index"]) for item in normalized}
     if len(keys) != len(normalized):
         raise ValueError("operator dispatch contains duplicate repo/run/task items")
+    _prepare_worktree_contexts(normalized, worktree_queue)
     requested_workers = max_workers
     effective_workers = _operator_worker_limit(max_workers, len(normalized))
     isolation_keys = {item["isolation_key"] for item in normalized}
@@ -1280,19 +1464,22 @@ def dispatch_operator_batch(
     def _run_item(item: Dict[str, Any]) -> List[Dict[str, Any]]:
         attempts: List[Dict[str, Any]] = []
         previous_fingerprint = ""
-        for attempt_no in range(1, retry_budget + 2):
-            record = _operator_dispatch_attempt(item)
-            record["dispatch_attempt"] = attempt_no
-            if previous_fingerprint and record.get("failure_fingerprint") == previous_fingerprint:
-                record["retry_strategy"] = "same_fingerprint_bounded"
-            elif attempt_no > 1:
-                record["retry_strategy"] = "alternate_strategy"
-            else:
-                record["retry_strategy"] = "initial"
-            attempts.append(record)
-            if record["status"] == "succeeded":
-                break
-            previous_fingerprint = str(record.get("failure_fingerprint") or "")
+        try:
+            for attempt_no in range(1, retry_budget + 2):
+                record = _operator_dispatch_attempt(item)
+                record["dispatch_attempt"] = attempt_no
+                if previous_fingerprint and record.get("failure_fingerprint") == previous_fingerprint:
+                    record["retry_strategy"] = "same_fingerprint_bounded"
+                elif attempt_no > 1:
+                    record["retry_strategy"] = "alternate_strategy"
+                else:
+                    record["retry_strategy"] = "initial"
+                attempts.append(record)
+                if record["status"] == "succeeded":
+                    break
+                previous_fingerprint = str(record.get("failure_fingerprint") or "")
+        finally:
+            _release_shared_context(item, worktree_queue)
         attempts[-1]["dead_letter"] = attempts[-1]["status"] != "succeeded"
         return attempts
 
@@ -1312,7 +1499,10 @@ def dispatch_operator_batch(
                         attempts = [{
                             "schema": "simplicio.operator-worker/v1",
                             "worker_id": item["worker_id"], "repo": item["repo"],
+                            "source_repo": item.get("source_repo", item["repo"]),
                             "run_id": item["run_id"], "task_index": item["task_index"],
+                            "task_id": item.get("task_id", ""),
+                            "worktree_context": item.get("worktree_context", {}),
                             "status": "failed", "phase": "blocked", "execution_state": "error",
                             "error": f"{type(exc).__name__}: {exc}", "dead_letter": True,
                             "started_at": _now(), "finished_at": _now(),
@@ -1333,6 +1523,9 @@ def dispatch_operator_batch(
         final_records.append(records.get(key, {
             "schema": "simplicio.operator-worker/v1", "worker_id": item["worker_id"],
             "repo": item["repo"], "run_id": item["run_id"], "task_index": item["task_index"],
+            "task_id": item.get("task_id", ""),
+            "source_repo": item.get("source_repo", item["repo"]),
+            "worktree_context": item.get("worktree_context", {}),
             "status": "pending", "phase": "queued", "execution_state": "pending",
         }))
     result = {
@@ -1383,6 +1576,7 @@ def execute_operator_batch(
     max_workers: Optional[int] = None,
     retry_budget: int = 3,
     isolated_contexts: Optional[Mapping[int, Mapping[str, Any]]] = None,
+    worktree_queue: Any = None,
 ) -> Dict[str, Any]:
     """Dispatch all (or selected) tasks from one run through the real operator bridge.
 
@@ -1409,6 +1603,12 @@ def execute_operator_batch(
             "task_index": index,
             "worker_id": context.get("worker_id", f"operator-{index}"),
             "isolation_key": context.get("isolation_key"),
+            "task_id": context.get("task_id", f"{run_id}-task-{index}"),
+            "task_spec": context.get("task_spec") or {
+                "id": context.get("task_id", f"{run_id}-task-{index}"),
+                "goal": _task_goal((contract.get("tasks") or [])[index - 1]),
+            },
+            "isolation": context.get("isolation", "worktree"),
         }
         items.append(item)
     result = dispatch_operator_batch(
@@ -1416,6 +1616,7 @@ def execute_operator_batch(
         max_workers=max_workers,
         retry_budget=retry_budget,
         journal_dir=str(Path(status["run_dir"])),
+        worktree_queue=worktree_queue,
     )
     if not contexts and len(items) > 1:
         # dispatch_operator_batch derives this from the shared isolation key; retain a clear
