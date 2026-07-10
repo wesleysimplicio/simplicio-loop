@@ -125,4 +125,3 @@ def test_teardown_does_not_remove_unowned_path_and_reports_failure(tmp_path):
     report = q.teardown("A")
     assert report.removed is False
     assert "path-not-owned" in report.failures
-
