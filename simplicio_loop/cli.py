@@ -517,11 +517,11 @@ def main(argv=None) -> int:
     p_sync.add_argument("--tag", default="", help="release tag")
 
     p_drain = sub.add_parser("drain", help="evaluate, persist, or load a queue-drain receipt")
-    p_drain.add_argument("action", choices=("evaluate", "persist", "load"),
-                          help="operation to perform")
-    p_drain.add_argument("--snapshot", dest="snapshot_path", default="",
+    p_drain.add_argument("action", nargs="?", default="",
+                          help="operation to perform: evaluate, persist, or load")
+    p_drain.add_argument("--snapshot", "--snapshot-file", dest="snapshot_path", default="",
                          help="JSON scheduler/source snapshot (evaluate and persist)")
-    p_drain.add_argument("--receipt", dest="receipt_path", default="",
+    p_drain.add_argument("--receipt", "--receipt-file", dest="receipt_path", default="",
                          help="receipt JSON path (persist and load)")
     p_drain.add_argument("--polls-required", type=int, default=2,
                          help="identical empty polls required (default: %(default)s)")
