@@ -129,6 +129,9 @@ def cmd_verify():
         reasons.append("anchor missing or has no criteria")
     if not evidence:
         reasons.append("evidence receipt missing")
+    elif not (evidence.get("operator") or {}).get("coverage_ok", True):
+        uncovered = ", ".join((evidence.get("operator") or {}).get("uncovered_paths") or [])
+        reasons.append("uncovered diff outside operator receipt: %s" % uncovered)
 
     executed = execute_receipt_checks(evidence or {})
     truth = watcher_truth_from_receipt(evidence or {})

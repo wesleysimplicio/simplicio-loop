@@ -18,6 +18,17 @@ from pathlib import Path
 HOME = os.path.expanduser("~")
 LOGS = os.path.join(HOME, ".simplicio", "logs")
 REPO_ROOT = Path(__file__).resolve().parents[1]
+_SCRIPTS_DIR = str(REPO_ROOT / "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+try:
+    # tolerant JSONL reader (#127) — the savings ledger is written by the external `simplicio`
+    # runtime, never by this repo; we only ever READ it, so hardening here means counting valid
+    # vs. corrupt/truncated lines instead of a naive `sum(1 for _ in file)` that treats a torn
+    # line the same as a real event. Fail-open: missing helper -> fall back to the raw count.
+    from _locked_append import count_jsonl_lines
+except Exception:
+    count_jsonl_lines = None
 # Native engine: invoked cross-platform via this interpreter (no external binary).
 ENGINE_CMD = [sys.executable or "python3", str(REPO_ROOT / "engine" / "simplicio_engine.py")]
 PROXY_PORT = os.environ.get("SIMPLICIO_PROXY_PORT", "8788")
@@ -40,9 +51,9 @@ def status():
     out, _ = run([*ENGINE_CMD, "doctor", "--port", PROXY_PORT])
     running = "running" in out.lower() and "not reachable" not in out.lower()
     if running:
-        log(f"Simplicio proxy - RUNNING (port {PROXY_PORT})")
+        log(f"✅ Simplicio proxy — RUNNING (port {PROXY_PORT})")
     else:
-        log("Simplicio proxy - NOT RUNNING")
+        log("❌ Simplicio proxy — NOT RUNNING")
     for line in out.split("\n"):
         if line.strip().startswith(("proxy:", "savings:")):
             log(f"  {line.strip()}")
@@ -50,12 +61,18 @@ def status():
     for line in out2.split("\n"):
         if "Total" in line or "Database" in line:
             log(f"  {line.strip()}")
-    # Savings ledger
+    # Savings ledger — tolerant count (#127): a truncated/illegible line is counted, not silently
+    # folded into the total as if it were a real event.
     ledger = REPO_ROOT / ".simplicio" / "ledger" / "savings-events.jsonl"
     if ledger.is_file():
-        total = sum(1 for _ in ledger.open(errors="replace"))
-        log(f"  Savings ledger: {total} events")
-    log(f"  Logs: {LOGS}/proxy.log")
+        if count_jsonl_lines is not None:
+            valid, corrupt = count_jsonl_lines(str(ledger))
+            suffix = f" ({corrupt} corrupt line(s) skipped)" if corrupt else ""
+            log(f"  💰 Savings ledger: {valid} events{suffix}")
+        else:
+            total = sum(1 for _ in ledger.open(errors="replace"))
+            log(f"  💰 Savings ledger: {total} events")
+    log(f"  🪵 Logs: {LOGS}/proxy.log")
     return 0 if running else 1
 
 

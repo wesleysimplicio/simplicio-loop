@@ -162,9 +162,11 @@ detector below. It is the difference between a loop that converges and one that 
    Before deciding the change, refresh the impact map (`python3 scripts/impact_audit.py audit <root>
    --file <seed> --cover <known-file> --json`, `--fail-on medium` for shared/public contracts) and,
    for cross-surface flows, the flow map (`python3 scripts/flow_audit.py audit <root> --fail-on
-   high --json`). Journal = memory for ATTEMPTS; anchor = SCOPE; impact audit = BLAST RADIUS; flow
-   audit = INTEGRATION. Act only on what's still genuinely open (idempotency). Full rationale +
-   extra flags: **`references/triage-verify-detail.md`**.
+   high --json`). When a Phase 0 decomposition exists, also re-read the backlog (`python3
+   scripts/task_backlog.py status`). Journal = memory for ATTEMPTS; anchor = SCOPE; backlog =
+   THE DECOMPOSITION; impact audit = BLAST RADIUS; flow audit = INTEGRATION. Act only on what's
+   still genuinely open (idempotency). Full rationale + extra flags:
+   **`references/triage-verify-detail.md`**.
 3. **Work the goal** each turn against that triaged state. The model DECIDES the AC-scoped change;
    the **`simplicio-dev-cli` operator APPLIES and verifies it** — never hand-edit inside the loop.
    End EVERY iteration with a concrete verification. **After the operator passes, run the watcher
@@ -197,7 +199,7 @@ for a single goal, `drain` for a work-queue.
 | | `converge` (single hard task) | `drain` (a queue of items) |
 |---|---|---|
 | Wants | depth — keep changing strategy until ONE thing passes | breadth — clear many independent items, idempotently |
-| Each turn | triage `since` last turn (incremental) → one AC-scoped change → verify → watcher-gate → journal | claim next open item → implement → deliver → re-query source |
+| Each turn | triage `since` last turn (incremental) → one AC-scoped change → verify → watcher-gate → journal | claim next open item → implement → deliver → re-query source (the local Phase 0 backlog is a first-class source: re-query = `task_backlog.py next`; an `empty` print counts as a dry round, `dry≥2` unchanged) |
 | **Termination** | the evidence-gated `<promise>` fires, OR the **stall detector** says STALLED and escalates (below) | the source re-query returns empty for **K consecutive rounds** (`dry≥2`) AND the working set is idle |
 | Anti-pattern it avoids | oscillation (retrying the same dead-end) | missing late-arriving work (stops too early) |
 
@@ -207,6 +209,27 @@ genuinely stuck; `drain` is done when the queue stays empty across rounds. Don't
 "empty K times → done" to a single task (it would quit the moment a turn makes no visible change),
 and don't apply `converge`'s stall-escalation to a queue (a stuck item should be quarantined, not
 halt the whole drain). `simplicio-tasks` Step 3 routes fast-path/heavy-path on top of this.
+
+## Phase 0 — intake & decomposition (no source / vague goal / genesis)
+
+When the goal is vague and no external source (board/issues) supplies items, the LLM brainstorms
+the decomposition — subtasks with ≥1 acceptance criterion each, `depends_on`, risks — and MUST
+freeze it BEFORE any edit: `python3 scripts/task_backlog.py init --goal "<goal verbatim>"
+--items-file plan.json` (the worker refuses an empty plan, a zero-AC item, or an unknown/cyclic
+dependency — the AI decides, the worker freezes, orders and gates). State:
+`.orchestrator/backlog/backlog.jsonl`.
+
+**Genesis.** First run `python3 scripts/task_backlog.py genesis --exit-code` — exit 10 means a
+repo with NO code yet. There `init` demands `--genesis` plus exactly one item tagged `scaffold`
+(structure + toolchain + one minimal green test as its ACs); the worker reorders it to T1 and
+makes every other item depend on it. After the scaffold item's gate passes, re-run
+`simplicio-mapper scan . --json` before claiming the next item — the survey only feeds the goal
+once there is something to map.
+
+**Per-item cycle**: `python3 scripts/task_backlog.py next` claims one item (re-prints the one in
+flight) and prints the ready `task_anchor.py set` arming command → work it under the normal
+converge contract → `python3 scripts/task_backlog.py done --id T1` (exit 12 unless the ARMED
+anchor is this item with every AC verified) → `next` again; exactly `empty` = drained.
 
 ## HRM-style hierarchical planner (two-level reasoning loop)
 
