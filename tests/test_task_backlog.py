@@ -350,9 +350,35 @@ def test_backlog_expired_worker_cannot_reuse_its_old_claim(tmp_path):
     next(record for record in body if record.get("id") == "T1")["lease"]["expires_at"] = "2000-01-01T00:00:00Z"
     backlog_path.write_text("\n".join(json.dumps(record, ensure_ascii=False) for record in body) + "\n",
                             encoding="utf-8")
+    expired_hb = _run(["heartbeat", "--item", "T1", "--worker", "w1"], str(tmp_path), env)
+    assert expired_hb.returncode == 12, expired_hb.stdout + expired_hb.stderr
     second = _run(["next", "--worker", "w1", "--lease-ttl", "120"], str(tmp_path), env)
     new_fence = _fence_from_claim(second.stdout)
     assert new_fence != old_fence
+
+
+def test_backlog_done_requires_current_owner_and_fence(tmp_path):
+    item_file = tmp_path / "items.json"
+    item_file.write_text(json.dumps([
+        {"id": "T1", "goal": "Close safely", "acs": ["A real criterion"]},
+    ]), encoding="utf-8")
+    backlog_path = tmp_path / "backlog.jsonl"
+    anchor_path = tmp_path / "anchor.json"
+    env = {"SIMPLICIO_BACKLOG_FILE": str(backlog_path)}
+    assert _run(["init", "--goal", "Drain", "--item-file", str(item_file)], str(tmp_path), env).returncode == 0
+    claim = _run(["next", "--worker", "w1"], str(tmp_path), env)
+    fence = _fence_from_claim(claim.stdout)
+    records = [json.loads(line) for line in backlog_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    goal_fp = next(record for record in records if record.get("id") == "T1")["goal_fp"]
+    anchor_path.write_text(json.dumps({
+        "goal_fp": goal_fp,
+        "criteria": [{"id": "AC1", "status": "done", "evidence": "receipt.json"}],
+    }), encoding="utf-8")
+    missing = _run(["done", "--item", "T1", "--anchor", str(anchor_path)], str(tmp_path), env)
+    assert missing.returncode == 12, missing.stdout + missing.stderr
+    closed = _run(["done", "--item", "T1", "--anchor", str(anchor_path),
+                   "--worker", "w1", "--fence", fence], str(tmp_path), env)
+    assert closed.returncode == 0, closed.stdout + closed.stderr
 
 
 def test_backlog_transition_is_compare_and_swap_and_fenced(tmp_path):
@@ -364,14 +390,24 @@ def test_backlog_transition_is_compare_and_swap_and_fenced(tmp_path):
     assert _run(["init", "--goal", "Drain", "--item-file", str(item_file)], str(tmp_path), env).returncode == 0
     claim = _run(["next", "--worker", "w1"], str(tmp_path), env)
     fence = _fence_from_claim(claim.stdout)
+    backlog_path = tmp_path / "backlog.jsonl"
+    records = [json.loads(line) for line in backlog_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    claimed_revision = next(record for record in records if record.get("kind") == "master")["revision"]
+    mismatch = _run(["transition", "--item", "T1", "--from", "claimed", "--to", "running",
+                     "--worker", "w1", "--fence", fence, "--expected-revision", str(claimed_revision - 1)],
+                    str(tmp_path), env)
+    assert mismatch.returncode == 12, mismatch.stdout + mismatch.stderr
+    assert "expected revision" in mismatch.stdout
     moved = _run(["transition", "--item", "T1", "--from", "claimed", "--to", "running",
-                  "--worker", "w1", "--fence", fence], str(tmp_path), env)
+                  "--worker", "w1", "--fence", fence, "--expected-revision", str(claimed_revision)],
+                 str(tmp_path), env)
     assert moved.returncode == 0, moved.stdout + moved.stderr
     stale = _run(["transition", "--item", "T1", "--from", "running", "--to", "verification",
                   "--worker", "w1", "--fence", "fence-0-stale"], str(tmp_path), env)
     assert stale.returncode == 12, stale.stdout + stale.stderr
     good = _run(["transition", "--item", "T1", "--from", "running", "--to", "verification",
-                 "--worker", "w1", "--fence", fence], str(tmp_path), env)
+                 "--worker", "w1", "--fence", fence, "--expected-revision", str(claimed_revision + 1)],
+                str(tmp_path), env)
     assert good.returncode == 0, good.stdout + good.stderr
 
 
@@ -392,15 +428,21 @@ def test_backlog_fail_moves_to_dead_letter_after_distinct_failures(tmp_path):
     f2 = _run(["fail", "--item", "T1", "--reason", "lint failed", "--code", "lint-red",
                "--fingerprint", "fp-2", "--max-failures", "3"], str(tmp_path), env)
     assert f2.returncode == 0, f2.stdout + f2.stderr
+    before_dead_letter = next(
+        json.loads(line) for line in backlog_path.read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("kind") == "master"
+    )["revision"]
     f3 = _run(["fail", "--item", "T1", "--reason", "review failed", "--code", "review-red",
                "--fingerprint", "fp-3", "--max-failures", "3"], str(tmp_path), env)
     assert f3.returncode == 0, f3.stdout + f3.stderr
     assert "dead-letter T1" in f3.stdout, f3.stdout
     body = [json.loads(line) for line in backlog_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     item = next(record for record in body if record.get("kind") == "item" and record.get("id") == "T1")
+    master = next(record for record in body if record.get("kind") == "master")
     assert item["status"] == "dead-letter"
     assert len(item["failures"]) == 3
     assert item["reason_code"] == "dead-letter"
+    assert master["revision"] == before_dead_letter + 1
 
 
 def test_backlog_status_shows_dependency_chain_and_lease(tmp_path):
@@ -483,7 +525,10 @@ def test_backlog_poll_drains_after_k_empty_polls_with_zero_workers(tmp_path):
         "goal_fp": item["goal_fp"],
         "criteria": [{"id": "AC1", "status": "done", "evidence": "shot.png"}]
     }), encoding="utf-8")
-    done = _run(["done", "--item", "T1", "--anchor", str(anchor_path)], str(tmp_path), env)
+    claim = _run(["next", "--worker", "finisher"], str(tmp_path), env)
+    fence = _fence_from_claim(claim.stdout)
+    done = _run(["done", "--item", "T1", "--anchor", str(anchor_path),
+                 "--worker", "finisher", "--fence", fence], str(tmp_path), env)
     assert done.returncode == 0, done.stdout + done.stderr
     p1 = _run(["poll", "--empty-polls", "2"], str(tmp_path), env)
     assert p1.returncode == 0, p1.stdout + p1.stderr

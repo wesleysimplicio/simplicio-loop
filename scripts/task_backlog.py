@@ -159,17 +159,41 @@ def _lease_fence(lease):
 
 
 def _lease_matches(item, worker="", fence="", require=False):
-    """Validate optional owner/fence credentials for a state transition."""
+    """Validate owner/fence credentials and reject expired leases.
+
+    A missing or malformed expiry is fail-closed.  This matters during crash
+    recovery: an old worker must not renew or close an item simply because its
+    worker id still matches the record.
+    """
     worker = (worker or "").strip()
     fence = (fence or "").strip()
     lease = item.get("lease") or {}
-    if require and not worker and not fence:
+    if require and (not worker or not fence):
         return False
     if worker and lease.get("worker") != worker:
         return False
     if fence and _lease_fence(lease) != fence:
         return False
+    expires_at = str(lease.get("expires_at") or "").strip()
+    if not expires_at or _parse_utc(expires_at) <= int(time.time()):
+        return False
     return True
+
+
+def _check_expected_revision(master, opts):
+    """Compare the caller's graph revision while holding the state lock."""
+    raw = (opts or {}).get("expected-revision")
+    if raw is None or raw is True or str(raw).strip() == "":
+        return
+    try:
+        expected = int(raw)
+    except (TypeError, ValueError):
+        print("backlog: --expected-revision must be an integer")
+        sys.exit(2)
+    actual = int(master.get("revision", 0))
+    if expected != actual:
+        print("backlog: BLOCKED — expected revision %d, found %d" % (expected, actual))
+        sys.exit(12)
 
 
 def _lease_error(worker, item_id):
@@ -795,6 +819,7 @@ def cmd_done(opts):
     if not master or not items:
         print("backlog: none frozen")
         sys.exit(2)
+    _check_expected_revision(master, opts)
     anchor = _load_anchor(opts.get("anchor") if isinstance(opts.get("anchor"), str) else None)
     if not anchor.get("goal_fp"):
         print("backlog: BLOCKED — no anchor set for this item")
@@ -809,7 +834,9 @@ def cmd_done(opts):
         sys.exit(2)
     worker = (opts.get("worker") or "").strip()
     fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
-    if (worker or fence) and not _lease_matches(hit, worker=worker, fence=fence):
+    # Closing an item is irreversible at the backlog layer: require both the
+    # current owner and its lease fence, and fail closed on an expired lease.
+    if not _lease_matches(hit, worker=worker, fence=fence, require=True):
         _lease_error(worker, item_id)
     if hit.get("goal_fp") != anchor.get("goal_fp"):
         print("backlog: BLOCKED — anchor goal does not match item %s" % item_id)
@@ -935,6 +962,7 @@ def cmd_fail(opts):
             item["reason_code"] = "dead-letter"
             item["blocked_reason"] = "distinct failure threshold reached"
             item["dead_letter_at"] = _now()
+            _bump_revision(master)
             _save(master, items)
             print("dead-letter %s" % item_id)
             return
@@ -1021,6 +1049,7 @@ def cmd_heartbeat(opts):
     if not master or not items:
         print("backlog: none frozen")
         sys.exit(2)
+    _check_expected_revision(master, opts)
     _refresh_ready_states(items)
     for item in items:
         if item.get("id") != item_id:
@@ -1073,6 +1102,7 @@ def cmd_transition(opts):
     if not master or not items:
         print("backlog: none frozen")
         sys.exit(2)
+    _check_expected_revision(master, opts)
     hit = next((item for item in items if item.get("id") == item_id), None)
     if hit is None:
         print("backlog: no such item %r" % item_id)
@@ -1187,7 +1217,7 @@ def main():
         print(json.dumps({
             "verbs": ["init", "next", "done", "skip", "block", "fail", "heartbeat", "transition", "status", "poll", "checklist", "selftest"],
             "flags": ["--anchor", "--code", "--goal", "--help", "--item", "--item-file", "--lint",
-                      "--reason", "--task-file", "--worker", "--fence", "--fencing-token", "--from", "--to", "--status",
+                      "--reason", "--task-file", "--worker", "--fence", "--fencing-token", "--from", "--to", "--status", "--expected-revision",
                       "--lease-ttl", "--fingerprint", "--max-failures", "--empty-polls"],
         }))
         sys.exit(0)
