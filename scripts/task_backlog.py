@@ -24,6 +24,10 @@ Verbs:
   checklist  Emit the body-of-work table. With no backlog, prints `backlog: none frozen`.
   selftest   Prove linting, claim/done propagation, and table rendering deterministically.
 
+Lock tuning:
+  --lock-timeout SECONDS and --lock-retry SECONDS override
+  SIMPLICIO_BACKLOG_LOCK_TIMEOUT / SIMPLICIO_BACKLOG_LOCK_RETRY for one command.
+
 Usage:
     python3 scripts/task_backlog.py init --goal "Drain Phase 0" --item-file backlog.json
     python3 scripts/task_backlog.py next
@@ -51,6 +55,31 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 BACKLOG = (os.environ.get("SIMPLICIO_BACKLOG_FILE") or
            os.path.join(REPO, ".orchestrator", "backlog", "backlog.jsonl"))
+
+# The Windows CRT lock API can report a transient ``PermissionError`` (and on
+# some Python/CRT combinations a plain ``OSError``) while another process
+# owns the one-byte lock range.  Keep the retry policy explicit and tunable so
+# a busy host does not either spin forever or fail on the first transient
+# collision.  CLI flags override these environment defaults per transaction.
+_LOCK_TIMEOUT_ENV = "SIMPLICIO_BACKLOG_LOCK_TIMEOUT"
+_LOCK_RETRY_ENV = "SIMPLICIO_BACKLOG_LOCK_RETRY"
+_DEFAULT_LOCK_TIMEOUT = 30.0
+_DEFAULT_LOCK_RETRY = 0.05
+
+
+class BacklogLockTimeout(TimeoutError):
+    """Raised when a backlog transaction cannot acquire its sidecar lock."""
+
+
+def _lock_seconds(value, default, minimum=0.0):
+    """Parse a finite lock duration, falling back safely on bad input."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = float(default)
+    if number != number or number in (float("inf"), float("-inf")):
+        number = float(default)
+    return max(float(minimum), number)
 
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
@@ -94,7 +123,7 @@ def _lease_expires(ttl_seconds):
 
 
 @contextmanager
-def _state_lock(path=None):
+def _state_lock(path=None, timeout=None, retry=None):
     """Serialize backlog state transitions across processes.
 
     JSONL remains the portable interchange format, but every command that can
@@ -106,6 +135,15 @@ def _state_lock(path=None):
     lock_path = path + ".lock"
     directory = os.path.dirname(lock_path) or "."
     os.makedirs(directory, exist_ok=True)
+    timeout = _lock_seconds(
+        timeout if timeout is not None else os.environ.get(_LOCK_TIMEOUT_ENV),
+        _DEFAULT_LOCK_TIMEOUT,
+    )
+    retry = _lock_seconds(
+        retry if retry is not None else os.environ.get(_LOCK_RETRY_ENV),
+        _DEFAULT_LOCK_RETRY,
+        minimum=0.001,
+    )
     with open(lock_path, "a+b") as stream:
         if os.name == "nt":
             import msvcrt
@@ -114,13 +152,36 @@ def _state_lock(path=None):
             if stream.tell() == 0:
                 stream.write(b"0")
                 stream.flush()
-            stream.seek(0)
-            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+            # LK_NBLCK is deliberately used in a bounded loop.  LK_LOCK has
+            # implementation-defined retries and can surface WinError 6/50
+            # without giving callers a way to bound the wait.
+            deadline = time.monotonic() + timeout
+            acquired = False
+            while True:
+                try:
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                    break
+                except (OSError, IOError) as exc:
+                    if time.monotonic() >= deadline:
+                        detail = " (%s)" % exc if exc else ""
+                        raise BacklogLockTimeout(
+                            "timeout acquiring backlog lock after %.3fs%s" %
+                            (timeout, detail)
+                        )
+                    time.sleep(min(retry, max(0.001, deadline - time.monotonic())))
             try:
                 yield
             finally:
-                stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                if acquired:
+                    try:
+                        stream.seek(0)
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                    except (OSError, IOError):
+                        # Do not mask the command's real exception while
+                        # releasing a lock whose handle is already closing.
+                        pass
         else:
             import fcntl
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
@@ -134,8 +195,15 @@ def _transactional(func):
     """Run one CLI command under the cross-process backlog transaction lock."""
     @wraps(func)
     def wrapped(opts):
-        with _state_lock():
-            return func(opts)
+        try:
+            with _state_lock(
+                timeout=(opts or {}).get("lock-timeout"),
+                retry=(opts or {}).get("lock-retry"),
+            ):
+                return func(opts)
+        except BacklogLockTimeout as exc:
+            print("backlog: BLOCKED — %s" % exc)
+            sys.exit(12)
     return wrapped
 
 
@@ -1218,7 +1286,8 @@ def main():
             "verbs": ["init", "next", "done", "skip", "block", "fail", "heartbeat", "transition", "status", "poll", "checklist", "selftest"],
             "flags": ["--anchor", "--code", "--goal", "--help", "--item", "--item-file", "--lint",
                       "--reason", "--task-file", "--worker", "--fence", "--fencing-token", "--from", "--to", "--status", "--expected-revision",
-                      "--lease-ttl", "--fingerprint", "--max-failures", "--empty-polls"],
+                      "--lease-ttl", "--fingerprint", "--max-failures", "--empty-polls",
+                      "--lock-timeout", "--lock-retry"],
         }))
         sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])

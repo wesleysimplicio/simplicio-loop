@@ -4,13 +4,20 @@ The new worker must share the anchor AC lint helper (same vague-AC refusal and o
 short-AC rule) and render a deterministic markdown table for PR evidence.
 """
 import json
+import importlib.util
 import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKLOG = os.path.join(REPO, "scripts", "task_backlog.py")
+
+_spec = importlib.util.spec_from_file_location("task_backlog_lock_test", BACKLOG)
+task_backlog = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(task_backlog)
 
 
 def _run(args, cwd, env=None):
@@ -26,6 +33,57 @@ def _fence_from_claim(stdout):
     assert len(fields) >= 3, stdout
     assert fields[2].startswith("fence-"), stdout
     return fields[2]
+
+
+def test_windows_lock_retries_contention_and_expiry_is_fail_closed(tmp_path, monkeypatch):
+    """Exercise CRT contention deterministically without spawning git/processes."""
+    class FakeMsvcrt:
+        LK_NBLCK = 1
+        LK_UNLCK = 2
+
+        def __init__(self, failures=0):
+            self.failures = failures
+            self.calls = []
+
+        def locking(self, _fd, mode, _size):
+            self.calls.append(mode)
+            if mode == self.LK_NBLCK and self.failures:
+                self.failures -= 1
+                raise PermissionError(13, "simulated lock contention")
+
+    fake = FakeMsvcrt(failures=2)
+    monkeypatch.setattr(task_backlog.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    lock_path = str(tmp_path / "backlog.jsonl")
+    with task_backlog._state_lock(lock_path, timeout=0.2, retry=0.001):
+        assert fake.calls[:3] == [fake.LK_NBLCK, fake.LK_NBLCK, fake.LK_NBLCK]
+    assert fake.calls[-1] == fake.LK_UNLCK
+
+    # Lease validation remains deterministic and fail-closed after expiry; it
+    # does not rely on a subprocess or a Git checkout to model recovery.
+    monkeypatch.setattr(task_backlog.time, "time", lambda: 1_700_000_000)
+    future = "2023-11-14T22:13:30Z"
+    expired = "2023-11-14T22:13:10Z"
+    live = {"lease": {"worker": "w1", "fencing_token": "f1", "expires_at": future}}
+    stale = {"lease": {"worker": "w1", "fencing_token": "f1", "expires_at": expired}}
+    assert task_backlog._lease_matches(live, worker="w1", fence="f1", require=True)
+    assert not task_backlog._lease_matches(stale, worker="w1", fence="f1", require=True)
+
+
+def test_windows_lock_timeout_is_bounded_and_configurable(tmp_path, monkeypatch):
+    class AlwaysBusy:
+        LK_NBLCK = 1
+        LK_UNLCK = 2
+
+        def locking(self, _fd, mode, _size):
+            if mode == self.LK_NBLCK:
+                raise OSError(13, "busy")
+
+    monkeypatch.setattr(task_backlog.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "msvcrt", AlwaysBusy())
+    with pytest.raises(task_backlog.BacklogLockTimeout):
+        with task_backlog._state_lock(str(tmp_path / "backlog.jsonl"), timeout=0.01, retry=0.001):
+            raise AssertionError("lock should not be acquired")
 
 
 def test_backlog_init_rejects_vague_ac_by_default(tmp_path):
