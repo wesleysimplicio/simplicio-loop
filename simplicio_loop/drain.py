@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,6 +22,15 @@ try:
 except ImportError:  # pragma: no cover - a lock is required for persistence
     _locks = None
 
+try:  # Keep the installed package self-contained when ``scripts/`` is absent.
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - Windows
+    _fcntl = None
+try:
+    import msvcrt as _msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    _msvcrt = None
+
 SCHEMA = "simplicio.drain-receipt/v1"
 ACTIVE_STATES = {"claimed", "running", "verification", "delivery"}
 
@@ -33,6 +43,54 @@ def _canonical(value: Mapping[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _ensure_lock_file(lock_path: Path) -> None:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("ab") as handle:
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+
+
+def _acquire_local_posix(handle, timeout_ms: int) -> bool:
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        try:
+            _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+
+def _acquire_local_windows(handle, timeout_ms: int) -> bool:  # pragma: no cover - Windows
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        try:
+            handle.seek(0)
+            _msvcrt.locking(handle.fileno(), _msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+
+def _release_local_posix(handle) -> None:
+    try:
+        _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+    except Exception:
+        pass
+
+
+def _release_local_windows(handle) -> None:  # pragma: no cover - Windows
+    try:
+        handle.seek(0)
+        _msvcrt.locking(handle.fileno(), _msvcrt.LK_UNLCK, 1)
+    except Exception:
+        pass
+
+
 @contextmanager
 def _receipt_lock(path: Path):
     """Hold the sidecar lock while checking and replacing a receipt.
@@ -41,30 +99,35 @@ def _receipt_lock(path: Path):
     partial JSON document.  The sidecar lock serializes the check/replace pair
     across processes, which makes repeated verifier calls idempotent.
     """
-    if _locks is None:
-        raise DrainReceiptError("cross-process locking helper is unavailable")
     lock_path = Path(str(path) + ".lock")
-    _locks._ensure_lock_file(str(lock_path))
-    if _locks.fcntl is not None:
+    if _locks is not None:
+        _locks._ensure_lock_file(str(lock_path))
+    else:
+        _ensure_lock_file(lock_path)
+    if (_locks is not None and _locks.fcntl is not None) or _fcntl is not None:
+        acquire = _locks._acquire_posix if _locks is not None else _acquire_local_posix
+        release = _locks._release_posix if _locks is not None else _release_local_posix
         try:
             with lock_path.open("a+b") as handle:
-                if not _locks._acquire_posix(handle, _locks.DEFAULT_TIMEOUT_MS):
+                if not acquire(handle, _locks.DEFAULT_TIMEOUT_MS if _locks is not None else 2000):
                     raise DrainReceiptError("drain receipt lock acquisition timed out")
                 try:
                     yield
                 finally:
-                    _locks._release_posix(handle)
+                    release(handle)
         except OSError as exc:
             raise DrainReceiptError("drain receipt lock error: %s" % exc) from exc
-    elif _locks.msvcrt is not None:  # pragma: no cover - Windows CI exercises this path
+    elif (_locks is not None and _locks.msvcrt is not None) or _msvcrt is not None:  # pragma: no cover
+        acquire = _locks._acquire_windows if _locks is not None else _acquire_local_windows
+        release = _locks._release_windows if _locks is not None else _release_local_windows
         try:
             with lock_path.open("r+b") as handle:
-                if not _locks._acquire_windows(handle, _locks.DEFAULT_TIMEOUT_MS):
+                if not acquire(handle, _locks.DEFAULT_TIMEOUT_MS if _locks is not None else 2000):
                     raise DrainReceiptError("drain receipt lock acquisition timed out")
                 try:
                     yield
                 finally:
-                    _locks._release_windows(handle)
+                    release(handle)
         except OSError as exc:
             raise DrainReceiptError("drain receipt lock error: %s" % exc) from exc
     else:  # pragma: no cover

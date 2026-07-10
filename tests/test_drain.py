@@ -7,6 +7,7 @@ sys.path.insert(0, REPO)
 
 import pytest
 
+import simplicio_loop.drain as drain_module
 from simplicio_loop.drain import (
     DrainReceiptError,
     evaluate_drain,
@@ -128,3 +129,12 @@ def test_corrupt_existing_receipt_fails_closed(tmp_path):
 
     with pytest.raises(DrainReceiptError):
         persist_drain_receipt(path, _snapshot([_task()]))
+
+
+def test_persistence_has_self_contained_lock_fallback(tmp_path, monkeypatch):
+    path = tmp_path / "drain-receipt.json"
+    monkeypatch.setattr(drain_module, "_locks", None)
+
+    receipt = persist_drain_receipt(path, _snapshot([_task()]))
+
+    assert load_drain_receipt(path) == receipt
