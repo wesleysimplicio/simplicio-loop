@@ -2,10 +2,113 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Dict, List, Mapping, Sequence
+import json
+import os
+import sys
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
+
+try:
+    # Reuse the repository's cross-process lock implementation.  Importing the
+    # helper by path keeps this module usable from a source checkout as well as
+    # from an installed package.
+    _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+    if str(_SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS))
+    import _locked_append as _locks
+except ImportError:  # pragma: no cover - a lock is required for persistence
+    _locks = None
 
 SCHEMA = "simplicio.drain-receipt/v1"
 ACTIVE_STATES = {"claimed", "running", "verification", "delivery"}
+
+
+class DrainReceiptError(ValueError):
+    """Raised when a persisted drain receipt is invalid or cannot be locked."""
+
+
+def _canonical(value: Mapping[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+@contextmanager
+def _receipt_lock(path: Path):
+    """Hold the sidecar lock while checking and replacing a receipt.
+
+    The data file itself is replaced atomically, so readers never observe a
+    partial JSON document.  The sidecar lock serializes the check/replace pair
+    across processes, which makes repeated verifier calls idempotent.
+    """
+    if _locks is None:
+        raise DrainReceiptError("cross-process locking helper is unavailable")
+    lock_path = Path(str(path) + ".lock")
+    _locks._ensure_lock_file(str(lock_path))
+    if _locks.fcntl is not None:
+        try:
+            with lock_path.open("a+b") as handle:
+                if not _locks._acquire_posix(handle, _locks.DEFAULT_TIMEOUT_MS):
+                    raise DrainReceiptError("drain receipt lock acquisition timed out")
+                try:
+                    yield
+                finally:
+                    _locks._release_posix(handle)
+        except OSError as exc:
+            raise DrainReceiptError("drain receipt lock error: %s" % exc) from exc
+    elif _locks.msvcrt is not None:  # pragma: no cover - Windows CI exercises this path
+        try:
+            with lock_path.open("r+b") as handle:
+                if not _locks._acquire_windows(handle, _locks.DEFAULT_TIMEOUT_MS):
+                    raise DrainReceiptError("drain receipt lock acquisition timed out")
+                try:
+                    yield
+                finally:
+                    _locks._release_windows(handle)
+        except OSError as exc:
+            raise DrainReceiptError("drain receipt lock error: %s" % exc) from exc
+    else:  # pragma: no cover
+        raise DrainReceiptError("no cross-process locking primitive is available")
+
+
+def _read_receipt(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise DrainReceiptError("persisted drain receipt is invalid JSON") from exc
+    if not isinstance(value, dict) or value.get("schema") != SCHEMA:
+        raise DrainReceiptError("persisted drain receipt has an invalid schema")
+    return value
+
+
+def _atomic_write_receipt(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_name = ".%s.%s.tmp" % (path.name, uuid.uuid4().hex)
+    temp_path = path.with_name(temp_name)
+    try:
+        with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(_canonical(payload) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(temp_path), str(path))
+        # A directory fsync is supported on POSIX and is harmlessly skipped on
+        # platforms that do not allow opening directories this way.
+        if os.name != "nt":
+            try:
+                directory_fd = os.open(str(path.parent), os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except OSError:
+                pass
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _fail(code: str, detail: str, **extra: Any) -> Dict[str, Any]:
@@ -110,7 +213,9 @@ def evaluate_drain(snapshot: Mapping[str, Any], polls_required: int = 2) -> Dict
         return _fail("evidence_pending", "done tasks lack fresh measured evidence", evidence_pending=evidence_pending)
 
     receipt_seed = {"tasks": tasks, "polls": list(snapshot.get("polls") or []), "challenge": challenge}
-    receipt_key = hashlib.sha256(repr(receipt_seed).encode("utf-8")).hexdigest()
+    # Canonical JSON makes the key independent of mapping insertion order and
+    # therefore stable across verifier processes and runtimes.
+    receipt_key = hashlib.sha256(_canonical(receipt_seed).encode("utf-8")).hexdigest()
     return {
         "schema": SCHEMA,
         "verdict": "DRAINED",
@@ -126,4 +231,56 @@ def evaluate_drain(snapshot: Mapping[str, Any], polls_required: int = 2) -> Dict
     }
 
 
-__all__ = ["SCHEMA", "evaluate_drain"]
+def load_drain_receipt(path: Union[str, os.PathLike]) -> Optional[Dict[str, Any]]:
+    """Load a persisted receipt, rejecting torn or foreign-schema files."""
+    return _read_receipt(Path(path))
+
+
+def persist_drain_receipt(
+    path: Union[str, os.PathLike],
+    snapshot: Optional[Mapping[str, Any]] = None,
+    result: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Atomically persist and return one drain verdict.
+
+    ``result`` may be supplied when the caller already evaluated the snapshot;
+    otherwise ``evaluate_drain(snapshot)`` is called.  For convenience, a
+    previously evaluated result can also be passed as the second argument.
+    Equal receipts are returned without rewriting the file.  A changed verdict
+    (for example, a late arrival after a prior DRAINED result) replaces the old
+    receipt atomically while holding the same sidecar lock.
+    """
+    if result is None and isinstance(snapshot, Mapping) and snapshot.get("schema") == SCHEMA and "verdict" in snapshot:
+        result = snapshot
+    elif result is None:
+        if not isinstance(snapshot, Mapping):
+            raise DrainReceiptError("snapshot is required when result is not supplied")
+        result = evaluate_drain(snapshot)
+    if not isinstance(result, Mapping) or result.get("schema") != SCHEMA:
+        raise DrainReceiptError("drain result has an invalid schema")
+    payload = dict(result)
+    if payload.get("verdict") not in {"DRAINED", "CONTINUE", "BLOCKED"}:
+        raise DrainReceiptError("drain result has an invalid verdict")
+
+    receipt_path = Path(path)
+    with _receipt_lock(receipt_path):
+        existing = _read_receipt(receipt_path)
+        if existing is not None and _canonical(existing) == _canonical(payload):
+            return existing
+        _atomic_write_receipt(receipt_path, payload)
+        return payload
+
+
+# More explicit spelling for callers that prefer a write-oriented API.  Keep
+# both names public so existing integrations can adopt persistence gradually.
+write_drain_receipt = persist_drain_receipt
+
+
+__all__ = [
+    "SCHEMA",
+    "DrainReceiptError",
+    "evaluate_drain",
+    "load_drain_receipt",
+    "persist_drain_receipt",
+    "write_drain_receipt",
+]

@@ -1,10 +1,18 @@
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
-from simplicio_loop.drain import evaluate_drain
+import pytest
+
+from simplicio_loop.drain import (
+    DrainReceiptError,
+    evaluate_drain,
+    load_drain_receipt,
+    persist_drain_receipt,
+)
 
 
 def _task(task_id="T1", state="done", delivered=True, evidence=None):
@@ -78,3 +86,45 @@ def test_done_task_requires_measured_watcher_oracle_and_delivery():
 def test_unknown_task_state_is_fail_closed():
     result = evaluate_drain(_snapshot([_task(state="wat")]))
     assert result["reason_code"] == "task_state_unknown"
+
+
+def test_persisted_receipt_is_atomic_and_idempotent(tmp_path):
+    path = tmp_path / "drain-receipt.json"
+    snapshot = _snapshot([_task()])
+
+    first = persist_drain_receipt(path, snapshot)
+    second = persist_drain_receipt(path, snapshot)
+
+    assert second == first
+    assert load_drain_receipt(path) == first
+    assert path.read_bytes().endswith(b"\n")
+    assert not list(tmp_path.glob(".drain-receipt.json.*.tmp"))
+
+
+def test_concurrent_verifiers_leave_one_valid_receipt(tmp_path):
+    path = tmp_path / "drain-receipt.json"
+    snapshot = _snapshot([_task()])
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: persist_drain_receipt(path, snapshot), range(24)))
+
+    assert all(item == results[0] for item in results)
+    assert load_drain_receipt(path) == results[0]
+
+
+def test_late_arrival_replaces_old_receipt_atomically(tmp_path):
+    path = tmp_path / "drain-receipt.json"
+    drained = persist_drain_receipt(path, _snapshot([_task()]))
+    changed = persist_drain_receipt(path, _snapshot([_task()], polls=("empty:1", "ready:1")))
+
+    assert drained["verdict"] == "DRAINED"
+    assert changed["verdict"] == "CONTINUE"
+    assert load_drain_receipt(path)["reason_code"] == "source_not_quiet"
+
+
+def test_corrupt_existing_receipt_fails_closed(tmp_path):
+    path = tmp_path / "drain-receipt.json"
+    path.write_text('{"schema":"simplicio.drain-receipt/v1"', encoding="utf-8")
+
+    with pytest.raises(DrainReceiptError):
+        persist_drain_receipt(path, _snapshot([_task()]))
