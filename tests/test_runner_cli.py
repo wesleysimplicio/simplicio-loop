@@ -497,6 +497,69 @@ def test_sync_source_requeries_github_fixture_for_release(tmp_path):
     assert synced_payload["state"]["delivery"]["ready"] is True
 
 
+def test_sync_source_reopens_delivery_when_merge_ready_regresses(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src = repo / "src"
+    src.mkdir()
+    (src / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
+    task = tmp_path / "task.md"
+    task.write_text(TASK, encoding="utf-8")
+    fake_operator = json.dumps({
+        "execution_state": "dry_run",
+        "returncode": 0,
+        "stdout": {"kind": "operator-proposal", "ok": True},
+        "stderr": "",
+        "argv": ["simplicio-dev-cli", "task", "demo"]
+    })
+    fake_mapper_preflight = json.dumps({
+        "version_stdout": "simplicio-mapper 0.14.2",
+        "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
+        "version_returncode": 0,
+        "help_returncode": 0
+    })
+    fake_devcli_preflight = json.dumps({
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_returncode": 0
+    })
+    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
+                          "--delivery", "merge-ready", "--max-iterations", "9"], REPO,
+                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
+                        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
+                        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight})
+    assert started.returncode == 0, started.stdout + started.stderr
+    run_id = json.loads(started.stdout)["manifest"]["run_id"]
+
+    ready_fixture = json.dumps({
+        "pr": {"url": "https://example/pr/77", "head_sha": "abc123", "base_sha": "def456", "evidence": "github-pr-view"},
+        "checks": {"green": True},
+        "reviews": {"approvals": 1, "open_threads": 0},
+        "branch": {"up_to_date": True}
+    })
+    ready = _run(CLI + ["sync-source", "--repo", str(repo), run_id, "--source", "github",
+                        "--external-repo", "wesleysimplicio/simplicio-loop", "--pr", "77"], REPO,
+                 env={"SIMPLICIO_LOOP_GITHUB_FIXTURE_JSON": ready_fixture})
+    assert ready.returncode == 0, ready.stdout + ready.stderr
+    ready_payload = json.loads(ready.stdout)
+    assert ready_payload["state"]["delivery"]["ready"] is True
+    assert ready_payload["state"]["phase"] == "delivering"
+
+    regressed_fixture = json.dumps({
+        "pr": {"url": "https://example/pr/77", "head_sha": "abc123", "base_sha": "def456", "evidence": "github-pr-view"},
+        "checks": {"green": False},
+        "reviews": {"approvals": 1, "open_threads": 0},
+        "branch": {"up_to_date": True}
+    })
+    regressed = _run(CLI + ["sync-source", "--repo", str(repo), run_id, "--source", "github",
+                            "--external-repo", "wesleysimplicio/simplicio-loop", "--pr", "77"], REPO,
+                     env={"SIMPLICIO_LOOP_GITHUB_FIXTURE_JSON": regressed_fixture})
+    assert regressed.returncode == 0, regressed.stdout + regressed.stderr
+    regressed_payload = json.loads(regressed.stdout)
+    assert regressed_payload["state"]["delivery"]["ready"] is False
+    assert regressed_payload["state"]["phase"] == "partial"
+    assert "not green" in regressed_payload["state"]["blockers"][0].lower()
+
+
 def test_run_blocks_when_mapper_preflight_version_too_old(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

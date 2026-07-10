@@ -70,6 +70,8 @@ def validate_delivery_receipt(receipt: Dict[str, Any], target: str = "") -> Dict
         gates.append(_gate("delivery_state", False, "delivery_state_invalid", f"unsupported delivery state {current_state!r}"))
         return {"ok": False, "gates": gates}
     gates.append(_gate("delivery_state", True, "delivery_state_valid", f"delivery state {current_state!r} is recognized"))
+    payload = receipt.get("source_payload") or {}
+    normalized_target = ""
     if target:
         normalized_target = normalize_delivery_target(target)
         if receipt.get("target") != normalized_target:
@@ -77,12 +79,31 @@ def validate_delivery_receipt(receipt: Dict[str, Any], target: str = "") -> Dict
                                f"delivery receipt target {receipt.get('target')!r} does not match manifest target {normalized_target!r}"))
             return {"ok": False, "gates": gates}
         if not delivery_satisfies(current_state, normalized_target):
+            if normalized_target == "merge-ready" and current_state == "pr-open":
+                checks = payload.get("checks") or {}
+                reviews = payload.get("reviews") or {}
+                branch = payload.get("branch") or {}
+                if checks.get("green") is False:
+                    gates.append(_gate("delivery_target", False, "checks_not_green",
+                                       "merge-ready target regressed because checks are not green"))
+                    return {"ok": False, "gates": gates}
+                if int(reviews.get("open_threads", 0)) != 0:
+                    gates.append(_gate("delivery_target", False, "review_threads_open",
+                                       "merge-ready target regressed because review threads are still open"))
+                    return {"ok": False, "gates": gates}
+                if int(reviews.get("approvals", 0)) < 1:
+                    gates.append(_gate("delivery_target", False, "approvals_missing",
+                                       "merge-ready target regressed because approvals are missing"))
+                    return {"ok": False, "gates": gates}
+                if branch.get("up_to_date") is False:
+                    gates.append(_gate("delivery_target", False, "branch_drift_open",
+                                       "merge-ready target regressed because the head branch is behind base"))
+                    return {"ok": False, "gates": gates}
             gates.append(_gate("delivery_target", False, "delivery_target_not_met",
                                f"delivery state {current_state!r} has not reached target {normalized_target!r}"))
             return {"ok": False, "gates": gates}
         gates.append(_gate("delivery_target", True, "delivery_target_met",
                            f"delivery state {current_state!r} satisfies target {normalized_target!r}"))
-    payload = receipt.get("source_payload") or {}
     required = {
         "implemented": [],
         "verified": ["evidence_receipt", "criteria_verified"],

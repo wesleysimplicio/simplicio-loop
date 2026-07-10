@@ -231,6 +231,48 @@ def test_oracle_requires_merge_ready_source_requery_fields(tmp_path):
     assert payload["reason_code"] == "review_threads_open"
 
 
+def test_oracle_requires_release_proofs_for_released_target(tmp_path):
+    loop = tmp_path / ".orchestrator" / "loop"
+    loop.mkdir(parents=True)
+    run_dir = tmp_path / ".orchestrator" / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    _seed_loop(loop)
+    _seed_run(run_dir)
+    (run_dir / "manifest.json").write_text(json.dumps({
+        "schema": "simplicio.run-manifest/v1",
+        "delivery_target": "released"
+    }), encoding="utf-8")
+    (run_dir / "evidence-receipt.json").write_text(json.dumps({
+        "schema": "simplicio.evidence-receipt/v1",
+        "status": "VERIFIED",
+        "criteria": [{"id": "AC1", "verification_state": "verified"}],
+        "summary": {"criteria_total": 1, "criteria_verified": 1,
+                    "scenario_total": 1, "scenario_verified": 1, "rule_total": 1, "rule_verified": 1}
+    }), encoding="utf-8")
+    (run_dir / "delivery-receipt.json").write_text(json.dumps({
+        "schema": "simplicio.delivery-receipt/v1",
+        "target": "released",
+        "current_state": "released",
+        "source_kind": "github",
+        "source_payload": {
+            "release": {
+                "tag": "v1.2.3",
+                "assets": ["simplicio-loop.whl"],
+                "checksums_verified": True,
+                "signatures_verified": True,
+                "sbom_present": True
+            },
+            "install_smoke": {"passed": False}
+        },
+        "ready": False
+    }), encoding="utf-8")
+    blocked = _run(["--loop-dir", str(loop), "--run-dir", str(run_dir),
+                    "--response-text", "<promise>SIMPLICIO_DONE</promise>"], str(tmp_path))
+    assert blocked.returncode == 1, blocked.stdout + blocked.stderr
+    payload = json.loads(blocked.stdout)
+    assert payload["reason_code"] == "install_smoke_failed"
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module
