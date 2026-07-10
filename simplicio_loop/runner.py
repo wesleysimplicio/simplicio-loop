@@ -889,6 +889,60 @@ def _changed_paths(repo_path: Path) -> List[str]:
         return []
 
 
+def _capture_operator_checkpoint(run_dir: Path, repo_path: Path, targets: List[str]) -> Dict[str, Any]:
+    checkpoint_dir = run_dir / "checkpoint"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    files = []
+    for target in sorted(set(t for t in targets if t)):
+        path = repo_path / target
+        exists = path.exists()
+        content = path.read_text(encoding="utf-8") if exists else None
+        files.append({
+            "path": target,
+            "exists": exists,
+            "content": content,
+        })
+    return {
+        "kind": "file-snapshot/v1",
+        "created_at": _now(),
+        "safe_targets": sorted(set(t for t in targets if t)),
+        "files": files,
+    }
+
+
+def _restore_operator_checkpoint(checkpoint: Dict[str, Any], repo_path: Path, changed_paths: List[str]) -> Dict[str, Any]:
+    targets = sorted(set(str(path) for path in (checkpoint.get("safe_targets") or []) if str(path)))
+    changed = sorted(set(str(path) for path in (changed_paths or []) if str(path)))
+    snapshots = {item["path"]: item for item in (checkpoint.get("files") or []) if isinstance(item, dict) and item.get("path")}
+    if not changed:
+        for rel in targets:
+            snap = snapshots.get(rel)
+            if not snap:
+                continue
+            path = repo_path / rel
+            exists_now = path.exists()
+            content_now = path.read_text(encoding="utf-8") if exists_now else None
+            if bool(snap.get("exists")) != exists_now or (snap.get("exists") and snap.get("content") != content_now):
+                changed.append(rel)
+    if not changed:
+        return {"attempted": False, "restored": False, "reason": "no_changed_paths"}
+    if not targets:
+        return {"attempted": False, "restored": False, "reason": "checkpoint_targets_missing"}
+    if any(path not in targets for path in changed):
+        return {"attempted": False, "restored": False, "reason": "changed_paths_outside_checkpoint_scope"}
+    for rel in changed:
+        snap = snapshots.get(rel)
+        if not snap:
+            return {"attempted": False, "restored": False, "reason": f"missing_snapshot:{rel}"}
+        path = repo_path / rel
+        if snap.get("exists"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(snap.get("content") or "", encoding="utf-8")
+        elif path.exists():
+            path.unlink()
+    return {"attempted": True, "restored": True, "reason": "restored_checkpoint"}
+
+
 def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, Any]:
     """Execute one planned task through the real dev-cli and persist an immutable receipt.
 
@@ -935,6 +989,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         "--bound-paths",
         target,
     )
+    checkpoint = _capture_operator_checkpoint(run_dir, repo_path, targets or [target])
     op_env = _devcli_env(repo_path, _operator_env())
     provider_config = {
         "model": op_env.get("SIMPLICIO_MODEL", ""),
@@ -943,6 +998,10 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
     fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON", "").strip()
     if fake:
         payload = json.loads(fake)
+        for rel, content in (payload.get("write_files") or {}).items():
+            path = repo_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(str(content), encoding="utf-8")
         returncode = int(payload.get("returncode", 0))
         stdout = payload.get("stdout", {})
         stderr = redact_sensitive_text(str(payload.get("stderr", "")))
@@ -972,6 +1031,12 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
             source = "live_cli"
     after = _repo_fingerprint(repo_path)
     changed = _changed_paths(repo_path)
+    rollback = {"attempted": False, "restored": False, "reason": "not_needed"}
+    if returncode != 0:
+        rollback = _restore_operator_checkpoint(checkpoint, repo_path, changed)
+        if rollback.get("restored"):
+            changed = _changed_paths(repo_path)
+            after = _repo_fingerprint(repo_path)
     receipt = {
         "schema": OPERATOR_RECEIPT_SCHEMA,
         "mode": "execute",
@@ -990,6 +1055,8 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         "finished_at": _now(),
         "source": source,
         "provider_config": provider_config,
+        "checkpoint": checkpoint,
+        "rollback": rollback,
         "task_contract_hash": contract.get("collection_hash", ""),
         "plan_hash": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
         "mapper_pack_hash": plan.get("mapper_pack_hash", ""),
