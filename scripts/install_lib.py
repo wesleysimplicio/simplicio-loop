@@ -6,8 +6,8 @@ ensures the runtime's entry/instructions file references the skill, and prints t
 line. Pure Python ->identical on Windows/macOS/Linux. Safe: create-or-merge, never clobbers
 unrelated config; idempotent marker blocks.
 
-Also installs+verifies the two REQUIRED loop operators (simplicio-mapper, simplicio-cli) unless
---skip-operators is passed.
+Also installs+verifies the REQUIRED loop operator package (`simplicio-cli`) and the runtime bins
+it exposes (`simplicio-dev-cli`, `simplicio-mapper`) unless --skip-operators is passed.
 
 Usage:
     python3 scripts/install_lib.py <runtime> [--global] [--target DIR] [--skip-operators] [--lite]
@@ -37,11 +37,11 @@ SOURCE = os.path.dirname(HERE)
 HOME = os.path.expanduser("~")
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
           "simplicio-review", "simplicio-compress", "simplicio-learn"]
-# The simplicio-loop drive REQUIRES two operators (see simplicio-loop/SKILL.md § Bound operators):
-#   simplicio-mapper -> repo survey (binds `orient`); binary: simplicio-mapper
-#   simplicio-cli    -> action operator (binds `execute`/`deterministic_edit`); binary: simplicio-dev-cli
+# The simplicio-loop drive REQUIRES the operator package `simplicio-cli`; it exposes
+# `simplicio-dev-cli` and also brings the survey binary `simplicio-mapper` transitively.
 # (the bare `simplicio` command is reserved for the separate `simplicio-runtime`, not this operator.)
-OPERATORS = [("simplicio-mapper", "simplicio-mapper"), ("simplicio-cli", "simplicio-dev-cli")]
+OPERATOR_PACKAGE = "simplicio-cli"
+OPERATOR_BINS = ("simplicio-dev-cli", "simplicio-mapper")
 LEGACY_MARK_A, LEGACY_MARK_B = "<!-- simplicio-tasks:begin -->", "<!-- simplicio-tasks:end -->"
 MARK_A, MARK_B = "<!-- simplicio-loop:begin -->", "<!-- simplicio-loop:end -->"
 
@@ -244,13 +244,13 @@ def print_claude_snippet():
 
 
 def ensure_operators(skip_install=False):
-    """Install + verify the two REQUIRED loop operators (simplicio-mapper, simplicio-cli).
+    """Install + verify the REQUIRED operator package and the runtime bins it exposes.
 
-    The simplicio-loop drive surveys via `simplicio-mapper` and acts via `simplicio-dev-cli` instead of
-    the LLM, so both must be present. pip-install (unless skipped), then verify the binaries are on
-    PATH. Missing binary after install is a hard error — the loop would BLOCK at runtime otherwise.
+    The loop still invokes `simplicio-mapper` and `simplicio-dev-cli` directly, so both binaries
+    must be present on PATH at runtime; but the supported install surface is the single package
+    `simplicio-cli`, which brings `simplicio-mapper` transitively.
     """
-    pkgs = [pkg for pkg, _ in OPERATORS]
+    pkgs = [OPERATOR_PACKAGE]
     if not skip_install:
         base = [sys.executable, "-m", "pip", "install", "-U"]
         try:
@@ -276,13 +276,13 @@ def ensure_operators(skip_install=False):
     # A --user install can land the console-scripts in a dir not on PATH (e.g. macOS
     # ~/Library/Python/X.Y/bin). Find each operator binary and symlink it into ~/.local/bin.
     _link_operator_bins()
-    missing = [b for _, b in OPERATORS if shutil.which(b) is None]
+    missing = [b for b in OPERATOR_BINS if shutil.which(b) is None]
     if missing:
-        log("! REQUIRED loop operators NOT on PATH: %s" % ", ".join(missing))
+        log("! REQUIRED operator runtime bins NOT on PATH: %s" % ", ".join(missing))
         log("  the simplicio-loop drive will BLOCK until present — run: pip install %s"
             % " ".join(pkgs))
     else:
-        log("operators verified on PATH: %s" % ", ".join(b for _, b in OPERATORS))
+        log("operator runtime bins verified on PATH: %s" % ", ".join(OPERATOR_BINS))
 
 
 def _link_console_script(name, kind="bin"):
@@ -313,8 +313,8 @@ def _link_console_script(name, kind="bin"):
 
 
 def _link_operator_bins():
-    """Symlink the two operator console-scripts into ~/.local/bin (best-effort)."""
-    for _, b in OPERATORS:
+    """Symlink the operator console-scripts into ~/.local/bin (best-effort)."""
+    for b in OPERATOR_BINS:
         _link_console_script(b, kind="operator")
 
 

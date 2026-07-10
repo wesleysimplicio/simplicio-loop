@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOK = os.path.join(REPO, "hooks", "loop_stop.py")
@@ -70,8 +71,27 @@ def _append_attempt(root, record):
 def _install_runtime_scripts(root):
     scripts_dir = os.path.join(root, "scripts")
     os.makedirs(scripts_dir, exist_ok=True)
-    for name in ("cross_agent_wiki.py", "hierarchical_planner.py"):
+    for name in ("cross_agent_wiki.py", "hierarchical_planner.py", "completion_oracle.py"):
         shutil.copy2(os.path.join(REPO, "scripts", name), os.path.join(scripts_dir, name))
+
+
+def _tick_hook(root, hook_path, response_text, mode="cursor", env=None):
+    full_env = dict(os.environ)
+    if env:
+        full_env.update(env)
+    current_py = full_env.get("PYTHONPATH", "").strip()
+    full_env["PYTHONPATH"] = REPO if not current_py else f"{REPO}{os.pathsep}{current_py}"
+    if mode == "cursor":
+        return subprocess.run([sys.executable, hook_path], input=json.dumps({"text": response_text}),
+                              capture_output=True, text=True, cwd=root, env=full_env)
+    transcript = Path(root) / "transcript.jsonl"
+    transcript.write_text(json.dumps({
+        "role": "assistant",
+        "message": {"content": [{"text": response_text}]}
+    }) + "\n", encoding="utf-8")
+    return subprocess.run([sys.executable, hook_path],
+                          input=json.dumps({"transcript_path": str(transcript)}),
+                          capture_output=True, text=True, cwd=root, env=full_env)
 
 
 def _write_watcher_challenge(root, challenge="chal-1", goal_fp="", written_at="2026-07-01T00:00:00Z"):
@@ -110,6 +130,8 @@ def test_promise_with_evidence_stops(tmp_path):
     root = str(tmp_path)
     _arm(root)
     _write_watcher_pass(root)  # watcher-gate must pass before promise is honored
+    _write_anchor(root, [{"id": "AC1", "status": "done"}])
+    _seed_verified_run(root)
     r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
                     "https://github.com/o/r/pull/9")
     assert r.returncode == 0
@@ -136,6 +158,35 @@ def _write_anchor(root, criteria):
         json.dump({"item": "1", "goal": "g", "goal_fp": "x", "criteria": criteria}, f)
 
 
+def _seed_verified_run(root, run_id="r1"):
+    run_dir = os.path.join(root, ".orchestrator", "runs", run_id)
+    os.makedirs(run_dir, exist_ok=True)
+    with open(os.path.join(run_dir, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema": "simplicio.run-manifest/v1", "run_id": run_id,
+                   "delivery_target": "verified"}, f)
+    with open(os.path.join(run_dir, "task-contract.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema": "simplicio.task-contract-collection/v1", "task_count": 1}, f)
+    with open(os.path.join(run_dir, "mapper-context.json"), "w", encoding="utf-8") as f:
+        json.dump({"handoff": {"stdout": {"context_pack": {"files": []}}}}, f)
+    with open(os.path.join(run_dir, "operator-receipt.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema": "simplicio.operator-receipt/v0", "execution_state": "verified"}, f)
+    with open(os.path.join(run_dir, "evidence-receipt.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema": "simplicio.evidence-receipt/v1", "status": "VERIFIED",
+                   "criteria": [{"id": "AC1", "verification_state": "verified"}],
+                   "summary": {"criteria_total": 1, "criteria_verified": 1,
+                               "scenario_total": 1, "scenario_verified": 1,
+                               "rule_total": 1, "rule_verified": 1}}, f)
+    with open(os.path.join(run_dir, "delivery-receipt.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema": "simplicio.delivery-receipt/v1", "target": "verified",
+                   "current_state": "verified", "ready": True,
+                   "source_kind": "local",
+                   "source_payload": {
+                       "evidence_receipt": "evidence-receipt.json",
+                       "criteria_verified": 1,
+                   }}, f)
+    return run_dir
+
+
 def test_promise_with_evidence_but_pending_anchor_continues(tmp_path):
     # The mechanical anti-drift gate: even WITH evidence, a promise must NOT stop the loop while the
     # task anchor still has an unverified acceptance criterion — it re-feeds instead, naming the gap.
@@ -157,6 +208,7 @@ def test_promise_with_evidence_all_acs_done_stops(tmp_path):
     _arm(root, iteration=1, max_iter=5)
     _write_watcher_pass(root)  # watcher-gate must pass
     _write_anchor(root, [{"id": "AC1", "status": "done"}, {"id": "AC2", "status": "done"}])
+    _seed_verified_run(root)
     r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
                     "https://github.com/o/r/pull/9")
     assert r.returncode == 0
@@ -250,8 +302,8 @@ def test_done_flag_halts(tmp_path):
     loop = _arm(root)
     open(os.path.join(loop, "done.flag"), "w").close()
     r = _tick(root, "anything")
-    assert r.stdout.strip() == ""
-    assert not os.path.exists(_scratchpad(root)), "done.flag should stop and clean state"
+    assert "followup_message" in r.stdout
+    assert os.path.exists(_scratchpad(root)), "done.flag alone must not bypass the oracle"
 
 
 def test_legacy_done_file_halts(tmp_path):
@@ -259,8 +311,27 @@ def test_legacy_done_file_halts(tmp_path):
     loop = _arm(root)
     open(os.path.join(loop, "done"), "w").close()
     r = _tick(root, "anything")
+    assert "followup_message" in r.stdout
+    assert os.path.exists(_scratchpad(root)), "legacy done file alone must not bypass the oracle"
+
+
+def test_done_flag_with_valid_oracle_halts(tmp_path):
+    root = str(tmp_path)
+    loop = _arm(root)
+    open(os.path.join(loop, "done.flag"), "w").close()
+    _write_watcher_challenge(root, challenge="done-ok", written_at="2026-07-10T00:00:00Z")
+    _write_anchor(root, [{"id": "AC1", "status": "done"}])
+    with open(os.path.join(loop, "watcher_state.json"), "w", encoding="utf-8") as f:
+        json.dump({"match": True, "status": "MEASURED", "checked_at": "2026-07-10T00:00:01Z",
+                   "challenge": "done-ok", "goal_fp": ""}, f)
+    run_dir = _seed_verified_run(root)
+    with open(os.path.join(loop, "last_response.txt"), "w", encoding="utf-8") as f:
+        f.write("<promise>SIMPLICIO_DONE</promise>")
+    r = _tick(root, "anything")
     assert r.stdout.strip() == ""
-    assert not os.path.exists(_scratchpad(root)), "legacy done file should still stop and clean state"
+    assert not os.path.exists(_scratchpad(root)), "done.flag should stop only when oracle is green"
+    receipt = os.path.join(run_dir, "completion-receipt.json")
+    assert os.path.exists(receipt), "cleanup must happen only after the completion receipt is persisted"
 
 
 def test_gate_lock_fresh_allows_stop_without_consuming_iteration(tmp_path):
@@ -296,6 +367,82 @@ def test_spindle_latched_writes_handoff_and_stops(tmp_path):
     handoff = os.path.join(root, HANDOFF)
     assert os.path.exists(handoff), "latched spindle should write HANDOFF.md"
     assert "codex" in open(handoff, encoding="utf-8").read()
+
+
+def test_handoff_includes_completion_oracle_reason_when_present(tmp_path):
+    root = str(tmp_path)
+    _arm(root, iteration=5, max_iter=5)
+    run_dir = _seed_verified_run(root)
+    with open(os.path.join(run_dir, "completion-receipt.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "schema": "simplicio.completion-receipt/v1",
+            "ready": False,
+            "verdict": "DELIVERY_PENDING",
+            "reason_code": "watcher_mismatch",
+            "tag": "UNVERIFIED",
+        }, f)
+    r = _tick(root, "still going, no promise here")
+    assert r.stdout.strip() == ""
+    handoff = os.path.join(root, HANDOFF)
+    body = open(handoff, encoding="utf-8").read()
+    assert "## Completion oracle" in body
+    assert "reason_code: promise_not_exact" in body
+
+
+def test_completion_parity_between_source_bundle_and_cursor_claude_success(tmp_path):
+    hook_paths = [
+        os.path.join(REPO, "hooks", "loop_stop.py"),
+        os.path.join(REPO, "simplicio_loop", "_bundle", "hooks", "loop_stop.py"),
+    ]
+    results = []
+    for idx, hook_path in enumerate(hook_paths):
+        for mode in ("cursor", "claude"):
+            root = str(tmp_path / f"case-{idx}-{mode}")
+            os.makedirs(root, exist_ok=True)
+            _install_runtime_scripts(root)
+            _arm(root)
+            _write_watcher_pass(root, challenge="same-fixture")
+            _write_anchor(root, [{"id": "AC1", "status": "done"}])
+            run_dir = _seed_verified_run(root)
+            result = _tick_hook(
+                root,
+                hook_path,
+                "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ https://github.com/o/r/pull/9",
+                mode=mode,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            results.append({
+                "stdout": result.stdout.strip(),
+                "scratchpad_exists": os.path.exists(_scratchpad(root)),
+                "completion_receipt": os.path.exists(os.path.join(run_dir, "completion-receipt.json")),
+            })
+    assert all(item["stdout"] == "" for item in results)
+    assert all(item["scratchpad_exists"] is False for item in results)
+    assert all(item["completion_receipt"] is True for item in results)
+
+
+def test_completion_parity_between_source_bundle_and_cursor_claude_rejects_bare_done_flag(tmp_path):
+    hook_paths = [
+        os.path.join(REPO, "hooks", "loop_stop.py"),
+        os.path.join(REPO, "simplicio_loop", "_bundle", "hooks", "loop_stop.py"),
+    ]
+    results = []
+    for idx, hook_path in enumerate(hook_paths):
+        for mode in ("cursor", "claude"):
+            root = str(tmp_path / f"reject-{idx}-{mode}")
+            os.makedirs(root, exist_ok=True)
+            _install_runtime_scripts(root)
+            loop = _arm(root)
+            open(os.path.join(loop, "done.flag"), "w").close()
+            result = _tick_hook(root, hook_path, "anything", mode=mode)
+            assert result.returncode == 0, result.stdout + result.stderr
+            results.append({
+                "scratchpad_exists": os.path.exists(_scratchpad(root)),
+                "followup": "followup_message" in result.stdout,
+                "block": '"decision": "block"' in result.stdout or '"decision":"block"' in result.stdout,
+            })
+    assert all(item["scratchpad_exists"] is True for item in results)
+    assert all(item["followup"] or item["block"] for item in results)
 
 
 def test_watcher_receipt_without_challenge_does_not_stop(tmp_path):
@@ -335,6 +482,8 @@ def test_watcher_receipt_matching_challenge_stops(tmp_path):
     root = str(tmp_path)
     _arm(root, iteration=1, max_iter=5)
     _write_watcher_pass(root, challenge="issued-this-turn")
+    _write_anchor(root, [{"id": "AC1", "status": "done"}])
+    _seed_verified_run(root)
     with open(os.path.join(root, ".orchestrator", "loop", "watcher_state.json"), "w", encoding="utf-8") as f:
         json.dump({"match": True, "status": "MEASURED", "checked_at": "2026-07-01T00:00:01Z",
                     "challenge": "issued-this-turn", "goal_fp": ""}, f)
@@ -416,6 +565,8 @@ def test_flow_audit_gap_absent_for_non_web_diff(tmp_path):
         f.write("print('hi')\n")
     subprocess.run(["git", "init", "-q"], cwd=root)
     _write_watcher_pass(root)
+    _write_anchor(root, [{"id": "AC1", "status": "done"}])
+    _seed_verified_run(root)
     r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
                     "https://github.com/o/r/pull/9")
     assert r.stdout.strip() == "", "non-web diff must not be gated by flow-audit:\n%s" % r.stdout
@@ -428,10 +579,15 @@ def test_flow_audit_green_receipt_allows_stop(tmp_path):
     _install_flow_audit(root)
     _write_web_file(root)
     _write_watcher_pass(root)
+    _write_anchor(root, [{"id": "AC1", "status": "done"}])
+    _seed_verified_run(root)
     orch = os.path.join(root, ".orchestrator")
     os.makedirs(orch, exist_ok=True)
-    with open(os.path.join(orch, "flow-audit.json"), "w", encoding="utf-8") as f:
+    receipt = os.path.join(orch, "flow-audit.json")
+    with open(receipt, "w", encoding="utf-8") as f:
         json.dump({"ok": True, "counts": {"high_issues": 0}}, f)
+    future = __import__("time").time() + 2
+    os.utime(receipt, (future, future))
     r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓ "
                     "https://github.com/o/r/pull/9")
     assert r.stdout.strip() == "", "green flow-audit receipt should allow the stop:\n%s" % r.stdout

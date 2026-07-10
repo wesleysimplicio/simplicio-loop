@@ -530,8 +530,9 @@ pwsh scripts/install.ps1 <runtime> [-Global]                    # Windows
 ```
 
 **The repo installer is full-stack by default — it installs everything.** One command sets up the whole stack:
-the two loop operators (`simplicio-mapper` + `simplicio-cli`, auto-handling PEP 668 / externally-managed
-Python and symlinking the binaries onto `PATH`), the **full Python stack** (the package itself),
+the loop operator package (`simplicio-cli`, which exposes `simplicio-dev-cli` and also brings
+`simplicio-mapper` transitively, auto-handling PEP 668 / externally-managed Python and symlinking
+the binaries onto `PATH`), the **full Python stack** (the package itself),
 the **7 skills + hooks** with the loop's Stop hook wired, and the **always-on capture proxy**
 with Claude + Codex + Hermes **routed and measured** in the background. The **dashboard opens once** on a
 fresh install, then it's on-demand (`simplicio-loop dashboard` / `simplicio-economy.sh monitor`); the
@@ -556,7 +557,7 @@ python3 scripts/doctor.py --repair   # install/wire what's fixable; make everyth
 # also: bash scripts/simplicio-economy.sh doctor [--repair]
 ```
 
-`doctor` separates **REQUIRED** (python3, the two loop operators, the 7 skills, the loop hooks, the
+`doctor` separates **REQUIRED** (python3, the loop operator package plus its runtime bins, the 7 skills, the loop hooks, the
 capture proxy — `--repair` installs/wires them) from **OPTIONAL** accelerators (the tray dep).
 **Missing an optional piece is never a failure and
 never blocks** — the Python engine + the deterministic path cover everything; the exit code is 0 as

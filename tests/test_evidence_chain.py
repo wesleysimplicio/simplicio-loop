@@ -25,15 +25,23 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TASK_ANCHOR = os.path.join(REPO, "scripts", "task_anchor.py")
+TASK_BACKLOG = os.path.join(REPO, "scripts", "task_backlog.py")
 PR_EVIDENCE = os.path.join(REPO, "scripts", "pr_evidence.py")
 
 
 def _run(script, args, cwd, env=None):
     full_env = dict(os.environ)
+    full_env["PYTHONIOENCODING"] = "utf-8"
     if env:
         full_env.update(env)
-    return subprocess.run([sys.executable, script] + args, capture_output=True, text=True,
-                          cwd=cwd, env=full_env)
+    return subprocess.run(
+        [sys.executable, script] + args,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=full_env,
+        stdin=subprocess.DEVNULL,
+    )
 
 
 def _write_web_verify_fixture(tee_web_dir, issue="12", url="https://app.example/login"):
@@ -160,6 +168,46 @@ def test_evidence_comment_reports_accurate_counts_end_to_end(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "1 print(s), 1 recording(s)" in r.stdout, r.stdout
     assert "1/2 acceptance criteria met" in r.stdout, r.stdout
+
+
+def test_backlog_table_is_embedded_before_anchor_checklist(tmp_path):
+    backlog_path = str(tmp_path / "backlog.jsonl")
+    anchor_path = str(tmp_path / "anchor.json")
+    item_file = tmp_path / "items.json"
+    item_file.write_text(json.dumps([
+        {"id": "T1", "goal": "Add SSO login", "acs": ["Login page renders an SSO button"]},
+        {"id": "T2", "goal": "Document rollout", "acs": ["Docs updated with release note"]},
+    ]), encoding="utf-8")
+
+    env = {"SIMPLICIO_BACKLOG_FILE": backlog_path, "SIMPLICIO_ANCHOR_FILE": anchor_path}
+    r = _run(TASK_BACKLOG, ["init", "--goal", "Drain Phase 0", "--item-file", str(item_file)],
+             cwd=str(tmp_path), env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = _run(TASK_BACKLOG, ["next"], cwd=str(tmp_path), env=env)
+    assert r.returncode == 0 and "T1" in r.stdout, r.stdout + r.stderr
+
+    r = _run(TASK_ANCHOR, ["set", "--item", "T1", "--goal", "Add SSO login",
+                           "--ac", "Login page renders an SSO button"], cwd=str(tmp_path), env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = _run(TASK_ANCHOR, ["mark", "--id", "AC1", "--status", "done",
+                           "--evidence", "web_verify screenshot"], cwd=str(tmp_path), env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = _run(TASK_BACKLOG, ["done", "--item", "T1", "--anchor", anchor_path],
+             cwd=str(tmp_path), env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    os.remove(anchor_path)  # end of drain turn: the next item can re-arm a fresh anchor
+
+    out_path = str(tmp_path / "pr_body.md")
+    r = _run(PR_EVIDENCE, ["build", "--title", "Drain Phase 0", "--item", "12",
+                           "--anchor", anchor_path, "--backlog", backlog_path,
+                           "--require-evidence", "--out", out_path],
+             cwd=str(tmp_path), env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    body = open(out_path, encoding="utf-8").read()
+    assert "Body of work (Phase 0 backlog)" in body, body
+    assert body.index("Body of work (Phase 0 backlog)") < body.index("### Acceptance criteria"), body
+    assert "| T1 | done |" in body, body
+    assert "web_verify screenshot" in body, body
 
 
 if __name__ == "__main__":

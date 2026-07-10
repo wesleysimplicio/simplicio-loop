@@ -1,0 +1,20 @@
+{
+  "rows": [
+    {"id": "ITA-TEMP-0901", "usina": "Itaipu", "tipo": "temporal", "inicio": "2026-09-01"},
+    {"id": "BHS-MOD-0701", "usina": "Belo Monte", "tipo": "modelagem", "inicio": "2026-07-01"},
+    {"id": "ITA-EST", "usina": "Itaipu", "tipo": "estrutural", "inicio": null},
+    {"id": "BHS-EST", "usina": "Belo Monte", "tipo": "estrutural", "inicio": null},
+    {"id": "ITA-MOD-0701", "usina": "Itaipu", "tipo": "modelagem", "inicio": "2026-07-01"},
+    {"id": "BHS-TEMP-0801", "usina": "Belo Monte", "tipo": "temporal", "inicio": "2026-08-01"},
+    {"id": "ITA-TEMP-1001", "usina": "Itaipu", "tipo": "temporal", "inicio": "2026-10-01"}
+  ],
+  "expected_order": [
+    "BHS-EST",
+    "BHS-MOD-0701",
+    "BHS-TEMP-0801",
+    "ITA-EST",
+    "ITA-MOD-0701",
+    "ITA-TEMP-0901",
+    "ITA-TEMP-1001"
+  ]
+}

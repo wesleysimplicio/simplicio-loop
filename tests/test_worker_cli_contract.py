@@ -19,7 +19,13 @@ WORKERS_WITH_SELFTEST = [
     "loop_journal.py",
     "billing_aggregator.py",
     "task_anchor.py",
+    "task_contract.py",
     "task_backlog.py",
+    "run_state.py",
+    "evidence_receipt.py",
+    "completion_oracle.py",
+    "mirror_parity.py",
+    "clean_env_contract.py",
     "pr_evidence.py",
     "flow_audit.py",
     "impact_audit.py",
@@ -33,7 +39,8 @@ WORKERS_WITH_SELFTEST = [
 
 def _run(script, *args):
     return subprocess.run([sys.executable, os.path.join(REPO, "scripts", script)] + list(args),
-                          capture_output=True, text=True, cwd=REPO, timeout=60)
+                          capture_output=True, text=True, cwd=REPO, timeout=60,
+                          stdin=subprocess.DEVNULL)
 
 
 def test_every_worker_selftest_exits_zero():

@@ -24,7 +24,14 @@ def _write(path, content=""):
 
 
 def _git(args, cwd):
-    return subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True, timeout=20)
+    return subprocess.run(
+        ["git"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        stdin=subprocess.DEVNULL,
+    )
 
 
 def _build_fixture_repo(root):
@@ -64,8 +71,14 @@ def test_sync_bundle_check_verb_runs_without_crashing():
     # System-level packaging invariant (mirrors test_sync_plugin_check_verb_runs_without_crashing
     # in test_system_check.py, but for the new _bundle/ syncer): --check must run to completion
     # and report drift as data, never a traceback.
-    r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "sync_bundle.py"), "--check"],
-                       capture_output=True, text=True, cwd=REPO, timeout=60)
+    r = subprocess.run(
+        [sys.executable, os.path.join(REPO, "scripts", "sync_bundle.py"), "--check"],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
     assert "Traceback (most recent call last)" not in r.stderr, r.stderr
     assert r.returncode in (0, 1)
     assert "bundle sync:" in r.stdout
@@ -79,8 +92,14 @@ def test_precommit_hook_syncs_both_mirrors_and_stages_them(tmp_path):
     _write(os.path.join(root, ".claude", "skills", "demo-skill", "SKILL.md"), "---\n---\nv2\n")
     _git(["add", "-A"], root)
 
-    r = subprocess.run([sys.executable, os.path.join(root, "hooks", "pre-commit.py")],
-                       cwd=root, capture_output=True, text=True, timeout=60)
+    r = subprocess.run(
+        [sys.executable, os.path.join(root, "hooks", "pre-commit.py")],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
     assert r.returncode == 0, "pre-commit hook must always exit 0 (fail-open):\n%s%s" % (
         r.stdout, r.stderr)
 
@@ -108,8 +127,14 @@ def test_precommit_hook_ignores_unwatched_paths(tmp_path):
     _write(os.path.join(root, "README.md"), "unrelated change\n")
     _git(["add", "-A"], root)
 
-    r = subprocess.run([sys.executable, os.path.join(root, "hooks", "pre-commit.py")],
-                       cwd=root, capture_output=True, text=True, timeout=60)
+    r = subprocess.run(
+        [sys.executable, os.path.join(root, "hooks", "pre-commit.py")],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
     assert r.returncode == 0
     assert not os.path.exists(os.path.join(root, "plugin")), (
         "a change outside the watched dirs must not trigger a mirror sync")
@@ -127,8 +152,14 @@ def test_precommit_hook_fails_open_when_a_syncer_errors(tmp_path):
     _write(os.path.join(root, ".claude", "skills", "demo-skill", "SKILL.md"), "---\n---\nv3\n")
     _git(["add", "-A"], root)
 
-    r = subprocess.run([sys.executable, os.path.join(root, "hooks", "pre-commit.py")],
-                       cwd=root, capture_output=True, text=True, timeout=60)
+    r = subprocess.run(
+        [sys.executable, os.path.join(root, "hooks", "pre-commit.py")],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
     assert r.returncode == 0, "a broken syncer must still fail OPEN (exit 0):\n%s%s" % (
         r.stdout, r.stderr)
     # sync_plugin.py (the one NOT broken) must still have run and staged its output

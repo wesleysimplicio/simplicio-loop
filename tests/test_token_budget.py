@@ -19,7 +19,7 @@ BASELINE = os.path.join(REPO, "scripts", "token_budget_baseline.json")
 
 def _run(args, cwd=None):
     return subprocess.run([sys.executable, GUARD] + args, capture_output=True, text=True,
-                          cwd=cwd or REPO)
+                          cwd=cwd or REPO, stdin=subprocess.DEVNULL)
 
 
 def test_baseline_is_committed_and_readable():
@@ -70,7 +70,8 @@ def test_regression_fails_with_a_clear_message():
             dst.write(padded)
 
         r = subprocess.run([sys.executable, os.path.join(scripts_dir, "token_budget.py"),
-                            "--check"], capture_output=True, text=True, cwd=scratch)
+                            "--check"], capture_output=True, text=True, cwd=scratch,
+                           stdin=subprocess.DEVNULL)
         assert r.returncode == 1, "adding 2000 words to SKILL.md must fail the guard: " + r.stdout
         assert "FAIL" in r.stdout
         assert "SKILL.md" in r.stdout
@@ -86,7 +87,8 @@ def test_update_baseline_writes_valid_json(tmp_path):
     (skill_dir / "SKILL.md").write_text("hello world\n" * 10, encoding="utf-8")
 
     r = subprocess.run([sys.executable, str(scripts_dir / "token_budget.py"),
-                        "--update-baseline"], capture_output=True, text=True, cwd=str(tmp_path))
+                        "--update-baseline"], capture_output=True, text=True, cwd=str(tmp_path),
+                       stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stdout + r.stderr
     baseline_path = scripts_dir / "token_budget_baseline.json"
     assert baseline_path.exists()

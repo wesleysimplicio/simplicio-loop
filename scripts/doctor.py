@@ -2,7 +2,8 @@
 """doctor — verify the whole simplicio-loop stack; `--repair` fixes what's fixable.
 
 Two tiers, and the distinction is the whole point:
-  • REQUIRED   — the orchestrator + token capture need these (python3, the two loop operators, the
+  • REQUIRED   — the orchestrator + token capture need these (python3, the loop operator package and
+                 its runtime bins, the
                  6 skills, the loop hooks, the always-on capture proxy). `--repair` installs/wires them.
   • OPTIONAL   — nice-to-have accelerators (the menu-bar tray dep). **Missing them is NOT a
                  failure** — the Python engine + the deterministic path cover everything.
@@ -30,7 +31,8 @@ PY = sys.executable or "python3"
 DARWIN = sys.platform == "darwin"
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
           "simplicio-review", "simplicio-compress", "simplicio-learn"]
-OPERATORS = [("simplicio-mapper", "simplicio-mapper"), ("simplicio-cli", "simplicio-dev-cli")]
+OPERATOR_PKG = "simplicio-cli"
+OPERATOR_BINS = ("simplicio-dev-cli", "simplicio-mapper")
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 GLYPH = {OK: "✓", WARN: "○", FAIL: "✗"}
@@ -66,7 +68,7 @@ def _link_operator_bins():
     cands = [str(local_bin), os.path.dirname(PY)]
     cands += glob.glob(str(HOME / "Library" / "Python" / "*" / "bin"))
     cands += glob.glob(str(HOME / "AppData" / "Roaming" / "Python" / "*" / "Scripts"))
-    for _, b in OPERATORS:
+    for b in OPERATOR_BINS:
         if shutil.which(b):
             continue
         for d in cands:
@@ -92,20 +94,21 @@ def chk_python():
 
 
 def _operators_ok():
-    return all(shutil.which(b) for _, b in OPERATORS)
+    return all(shutil.which(b) for b in OPERATOR_BINS)
 
 
 def chk_operators():
-    missing = [b for _, b in OPERATORS if not shutil.which(b)]
+    missing = [b for b in OPERATOR_BINS if not shutil.which(b)]
 
     def repair():
-        _pip([p for p, _ in OPERATORS])
+        _pip([OPERATOR_PKG])
         _link_operator_bins()
         return _operators_ok()
 
-    return dict(name="loop operators", tier="REQUIRED",
+    return dict(name="loop operator package", tier="REQUIRED",
                 status=OK if not missing else FAIL,
-                msg="simplicio-mapper + simplicio-dev-cli on PATH" if not missing else "missing: " + ", ".join(missing),
+                msg="simplicio-cli installed; simplicio-dev-cli + simplicio-mapper on PATH"
+                if not missing else "missing runtime bin(s): " + ", ".join(missing),
                 repair=repair)
 
 
@@ -118,7 +121,8 @@ MAPPER_CAPABILITY_VERBS = ("inspect", "handoff", "ask", "sync", "drift")
 def chk_mapper_capabilities():
     if not shutil.which("simplicio-mapper"):
         return dict(name="mapper 0.13/0.14 surface", tier="OPTIONAL", status=WARN,
-                    msg="mapper missing (see loop operators)", repair=lambda: False)
+                    msg="mapper bin missing (expected transitively from simplicio-cli)",
+                    repair=lambda: False)
 
     def _missing():
         helptext = _run(["simplicio-mapper", "--help"], timeout=30).stdout
@@ -127,13 +131,14 @@ def chk_mapper_capabilities():
     missing = _missing()
 
     def repair():
-        _pip(["simplicio-mapper"])
+        _pip([OPERATOR_PKG])
         return not _missing()
 
     return dict(name="mapper 0.13/0.14 surface", tier="OPTIONAL",
                 status=OK if not missing else WARN,
                 msg="inspect/handoff + ask/sync/drift available" if not missing
-                else "mapper missing verbs (%s) — pip install -U simplicio-mapper" % ", ".join(missing),
+                else "mapper missing verbs (%s) — pip install -U %s" %
+                     (", ".join(missing), OPERATOR_PKG),
                 repair=repair)
 
 

@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/task-contract/v1/schema.json",
+  "title": "simplicio.task-contract/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "source",
+    "identity",
+    "story",
+    "scenarios",
+    "rules",
+    "nfrs",
+    "prototypes",
+    "access_path",
+    "dependencies",
+    "impact_signals",
+    "constraints",
+    "additional_information",
+    "production_signal",
+    "questions",
+    "assumptions",
+    "blockers",
+    "raw_sections",
+    "contract_hash"
+  ],
+  "properties": {
+    "schema": {
+      "const": "simplicio.task-contract/v1"
+    },
+    "source": {
+      "type": "object",
+      "required": ["kind", "path", "hash", "compiled_at"],
+      "properties": {
+        "kind": { "type": "string" },
+        "path": { "type": "string" },
+        "hash": { "type": "string" },
+        "compiled_at": { "type": "string" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "required": ["system", "feature", "type", "title"],
+      "properties": {
+        "system": { "type": "string" },
+        "feature": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" }
+      }
+    },
+    "story": {
+      "type": "object",
+      "required": ["persona", "desire", "value"],
+      "properties": {
+        "persona": { "type": "string" },
+        "desire": { "type": "string" },
+        "value": { "type": "string" }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "given", "when", "then", "rule_refs", "verification_intent"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "given": { "type": "array", "items": { "type": "string" } },
+          "when": { "type": "array", "items": { "type": "string" } },
+          "then": { "type": "array", "items": { "type": "string" } },
+          "rule_refs": { "type": "array", "items": { "type": "string" } },
+          "verification_intent": { "type": "string" }
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text", "scenario_refs"],
+        "properties": {
+          "id": { "type": "string" },
+          "text": { "type": "string" },
+          "scenario_refs": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "nfrs": {
+      "type": "object",
+      "required": ["state", "items"],
+      "properties": {
+        "state": { "enum": ["declared", "confirmed_none", "unknown"] },
+        "items": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "prototypes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["reference", "status", "hash"],
+        "properties": {
+          "reference": { "type": "string" },
+          "status": { "enum": ["available", "missing"] },
+          "hash": { "type": "string" }
+        }
+      }
+    },
+    "access_path": { "type": "string" },
+    "dependencies": {
+      "type": "object",
+      "required": ["state", "items"],
+      "properties": {
+        "state": { "enum": ["declared", "confirmed_none", "unknown"] },
+        "items": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "impact_signals": {
+      "type": "object",
+      "required": ["frontend", "backend", "database", "integrations"]
+    },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "additional_information": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "production_signal": { "type": "string" },
+    "questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "raw_sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "content"],
+        "properties": {
+          "name": { "type": "string" },
+          "content": { "type": "string" }
+        }
+      }
+    },
+    "contract_hash": { "type": "string" }
+  }
+}

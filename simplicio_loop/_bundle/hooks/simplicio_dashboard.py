@@ -27,15 +27,6 @@ from pathlib import Path
 
 HOME = os.path.expanduser("~")
 REPO_ROOT = Path(__file__).resolve().parents[1]
-_SCRIPTS_DIR = str(REPO_ROOT / "scripts")
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
-try:
-    # tolerant JSONL reader (#127) — see hooks/simplicio_watch.py for the same rationale: the
-    # savings ledger is written by the external `simplicio` runtime, never by this repo.
-    from _locked_append import count_jsonl_lines
-except Exception:
-    count_jsonl_lines = None
 # Structured savings file written by the capture engine — the primary data source.
 SAVINGS_JSON_CANDIDATES = [
     Path(HOME) / ".simplicio" / "proxy_savings.json",
@@ -715,16 +706,8 @@ def get_status():
             except (IndexError, ValueError):
                 pass
 
-    # Tolerant count (#127): a truncated/illegible line is counted separately, not folded into
-    # the event total as if it were real data.
     ledger = REPO_ROOT / ".simplicio" / "ledger" / "savings-events.jsonl"
-    if ledger.exists() and count_jsonl_lines is not None:
-        lc, ledger_corrupt = count_jsonl_lines(str(ledger))
-    elif ledger.exists():
-        lc = sum(1 for _ in ledger.open(errors="replace"))
-        ledger_corrupt = 0
-    else:
-        lc = ledger_corrupt = 0
+    lc = sum(1 for _ in ledger.open(errors="replace")) if ledger.exists() else 0
 
     savings_pct = round((tok_saved / max(tok_before, 1)) * 100, 1)
 
@@ -768,7 +751,6 @@ def get_status():
         "cache_hit_pct": cache_hit,
         "memories": mem,
         "ledger_events": lc,
-        "ledger_corrupt_lines": ledger_corrupt,
         "series": series,
         "models_seen": models_seen[:8],
         "active_model": active_model,

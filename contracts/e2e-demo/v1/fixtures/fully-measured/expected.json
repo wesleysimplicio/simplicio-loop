@@ -1,0 +1,11 @@
+{
+  "expected": {
+    "returncode": 0,
+    "payload_contains": {
+      "ok": true,
+      "missing": [],
+      "duplicates": [],
+      "simulated": []
+    }
+  }
+}

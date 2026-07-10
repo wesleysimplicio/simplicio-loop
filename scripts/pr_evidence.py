@@ -87,6 +87,11 @@ except Exception:  # pragma: no cover - keep pr_evidence usable even if the impo
         lines += ["", "**Coverage:** %d/%d criteria verified." % (d, t)]
         return "\n".join(lines)
 
+try:
+    from task_backlog import render_backlog_table
+except Exception:  # pragma: no cover
+    render_backlog_table = None
+
 
 def log(msg):
     print("  " + msg, file=sys.stderr)
@@ -101,6 +106,32 @@ def _load_anchor(opts):
             return json.load(f)
     except (OSError, ValueError):
         return {}
+
+
+def _load_backlog(opts):
+    if render_backlog_table is None:
+        return None, []
+    path = (opts.get("backlog") if isinstance(opts.get("backlog"), str) else
+            os.environ.get("SIMPLICIO_BACKLOG_FILE") or
+            os.path.join(REPO, ".orchestrator", "backlog", "backlog.jsonl"))
+    if not os.path.exists(path):
+        return None, []
+    master = None
+    items = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                s = line.strip()
+                if not s:
+                    continue
+                obj = json.loads(s)
+                if obj.get("kind") == "master":
+                    master = obj
+                elif obj.get("kind") == "item":
+                    items.append(obj)
+    except (OSError, ValueError):
+        return None, []
+    return master, items
 
 
 def collect_prints(shots_dir):
@@ -171,13 +202,17 @@ def build_body(opts):
     """Assemble the PR body. Returns (markdown, has_evidence)."""
     anchor = _load_anchor(opts)
     criteria = anchor.get("criteria", [])
+    backlog_master, backlog_items = _load_backlog(opts)
     images, videos = collect_all_evidence(opts)
-    has_evidence = bool(criteria) or bool(images) or bool(videos)
+    has_evidence = bool(criteria) or bool(backlog_items) or bool(images) or bool(videos)
 
     title = opts.get("title") or anchor.get("goal") or "Untitled change"
     item = opts.get("item") or anchor.get("item") or ""
     summary = opts.get("summary") or ""
 
+    backlog_md = ""
+    if backlog_items and render_backlog_table is not None:
+        backlog_md = render_backlog_table(backlog_master, backlog_items, anchor=anchor)
     checklist_md = render_checklist(criteria)
     evidence_md = render_evidence(images, videos)
     how = opts.get("how") or "Run the project's test gate (`python3 scripts/check.py`) and the " \
@@ -188,6 +223,8 @@ def build_body(opts):
         blocks += ["### Summary", summary, ""]
     if item:
         blocks += ["Closes #%s" % str(item).lstrip("#"), ""]
+    if backlog_md:
+        blocks += [backlog_md, ""]
     blocks += [checklist_md, "", evidence_md, "", "### How to verify", how, ""]
 
     tpl_path = opts.get("template") if isinstance(opts.get("template"), str) else DEFAULT_TEMPLATE
@@ -226,6 +263,7 @@ def cmd_comment(opts):
     anchor = _load_anchor(opts)
     criteria = anchor.get("criteria", [])
     done, total, pending = coverage(criteria)
+    backlog_master, backlog_items = _load_backlog(opts)
     images, videos = collect_all_evidence(opts)
     pr = opts.get("pr")
     lines = []
@@ -233,6 +271,11 @@ def cmd_comment(opts):
         lines.append("PR: #%s" % str(pr).lstrip("#"))
     lines.append("Verification: %d/%d acceptance criteria met · %d print(s), %d recording(s)."
                  % (done, total, len(images), len(videos)))
+    if backlog_items:
+        done_items = sum(1 for item in backlog_items if item.get("status") == "done")
+        skipped = sum(1 for item in backlog_items if item.get("status") == "skipped")
+        lines.append("Body of work: %d/%d done · %d skipped." %
+                     (done_items, len(backlog_items), skipped))
     lines.append("")
     lines.append(render_checklist(criteria))
     if pending:
@@ -266,6 +309,16 @@ def cmd_selftest(_opts):
     d, t, p = coverage([])
     chk("coverage.empty", (d, t, p) == (0, 0, []))
     chk("coverage.partial", coverage(crit)[:2] == (1, 2))
+    if render_backlog_table is not None:
+        table = render_backlog_table({"kind": "master", "goal": "Phase 0"},
+                                     [{"kind": "item", "id": "T1", "goal": "Fix | pipes",
+                                       "goal_fp": "fp1", "acs": ["x"], "status": "done",
+                                       "evidence": ["shot.png"], "done_criteria": 1,
+                                       "total_criteria": 1, "skip_reason": ""}], anchor={})
+        chk("backlog.heading", "Body of work" in table)
+        chk("backlog.row", "T1" in table and "1/1" in table)
+        chk("backlog.escaping", r"Fix \| pipes" in table)
+    chk("backlog.fail_open", _load_backlog({"backlog": "definitely-missing.jsonl"}) == (None, []))
 
     ok = all(checks)
     print("selftest: %s (%d/%d)" % ("PASS" if ok else "FAIL", sum(checks), len(checks)))
@@ -302,6 +355,7 @@ def main():
             "verbs": ["build", "comment", "selftest"],
             "flags": [
                 "--anchor",
+                "--backlog",
                 "--help",
                 "--how",
                 "--item",

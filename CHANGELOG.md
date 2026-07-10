@@ -61,6 +61,33 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   (`plan`/`decide`, `intake`, `work_queue`, `dependency_graph` cells + the
   `backlog.jsonl` state-file owner row — the 48-point count is unchanged).
 
+## [3.23.1] — 2026-07-07
+
+### Changed
+- Updated the loop's operator contract to treat `simplicio-cli` as the single supported install
+  surface: `simplicio-dev-cli` remains the action operator and `simplicio-mapper` remains the
+  survey binary, but both are now documented/installed/verified as runtime bins expected to come
+  transitively from `simplicio-cli` instead of as two separately-installed packages.
+- Raised the operator package floor to `simplicio-cli>=0.10.0`, which matches the latest published
+  action operator release and the transitively-installed mapper line now expected by the loop.
+
+### Added
+- A new claims-audit check (`10 skill-pair-parity`) that compares the shared
+  `.claude/skills/simplicio-loop/references/` and `.claude/skills/simplicio-tasks/references/`
+  files byte-for-byte for the intersection set, catching drift like the previously-diverged
+  `quality-safety-delivery.md` copy.
+- Inline `:: verify: ...` acceptance-criteria metadata plus default vague-AC linting in
+  `task_anchor.py`, with `--lint` as the stricter mode for short ACs without a declared method.
+- Phase-0 backlog evidence rendering: `task_backlog.py` freezes/renders multi-item backlog state
+  and `pr_evidence.py --backlog` now embeds the body-of-work table above the per-item anchor
+  checklist.
+
+### Fixed
+- Restored byte-identical parity between the canonical
+  `.claude/skills/simplicio-loop/references/quality-safety-delivery.md` and the
+  `simplicio-tasks` copy before enabling the new pair-parity gate, so the release does not ship
+  the already-known drift.
+
 ## [3.22.6] — 2026-07-07
 
 ### Added

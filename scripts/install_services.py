@@ -23,6 +23,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 REPO = Path(__file__).resolve().parents[1]
 HOME = Path.home()
 PY = sys.executable or shutil.which("python3") or "python3"

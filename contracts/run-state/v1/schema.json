@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/run-state/v1/schema.json",
+  "title": "simplicio.run-state/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "run_id",
+    "phase",
+    "delivery_target",
+    "created_at",
+    "updated_at",
+    "task_count",
+    "coverage",
+    "validation",
+    "mapper",
+    "operator",
+    "current_action",
+    "next_action",
+    "blockers",
+    "attempts",
+    "history"
+  ],
+  "properties": {
+    "schema": { "const": "simplicio.run-state/v1" },
+    "run_id": { "type": "string" },
+    "phase": {
+      "enum": [
+        "intake", "awaiting_decision", "mapping", "planning", "executing",
+        "validating", "watching", "delivering", "done", "partial", "blocked", "cancelled"
+      ]
+    },
+    "delivery_target": { "type": "string" },
+    "created_at": { "type": "string" },
+    "updated_at": { "type": "string" },
+    "task_count": { "type": "integer" },
+    "coverage": { "type": "object" },
+    "validation": { "type": "object" },
+    "mapper": { "type": "object" },
+    "operator": { "type": "object" },
+    "current_action": { "type": "string" },
+    "next_action": { "type": "string" },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "attempts": { "type": "integer" },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ts", "from", "to", "reason", "receipt"],
+        "properties": {
+          "ts": { "type": "string" },
+          "from": { "type": ["string", "null"] },
+          "to": { "type": "string" },
+          "reason": { "type": "string" },
+          "receipt": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -31,6 +31,12 @@ import subprocess
 import sys
 import time
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
@@ -280,9 +286,7 @@ def cmd_status(verbose: bool = True):
 
 
 def cmd_events(limit: int = 20):
-    """Show the recent handoff event log. Tolerant reader (#127): a truncated/illegible line
-    (e.g. a torn write from a pre-lock era, or a foreign writer) is COUNTED and warned about,
-    never silently dropped."""
+    """Show the recent handoff event log."""
     log_path = os.path.join(HANDOFFS_DIR, "events.jsonl")
     if not os.path.exists(log_path):
         print("No handoff events recorded yet.")
@@ -290,18 +294,13 @@ def cmd_events(limit: int = 20):
     try:
         with open(log_path, encoding="utf-8") as f:
             lines = [ln for ln in f if ln.strip()]
-        corrupt = 0
         for ln in lines[-limit:]:
             try:
                 ev = json.loads(ln)
                 ts = ev.pop("ts", "?")
                 sys.stdout.write("[%s] %s\n" % (ts, json.dumps(ev)))
             except Exception:
-                corrupt += 1
-        if corrupt:
-            sys.stderr.write(
-                "handoff: WARNING — %d corrupt/truncated event line(s) skipped\n" % corrupt
-            )
+                sys.stdout.write(ln)
     except OSError:
         print("error: could not read event log", file=sys.stderr)
         sys.exit(1)
@@ -337,51 +336,53 @@ def cmd_selftest():
     import tempfile
 
     origin = os.getcwd()
+    tmpdir = tempfile.TemporaryDirectory()
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            os.chdir(tmp)
+        os.chdir(tmpdir.name)
 
-            # round-trip: handoff -> latched -> confirm -> active
-            cmd_handoff("agent-b", {"done": ["phase1"]}, note="phase 1 complete")
-            spindle = _read_spindle()
-            assert spindle is not None, "handoff should write spindle_state.json"
-            assert spindle["latch"] is True, "a fresh handoff must be latched"
-            assert spindle["next_agent"] == "agent-b"
-            assert os.path.exists(HANDOFF_FILE), "handoff should write HANDOFF.md"
-            handoff_body = open(HANDOFF_FILE, encoding="utf-8").read()
-            assert "agent-b" in handoff_body
-            assert "phase 1 complete" in handoff_body
+        # round-trip: handoff -> latched -> confirm -> active
+        cmd_handoff("agent-b", {"done": ["phase1"]}, note="phase 1 complete")
+        spindle = _read_spindle()
+        assert spindle is not None, "handoff should write spindle_state.json"
+        assert spindle["latch"] is True, "a fresh handoff must be latched"
+        assert spindle["next_agent"] == "agent-b"
+        assert os.path.exists(HANDOFF_FILE), "handoff should write HANDOFF.md"
+        with open(HANDOFF_FILE, encoding="utf-8") as f:
+            handoff_body = f.read()
+        assert "agent-b" in handoff_body
+        assert "phase 1 complete" in handoff_body
 
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                cmd_confirm()
-            spindle = _read_spindle()
-            assert spindle["latch"] is False, "confirm must release the latch"
-            assert spindle["current_agent"] == "agent-b"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cmd_confirm()
+        spindle = _read_spindle()
+        assert spindle["latch"] is False, "confirm must release the latch"
+        assert spindle["current_agent"] == "agent-b"
 
-            # events log: handoff + confirm both recorded, in order
-            events_path = os.path.join(HANDOFFS_DIR, "events.jsonl")
-            with open(events_path, encoding="utf-8") as f:
-                events = [json.loads(ln) for ln in f if ln.strip()]
-            assert [e["event"] for e in events] == ["handoff", "confirm"], events
+        # events log: handoff + confirm both recorded, in order
+        events_path = os.path.join(HANDOFFS_DIR, "events.jsonl")
+        with open(events_path, encoding="utf-8") as f:
+            events = [json.loads(ln) for ln in f if ln.strip()]
+        assert [e["event"] for e in events] == ["handoff", "confirm"], events
 
-            # legacy spindle.json migration: an old-format file (pre-rename) is still read
-            os.remove(SPINDLE_STATE)
-            with open(LEGACY_SPINDLE_STATE, "w", encoding="utf-8") as f:
-                json.dump({"latch": True, "next_agent": "legacy-agent"}, f)
-            legacy = _read_spindle()
-            assert legacy is not None and legacy["next_agent"] == "legacy-agent", \
-                "legacy spindle.json must still be read for an in-flight handoff from an older version"
+        # legacy spindle.json migration: an old-format file (pre-rename) is still read
+        os.remove(SPINDLE_STATE)
+        with open(LEGACY_SPINDLE_STATE, "w", encoding="utf-8") as f:
+            json.dump({"latch": True, "next_agent": "legacy-agent"}, f)
+        legacy = _read_spindle()
+        assert legacy is not None and legacy["next_agent"] == "legacy-agent", \
+            "legacy spindle.json must still be read for an in-flight handoff from an older version"
 
-            # clear resets to idle
-            os.remove(LEGACY_SPINDLE_STATE)
-            cmd_handoff("agent-c", {})
-            cmd_clear()
-            assert _read_spindle() is None, "clear should remove the spindle state"
+        # clear resets to idle
+        os.remove(LEGACY_SPINDLE_STATE)
+        cmd_handoff("agent-c", {})
+        cmd_clear()
+        assert _read_spindle() is None, "clear should remove the spindle state"
 
-            print("handoff selftest: PASS")
+        print("handoff selftest: PASS")
     finally:
         os.chdir(origin)
+        tmpdir.cleanup()
 
 
 # ── CLI entry ────────────────────────────────────────────────────────────────

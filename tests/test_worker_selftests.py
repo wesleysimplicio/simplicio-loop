@@ -22,12 +22,17 @@ SELFTESTS = [
     ("scripts/impact_audit.py", "selftest"),
     ("scripts/toon_codec.py", "selftest"),
     ("scripts/autoresearch.py", "selftest"),
+    ("scripts/clean_env_contract.py", "selftest"),
+    ("scripts/completion_oracle.py", "selftest"),
+    ("scripts/mirror_parity.py", "selftest"),
+    ("scripts/run_state.py", "selftest"),
 ]
 
 
 def _run(script, sub):
     return subprocess.run([sys.executable, os.path.join(REPO, script), sub],
-                          capture_output=True, text=True, cwd=REPO)
+                          capture_output=True, text=True, cwd=REPO,
+                          stdin=subprocess.DEVNULL)
 
 
 def test_loop_journal_selftest():
@@ -64,6 +69,12 @@ def test_task_backlog_selftest():
 def test_pr_evidence_selftest():
     r = _run("scripts/pr_evidence.py", "selftest")
     assert r.returncode == 0, "pr_evidence selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_task_backlog_selftest():
+    r = _run("scripts/task_backlog.py", "selftest")
+    assert r.returncode == 0, "task_backlog selftest failed:\n%s%s" % (r.stdout, r.stderr)
     assert "PASS" in r.stdout, r.stdout
 
 
@@ -118,6 +129,44 @@ def test_autoresearch_selftest():
 def test_e2e_demo_selftest():
     r = _run("scripts/e2e_demo.py", "selftest")
     assert r.returncode == 0, "e2e_demo selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_check_e2e_demo_contract_selftest():
+    r = _run("scripts/check_e2e_demo_contract.py", "selftest")
+    assert r.returncode == 0, "check_e2e_demo_contract selftest failed:\n%s%s" % (
+        r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_check_e2e_installed_selftest():
+    r = _run("scripts/check_e2e_installed.py", "selftest")
+    assert r.returncode == 0, "check_e2e_installed selftest failed:\n%s%s" % (
+        r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_mirror_parity_selftest():
+    r = _run("scripts/mirror_parity.py", "selftest")
+    assert r.returncode == 0, "mirror_parity selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_clean_env_contract_selftest():
+    r = _run("scripts/clean_env_contract.py", "selftest")
+    assert r.returncode == 0, "clean_env_contract selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_completion_oracle_selftest():
+    r = _run("scripts/completion_oracle.py", "selftest")
+    assert r.returncode == 0, "completion_oracle selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_run_state_selftest():
+    r = _run("scripts/run_state.py", "selftest")
+    assert r.returncode == 0, "run_state selftest failed:\n%s%s" % (r.stdout, r.stderr)
     assert "PASS" in r.stdout, r.stdout
 
 

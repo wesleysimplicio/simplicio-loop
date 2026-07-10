@@ -21,11 +21,9 @@ classifiers = [
   "Topic :: Utilities",
   "Operating System :: OS Independent",
 ]
-# The simplicio-loop drive REQUIRES two operators (see .claude/skills/simplicio-loop/SKILL.md):
-#   simplicio-mapper -> the repo-survey step (binds `orient`)
-#   simplicio-cli    -> the operator that applies+verifies changes (binds `execute`/`deterministic_edit`)
+# The simplicio-loop drive requires the operator package (`simplicio-cli`), which exposes
+# `simplicio-dev-cli` and also brings the survey binary `simplicio-mapper` transitively.
 dependencies = [
-  "simplicio-mapper>=0.19.0",
   "simplicio-cli>=0.11.0",
 ]
 

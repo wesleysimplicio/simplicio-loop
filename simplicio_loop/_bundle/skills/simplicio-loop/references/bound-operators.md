@@ -4,32 +4,34 @@ Moved out of `SKILL.md` § Bound operators as part of the #119 shrink (SKILL.md 
 operator table, the preflight one-liner, and the BLOCK rule; this file has the full mechanics).
 
 This loop does NOT survey the repo with the LLM, and it does NOT hand-edit files with the LLM.
-Two installed CLIs are the operators; the model only DECIDES, the operators do. Both ship as
-hard dependencies of the `simplicio-loop` package (`pip install simplicio-loop` pulls them):
+Two installed CLIs are the operators; the model only DECIDES, the operators do. The supported
+install surface is the single operator package `simplicio-cli`, which exposes `simplicio-dev-cli`
+and also brings `simplicio-mapper` transitively:
 
 | Operator | CLI (binary) | Binds | Role in the loop |
 |---|---|---|---|
 | **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). Two-tier (v0.9+): `macro` is an instant shallow skeleton (no content reads), `scan` returns that skeleton now and runs the deep index in the background, `status` reports the deep-pass phase. v0.13+ adds `inspect` (machine-readable evidence that the artifacts actually exist — the survey's own evidence gate) and `handoff` (a compact context-pack — files, symbols, deps, `pack_hash` — that feeds the goal instead of re-reading the tree). v0.14+ adds the flow-docs engine: `ask` (low-token structured queries over the artifacts), `sync --check`/`drift --check` (docs-staleness + spec-drift gates), `flows`/`survey`/`business`/`history`/`diff` (flow inventory, onboarding report, business rules, architecture history). This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
 | **simplicio-dev-cli** | `simplicio-dev-cli` | `execute` / `deterministic_edit` / `validate` / `diagnostics` | **Operate** — applies a DECIDED change through its 6-layer contract (mapper context → precedent → prompt → diff → test → verify, ≤3 retries). The CLI edits and verifies; the AI does not hand-write the diff. |
 
-**Preflight (MANDATORY, BLOCKING).** Before iteration 1, auto-update both operators to their latest
-release (so every run uses the newest `simplicio-mapper`/`simplicio-cli`), then confirm both are on
+**Preflight (MANDATORY, BLOCKING).** Before iteration 1, auto-update the operator package to its
+latest release (so every run uses the newest `simplicio-cli`-shipped `simplicio-mapper`/`simplicio-dev-cli`),
+then confirm both runtime binaries are on
 PATH:
 ```bash
 # Always run the loop on the latest operators. FAIL-OPEN: offline / no-pip / a pin keeps the
 # currently-installed build; this never blocks. Runs ONCE per loop preflight, not per turn.
-python3 -m pip install -qU simplicio-mapper simplicio-cli 2>/dev/null \
-  || python3 -m pip install -qU --user --break-system-packages simplicio-mapper simplicio-cli 2>/dev/null || true
-simplicio-mapper --version   # survey operator (now latest)
+python3 -m pip install -qU simplicio-cli 2>/dev/null \
+  || python3 -m pip install -qU --user --break-system-packages simplicio-cli 2>/dev/null || true
+simplicio-mapper --version   # survey operator (expected transitively from simplicio-cli)
 simplicio-dev-cli --help     # action operator (pkg simplicio-cli; exposes `simplicio-dev-cli`)
 ```
 The auto-update is best-effort and offline-safe — a network/pip failure leaves the working version
 in place and the loop proceeds. The action binary is `simplicio-dev-cli` (from `pip install simplicio-cli`) — NOT the bare
 `simplicio`, which is reserved for the separate `simplicio-runtime` and is not what this loop
 binds. `simplicio-dev-cli` has no `--version` subcommand; `--help` exiting 0 is the readiness
-proof. If either operator is missing, do NOT fall back to LLM survey/editing — STOP and emit
-`simplicio-loop: BLOCKED — missing operator <name>; run: pip install simplicio-loop` (the install
-re-pulls `simplicio-mapper` + `simplicio-cli`). This requirement is scoped to the loop drive.
+proof. If either runtime binary is missing, do NOT fall back to LLM survey/editing — STOP and emit
+`simplicio-loop: BLOCKED — missing operator <name>; run: pip install simplicio-cli`. This requirement
+is scoped to the loop drive.
 
 **Survey step (each loop start + on any structural change).** Prefer the two-tier flow (v0.9+):
 `simplicio-mapper scan . --json` returns an instant `macro` skeleton AND kicks the deep index off in
@@ -95,7 +97,7 @@ merge/close gates); the operators do survey + apply:
 
 | Phase | Operator | Command |
 |---|---|---|
-| Preflight (before iteration 1) | both | `python3 -m pip install -qU simplicio-mapper simplicio-cli` (auto-update to latest, fail-open) → `simplicio-mapper --version` · `simplicio-dev-cli --help` → BLOCK if missing |
+| Preflight (before iteration 1) | both | `python3 -m pip install -qU simplicio-cli` (auto-update to latest, fail-open) → `simplicio-mapper --version` · `simplicio-dev-cli --help` → BLOCK if either runtime bin is missing |
 | Survey (loop start; multi-repo: per root) | mapper | `simplicio-mapper scan . --json` (instant macro + deep index in background; `--sync`/`--await` to block) → `.simplicio/*.json`. `index . --json` for a forced synchronous build. Gate: `inspect . --json` (artifacts exist on disk) → feed goal: `handoff . --for-llm toon` (context-pack, TOON-rendered; `--json` fallback + logged reason if the installed mapper predates `--for-llm`) |
 | Loop contract step 2 — Triage (every turn) | mapper | `simplicio-mapper handoff . --for-llm toon` → work from the `context_pack` (symbols/deps/recent_changes); `ask . impact\|tests-for\|callers <arg> --json` for targeted questions; `macro . --json` for an instant skeleton, or `scan`/`status` + `inspect` to refresh/re-gate if the tree changed |
 | Verify / DoD pass | mapper | `simplicio-mapper sync . --check --json` (stale generated docs) + `drift . --check --json` (spec↔code drift) — findings go in the turn report; BLOCK only when the AC itself is documentation |

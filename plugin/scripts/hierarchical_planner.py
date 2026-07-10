@@ -38,6 +38,12 @@ import sys
 import tempfile
 import time
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 LOOP_DIR = os.path.join(REPO, ".orchestrator", "loop")

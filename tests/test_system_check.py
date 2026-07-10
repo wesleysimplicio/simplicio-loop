@@ -26,7 +26,7 @@ def _run(args):
     env = dict(os.environ)
     env[NESTED_GUARD] = "1"
     return subprocess.run([sys.executable, CHECK] + args, capture_output=True, text=True,
-                          cwd=REPO, timeout=300, env=env)
+                          cwd=REPO, timeout=300, env=env, stdin=subprocess.DEVNULL)
 
 
 def test_tests_only_gate_is_green():
@@ -47,11 +47,27 @@ def test_audit_only_runs_every_numbered_check_without_crashing():
     assert r.returncode in (0, 1)
 
 
+def test_mirror_parity_only_runs_as_distinct_gate():
+    r = _run(["--mirror-parity-only"])
+    assert "=== mirror-parity ===" in r.stdout
+    assert "check:" in r.stdout
+    assert r.returncode in (0, 1)
+
+
+def test_clean_env_only_runs_as_distinct_gate():
+    r = _run(["--clean-env-only"])
+    assert "=== clean-env-contract ===" in r.stdout
+    assert "check:" in r.stdout
+    assert r.returncode in (0, 1)
+
+
 def test_check_with_no_flags_runs_both_audit_and_tests():
     if os.environ.get(NESTED_GUARD):
         return
     r = _run([])
     assert "=== claims-audit ===" in r.stdout
+    assert "=== mirror-parity ===" in r.stdout
+    assert "=== clean-env-contract ===" in r.stdout
     assert "pytest tests/" in r.stdout or "stdlib self-run" in r.stdout
     assert "check: %s" % ("PASS" if r.returncode == 0 else "FAIL") in r.stdout
 
@@ -60,7 +76,8 @@ def test_sync_plugin_check_verb_runs_without_crashing():
     # System-level packaging invariant (#74): plugin/ must stay a mirror of source; the --check
     # verb must run to completion and report drift as data, never a traceback.
     r = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "sync_plugin.py"), "--check"],
-                       capture_output=True, text=True, cwd=REPO, timeout=60)
+                       capture_output=True, text=True, cwd=REPO, timeout=60,
+                       stdin=subprocess.DEVNULL)
     assert "Traceback (most recent call last)" not in r.stderr, r.stderr
     assert r.returncode in (0, 1)
     assert "plugin sync:" in r.stdout

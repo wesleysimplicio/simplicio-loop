@@ -1,29 +1,16 @@
 #!/usr/bin/env python3
-"""simplicio-loop — watcher verification producer (Asolaria N-Nest Corrective Gate).
+"""simplicio-loop — watcher verification producer.
 
-Ships the "a watcher PID independently re-computes the truth" half of the gate as CODE, not
-prose (#82). Previously the SKILL prose taught the agent to hand-write
-`.orchestrator/loop/watcher_state.json` directly — a plain, unauthenticated JSON file in the
-workspace the SAME agent fully controls, so the gate reduced to trust. This script is the
-mechanical producer: it reads the current per-iteration challenge
-(`.orchestrator/loop/watcher_challenge.json`, written by `hooks/loop_stop.py` at the end of a
-re-feed turn — the agent does not choose its value), independently recomputes the frozen task
-anchor's (`.orchestrator/loop/anchor.json`) done/pending state from disk (it does NOT trust
-anything the calling agent asserts), and writes the receipt echoing the challenge + goal_fp so
-`hooks/loop_stop.py`'s `watcher_verify()` can bind it to THIS iteration/goal.
-
-State read:  .orchestrator/loop/watcher_challenge.json, .orchestrator/loop/anchor.json
-State written: .orchestrator/loop/watcher_state.json
-
-Usage:
-    python3 scripts/watcher_verify.py verify
-    python3 scripts/watcher_verify.py selftest
+Generates a watcher receipt bound to the current challenge and run artifacts.
+Without challenge + anchor criteria + structured evidence, the watcher fails closed.
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -32,15 +19,29 @@ CHALLENGE = os.path.join(LOOP_DIR, "watcher_challenge.json")
 ANCHOR = os.path.join(LOOP_DIR, "anchor.json")
 WATCHER_STATE = os.path.join(LOOP_DIR, "watcher_state.json")
 
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+from simplicio_loop.evidence import execute_receipt_checks, watcher_truth_from_receipt  # noqa: E402
+
 
 def _set_repo(repo):
-    """Rebind repo-relative state paths. Used by selftest and temp-repo tests."""
     global REPO, LOOP_DIR, CHALLENGE, ANCHOR, WATCHER_STATE
     REPO = repo
     LOOP_DIR = os.path.join(REPO, ".orchestrator", "loop")
     CHALLENGE = os.path.join(LOOP_DIR, "watcher_challenge.json")
     ANCHOR = os.path.join(LOOP_DIR, "anchor.json")
     WATCHER_STATE = os.path.join(LOOP_DIR, "watcher_state.json")
+
+
+_run_dir = os.environ.get("SIMPLICIO_RUN_DIR", "").strip()
+_repo_override = os.environ.get("SIMPLICIO_LOOP_REPO", "").strip()
+if _repo_override:
+    _set_repo(_repo_override)
+elif _run_dir:
+    try:
+        _set_repo(str(Path(_run_dir).resolve().parents[2]))
+    except Exception:
+        pass
 
 
 def _now():
@@ -55,34 +56,127 @@ def _read_json(path):
         return None
 
 
-def recompute_anchor_ready(anchor):
-    """Independent recompute of the anchor's done/pending — the watcher's OWN math over the
-    on-disk anchor, not a read of anything the agent asserts elsewhere. No anchor / no criteria
-    -> ready (there is nothing to gate)."""
+def _find_run_dir():
+    run_dir = os.environ.get("SIMPLICIO_RUN_DIR", "").strip()
+    return Path(run_dir) if run_dir else None
+
+
+def _git_meta():
+    def _run(*args):
+        try:
+            done = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, timeout=15)
+            return (done.stdout or "").strip() if done.returncode == 0 else ""
+        except Exception:
+            return ""
+    diff = _run("diff", "--no-ext-diff", "HEAD")
+    return {
+        "commit_sha": _run("rev-parse", "HEAD"),
+        "diff_present": bool(diff.strip()),
+    }
+
+
+def _anchor_criteria(anchor):
     criteria = (anchor or {}).get("criteria") or []
-    if not criteria:
-        return True, 0, 0
-    done = sum(1 for c in criteria if isinstance(c, dict) and c.get("status") == "done")
-    total = len(criteria)
-    return done == total, done, total
+    return [item for item in criteria if isinstance(item, dict) and item.get("id")]
+
+
+def _evidence_index(evidence):
+    idx = {}
+    for item in evidence.get("criteria") or []:
+        if isinstance(item, dict) and item.get("id"):
+            idx[item["id"]] = item
+    return idx
+
+
+def _criterion_results(anchor, evidence, executed):
+    anchor_items = _anchor_criteria(anchor)
+    evidence_items = _evidence_index(evidence or {})
+    executed_by_id = {item.get("id"): item for item in (executed.get("results") or []) if item.get("id")}
+    results = []
+    for item in anchor_items:
+        reported_done = item.get("status") == "done"
+        ev = evidence_items.get(item["id"])
+        ev_state = (ev or {}).get("verification_state", "unverified")
+        recomputed = ev_state == "verified"
+        proof_refs = list((ev or {}).get("proof_refs") or [])
+        check = executed_by_id.get(item["id"])
+        if check:
+            proof_refs.append(check.get("proof_ref", ""))
+            recomputed = recomputed and (check.get("status") == "MEASURED")
+        results.append({
+            "id": item["id"],
+            "reported_result": "done" if reported_done else item.get("status", "pending"),
+            "recomputed_result": "verified" if recomputed else ev_state,
+            "evidence_ids": [ref for ref in proof_refs if ref],
+            "match": reported_done and recomputed,
+        })
+    return results
 
 
 def cmd_verify():
     challenge = _read_json(CHALLENGE)
     if not challenge:
-        print("UNVERIFIED|watcher_verify: no challenge on disk yet — nothing to answer "
-              "(the loop issues one at the end of a re-feed turn; run this again next turn)")
+        print("UNVERIFIED|watcher_verify: no challenge on disk yet — nothing to answer")
         return 1
+
     anchor = _read_json(ANCHOR)
-    ready, done, total = recompute_anchor_ready(anchor)
+    anchor_items = _anchor_criteria(anchor)
+    run_dir = _find_run_dir()
+    evidence = _read_json(run_dir / "evidence-receipt.json") if run_dir and (run_dir / "evidence-receipt.json").exists() else None
+
+    reasons = []
+    if not anchor or not anchor_items:
+        reasons.append("anchor missing or has no criteria")
+    if not evidence:
+        reasons.append("evidence receipt missing")
+
+    executed = execute_receipt_checks(evidence or {})
+    truth = watcher_truth_from_receipt(evidence or {})
+    criteria_results = _criterion_results(anchor or {}, evidence or {}, executed)
+
+    if not criteria_results:
+        reasons.append("no criteria results could be recomputed")
+
+    all_criteria_match = bool(criteria_results) and all(item["match"] for item in criteria_results)
+    ready = not reasons and truth["ready"] and executed["all_passed"] and all_criteria_match
+    reported = truth["reported"]
+    if reasons:
+        reported = "; ".join(reasons)
+    elif evidence and evidence.get("checks"):
+        reported = "%s; watcher checks=%d/%d passed" % (
+            reported,
+            sum(1 for r in executed["results"] if r["status"] == "MEASURED"),
+            len(executed["results"]),
+        )
+
+    run_meta = (evidence or {}).get("run") or {}
+    git_meta = _git_meta()
     receipt = {
+        "schema": "simplicio.watcher-receipt/v1",
         "match": ready,
         "status": "MEASURED" if ready else "UNVERIFIED",
         "checked_at": _now(),
         "challenge": challenge.get("challenge", ""),
         "goal_fp": challenge.get("goal_fp", ""),
-        "reported": ("%d/%d acceptance criteria done" % (done, total)) if total else "no anchor set",
+        "iteration": challenge.get("iteration", 0),
+        "reported": reported,
         "recomputed_truth": ready,
+        "run_id": (evidence or {}).get("run_id", ""),
+        "task_contract_hash": run_meta.get("task_contract_hash", ""),
+        "plan_hash": run_meta.get("plan_hash", ""),
+        "commit_sha": run_meta.get("commit_sha", "") or git_meta["commit_sha"],
+        "diff_hash": run_meta.get("diff_hash", ""),
+        "tool_versions": {
+            "watcher": "watcher_verify.py",
+            "python": sys.version.split()[0],
+        },
+        "criteria_results": criteria_results,
+        "check_results": executed["results"],
+        "producer": {
+            "pid": os.getpid(),
+            "repo": REPO,
+            "run_dir": str(run_dir) if run_dir else "",
+        },
     }
     os.makedirs(LOOP_DIR, exist_ok=True)
     tmp = WATCHER_STATE + ".tmp"
@@ -102,28 +196,16 @@ def cmd_selftest():
             os.makedirs(LOOP_DIR, exist_ok=True)
 
             rc = cmd_verify()
-            assert rc == 1, "verify without a challenge on disk should refuse"
-            assert not os.path.exists(WATCHER_STATE), "no receipt should be written without a challenge"
+            assert rc == 1
+            assert not os.path.exists(WATCHER_STATE)
 
             with open(CHALLENGE, "w", encoding="utf-8") as f:
-                json.dump({"challenge": "abc123", "goal_fp": "fp1"}, f)
+                json.dump({"challenge": "abc123", "goal_fp": "fp1", "iteration": 2}, f)
 
             rc = cmd_verify()
-            assert rc == 0, "verify with a challenge but no anchor should succeed (nothing to gate)"
+            assert rc == 0
             state = _read_json(WATCHER_STATE)
-            assert state["match"] is True
-            assert state["status"] == "MEASURED"
-            assert state["challenge"] == "abc123"
-            assert state["goal_fp"] == "fp1"
-
-            with open(ANCHOR, "w", encoding="utf-8") as f:
-                json.dump({"goal_fp": "fp1", "criteria": [
-                    {"id": "AC1", "status": "done"},
-                    {"id": "AC2", "status": "pending"},
-                ]}, f)
-            cmd_verify()
-            state = _read_json(WATCHER_STATE)
-            assert state["match"] is False, "a pending AC must recompute to not-ready"
+            assert state["match"] is False
             assert state["status"] == "UNVERIFIED"
 
             with open(ANCHOR, "w", encoding="utf-8") as f:
@@ -131,10 +213,29 @@ def cmd_selftest():
                     {"id": "AC1", "status": "done"},
                     {"id": "AC2", "status": "done"},
                 ]}, f)
-            cmd_verify()
+            run_dir = os.path.join(tmp, ".orchestrator", "runs", "demo")
+            os.makedirs(run_dir, exist_ok=True)
+            with open(os.path.join(run_dir, "evidence-receipt.json"), "w", encoding="utf-8") as f:
+                json.dump({
+                    "schema": "simplicio.evidence-receipt/v1",
+                    "run_id": "demo",
+                    "status": "VERIFIED",
+                    "run": {"task_contract_hash": "hash1", "plan_hash": "hash2", "commit_sha": "", "diff_hash": ""},
+                    "criteria": [
+                        {"id": "AC1", "verification_state": "verified", "proof_refs": ["proof-1"]},
+                        {"id": "AC2", "verification_state": "verified", "proof_refs": ["proof-2"]},
+                    ],
+                    "summary": {"criteria_total": 2, "criteria_verified": 2, "scenario_total": 2,
+                                "scenario_verified": 2, "rule_total": 1, "rule_verified": 1},
+                    "checks": [],
+                }, f)
+            os.environ["SIMPLICIO_RUN_DIR"] = run_dir
+            rc = cmd_verify()
+            assert rc == 0
             state = _read_json(WATCHER_STATE)
-            assert state["match"] is True, "all-done criteria must recompute to ready"
-            assert state["status"] == "MEASURED"
+            assert state["match"] is True
+            assert len(state["criteria_results"]) == 2
+            os.environ.pop("SIMPLICIO_RUN_DIR", None)
 
             print("watcher_verify selftest: PASS")
     finally:

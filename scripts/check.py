@@ -6,13 +6,19 @@ Runs the whole verification gate locally — deterministic, stdlib-only, cross-p
   1. claims-audit   `scripts/claims_audit.py` (referenced scripts exist · extension-point count
                     consistent · cited commands run, including flow/impact audit selftests
                     · _bundle ≡ source)
-  2. test suite     pytest if installed (`pytest -q tests/`); otherwise each `tests/test_*.py`
+  2. mirror-parity  `scripts/mirror_parity.py check` — fail-closed mirror parity for the shipped
+                    `_bundle/`, `plugin/`, and shared skill references, reported as a distinct
+                    gate instead of being only an internal claims-audit detail.
+  3. test suite     pytest if installed (`pytest -q tests/`); otherwise each `tests/test_*.py`
                     self-runs on bare python3 (the suite needs no pip).
-  3. loop-contract  `scripts/check_loop_contract.py` — validates the exported
+  4. loop-contract  `scripts/check_loop_contract.py` — validates the exported
                     `simplicio.loop-execution/v1` converge/drain fixtures
                     (`contracts/loop-execution/v1/`) against the real `hooks/loop_stop.py` /
                     `scripts/loop_journal.py` producers (#115).
-  4. token-budget   `scripts/token_budget.py` (#121) — estimates tokens for SKILL.md/AGENTS.md/
+  5. clean-env      `scripts/clean_env_contract.py` — validates the package metadata / entrypoint /
+                    bundled assets contract needed for a clean environment to load the CLI without
+                    publishing or network access.
+  6. token-budget   `scripts/token_budget.py` (#121) — estimates tokens for SKILL.md/AGENTS.md/
                     CLAUDE.md/the largest scripts and FAILS on a regression past the committed
                     baseline (`scripts/token_budget_baseline.json`), so a doc/script that quietly
                     balloons in size gets caught the same way a broken test would.
@@ -27,7 +33,9 @@ Usage:
     python3 scripts/check.py              # audit + tests + loop-contract + token-budget
     python3 scripts/check.py --audit-only
     python3 scripts/check.py --tests-only
+    python3 scripts/check.py --mirror-parity-only
     python3 scripts/check.py --loop-contract-only
+    python3 scripts/check.py --clean-env-only
     python3 scripts/check.py --token-budget   # token-budget guard only
     python3 scripts/check.py --core-gate      # mandatory/fast gate only (#118): audit + loop-
                                                # contract + token-budget + CORE tests, skipping
@@ -49,6 +57,7 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+SYSTEM_TEST_NESTED_GUARD = "SIMPLICIO_SYSTEM_TEST_NESTED"
 
 # #118 — test files that exercise a SATELLITE (opt-in/advanced) script or capability, not the
 # mandatory loop drive. `--core-gate` skips these so the fast/mandatory path never waits on an
@@ -93,6 +102,12 @@ def run_tests(only_core=False):
     if not os.path.isdir(tests_dir):
         print("no tests/ dir — skipping")
         return True
+    # `tests/test_system_check.py` exercises this wrapper by spawning `scripts/check.py`
+    # again. When this wrapper itself is already the active top-level gate, propagate the
+    # nested guard so those tests do not recursively ask for another full `--tests-only`
+    # or no-flags gate inside the same run. The cheaper system variants still run.
+    env = dict(os.environ)
+    env[SYSTEM_TEST_NESTED_GUARD] = "1"
     if only_core:
         test_files = _core_test_files(tests_dir)
         label = "tests/ (core-gate — satellite tests skipped)"
@@ -101,15 +116,26 @@ def run_tests(only_core=False):
         label = "tests/"
     if _have_pytest():
         _hr("pytest %s" % label)
-        r = subprocess.run([sys.executable, "-m", "pytest", "-q"] + test_files, cwd=REPO)
+        r = subprocess.run([sys.executable, "-m", "pytest", "-q"] + test_files,
+                           cwd=REPO, env=env)
         return r.returncode == 0
     # zero-dependency fallback: each test file self-runs on bare python3
     _hr("%s (stdlib self-run — pytest not installed)" % label)
     ok = True
     for tf in test_files:
-        r = subprocess.run([sys.executable, tf], cwd=REPO)
+        r = subprocess.run([sys.executable, tf], cwd=REPO, env=env)
         ok = ok and r.returncode == 0
     return ok
+
+
+def run_mirror_parity():
+    _hr("mirror-parity")
+    path = os.path.join(HERE, "mirror_parity.py")
+    if not os.path.exists(path):
+        print("scripts/mirror_parity.py not found — skipping")
+        return True
+    r = subprocess.run([sys.executable, path, "check"], cwd=REPO)
+    return r.returncode == 0
 
 
 def run_loop_contract():
@@ -119,6 +145,16 @@ def run_loop_contract():
         print("scripts/check_loop_contract.py not found — skipping")
         return True
     r = subprocess.run([sys.executable, path], cwd=REPO)
+    return r.returncode == 0
+
+
+def run_clean_env_contract():
+    _hr("clean-env-contract")
+    path = os.path.join(HERE, "clean_env_contract.py")
+    if not os.path.exists(path):
+        print("scripts/clean_env_contract.py not found — skipping")
+        return True
+    r = subprocess.run([sys.executable, path, "check"], cwd=REPO)
     return r.returncode == 0
 
 
@@ -135,25 +171,32 @@ def run_token_budget():
 def main():
     args = sys.argv[1:]
     core_gate = "--core-gate" in args
-    only_flags = {"--audit-only", "--tests-only", "--loop-contract-only", "--token-budget"}
+    only_flags = {"--audit-only", "--tests-only", "--mirror-parity-only", "--loop-contract-only",
+                  "--clean-env-only", "--token-budget"}
     any_only = any(a in args for a in only_flags) or core_gate
-    audit_ok = tests_ok = contract_ok = budget_ok = True
+    audit_ok = mirror_ok = tests_ok = contract_ok = clean_env_ok = budget_ok = True
     if not any_only or "--audit-only" in args or core_gate:
         audit_ok = run_audit()
+    if not any_only or "--mirror-parity-only" in args or core_gate:
+        mirror_ok = run_mirror_parity()
     if not any_only or "--tests-only" in args or core_gate:
         tests_ok = run_tests(only_core=core_gate)
     if not any_only or "--loop-contract-only" in args or core_gate:
         contract_ok = run_loop_contract()
+    if not any_only or "--clean-env-only" in args or core_gate:
+        clean_env_ok = run_clean_env_contract()
     if not any_only or "--token-budget" in args or core_gate:
         budget_ok = run_token_budget()
-    ok = audit_ok and tests_ok and contract_ok and budget_ok
+    ok = audit_ok and mirror_ok and tests_ok and contract_ok and clean_env_ok and budget_ok
     if core_gate:
-        print("\ncore-gate: %s  (audit=%s · core-tests=%s · loop-contract=%s · token-budget=%s)" % (
-            "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if tests_ok else "FAIL",
-            "ok" if contract_ok else "FAIL", "ok" if budget_ok else "FAIL"))
-    print("\ncheck: %s  (audit=%s · tests=%s · loop-contract=%s · token-budget=%s)" % (
-        "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if tests_ok else "FAIL",
-        "ok" if contract_ok else "FAIL", "ok" if budget_ok else "FAIL"))
+        print("\ncore-gate: %s  (audit=%s · mirror-parity=%s · core-tests=%s · loop-contract=%s · clean-env=%s · token-budget=%s)" % (
+            "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if mirror_ok else "FAIL",
+            "ok" if tests_ok else "FAIL", "ok" if contract_ok else "FAIL",
+            "ok" if clean_env_ok else "FAIL", "ok" if budget_ok else "FAIL"))
+    print("\ncheck: %s  (audit=%s · mirror-parity=%s · tests=%s · loop-contract=%s · clean-env=%s · token-budget=%s)" % (
+        "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if mirror_ok else "FAIL",
+        "ok" if tests_ok else "FAIL", "ok" if contract_ok else "FAIL",
+        "ok" if clean_env_ok else "FAIL", "ok" if budget_ok else "FAIL"))
     sys.exit(0 if ok else 1)
 
 

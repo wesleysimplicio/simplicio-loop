@@ -20,12 +20,14 @@ They live in `.claude/skills/` and load automatically in this repo.
 
 ## The 2 bound operators (REQUIRED by the loop)
 
-`simplicio-loop` does not survey or edit with the LLM — it delegates to two installed CLIs, hard
-deps of `pip install simplicio-loop` (the loop BLOCKS if either is absent):
+`simplicio-loop` does not survey or edit with the LLM — it delegates to two installed CLIs. The
+supported install surface is the single package `simplicio-cli`, which exposes
+`simplicio-dev-cli` and also brings `simplicio-mapper` transitively; the loop BLOCKS if either
+runtime binary is absent:
 
 | Operator | Binary | pip pkg | Binds | Role |
 |---|---|---|---|---|
-| [simplicio-mapper](https://github.com/wesleysimplicio/simplicio-mapper) | `simplicio-mapper` | `simplicio-mapper` | `orient` | **survey** the repo → `.simplicio/*.json` (the survey that feeds the goal) |
+| [simplicio-mapper](https://github.com/wesleysimplicio/simplicio-mapper) | `simplicio-mapper` | transitively via `simplicio-cli` | `orient` | **survey** the repo → `.simplicio/*.json` (the survey that feeds the goal) |
 | [simplicio-dev-cli](https://github.com/wesleysimplicio/simplicio-dev-cli) | `simplicio-dev-cli` | `simplicio-cli` | `execute`/`deterministic_edit` | **operate** — apply+verify each decided change via its 6-layer contract, instead of the AI hand-editing |
 
 The AI decides; the operators act. See `.claude/skills/simplicio-loop/SKILL.md` § Bound operators

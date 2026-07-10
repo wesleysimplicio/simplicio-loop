@@ -42,6 +42,10 @@ per-turn prompt re-feed, `--format json` for a machine consumer) — verdict `DR
 goal moved — STOP, re-anchor with `--force`
 only if the task genuinely changed). As each AC is met: `task_anchor.py mark --id ACk --status done
 --evidence "<file:line / command output / screenshot path>"` (a `done` with no receipt is REFUSED).
+If the freeze itself should declare HOW the AC will be checked, add the inline suffix
+`:: verify: <command or artifact>` to the AC text; the checklist/PR then shows the declared method
+next to the real receipt, so "declared vs real" is auditable instead of implicit. Default lint now
+REFUSES vague ACs like `works`; `task_anchor.py set --lint` also refuses short ACs without `verify:`.
 The DoD gate is then mechanical: `task_anchor.py gate --exit-code` (exit 12 = criteria still
 pending) MUST pass before "done" or PR-open. This is the loop's durable working memory for SCOPE,
 the sibling of `loop_journal`'s working memory for ATTEMPTS.
@@ -184,9 +188,12 @@ the PR body and risk forgetting the proof — assemble it mechanically:
 --out .orchestrator/pr_body.md`. It pulls the item-by-item checklist from the task anchor (one line
 per AC, with its status + the receipt that verified it) AND embeds every screenshot
 (`web_verify`, under `.orchestrator/tee/web`) and recording (`video_evidence`, under
-`.orchestrator/tee/video`). With `--require-evidence`
-it FAILS CLOSED — exit 3 (`blocked`), never a body — when there is neither a checklist nor a single
-print, so an evidence-less PR cannot be opened by accident. It honors a discovered
+`.orchestrator/tee/video`). For body-of-work / Phase-0 runs, `task_backlog.py checklist` renders the
+master goal + multi-item table that `pr_evidence.py build --backlog ...` inserts ABOVE the per-item
+anchor checklist, so the PR shows backlog progress even after the anchor is cleared for the next item.
+With `--require-evidence` it FAILS CLOSED — exit 3 (`blocked`), never a body — when there is neither
+an anchor checklist, nor a backlog table, nor a single print, so an evidence-less PR cannot be
+opened by accident. It honors a discovered
 `.github/PULL_REQUEST_TEMPLATE.md` (keeps the maintainer's sections, appends the checklist + prints
 below). `pr_evidence.py comment --item <id> --pr <N>` emits the matching in-source evidence comment
 (PR link + per-AC check + a count of attached prints). Write surrounding comment PROSE in the user's
