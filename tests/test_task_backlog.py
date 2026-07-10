@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKLOG = os.path.join(REPO, "scripts", "task_backlog.py")
@@ -18,6 +19,13 @@ def _run(args, cwd, env=None):
         full_env.update(env)
     return subprocess.run([sys.executable, BACKLOG] + args, capture_output=True, text=True,
                           cwd=cwd, env=full_env, stdin=subprocess.DEVNULL)
+
+
+def _fence_from_claim(stdout):
+    fields = stdout.strip().split("\t")
+    assert len(fields) >= 3, stdout
+    assert fields[2].startswith("fence-"), stdout
+    return fields[2]
 
 
 def test_backlog_init_rejects_vague_ac_by_default(tmp_path):
@@ -271,6 +279,100 @@ def test_backlog_next_allows_parallel_claim_for_independent_plan_files(tmp_path)
     second = _run(["next", "--worker", "w2", "--lease-ttl", "120"], str(tmp_path), env)
     assert second.returncode == 0, second.stdout + second.stderr
     assert second.stdout.startswith("T2\t"), second.stdout
+
+
+def test_backlog_next_claim_is_atomic_across_concurrent_processes(tmp_path):
+    """Every ready node is claimed at most once when workers race on JSONL."""
+    item_file = tmp_path / "items.json"
+    item_file.write_text(json.dumps([
+        {"id": "T%d" % i, "goal": "Independent goal %d" % i,
+         "acs": ["A real criterion %d" % i], "plan_files": ["src/%d.py" % i]}
+        for i in range(8)
+    ]), encoding="utf-8")
+    env = {"SIMPLICIO_BACKLOG_FILE": str(tmp_path / "backlog.jsonl")}
+    init = _run(["init", "--goal", "Drain", "--item-file", str(item_file)], str(tmp_path), env)
+    assert init.returncode == 0, init.stdout + init.stderr
+
+    def claim(i):
+        return _run(["next", "--worker", "worker-%d" % i, "--lease-ttl", "120"],
+                    str(tmp_path), env)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(claim, range(8)))
+    assert all(result.returncode == 0 for result in results), "\n".join(
+        result.stdout + result.stderr for result in results)
+    claimed_ids = [result.stdout.split("\t", 1)[0] for result in results
+                   if result.stdout.startswith("T")]
+    assert len(claimed_ids) == 8, [result.stdout for result in results]
+    assert len(set(claimed_ids)) == 8, claimed_ids
+    records = [json.loads(line) for line in (tmp_path / "backlog.jsonl").read_text(
+        encoding="utf-8").splitlines() if line.strip()]
+    item_records = [record for record in records if record.get("kind") == "item"]
+    assert all(record["status"] == "claimed" for record in item_records)
+    assert len({_fence_from_claim(result.stdout) for result in results}) == 8
+
+
+def test_backlog_fence_rejects_stale_worker_after_lease_recovery(tmp_path):
+    item_file = tmp_path / "items.json"
+    item_file.write_text(json.dumps([
+        {"id": "T1", "goal": "Recoverable goal", "acs": ["A real criterion"]},
+        {"id": "T2", "goal": "Second goal", "acs": ["Another criterion"]},
+    ]), encoding="utf-8")
+    backlog_path = tmp_path / "backlog.jsonl"
+    env = {"SIMPLICIO_BACKLOG_FILE": str(backlog_path)}
+    assert _run(["init", "--goal", "Drain", "--item-file", str(item_file)], str(tmp_path), env).returncode == 0
+    first = _run(["next", "--worker", "w1", "--lease-ttl", "120"], str(tmp_path), env)
+    old_fence = _fence_from_claim(first.stdout)
+    body = [json.loads(line) for line in backlog_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    next(record for record in body if record.get("id") == "T1")["lease"]["expires_at"] = "2000-01-01T00:00:00Z"
+    backlog_path.write_text("\n".join(json.dumps(record, ensure_ascii=False) for record in body) + "\n",
+                            encoding="utf-8")
+    recovered = _run(["next", "--worker", "w2", "--lease-ttl", "120"], str(tmp_path), env)
+    new_fence = _fence_from_claim(recovered.stdout)
+    assert new_fence != old_fence
+    stale = _run(["heartbeat", "--item", "T1", "--worker", "w1", "--fence", old_fence],
+                 str(tmp_path), env)
+    assert stale.returncode == 12, stale.stdout + stale.stderr
+    assert "stale lease/fence" in stale.stdout
+
+
+def test_backlog_expired_worker_cannot_reuse_its_old_claim(tmp_path):
+    item_file = tmp_path / "items.json"
+    item_file.write_text(json.dumps([
+        {"id": "T1", "goal": "Recover own lease", "acs": ["A real criterion"]},
+    ]), encoding="utf-8")
+    backlog_path = tmp_path / "backlog.jsonl"
+    env = {"SIMPLICIO_BACKLOG_FILE": str(backlog_path)}
+    assert _run(["init", "--goal", "Drain", "--item-file", str(item_file)], str(tmp_path), env).returncode == 0
+    first = _run(["next", "--worker", "w1", "--lease-ttl", "120"], str(tmp_path), env)
+    old_fence = _fence_from_claim(first.stdout)
+    body = [json.loads(line) for line in backlog_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    next(record for record in body if record.get("id") == "T1")["lease"]["expires_at"] = "2000-01-01T00:00:00Z"
+    backlog_path.write_text("\n".join(json.dumps(record, ensure_ascii=False) for record in body) + "\n",
+                            encoding="utf-8")
+    second = _run(["next", "--worker", "w1", "--lease-ttl", "120"], str(tmp_path), env)
+    new_fence = _fence_from_claim(second.stdout)
+    assert new_fence != old_fence
+
+
+def test_backlog_transition_is_compare_and_swap_and_fenced(tmp_path):
+    item_file = tmp_path / "items.json"
+    item_file.write_text(json.dumps([
+        {"id": "T1", "goal": "Transition goal", "acs": ["A real criterion"]},
+    ]), encoding="utf-8")
+    env = {"SIMPLICIO_BACKLOG_FILE": str(tmp_path / "backlog.jsonl")}
+    assert _run(["init", "--goal", "Drain", "--item-file", str(item_file)], str(tmp_path), env).returncode == 0
+    claim = _run(["next", "--worker", "w1"], str(tmp_path), env)
+    fence = _fence_from_claim(claim.stdout)
+    moved = _run(["transition", "--item", "T1", "--from", "claimed", "--to", "running",
+                  "--worker", "w1", "--fence", fence], str(tmp_path), env)
+    assert moved.returncode == 0, moved.stdout + moved.stderr
+    stale = _run(["transition", "--item", "T1", "--from", "running", "--to", "verification",
+                  "--worker", "w1", "--fence", "fence-0-stale"], str(tmp_path), env)
+    assert stale.returncode == 12, stale.stdout + stale.stderr
+    good = _run(["transition", "--item", "T1", "--from", "running", "--to", "verification",
+                 "--worker", "w1", "--fence", fence], str(tmp_path), env)
+    assert good.returncode == 0, good.stdout + good.stderr
 
 
 def test_backlog_fail_moves_to_dead_letter_after_distinct_failures(tmp_path):
