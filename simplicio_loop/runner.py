@@ -1161,6 +1161,10 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         execution_state = str(operator.get("execution_state") or "")
         success = execution_state == "applied"
         receipt = str(operator.get("receipt") or "")
+        evidence = state.get("evidence") or {}
+        evidence_receipt = str(evidence.get("receipt") or "")
+        run_dir = str(payload.get("run_dir") or "")
+        watcher_receipt = str(Path(run_dir) / "loop" / "watcher_state.json") if run_dir else ""
         failure_fingerprint = ""
         if receipt:
             try:
@@ -1179,6 +1183,8 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             "phase": str(state.get("phase") or "blocked"),
             "execution_state": execution_state or "unknown",
             "receipt": receipt,
+            "evidence_receipt": evidence_receipt,
+            "watcher_receipt": watcher_receipt if Path(watcher_receipt).exists() else "",
             "attempt": int(state.get("attempts") or 0),
             "failure_fingerprint": failure_fingerprint,
             "started_at": started,
