@@ -19,6 +19,7 @@ from .delivery import build_delivery_receipt, normalize_delivery_target, write_d
 from .evidence import build_evidence_receipt, redact_sensitive_text
 from .source_state import github_delivery_payload, infer_github_delivery_state
 from .task_contract import compile_many, validate_contract
+from .plan_contract import PLAN_SCHEMA, validate_plan
 
 RUNNER_SCHEMA = "simplicio.run-manifest/v1"
 STATE_SCHEMA = "simplicio.run-state/v1"
@@ -636,8 +637,9 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
     return payload
 
 
-def _build_plan(tasks: List[Dict[str, Any]], mapper_payload: Dict[str, Any], repo_path: Path) -> Dict[str, Any]:
-    return _build_plan_with_hints(tasks, mapper_payload, repo_path, "")
+def _build_plan(tasks: List[Dict[str, Any]], mapper_payload: Dict[str, Any], repo_path: Path,
+                contract_hash: str = "") -> Dict[str, Any]:
+    return _build_plan_with_hints(tasks, mapper_payload, repo_path, "", contract_hash=contract_hash)
 
 
 def _extract_repo_file_hints(task_text: str, repo_path: Path) -> List[str]:
@@ -663,7 +665,7 @@ def _extract_repo_file_hints(task_text: str, repo_path: Path) -> List[str]:
 
 
 def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str, Any], repo_path: Path,
-                           task_text: str) -> Dict[str, Any]:
+                           task_text: str, *, contract_hash: str = "") -> Dict[str, Any]:
     handoff = ((mapper_payload.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
     explicit_hints = _extract_repo_file_hints(task_text, repo_path)
     filtered_targets = _candidate_targets(mapper_payload, repo_path)
@@ -686,16 +688,20 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
                     "status": "pending",
                 }
             )
+        rule_ids = [str(rule.get("id")) for rule in task.get("rules") or [] if rule.get("id")]
         steps.append(
             {
                 "task_index": index,
                 "title": (task.get("identity") or {}).get("title") or _task_goal(task),
                 "candidate_targets": list(candidate_targets),
+                "to_create": [],
+                "rule_ids": rule_ids,
                 "steps": task_steps,
             }
         )
     return {
-        "schema": "simplicio.plan/v0",
+        "schema": PLAN_SCHEMA,
+        "task_contract_hash": contract_hash,
         "generated_at": _now(),
         "task_count": len(tasks),
         "mapper_targets": list(candidate_targets),
@@ -989,7 +995,16 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         _write_json(run_root / "state.json", state)
         _transition(run_root, state, "planning", "mapper scan/inspect/handoff persisted",
                     receipt=str(run_root / "mapper-context.json"))
-        plan = _build_plan_with_hints(tasks, mapper_payload, repo_path, raw)
+        plan = _build_plan_with_hints(tasks, mapper_payload, repo_path, raw,
+                                      contract_hash=compiled["collection_hash"])
+        plan_validation = validate_plan(
+            plan, tasks, repo_path,
+            contract_hash=compiled["collection_hash"],
+            current_state=_repo_fingerprint(repo_path),
+        )
+        plan["validation"] = plan_validation
+        if not plan_validation["valid"]:
+            raise RuntimeError("mapper-derived plan failed validation: " + ", ".join(plan_validation["errors"]))
         _write_json(run_root / "plan.json", plan)
         state = _load_json(run_root / "state.json")
         state["current_action"] = "plan_materialized"
@@ -1148,6 +1163,11 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
     before = _repo_fingerprint(repo_path)
     current = _repo_fingerprint(repo_path)
     planned_state = plan.get("repo_state") or {}
+    plan_validation = validate_plan(plan, tasks, repo_path,
+                                   contract_hash=contract.get("collection_hash", ""),
+                                   current_state=current)
+    if not plan_validation["valid"]:
+        raise RuntimeError("plan validation failed before operator execution: " + ", ".join(plan_validation["errors"]))
     if planned_state and not _repo_state_equivalent(planned_state, current):
         raise RuntimeError("repository changed after planning; re-run mapper before execution")
     task = tasks[task_index - 1]
