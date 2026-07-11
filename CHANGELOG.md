@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.29.0] — 2026-07-11
+
+- Portable visual progress rendering with ASCII/no-animation fallback, lanes and stage events.
+- Cross-runtime completion oracle CLI with fail-closed receipts.
+- Unified hook/self-paced driver contract with deterministic deduplication and shared gates.
+
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
