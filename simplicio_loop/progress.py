@@ -95,7 +95,19 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
     watcher_status = str(watcher.get("status") or "").upper()
     watcher_ready = bool(watcher.get("ready")) or watcher_status in {"MATCH", "VERIFIED"} or (
         watcher_status == "MEASURED" and watcher.get("match") is True)
-    percent = 100 if ready else min(99, _phase_percent(phase))
+    # A producer may persist a measured percentage when a phase has finer-grained
+    # milestones (for example 25/50/75% within ``executing``).  It is presentation
+    # metadata only: an unverified run can never advertise 100%, even if a stale or
+    # malformed producer wrote that value.
+    supplied_percent = state.get("progress_percent", state.get("percent"))
+    try:
+        supplied_percent = int(supplied_percent) if supplied_percent is not None else None
+    except (TypeError, ValueError):
+        supplied_percent = None
+    phase_percent = min(99, _phase_percent(phase))
+    if supplied_percent is not None:
+        phase_percent = max(0, min(99, supplied_percent))
+    percent = 100 if ready else phase_percent
     icon, label = PHASE_META.get(phase, ("•", phase.replace("_", " ").title()))
     total = int(state.get("task_count") or 0)
     coverage = state.get("coverage") or {}
@@ -185,9 +197,18 @@ def render_markdown(event: Mapping[str, Any], *, width: int = 20, ascii_only: bo
     pct = max(0, min(100, int(event.get("percent") or 0)))
     filled = int(width * pct / 100)
     bar = "█" * filled + "░" * (width - filled)
-    rendered = f"**{event.get('icon', '•')} {event.get('label', 'Progresso')} — {pct}%**\n\n`{bar}` · `{event.get('status', 'RUNNING')}`"
+    gates = event.get("gates") or {}
+    marks = " ".join(f"{'✅' if gates.get(k) else '▫️'} {k}" for k in ("evidence", "watcher", "oracle"))
+    rendered = (f"**{event.get('icon', '•')} {event.get('label', 'Progresso')} — {pct}%**\n\n"
+                f"`{bar}` · `{event.get('status', 'RUNNING')}`\n\n"
+                f"Gates: {marks}\n\n"
+                f"Ação: `{event.get('current_action') or 'aguardando'}` → `{event.get('next_action') or '—'}`")
     if (event.get("lanes") or []):
         rendered += "\n\nLanes: " + ", ".join(f"`{x['id']}` {x['percent']}% ({x['status']})" for x in event["lanes"])
+    events = event.get("events") or []
+    if events:
+        rendered += "\n\nEtapas: " + ", ".join(
+            f"`{x['phase']}` ({x.get('status', 'INFO')})" for x in events[-3:])
     return _ascii(rendered) if ascii_only else rendered
 
 

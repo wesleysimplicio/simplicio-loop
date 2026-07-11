@@ -32,6 +32,11 @@ same card while the run is active. JSON mode is stable for adapters and dashboar
 `COMPLETE` or `DRAINED`. Missing, stale, or malformed receipts remain `UNVERIFIED`; a terminal
 `done` phase without oracle proof is intentionally rendered as `99%`.
 
+Producers that have measured sub-phase milestones may persist `progress_percent` in
+`state.json` (0–99). The renderer clamps this value and uses it only for display; it never
+promotes an unverified state to 100%. This is what makes stable 0/25/50/75 snapshots possible
+without letting a stale writer claim completion.
+
 ## Fan-out e etapas
 
 Quando `state.json` inclui `lanes` ou `events`, o mesmo evento JSON transporta as lanes de
