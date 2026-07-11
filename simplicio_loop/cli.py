@@ -43,6 +43,7 @@ from .ops_ledger import (
     validate_handshake,
 )
 from .progress import stream as stream_progress
+from .oracle import evaluate_matrix, persist_completion_receipt
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -232,6 +233,20 @@ def cancel(repo: str, run_id: str) -> int:
     payload = change_phase(repo, run_id, "cancelled", "cancel requested from CLI")
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def oracle(loop_dir: str, run_dir: str, response_text: str, flow_gap: str,
+           write_receipt: bool) -> int:
+    """Evaluate the shared completion oracle and its cross-runtime parity."""
+    payload = evaluate_matrix(loop_dir, run_dir, response_text=response_text, flow_gap=flow_gap)
+    if write_receipt:
+        # Persist the canonical verdict once; the matrix is only the parity proof.
+        from .oracle import evaluate_completion
+        verdict = evaluate_completion(loop_dir, run_dir, response_text=response_text,
+                                      flow_gap=flow_gap)
+        payload["receipt_path"] = persist_completion_receipt(verdict, loop_dir, run_dir)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if payload.get("parity") and payload.get("signature", [False])[0] else 1
 
 
 def progress(repo: str, run_id: str, fmt: str, once: bool, interval: float) -> int:
@@ -501,6 +516,13 @@ def main(argv=None) -> int:
     p_run.add_argument("--delivery", default="verified", help="requested delivery target")
     p_run.add_argument("--max-iterations", type=int, default=12, help="safety cap")
 
+    p_oracle = sub.add_parser("oracle", help="evaluate completion and cross-runtime parity")
+    p_oracle.add_argument("--loop-dir", default=os.path.join(".orchestrator", "loop"))
+    p_oracle.add_argument("--run-dir", default=os.environ.get("SIMPLICIO_RUN_DIR", ""))
+    p_oracle.add_argument("--response-text", default="")
+    p_oracle.add_argument("--flow-gap", default="")
+    p_oracle.add_argument("--write-receipt", action="store_true")
+
     p_status = sub.add_parser("status", help="show the latest run state or a specific run")
     p_status.add_argument("--repo", default=".", help="repository root")
     p_status.add_argument("--run-id", default="", help="run id to inspect")
@@ -637,6 +659,9 @@ def main(argv=None) -> int:
         return plan(args.task, args.out)
     if command == "run":
         return run(args.repo, args.task, args.delivery, args.max_iterations)
+    if command == "oracle":
+        return oracle(args.loop_dir, args.run_dir, args.response_text, args.flow_gap,
+                      args.write_receipt)
     if command == "status":
         return status(args.repo, args.run_id)
     if command == "progress":

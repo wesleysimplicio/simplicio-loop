@@ -11,6 +11,8 @@ from .evidence import watcher_truth_from_receipt
 
 PROMISE_RE = re.compile(r"<promise>\s*(.*?)\s*</promise>", re.IGNORECASE | re.DOTALL)
 COMPLETION_SCHEMA = "simplicio.completion-receipt/v1"
+ORACLE_MATRIX_SCHEMA = "simplicio.completion-oracle-matrix/v1"
+ADAPTERS = ("cursor", "claude", "codex", "vscode", "antigravity", "hermes")
 
 
 def _gate(name: str, ok: bool, reason_code: str, detail: str) -> Dict[str, Any]:
@@ -259,3 +261,33 @@ def evaluate_completion(loop_dir: str, run_dir: str = "", response_text: str = "
         "tag": "MEASURED",
     })
     return result
+
+
+def evaluate_matrix(loop_dir: str, run_dir: str, response_text: str = "",
+                    flow_gap: str = "") -> Dict[str, Any]:
+    """Evaluate the same completion oracle for every supported host adapter.
+
+    Adapters are deliberately data-only here: hooks transport events, while this
+    function owns the verdict.  A parity failure is therefore a real contract
+    failure rather than six adapters each making a best-effort decision.
+    """
+    rows = []
+    for adapter in ADAPTERS:
+        result = evaluate_completion(loop_dir, run_dir, response_text=response_text,
+                                     flow_gap=flow_gap)
+        rows.append({
+            "adapter": adapter,
+            "ready": bool(result.get("ready")),
+            "verdict": result.get("verdict", "DELIVERY_PENDING"),
+            "reason_code": result.get("reason_code", "oracle_incomplete"),
+            "tag": result.get("tag", "UNVERIFIED"),
+        })
+    signatures = {(row["ready"], row["verdict"], row["reason_code"], row["tag"])
+                  for row in rows}
+    signature = list(next(iter(signatures))) if len(signatures) == 1 else None
+    return {
+        "schema": ORACLE_MATRIX_SCHEMA,
+        "adapters": rows,
+        "parity": len(signatures) == 1,
+        "signature": signature,
+    }
