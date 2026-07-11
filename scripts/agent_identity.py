@@ -52,7 +52,8 @@ def _read(path: Path) -> Optional[dict[str, Any]]:
 def ensure_identity(*, path: Optional[str] = None, runtime: Optional[str] = None,
                     session_id: Optional[str] = None,
                     agent_id: Optional[str] = None,
-                    device_id: Optional[str] = None) -> dict[str, Any]:
+                    device_id: Optional[str] = None,
+                    capabilities: Optional[list[str]] = None) -> dict[str, Any]:
     """Load or atomically create a stable identity for this agent process."""
     target = identity_path(path)
     existing = _read(target)
@@ -63,6 +64,9 @@ def ensure_identity(*, path: Optional[str] = None, runtime: Optional[str] = None
                                 existing.get("runtime") or "unknown")
         existing["session_id"] = (session_id or os.environ.get("SIMPLICIO_SESSION_ID") or
                                    existing.get("session_id") or uuid.uuid4().hex)
+        if capabilities is not None:
+            existing["capabilities"] = list(capabilities)
+        _validate(existing)
         return existing
     value = {
         "schema": SCHEMA,
@@ -72,7 +76,7 @@ def ensure_identity(*, path: Optional[str] = None, runtime: Optional[str] = None
         "runtime": runtime or os.environ.get("SIMPLICIO_RUNTIME") or "unknown",
         "device_id": device_id or _device_id(),
         "session_id": session_id or os.environ.get("SIMPLICIO_SESSION_ID") or uuid.uuid4().hex,
-        "capabilities": ["claim", "heartbeat", "fencing", "receipts"],
+        "capabilities": list(capabilities or ["claim", "heartbeat", "fencing", "receipts"]),
         "issued_at": _now(),
     }
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -89,7 +93,17 @@ def ensure_identity(*, path: Optional[str] = None, runtime: Optional[str] = None
             os.unlink(tmp)
         except FileNotFoundError:
             pass
+    _validate(value)
     return value
+
+
+def _validate(value: dict[str, Any]) -> None:
+    """Reject malformed or duplicate capability identities before persistence."""
+    capabilities = value.get("capabilities") or []
+    if len(capabilities) != len(set(capabilities)):
+        raise ValueError("duplicate capabilities are not allowed")
+    if any(not isinstance(capability, str) or not capability.strip() for capability in capabilities):
+        raise ValueError("capabilities must contain non-empty strings")
 
 
 def lease_identity(identity: Mapping[str, Any]) -> dict[str, str]:

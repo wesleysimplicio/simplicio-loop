@@ -16,7 +16,9 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional, Protocol
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence
+
+from .agent_contract import validate_identity
 
 
 SCHEMA = "simplicio.queue/v1"
@@ -38,11 +40,14 @@ class Lease:
     fencing_token: int
     expires_at: float
     idempotency_key: str
+    identity: Optional[Dict[str, Any]] = None
+    capabilities: tuple[str, ...] = ()
 
 
 class RemoteQueue(Protocol):
     def claim(self, task_id: str, agent_id: str, *, idempotency_key: str,
-              ttl: float = 60.0) -> Lease: ...
+              ttl: float = 60.0, identity: Optional[Mapping[str, Any]] = None,
+              capabilities: Optional[Sequence[str]] = None) -> Lease: ...
 
     def heartbeat(self, lease: Lease, *, ttl: float = 60.0) -> Lease: ...
 
@@ -96,6 +101,7 @@ class SQLiteRemoteQueue:
                 fencing_token INTEGER NOT NULL, idempotency_key TEXT NOT NULL,
                 expires_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'active',
                 receipt_ref TEXT, updated_at REAL NOT NULL,
+                identity TEXT, capabilities TEXT,
                 FOREIGN KEY(task_id) REFERENCES tasks(task_id)
             );
             CREATE TABLE IF NOT EXISTS idempotency (
@@ -109,6 +115,11 @@ class SQLiteRemoteQueue:
             );
             CREATE INDEX IF NOT EXISTS events_task_seq ON events(task_id, seq);
             """)
+            columns = {row[1] for row in c.execute("PRAGMA table_info(leases)").fetchall()}
+            if "identity" not in columns:
+                c.execute("ALTER TABLE leases ADD COLUMN identity TEXT")
+            if "capabilities" not in columns:
+                c.execute("ALTER TABLE leases ADD COLUMN capabilities TEXT")
             c.execute("INSERT OR IGNORE INTO queue_meta(key, value) VALUES('schema', ?)", (SCHEMA,))
 
     @contextlib.contextmanager
@@ -143,9 +154,14 @@ class SQLiteRemoteQueue:
             self._event(c, task_id, "enqueued", "system", None, payload or {})
 
     def claim(self, task_id: str, agent_id: str, *, idempotency_key: str,
-              ttl: float = 60.0) -> Lease:
+              ttl: float = 60.0, identity: Optional[Mapping[str, Any]] = None,
+              capabilities: Optional[Sequence[str]] = None) -> Lease:
         if ttl <= 0 or not agent_id or not idempotency_key:
             raise ValueError("agent_id, idempotency_key and positive ttl are required")
+        normalized_identity = validate_identity(identity, capabilities=capabilities) if identity is not None else None
+        if normalized_identity is not None and normalized_identity["agent_id"] != agent_id:
+            raise QueueConflict("agent_id does not match distributed identity")
+        normalized_caps = tuple(normalized_identity["capabilities"] if normalized_identity else ())
         now = _now()
         lid = _lease_id(task_id, agent_id, idempotency_key)
         try:
@@ -158,8 +174,12 @@ class SQLiteRemoteQueue:
                     row = c.execute("SELECT * FROM leases WHERE task_id=? AND lease_id=?",
                                     (existing["task_id"], existing["lease_id"])).fetchone()
                     if row and row["status"] == "active" and row["expires_at"] > now:
+                        stored_identity = json.loads(row["identity"]) if row["identity"] else None
+                        if normalized_identity is not None and stored_identity != normalized_identity:
+                            raise QueueConflict("idempotency key is bound to another agent identity")
                         return Lease(row["task_id"], row["agent_id"], row["lease_id"], row["fencing_token"],
-                                     row["expires_at"], row["idempotency_key"])
+                                     row["expires_at"], row["idempotency_key"], stored_identity,
+                                     tuple(json.loads(row["capabilities"] or "[]")))
                 task = c.execute("SELECT status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
                 if task is None:
                     raise KeyError("unknown task: %s" % task_id)
@@ -172,23 +192,28 @@ class SQLiteRemoteQueue:
                 expires = now + ttl
                 c.execute(
                     "INSERT OR REPLACE INTO leases(task_id,agent_id,lease_id,fencing_token,"
-                    "idempotency_key,expires_at,status,receipt_ref,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                          (task_id, agent_id, lid, token, idempotency_key, expires, "active", None, now))
+                    "idempotency_key,expires_at,status,receipt_ref,updated_at,identity,capabilities) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                          (task_id, agent_id, lid, token, idempotency_key, expires, "active", None, now,
+                           json.dumps(normalized_identity, sort_keys=True) if normalized_identity else None,
+                           json.dumps(list(normalized_caps))))
                 c.execute(
                     "INSERT OR REPLACE INTO idempotency(idempotency_key,task_id,lease_id,created_at) "
                     "VALUES(?,?,?,?)",
                           (idempotency_key, task_id, lid, now))
                 c.execute("UPDATE tasks SET status='claimed',updated_at=? WHERE task_id=?", (now, task_id))
                 self._event(c, task_id, "claimed", agent_id, token, {"lease_id": lid, "expires_at": expires})
-                return Lease(task_id, agent_id, lid, token, expires, idempotency_key)
+                return Lease(task_id, agent_id, lid, token, expires, idempotency_key,
+                             normalized_identity, normalized_caps)
         except sqlite3.Error as exc:
             raise QueueUnavailable("queue unavailable: %s" % exc) from exc
 
     def _owned(self, c: sqlite3.Connection, lease: Lease) -> sqlite3.Row:
         row = c.execute("SELECT * FROM leases WHERE task_id=?", (lease.task_id,)).fetchone()
+        stored_identity = json.loads(row["identity"]) if row is not None and row["identity"] else None
         if (row is None or row["lease_id"] != lease.lease_id or row["agent_id"] != lease.agent_id or
                 int(row["fencing_token"]) != lease.fencing_token or row["status"] != "active" or
-                row["expires_at"] <= _now()):
+                row["expires_at"] <= _now() or
+                (lease.identity is not None and stored_identity != lease.identity)):
             raise QueueConflict("stale or expired fencing token")
         return row
 
@@ -201,7 +226,7 @@ class SQLiteRemoteQueue:
             c.execute("UPDATE leases SET expires_at=?,updated_at=? WHERE task_id=?", (expires, _now(), lease.task_id))
             self._event(c, lease.task_id, "heartbeat", lease.agent_id, lease.fencing_token, {"expires_at": expires})
             return Lease(lease.task_id, lease.agent_id, lease.lease_id, lease.fencing_token,
-                         expires, lease.idempotency_key)
+                         expires, lease.idempotency_key, lease.identity, lease.capabilities)
 
     def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]:
         if not receipt_ref:
@@ -215,7 +240,8 @@ class SQLiteRemoteQueue:
             self._event(c, lease.task_id, "completed", lease.agent_id, lease.fencing_token,
                         {"receipt_ref": receipt_ref})
             return {"schema": SCHEMA, "task_id": lease.task_id, "status": "completed",
-                    "fencing_token": lease.fencing_token, "receipt_ref": receipt_ref}
+                    "fencing_token": lease.fencing_token, "receipt_ref": receipt_ref,
+                    "agent": lease.identity or {"agent_id": lease.agent_id}}
 
     def release(self, lease: Lease, *, reason: str = "handoff") -> Dict[str, Any]:
         with self._tx() as c:

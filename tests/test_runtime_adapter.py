@@ -101,3 +101,15 @@ def test_runtime_mutation_requires_explicit_negotiation(tmp_path):
     bridge = adapter(tmp_path, FakeRuntime())
     with pytest.raises(RuntimeCompatibilityError, match="negotiate before"):
         bridge.register_run({"source": "issue-177"})
+
+
+def test_runtime_receipts_carry_agent_identity(tmp_path):
+    runtime = FakeRuntime()
+    identity = {"agent_id": "codex-a", "runtime": "codex", "device_id": "laptop-a",
+                "session_id": "s1", "capabilities": ["claim", "heartbeat", "fencing", "receipts"]}
+    bridge = LoopRuntimeAdapter(run_id="run-1", work_item_id="wi-1", actor="codex@host-a",
+                                transport=runtime, outbox_path=tmp_path / "outbox.jsonl", identity=identity)
+    bridge.negotiate()
+    bridge.record_evidence({"schema": "simplicio.evidence-receipt/v1", "status": "VERIFIED"})
+    assert runtime.operations[0]["agent"]["device_id"] == "laptop-a"
+    assert runtime.operations[0]["payload"]["agent"]["agent_id"] == "codex-a"

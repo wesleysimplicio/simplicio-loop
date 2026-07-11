@@ -46,3 +46,22 @@ silently downgrade to last-write-wins. Runtime adapters should show the
 identity in task receipts, never expose another agent's prompt/context, and
 re-query the source after reconnecting.
 
+## Context isolation and receipts
+
+`simplicio_loop.agent_contract` is the shared boundary for every transport:
+
+- `validate_identity()` rejects missing identity fields, unknown capabilities,
+  and duplicate capabilities before a lease or runtime mutation is accepted.
+- `build_context_pack()` emits only the assigned task, acceptance criteria,
+  dependency IDs, and source paths explicitly allow-listed for that worker. It
+  never includes prompts, transcripts, environment variables, or another
+  worker's private state.
+- `bind_receipt()` attaches the immutable `agent` record and rejects a receipt
+  or context pack assigned to a different agent.
+
+The SQLite queue persists the identity and capability set with each lease and
+returns it in the completion receipt. A reconnecting worker must present the
+same identity and fencing token; a duplicate/replayed identity is rejected.
+The runtime adapter carries the same identity on every envelope and binds
+evidence/completion receipts before delivery or outbox buffering.
+

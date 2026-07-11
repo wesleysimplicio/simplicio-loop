@@ -33,9 +33,8 @@ assignees, milestone, acceptance_criteria, comments, linked_prs, linked_items.
   derive + record them. An item that obviously should have ACs but has none is a BLOCKER — ask
   ONE line, don't guess. With a VAGUE goal and no source at all, decompose first (brainstorm the
   subtasks + per-item ACs + `depends_on`) and freeze the plan with `python3
-  scripts/task_backlog.py init --goal "<goal>" --item-file plan.json` (SKILL.md § Phase 0). For a
-  genesis repo, make one explicit `scaffold` item T1 in that input and make every later item
-  depend on T1.
+  scripts/task_backlog.py init --goal "<goal>" --items-file plan.json` (SKILL.md § Phase 0); a
+  GENESIS repo (`task_backlog.py genesis --exit-code` exits 10) leads with the `scaffold` item.
 - Extract design decisions/constraints/rejections from comments ("don't use X", "must integrate
   with Y", reviewer requests) — these override naive title reading.
 - Note linked items/PRs and check status — a blocked dependency is flagged, not ignored.
