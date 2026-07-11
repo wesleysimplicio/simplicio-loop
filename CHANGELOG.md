@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.32.6] — 2026-07-11
+
+- Runtime-compatible Execution Board backlog import and dashboard progress receipts.
+- Cross-runtime adapter matrix with fail-closed isolated verification.
+- Isolated adapter verification now uses minimal mode and cannot trigger host-wide setup.
+
 ## [3.32.2] — 2026-07-11
 
 - Refresh the measured token-budget baseline after the merged runtime, queue, recovery and preflight contracts.
