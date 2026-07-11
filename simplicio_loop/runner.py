@@ -364,6 +364,89 @@ def _task_goal(task: Dict[str, Any]) -> str:
     return " | ".join(parts)
 
 
+def _auto_fan_out_enabled() -> bool:
+    """Return whether batch execution may provision isolated workers automatically.
+
+    Fan-out is the safe default for independent tasks.  Operators can explicitly opt out
+    with ``SIMPLICIO_LOOP_AUTO_FAN_OUT=0`` when a repository cannot create worktrees (for
+    example, a read-only checkout); the ordinary shared-run serial guard remains active in
+    either mode.
+    """
+    raw = os.environ.get("SIMPLICIO_LOOP_AUTO_FAN_OUT", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def _auto_worktree_dispatch(
+    repo: str,
+    run_id: str,
+    contract: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    indices: Sequence[int],
+) -> Tuple[Any, Dict[int, Dict[str, Any]], str]:
+    """Build an isolated queue for a default batch when task impact is independent.
+
+    This helper intentionally fails closed: missing plan targets, a non-git checkout, an
+    overlapping impact key, or a queue allocation error all leave the caller with the
+    existing shared-run serial path.  It never claims parallel execution without distinct
+    worktree contexts.
+    """
+    if not _auto_fan_out_enabled() or len(indices) < 2:
+        return None, {}, "auto_fan_out_disabled" if not _auto_fan_out_enabled() else "single_task"
+    root = Path(repo).resolve()
+    if not (root / ".git").exists():
+        return None, {}, "not_git_checkout"
+    try:
+        from scripts.worktree_queue import TaskSpec, WorktreeQueue
+    except ImportError:  # pragma: no cover - installed bundle without optional adapter
+        try:
+            from worktree_queue import TaskSpec, WorktreeQueue
+        except ImportError:
+            return None, {}, "worktree_adapter_unavailable"
+
+    tasks = list(contract.get("tasks") or [])
+    steps = list(plan.get("steps") or [])
+    specs = []
+    contexts: Dict[int, Dict[str, Any]] = {}
+    for index in indices:
+        if index > len(tasks) or index > len(steps):
+            return None, {}, "plan_task_mismatch"
+        step = steps[index - 1] if isinstance(steps[index - 1], Mapping) else {}
+        targets = [str(value) for value in (step.get("candidate_targets") or []) if str(value).strip()]
+        # A worktree without an authorized target cannot be executed; serial fallback gives
+        # the caller the same clear preflight failure instead of manufacturing a lane.
+        if not targets:
+            return None, {}, "missing_plan_targets"
+        task_id = f"{run_id}-task-{index}"
+        specs.append(TaskSpec(id=task_id, goal=_task_goal(tasks[index - 1]), files_affected=targets))
+    graph = WorktreeQueue.conflict_graph(specs)
+    if any(graph.values()):
+        return None, {}, "overlapping_task_impacts"
+    try:
+        queue = WorktreeQueue(
+            repo_root=str(root),
+            run_id=run_id,
+            state_path=str(root / ".orchestrator" / "runs" / run_id / "worktree-queue.json"),
+            worktree_root=str(root / ".orchestrator" / "worktrees" / run_id),
+        )
+        # Registration is an explicit preflight gate.  Allocation happens inside the
+        # dispatcher, before any worker starts, and is persisted by the queue.
+        queue.register_tasks(specs)
+    except Exception:
+        return None, {}, "worktree_preflight_failed"
+    for index, spec in zip(indices, specs):
+        contexts[index] = {
+            "task_id": spec.id,
+            "task_spec": {
+                "id": spec.id,
+                "goal": spec.goal,
+                "files_affected": list(spec.files_affected),
+            },
+            "isolation": "worktree",
+            "isolation_key": spec.id,
+        }
+    return queue, contexts, ""
+
+
 def _write_scratchpad(loop_dir: Path, goal: str, max_iterations: int, promise: str) -> None:
     body = "\n".join(
         [
@@ -1679,17 +1762,20 @@ def execute_operator_batch(
     retry_budget: int = 3,
     isolated_contexts: Optional[Mapping[int, Mapping[str, Any]]] = None,
     worktree_queue: Any = None,
+    auto_fan_out: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Dispatch all (or selected) tasks from one run through the real operator bridge.
 
-    A normal run shares one state/working tree and is therefore deliberately serialized.  A
-    scheduler that has provisioned worktrees can pass ``isolated_contexts`` (one distinct
-    ``repo``/``run_id`` per task) to unlock parallel execution while retaining the same API.
+    Independent tasks fan out into owned worktrees by default.  Set ``auto_fan_out=False`` or
+    ``SIMPLICIO_LOOP_AUTO_FAN_OUT=0`` to opt out.  If impact metadata, Git, or the worktree
+    adapter is unavailable, the shared-run serial guard remains the safe fallback.
     """
     status = read_status(repo, run_id)
     if (status["state"].get("maintenance") or {}).get("disposition") == "backlog_only":
         raise RuntimeError("maintenance deferred: operator batch is blocked until explicit resume")
     contract = _load_json(Path(status["run_dir"]) / "task-contract.json")
+    run_dir = Path(status["run_dir"])
+    plan = _load_json(run_dir / "plan.json") if (run_dir / "plan.json").exists() else {}
     task_count = len(contract.get("tasks") or [])
     if task_indices is None:
         indices = list(range(1, task_count + 1))
@@ -1697,7 +1783,23 @@ def execute_operator_batch(
         indices = [int(index) for index in task_indices]
     if any(index < 1 or index > task_count for index in indices):
         raise ValueError("task index out of range")
-    contexts = isolated_contexts or {}
+    contexts = dict(isolated_contexts or {})
+    auto_reason = "explicit_contexts" if isolated_contexts else ""
+    if not isolated_contexts and worktree_queue is None and (auto_fan_out is not False):
+        previous = os.environ.get("SIMPLICIO_LOOP_AUTO_FAN_OUT")
+        if auto_fan_out is True:
+            os.environ["SIMPLICIO_LOOP_AUTO_FAN_OUT"] = "1"
+        try:
+            worktree_queue, auto_contexts, auto_reason = _auto_worktree_dispatch(
+                repo, run_id, contract, plan, indices,
+            )
+        finally:
+            if auto_fan_out is True:
+                if previous is None:
+                    os.environ.pop("SIMPLICIO_LOOP_AUTO_FAN_OUT", None)
+                else:
+                    os.environ["SIMPLICIO_LOOP_AUTO_FAN_OUT"] = previous
+        contexts.update(auto_contexts)
     items = []
     for index in indices:
         context = dict(contexts.get(index) or {})
@@ -1726,6 +1828,12 @@ def execute_operator_batch(
         # dispatch_operator_batch derives this from the shared isolation key; retain a clear
         # contract-level marker for callers inspecting the convenience API.
         result["serial_fallback_reason"] = result.get("serial_fallback_reason") or "shared_run_state"
+    result["fan_out"] = {
+        "enabled": bool(worktree_queue is not None and len(contexts) > 1),
+        "default": auto_fan_out is not False,
+        "reason": auto_reason or ("isolated_contexts" if contexts else "serial_fallback"),
+        "contexts": len(contexts),
+    }
     return result
 
 

@@ -209,7 +209,8 @@ def tick(repo: str, run_id: str, task_index: int) -> int:
     return 0
 
 
-def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_budget: int) -> int:
+def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_budget: int,
+          serial: bool = False) -> int:
     """Run selected ready tasks through the durable real-operator pool."""
     indices = None
     if task_indices.strip():
@@ -223,6 +224,7 @@ def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_bud
         indices,
         max_workers=max_workers or None,
         retry_budget=retry_budget,
+        auto_fan_out=not serial,
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
@@ -538,6 +540,10 @@ def main(argv=None) -> int:
         help="maximum live operator workers (default: SIMPLICIO_LOOP_OPERATOR_WORKERS/6)",
     )
     p_batch.add_argument("--retry-budget", type=int, default=3, help="retries after the first attempt")
+    p_batch.add_argument(
+        "--serial", action="store_true",
+        help="disable the default isolated fan-out and force the shared-run serial lane",
+    )
 
     p_cancel = sub.add_parser("cancel", help="cancel a non-terminal run")
     p_cancel.add_argument("--repo", default=".", help="repository root")
@@ -646,7 +652,7 @@ def main(argv=None) -> int:
     if command == "tick":
         return tick(args.repo, args.run_id, args.task_index)
     if command == "batch":
-        return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget)
+        return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget, args.serial)
     if command == "cancel":
         return cancel(args.repo, args.run_id)
     if command in {"maintenance-deferred", "defer-maintenance"}:

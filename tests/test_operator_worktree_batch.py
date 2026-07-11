@@ -6,6 +6,61 @@ from types import SimpleNamespace
 from simplicio_loop import runner
 
 
+def test_auto_fan_out_requires_independent_plan_targets(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+
+    class Queue:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.registered = []
+
+        def register_tasks(self, specs):
+            self.registered = list(specs)
+
+        @staticmethod
+        def conflict_graph(specs):
+            return {spec.id: [] for spec in specs}
+
+    import scripts.worktree_queue as worktree_queue
+    monkeypatch.setattr(worktree_queue, "WorktreeQueue", Queue)
+    contract = {"tasks": [{"identity": {"feature": "A"}}, {"identity": {"feature": "B"}}]}
+    plan = {"steps": [{"candidate_targets": ["src/a.py"]}, {"candidate_targets": ["src/b.py"]}]}
+
+    queue, contexts, reason = runner._auto_worktree_dispatch(
+        str(tmp_path), "run-1", contract, plan, [1, 2]
+    )
+
+    assert isinstance(queue, Queue)
+    assert reason == ""
+    assert set(contexts) == {1, 2}
+    assert {spec.files_affected[0] for spec in queue.registered} == {"src/a.py", "src/b.py"}
+
+
+def test_auto_fan_out_falls_back_for_overlapping_targets(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    contract = {"tasks": [{"identity": {"feature": "A"}}, {"identity": {"feature": "B"}}]}
+    plan = {"steps": [{"candidate_targets": ["src/shared.py"]}, {"candidate_targets": ["src/shared.py"]}]}
+
+    queue, contexts, reason = runner._auto_worktree_dispatch(
+        str(tmp_path), "run-1", contract, plan, [1, 2]
+    )
+
+    assert queue is None
+    assert contexts == {}
+    assert reason == "overlapping_task_impacts"
+
+
+def test_auto_fan_out_can_be_disabled(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setenv("SIMPLICIO_LOOP_AUTO_FAN_OUT", "0")
+    queue, contexts, reason = runner._auto_worktree_dispatch(
+        str(tmp_path), "run-1", {"tasks": [{}, {}]}, {"steps": [{}, {}]}, [1, 2]
+    )
+    assert queue is None
+    assert contexts == {}
+    assert reason == "auto_fan_out_disabled"
+
+
 class FakeQueue:
     def __init__(self, root: Path):
         self.root = root
