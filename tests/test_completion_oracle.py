@@ -311,6 +311,8 @@ def test_oracle_writes_completion_receipt_bound_to_run_and_challenge(tmp_path):
     assert receipt["run_id"] == "r1"
     assert receipt["challenge"] == "abc"
     assert receipt["artifacts"]["delivery_receipt"].endswith("delivery-receipt.json")
+    assert receipt["delivery_target"] == "verified"
+    assert receipt["delivery_state"] == "verified"
 
 
 if __name__ == "__main__":
