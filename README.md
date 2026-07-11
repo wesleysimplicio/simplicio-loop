@@ -141,7 +141,7 @@ simplicio-loop progress <run-id> --format text --ascii --no-animation  # log/Pow
 ```
 
 `100%` só aparece com receipt do oracle pronto (`COMPLETE`/`DRAINED`); uma fase `done` sem prova
-fica em `99%` e mostra o blocker. Consulte o contrato completo em
+fica quase concluída e mostra o blocker. Consulte o contrato completo em
 [`docs/PROGRESS_PROTOCOL.md`](docs/PROGRESS_PROTOCOL.md).
 
 ---
