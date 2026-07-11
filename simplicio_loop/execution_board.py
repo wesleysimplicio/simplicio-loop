@@ -27,6 +27,25 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
 
+def _read_backlog(path: str | Path) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Read the portable JSONL backlog format without importing CLI internals."""
+    master: Dict[str, Any] = {}
+    items: List[Dict[str, Any]] = []
+    try:
+        with Path(path).open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if row.get("kind") == "master":
+                    master = row
+                elif row.get("kind") == "item":
+                    items.append(row)
+    except (OSError, ValueError, TypeError) as exc:
+        raise BoardError("invalid backlog JSONL: %s" % exc) from exc
+    return master, items
+
+
 class BoardError(ValueError):
     pass
 
@@ -40,6 +59,43 @@ class ExecutionBoard:
         self.run_id = run_id
         self.external = bool(external)
         self._events: List[Dict[str, Any]] = []
+
+    @classmethod
+    def from_backlog(cls, path: str | Path, *, run_id: Optional[str] = None,
+                     external: bool = False) -> "ExecutionBoard":
+        """Import a frozen backlog into a deterministic local board projection.
+
+        The backlog remains the source of truth.  Each canonical WorkItem is carried
+        losslessly in a ``created`` event so a Runtime/desktop consumer can render one
+        card without reconstructing or dropping acceptance criteria and metadata.
+        """
+        master, items = _read_backlog(path)
+        if not master or not items:
+            raise BoardError("backlog must contain one master and at least one WorkItem")
+        if master.get("schema") != "simplicio.backlog/v2":
+            raise BoardError("unsupported backlog schema")
+        if (master.get("contract") or {}).get("name") != "simplicio.work-items/v1":
+            raise BoardError("unsupported WorkItem contract")
+        ids = [str(item.get("id") or "") for item in items]
+        if not all(ids) or len(set(ids)) != len(ids):
+            raise BoardError("backlog contains missing or duplicate WorkItem ids")
+        board = cls(run_id=run_id or str(master.get("goal_fp") or master.get("goal") or "backlog"),
+                    external=external)
+        for item in sorted(items, key=lambda row: str(row.get("id"))):
+            board.append("created", item_id=str(item["id"]), payload={
+                "title": str(item.get("goal") or item["id"]),
+                "status": str(item.get("status") or "ready"),
+                "work_item": item,
+                "goal": item.get("goal"), "goal_fp": item.get("goal_fp"),
+                "acs": list(item.get("acs") or []),
+                "depends_on": list(item.get("depends_on") or []),
+                "source_refs": list(item.get("source_refs") or []),
+                "required_evidence": list(item.get("required_evidence") or []),
+                "risks": list(item.get("risks") or []),
+                "estimate": item.get("estimate"),
+                "scheduling_hints": dict(item.get("scheduling_hints") or {}),
+            })
+        return board
 
     @property
     def events(self) -> List[Dict[str, Any]]:
@@ -89,6 +145,17 @@ class ExecutionBoard:
             if event["kind"] == "created":
                 card["title"] = str(payload.get("title") or item_id)
                 card["depends_on"] = list(payload.get("depends_on") or [])
+                if isinstance(payload.get("work_item"), Mapping):
+                    card["work_item"] = dict(payload["work_item"])
+                for field in ("goal", "goal_fp", "acs", "source_refs", "required_evidence",
+                              "risks", "estimate", "scheduling_hints"):
+                    if field in payload:
+                        value = payload[field]
+                        card[field] = (dict(value) if isinstance(value, Mapping)
+                                       else list(value) if isinstance(value, list) else value)
+                initial_status = str(payload.get("status") or "queued")
+                if initial_status in {"queued", "ready", "blocked", "done", "skipped", "cancelled"}:
+                    card["status"] = initial_status
             elif event["kind"] == "dependency_blocked":
                 card["status"] = "blocked"
             elif event["kind"] == "claimed":

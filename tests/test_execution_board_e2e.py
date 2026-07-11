@@ -40,3 +40,36 @@ def test_board_replay_rejects_tampering(tmp_path):
     from simplicio_loop.execution_board import BoardError, ExecutionBoard
     with __import__("pytest").raises(BoardError):
         ExecutionBoard(run_id="fixture-178-multi-item").replay([json.loads(line) for line in lines])
+
+
+def test_board_imports_frozen_workitems_losslessly_and_deterministically(tmp_path):
+    items = [
+        {"kind": "item", "id": "WI-B", "goal": "Ship B", "goal_fp": "fp-b",
+         "acs": ["B is verified"], "status": "ready", "depends_on": ["WI-A"],
+         "source_refs": [{"path": "README.md", "sha1": "abc"}],
+         "required_evidence": ["watcher"], "risks": ["remote"], "estimate": 3,
+         "scheduling_hints": {"lane": "parallel"}, "extra": {"owner": "runtime"}},
+        {"kind": "item", "id": "WI-A", "goal": "Ship A", "goal_fp": "fp-a",
+         "acs": ["A is verified"], "status": "done", "depends_on": [],
+         "source_refs": [], "required_evidence": ["receipt"], "risks": [],
+         "estimate": 1, "scheduling_hints": {}},
+    ]
+    master = {"kind": "master", "schema": "simplicio.backlog/v2", "goal": "release",
+              "goal_fp": "goal-fp", "contract": {"name": "simplicio.work-items/v1"}}
+    path = tmp_path / "backlog.jsonl"
+    path.write_text("\n".join(json.dumps(row) for row in [master] + items) + "\n", encoding="utf-8")
+    from simplicio_loop.execution_board import BoardError, ExecutionBoard
+    first = ExecutionBoard.from_backlog(path, run_id="run-import")
+    second = ExecutionBoard.from_backlog(path, run_id="run-import")
+    projection = first.replay()
+    assert projection["external_status"] == "UNVERIFIED"
+    assert [card["id"] for card in projection["cards"]] == ["WI-A", "WI-B"]
+    imported = {card["id"]: card["work_item"] for card in projection["cards"]}
+    assert imported["WI-B"] == items[0]
+    assert projection["cards"][1]["required_evidence"] == ["watcher"]
+    assert projection["cards"][1]["depends_on"] == ["WI-A"]
+    assert projection["projection_hash"] == second.replay()["projection_hash"]
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text(json.dumps({"kind": "master", "schema": "unknown"}) + "\n", encoding="utf-8")
+    with __import__("pytest").raises(BoardError):
+        ExecutionBoard.from_backlog(bad)
