@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.32.1] — 2026-07-11
+
+- Add the operational manual and examples required by the Runtime standard-I/O smoke gate.
+- Runtime 3.5.0 contract smoke now passes all artifacts and adapters on a clean repository checkout.
+
 ## [3.32.0] — 2026-07-11
 
 - Crash recovery handshake with source re-query, runtime replay, lease reclaim and identity drift protection.
