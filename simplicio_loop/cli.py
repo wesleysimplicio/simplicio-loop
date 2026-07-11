@@ -42,6 +42,7 @@ from .ops_ledger import (
     LedgerError,
     validate_handshake,
 )
+from .progress import stream as stream_progress
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -230,6 +231,22 @@ def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_bud
 def cancel(repo: str, run_id: str) -> int:
     payload = change_phase(repo, run_id, "cancelled", "cancel requested from CLI")
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def progress(repo: str, run_id: str, fmt: str, once: bool, interval: float) -> int:
+    """Render a run's portable progress event for an LLM, terminal, or dashboard."""
+    try:
+        status = read_status(repo, run_id)
+    except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
+        print(json.dumps({"schema": "simplicio.progress/v1", "status": "UNVERIFIED",
+                          "reason_code": "run_missing", "error": str(exc)}, ensure_ascii=False))
+        return 2
+    if not status or not status.get("run_dir"):
+        print(json.dumps({"schema": "simplicio.progress/v1", "status": "UNVERIFIED",
+                          "reason_code": "run_missing"}, ensure_ascii=False))
+        return 2
+    stream_progress(status["run_dir"], fmt=fmt, once=once, interval=interval)
     return 0
 
 
@@ -488,6 +505,15 @@ def main(argv=None) -> int:
     p_status.add_argument("--repo", default=".", help="repository root")
     p_status.add_argument("--run-id", default="", help="run id to inspect")
 
+    p_progress = sub.add_parser("progress", help="render visual progress for a run")
+    p_progress.add_argument("--repo", default=".", help="repository root")
+    p_progress.add_argument("run_id", help="run id to render")
+    p_progress.add_argument("--format", choices=("text", "json", "markdown", "ansi"),
+                            default="text", dest="fmt", help="output format")
+    p_progress.add_argument("--once", action="store_true", help="render one snapshot")
+    p_progress.add_argument("--interval", type=float, default=0.25,
+                            help="animation polling interval in seconds")
+
     p_resume = sub.add_parser("resume", help="resume a non-terminal run")
     p_resume.add_argument("--repo", default=".", help="repository root")
     p_resume.add_argument("run_id", help="run id to resume")
@@ -613,6 +639,8 @@ def main(argv=None) -> int:
         return run(args.repo, args.task, args.delivery, args.max_iterations)
     if command == "status":
         return status(args.repo, args.run_id)
+    if command == "progress":
+        return progress(args.repo, args.run_id, args.fmt, args.once, args.interval)
     if command == "resume":
         return resume(args.repo, args.run_id)
     if command == "tick":
