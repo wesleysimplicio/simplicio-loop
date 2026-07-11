@@ -43,8 +43,8 @@ def _install(runtime, target):
     system-wide dependency/model/monitor setup regardless of `--target` (the target scopes
     files, not the host's Python/services). Running that in a verifier would mutate the real
     environment and can block on package/model/network work, contradicting this script's
-    throwaway contract. This harness verifies the skills/entry/hooks contract, not operator
-    installation.
+    throwaway contract. This harness verifies the skills/entry/hooks contract, not
+    operator/dependency installation.
     """
     return subprocess.run(
         [sys.executable, os.path.join(HERE, "install_lib.py"), runtime,
