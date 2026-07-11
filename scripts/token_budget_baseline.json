@@ -3,18 +3,18 @@
   "artifacts": {
     ".claude/skills/simplicio-loop/SKILL.md": {
       "label": "SKILL.md (simplicio-loop)",
-      "tokens": 6610,
-      "words": 3743
+      "tokens": 7022,
+      "words": 3988
     },
     ".simplicio\\architecture-inventory.json": {
       "label": "mapper artifact (architecture-inventory.json)",
-      "tokens": 109100,
-      "words": 25699
+      "tokens": 134195,
+      "words": 31356
     },
     ".simplicio\\call-graph.json": {
       "label": "mapper artifact (call-graph.json)",
-      "tokens": 77140,
-      "words": 15938
+      "tokens": 77146,
+      "words": 15934
     },
     ".simplicio\\endpoint-inventory.json": {
       "label": "mapper artifact (endpoint-inventory.json)",
@@ -28,18 +28,18 @@
     },
     ".simplicio\\map-job.json": {
       "label": "mapper artifact (map-job.json)",
-      "tokens": 1053,
-      "words": 342
+      "tokens": 1102,
+      "words": 354
     },
     ".simplicio\\precedent-index.json": {
       "label": "mapper artifact (precedent-index.json)",
-      "tokens": 38799,
-      "words": 12829
+      "tokens": 38662,
+      "words": 12389
     },
     ".simplicio\\project-map.json": {
       "label": "mapper artifact (project-map.json)",
-      "tokens": 102110,
-      "words": 21550
+      "tokens": 129051,
+      "words": 26985
     },
     ".simplicio\\runtime-project-map.json": {
       "label": "mapper artifact (runtime-project-map.json)",
@@ -58,18 +58,18 @@
     },
     ".simplicio\\symbol-index.json": {
       "label": "mapper artifact (symbol-index.json)",
-      "tokens": 244864,
-      "words": 60332
+      "tokens": 270829,
+      "words": 66401
     },
     "AGENTS.md": {
       "label": "AGENTS.md",
-      "tokens": 1694,
-      "words": 964
+      "tokens": 1744,
+      "words": 988
     },
     "CLAUDE.md": {
       "label": "CLAUDE.md",
-      "tokens": 2050,
-      "words": 1051
+      "tokens": 2115,
+      "words": 1089
     },
     "scripts/check.py": {
       "label": "check.py",
@@ -78,13 +78,13 @@
     },
     "scripts/claims_audit.py": {
       "label": "claims_audit.py",
-      "tokens": 6284,
-      "words": 2590
+      "tokens": 6293,
+      "words": 2591
     },
     "scripts/loop_journal.py": {
       "label": "loop_journal.py",
-      "tokens": 8634,
-      "words": 3626
+      "tokens": 10736,
+      "words": 4578
     },
     "scripts/task_anchor.py": {
       "label": "task_anchor.py",
@@ -98,11 +98,11 @@
     },
     "simplicio_loop/cli.py": {
       "label": "cli.py",
-      "tokens": 6619,
-      "words": 2304
+      "tokens": 8112,
+      "words": 2707
     }
   },
   "estimator": "heuristic:chars-div-4",
-  "generated_at": "2026-07-10T17:57:50Z",
+  "generated_at": "2026-07-11T14:58:25Z",
   "threshold_growth": 0.25
 }
