@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import pytest
 
 from simplicio_loop import runner as runner_mod
 from simplicio_loop.oracle import persist_completion_receipt
@@ -253,6 +254,80 @@ def test_run_arms_persisted_state_and_status_resume_cancel(tmp_path):
     assert cancelled.returncode == 0, cancelled.stdout + cancelled.stderr
     cancelled_payload = json.loads(cancelled.stdout)
     assert cancelled_payload["state"]["phase"] == "cancelled"
+
+
+def _start_run_for_maintenance_cli(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
+    task = tmp_path / "task.md"
+    task.write_text(TASK, encoding="utf-8")
+    monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON", json.dumps({
+        "version_stdout": "simplicio-mapper 0.14.2",
+        "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
+        "version_returncode": 0,
+        "help_returncode": 0,
+    }))
+    monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON", json.dumps({
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_returncode": 0,
+    }))
+    monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", json.dumps({
+        "execution_state": "dry_run", "returncode": 0,
+        "stdout": {"kind": "operator-proposal", "ok": True}, "stderr": "",
+        "argv": ["simplicio-dev-cli", "task", "demo"],
+    }))
+
+    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task)], REPO)
+    assert started.returncode == 0, started.stdout + started.stderr
+    return repo, json.loads(started.stdout)["manifest"]["run_id"]
+
+
+def test_maintenance_deferred_cli_serializes_mode_without_operator(tmp_path, monkeypatch):
+    repo, run_id = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
+    run_dir = repo / ".orchestrator" / "runs" / run_id
+    operator_receipt = run_dir / "operator-receipt.json"
+    operator_before = operator_receipt.read_text(encoding="utf-8")
+
+    deferred = _run(CLI + [
+        "maintenance-deferred", "--repo", str(repo), run_id,
+        "--mode", "maintenance_deferred", "--disposition", "backlog_only",
+        "--correction-summary", "Corrected the maintenance backlog entry.",
+        "--deferral-reason", "Operator maintenance window is active.",
+        "--resume-instruction", "Resume from the maintenance receipt.",
+        "--resume-instruction", "Run the operator after maintenance.",
+    ], REPO)
+    assert deferred.returncode == 0, deferred.stdout + deferred.stderr
+    status = json.loads(deferred.stdout)
+
+    receipt = json.loads((run_dir / "maintenance-receipt.json").read_text(encoding="utf-8"))
+    assert receipt["mode"] == "maintenance_deferred"
+    assert receipt["disposition"] == "backlog_only"
+    assert receipt["completion_ready"] is False
+    assert operator_receipt.read_text(encoding="utf-8") == operator_before
+    assert status["state"]["completion"]["ready"] is False
+    assert status["state"]["completion"]["tag"] == "UNVERIFIED"
+    assert status["state"]["maintenance"]["mode"] == "maintenance_deferred"
+    assert status["state"]["next_action"] == "resume_from_maintenance_receipt"
+
+
+def test_maintenance_deferred_cli_rejects_non_deferred_mode(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_id = "missing-run"
+    rejected = _run(CLI + [
+        "maintenance-deferred", "--repo", str(repo), run_id,
+        "--mode", "active", "--disposition", "backlog_only",
+        "--correction-summary", "summary", "--deferral-reason", "reason",
+    ], REPO)
+    assert rejected.returncode == 2
+    assert json.loads(rejected.stdout) == {
+        "ready": False,
+        "reason_code": "maintenance_mode_invalid",
+        "tag": "UNVERIFIED",
+    }
+    assert not (repo / ".orchestrator" / "runs" / run_id / "maintenance-receipt.json").exists()
 
 
 def test_resume_rejects_terminal_cancelled_run(tmp_path):
@@ -877,6 +952,47 @@ def test_sync_source_infers_merged_even_when_target_is_merge_ready(tmp_path):
     synced_payload = json.loads(synced.stdout)
     assert synced_payload["state"]["delivery"]["current_state"] == "merged"
     assert synced_payload["state"]["delivery"]["ready"] is True
+
+
+def test_maintenance_deferred_invalidates_ready_completion_receipt(tmp_path, monkeypatch):
+    repo, run_id = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
+    run_dir = repo / ".orchestrator" / "runs" / run_id
+    (run_dir / "completion-receipt.json").write_text(json.dumps({"ready": True, "verdict": "COMPLETE", "tag": "MEASURED"}), encoding="utf-8")
+
+    result = runner_mod.defer_maintenance_backlog_only(
+        str(repo), run_id, correction_summary="stale receipt",
+        deferral_reason="maintenance window", resume_instructions=["resume later"],
+    )
+
+    persisted = json.loads((run_dir / "completion-receipt.json").read_text(encoding="utf-8"))
+    assert persisted["ready"] is False
+    assert persisted["verdict"] == "DELIVERY_PENDING"
+    assert persisted["reason_code"] == "maintenance_deferred"
+    assert result["state"]["completion"]["ready"] is False
+
+
+def test_maintenance_deferred_rejects_terminal_run(tmp_path, monkeypatch):
+    repo, run_id = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
+    runner_mod.change_phase(str(repo), run_id, "done", "test terminal")
+
+    with pytest.raises(ValueError, match="run already terminal"):
+        runner_mod.defer_maintenance_backlog_only(
+            str(repo), run_id, correction_summary="late",
+            deferral_reason="maintenance", resume_instructions=["resume"],
+        )
+
+
+def test_maintenance_deferred_blocks_operator_and_batch(tmp_path, monkeypatch):
+    repo, run_id = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
+    runner_mod.defer_maintenance_backlog_only(
+        str(repo), run_id, correction_summary="freeze",
+        deferral_reason="maintenance", resume_instructions=["resume"],
+    )
+
+    with pytest.raises(RuntimeError, match="maintenance deferred"):
+        runner_mod.execute_operator(str(repo), run_id)
+    with pytest.raises(RuntimeError, match="maintenance deferred"):
+        runner_mod.execute_operator_batch(str(repo), run_id)
 
 
 if __name__ == "__main__":
