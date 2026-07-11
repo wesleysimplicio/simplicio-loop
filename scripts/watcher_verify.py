@@ -7,6 +7,7 @@ Without challenge + anchor criteria + structured evidence, the watcher fails clo
 import json
 import os
 import subprocess
+import hashlib
 import sys
 import tempfile
 import time
@@ -71,6 +72,7 @@ def _git_meta():
     diff = _run("diff", "--no-ext-diff", "HEAD")
     return {
         "commit_sha": _run("rev-parse", "HEAD"),
+        "diff_hash": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
         "diff_present": bool(diff.strip()),
     }
 
@@ -140,6 +142,14 @@ def cmd_verify():
     if not criteria_results:
         reasons.append("no criteria results could be recomputed")
 
+    run_meta = (evidence or {}).get("run") or {}
+    git_meta = _git_meta()
+    expected_commit = run_meta.get("commit_sha", "")
+    expected_diff = run_meta.get("diff_hash", "")
+    if expected_commit and git_meta["commit_sha"] and expected_commit != git_meta["commit_sha"]:
+        reasons.append("run commit differs from watcher worktree")
+    if expected_diff and expected_diff != git_meta["diff_hash"]:
+        reasons.append("run diff differs from watcher worktree")
     all_criteria_match = bool(criteria_results) and all(item["match"] for item in criteria_results)
     ready = not reasons and truth["ready"] and executed["all_passed"] and all_criteria_match
     reported = truth["reported"]
@@ -152,8 +162,6 @@ def cmd_verify():
             len(executed["results"]),
         )
 
-    run_meta = (evidence or {}).get("run") or {}
-    git_meta = _git_meta()
     receipt = {
         "schema": "simplicio.watcher-receipt/v1",
         "match": ready,

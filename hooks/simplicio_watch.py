@@ -36,6 +36,11 @@ PROXY_SERVICE = "ai.simplicio.proxy"
 
 
 def log(msg):
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        msg = str(msg).encode(encoding).decode(encoding)
+    except UnicodeEncodeError:
+        msg = str(msg).encode(encoding, errors="replace").decode(encoding)
     print(msg)
 
 
