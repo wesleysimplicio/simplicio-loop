@@ -15,7 +15,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Tuple, TypedDict
 
-from .delivery import build_delivery_receipt, normalize_delivery_target, write_delivery_receipt
+from .delivery import (build_delivery_receipt, normalize_delivery_target,
+                       reconcile_delivery_observation, write_delivery_receipt)
 from .evidence import build_evidence_receipt, redact_sensitive_text
 from .source_state import github_delivery_payload, infer_github_delivery_state
 from .task_contract import compile_many, validate_contract
@@ -2010,9 +2011,17 @@ def reconcile_delivery(repo: str, run_id: str, current_state: str, source_kind: 
     run_dir = Path(status["run_dir"])
     manifest = status["manifest"]
     state = status["state"]
+    previous_receipt = None
+    previous_path = run_dir / "delivery-receipt.json"
+    if previous_path.exists():
+        try:
+            previous_receipt = _load_json(previous_path)
+        except (OSError, ValueError, TypeError):
+            previous_receipt = None
     receipt = build_delivery_receipt(str(run_dir), manifest.get("delivery_target") or "verified",
                                      current_state=current_state, source_kind=source_kind,
                                      source_payload=source_payload or {})
+    receipt["reconciliation"] = reconcile_delivery_observation(previous_receipt, receipt)
     write_delivery_receipt(str(run_dir), receipt)
     state["delivery"] = {
         "target": receipt["target"],
@@ -2022,7 +2031,20 @@ def reconcile_delivery(repo: str, run_id: str, current_state: str, source_kind: 
         "source_checked_at": receipt["source_checked_at"],
         "source_kind": source_kind,
     }
-    if receipt["ready"]:
+    reconciliation = receipt.get("reconciliation") or {}
+    if reconciliation.get("status") == "reopened":
+        state["current_action"] = "delivery_reopened"
+        state["next_action"] = "requery_source"
+        next_phase = "partial"
+        state.setdefault("blockers", [])
+        failed_gate = next((gate for gate in receipt.get("gates", [])
+                            if gate.get("status") == "fail"), {})
+        state["blockers"] = [
+            "delivery reopened: " + str(failed_gate.get("detail") or
+                                         reconciliation.get("reason_code") or
+                                         "delivery_target_regressed")
+        ]
+    elif receipt["ready"]:
         state["current_action"] = "delivery_reconciled"
         state["next_action"] = "completion_oracle"
         next_phase = "delivering" if current_state not in {"verified", "done"} else "validating"

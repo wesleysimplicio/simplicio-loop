@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 DELIVERY_SCHEMA = "simplicio.delivery-receipt/v1"
+RECONCILIATION_SCHEMA = "simplicio.delivery-reconciliation/v1"
 DELIVERY_ORDER = [
     "planned",
     "implemented",
@@ -50,6 +51,50 @@ def delivery_rank(value: str) -> int:
 
 def delivery_satisfies(current_state: str, target: str) -> bool:
     return delivery_rank(current_state) >= delivery_rank(target) >= 0
+
+
+def reconcile_delivery_observation(previous_receipt: Dict[str, Any] | None,
+                                   current_receipt: Dict[str, Any], *,
+                                   expected_previous_fingerprint: str = "") -> Dict[str, Any]:
+    """Classify a fresh observation against the last delivery receipt.
+
+    This local contract makes the race visible: a target that was previously ready
+    but no longer validates is ``reopened``.  An optimistic worker can require the
+    fingerprint it read; a concurrent writer then yields ``stale`` instead of an
+    unsafe overwrite.  External GitHub/release queries remain caller responsibilities.
+    """
+    previous = previous_receipt or {}
+    previous_fp = str(previous.get("source_fingerprint") or "")
+    current_fp = str(current_receipt.get("source_fingerprint") or "")
+    target = str(current_receipt.get("target") or previous.get("target") or "")
+    previous_state = str(previous.get("current_state") or "planned")
+    current_state = str(current_receipt.get("current_state") or "planned")
+    prior_ready = bool(previous.get("ready")) and delivery_satisfies(previous_state, target)
+    current_ready = bool(current_receipt.get("ready")) and delivery_satisfies(current_state, target)
+    result: Dict[str, Any] = {
+        "schema": RECONCILIATION_SCHEMA,
+        "status": "observed",
+        "reason_code": "fresh_observation",
+        "previous_fingerprint": previous_fp,
+        "current_fingerprint": current_fp,
+        "previous_state": previous_state,
+        "current_state": current_state,
+        "target": target,
+    }
+    if expected_previous_fingerprint and expected_previous_fingerprint != previous_fp:
+        result.update({"status": "stale", "reason_code": "previous_observation_changed"})
+    elif previous_fp and previous_fp == current_fp:
+        result.update({"status": "unchanged", "reason_code": "same_source_observation"})
+    elif prior_ready and not current_ready:
+        failed = next((gate for gate in current_receipt.get("gates", [])
+                       if gate.get("status") == "fail"), {})
+        result.update({
+            "status": "reopened",
+            "reason_code": failed.get("reason_code", "delivery_target_regressed"),
+        })
+    elif current_ready and not prior_ready:
+        result.update({"status": "advanced", "reason_code": "delivery_target_met"})
+    return result
 
 
 def _gate(name: str, ok: bool, reason_code: str, detail: str) -> Dict[str, Any]:
