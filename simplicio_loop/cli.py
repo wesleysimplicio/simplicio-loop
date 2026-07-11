@@ -25,6 +25,7 @@ from .runner import (
     arm_run,
     apply_human_decision,
     change_phase,
+    defer_maintenance_backlog_only,
     execute_operator,
     execute_operator_batch,
     read_status,
@@ -229,6 +230,28 @@ def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_bud
 def cancel(repo: str, run_id: str) -> int:
     payload = change_phase(repo, run_id, "cancelled", "cancel requested from CLI")
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def maintenance_deferred(repo: str, run_id: str, mode: str, disposition: str,
+                         correction_summary: str, deferral_reason: str,
+                         resume_instructions: list[str], evidence_status: str) -> int:
+    if mode != "maintenance_deferred" or disposition != "backlog_only":
+        print(json.dumps({
+            "ready": False,
+            "reason_code": "maintenance_mode_invalid",
+            "tag": "UNVERIFIED",
+        }, ensure_ascii=False, sort_keys=True))
+        return 2
+    payload = defer_maintenance_backlog_only(
+        repo,
+        run_id,
+        correction_summary=correction_summary,
+        deferral_reason=deferral_reason,
+        resume_instructions=resume_instructions,
+        evidence_status=evidence_status,
+    )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -494,6 +517,26 @@ def main(argv=None) -> int:
     p_cancel.add_argument("--repo", default=".", help="repository root")
     p_cancel.add_argument("run_id", help="run id to cancel")
 
+    p_maintenance = sub.add_parser(
+        "maintenance-deferred",
+        aliases=["defer-maintenance"],
+        help="record a maintenance-deferred backlog-only transition",
+    )
+    p_maintenance.add_argument("--repo", default=".", help="repository root")
+    p_maintenance.add_argument("run_id", help="run id to update")
+    p_maintenance.add_argument(
+        "--mode", choices=("active", "maintenance_deferred"), required=True,
+        help="explicit runner mode",
+    )
+    p_maintenance.add_argument(
+        "--disposition", choices=("operator", "backlog_only"), required=True,
+        help="explicit runner disposition",
+    )
+    p_maintenance.add_argument("--correction-summary", required=True)
+    p_maintenance.add_argument("--deferral-reason", required=True)
+    p_maintenance.add_argument("--resume-instruction", action="append", default=[])
+    p_maintenance.add_argument("--evidence-status", default="UNVERIFIED")
+
     p_deliver = sub.add_parser("deliver", help="reconcile delivery state against local/external source evidence")
     p_deliver.add_argument("--repo", default=".", help="repository root")
     p_deliver.add_argument("run_id", help="run id to reconcile")
@@ -578,6 +621,12 @@ def main(argv=None) -> int:
         return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget)
     if command == "cancel":
         return cancel(args.repo, args.run_id)
+    if command in {"maintenance-deferred", "defer-maintenance"}:
+        return maintenance_deferred(
+            args.repo, args.run_id, args.mode, args.disposition,
+            args.correction_summary, args.deferral_reason,
+            args.resume_instruction, args.evidence_status,
+        )
     if command == "deliver":
         return deliver(args.repo, args.run_id, args.state, args.source_kind, args.payload_file)
     if command == "decide":

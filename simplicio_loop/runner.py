@@ -13,7 +13,7 @@ import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, TypedDict
+from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Tuple, TypedDict
 
 from .delivery import build_delivery_receipt, normalize_delivery_target, write_delivery_receipt
 from .evidence import build_evidence_receipt, redact_sensitive_text
@@ -23,6 +23,7 @@ from .task_contract import compile_many, validate_contract
 RUNNER_SCHEMA = "simplicio.run-manifest/v1"
 STATE_SCHEMA = "simplicio.run-state/v1"
 OPERATOR_RECEIPT_SCHEMA = "simplicio.operator-receipt/v0"
+MAINTENANCE_RECEIPT_SCHEMA = "simplicio.maintenance-receipt/v1"
 PHASES = [
     "intake",
     "awaiting_decision",
@@ -42,6 +43,11 @@ MAPPER_REQUIRED_VERBS = ("inspect", "handoff", "ask", "sync", "drift")
 DEVCLI_REQUIRED_TOKENS = (" task", "--dry-run-task", "--json")
 DEFAULT_OPERATOR_WORKERS = 6
 BATCH_SCHEMA = "simplicio.operator-batch/v1"
+
+MaintenanceMode = Literal["active", "maintenance_deferred"]
+MaintenanceDisposition = Literal["operator", "backlog_only"]
+
+
 class OperatorDispatchItem(TypedDict, total=False):
     """Typed input contract for :func:`dispatch_operator_batch`."""
 
@@ -54,6 +60,29 @@ class OperatorDispatchItem(TypedDict, total=False):
     task_spec: Mapping[str, Any]
     isolation: str
     operator_context: Mapping[str, Any]
+
+
+class MaintenanceState(TypedDict):
+    mode: MaintenanceMode
+    disposition: MaintenanceDisposition
+    receipt: str
+    correction_summary: str
+    deferral_reason: str
+    evidence_status: str
+
+
+class MaintenanceDeferredReceipt(TypedDict):
+    schema: str
+    mode: Literal["maintenance_deferred"]
+    disposition: Literal["backlog_only"]
+    correction_summary: str
+    deferral_reason: str
+    resume_instructions: List[str]
+    evidence_status: str
+    recorded_at: str
+    completion_ready: bool
+    completion_verdict: str
+    completion_reason_code: str
 
 
 def _now() -> str:
@@ -83,6 +112,17 @@ def _default_completion_state() -> Dict[str, Any]:
     }
 
 
+def _default_maintenance_state() -> MaintenanceState:
+    return {
+        "mode": "active",
+        "disposition": "operator",
+        "receipt": "",
+        "correction_summary": "",
+        "deferral_reason": "",
+        "evidence_status": "UNVERIFIED",
+    }
+
+
 def _completion_state(run_dir: Path, current: Dict[str, Any] | None = None) -> Dict[str, Any]:
     state = dict(current or _default_completion_state())
     receipt_path = run_dir / "completion-receipt.json"
@@ -102,6 +142,33 @@ def _completion_state(run_dir: Path, current: Dict[str, Any] | None = None) -> D
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_maintenance_deferred_receipt(
+    run_dir: Path,
+    *,
+    correction_summary: str,
+    deferral_reason: str,
+    resume_instructions: Sequence[str] | str,
+    evidence_status: str,
+) -> MaintenanceDeferredReceipt:
+    completion = _completion_state(run_dir)
+    instructions = [str(item).strip() for item in resume_instructions] if not isinstance(resume_instructions, str) else [resume_instructions.strip()]
+    payload: MaintenanceDeferredReceipt = {
+        "schema": MAINTENANCE_RECEIPT_SCHEMA,
+        "mode": "maintenance_deferred",
+        "disposition": "backlog_only",
+        "correction_summary": correction_summary.strip(),
+        "deferral_reason": deferral_reason.strip(),
+        "resume_instructions": [item for item in instructions if item],
+        "evidence_status": str(evidence_status or "UNVERIFIED"),
+        "recorded_at": _now(),
+        "completion_ready": False,
+        "completion_verdict": str(completion.get("verdict") or "DELIVERY_PENDING"),
+        "completion_reason_code": str(completion.get("reason_code") or "oracle_incomplete"),
+    }
+    _write_json(run_dir / "maintenance-receipt.json", payload)
+    return payload
 
 
 def _contract_path(run_dir: Path) -> Path:
@@ -797,6 +864,7 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         "next_action": "mapper_scan_required",
         "delivery": {"target": delivery, "current_state": "planned", "ready": False, "receipt": ""},
         "completion": _default_completion_state(),
+        "maintenance": _default_maintenance_state(),
         "mapper": {"ready": False, "receipt": "", "targets": []},
         "operator": {"ready": False, "receipt": "", "target": "", "execution_state": "proposed"},
         "evidence": {"ready": False, "receipt": "", "status": "UNVERIFIED"},
@@ -1655,6 +1723,61 @@ def execute_operator_batch(
         # contract-level marker for callers inspecting the convenience API.
         result["serial_fallback_reason"] = result.get("serial_fallback_reason") or "shared_run_state"
     return result
+
+
+def defer_maintenance_backlog_only(
+    repo: str,
+    run_id: str,
+    *,
+    correction_summary: str,
+    deferral_reason: str,
+    resume_instructions: Sequence[str] | str,
+    evidence_status: str = "UNVERIFIED",
+) -> Dict[str, Any]:
+    status = read_status(repo, run_id)
+    run_dir = Path(status["run_dir"])
+    state = status["state"]
+    receipt = _write_maintenance_deferred_receipt(
+        run_dir,
+        correction_summary=correction_summary,
+        deferral_reason=deferral_reason,
+        resume_instructions=resume_instructions,
+        evidence_status=evidence_status,
+    )
+    state["maintenance"] = {
+        "mode": receipt["mode"],
+        "disposition": receipt["disposition"],
+        "receipt": str(run_dir / "maintenance-receipt.json"),
+        "correction_summary": receipt["correction_summary"],
+        "deferral_reason": receipt["deferral_reason"],
+        "evidence_status": receipt["evidence_status"],
+    }
+    completion = _completion_state(run_dir, state.get("completion"))
+    completion["ready"] = False
+    completion["tag"] = "UNVERIFIED"
+    state["completion"] = completion
+    state["operator"] = {
+        **(state.get("operator") or {}),
+        "ready": False,
+        "execution_state": "backlog_only",
+    }
+    state["current_action"] = "maintenance_deferred_to_backlog"
+    state["next_action"] = "resume_from_maintenance_receipt"
+    state["evidence"] = {
+        **(state.get("evidence") or {}),
+        "ready": False,
+        "status": receipt["evidence_status"],
+    }
+    _write_json(run_dir / "state.json", state)
+    _transition(
+        run_dir,
+        state,
+        "partial",
+        "maintenance correction deferred to backlog-only mode",
+        receipt=str(run_dir / "maintenance-receipt.json"),
+        extra={"mode": receipt["mode"], "disposition": receipt["disposition"]},
+    )
+    return read_status(repo, run_id)
 
 
 def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:
