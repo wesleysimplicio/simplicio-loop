@@ -3,6 +3,14 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [3.25.1] — 2026-07-11
+
+### Changed
+- Replaced the README lifecycle Mermaid diagram with the current contract-first flow: isolated
+  parallel worktrees, evidence receipts, watcher challenges, completion oracle, rollback,
+  maintenance-deferred recovery, delivery, and durable memory.
+- Synchronized the Mermaid flow across the canonical README and all 14 localized mirrors.
+
 ## [3.25.0] — 2026-07-10
 
 ### Added
