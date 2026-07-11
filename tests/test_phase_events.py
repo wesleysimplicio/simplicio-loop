@@ -51,3 +51,24 @@ def test_reconcile_rejects_conflicting_duplicate():
 
 def test_terminal_board_mapping_is_runtime_derived():
     assert phase_to_board_state("done") == "completed"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ["intake", "mapping", "planning", "executing", "validating", "watching", "delivering", "done"],
+        ["intake", "mapping", "planning", "executing", "validating", "executing", "validating", "watching", "delivering", "partial"],
+        ["intake", "blocked"],
+        ["intake", "mapping", "planning", "cancelled"],
+        ["intake", "mapping", "planning", "awaiting_decision", "planning", "executing", "validating", "watching", "delivering", "done"],
+        ["intake", "mapping", "planning", "executing", "blocked"],
+    ],
+)
+def test_golden_streams_cover_success_retry_block_cancel_handoff_and_resume(path):
+    events = []
+    previous = None
+    for index, phase in enumerate(path, 1):
+        events.append(event(index, from_phase=previous, to_phase=phase))
+        previous = phase
+    replayed = reconcile_events(list(reversed(events)))
+    assert [item["to_phase"] for item in replayed] == path
