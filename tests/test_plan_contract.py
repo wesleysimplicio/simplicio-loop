@@ -13,13 +13,18 @@ def _plan(repo):
         "schema": PLAN_SCHEMA,
         "task_contract_hash": "contract-1",
         "mapper_pack_hash": "pack-1",
+        "context_pack_hash": "pack-1",
         "repo_state": {"head": "head-1", "tree_hash": "tree-1"},
         "freshness": {"verified": True, "current_state": {"head": "head-1", "tree_hash": "tree-1"}},
         "steps": [{
             "candidate_targets": ["src/app.py"],
             "to_create": [],
             "rule_ids": ["RN01"],
-            "steps": [{"scenario_id": "S1"}],
+            "steps": [{"scenario_id": "S1", "plan": {
+                "read_paths": ["src/app.py"],
+                "change_paths": ["src/app.py"],
+                "test_commands": ["pytest"],
+            }}],
         }],
     }
 
