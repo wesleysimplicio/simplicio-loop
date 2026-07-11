@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -68,6 +69,9 @@ class SQLiteRemoteQueue:
         self.path = path
         self.busy_timeout = busy_timeout
         try:
+            parent = os.path.dirname(os.path.abspath(path))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             self._init()
         except sqlite3.Error as exc:
             raise QueueUnavailable("queue unavailable: %s" % exc) from exc
