@@ -314,6 +314,17 @@ def _preflight_override(name: str) -> Dict[str, Any] | None:
     return json.loads(raw)
 
 
+def _resolved_identity(command: str, expected_stems: Sequence[str]) -> Dict[str, Any]:
+    """Resolve an operator once and fail closed on a PATH identity mismatch."""
+    path = shutil.which(command) or ""
+    normalized = Path(path).stem.lower() if path else ""
+    return {
+        "command": command,
+        "path": path,
+        "identity_ok": bool(path) and any(stem.lower() in normalized for stem in expected_stems),
+    }
+
+
 def _coverage(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
     total_scenarios = 0
     total_rules = 0
@@ -503,11 +514,13 @@ def _transition(run_dir: Path, state: Dict[str, Any], to_phase: str, reason: str
 def _preflight_mapper(repo_path: Path, run_root: Path) -> Dict[str, Any]:
     override = _preflight_override("SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON")
     if override is not None:
+        identity = {"command": "simplicio-mapper", "path": "", "identity_ok": True}
         version_stdout = str(override.get("version_stdout", ""))
         help_stdout = str(override.get("help_stdout", ""))
         version_rc = int(override.get("version_returncode", 0))
         help_rc = int(override.get("help_returncode", 0))
     else:
+        identity = _resolved_identity("simplicio-mapper", ("simplicio-mapper",))
         version = _run_cmd(["simplicio-mapper", "--version"], repo_path)
         help_result = _run_cmd(["simplicio-mapper", "--help"], repo_path)
         version_stdout = (version.stdout or "").strip()
@@ -532,11 +545,15 @@ def _preflight_mapper(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         "task_aware_flags": list(task_aware_flags),
         "supported_task_aware_flags": supported_task_aware_flags,
         "task_aware_supported": len(supported_task_aware_flags) == len(task_aware_flags),
+        "path": identity["path"],
+        "identity_ok": identity["identity_ok"],
         "checked_at": _now(),
     }
     _write_json(run_root / "mapper-preflight.json", receipt)
     if version_rc != 0 or help_rc != 0:
         raise RuntimeError("simplicio-mapper unavailable")
+    if not receipt["identity_ok"]:
+        raise RuntimeError("simplicio-mapper identity mismatch")
     if parsed_version < MAPPER_MIN_VERSION:
         raise RuntimeError("simplicio-mapper below minimum version")
     if missing_verbs:
@@ -547,11 +564,13 @@ def _preflight_mapper(repo_path: Path, run_root: Path) -> Dict[str, Any]:
 def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
     override = _preflight_override("SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON")
     if override is not None:
+        identity = {"command": "simplicio-dev-cli", "path": "", "identity_ok": True}
         help_stdout = str(override.get("help_stdout", ""))
         help_rc = int(override.get("help_returncode", 0))
         task_help_stdout = str(override.get("task_help_stdout", help_stdout))
         task_help_rc = int(override.get("task_help_returncode", help_rc))
     else:
+        identity = _resolved_identity("simplicio-dev-cli", ("simplicio-dev-cli", "simplicio-py"))
         env = _devcli_env(repo_path)
         help_result = subprocess.run(
             _devcli_cmd(repo_path, "--help"),
@@ -583,14 +602,41 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         "task_help_stdout": task_help_stdout,
         "required_tokens": list(DEVCLI_REQUIRED_TOKENS),
         "missing_tokens": missing_tokens,
+        "path": identity["path"],
+        "identity_ok": identity["identity_ok"],
         "checked_at": _now(),
     }
     _write_json(run_root / "operator-preflight.json", receipt)
     if help_rc != 0 or task_help_rc != 0:
         raise RuntimeError("simplicio-dev-cli unavailable")
+    if not receipt["identity_ok"]:
+        raise RuntimeError("simplicio-dev-cli identity mismatch")
     if missing_tokens:
         raise RuntimeError("simplicio-dev-cli missing required capabilities")
     return receipt
+
+
+def _validate_mapper_receipt(payload: Mapping[str, Any], repo_path: Path) -> None:
+    """Require the mapper's own artifact receipt, not a caller-supplied freshness flag."""
+    inspect = payload.get("inspect") or {}
+    inspect_out = inspect.get("stdout") or {}
+    status = inspect_out.get("status") or {}
+    evidence = inspect_out.get("evidence") or {}
+    artifacts = evidence.get("artifacts") or {}
+    if not status.get("artifacts_present") or not inspect_out.get("fresh"):
+        raise RuntimeError("mapper artifacts are missing or stale")
+    if not artifacts or any(not bool(item.get("exists")) for item in artifacts.values() if isinstance(item, Mapping)):
+        raise RuntimeError("mapper artifact evidence is incomplete")
+    handoff = ((payload.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
+    for item in handoff.get("files") or []:
+        raw = item.get("path") if isinstance(item, Mapping) else ""
+        if not raw:
+            continue
+        try:
+            candidate = (repo_path / str(raw)).resolve() if not Path(str(raw)).is_absolute() else Path(str(raw)).resolve()
+            candidate.relative_to(repo_path.resolve())
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"mapper returned path outside authorized repo: {raw}") from exc
 
 
 def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str = "",
@@ -635,6 +681,10 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         raise RuntimeError("mapper scan/inspect/handoff failed")
     if not _repo_state_equivalent(payload["repo_state_before"], payload["repo_state_after"]):
         raise RuntimeError("repository changed during mapper survey; freshness cannot be proven")
+    # Test fixtures intentionally replace the operator preflight; production runs
+    # always use the mapper's own artifact/freshness receipt.
+    if _preflight_override("SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON") is None:
+        _validate_mapper_receipt(payload, repo_path)
     return payload
 
 
@@ -675,6 +725,13 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
         if path not in candidate_targets:
             candidate_targets.append(path)
     candidate_targets = candidate_targets[:8]
+    mapped_tests = sorted({
+        str(test_path).replace("\\", "/")
+        for item in handoff.get("files") or []
+        if isinstance(item, Mapping)
+        for test_path in item.get("tests") or []
+        if str(test_path).strip()
+    })
     steps = []
     for index, task in enumerate(tasks, start=1):
         task_steps = []
@@ -686,6 +743,13 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
                     "title": scenario.get("title"),
                     "rule_refs": scenario.get("rule_refs") or [],
                     "verification_intent": scenario.get("verification_intent"),
+                    "plan": {
+                        "read_paths": list(candidate_targets),
+                        "change_paths": list(candidate_targets),
+                        "test_paths": list(mapped_tests),
+                        "test_commands": ["operator validation and repository test gate"],
+                        "no_code_change": False,
+                    },
                     "status": "pending",
                 }
             )
@@ -707,6 +771,7 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
         "task_count": len(tasks),
         "mapper_targets": list(candidate_targets),
         "mapper_pack_hash": handoff.get("pack_hash", ""),
+        "context_pack_hash": handoff.get("pack_hash", ""),
         "repo_state": mapper_payload.get("repo_state_after") or {},
         "freshness": {
             "verified": _repo_state_equivalent(
@@ -985,7 +1050,6 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
             task_fingerprint=compiled["collection_hash"],
         )
         state = _load_json(run_root / "state.json")
-        handoff = ((mapper_payload.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
         state["mapper"] = {
             "ready": True,
             "receipt": str(run_root / "mapper-context.json"),

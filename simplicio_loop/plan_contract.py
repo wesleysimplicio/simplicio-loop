@@ -41,6 +41,12 @@ def validate_plan(
     strict_identity = bool(str(plan.get("mapper_pack_hash") or "").strip() or (plan.get("repo_state") or {}).get("head"))
     if strict_identity and not str(plan.get("mapper_pack_hash") or "").strip():
         errors.append("mapper_pack_hash_missing")
+    context_pack_hash = str(plan.get("context_pack_hash") or "").strip()
+    mapper_pack_hash = str(plan.get("mapper_pack_hash") or "").strip()
+    if strict_identity and not context_pack_hash:
+        errors.append("context_pack_hash_missing")
+    if context_pack_hash and mapper_pack_hash and context_pack_hash != mapper_pack_hash:
+        errors.append("context_pack_hash_mismatch")
     repo = Path(repo_path).resolve()
     state = plan.get("repo_state") or {}
     if not state.get("tree_hash"):
@@ -69,6 +75,20 @@ def validate_plan(
             errors.append(f"task[{index}] scenario_unplanned:{missing}")
         for missing in sorted(expected_rules - actual_rules):
             errors.append(f"task[{index}] rule_unplanned:{missing}")
+        for scenario in step.get("steps") or []:
+            if not isinstance(scenario, Mapping):
+                continue
+            scenario_id = str(scenario.get("scenario_id") or scenario.get("id") or "")
+            if not scenario_id:
+                continue
+            scenario_plan = scenario.get("plan") or {}
+            no_code_change = bool(scenario_plan.get("no_code_change"))
+            if not no_code_change and not scenario_plan.get("read_paths"):
+                errors.append(f"task[{index}] scenario_unplanned_read:{scenario_id}")
+            if not no_code_change and not scenario_plan.get("change_paths"):
+                errors.append(f"task[{index}] scenario_unplanned_change:{scenario_id}")
+            if not no_code_change and not scenario_plan.get("test_commands"):
+                errors.append(f"task[{index}] scenario_unplanned_test:{scenario_id}")
         targets = list(step.get("candidate_targets") or [])
         if not targets:
             errors.append(f"task[{index}] targets_missing")
@@ -80,7 +100,8 @@ def validate_plan(
             except (OSError, ValueError):
                 errors.append(f"task[{index}] target_outside_repo:{value}")
                 continue
-            if not path.exists() and value not in set(step.get("to_create") or []):
+            to_create = {str(item).replace("\\", "/").strip() for item in step.get("to_create") or []}
+            if not path.exists() and value not in to_create:
                 errors.append(f"task[{index}] target_missing_without_to_create:{value}")
 
     return {
