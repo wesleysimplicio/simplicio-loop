@@ -11,7 +11,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Union
 
 from .phase_events import PhaseEventError, validate_phase_event
 
@@ -76,7 +76,7 @@ class LoopRuntimeAdapter:
 
     def __init__(self, *, run_id: str, work_item_id: str, actor: str,
                  transport: Optional[RuntimeTransport] = None,
-                 outbox_path: Optional[str | Path] = None,
+                 outbox_path: Optional[Union[str, Path]] = None,
                  standalone: bool = False) -> None:
         self.run_id = _text(run_id, "run_id")
         self.work_item_id = _text(work_item_id, "work_item_id")
