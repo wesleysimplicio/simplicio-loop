@@ -26,6 +26,18 @@ def test_tool_report_requires_identity_version_and_capabilities():
     assert report["capabilities_ok"] is False
 
 
+def test_tool_report_rejects_wrong_resolved_executable_identity():
+    report = preflight._tool_report(
+        "simplicio-dev-cli", "simplicio-dev-cli", (0, 11, 0),
+        {"identity": "simplicio-dev-cli", "path": "/tmp/simplicio.exe",
+         "version_text": "0.11.0", "surface": "task --dry-run-task --json",
+         "returncode": 0},
+        preflight.DEVCLI_CAPABILITIES,
+    )
+    assert report["version_ok"] is True
+    assert report["identity_ok"] is False
+
+
 def test_build_report_is_stable_shape(monkeypatch, tmp_path: Path):
     def component(*args, **kwargs):
         name = args[0]
