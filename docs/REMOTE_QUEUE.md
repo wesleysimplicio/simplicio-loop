@@ -47,3 +47,19 @@ transport failure raises `QueueUnavailable` and therefore pauses mutation. A
 stale lease remains rejected by the server's SQLite fencing check. Do not use
 GitHub issue labels as a lock. For production, put the service behind TLS and a
 network policy; Redis/SQL service implementations can target the same protocol.
+
+### Measured local multi-worker proof
+
+The live transport test starts the HTTP facade and then uses two independent
+spawned Python processes (one Codex-style identity and one Claude-style
+identity). It verifies bearer-token rejection, one atomic winner, expiry
+reclaim with a higher fencing token, stale completion rejection, monotonic
+event replay, and the completion `receipt_ref`:
+
+```powershell
+python -m pytest -q tests/test_remote_queue_live.py tests/test_remote_queue.py
+```
+
+This is a local process-isolation proof of the wire contract. It does **not**
+claim TLS termination, firewall policy, or a live deployment on separate
+physical machines; those remain deployment acceptance gates.
