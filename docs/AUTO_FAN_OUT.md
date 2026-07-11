@@ -16,9 +16,28 @@ task before starting the operator pool. The JSON result exposes:
 {
   "fan_out": {"enabled": true, "default": true, "contexts": 3, "reason": ""},
   "max_workers": 3,
-  "workers": [{"worktree_context": {"mode": "worktree"}}]
+  "workers": [{
+    "worktree_context": {"mode": "worktree"},
+    "operator_receipt": ".../operator-receipt.json",
+    "evidence_receipt": ".../evidence-receipt.json",
+    "receipt_status": "VERIFIED",
+    "retry_scope": "worker",
+    "attempt_history": [{"dispatch_attempt": 1, "status": "succeeded"}]
+  }],
+  "receipt_contract": {
+    "scope": "worker",
+    "required": ["operator_receipt", "evidence_receipt"],
+    "ready": true
+  },
+  "retry_contract": {"scope": "worker", "independent": true}
 }
 ```
+
+Each successful lane must carry its own durable operator and evidence receipt. The
+coordinator reports `receipt_contract.ready=false` (and the affected task indices) when
+either proof is missing. Retries are scoped to the failed worker; `attempt_history` makes
+that boundary auditable without restarting sibling lanes. A serial fallback remains
+visible through `serial_fallback_reason` and never claims parallel execution.
 
 The fallback is deliberately conservative. Missing targets, overlapping impact keys,
 non-Git checkouts, an unavailable adapter, queue preflight failure, or an existing shared
