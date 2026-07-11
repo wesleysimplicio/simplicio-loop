@@ -1,0 +1,36 @@
+{
+  "schema": "simplicio.progress-snapshots/v1",
+  "description": "Deterministic progress cards used by CLI, chat and dashboard adapters.",
+  "cases": [
+    {
+      "id": "single-0",
+      "state": {"run_id": "snap-0", "phase": "intake", "progress_percent": 0, "task_count": 1, "current_action": "intake", "next_action": "map"},
+      "expected": {"percent": 0, "status": "RUNNING", "oracle": false}
+    },
+    {
+      "id": "single-25",
+      "state": {"run_id": "snap-25", "phase": "executing", "progress_percent": 25, "task_count": 1, "current_action": "plan", "next_action": "execute"},
+      "expected": {"percent": 25, "status": "RUNNING", "oracle": false}
+    },
+    {
+      "id": "single-50",
+      "state": {"run_id": "snap-50", "phase": "executing", "progress_percent": 50, "task_count": 1, "current_action": "execute", "next_action": "validate"},
+      "expected": {"percent": 50, "status": "RUNNING", "oracle": false}
+    },
+    {
+      "id": "single-75",
+      "state": {"run_id": "snap-75", "phase": "validating", "progress_percent": 75, "task_count": 1, "current_action": "validate", "next_action": "watch"},
+      "expected": {"percent": 75, "status": "RUNNING", "oracle": false}
+    },
+    {
+      "id": "single-100",
+      "state": {"run_id": "snap-100", "phase": "done", "progress_percent": 100, "task_count": 1, "current_action": "deliver", "next_action": "none", "evidence": {"ready": true, "status": "VERIFIED"}, "completion": {"ready": true, "verdict": "COMPLETE"}},
+      "expected": {"percent": 100, "status": "COMPLETE", "oracle": true}
+    },
+    {
+      "id": "fanout-blocked",
+      "state": {"run_id": "snap-fanout", "phase": "watching", "task_count": 3, "current_action": "watcher_challenge", "next_action": "reconcile", "lanes": [{"id": "worker-a", "status": "running", "percent": 75, "worktree": "wt/a"}, {"id": "worker-b", "status": "blocked", "percent": 50, "worktree": "wt/b"}, {"id": "worker-c", "status": "done", "percent": 100, "worktree": "wt/c"}], "events": [{"phase": "worker_claimed", "task_id": "T1", "status": "ok"}, {"phase": "watcher_challenge", "task_id": "T2", "status": "blocked"}]},
+      "expected": {"percent": 71, "status": "RUNNING", "oracle": false, "lanes": 3, "events": 2}
+    }
+  ]
+}

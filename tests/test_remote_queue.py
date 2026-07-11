@@ -75,6 +75,7 @@ def test_http_adapter_preserves_atomic_claims_and_fencing(tmp_path):
                             identity={"agent_id": "codex@A", "runtime": "codex",
                                       "device_id": "laptop-a", "session_id": "s1",
                                       "capabilities": ["claim", "heartbeat", "fencing", "receipts"]})
+        codex.assert_active(lease)
         assert codex.heartbeat(lease, ttl=5).fencing_token == 1
         with pytest.raises(QueueConflict):
             claude.claim("T1", "claude@B", idempotency_key="run:T1-other")
