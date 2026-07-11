@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import threading
 import time
 
@@ -91,3 +93,19 @@ def test_http_unavailable_is_fail_closed():
     with pytest.raises(Exception) as error:
         HTTPRemoteQueue("http://127.0.0.1:1", timeout=0.05).events()
     assert "QueueUnavailable" in type(error.value).__name__
+
+
+def test_network_bind_requires_explicit_tls(tmp_path):
+    backend = SQLiteRemoteQueue(str(tmp_path / "queue.db"))
+    with pytest.raises(ValueError, match="TLS is required"):
+        create_http_queue_server(backend, host="0.0.0.0", token="secret")
+
+
+def test_server_cli_requires_tls_pair(tmp_path):
+    result = subprocess.run(
+        [sys.executable, "scripts/remote_queue_server.py", "--db", str(tmp_path / "q.db"),
+         "--token", "secret", "--tls-certfile", "only-cert.pem"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 2
+    assert "must be provided together" in (result.stderr + result.stdout)

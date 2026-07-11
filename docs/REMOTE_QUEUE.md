@@ -35,6 +35,18 @@ machines use the same claim/lease/fencing protocol:
 python scripts/remote_queue_server.py --db .orchestrator/shared-queue.db --host 0.0.0.0 --port 8765 --token "$env:SIMPLICIO_QUEUE_TOKEN"
 ```
 
+Network-facing binds are fail-closed unless TLS is configured. Provide a certificate and
+private key (TLS 1.2 or newer) through flags or environment variables:
+
+```powershell
+$env:SIMPLICIO_QUEUE_TLS_CERTFILE = "C:\\etc\\simplicio\\queue.crt"
+$env:SIMPLICIO_QUEUE_TLS_KEYFILE = "C:\\etc\\simplicio\\queue.key"
+python scripts/remote_queue_server.py --host 0.0.0.0 --port 8765
+```
+
+Plain HTTP is supported only on loopback for local tests. Production deployments still require
+a firewall/network policy, token rotation, and a trusted certificate chain.
+
 ```python
 from simplicio_loop.remote_queue import HTTPRemoteQueue
 q = HTTPRemoteQueue("https://queue.example.internal", token=os.environ["SIMPLICIO_QUEUE_TOKEN"])

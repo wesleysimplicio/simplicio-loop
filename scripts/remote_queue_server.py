@@ -6,7 +6,7 @@ import argparse
 import os
 import signal
 
-from simplicio_loop.remote_queue import SQLiteRemoteQueue, create_http_queue_server
+from simplicio_loop.remote_queue import SQLiteRemoteQueue, create_http_queue_server, tls_context_from_files
 
 
 def main() -> int:
@@ -15,10 +15,20 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--token", default=os.environ.get("SIMPLICIO_QUEUE_TOKEN"))
+    parser.add_argument("--tls-certfile", default=os.environ.get("SIMPLICIO_QUEUE_TLS_CERTFILE"))
+    parser.add_argument("--tls-keyfile", default=os.environ.get("SIMPLICIO_QUEUE_TLS_KEYFILE"))
     args = parser.parse_args()
     if not args.token:
         parser.error("--token or SIMPLICIO_QUEUE_TOKEN is required")
-    server = create_http_queue_server(SQLiteRemoteQueue(args.db), args.host, args.port, token=args.token)
+    if bool(args.tls_certfile) != bool(args.tls_keyfile):
+        parser.error("--tls-certfile and --tls-keyfile must be provided together")
+    context = (tls_context_from_files(args.tls_certfile, args.tls_keyfile)
+               if args.tls_certfile else None)
+    try:
+        server = create_http_queue_server(SQLiteRemoteQueue(args.db), args.host, args.port,
+                                          token=args.token, ssl_context=context)
+    except ValueError as exc:
+        parser.error(str(exc))
     signal.signal(signal.SIGTERM, lambda *_: server.shutdown())
     print("simplicio queue listening on %s:%d" % (args.host, server.server_port), flush=True)
     try:

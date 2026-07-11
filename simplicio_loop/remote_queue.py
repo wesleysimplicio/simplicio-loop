@@ -14,6 +14,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import ipaddress
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -365,14 +367,37 @@ class SQLiteRemoteQueue:
                     "lease": dict(lease) if lease else None}
 
 
+def _is_loopback_host(host: str) -> bool:
+    value = str(host or "").strip().lower().strip("[]")
+    if value == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def tls_context_from_files(certfile: str, keyfile: str) -> ssl.SSLContext:
+    if not certfile or not keyfile:
+        raise ValueError("tls certfile and keyfile are both required")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+    return context
+
+
 def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", port: int = 0,
-                             *, token: Optional[str] = None) -> ThreadingHTTPServer:
+                             *, token: Optional[str] = None,
+                             ssl_context: Optional[ssl.SSLContext] = None) -> ThreadingHTTPServer:
     """Create a small authenticated HTTP facade over a transactional queue.
 
     The returned server is not started, allowing tests and embedding runtimes to
     choose a thread, process, or service manager. Set ``token`` in any network
     deployment; a missing/incorrect bearer token is rejected before dispatch.
+    Non-loopback binds require an explicit TLS context.
     """
+    if not _is_loopback_host(host) and ssl_context is None:
+        raise ValueError("TLS is required for non-loopback queue binds")
     class Handler(BaseHTTPRequestHandler):
         server_version = "simplicio-queue/1"
 
@@ -435,4 +460,7 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 self._send(400, {"error": str(exc)})
 
-    return ThreadingHTTPServer((host, port), Handler)
+    server = ThreadingHTTPServer((host, port), Handler)
+    if ssl_context is not None:
+        server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
+    return server
