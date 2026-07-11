@@ -138,11 +138,11 @@ def test_evidence_receipt_flags_uncovered_manual_diff(tmp_path):
         "changed_paths": ["src/app.py"],
     }), encoding="utf-8")
 
-    extra = repo / "README.manual.md"
+    extra = repo / "manual_extra.txt"
     extra.write_text("manual mutation\n", encoding="utf-8")
     receipt = evidence_mod.build_evidence_receipt(str(run_dir))
     assert receipt["operator"]["coverage_ok"] is False
-    assert "README.manual.md" in receipt["operator"]["uncovered_paths"]
+    assert "manual_extra.txt" in receipt["operator"]["uncovered_paths"]
 
 
 def test_watcher_rejects_uncovered_manual_diff_from_evidence(tmp_path):
