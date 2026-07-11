@@ -5,8 +5,14 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import sys
 
-from simplicio_loop.remote_queue import SQLiteRemoteQueue, create_http_queue_server, tls_context_from_files
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+
+from simplicio_loop.remote_queue import SQLiteRemoteQueue, create_http_queue_server, tls_context_from_files  # noqa: E402
 
 
 def main() -> int:
