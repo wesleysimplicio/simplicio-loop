@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 import uuid
+from pathlib import Path
 
 LOOP_DIR = os.path.join(".orchestrator", "loop")
 SCRATCHPAD = os.path.join(LOOP_DIR, "scratchpad.md")
@@ -131,38 +132,6 @@ def last_assistant_text(stdin):
     return ""
 
 
-def completion_oracle(resp):
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if os.path.basename(repo_root) == "_bundle":
-        repo_root = os.path.dirname(os.path.dirname(repo_root))
-    script = os.path.join(repo_root, "scripts", "completion_oracle.py")
-    if not os.path.exists(script):
-        return False, {}
-    runs_root = os.path.join(".orchestrator", "runs")
-    run_dirs = []
-    if os.path.isdir(runs_root):
-        for name in os.listdir(runs_root):
-            path = os.path.join(runs_root, name)
-            if os.path.isdir(path):
-                run_dirs.append(path)
-    run_dir = max(run_dirs, key=os.path.getmtime) if run_dirs else ""
-    oracle_resp = resp or ""
-    if not PROMISE_RE.search(oracle_resp) and os.path.exists(LAST_RESP):
-        try:
-            with open(LAST_RESP, encoding="utf-8") as f:
-                oracle_resp = f.read()
-        except OSError:
-            pass
-    cmd = [sys.executable, script, "--loop-dir", LOOP_DIR, "--run-dir", run_dir,
-           "--response-text", oracle_resp, "--write-receipt"]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        payload = json.loads(result.stdout or "{}")
-        return bool(payload.get("ready")), payload
-    except Exception:
-        return False, {}
-
-
 def gate_running():
     """True when a background gate (verification workflow / CI / long task) is in flight + fresh.
 
@@ -254,6 +223,7 @@ def write_handoff(reason, meta=None, body=None):
         anchor = read_anchor() or {}
         criteria = anchor.get("criteria") or []
         attempts = tail_journal()
+        completion = latest_completion_receipt() or {}
         lines = [
             "# simplicio-loop handoff",
             "",
@@ -280,24 +250,6 @@ def write_handoff(reason, meta=None, body=None):
                     "- [%s] %s (%s)%s"
                     % (mark, c.get("text", c.get("id", "?")), c.get("status", "pending"), ev)
                 )
-        oracle_path = os.path.join(LOOP_DIR, "completion-receipt.json")
-        if not os.path.exists(oracle_path):
-            run_root = os.path.join(".orchestrator", "runs")
-            candidates = [os.path.join(run_root, name, "completion-receipt.json")
-                          for name in os.listdir(run_root)] if os.path.isdir(run_root) else []
-            candidates = [path for path in candidates if os.path.exists(path)]
-            if candidates:
-                oracle_path = max(candidates, key=os.path.getmtime)
-        if os.path.exists(oracle_path):
-            try:
-                with open(oracle_path, encoding="utf-8") as f:
-                    oracle = json.load(f)
-                lines += ["", "## Completion oracle",
-                          "", "Verdict: %s" % oracle.get("verdict", "unknown"),
-                          "reason_code: %s" % oracle.get("reason_code", "unknown"),
-                          "Reason: %s" % oracle.get("reason", oracle.get("reason_code", "unknown"))]
-            except (OSError, ValueError):
-                pass
         if attempts:
             lines += ["", "## Last attempts (`scripts/loop_journal.py resume` for the full read)"]
             for a in attempts:
@@ -312,6 +264,16 @@ def write_handoff(reason, meta=None, body=None):
                         attempt_suffix(a),
                     )
                 )
+        if completion:
+            lines += [
+                "",
+                "## Completion oracle",
+                "",
+                "- verdict: %s" % completion.get("verdict", "DELIVERY_PENDING"),
+                "- reason_code: %s" % completion.get("reason_code", "oracle_incomplete"),
+                "- tag: %s" % completion.get("tag", "UNVERIFIED"),
+                "- receipt: %s" % completion.get("_path", "(unknown)"),
+            ]
         lines += [
             "",
             "## Resume",
@@ -729,6 +691,61 @@ def watcher_verify():
         return False, "UNVERIFIED"
 
 
+def latest_run_dir():
+    try:
+        runs = Path(".orchestrator") / "runs"
+        if not runs.exists():
+            return ""
+        candidates = sorted([p for p in runs.iterdir() if p.is_dir()], key=lambda p: p.name)
+        return str(candidates[-1]) if candidates else ""
+    except Exception:
+        return ""
+
+
+def latest_completion_receipt():
+    try:
+        run_dir = latest_run_dir()
+        if not run_dir:
+            return None
+        path = Path(run_dir) / "completion-receipt.json"
+        if not path.exists():
+            return None
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        payload["_path"] = str(path)
+        return payload
+    except Exception:
+        return None
+
+
+def completion_oracle_payload(response_text="", flow_gap=""):
+    try:
+        repo_root = os.getcwd()
+        script = os.path.join(repo_root, "scripts", "completion_oracle.py")
+        if not os.path.exists(script):
+            source_repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            script = os.path.join(source_repo, "scripts", "completion_oracle.py")
+        if not os.path.exists(script):
+            return {"ready": False, "reason_code": "oracle_script_missing", "tag": "UNVERIFIED"}
+        run_dir = latest_run_dir()
+        cmd = [sys.executable, script, "--loop-dir", LOOP_DIR]
+        if run_dir:
+            cmd += ["--run-dir", run_dir]
+        if response_text:
+            cmd += ["--response-text", response_text]
+        if flow_gap:
+            cmd += ["--flow-gap", flow_gap]
+        if run_dir:
+            cmd += ["--write-receipt"]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=repo_root)
+        payload = json.loads(r.stdout) if (r.stdout or "").strip() else {}
+        if isinstance(payload, dict):
+            return payload
+        return {"ready": False, "reason_code": "oracle_invalid_payload", "tag": "UNVERIFIED"}
+    except Exception:
+        return {"ready": False, "reason_code": "oracle_error", "tag": "UNVERIFIED"}
+
+
 def spindle_latched():
     """True when a spindle handoff exists with an unreleased latch.
 
@@ -910,22 +927,20 @@ def main():
 
         # Pre-promise: front→back flow-audit gate (#80) — mechanical, not prose-only.
         flow_gap = flow_audit_gap()
-        oracle_pass, _oracle = completion_oracle(resp)
 
-        # Completion detection (capture folded in for single-hook runtimes like Claude).
-        oracle_pass = False
+        # Completion detection is centralized in the shared oracle (#138). The stop hook can still
+        # surface watcher/flow state in the re-feed header below, but it no longer decides COMPLETE
+        # on its own.
         if promise and resp:
-            m = PROMISE_RE.search(resp)
-            if m and m.group(1).strip() == promise.strip():
-                oracle_pass, _oracle = completion_oracle(resp)
-                if (((not evidence_required) or has_evidence) and watcher_pass
-                        and not anchor_pending() and not flow_gap and oracle_pass):
-                    _call_simplicio_hbp_append(iteration, promise, watcher_tag)
-                    refresh_cross_agent_wiki(include_handoff=False)
-                    cleanup_and_stop()
+            oracle = completion_oracle_payload(resp, flow_gap or "")
+            if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
+                _call_simplicio_hbp_append(iteration, promise, watcher_tag)
+                refresh_cross_agent_wiki(include_handoff=False)
+                cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
+        # (3') Cursor capture may have raised the flag.
         if os.path.exists(DONE_FLAG) or os.path.exists(LEGACY_DONE_FLAG):
-            oracle_pass, _oracle = completion_oracle(resp)
-            if oracle_pass:
+            oracle = completion_oracle_payload(flow_gap=flow_gap or "")
+            if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
                 cleanup_and_stop()
         # (4) Iteration cap — incomplete stop, hand off.
         if max_iter > 0 and iteration >= max_iter:
