@@ -870,9 +870,56 @@ def _send_logo(handler):
     handler.wfile.write(_fallback_logo_svg().encode())
 
 
+_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _progress_root():
+    configured = os.environ.get("SIMPLICIO_RUNS_DIR", "")
+    return Path(configured).expanduser() if configured else Path.cwd() / ".orchestrator" / "runs"
+
+
+def _progress_response(run_id):
+    """Return one receipt-backed progress snapshot without allowing path traversal."""
+    base = _progress_root().resolve()
+    if not run_id or not _RUN_ID.fullmatch(run_id):
+        return 400, {"schema": "simplicio.progress/v1", "status": "UNVERIFIED",
+                      "reason_code": "run_id_invalid"}
+    run_dir = (base / run_id).resolve()
+    try:
+        run_dir.relative_to(base)
+    except ValueError:
+        return 400, {"schema": "simplicio.progress/v1", "status": "UNVERIFIED",
+                      "reason_code": "run_id_outside_root"}
+    state_path = run_dir / "state.json"
+    if not state_path.is_file():
+        return 404, {"schema": "simplicio.progress/v1", "status": "UNVERIFIED",
+                     "run_id": run_id, "reason_code": "run_not_found"}
+    try:
+        from simplicio_loop.progress import build_progress
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            raise ValueError("state_not_object")
+        return 200, build_progress(state, run_dir=run_dir)
+    except (OSError, ValueError, TypeError, ImportError, json.JSONDecodeError):
+        return 422, {"schema": "simplicio.progress/v1", "status": "UNVERIFIED",
+                      "run_id": run_id, "reason_code": "state_invalid"}
+
+
+def _send_json(handler, status, payload):
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path
         if path == "/api/status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -880,6 +927,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(json.dumps(get_status()).encode())
+        elif path == "/api/progress":
+            query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            run_id = (query.get("run") or [""])[0]
+            status, payload = _progress_response(run_id)
+            _send_json(self, status, payload)
         elif path == "/assets/simplicio-logo.png":
             _send_logo(self)
         else:

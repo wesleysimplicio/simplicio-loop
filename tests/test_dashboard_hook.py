@@ -43,6 +43,30 @@ def test_parse_int_tolerates_garbage():
     assert mod._parse_int("42") == 42
     assert mod._parse_int("3.7") == 3
     assert mod._parse_int("not-a-number") == 0
+
+
+def test_progress_snapshot_api_is_receipt_backed_and_scoped(tmp_path, monkeypatch):
+    mod = _import_dashboard()
+    runs = tmp_path / "runs"
+    run = runs / "run-demo"
+    run.mkdir(parents=True)
+    (run / "state.json").write_text(json.dumps({
+        "run_id": "run-demo", "phase": "executing", "progress_percent": 50,
+        "task_count": 1, "completion": {"ready": False, "verdict": "DELIVERY_PENDING"},
+    }), encoding="utf-8")
+    monkeypatch.setenv("SIMPLICIO_RUNS_DIR", str(runs))
+    status, payload = mod._progress_response("run-demo")
+    assert status == 200
+    assert payload["schema"] == "simplicio.progress/v1"
+    assert payload["percent"] == 50
+    assert payload["status"] == "RUNNING"
+
+    status, payload = mod._progress_response("../run-demo")
+    assert status == 400
+    assert payload["status"] == "UNVERIFIED"
+    status, payload = mod._progress_response("missing")
+    assert status == 404
+    assert payload["reason_code"] == "run_not_found"
     assert mod._parse_int("") == 0
 
 
