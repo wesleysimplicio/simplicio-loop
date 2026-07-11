@@ -30,6 +30,15 @@ def test_expiry_reclaim_increments_fence_and_rejects_stale_worker(tmp_path):
     q.complete(new, receipt_ref="fresh")
 
 
+def test_idempotency_key_cannot_be_reused_for_another_task(tmp_path):
+    q = SQLiteRemoteQueue(str(tmp_path / "queue.db"))
+    q.enqueue("T1")
+    q.enqueue("T2")
+    q.claim("T1", "codex@A", idempotency_key="same-key")
+    with pytest.raises(QueueConflict):
+        q.claim("T2", "codex@A", idempotency_key="same-key")
+
+
 def test_two_agents_only_one_atomic_claim_wins(tmp_path):
     path = str(tmp_path / "queue.db")
     q = SQLiteRemoteQueue(path)
