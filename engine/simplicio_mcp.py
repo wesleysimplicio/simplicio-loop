@@ -29,6 +29,42 @@ DATA_DIR = Path(os.environ.get("SIMPLICIO_HOME", Path(os.path.expanduser("~")) /
 MEMORY_FILE = DATA_DIR / "memory.json"
 SAVINGS_FILE = DATA_DIR / "proxy_savings.json"
 
+
+def _runner_action(args):
+    """Run one explicit action through the persisted local runner state machine."""
+    from simplicio_loop import runner
+    action = str(args.get("action", "")).strip().lower()
+    repo = str(args.get("repo", "."))
+    run_id = str(args.get("run_id", "")).strip()
+    if action == "arm":
+        task = str(args.get("task", "")).strip()
+        if not task:
+            raise ValueError("task is required for action=arm")
+        payload = runner.arm_run(repo, task, str(args.get("delivery", "verified")), int(args.get("max_iterations", 12)))
+    elif action == "status":
+        payload = runner.read_status(repo, run_id or None)
+    elif action == "resume":
+        if not run_id: raise ValueError("run_id is required for action=resume")
+        payload = runner.change_phase(repo, run_id, "awaiting_decision", "resume requested via MCP")
+    elif action == "tick":
+        if not run_id: raise ValueError("run_id is required for action=tick")
+        payload = runner.execute_operator(repo, run_id, task_index=int(args.get("task_index", 1)))
+    elif action == "batch":
+        if not run_id: raise ValueError("run_id is required for action=batch")
+        values = args.get("task_indices")
+        if values is not None and (not isinstance(values, list) or not all(isinstance(v, int) for v in values)):
+            raise ValueError("task_indices must be an array of integers")
+        payload = runner.execute_operator_batch(repo, run_id, values,
+            max_workers=int(args.get("max_workers", 0)) or None,
+            retry_budget=int(args.get("retry_budget", 3)),
+            auto_fan_out=bool(args.get("auto_fan_out", True)))
+    elif action == "cancel":
+        if not run_id: raise ValueError("run_id is required for action=cancel")
+        payload = runner.change_phase(repo, run_id, "cancelled", "cancel requested via MCP")
+    else:
+        raise ValueError("action must be one of: arm, status, resume, tick, batch, cancel")
+    return json.dumps(payload, ensure_ascii=False)
+
 _TRAILING_WS = re.compile(r"[ \t]+(?=\n)")
 _MANY_BLANKS = re.compile(r"\n{3,}")
 
@@ -172,12 +208,26 @@ TOOLS = [
                        "if the file is absent.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "simplicio_runner",
+        "description": "Drive an explicit local runner action: arm, status, resume, tick, batch, or cancel.",
+        "inputSchema": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["arm", "status", "resume", "tick", "batch", "cancel"]},
+            "repo": {"type": "string"}, "task": {"type": "string"}, "run_id": {"type": "string"},
+            "delivery": {"type": "string"}, "max_iterations": {"type": "integer", "minimum": 1},
+            "task_index": {"type": "integer", "minimum": 1},
+            "task_indices": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+            "max_workers": {"type": "integer", "minimum": 1}, "retry_budget": {"type": "integer", "minimum": 0},
+            "auto_fan_out": {"type": "boolean"},
+        }, "required": ["action"]},
+    },
 ]
 
 _DISPATCH = {
     "simplicio_compress": tool_compress,
     "simplicio_retrieve": tool_retrieve,
     "simplicio_stats": tool_stats,
+    "simplicio_runner": _runner_action,
 }
 
 
