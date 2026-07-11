@@ -251,7 +251,8 @@ def oracle(loop_dir: str, run_dir: str, response_text: str, flow_gap: str,
     return 0 if payload.get("parity") and payload.get("signature", [False])[0] else 1
 
 
-def progress(repo: str, run_id: str, fmt: str, once: bool, interval: float) -> int:
+def progress(repo: str, run_id: str, fmt: str, once: bool, interval: float,
+             no_animation: bool = False, ascii_only: bool = False) -> int:
     """Render a run's portable progress event for an LLM, terminal, or dashboard."""
     try:
         status = read_status(repo, run_id)
@@ -263,7 +264,8 @@ def progress(repo: str, run_id: str, fmt: str, once: bool, interval: float) -> i
         print(json.dumps({"schema": "simplicio.progress/v1", "status": "UNVERIFIED",
                           "reason_code": "run_missing"}, ensure_ascii=False))
         return 2
-    stream_progress(status["run_dir"], fmt=fmt, once=once, interval=interval)
+    stream_progress(status["run_dir"], fmt=fmt, once=once, interval=interval,
+                    no_animation=no_animation, ascii_only=ascii_only)
     return 0
 
 
@@ -535,6 +537,10 @@ def main(argv=None) -> int:
     p_progress.add_argument("--format", choices=("text", "json", "markdown", "ansi"),
                             default="text", dest="fmt", help="output format")
     p_progress.add_argument("--once", action="store_true", help="render one snapshot")
+    p_progress.add_argument("--no-animation", action="store_true",
+                            help="emit one static snapshot without spinner/ANSI control codes")
+    p_progress.add_argument("--ascii", action="store_true", dest="ascii_only",
+                            help="use ASCII icons/bar for terminals without Unicode support")
     p_progress.add_argument("--interval", type=float, default=0.25,
                             help="animation polling interval in seconds")
 
@@ -671,7 +677,8 @@ def main(argv=None) -> int:
     if command == "status":
         return status(args.repo, args.run_id)
     if command == "progress":
-        return progress(args.repo, args.run_id, args.fmt, args.once, args.interval)
+        return progress(args.repo, args.run_id, args.fmt, args.once, args.interval,
+                        args.no_animation, args.ascii_only)
     if command == "resume":
         return resume(args.repo, args.run_id)
     if command == "tick":

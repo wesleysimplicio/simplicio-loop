@@ -28,6 +28,17 @@ PHASE_META = {
     "cancelled": ("🛑", "Cancelado"),
 }
 SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+def _ascii(value: Any) -> str:
+    """Replace presentation glyphs; payloads remain Unicode-safe and unchanged."""
+    text = str(value or "")
+    for glyph, replacement in (("📥", "[in]"), ("🗺️", "[map]"), ("🧭", "[plan]"),
+                               ("⚙️", "[run]"), ("🧪", "[test]"), ("👁️", "[watch]"),
+                               ("📦", "[ship]"), ("✅", "[ok]"), ("⛔", "[blocked]"),
+                               ("🛑", "[stop]"), ("█", "#"), ("░", "."),
+                               ("⠋", "|"), ("⠙", "/"), ("⠹", "-"), ("⠸", "\\"),
+                               ("▫️", "[ ]")):
+        text = text.replace(glyph, replacement)
+    return text
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -65,8 +76,25 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
     ready = bool(completion.get("ready")) and str(completion.get("verdict") or "").upper() in {"COMPLETE", "DRAINED"}
     evidence = dict(state.get("evidence") or {})
     watcher = dict(state.get("watcher") or {})
-    evidence_ready = bool(evidence.get("ready")) and str(evidence.get("status") or "").upper() == "VERIFIED"
-    watcher_ready = bool(watcher.get("ready")) or str(watcher.get("status") or "").upper() in {"MATCH", "VERIFIED"}
+    # Receipts are authoritative when state.json has not yet been refreshed by a hook.
+    if root:
+        for path, target in ((root / "evidence-receipt.json", evidence),
+                             (root / "loop" / "watcher_state.json", watcher)):
+            if path.is_file():
+                try:
+                    receipt = _load_json(path)
+                    target.update(receipt)
+                    # Older hooks persisted only a status; promote that measured receipt
+                    # over stale state.json flags without weakening the oracle gate.
+                    if path.name == "evidence-receipt.json" and str(receipt.get("status") or "").upper() == "VERIFIED":
+                        target["ready"] = True
+                except (OSError, ValueError, TypeError):
+                    target["status"] = "UNVERIFIED"
+    evidence_ready = str(evidence.get("status") or "").upper() == "VERIFIED" and (
+        bool(evidence.get("ready")) or "ready" not in evidence)
+    watcher_status = str(watcher.get("status") or "").upper()
+    watcher_ready = bool(watcher.get("ready")) or watcher_status in {"MATCH", "VERIFIED"} or (
+        watcher_status == "MEASURED" and watcher.get("match") is True)
     percent = 100 if ready else min(99, _phase_percent(phase))
     icon, label = PHASE_META.get(phase, ("•", phase.replace("_", " ").title()))
     total = int(state.get("task_count") or 0)
@@ -90,27 +118,77 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
         "gates": {"evidence": evidence_ready, "watcher": watcher_ready, "oracle": ready},
         "completion": {"ready": ready, "verdict": str(completion.get("verdict") or "DELIVERY_PENDING"),
                        "reason_code": str(completion.get("reason_code") or "oracle_incomplete")},
+        # Optional lanes/events are copied as data, never used to infer completion. This keeps
+        # the same JSON contract useful for fan-out dashboards and chat adapters.
+        "lanes": _normalise_lanes(state.get("lanes")),
+        "events": _normalise_events(state.get("events") or state.get("phase_events")),
     }
 
 
-def render_text(event: Mapping[str, Any], *, width: int = 24) -> str:
+def _normalise_lanes(value: Any) -> list[Dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    lanes = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            percent = int(item.get("percent") or 0)
+        except (TypeError, ValueError):
+            percent = 0
+        lanes.append({"id": str(item.get("id") or item.get("lane") or f"lane-{index + 1}"),
+                      "status": str(item.get("status") or "UNKNOWN").upper(),
+                      "percent": max(0, min(100, percent)),
+                      "worktree": str(item.get("worktree") or ""),
+                      "action": str(item.get("action") or item.get("current_action") or "")})
+    return lanes
+
+
+def _normalise_events(value: Any) -> list[Dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    events = []
+    for item in value[-12:]:
+        if not isinstance(item, Mapping):
+            continue
+        events.append({"phase": str(item.get("phase") or item.get("event") or "unknown"),
+                       "status": str(item.get("status") or "INFO").upper(),
+                       "task_id": str(item.get("task_id") or item.get("work_item_id") or ""),
+                       "message": str(item.get("message") or item.get("reason_code") or "")})
+    return events
+
+
+def render_text(event: Mapping[str, Any], *, width: int = 24, ascii_only: bool = False) -> str:
     """Render a compact, Unicode-safe progress card for chat/LLM output."""
     pct = max(0, min(100, int(event.get("percent") or 0)))
     filled = int(width * pct / 100)
     bar = "█" * filled + "░" * (width - filled)
     gates = event.get("gates") or {}
     marks = " ".join(f"{'✅' if gates.get(k) else '▫️'} {k}" for k in ("evidence", "watcher", "oracle"))
-    return (f"{event.get('icon', '•')} {event.get('label', 'Progresso')} · {pct:3d}%\n"
-            f"[{bar}] {event.get('spinner', '·')}\n"
-            f"{marks}\n"
-            f"ação: {event.get('current_action') or 'aguardando'} → {event.get('next_action') or '—'}")
+    lines = [f"{event.get('icon', '•')} {event.get('label', 'Progresso')} · {pct:3d}%",
+             f"[{bar}] {event.get('spinner', '·')}", marks,
+             f"ação: {event.get('current_action') or 'aguardando'} → {event.get('next_action') or '—'}"]
+    lanes = event.get("lanes") or []
+    if lanes:
+        lines.append("lanes: " + " · ".join(f"{x['id']} {x['percent']}%/{x['status']}" for x in lanes))
+    events = event.get("events") or []
+    if events:
+        recent = events[-3:]
+        lines.append("etapas: " + " · ".join(
+            f"{x['phase']}" + (f"[{x['status']}]" if x.get("status") else "") for x in recent))
+    if ascii_only:
+        lines = [_ascii(line) for line in lines]
+    return "\n".join(lines)
 
 
-def render_markdown(event: Mapping[str, Any], *, width: int = 20) -> str:
+def render_markdown(event: Mapping[str, Any], *, width: int = 20, ascii_only: bool = False) -> str:
     pct = max(0, min(100, int(event.get("percent") or 0)))
     filled = int(width * pct / 100)
     bar = "█" * filled + "░" * (width - filled)
-    return f"**{event.get('icon', '•')} {event.get('label', 'Progresso')} — {pct}%**\n\n`{bar}` · `{event.get('status', 'RUNNING')}`"
+    rendered = f"**{event.get('icon', '•')} {event.get('label', 'Progresso')} — {pct}%**\n\n`{bar}` · `{event.get('status', 'RUNNING')}`"
+    if (event.get("lanes") or []):
+        rendered += "\n\nLanes: " + ", ".join(f"`{x['id']}` {x['percent']}% ({x['status']})" for x in event["lanes"])
+    return _ascii(rendered) if ascii_only else rendered
 
 
 def render_ansi(event: Mapping[str, Any], *, width: int = 24) -> str:
@@ -123,7 +201,8 @@ def load_state(run_dir: str | Path) -> Dict[str, Any]:
 
 
 def stream(run_dir: str | Path, *, fmt: str = "text", interval: float = 0.25,
-           once: bool = False, out: Any = None) -> Dict[str, Any]:
+           once: bool = False, out: Any = None, no_animation: bool = False,
+           ascii_only: bool = False) -> Dict[str, Any]:
     """Print progress snapshots until terminal; ``once`` is safe for non-interactive hosts."""
     out = out or sys.stdout
     frame = 0
@@ -133,13 +212,13 @@ def stream(run_dir: str | Path, *, fmt: str = "text", interval: float = 0.25,
         if fmt == "json":
             rendered = json.dumps(event, ensure_ascii=False, sort_keys=True)
         elif fmt == "markdown":
-            rendered = render_markdown(event)
+            rendered = render_markdown(event, ascii_only=ascii_only)
         elif fmt == "ansi":
-            rendered = render_ansi(event)
+            rendered = render_text(event, ascii_only=ascii_only) if no_animation else render_ansi(event)
         else:
-            rendered = render_text(event)
+            rendered = render_text(event, ascii_only=ascii_only)
         print(rendered, end="\n\n" if fmt != "ansi" else "", file=out, flush=True)
-        if once or event["status"] in {"COMPLETE", "BLOCKED"}:
+        if once or no_animation or event["status"] in {"COMPLETE", "BLOCKED"}:
             return event
         frame += 1
         time.sleep(max(0.05, float(interval)))
