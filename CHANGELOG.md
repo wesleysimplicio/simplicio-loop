@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.30.0] — 2026-07-11
+
+- Authenticated HTTP remote queue server over SQLite with leases, fencing, identity and fail-closed outages.
+- Canonical WorkItem graph validation rejects unknown dependencies, cycles, duplicate edges and zero-AC items.
+- Watcher evidence hardening requires proof references and validates challenge freshness and goal identity.
+- Claims-clean README and full gate: 508 tests passing.
+
 ## [3.29.0] — 2026-07-11
 
 - Portable visual progress rendering with ASCII/no-animation fallback, lanes and stage events.
