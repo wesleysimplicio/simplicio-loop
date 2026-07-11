@@ -231,6 +231,35 @@ def _lease_fence(lease):
     return str(lease.get("fencing_token") or lease.get("fence") or "")
 
 
+def _record_attempt(item, lease):
+    """Append one immutable attempt record when a WorkItem is claimed."""
+    attempt_id = "attempt-%s" % uuid.uuid4().hex
+    lease["attempt_id"] = attempt_id
+    item.setdefault("attempts", []).append({
+        "attempt_id": attempt_id,
+        "worker": lease.get("worker", ""),
+        "identity": dict(lease.get("identity") or {}),
+        "fencing_token": _lease_fence(lease),
+        "claimed_at": lease.get("claimed_at", ""),
+        "status": "active",
+    })
+    return attempt_id
+
+
+def _finish_attempt(item, status, **fields):
+    """Close the current attempt without rewriting prior attempt history."""
+    lease = item.get("lease") or {}
+    attempt_id = lease.get("attempt_id")
+    if not attempt_id:
+        return
+    for attempt in reversed(item.get("attempts") or []):
+        if attempt.get("attempt_id") == attempt_id:
+            attempt["status"] = status
+            attempt["finished_at"] = _now()
+            attempt.update(fields)
+            return
+
+
 def _lease_matches(item, worker="", fence="", require=False, identity=None):
     """Validate owner/fence credentials and reject expired leases.
 
@@ -945,6 +974,7 @@ def cmd_next(_opts):
             "generation": int(master.get("fence_counter", 0)),
             "identity": lease_identity(identity) if identity and lease_identity else {},
         }
+        _record_attempt(item, item["lease"])
         _save(master, items)
         print("%s\t%s\t%s" % (item.get("id"), item.get("goal"), fence))
         return
@@ -993,6 +1023,7 @@ def cmd_done(opts):
     if total == 0 or pending:
         print("backlog: BLOCKED — anchor is not READY for item %s" % item_id)
         sys.exit(12)
+    _finish_attempt(hit, "done", evidence_count=len(anchor.get("criteria", [])))
     hit["status"] = "done"
     hit["done_at"] = _now()
     hit["lease"] = {}
@@ -1031,8 +1062,11 @@ def cmd_skip(opts):
         sys.exit(2)
     for item in items:
         if item.get("id") == item_id:
-            if (worker or fence or identity) and not _lease_matches(item, worker=worker, fence=fence, identity=identity):
+            active = item.get("status") in ("claimed", "running", "verification", "delivery")
+            if (active and not _lease_matches(item, worker=worker, fence=fence, identity=identity, require=True)) or \
+                    (not active and (worker or fence or identity) and not _lease_matches(item, worker=worker, fence=fence, identity=identity)):
                 _lease_error(worker, item_id)
+            _finish_attempt(item, "skipped", reason=reason)
             item["status"] = "skipped"
             item["skip_reason"] = reason
             item["lease"] = {}
@@ -1063,8 +1097,11 @@ def cmd_block(opts):
         sys.exit(2)
     for item in items:
         if item.get("id") == item_id:
-            if (worker or fence or identity) and not _lease_matches(item, worker=worker, fence=fence, identity=identity):
+            active = item.get("status") in ("claimed", "running", "verification", "delivery")
+            if (active and not _lease_matches(item, worker=worker, fence=fence, identity=identity, require=True)) or \
+                    (not active and (worker or fence or identity) and not _lease_matches(item, worker=worker, fence=fence, identity=identity)):
                 _lease_error(worker, item_id)
+            _finish_attempt(item, "blocked", reason=reason, reason_code=code)
             item["status"] = "blocked"
             item["blocked_reason"] = reason
             item["reason_code"] = code
@@ -1099,9 +1136,11 @@ def cmd_fail(opts):
     for item in items:
         if item.get("id") != item_id:
             continue
-        lease = item.get("lease") or {}
-        if (worker or fence or identity) and not _lease_matches(item, worker=worker, fence=fence, identity=identity):
+        active = item.get("status") in ("claimed", "running", "verification", "delivery")
+        if (active and not _lease_matches(item, worker=worker, fence=fence, identity=identity, require=True)) or \
+                (not active and (worker or fence or identity) and not _lease_matches(item, worker=worker, fence=fence, identity=identity)):
             _lease_error(worker, item_id)
+        _finish_attempt(item, "failed", reason=reason, reason_code=code, fingerprint=fingerprint)
         failures = item.setdefault("failures", [])
         if not any(f.get("fingerprint") == fingerprint for f in failures):
             failures.append({

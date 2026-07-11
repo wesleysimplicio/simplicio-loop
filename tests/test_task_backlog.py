@@ -520,7 +520,8 @@ def test_backlog_fail_moves_to_dead_letter_after_distinct_failures(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     claimed = _run(["next", "--worker", "w1"], str(tmp_path), env)
     assert claimed.returncode == 0, claimed.stdout + claimed.stderr
-    f1 = _run(["fail", "--item", "T1", "--worker", "w1", "--reason", "test failed", "--code", "test-red",
+    fence = _fence_from_claim(claimed.stdout)
+    f1 = _run(["fail", "--item", "T1", "--worker", "w1", "--fence", fence, "--reason", "test failed", "--code", "test-red",
                "--fingerprint", "fp-1", "--max-failures", "3"], str(tmp_path), env)
     assert f1.returncode == 0, f1.stdout + f1.stderr
     f2 = _run(["fail", "--item", "T1", "--reason", "lint failed", "--code", "lint-red",
