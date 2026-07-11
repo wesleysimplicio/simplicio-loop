@@ -137,6 +137,8 @@ def persist_completion_receipt(payload: Dict[str, Any], loop_dir: str, run_dir: 
     challenge = _load_json(loop / "watcher_challenge.json") or {}
     watcher_state = _load_json(loop / "watcher_state.json") or {}
     anchor = _load_json(loop / "anchor.json") or {}
+    manifest = _load_json(run / "manifest.json") if run else {}
+    delivery = _load_json(run / "delivery-receipt.json") if run else {}
     out = {
         "schema": COMPLETION_SCHEMA,
         "ready": bool(payload.get("ready")),
@@ -148,6 +150,8 @@ def persist_completion_receipt(payload: Dict[str, Any], loop_dir: str, run_dir: 
         "loop_dir": str(loop),
         "run_dir": str(run) if run else "",
         "run_id": run.name if run else "",
+        "delivery_target": manifest.get("delivery_target", ""),
+        "delivery_state": delivery.get("current_state", ""),
         "challenge": challenge.get("challenge", ""),
         "goal_fp": challenge.get("goal_fp") or anchor.get("goal_fp") or "",
         "watcher_status": watcher_state.get("status", "UNVERIFIED"),
