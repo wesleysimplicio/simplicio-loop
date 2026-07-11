@@ -1,0 +1,132 @@
+{
+  "contract": "simplicio.operator-run/v1",
+  "$comment": "Single source of truth for the mandatory operator bridge between the simplicio-loop runner and the production mutation boundary (simplicio-dev-cli). Every production diff MUST be produced through a bridge call whose output satisfies this schema; the runner blocks conclusion when `git diff` contains a file with no matching operator receipt (#135). Consumers (simplicio-runtime, MCP, or the CLI) must produce/emit the same operator receipt schema whether they invoke the dev-cli directly or through the bridge - AC 'CLI direta e MCP produzem o mesmo operator receipt schema'.",
+  "input": {
+    "required_fields": [
+      "run_id",
+      "task_id",
+      "ac_id",
+      "rn_id",
+      "task_contract_hash",
+      "plan_hash",
+      "mapper_pack_hash",
+      "decided_change",
+      "authorized_targets",
+      "expected_validation",
+      "checkpoint_id",
+      "retry_budget",
+      "safety_policy"
+    ],
+    "field_types": {
+      "run_id": "string — the .orchestrator/runs/<id> identifier",
+      "task_index": "integer >= 1 — position of the task in the task-contract collection",
+      "task_id": "string — stable task identity from the task-contract",
+      "ac_id": "string — acceptance-criterion id the decided change is scoped to",
+      "rn_id": "string — run/attempt id (RN) the change belongs to",
+      "task_contract_hash": "string — sha256 collection_hash of the frozen task-contract",
+      "plan_hash": "string — sha256 of the frozen plan (steps + candidate_targets)",
+      "mapper_pack_hash": "string — sha256 of the mapper handoff context pack",
+      "decided_change": "string — the concrete mutation the planner/AI decided, AC-scoped",
+      "authorized_targets": "array<string> — plan targets the change may touch (bound-paths)",
+      "expected_validation": "array<string> — tests/validation commands expected to run",
+      "checkpoint_id": "string — id of the pre-mutation file snapshot for automatic rollback",
+      "retry_budget": "integer in [0,3] — max operator retries (AC: 'até três retries')",
+      "safety_policy": "object — kill-switch/STOP path + human gate + secret-scan policy"
+    },
+    "invariants": [
+      "authorized_targets must be a non-empty subset of plan.candidate_targets for the task",
+      "decided_change must reference ac_id (the change is AC-scoped, never free-form)",
+      "checkpoint_id must be non-empty and captured BEFORE the first mutation (AC: 'Checkpoint ocorre antes da primeira mutação')"
+    ]
+  },
+  "operator_identity": {
+    "required_fields": ["command", "path", "identity_ok", "capabilities", "min_version"],
+    "field_types": {
+      "command": "string — the resolved operator command stem (simplicio-dev-cli)",
+      "path": "string — absolute path resolved from PATH (identity, not just `which`)",
+      "identity_ok": "boolean — True iff resolved stem matches the expected operator identity",
+      "capabilities": "array<string> — verbs the operator's --help surface advertises (task, --dry-run-task, --json, ...)",
+      "min_version": "string — the minimum tolerated version tuple (e.g. '0.14.0')",
+      "version_ok": "boolean — True iff parsed operator version >= min_version"
+    },
+    "invariants": [
+      "identity is validated by identity/path/capability/min-version, NOT merely `which` (AC: 'Dev-cli é validado por identity/capability/min-version, não somente which')",
+      "a wrong homonym (path resolves but stem mismatches) MUST set identity_ok=false and block",
+      "a version below min_version MUST block before any mutation"
+    ]
+  },
+  "receipt": {
+    "required_fields": [
+      "schema",
+      "mode",
+      "tool",
+      "execution_state",
+      "target",
+      "authorized_targets",
+      "target_within_repo",
+      "argv",
+      "returncode",
+      "stdout",
+      "stderr",
+      "timed_out",
+      "provider_config",
+      "checkpoint",
+      "rollback",
+      "failure_fingerprint",
+      "task_contract_hash",
+      "plan_hash",
+      "mapper_pack_hash",
+      "repo_state_before",
+      "repo_state_after",
+      "changed_paths",
+      "diff_hash",
+      "receipt_hash",
+      "status"
+    ],
+    "field_types": {
+      "schema": "string — must equal 'simplicio.operator-receipt/v0' (or this contract's operator receipt schema)",
+      "mode": "enum: dry_run | execute",
+      "tool": "string — 'simplicio-dev-cli'",
+      "execution_state": "enum: dry_run | applied | no_change | failed | blocked",
+      "status": "enum: applied | no_change | failed | blocked",
+      "target": "string — the AC-scoped target actually mutated",
+      "authorized_targets": "array<string>",
+      "target_within_repo": "boolean",
+      "argv": "array<string> — the exact operator command (redacted of secrets)",
+      "returncode": "integer|null — null means timeout/killed",
+      "stdout": "object|string — structured operator output (redacted)",
+      "stderr": "string — redacted operator stderr",
+      "timed_out": "boolean",
+      "started_at": "string — ISO-8601 UTC",
+      "finished_at": "string — ISO-8601 UTC",
+      "provider_config": "object — {model, effort} of the remote model used (or empty if mechanical/local)",
+      "checkpoint": "object — {kind, created_at, safe_targets, files[]}",
+      "rollback": "object — {attempted, restored, reason}",
+      "failure_fingerprint": "string — stable 16-hex fingerprint of the failure signature",
+      "retry_budget": "integer",
+      "attempt": "integer — 1-based attempt number within the retry budget",
+      "task_contract_hash": "string",
+      "plan_hash": "string",
+      "mapper_pack_hash": "string",
+      "repo_state_before": "object — {head, tree_hash, dirty_status_hash}",
+      "repo_state_after": "object — {head, tree_hash, dirty_status_hash}",
+      "changed_paths": "array<string> — paths changed by this run",
+      "diff_hash": "string — sha256 of the resulting working-tree diff/tree",
+      "receipt_hash": "string — sha256 over the canonical receipt body (excluding receipt_hash itself)",
+      "no_change_proof": "object|null — required when status=='no_change': {satisfying_state, measured_at, evidence}"
+    },
+    "invariants": [
+      "each production diff is covered by exactly one operator receipt (status applied|no_change) — AC: 'Cada diff de produção do run é coberto por um operator receipt'",
+      "the runner blocks conclusion if `git diff` names a file with no matching receipt — AC: 'O runner bloqueia conclusão se git diff contém arquivo sem receipt correspondente'",
+      "the decided change is AC-scoped and points at plan targets — AC: 'A alteração decidida é AC-scoped e aponta para targets do plano'",
+      "a target expansion beyond authorized_targets MUST route back to planner/impact gate before continuing — AC: 'Expansão de target volta ao planner/impact gate antes de continuar'",
+      "up to three retries preserve failure_fingerprints and change strategy; the same fingerprint must not be repeated indefinitely — AC: 'Até três retries preservam fingerprints e mudam estratégia; não repetem o mesmo failure indefinidamente'",
+      "checkpoint is captured before the first mutation; rollback is automatic on validation fail/cancel when safe — AC: 'Checkpoint ocorre antes da primeira mutação e rollback é automático em validation fail/cancel quando seguro'",
+      "the operator command, redacted stdout/stderr, and exit code are persisted — AC: 'Comando do dev-cli, stdout/stderr redigidos e exit code são persistidos'",
+      "a dev-cli failure NEVER unlocks silent manual LLM editing — AC: 'Falha do dev-cli nunca libera edição manual silenciosa do LLM'",
+      "purely mechanical operations do NOT call a remote model when the Runtime can execute them — AC: 'Operações puramente mecânicas não chamam modelo remoto quando o Runtime consegue executá-las'",
+      "`no_change` is accepted ONLY with proof the state already satisfied the AC — AC: 'no_change só é aceito com prova de que o estado já satisfazia o AC'",
+      "the same receipt schema is produced whether the bridge is invoked via CLI or MCP — AC: 'CLI direta e MCP produzem o mesmo operator receipt schema'"
+    ]
+  }
+}

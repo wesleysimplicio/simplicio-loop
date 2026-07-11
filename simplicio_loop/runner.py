@@ -43,6 +43,10 @@ PHASES = [
 MAPPER_MIN_VERSION = (0, 14, 0)
 MAPPER_REQUIRED_VERBS = ("inspect", "handoff", "ask", "sync", "drift")
 DEVCLI_REQUIRED_TOKENS = (" task", "--dry-run-task", "--json")
+# Issue #135: the operator bridge validates identity + capability + MIN_VERSION, not
+# merely `which`. A dev-cli below this tuple is blocked before any mutation.
+DEVCLI_MIN_VERSION = (0, 14, 0)
+DEVCLI_REQUIRED_CAPABILITIES = ("task", "--dry-run-task", "--json", "--bound-paths", "--target")
 DEFAULT_OPERATOR_WORKERS = 6
 BATCH_SCHEMA = "simplicio.operator-batch/v1"
 
@@ -562,13 +566,18 @@ def _preflight_mapper(repo_path: Path, run_root: Path) -> Dict[str, Any]:
 
 
 def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
+    # Issue #135: the operator bridge validates identity + capability + MIN_VERSION,
+    # not merely `which`. A wrong homonym (PATH resolves but the stem mismatches) or a
+    # version below DEVCLI_MIN_VERSION blocks before any mutation.
     override = _preflight_override("SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON")
     if override is not None:
-        identity = {"command": "simplicio-dev-cli", "path": "", "identity_ok": True}
+        identity = {"command": "simplicio-dev-cli", "path": str(override.get("path", "")), "identity_ok": True}
         help_stdout = str(override.get("help_stdout", ""))
         help_rc = int(override.get("help_returncode", 0))
         task_help_stdout = str(override.get("task_help_stdout", help_stdout))
         task_help_rc = int(override.get("task_help_returncode", help_rc))
+        version_stdout = str(override.get("version_stdout", "simplicio-py 0.14.0"))
+        version_rc = int(override.get("version_returncode", 0))
     else:
         identity = _resolved_identity("simplicio-dev-cli", ("simplicio-dev-cli", "simplicio-py"))
         env = _devcli_env(repo_path)
@@ -588,12 +597,24 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
             timeout=180,
             env=env,
         )
+        version_result = subprocess.run(
+            _devcli_cmd(repo_path, "--version"),
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=env,
+        )
         help_stdout = (help_result.stdout or "").strip()
         help_rc = help_result.returncode
         task_help_stdout = (task_help_result.stdout or "").strip()
         task_help_rc = task_help_result.returncode
+        version_stdout = (version_result.stdout or "").strip()
+        version_rc = version_result.returncode
     capability_surface = " ".join(part for part in (help_stdout, task_help_stdout) if part)
     missing_tokens = [token for token in DEVCLI_REQUIRED_TOKENS if token not in (" " + capability_surface)]
+    parsed_version = _parse_version_tuple(version_stdout)
+    missing_capabilities = [cap for cap in DEVCLI_REQUIRED_CAPABILITIES if cap not in capability_surface]
     receipt = {
         "tool": "simplicio-dev-cli",
         "returncode": help_rc,
@@ -604,6 +625,13 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         "missing_tokens": missing_tokens,
         "path": identity["path"],
         "identity_ok": identity["identity_ok"],
+        "version_stdout": version_stdout,
+        "version_returncode": version_rc,
+        "version": ".".join(str(part) for part in parsed_version),
+        "min_version": ".".join(str(part) for part in DEVCLI_MIN_VERSION),
+        "version_ok": parsed_version >= DEVCLI_MIN_VERSION,
+        "required_capabilities": list(DEVCLI_REQUIRED_CAPABILITIES),
+        "missing_capabilities": missing_capabilities,
         "checked_at": _now(),
     }
     _write_json(run_root / "operator-preflight.json", receipt)
@@ -613,6 +641,13 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         raise RuntimeError("simplicio-dev-cli identity mismatch")
     if missing_tokens:
         raise RuntimeError("simplicio-dev-cli missing required capabilities")
+    if version_rc != 0:
+        raise RuntimeError("simplicio-dev-cli version probe failed")
+    if not receipt["version_ok"]:
+        raise RuntimeError(
+            "simplicio-dev-cli below minimum version %s (found %s)"
+            % (receipt["min_version"], receipt["version"])
+        )
     return receipt
 
 
@@ -1204,6 +1239,85 @@ def _operator_failure_fingerprint(returncode: int | None, stderr: str, stdout: A
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def _operator_receipt_hash(receipt: Mapping[str, Any]) -> str:
+    """Stable sha256 over the canonical receipt body (excluding receipt_hash itself).
+
+    Issue #135: the receipt is the durable proof a production diff was produced through the
+    bridge. The hash lets the diff-coverage gate bind a `git diff` path to exactly one receipt.
+    """
+    canonical = {k: v for k, v in receipt.items() if k != "receipt_hash"}
+    blob = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _operator_run_diff_coverage(repo_path: Path, run_dir: Path) -> Dict[str, Any]:
+    """Issue #135: every production diff path must be covered by an operator receipt.
+
+    The bridge is the ONLY allowed mutation path. Any path `git diff` names that no operator
+    receipt covers (i.e. was edited outside the bridge, or by a dev-cli failure that silently
+    unlocked manual editing) makes the run non-concludable.
+    """
+    changed = _changed_paths(repo_path)
+    covered: List[str] = []
+    receipts: List[Dict[str, Any]] = []
+    # Collect every operator receipt in this run (execute + batch lanes).
+    for candidate in sorted(run_dir.glob("operator-receipt*.json")):
+        try:
+            receipts.append(_load_json(candidate))
+        except (OSError, ValueError, TypeError):
+            continue
+    for receipt in receipts:
+        status = str(receipt.get("status") or receipt.get("execution_state") or "")
+        if status not in ("applied", "no_change"):
+            continue
+        covered.extend(str(p) for p in (receipt.get("changed_paths") or []) if str(p))
+    covered_set = {str(p) for p in covered}
+    uncovered = [p for p in changed if p not in covered_set]
+    coverage_ok = not uncovered
+    return {
+        "changed_paths": changed,
+        "covered_paths": sorted(covered_set),
+        "uncovered_paths": uncovered,
+        "coverage_ok": coverage_ok,
+        "receipt_count": len(receipts),
+    }
+
+
+def conclude_run(repo: str, run_id: str, *, force: bool = False) -> Dict[str, Any]:
+    """Gate run conclusion on full operator-receipt diff coverage (issue #135).
+
+    `force=True` is the explicit human override (the safety policy's human gate) and still
+    records the violation rather than silently passing.
+    """
+    status = read_status(repo, run_id)
+    run_dir = Path(status["run_dir"])
+    repo_path = Path(status["manifest"]["repo"]).resolve()
+    coverage = _operator_run_diff_coverage(repo_path, run_dir)
+    state = status["state"]
+    if not coverage["coverage_ok"] and not force:
+        raise RuntimeError(
+            "cannot conclude run: production diff paths without an operator receipt: "
+            + ", ".join(coverage["uncovered_paths"])
+        )
+    gate = {
+        "kind": "operator_run_diff_coverage",
+        "coverage_ok": coverage["coverage_ok"],
+        "uncovered_paths": coverage["uncovered_paths"],
+        "forced": bool(force),
+        "checked_at": _now(),
+    }
+    state.setdefault("gates", []).append(gate)
+    state["operator_run_gate"] = gate
+    _write_json(run_dir / "state.json", state)
+    _transition(
+        run_dir, state, state.get("phase") or "done",
+        "operator-run diff-coverage gate evaluated",
+        receipt=str(run_dir / "state.json"),
+        extra={"coverage": coverage},
+    )
+    return read_status(repo, run_id)
+
+
 def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, Any]:
     """Execute one planned task through the real dev-cli and persist an immutable receipt.
 
@@ -1241,6 +1355,13 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
     target = targets[0] if targets else status["state"].get("operator", {}).get("target", "")
     if not target:
         raise RuntimeError("plan has no authorized operator target")
+    # Issue #135: the decided change is AC-scoped and MUST point at a plan target. Any target
+    # expansion beyond authorized_targets routes back to the planner/impact gate before continuing.
+    if target not in (targets or []):
+        raise RuntimeError(
+            "operator target '%s' is outside the plan's authorized_targets %s; "
+            "route back to planner/impact gate before continuing" % (target, targets)
+        )
     _preflight_operator(repo_path, run_dir)
     argv = _devcli_cmd(
         repo_path,
@@ -1306,11 +1427,24 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         if rollback.get("restored"):
             changed = _changed_paths(repo_path)
             after = _repo_fingerprint(repo_path)
+    # Issue #135: `no_change` is only valid with proof the state already satisfied the AC.
+    # A dev-cli failure NEVER unlocks silent manual LLM editing (fail-closed `blocked`).
+    if returncode == 0 and not changed:
+        execution_state = "no_change"
+        no_change_proof = {
+            "satisfying_state": "repository already satisfied the AC; no production diff produced",
+            "measured_at": _now(),
+            "evidence": str(after.get("tree_hash", "")),
+        }
+    else:
+        execution_state = "applied" if returncode == 0 else "blocked"
+        no_change_proof = None
     receipt = {
         "schema": OPERATOR_RECEIPT_SCHEMA,
         "mode": "execute",
         "tool": "simplicio-dev-cli",
-        "execution_state": "applied" if returncode == 0 else "blocked",
+        "execution_state": execution_state,
+        "status": execution_state,
         "attempt": attempt,
         "retry_budget": 3,
         "target": target,
@@ -1336,7 +1470,9 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         "repo_state_after": after,
         "changed_paths": changed,
         "diff_hash": after.get("tree_hash", ""),
+        "no_change_proof": no_change_proof,
     }
+    receipt["receipt_hash"] = _operator_receipt_hash(receipt)
     _write_json(operator_path, receipt)
     state = status["state"]
     state["operator"] = {
