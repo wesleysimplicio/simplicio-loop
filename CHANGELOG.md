@@ -3,6 +3,16 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [3.27.0] — 2026-07-11
+
+### Added
+- **Distributed coordination backend:** transactional SQLite queue with atomic claims, expiring
+  leases, monotonic fencing, heartbeats, ordered reconciliation events, and fail-closed outages.
+- **Crash-safe execution recovery:** AC-aware receipts, durable cursors, atomic fsync/replace,
+  idempotent replay, and fail-closed gap/tamper/identity-drift handling.
+- **Runtime compatibility adapter:** explicit negotiation, capabilities, identity-preserving events,
+  leases, evidence, completion, durable outbox, replay, and cross-platform contract CI.
+
 ## [3.26.0] — 2026-07-11
 
 ### Added
