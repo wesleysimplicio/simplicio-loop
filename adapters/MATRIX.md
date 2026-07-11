@@ -85,6 +85,13 @@ antigravity, kiro, opencode, hermes) — actually applies the native MCP/CLI bin
 (`ensure_runtime_bind` in `scripts/install_lib.py`), not just prints a suggestion. Everything it
 does is a copy + a config edit — reversible, no build.
 
+## Loop→Runtime contract adapter
+
+All native bindings use the transport-neutral [`docs/runtime-adapter.md`](../docs/runtime-adapter.md)
+contract. The adapter negotiates `simplicio.runtime/v1`, preserves the same Run/WorkItem IDs,
+buffers operations during outages, and fails closed on incompatible versions. Standalone mode is
+available only with an explicit `standalone=True` choice and never claims runtime delivery.
+
 ## What degrades gracefully — and what does not
 
 - **No stop-hook** → the loop self-paces via the host scheduler (`simplicio-loop` "No-hook
