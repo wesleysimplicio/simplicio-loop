@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Union
 
 from .phase_events import PhaseEventError, validate_phase_event
+from .agent_contract import AgentContractError, bind_receipt, validate_identity
 
 SCHEMA = "simplicio.loop-runtime-adapter/v1"
 CONTRACT_VERSION = "1"
@@ -52,8 +53,9 @@ def _text(value: Any, field: str) -> str:
     return value.strip()
 
 
-def _envelope(kind: str, run_id: str, work_item_id: str, actor: str, payload: Mapping[str, Any]) -> Dict[str, Any]:
-    return {
+def _envelope(kind: str, run_id: str, work_item_id: str, actor: str, payload: Mapping[str, Any],
+              identity: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    envelope = {
         "schema": SCHEMA,
         "contract_version": CONTRACT_VERSION,
         "operation_id": "op-" + uuid.uuid4().hex,
@@ -64,6 +66,9 @@ def _envelope(kind: str, run_id: str, work_item_id: str, actor: str, payload: Ma
         "created_at": _now(),
         "payload": dict(payload),
     }
+    if identity is not None:
+        envelope["agent"] = dict(identity)
+    return envelope
 
 
 class LoopRuntimeAdapter:
@@ -77,10 +82,15 @@ class LoopRuntimeAdapter:
     def __init__(self, *, run_id: str, work_item_id: str, actor: str,
                  transport: Optional[RuntimeTransport] = None,
                  outbox_path: Optional[Union[str, Path]] = None,
-                 standalone: bool = False) -> None:
+                 standalone: bool = False,
+                 identity: Optional[Mapping[str, Any]] = None) -> None:
         self.run_id = _text(run_id, "run_id")
         self.work_item_id = _text(work_item_id, "work_item_id")
         self.actor = _text(actor, "actor")
+        try:
+            self.identity = validate_identity(identity) if identity is not None else None
+        except AgentContractError as exc:
+            raise RuntimeAdapterError(str(exc)) from exc
         if standalone and transport is not None:
             raise RuntimeAdapterError("standalone mode cannot also bind a runtime")
         if transport is None and not standalone:
@@ -125,7 +135,7 @@ class LoopRuntimeAdapter:
         return dict(response)
 
     def register_run(self, manifest: Mapping[str, Any]) -> Dict[str, Any]:
-        return self._submit(_envelope("register_run", self.run_id, self.work_item_id, self.actor, manifest))
+        return self._submit(_envelope("register_run", self.run_id, self.work_item_id, self.actor, manifest, self.identity))
 
     def emit_event(self, event: Mapping[str, Any]) -> Dict[str, Any]:
         try:
@@ -134,20 +144,30 @@ class LoopRuntimeAdapter:
             raise RuntimeAdapterError(str(exc)) from exc
         if normalized["run_id"] != self.run_id or normalized["work_item_id"] != self.work_item_id:
             raise RuntimeAdapterError("event identity does not match adapter run/work item")
-        return self._submit(_envelope("event", self.run_id, self.work_item_id, self.actor, normalized))
+        return self._submit(_envelope("event", self.run_id, self.work_item_id, self.actor, normalized, self.identity))
 
     def lease(self, action: str, lease: Mapping[str, Any]) -> Dict[str, Any]:
-        return self._submit(_envelope("lease_" + _text(action, "action"), self.run_id, self.work_item_id, self.actor, lease))
+        return self._submit(_envelope("lease_" + _text(action, "action"), self.run_id, self.work_item_id, self.actor, lease, self.identity))
 
     def record_evidence(self, receipt: Mapping[str, Any]) -> Dict[str, Any]:
         if not receipt.get("schema") or not receipt.get("status"):
             raise RuntimeAdapterError("evidence receipt requires schema and status")
-        return self._submit(_envelope("evidence", self.run_id, self.work_item_id, self.actor, receipt))
+        payload = self._bind_receipt(receipt)
+        return self._submit(_envelope("evidence", self.run_id, self.work_item_id, self.actor, payload, self.identity))
 
     def complete(self, receipt: Mapping[str, Any]) -> Dict[str, Any]:
         if receipt.get("ready") is not True or receipt.get("verdict") != "COMPLETE":
             raise RuntimeAdapterError("completion requires a COMPLETE receipt; outage cannot create Done")
-        return self._submit(_envelope("complete", self.run_id, self.work_item_id, self.actor, receipt))
+        payload = self._bind_receipt(receipt)
+        return self._submit(_envelope("complete", self.run_id, self.work_item_id, self.actor, payload, self.identity))
+
+    def _bind_receipt(self, receipt: Mapping[str, Any]) -> Dict[str, Any]:
+        if self.identity is None:
+            return dict(receipt)
+        try:
+            return bind_receipt(receipt, self.identity)
+        except AgentContractError as exc:
+            raise RuntimeAdapterError(str(exc)) from exc
 
     def reconcile(self) -> Dict[str, Any]:
         pending = self._read_outbox()
