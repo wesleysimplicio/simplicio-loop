@@ -148,6 +148,8 @@ class SQLiteRemoteQueue:
             with self._tx() as c:
                 existing = c.execute("SELECT task_id,lease_id FROM idempotency WHERE idempotency_key=?",
                                      (idempotency_key,)).fetchone()
+                if existing and existing["task_id"] != task_id:
+                    raise QueueConflict("idempotency key already belongs to another task")
                 if existing:
                     row = c.execute("SELECT * FROM leases WHERE task_id=? AND lease_id=?",
                                     (existing["task_id"], existing["lease_id"])).fetchone()
