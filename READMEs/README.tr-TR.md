@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
+  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
 </p>
 
 <p align="center">
@@ -45,6 +45,41 @@
 </p>
 
 ---
+
+<!-- visual-story:start -->
+## 🚀 Yeni nesil — doğrulanabilir ajan çalışmaları için bir işletim sistemi
+
+**simplicio-loop, bitene kadar tekrarlanan bir prompt olmanın çok ötesine geçti.** Artık niyeti dondurulmuş bir görev sözleşmesine dönüştürüyor, depoyu haritalıyor, bağımlılıklara göre planlıyor, yürütmeyi yalıtılmış worktree’lere dağıtıyor, yapılandırılmış kanıtlar topluyor, bağımsız doğrulama ve güvenli rollback yapıyor, her denemeyi hatırlıyor ve teslimata kadar source of record ile eşitleniyor.
+
+- **Önce sözleşme** — kabul kriterleri, bağımlılıklar, riskler, kaynak durumu ve tamamlanma oracle’ı yürütmeden önce açıktır.
+- **Bozulmadan paralellik** — hazır görevler yalıtılmış lane/worktree’lerde çalışır ve operasyonel ledger üzerinden birleşir.
+- **Tamamlanmadan önce kanıt** — testler, impact/flow kontrolleri, watcher challenge, delivery receipt ve HBP evidence sahte done durumlarını reddeder.
+- **Davranışı değiştiren hafıza** — journal, stall detector, checkpoint ve cross-agent wiki salınımı önler, handoff’ları kalıcı kılar.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-parallel-worktrees.png" alt="simplicio-loop parallel isolated worktree execution" width="920" />
+</p>
+
+<p align="center"><em>Bağımlılık duyarlı fan-out: yalıtılmış worker’lar paralel çalışır, kanıt döndürür ve tek bir doğrulanmış teslimatta birleşir.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-lifecycle-2026.svg" alt="simplicio-loop lifecycle from intake to durable memory" width="920" />
+</p>
+
+<p align="center"><em>Her aşama açık, sınırlı, gözlemlenebilir ve geri alınabilirdir.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-evidence-memory.png" alt="simplicio-loop evidence memory verification rollback and completion" width="920" />
+</p>
+
+<p align="center"><em>Kanıt ve hafıza yürütme yolunun parçasıdır; sonradan yazılan bir rapor değildir.</em></p>
+
+Bu mimari tek bir hedefi yönetilen teslimat sistemine dönüştürür: zor bir görevden tüm backlog’a, session ve runtime’lar arasında, local-first operator ve insan, CI ya da başka bir ajanın denetleyebileceği receipt’lerle.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
+</p>
+<!-- visual-story:end -->
 
 ## ⚡ TL;DR
 

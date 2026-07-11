@@ -58,8 +58,8 @@
     },
     ".simplicio\\symbol-index.json": {
       "label": "mapper artifact (symbol-index.json)",
-      "tokens": 39615,
-      "words": 1
+      "tokens": 244864,
+      "words": 60332
     },
     "AGENTS.md": {
       "label": "AGENTS.md",
@@ -98,8 +98,8 @@
     },
     "simplicio_loop/cli.py": {
       "label": "cli.py",
-      "tokens": 3579,
-      "words": 1333
+      "tokens": 6619,
+      "words": 2304
     }
   },
   "estimator": "heuristic:chars-div-4",

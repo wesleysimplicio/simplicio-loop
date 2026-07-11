@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
+  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
 </p>
 
 <p align="center">
@@ -45,6 +45,41 @@
 </p>
 
 ---
+
+<!-- visual-story:start -->
+## 🚀 Die neue Generation — ein Betriebssystem für verifizierte Agentenarbeit
+
+**simplicio-loop ist weit mehr als ein Prompt, der bis zum Abschluss wiederholt wird.** Es übersetzt Absicht in einen eingefrorenen Task-Vertrag, kartiert das Repository, plant nach Abhängigkeiten, verteilt die Ausführung auf isolierte Worktrees, sammelt strukturierte Belege, verifiziert unabhängig, rollt sicher zurück, merkt sich jeden Versuch und hält die maßgebliche Quelle bis zur Auslieferung synchron.
+
+- **Vertrag zuerst** — Akzeptanzkriterien, Abhängigkeiten, Risiken, Quellenstatus und Completion Oracle sind vor der Ausführung explizit.
+- **Parallel ohne Korruption** — bereite Tasks laufen in isolierten Lanes/Worktrees und konvergieren über ein operatives Ledger.
+- **Beweis vor Abschluss** — Tests, Impact-/Flow-Prüfungen, Watcher-Challenges, Lieferbelege und HBP-Evidenz weisen falsche Done-Zustände zurück.
+- **Gedächtnis, das Verhalten ändert** — Journal, Stall Detector, Checkpoints und Cross-Agent-Wiki verhindern Oszillation und machen Handoffs dauerhaft.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-parallel-worktrees.png" alt="simplicio-loop parallel isolated worktree execution" width="920" />
+</p>
+
+<p align="center"><em>Abhängigkeitsgesteuerter Fan-out: isolierte Worker arbeiten parallel, liefern Evidenz zurück und konvergieren zu einer verifizierten Lieferung.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-lifecycle-2026.svg" alt="simplicio-loop lifecycle from intake to durable memory" width="920" />
+</p>
+
+<p align="center"><em>Jede Stufe ist explizit, begrenzt, beobachtbar und reversibel.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-evidence-memory.png" alt="simplicio-loop evidence memory verification rollback and completion" width="920" />
+</p>
+
+<p align="center"><em>Evidenz und Gedächtnis sind Teil des Ausführungspfads — kein nachträglich geschriebener Bericht.</em></p>
+
+Diese Architektur macht aus einem Ziel ein gesteuertes Liefersystem: von einer schwierigen Aufgabe bis zum gesamten Backlog, über Sessions und Runtimes hinweg, mit Local-first-Operatoren und Belegen, die Menschen, CI oder andere Agenten auditieren können.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
+</p>
+<!-- visual-story:end -->
 
 ## ⚡ TL;DR
 

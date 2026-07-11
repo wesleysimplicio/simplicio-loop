@@ -5,7 +5,7 @@ drains any queue of work end-to-end on **any LLM / runtime**:
 `discover → implement → verify → merge → close → watch 24/7`, behind safety gates and evidence
 checks, at up to **96% fewer tokens**. Not a chatbot. A worker.
 
-![simplicio-loop](https://raw.githubusercontent.com/wesleysimplicio/simplicio-loop/main/assets/simplicio-loop-hero.jpg)
+![simplicio-loop](https://raw.githubusercontent.com/wesleysimplicio/simplicio-loop/main/assets/simplicio-loop-hero-2026.png)
 
 ## Install
 

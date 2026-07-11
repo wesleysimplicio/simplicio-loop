@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
+  <img src="assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
 </p>
 
 <p align="center">
@@ -47,6 +47,41 @@
 </p>
 
 ---
+
+<!-- visual-story:start -->
+## 🚀 The new generation — an operating system for verified agent work
+
+**simplicio-loop has evolved far beyond a repeat-until-done prompt.** It now compiles intent into a frozen task contract, maps the repository, schedules dependency-aware work, fans execution out into isolated worktrees, collects structured receipts, verifies independently, rolls back safely, remembers every attempt, and keeps the source of record synchronized through delivery.
+
+- **Contract first** — acceptance criteria, dependencies, risks, source state, and the completion oracle are explicit before execution.
+- **Parallel without corruption** — ready tasks run in isolated lanes/worktrees and converge through an operational ledger.
+- **Proof before completion** — tests, impact/flow checks, watcher challenges, delivery receipts, and HBP evidence reject false done states.
+- **Memory that changes behavior** — the journal, stall detector, checkpoints, and cross-agent wiki prevent oscillation and make handoffs durable.
+
+<p align="center">
+  <img src="assets/simplicio-loop-parallel-worktrees.png" alt="simplicio-loop parallel isolated worktree execution" width="920" />
+</p>
+
+<p align="center"><em>Dependency-aware fan-out: isolated workers execute concurrently, return evidence, and converge into one verified delivery.</em></p>
+
+<p align="center">
+  <img src="assets/simplicio-loop-lifecycle-2026.svg" alt="simplicio-loop lifecycle from intake to durable memory" width="920" />
+</p>
+
+<p align="center"><em>Every stage is explicit, bounded, observable, and reversible.</em></p>
+
+<p align="center">
+  <img src="assets/simplicio-loop-evidence-memory.png" alt="simplicio-loop evidence memory verification rollback and completion" width="920" />
+</p>
+
+<p align="center"><em>Evidence and memory are part of the execution path—not a report written after the fact.</em></p>
+
+That architecture lets one goal become a governed delivery system: from a single hard task to an entire backlog, across sessions and runtimes, with local-first operators and receipts strong enough for humans, CI, or another agent to audit.
+
+<p align="center">
+  <img src="assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
+</p>
+<!-- visual-story:end -->
 
 ## ⚡ TL;DR
 

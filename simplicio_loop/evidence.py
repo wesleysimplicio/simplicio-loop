@@ -88,7 +88,7 @@ def _command_policy(check: Dict[str, Any]) -> tuple[List[str] | None, str]:
 def _git_meta(root: Path) -> Dict[str, str]:
     def _run(*args: str) -> str:
         try:
-            done = subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True,
+            done = subprocess.run(["git", *args], cwd=str(root), capture_output=True, stdin=subprocess.DEVNULL, text=True,
                                   timeout=15)
             return (done.stdout or "").strip() if done.returncode == 0 else ""
         except Exception:
@@ -105,7 +105,7 @@ def _changed_paths(root: Path) -> List[str]:
 
     def _run(*args: str) -> List[str]:
         try:
-            done = subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True, timeout=15)
+            done = subprocess.run(["git", *args], cwd=str(root), capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=15)
             if done.returncode != 0:
                 return []
             return [line.strip() for line in (done.stdout or "").splitlines() if line.strip()]
@@ -113,9 +113,11 @@ def _changed_paths(root: Path) -> List[str]:
             return []
 
     out.extend(_run("diff", "--name-only", "HEAD"))
-    for line in _run("status", "--porcelain=v1", "--untracked-files=all"):
-        if len(line) > 3:
-            out.append(line[3:].strip())
+    # Ask Git directly for untracked files instead of parsing porcelain status.
+    # On Windows, rapid init/write/status cycles can intermittently yield an empty
+    # porcelain snapshot under captured subprocess output; ls-files is the narrower,
+    # deterministic source for exactly the untracked paths this coverage gate needs.
+    out.extend(_run("ls-files", "--others", "--exclude-standard"))
     return sorted({
         path for path in out
         if path

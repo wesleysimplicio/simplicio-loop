@@ -3,6 +3,41 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [3.25.0] — 2026-07-10
+
+### Added
+- **Contract-first task-to-delivery runtime:** canonical task/run-state contracts, source-state
+  reconciliation, a completion oracle, structured evidence receipts, clean-environment checks,
+  and HBP-backed completion records make transitions auditable instead of self-reported.
+- **Parallel queue draining with durable isolation:** dependency-aware fan-out, bounded worker
+  batches, per-task worktrees, a persistent worktree queue, and an operational ledger let ready
+  tasks execute concurrently without sharing a mutable checkout.
+- **Evidence-aware recovery:** operator rollback contracts, watcher challenges, checkpoints,
+  impact/flow coverage, and durable attempt memory keep failures reversible and prevent repeated
+  dead ends from being mistaken for progress.
+- **A new visual product story:** a GPT Image 2 flagship hero, two supporting system
+  illustrations, two deterministic architecture charts, and a synchronized narrative across all
+  15 maintained README languages show the complete path from intent to verified delivery.
+- **Completion-oracle stop authority:** every stop-hook turn now evaluates and persists the typed
+  completion receipt, records the authoritative reason in handoff evidence, and treats a legacy
+  done flag only as a request for evaluation.
+- **Maintenance-deferred mode:** operators can move corrective work into an explicit backlog-only
+  state with a durable receipt and resume instructions, while completion remains blocked instead
+  of being reported optimistically.
+
+### Changed
+- Reframed the README around simplicio-loop as a governed delivery operating system for agent
+  work: contract first, parallel in isolation, proof before completion, and memory that changes
+  future execution.
+- Updated Python, source-checkout fallback, and npm wrapper versions to `3.25.0`.
+
+### Fixed
+- Hardened Git, hook, watcher, evidence, and loop-contract subprocesses for Windows with explicit
+  UTF-8 streams and non-interactive stdin; escaped batch forwarding correctly and removed inherited
+  invalid-handle failures from the verification path.
+- Reconciled the token-budget baseline with the reviewed mapper index and CLI growth, restored the
+  selftest registry, and synchronized source, plugin, and bundled mirrors.
+
 ## [3.24.0] — 2026-07-09
 
 ### Added

@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
+  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
 </p>
 
 <p align="center">
@@ -45,6 +45,41 @@
 </p>
 
 ---
+
+<!-- visual-story:start -->
+## 🚀 新世代 — 検証可能なエージェント作業のためのオペレーティングシステム
+
+**simplicio-loop は、完了まで同じプロンプトを繰り返す仕組みを大きく超えました。** 意図を固定されたタスク契約に変換し、リポジトリをマッピングし、依存関係に沿って計画し、分離された worktree に実行を展開します。さらに構造化された証跡を収集し、独立検証、安全な rollback、試行の記憶、納品までの source of record 同期を行います。
+
+- **契約を先に** — 受け入れ条件、依存関係、リスク、ソース状態、完了オラクルを実行前に明示します。
+- **壊さない並列処理** — 実行可能なタスクは分離された lane/worktree で動き、運用 ledger を通じて収束します。
+- **完了より先に証明** — test、impact/flow 検査、watcher challenge、delivery receipt、HBP evidence が偽の done を拒否します。
+- **行動を変える記憶** — journal、stall detector、checkpoint、cross-agent wiki が同じ失敗の反復を防ぎ、handoff を永続化します。
+
+<p align="center">
+  <img src="../assets/simplicio-loop-parallel-worktrees.png" alt="simplicio-loop parallel isolated worktree execution" width="920" />
+</p>
+
+<p align="center"><em>依存関係を理解した fan-out：分離された worker が並列実行し、証跡を返し、1つの検証済み成果へ収束します。</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-lifecycle-2026.svg" alt="simplicio-loop lifecycle from intake to durable memory" width="920" />
+</p>
+
+<p align="center"><em>すべての段階が明示的で、上限があり、観測可能で、元に戻せます。</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-evidence-memory.png" alt="simplicio-loop evidence memory verification rollback and completion" width="920" />
+</p>
+
+<p align="center"><em>証跡と記憶は実行経路そのものです。後から書く報告書ではありません。</em></p>
+
+このアーキテクチャにより、1つの目標を統制されたデリバリーシステムへ変換できます。難しい単一タスクからバックログ全体まで、session と runtime を越え、local-first operator と人・CI・別エージェントが監査できる receipt で運用できます。
+
+<p align="center">
+  <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
+</p>
+<!-- visual-story:end -->
 
 ## ⚡ TL;DR
 

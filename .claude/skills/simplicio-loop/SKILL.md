@@ -215,22 +215,20 @@ halt the whole drain). `simplicio-tasks` Step 3 routes fast-path/heavy-path on t
 When the goal is vague and no external source (board/issues) supplies items, the LLM brainstorms
 the decomposition — subtasks with ≥1 acceptance criterion each, `depends_on`, risks — and MUST
 freeze it BEFORE any edit: `python3 scripts/task_backlog.py init --goal "<goal verbatim>"
---items-file plan.json` (the worker refuses an empty plan, a zero-AC item, or an unknown/cyclic
+--item-file plan.json` (the worker refuses an empty plan, a zero-AC item, or an unknown/cyclic
 dependency — the AI decides, the worker freezes, orders and gates). State:
 `.orchestrator/backlog/backlog.jsonl`.
 
-**Genesis.** First run `python3 scripts/task_backlog.py genesis --exit-code` — exit 10 means a
-repo with NO code yet. There `init` demands `--genesis` plus exactly one item tagged `scaffold`
-(structure + toolchain + one minimal green test as its ACs); the worker reorders it to T1 and
-makes every other item depend on it. After the scaffold item's gate passes, re-run
-`simplicio-mapper scan . --json` before claiming the next item — the survey only feeds the goal
-once there is something to map.
+**Scaffolding a new repo.** Put exactly one explicit `scaffold` item first in `plan.json`
+(structure + toolchain + one minimal green test as its ACs) and make every later item depend on
+it. After that item passes, re-run `simplicio-mapper scan . --json` before claiming the next
+item — the survey only becomes useful once there is code to map.
 
-**Per-item cycle**: `python3 scripts/task_backlog.py next` claims one item (re-prints the one in
-flight) and prints the ready `task_anchor.py set` arming command → work it under the normal
-converge contract → `python3 scripts/task_backlog.py done --id T1` (exit 12 unless the ARMED
-anchor is this item with every AC verified) → `next` again; exactly `empty` = drained.
-
+**Per-item cycle**: `python3 scripts/task_backlog.py next` claims one ready item and prints its id,
+goal, lease owner, and fencing token → freeze that item's goal/ACs with `task_anchor.py set` → work
+it under the normal converge contract → `python3 scripts/task_backlog.py done --item T1` (exit 12
+unless the current anchor is this item with every AC verified) → `next` again. `status`/`poll`
+provide the deterministic drain signal and active-lease view.
 ## HRM-style hierarchical planner (two-level reasoning loop)
 
 Inspired by the **Hierarchical Reasoning Model** (arXiv:2506.21734, JesseBrown1980/HRM), the loop

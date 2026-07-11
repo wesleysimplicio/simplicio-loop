@@ -48,7 +48,7 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 |---|---|---|
 | `autoresearch.py` | the `simplicio-autoresearch` satellite skill | active |
 | `agentsview_adapter.py` | AgentsView source adapter (README § Source adapters) | active |
-| `az_boards_adapter.py` | Azure Boards source adapter (`references/azure-devops-adapter.md`) | active |
+| `az_boards_adapter.py` | Azure Boards source adapter (`.claude/skills/simplicio-loop/references/azure-devops-adapter.md`) | active |
 | `repo_conventions.py` | the `repo_conventions` extension point (learns repo conventions on demand) | active |
 | `schema_verify.py` | optional schema/migration-diff gate (invoked by hand or from a task's own AC, not every turn) | active |
 | `billing_aggregator.py` | `scripts/simplicio-economy.sh` (economy/billing stack) | active |

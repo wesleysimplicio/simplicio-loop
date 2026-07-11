@@ -191,7 +191,7 @@ def run_hook_fixture(fixture_dir, expected, errors, name):
         try:
             r = subprocess.run(
                 [sys.executable, LOOP_STOP], cwd=tmp_dir, input=stdin_text,
-                capture_output=True, text=True, timeout=20,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
             )
         except subprocess.TimeoutExpired:
             errors.append("%s: hooks/loop_stop.py timed out" % name)

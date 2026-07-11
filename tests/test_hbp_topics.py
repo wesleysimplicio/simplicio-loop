@@ -133,7 +133,7 @@ def test_stall_cli_consumes_events_via_events_root(tmp_path):
     ])
     r = subprocess.run([sys.executable, os.path.join(scripts, "loop_journal.py"),
                         "stall", "--format", "json"],
-                       capture_output=True, text=True, cwd=root)
+                       capture_output=True, stdin=subprocess.DEVNULL, text=True, cwd=root)
     assert r.returncode == 0, r.stdout + r.stderr
     verdict = json.loads(r.stdout)
     assert verdict["verdict"] == "STALLED", verdict
@@ -142,7 +142,7 @@ def test_stall_cli_consumes_events_via_events_root(tmp_path):
     os.makedirs(empty)
     r2 = subprocess.run([sys.executable, os.path.join(scripts, "loop_journal.py"),
                          "stall", "--format", "json", "--events-root", empty],
-                        capture_output=True, text=True, cwd=root)
+                        capture_output=True, stdin=subprocess.DEVNULL, text=True, cwd=root)
     assert json.loads(r2.stdout)["verdict"] == "PROGRESS", r2.stdout
 
 
@@ -155,7 +155,7 @@ def _fake_simplicio(bin_dir, log_path):
     if os.name == "nt":  # pragma: no cover — POSIX CI
         path = os.path.join(bin_dir, "simplicio.bat")
         with open(path, "w", encoding="utf-8") as f:
-            f.write('@echo off\r\necho %* >> "%s"\r\n' % log_path)
+            f.write('@echo off\r\necho %%* >> "%s"\r\n' % log_path)
     else:
         path = os.path.join(bin_dir, "simplicio")
         with open(path, "w", encoding="utf-8") as f:
@@ -260,7 +260,7 @@ def test_gate_blocked_appends_hbp_topic(tmp_path):
     env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""))
     r = subprocess.run([sys.executable, GATE, "check", "--command",
                         "git push --force origin main"],
-                       capture_output=True, text=True, cwd=root, env=env)
+                       capture_output=True, stdin=subprocess.DEVNULL, text=True, cwd=root, env=env)
     assert r.returncode == 2, "force-push must still be blocked (exit 2)"
     blocked = [c for c in _calls(log) if "loop-gate-blocked" in c]
     assert blocked, "a gate BLOCK must append loop-gate-blocked: %s" % _calls(log)
@@ -289,7 +289,7 @@ def test_all_producers_degrade_silently_without_binary(tmp_path):
     # gate path: still blocks with exit 2 (PATH needs git for the classify-only path — none used)
     r = subprocess.run([sys.executable, GATE, "check", "--command",
                         "git push --force origin main"],
-                       capture_output=True, text=True, cwd=root, env=env)
+                       capture_output=True, stdin=subprocess.DEVNULL, text=True, cwd=root, env=env)
     assert r.returncode == 2, "gate must still block without the runtime binary"
 
 

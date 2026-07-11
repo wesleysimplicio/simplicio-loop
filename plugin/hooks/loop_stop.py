@@ -28,6 +28,13 @@ import time
 import uuid
 from pathlib import Path
 
+try:  # Windows consoles default to cp1252; hook protocols and evidence are UTF-8.
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 LOOP_DIR = os.path.join(".orchestrator", "loop")
 SCRATCHPAD = os.path.join(LOOP_DIR, "scratchpad.md")
 DONE_FLAG = os.path.join(LOOP_DIR, "done.flag")
@@ -737,7 +744,16 @@ def completion_oracle_payload(response_text="", flow_gap=""):
             cmd += ["--flow-gap", flow_gap]
         if run_dir:
             cmd += ["--write-receipt"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=repo_root)
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            cwd=repo_root,
+        )
         payload = json.loads(r.stdout) if (r.stdout or "").strip() else {}
         if isinstance(payload, dict):
             return payload
@@ -937,6 +953,17 @@ def main():
                 _call_simplicio_hbp_append(iteration, promise, watcher_tag)
                 refresh_cross_agent_wiki(include_handoff=False)
                 cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
+            # Legacy converge fixtures and lightweight installs predate persisted run artifacts.
+            # Preserve their evidence-gated contract only when the oracle explicitly reports that
+            # no run directory exists; every persisted run remains exclusively oracle-authorized.
+            if oracle.get("reason_code") == "run_dir_missing":
+                match = PROMISE_RE.search(resp)
+                if (match and match.group(1).strip() == promise.strip()
+                        and ((not evidence_required) or has_evidence)
+                        and watcher_pass and not anchor_pending() and not flow_gap):
+                    _call_simplicio_hbp_append(iteration, promise, watcher_tag)
+                    refresh_cross_agent_wiki(include_handoff=False)
+                    cleanup_and_stop()
         # (3') Cursor capture may have raised the flag.
         if os.path.exists(DONE_FLAG) or os.path.exists(LEGACY_DONE_FLAG):
             oracle = completion_oracle_payload(flow_gap=flow_gap or "")

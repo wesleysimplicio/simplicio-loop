@@ -5,7 +5,7 @@
 </div>
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
+  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
 </p>
 
 <p align="center">
@@ -49,6 +49,41 @@
 </p>
 
 ---
+
+<!-- visual-story:start -->
+## 🚀 الجيل الجديد — نظام تشغيل لعمل الوكلاء القابل للتحقق
+
+**تطوّر simplicio-loop إلى ما هو أبعد بكثير من تكرار prompt حتى الاكتمال.** فهو يحوّل النية إلى عقد مهمة ثابت، ويرسم خريطة المستودع، ويخطط وفق الاعتماديات، ويوزع التنفيذ على worktree معزولة، ويجمع إيصالات منظمة، ويتحقق بصورة مستقلة، وينفذ rollback آمناً، ويتذكر كل محاولة، ويبقي source of record متزامناً حتى التسليم.
+
+- **العقد أولاً** — تكون معايير القبول والاعتماديات والمخاطر وحالة المصدر وcompletion oracle صريحة قبل التنفيذ.
+- **توازٍ بلا إفساد** — تعمل المهام الجاهزة داخل lane/worktree معزولة ثم تتقارب عبر ledger تشغيلي.
+- **الدليل قبل الاكتمال** — ترفض الاختبارات وفحوص impact/flow وتحديات watcher وإيصالات التسليم وHBP evidence حالات done الزائفة.
+- **ذاكرة تغيّر السلوك** — تمنع journal وstall detector وcheckpoint وcross-agent wiki التكرار وتجعل handoff مستداماً.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-parallel-worktrees.png" alt="simplicio-loop parallel isolated worktree execution" width="920" />
+</p>
+
+<p align="center"><em>Fan-out واعٍ بالاعتماديات: يعمل كل worker المعزول بالتوازي، ويعيد الدليل، ثم تتقارب النتائج في تسليم واحد متحقق منه.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-lifecycle-2026.svg" alt="simplicio-loop lifecycle from intake to durable memory" width="920" />
+</p>
+
+<p align="center"><em>كل مرحلة صريحة ومحدودة وقابلة للمراقبة والعكس.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-evidence-memory.png" alt="simplicio-loop evidence memory verification rollback and completion" width="920" />
+</p>
+
+<p align="center"><em>الدليل والذاكرة جزء من مسار التنفيذ، وليسا تقريراً يُكتب بعد انتهائه.</em></p>
+
+تحوّل هذه البنية هدفاً واحداً إلى نظام تسليم محكوم: من مهمة صعبة إلى backlog كامل، عبر sessions وruntimes، باستخدام local-first operators وإيصالات يستطيع الإنسان أو CI أو وكيل آخر تدقيقها.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
+</p>
+<!-- visual-story:end -->
 
 <div dir="rtl">
 

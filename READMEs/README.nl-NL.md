@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
+  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
 </p>
 
 <p align="center">
@@ -45,6 +45,41 @@
 </p>
 
 ---
+
+<!-- visual-story:start -->
+## 🚀 De nieuwe generatie — een besturingssysteem voor verifieerbaar agentwerk
+
+**simplicio-loop is veel meer geworden dan een prompt die tot voltooiing wordt herhaald.** Het zet intentie om in een bevroren taakcontract, brengt de repository in kaart, plant op afhankelijkheden, verdeelt uitvoering over geïsoleerde worktrees, verzamelt gestructureerde bewijzen, verifieert onafhankelijk, rolt veilig terug, onthoudt iedere poging en houdt de bron van waarheid synchroon tot en met levering.
+
+- **Eerst het contract** — acceptatiecriteria, afhankelijkheden, risico’s, bronstatus en completion oracle zijn vóór uitvoering expliciet.
+- **Parallel zonder corruptie** — gereed werk draait in geïsoleerde lanes/worktrees en convergeert via een operationeel ledger.
+- **Bewijs vóór voltooiing** — tests, impact/flow-controles, watcher challenges, delivery receipts en HBP evidence weigeren valse done-statussen.
+- **Geheugen dat gedrag verandert** — journal, stall detector, checkpoints en cross-agent wiki voorkomen oscillatie en maken handoffs duurzaam.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-parallel-worktrees.png" alt="simplicio-loop parallel isolated worktree execution" width="920" />
+</p>
+
+<p align="center"><em>Afhankelijkheidsbewuste fan-out: geïsoleerde workers draaien parallel, leveren bewijs terug en convergeren naar één geverifieerde levering.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-lifecycle-2026.svg" alt="simplicio-loop lifecycle from intake to durable memory" width="920" />
+</p>
+
+<p align="center"><em>Elke fase is expliciet, begrensd, observeerbaar en omkeerbaar.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-evidence-memory.png" alt="simplicio-loop evidence memory verification rollback and completion" width="920" />
+</p>
+
+<p align="center"><em>Bewijs en geheugen horen bij het uitvoeringspad, niet bij een achteraf geschreven rapport.</em></p>
+
+Deze architectuur maakt van één doel een bestuurd leveringssysteem: van een moeilijke taak tot een volledige backlog, over sessions en runtimes heen, met local-first operators en receipts die mensen, CI of een andere agent kunnen auditen.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
+</p>
+<!-- visual-story:end -->
 
 ## ⚡ TL;DR
 
