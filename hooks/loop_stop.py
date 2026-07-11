@@ -131,6 +131,38 @@ def last_assistant_text(stdin):
     return ""
 
 
+def completion_oracle(resp):
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.path.basename(repo_root) == "_bundle":
+        repo_root = os.path.dirname(os.path.dirname(repo_root))
+    script = os.path.join(repo_root, "scripts", "completion_oracle.py")
+    if not os.path.exists(script):
+        return False, {}
+    runs_root = os.path.join(".orchestrator", "runs")
+    run_dirs = []
+    if os.path.isdir(runs_root):
+        for name in os.listdir(runs_root):
+            path = os.path.join(runs_root, name)
+            if os.path.isdir(path):
+                run_dirs.append(path)
+    run_dir = max(run_dirs, key=os.path.getmtime) if run_dirs else ""
+    oracle_resp = resp or ""
+    if not PROMISE_RE.search(oracle_resp) and os.path.exists(LAST_RESP):
+        try:
+            with open(LAST_RESP, encoding="utf-8") as f:
+                oracle_resp = f.read()
+        except OSError:
+            pass
+    cmd = [sys.executable, script, "--loop-dir", LOOP_DIR, "--run-dir", run_dir,
+           "--response-text", oracle_resp, "--write-receipt"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        payload = json.loads(result.stdout or "{}")
+        return bool(payload.get("ready")), payload
+    except Exception:
+        return False, {}
+
+
 def gate_running():
     """True when a background gate (verification workflow / CI / long task) is in flight + fresh.
 
@@ -248,6 +280,24 @@ def write_handoff(reason, meta=None, body=None):
                     "- [%s] %s (%s)%s"
                     % (mark, c.get("text", c.get("id", "?")), c.get("status", "pending"), ev)
                 )
+        oracle_path = os.path.join(LOOP_DIR, "completion-receipt.json")
+        if not os.path.exists(oracle_path):
+            run_root = os.path.join(".orchestrator", "runs")
+            candidates = [os.path.join(run_root, name, "completion-receipt.json")
+                          for name in os.listdir(run_root)] if os.path.isdir(run_root) else []
+            candidates = [path for path in candidates if os.path.exists(path)]
+            if candidates:
+                oracle_path = max(candidates, key=os.path.getmtime)
+        if os.path.exists(oracle_path):
+            try:
+                with open(oracle_path, encoding="utf-8") as f:
+                    oracle = json.load(f)
+                lines += ["", "## Completion oracle",
+                          "", "Verdict: %s" % oracle.get("verdict", "unknown"),
+                          "reason_code: %s" % oracle.get("reason_code", "unknown"),
+                          "Reason: %s" % oracle.get("reason", oracle.get("reason_code", "unknown"))]
+            except (OSError, ValueError):
+                pass
         if attempts:
             lines += ["", "## Last attempts (`scripts/loop_journal.py resume` for the full read)"]
             for a in attempts:
@@ -860,25 +910,23 @@ def main():
 
         # Pre-promise: front→back flow-audit gate (#80) — mechanical, not prose-only.
         flow_gap = flow_audit_gap()
+        oracle_pass, _oracle = completion_oracle(resp)
 
         # Completion detection (capture folded in for single-hook runtimes like Claude).
+        oracle_pass = False
         if promise and resp:
             m = PROMISE_RE.search(resp)
             if m and m.group(1).strip() == promise.strip():
-                # The promise is honored only with evidence AND watcher verification AND no
-                # acceptance criterion still open in the task anchor AND no open flow-audit gap.
-                # The watcher-gate ensures the agent's result was independently re-executed and
-                # matched before the promise is accepted — corrective gate per Asolaria.
+                oracle_pass, _oracle = completion_oracle(resp)
                 if (((not evidence_required) or has_evidence) and watcher_pass
-                        and not anchor_pending() and not flow_gap):
+                        and not anchor_pending() and not flow_gap and oracle_pass):
                     _call_simplicio_hbp_append(iteration, promise, watcher_tag)
                     refresh_cross_agent_wiki(include_handoff=False)
-                    cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
-                # promise without evidence, or watcher disagrees, or anchor still has open ACs,
-                # or a flow-audit gap remains → ignore, keep looping
-        # (3') Cursor capture may have raised the flag.
+                    cleanup_and_stop()
         if os.path.exists(DONE_FLAG) or os.path.exists(LEGACY_DONE_FLAG):
-            cleanup_and_stop()
+            oracle_pass, _oracle = completion_oracle(resp)
+            if oracle_pass:
+                cleanup_and_stop()
         # (4) Iteration cap — incomplete stop, hand off.
         if max_iter > 0 and iteration >= max_iter:
             _call_simplicio_hbp_append_topic("loop-run-blocked", {
