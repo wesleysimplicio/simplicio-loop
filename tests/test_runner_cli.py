@@ -982,6 +982,19 @@ def test_maintenance_deferred_rejects_terminal_run(tmp_path, monkeypatch):
         )
 
 
+def test_maintenance_deferred_blocks_operator_and_batch(tmp_path, monkeypatch):
+    repo, run_id = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
+    runner_mod.defer_maintenance_backlog_only(
+        str(repo), run_id, correction_summary="freeze",
+        deferral_reason="maintenance", resume_instructions=["resume"],
+    )
+
+    with pytest.raises(RuntimeError, match="maintenance deferred"):
+        runner_mod.execute_operator(str(repo), run_id)
+    with pytest.raises(RuntimeError, match="maintenance deferred"):
+        runner_mod.execute_operator_batch(str(repo), run_id)
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module

@@ -1048,6 +1048,8 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
     it cannot run without the mapper/plan/operator preflight artifacts created by `arm_run`.
     """
     status = read_status(repo, run_id)
+    if (status["state"].get("maintenance") or {}).get("disposition") == "backlog_only":
+        raise RuntimeError("maintenance deferred: operator execution is blocked until explicit resume")
     run_dir = Path(status["run_dir"])
     repo_path = Path(status["manifest"]["repo"]).resolve()
     contract = _load_json(run_dir / "task-contract.json")
@@ -1685,6 +1687,8 @@ def execute_operator_batch(
     ``repo``/``run_id`` per task) to unlock parallel execution while retaining the same API.
     """
     status = read_status(repo, run_id)
+    if (status["state"].get("maintenance") or {}).get("disposition") == "backlog_only":
+        raise RuntimeError("maintenance deferred: operator batch is blocked until explicit resume")
     contract = _load_json(Path(status["run_dir"]) / "task-contract.json")
     task_count = len(contract.get("tasks") or [])
     if task_indices is None:
