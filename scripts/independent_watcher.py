@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import tarfile
+import platform
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -86,30 +87,47 @@ def _run_check(root: Path, criterion: Dict[str, Any], timeout: int) -> Dict[str,
     cid = str(criterion.get("id") or "")
     if argv is None:
         return {"id": cid, "status": "UNVERIFIED", "reason": reason,
-                "returncode": None, "worker_pid": os.getpid()}
+                "returncode": None, "runner_pid": None, "watcher_pid": os.getpid(),
+                "process_isolated": False}
     cwd = root / str(criterion.get("cwd") or ".")
     if not cwd.is_dir() or root not in cwd.resolve().parents and cwd.resolve() != root.resolve():
         return {"id": cid, "status": "UNVERIFIED", "reason": "cwd_outside_snapshot",
-                "returncode": None, "worker_pid": os.getpid()}
+                "returncode": None, "runner_pid": None, "watcher_pid": os.getpid(),
+                "process_isolated": False}
     expected = int(criterion.get("expected_exit_code", 0))
+    runner_pid = None
     try:
-        result = subprocess.run(argv, cwd=str(cwd), shell=False, stdin=subprocess.DEVNULL,
-                                capture_output=True, text=True, timeout=timeout)
-        ok = result.returncode == expected
+        process = subprocess.Popen(argv, cwd=str(cwd), shell=False, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        runner_pid = process.pid
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            return {"id": cid, "status": "UNVERIFIED", "reason": "criterion_timeout",
+                    "returncode": None, "expected_exit_code": expected,
+                    "runner_pid": runner_pid, "watcher_pid": os.getpid(),
+                    "process_isolated": runner_pid != os.getpid()}
+        ok = process.returncode == expected
         return {
             "id": cid,
             "status": "MEASURED" if ok else "UNVERIFIED",
             "reason": "command matched expected exit code" if ok else "command failed",
-            "returncode": result.returncode,
+            "returncode": process.returncode,
             "expected_exit_code": expected,
-            "stdout": redact_sensitive_text((result.stdout or "").strip())[-4000:],
-            "stderr": redact_sensitive_text((result.stderr or "").strip())[-4000:],
+            "stdout": redact_sensitive_text((stdout or "").strip())[-4000:],
+            "stderr": redact_sensitive_text((stderr or "").strip())[-4000:],
             "argv": argv,
-            "worker_pid": os.getpid(),
+            "runner_pid": runner_pid,
+            "watcher_pid": os.getpid(),
+            "process_isolated": runner_pid != os.getpid(),
         }
     except Exception as exc:
         return {"id": cid, "status": "UNVERIFIED", "reason": redact_sensitive_text(str(exc)),
-                "returncode": None, "worker_pid": os.getpid()}
+                "returncode": None, "runner_pid": runner_pid,
+                "watcher_pid": os.getpid(),
+                "process_isolated": bool(runner_pid and runner_pid != os.getpid())}
 
 
 def verify(repo: str, plan: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
@@ -153,6 +171,10 @@ def verify(repo: str, plan: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]
         "commit_sha": observation.get("commit_sha", plan.get("commit_sha", "")),
         "diff_hash": observation.get("diff_hash", plan.get("diff_hash", "")),
         "plan_hash": _stable_hash(plan),
+        "task_contract_hash": str(plan.get("task_contract_hash") or ""),
+        "verify_plan_hash": _stable_hash(plan),
+        "tool_versions": {"python": platform.python_version(),
+                           "platform": platform.platform(), "watcher": RECEIPT_SCHEMA},
         "criteria_results": results,
         "errors": errors,
         "producer": {"pid": os.getpid(), "snapshot": bool(snapshot), "worker": "independent_watcher.py"},

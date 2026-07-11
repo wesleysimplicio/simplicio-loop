@@ -42,6 +42,10 @@ def test_independent_watcher_runs_against_clean_detached_snapshot(tmp_path):
     assert receipt["status"] == "MEASURED"
     assert receipt["producer"]["snapshot"] is True
     assert receipt["criteria_results"][0]["status"] == "MEASURED"
+    criterion = receipt["criteria_results"][0]
+    assert criterion["process_isolated"] is True
+    assert criterion["runner_pid"] != criterion["watcher_pid"]
+    assert receipt["tool_versions"]["python"]
     assert receipt["receipt_hash"]
 
 
