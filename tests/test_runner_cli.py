@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import pytest
 
 from simplicio_loop import runner as runner_mod
 from simplicio_loop.oracle import persist_completion_receipt
@@ -951,6 +952,34 @@ def test_sync_source_infers_merged_even_when_target_is_merge_ready(tmp_path):
     synced_payload = json.loads(synced.stdout)
     assert synced_payload["state"]["delivery"]["current_state"] == "merged"
     assert synced_payload["state"]["delivery"]["ready"] is True
+
+
+def test_maintenance_deferred_invalidates_ready_completion_receipt(tmp_path, monkeypatch):
+    repo, run_id = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
+    run_dir = repo / ".orchestrator" / "runs" / run_id
+    (run_dir / "completion-receipt.json").write_text(json.dumps({"ready": True, "verdict": "COMPLETE", "tag": "MEASURED"}), encoding="utf-8")
+
+    result = runner_mod.defer_maintenance_backlog_only(
+        str(repo), run_id, correction_summary="stale receipt",
+        deferral_reason="maintenance window", resume_instructions=["resume later"],
+    )
+
+    persisted = json.loads((run_dir / "completion-receipt.json").read_text(encoding="utf-8"))
+    assert persisted["ready"] is False
+    assert persisted["verdict"] == "DELIVERY_PENDING"
+    assert persisted["reason_code"] == "maintenance_deferred"
+    assert result["state"]["completion"]["ready"] is False
+
+
+def test_maintenance_deferred_rejects_terminal_run(tmp_path, monkeypatch):
+    repo, run_id = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
+    runner_mod.change_phase(str(repo), run_id, "done", "test terminal")
+
+    with pytest.raises(ValueError, match="run already terminal"):
+        runner_mod.defer_maintenance_backlog_only(
+            str(repo), run_id, correction_summary="late",
+            deferral_reason="maintenance", resume_instructions=["resume"],
+        )
 
 
 if __name__ == "__main__":

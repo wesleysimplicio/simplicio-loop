@@ -1735,6 +1735,8 @@ def defer_maintenance_backlog_only(
     evidence_status: str = "UNVERIFIED",
 ) -> Dict[str, Any]:
     status = read_status(repo, run_id)
+    if status["state"].get("phase") in {"done", "cancelled"}:
+        raise ValueError(f"run already terminal: {status['state'].get('phase')}")
     run_dir = Path(status["run_dir"])
     state = status["state"]
     receipt = _write_maintenance_deferred_receipt(
@@ -1755,6 +1757,13 @@ def defer_maintenance_backlog_only(
     completion = _completion_state(run_dir, state.get("completion"))
     completion["ready"] = False
     completion["tag"] = "UNVERIFIED"
+    completion["verdict"] = "DELIVERY_PENDING"
+    completion["reason_code"] = "maintenance_deferred"
+    if (run_dir / "completion-receipt.json").exists():
+        persisted = _load_json(run_dir / "completion-receipt.json")
+        persisted.update({"ready": False, "verdict": completion["verdict"],
+                          "reason_code": completion["reason_code"], "tag": "UNVERIFIED"})
+        _write_json(run_dir / "completion-receipt.json", persisted)
     state["completion"] = completion
     state["operator"] = {
         **(state.get("operator") or {}),
