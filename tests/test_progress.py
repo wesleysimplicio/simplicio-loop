@@ -57,3 +57,45 @@ def test_completion_receipt_can_promote_state_to_100(tmp_path):
     event = stream(run, fmt="json", once=True, out=out)
     assert event["percent"] == 100
     assert json.loads(out.getvalue())["status"] == "COMPLETE"
+
+
+def test_receipts_refresh_stale_state_gate_indicators(tmp_path):
+    run = tmp_path / "run"
+    (run / "loop").mkdir(parents=True)
+    (run / "state.json").write_text(json.dumps(_state(phase="watching")), encoding="utf-8")
+    (run / "evidence-receipt.json").write_text(json.dumps({"status": "VERIFIED"}), encoding="utf-8")
+    (run / "loop" / "watcher_state.json").write_text(json.dumps({"status": "MEASURED", "match": True}), encoding="utf-8")
+    event = build_progress(_state(phase="watching"), run_dir=run)
+    assert event["gates"]["evidence"] is True
+    assert event["gates"]["watcher"] is True
+
+
+def test_fanout_lanes_and_phase_events_are_portable():
+    event = build_progress(_state(
+        lanes=[{"id": "worker-a", "status": "running", "percent": 50, "worktree": "wt/a"},
+                {"id": "worker-b", "status": "blocked", "percent": 25}],
+        events=[{"phase": "worker_claimed", "task_id": "T1", "status": "ok"}],
+    ))
+    assert event["lanes"][0]["id"] == "worker-a"
+    assert event["events"][0]["task_id"] == "T1"
+    assert "worker-a" in render_text(event)
+    assert "Lanes:" in render_markdown(event)
+
+
+def test_ascii_static_mode_has_no_control_codes_or_unicode():
+    event = build_progress(_state())
+    rendered = render_text(event, ascii_only=True)
+    assert "\x1b" not in rendered
+    assert "█" not in rendered and "▫️" not in rendered
+    assert "[run]" in rendered
+
+
+def test_no_animation_emits_one_plain_snapshot(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "state.json").write_text(json.dumps(_state()), encoding="utf-8")
+    out = io.StringIO()
+    event = stream(run, fmt="ansi", no_animation=True, ascii_only=True, out=out)
+    assert event["status"] == "RUNNING"
+    assert "\x1b" not in out.getvalue()
+    assert out.getvalue().count("ação:") == 1

@@ -127,6 +127,23 @@ company work. `simplicio-runtime` is the unified entrypoint going forward, but i
 reuse this loop's evidence-gated converge/drain discipline, durable attempt journal, and worker
 coordination patterns instead of creating a separate task semantics.
 
+### 👁️ Progresso visual, honesto e portátil
+
+Cada execução pode ser acompanhada por texto, Markdown, JSON ou uma animação ANSI. Todas as
+superfícies consomem o mesmo evento `simplicio.progress/v1`, incluindo ícones de etapa, gates de
+evidence/watcher/oracle, lanes de worktrees e eventos de `worker_claimed` até `delivery_reconciled`.
+
+```powershell
+simplicio-loop progress <run-id> --format text --once
+simplicio-loop progress <run-id> --format markdown --once   # LLM/chat
+simplicio-loop progress <run-id> --format json --once       # dashboard/adapters
+simplicio-loop progress <run-id> --format text --ascii --no-animation  # log/PowerShell
+```
+
+`100%` só aparece com receipt do oracle pronto (`COMPLETE`/`DRAINED`); uma fase `done` sem prova
+fica em `99%` e mostra o blocker. Consulte o contrato completo em
+[`docs/PROGRESS_PROTOCOL.md`](docs/PROGRESS_PROTOCOL.md).
+
 ---
 
 ## 🤖 LLM front door
