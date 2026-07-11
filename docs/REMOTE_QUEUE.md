@@ -25,11 +25,25 @@ reconnecting client can call `events(after=last_seq)` and reconcile without
 guessing state. The backend never silently falls back when the store is
 unavailable (`QueueUnavailable`).
 
-## Network adapters
+## HTTP network adapter
 
-An HTTP/Redis adapter must implement the same `RemoteQueue` methods with
-server-side transactions (`SET NX`/Lua or SQL transaction), durable event
-sequence, and identity authentication. Do not use GitHub issue labels as a
-lock. Until such a service is configured, this SQLite backend is the honest
-single-host mode; it does not claim multi-device coordination over an ordinary
-local path.
+The repository now ships a stdlib-only HTTP facade and client. The server keeps
+the SQLite transaction boundary authoritative while clients on separate
+machines use the same claim/lease/fencing protocol:
+
+```powershell
+python scripts/remote_queue_server.py --db .orchestrator/shared-queue.db --host 0.0.0.0 --port 8765 --token "$env:SIMPLICIO_QUEUE_TOKEN"
+```
+
+```python
+from simplicio_loop.remote_queue import HTTPRemoteQueue
+q = HTTPRemoteQueue("https://queue.example.internal", token=os.environ["SIMPLICIO_QUEUE_TOKEN"])
+lease = q.claim("issue-185", "claude@machine-b", idempotency_key="run:185")
+q.complete(lease, receipt_ref="receipts/185.json")
+```
+
+Authentication is required when the server is configured with `--token`; every
+transport failure raises `QueueUnavailable` and therefore pauses mutation. A
+stale lease remains rejected by the server's SQLite fencing check. Do not use
+GitHub issue labels as a lock. For production, put the service behind TLS and a
+network policy; Redis/SQL service implementations can target the same protocol.
