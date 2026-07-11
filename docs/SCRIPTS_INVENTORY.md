@@ -23,6 +23,7 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 | `sync_plugin.py` | manual, after editing `.claude/skills/` or a shipped hook; `tests/test_system_check.py` exercises `--check` | active |
 | `verify_adapters.py` | `claims_audit.py` check 7 (adapter-install-contract) | active |
 | `doctor.py` | manual (`python3 scripts/doctor.py [--repair]`), also wrapped by `scripts/simplicio-engine doctor` | active |
+| `preflight.py` | fail-closed identity, minimum-version, capability, and Runtime contract smoke gate (`python3 scripts/preflight.py --json`) | active |
 | `install.sh` / `install.ps1` | README § Install; the plugin/marketplace install path | active |
 | `install_lib.py` | imported by `install.sh` / `install.ps1` | active |
 | `install_services.py` | install flow (service/daemon registration) | active |
