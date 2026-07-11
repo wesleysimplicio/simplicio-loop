@@ -558,6 +558,7 @@ launchd/systemd services so they run the new code, and prints the live stack + s
 ```bash
 python3 scripts/doctor.py            # report the whole stack (REQUIRED vs OPTIONAL)
 python3 scripts/doctor.py --repair   # install/wire what's fixable; make everything operational
+python3 scripts/preflight.py --json   # fail-closed mapper + dev-cli + Runtime identity/version/capability gate
 # also: bash scripts/simplicio-economy.sh doctor [--repair]
 ```
 
