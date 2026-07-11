@@ -99,3 +99,33 @@ def test_no_animation_emits_one_plain_snapshot(tmp_path):
     assert event["status"] == "RUNNING"
     assert "\x1b" not in out.getvalue()
     assert out.getvalue().count("ação:") == 1
+
+
+def test_non_tty_ansi_format_degrades_to_plain_text(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "state.json").write_text(json.dumps(_state()), encoding="utf-8")
+    out = io.StringIO()
+    stream(run, fmt="ansi", once=True, out=out)
+    assert "\x1b" not in out.getvalue()
+
+
+def test_event_provenance_is_preserved_and_missing_evidence_is_explicit():
+    event = build_progress(_state(events=[{
+        "event_id": "evt-1", "kind": "test_gate", "task_id": "T1", "ac_ids": ["AC-1"],
+        "receipt_ref": "test-receipt.json", "status": "ok",
+    }, {"kind": "watcher_challenge", "task_id": "T1"}]))
+    measured, unverified = event["events"]
+    assert measured["run_id"] == "run-demo"
+    assert measured["ac_ids"] == ["AC-1"]
+    assert measured["receipt"] == "test-receipt.json"
+    assert measured["metadata_status"] == "MEASURED"
+    assert unverified["metadata_status"] == "UNVERIFIED"
+    assert "missing_event_metadata" in unverified["blocker"]
+    assert unverified["blocker"] in event["blockers"]
+
+
+def test_cancelled_run_is_terminal_and_honest():
+    event = build_progress(_state(phase="cancelled", progress_percent=100))
+    assert event["status"] == "CANCELLED"
+    assert event["percent"] == 0

@@ -36,7 +36,6 @@ from .task_contract import compile_many, main as task_contract_main, preview_con
 from .ops_ledger import (
     CONTEXT_SCHEMA,
     HANDSHAKE_SCHEMA,
-    LEGACY_COMPATIBILITY,
     REQUIRED_CONTEXT_FIELDS,
     EventLedger,
     LedgerError,
@@ -154,7 +153,7 @@ def dashboard(port: int, open_browser: bool, stop: bool) -> int:
                 break
             time.sleep(0.2)
     if not _port_up(port):
-        print(f"⬡ failed to start the dashboard — see ~/.simplicio/logs/token-monitor.log", flush=True)
+        print("⬡ failed to start the dashboard — see ~/.simplicio/logs/token-monitor.log", flush=True)
         return 1
     print(f"⬡ Simplicio Token Monitor → {url}")
     if open_browser and _gui_available():
@@ -533,7 +532,9 @@ def main(argv=None) -> int:
 
     p_progress = sub.add_parser("progress", help="render visual progress for a run")
     p_progress.add_argument("--repo", default=".", help="repository root")
-    p_progress.add_argument("run_id", help="run id to render")
+    p_progress.add_argument("run_id", nargs="?", help="run id to render (legacy positional form)")
+    p_progress.add_argument("--run", dest="run_flag", default="",
+                            help="run id to render (explicit form)")
     p_progress.add_argument("--format", choices=("text", "json", "markdown", "ansi"),
                             default="text", dest="fmt", help="output format")
     p_progress.add_argument("--once", action="store_true", help="render one snapshot")
@@ -677,7 +678,10 @@ def main(argv=None) -> int:
     if command == "status":
         return status(args.repo, args.run_id)
     if command == "progress":
-        return progress(args.repo, args.run_id, args.fmt, args.once, args.interval,
+        run_id = args.run_id or args.run_flag
+        if not run_id:
+            parser.error("progress requires a run id (positional or --run)")
+        return progress(args.repo, run_id, args.fmt, args.once, args.interval,
                         args.no_animation, args.ascii_only)
     if command == "resume":
         return resume(args.repo, args.run_id)
