@@ -106,6 +106,8 @@ def validate_observation(event: Mapping[str, Any]) -> Dict[str, Any]:
         causation_id=event.get("causation_id"), claim_type=event["claim_type"],
         ac_ids=event.get("ac_ids"), observed_at=event.get("observed_at"),
     )
+    if event.get("kind") == "failure" and event.get("failure_fingerprint") != checked.get("failure_fingerprint"):
+        raise AttemptJournalError("failure fingerprint mismatch")
     if set(event) - set(checked):
         # Forward-compatible fields are allowed, but are included in the hash and
         # therefore cannot be changed during replay.
