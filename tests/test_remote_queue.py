@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import threading
@@ -102,10 +103,31 @@ def test_network_bind_requires_explicit_tls(tmp_path):
 
 
 def test_server_cli_requires_tls_pair(tmp_path):
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script = os.path.join(repo, "scripts", "remote_queue_server.py")
     result = subprocess.run(
-        [sys.executable, "scripts/remote_queue_server.py", "--db", str(tmp_path / "q.db"),
+        [sys.executable, script, "--db", str(tmp_path / "q.db"),
          "--token", "secret", "--tls-certfile", "only-cert.pem"],
         capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 2
     assert "must be provided together" in (result.stderr + result.stdout)
+
+
+def test_server_cli_imports_from_any_cwd_without_module_error(tmp_path):
+    # Regression for the import-path bug: the script lives in scripts/ but imports the
+    # top-level ``simplicio_loop`` package. Running it as a subprocess used to add only the
+    # script's own directory to sys.path, so the import failed with a bare ModuleNotFoundError
+    # (exit 1) that masked the intended argparse/ValueError gates. The server now anchors the
+    # repo root on sys.path, so a genuine gate (here: partial TLS pair) still surfaces with its
+    # intended exit code even when invoked from a neutral working directory.
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script = os.path.join(repo, "scripts", "remote_queue_server.py")
+    result = subprocess.run(
+        [sys.executable, script, "--db", str(tmp_path / "q.db"),
+         "--token", "secret", "--tls-certfile", "only-cert.pem"],
+        capture_output=True, text=True, timeout=10, cwd=str(tmp_path),
+    )
+    assert result.returncode == 2, result.stderr
+    assert "must be provided together" in (result.stderr + result.stdout)
+    assert "ModuleNotFoundError" not in result.stderr
