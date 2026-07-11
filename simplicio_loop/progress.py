@@ -8,6 +8,7 @@ backed by a fresh, ready completion receipt from the oracle.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -28,6 +29,11 @@ PHASE_META = {
     "cancelled": ("🛑", "Cancelado"),
 }
 SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+EVENT_KINDS = frozenset((
+    "contract_frozen", "mapper_fresh", "plan_ready", "worker_claimed",
+    "worktree_created", "operator_receipt", "test_gate", "watcher_challenge",
+    "oracle_verdict", "delivery_reconciled", "rollback", "handoff",
+))
 def _ascii(value: Any) -> str:
     """Replace presentation glyphs; payloads remain Unicode-safe and unchanged."""
     text = str(value or "")
@@ -61,6 +67,76 @@ def _phase_percent(phase: str) -> int:
     if phase in PHASES:
         return round(PHASES.index(phase) / (len(PHASES) - 1) * 100)
     return 0
+
+
+def _event_kind(item: Mapping[str, Any]) -> str:
+    value = item.get("kind") or item.get("event") or item.get("phase") or "unknown"
+    return str(value).strip().lower().replace("-", "_") or "unknown"
+
+
+def _normalise_ac_ids(item: Mapping[str, Any]) -> list[str]:
+    value = item.get("ac_ids", item.get("ac_id", ()))
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(entry) for entry in value if str(entry).strip()]
+    return []
+
+
+def _normalise_events(value: Any, *, run_id: str = "") -> list[Dict[str, Any]]:
+    """Normalize visual events without manufacturing evidence.
+
+    A renderer may fill the run identity from the enclosing state, but it must not invent a
+    task, acceptance criterion, receipt, or blocker. Missing provenance is surfaced as an
+    ``UNVERIFIED`` metadata blocker so every consumer sees the same honest payload.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    events = []
+    for item in value[-12:]:
+        if not isinstance(item, Mapping):
+            continue
+        kind = _event_kind(item)
+        task_id = str(item.get("task_id") or item.get("work_item_id") or "")
+        ac_ids = _normalise_ac_ids(item)
+        receipt = str(item.get("receipt") or item.get("receipt_ref") or "")
+        blocker = str(item.get("blocker") or item.get("reason") or "")
+        missing = []
+        if not run_id and not item.get("run_id"):
+            missing.append("run_id")
+        if not task_id:
+            missing.append("task_id")
+        if not ac_ids:
+            missing.append("ac_ids")
+        if not receipt and not blocker:
+            missing.append("receipt_or_blocker")
+        if missing:
+            blocker = blocker or "missing_event_metadata:" + ",".join(missing)
+        events.append({
+            "event_id": str(item.get("event_id") or ""),
+            "kind": kind,
+            "phase": str(item.get("phase") or kind),
+            "status": str(item.get("status") or "INFO").upper(),
+            "run_id": str(item.get("run_id") or run_id),
+            "task_id": task_id,
+            "ac_ids": ac_ids,
+            "receipt": receipt,
+            "blocker": blocker,
+            "metadata_status": "UNVERIFIED" if missing else "MEASURED",
+            "message": str(item.get("message") or item.get("reason_code") or ""),
+        })
+    return events
+
+
+def _normalise_blockers(state: Mapping[str, Any], events: Iterable[Mapping[str, Any]]) -> list[str]:
+    blockers = []
+    raw = state.get("blockers") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if isinstance(raw, (list, tuple)):
+        blockers.extend(str(item) for item in raw if str(item).strip())
+    blockers.extend(str(item["blocker"]) for item in events if item.get("blocker"))
+    return list(dict.fromkeys(blockers))
 
 
 def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = None,
@@ -107,7 +183,10 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
     phase_percent = min(99, _phase_percent(phase))
     if supplied_percent is not None:
         phase_percent = max(0, min(99, supplied_percent))
-    percent = 100 if ready else phase_percent
+    if phase == "cancelled":
+        percent = 0
+    else:
+        percent = 100 if ready else phase_percent
     icon, label = PHASE_META.get(phase, ("•", phase.replace("_", " ").title()))
     total = int(state.get("task_count") or 0)
     coverage = state.get("coverage") or {}
@@ -115,11 +194,16 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
     for item in coverage.values() if isinstance(coverage, Mapping) else ():
         if isinstance(item, Mapping):
             verified += int(item.get("verified") or 0)
+    events = _normalise_events(state.get("events") or state.get("phase_events"),
+                               run_id=str(state.get("run_id") or ""))
+    blockers = _normalise_blockers(state, events)
+    status = "COMPLETE" if ready else ("BLOCKED" if phase == "blocked" else
+                                        "CANCELLED" if phase == "cancelled" else "RUNNING")
     return {
         "schema": SCHEMA,
         "run_id": str(state.get("run_id") or ""),
         "phase": phase,
-        "status": "COMPLETE" if ready else ("BLOCKED" if phase == "blocked" else "RUNNING"),
+        "status": status,
         "percent": percent,
         "icon": icon,
         "label": label,
@@ -133,7 +217,8 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
         # Optional lanes/events are copied as data, never used to infer completion. This keeps
         # the same JSON contract useful for fan-out dashboards and chat adapters.
         "lanes": _normalise_lanes(state.get("lanes")),
-        "events": _normalise_events(state.get("events") or state.get("phase_events")),
+        "events": events,
+        "blockers": blockers,
     }
 
 
@@ -156,21 +241,14 @@ def _normalise_lanes(value: Any) -> list[Dict[str, Any]]:
     return lanes
 
 
-def _normalise_events(value: Any) -> list[Dict[str, Any]]:
-    if not isinstance(value, (list, tuple)):
-        return []
-    events = []
-    for item in value[-12:]:
-        if not isinstance(item, Mapping):
-            continue
-        events.append({"phase": str(item.get("phase") or item.get("event") or "unknown"),
-                       "status": str(item.get("status") or "INFO").upper(),
-                       "task_id": str(item.get("task_id") or item.get("work_item_id") or ""),
-                       "message": str(item.get("message") or item.get("reason_code") or "")})
-    return events
+def _fit_line(value: str, max_width: int = 80) -> str:
+    if max_width < 8 or len(value) <= max_width:
+        return value
+    return value[:max_width - 1].rstrip() + "…"
 
 
-def render_text(event: Mapping[str, Any], *, width: int = 24, ascii_only: bool = False) -> str:
+def render_text(event: Mapping[str, Any], *, width: int = 24, ascii_only: bool = False,
+                max_width: int = 80) -> str:
     """Render a compact, Unicode-safe progress card for chat/LLM output."""
     pct = max(0, min(100, int(event.get("percent") or 0)))
     filled = int(width * pct / 100)
@@ -188,9 +266,12 @@ def render_text(event: Mapping[str, Any], *, width: int = 24, ascii_only: bool =
         recent = events[-3:]
         lines.append("etapas: " + " · ".join(
             f"{x['phase']}" + (f"[{x['status']}]" if x.get("status") else "") for x in recent))
+    blockers = event.get("blockers") or []
+    if blockers:
+        lines.append("blockers: " + " · ".join(str(item) for item in blockers))
     if ascii_only:
         lines = [_ascii(line) for line in lines]
-    return "\n".join(lines)
+    return "\n".join(_fit_line(line, max_width) for line in lines)
 
 
 def render_markdown(event: Mapping[str, Any], *, width: int = 20, ascii_only: bool = False) -> str:
@@ -209,6 +290,9 @@ def render_markdown(event: Mapping[str, Any], *, width: int = 20, ascii_only: bo
     if events:
         rendered += "\n\nEtapas: " + ", ".join(
             f"`{x['phase']}` ({x.get('status', 'INFO')})" for x in events[-3:])
+    blockers = event.get("blockers") or []
+    if blockers:
+        rendered += "\n\nBlockers: " + ", ".join(f"`{item}`" for item in blockers)
     return _ascii(rendered) if ascii_only else rendered
 
 
@@ -235,14 +319,19 @@ def stream(run_dir: str | Path, *, fmt: str = "text", interval: float = 0.25,
         elif fmt == "markdown":
             rendered = render_markdown(event, ascii_only=ascii_only)
         elif fmt == "ansi":
-            rendered = render_text(event, ascii_only=ascii_only) if no_animation else render_ansi(event)
+            tty = bool(getattr(out, "isatty", lambda: False)())
+            animate = not no_animation and not once and tty
+            rendered = render_ansi(event) if animate else render_text(
+                event, ascii_only=ascii_only,
+                max_width=max(40, shutil.get_terminal_size((80, 20)).columns),
+            )
         else:
             rendered = render_text(event, ascii_only=ascii_only)
         print(rendered, end="\n\n" if fmt != "ansi" else "", file=out, flush=True)
-        if once or no_animation or event["status"] in {"COMPLETE", "BLOCKED"}:
+        if once or no_animation or event["status"] in {"COMPLETE", "BLOCKED", "CANCELLED"}:
             return event
         frame += 1
         time.sleep(max(0.05, float(interval)))
 
 
-__all__ = ["SCHEMA", "build_progress", "load_state", "render_ansi", "render_markdown", "render_text", "stream"]
+__all__ = ["EVENT_KINDS", "SCHEMA", "build_progress", "load_state", "render_ansi", "render_markdown", "render_text", "stream"]

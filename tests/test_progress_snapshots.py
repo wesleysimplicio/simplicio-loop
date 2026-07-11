@@ -28,7 +28,7 @@ def test_progress_snapshot_contract_covers_milestones_and_fanout():
 
 
 def test_progress_renderers_preserve_gates_actions_and_no_control_codes():
-    state = json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"][-1]["state"]
+    state = next(case["state"] for case in json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"] if case["id"] == "fanout-blocked")
     event = build_progress(state)
     markdown = render_markdown(event, ascii_only=True)
     plain = render_text(event, ascii_only=True)
