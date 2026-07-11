@@ -54,6 +54,7 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 | `billing_aggregator.py` | `scripts/simplicio-economy.sh` (economy/billing stack) | active |
 | `savings_harness.py` | `scripts/simplicio-economy.sh`; `e2e_demo.py` | active |
 | `e2e_demo.py` | manual capstone acceptance demo (README § the e2e savings demo) | active |
+| `independent_watcher.py` | `docs/INDEPENDENT_WATCHER.md`; clean committed-snapshot behavioral verification | active |
 | `simplicio-economy.sh` | manual (`bash scripts/simplicio-economy.sh {status\|up\|monitor\|tray\|wire}`) | active |
 | `simplicio-capture.sh` | token-capture proxy control (pip-only asset, not shipped in the marketplace `plugin/`) | active |
 | `simplicio-engine` | wrapper CLI around the capture/economy stack (`simplicio-engine doctor`, etc.) | active |

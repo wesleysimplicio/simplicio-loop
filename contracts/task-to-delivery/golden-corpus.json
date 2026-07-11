@@ -1,0 +1,16 @@
+{
+  "schema": "simplicio.task-to-delivery-golden-corpus/v1",
+  "execution_mode": "raw-markdown-contract",
+  "cases": [
+    {"id": "frontend", "category": "frontend", "task": "Tela: Frontend\nFuncionalidade: Lista\nTipo: Evolução\n\n1. Critérios de Aceite\n\nCenário 1: renderiza\n  Dado que a tela foi aberta\n  Quando o componente for montado\n  Então a lista deve aparecer [RN01]\n\n2. Regras de Negócio\n\nRN01 – A lista é visível."},
+    {"id": "backend", "category": "backend", "task": "Sistema: Backend\nFuncionalidade: API\nTipo: Evolução\n\n1. Critérios de Aceite\n\nCenário 1: responde\n  Dado que há uma requisição\n  Quando o endpoint for chamado\n  Então retorna sucesso [RN01]\n\n2. Regras de Negócio\n\nRN01 – O endpoint retorna sucesso."},
+    {"id": "full-stack", "category": "full-stack", "task": "Sistema: Portal\nFuncionalidade: Fluxo completo\nTipo: Evolução\n\n1. Critérios de Aceite\n\nCenário 1: conclui fluxo\n  Dado que o usuário iniciou\n  Quando salvar\n  Então UI e API refletem o estado [RN01]\n\n2. Regras de Negócio\n\nRN01 – O estado é consistente."},
+    {"id": "migration", "category": "migration", "task": "Sistema: Dados\nFuncionalidade: Migração\nTipo: Manutenção\n\n1. Critérios de Aceite\n\nCenário 1: preserva dados\n  Dado que existem registros\n  Quando migrar\n  Então nenhum registro é perdido [RN01]\n\n2. Regras de Negócio\n\nRN01 – A migração é idempotente."},
+    {"id": "bug", "category": "bug", "task": "Sistema: Checkout\nFuncionalidade: Correção\nTipo: Bug\n\n1. Critérios de Aceite\n\nCenário 1: corrige erro\n  Dado que o caso inválido ocorre\n  Quando processar\n  Então retorna erro controlado [RN01]\n\n2. Regras de Negócio\n\nRN01 – O erro é controlado."},
+    {"id": "cli", "category": "cli", "task": "Sistema: CLI\nFuncionalidade: Comando\nTipo: Evolução\n\n1. Critérios de Aceite\n\nCenário 1: aceita opção\n  Dado que o comando foi chamado\n  Quando a opção for informada\n  Então imprime resultado [RN01]\n\n2. Regras de Negócio\n\nRN01 – A opção é determinística."},
+    {"id": "docs", "category": "docs", "task": "Sistema: Docs\nFuncionalidade: Guia\nTipo: Documentação\n\n1. Critérios de Aceite\n\nCenário 1: explica uso\n  Dado que o leitor abriu o guia\n  Quando buscar o comando\n  Então encontra um exemplo [RN01]\n\n2. Regras de Negócio\n\nRN01 – O exemplo é executável."},
+    {"id": "security", "category": "security", "task": "Sistema: Auth\nFuncionalidade: Segurança\nTipo: Hardening\n\n1. Critérios de Aceite\n\nCenário 1: bloqueia segredo\n  Dado que há entrada sensível\n  Quando registrar\n  Então o segredo não aparece [RN01]\n\n2. Regras de Negócio\n\nRN01 – Segredos são redigidos."},
+    {"id": "multi-task-dag", "category": "multi-task-dag", "task": "Sistema: A\nFuncionalidade: Primeiro\nTipo: Evolução\n\n1. Critérios de Aceite\n\nCenário 1: conclui A\n  Dado que A foi iniciado\n  Quando executar\n  Então A conclui [RN01]\n\n2. Regras de Negócio\n\nRN01 – A precede B.\n\nSistema: B\nFuncionalidade: Segundo\nTipo: Evolução\n\n1. Critérios de Aceite\n\nCenário 1: conclui B\n  Dado que A concluiu\n  Quando executar\n  Então B conclui [RN02]\n\n2. Regras de Negócio\n\nRN02 – B depende de A."},
+    {"id": "planes", "category": "planes", "source": "fixtures/planes/task.md", "expected_scenarios": 5, "expected_rules": 3}
+  ]
+}
