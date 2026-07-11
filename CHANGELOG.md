@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.32.2] — 2026-07-11
+
+- Refresh the measured token-budget baseline after the merged runtime, queue, recovery and preflight contracts.
+- Full gate verified: 540 tests, claims audit, mirror parity, clean-env, loop contract and token budget all pass.
+
 ## [3.32.1] — 2026-07-11
 
 - Add the operational manual and examples required by the Runtime standard-I/O smoke gate.
