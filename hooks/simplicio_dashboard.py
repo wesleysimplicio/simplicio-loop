@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 
 HOME = os.path.expanduser("~")
@@ -52,6 +53,9 @@ LOGO_CANDIDATES = [
 # Cross-platform temp dir (Windows has no /tmp) — must match simplicio_loop/cli.py PID_FILE.
 PID_FILE = Path(tempfile.gettempdir()) / "simplicio-token-monitor.pid"
 PROXY_PORT = os.environ.get("SIMPLICIO_PROXY_PORT", "8788")
+# Optional run projection for the visual dashboard.  It is deliberately opt-in: the token
+# monitor remains useful without a repository checkout or an active loop run.
+PROGRESS_RUN = os.environ.get("SIMPLICIO_PROGRESS_RUN", "").strip()
 # Engine call: the native Simplicio engine module, invoked cross-platform via this interpreter.
 ENGINE_CMD = [sys.executable or "python3", str(REPO_ROOT / "engine" / "simplicio_engine.py")]
 
@@ -364,6 +368,11 @@ BODY = """<div class="wrap">
     </section>
   </div>
 
+  <section class="panel" id="progressPanel" hidden>
+    <div class="panel-head"><div class="title">loop progress · live receipt</div><div class="meta" id="progressMeta">waiting</div></div>
+    <div class="panel-body"><pre class="log" id="progressCard" aria-live="polite"></pre></div>
+  </section>
+
   <div class="footer">
     <span><span class="tm-g">Simplicio</span> <span class="tm-y">Token Monitor</span> · simplicio-loop</span>
     <span id="footMeta">--</span>
@@ -372,6 +381,18 @@ BODY = """<div class="wrap">
 
 SCRIPT = """<script>
 const GAUGE_CIRC = 327;
+const PROGRESS_RUN = __PROGRESS_RUN__;
+async function refreshProgress(){
+  if(!PROGRESS_RUN) return;
+  const panel=document.getElementById('progressPanel'); panel.hidden=false;
+  try{
+    const r=await fetch('/api/progress?run='+encodeURIComponent(PROGRESS_RUN),{cache:'no-store'});
+    const d=await r.json();
+    document.getElementById('progressMeta').textContent=(d.run_id||PROGRESS_RUN)+' · '+(d.status||'UNVERIFIED');
+    document.getElementById('progressCard').textContent=(d.label||'Progress')+' · '+String(d.percent??0)+'%\n'+
+      'gates: '+JSON.stringify(d.gates||{})+'\n'+(d.blockers||[]).map(x=>'blocker: '+x).join('\n');
+  }catch(e){ document.getElementById('progressMeta').textContent='UNVERIFIED · '+e; }
+}
 // Compact brand monograms for each LLM/runtime (recognizable marks, brand-tinted).
 const LOGOS = {
   claude:'<svg viewBox="0 0 24 24"><g stroke="#d97757" stroke-width="2.1" stroke-linecap="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></g></svg>',
@@ -558,7 +579,7 @@ async function refresh(){
     document.getElementById('stats').innerHTML=card('error',e.message,'red','',0,'red');
   }
 }
-setInterval(refresh,3000); refresh();
+setInterval(refresh,3000); refresh(); setInterval(refreshProgress,1500); refreshProgress();
 </script>"""
 
 HTML = """<!DOCTYPE html>
@@ -586,7 +607,8 @@ _FAVICON = "data:image/svg+xml;base64," + _b64.b64encode(BADGE_SVG.encode()).dec
 # Inline the badge into BODY first (re.sub does not re-scan replacement text), then
 # single-pass substitution — atomic per token, so a slot value can't expand a later slot.
 BODY = BODY.replace("__BADGE__", BADGE_SVG)
-_SLOTS = {"__FAVICON__": _FAVICON, "__STYLE__": STYLE, "__BODY__": BODY, "__SCRIPT__": SCRIPT}
+_SLOTS = {"__FAVICON__": _FAVICON, "__STYLE__": STYLE, "__BODY__": BODY,
+          "__SCRIPT__": SCRIPT.replace("__PROGRESS_RUN__", json.dumps(PROGRESS_RUN))}
 HTML = _re.sub(r"__(?:FAVICON|STYLE|BODY|SCRIPT)__", lambda m: _SLOTS[m.group(0)], HTML)
 
 
@@ -848,9 +870,56 @@ def _send_logo(handler):
     handler.wfile.write(_fallback_logo_svg().encode())
 
 
+_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _progress_root():
+    configured = os.environ.get("SIMPLICIO_RUNS_DIR", "")
+    return Path(configured).expanduser() if configured else Path.cwd() / ".orchestrator" / "runs"
+
+
+def _progress_response(run_id):
+    """Return one receipt-backed progress snapshot without allowing path traversal."""
+    base = _progress_root().resolve()
+    if not run_id or not _RUN_ID.fullmatch(run_id):
+        return 400, {"schema": "simplicio.progress/v1", "status": "UNVERIFIED",
+                      "reason_code": "run_id_invalid"}
+    run_dir = (base / run_id).resolve()
+    try:
+        run_dir.relative_to(base)
+    except ValueError:
+        return 400, {"schema": "simplicio.progress/v1", "status": "UNVERIFIED",
+                      "reason_code": "run_id_outside_root"}
+    state_path = run_dir / "state.json"
+    if not state_path.is_file():
+        return 404, {"schema": "simplicio.progress/v1", "status": "UNVERIFIED",
+                     "run_id": run_id, "reason_code": "run_not_found"}
+    try:
+        from simplicio_loop.progress import build_progress
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            raise ValueError("state_not_object")
+        return 200, build_progress(state, run_dir=run_dir)
+    except (OSError, ValueError, TypeError, ImportError, json.JSONDecodeError):
+        return 422, {"schema": "simplicio.progress/v1", "status": "UNVERIFIED",
+                      "run_id": run_id, "reason_code": "state_invalid"}
+
+
+def _send_json(handler, status, payload):
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path
         if path == "/api/status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -858,6 +927,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(json.dumps(get_status()).encode())
+        elif path == "/api/progress":
+            query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            run_id = (query.get("run") or [""])[0]
+            status, payload = _progress_response(run_id)
+            _send_json(self, status, payload)
         elif path == "/assets/simplicio-logo.png":
             _send_logo(self)
         else:
