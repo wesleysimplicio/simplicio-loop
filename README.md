@@ -55,6 +55,9 @@
 
 - **Contract first** — acceptance criteria, dependencies, risks, source state, and the completion oracle are explicit before execution.
 - **Parallel without corruption** — ready tasks run in isolated lanes/worktrees and converge through an operational ledger.
+- **Automatic fan-out by default** — `batch` provisions one owned worktree per independent,
+  authorized task; overlap, missing evidence, or unavailable isolation falls back to a
+  visible serial lane. See [`docs/AUTO_FAN_OUT.md`](docs/AUTO_FAN_OUT.md).
 - **Proof before completion** — tests, impact/flow checks, watcher challenges, delivery receipts, and HBP evidence reject false done states.
 - **Memory that changes behavior** — the journal, stall detector, checkpoints, and cross-agent wiki prevent oscillation and make handoffs durable.
 
