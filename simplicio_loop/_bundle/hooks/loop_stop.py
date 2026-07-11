@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 import uuid
+from pathlib import Path
 
 LOOP_DIR = os.path.join(".orchestrator", "loop")
 SCRATCHPAD = os.path.join(LOOP_DIR, "scratchpad.md")
@@ -222,6 +223,7 @@ def write_handoff(reason, meta=None, body=None):
         anchor = read_anchor() or {}
         criteria = anchor.get("criteria") or []
         attempts = tail_journal()
+        completion = latest_completion_receipt() or {}
         lines = [
             "# simplicio-loop handoff",
             "",
@@ -262,6 +264,16 @@ def write_handoff(reason, meta=None, body=None):
                         attempt_suffix(a),
                     )
                 )
+        if completion:
+            lines += [
+                "",
+                "## Completion oracle",
+                "",
+                "- verdict: %s" % completion.get("verdict", "DELIVERY_PENDING"),
+                "- reason_code: %s" % completion.get("reason_code", "oracle_incomplete"),
+                "- tag: %s" % completion.get("tag", "UNVERIFIED"),
+                "- receipt: %s" % completion.get("_path", "(unknown)"),
+            ]
         lines += [
             "",
             "## Resume",
@@ -679,6 +691,61 @@ def watcher_verify():
         return False, "UNVERIFIED"
 
 
+def latest_run_dir():
+    try:
+        runs = Path(".orchestrator") / "runs"
+        if not runs.exists():
+            return ""
+        candidates = sorted([p for p in runs.iterdir() if p.is_dir()], key=lambda p: p.name)
+        return str(candidates[-1]) if candidates else ""
+    except Exception:
+        return ""
+
+
+def latest_completion_receipt():
+    try:
+        run_dir = latest_run_dir()
+        if not run_dir:
+            return None
+        path = Path(run_dir) / "completion-receipt.json"
+        if not path.exists():
+            return None
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        payload["_path"] = str(path)
+        return payload
+    except Exception:
+        return None
+
+
+def completion_oracle_payload(response_text="", flow_gap=""):
+    try:
+        repo_root = os.getcwd()
+        script = os.path.join(repo_root, "scripts", "completion_oracle.py")
+        if not os.path.exists(script):
+            source_repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            script = os.path.join(source_repo, "scripts", "completion_oracle.py")
+        if not os.path.exists(script):
+            return {"ready": False, "reason_code": "oracle_script_missing", "tag": "UNVERIFIED"}
+        run_dir = latest_run_dir()
+        cmd = [sys.executable, script, "--loop-dir", LOOP_DIR]
+        if run_dir:
+            cmd += ["--run-dir", run_dir]
+        if response_text:
+            cmd += ["--response-text", response_text]
+        if flow_gap:
+            cmd += ["--flow-gap", flow_gap]
+        if run_dir:
+            cmd += ["--write-receipt"]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=repo_root)
+        payload = json.loads(r.stdout) if (r.stdout or "").strip() else {}
+        if isinstance(payload, dict):
+            return payload
+        return {"ready": False, "reason_code": "oracle_invalid_payload", "tag": "UNVERIFIED"}
+    except Exception:
+        return {"ready": False, "reason_code": "oracle_error", "tag": "UNVERIFIED"}
+
+
 def spindle_latched():
     """True when a spindle handoff exists with an unreleased latch.
 
@@ -861,24 +928,20 @@ def main():
         # Pre-promise: front→back flow-audit gate (#80) — mechanical, not prose-only.
         flow_gap = flow_audit_gap()
 
-        # Completion detection (capture folded in for single-hook runtimes like Claude).
+        # Completion detection is centralized in the shared oracle (#138). The stop hook can still
+        # surface watcher/flow state in the re-feed header below, but it no longer decides COMPLETE
+        # on its own.
         if promise and resp:
-            m = PROMISE_RE.search(resp)
-            if m and m.group(1).strip() == promise.strip():
-                # The promise is honored only with evidence AND watcher verification AND no
-                # acceptance criterion still open in the task anchor AND no open flow-audit gap.
-                # The watcher-gate ensures the agent's result was independently re-executed and
-                # matched before the promise is accepted — corrective gate per Asolaria.
-                if (((not evidence_required) or has_evidence) and watcher_pass
-                        and not anchor_pending() and not flow_gap):
-                    _call_simplicio_hbp_append(iteration, promise, watcher_tag)
-                    refresh_cross_agent_wiki(include_handoff=False)
-                    cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
-                # promise without evidence, or watcher disagrees, or anchor still has open ACs,
-                # or a flow-audit gap remains → ignore, keep looping
+            oracle = completion_oracle_payload(resp, flow_gap or "")
+            if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
+                _call_simplicio_hbp_append(iteration, promise, watcher_tag)
+                refresh_cross_agent_wiki(include_handoff=False)
+                cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
         # (3') Cursor capture may have raised the flag.
         if os.path.exists(DONE_FLAG) or os.path.exists(LEGACY_DONE_FLAG):
-            cleanup_and_stop()
+            oracle = completion_oracle_payload(flow_gap=flow_gap or "")
+            if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
+                cleanup_and_stop()
         # (4) Iteration cap — incomplete stop, hand off.
         if max_iter > 0 and iteration >= max_iter:
             _call_simplicio_hbp_append_topic("loop-run-blocked", {
