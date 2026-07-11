@@ -79,8 +79,12 @@ def _command_policy(check: Dict[str, Any]) -> tuple[List[str] | None, str]:
         return None, "no argv resolved"
     exe = Path(normalized[0]).name.lower()
     if exe.endswith(".exe"):
-        exe = exe
-    if exe not in SAFE_EXECUTABLES and not normalized[0].lower().endswith(".py"):
+        exe = exe[:-4]
+    # Test runners and receipts often pass an absolute interpreter path
+    # (python3.11, python3.14, ...). Treat versioned Python executables as
+    # equivalent to the explicitly allowlisted python/python3 commands.
+    python_executable = exe == "python" or exe.startswith("python3.")
+    if exe not in SAFE_EXECUTABLES and not python_executable and not normalized[0].lower().endswith(".py"):
         return None, f"command executable not allowlisted: {normalized[0]}"
     return normalized, "allowed"
 

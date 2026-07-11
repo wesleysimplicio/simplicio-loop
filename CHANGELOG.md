@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.31.1] — 2026-07-11
+
+- Fix evidence-receipt allowlisting for absolute, versioned Python interpreters (`python3.11`, `python3.14`).
+- Keep self-tests fail-closed while allowing the same interpreter paths used by test runners.
+
 ## [3.31.0] — 2026-07-11
 
 - Typed append-only attempt journal with causal identity, hash-chain replay and failure fingerprints.
