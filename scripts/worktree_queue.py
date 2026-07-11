@@ -229,7 +229,21 @@ class WorktreeQueue:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(state, fh, ensure_ascii=False, indent=2, sort_keys=True)
                 fh.write("\n")
-            os.replace(temp, self.state_path)
+            # Windows scanners and short-lived readers can transiently hold the
+            # destination. Retry a bounded number of times; callers still receive
+            # the OSError and must fail closed if the state cannot be persisted.
+            last_error = None
+            for attempt in range(4):
+                try:
+                    os.replace(temp, self.state_path)
+                    last_error = None
+                    break
+                except PermissionError as exc:
+                    last_error = exc
+                    if attempt < 3:
+                        time.sleep(0.05 * (attempt + 1))
+            if last_error is not None:
+                raise last_error
         finally:
             if os.path.exists(temp):
                 os.unlink(temp)
@@ -626,7 +640,10 @@ class WorktreeQueue:
             entry["status"] = "cleaned" if not failures else "cleanup-failed"
             entry["cleanup_at"] = _now()
             entry["cleanup_failures"] = failures
-            self._write(state)
+            try:
+                self._write(state)
+            except OSError as exc:
+                failures.append("state-write: %s" % exc)
             return CleanupReport(task_id=task_id, removed=not failures, failures=failures, path=path, branch=branch)
 
     def cleanup_orphans(self, task_ids: Optional[Iterable[str]] = None) -> List[CleanupReport]:
