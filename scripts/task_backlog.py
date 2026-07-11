@@ -106,6 +106,11 @@ try:
 except Exception:  # pragma: no cover
     compile_many = None
 
+try:
+    from agent_identity import ensure_identity, identity_matches, lease_identity
+except Exception:  # pragma: no cover
+    ensure_identity = identity_matches = lease_identity = None
+
 
 def _now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -226,7 +231,7 @@ def _lease_fence(lease):
     return str(lease.get("fencing_token") or lease.get("fence") or "")
 
 
-def _lease_matches(item, worker="", fence="", require=False):
+def _lease_matches(item, worker="", fence="", require=False, identity=None):
     """Validate owner/fence credentials and reject expired leases.
 
     A missing or malformed expiry is fail-closed.  This matters during crash
@@ -241,6 +246,8 @@ def _lease_matches(item, worker="", fence="", require=False):
     if worker and lease.get("worker") != worker:
         return False
     if fence and _lease_fence(lease) != fence:
+        return False
+    if identity is not None and not identity_matches(lease.get("identity"), identity):
         return False
     expires_at = str(lease.get("expires_at") or "").strip()
     if not expires_at or _parse_utc(expires_at) <= int(time.time()):
@@ -833,7 +840,12 @@ def cmd_next(_opts):
     if not master or not items:
         print("backlog: none frozen")
         return
-    worker = (opts.get("worker") or "").strip()
+    identity_requested = any(opts.get(name) for name in
+                             ("agent-id", "runtime", "session-id", "device-id"))
+    identity = (ensure_identity(runtime=opts.get("runtime"), session_id=opts.get("session-id"),
+                                agent_id=opts.get("agent-id"), device_id=opts.get("device-id"))
+                if ensure_identity and identity_requested else {})
+    worker = (opts.get("worker") or identity.get("agent_id") or "").strip()
     ttl = int(opts.get("lease-ttl") or 900)
     if worker:
         for item in items:
@@ -841,7 +853,8 @@ def cmd_next(_opts):
             active_lease = item.get("status") in ("claimed", "running", "verification", "delivery")
             not_expired = (not lease.get("expires_at") or
                            _parse_utc(lease.get("expires_at")) > int(time.time()))
-            if active_lease and not_expired and lease.get("worker") == worker:
+            if (active_lease and not_expired and lease.get("worker") == worker and
+                    (not identity or identity_matches(lease.get("identity"), identity))):
                 lease["heartbeat_at"] = _now()
                 lease["expires_at"] = _lease_expires(ttl)
                 item["lease"] = lease
@@ -866,6 +879,7 @@ def cmd_next(_opts):
             "fencing_token": fence,
             "fence": fence,
             "generation": int(master.get("fence_counter", 0)),
+            "identity": lease_identity(identity) if identity and lease_identity else {},
         }
         _save(master, items)
         print("%s\t%s\t%s" % (item.get("id"), item.get("goal"), fence))
@@ -901,10 +915,12 @@ def cmd_done(opts):
         print("backlog: no such item %r" % item_id)
         sys.exit(2)
     worker = (opts.get("worker") or "").strip()
+    identity = ensure_identity(runtime=opts.get("runtime"), session_id=opts.get("session-id"),
+                               agent_id=opts.get("agent-id"), device_id=opts.get("device-id")) if opts.get("agent-id") else None
     fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
     # Closing an item is irreversible at the backlog layer: require both the
     # current owner and its lease fence, and fail closed on an expired lease.
-    if not _lease_matches(hit, worker=worker, fence=fence, require=True):
+    if not _lease_matches(hit, worker=worker, fence=fence, require=True, identity=identity):
         _lease_error(worker, item_id)
     if hit.get("goal_fp") != anchor.get("goal_fp"):
         print("backlog: BLOCKED — anchor goal does not match item %s" % item_id)
@@ -939,6 +955,8 @@ def cmd_skip(opts):
     item_id = (opts.get("item") or "").strip()
     reason = (opts.get("reason") or "").strip()
     worker = (opts.get("worker") or "").strip()
+    identity = ensure_identity(runtime=opts.get("runtime"), session_id=opts.get("session-id"),
+                               agent_id=opts.get("agent-id"), device_id=opts.get("device-id")) if opts.get("agent-id") else None
     fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
     if not item_id or not reason:
         print("backlog: --item and --reason are required")
@@ -949,7 +967,7 @@ def cmd_skip(opts):
         sys.exit(2)
     for item in items:
         if item.get("id") == item_id:
-            if (worker or fence) and not _lease_matches(item, worker=worker, fence=fence):
+            if (worker or fence or identity) and not _lease_matches(item, worker=worker, fence=fence, identity=identity):
                 _lease_error(worker, item_id)
             item["status"] = "skipped"
             item["skip_reason"] = reason
@@ -969,6 +987,8 @@ def cmd_block(opts):
     reason = (opts.get("reason") or "").strip()
     code = (opts.get("code") or "").strip()
     worker = (opts.get("worker") or "").strip()
+    identity = ensure_identity(runtime=opts.get("runtime"), session_id=opts.get("session-id"),
+                               agent_id=opts.get("agent-id"), device_id=opts.get("device-id")) if opts.get("agent-id") else None
     fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
     if not item_id or not reason or not code:
         print("backlog: --item, --reason and --code are required")
@@ -979,7 +999,7 @@ def cmd_block(opts):
         sys.exit(2)
     for item in items:
         if item.get("id") == item_id:
-            if (worker or fence) and not _lease_matches(item, worker=worker, fence=fence):
+            if (worker or fence or identity) and not _lease_matches(item, worker=worker, fence=fence, identity=identity):
                 _lease_error(worker, item_id)
             item["status"] = "blocked"
             item["blocked_reason"] = reason
@@ -1001,6 +1021,8 @@ def cmd_fail(opts):
     code = (opts.get("code") or "").strip()
     fingerprint = (opts.get("fingerprint") or "").strip()
     worker = (opts.get("worker") or "").strip()
+    identity = ensure_identity(runtime=opts.get("runtime"), session_id=opts.get("session-id"),
+                               agent_id=opts.get("agent-id"), device_id=opts.get("device-id")) if opts.get("agent-id") else None
     fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
     max_failures = int(opts.get("max-failures") or 3)
     if not item_id or not reason or not code or not fingerprint:
@@ -1014,7 +1036,7 @@ def cmd_fail(opts):
         if item.get("id") != item_id:
             continue
         lease = item.get("lease") or {}
-        if (worker or fence) and not _lease_matches(item, worker=worker, fence=fence):
+        if (worker or fence or identity) and not _lease_matches(item, worker=worker, fence=fence, identity=identity):
             _lease_error(worker, item_id)
         failures = item.setdefault("failures", [])
         if not any(f.get("fingerprint") == fingerprint for f in failures):
@@ -1107,7 +1129,9 @@ def cmd_poll(opts):
 @_transactional
 def cmd_heartbeat(opts):
     item_id = (opts.get("item") or "").strip()
-    worker = (opts.get("worker") or "").strip()
+    identity = ensure_identity(runtime=opts.get("runtime"), session_id=opts.get("session-id"),
+                               agent_id=opts.get("agent-id"), device_id=opts.get("device-id")) if opts.get("agent-id") else None
+    worker = (opts.get("worker") or (identity or {}).get("agent_id") or "").strip()
     fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
     ttl = int(opts.get("lease-ttl") or 900)
     if not item_id or not worker:
@@ -1124,7 +1148,7 @@ def cmd_heartbeat(opts):
             continue
         lease = item.get("lease") or {}
         if (item.get("status") not in ("claimed", "running", "verification", "delivery") or
-                not _lease_matches(item, worker=worker, fence=fence)):
+                not _lease_matches(item, worker=worker, fence=fence, identity=identity)):
             _lease_error(worker, item_id)
         lease["heartbeat_at"] = _now()
         lease["ttl_seconds"] = ttl
@@ -1158,7 +1182,9 @@ def cmd_transition(opts):
     item_id = (opts.get("item") or "").strip()
     target = (opts.get("to") or opts.get("status") or "").strip().lower()
     expected = (opts.get("from") or "").strip().lower()
-    worker = (opts.get("worker") or "").strip()
+    identity = ensure_identity(runtime=opts.get("runtime"), session_id=opts.get("session-id"),
+                               agent_id=opts.get("agent-id")) if opts.get("agent-id") else None
+    worker = (opts.get("worker") or (identity or {}).get("agent_id") or "").strip()
     fence = (opts.get("fence") or opts.get("fencing-token") or "").strip()
     if not item_id or not target:
         print("backlog: --item and --to/--status are required")
@@ -1186,9 +1212,9 @@ def cmd_transition(opts):
     # Every transition out of an active lease is fenced.  For compatibility,
     # legacy callers may omit credentials only while transitioning an unleased
     # item; a claimed/running item cannot be mutated anonymously.
-    if current in active and not _lease_matches(hit, worker=worker, fence=fence, require=True):
+    if current in active and not _lease_matches(hit, worker=worker, fence=fence, require=True, identity=identity):
         _lease_error(worker, item_id)
-    if target in active and not _lease_matches(hit, worker=worker, fence=fence, require=True):
+    if target in active and not _lease_matches(hit, worker=worker, fence=fence, require=True, identity=identity):
         _lease_error(worker, item_id)
     hit["status"] = target
     hit["transitioned_at"] = _now()
@@ -1284,9 +1310,10 @@ def main():
     if argv[0] == "--describe-cli":
         print(json.dumps({
             "verbs": ["init", "next", "done", "skip", "block", "fail", "heartbeat", "transition", "status", "poll", "checklist", "selftest"],
-            "flags": ["--anchor", "--code", "--goal", "--help", "--item", "--item-file", "--lint",
+            "flags": ["--anchor", "--agent-id", "--code", "--device-id", "--goal", "--help", "--item", "--item-file", "--lint",
                       "--reason", "--task-file", "--worker", "--fence", "--fencing-token", "--from", "--to", "--status", "--expected-revision",
                       "--lease-ttl", "--fingerprint", "--max-failures", "--empty-polls",
+                      "--runtime", "--session-id",
                       "--lock-timeout", "--lock-retry"],
         }))
         sys.exit(0)
