@@ -56,6 +56,8 @@ class RemoteQueue(Protocol):
 
     def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]: ...
 
+    def assert_active(self, lease: Lease) -> None: ...
+
 
 def _lease_from_json(value: Mapping[str, Any]) -> Lease:
     """Decode the wire representation without trusting client-controlled fields."""
@@ -129,6 +131,9 @@ class HTTPRemoteQueue:
 
     def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]:
         return self._request("POST", "/complete", {"lease": _lease_json(lease), "receipt_ref": receipt_ref})
+
+    def assert_active(self, lease: Lease) -> None:
+        self._request("POST", "/assert-active", {"lease": _lease_json(lease)})
 
     def release(self, lease: Lease, *, reason: str = "handoff") -> Dict[str, Any]:
         return self._request("POST", "/release", {"lease": _lease_json(lease), "reason": reason})
@@ -314,6 +319,11 @@ class SQLiteRemoteQueue:
             return Lease(lease.task_id, lease.agent_id, lease.lease_id, lease.fencing_token,
                          expires, lease.idempotency_key, lease.identity, lease.capabilities)
 
+    def assert_active(self, lease: Lease) -> None:
+        """Validate fencing without extending the lease or mutating queue state."""
+        with self._tx() as c:
+            self._owned(c, lease)
+
     def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]:
         if not receipt_ref:
             raise ValueError("receipt_ref is required")
@@ -405,6 +415,8 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
                     result = {"lease": _lease_json(lease)}
                 elif op == "complete":
                     result = queue.complete(_lease_from_json(body["lease"]), receipt_ref=body["receipt_ref"])
+                elif op == "assert-active":
+                    queue.assert_active(_lease_from_json(body["lease"])); result = {"active": True}
                 elif op == "release":
                     result = queue.release(_lease_from_json(body["lease"]), reason=body.get("reason", "handoff"))
                 elif op == "events":
