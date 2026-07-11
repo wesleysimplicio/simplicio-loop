@@ -3,6 +3,15 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [3.28.0] — 2026-07-11
+
+### Added
+- **Execution Board E2E:** event-sourced local board fixture with four WorkItems, first-wave
+  parallel lanes, dependency ordering, validation retry, human gate, evidence/watcher gates,
+  drain verification and stable replay hash; absent external board adapters remain UNVERIFIED.
+- **Context isolation enforcement:** allow-listed context packs, capability validation, duplicate
+  identity rejection and agent-bound queue/runtime receipts prevent cross-agent leakage or replay.
+
 ## [3.27.0] — 2026-07-11
 
 ### Added
