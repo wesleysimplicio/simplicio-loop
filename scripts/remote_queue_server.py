@@ -6,6 +6,18 @@ import argparse
 import os
 import signal
 import sys
+from pathlib import Path
+
+# The script lives in scripts/, but it imports the top-level ``simplicio_loop`` package.
+# When executed as ``python3 scripts/remote_queue_server.py`` Python adds the script's own
+# directory (scripts/) to sys.path[0], not the repo root, so the import below fails with a
+# bare ModuleNotFoundError. Anchoring the repo root on sys.path here keeps the CLI invokable
+# from any working directory and lets genuine argparse/ValueError gates (e.g. the TLS-pair
+# requirement) surface with their intended exit codes instead of being masked by an import
+# error.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
