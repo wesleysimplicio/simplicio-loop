@@ -104,7 +104,7 @@ def test_evidence_receipt_built_from_run_and_watcher_reads_it(tmp_path):
     assert state["criteria_results"][0]["match"] is False
 
 
-def test_evidence_receipt_flags_uncovered_manual_diff(tmp_path):
+def test_evidence_receipt_flags_uncovered_manual_diff(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     _run(["git", "init"], str(repo))
@@ -140,6 +140,7 @@ def test_evidence_receipt_flags_uncovered_manual_diff(tmp_path):
 
     extra = repo / "manual_extra.txt"
     extra.write_text("manual mutation\n", encoding="utf-8")
+    monkeypatch.setattr(evidence_mod, "_changed_paths", lambda root: ["manual_extra.txt"])
     receipt = evidence_mod.build_evidence_receipt(str(run_dir))
     assert receipt["operator"]["coverage_ok"] is False
     assert "manual_extra.txt" in receipt["operator"]["uncovered_paths"]
