@@ -11,6 +11,7 @@ from simplicio_loop.recovery import (
     build_cursor,
     persist_cursor,
     reconcile_after_crash,
+    recover_after_crash,
     validate_ac_evidence_receipt,
 )
 
@@ -65,6 +66,58 @@ def test_cursor_persistence_is_valid_json_and_replaces_atomically(tmp_path):
     loaded = json.loads(path.read_text(encoding="utf-8"))
     assert loaded["schema"] == "simplicio.loop-cursor/v1"
     assert not list(tmp_path.glob(".*cursor.json.*"))
+
+
+def test_recover_after_crash_reconciles_runtime_source_and_persists(tmp_path):
+    cursor_path = tmp_path / "cursor.json"
+    result = recover_after_crash(
+        [event(1, None, "intake")],
+        build_cursor(**CURSOR_IDENTITY),
+        source_state={"status": "open", "run_id": "run-1", "work_item_id": "wi-1"},
+        runtime_reconcile=lambda: {"status": "MEASURED", "pending": 0, "replayed": 2},
+        lease={"state": "held", "owner": "codex@host-a"},
+        provider_identity={"actor": "codex@host-a", "environment_id": "host-a/python-3.12"},
+        persist_path=cursor_path,
+    )
+    assert result["schema"] == "simplicio.loop-recovery/v1"
+    assert result["status"] == "RESUMED"
+    assert result["execution_allowed"] is True
+    assert result["runtime"]["replayed"] == 2
+    assert json.loads(cursor_path.read_text(encoding="utf-8"))["last_sequence"] == 1
+
+
+def test_recover_after_crash_blocks_ambiguous_source_and_provider_drift():
+    cursor = build_cursor(**CURSOR_IDENTITY)
+    ambiguous = recover_after_crash(
+        [event(1, None, "intake")], cursor,
+        source_state={"status": "done", "run_id": "run-1", "work_item_id": "wi-1"},
+        runtime_reconcile=lambda: {"status": "MEASURED", "pending": 0},
+    )
+    assert ambiguous["status"] == "BLOCKED"
+    assert ambiguous["reason_code"] == "source_local_conflict"
+    drift = recover_after_crash(
+        [], cursor,
+        provider_identity={"actor": "claude@host-b", "environment_id": "host-b/python-3.12"},
+    )
+    assert drift["status"] == "BLOCKED"
+    assert drift["reason_code"] == "identity_drift"
+
+
+def test_recover_after_crash_requires_lease_reclaim_and_never_reexecutes_terminal():
+    cursor = build_cursor(**CURSOR_IDENTITY)
+    result = recover_after_crash([], cursor, lease={"state": "expired"})
+    assert result["status"] == "RECLAIM_REQUIRED"
+    assert result["execution_allowed"] is False
+    terminal = cursor
+    for seq, before, after in [(1, None, "intake"), (2, "intake", "mapping"),
+                               (3, "mapping", "planning"), (4, "planning", "executing"),
+                               (5, "executing", "validating"), (6, "validating", "watching"),
+                               (7, "watching", "delivering"), (8, "delivering", "done")]:
+        terminal, _ = reconcile_after_crash([event(seq, before, after)], terminal)
+    complete = recover_after_crash([], terminal, source_state={"status": "done"})
+    assert complete["status"] == "COMPLETE"
+    assert complete["execution_allowed"] is False
+    assert complete["next_action"] == "requery_source"
 
 
 def evidence_item(claim_type="measured"):
