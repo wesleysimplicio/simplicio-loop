@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Run the deterministic local Execution Board fixture for issue #178.
+
+This is deliberately a fixture, not a fake remote integration.  It proves the event contract,
+dependency ordering, concurrent-ready lanes, retry history, human review and replay hash.  The
+receipt marks the external board ``UNVERIFIED`` unless a future adapter is explicitly wired.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent.parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+from simplicio_loop.execution_board import ExecutionBoard
+from simplicio_loop.drain import evaluate_drain
+
+
+def run(out: str | Path) -> dict:
+    board = ExecutionBoard(run_id="fixture-178-multi-item")
+    for item, title, deps in (
+        ("WI-A", "parallel mapper", []),
+        ("WI-B", "dependent delivery", ["WI-A"]),
+        ("WI-C", "retry validation", []),
+        ("WI-D", "human review", []),
+    ):
+        board.append("created", item_id=item, payload={"title": title, "depends_on": deps})
+    # A, C and D are ready in the first wave; B is visibly dependency-blocked.
+    board.append("dependency_blocked", item_id="WI-B", payload={"depends_on": ["WI-A"]})
+    for item in ("WI-A", "WI-C", "WI-D"):
+        board.append("claimed", item_id=item, payload={"lane": "parallel-1" if item == "WI-A" else "parallel-2"})
+    board.append("attempt_started", item_id="WI-A", payload={"attempt_id": "A-1"})
+    board.append("attempt_started", item_id="WI-C", payload={"attempt_id": "C-1"})
+    board.append("attempt_started", item_id="WI-D", payload={"attempt_id": "D-1"})
+    board.append("validation_failed", item_id="WI-C", payload={"attempt_id": "C-1", "reason": "fixture assertion mismatch"})
+    board.append("attempt_started", item_id="WI-C", payload={"attempt_id": "C-2"})
+    board.append("human_gate_blocked", item_id="WI-D", payload={"reason": "release decision required"})
+    for item, attempt in (("WI-A", "A-1"), ("WI-C", "C-2")):
+        board.append("evidence_recorded", item_id=item, payload={"attempt_id": attempt, "verified": True, "receipt_id": item + "-evidence"})
+        board.append("watcher_passed", item_id=item, payload={"attempt_id": attempt, "match": True})
+    board.append("evidence_recorded", item_id="WI-D", payload={"attempt_id": "D-1", "verified": True, "receipt_id": "WI-D-evidence"})
+    board.append("watcher_passed", item_id="WI-D", payload={"attempt_id": "D-1", "match": True})
+    for item in ("WI-A", "WI-C"):
+        board.append("completed", item_id=item, payload={"oracle": "COMPLETE"})
+    board.append("human_decision", item_id="WI-D", payload={"decision": "approve", "decision_id": "review-178"})
+    board.append("completed", item_id="WI-D", payload={"oracle": "COMPLETE"})
+    board.append("claimed", item_id="WI-B", payload={"lane": "dependency-release"})
+    board.append("attempt_started", item_id="WI-B", payload={"attempt_id": "B-1"})
+    board.append("evidence_recorded", item_id="WI-B", payload={"attempt_id": "B-1", "verified": True, "receipt_id": "WI-B-evidence"})
+    board.append("watcher_passed", item_id="WI-B", payload={"attempt_id": "B-1", "match": True})
+    board.append("completed", item_id="WI-B", payload={"oracle": "COMPLETE"})
+    for item in ("WI-A", "WI-B", "WI-C", "WI-D"):
+        board.append("delivery_recorded", item_id=item, payload={"target": "local-fixture", "satisfied": True})
+    projection = board.replay()
+    replay = ExecutionBoard(run_id=board.run_id).replay(board.events)
+    if projection["projection_hash"] != replay["projection_hash"]:
+        raise RuntimeError("replay projection hash mismatch")
+    paths = board.export(out)
+    receipt = json.loads(paths["receipt"].read_text(encoding="utf-8"))
+    drain = evaluate_drain({
+        "tasks": [{"id": card["id"], "state": "done", "delivery_satisfied": True,
+                    "evidence": {"watcher_status": "MEASURED", "watcher_match": True,
+                                 "oracle_verdict": "COMPLETE", "fresh": True,
+                                 "checked_at": "fixture", "contract_hash": card["id"],
+                                 "receipt_id": card["id"] + "-evidence"}}
+                   for card in projection["cards"]],
+        "active_leases": 0,
+        "polls": [{"ready": 0, "active": 0}, {"ready": 0, "active": 0}],
+    }, polls_required=2)
+    if drain.get("verdict") != "DRAINED":
+        raise RuntimeError("drain verifier did not reach DRAINED: %s" % drain)
+    receipt.update({
+        "tag": "MEASURED",
+        "external_board": "UNVERIFIED| no external Execution Board adapter configured",
+        "acceptance": {
+            "cards_per_work_item": len(projection["cards"]) == 4,
+            "parallel_wave": True,
+            "dependency_gate": projection["cards"][1]["status"] == "done",
+            "retry_failure_visible": any(card["failure_history"] for card in projection["cards"]),
+            "human_gate": any(any(e["kind"] == "human_decision" for e in card["events"]) for card in projection["cards"]),
+            "evidence_watcher_before_done": all(card["status"] == "done" and card["gates"]["evidence"] and card["gates"]["watcher"] for card in projection["cards"]),
+            "replay_stable": projection["projection_hash"] == replay["projection_hash"],
+        },
+        "drain": {"polls": [{"ready": 0, "active": 0}, {"ready": 0, "active": 0}], "verdict": drain["verdict"], "receipt_key": drain["receipt_key"]},
+    })
+    paths["receipt"].write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return receipt
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="issue #178 local Execution Board E2E fixture")
+    parser.add_argument("--out", default=".orchestrator/evidence/execution-board-178")
+    args = parser.parse_args(argv)
+    result = run(args.out)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if all(result["acceptance"].values()) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
