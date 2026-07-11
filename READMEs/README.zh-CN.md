@@ -210,79 +210,28 @@ skill*、*如何武装循环*、*如何绑定原生速度*。**skill 不指名�
 支撑的成果，随后再以 7×24 循环寻找更多工作。
 
 ```mermaid
-flowchart TD
-  subgraph SRC["1 · Demand sources (any adapter)"]
-    direction LR
-    S1["GitHub Issues / PRs / CI"]
-    S2["Jira · Azure DevOps · Linear · ClickUp · Notion · agentsview · Understand Anything (orient)"]
-    S3["Assigns · TODO/FIXME · CVE · local files · LMCache (inference accelerator)"]
-  end
-  SRC --> PF
-  subgraph PF["2 · Pre-flight gates"]
-    direction LR
-    P1["source auth + scopes"]
-    P2["runtime/tools ready"]
-    P3["arm 24/7 watcher + STOP path"]
-  end
-  PF --> DISC
-  subgraph DISC["3 · Discover + normalize"]
-    direction LR
-    D1["source_adapter: list metadata only"]
-    D2["normalize to canonical schema"]
-    D3["dedup id+title+fingerprint+branch/PR"]
-    D4["dependency DAG"]
-  end
-  DISC --> INTK
-  subgraph INTK["4 · Deep intake (per item)"]
-    direction LR
-    I1["body + ALL comments"]
-    I2["extract acceptance criteria"]
-    I3["orient code · signatures-only reads or Understand Anything knowledge graph"]
-    I4["plan + AC checklist + complexity"]
-  end
-  INTK --> RT{"5 · Route"}
-  RT -->|"small and every item complexity at most 3"| FAST["Fast-path: solo, one targeted test"]
-  RT -->|"large queue or any medium+"| POOL
-  subgraph POOL["6 · Continuous worker pool (autoscaled, conflict-aware)"]
-    direction LR
-    W1["claim · branch · worktree if overlap"]
-    W2["deterministic_edit"]
-    W3["quality loop: edit-lint-test-fix"]
-  end
-  FAST --> QG
-  POOL --> QG
-  subgraph QG["7 · Quality gates"]
-    direction LR
-    Q1["AC gate = real DoD"]
-    Q2["WORKS not just compiles · web_verify (Playwright) · video_evidence (Playwright recording · hyperframes on request)"]
-    Q3["adversarial review · thermos rubrics"]
-  end
-  QG --> SG
-  subgraph SG["8 · Safety gates (non-negotiable)"]
-    direction LR
-    G1["secret-scan"]
-    G2["irreversible-op human gate"]
-    G3["4-state verdict · attestation"]
-  end
-  SG --> DEL
-  subgraph DEL["9 · Deliver"]
-    direction LR
-    L1["commit · push · Draft PR"]
-    L2["close in-source + evidence"]
-    L3["verify reality, not self-report"]
-  end
-  DEL --> FB
-  subgraph FB["10 · Feedback loop to merge-ready"]
-    direction LR
-    F1["CI fail -> fix root cause"]
-    F2["review comments -> adjust"]
-    F3["branch behind main -> additive rebase"]
-  end
-  FB -->|"merged and closed"| DONE(["done + evidence + measured savings (only if a receipt exists)"])
-  WATCH["11 · 24/7 watcher · simplicio-loop evidence-gated promise · max-iterations cap · LMCache KV cache warm"]
-  FB -. "poll new work / comments / checks" .-> WATCH
-  DONE -. "idle until new work" .-> WATCH
-  WATCH -. "re-feed the goal" .-> DISC
+flowchart LR
+  IN["Intent: issue · task · queue"] --> CONTRACT["1 · Freeze task contract"]
+  CONTRACT --> MAP["2 · Map source + normalize"]
+  MAP --> PLAN["3 · Dependency DAG + acceptance criteria"]
+  PLAN --> ROUTE{"4 · Ready task?"}
+  ROUTE -->|"solo / small"| SOLO["Targeted lane"]
+  ROUTE -->|"parallel / medium+"| FAN["Bounded fan-out"]
+  FAN --> A["Isolated worktree A"]
+  FAN --> B["Isolated worktree B"]
+  FAN --> C["Isolated worktree C"]
+  SOLO --> VERIFY["5 · Test + impact/flow evidence"]
+  A --> VERIFY
+  B --> VERIFY
+  C --> VERIFY
+  VERIFY --> RECEIPT["Watcher challenge + evidence receipt"]
+  RECEIPT --> ORACLE{"6 · Completion oracle"}
+  ORACLE -->|"pending / blocked"| RECOVER["Journal · checkpoint · rollback · backlog-only maintenance"]
+  RECOVER --> PLAN
+  ORACLE -->|"verified / measured"| DELIVER["7 · Source sync · PR · merge"]
+  DELIVER --> MEMORY["8 · Ledger · wiki · durable attempt memory"]
+  MEMORY --> WATCH["9 · Re-feed · watcher · STOP path"]
+  WATCH -->|"new work"| IN
 ```
 
 ---
