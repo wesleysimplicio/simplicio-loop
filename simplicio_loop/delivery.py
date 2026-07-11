@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -20,6 +21,17 @@ DELIVERY_ORDER = [
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def source_fingerprint(payload: Dict[str, Any]) -> str:
+    """Return a stable identity for one external delivery observation.
+
+    The fingerprint deliberately excludes the receipt timestamp and is based on
+    canonical JSON, so two runtimes produce the same identity for the same source
+    state while any check/review/branch/release change invalidates old evidence.
+    """
+    canonical = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def normalize_delivery_target(value: str) -> str:
@@ -71,6 +83,20 @@ def validate_delivery_receipt(receipt: Dict[str, Any], target: str = "") -> Dict
         return {"ok": False, "gates": gates}
     gates.append(_gate("delivery_state", True, "delivery_state_valid", f"delivery state {current_state!r} is recognized"))
     payload = receipt.get("source_payload") or {}
+    expected_fingerprint = source_fingerprint(payload)
+    if "source_fingerprint" not in receipt:
+        # Receipts written before v3.25.2 remain readable during migration. New
+        # receipts always include the binding, so callers can distinguish legacy
+        # evidence and request a fresh source re-query before higher targets.
+        gates.append(_gate("delivery_source_identity", True, "source_identity_legacy_unbound",
+                           "legacy delivery receipt has no source fingerprint; re-query before external delivery"))
+    elif receipt.get("source_fingerprint") != expected_fingerprint:
+        gates.append(_gate("delivery_source_identity", False, "source_fingerprint_mismatch",
+                           "delivery receipt does not match the canonical source observation"))
+        return {"ok": False, "gates": gates}
+    else:
+        gates.append(_gate("delivery_source_identity", True, "source_fingerprint_valid",
+                           "delivery receipt is bound to its canonical source observation"))
     normalized_target = ""
     if target:
         normalized_target = normalize_delivery_target(target)
@@ -178,6 +204,7 @@ def build_delivery_receipt(run_dir: str, target: str, current_state: str = "plan
         "current_state": current_state,
         "source_kind": source_kind,
         "source_checked_at": _now(),
+        "source_fingerprint": source_fingerprint(source_payload or {}),
         "ready": delivery_satisfies(current_state, target),
         "source_payload": source_payload or {},
     }
