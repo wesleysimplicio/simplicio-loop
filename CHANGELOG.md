@@ -3,6 +3,23 @@
 All notable changes to **simplicio-loop** are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses SemVer.
 
+## [3.26.0] — 2026-07-11
+
+### Added
+- **Safe automatic fan-out:** independent ready tasks use isolated worktrees and bounded workers
+  by default; overlaps, missing targets, non-Git checkouts, or adapter failures fail closed to a
+  truthful serial path.
+- **Visual progress protocol:** `simplicio.progress/v1` exposes deterministic text, JSON, Markdown,
+  ANSI, icons, optional animation, evidence-aware percentages, and a strict oracle-backed 100%.
+- **Distributed agent identity:** backlog leases persist agent/runtime/device/session identity and
+  fencing metadata so claims and transitions reject stale or mismatched workers.
+- **Typed phase events:** phase-machine envelopes, derived board state, offline idempotent
+  reconciliation, and golden streams cover success, retry, blocked, cancel, handoff, and resume.
+
+### Changed
+- The runtime now presents the multi-agent execution path as the default governed strategy while
+  preserving explicit serial mode for unsafe or resource-constrained environments.
+
 ## [3.25.1] — 2026-07-11
 
 ### Changed
