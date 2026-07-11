@@ -15,6 +15,9 @@ import json
 import os
 import sqlite3
 import time
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence
 
@@ -52,6 +55,89 @@ class RemoteQueue(Protocol):
     def heartbeat(self, lease: Lease, *, ttl: float = 60.0) -> Lease: ...
 
     def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]: ...
+
+
+def _lease_from_json(value: Mapping[str, Any]) -> Lease:
+    """Decode the wire representation without trusting client-controlled fields."""
+    return Lease(str(value["task_id"]), str(value["agent_id"]), str(value["lease_id"]),
+                 int(value["fencing_token"]), float(value["expires_at"]),
+                 str(value["idempotency_key"]), value.get("identity"),
+                 tuple(value.get("capabilities") or ()))
+
+
+def _lease_json(lease: Lease) -> Dict[str, Any]:
+    return {"task_id": lease.task_id, "agent_id": lease.agent_id, "lease_id": lease.lease_id,
+            "fencing_token": lease.fencing_token, "expires_at": lease.expires_at,
+            "idempotency_key": lease.idempotency_key, "identity": lease.identity,
+            "capabilities": list(lease.capabilities)}
+
+
+class HTTPRemoteQueue:
+    """Network client for ``simplicio.queue/v1``.
+
+    The client has no local mutation fallback: DNS, timeout, non-JSON, and 5xx
+    failures become :class:`QueueUnavailable`, so callers must pause and hand
+    off rather than mutating a checkout while disconnected.
+    """
+
+    def __init__(self, base_url: str, *, token: Optional[str] = None, timeout: float = 5.0) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self.timeout = timeout
+
+    def _request(self, method: str, path: str, payload: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        body = json.dumps(payload or {}, sort_keys=True).encode("utf-8")
+        req = urllib.request.Request(self.base_url + "/v1/queue" + path, data=body,
+                                     headers={"Content-Type": "application/json",
+                                              **({"Authorization": "Bearer " + self.token} if self.token else {})},
+                                     method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:  # noqa: S310
+                raw = response.read()
+                result = json.loads(raw.decode("utf-8"))
+                if not isinstance(result, dict):
+                    raise ValueError("queue response must be an object")
+                return result
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode("utf-8"))
+            except Exception:
+                detail = {}
+            message = str(detail.get("error") or exc.reason or "queue request failed")
+            if exc.code == 409:
+                raise QueueConflict(message) from exc
+            if exc.code in (400, 401, 404):
+                raise (KeyError(message) if exc.code == 404 else ValueError(message)) from exc
+            raise QueueUnavailable(message) from exc
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise QueueUnavailable("queue unavailable: %s" % exc) from exc
+
+    def enqueue(self, task_id: str, payload: Optional[Dict[str, Any]] = None) -> None:
+        self._request("POST", "/enqueue", {"task_id": task_id, "payload": payload or {}})
+
+    def claim(self, task_id: str, agent_id: str, *, idempotency_key: str,
+              ttl: float = 60.0, identity: Optional[Mapping[str, Any]] = None,
+              capabilities: Optional[Sequence[str]] = None) -> Lease:
+        result = self._request("POST", "/claim", {"task_id": task_id, "agent_id": agent_id,
+            "idempotency_key": idempotency_key, "ttl": ttl, "identity": identity,
+            "capabilities": list(capabilities) if capabilities is not None else None})
+        return _lease_from_json(result["lease"])
+
+    def heartbeat(self, lease: Lease, *, ttl: float = 60.0) -> Lease:
+        result = self._request("POST", "/heartbeat", {"lease": _lease_json(lease), "ttl": ttl})
+        return _lease_from_json(result["lease"])
+
+    def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]:
+        return self._request("POST", "/complete", {"lease": _lease_json(lease), "receipt_ref": receipt_ref})
+
+    def release(self, lease: Lease, *, reason: str = "handoff") -> Dict[str, Any]:
+        return self._request("POST", "/release", {"lease": _lease_json(lease), "reason": reason})
+
+    def events(self, *, after: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        return self._request("POST", "/events", {"after": after, "limit": limit})["events"]
+
+    def task(self, task_id: str) -> Dict[str, Any]:
+        return self._request("POST", "/task", {"task_id": task_id})
 
 
 def _now() -> float:
@@ -267,3 +353,74 @@ class SQLiteRemoteQueue:
             lease = c.execute("SELECT * FROM leases WHERE task_id=?", (task_id,)).fetchone()
             return {"task_id": task_id, "status": row["status"], "payload": json.loads(row["payload"]),
                     "lease": dict(lease) if lease else None}
+
+
+def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", port: int = 0,
+                             *, token: Optional[str] = None) -> ThreadingHTTPServer:
+    """Create a small authenticated HTTP facade over a transactional queue.
+
+    The returned server is not started, allowing tests and embedding runtimes to
+    choose a thread, process, or service manager. Set ``token`` in any network
+    deployment; a missing/incorrect bearer token is rejected before dispatch.
+    """
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "simplicio-queue/1"
+
+        def log_message(self, *_args: Any) -> None:
+            return
+
+        def _send(self, status: int, value: Mapping[str, Any]) -> None:
+            raw = json.dumps(dict(value), sort_keys=True).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def _body(self) -> Dict[str, Any]:
+            length = int(self.headers.get("Content-Length", "0"))
+            value = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            if not isinstance(value, dict):
+                raise ValueError("request body must be an object")
+            return value
+
+        def do_POST(self) -> None:  # noqa: N802
+            if token is not None and self.headers.get("Authorization") != "Bearer " + token:
+                self._send(401, {"error": "invalid queue token"})
+                return
+            if not self.path.startswith("/v1/queue/"):
+                self._send(404, {"error": "unknown queue endpoint"})
+                return
+            try:
+                body = self._body()
+                op = self.path.rsplit("/", 1)[-1]
+                if op == "enqueue":
+                    queue.enqueue(body["task_id"], body.get("payload")); result = {}
+                elif op == "claim":
+                    lease = queue.claim(body["task_id"], body["agent_id"], idempotency_key=body["idempotency_key"],
+                                        ttl=float(body.get("ttl", 60.0)), identity=body.get("identity"),
+                                        capabilities=body.get("capabilities")); result = {"lease": _lease_json(lease)}
+                elif op == "heartbeat":
+                    lease = queue.heartbeat(_lease_from_json(body["lease"]), ttl=float(body.get("ttl", 60.0)))
+                    result = {"lease": _lease_json(lease)}
+                elif op == "complete":
+                    result = queue.complete(_lease_from_json(body["lease"]), receipt_ref=body["receipt_ref"])
+                elif op == "release":
+                    result = queue.release(_lease_from_json(body["lease"]), reason=body.get("reason", "handoff"))
+                elif op == "events":
+                    result = {"events": queue.events(after=int(body.get("after", 0)), limit=int(body.get("limit", 100)))}
+                elif op == "task":
+                    result = queue.task(body["task_id"])
+                else:
+                    self._send(404, {"error": "unknown queue operation"}); return
+                self._send(200, result)
+            except QueueConflict as exc:
+                self._send(409, {"error": str(exc)})
+            except QueueUnavailable as exc:
+                self._send(503, {"error": str(exc)})
+            except KeyError as exc:
+                self._send(404, {"error": str(exc)})
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                self._send(400, {"error": str(exc)})
+
+    return ThreadingHTTPServer((host, port), Handler)

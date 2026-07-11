@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from simplicio_loop.remote_queue import QueueConflict, SQLiteRemoteQueue
+from simplicio_loop.remote_queue import HTTPRemoteQueue, QueueConflict, SQLiteRemoteQueue, create_http_queue_server
 
 
 def test_idempotent_claim_and_ordered_reconnect_events(tmp_path):
@@ -59,3 +59,34 @@ def test_two_agents_only_one_atomic_claim_wins(tmp_path):
     for t in threads: t.join()
     assert results.count("conflict") == 1
     assert sum(value != "conflict" for value in results) == 1
+
+
+def test_http_adapter_preserves_atomic_claims_and_fencing(tmp_path):
+    backend = SQLiteRemoteQueue(str(tmp_path / "queue.db"))
+    backend.enqueue("T1", {"source": "github", "number": 185})
+    server = create_http_queue_server(backend, token="secret")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = "http://127.0.0.1:%d" % server.server_port
+        codex = HTTPRemoteQueue(url, token="secret")
+        claude = HTTPRemoteQueue(url, token="secret")
+        lease = codex.claim("T1", "codex@A", idempotency_key="run:T1", ttl=5,
+                            identity={"agent_id": "codex@A", "runtime": "codex",
+                                      "device_id": "laptop-a", "session_id": "s1",
+                                      "capabilities": ["claim", "heartbeat", "fencing", "receipts"]})
+        assert codex.heartbeat(lease, ttl=5).fencing_token == 1
+        with pytest.raises(QueueConflict):
+            claude.claim("T1", "claude@B", idempotency_key="run:T1-other")
+        codex.complete(lease, receipt_ref="receipts/T1.json")
+        assert codex.events()[-1]["kind"] == "completed"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_http_unavailable_is_fail_closed():
+    with pytest.raises(Exception) as error:
+        HTTPRemoteQueue("http://127.0.0.1:1", timeout=0.05).events()
+    assert "QueueUnavailable" in type(error.value).__name__
