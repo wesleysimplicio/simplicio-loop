@@ -40,8 +40,11 @@ def test_duplicate_event_id_with_changed_payload_fails_closed(tmp_path):
 def test_failure_fingerprint_survives_provider_handoff(tmp_path):
     first = AttemptJournal(tmp_path / "first.jsonl")
     second = AttemptJournal(tmp_path / "second.jsonl")
-    event = _event("failure", "failure-1")
-    event["payload"] = {"message": "timeout at line 42"}
+    event = build_observation(
+        run_id="run-1", work_item_id="WI-1", attempt_id="A-1", actor="codex@host-a",
+        kind="failure", payload={"message": "timeout at line 42"}, sequence=1,
+        event_id="failure-1", ac_ids=["AC-1"], claim_type="UNVERIFIED",
+    )
     first.append(event)
     exported = first.export()
     second.import_events(exported)

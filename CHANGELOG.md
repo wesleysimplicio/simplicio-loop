@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.31.0] — 2026-07-11
+
+- Typed append-only attempt journal with causal identity, hash-chain replay and failure fingerprints.
+- Mapper-derived `simplicio.plan/v1` contract blocks stale or unsafe operator plans before mutation.
+- Failure-fingerprint tamper detection and provider-handoff continuity checks.
+- Focused journal/recovery/planner tests pass; previous full gate remains green at 508 tests.
+
 ## [3.30.0] — 2026-07-11
 
 - Authenticated HTTP remote queue server over SQLite with leases, fencing, identity and fail-closed outages.
