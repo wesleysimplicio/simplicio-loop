@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.32.0] — 2026-07-11
+
+- Crash recovery handshake with source re-query, runtime replay, lease reclaim and identity drift protection.
+- Independent watcher snapshot execution and raw-Markdown task-to-delivery golden corpus.
+- Live HTTP queue proof across two workers with auth, atomic claims, fencing, reclaim and ordered events.
+- Fail-closed worker receipts, preflight, delivery requery races and converge/drain semantics.
+
 ## [3.31.1] — 2026-07-11
 
 - Fix evidence-receipt allowlisting for absolute, versioned Python interpreters (`python3.11`, `python3.14`).
