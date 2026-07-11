@@ -1538,6 +1538,12 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "task_index": item["task_index"],
         "task_id": str(item.get("task_id") or ""),
         "worktree_context": context,
+        # These are deliberately worker-scoped aliases.  A fan-out consumer must never
+        # infer a shared receipt from the coordinator's run-level state; every lane has
+        # its own operator and evidence proof (or an explicit UNVERIFIED state).
+        "operator_receipt": "",
+        "evidence_receipt": "",
+        "receipt_status": "UNVERIFIED",
     }
     if item.get("worktree_error"):
         return {
@@ -1580,8 +1586,12 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             "phase": str(state.get("phase") or "blocked"),
             "execution_state": execution_state or "unknown",
             "receipt": receipt,
+            "operator_receipt": receipt,
             "evidence_receipt": evidence_receipt,
             "watcher_receipt": watcher_receipt if Path(watcher_receipt).exists() else "",
+            "receipt_status": "VERIFIED" if (
+                receipt and evidence_receipt and Path(receipt).is_file() and Path(evidence_receipt).is_file()
+            ) else "UNVERIFIED",
             "attempt": int(state.get("attempts") or 0),
             "failure_fingerprint": failure_fingerprint,
             "started_at": started,
@@ -1594,6 +1604,9 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             "phase": "blocked",
             "execution_state": "error",
             "receipt": "",
+            "operator_receipt": "",
+            "evidence_receipt": "",
+            "receipt_status": "UNVERIFIED",
             "attempt": 0,
             "error": f"{type(exc).__name__}: {exc}",
             "reason_code": "operator_exception",
@@ -1686,6 +1699,19 @@ def dispatch_operator_batch(
         finally:
             _release_shared_context(item, worktree_queue)
         attempts[-1]["dead_letter"] = attempts[-1]["status"] != "succeeded"
+        # Keep compact per-lane history on the final record while the JSONL journal
+        # retains the complete receipts.  This proves a retry belongs to one worker and
+        # did not restart sibling lanes.
+        attempts[-1]["attempt_count"] = len(attempts)
+        attempts[-1]["retry_scope"] = "worker"
+        attempts[-1]["attempt_history"] = [
+            {
+                "dispatch_attempt": int(record.get("dispatch_attempt") or index),
+                "status": record.get("status", "UNVERIFIED"),
+                "failure_fingerprint": record.get("failure_fingerprint", ""),
+            }
+            for index, record in enumerate(attempts, start=1)
+        ]
         return attempts
 
     if pending and effective_workers:
@@ -1766,6 +1792,26 @@ def dispatch_operator_batch(
         "completed_task_indices": sorted(r["task_index"] for r in final_records if r.get("status") == "succeeded"),
         "failed_task_indices": sorted(r["task_index"] for r in final_records if r.get("status") == "failed"),
         "dead_letter_task_indices": sorted(r["task_index"] for r in final_records if r.get("dead_letter")),
+        "receipt_contract": {
+            "scope": "worker",
+            "required": ["operator_receipt", "evidence_receipt"],
+            "ready": all(
+                r.get("receipt_status") == "VERIFIED"
+                for r in final_records
+            ),
+            "missing_task_indices": sorted(
+                r["task_index"] for r in final_records
+                if r.get("receipt_status") != "VERIFIED"
+            ),
+        },
+        "retry_contract": {
+            "scope": "worker",
+            "independent": True,
+            "attempts_by_task": {
+                str(r["task_index"]): int(r.get("attempt_count") or 0)
+                for r in final_records
+            },
+        },
         "journal": str(journal_path) if journal_path else "",
     }
     if journal_path:
