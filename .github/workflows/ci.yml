@@ -56,6 +56,28 @@ jobs:
       - name: scripts/check.py (claims-audit + worker selftests/smoke)
         run: python3 scripts/check.py
 
+  runtime-adapter-contract:
+    # Keep the Loop→Runtime wire contract visible as a first-class CI signal. This
+    # intentionally runs against the source package: compiled/runtime consumers use
+    # the same pure-stdlib adapter and the same N-1/N/N+1 fixtures.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.8", "3.x"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install contract test runner
+        run: python3 -m pip install --disable-pip-version-check pytest
+      - name: Compile runtime adapter
+        run: python3 -m py_compile simplicio_loop/runtime_adapter.py
+      - name: Loop→Runtime contract matrix
+        run: python3 -m pytest -q tests/test_runtime_adapter.py tests/test_phase_events.py
+
   package:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: check
