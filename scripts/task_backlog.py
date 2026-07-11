@@ -438,6 +438,10 @@ def _freeze_item_workspace(item, master, path=None):
         "depends_on": item.get("depends_on") or [],
         "plan_files": item.get("plan_files") or [],
         "source_refs": item.get("source_refs") or [],
+        "risks": item.get("risks") or [],
+        "required_evidence": item.get("required_evidence") or [],
+        "estimate": item.get("estimate"),
+        "scheduling_hints": item.get("scheduling_hints") or {},
         "frozen_at": item.get("frozen_at") or _now(),
     }
     manifest = {
@@ -601,9 +605,15 @@ def _parse_item_obj(obj):
     related = obj.get("related") or []
     blocks = obj.get("blocks") or []
     plan_files = obj.get("plan_files") or []
+    source_refs = obj.get("source_refs") or plan_files
+    risks = obj.get("risks") or []
+    required_evidence = obj.get("required_evidence") or []
+    scheduling_hints = obj.get("scheduling_hints") or {}
     if (not iid or not goal or not isinstance(acs, list) or not isinstance(depends_on, list)
             or not isinstance(related, list) or not isinstance(blocks, list)
-            or not isinstance(plan_files, list)):
+            or not isinstance(plan_files, list) or not isinstance(source_refs, list)
+            or not isinstance(risks, list) or not isinstance(required_evidence, list)
+            or not isinstance(scheduling_hints, dict)):
         raise ValueError("item must contain id, goal, acs[] and optional list fields")
     return {"kind": "item", "id": iid, "goal": goal, "goal_fp": goal_fingerprint(goal),
             "acs": [str(a) for a in acs], "status": "ready", "skip_reason": "",
@@ -612,7 +622,11 @@ def _parse_item_obj(obj):
             "related": [str(x) for x in related], "blocks": [str(x) for x in blocks],
             "priority": int(obj.get("priority", 100)),
             "plan_files": [str(x) for x in plan_files], "lease": {}, "failures": [], "frozen_at": _now(),
-            "source_refs": _source_snapshot(plan_files)}
+            "source_refs": _source_snapshot([str(x) for x in source_refs]),
+            "risks": [str(x) for x in risks],
+            "required_evidence": [str(x) for x in required_evidence],
+            "estimate": obj.get("estimate"),
+            "scheduling_hints": dict(scheduling_hints)}
 
 
 def _dependency_chain(item):
@@ -707,6 +721,52 @@ def _detect_cycles(items):
         if cycle:
             return cycle
     return []
+
+
+def _validate_graph(items):
+    """Validate the frozen WorkItem graph before it can become a contract.
+
+    A missing dependency is not a permanently blocked item: it is malformed input
+    and must fail at freeze time.  Likewise, an item without acceptance criteria
+    cannot be independently verified, so accepting it would create an
+    unfinishable card.  Keep the errors deterministic for callers and migrations.
+    """
+    errors = []
+    ids = [str(item.get("id") or "") for item in items]
+    known = set(ids)
+    for item in items:
+        item_id = str(item.get("id") or "")
+        acs = item.get("acs") or []
+        if not acs:
+            errors.append("item %s has no acceptance criteria" % item_id)
+        deps = [str(dep) for dep in (item.get("depends_on") or [])]
+        unknown = sorted({dep for dep in deps if dep not in known})
+        if unknown:
+            errors.append("item %s references unknown dependencies: %s" % (item_id, ", ".join(unknown)))
+        if len(deps) != len(set(deps)):
+            errors.append("item %s has duplicate dependencies" % item_id)
+    cycle = _detect_cycles(items)
+    if cycle:
+        errors.append("dependency cycle detected: %s" % " -> ".join(cycle))
+    return errors
+
+
+def _graph_fingerprint(items):
+    """Stable hash of the normalized frozen WorkItem graph (order-independent)."""
+    rows = []
+    for item in sorted(items, key=lambda row: str(row.get("id") or "")):
+        rows.append({
+            "id": item.get("id"), "goal_fp": item.get("goal_fp"),
+            "acs": list(item.get("acs") or []),
+            "depends_on": sorted(str(dep) for dep in (item.get("depends_on") or [])),
+            "priority": int(item.get("priority", 100)),
+            "source_refs": [ref.get("path") or ref.get("abs_path") for ref in (item.get("source_refs") or [])],
+            "required_evidence": list(item.get("required_evidence") or []),
+            "risks": list(item.get("risks") or []),
+            "scheduling_hints": item.get("scheduling_hints") or {},
+        })
+    encoded = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _blocked_by_dependencies(item, items_by_id):
@@ -812,9 +872,10 @@ def cmd_init(opts):
     if len(set(ids)) != len(ids):
         print("backlog: refusing to freeze — duplicate item ids detected")
         sys.exit(2)
-    cycle = _detect_cycles(items)
-    if cycle:
-        print("backlog: refusing to freeze — dependency cycle detected: %s" % " -> ".join(cycle))
+    graph_errors = _validate_graph(items)
+    if graph_errors:
+        for error in graph_errors:
+            print("backlog: refusing to freeze — %s" % error)
         sys.exit(2)
     strict = bool(opts.get("lint"))
     for item in items:
@@ -826,10 +887,13 @@ def cmd_init(opts):
     master = {"kind": "master", "schema": "simplicio.backlog/v2",
               "goal": goal, "goal_fp": goal_fingerprint(goal), "frozen_at": _now(),
               "empty_polls": 0, "revision": 0, "fence_counter": 0, "updated_at": _now()}
+    master["graph_hash"] = _graph_fingerprint(items)
+    master["contract"] = {"name": "simplicio.work-items/v1", "graph_hash": master["graph_hash"]}
     _refresh_ready_states(items)
+    backlog_path = os.environ.get("SIMPLICIO_BACKLOG_FILE") or BACKLOG
     for item in items:
-        _freeze_item_workspace(item, master)
-    _save(master, items)
+        _freeze_item_workspace(item, master, path=backlog_path)
+    _save(master, items, path=backlog_path)
     print("frozen %d item(s)" % len(items))
 
 

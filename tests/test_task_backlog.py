@@ -155,6 +155,46 @@ def test_backlog_init_rejects_dependency_cycle(tmp_path):
     assert "dependency cycle detected" in r.stdout, r.stdout
 
 
+def test_backlog_init_rejects_unknown_dependency_and_empty_acceptance_criteria(tmp_path):
+    item_file = tmp_path / "items.json"
+    item_file.write_text(json.dumps([
+        {"id": "T1", "goal": "A", "acs": [], "depends_on": ["MISSING"]},
+    ]), encoding="utf-8")
+    env = {"SIMPLICIO_BACKLOG_FILE": str(tmp_path / "backlog.jsonl")}
+    r = _run(["init", "--goal", "Drain", "--item-file", str(item_file)], str(tmp_path), env)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "unknown dependencies: MISSING" in r.stdout, r.stdout
+    assert "has no acceptance criteria" in r.stdout, r.stdout
+
+
+def test_backlog_freeze_records_canonical_graph_contract_and_metadata(tmp_path):
+    item_file = tmp_path / "items.json"
+    item_file.write_text(json.dumps([
+        {"id": "T1", "goal": "Base", "acs": ["A real criterion"],
+         "source_refs": ["README.md"], "risks": ["migration"],
+         "required_evidence": ["pytest"], "estimate": {"minutes": 5},
+         "scheduling_hints": {"lane": "docs"}},
+        {"id": "T2", "goal": "Follow-up", "acs": ["Another real criterion"],
+         "depends_on": ["T1"]},
+    ]), encoding="utf-8")
+    path = tmp_path / "backlog.jsonl"
+    env = {"SIMPLICIO_BACKLOG_FILE": str(path)}
+    r = _run(["init", "--goal", "Drain", "--item-file", str(item_file)], str(tmp_path), env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    master = next(row for row in rows if row["kind"] == "master")
+    item = next(row for row in rows if row.get("id") == "T1")
+    assert master["schema"] == "simplicio.backlog/v2"
+    assert master["graph_hash"] == master["contract"]["graph_hash"]
+    assert len(master["graph_hash"]) == 64
+    run_contract = tmp_path / "items" / "T1" / "run" / "task-contract.json"
+    contract = json.loads(run_contract.read_text(encoding="utf-8"))
+    assert contract["required_evidence"] == ["pytest"]
+    assert contract["risks"] == ["migration"]
+    assert contract["scheduling_hints"] == {"lane": "docs"}
+    assert item["source_refs"][0]["path"] == "README.md"
+
+
 def test_backlog_block_records_reason_code(tmp_path):
     item_file = tmp_path / "items.json"
     item_file.write_text(json.dumps([
