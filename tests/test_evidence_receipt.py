@@ -176,6 +176,34 @@ def test_watcher_rejects_uncovered_manual_diff_from_evidence(tmp_path):
     assert "uncovered diff outside operator receipt" in state["reported"]
 
 
+def test_watcher_rejects_verified_ac_without_proof_reference(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    loop_dir = repo / ".orchestrator" / "loop"
+    loop_dir.mkdir(parents=True)
+    run_dir = repo / ".orchestrator" / "runs" / "demo"
+    run_dir.mkdir(parents=True)
+    (loop_dir / "watcher_challenge.json").write_text(json.dumps({
+        "challenge": "proof-required", "goal_fp": "", "written_at": "2026-07-10T00:00:00Z"
+    }), encoding="utf-8")
+    (loop_dir / "anchor.json").write_text(json.dumps({
+        "criteria": [{"id": "AC1", "status": "done"}]
+    }), encoding="utf-8")
+    (run_dir / "evidence-receipt.json").write_text(json.dumps({
+        "schema": "simplicio.evidence-receipt/v1", "run_id": "demo", "status": "VERIFIED",
+        "run": {"task_contract_hash": "hash1", "plan_hash": "hash2", "commit_sha": "", "diff_hash": ""},
+        "criteria": [{"id": "AC1", "verification_state": "verified"}],
+        "summary": {"criteria_total": 1, "criteria_verified": 1, "scenario_total": 1,
+                    "scenario_verified": 1, "rule_total": 0, "rule_verified": 0}, "checks": [],
+    }), encoding="utf-8")
+    r = _run([sys.executable, WATCHER, "verify"], str(repo),
+             env={"SIMPLICIO_RUN_DIR": str(run_dir)})
+    assert r.returncode == 0
+    state = json.loads((loop_dir / "watcher_state.json").read_text(encoding="utf-8"))
+    assert state["match"] is False
+    assert state["criteria_results"][0]["match"] is False
+
+
 def test_evidence_receipt_cli_selftest():
     r = _run([sys.executable, EVIDENCE, "selftest"], REPO)
     assert r.returncode == 0, r.stdout + r.stderr

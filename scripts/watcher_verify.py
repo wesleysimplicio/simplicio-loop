@@ -105,6 +105,11 @@ def _criterion_results(anchor, evidence, executed):
         if check:
             proof_refs.append(check.get("proof_ref", ""))
             recomputed = recomputed and (check.get("status") == "MEASURED")
+        # A status flag alone is not evidence.  Every verified AC must carry
+        # at least one non-empty, producer-supplied proof reference; otherwise
+        # a hand-written ``verification_state`` could satisfy completion.
+        proof_refs = [str(ref).strip() for ref in proof_refs if str(ref).strip()]
+        recomputed = recomputed and bool(proof_refs)
         results.append({
             "id": item["id"],
             "reported_result": "done" if reported_done else item.get("status", "pending"),
@@ -129,6 +134,15 @@ def cmd_verify():
     reasons = []
     if not anchor or not anchor_items:
         reasons.append("anchor missing or has no criteria")
+    anchor_ids = [item["id"] for item in anchor_items]
+    if len(anchor_ids) != len(set(anchor_ids)):
+        reasons.append("anchor contains duplicate acceptance-criterion ids")
+    challenge_goal = str(challenge.get("goal_fp") or "")
+    anchor_goal = str((anchor or {}).get("goal_fp") or "")
+    if challenge_goal and anchor_goal and challenge_goal != anchor_goal:
+        reasons.append("challenge goal fingerprint does not match anchor")
+    if not challenge.get("written_at"):
+        reasons.append("challenge has no issuance timestamp")
     if not evidence:
         reasons.append("evidence receipt missing")
     elif not (evidence.get("operator") or {}).get("coverage_ok", True):
@@ -211,7 +225,8 @@ def cmd_selftest():
             assert not os.path.exists(WATCHER_STATE)
 
             with open(CHALLENGE, "w", encoding="utf-8") as f:
-                json.dump({"challenge": "abc123", "goal_fp": "fp1", "iteration": 2}, f)
+                json.dump({"challenge": "abc123", "goal_fp": "fp1", "iteration": 2,
+                           "written_at": "2026-07-10T00:00:00Z"}, f)
 
             rc = cmd_verify()
             assert rc == 0
