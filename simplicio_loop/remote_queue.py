@@ -164,9 +164,13 @@ class SQLiteRemoteQueue:
                     raise QueueConflict("task already leased by %s" % current["agent_id"])
                 token = int(current["fencing_token"]) + 1 if current else 1
                 expires = now + ttl
-                c.execute("INSERT OR REPLACE INTO leases(task_id,agent_id,lease_id,fencing_token,idempotency_key,expires_at,status,receipt_ref,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                c.execute(
+                    "INSERT OR REPLACE INTO leases(task_id,agent_id,lease_id,fencing_token,"
+                    "idempotency_key,expires_at,status,receipt_ref,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
                           (task_id, agent_id, lid, token, idempotency_key, expires, "active", None, now))
-                c.execute("INSERT OR REPLACE INTO idempotency(idempotency_key,task_id,lease_id,created_at) VALUES(?,?,?,?)",
+                c.execute(
+                    "INSERT OR REPLACE INTO idempotency(idempotency_key,task_id,lease_id,created_at) "
+                    "VALUES(?,?,?,?)",
                           (idempotency_key, task_id, lid, now))
                 c.execute("UPDATE tasks SET status='claimed',updated_at=? WHERE task_id=?", (now, task_id))
                 self._event(c, task_id, "claimed", agent_id, token, {"lease_id": lid, "expires_at": expires})
@@ -190,7 +194,8 @@ class SQLiteRemoteQueue:
             expires = _now() + ttl
             c.execute("UPDATE leases SET expires_at=?,updated_at=? WHERE task_id=?", (expires, _now(), lease.task_id))
             self._event(c, lease.task_id, "heartbeat", lease.agent_id, lease.fencing_token, {"expires_at": expires})
-            return Lease(lease.task_id, lease.agent_id, lease.lease_id, lease.fencing_token, expires, lease.idempotency_key)
+            return Lease(lease.task_id, lease.agent_id, lease.lease_id, lease.fencing_token,
+                         expires, lease.idempotency_key)
 
     def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]:
         if not receipt_ref:
@@ -201,7 +206,8 @@ class SQLiteRemoteQueue:
             c.execute("UPDATE leases SET status='completed',receipt_ref=?,updated_at=? WHERE task_id=?",
                       (receipt_ref, now, lease.task_id))
             c.execute("UPDATE tasks SET status='completed',updated_at=? WHERE task_id=?", (now, lease.task_id))
-            self._event(c, lease.task_id, "completed", lease.agent_id, lease.fencing_token, {"receipt_ref": receipt_ref})
+            self._event(c, lease.task_id, "completed", lease.agent_id, lease.fencing_token,
+                        {"receipt_ref": receipt_ref})
             return {"schema": SCHEMA, "task_id": lease.task_id, "status": "completed",
                     "fencing_token": lease.fencing_token, "receipt_ref": receipt_ref}
 
