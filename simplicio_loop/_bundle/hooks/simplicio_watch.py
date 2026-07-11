@@ -15,6 +15,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+try:  # Status icons and protocol output must survive Windows cp1252 consoles.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 HOME = os.path.expanduser("~")
 LOGS = os.path.join(HOME, ".simplicio", "logs")
 REPO_ROOT = Path(__file__).resolve().parents[1]

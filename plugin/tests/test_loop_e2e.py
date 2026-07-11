@@ -48,7 +48,7 @@ def _arm(root, iteration=1, max_iter=5):
 def _tick(root, response_text, env=None):
     """Run loop_stop.py exactly as the host would: cwd=root, stdin = {text:...}."""
     return subprocess.run([sys.executable, HOOK], input=json.dumps({"text": response_text}),
-                          capture_output=True, text=True, cwd=root, env=env)
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=root, env=env)
 
 
 def _scratchpad(root):
@@ -83,7 +83,7 @@ def _tick_hook(root, hook_path, response_text, mode="cursor", env=None):
     full_env["PYTHONPATH"] = REPO if not current_py else f"{REPO}{os.pathsep}{current_py}"
     if mode == "cursor":
         return subprocess.run([sys.executable, hook_path], input=json.dumps({"text": response_text}),
-                              capture_output=True, text=True, cwd=root, env=full_env)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=root, env=full_env)
     transcript = Path(root) / "transcript.jsonl"
     transcript.write_text(json.dumps({
         "role": "assistant",
@@ -91,7 +91,7 @@ def _tick_hook(root, hook_path, response_text, mode="cursor", env=None):
     }) + "\n", encoding="utf-8")
     return subprocess.run([sys.executable, hook_path],
                           input=json.dumps({"transcript_path": str(transcript)}),
-                          capture_output=True, text=True, cwd=root, env=full_env)
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=root, env=full_env)
 
 
 def _write_watcher_challenge(root, challenge="chal-1", goal_fp="", written_at="2026-07-01T00:00:00Z"):

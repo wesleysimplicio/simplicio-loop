@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
+  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
 </p>
 
 <p align="center">
@@ -45,6 +45,41 @@
 </p>
 
 ---
+
+<!-- visual-story:start -->
+## 🚀 Новое поколение — операционная система для проверяемой работы агентов
+
+**simplicio-loop давно вышел за рамки промпта, повторяемого до завершения.** Теперь он превращает намерение в зафиксированный контракт задачи, строит карту репозитория, планирует по зависимостям, распределяет выполнение по изолированным worktree, собирает структурированные подтверждения, независимо проверяет результат, безопасно откатывается, помнит каждую попытку и синхронизирует источник истины до самой поставки.
+
+- **Сначала контракт** — критерии приёмки, зависимости, риски, состояние источника и оракул завершения явно задаются до выполнения.
+- **Параллельно без повреждений** — готовые задачи выполняются в изолированных lane/worktree и сходятся через операционный ledger.
+- **Сначала доказательство** — тесты, проверки impact/flow, challenge от watcher, delivery receipt и HBP evidence отклоняют ложные состояния done.
+- **Память, меняющая поведение** — journal, stall detector, checkpoint и cross-agent wiki предотвращают зацикливание и делают handoff долговечным.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-parallel-worktrees.png" alt="simplicio-loop parallel isolated worktree execution" width="920" />
+</p>
+
+<p align="center"><em>Fan-out с учётом зависимостей: изолированные worker работают параллельно, возвращают доказательства и сходятся в одну проверенную поставку.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-lifecycle-2026.svg" alt="simplicio-loop lifecycle from intake to durable memory" width="920" />
+</p>
+
+<p align="center"><em>Каждый этап явный, ограниченный, наблюдаемый и обратимый.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-evidence-memory.png" alt="simplicio-loop evidence memory verification rollback and completion" width="920" />
+</p>
+
+<p align="center"><em>Доказательства и память встроены в выполнение, а не добавляются отчётом после него.</em></p>
+
+Эта архитектура превращает цель в управляемую систему поставки: от одной сложной задачи до всего backlog, между session и runtime, с local-first operator и receipt, доступными для аудита человеком, CI или другим агентом.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
+</p>
+<!-- visual-story:end -->
 
 ## ⚡ TL;DR
 

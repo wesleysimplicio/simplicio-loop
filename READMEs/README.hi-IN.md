@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
+  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
 </p>
 
 <p align="center">
@@ -45,6 +45,41 @@
 </p>
 
 ---
+
+<!-- visual-story:start -->
+## 🚀 नई पीढ़ी — सत्यापित एजेंट कार्य के लिए एक ऑपरेटिंग सिस्टम
+
+**simplicio-loop अब केवल पूरा होने तक prompt दोहराने वाला साधन नहीं है।** यह उद्देश्य को स्थिर task contract में बदलता है, repository का मानचित्र बनाता है, dependencies के अनुसार योजना करता है, execution को अलग-अलग worktree में बाँटता है, structured receipts एकत्र करता है, स्वतंत्र verification और सुरक्षित rollback करता है, हर प्रयास याद रखता है और delivery तक source of record को synchronize रखता है।
+
+- **पहले contract** — acceptance criteria, dependencies, risks, source state और completion oracle execution से पहले स्पष्ट होते हैं।
+- **बिना corruption के parallelism** — तैयार tasks अलग lane/worktree में चलते हैं और operational ledger के माध्यम से converge करते हैं।
+- **completion से पहले proof** — tests, impact/flow checks, watcher challenge, delivery receipt और HBP evidence झूठे done state को अस्वीकार करते हैं।
+- **व्यवहार बदलने वाली memory** — journal, stall detector, checkpoint और cross-agent wiki दोहराव रोकते हैं और handoff को टिकाऊ बनाते हैं।
+
+<p align="center">
+  <img src="../assets/simplicio-loop-parallel-worktrees.png" alt="simplicio-loop parallel isolated worktree execution" width="920" />
+</p>
+
+<p align="center"><em>Dependency-aware fan-out: अलग workers parallel चलते हैं, evidence लौटाते हैं और एक verified delivery में converge करते हैं।</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-lifecycle-2026.svg" alt="simplicio-loop lifecycle from intake to durable memory" width="920" />
+</p>
+
+<p align="center"><em>हर चरण स्पष्ट, सीमित, observable और reversible है।</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-evidence-memory.png" alt="simplicio-loop evidence memory verification rollback and completion" width="920" />
+</p>
+
+<p align="center"><em>Evidence और memory execution path का हिस्सा हैं, बाद में लिखी गई report नहीं।</em></p>
+
+यह architecture एक लक्ष्य को governed delivery system में बदलता है: एक कठिन task से पूरे backlog तक, sessions और runtimes के पार, local-first operators और ऐसे receipts के साथ जिन्हें मनुष्य, CI या दूसरा agent audit कर सके।
+
+<p align="center">
+  <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
+</p>
+<!-- visual-story:end -->
 
 ## ⚡ TL;DR
 

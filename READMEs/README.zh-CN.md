@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
+  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
 </p>
 
 <p align="center">
@@ -45,6 +45,41 @@
 </p>
 
 ---
+
+<!-- visual-story:start -->
+## 🚀 新一代 — 面向可验证智能体工作的操作系统
+
+**simplicio-loop 已远不只是一个重复提示直到完成的工具。** 它把意图编译成冻结的任务契约，映射代码仓库，按依赖关系调度，把执行分发到隔离的 worktree，收集结构化凭证，进行独立验证和安全 rollback，记住每次尝试，并在交付前持续同步 source of record。
+
+- **契约优先** — 在执行前明确验收标准、依赖、风险、来源状态和完成判定器。
+- **并行而不破坏** — 就绪任务在隔离的 lane/worktree 中运行，并通过操作 ledger 汇聚。
+- **先证明，再完成** — test、impact/flow 检查、watcher challenge、交付凭证和 HBP evidence 会拒绝虚假的 done 状态。
+- **能改变行为的记忆** — journal、stall detector、checkpoint 和 cross-agent wiki 防止重复振荡，并让 handoff 持久可靠。
+
+<p align="center">
+  <img src="../assets/simplicio-loop-parallel-worktrees.png" alt="simplicio-loop parallel isolated worktree execution" width="920" />
+</p>
+
+<p align="center"><em>依赖感知的 fan-out：隔离 worker 并行执行、返回证据，并汇聚为一个已验证交付物。</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-lifecycle-2026.svg" alt="simplicio-loop lifecycle from intake to durable memory" width="920" />
+</p>
+
+<p align="center"><em>每个阶段都明确、有界、可观测、可回滚。</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-evidence-memory.png" alt="simplicio-loop evidence memory verification rollback and completion" width="920" />
+</p>
+
+<p align="center"><em>证据和记忆属于执行路径本身，而不是事后编写的报告。</em></p>
+
+这套架构能把一个目标变成受治理的交付系统：从单个高难任务到整个 backlog，跨 session 与 runtime 运行，使用 local-first operator，并留下可供人、CI 或其他智能体审计的 receipt。
+
+<p align="center">
+  <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
+</p>
+<!-- visual-story:end -->
 
 ## ⚡ TL;DR
 

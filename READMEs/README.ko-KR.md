@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero.jpg" alt="simplicio-loop" width="920" />
+  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
 </p>
 
 <p align="center">
@@ -45,6 +45,41 @@
 </p>
 
 ---
+
+<!-- visual-story:start -->
+## 🚀 새로운 세대 — 검증 가능한 에이전트 작업을 위한 운영체제
+
+**simplicio-loop는 완료될 때까지 프롬프트를 반복하는 도구를 훨씬 넘어섰습니다.** 의도를 고정된 작업 계약으로 변환하고, 저장소를 매핑하며, 의존성에 따라 계획하고, 격리된 worktree로 실행을 분산합니다. 구조화된 증거를 수집하고 독립 검증, 안전한 rollback, 모든 시도의 기억, 전달까지 source of record 동기화도 수행합니다.
+
+- **계약 우선** — 승인 기준, 의존성, 위험, 소스 상태, 완료 오라클을 실행 전에 명시합니다.
+- **손상 없는 병렬 실행** — 준비된 작업은 격리된 lane/worktree에서 실행되고 운영 ledger를 통해 수렴합니다.
+- **완료보다 증명이 먼저** — test, impact/flow 검사, watcher challenge, delivery receipt, HBP evidence가 거짓 done 상태를 거부합니다.
+- **행동을 바꾸는 기억** — journal, stall detector, checkpoint, cross-agent wiki가 반복 실패를 막고 handoff를 지속시킵니다.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-parallel-worktrees.png" alt="simplicio-loop parallel isolated worktree execution" width="920" />
+</p>
+
+<p align="center"><em>의존성을 인식한 fan-out: 격리된 worker가 병렬로 실행되고 증거를 반환해 하나의 검증된 전달물로 수렴합니다.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-lifecycle-2026.svg" alt="simplicio-loop lifecycle from intake to durable memory" width="920" />
+</p>
+
+<p align="center"><em>모든 단계는 명시적이고, 제한되며, 관찰 가능하고, 되돌릴 수 있습니다.</em></p>
+
+<p align="center">
+  <img src="../assets/simplicio-loop-evidence-memory.png" alt="simplicio-loop evidence memory verification rollback and completion" width="920" />
+</p>
+
+<p align="center"><em>증거와 기억은 실행 경로의 일부이며, 나중에 작성하는 보고서가 아닙니다.</em></p>
+
+이 아키텍처는 하나의 목표를 통제된 전달 시스템으로 바꿉니다. 어려운 단일 작업부터 전체 backlog까지 session과 runtime을 넘어 실행하며, local-first operator와 사람·CI·다른 에이전트가 감사할 수 있는 receipt를 남깁니다.
+
+<p align="center">
+  <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
+</p>
+<!-- visual-story:end -->
 
 ## ⚡ 요약
 
