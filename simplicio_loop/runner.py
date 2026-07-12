@@ -480,8 +480,8 @@ def _auto_worktree_dispatch(
         queue = WorktreeQueue(
             repo_root=str(root),
             run_id=run_id,
-            state_path=str(root / ".orchestrator" / "runs" / run_id / "worktree-queue.json"),
-            worktree_root=str(root / ".orchestrator" / "worktrees" / run_id),
+            state_path=str(root / ".simplicio" / "loop-runs" / run_id / "worktree-queue.json"),
+            worktree_root=str(root / ".simplicio" / "loop-worktrees" / run_id),
         )
         # Registration is an explicit preflight gate.  Allocation happens inside the
         # dispatcher, before any worker starts, and is persisted by the queue.
@@ -765,9 +765,17 @@ def _validate_mapper_receipt(payload: Mapping[str, Any], repo_path: Path) -> Non
     status = inspect_out.get("status") or {}
     evidence = inspect_out.get("evidence") or {}
     artifacts = evidence.get("artifacts") or {}
-    if not status.get("artifacts_present") or not inspect_out.get("fresh"):
+    if not status.get("artifacts_present") or not status.get("fresh"):
         raise RuntimeError("mapper artifacts are missing or stale")
-    if not artifacts or any(not bool(item.get("exists")) for item in artifacts.values() if isinstance(item, Mapping)):
+    # context_cache is an optional cache artifact the mapper does not always emit;
+    # it must not block the loop when only that one is missing.
+    required_artifacts = {
+        key: item for key, item in artifacts.items()
+        if isinstance(item, Mapping) and key != "context_cache"
+    }
+    if not required_artifacts or any(
+        not bool(item.get("exists")) for item in required_artifacts.values()
+    ):
         raise RuntimeError("mapper artifact evidence is incomplete")
     handoff = ((payload.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
     for item in handoff.get("files") or []:
@@ -1123,7 +1131,10 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         raise ValueError("invalid task contract: " + "; ".join(validation_errors))
 
     run_id = _run_id()
-    run_root = repo_path / ".orchestrator" / "runs" / run_id
+    # Keep loop run state under .simplicio/ (which simplicio-mapper ignores for
+    # freshness) instead of .orchestrator/ (which the mapper sees as repo churn and
+    # marks artifacts_not_fresh, blocking the loop before any implementation work).
+    run_root = repo_path / ".simplicio" / "loop-runs" / run_id
     loop_dir = run_root / "loop"
     loop_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1785,7 +1796,7 @@ def _persist_isolated_run_context(item: Dict[str, Any], context: Dict[str, Any])
     context["context_path"] = str(context_path)
     _write_json(context_path, context)
 
-    source_state_path = source_repo / ".orchestrator" / "runs" / run_id / "state.json"
+    source_state_path = source_repo / ".simplicio" / "loop-runs" / run_id / "state.json"
     if source_state_path.exists():
         try:
             source_run = source_state_path.parent
@@ -1798,8 +1809,8 @@ def _persist_isolated_run_context(item: Dict[str, Any], context: Dict[str, Any])
             # The worker's normal receipts remain authoritative if the coordinator is gone.
             pass
 
-    source_run = source_repo / ".orchestrator" / "runs" / run_id
-    target_run = target_root / ".orchestrator" / "runs" / run_id
+    source_run = source_repo / ".simplicio" / "loop-runs" / run_id
+    target_run = target_root / ".simplicio" / "loop-runs" / run_id
     if source_run.is_dir() and target_root != source_repo and not target_run.exists():
         target_run.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source_run, target_run)
@@ -2451,7 +2462,7 @@ def defer_maintenance_backlog_only(
 
 def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:
     repo_path = Path(repo).resolve()
-    runs_root = repo_path / ".orchestrator" / "runs"
+    runs_root = repo_path / ".simplicio" / "loop-runs"
     if not runs_root.exists():
         raise FileNotFoundError("no runs directory found")
     chosen = None
