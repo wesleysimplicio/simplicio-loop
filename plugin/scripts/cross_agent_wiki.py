@@ -223,7 +223,9 @@ def cmd_capture():
     git_log = _git_log()
     git_diff = _git_diff_stat()
     branch = _git_branch()
-    agent = os.environ.get("HERMES_PROFILE", os.environ.get("CLAUDE_PROFILE", "unknown"))
+    agent = os.environ.get("SIMPLICIO_AGENT_PROFILE",
+                           os.environ.get("HERMES_PROFILE",  # legacy alias, compat window
+                                          os.environ.get("CLAUDE_PROFILE", "unknown")))
 
     # Extract goal from scratchpad
     goal = scratchpad
@@ -526,7 +528,8 @@ def cmd_status():
 
 def cmd_selftest():
     origin = REPO
-    prior_env = os.environ.get("HERMES_PROFILE")
+    prior_env = os.environ.get("SIMPLICIO_AGENT_PROFILE")
+    prior_legacy_env = os.environ.get("HERMES_PROFILE")
     try:
         with tempfile.TemporaryDirectory() as tmp:
             _set_repo(tmp)
@@ -558,7 +561,8 @@ def cmd_selftest():
                 "status": "MEASURED",
                 "checked_at": "2026-07-01T00:00:00Z",
             }))
-            os.environ["HERMES_PROFILE"] = "selftest"
+            os.environ["SIMPLICIO_AGENT_PROFILE"] = "selftest"
+            os.environ.pop("HERMES_PROFILE", None)
 
             cmd_capture()
             cmd_summary()
@@ -577,9 +581,13 @@ def cmd_selftest():
     finally:
         _set_repo(origin)
         if prior_env is None:
+            os.environ.pop("SIMPLICIO_AGENT_PROFILE", None)
+        else:
+            os.environ["SIMPLICIO_AGENT_PROFILE"] = prior_env
+        if prior_legacy_env is None:
             os.environ.pop("HERMES_PROFILE", None)
         else:
-            os.environ["HERMES_PROFILE"] = prior_env
+            os.environ["HERMES_PROFILE"] = prior_legacy_env
 
 
 def main():

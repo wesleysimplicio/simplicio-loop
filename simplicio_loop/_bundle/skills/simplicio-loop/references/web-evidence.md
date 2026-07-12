@@ -34,7 +34,7 @@ npx playwright install --with-deps chromium
 PWTEST_OUTPUT_DIR=.orchestrator/tee/web npx playwright test --trace on --output .orchestrator/tee/web
 ```
 
-**Fallback B — playwright-python / pytest (Python repos, e.g. hermes-agent):**
+**Fallback B — playwright-python / pytest (Python repos, e.g. the Simplicio Agent repo, formerly hermes-agent):**
 ```bash
 pip install playwright pytest-playwright && playwright install chromium
 pytest --tracing retain-on-failure --output .orchestrator/tee/web
