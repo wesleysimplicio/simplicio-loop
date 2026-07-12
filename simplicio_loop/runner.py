@@ -21,6 +21,13 @@ from .evidence import build_evidence_receipt, redact_sensitive_text
 from .source_state import github_delivery_payload, infer_github_delivery_state
 from .task_contract import compile_many, validate_contract
 from .plan_contract import PLAN_SCHEMA, validate_plan
+from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable
+from .agent_contract import bind_receipt, build_context_pack
+
+try:
+    from scripts.agent_identity import ensure_identity
+except ImportError:  # pragma: no cover - installed package without scripts namespace
+    ensure_identity = None
 
 RUNNER_SCHEMA = "simplicio.run-manifest/v1"
 STATE_SCHEMA = "simplicio.run-state/v1"
@@ -66,6 +73,9 @@ class OperatorDispatchItem(TypedDict, total=False):
     task_spec: Mapping[str, Any]
     isolation: str
     operator_context: Mapping[str, Any]
+    distributed_queue: Any
+    agent_identity: Mapping[str, Any]
+    context_pack: Mapping[str, Any]
 
 
 class MaintenanceState(TypedDict):
@@ -98,6 +108,31 @@ def _now() -> str:
 def _rand_token(n: int = 10) -> str:
     chars = string.ascii_lowercase + string.digits
     return "".join(random.choice(chars) for _ in range(n))
+
+
+def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]]:
+    """Return the opt-in network coordinator and stable worker identity.
+
+    Local fan-out remains the default when no URL is configured. Once a URL is
+    present, an outage has no local fallback: work pauses instead of mutating
+    without a remote claim.
+    """
+    url = os.environ.get("SIMPLICIO_REMOTE_QUEUE_URL", "").strip()
+    if not url:
+        return None, None
+    if ensure_identity is None:
+        raise RuntimeError("distributed identity adapter unavailable")
+    identity = ensure_identity(
+        path=os.environ.get("SIMPLICIO_IDENTITY_FILE") or str(Path(repo) / ".orchestrator" / "agent-identity.json"),
+        runtime=os.environ.get("SIMPLICIO_RUNTIME", "unknown-runtime"),
+        capabilities=["claim", "heartbeat", "fencing", "receipts", "events", "evidence", "completion"],
+    )
+    queue = HTTPRemoteQueue(
+        url,
+        token=os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN") or None,
+        timeout=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TIMEOUT", "5")),
+    )
+    return queue, identity
 
 
 def _run_id() -> str:
@@ -1715,6 +1750,12 @@ def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
         normalized["task_spec"] = dict(item["task_spec"])
     if isinstance(item.get("operator_context"), Mapping):
         normalized["operator_context"] = dict(item["operator_context"])
+    if item.get("distributed_queue") is not None:
+        normalized["distributed_queue"] = item["distributed_queue"]
+    if isinstance(item.get("agent_identity"), Mapping):
+        normalized["agent_identity"] = dict(item["agent_identity"])
+    if isinstance(item.get("context_pack"), Mapping):
+        normalized["context_pack"] = dict(item["context_pack"])
     if item.get("source_repo"):
         normalized["source_repo"] = str(item["source_repo"])
     if item.get("source_run_id"):
@@ -1745,7 +1786,34 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "operator_receipt": "",
         "evidence_receipt": "",
         "receipt_status": "UNVERIFIED",
+        "agent": dict(item.get("agent_identity") or {}),
+        "context_pack": dict(item.get("context_pack") or {}),
     }
+    queue = item.get("distributed_queue")
+    lease = None
+    if queue is not None:
+        identity = item.get("agent_identity")
+        try:
+            lease = queue.claim(
+                common["task_id"], common["worker_id"],
+                idempotency_key=f"{common['run_id']}:{common['task_id']}:{common['worker_id']}",
+                ttl=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TTL", "3600")),
+                identity=identity,
+                capabilities=(identity or {}).get("capabilities", ()),
+            )
+            common["lease"] = {
+                "lease_id": lease.lease_id,
+                "fencing_token": lease.fencing_token,
+                "expires_at": lease.expires_at,
+            }
+        except QueueConflict as exc:
+            return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
+                    "reason_code": "claim_conflict", "error": str(exc), "dead_letter": True,
+                    "started_at": started, "finished_at": _now()}
+        except (QueueUnavailable, OSError, ValueError) as exc:
+            return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
+                    "reason_code": "network_paused", "error": str(exc), "dead_letter": True,
+                    "started_at": started, "finished_at": _now()}
     if item.get("worktree_error"):
         return {
             **common,
@@ -1781,6 +1849,14 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
                 # The worker result remains useful even when a crashed operator did not leave
                 # a readable receipt; the scheduler will use the bounded exception path.
                 failure_fingerprint = ""
+        if lease is not None and success:
+            queue.complete(lease, receipt_ref=receipt or f"{run_dir}/operator-receipt.json")
+        if item.get("agent_identity") and receipt:
+            # Keep the worker result itself immutable and independently attributable.
+            common["receipt_binding"] = bind_receipt(
+                {"receipt_ref": receipt}, item["agent_identity"],
+                context_pack=item.get("context_pack"),
+            )
         return {
             **common,
             "status": "succeeded" if success else "failed",
@@ -2051,6 +2127,10 @@ def execute_operator_batch(
     if any(index < 1 or index > task_count for index in indices):
         raise ValueError("task index out of range")
     contexts = dict(isolated_contexts or {})
+    distributed_queue = None
+    agent_identity = None
+    if not isolated_contexts:
+        distributed_queue, agent_identity = _distributed_configuration(repo)
     auto_reason = "explicit_contexts" if isolated_contexts else ""
     if not isolated_contexts and worktree_queue is None and (auto_fan_out is not False):
         previous = os.environ.get("SIMPLICIO_LOOP_AUTO_FAN_OUT")
@@ -2083,6 +2163,17 @@ def execute_operator_batch(
             },
             "isolation": context.get("isolation", "worktree"),
         }
+        if distributed_queue is not None:
+            item["distributed_queue"] = distributed_queue
+            item["agent_identity"] = agent_identity
+            task = (contract.get("tasks") or [])[index - 1]
+            target_paths = (plan.get("steps") or [])[index - 1].get("candidate_targets") or []
+            item["context_pack"] = build_context_pack(
+                task_id=item["task_id"], goal=_task_goal(task), identity=agent_identity,
+                acs=[*[(s.get("title") or s.get("id") or "") for s in (task.get("scenarios") or [])]],
+                depends_on=list((task.get("dependencies") or {}).get("items") or []),
+                allowed_paths=target_paths, source_refs=target_paths,
+            )
         items.append(item)
     result = dispatch_operator_batch(
         items,
@@ -2091,6 +2182,12 @@ def execute_operator_batch(
         journal_dir=str(Path(status["run_dir"])),
         worktree_queue=worktree_queue,
     )
+    result["distributed"] = {
+        "enabled": distributed_queue is not None,
+        "queue": os.environ.get("SIMPLICIO_REMOTE_QUEUE_URL", "") if distributed_queue is not None else "",
+        "agent": agent_identity or {},
+        "fail_closed": distributed_queue is not None,
+    }
     if not contexts and len(items) > 1:
         # dispatch_operator_batch derives this from the shared isolation key; retain a clear
         # contract-level marker for callers inspecting the convenience API.
