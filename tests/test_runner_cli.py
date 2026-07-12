@@ -80,6 +80,24 @@ def test_operator_env_preserves_explicit_outer_configuration(monkeypatch):
     assert env["SIMPLICIO_CODEX_EFFORT"] == "high"
 
 
+def test_mapper_preflight_requires_receipt_contract_minimum(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    run_root = repo / "run"
+    repo.mkdir()
+    run_root.mkdir()
+    monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON", json.dumps({
+        "version_stdout": "simplicio-mapper 0.18.9",
+        "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
+    }))
+
+    with pytest.raises(RuntimeError, match="below minimum version"):
+        runner_mod._preflight_mapper(repo, run_root)
+
+    receipt = json.loads((run_root / "mapper-preflight.json").read_text(encoding="utf-8"))
+    assert receipt["min_version"] == "0.19.0"
+    assert receipt["version_ok"] is False
+
+
 def test_operator_timeout_defaults_and_override(monkeypatch):
     monkeypatch.delenv("SIMPLICIO_LOOP_OPERATOR_TIMEOUT_SEC", raising=False)
     assert runner_mod._operator_timeout("dry_run") == 60
@@ -195,7 +213,7 @@ def test_run_arms_persisted_state_and_status_resume_cancel(tmp_path):
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
     fake_mapper_preflight = json.dumps({
-        "version_stdout": "simplicio-mapper 0.14.2",
+        "version_stdout": "simplicio-mapper 0.19.0",
         "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
         "version_returncode": 0,
         "help_returncode": 0
@@ -264,7 +282,7 @@ def _start_run_for_maintenance_cli(tmp_path, monkeypatch):
     task = tmp_path / "task.md"
     task.write_text(TASK, encoding="utf-8")
     monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON", json.dumps({
-        "version_stdout": "simplicio-mapper 0.14.2",
+        "version_stdout": "simplicio-mapper 0.19.0",
         "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
         "version_returncode": 0,
         "help_returncode": 0,
@@ -400,7 +418,7 @@ def test_status_surfaces_completion_receipt_reason_code(tmp_path):
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
     fake_mapper_preflight = json.dumps({
-        "version_stdout": "simplicio-mapper 0.14.2",
+        "version_stdout": "simplicio-mapper 0.19.0",
         "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
         "version_returncode": 0,
         "help_returncode": 0
@@ -453,7 +471,7 @@ def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path):
             "returncode": 0, "stdout": {"kind": "operator-applied", "ok": True}, "stderr": "",
         }),
         "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": json.dumps({
-            "version_stdout": "simplicio-mapper 0.14.2",
+            "version_stdout": "simplicio-mapper 0.19.0",
             "help_stdout": "inspect handoff ask sync drift", "version_returncode": 0,
             "help_returncode": 0,
         }),
@@ -501,7 +519,7 @@ def test_tick_rolls_back_failed_operator_when_change_stays_within_authorized_tar
             "write_files": {"src/app.py": "def main():\n    return 'broken'\n"},
         }),
         "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": json.dumps({
-            "version_stdout": "simplicio-mapper 0.14.2",
+            "version_stdout": "simplicio-mapper 0.19.0",
             "help_stdout": "inspect handoff ask sync drift", "version_returncode": 0,
             "help_returncode": 0,
         }),
@@ -543,7 +561,7 @@ def test_deliver_reconciles_external_delivery_state(tmp_path):
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
     fake_mapper_preflight = json.dumps({
-        "version_stdout": "simplicio-mapper 0.14.2",
+        "version_stdout": "simplicio-mapper 0.19.0",
         "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
         "version_returncode": 0,
         "help_returncode": 0
@@ -612,7 +630,7 @@ Integrações: ✗
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
     fake_mapper_preflight = json.dumps({
-        "version_stdout": "simplicio-mapper 0.14.2",
+        "version_stdout": "simplicio-mapper 0.19.0",
         "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
         "version_returncode": 0,
         "help_returncode": 0
@@ -665,7 +683,7 @@ def test_sync_source_requeries_github_fixture_for_merge_ready(tmp_path):
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
     fake_mapper_preflight = json.dumps({
-        "version_stdout": "simplicio-mapper 0.14.2",
+        "version_stdout": "simplicio-mapper 0.19.0",
         "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
         "version_returncode": 0,
         "help_returncode": 0
@@ -717,7 +735,7 @@ def test_sync_source_requeries_github_fixture_for_release(tmp_path):
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
     fake_mapper_preflight = json.dumps({
-        "version_stdout": "simplicio-mapper 0.14.2",
+        "version_stdout": "simplicio-mapper 0.19.0",
         "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
         "version_returncode": 0,
         "help_returncode": 0
@@ -769,7 +787,7 @@ def test_sync_source_reopens_delivery_when_merge_ready_regresses(tmp_path):
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
     fake_mapper_preflight = json.dumps({
-        "version_stdout": "simplicio-mapper 0.14.2",
+        "version_stdout": "simplicio-mapper 0.19.0",
         "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
         "version_returncode": 0,
         "help_returncode": 0
@@ -857,7 +875,7 @@ def test_run_blocks_when_devcli_preflight_lacks_required_capability(tmp_path):
         REPO,
         env={
             "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": json.dumps({
-                "version_stdout": "simplicio-mapper 0.14.2",
+                "version_stdout": "simplicio-mapper 0.19.0",
                 "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
                 "version_returncode": 0,
                 "help_returncode": 0
