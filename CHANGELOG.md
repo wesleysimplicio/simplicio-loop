@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.33.0] — 2026-07-12
+
+- Consume `simplicio-cli>=0.15.0`, paired with mapper `v0.22.0` and dev-cli `v0.15.0`.
+- Include the verified distributed delivery, visual events, oracle, watcher, PLANES, release-parity, and conduct-runner wave.
+
 ## [3.32.6] — 2026-07-11
 
 - Runtime-compatible Execution Board backlog import and dashboard progress receipts.
