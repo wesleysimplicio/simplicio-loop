@@ -953,17 +953,9 @@ def main():
                 _call_simplicio_hbp_append(iteration, promise, watcher_tag)
                 refresh_cross_agent_wiki(include_handoff=False)
                 cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
-            # Legacy converge fixtures and lightweight installs predate persisted run artifacts.
-            # Preserve their evidence-gated contract only when the oracle explicitly reports that
-            # no run directory exists; every persisted run remains exclusively oracle-authorized.
-            if oracle.get("reason_code") == "run_dir_missing":
-                match = PROMISE_RE.search(resp)
-                if (match and match.group(1).strip() == promise.strip()
-                        and ((not evidence_required) or has_evidence)
-                        and watcher_pass and not anchor_pending() and not flow_gap):
-                    _call_simplicio_hbp_append(iteration, promise, watcher_tag)
-                    refresh_cross_agent_wiki(include_handoff=False)
-                    cleanup_and_stop()
+            # A promise is never sufficient without a persisted run receipt.  The old
+            # lightweight fallback was a fail-open completion bypass (#138); missing run
+            # artifacts remain DELIVERY_PENDING and the loop continues or hands off at cap.
         # (3') Cursor capture may have raised the flag.
         if os.path.exists(DONE_FLAG) or os.path.exists(LEGACY_DONE_FLAG):
             oracle = completion_oracle_payload(flow_gap=flow_gap or "")

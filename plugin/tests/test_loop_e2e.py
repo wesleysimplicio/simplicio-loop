@@ -139,6 +139,18 @@ def test_promise_with_evidence_stops(tmp_path):
     assert not os.path.exists(_scratchpad(root)), "state should be cleaned up on a verified stop"
 
 
+def test_promise_without_run_receipt_never_uses_legacy_fallback(tmp_path):
+    root = str(tmp_path)
+    _arm(root)
+    _write_watcher_pass(root)
+    _write_anchor(root, [{"id": "AC1", "status": "done"}])
+    r = _tick(root, "All green. <promise>SIMPLICIO_DONE</promise> tests pass ✓")
+    assert r.returncode == 0
+    assert "followup_message" in r.stdout or "block" in r.stdout
+    assert os.path.exists(_scratchpad(root)), "missing run receipt must not bypass the oracle"
+    assert not os.path.exists(os.path.join(root, ".orchestrator", "runs")), "no run receipt was created"
+
+
 def test_bare_promise_without_evidence_continues(tmp_path):
     root = str(tmp_path)
     _arm(root, iteration=1, max_iter=5)
