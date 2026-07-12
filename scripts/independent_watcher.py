@@ -63,6 +63,8 @@ def _validate_plan(plan: Dict[str, Any]) -> List[str]:
     for field in ("challenge", "run_id", "commit_sha", "diff_hash"):
         if not str(plan.get(field) or "").strip():
             errors.append(f"plan_{field}_missing")
+    if not str(plan.get("task_contract_hash") or "").strip():
+        errors.append("plan_task_contract_hash_missing")
     criteria = plan.get("criteria")
     if not isinstance(criteria, list) or not criteria:
         errors.append("plan_criteria_missing")
@@ -79,52 +81,88 @@ def _validate_plan(plan: Dict[str, Any]) -> List[str]:
         argv, reason = _command_policy(item)
         if argv is None:
             errors.append(f"criterion_{item.get('id', '?')}_command_{reason.replace(' ', '_')}")
+        if "reported_result" not in item:
+            errors.append(f"criterion_{item.get('id', '?')}_reported_result_missing")
+        if not isinstance(item.get("evidence_ids", []), list):
+            errors.append(f"criterion_{item.get('id', '?')}_evidence_ids_invalid")
     return errors
+
+
+def _artifact_results(root: Path, criterion: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Recompute declared evidence artifacts inside the clean snapshot."""
+    results = []
+    for raw in criterion.get("artifacts", []) or []:
+        path = str(raw.get("path") if isinstance(raw, dict) else raw)
+        expected_sha = str(raw.get("sha256", "") if isinstance(raw, dict) else "")
+        candidate = (root / path).resolve()
+        safe = candidate == root.resolve() or root.resolve() in candidate.parents
+        exists = safe and candidate.is_file()
+        digest = hashlib.sha256(candidate.read_bytes()).hexdigest() if exists else ""
+        results.append({"path": path, "exists": exists, "sha256": digest,
+                        "match": exists and (not expected_sha or expected_sha == digest)})
+    return results
 
 
 def _run_check(root: Path, criterion: Dict[str, Any], timeout: int) -> Dict[str, Any]:
     argv, reason = _command_policy(criterion)
     cid = str(criterion.get("id") or "")
+    base = {"id": cid, "reported_result": criterion.get("reported_result", "pending"),
+            "recomputed_result": "pending", "evidence_ids": criterion.get("evidence_ids", [])}
     if argv is None:
-        return {"id": cid, "status": "UNVERIFIED", "reason": reason,
+        return {**base, "match": False,
+                "status": "UNVERIFIED", "reason": reason,
                 "returncode": None, "runner_pid": None, "watcher_pid": os.getpid(),
                 "process_isolated": False}
     cwd = root / str(criterion.get("cwd") or ".")
     if not cwd.is_dir() or root not in cwd.resolve().parents and cwd.resolve() != root.resolve():
-        return {"id": cid, "status": "UNVERIFIED", "reason": "cwd_outside_snapshot",
+        return {**base, "match": False, "status": "UNVERIFIED", "reason": "cwd_outside_snapshot",
                 "returncode": None, "runner_pid": None, "watcher_pid": os.getpid(),
                 "process_isolated": False}
     expected = int(criterion.get("expected_exit_code", 0))
     runner_pid = None
     try:
+        isolated_env = {key: value for key, value in os.environ.items()
+                        if key not in {"SIMPLICIO_RUN_DIR", "SIMPLICIO_LOOP_REPO", "PYTHONPATH"}}
+        isolated_env["PYTHONNOUSERSITE"] = "1"
         process = subprocess.Popen(argv, cwd=str(cwd), shell=False, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                   env=isolated_env)
         runner_pid = process.pid
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             process.kill()
             stdout, stderr = process.communicate()
-            return {"id": cid, "status": "UNVERIFIED", "reason": "criterion_timeout",
+            return {**base, "match": False,
+                    "status": "UNVERIFIED", "reason": "criterion_timeout",
                     "returncode": None, "expected_exit_code": expected,
                     "runner_pid": runner_pid, "watcher_pid": os.getpid(),
                     "process_isolated": runner_pid != os.getpid()}
         ok = process.returncode == expected
+        artifacts = _artifact_results(root, criterion)
+        contains = [str(value) for value in criterion.get("stdout_contains", []) or []]
+        stdout = redact_sensitive_text((stdout or "").strip())[-4000:]
+        stderr = redact_sensitive_text((stderr or "").strip())[-4000:]
+        ok = ok and all(value in stdout for value in contains) and all(item["match"] for item in artifacts)
         return {
-            "id": cid,
+            **base,
+            "recomputed_result": "verified" if ok else "pending",
+            "match": ok,
             "status": "MEASURED" if ok else "UNVERIFIED",
-            "reason": "command matched expected exit code" if ok else "command failed",
+            "reason": "behavior and evidence matched" if ok else "behavior or evidence failed",
             "returncode": process.returncode,
             "expected_exit_code": expected,
-            "stdout": redact_sensitive_text((stdout or "").strip())[-4000:],
-            "stderr": redact_sensitive_text((stderr or "").strip())[-4000:],
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_contains": contains,
+            "artifacts": artifacts,
             "argv": argv,
             "runner_pid": runner_pid,
             "watcher_pid": os.getpid(),
             "process_isolated": runner_pid != os.getpid(),
         }
     except Exception as exc:
-        return {"id": cid, "status": "UNVERIFIED", "reason": redact_sensitive_text(str(exc)),
+        return {**base, "match": False, "status": "UNVERIFIED", "reason": redact_sensitive_text(str(exc)),
                 "returncode": None, "runner_pid": runner_pid,
                 "watcher_pid": os.getpid(),
                 "process_isolated": bool(runner_pid and runner_pid != os.getpid())}
@@ -159,6 +197,12 @@ def verify(repo: str, plan: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]
                 archive.extractall(snapshot_path)
             snapshot = str(snapshot_path)
             results = [_run_check(snapshot_path, item, timeout) for item in plan["criteria"]]
+    if errors and not results:
+        results = [{"id": str(item.get("id", "")),
+                    "reported_result": item.get("reported_result", "pending"),
+                    "recomputed_result": "pending", "evidence_ids": item.get("evidence_ids", []),
+                    "match": False, "status": "UNVERIFIED", "reason": "watcher_preflight_failed"}
+                   for item in plan.get("criteria", []) if isinstance(item, dict)]
 
     all_passed = bool(results) and not errors and all(item["status"] == "MEASURED" for item in results)
     receipt = {

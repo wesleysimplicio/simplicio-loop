@@ -2,11 +2,12 @@
 
 `scripts/independent_watcher.py` is a fail-closed behavioral verifier for a
 committed implementation snapshot. It receives a versioned plan containing a
-challenge, run id, commit/diff fingerprints, and one safe command per
-acceptance criterion. It then archives the exact commit into a temporary
-directory and executes each command from that clean snapshot in a separate
-process. It does not consume the implementer's `verification_state` or
-`watcher_state.json`.
+challenge, run ID, task-contract hash, commit/diff fingerprints, and one safe
+command per acceptance criterion. Each criterion declares the implementer's
+`reported_result` and evidence IDs; the watcher emits its own
+`recomputed_result`, per-criterion match, result status, and artifact checks.
+The watcher never consumes `verification_state` or `watcher_state.json` from the
+implementer.
 
 ```powershell
 python scripts/independent_watcher.py --repo . `
