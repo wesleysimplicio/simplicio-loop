@@ -547,7 +547,76 @@ def _transition(run_dir: Path, state: Dict[str, Any], to_phase: str, reason: str
     state["updated_at"] = entry["ts"]
     _write_json(run_dir / "state.json", state)
     _append_jsonl(run_dir / "transitions.jsonl", entry)
+    _record_event(run_dir, state, {
+        "phase": "phase_transition",
+        "to_phase": to_phase,
+        "from_phase": entry["from"],
+        "reason": reason,
+        "receipt": receipt,
+    }, transition_extra=extra)
     return state
+
+
+# Canonical phase-event kinds consumed by simplicio_loop.progress.build_progress (#181).
+_PHASE_EVENT_KINDS = {
+    "intake", "mapping", "planning", "executing", "validating",
+    "watching", "delivering", "done", "partial", "blocked", "cancelled",
+    "awaiting_decision", "mapper_fresh", "watcher_challenge", "operator_receipt",
+    "worker_claimed", "worktree_created", "test_gate", "completion_verdict",
+}
+
+
+def _record_event(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any],
+                  transition_extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Append one normalized progress event to ``state['events']`` (#181).
+
+    Every loop stage emits these so external dashboards and LLMs can render
+    real per-stage progress (see ``docs/PROGRESS_PROTOCOL.md``).  ``progress.py``
+    already normalizes and renders ``state['events']``; previously the runner
+    never populated it.
+    """
+    event = dict(event)
+    event.setdefault("event_id", "evt-" + hashlib.sha256(
+        (json.dumps(event, sort_keys=True, ensure_ascii=False) + _now()).encode("utf-8")
+    ).hexdigest()[:12])
+    event.setdefault("ts", _now())
+    event.setdefault("run_id", state.get("run_id", ""))
+    event.setdefault("phase", state.get("phase", ""))
+    task_ids = state.get("task_ids") or []
+    ac_ids = state.get("ac_ids") or []
+    if not event.get("task_id") and task_ids:
+        event["task_id"] = task_ids[0]
+    if not event.get("ac_ids") and ac_ids:
+        event["ac_ids"] = list(ac_ids)
+    if not event.get("receipt") and not event.get("blocker"):
+        event["blocker"] = event.get("reason") or event.get("message") or ""
+    kind = event.get("kind") or event.get("phase")
+    if kind in _PHASE_EVENT_KINDS and "kind" not in event:
+        event["kind"] = kind
+    if transition_extra and "extra" not in event:
+        event["extra"] = transition_extra
+    events = state.setdefault("events", [])
+    events.append(event)
+    state["updated_at"] = event["ts"]
+    _write_json(run_dir / "state.json", state)
+    _append_jsonl(run_dir / "events.jsonl", event)
+    return state
+
+
+def _emit_event(run_dir: Path, state: Dict[str, Any], kind: str, *,
+                receipt: str = "", blocker: str = "", message: str = "",
+                **extra: Any) -> Dict[str, Any]:
+    """Emit one named visual event with the run's canonical provenance."""
+    event: Dict[str, Any] = {"kind": kind, "receipt": receipt, "blocker": blocker,
+                             "message": message}
+    event.update(extra)
+    return _record_event(run_dir, state, event)
+
+
+def _task_ac_ids(task: Mapping[str, Any]) -> List[str]:
+    """Return acceptance-criterion/scenario IDs from a compiled task."""
+    return [str(item.get("id") or "") for item in (task.get("scenarios") or [])
+            if isinstance(item, Mapping) and item.get("id")]
 
 
 def _preflight_mapper(repo_path: Path, run_root: Path) -> Dict[str, Any]:
@@ -1096,8 +1165,15 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         "blockers": [],
         "attempts": 0,
         "history": [],
+        "events": [],
+        "task_ids": [str(task.get("id") or "") for task in tasks if task.get("id")],
+        "ac_ids": [ac_id for task in tasks for ac_id in _task_ac_ids(task)],
     }
     _write_json(run_root / "state.json", state)
+    _emit_event(run_root, state, "contract_frozen", receipt=str(run_root / "task-contract.json"),
+                message="task contract compiled and frozen")
+    _emit_event(run_root, state, "watcher_challenge", receipt=str(loop_dir / "watcher_challenge.json"),
+                message="watcher challenge created")
     _append_jsonl(
         run_root / "transitions.jsonl",
         {
@@ -1128,6 +1204,8 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         state["current_action"] = "mapper_context_persisted"
         state["next_action"] = "plan_ready_for_decision"
         _write_json(run_root / "state.json", state)
+        _emit_event(run_root, state, "mapper_fresh", receipt=str(run_root / "mapper-context.json"),
+                    message="mapper scan, inspect, and handoff are fresh")
         _transition(run_root, state, "planning", "mapper scan/inspect/handoff persisted",
                     receipt=str(run_root / "mapper-context.json"))
         plan = _build_plan_with_hints(tasks, mapper_payload, repo_path, raw,
@@ -1181,6 +1259,12 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
             state["current_action"] = "plan_materialized"
             state["next_action"] = "select_target_for_operator"
         _write_json(run_root / "state.json", state)
+        _emit_event(run_root, state, "plan_ready", receipt=str(run_root / "plan.json"),
+                    message="validated plan materialized")
+        if state.get("operator", {}).get("receipt"):
+            _emit_event(run_root, state, "operator_receipt",
+                        receipt=str(run_root / "operator-receipt.json"),
+                        message="operator dry-run receipt persisted")
         _transition(run_root, state, "awaiting_decision", "plan derived from task contract + mapper",
                     receipt=str(run_root / "plan.json"))
     except Exception as exc:
@@ -1415,6 +1499,15 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         target,
     )
     checkpoint = _capture_operator_checkpoint(run_dir, repo_path, targets or [target])
+    _emit_event(run_dir, status["state"], "worker_claimed",
+                receipt=str(run_dir / "task-contract.json"),
+                task_id=str(task.get("id") or ""),
+                ac_ids=_task_ac_ids(task),
+                message="operator worker claimed task")
+    if item_context := (status["state"].get("operator") or {}).get("worktree_context"):
+        _emit_event(run_dir, status["state"], "worktree_created",
+                    receipt=str(item_context.get("lock_receipt") or operator_path),
+                    message="isolated worktree context available", worktree=item_context)
     op_env = _devcli_env(repo_path, _operator_env())
     provider_config = {
         "model": op_env.get("SIMPLICIO_MODEL", ""),
@@ -1510,6 +1603,10 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
     receipt["receipt_hash"] = _operator_receipt_hash(receipt)
     _write_json(operator_path, receipt)
     state = status["state"]
+    if rollback.get("restored"):
+        _emit_event(run_dir, state, "rollback", receipt=str(operator_path),
+                    blocker=str(rollback.get("reason") or "operator execution failed"),
+                    message="operator changes rolled back")
     state["operator"] = {
         "ready": returncode == 0,
         "receipt": str(operator_path),
@@ -1529,6 +1626,11 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         state = _load_json(run_dir / "state.json")
         state["evidence"] = {"ready": False, "receipt": str(run_dir / "evidence-receipt.json"), "status": evidence.get("status", "UNVERIFIED")}
         _write_json(run_dir / "state.json", state)
+        _emit_event(run_dir, state, "operator_receipt", receipt=str(operator_path),
+                    message="operator execution receipt persisted")
+        _emit_event(run_dir, state, "test_gate", receipt=str(run_dir / "evidence-receipt.json"),
+                    blocker="" if evidence.get("status") == "VERIFIED" else "evidence_unverified",
+                    message="test and evidence gate evaluated", status=evidence.get("status", "UNVERIFIED"))
     return read_status(repo, run_id)
 
 
@@ -1679,6 +1781,19 @@ def _persist_isolated_run_context(item: Dict[str, Any], context: Dict[str, Any])
     context_path = context_dir / (str(context.get("task_id") or item.get("task_index")) + ".json")
     context["context_path"] = str(context_path)
     _write_json(context_path, context)
+
+    source_state_path = source_repo / ".orchestrator" / "runs" / run_id / "state.json"
+    if source_state_path.exists():
+        try:
+            source_run = source_state_path.parent
+            source_state = _load_json(source_state_path)
+            _emit_event(source_run, source_state, "worktree_created",
+                        receipt=str(context.get("lock_receipt") or context_path),
+                        task_id=str(context.get("task_id") or item.get("task_id") or ""),
+                        message="isolated worktree context persisted", worktree=context)
+        except (OSError, ValueError, TypeError):
+            # The worker's normal receipts remain authoritative if the coordinator is gone.
+            pass
 
     source_run = source_repo / ".orchestrator" / "runs" / run_id
     target_run = target_root / ".orchestrator" / "runs" / run_id
@@ -2420,6 +2535,23 @@ def reconcile_delivery(repo: str, run_id: str, current_state: str, source_kind: 
         if fail_gate:
             state["blockers"] = [fail_gate.get("detail", "delivery reconciliation failed")]
     _write_json(run_dir / "state.json", state)
+    _emit_event(run_dir, state, "delivery_reconciled", receipt=str(run_dir / "delivery-receipt.json"),
+                blocker="" if receipt["ready"] else "delivery_reconciliation_failed",
+                message="delivery state reconciled", current_state=receipt["current_state"],
+                reconciliation=reconciliation)
+    if reconciliation.get("status") == "reopened":
+        _emit_event(run_dir, state, "rollback", receipt=str(run_dir / "delivery-receipt.json"),
+                    blocker=str(reconciliation.get("reason_code") or "delivery_reopened"),
+                    message="delivery regression reopened the run")
+    if receipt["ready"]:
+        completion = _completion_state(run_dir, state.get("completion"))
+        _emit_event(run_dir, state, "oracle_verdict", receipt=(
+            str(run_dir / "completion-receipt.json")
+            if (run_dir / "completion-receipt.json").exists()
+            else str(run_dir / "delivery-receipt.json")),
+            blocker="" if completion.get("ready") else "oracle_incomplete",
+            message=str(completion.get("verdict") or "DELIVERY_PENDING"),
+            verdict=str(completion.get("verdict") or "DELIVERY_PENDING"))
     _transition(run_dir, state, next_phase, "delivery state reconciled", receipt=str(run_dir / "delivery-receipt.json"))
     return read_status(repo, run_id)
 
@@ -2456,6 +2588,9 @@ def apply_human_decision(repo: str, run_id: str, decision_id: str, answer: str,
     contract_payload["revision"] = int(contract_payload.get("revision", 1)) + 1
     contract_payload["updated_at"] = _now()
     _write_json(_contract_path(run_dir), contract_payload)
+    _emit_event(run_dir, state, "handoff", receipt=str(_contract_path(run_dir)),
+                task_id=str(tasks[0].get("id") or ""), ac_ids=_task_ac_ids(tasks[0]),
+                message="human decision handed off to replanning", decision_id=decision_id)
     invalidated = []
     for name in ("plan.json", "operator-receipt.json", "evidence-receipt.json", "delivery-receipt.json"):
         path = run_dir / name
