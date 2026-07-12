@@ -267,8 +267,15 @@ def _devcli_env(repo_path: Path, base_env: Dict[str, str] | None = None) -> Dict
 
 def _devcli_cmd(repo_path: Path, *args: str) -> List[str]:
     if (repo_path / "simplicio" / "cli.py").exists():
-        return [sys.executable, "-m", "simplicio.cli", *args]
-    return ["simplicio-dev-cli", *args]
+        base = [sys.executable, "-m", "simplicio.cli", *args]
+    else:
+        base = ["simplicio-dev-cli", *args]
+    # Route the operator to the local llama.cpp backend when the configured model
+    # is a local one, so the loop works fully offline without API keys.
+    model = os.environ.get("SIMPLICIO_MODEL", "").strip()
+    if model.startswith("local/") and "--local" not in base:
+        base.append("--local")
+    return base
 
 
 def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
