@@ -36,7 +36,7 @@ Pide un video demostrativo y lo crea. web_verify captura las pantallas, hyperfra
 
 10
 00:01:37,000 --> 00:01:46,900
-Once runtimes, un solo protocolo: Claude, Codex, Copilot, Cursor, Gemini, Hermes y más. Las mismas puertas, la misma seguridad. Solo cambia la velocidad.
+Once runtimes, un solo protocolo: Claude, Codex, Copilot, Cursor, Gemini, Simplicio Agent y más. Las mismas puertas, la misma seguridad. Solo cambia la velocidad.
 
 11
 00:01:47,000 --> 00:01:54,900

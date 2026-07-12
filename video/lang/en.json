@@ -35,7 +35,7 @@
       "narration": "Ask for a demo video and it makes one. web_verify captures the screens, hyperframes renders a deterministic M-P-4, attached straight to the pull request as proof." },
     { "id": 10, "key": "runtimes", "start_s": 97, "duration_s": 10,
       "caption": "11 runtimes, one protocol — only the speed differs",
-      "narration": "Eleven runtimes, one protocol — Claude, Codex, Copilot, Cursor, Gemini, Hermes and more. Same gates, same safety. Only the speed differs." },
+      "narration": "Eleven runtimes, one protocol — Claude, Codex, Copilot, Cursor, Gemini, Simplicio Agent and more. Same gates, same safety. Only the speed differs." },
     { "id": 11, "key": "always_on", "start_s": 107, "duration_s": 8,
       "caption": "merge · close · idle · wake — 24/7",
       "narration": "It merges, closes, and goes idle — then wakes the moment new work arrives. Twenty-four seven." },

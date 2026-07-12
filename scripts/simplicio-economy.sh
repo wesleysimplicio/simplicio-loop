@@ -57,9 +57,9 @@ cmd_status() {
   grep -qE "^export ANTHROPIC_BASE_URL=http://127.0.0.1:$PROXY_PORT" "$HOME/.zshrc" 2>/dev/null && an="✓"
   grep -qE "^export OPENAI_BASE_URL=http://127.0.0.1:$PROXY_PORT" "$HOME/.zshrc" 2>/dev/null && oa="✓"
   if [ "$an$oa" != "✗✗" ]; then
-    echo "  ● auto-capture       Claude $an · Codex/OpenAI $oa · Hermes ✓ (always-on)"
+    echo "  ● auto-capture       Claude $an · Codex/OpenAI $oa · Simplicio Agent ✓ (always-on)"
   else
-    echo "  ○ auto-capture       Claude ✗ · Codex/OpenAI ✗ · Hermes ✓ (run: simplicio-economy wire)"
+    echo "  ○ auto-capture       Claude ✗ · Codex/OpenAI ✗ · Simplicio Agent ✓ (run: simplicio-economy wire)"
   fi
   echo "─────────────────────────────────────────────"
   echo "  savings: $(_savings)"
@@ -121,8 +121,8 @@ cmd_tray() {
 cmd_wire() {
   # Route BOTH OpenAI (Codex/Cursor/OpenCode) and Anthropic (Claude) clients through the LOCAL
   # capture proxy so every call is intercepted + measured — the engine routes each model to its
-  # REAL provider (claude→anthropic, gpt→openai, deepseek→deepseek), no model swap. Hermes is
-  # already routed. Reversible via `unwire`. Resilient: the proxy is a KeepAlive service.
+  # REAL provider (claude→anthropic, gpt→openai, deepseek→deepseek), no model swap. Simplicio
+  # Agent (formerly Hermes) is already routed. Reversible via `unwire`. Resilient: the proxy is a KeepAlive service.
   # Opt out by setting SIMPLICIO_NO_WIRE=1 before install. NOTE the base-url shapes differ:
   #   OpenAI clients append /chat/completions  → base needs the /v1 suffix
   #   Claude appends /v1/messages              → base must NOT carry /v1
@@ -192,14 +192,15 @@ cmd_capture() {
   esac
   echo "⬡ Starting TRANSPARENT capture proxy for $provider on :$port → $url"
   echo "  (forwards each call to the REAL provider — captures tokens, does NOT swap the model)"
+  mkdir -p "$HOME/.simplicio-agent/logs"
   SIMPLICIO_PROXY_PORT="$port" nohup "$ENGINE" proxy --port "$port" --openai-api-url "$url" --host 127.0.0.1 \
-    > "$HOME/.hermes/logs/simplicio-transparent-$provider.log" 2>&1 &
+    > "$HOME/.simplicio-agent/logs/simplicio-transparent-$provider.log" 2>&1 &
   sleep 4
   if _up "$port"; then
     echo "  ● transparent proxy live on :$port"
     echo "  Wire a client by pointing its API base_url at  http://127.0.0.1:$port"
   else
-    echo "  ○ failed to start — see ~/.hermes/logs/simplicio-transparent-$provider.log" >&2
+    echo "  ○ failed to start — see ~/.simplicio-agent/logs/simplicio-transparent-$provider.log" >&2
   fi
 }
 

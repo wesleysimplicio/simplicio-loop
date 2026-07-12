@@ -350,12 +350,12 @@
   },
 
   "token_monitor": {
-    "capture_proxy": { "always_on": true, "port": 8788, "role": "Captura + mede Claude + Codex + Hermes em background; o único serviço auto-started", "savings_file": "~/.simplicio/proxy_savings.json (schema v3)" },
+    "capture_proxy": { "always_on": true, "port": 8788, "role": "Captura + mede Claude + Codex + Simplicio Agent em background; o único serviço auto-started", "savings_file": "~/.simplicio/proxy_savings.json (schema v3)" },
     "web_dashboard": { "url": "http://127.0.0.1:9090", "shows": ["chart de tokens em tempo real", "savings gauge", "LLMs/runtimes e 141/144 providers (98%) interceptados", "live proxy log"], "opens_once": "na primeira instalação (marker-guarded; re-install/update não reabre; opt-out SIMPLICIO_NO_DASHBOARD=1)", "reopen": ["simplicio-loop dashboard", "simplicio-loop dashboard --stop", "simplicio-loop dashboard --no-browser", "bash scripts/simplicio-economy.sh monitor", "perguntar ao agente: 'open the token dashboard'"] },
     "tray_widget": { "what": "Tokens salvos ao vivo na system tray (macOS rumps · Windows/Linux pystray)", "on_demand": ["bash scripts/simplicio-economy.sh tray", "… tray stop"], "never_opens_by_itself": true },
     "service_backends": { "macOS": "launchd", "Linux": "systemd --user", "Windows": "Startup folder" },
     "economy_per_runtime": {
-      "Hermes": "Economy ✓ · Measurement ✓ automático (já roteado via proxy base_url → :8788)",
+      "Simplicio Agent": "Economy ✓ · Measurement ✓ automático (já roteado via proxy base_url → :8788)",
       "Claude": "Economy ✓ (skill + hooks) · Measurement ✗ por default (fala com api.anthropic.com direto); medido após simplicio wrap claude ou ANTHROPIC_BASE_URL → http://127.0.0.1:8788",
       "Codex": "Economy ✓ (skill) · Measurement ✗ por default; medido com simplicio wrap codex ou OpenAI base-url no proxy"
     },
@@ -588,7 +588,7 @@
       { "n": 7, "runtime": "OpenCode", "skill_load": "AGENTS.md + config", "loop_drive": "self-paced", "hooks": "⚠️", "native_bind": "MCP", "adapter": "adapters/opencode/README.md" },
       { "n": 8, "runtime": "Gemini", "skill_load": "GEMINI.md → SKILL.md", "loop_drive": "self-paced", "hooks": "⚠️", "native_bind": "MCP / native adapter", "adapter": "adapters/gemini/README.md" },
       { "n": 9, "runtime": "Aider", "skill_load": "CONVENTIONS.md (read)", "loop_drive": "self-paced", "hooks": "❌", "native_bind": "— (LLM fallback)", "adapter": "adapters/aider/README.md" },
-      { "n": 10, "runtime": "Hermes", "skill_load": "native skill recall", "loop_drive": "native loop", "hooks": "✅ native", "native_bind": "native (extension points)", "adapter": "adapters/hermes/README.md" },
+      { "n": 10, "runtime": "Simplicio Agent (formerly Hermes)", "skill_load": "native skill recall", "loop_drive": "native loop", "hooks": "✅ native", "native_bind": "native (extension points)", "adapter": "adapters/simplicio_agent/README.md" },
       { "n": 11, "runtime": "OpenClaw", "skill_load": "plugin SDK / skills/", "loop_drive": "native scheduler", "hooks": "✅ native", "native_bind": "native (plugin SDK)", "adapter": "adapters/openclaw/README.md" }
     ],
     "graceful_degradation": ["No stop-hook → loop self-paces via host scheduler", "No native bind → LLM faz cada extension point com shell/git/gh/file", "No skill loader (ex: Aider) → adapter inlina SKILL.md como conventions file"]
@@ -642,8 +642,9 @@
   "install_and_ops": {
     "clone": "git clone https://github.com/wesleysimplicio/simplicio-loop && cd simplicio-loop",
     "install": "bash scripts/install.sh <runtime> [--global] [--minimal]  (macOS/Linux) · pwsh scripts/install.ps1 <runtime> [-Global] (Windows)",
-    "runtimes_enum": ["claude", "codex", "vscode", "cursor", "antigravity", "kiro", "opencode", "gemini", "aider", "hermes", "openclaw"],
-    "default_is_complete": "Install completo por default: 2 operadores (simplicio-mapper + simplicio-cli, lida com PEP 668 + symlink no PATH), full Python stack + [onnx] models backend, 6 skills + hooks (Stop hook wired), capture proxy always-on com Claude+Codex+Hermes roteados e medidos. Dashboard abre 1× no fresh install, tray nunca abre sozinho.",
+    "runtimes_enum": ["claude", "codex", "vscode", "cursor", "antigravity", "kiro", "opencode", "gemini", "aider", "simplicio_agent", "openclaw"],
+    "runtimes_enum_legacy_aliases": {"hermes": "simplicio_agent"},
+    "default_is_complete": "Install completo por default: 2 operadores (simplicio-mapper + simplicio-cli, lida com PEP 668 + symlink no PATH), full Python stack + [onnx] models backend, 6 skills + hooks (Stop hook wired), capture proxy always-on com Claude+Codex+Simplicio Agent roteados e medidos. Dashboard abre 1× no fresh install, tray nunca abre sozinho.",
     "minimal": "--minimal só p/ headless/CI: pula deps pesadas + serviços de máquina",
     "pip_install": "pip install simplicio-loop · simplicio-loop install [--global]",
     "github_release_install": "gh release download --repo wesleysimplicio/simplicio-loop --archive tar.gz → tar xzf → bash scripts/install.sh claude|cursor",
@@ -755,7 +756,7 @@
       { "scene": 7, "title": "Token economy", "beats": ["signatures 870→65 linhas (93%)", "clamp + tee cache", "dashboard 127.0.0.1:9090 ao vivo", "até 96% menos tokens"], "duration_s": 12 },
       { "scene": 8, "title": "Evidence-gated loop", "beats": ["<promise> SÓ com prova", "stall detector troca estratégia", "nunca um falso 'done'"], "duration_s": 10 },
       { "scene": 9, "title": "Video evidence", "beats": ["'faça um vídeo demonstrativo da tela X'", "web_verify captura screenshots → hyperframes → MP4 determinístico anexado ao PR"], "duration_s": 10 },
-      { "scene": 10, "title": "11 runtimes, um protocolo", "beats": ["Logos: Claude, Codex, Copilot, Cursor, Gemini, Antigravity, Kiro, OpenCode, Aider, Hermes, OpenClaw", "mesma cor, só a velocidade difere"], "duration_s": 10 },
+      { "scene": 10, "title": "11 runtimes, um protocolo", "beats": ["Logos: Claude, Codex, Copilot, Cursor, Gemini, Antigravity, Kiro, OpenCode, Aider, Simplicio Agent, OpenClaw", "mesma cor, só a velocidade difere"], "duration_s": 10 },
       { "scene": 11, "title": "24/7", "beats": ["merge · close · idle · acorda com novo trabalho", "loop infinito girando"], "duration_s": 8 },
       { "scene": 12, "title": "CTA", "beats": ["pip install simplicio-loop", "bash scripts/install.sh claude", "Discord badge", "GitHub stars"], "duration_s": 8 }
     ],

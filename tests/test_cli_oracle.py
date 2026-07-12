@@ -34,7 +34,7 @@ def test_oracle_cli_emits_adapter_matrix_and_receipt(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema"] == "simplicio.completion-oracle-matrix/v1"
     assert payload["parity"] is True
-    assert len(payload["adapters"]) == 6
+    assert len(payload["adapters"]) == 7
     assert Path(payload["receipt_path"]).exists()
 
 

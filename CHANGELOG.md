@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+- #262: `simplicio_agent` is now the canonical adapter ID (formerly `hermes`); `hermes` is kept
+  as a legacy shim (same install/native-bind contract) for the compat window. Config/log paths
+  move from `~/.hermes/` to `~/.simplicio-agent/`; the `HERMES_PROFILE` env var is superseded by
+  `SIMPLICIO_AGENT_PROFILE` (legacy var still honored as a fallback).
+
 ## [3.33.0] — 2026-07-12
 
 - Consume `simplicio-cli>=0.15.0`, paired with mapper `v0.22.0` and dev-cli `v0.15.0`.

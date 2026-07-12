@@ -104,7 +104,7 @@
     {
       "id": 10, "key": "runtimes", "start_s": 97, "duration_s": 10,
       "headline_data": "11 runtimes, um protocolo — só a velocidade difere",
-      "on_screen": ["11 logos/labels: Claude Code, Codex, VS Code/Copilot, Cursor, Antigravity, Kiro, OpenCode, Gemini, Aider, Hermes, OpenClaw", "mesma cor de protocolo conectando todos ao hub central"],
+      "on_screen": ["11 logos/labels: Claude Code, Codex, VS Code/Copilot, Cursor, Antigravity, Kiro, OpenCode, Gemini, Aider, Simplicio Agent, OpenClaw", "mesma cor de protocolo conectando todos ao hub central"],
       "effects": { "in": "depth-zoom", "anim": ["11 nós orbitam o hub simplicio-tasks", "linhas de conexão pulsam na mesma cor", "selo '✅ same gates, same safety'"], "camera": "orbital", "out": "radial-wipe" },
       "sound": { "music": "expansive", "sfx": ["data-blip x11", "riser"] }
     },

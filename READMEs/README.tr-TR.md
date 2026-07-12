@@ -199,7 +199,7 @@ bağlayacağını* söyler. **Skill hiçbir runtime'ı adlandırmaz; runtime ski
 | **OpenCode** | `AGENTS.md` | kendi temposunda | MCP |
 | **Gemini** | `GEMINI.md` | kendi temposunda | MCP / adaptör |
 | **Aider** | `CONVENTIONS.md` | kendi temposunda | — (LLM yedeği) |
-| **Hermes** | yerel bellek | yerel döngü | **yerel** |
+| **Simplicio Agent** | yerel bellek | yerel döngü | **yerel** |
 | **OpenClaw** | plugin SDK | yerel zamanlayıcı | **yerel** |
 
 Söz: **aynı protokol, aynı kapılar, 11'inin hepsinde aynı güvenlik — yalnızca hız farklıdır.**
@@ -352,11 +352,11 @@ ya da yüzde uydurmaz. Bkz. `references/token-economy.md`.
 
 | Runtime | Ekonomi (skill) | Ölçüm (monitör) |
 |---|---|---|
-| **Hermes** | ✓ | ✓ **otomatik** — zaten proxy üzerinden yönlendirilmiş (`base_url → :8788`) |
+| **Simplicio Agent** | ✓ | ✓ **otomatik** — zaten proxy üzerinden yönlendirilmiş (`base_url → :8788`) |
 | **Claude** | ✓ (skill + hook'lar) | ✗ varsayılan olarak — Claude doğrudan `api.anthropic.com` ile konuşur; yalnızca yönlendirildiğinde ölçülür (`simplicio-cli wrap claude` ya da `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
 | **Codex** | ✓ (skill) | ✗ varsayılan olarak — `simplicio-cli init codex` MCP araçlarını ekler ama LLM trafiğini yönlendirmez; `simplicio-cli wrap codex` ya da proxy'ye işaret eden bir OpenAI base-url ile ölçülür |
 
-Yani: **tasarruflar her runtime'da gerçekleşir**; **monitör bunları Hermes'te otomatik olarak
+Yani: **tasarruflar her runtime'da gerçekleşir**; **monitör bunları Simplicio Agent'te otomatik olarak
 toplar** ve Claude/Codex'te bir **tek-seferlik yönlendirme adımından** sonra (`simplicio-cli wrap …` /
 base-url → `:8788`). Yönlendirme olmadan ekonomi yine de geçerlidir — monitör yalnızca o token'ları
 saymaz. `scripts/simplicio-economy.sh wire`, kurulum sırasında OpenAI-uyumlu istemciler için bu
@@ -422,7 +422,7 @@ cd simplicio-loop
 # install for your runtime (omit <runtime> to auto-detect)
 bash scripts/install.sh <runtime> [--global]        # macOS / Linux
 pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
-# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
+# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent openclaw
 ```
 
 Veya, Claude Code / Cursor üzerinde, onu doğrudan en son GitHub sürümünden kurun (marketplace yok):

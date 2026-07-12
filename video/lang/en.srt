@@ -36,7 +36,7 @@ Ask for a demo video and it makes one. web_verify captures the screens, hyperfra
 
 10
 00:01:37,000 --> 00:01:46,900
-Eleven runtimes, one protocol — Claude, Codex, Copilot, Cursor, Gemini, Hermes and more. Same gates, same safety. Only the speed differs.
+Eleven runtimes, one protocol — Claude, Codex, Copilot, Cursor, Gemini, Simplicio Agent and more. Same gates, same safety. Only the speed differs.
 
 11
 00:01:47,000 --> 00:01:54,900

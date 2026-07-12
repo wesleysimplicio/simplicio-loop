@@ -36,7 +36,7 @@ Peça um vídeo demonstrativo e ele cria. O web_verify captura as telas, o hyper
 
 10
 00:01:37,000 --> 00:01:46,900
-Onze runtimes, um protocolo: Claude, Codex, Copilot, Cursor, Gemini, Hermes e mais. Os mesmos portões, a mesma segurança. Só a velocidade muda.
+Onze runtimes, um protocolo: Claude, Codex, Copilot, Cursor, Gemini, Simplicio Agent e mais. Os mesmos portões, a mesma segurança. Só a velocidade muda.
 
 11
 00:01:47,000 --> 00:01:54,900

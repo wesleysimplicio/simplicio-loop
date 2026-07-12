@@ -41,6 +41,17 @@ def test_matrix_is_identical_for_all_supported_adapters_when_complete(tmp_path):
     assert payload["signature"][:3] == [True, "COMPLETE", "completion_verified"] or tuple(payload["signature"][:3]) == (True, "COMPLETE", "completion_verified")
 
 
+def test_hermes_and_simplicio_agent_share_a_signature(tmp_path):
+    """N-1/N parity fixture (#262): the legacy `hermes` adapter and the canonical
+    `simplicio_agent` adapter must evaluate to the same oracle signature."""
+    loop, run = _seed(tmp_path, ready=True)
+    assert "hermes" in ADAPTERS and "simplicio_agent" in ADAPTERS
+    hermes_row = evaluate_adapter("hermes", str(loop), str(run), "<promise>DONE</promise>")
+    agent_row = evaluate_adapter("simplicio_agent", str(loop), str(run), "<promise>DONE</promise>")
+    assert (hermes_row["ready"], hermes_row["verdict"], hermes_row["reason_code"], hermes_row["tag"]) == (
+        agent_row["ready"], agent_row["verdict"], agent_row["reason_code"], agent_row["tag"])
+
+
 def test_unknown_adapter_fails_closed(tmp_path):
     loop, run = _seed(tmp_path, ready=False)
     try:

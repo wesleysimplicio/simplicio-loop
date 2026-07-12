@@ -6,9 +6,9 @@
 # installs its *blessed, transparent* integration per client (provider routing that forwards to
 # each client's REAL provider — it does NOT swap the model). Three tiers:
 #
-#   native   Claude · Codex · VS Code (Copilot) · OpenClaw   → `simplicio-cli capture init <client>`
-#   base-url Hermes · Cursor · OpenCode                       → point OPENAI/ANTHROPIC_BASE_URL at the proxy
-#   none     Gemini · Kiro · Antigravity                      → proprietary API, not interceptable (yet)
+#   native   Claude · Codex · VS Code (Copilot) · OpenClaw          → `simplicio-cli capture init <client>`
+#   base-url Simplicio Agent (formerly Hermes) · Cursor · OpenCode  → point OPENAI/ANTHROPIC_BASE_URL at the proxy
+#   none     Gemini · Kiro · Antigravity                            → proprietary API, not interceptable (yet)
 #
 # Usage:
 #   bash scripts/simplicio-capture.sh status      # show capture status (read-only engine doctor)
@@ -49,7 +49,7 @@ cmd_init() {
     fi
   done
   echo ""
-  echo "Base-url runtimes (Hermes/Cursor/OpenCode): set their model base_url to"
+  echo "Base-url runtimes (Simplicio Agent/Cursor/OpenCode): set their model base_url to"
   echo "  http://127.0.0.1:$PORT   (OpenAI-compatible) or  /v1  as the API root."
   echo ""
   cmd_status

@@ -11,7 +11,8 @@ it exposes (`simplicio-dev-cli`, `simplicio-mapper`) unless --skip-operators is 
 
 Usage:
     python3 scripts/install_lib.py <runtime> [--global] [--target DIR] [--skip-operators] [--lite]
-    <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
+    <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent
+               openclaw (hermes accepted as a legacy alias for simplicio_agent)
     omit <runtime> to auto-detect.
 
 --lite mode:
@@ -82,7 +83,8 @@ RUNTIMES = {
     "opencode":    {"entry": "AGENTS.md",                       "mcp": "opencode",    "hooks": None},
     "gemini":      {"entry": "GEMINI.md",                       "mcp": "gemini",      "hooks": None},
     "aider":       {"entry": "CONVENTIONS.md",                  "mcp": None,          "hooks": None},
-    "hermes":      {"entry": None,                              "mcp": None,          "hooks": "native"},
+    "simplicio_agent": {"entry": None,                          "mcp": None,          "hooks": "native"},
+    "hermes":      {"entry": None,                              "mcp": None,          "hooks": "native"},  # legacy alias — see simplicio_agent
     "openclaw":    {"entry": None,                              "mcp": None,          "hooks": "native"},
 }
 
@@ -322,7 +324,7 @@ def _link_operator_bins():
 # optional nicety: the loop and ALL simplicio-tasks/simplicio-loop/simplicio-review directives
 # must run bound, never silently degrade to the full LLM-only fallback on these hosts.
 FORCED_BIND_RUNTIMES = {"claude", "codex", "cursor", "vscode", "antigravity",
-                        "kiro", "opencode", "hermes"}
+                        "kiro", "opencode", "simplicio_agent", "hermes"}  # hermes: legacy alias, compat window
 # Runtimes simplicio-runtime's own `simplicio install --global` auto-detects and registers
 # end-to-end (writes the MCP config for each, idempotent to re-run) — see
 # `simplicio install --global --dry-run --json` -> assistant_adapters.
@@ -358,8 +360,9 @@ def ensure_runtime_bind(runtime, cfg):
     elif runtime == "opencode":
         pass  # merge_opencode_mcp() in main() already does this, with the same forced severity
     else:
-        # antigravity, hermes: no config schema this installer can safely auto-write (Antigravity's
-        # MCP config path/format isn't verified here; Hermes binds natively, no MCP file at all).
+        # antigravity, simplicio_agent, hermes: no config schema this installer can safely
+        # auto-write (Antigravity's MCP config path/format isn't verified here; Simplicio Agent
+        # (formerly Hermes) binds natively, no MCP file at all).
         # Verify the runtime itself is healthy so the requirement is at least checked, not assumed.
         try:
             import re as _re
@@ -559,7 +562,7 @@ def setup_monitor(enable):
 
     Default-on (the install is complete by default; `--minimal` disables it). Registers the
     always-on capture proxy (launchd via setup_simplicio.sh on macOS · systemd/Startup via
-    install_services.py elsewhere) and routes Claude + Codex + Hermes through the proxy. The
+    install_services.py elsewhere) and routes Claude + Codex + Simplicio Agent through the proxy. The
     dashboard opens ONCE on the first install (then on-demand); the tray is on-demand.
     """
     svc = os.path.join(HERE, "install_services.py")
@@ -575,7 +578,7 @@ def setup_monitor(enable):
         subprocess.run([py, svc, "install"], check=False)
         subprocess.run([py, svc, "wire"], check=False)
     _open_dashboard_first_run()   # show the dashboard once on a fresh install (marker-guarded)
-    log("capture proxy always-on · Claude+Codex+Hermes measured. Re-open the UI any time:")
+    log("capture proxy always-on · Claude+Codex+Simplicio Agent measured. Re-open the UI any time:")
     log("  dashboard: simplicio-loop dashboard   (or: bash scripts/simplicio-economy.sh monitor)")
     log("  tray:      bash scripts/simplicio-economy.sh tray   ·   or just ask the agent to open it")
 

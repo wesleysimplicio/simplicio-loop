@@ -44,7 +44,8 @@ SAVINGS_JSON_CANDIDATES = [
 # Raw proxy log (Simplicio-named first; engine dir kept for back-compat).
 LOG_CANDIDATES = [
     Path(HOME) / ".simplicio" / "logs" / "proxy.log",
-    Path(HOME) / ".hermes" / "logs" / "simplicio-proxy.log",
+    Path(HOME) / ".simplicio-agent" / "logs" / "simplicio-proxy.log",
+    Path(HOME) / ".hermes" / "logs" / "simplicio-proxy.log",  # legacy alias, compat window
 ]
 LOGO_CANDIDATES = [
     REPO_ROOT / "assets" / "simplicio-loop-logo.png",
@@ -69,7 +70,8 @@ RUNTIMES = [
     {"name": "Codex", "load": "AGENTS.md", "loop": "self-paced", "state": "partial", "intercept": "native", "logo": "openai", "proc": r"\bcodex\b", "families": ["openai"]},
     {"name": "VS Code", "load": "copilot instructions", "loop": "tasks", "state": "partial", "intercept": "native", "logo": "vscode", "proc": r"Visual Studio Code|Code Helper|Copilot", "families": ["openai"]},
     {"name": "OpenClaw", "load": "plugin SDK", "loop": "native loop", "state": "native", "intercept": "native", "logo": "openclaw", "proc": r"openclaw", "families": ["openai", "anthropic"]},
-    {"name": "Hermes", "load": "native recall", "loop": "native loop", "state": "native", "intercept": "baseurl", "logo": "hermes", "proc": r"hermes", "families": ["deepseek", "openai"]},
+    {"name": "Simplicio Agent", "load": "native recall", "loop": "native loop", "state": "native", "intercept": "baseurl", "logo": "simplicio_agent", "proc": r"simplicio-agent", "families": ["deepseek", "openai"]},
+    {"name": "Hermes (legacy)", "load": "native recall", "loop": "native loop", "state": "native", "intercept": "baseurl", "logo": "hermes", "proc": r"hermes", "families": ["deepseek", "openai"]},
     {"name": "Cursor", "load": ".cursor-plugin", "loop": "Stop hook", "state": "full", "intercept": "baseurl", "logo": "cursor", "proc": r"Cursor\.app|Cursor Helper", "families": ["openai", "anthropic"]},
     {"name": "OpenCode", "load": "AGENTS.md", "loop": "self-paced", "state": "partial", "intercept": "baseurl", "logo": "opencode", "proc": r"opencode", "families": ["openai", "anthropic"]},
     {"name": "Gemini", "load": "GEMINI.md", "loop": "self-paced", "state": "partial", "intercept": "none", "logo": "gemini", "proc": r"\bgemini\b", "families": []},
@@ -399,6 +401,7 @@ const LOGOS = {
   openai:'<svg viewBox="0 0 24 24"><g fill="none" stroke="#10a37f" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 4v16M5 8l14 8M5 16l14-8"/></g></svg>',
   vscode:'<svg viewBox="0 0 24 24"><path fill="#3aa0e3" d="M17 2l5 2.5v15L17 22l-9-8 3-3 6 5V8l-6 5-3-3z"/><path fill="#3aa0e3" opacity=".55" d="M8 11L4 8 6 7l3 2.5z"/></svg>',
   openclaw:'<svg viewBox="0 0 24 24"><g fill="none" stroke="#ff7a3c" stroke-width="2.1" stroke-linecap="round"><path d="M6 4c0 6 1.5 11 6 14M12 4c.5 6 .3 11 0 14M18 4c0 6-1.5 11-6 14"/></g></svg>',
+  simplicio_agent:'<svg viewBox="0 0 24 24"><g stroke="#e0b341" stroke-width="2" fill="none" stroke-linecap="round"><path d="M9 5v14M15 5v14M9 12h6"/><path d="M7 8c-2.2 0-3.5 1.2-3.5 1.2M17 8c2.2 0 3.5 1.2 3.5 1.2" stroke-width="1.4"/></g></svg>',
   hermes:'<svg viewBox="0 0 24 24"><g stroke="#e0b341" stroke-width="2" fill="none" stroke-linecap="round"><path d="M9 5v14M15 5v14M9 12h6"/><path d="M7 8c-2.2 0-3.5 1.2-3.5 1.2M17 8c2.2 0 3.5 1.2 3.5 1.2" stroke-width="1.4"/></g></svg>',
   cursor:'<svg viewBox="0 0 24 24"><path fill="#cfd2d6" opacity=".28" d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path fill="none" stroke="#cfd2d6" stroke-width="1.5" stroke-linejoin="round" d="M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>',
   opencode:'<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5" fill="none" stroke="#9dff1a" stroke-width="1.6"/><path d="M7 9l3 3-3 3M13 15h4" fill="none" stroke="#9dff1a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',

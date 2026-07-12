@@ -35,7 +35,7 @@ auto-clamp). See [`hooks/README.md`](hooks/README.md).
 
 Install for any of the 11 runtimes with `scripts/install.sh <runtime>` (or `install.ps1`). See
 [`adapters/MATRIX.md`](adapters/MATRIX.md): Claude Code · Codex · VS Code (Copilot) · Cursor ·
-Antigravity · Kiro · OpenCode · Gemini · Aider · Hermes · OpenClaw.
+Antigravity · Kiro · OpenCode · Gemini · Aider · Simplicio Agent (formerly Hermes) · OpenClaw.
 
 ## Activation
 
@@ -57,7 +57,7 @@ For each point, if this runtime exposes a faster native capability, **bind it** 
 the step becomes deterministic and near-zero-token. The skill never requires a specific
 runtime; the binding lives here in the host, not in the skill.
 
-On Claude Code, Codex, Cursor, VS Code, Antigravity, Kiro, OpenCode, and Hermes, binding to
+On Claude Code, Codex, Cursor, VS Code, Antigravity, Kiro, OpenCode, and Simplicio Agent, binding to
 `simplicio-runtime` (MCP or CLI) is **REQUIRED project policy, not an optional speed-up** — see
 `adapters/MATRIX.md` `FORCED_BIND_RUNTIMES`. On these 8, an unreachable bind is a STOP-and-report
 condition (verify with `simplicio doctor --json`); only Gemini, Aider, and OpenClaw fall back to
@@ -106,7 +106,7 @@ path + verdict; a missing toolchain BLOCKS, never a fake pass.
   Self-runs on bare python3 — no CI, no pytest required. Keep it green.
 - **Big refactors/doc rewrites:** run `python3 scripts/check.py --token-budget` and treat a FAIL
   as a real regression to justify or trim, not to silence with `--update-baseline` unreviewed.
-- On Claude/Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Hermes, the `simplicio-runtime` native
+- On Claude/Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Simplicio Agent, the `simplicio-runtime` native
   bind (MCP or CLI) is REQUIRED before driving the loop — `simplicio doctor --json` must report
   the runtime reachable. An unbound run on one of these 8 is a blocker to fix
   (`simplicio install --global`), never a silent fallback to the plain-LLM path.

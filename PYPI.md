@@ -41,7 +41,7 @@ Now invoke it from your agent runtime (Claude Code, Cursor, Codex, Gemini, …):
 ## Highlights
 
 - **11 runtimes, one protocol** — Claude Code, Codex, VS Code/Copilot, Cursor, Antigravity, Kiro,
-  OpenCode, Gemini, Aider, Hermes, OpenClaw.
+  OpenCode, Gemini, Aider, Simplicio Agent (formerly Hermes), OpenClaw.
 - **Evidence-gated completion** — never a false "done"; exits only on a verified `<promise>`,
   cap, spindle handoff, or STOP.
 - **Token economy** — honest "answer concisely" baseline; savings credited only on verified-correct

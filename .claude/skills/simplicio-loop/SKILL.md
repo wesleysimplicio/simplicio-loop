@@ -22,7 +22,7 @@ and safety details.
 
 ## Normative contract (non-negotiable)
 
-These invariants are MUST-level. Any runtime that loads this skill (Hermes, Claude, Cursor, or a
+These invariants are MUST-level. Any runtime that loads this skill (Simplicio Agent, Claude, Cursor, or a
 bare LLM) follows them mechanically — no paraphrase, no drift:
 
 1. **Evidence-gated exit.** The loop MUST NOT terminate without concrete evidence, produced in the
@@ -245,7 +245,7 @@ flat mode. Full phase table + usage: **`references/hierarchical-planner.md`**.
 
 Every turn's key decisions, findings, and dead-ends are captured into a persistent markdown wiki
 at `.orchestrator/wiki/` (`scripts/cross_agent_wiki.py capture|summary|handoff|status`) — a
-per-project, cross-agent, zero-friction knowledge base that survives across agent vendors (Hermes
+per-project, cross-agent, zero-friction knowledge base that survives across agent vendors (Simplicio Agent
 → Claude Code → Codex): a fresh agent reads it and sees "where we left off" with no transcript.
 Plain markdown, no vector DB. Full structure + per-turn mechanics:
 **`references/cross-agent-wiki.md`**.

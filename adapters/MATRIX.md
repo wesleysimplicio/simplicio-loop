@@ -12,7 +12,7 @@ Three capabilities decide how rich an adapter is:
   **self-paced** fallback (host scheduler / cron / `/loop`).
 - **Native bind** — whether `simplicio-runtime` (or a native command set) binds the extension
   points for near-zero-token determinism. **REQUIRED, not optional, on Claude, Codex, Cursor,
-  VS Code, Antigravity, Kiro, OpenCode, and Hermes** (`scripts/install_lib.py`
+  VS Code, Antigravity, Kiro, OpenCode, and Simplicio Agent** (`scripts/install_lib.py`
   `FORCED_BIND_RUNTIMES`) — these 8 must verify the bind (`simplicio doctor --json`) and STOP
   rather than silently run the unbound LLM fallback. Gemini, Aider, and OpenClaw keep the bind
   optional/native-by-design per their own adapter.
@@ -61,8 +61,13 @@ no gate, no parity promise per release:
 | 7 | **OpenCode** | `AGENTS.md` + config | self-paced | ⚠️ | MCP, **REQUIRED** | [opencode](opencode/README.md) |
 | 8 | **Gemini** | `GEMINI.md` → `SKILL.md` | self-paced | ⚠️ | MCP / native adapter (optional) | [gemini](gemini/README.md) |
 | 9 | **Aider** | `CONVENTIONS.md` (read) | self-paced | ❌ | — (LLM fallback, no bind exists) | [aider](aider/README.md) |
-| 10 | **Hermes** | native skill recall | native loop | ✅ native | **native** (extension points), **REQUIRED** | [hermes](hermes/README.md) |
+| 10 | **Simplicio Agent** *(formerly Hermes)* | native skill recall | native loop | ✅ native | **native** (extension points), **REQUIRED** | [simplicio_agent](simplicio_agent/README.md) |
 | 11 | **OpenClaw** | plugin SDK / `skills/` | native scheduler | ✅ native | **native** (plugin SDK) | [openclaw](openclaw/README.md) |
+
+`hermes` is kept as a **legacy shim** for row 10, not a 12th runtime — see
+[hermes/README.md](hermes/README.md). It installs/binds identically to `simplicio_agent` during
+the compat window and will be removed after the deprecation threshold (one release cycle without
+a regression report), per the adapter-rebrand rollback policy (#262).
 
 Legend: ✅ first-class · ⚠️ partial / via a generic mechanism · ❌ none (degrade to fallback).
 **REQUIRED** = native bind is mandatory project policy on this host (rows 1–7 + 10); not following
@@ -75,13 +80,14 @@ it is a policy violation, not a graceful degradation — see `scripts/install_li
 # from a clone of this repo:
 bash scripts/install.sh <runtime> [--global]      # macOS/Linux
 pwsh scripts/install.ps1 <runtime> [-Global]      # Windows / pwsh
-# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
+# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent
+#            openclaw   (hermes still accepted as a legacy alias for simplicio_agent)
 # omit <runtime> to auto-detect
 ```
 
 The installer copies the 6 skills into the runtime's skills location, wires the loop hooks
 where supported, and — on the 8 `FORCED_BIND_RUNTIMES` (claude, codex, cursor, vscode,
-antigravity, kiro, opencode, hermes) — actually applies the native MCP/CLI bind
+antigravity, kiro, opencode, simplicio_agent) — actually applies the native MCP/CLI bind
 (`ensure_runtime_bind` in `scripts/install_lib.py`), not just prints a suggestion. Everything it
 does is a copy + a config edit — reversible, no build.
 
