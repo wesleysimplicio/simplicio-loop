@@ -78,6 +78,19 @@ jobs:
       - name: Loop→Runtime contract matrix
         run: python3 -m pytest -q tests/test_runtime_adapter.py tests/test_phase_events.py
 
+  release-manifest:
+    name: Published surface parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Verify one version across package, npm, plugin, and source fallback
+        run: python3 scripts/release_manifest.py --json
+      - name: Verify focused release gate tests
+        run: python3 -m pytest -q tests/test_release_manifest.py
+
   package:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: check
