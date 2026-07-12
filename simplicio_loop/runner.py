@@ -270,11 +270,14 @@ def _devcli_cmd(repo_path: Path, *args: str) -> List[str]:
         base = [sys.executable, "-m", "simplicio.cli", *args]
     else:
         base = ["simplicio-dev-cli", *args]
-    # Route the operator to the local llama.cpp backend when the configured model
-    # is a local one, so the loop works fully offline without API keys.
-    model = os.environ.get("SIMPLICIO_MODEL", "").strip()
-    if model.startswith("local/") and "--local" not in base:
-        base.append("--local")
+    # Route the operator offline. Prefer an OpenAI-compatible local server when
+    # SIMPLICIO_BASE_URL is set (e.g. llama-server on 127.0.0.1:11435 with a Q4 model);
+    # otherwise fall back to the bundled llama-cpp-python '--local' mode.
+    base_url = os.environ.get("SIMPLICIO_BASE_URL", "").strip()
+    if not base_url:
+        model = os.environ.get("SIMPLICIO_MODEL", "").strip()
+        if model.startswith("local/") and "--local" not in base:
+            base.append("--local")
     return base
 
 
