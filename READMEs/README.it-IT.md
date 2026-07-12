@@ -200,7 +200,7 @@ skill non nomina alcun runtime; è il runtime a rilevare la skill.**
 | **OpenCode** | `AGENTS.md` | auto-ritmato | MCP |
 | **Gemini** | `GEMINI.md` | auto-ritmato | MCP / adapter |
 | **Aider** | `CONVENTIONS.md` | auto-ritmato | — (fallback LLM) |
-| **Hermes** | native recall | loop nativo | **nativo** |
+| **Simplicio Agent** | native recall | loop nativo | **nativo** |
 | **OpenClaw** | plugin SDK | scheduler nativo | **nativo** |
 
 La promessa: **stesso protocollo, stessi gate, stessa sicurezza su tutti e 11 — cambia solo la
@@ -350,11 +350,11 @@ Quando chiami **`simplicio-loop`** accadono due cose diverse, e si comportano di
 
 | Runtime | Economia (skill) | Misurazione (monitor) |
 |---|---|---|
-| **Hermes** | ✓ | ✓ **automatica** — già instradato attraverso il proxy (`base_url → :8788`) |
+| **Simplicio Agent** | ✓ | ✓ **automatica** — già instradato attraverso il proxy (`base_url → :8788`) |
 | **Claude** | ✓ (skill + hook) | ✗ di default — Claude parla direttamente con `api.anthropic.com`; misurato solo una volta instradato (`simplicio-cli wrap claude`, o `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
 | **Codex** | ✓ (skill) | ✗ di default — `simplicio-cli init codex` aggiunge gli strumenti MCP ma non instrada il traffico LLM; misurato con `simplicio-cli wrap codex` o un base-url OpenAI che punta al proxy |
 
-Quindi: i **risparmi avvengono su ogni runtime**; il **monitor li conteggia automaticamente su Hermes**, e
+Quindi: i **risparmi avvengono su ogni runtime**; il **monitor li conteggia automaticamente su Simplicio Agent**, e
 su Claude/Codex dopo un **passo di routing una-tantum** (`simplicio-cli wrap …` / base-url → `:8788`). Senza
 routing, l'economia si applica comunque — il monitor semplicemente non conterà quei token.
 `scripts/simplicio-economy.sh wire` esegue questo routing per i client compatibili con OpenAI al momento
@@ -418,7 +418,7 @@ cd simplicio-loop
 # install for your runtime (omit <runtime> to auto-detect)
 bash scripts/install.sh <runtime> [--global]        # macOS / Linux
 pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
-# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
+# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent openclaw
 ```
 
 Oppure, su Claude Code / Cursor, installalo direttamente dall'ultima release di GitHub (senza marketplace):

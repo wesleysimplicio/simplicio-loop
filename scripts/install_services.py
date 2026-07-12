@@ -160,7 +160,7 @@ def _shell_profile():
 
 def cmd_wire(on=True):
     """Always-capture: route Claude (Anthropic) + Codex/OpenAI clients through the local proxy so
-    the monitor measures them too (Hermes is already routed). The engine routes each model to its
+    the monitor measures them too (Simplicio Agent is already routed). The engine routes each model to its
     REAL provider (no model swap). NOTE: OpenAI clients append /chat/completions so the base needs
     a /v1 suffix; Claude appends /v1/messages so its base must NOT carry /v1. Opt out: SIMPLICIO_NO_WIRE=1."""
     if os.environ.get("SIMPLICIO_NO_WIRE") == "1":

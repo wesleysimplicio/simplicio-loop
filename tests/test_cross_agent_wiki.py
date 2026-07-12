@@ -49,10 +49,10 @@ def test_capture_summary_and_handoff_materialize_cross_agent_artifacts(tmp_path)
     root = str(tmp_path)
     _seed_loop(root)
     origin = wiki.REPO
-    prior_env = os.environ.get("HERMES_PROFILE")
+    prior_env = os.environ.get("SIMPLICIO_AGENT_PROFILE")
     try:
         wiki._set_repo(root)
-        os.environ["HERMES_PROFILE"] = "test-agent"
+        os.environ["SIMPLICIO_AGENT_PROFILE"] = "test-agent"
         wiki.cmd_capture()
         wiki.cmd_summary()
         wiki.cmd_handoff()
@@ -78,9 +78,36 @@ def test_capture_summary_and_handoff_materialize_cross_agent_artifacts(tmp_path)
     finally:
         wiki._set_repo(origin)
         if prior_env is None:
+            os.environ.pop("SIMPLICIO_AGENT_PROFILE", None)
+        else:
+            os.environ["SIMPLICIO_AGENT_PROFILE"] = prior_env
+
+
+def test_legacy_hermes_profile_env_var_still_resolves(tmp_path):
+    """N-1/N compat (#262): SIMPLICIO_AGENT_PROFILE is canonical; HERMES_PROFILE still works
+    as a fallback during the rebrand's compat window."""
+    root = str(tmp_path)
+    _seed_loop(root)
+    origin = wiki.REPO
+    prior_agent_env = os.environ.get("SIMPLICIO_AGENT_PROFILE")
+    prior_legacy_env = os.environ.get("HERMES_PROFILE")
+    try:
+        wiki._set_repo(root)
+        os.environ.pop("SIMPLICIO_AGENT_PROFILE", None)
+        os.environ["HERMES_PROFILE"] = "legacy-agent"
+        wiki.cmd_capture()
+        journal_dir = os.path.join(root, ".orchestrator", "wiki", "journal")
+        assert os.listdir(journal_dir)
+    finally:
+        wiki._set_repo(origin)
+        if prior_agent_env is None:
+            os.environ.pop("SIMPLICIO_AGENT_PROFILE", None)
+        else:
+            os.environ["SIMPLICIO_AGENT_PROFILE"] = prior_agent_env
+        if prior_legacy_env is None:
             os.environ.pop("HERMES_PROFILE", None)
         else:
-            os.environ["HERMES_PROFILE"] = prior_env
+            os.environ["HERMES_PROFILE"] = prior_legacy_env
 
 
 def test_status_surfaces_watcher_receipt(tmp_path):

@@ -5,7 +5,7 @@ Moved out of `SKILL.md` § Cross-agent persistent wiki as part of the #119 shrin
 Evolved from the one-shot `HANDOFF.md` pattern (inspired by JesseBrown1980/ai-memory).
 Every turn's key decisions, findings, and dead-ends are captured into a persistent
 markdown wiki at `.orchestrator/wiki/` — a per-project, cross-agent, zero-friction
-knowledge base that survives across agent vendors (Hermes → Claude Code → Codex).
+knowledge base that survives across agent vendors (Simplicio Agent → Claude Code → Codex).
 
 A fresh agent arriving in the repo reads the wiki and sees "where we left off"
 without needing the prior conversation transcript.

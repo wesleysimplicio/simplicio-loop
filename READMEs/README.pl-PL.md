@@ -203,7 +203,7 @@ skill.**
 | **OpenCode** | `AGENTS.md` | własne tempo | MCP |
 | **Gemini** | `GEMINI.md` | własne tempo | MCP / adapter |
 | **Aider** | `CONVENTIONS.md` | własne tempo | — (awaryjny LLM) |
-| **Hermes** | natywna pamięć | natywna pętla | **natywne** |
+| **Simplicio Agent** | natywna pamięć | natywna pętla | **natywne** |
 | **OpenClaw** | plugin SDK | natywny harmonogram | **natywne** |
 
 Obietnica: **ten sam protokół, te same bramki, to samo bezpieczeństwo na wszystkich 11 — różni się
@@ -362,12 +362,12 @@ zależności od środowiska:
 
 | Środowisko | Ekonomia (skill) | Pomiar (monitor) |
 |---|---|---|
-| **Hermes** | ✓ | ✓ **automatyczny** — już skierowany przez proxy (`base_url → :8788`) |
+| **Simplicio Agent** | ✓ | ✓ **automatyczny** — już skierowany przez proxy (`base_url → :8788`) |
 | **Claude** | ✓ (skill + hooki) | ✗ domyślnie — Claude rozmawia bezpośrednio z `api.anthropic.com`; mierzony dopiero po skierowaniu (`simplicio-cli wrap claude`, lub `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
 | **Codex** | ✓ (skill) | ✗ domyślnie — `simplicio-cli init codex` dodaje narzędzia MCP, ale nie kieruje ruchu LLM; mierzony przy `simplicio-cli wrap codex` lub base-url OpenAI wskazującym na proxy |
 
 Zatem: **oszczędności występują na każdym środowisku**; **monitor zlicza je automatycznie na
-Hermes**, a na Claude/Codex po **jednorazowym kroku kierowania** (`simplicio-cli wrap …` / base-url →
+Simplicio Agent**, a na Claude/Codex po **jednorazowym kroku kierowania** (`simplicio-cli wrap …` / base-url →
 `:8788`). Bez kierowania ekonomia nadal obowiązuje — monitor po prostu nie zliczy tych tokenów.
 `scripts/simplicio-economy.sh wire` wykonuje to kierowanie dla klientów kompatybilnych z OpenAI w
 czasie instalacji.
@@ -430,7 +430,7 @@ cd simplicio-loop
 # install for your runtime (omit <runtime> to auto-detect)
 bash scripts/install.sh <runtime> [--global]        # macOS / Linux
 pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
-# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
+# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent openclaw
 ```
 
 Albo, na Claude Code / Cursor, zainstaluj go bezpośrednio z najnowszego wydania GitHub (bez marketplace):

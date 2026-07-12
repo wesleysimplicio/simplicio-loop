@@ -114,7 +114,7 @@ Add (paths relative to the repo root, or absolute):
 `orient_clamp.py`. Claude has no `afterAgentResponse`; `loop_stop.py` folds capture in by
 reading the transcript, so `loop_capture.py` isn't needed there.
 
-### Other runtimes (Codex, Gemini, Aider, OpenCode, Kiro, Antigravity, Hermes, OpenClaw)
+### Other runtimes (Codex, Gemini, Aider, OpenCode, Kiro, Antigravity, Simplicio Agent, OpenClaw)
 Most don't expose a stop hook. Use the **no-hook fallback**: the `simplicio-loop` skill
 self-paces via the host scheduler (`/loop`, OS cron, or the runtime's task scheduler), and
 `orient_clamp.py` is invoked directly. See `adapters/<runtime>/` for the per-runtime entry.

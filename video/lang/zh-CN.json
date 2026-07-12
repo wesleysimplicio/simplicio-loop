@@ -35,7 +35,7 @@
       "narration": "要一段演示视频，它就做一段。web_verify 截取画面，hyperframes 渲染出确定性的 MP4，直接作为证据附到 PR 上。" },
     { "id": 10, "key": "runtimes", "start_s": 97, "duration_s": 10,
       "caption": "十一种运行时，一套协议——只有速度不同",
-      "narration": "十一种运行时，一套协议——Claude、Codex、Copilot、Cursor、Gemini、Hermes 等等。相同的闸门，相同的安全。只有速度不同。" },
+      "narration": "十一种运行时，一套协议——Claude、Codex、Copilot、Cursor、Gemini、Simplicio Agent 等等。相同的闸门，相同的安全。只有速度不同。" },
     { "id": 11, "key": "always_on", "start_s": 107, "duration_s": 8,
       "caption": "合并 · 关闭 · 空闲 · 唤醒 —— 7×24",
       "narration": "它合并、关闭、进入空闲——一旦有新工作就立刻唤醒。全天候 7×24。" },

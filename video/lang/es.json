@@ -35,7 +35,7 @@
       "narration": "Pide un video demostrativo y lo crea. web_verify captura las pantallas, hyperframes renderiza un MP4 determinista, adjunto directamente al pull request como prueba." },
     { "id": 10, "key": "runtimes", "start_s": 97, "duration_s": 10,
       "caption": "11 runtimes, un protocolo — solo cambia la velocidad",
-      "narration": "Once runtimes, un solo protocolo: Claude, Codex, Copilot, Cursor, Gemini, Hermes y más. Las mismas puertas, la misma seguridad. Solo cambia la velocidad." },
+      "narration": "Once runtimes, un solo protocolo: Claude, Codex, Copilot, Cursor, Gemini, Simplicio Agent y más. Las mismas puertas, la misma seguridad. Solo cambia la velocidad." },
     { "id": 11, "key": "always_on", "start_s": 107, "duration_s": 8,
       "caption": "fusiona · cierra · reposo · despierta — 24/7",
       "narration": "Fusiona, cierra y queda en reposo, y despierta en cuanto llega trabajo nuevo. Veinticuatro siete." },

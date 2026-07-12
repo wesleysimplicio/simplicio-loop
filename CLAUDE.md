@@ -121,7 +121,7 @@ mass-delete, destructive DDL, infra teardown) and secret-laden commits/pushes be
 
 Claude's native tools satisfy the extension points: sub-agents → `execute`, file tools →
 `deterministic_edit`, the scheduler → `watcher`. `simplicio-runtime` native bind is REQUIRED on
-Claude Code (and on Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Hermes — see
+Claude Code (and on Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Simplicio Agent — see
 `adapters/MATRIX.md` `FORCED_BIND_RUNTIMES`), not optional: `pip install -U simplicio-installer
 && simplicio install --global` binds them deterministically; verify with `simplicio doctor
 --json` before driving the loop.
@@ -129,6 +129,6 @@ Claude Code (and on Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Hermes — se
 ## Other runtimes
 
 The same skills run on Codex, VS Code (Copilot), Cursor, Antigravity, Kiro, OpenCode, Gemini,
-Aider, Hermes, and OpenClaw — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
+Aider, Simplicio Agent (formerly Hermes), and OpenClaw — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
 [`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (48 extension points; the binding
 lives in the host, never in the skill).

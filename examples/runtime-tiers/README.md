@@ -18,6 +18,6 @@ python3 scripts/check.py
 ## Structure
 
 - Tier 1 (guaranteed, gated): Claude Code, Codex, Cursor
-- Tier 2 (best-effort, ungate): VS Code, Antigravity, Kiro, OpenCode, Gemini, Aider, Hermes, OpenClaw
+- Tier 2 (best-effort, ungate): VS Code, Antigravity, Kiro, OpenCode, Gemini, Aider, Simplicio Agent, OpenClaw
 
 See `adapters/MATRIX.md` for the full rules, including promotion/demotion criteria.

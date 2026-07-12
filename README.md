@@ -250,7 +250,7 @@ skill names no runtime; the runtime detects the skill.**
 | **OpenCode** | `AGENTS.md` | self-paced | MCP |
 | **Gemini** | `GEMINI.md` | self-paced | MCP / adapter |
 | **Aider** | `CONVENTIONS.md` | self-paced | — (LLM fallback) |
-| **Hermes** | native recall | native loop | **native** |
+| **Simplicio Agent** *(formerly Hermes)* | native recall | native loop | **native** |
 | **OpenClaw** | plugin SDK | native scheduler | **native** |
 
 The promise: **same protocol, same gates, same safety on all 11 — Tier 1 verified mechanically,
@@ -418,11 +418,11 @@ Two different things happen when you call **`simplicio-loop`**, and they behave 
 
 | Runtime | Economy (skill) | Measurement (monitor) |
 |---|---|---|
-| **Hermes** | ✓ | ✓ **automatic** — already routed through the proxy (`base_url → :8788`) |
+| **Simplicio Agent** | ✓ | ✓ **automatic** — already routed through the proxy (`base_url → :8788`) |
 | **Claude** | ✓ (skill + hooks) | ✗ by default — Claude talks to `api.anthropic.com` directly; measured only once routed (`simplicio-cli wrap claude`, or `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
 | **Codex** | ✓ (skill) | ✗ by default — `simplicio-cli init codex` adds the MCP tools but does not route LLM traffic; measured with `simplicio-cli wrap codex` or an OpenAI base-url pointing at the proxy |
 
-So: the **savings happen on every runtime**; the **monitor tallies them automatically on Hermes**, and on
+So: the **savings happen on every runtime**; the **monitor tallies them automatically on Simplicio Agent**, and on
 Claude/Codex after a **one-time routing step** (`simplicio-cli wrap …` / base-url → `:8788`). Without routing,
 the economy still applies — the monitor just won't count those tokens. `scripts/simplicio-economy.sh wire`
 does this routing for OpenAI-compatible clients at install time.
@@ -432,7 +432,7 @@ does this routing for OpenAI-compatible clients at install time.
 A view of the savings you open when you want — only the capture is always-on:
 
 - **Capture proxy** — **always-on** (the one auto-started service; the wired clients need it
-  reachable). It silently captures + measures Claude + Codex + Hermes in the background.
+  reachable). It silently captures + measures Claude + Codex + Simplicio Agent in the background.
 - **Web dashboard** — `http://127.0.0.1:9090` — real-time token chart, savings gauge, the LLMs/runtimes
   and **141/144 providers (98%)** we intercept, a live proxy log. **Opens once on the first install**
   so you see it works, then it's **on-demand** — re-open it any of these ways:
@@ -530,7 +530,8 @@ cd simplicio-loop
 # install for your runtime (omit <runtime> to auto-detect)
 bash scripts/install.sh <runtime> [--global] [--minimal]        # macOS / Linux
 pwsh scripts/install.ps1 <runtime> [-Global]                    # Windows
-# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
+# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent openclaw
+#            (hermes still accepted as a legacy alias for simplicio_agent)
 ```
 
 **The repo installer is full-stack by default — it installs everything.** One command sets up the whole stack:
@@ -538,7 +539,7 @@ the loop operator package (`simplicio-cli`, which exposes `simplicio-dev-cli` an
 `simplicio-mapper` transitively, auto-handling PEP 668 / externally-managed Python and symlinking
 the binaries onto `PATH`), the **full Python stack** (the package itself),
 the **7 skills + hooks** with the loop's Stop hook wired, and the **always-on capture proxy**
-with Claude + Codex + Hermes **routed and measured** in the background. The **dashboard opens once** on a
+with Claude + Codex + Simplicio Agent **routed and measured** in the background. The **dashboard opens once** on a
 fresh install, then it's on-demand (`simplicio-loop dashboard` / `simplicio-economy.sh monitor`); the
 **menu-bar tray never opens by itself** — nothing is forced to stay open.
 Pass **`--minimal`** only for headless/CI to skip the heavy deps + the machine services. Verify any time:

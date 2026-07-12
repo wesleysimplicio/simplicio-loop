@@ -15,7 +15,7 @@ Non-negotiables:
 - Never mark work done without green gates + evidence.
 - Verify claims locally before push with `python3 scripts/check.py`.
 - Keep `_bundle` and source in parity; `scripts/check.py` audits this.
-- On Claude/Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Hermes, `simplicio-runtime` binding is required before driving the loop.
+- On Claude/Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Simplicio Agent, `simplicio-runtime` binding is required before driving the loop.
 
 Key loop artifacts:
 - `.orchestrator/loop/scratchpad.md` — single source of truth for loop state

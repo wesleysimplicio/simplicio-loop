@@ -203,7 +203,7 @@ vitesse native*. **La skill ne nomme aucun runtime ; c'est le runtime qui détec
 | **OpenCode** | `AGENTS.md` | self-paced | MCP |
 | **Gemini** | `GEMINI.md` | self-paced | MCP / adaptateur |
 | **Aider** | `CONVENTIONS.md` | self-paced | — (repli LLM) |
-| **Hermes** | recall natif | boucle native | **natif** |
+| **Simplicio Agent** | recall natif | boucle native | **natif** |
 | **OpenClaw** | plugin SDK | scheduler natif | **natif** |
 
 La promesse : **même protocole, mêmes garde-fous, même sécurité sur les 11 — seule la vitesse
@@ -359,12 +359,12 @@ différemment selon le runtime :
 
 | Runtime | Économie (skill) | Mesure (moniteur) |
 |---|---|---|
-| **Hermes** | ✓ | ✓ **automatique** — déjà routé via le proxy (`base_url → :8788`) |
+| **Simplicio Agent** | ✓ | ✓ **automatique** — déjà routé via le proxy (`base_url → :8788`) |
 | **Claude** | ✓ (skill + hooks) | ✗ par défaut — Claude parle directement à `api.anthropic.com` ; mesuré uniquement une fois routé (`simplicio-cli wrap claude`, ou `ANTHROPIC_BASE_URL → http://127.0.0.1:8788`) |
 | **Codex** | ✓ (skill) | ✗ par défaut — `simplicio-cli init codex` ajoute les outils MCP mais ne route pas le trafic LLM ; mesuré avec `simplicio-cli wrap codex` ou une base-url OpenAI pointant vers le proxy |
 
 Donc : les **économies se produisent sur chaque runtime** ; le **moniteur les comptabilise
-automatiquement sur Hermes**, et sur Claude/Codex après une **étape de routage unique** (`simplicio-cli wrap
+automatiquement sur Simplicio Agent**, et sur Claude/Codex après une **étape de routage unique** (`simplicio-cli wrap
 …` / base-url → `:8788`). Sans routage, l'économie s'applique tout de même — le moniteur ne comptera
 simplement pas ces tokens. `scripts/simplicio-economy.sh wire` effectue ce routage pour les clients
 compatibles OpenAI au moment de l'installation.
@@ -432,7 +432,7 @@ cd simplicio-loop
 # install for your runtime (omit <runtime> to auto-detect)
 bash scripts/install.sh <runtime> [--global]        # macOS / Linux
 pwsh scripts/install.ps1 <runtime> [-Global]        # Windows
-# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider hermes openclaw
+# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent openclaw
 ```
 
 Ou, sur Claude Code / Cursor, installez-le directement depuis la dernière release GitHub (sans marketplace) :

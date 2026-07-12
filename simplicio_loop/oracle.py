@@ -12,7 +12,7 @@ from .evidence import watcher_truth_from_receipt
 PROMISE_RE = re.compile(r"<promise>\s*(.*?)\s*</promise>", re.IGNORECASE | re.DOTALL)
 COMPLETION_SCHEMA = "simplicio.completion-receipt/v1"
 ORACLE_MATRIX_SCHEMA = "simplicio.completion-oracle-matrix/v1"
-ADAPTERS = ("cursor", "claude", "codex", "vscode", "antigravity", "hermes")
+ADAPTERS = ("cursor", "claude", "codex", "vscode", "antigravity", "simplicio_agent", "hermes")
 
 
 def _gate(name: str, ok: bool, reason_code: str, detail: str) -> Dict[str, Any]:

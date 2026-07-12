@@ -141,7 +141,7 @@ Detect platform once: `python3 -c "import platform; print(platform.system())"` �
 | Comment / close | `gh issue comment N --body "…"` · `gh issue close N` |
 | Workflow dispatch | `gh api repos/{owner}/{repo}/dispatches -f event_type=X` |
 
-### node (vscode, openclaw, claude-code) / python (hermes)
+### node (vscode, openclaw, claude-code) / python (simplicio-agent, formerly hermes)
 | intent | command |
 |---|---|
 | Deterministic install | `npm ci` · `pnpm install --frozen-lockfile` · `uv sync --locked` |
@@ -160,7 +160,7 @@ Detect platform once: `python3 -c "import platform; print(platform.system())"` �
 | Azure login / acct | `az login` · `az account show -o json` |
 | Azure DevOps boards (if used) | `az boards work-item show --id N` · `az boards query --wiql "…"` · `az repos pr list` · `az pipelines runs list` |
 
-> NOTE: the 5 scanned local repos (hermes-agent, openclaw, vscode, codex, claude-code) use
+> NOTE: the 5 scanned local repos (simplicio-agent (formerly hermes-agent), openclaw, vscode, codex, claude-code) use
 > **GitHub (`gh`) + GitHub Actions exclusively** — no Azure DevOps. The `az`/`az boards` rows are
 > provided for repos that DO use Azure DevOps; bind them as a `source_adapter` only when detected.
 

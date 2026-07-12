@@ -35,7 +35,7 @@
       "narration": "Peça um vídeo demonstrativo e ele cria. O web_verify captura as telas, o hyperframes renderiza um MP4 determinístico, anexado direto ao pull request como prova." },
     { "id": 10, "key": "runtimes", "start_s": 97, "duration_s": 10,
       "caption": "11 runtimes, um protocolo — só a velocidade muda",
-      "narration": "Onze runtimes, um protocolo: Claude, Codex, Copilot, Cursor, Gemini, Hermes e mais. Os mesmos portões, a mesma segurança. Só a velocidade muda." },
+      "narration": "Onze runtimes, um protocolo: Claude, Codex, Copilot, Cursor, Gemini, Simplicio Agent e mais. Os mesmos portões, a mesma segurança. Só a velocidade muda." },
     { "id": 11, "key": "always_on", "start_s": 107, "duration_s": 8,
       "caption": "mergeia · fecha · ocioso · acorda — 24/7",
       "narration": "Ele mergeia, fecha e fica ocioso — e acorda assim que chega trabalho novo. Vinte e quatro horas por dia, sete dias por semana." },

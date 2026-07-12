@@ -233,9 +233,9 @@ def chk_wire():
         return ("OPENAI_BASE_URL=http://127.0.0.1:%d" % PROXY_PORT) in t
 
     if want_a:
-        msg = "Claude (static key) + Codex/OpenAI + Hermes routed" if ok else "not wired (Claude/Codex not measured)"
+        msg = "Claude (static key) + Codex/OpenAI + Simplicio Agent routed" if ok else "not wired (Claude/Codex not measured)"
     else:
-        msg = "Codex/OpenAI + Hermes routed (Claude uses OAuth — not proxied)" if ok else "OpenAI not wired (Codex not measured)"
+        msg = "Codex/OpenAI + Simplicio Agent routed (Claude uses OAuth — not proxied)" if ok else "OpenAI not wired (Codex not measured)"
     return dict(name="always-capture wire", tier="RECOMMENDED", status=OK if ok else WARN,
                 msg=msg, repair=repair)
 

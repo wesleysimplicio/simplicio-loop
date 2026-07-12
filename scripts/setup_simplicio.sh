@@ -7,7 +7,8 @@ set -euo pipefail
 
 PORT="${2:-8788}"
 DASH_PORT="${4:-9090}"
-HERMES_CONFIG="$HOME/.hermes/config.yaml"
+SIMPLICIO_AGENT_CONFIG="$HOME/.simplicio-agent/config.yaml"
+HERMES_CONFIG="$HOME/.hermes/config.yaml"  # legacy alias, compat window
 LAUNCHD="$HOME/Library/LaunchAgents"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROXY_SERVICE="ai.simplicio.proxy"
@@ -53,9 +54,9 @@ cat > "$LAUNCHD/$PROXY_SERVICE.plist" << EOF
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>$HOME/.hermes/logs/simplicio-proxy.log</string>
+    <string>$HOME/.simplicio-agent/logs/simplicio-proxy.log</string>
     <key>StandardErrorPath</key>
-    <string>$HOME/.hermes/logs/simplicio-proxy.error.log</string>
+    <string>$HOME/.simplicio-agent/logs/simplicio-proxy.error.log</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -99,12 +100,23 @@ else
   echo "  ⊘ ANTHROPIC_BASE_URL skipped (OAuth claude; set ANTHROPIC_API_KEY to capture Claude)"
 fi
 
-# 6. Configure Hermes base_url
-echo "🔧 Configuring Hermes base_url..."
-if command -v hermes &>/dev/null; then
-  CURRENT=$(grep "base_url:" "$HERMES_CONFIG" 2>/dev/null | head -1 | tr -d ' ')
+# 6. Configure Simplicio Agent base_url (falls back to the legacy `hermes` binary/config
+# during the compat window if `simplicio-agent` isn't installed yet).
+AGENT_BIN=""
+AGENT_CONFIG=""
+if command -v simplicio-agent &>/dev/null; then
+  AGENT_BIN="simplicio-agent"
+  AGENT_CONFIG="$SIMPLICIO_AGENT_CONFIG"
+elif command -v hermes &>/dev/null; then
+  AGENT_BIN="hermes"
+  AGENT_CONFIG="$HERMES_CONFIG"
+  echo "  ⚠ 'hermes' binary detected — please migrate to 'simplicio-agent' (legacy alias, compat window)"
+fi
+if [ -n "$AGENT_BIN" ]; then
+  echo "🔧 Configuring $AGENT_BIN base_url..."
+  CURRENT=$(grep "base_url:" "$AGENT_CONFIG" 2>/dev/null | head -1 | tr -d ' ')
   if [ "$CURRENT" != "base_url:http://127.0.0.1:$PORT/v1" ]; then
-    hermes config set model.base_url "http://127.0.0.1:$PORT/v1" 2>&1
+    "$AGENT_BIN" config set model.base_url "http://127.0.0.1:$PORT/v1" 2>&1
     echo "  ✅ model.base_url = http://127.0.0.1:$PORT/v1"
   else
     echo "  model.base_url already set"
@@ -131,7 +143,7 @@ echo "  Proxy:          http://127.0.0.1:$PORT"
 echo "  Token Monitor:  opens once on first install, then on-demand"
 echo "                  re-open → simplicio-loop dashboard   (or: bash scripts/simplicio-economy.sh monitor, opens :$DASH_PORT)"
 echo "  Menu-bar tray:  on-demand → bash scripts/simplicio-economy.sh tray"
-echo "  Hermes:         → proxy → DeepSeek (auto-routed)"
+echo "  Simplicio Agent: → proxy → DeepSeek (auto-routed; legacy 'hermes' alias supported)"
 echo "───────────────────────────────────────"
 echo "  Optional MCP tools per client (memory/retrieve/stats — does NOT route traffic):"
 echo "    bash scripts/simplicio-capture.sh init      # Claude/Codex/Copilot/OpenClaw MCP tools"

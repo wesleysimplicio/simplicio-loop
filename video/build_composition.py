@@ -216,7 +216,7 @@ def scene_video(sid, t, d, cap, chip):
 
 
 def scene_runtimes(sid, t, d, cap, chip):
-    names = ["Claude", "Codex", "Copilot", "Cursor", "Antigravity", "Kiro", "OpenCode", "Gemini", "Aider", "Hermes", "OpenClaw"]
+    names = ["Claude", "Codex", "Copilot", "Cursor", "Antigravity", "Kiro", "OpenCode", "Gemini", "Aider", "Simplicio Agent", "OpenClaw"]
     nodes = "".join('<div class="rt" id="rt%d_%d" style="--a:%ddeg">%s</div>' % (sid, i, int(360 * i / len(names)), n)
                     for i, n in enumerate(names))
     html = ('<div class="orbit" id="orb%d"><div class="hub">simplicio<br>tasks</div>%s</div>'

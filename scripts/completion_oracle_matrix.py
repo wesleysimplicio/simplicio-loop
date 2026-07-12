@@ -9,7 +9,7 @@ from typing import Any
 
 from simplicio_loop.oracle import evaluate_completion
 
-ADAPTERS = ("cursor", "claude", "codex", "vscode", "antigravity", "hermes")
+ADAPTERS = ("cursor", "claude", "codex", "vscode", "antigravity", "simplicio_agent", "hermes")
 
 
 def evaluate_adapter(adapter: str, loop_dir: str, run_dir: str, response_text: str = "", flow_gap: str = "") -> dict[str, Any]:

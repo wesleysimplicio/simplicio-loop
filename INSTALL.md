@@ -20,8 +20,9 @@ bash scripts/install.sh <runtime> [--global] [--target DIR]
 pwsh scripts/install.ps1 <runtime> [-Global] [-Target DIR]
 ```
 
-`<runtime>` ∈ `claude codex vscode cursor antigravity kiro opencode gemini aider hermes
-openclaw`. Omit it to auto-detect from the current directory. `--target DIR` installs into
+`<runtime>` ∈ `claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent
+openclaw` (`hermes` still accepted as a legacy alias for `simplicio_agent`). Omit it to
+auto-detect from the current directory. `--target DIR` installs into
 another project; `--global` installs to the runtime's user-wide location.
 
 The only requirement is **python3** on PATH (the skills, hooks, and installer are all
