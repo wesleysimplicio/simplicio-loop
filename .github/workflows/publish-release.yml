@@ -1,0 +1,46 @@
+name: Publish cross-runtime release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'wesleysimplicio/simplicio-loop'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Fail closed on cross-surface version drift
+        run: python3 scripts/release_manifest.py --tag "${GITHUB_REF_NAME}" --json
+      - name: Build and validate wheel and sdist
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Pack and validate npm wrapper
+        working-directory: packaging/npm
+        run: npm pack --dry-run
+      - name: Publish npm wrapper
+        working-directory: packaging/npm
+        if: env.NPM_TOKEN != ''
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+          npm publish --access public
+      - name: Create GitHub Release with the exact tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes --verify-tag
