@@ -23,6 +23,7 @@ from .drain import (
 )
 from .runner import (
     arm_run,
+    conduct_run,
     apply_human_decision,
     change_phase,
     defer_maintenance_backlog_only,
@@ -186,9 +187,16 @@ def plan(task_path: str, out_path: str) -> int:
 
 
 def run(repo: str, task_path: str, delivery: str, max_iterations: int) -> int:
-    payload = arm_run(repo, task_path, delivery, max_iterations)
+    payload = conduct_run(repo, task_path, delivery, max_iterations)
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def verify(repo: str, run_id: str) -> int:
+    from .runner import verify_run
+    payload = verify_run(repo, run_id)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if payload["state"].get("phase") == "done" else 1
 
 
 def status(repo: str, run_id: str) -> int:
@@ -513,7 +521,7 @@ def main(argv=None) -> int:
     p_plan.add_argument("--out", default=os.path.join(".orchestrator", "task-contract.json"),
                         help="where to write the compiled contract")
 
-    p_run = sub.add_parser("run", help="arm a persisted run from a raw markdown task")
+    p_run = sub.add_parser("run", help="arm, execute, and independently verify a raw markdown task")
     p_run.add_argument("--task", required=True, help="markdown task file")
     p_run.add_argument("--repo", default=".", help="repository root")
     p_run.add_argument("--delivery", default="verified", help="requested delivery target")
@@ -529,6 +537,10 @@ def main(argv=None) -> int:
     p_status = sub.add_parser("status", help="show the latest run state or a specific run")
     p_status.add_argument("--repo", default=".", help="repository root")
     p_status.add_argument("--run-id", default="", help="run id to inspect")
+
+    p_verify = sub.add_parser("verify", help="run the independent watcher and delivery gates")
+    p_verify.add_argument("--repo", default=".", help="repository root")
+    p_verify.add_argument("run_id", help="run id to verify")
 
     p_progress = sub.add_parser("progress", help="render visual progress for a run")
     p_progress.add_argument("--repo", default=".", help="repository root")
@@ -677,6 +689,8 @@ def main(argv=None) -> int:
                       args.write_receipt)
     if command == "status":
         return status(args.repo, args.run_id)
+    if command == "verify":
+        return verify(args.repo, args.run_id)
     if command == "progress":
         run_id = args.run_id or args.run_flag
         if not run_id:
