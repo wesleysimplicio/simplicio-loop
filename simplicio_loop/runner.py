@@ -1497,6 +1497,72 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
     return read_status(repo, run_id)
 
 
+def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
+    """Run the independent watcher and advance a run without a manual tick."""
+    status = read_status(repo, run_id)
+    run_dir = Path(status["run_dir"])
+    repo_path = Path(status["manifest"]["repo"]).resolve()
+    state = status["state"]
+    if state.get("phase") in {"done", "cancelled"}:
+        return status
+    watcher = repo_path / "scripts" / "watcher_verify.py"
+    if not watcher.exists():
+        state["blockers"] = ["watcher_verify.py is unavailable"]
+        state["current_action"] = "watcher_unavailable"
+        state["next_action"] = "inspect_and_recover"
+        _write_json(run_dir / "state.json", state)
+        _transition(run_dir, state, "blocked", "independent watcher is unavailable", receipt=str(run_dir / "state.json"))
+        return read_status(repo, run_id)
+    _transition(run_dir, state, "watching", "automatic conduct reached independent verification", receipt=str(run_dir / "operator-receipt.json"))
+    env = dict(os.environ)
+    env["SIMPLICIO_RUN_DIR"] = str(run_dir)
+    env["SIMPLICIO_LOOP_REPO"] = str(repo_path)
+    env["SIMPLICIO_LOOP_DIR"] = str(run_dir / "loop")
+    result = subprocess.run([sys.executable, str(watcher), "verify"], cwd=str(repo_path), capture_output=True, text=True, timeout=180, env=env)
+    output = redact_sensitive_text((result.stdout or "") + (result.stderr or "")).strip()
+    _write_json(run_dir / "watcher-receipt.json", {"schema": "simplicio.watcher-invocation/v1", "returncode": result.returncode, "output": output, "receipt": str(run_dir / "loop" / "watcher_state.json"), "checked_at": _now()})
+    watcher_path = run_dir / "loop" / "watcher_state.json"
+    watcher_state = _load_json(watcher_path) if watcher_path.exists() else {}
+    if result.returncode != 0 or watcher_state.get("status") != "MEASURED" or not watcher_state.get("match"):
+        state = read_status(repo, run_id)["state"]
+        state["blockers"] = [watcher_state.get("reported") or output or "watcher verification failed"]
+        state["current_action"] = "watcher_failed"
+        state["next_action"] = "inspect_and_recover"
+        state["evidence"] = {"ready": False, "receipt": str(watcher_path), "status": "UNVERIFIED"}
+        _write_json(run_dir / "state.json", state)
+        _transition(run_dir, state, "blocked", "independent watcher rejected the run", receipt=str(watcher_path))
+        return read_status(repo, run_id)
+    state = read_status(repo, run_id)["state"]
+    state["evidence"] = {"ready": True, "receipt": str(watcher_path), "status": "MEASURED"}
+    state["current_action"] = "watcher_verified"
+    state["next_action"] = "delivery_reconciliation"
+    _write_json(run_dir / "state.json", state)
+    _transition(run_dir, state, "delivering", "independent watcher measured all acceptance criteria", receipt=str(watcher_path))
+    delivered = reconcile_delivery(repo, run_id, "verified", source_kind="local")
+    if not delivered["state"].get("delivery", {}).get("ready"):
+        return delivered
+    state = delivered["state"]
+    state["current_action"] = "run_verified"
+    state["next_action"] = "none"
+    state["completion"] = {"ready": True, "receipt": str(watcher_path), "verdict": "VERIFIED", "reason_code": "watcher_and_delivery_verified", "tag": "MEASURED"}
+    _write_json(run_dir / "state.json", state)
+    _transition(run_dir, state, "done", "automatic task-to-verify conduct completed", receipt=str(watcher_path))
+    return read_status(repo, run_id)
+
+
+def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3) -> Dict[str, Any]:
+    """Arm, execute, and independently verify one run as one durable operation."""
+    armed = arm_run(repo, task_path, delivery, max_iterations)
+    run_id = armed["manifest"]["run_id"]
+    if armed["state"].get("phase") == "blocked":
+        return armed
+    batch = execute_operator_batch(repo, run_id, max_workers=1, retry_budget=retry_budget, auto_fan_out=False)
+    status = read_status(repo, run_id)
+    if batch.get("failed_task_indices") or status["state"].get("phase") == "blocked":
+        return status
+    return verify_run(repo, run_id)
+
+
 def _operator_worker_limit(requested: Optional[int], item_count: int) -> int:
     """Resolve a bounded worker count without silently creating an empty pool."""
     if item_count <= 0:

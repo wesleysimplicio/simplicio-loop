@@ -223,6 +223,53 @@ TOOLS = [
     },
 ]
 
+def _typed_runner_action(name, args):
+    """Typed MCP aliases share the persisted CLI runner implementation."""
+    from simplicio_loop import runner
+    repo = str(args.get("repo", "."))
+    if name == "task.compile":
+        from simplicio_loop.task_contract import compile_many
+        task = str(args.get("task", "")).strip()
+        if not task:
+            raise ValueError("task is required")
+        return compile_many(task, source_path="mcp://task")
+    if name == "run.start":
+        task = str(args.get("task", "")).strip()
+        if not task:
+            raise ValueError("task is required")
+        path = Path(task)
+        if not path.is_file():
+            root = Path(repo).resolve() / ".orchestrator" / "mcp-tasks"
+            root.mkdir(parents=True, exist_ok=True)
+            path = root / ("task-" + __import__("hashlib").sha256(task.encode()).hexdigest()[:16] + ".md")
+            path.write_text(task, encoding="utf-8")
+        return runner.conduct_run(repo, str(path), str(args.get("delivery", "verified")), int(args.get("max_iterations", 12)))
+    if name == "run.status":
+        return runner.read_status(repo, str(args.get("run_id", "")))
+    if name == "run.tick":
+        return runner.execute_operator(repo, str(args["run_id"]), int(args.get("task_index", 1)))
+    if name == "run.verify":
+        return runner.verify_run(repo, str(args["run_id"]))
+    if name == "run.resume":
+        return runner.change_phase(repo, str(args["run_id"]), "awaiting_decision", "resume requested via MCP")
+    if name == "run.cancel":
+        return runner.change_phase(repo, str(args["run_id"]), "cancelled", "cancel requested via MCP")
+    raise ValueError("unknown typed runner tool")
+
+
+_TYPED_TOOLS = {
+    "task.compile": {"description": "Compile raw task markdown into a task contract.", "required": ["task"]},
+    "run.start": {"description": "Arm, execute, and independently verify a task.", "required": ["task"]},
+    "run.status": {"description": "Read persisted runner state.", "required": ["run_id"]},
+    "run.tick": {"description": "Execute one planned task.", "required": ["run_id"]},
+    "run.verify": {"description": "Run independent watcher and delivery verification.", "required": ["run_id"]},
+    "run.resume": {"description": "Resume a non-terminal run.", "required": ["run_id"]},
+    "run.cancel": {"description": "Cancel a non-terminal run.", "required": ["run_id"]},
+}
+for _name, _spec in _TYPED_TOOLS.items():
+    TOOLS.append({"name": _name, "description": _spec["description"], "inputSchema": {"type": "object", "properties": {"repo": {"type": "string"}, "task": {"type": "string"}, "run_id": {"type": "string"}, "delivery": {"type": "string"}, "max_iterations": {"type": "integer"}, "task_index": {"type": "integer"}}, "required": _spec["required"]}})
+
+
 _DISPATCH = {
     "simplicio_compress": tool_compress,
     "simplicio_retrieve": tool_retrieve,
@@ -264,6 +311,12 @@ def handle(msg):
     if method == "tools/call":
         name = params.get("name")
         args = params.get("arguments") or {}
+        if name in _TYPED_TOOLS:
+            try:
+                text = json.dumps(_typed_runner_action(name, args), ensure_ascii=False)
+            except Exception as exc:
+                text = "tool error: {}".format(exc)
+            return _result(req_id, {"content": [{"type": "text", "text": text}]})
         fn = _DISPATCH.get(name)
         if fn is None:
             return _error(req_id, -32602, "unknown tool: {}".format(name))

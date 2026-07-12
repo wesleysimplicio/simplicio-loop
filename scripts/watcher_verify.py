@@ -34,6 +34,15 @@ def _set_repo(repo):
     WATCHER_STATE = os.path.join(LOOP_DIR, "watcher_state.json")
 
 
+def _set_loop_dir(loop_dir):
+    """Bind the producer to a persisted run-local control directory."""
+    global LOOP_DIR, CHALLENGE, ANCHOR, WATCHER_STATE
+    LOOP_DIR = loop_dir
+    CHALLENGE = os.path.join(LOOP_DIR, "watcher_challenge.json")
+    ANCHOR = os.path.join(LOOP_DIR, "anchor.json")
+    WATCHER_STATE = os.path.join(LOOP_DIR, "watcher_state.json")
+
+
 _run_dir = os.environ.get("SIMPLICIO_RUN_DIR", "").strip()
 _repo_override = os.environ.get("SIMPLICIO_LOOP_REPO", "").strip()
 if _repo_override:
@@ -43,6 +52,9 @@ elif _run_dir:
         _set_repo(str(Path(_run_dir).resolve().parents[2]))
     except Exception:
         pass
+_loop_override = os.environ.get("SIMPLICIO_LOOP_DIR", "").strip()
+if _loop_override:
+    _set_loop_dir(_loop_override)
 
 
 def _now():
