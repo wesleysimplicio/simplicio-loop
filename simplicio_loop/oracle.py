@@ -113,6 +113,10 @@ def _run_artifacts_gate(run_dir: Path) -> Tuple[bool, List[Dict[str, Any]], Dict
         gates.append(_gate(name, True, f"{name}_present", f"{filename} loaded"))
     if not ok:
         return False, gates, None
+    contract = loaded["task_contract"]
+    if not isinstance(contract.get("schema"), str) or not contract.get("schema"):
+        gates.append(_gate("task_contract", False, "task_contract_invalid", "task-contract.json has no schema"))
+        return False, gates, loaded
     evidence = loaded["evidence_receipt"]
     verdict = watcher_truth_from_receipt(evidence)
     if not verdict["ready"]:
