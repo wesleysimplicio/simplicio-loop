@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence
 
-from .agent_contract import bind_receipt, build_context_pack, validate_identity
-from .remote_queue import Lease, QueueConflict, RemoteQueue
+from .agent_contract import IDENTITY_FIELDS, bind_receipt, build_context_pack, validate_identity
+from .remote_queue import Lease, RemoteQueue
 
 SCHEMA = "simplicio.work-item-attempt/v1"
 EVENT_SCHEMA = "simplicio.work-item-attempt-event/v1"
@@ -76,9 +76,12 @@ class AttemptCoordinator:
         self.assert_active(attempt)
         if not str(kind).strip():
             raise ValueError("event kind is required")
+        identity = {field: str((attempt.lease.identity or {}).get(field) or "") for field in IDENTITY_FIELDS}
+        if not all(identity.values()):
+            identity = {field: attempt.context["assigned_to"][field] for field in IDENTITY_FIELDS}
         event = {
             "schema": EVENT_SCHEMA, "run_id": self.run_id, "work_item_id": attempt.work_item_id,
-            "attempt_id": attempt.attempt_id, "agent_id": attempt.lease.agent_id,
+            "attempt_id": attempt.attempt_id, "agent_id": attempt.lease.agent_id, "agent": identity,
             "fencing_token": attempt.lease.fencing_token, "kind": str(kind).strip(),
             "payload": dict(payload or {}), "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
@@ -134,11 +137,15 @@ class AttemptCoordinator:
         self.record_event(attempt, kind, payload) if kind != "claimed" else self._append_json(
             attempt, {"schema": EVENT_SCHEMA, "kind": kind, "run_id": self.run_id,
                       "work_item_id": attempt.work_item_id, "attempt_id": attempt.attempt_id,
+                      "agent_id": attempt.lease.agent_id,
+                      "agent": {field: attempt.context["assigned_to"][field] for field in IDENTITY_FIELDS},
                       "fencing_token": attempt.lease.fencing_token, "payload": dict(payload)})
 
     def _append_terminal(self, attempt: WorkItemAttempt, kind: str, payload: Mapping[str, Any]) -> None:
         self._append_json(attempt, {"schema": EVENT_SCHEMA, "kind": kind, "run_id": self.run_id,
                                     "work_item_id": attempt.work_item_id, "attempt_id": attempt.attempt_id,
+                                    "agent_id": attempt.lease.agent_id,
+                                    "agent": {field: attempt.context["assigned_to"][field] for field in IDENTITY_FIELDS},
                                     "fencing_token": attempt.lease.fencing_token, "payload": dict(payload)})
 
 

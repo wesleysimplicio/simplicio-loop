@@ -84,6 +84,32 @@ def test_conflict_lane_serializes_only_overlapping_tasks(tmp_path):
                if event.event in ("idle", "deferred"))
 
 
+def test_dependencies_serialize_dependent_task_until_prerequisite_finishes(tmp_path):
+    timeline = {}
+    lock = threading.Lock()
+
+    def worker(task, _workdir, _dry_run):
+        started = time.monotonic()
+        with lock:
+            timeline[task.id] = [started, None]
+        time.sleep(0.03 if task.id == "a" else 0.01)
+        ended = time.monotonic()
+        with lock:
+            timeline[task.id][1] = ended
+        return fan_out.WorkerResult(task.id, True)
+
+    tasks = [
+        fan_out.Task("a", "a", files_affected=["a.py"]),
+        fan_out.Task("b", "b", files_affected=["b.py"], dependencies=["a"]),
+        fan_out.Task("c", "c", files_affected=["c.py"]),
+    ]
+    results, scheduler = fan_out.run_scheduler(tasks, str(tmp_path), 2,
+                                                capacity=_capacity(2), worker=worker)
+    assert len(results) == 3 and all(result.success for result in results)
+    assert timeline["b"][0] >= timeline["a"][1]
+    assert timeline["c"][0] < timeline["a"][1]
+
+
 def test_resource_governor_never_exceeds_cpu_cap(tmp_path):
     active = 0
     peak = 0

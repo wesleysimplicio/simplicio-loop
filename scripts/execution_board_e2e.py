@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -17,8 +16,96 @@ HERE = Path(__file__).resolve().parent.parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from simplicio_loop.execution_board import ExecutionBoard
-from simplicio_loop.drain import evaluate_drain
+from scripts import runtime_matrix  # noqa: E402
+from simplicio_loop.execution_board import ExecutionBoard  # noqa: E402
+from simplicio_loop.drain import evaluate_drain  # noqa: E402
+
+
+ISSUE_183_CRITERION_9 = "`100%`/`COMPLETE` só ocorre quando todas as frentes e receipts convergirem."
+
+
+def _criterion9(projection: dict, drain: dict, events: list[dict]) -> dict:
+    cards = projection["cards"]
+    completed = [card for card in cards if card["status"] == "done"]
+    watchers_ready = [
+        card for card in completed
+        if card["gates"].get("evidence") and card["gates"].get("watcher")
+    ]
+    all_delivery_recorded = all(
+        any(event["kind"] == "delivery_recorded" for event in card["events"])
+        for card in cards
+    )
+    last_front_complete = max(
+        idx for idx, event in enumerate(events)
+        if event["kind"] == "completed"
+    )
+    first_delivery_recorded = min(
+        idx for idx, event in enumerate(events)
+        if event["kind"] == "delivery_recorded"
+    )
+    oracle_after_all_fronts = first_delivery_recorded > last_front_complete
+    local_pass = (
+        len(cards) == len(completed) == len(watchers_ready)
+        and drain.get("verdict") == "DRAINED"
+        and all_delivery_recorded
+        and oracle_after_all_fronts
+    )
+    return {
+        "criterion_id": 9,
+        "criterion_text": ISSUE_183_CRITERION_9,
+        "tag": "MEASURED" if local_pass else "UNVERIFIED",
+        "local_convergence_status": "PASS" if local_pass else "FAIL",
+        "fronts_total": len(cards),
+        "fronts_converged": len(completed),
+        "watcher_verified_fronts": len(watchers_ready),
+        "delivery_recorded_fronts": sum(
+            1 for card in cards
+            if any(event["kind"] == "delivery_recorded" for event in card["events"])
+        ),
+        "drain_verdict": drain["verdict"],
+        "drain_receipt_key": drain["receipt_key"],
+        "projection_hash": projection["projection_hash"],
+        "oracle_complete_after_all_fronts": oracle_after_all_fronts,
+    }
+
+
+def _build_issue_183_receipt(out_dir: Path, board_receipt: dict, projection: dict, drain: dict, events: list[dict]) -> dict:
+    matrix = runtime_matrix.build_matrix(["codex", "claude"], HERE)
+    matrix_path = out_dir / "runtime-matrix.json"
+    matrix_path.write_text(json.dumps(matrix, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    criterion6 = runtime_matrix.build_issue_183_criterion6(HERE)
+    criterion9 = _criterion9(projection, drain, events)
+    local_ready = criterion6["local_contract_verified"] and criterion9["local_convergence_status"] == "PASS"
+    payload = {
+        "schema": "simplicio.distributed-epic-evidence/v1",
+        "issue": 183,
+        "title": "[EPIC][P0][Distributed] Multi-agent paralelo por default entre Codex, Claude e máquinas",
+        "tag": "MEASURED",
+        "epic_closure_ready": False,
+        "criteria_audited": [6, 9],
+        "criteria_not_audited": [1, 2, 3, 4, 5, 7, 8],
+        "local_audit_status": "PASS" if local_ready else "FAIL",
+        "external_boundaries": {
+            "physical_machines": "UNVERIFIED",
+            "tls_deploy": "UNVERIFIED",
+            "external_release": "UNVERIFIED",
+        },
+        "blocking_reasons": [
+            "physical multi-machine proof remains UNVERIFIED",
+            "TLS/deploy proof remains UNVERIFIED",
+            "external release proof remains UNVERIFIED",
+            "criteria 1, 2, 3, 4, 5, 7 and 8 were not audited by this local evidence producer",
+        ],
+        "artifacts": {
+            "execution_board_receipt": str(out_dir / "execution-board-receipt.json"),
+            "runtime_matrix_receipt": str(matrix_path),
+        },
+        "criteria": [criterion6, criterion9],
+        "board_acceptance": board_receipt["acceptance"],
+    }
+    receipt_path = out_dir / "distributed-epic-evidence.json"
+    receipt_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return payload
 
 
 def run(out: str | Path) -> dict:
@@ -89,6 +176,7 @@ def run(out: str | Path) -> dict:
         "drain": {"polls": [{"ready": 0, "active": 0}, {"ready": 0, "active": 0}], "verdict": drain["verdict"], "receipt_key": drain["receipt_key"]},
     })
     paths["receipt"].write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _build_issue_183_receipt(Path(out), receipt, projection, drain, board.events)
     return receipt
 
 

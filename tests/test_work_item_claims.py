@@ -23,6 +23,7 @@ def test_claim_scopes_context_and_fences_receipts(tmp_path):
     assert attempt.context["source_refs"] == ["src/a.py"]
     event = coordinator.record_event(attempt, "tool_called", {"tool": "pytest"})
     assert event["fencing_token"] == 1
+    assert event["agent"] == {key: IDENTITY[key] for key in ("agent_id", "runtime", "device_id", "session_id")}
     receipt = coordinator.accept_receipt(attempt, {"status": "passed"})
     assert receipt["work_item_id"] == "WI-1"
     assert receipt["attempt_id"] == "WI-1-1"
@@ -30,7 +31,9 @@ def test_claim_scopes_context_and_fences_receipts(tmp_path):
     done = coordinator.complete(attempt, receipt_ref="receipts/WI-1/1.json")
     assert done["status"] == "completed"
     lines = (tmp_path / "receipts" / "run-1" / "WI-1" / "WI-1-1" / "events.jsonl").read_text().splitlines()
-    assert [json.loads(line)["kind"] for line in lines] == ["claimed", "tool_called", "completed"]
+    records = [json.loads(line) for line in lines]
+    assert [record["kind"] for record in records] == ["claimed", "tool_called", "completed"]
+    assert all(record["agent"] == event["agent"] for record in records)
 
 
 def test_lease_loss_rejects_receipt_and_retry_gets_new_attempt(tmp_path):

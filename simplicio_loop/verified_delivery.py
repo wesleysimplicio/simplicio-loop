@@ -58,6 +58,7 @@ class VerifiedAgentDelivery:
         self.previous_event_id: Optional[str] = None
         self.evidence: Optional[Mapping[str, Any]] = None
         self.watcher_measured = False
+        self.delivery: Optional[Mapping[str, Any]] = None
 
     def transition(self, to_phase: str, *, reason_code: str = "phase_transition",
                    payload: Optional[Mapping[str, Any]] = None,
@@ -103,14 +104,36 @@ class VerifiedAgentDelivery:
                                  payload={"attempt_id": self.attempt_id, "match": True,
                                           "challenge": challenge.strip()})
 
+    def record_delivery(self, delivery: Mapping[str, Any]) -> Dict[str, Any]:
+        target = str(delivery.get("target") or "").strip()
+        if not target:
+            raise VerifiedDeliveryError("delivery target is required")
+        payload: Dict[str, Any] = {"attempt_id": self.attempt_id, "target": target,
+                                   "satisfied": bool(delivery.get("satisfied"))}
+        if "merge_queue" in delivery:
+            payload["merge_queue"] = dict(delivery.get("merge_queue") or {})
+        if "merge_queue_receipt_sha" in delivery:
+            payload["merge_queue_receipt_sha"] = delivery.get("merge_queue_receipt_sha")
+        if "merge_queue_status" in delivery:
+            payload["merge_queue_status"] = delivery.get("merge_queue_status")
+        self.delivery = dict(payload)
+        return self.board.append("delivery_recorded", item_id=self.runtime.work_item_id, payload=payload)
+
     def complete(self, receipt: Mapping[str, Any]) -> Dict[str, Any]:
         if self.evidence is None or not self.watcher_measured:
             raise VerifiedDeliveryError("completion requires evidence and measured watcher gates")
+        if self.delivery is None or not self.delivery.get("satisfied"):
+            raise VerifiedDeliveryError("completion requires recorded delivery convergence")
+        merge_receipt = str(self.delivery.get("merge_queue_receipt_sha") or "").strip()
+        merge_status = str(self.delivery.get("merge_queue_status") or "").strip().lower()
+        if self.delivery.get("target") != "local-fixture" and not (merge_receipt and merge_status == "accepted"):
+            raise VerifiedDeliveryError("external delivery requires merge-queue acceptance evidence")
         self.runtime.complete(receipt)
         result = self.transition("done", reason_code="verified_delivery", payload={
             "oracle": receipt.get("verdict"), "receipt_id": receipt.get("receipt_id", "")})
         result["status"] = "VERIFIED"
         result["schema"] = SCHEMA
+        result["delivery"] = dict(self.delivery)
         return result
 
 
