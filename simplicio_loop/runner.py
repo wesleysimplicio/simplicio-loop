@@ -2385,11 +2385,14 @@ def execute_operator_batch(
             item["agent_identity"] = agent_identity
             task = (contract.get("tasks") or [])[index - 1]
             target_paths = (plan.get("steps") or [])[index - 1].get("candidate_targets") or []
+            issue_ref = task.get("issue_ref") or contract.get("issue_ref") or ""
+            issue_url = task.get("issue_url") or contract.get("issue_url") or ""
             item["context_pack"] = build_context_pack(
                 task_id=item["task_id"], goal=_task_goal(task), identity=agent_identity,
                 acs=[*[(s.get("title") or s.get("id") or "") for s in (task.get("scenarios") or [])]],
                 depends_on=list((task.get("dependencies") or {}).get("items") or []),
                 allowed_paths=target_paths, source_refs=target_paths,
+                issue_ref=issue_ref, issue_url=issue_url,
             )
         items.append(item)
     result = dispatch_operator_batch(

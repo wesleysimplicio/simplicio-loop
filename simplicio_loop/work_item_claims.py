@@ -43,6 +43,7 @@ class AttemptCoordinator:
     def claim(self, *, work_item_id: str, identity: Mapping[str, Any], goal: str,
               acs: Sequence[str] = (), depends_on: Sequence[str] = (),
               source_refs: Sequence[str] = (), allowed_paths: Sequence[str] = (),
+              issue_ref: str = "", issue_url: str = "",
               ttl: float = 60.0) -> WorkItemAttempt:
         normalized = validate_identity(identity)
         item = str(work_item_id).strip()
@@ -58,7 +59,8 @@ class AttemptCoordinator:
                                  identity=normalized, capabilities=normalized["capabilities"])
         context = build_context_pack(task_id=item, goal=goal, identity=normalized, acs=acs,
                                      source_refs=source_refs, depends_on=depends_on,
-                                     allowed_paths=allowed_paths)
+                                     allowed_paths=allowed_paths, issue_ref=issue_ref,
+                                     issue_url=issue_url)
         attempt_id = "%s-%d" % (item, lease.fencing_token)
         attempt = WorkItemAttempt(self.run_id, item, attempt_id, lease, context)
         self._append(attempt, "claimed", {"fencing_token": lease.fencing_token})
@@ -85,6 +87,9 @@ class AttemptCoordinator:
             "fencing_token": attempt.lease.fencing_token, "kind": str(kind).strip(),
             "payload": dict(payload or {}), "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        if attempt.context.get("issue_ref"):
+            event["issue_ref"] = attempt.context["issue_ref"]
+            event["issue_url"] = attempt.context["issue_url"]
         self._append_json(attempt, event)
         return event
 
@@ -118,7 +123,9 @@ class AttemptCoordinator:
                           goal=attempt.context["goal"], acs=attempt.context.get("acs", ()),
                           depends_on=attempt.context.get("depends_on", ()),
                           source_refs=attempt.context.get("source_refs", ()),
-                          allowed_paths=attempt.context.get("source_refs", ()))
+                          allowed_paths=attempt.context.get("source_refs", ()),
+                          issue_ref=str(attempt.context.get("issue_ref") or ""),
+                          issue_url=str(attempt.context.get("issue_url") or ""))
 
     def _path(self, attempt: WorkItemAttempt, name: str = "events") -> Path | None:
         if self.receipt_dir is None:
@@ -139,14 +146,18 @@ class AttemptCoordinator:
                       "work_item_id": attempt.work_item_id, "attempt_id": attempt.attempt_id,
                       "agent_id": attempt.lease.agent_id,
                       "agent": {field: attempt.context["assigned_to"][field] for field in IDENTITY_FIELDS},
-                      "fencing_token": attempt.lease.fencing_token, "payload": dict(payload)})
+                      "fencing_token": attempt.lease.fencing_token, "payload": dict(payload),
+                      **({"issue_ref": attempt.context["issue_ref"], "issue_url": attempt.context["issue_url"]}
+                         if attempt.context.get("issue_ref") else {})})
 
     def _append_terminal(self, attempt: WorkItemAttempt, kind: str, payload: Mapping[str, Any]) -> None:
         self._append_json(attempt, {"schema": EVENT_SCHEMA, "kind": kind, "run_id": self.run_id,
                                     "work_item_id": attempt.work_item_id, "attempt_id": attempt.attempt_id,
                                     "agent_id": attempt.lease.agent_id,
                                     "agent": {field: attempt.context["assigned_to"][field] for field in IDENTITY_FIELDS},
-                                    "fencing_token": attempt.lease.fencing_token, "payload": dict(payload)})
+                                    "fencing_token": attempt.lease.fencing_token, "payload": dict(payload),
+                                    **({"issue_ref": attempt.context["issue_ref"], "issue_url": attempt.context["issue_url"]}
+                                       if attempt.context.get("issue_ref") else {})})
 
 
 __all__ = ["AttemptCoordinator", "EVENT_SCHEMA", "SCHEMA", "WorkItemAttempt"]

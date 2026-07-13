@@ -95,6 +95,9 @@ def test_composed_verification_receipt_is_hash_linked_and_not_delivery(tmp_path)
     receipt = q.run_composed_verification("A", [command], suite="suite+flow+impact")
     assert receipt["passed"] is True
     assert receipt["previous_receipt_sha"] == ""
+    assert receipt["worktree_path"].endswith(os.path.join("run1", "A"))
+    assert receipt["lane"].startswith("lane-")
+    assert receipt["tree_sha"]
     assert q.state()["tasks"]["A"]["status"] == "accepted"
     assert q.state()["merge_queue"][0]["status"] == "accepted"
     assert q.state()["tasks"]["A"]["status"] != "delivered"
@@ -105,7 +108,7 @@ def test_shared_checkout_requires_policy_and_one_owned_lock(tmp_path):
     q = _queue(tmp_path, repo)
     with pytest.raises(ValueError):
         q.allocate(TaskSpec("A"), isolation="shared")
-    first = q.allocate(TaskSpec("A"), isolation="shared", shared_policy=True)
+    q.allocate(TaskSpec("A"), isolation="shared", shared_policy=True)
     with pytest.raises(RuntimeError):
         q.allocate(TaskSpec("B"), isolation="shared", shared_policy=True)
     report = q.teardown("A")

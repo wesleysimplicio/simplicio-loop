@@ -32,10 +32,14 @@ def _normalize_delivery(payload: Mapping[str, Any], *, gates: Mapping[str, Any])
     merge_queue = dict(payload.get("merge_queue") or {})
     merge_receipt = str(merge_queue.get("receipt_sha") or payload.get("merge_queue_receipt_sha") or "").strip()
     merge_status = str(merge_queue.get("status") or payload.get("merge_queue_status") or "").strip().lower()
+    merge_branch = str(merge_queue.get("branch") or payload.get("merge_queue_branch") or "").strip()
+    merge_worktree_path = str(merge_queue.get("worktree_path") or payload.get("merge_queue_worktree_path") or "").strip()
+    merge_lane = str(merge_queue.get("lane") or "").strip()
+    merge_tree_sha = str(merge_queue.get("tree_sha") or "").strip()
     evidence_gate = bool(gates.get("evidence")) and bool(gates.get("watcher"))
     if target == "local-fixture":
         convergence = "local-fixture" if satisfied and evidence_gate else "UNVERIFIED"
-    elif merge_receipt and merge_status == "accepted":
+    elif merge_receipt and merge_status == "accepted" and merge_branch and merge_worktree_path:
         convergence = "merge-queue-verified" if satisfied and evidence_gate else "UNVERIFIED"
     else:
         convergence = "UNVERIFIED"
@@ -46,6 +50,10 @@ def _normalize_delivery(payload: Mapping[str, Any], *, gates: Mapping[str, Any])
         "merge_queue": merge_queue,
         "merge_queue_receipt_sha": merge_receipt,
         "merge_queue_status": merge_status,
+        "merge_queue_branch": merge_branch,
+        "merge_queue_worktree_path": merge_worktree_path,
+        "merge_queue_lane": merge_lane,
+        "merge_queue_tree_sha": merge_tree_sha,
         "convergence": convergence,
         "external": convergence == "merge-queue-verified",
         "verified": convergence in {"local-fixture", "merge-queue-verified"},
@@ -165,7 +173,9 @@ class ExecutionBoard:
                     "evidence": False, "watcher": False, "human": False,
                 }, "delivery": {"target": "unknown", "satisfied": False, "evidence_gate": False,
                                  "merge_queue": {}, "merge_queue_receipt_sha": "",
-                                 "merge_queue_status": "", "convergence": "UNVERIFIED",
+                                 "merge_queue_status": "", "merge_queue_branch": "",
+                                 "merge_queue_worktree_path": "", "merge_queue_lane": "",
+                                 "merge_queue_tree_sha": "", "convergence": "UNVERIFIED",
                                  "external": False, "verified": False},
             })
             payload = dict(event.get("payload") or {})
