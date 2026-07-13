@@ -68,5 +68,12 @@ def test_external_delivery_requires_merge_queue_acceptance_evidence(tmp_path):
         delivery.complete(receipt)
     delivery.record_delivery({"target": "merge-queue", "satisfied": True,
                               "merge_queue_receipt_sha": "abc123", "merge_queue_status": "accepted"})
+    with pytest.raises(VerifiedDeliveryError, match="merge-queue worktree/branch evidence"):
+        delivery.complete(receipt)
+    delivery.record_delivery({"target": "merge-queue", "satisfied": True,
+                              "merge_queue": {"receipt_sha": "abc123", "status": "accepted",
+                                              "branch": "simplicio/run-168/wi-168",
+                                              "worktree_path": "/tmp/run-168/wi-168"}})
     result = delivery.complete(receipt)
     assert result["delivery"]["merge_queue_status"] == "accepted"
+    assert result["delivery"]["merge_queue"]["branch"] == "simplicio/run-168/wi-168"

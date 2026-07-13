@@ -18,22 +18,28 @@ def test_claim_scopes_context_and_fences_receipts(tmp_path):
     coordinator = AttemptCoordinator(queue, run_id="run-1", receipt_dir=tmp_path / "receipts")
     attempt = coordinator.claim(work_item_id="WI-1", identity=IDENTITY, goal="ship one item",
                                 acs=["AC-1"], source_refs=["src/a.py", "private.txt"],
-                                allowed_paths=["src/a.py"])
+                                allowed_paths=["src/a.py"],
+                                issue_ref="wesleysimplicio/simplicio-loop#183")
     assert attempt.attempt_id == "WI-1-1"
     assert attempt.context["source_refs"] == ["src/a.py"]
+    assert attempt.context["issue_ref"] == "wesleysimplicio/simplicio-loop#183"
     event = coordinator.record_event(attempt, "tool_called", {"tool": "pytest"})
     assert event["fencing_token"] == 1
     assert event["agent"] == {key: IDENTITY[key] for key in ("agent_id", "runtime", "device_id", "session_id")}
+    assert event["issue_ref"] == "wesleysimplicio/simplicio-loop#183"
+    assert event["issue_url"] == "https://github.com/wesleysimplicio/simplicio-loop/issues/183"
     receipt = coordinator.accept_receipt(attempt, {"status": "passed"})
     assert receipt["work_item_id"] == "WI-1"
     assert receipt["attempt_id"] == "WI-1-1"
     assert receipt["agent"]["agent_id"] == IDENTITY["agent_id"]
+    assert receipt["issue_ref"] == "wesleysimplicio/simplicio-loop#183"
     done = coordinator.complete(attempt, receipt_ref="receipts/WI-1/1.json")
     assert done["status"] == "completed"
     lines = (tmp_path / "receipts" / "run-1" / "WI-1" / "WI-1-1" / "events.jsonl").read_text().splitlines()
     records = [json.loads(line) for line in lines]
     assert [record["kind"] for record in records] == ["claimed", "tool_called", "completed"]
     assert all(record["agent"] == event["agent"] for record in records)
+    assert all(record["issue_ref"] == "wesleysimplicio/simplicio-loop#183" for record in records)
 
 
 def test_lease_loss_rejects_receipt_and_retry_gets_new_attempt(tmp_path):

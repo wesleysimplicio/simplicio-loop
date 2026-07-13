@@ -1,0 +1,514 @@
+name: distributed-183-proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      queue_url:
+        description: "Optional HTTPS queue URL override; otherwise uses vars.SIMPLICIO_DISTRIBUTED_QUEUE_URL"
+        required: false
+      tls_hostname:
+        description: "Optional TLS hostname override; otherwise uses vars.SIMPLICIO_DISTRIBUTED_TLS_HOSTNAME"
+        required: false
+      tls_sha256:
+        description: "Optional SHA-256 cert fingerprint override; otherwise uses vars.SIMPLICIO_DISTRIBUTED_TLS_SHA256"
+        required: false
+
+concurrency:
+  group: distributed-183-proof-${{ github.ref }}-${{ github.event.inputs.queue_url || vars.SIMPLICIO_DISTRIBUTED_QUEUE_URL || 'missing-endpoint' }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight gate
+    runs-on: ubuntu-latest
+    outputs:
+      queue_url: ${{ steps.preflight.outputs.queue_url }}
+      tls_hostname: ${{ steps.preflight.outputs.tls_hostname }}
+      tls_sha256: ${{ steps.preflight.outputs.tls_sha256 }}
+      task_prefix: ${{ steps.preflight.outputs.task_prefix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Fail closed on missing endpoint/TLS/token
+        id: preflight
+        env:
+          INPUT_QUEUE_URL: ${{ github.event.inputs.queue_url }}
+          VAR_QUEUE_URL: ${{ vars.SIMPLICIO_DISTRIBUTED_QUEUE_URL }}
+          INPUT_TLS_HOSTNAME: ${{ github.event.inputs.tls_hostname }}
+          VAR_TLS_HOSTNAME: ${{ vars.SIMPLICIO_DISTRIBUTED_TLS_HOSTNAME }}
+          INPUT_TLS_SHA256: ${{ github.event.inputs.tls_sha256 }}
+          VAR_TLS_SHA256: ${{ vars.SIMPLICIO_DISTRIBUTED_TLS_SHA256 }}
+          QUEUE_TOKEN: ${{ secrets.SIMPLICIO_REMOTE_QUEUE_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          mkdir -p .orchestrator/proof/preflight
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import socket
+          import ssl
+          import sys
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          queue_url = (os.environ.get("INPUT_QUEUE_URL") or os.environ.get("VAR_QUEUE_URL") or "").strip()
+          tls_hostname = (os.environ.get("INPUT_TLS_HOSTNAME") or os.environ.get("VAR_TLS_HOSTNAME") or "").strip()
+          tls_sha256 = ((os.environ.get("INPUT_TLS_SHA256") or os.environ.get("VAR_TLS_SHA256") or "").strip()
+                        .replace(":", "").lower())
+          queue_token = (os.environ.get("QUEUE_TOKEN") or "").strip()
+          run_id = os.environ["RUN_ID"]
+          run_attempt = os.environ["RUN_ATTEMPT"]
+          out_dir = Path(".orchestrator/proof/preflight")
+          out_dir.mkdir(parents=True, exist_ok=True)
+
+          errors = []
+          if not queue_url:
+              errors.append("missing queue URL: provide workflow input.queue_url or vars.SIMPLICIO_DISTRIBUTED_QUEUE_URL")
+          if not tls_hostname:
+              errors.append("missing TLS hostname: provide workflow input.tls_hostname or vars.SIMPLICIO_DISTRIBUTED_TLS_HOSTNAME")
+          if not tls_sha256:
+              errors.append("missing TLS SHA-256 fingerprint: provide workflow input.tls_sha256 or vars.SIMPLICIO_DISTRIBUTED_TLS_SHA256")
+          if not queue_token:
+              errors.append("missing queue token secret: set secrets.SIMPLICIO_REMOTE_QUEUE_TOKEN")
+
+          parsed = urlsplit(queue_url) if queue_url else None
+          if parsed and parsed.scheme != "https":
+              errors.append("queue URL must use https")
+          if parsed and not parsed.hostname:
+              errors.append("queue URL must include a hostname")
+
+          measured_fingerprint = ""
+          handshake = "SKIPPED"
+          if not errors and parsed:
+              context = ssl.create_default_context()
+              port = parsed.port or 443
+              with socket.create_connection((parsed.hostname, port), timeout=15) as sock:
+                  with context.wrap_socket(sock, server_hostname=tls_hostname) as secure_sock:
+                      cert = secure_sock.getpeercert(binary_form=True)
+                      measured_fingerprint = hashlib.sha256(cert).hexdigest()
+                      handshake = "OK"
+          if measured_fingerprint and measured_fingerprint != tls_sha256:
+              errors.append("TLS fingerprint mismatch between measured certificate and configured expectation")
+
+          payload = {
+              "schema": "simplicio.distributed-proof.preflight/v1",
+              "tag": "MEASURED" if not errors else "UNVERIFIED",
+              "queue_url": queue_url,
+              "queue_host": parsed.hostname if parsed else "",
+              "queue_port": (parsed.port or 443) if parsed else None,
+              "tls_hostname": tls_hostname,
+              "tls_sha256_expected": tls_sha256,
+              "tls_sha256_measured": measured_fingerprint,
+              "tls_handshake": handshake,
+              "queue_token_present": bool(queue_token),
+              "task_prefix": f"gha-183-{run_id}-{run_attempt}",
+              "errors": errors,
+              "physical_runner_independence": "UNVERIFIED",
+              "production_firewall_policy": "UNVERIFIED",
+          }
+          (out_dir / "preflight.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          if errors:
+              print(json.dumps(payload, ensure_ascii=False, indent=2))
+              sys.exit(1)
+
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
+          with github_output.open("a", encoding="utf-8") as fh:
+              fh.write(f"queue_url={queue_url}\n")
+              fh.write(f"tls_hostname={tls_hostname}\n")
+              fh.write(f"tls_sha256={tls_sha256}\n")
+              fh.write(f"task_prefix={payload['task_prefix']}\n")
+          print(json.dumps(payload, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload preflight receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributed-183-preflight
+          path: .orchestrator/proof/preflight
+          if-no-files-found: error
+
+  codex-identity-proof:
+    name: Codex identity proof
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run Codex remote-queue receipt
+        env:
+          QUEUE_URL: ${{ needs.preflight.outputs.queue_url }}
+          QUEUE_TOKEN: ${{ secrets.SIMPLICIO_REMOTE_QUEUE_TOKEN }}
+          TASK_PREFIX: ${{ needs.preflight.outputs.task_prefix }}
+          JOB_NAME: codex
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          mkdir -p .orchestrator/proof/codex
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from simplicio_loop.remote_queue import HTTPRemoteQueue
+
+          job_name = os.environ["JOB_NAME"]
+          queue = HTTPRemoteQueue(os.environ["QUEUE_URL"], token=os.environ["QUEUE_TOKEN"], timeout=15)
+          task_id = f"{os.environ['TASK_PREFIX']}-{job_name}-identity"
+          agent_id = f"{job_name}@github-actions-{os.environ['RUN_ID']}-{os.environ['RUN_ATTEMPT']}"
+          identity = {
+              "agent_id": agent_id,
+              "runtime": job_name,
+              "device_id": f"github-actions-{job_name}",
+              "session_id": f"{os.environ['RUN_ID']}-{os.environ['RUN_ATTEMPT']}-{job_name}",
+              "protocol": "simplicio-distributed/v1",
+              "capabilities": ["claim", "heartbeat", "fencing", "receipts", "events", "evidence", "completion"],
+          }
+          queue.enqueue(task_id, {"source": "github-actions", "issue": 183, "job": job_name})
+          lease = queue.claim(task_id, agent_id, idempotency_key=f"{task_id}:claim", ttl=45, identity=identity)
+          lease = queue.heartbeat(lease, ttl=45)
+          receipt_ref = f"receipts/{task_id}.json"
+          completion = queue.complete(lease, receipt_ref=receipt_ref)
+          task_state = queue.task(task_id)
+          events = [row for row in queue.events(after=0, limit=200) if row["task_id"] == task_id]
+          payload = {
+              "schema": "simplicio.distributed-proof.identity-receipt/v1",
+              "tag": "MEASURED",
+              "issue": 183,
+              "job": job_name,
+              "task_id": task_id,
+              "agent": identity,
+              "queue_url": os.environ["QUEUE_URL"],
+              "receipt_ref": receipt_ref,
+              "fencing_token": lease.fencing_token,
+              "task_status": task_state["status"],
+              "events": events,
+              "completion": completion,
+              "physical_machine_status": "UNVERIFIED",
+              "separate_deployment_status": "MEASURED",
+          }
+          out = Path(f".orchestrator/proof/{job_name}/{job_name}-identity-receipt.json")
+          out.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          print(json.dumps(payload, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload Codex receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributed-183-codex
+          path: .orchestrator/proof/codex
+          if-no-files-found: error
+
+  claude-identity-proof:
+    name: Claude identity proof
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run Claude remote-queue receipt
+        env:
+          QUEUE_URL: ${{ needs.preflight.outputs.queue_url }}
+          QUEUE_TOKEN: ${{ secrets.SIMPLICIO_REMOTE_QUEUE_TOKEN }}
+          TASK_PREFIX: ${{ needs.preflight.outputs.task_prefix }}
+          JOB_NAME: claude
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          mkdir -p .orchestrator/proof/claude
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from simplicio_loop.remote_queue import HTTPRemoteQueue
+
+          job_name = os.environ["JOB_NAME"]
+          queue = HTTPRemoteQueue(os.environ["QUEUE_URL"], token=os.environ["QUEUE_TOKEN"], timeout=15)
+          task_id = f"{os.environ['TASK_PREFIX']}-{job_name}-identity"
+          agent_id = f"{job_name}@github-actions-{os.environ['RUN_ID']}-{os.environ['RUN_ATTEMPT']}"
+          identity = {
+              "agent_id": agent_id,
+              "runtime": job_name,
+              "device_id": f"github-actions-{job_name}",
+              "session_id": f"{os.environ['RUN_ID']}-{os.environ['RUN_ATTEMPT']}-{job_name}",
+              "protocol": "simplicio-distributed/v1",
+              "capabilities": ["claim", "heartbeat", "fencing", "receipts", "events", "evidence", "completion"],
+          }
+          queue.enqueue(task_id, {"source": "github-actions", "issue": 183, "job": job_name})
+          lease = queue.claim(task_id, agent_id, idempotency_key=f"{task_id}:claim", ttl=45, identity=identity)
+          lease = queue.heartbeat(lease, ttl=45)
+          receipt_ref = f"receipts/{task_id}.json"
+          completion = queue.complete(lease, receipt_ref=receipt_ref)
+          task_state = queue.task(task_id)
+          events = [row for row in queue.events(after=0, limit=200) if row["task_id"] == task_id]
+          payload = {
+              "schema": "simplicio.distributed-proof.identity-receipt/v1",
+              "tag": "MEASURED",
+              "issue": 183,
+              "job": job_name,
+              "task_id": task_id,
+              "agent": identity,
+              "queue_url": os.environ["QUEUE_URL"],
+              "receipt_ref": receipt_ref,
+              "fencing_token": lease.fencing_token,
+              "task_status": task_state["status"],
+              "events": events,
+              "completion": completion,
+              "physical_machine_status": "UNVERIFIED",
+              "separate_deployment_status": "MEASURED",
+          }
+          out = Path(f".orchestrator/proof/{job_name}/{job_name}-identity-receipt.json")
+          out.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          print(json.dumps(payload, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload Claude receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributed-183-claude
+          path: .orchestrator/proof/claude
+          if-no-files-found: error
+
+  shared-claim-fencing-proof:
+    name: Shared claim and fencing proof
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Prove atomic claim and stale-fence rejection against live queue
+        env:
+          QUEUE_URL: ${{ needs.preflight.outputs.queue_url }}
+          QUEUE_TOKEN: ${{ secrets.SIMPLICIO_REMOTE_QUEUE_TOKEN }}
+          TASK_PREFIX: ${{ needs.preflight.outputs.task_prefix }}
+        shell: bash
+        run: |
+          mkdir -p .orchestrator/proof/shared
+          python3 - <<'PY'
+          import json
+          import multiprocessing as mp
+          import os
+          import time
+          from pathlib import Path
+
+          from simplicio_loop.remote_queue import HTTPRemoteQueue, QueueConflict
+
+          queue_url = os.environ["QUEUE_URL"]
+          token = os.environ["QUEUE_TOKEN"]
+          prefix = os.environ["TASK_PREFIX"]
+          shared_task = f"{prefix}-shared-claim"
+          fenced_task = f"{prefix}-fenced-claim"
+          queue = HTTPRemoteQueue(queue_url, token=token, timeout=15)
+          queue.enqueue(shared_task, {"source": "github-actions", "issue": 183, "proof": "shared-claim"})
+          queue.enqueue(fenced_task, {"source": "github-actions", "issue": 183, "proof": "stale-fence"})
+
+          def worker(agent_id, barrier, result_queue):
+              client = HTTPRemoteQueue(queue_url, token=token, timeout=15)
+              identity = {
+                  "agent_id": agent_id,
+                  "runtime": "codex" if agent_id.startswith("codex") else "claude",
+                  "device_id": agent_id.split("@", 1)[1],
+                  "session_id": "gha-shared-proof-" + agent_id,
+                  "protocol": "simplicio-distributed/v1",
+                  "capabilities": ["claim", "heartbeat", "fencing", "receipts"],
+              }
+              try:
+                  barrier.wait(timeout=10)
+                  lease = client.claim(shared_task, agent_id, idempotency_key=shared_task + ":" + agent_id, ttl=20, identity=identity)
+                  time.sleep(2)
+                  client.complete(lease, receipt_ref=f"receipts/{shared_task}-{agent_id}.json")
+                  result_queue.put({"agent_id": agent_id, "status": "claimed", "fencing_token": lease.fencing_token})
+              except QueueConflict as exc:
+                  result_queue.put({"agent_id": agent_id, "status": "conflict", "error": str(exc)})
+              except Exception as exc:
+                  result_queue.put({"agent_id": agent_id, "status": "error", "error": repr(exc)})
+
+          ctx = mp.get_context("spawn")
+          barrier = ctx.Barrier(2)
+          result_queue = ctx.Queue()
+          workers = [
+              ctx.Process(target=worker, args=("codex@gha-shared-a", barrier, result_queue)),
+              ctx.Process(target=worker, args=("claude@gha-shared-b", barrier, result_queue)),
+          ]
+          for proc in workers:
+              proc.start()
+          observed = [result_queue.get(timeout=30) for _ in workers]
+          for proc in workers:
+              proc.join(timeout=30)
+          stale = queue.claim(fenced_task, "codex@gha-fence-a", idempotency_key=f"{fenced_task}:stale", ttl=0.1, identity={
+              "agent_id": "codex@gha-fence-a",
+              "runtime": "codex",
+              "device_id": "gha-fence-a",
+              "session_id": "gha-fence-stale",
+              "protocol": "simplicio-distributed/v1",
+              "capabilities": ["claim", "heartbeat", "fencing", "receipts"],
+          })
+          time.sleep(0.2)
+          fresh = queue.claim(fenced_task, "claude@gha-fence-b", idempotency_key=f"{fenced_task}:fresh", ttl=20, identity={
+              "agent_id": "claude@gha-fence-b",
+              "runtime": "claude",
+              "device_id": "gha-fence-b",
+              "session_id": "gha-fence-fresh",
+              "protocol": "simplicio-distributed/v1",
+              "capabilities": ["claim", "heartbeat", "fencing", "receipts"],
+          })
+          stale_rejected = False
+          stale_error = ""
+          try:
+              queue.complete(stale, receipt_ref=f"receipts/{fenced_task}-stale.json")
+          except QueueConflict as exc:
+              stale_rejected = True
+              stale_error = str(exc)
+          fresh_completion = queue.complete(fresh, receipt_ref=f"receipts/{fenced_task}-fresh.json")
+          events = [row for row in queue.events(after=0, limit=400) if row["task_id"] in {shared_task, fenced_task}]
+          payload = {
+              "schema": "simplicio.distributed-proof.shared-claim-fencing/v1",
+              "tag": "MEASURED" if stale_rejected else "UNVERIFIED",
+              "issue": 183,
+              "queue_url": queue_url,
+              "shared_task": shared_task,
+              "fenced_task": fenced_task,
+              "observed": observed,
+              "stale_rejected": stale_rejected,
+              "stale_error": stale_error,
+              "fresh_completion": fresh_completion,
+              "events": events,
+              "physical_machine_status": "UNVERIFIED",
+          }
+          Path(".orchestrator/proof/shared/shared-claim-fencing.json").write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(payload, ensure_ascii=False, indent=2))
+          if not stale_rejected:
+              raise SystemExit(1)
+          PY
+
+      - name: Upload shared proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributed-183-shared
+          path: .orchestrator/proof/shared
+          if-no-files-found: error
+
+  local-boundary-receipt:
+    name: Local boundary receipt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Generate issue-183 local boundary receipt
+        shell: bash
+        run: |
+          mkdir -p .orchestrator/proof/local-boundary
+          python3 scripts/execution_board_e2e.py --out .orchestrator/proof/local-boundary
+
+      - name: Upload local boundary receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributed-183-local-boundary
+          path: .orchestrator/proof/local-boundary
+          if-no-files-found: error
+
+  summary:
+    name: Summarize distributed proof
+    needs:
+      - preflight
+      - codex-identity-proof
+      - claude-identity-proof
+      - shared-claim-fencing-proof
+      - local-boundary-receipt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Aggregate verifiable receipts
+        shell: bash
+        run: |
+          mkdir -p .orchestrator/proof/summary
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          def load_one(pattern):
+              matches = list(Path("artifacts").glob(pattern))
+              if len(matches) != 1:
+                  raise SystemExit(f"expected exactly one artifact for {pattern}, found {len(matches)}")
+              return json.loads(matches[0].read_text(encoding="utf-8"))
+
+          preflight = load_one("distributed-183-preflight/preflight.json")
+          codex = load_one("distributed-183-codex/codex-identity-receipt.json")
+          claude = load_one("distributed-183-claude/claude-identity-receipt.json")
+          shared = load_one("distributed-183-shared/shared-claim-fencing.json")
+          local_boundary = load_one("distributed-183-local-boundary/distributed-epic-evidence.json")
+
+          payload = {
+              "schema": "simplicio.distributed-proof.summary/v1",
+              "issue": 183,
+              "tag": "MEASURED",
+              "queue_url": preflight["queue_url"],
+              "tls_sha256_measured": preflight["tls_sha256_measured"],
+              "proofs": {
+                  "preflight": preflight,
+                  "codex_identity": codex,
+                  "claude_identity": claude,
+                  "shared_claim_fencing": shared,
+                  "local_boundary": local_boundary,
+              },
+              "measured_status": {
+                  "endpoint_tls_secret_gate": preflight["tag"],
+                  "codex_identity_receipt": codex["tag"],
+                  "claude_identity_receipt": claude["tag"],
+                  "shared_claim_fencing": shared["tag"],
+                  "local_boundary_receipt": local_boundary["tag"],
+              },
+              "unverified_boundaries": {
+                  "physical_machine_independence": "UNVERIFIED",
+                  "production_firewall_policy": "UNVERIFIED",
+                  "merge_queue_delivery": "UNVERIFIED",
+              },
+              "notes": [
+                  "Independent GitHub jobs prove runtime-specific receipts against one HTTPS queue endpoint.",
+                  "This workflow does not prove Codex and Claude ran on physically independent machines.",
+                  "Deployment-level absence fails closed in preflight instead of being silently downgraded to local proof.",
+              ],
+          }
+          out = Path(".orchestrator/proof/summary/distributed-183-summary.json")
+          out.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          print(json.dumps(payload, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributed-183-summary
+          path: .orchestrator/proof/summary
+          if-no-files-found: error

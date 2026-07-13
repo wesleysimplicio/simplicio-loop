@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,11 +19,115 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from scripts import runtime_matrix  # noqa: E402
+from scripts.worktree_queue import TaskSpec, WorktreeQueue  # noqa: E402
 from simplicio_loop.execution_board import ExecutionBoard  # noqa: E402
 from simplicio_loop.drain import evaluate_drain  # noqa: E402
+from simplicio_loop.runtime_adapter import LoopRuntimeAdapter  # noqa: E402
+from simplicio_loop.verified_delivery import VerifiedAgentDelivery  # noqa: E402
 
 
+ISSUE_183_CRITERION_7 = "Worktree/branch/receipt são isolados e convergem por merge queue/evidence gate."
 ISSUE_183_CRITERION_9 = "`100%`/`COMPLETE` só ocorre quando todas as frentes e receipts convergirem."
+
+
+class _Runtime:
+    def negotiate(self, request):
+        return {"contract": "simplicio.runtime/v1", "contract_version": "1",
+                "capabilities": ["events", "leases", "evidence", "completion"]}
+
+    def apply(self, operation):
+        return {"accepted": True, "operation_id": operation["operation_id"]}
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git"] + list(args), cwd=str(cwd), check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ).stdout.strip()
+
+
+def _criterion7(out_dir: Path) -> dict:
+    fixture_root = out_dir / "criterion7-merge-queue"
+    if fixture_root.exists():
+        shutil.rmtree(fixture_root)
+    repo = fixture_root / "repo"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "simplicio-test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-qm", "base")
+
+    queue = WorktreeQueue(str(repo), str(fixture_root / "queue.json"), run_id="issue183-ac7")
+    task = TaskSpec("WI-AC7", goal="merge queue convergence", files_affected=["src/shared.py"])
+    queue.register_tasks([task])
+    allocation = queue.allocate(task)
+    worktree = Path(allocation.path)
+    (worktree / "worker.txt").write_text("merge queue fixture\n", encoding="utf-8")
+    _git(worktree, "add", "worker.txt")
+    _git(worktree, "commit", "-qm", "worker change")
+    queue.enqueue_merge(task.id)
+    command = [sys.executable, "-c", "print('merge queue green')"]
+    composed = queue.run_composed_verification(task.id, [command], suite="suite+flow+impact")
+
+    runtime = LoopRuntimeAdapter(
+        run_id="issue183-ac7", work_item_id=task.id, actor="fixture@local",
+        transport=_Runtime(), outbox_path=fixture_root / "runtime-outbox.jsonl",
+    )
+    runtime.negotiate()
+    delivery = VerifiedAgentDelivery(
+        runtime=runtime, board=ExecutionBoard(run_id="issue183-ac7"), attempt_id="attempt-ac7"
+    )
+    for phase in ("intake", "mapping", "planning", "executing", "validating", "watching", "delivering"):
+        delivery.transition(phase)
+    evidence = {
+        "schema": "simplicio.ac-evidence/v1", "status": "PASS",
+        "ready": True, "verdict": "COMPLETE", "receipt_id": composed["receipt_sha"],
+    }
+    delivery.record_evidence(evidence)
+    delivery.record_watcher(match=True, challenge="replay issue183-ac7")
+    delivery.record_delivery({
+        "target": "merge-queue",
+        "satisfied": True,
+        "merge_queue": {
+            "receipt_sha": composed["receipt_sha"],
+            "status": "accepted",
+            "branch": composed["branch"],
+            "worktree_path": composed["worktree_path"],
+            "lane": composed["lane"],
+            "tree_sha": composed["tree_sha"],
+            "receipt_path": composed["path"],
+        },
+    })
+    result = delivery.complete(evidence)
+    projection = delivery.board.replay()
+    card = projection["cards"][0]
+    local_pass = (
+        composed["passed"] is True
+        and card["delivery"]["convergence"] == "merge-queue-verified"
+        and card["delivery"]["evidence_gate"] is True
+        and card["delivery"]["merge_queue_branch"] == composed["branch"]
+        and card["delivery"]["merge_queue_worktree_path"] == composed["worktree_path"]
+    )
+    return {
+        "criterion_id": 7,
+        "criterion_text": ISSUE_183_CRITERION_7,
+        "tag": "MEASURED" if local_pass else "UNVERIFIED",
+        "local_merge_queue_status": "PASS" if local_pass else "FAIL",
+        "local_fixture_distinct": True,
+        "merge_acceptance_sha": composed["receipt_sha"],
+        "merge_acceptance_receipt": composed["path"],
+        "merge_queue_status": card["delivery"]["merge_queue_status"],
+        "delivery_convergence": card["delivery"]["convergence"],
+        "evidence_gate": card["delivery"]["evidence_gate"],
+        "isolated_branch": composed["branch"],
+        "isolated_worktree_path": composed["worktree_path"],
+        "lane": composed["lane"],
+        "tree_sha": composed["tree_sha"],
+        "board_projection_hash": projection["projection_hash"],
+        "delivery_target": result["delivery"]["target"],
+    }
 
 
 def _criterion9(projection: dict, drain: dict, events: list[dict]) -> dict:
@@ -74,16 +180,21 @@ def _build_issue_183_receipt(out_dir: Path, board_receipt: dict, projection: dic
     matrix_path = out_dir / "runtime-matrix.json"
     matrix_path.write_text(json.dumps(matrix, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     criterion6 = runtime_matrix.build_issue_183_criterion6(HERE)
+    criterion7 = _criterion7(out_dir)
     criterion9 = _criterion9(projection, drain, events)
-    local_ready = criterion6["local_contract_verified"] and criterion9["local_convergence_status"] == "PASS"
+    local_ready = (
+        criterion6["local_contract_verified"]
+        and criterion7["local_merge_queue_status"] == "PASS"
+        and criterion9["local_convergence_status"] == "PASS"
+    )
     payload = {
         "schema": "simplicio.distributed-epic-evidence/v1",
         "issue": 183,
         "title": "[EPIC][P0][Distributed] Multi-agent paralelo por default entre Codex, Claude e máquinas",
         "tag": "MEASURED",
         "epic_closure_ready": False,
-        "criteria_audited": [6, 9],
-        "criteria_not_audited": [1, 2, 3, 4, 5, 7, 8],
+        "criteria_audited": [6, 7, 9],
+        "criteria_not_audited": [1, 2, 3, 4, 5, 8],
         "local_audit_status": "PASS" if local_ready else "FAIL",
         "external_boundaries": {
             "physical_machines": "UNVERIFIED",
@@ -99,8 +210,9 @@ def _build_issue_183_receipt(out_dir: Path, board_receipt: dict, projection: dic
         "artifacts": {
             "execution_board_receipt": str(out_dir / "execution-board-receipt.json"),
             "runtime_matrix_receipt": str(matrix_path),
+            "criterion7_merge_queue_receipt": criterion7["merge_acceptance_receipt"],
         },
-        "criteria": [criterion6, criterion9],
+        "criteria": [criterion6, criterion7, criterion9],
         "board_acceptance": board_receipt["acceptance"],
     }
     receipt_path = out_dir / "distributed-epic-evidence.json"

@@ -1,29 +1,17 @@
 import json
-import subprocess
-import sys
 from pathlib import Path
 
-
-REPO = Path(__file__).resolve().parents[1]
-SCRIPT = REPO / "scripts" / "execution_board_e2e.py"
+from scripts.execution_board_e2e import run  # noqa: E402
 
 
 def test_issue_183_aggregate_receipt_is_honest_about_local_and_external_boundaries(tmp_path):
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), "--out", str(tmp_path)],
-        cwd=str(REPO),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        stdin=subprocess.DEVNULL,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    run(tmp_path)
     payload = json.loads((tmp_path / "distributed-epic-evidence.json").read_text(encoding="utf-8"))
     assert payload["schema"] == "simplicio.distributed-epic-evidence/v1"
     assert payload["issue"] == 183
     assert payload["epic_closure_ready"] is False
-    assert payload["criteria_audited"] == [6, 9]
-    assert payload["criteria_not_audited"] == [1, 2, 3, 4, 5, 7, 8]
+    assert payload["criteria_audited"] == [6, 7, 9]
+    assert payload["criteria_not_audited"] == [1, 2, 3, 4, 5, 8]
     assert payload["external_boundaries"]["physical_machines"] == "UNVERIFIED"
     assert payload["external_boundaries"]["tls_deploy"] == "UNVERIFIED"
     assert payload["external_boundaries"]["external_release"] == "UNVERIFIED"
@@ -35,6 +23,16 @@ def test_issue_183_aggregate_receipt_is_honest_about_local_and_external_boundari
     assert criterion6["physical_machine_status"] == "UNVERIFIED"
     assert criterion6["tls_deploy_status"] == "UNVERIFIED"
     assert criterion6["external_release_status"] == "UNVERIFIED"
+
+    criterion7 = criteria[7]
+    assert criterion7["tag"] == "MEASURED"
+    assert criterion7["local_merge_queue_status"] == "PASS"
+    assert criterion7["local_fixture_distinct"] is True
+    assert criterion7["merge_queue_status"] == "accepted"
+    assert criterion7["delivery_convergence"] == "merge-queue-verified"
+    assert criterion7["evidence_gate"] is True
+    assert criterion7["isolated_branch"].startswith("simplicio/issue183-ac7/")
+    assert Path(criterion7["merge_acceptance_receipt"]).exists()
 
     criterion9 = criteria[9]
     assert criterion9["tag"] == "MEASURED"

@@ -160,6 +160,8 @@ def test_board_distinguishes_local_fixture_from_merge_queue_delivery():
     board.append("delivery_recorded", item_id="WI-1", payload={
         "target": "merge-queue", "satisfied": True,
         "merge_queue_receipt_sha": "sha-123", "merge_queue_status": "accepted",
+        "merge_queue_branch": "simplicio/run-merge/WI-1",
+        "merge_queue_worktree_path": "/tmp/run-merge/WI-1",
     })
     projection = board.replay()
     assert projection["cards"][0]["delivery"]["convergence"] == "merge-queue-verified"

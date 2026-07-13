@@ -8,17 +8,47 @@ environment variables and another worker's private state are never copied.
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any, Mapping, Sequence
 
 SCHEMA = "simplicio.agent-context/v1"
 RECEIPT_SCHEMA = "simplicio.agent-receipt/v1"
 IDENTITY_FIELDS = ("agent_id", "runtime", "device_id", "session_id")
-CONTEXT_FIELDS = ("schema", "task_id", "goal", "acs", "source_refs", "depends_on", "assigned_to", "capabilities")
+CONTEXT_FIELDS = (
+    "schema", "task_id", "goal", "acs", "source_refs", "depends_on",
+    "assigned_to", "capabilities", "issue_ref", "issue_url",
+)
 CAPABILITIES = frozenset(("claim", "heartbeat", "fencing", "receipts", "events", "evidence", "completion"))
+_ISSUE_REF_RE = re.compile(r"^(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)#(?P<number>[1-9][0-9]*)$")
+_ISSUE_URL_RE = re.compile(
+    r"^https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)/issues/(?P<number>[1-9][0-9]*)/?$"
+)
 
 
 class AgentContractError(ValueError):
     """Raised when an identity, capability set, or context pack is unsafe."""
+
+
+def _canonical_issue_fields(issue_ref: Any = "", issue_url: Any = "") -> tuple[str, str]:
+    raw_ref = str(issue_ref or "").strip()
+    raw_url = str(issue_url or "").strip()
+    if not raw_ref and not raw_url:
+        return "", ""
+    ref_match = _ISSUE_REF_RE.match(raw_ref) if raw_ref else None
+    url_match = _ISSUE_URL_RE.match(raw_url) if raw_url else None
+    if raw_ref and ref_match is None:
+        raise AgentContractError("issue_ref must be canonical owner/repo#123")
+    if raw_url and url_match is None:
+        raise AgentContractError("issue_url must be canonical https://github.com/owner/repo/issues/123")
+    ref_parts = ref_match.groupdict() if ref_match else None
+    url_parts = url_match.groupdict() if url_match else None
+    if ref_parts and url_parts and ref_parts != url_parts:
+        raise AgentContractError("issue_ref and issue_url identify different issues")
+    parts = ref_parts or url_parts or {}
+    owner = parts.get("owner", "")
+    repo = parts.get("repo", "")
+    number = parts.get("number", "")
+    return f"{owner}/{repo}#{number}", f"https://github.com/{owner}/{repo}/issues/{number}"
 
 
 def validate_identity(identity: Mapping[str, Any], *, capabilities: Sequence[str] | None = None) -> dict[str, Any]:
@@ -62,6 +92,10 @@ def validate_context_pack(context_pack: Mapping[str, Any], identity: Mapping[str
         "assigned_to": dict(assigned_to),
         "capabilities": list(context_pack.get("capabilities") or ()),
     }
+    result["issue_ref"], result["issue_url"] = _canonical_issue_fields(
+        context_pack.get("issue_ref"),
+        context_pack.get("issue_url"),
+    )
     if result["schema"] != SCHEMA:
         raise AgentContractError("unsupported context pack schema")
     if not result["task_id"]:
@@ -75,7 +109,8 @@ def validate_context_pack(context_pack: Mapping[str, Any], identity: Mapping[str
 
 def build_context_pack(*, task_id: str, goal: str, identity: Mapping[str, Any],
                        acs: Sequence[str] = (), source_refs: Sequence[str] = (),
-                       depends_on: Sequence[str] = (), allowed_paths: Sequence[str] = ()) -> dict[str, Any]:
+                       depends_on: Sequence[str] = (), allowed_paths: Sequence[str] = (),
+                       issue_ref: str = "", issue_url: str = "") -> dict[str, Any]:
     """Build a deterministic, minimum-necessary context for one worker."""
     normalized = validate_identity(identity)
     allow = {str(path).strip() for path in allowed_paths if str(path).strip()}
@@ -89,6 +124,8 @@ def build_context_pack(*, task_id: str, goal: str, identity: Mapping[str, Any],
         "depends_on": [str(dep).strip() for dep in depends_on if str(dep).strip()],
         "assigned_to": {field: normalized[field] for field in IDENTITY_FIELDS},
         "capabilities": list(normalized["capabilities"]),
+        "issue_ref": str(issue_ref).strip(),
+        "issue_url": str(issue_url).strip(),
     }, normalized)
 
 
@@ -102,7 +139,11 @@ def bind_receipt(receipt: Mapping[str, Any], identity: Mapping[str, Any], *, con
     result["schema"] = result.get("schema") or RECEIPT_SCHEMA
     result["agent"] = normalized
     if context_pack is not None:
-        result["context"] = deepcopy(validate_context_pack(context_pack, normalized))
+        context = deepcopy(validate_context_pack(context_pack, normalized))
+        result["context"] = context
+        if context.get("issue_ref"):
+            result["issue_ref"] = context["issue_ref"]
+            result["issue_url"] = context["issue_url"]
     return result
 
 
