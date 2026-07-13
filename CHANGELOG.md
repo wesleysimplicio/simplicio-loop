@@ -7,6 +7,11 @@
   move from `~/.hermes/` to `~/.simplicio-agent/`; the `HERMES_PROFILE` env var is superseded by
   `SIMPLICIO_AGENT_PROFILE` (legacy var still honored as a fallback).
 
+## [3.34.0] — 2026-07-12
+
+- Raise the `simplicio-cli` (dev-cli) dependency floor to `>=0.16.0`, paired with dev-cli `v0.16.0`
+  and mapper `v0.23.0` (correlated releases).
+
 ## [3.33.0] — 2026-07-12
 
 - Consume `simplicio-cli>=0.15.0`, paired with mapper `v0.22.0` and dev-cli `v0.15.0`.
