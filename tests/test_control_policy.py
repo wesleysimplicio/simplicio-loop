@@ -76,6 +76,16 @@ def test_budget_exhaustion_stops_regardless_of_drift():
     assert result["reason_code"] == "budget_exhausted"
 
 
+def test_maintenance_deferred_backlog_only_stops_as_blocked():
+    projection = {
+        "acs_open": 5,
+        "maintenance": {"mode": "maintenance_deferred", "disposition": "backlog_only"},
+    }
+    result = decide(projection)
+    assert result["decision"] == "STOP_BLOCKED"
+    assert result["reason_code"] == "maintenance_deferred"
+
+
 def test_all_clear_stops_success():
     projection = {"acs_open": 0, "verifiers_failed": 0, "effects_unverified": 0}
     result = decide(projection)

@@ -505,6 +505,29 @@ def test_watcher_receipt_matching_challenge_stops(tmp_path):
     assert not os.path.exists(_scratchpad(root))
 
 
+def test_maintenance_deferred_receipt_hands_off_without_honoring_promise(tmp_path):
+    """Root hook parity: backlog-only maintenance is incomplete and must hand off."""
+    root = str(tmp_path)
+    _arm(root, iteration=1, max_iter=5)
+    run_dir = _seed_verified_run(root)
+    with open(os.path.join(run_dir, "completion-receipt.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "schema": "simplicio.completion-receipt/v1",
+            "ready": False,
+            "reason_code": "maintenance_deferred",
+            "tag": "UNVERIFIED",
+        }, f)
+
+    result = _tick(root, "Looks done. <promise>SIMPLICIO_DONE</promise> tests pass")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == ""
+    assert not os.path.exists(_scratchpad(root))
+    handoff = os.path.join(root, HANDOFF)
+    assert os.path.exists(handoff)
+    assert "maintenance deferred" in open(handoff, encoding="utf-8").read()
+
+
 def test_bound_operator_missing_blocks_when_simplicio_loop_shipped(tmp_path):
     # #83: when the repo ships the simplicio-loop companion skill, a missing bound operator
     # (simplicio-mapper / simplicio-dev-cli) must BLOCK the loop (handoff + stop), not silently
