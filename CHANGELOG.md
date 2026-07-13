@@ -7,6 +7,13 @@
   move from `~/.hermes/` to `~/.simplicio-agent/`; the `HERMES_PROFILE` env var is superseded by
   `SIMPLICIO_AGENT_PROFILE` (legacy var still honored as a fallback).
 
+## [3.34.1] — 2026-07-13
+
+- Raise the `simplicio-cli` (dev-cli) dependency floor to `>=0.16.1`, paired with
+  dev-cli `v0.16.1` and its transitively shipped mapper `v0.23.1`.
+- Publish the current `main` package state as a patch release; PyPI publication is
+  performed locally when hosted GitHub Actions are unavailable.
+
 ## [3.34.0] — 2026-07-12
 
 - Raise the `simplicio-cli` (dev-cli) dependency floor to `>=0.16.0`, paired with dev-cli `v0.16.0`

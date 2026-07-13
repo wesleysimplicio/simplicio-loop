@@ -1,4 +1,4 @@
-# Extension points — the 48 named binding points
+# Extension points — the 49 named binding points
 
 These are the named points where work happens. For each, if the host runtime exposes a native
 capability, BIND it (deterministic, local-first, near-zero token). If not, the LLM performs the

@@ -130,5 +130,5 @@ Claude Code (and on Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Simplicio Age
 
 The same skills run on Codex, VS Code (Copilot), Cursor, Antigravity, Kiro, OpenCode, Gemini,
 Aider, Simplicio Agent (formerly Hermes), and OpenClaw — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
-[`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (48 extension points; the binding
+[`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (49 extension points; the binding
 lives in the host, never in the skill).
