@@ -3,10 +3,19 @@ import subprocess
 import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from simplicio_loop.remote_queue import HTTPRemoteQueue, QueueConflict, SQLiteRemoteQueue, create_http_queue_server
+from simplicio_loop.remote_queue import (
+    HTTPRemoteQueue,
+    QueueConflict,
+    QueueUnavailable,
+    SQLiteRemoteQueue,
+    _lease_from_json,
+    _lease_json,
+    create_http_queue_server,
+)
 
 
 def test_idempotent_claim_and_ordered_reconnect_events(tmp_path):
@@ -58,8 +67,10 @@ def test_two_agents_only_one_atomic_claim_wins(tmp_path):
             results.append("conflict")
 
     threads = [threading.Thread(target=worker, args=("codex@A",)), threading.Thread(target=worker, args=("claude@B",))]
-    for t in threads: t.start()
-    for t in threads: t.join()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     assert results.count("conflict") == 1
     assert sum(value != "conflict" for value in results) == 1
 
@@ -94,6 +105,12 @@ def test_http_unavailable_is_fail_closed():
     with pytest.raises(Exception) as error:
         HTTPRemoteQueue("http://127.0.0.1:1", timeout=0.05).events()
     assert "QueueUnavailable" in type(error.value).__name__
+
+
+def test_http_client_requires_tls_for_non_loopback_urls():
+    with pytest.raises(Exception) as error:
+        HTTPRemoteQueue("http://queue.example.internal:8765", timeout=0.05).events()
+    assert isinstance(error.value, QueueUnavailable)
 
 
 def test_network_bind_requires_explicit_tls(tmp_path):
@@ -131,3 +148,112 @@ def test_server_cli_imports_from_any_cwd_without_module_error(tmp_path):
     assert result.returncode == 2, result.stderr
     assert "must be provided together" in (result.stderr + result.stdout)
     assert "ModuleNotFoundError" not in result.stderr
+
+
+def test_claim_retry_after_broken_response_reuses_same_lease_without_duplicate_claim(tmp_path):
+    backend = SQLiteRemoteQueue(str(tmp_path / "queue.db"))
+    backend.enqueue("T1")
+    fail_once = {"claim": True}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            return
+
+        def do_POST(self):  # noqa: N802
+            import json
+
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            if self.path.endswith("/claim"):
+                lease = backend.claim(body["task_id"], body["agent_id"], idempotency_key=body["idempotency_key"],
+                                      ttl=float(body.get("ttl", 60.0)), identity=body.get("identity"),
+                                      capabilities=body.get("capabilities"))
+                if fail_once["claim"]:
+                    fail_once["claim"] = False
+                    self.connection.shutdown(2)
+                    self.connection.close()
+                    return
+                raw = json.dumps({"lease": _lease_json(lease)}, sort_keys=True).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = HTTPRemoteQueue("http://127.0.0.1:%d" % server.server_port, timeout=1)
+        with pytest.raises(QueueUnavailable):
+            client.claim("T1", "codex@A", idempotency_key="run:T1", ttl=5)
+        lease = client.claim("T1", "codex@A", idempotency_key="run:T1", ttl=5)
+        assert lease.fencing_token == 1
+        claimed_events = [event for event in backend.events() if event["kind"] == "claimed"]
+        assert len(claimed_events) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_complete_retry_after_broken_response_does_not_duplicate_completion(tmp_path):
+    backend = SQLiteRemoteQueue(str(tmp_path / "queue.db"))
+    backend.enqueue("T1")
+    lease = backend.claim("T1", "codex@A", idempotency_key="run:T1", ttl=5)
+    fail_once = {"complete": True}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            return
+
+        def do_POST(self):  # noqa: N802
+            import json
+
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            if self.path.endswith("/complete"):
+                try:
+                    result = backend.complete(_lease_from_json(body["lease"]), receipt_ref=body["receipt_ref"])
+                except QueueConflict as exc:
+                    raw = json.dumps({"error": str(exc)}, sort_keys=True).encode("utf-8")
+                    self.send_response(409)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
+                if fail_once["complete"]:
+                    fail_once["complete"] = False
+                    self.connection.shutdown(2)
+                    self.connection.close()
+                    return
+                raw = json.dumps(result, sort_keys=True).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = HTTPRemoteQueue("http://127.0.0.1:%d" % server.server_port, timeout=1)
+        with pytest.raises(QueueUnavailable):
+            client.complete(lease, receipt_ref="receipts/T1.json")
+        with pytest.raises(QueueConflict, match="stale or expired"):
+            client.complete(lease, receipt_ref="receipts/T1.json")
+        completed_events = [event for event in backend.events() if event["kind"] == "completed"]
+        assert len(completed_events) == 1
+        assert completed_events[0]["payload"]["receipt_ref"] == "receipts/T1.json"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

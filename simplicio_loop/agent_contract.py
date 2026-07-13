@@ -13,6 +13,7 @@ from typing import Any, Mapping, Sequence
 SCHEMA = "simplicio.agent-context/v1"
 RECEIPT_SCHEMA = "simplicio.agent-receipt/v1"
 IDENTITY_FIELDS = ("agent_id", "runtime", "device_id", "session_id")
+CONTEXT_FIELDS = ("schema", "task_id", "goal", "acs", "source_refs", "depends_on", "assigned_to", "capabilities")
 CAPABILITIES = frozenset(("claim", "heartbeat", "fencing", "receipts", "events", "evidence", "completion"))
 
 
@@ -41,6 +42,37 @@ def validate_identity(identity: Mapping[str, Any], *, capabilities: Sequence[str
     return result
 
 
+def validate_context_pack(context_pack: Mapping[str, Any], identity: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(context_pack, Mapping):
+        raise AgentContractError("context pack must be an object")
+    extra = sorted(set(context_pack.keys()).difference(CONTEXT_FIELDS))
+    if extra:
+        raise AgentContractError("context pack contains non-allow-listed fields: " + ", ".join(extra))
+    normalized = validate_identity(identity)
+    assigned_to = context_pack.get("assigned_to")
+    if assigned_to != {field: normalized[field] for field in IDENTITY_FIELDS}:
+        raise AgentContractError("context pack is assigned to another agent")
+    result = {
+        "schema": str(context_pack.get("schema") or SCHEMA),
+        "task_id": str(context_pack.get("task_id") or "").strip(),
+        "goal": str(context_pack.get("goal") or "").strip(),
+        "acs": [str(ac).strip() for ac in context_pack.get("acs", ()) if str(ac).strip()],
+        "source_refs": [str(path).strip() for path in context_pack.get("source_refs", ()) if str(path).strip()],
+        "depends_on": [str(dep).strip() for dep in context_pack.get("depends_on", ()) if str(dep).strip()],
+        "assigned_to": dict(assigned_to),
+        "capabilities": list(context_pack.get("capabilities") or ()),
+    }
+    if result["schema"] != SCHEMA:
+        raise AgentContractError("unsupported context pack schema")
+    if not result["task_id"]:
+        raise AgentContractError("context pack task_id is required")
+    if not result["goal"]:
+        raise AgentContractError("context pack goal is required")
+    if result["capabilities"] != list(normalized["capabilities"]):
+        raise AgentContractError("context pack capabilities do not match assigned agent")
+    return result
+
+
 def build_context_pack(*, task_id: str, goal: str, identity: Mapping[str, Any],
                        acs: Sequence[str] = (), source_refs: Sequence[str] = (),
                        depends_on: Sequence[str] = (), allowed_paths: Sequence[str] = ()) -> dict[str, Any]:
@@ -48,7 +80,7 @@ def build_context_pack(*, task_id: str, goal: str, identity: Mapping[str, Any],
     normalized = validate_identity(identity)
     allow = {str(path).strip() for path in allowed_paths if str(path).strip()}
     refs = [str(path).strip() for path in source_refs if str(path).strip() and str(path).strip() in allow]
-    return {
+    return validate_context_pack({
         "schema": SCHEMA,
         "task_id": str(task_id).strip(),
         "goal": str(goal).strip(),
@@ -57,7 +89,7 @@ def build_context_pack(*, task_id: str, goal: str, identity: Mapping[str, Any],
         "depends_on": [str(dep).strip() for dep in depends_on if str(dep).strip()],
         "assigned_to": {field: normalized[field] for field in IDENTITY_FIELDS},
         "capabilities": list(normalized["capabilities"]),
-    }
+    }, normalized)
 
 
 def bind_receipt(receipt: Mapping[str, Any], identity: Mapping[str, Any], *, context_pack: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -70,10 +102,9 @@ def bind_receipt(receipt: Mapping[str, Any], identity: Mapping[str, Any], *, con
     result["schema"] = result.get("schema") or RECEIPT_SCHEMA
     result["agent"] = normalized
     if context_pack is not None:
-        if context_pack.get("assigned_to") != {field: normalized[field] for field in IDENTITY_FIELDS}:
-            raise AgentContractError("context pack is assigned to another agent")
-        result["context"] = deepcopy(dict(context_pack))
+        result["context"] = deepcopy(validate_context_pack(context_pack, normalized))
     return result
 
 
-__all__ = ["AgentContractError", "CAPABILITIES", "IDENTITY_FIELDS", "RECEIPT_SCHEMA", "SCHEMA", "bind_receipt", "build_context_pack", "validate_identity"]
+__all__ = ["AgentContractError", "CAPABILITIES", "CONTEXT_FIELDS", "IDENTITY_FIELDS", "RECEIPT_SCHEMA",
+           "SCHEMA", "bind_receipt", "build_context_pack", "validate_context_pack", "validate_identity"]

@@ -21,6 +21,7 @@ except ModuleNotFoundError:  # direct ``python scripts/runtime_matrix.py`` invoc
     import install_lib  # type: ignore
 
 SCHEMA = "simplicio.runtime-matrix/v1"
+ISSUE_183_CRITERION_6 = "Codex numa máquina e Claude em outra podem consumir a mesma fila segura."
 TIER1 = {"claude", "codex", "cursor"}
 TIER2 = set(install_lib.RUNTIMES) - TIER1
 _RESULT_RE = re.compile(r"^(PASS|FAIL)\s+(\S+)", re.MULTILINE)
@@ -79,6 +80,47 @@ def build_matrix(runtimes: Iterable[str], root: Path, *, runner=subprocess.run) 
         "ready": bool(rows) and all(bool(row["contract_verified"]) for row in rows),
         "external_launch_verified": False,
         "external_launch_status": "UNVERIFIED",
+    }
+
+
+def build_issue_183_criterion6(root: Path, *, runner=subprocess.run) -> Dict[str, Any]:
+    """Audit the local, machine-readable portion of issue #183 criterion 6.
+
+    This proves the adapter/install contract for Codex + Claude against the same repo and keeps
+    all truly external boundaries explicitly UNVERIFIED instead of implying cross-machine success.
+    """
+    matrix = build_matrix(["codex", "claude"], root, runner=runner)
+    rows = {row["runtime"]: row for row in matrix["runtimes"]}
+    local_ready = matrix["ready"]
+    return {
+        "criterion_id": 6,
+        "criterion_text": ISSUE_183_CRITERION_6,
+        "tag": "MEASURED" if local_ready else "UNVERIFIED",
+        "local_contract_status": "PASS" if local_ready else "FAIL",
+        "local_contract_verified": local_ready,
+        "same_queue_adapter_contracts": {
+            "codex": rows["codex"],
+            "claude": rows["claude"],
+        },
+        "required_runtime_bind_policy": {
+            "codex": bool(rows["codex"]["forced_native_bind"]),
+            "claude": bool(rows["claude"]["forced_native_bind"]),
+        },
+        "physical_machine_verified": False,
+        "physical_machine_status": "UNVERIFIED",
+        "tls_deploy_verified": False,
+        "tls_deploy_status": "UNVERIFIED",
+        "external_release_verified": False,
+        "external_release_status": "UNVERIFIED",
+        "scope_note": (
+            "Local repo install/bind contract is audited here; physical multi-machine execution, "
+            "transport security/deploy wiring and external release evidence remain UNVERIFIED."
+        ),
+        "artifacts": {
+            "runtime_matrix_schema": matrix["schema"],
+            "runtime_count": matrix["requested"],
+            "runtime_passed": matrix["passed"],
+        },
     }
 
 

@@ -19,6 +19,7 @@ import ssl
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence
@@ -88,8 +89,19 @@ class HTTPRemoteQueue:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self._require_secure_transport()
+
+    def _require_secure_transport(self) -> None:
+        parsed = urllib.parse.urlsplit(self.base_url)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("queue URL must use http or https")
+        if not parsed.hostname:
+            raise ValueError("queue URL must include a host")
+        if parsed.scheme != "https" and not _is_loopback_host(parsed.hostname):
+            raise QueueUnavailable("TLS is required for non-loopback queue URLs")
 
     def _request(self, method: str, path: str, payload: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        self._require_secure_transport()
         body = json.dumps(payload or {}, sort_keys=True).encode("utf-8")
         req = urllib.request.Request(self.base_url + "/v1/queue" + path, data=body,
                                      headers={"Content-Type": "application/json",
@@ -430,18 +442,21 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
                 body = self._body()
                 op = self.path.rsplit("/", 1)[-1]
                 if op == "enqueue":
-                    queue.enqueue(body["task_id"], body.get("payload")); result = {}
+                    queue.enqueue(body["task_id"], body.get("payload"))
+                    result = {}
                 elif op == "claim":
                     lease = queue.claim(body["task_id"], body["agent_id"], idempotency_key=body["idempotency_key"],
                                         ttl=float(body.get("ttl", 60.0)), identity=body.get("identity"),
-                                        capabilities=body.get("capabilities")); result = {"lease": _lease_json(lease)}
+                                        capabilities=body.get("capabilities"))
+                    result = {"lease": _lease_json(lease)}
                 elif op == "heartbeat":
                     lease = queue.heartbeat(_lease_from_json(body["lease"]), ttl=float(body.get("ttl", 60.0)))
                     result = {"lease": _lease_json(lease)}
                 elif op == "complete":
                     result = queue.complete(_lease_from_json(body["lease"]), receipt_ref=body["receipt_ref"])
                 elif op == "assert-active":
-                    queue.assert_active(_lease_from_json(body["lease"])); result = {"active": True}
+                    queue.assert_active(_lease_from_json(body["lease"]))
+                    result = {"active": True}
                 elif op == "release":
                     result = queue.release(_lease_from_json(body["lease"]), reason=body.get("reason", "handoff"))
                 elif op == "events":
@@ -449,7 +464,8 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
                 elif op == "task":
                     result = queue.task(body["task_id"])
                 else:
-                    self._send(404, {"error": "unknown queue operation"}); return
+                    self._send(404, {"error": "unknown queue operation"})
+                    return
                 self._send(200, result)
             except QueueConflict as exc:
                 self._send(409, {"error": str(exc)})

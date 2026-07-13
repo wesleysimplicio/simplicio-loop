@@ -1,6 +1,12 @@
 import pytest
 
-from simplicio_loop.agent_contract import AgentContractError, bind_receipt, build_context_pack, validate_identity
+from simplicio_loop.agent_contract import (
+    AgentContractError,
+    bind_receipt,
+    build_context_pack,
+    validate_context_pack,
+    validate_identity,
+)
 from simplicio_loop.remote_queue import QueueConflict, SQLiteRemoteQueue
 
 
@@ -18,6 +24,14 @@ def test_context_pack_is_allow_listed_and_receipt_is_agent_bound():
     assert receipt["agent"] == validate_identity(IDENTITY)
     with pytest.raises(AgentContractError, match="duplicate capabilities"):
         validate_identity({**IDENTITY, "capabilities": ["claim", "claim"]})
+
+
+def test_context_pack_rejects_non_allow_listed_fields_and_capability_drift():
+    pack = build_context_pack(task_id="T1", goal="fix docs", identity=IDENTITY, allowed_paths=["README.md"])
+    with pytest.raises(AgentContractError, match="non-allow-listed fields"):
+        bind_receipt({"status": "VERIFIED"}, IDENTITY, context_pack={**pack, "prompt": "secret"})
+    with pytest.raises(AgentContractError, match="capabilities do not match"):
+        validate_context_pack({**pack, "capabilities": ["claim"]}, IDENTITY)
 
 
 def test_queue_persists_identity_and_rejects_replayed_identity(tmp_path):

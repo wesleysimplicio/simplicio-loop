@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
@@ -25,6 +24,32 @@ def _canonical(value: Any) -> str:
 
 def _hash(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+def _normalize_delivery(payload: Mapping[str, Any], *, gates: Mapping[str, Any]) -> Dict[str, Any]:
+    target = str(payload.get("target") or "").strip() or "unknown"
+    satisfied = bool(payload.get("satisfied"))
+    merge_queue = dict(payload.get("merge_queue") or {})
+    merge_receipt = str(merge_queue.get("receipt_sha") or payload.get("merge_queue_receipt_sha") or "").strip()
+    merge_status = str(merge_queue.get("status") or payload.get("merge_queue_status") or "").strip().lower()
+    evidence_gate = bool(gates.get("evidence")) and bool(gates.get("watcher"))
+    if target == "local-fixture":
+        convergence = "local-fixture" if satisfied and evidence_gate else "UNVERIFIED"
+    elif merge_receipt and merge_status == "accepted":
+        convergence = "merge-queue-verified" if satisfied and evidence_gate else "UNVERIFIED"
+    else:
+        convergence = "UNVERIFIED"
+    return {
+        "target": target,
+        "satisfied": satisfied,
+        "evidence_gate": evidence_gate,
+        "merge_queue": merge_queue,
+        "merge_queue_receipt_sha": merge_receipt,
+        "merge_queue_status": merge_status,
+        "convergence": convergence,
+        "external": convergence == "merge-queue-verified",
+        "verified": convergence in {"local-fixture", "merge-queue-verified"},
+    }
 
 
 def _read_backlog(path: str | Path) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -138,7 +163,10 @@ class ExecutionBoard:
                 "id": item_id, "title": item_id, "status": "queued", "depends_on": [],
                 "attempts": [], "events": [], "failure_history": [], "gates": {
                     "evidence": False, "watcher": False, "human": False,
-                },
+                }, "delivery": {"target": "unknown", "satisfied": False, "evidence_gate": False,
+                                 "merge_queue": {}, "merge_queue_receipt_sha": "",
+                                 "merge_queue_status": "", "convergence": "UNVERIFIED",
+                                 "external": False, "verified": False},
             })
             payload = dict(event.get("payload") or {})
             card["events"].append({"sequence": expected, "kind": event["kind"], "payload": payload})
@@ -196,14 +224,40 @@ class ExecutionBoard:
                         attempt["status"] = "passed"
                         break
             elif event["kind"] == "delivery_recorded":
-                card["delivery"] = dict(payload)
+                card["delivery"] = _normalize_delivery(payload, gates=card["gates"])
+        cards_sorted = [cards[key] for key in sorted(cards)]
+        total_cards = len(cards_sorted)
+        converged_cards = sum(
+            1 for card in cards_sorted if card["status"] == "done" and bool(card["delivery"].get("verified"))
+        )
+        summary = {
+            "total_cards": total_cards,
+            "done_cards": sum(1 for card in cards_sorted if card["status"] == "done"),
+            "delivery_converged_cards": sum(1 for card in cards_sorted if bool(card["delivery"].get("verified"))),
+            "merge_queue_verified_cards": sum(
+                1 for card in cards_sorted if card["delivery"].get("convergence") == "merge-queue-verified"
+            ),
+            "local_fixture_cards": sum(
+                1 for card in cards_sorted if card["delivery"].get("convergence") == "local-fixture"
+            ),
+            "converged_cards": converged_cards,
+            "completion_percent": (100 if total_cards and converged_cards == total_cards
+                                   else int((100 * converged_cards) / total_cards) if total_cards else 0),
+        }
+        summary["fronts_converged"] = (
+            total_cards > 0
+            and summary["done_cards"] == total_cards
+            and summary["delivery_converged_cards"] == total_cards
+        )
         projection = {
             "schema": SCHEMA,
             "run_id": self.run_id,
             "external_board": self.external,
             "external_status": "VERIFIED" if self.external else "UNVERIFIED",
-            "cards": [cards[key] for key in sorted(cards)],
+            "cards": cards_sorted,
             "event_count": len(source),
+            "summary": summary,
+            "status": "COMPLETE" if summary["fronts_converged"] else "INCOMPLETE",
         }
         projection["projection_hash"] = _hash(projection)
         return projection
@@ -226,7 +280,9 @@ class ExecutionBoard:
         receipt.write_text(json.dumps({
             "schema": "simplicio.execution-board-receipt/v1", "run_id": self.run_id,
             "projection_hash": projection["projection_hash"], "event_count": len(self._events),
-            "external_status": projection["external_status"], "tag": "MEASURED",
+            "external_status": projection["external_status"], "status": projection["status"],
+            "completion_percent": projection["summary"]["completion_percent"],
+            "fronts_converged": projection["summary"]["fronts_converged"], "tag": "MEASURED",
         }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return {"events": ledger, "board": board, "text": text, "receipt": receipt}
 
