@@ -40,10 +40,12 @@ class _Runtime:
 
 
 def _git(cwd: Path, *args: str) -> str:
-    return subprocess.run(
+    subprocess.run(
         ["git"] + list(args), cwd=str(cwd), check=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    ).stdout.strip()
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    return ""
 
 
 def _criterion7(out_dir: Path) -> dict:

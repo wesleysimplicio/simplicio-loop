@@ -255,6 +255,7 @@ class WorktreeQueue:
     def _git(self, args: Sequence[str], cwd: Optional[str] = None, check: bool = True) -> str:
         proc = subprocess.run(
             ["git"] + list(args), cwd=cwd or self.repo_root,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         if check and proc.returncode:

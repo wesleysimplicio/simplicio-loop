@@ -60,7 +60,10 @@ def _json_post(url: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    subprocess.run(
+        ["git", *args], cwd=repo, check=True, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 
 
 def _init_repo(repo: Path) -> None:
