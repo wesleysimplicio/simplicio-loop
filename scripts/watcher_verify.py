@@ -74,6 +74,14 @@ def _find_run_dir():
     return Path(run_dir) if run_dir else None
 
 
+def _load_run_artifacts(run_dir):
+    if not run_dir:
+        return None, None
+    evidence = _read_json(run_dir / "evidence-receipt.json")
+    independent = _read_json(run_dir / "independent-watcher-receipt.json")
+    return evidence, independent
+
+
 def _git_meta():
     def _run(*args):
         try:
@@ -132,6 +140,30 @@ def _criterion_results(anchor, evidence, executed):
     return results
 
 
+def _independent_criterion_results(anchor, independent):
+    anchor_items = _anchor_criteria(anchor)
+    independent_items = {
+        item.get("id"): item
+        for item in (independent or {}).get("criteria_results") or []
+        if isinstance(item, dict) and item.get("id")
+    }
+    results = []
+    for item in anchor_items:
+        reported_done = item.get("status") == "done"
+        measured = independent_items.get(item["id"]) or {}
+        recomputed = measured.get("status") == "MEASURED" and bool(measured.get("match"))
+        evidence_ids = [str(ref).strip() for ref in (measured.get("evidence_ids") or []) if str(ref).strip()]
+        recomputed = recomputed and bool(evidence_ids)
+        results.append({
+            "id": item["id"],
+            "reported_result": "done" if reported_done else item.get("status", "pending"),
+            "recomputed_result": "verified" if recomputed else measured.get("recomputed_result", "pending"),
+            "evidence_ids": evidence_ids,
+            "match": reported_done and recomputed,
+        })
+    return results
+
+
 def cmd_verify():
     challenge = _read_json(CHALLENGE)
     if not challenge:
@@ -141,7 +173,7 @@ def cmd_verify():
     anchor = _read_json(ANCHOR)
     anchor_items = _anchor_criteria(anchor)
     run_dir = _find_run_dir()
-    evidence = _read_json(run_dir / "evidence-receipt.json") if run_dir and (run_dir / "evidence-receipt.json").exists() else None
+    evidence, independent = _load_run_artifacts(run_dir)
 
     reasons = []
     if not anchor or not anchor_items:
@@ -155,20 +187,44 @@ def cmd_verify():
         reasons.append("challenge goal fingerprint does not match anchor")
     if not challenge.get("written_at"):
         reasons.append("challenge has no issuance timestamp")
-    if not evidence:
+    if not evidence and not independent:
         reasons.append("evidence receipt missing")
-    elif not (evidence.get("operator") or {}).get("coverage_ok", True):
+    elif evidence and not (evidence.get("operator") or {}).get("coverage_ok", True):
         uncovered = ", ".join((evidence.get("operator") or {}).get("uncovered_paths") or [])
         reasons.append("uncovered diff outside operator receipt: %s" % uncovered)
 
-    executed = execute_receipt_checks(evidence or {})
-    truth = watcher_truth_from_receipt(evidence or {})
-    criteria_results = _criterion_results(anchor or {}, evidence or {}, executed)
+    using_independent = not evidence and bool(independent)
+    if using_independent:
+        independent_challenge = str((independent or {}).get("challenge") or "")
+        if independent_challenge and independent_challenge != str(challenge.get("challenge") or ""):
+            reasons.append("independent watcher challenge does not match current challenge")
+        if not str((independent or {}).get("task_contract_hash") or "").strip():
+            reasons.append("independent watcher task-contract hash missing")
+        executed = {"all_passed": bool(independent and independent.get("match")), "results": []}
+        truth = {
+            "ready": bool(independent and independent.get("match") and independent.get("status") == "MEASURED"),
+            "reported": "independent watcher recomputed all criteria"
+            if independent and independent.get("match")
+            else "independent watcher did not verify all criteria",
+            "status": "MEASURED" if independent and independent.get("match") else "UNVERIFIED",
+        }
+        criteria_results = _independent_criterion_results(anchor or {}, independent or {})
+    else:
+        executed = execute_receipt_checks(evidence or {})
+        truth = watcher_truth_from_receipt(evidence or {})
+        criteria_results = _criterion_results(anchor or {}, evidence or {}, executed)
 
     if not criteria_results:
         reasons.append("no criteria results could be recomputed")
 
     run_meta = (evidence or {}).get("run") or {}
+    if using_independent:
+        run_meta = {
+            "task_contract_hash": (independent or {}).get("task_contract_hash", ""),
+            "plan_hash": (independent or {}).get("plan_hash", "") or (independent or {}).get("verify_plan_hash", ""),
+            "commit_sha": (independent or {}).get("commit_sha", ""),
+            "diff_hash": (independent or {}).get("diff_hash", ""),
+        }
     git_meta = _git_meta()
     expected_commit = run_meta.get("commit_sha", "")
     expected_diff = run_meta.get("diff_hash", "")
@@ -198,7 +254,7 @@ def cmd_verify():
         "iteration": challenge.get("iteration", 0),
         "reported": reported,
         "recomputed_truth": ready,
-        "run_id": (evidence or {}).get("run_id", ""),
+        "run_id": (evidence or independent or {}).get("run_id", ""),
         "task_contract_hash": run_meta.get("task_contract_hash", ""),
         "plan_hash": run_meta.get("plan_hash", ""),
         "commit_sha": run_meta.get("commit_sha", "") or git_meta["commit_sha"],

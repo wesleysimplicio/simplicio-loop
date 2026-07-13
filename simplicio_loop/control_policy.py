@@ -186,6 +186,15 @@ def decide(
     if not hard.get("within_budget", True):
         return _result("STOP_BUDGET", "budget_exhausted", "the run is out of budget")
 
+    maintenance = dict(projection.get("maintenance") or {})
+    if (maintenance.get("mode") == "maintenance_deferred"
+            or maintenance.get("disposition") == "backlog_only"):
+        return _result(
+            "STOP_BLOCKED",
+            "maintenance_deferred",
+            "maintenance-deferred backlog-only mode blocks operator progress",
+        )
+
     acs_open = int(projection.get("acs_open") or 0)
     verifiers_failed = int(projection.get("verifiers_failed") or 0)
     effects_unverified = int(projection.get("effects_unverified") or 0)

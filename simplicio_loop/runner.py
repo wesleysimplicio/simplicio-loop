@@ -167,6 +167,18 @@ def _default_maintenance_state() -> MaintenanceState:
     }
 
 
+def _active_maintenance_state(current: Mapping[str, Any] | None = None) -> MaintenanceState:
+    payload = dict(current or {})
+    return {
+        "mode": "active",
+        "disposition": "operator",
+        "receipt": str(payload.get("receipt") or ""),
+        "correction_summary": str(payload.get("correction_summary") or ""),
+        "deferral_reason": str(payload.get("deferral_reason") or ""),
+        "evidence_status": str(payload.get("evidence_status") or "UNVERIFIED"),
+    }
+
+
 def _completion_state(run_dir: Path, current: Dict[str, Any] | None = None) -> Dict[str, Any]:
     state = dict(current or _default_completion_state())
     receipt_path = run_dir / "completion-receipt.json"
@@ -2500,6 +2512,19 @@ def change_phase(repo: str, run_id: str, to_phase: str, reason: str) -> Dict[str
     if state.get("phase") in {"done", "cancelled"}:
         raise ValueError(f"run already terminal: {state.get('phase')}")
     if to_phase == "awaiting_decision":
+        maintenance = state.get("maintenance") or {}
+        if maintenance.get("mode") == "maintenance_deferred" or maintenance.get("disposition") == "backlog_only":
+            state["maintenance"] = _active_maintenance_state(maintenance)
+            state["operator"] = {
+                **(state.get("operator") or {}),
+                "ready": False,
+                "execution_state": "invalidated",
+            }
+            state["evidence"] = {
+                **(state.get("evidence") or {}),
+                "ready": False,
+                "status": "INVALIDATED",
+            }
         state["next_action"] = "mapper_scan_required"
     elif to_phase == "cancelled":
         state["next_action"] = "none"

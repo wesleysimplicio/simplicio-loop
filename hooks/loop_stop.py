@@ -725,6 +725,22 @@ def latest_completion_receipt():
         return None
 
 
+def maintenance_deferred_receipt():
+    """Return the active maintenance-deferred completion receipt, if any.
+
+    Backlog-only maintenance is explicitly incomplete: the loop must hand off
+    with the durable receipt instead of honoring a fresh completion promise.
+    Unreadable or unrelated receipts are treated as absent.
+    """
+    try:
+        receipt = latest_completion_receipt() or {}
+        if receipt.get("ready") is False and receipt.get("reason_code") == "maintenance_deferred":
+            return receipt
+    except Exception:
+        pass
+    return None
+
+
 def completion_oracle_payload(response_text="", flow_gap=""):
     try:
         repo_root = os.getcwd()
@@ -947,6 +963,10 @@ def main():
         # Completion detection is centralized in the shared oracle (#138). The stop hook can still
         # surface watcher/flow state in the re-feed header below, but it no longer decides COMPLETE
         # on its own.
+        deferred_receipt = maintenance_deferred_receipt()
+        if deferred_receipt:
+            write_handoff("maintenance deferred (backlog-only mode active)", meta, body)
+            cleanup_and_stop()
         if promise and resp:
             oracle = completion_oracle_payload(resp, flow_gap or "")
             if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):

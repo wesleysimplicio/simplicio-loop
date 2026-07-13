@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 import pytest
 
 from simplicio_loop import runner as runner_mod
@@ -296,17 +297,14 @@ def _start_run_for_maintenance_cli(tmp_path, monkeypatch):
         "stdout": {"kind": "operator-proposal", "ok": True}, "stderr": "",
         "argv": ["simplicio-dev-cli", "task", "demo"],
     }))
-
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task)], REPO)
-    assert started.returncode == 0, started.stdout + started.stderr
-    return repo, json.loads(started.stdout)["manifest"]["run_id"]
+    armed = runner_mod.arm_run(str(repo), str(task), "verified", 12)
+    return repo, armed["manifest"]["run_id"], Path(armed["run_dir"])
 
 
 def test_maintenance_deferred_cli_serializes_mode_without_operator(tmp_path, monkeypatch):
-    repo, run_id = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
-    run_dir = repo / ".orchestrator" / "runs" / run_id
+    repo, run_id, run_dir = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
     operator_receipt = run_dir / "operator-receipt.json"
-    operator_before = operator_receipt.read_text(encoding="utf-8")
+    operator_before = operator_receipt.read_text(encoding="utf-8") if operator_receipt.exists() else None
 
     deferred = _run(CLI + [
         "maintenance-deferred", "--repo", str(repo), run_id,
@@ -323,7 +321,10 @@ def test_maintenance_deferred_cli_serializes_mode_without_operator(tmp_path, mon
     assert receipt["mode"] == "maintenance_deferred"
     assert receipt["disposition"] == "backlog_only"
     assert receipt["completion_ready"] is False
-    assert operator_receipt.read_text(encoding="utf-8") == operator_before
+    if operator_before is None:
+        assert not operator_receipt.exists()
+    else:
+        assert operator_receipt.read_text(encoding="utf-8") == operator_before
     assert status["state"]["completion"]["ready"] is False
     assert status["state"]["completion"]["tag"] == "UNVERIFIED"
     assert status["state"]["maintenance"]["mode"] == "maintenance_deferred"
@@ -973,8 +974,7 @@ def test_sync_source_infers_merged_even_when_target_is_merge_ready(tmp_path):
 
 
 def test_maintenance_deferred_invalidates_ready_completion_receipt(tmp_path, monkeypatch):
-    repo, run_id = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
-    run_dir = repo / ".orchestrator" / "runs" / run_id
+    repo, run_id, run_dir = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
     (run_dir / "completion-receipt.json").write_text(json.dumps({"ready": True, "verdict": "COMPLETE", "tag": "MEASURED"}), encoding="utf-8")
 
     result = runner_mod.defer_maintenance_backlog_only(
@@ -990,7 +990,7 @@ def test_maintenance_deferred_invalidates_ready_completion_receipt(tmp_path, mon
 
 
 def test_maintenance_deferred_rejects_terminal_run(tmp_path, monkeypatch):
-    repo, run_id = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
+    repo, run_id, _ = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
     runner_mod.change_phase(str(repo), run_id, "done", "test terminal")
 
     with pytest.raises(ValueError, match="run already terminal"):
@@ -1001,7 +1001,7 @@ def test_maintenance_deferred_rejects_terminal_run(tmp_path, monkeypatch):
 
 
 def test_maintenance_deferred_blocks_operator_and_batch(tmp_path, monkeypatch):
-    repo, run_id = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
+    repo, run_id, _ = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
     runner_mod.defer_maintenance_backlog_only(
         str(repo), run_id, correction_summary="freeze",
         deferral_reason="maintenance", resume_instructions=["resume"],
@@ -1011,6 +1011,27 @@ def test_maintenance_deferred_blocks_operator_and_batch(tmp_path, monkeypatch):
         runner_mod.execute_operator(str(repo), run_id)
     with pytest.raises(RuntimeError, match="maintenance deferred"):
         runner_mod.execute_operator_batch(str(repo), run_id)
+
+
+def test_resume_clears_maintenance_backlog_only_transition(tmp_path, monkeypatch):
+    repo, run_id, _ = _start_run_for_maintenance_cli(tmp_path, monkeypatch)
+    runner_mod.defer_maintenance_backlog_only(
+        str(repo), run_id, correction_summary="freeze",
+        deferral_reason="maintenance", resume_instructions=["resume"],
+    )
+
+    resumed = _run(CLI + ["resume", "--repo", str(repo), run_id], REPO)
+    assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+    payload = json.loads(resumed.stdout)
+
+    assert payload["state"]["phase"] == "awaiting_decision"
+    assert payload["state"]["maintenance"]["mode"] == "active"
+    assert payload["state"]["maintenance"]["disposition"] == "operator"
+    assert payload["state"]["operator"]["ready"] is False
+    assert payload["state"]["operator"]["execution_state"] == "invalidated"
+    assert payload["state"]["evidence"]["ready"] is False
+    assert payload["state"]["evidence"]["status"] == "INVALIDATED"
+    assert payload["state"]["next_action"] == "mapper_scan_required"
 
 
 if __name__ == "__main__":
