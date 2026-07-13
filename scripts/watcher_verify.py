@@ -3,6 +3,12 @@
 
 Generates a watcher receipt bound to the current challenge and run artifacts.
 Without challenge + anchor criteria + structured evidence, the watcher fails closed.
+
+Anchor-derived challenges:
+  - `issue` writes a deterministic challenge derived from the current anchor.
+  - `verify` validates that binding when the challenge uses the anchor-derived schema.
+  - A derived challenge alone NEVER approves criteria; without an independent
+    watcher receipt the final state stays UNVERIFIED.
 """
 import json
 import os
@@ -19,6 +25,7 @@ LOOP_DIR = os.path.join(REPO, ".orchestrator", "loop")
 CHALLENGE = os.path.join(LOOP_DIR, "watcher_challenge.json")
 ANCHOR = os.path.join(LOOP_DIR, "anchor.json")
 WATCHER_STATE = os.path.join(LOOP_DIR, "watcher_state.json")
+ANCHOR_CHALLENGE_SCHEMA = "simplicio.anchor-challenge/v1"
 
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
@@ -69,6 +76,10 @@ def _read_json(path):
         return None
 
 
+def _stable_json(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _find_run_dir():
     run_dir = os.environ.get("SIMPLICIO_RUN_DIR", "").strip()
     return Path(run_dir) if run_dir else None
@@ -100,6 +111,65 @@ def _git_meta():
 def _anchor_criteria(anchor):
     criteria = (anchor or {}).get("criteria") or []
     return [item for item in criteria if isinstance(item, dict) and item.get("id")]
+
+
+def _anchor_snapshot(anchor):
+    items = []
+    for item in _anchor_criteria(anchor):
+        items.append({
+            "id": str(item.get("id") or ""),
+            "status": str(item.get("status") or "pending"),
+        })
+    items.sort(key=lambda entry: entry["id"])
+    return {
+        "goal_fp": str((anchor or {}).get("goal_fp") or ""),
+        "criteria": items,
+    }
+
+
+def _derive_anchor_challenge(anchor, iteration=0):
+    snapshot = _anchor_snapshot(anchor)
+    material = {
+        "goal_fp": snapshot["goal_fp"],
+        "criteria": snapshot["criteria"],
+        "iteration": int(iteration or 0),
+        "schema": ANCHOR_CHALLENGE_SCHEMA,
+    }
+    criteria_json = _stable_json(snapshot["criteria"])
+    snapshot_json = _stable_json(snapshot)
+    material_json = _stable_json(material)
+    return {
+        "schema": ANCHOR_CHALLENGE_SCHEMA,
+        "mode": "anchor-derived",
+        "challenge": hashlib.sha256(material_json.encode("utf-8")).hexdigest(),
+        "goal_fp": snapshot["goal_fp"],
+        "iteration": int(iteration or 0),
+        "anchor_sha256": hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest(),
+        "criteria_fp": hashlib.sha256(criteria_json.encode("utf-8")).hexdigest(),
+        "challenge_material": material,
+        "challenge_derivation": (
+            "SHA-256 over schema + iteration + anchor.goal_fp + sorted criterion ids/statuses. "
+            "This binds the challenge to the frozen anchor only; it does not approve criteria "
+            "without an independent watcher receipt."
+        ),
+    }
+
+
+def _is_anchor_derived_challenge(challenge):
+    return isinstance(challenge, dict) and str(challenge.get("schema") or "") == ANCHOR_CHALLENGE_SCHEMA
+
+
+def _validate_anchor_derived_challenge(anchor, challenge):
+    expected = _derive_anchor_challenge(anchor or {}, challenge.get("iteration", 0))
+    reasons = []
+    if not challenge.get("written_at"):
+        reasons.append("challenge has no issuance timestamp")
+    for field in ("challenge", "goal_fp", "anchor_sha256", "criteria_fp"):
+        if str(challenge.get(field) or "") != str(expected.get(field) or ""):
+            reasons.append("anchor-derived challenge %s does not match current anchor" % field)
+    if challenge.get("challenge_material") != expected.get("challenge_material"):
+        reasons.append("anchor-derived challenge material does not match current anchor")
+    return expected, reasons
 
 
 def _evidence_index(evidence):
@@ -164,6 +234,28 @@ def _independent_criterion_results(anchor, independent):
     return results
 
 
+def cmd_issue():
+    anchor = _read_json(ANCHOR)
+    anchor_items = _anchor_criteria(anchor)
+    if not anchor or not anchor_items:
+        print("UNVERIFIED|watcher_verify: cannot issue challenge without anchor criteria")
+        return 1
+    anchor_ids = [item["id"] for item in anchor_items]
+    if len(anchor_ids) != len(set(anchor_ids)):
+        print("UNVERIFIED|watcher_verify: cannot issue challenge with duplicate acceptance-criterion ids")
+        return 1
+    current = _read_json(CHALLENGE) or {}
+    payload = _derive_anchor_challenge(anchor, current.get("iteration", 0))
+    payload["written_at"] = _now()
+    os.makedirs(LOOP_DIR, exist_ok=True)
+    tmp = CHALLENGE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, CHALLENGE)
+    print("MEASURED|watcher challenge issued: %s (anchor-derived deterministic binding)" % payload["challenge"])
+    return 0
+
+
 def cmd_verify():
     challenge = _read_json(CHALLENGE)
     if not challenge:
@@ -181,19 +273,24 @@ def cmd_verify():
     anchor_ids = [item["id"] for item in anchor_items]
     if len(anchor_ids) != len(set(anchor_ids)):
         reasons.append("anchor contains duplicate acceptance-criterion ids")
-    challenge_goal = str(challenge.get("goal_fp") or "")
-    anchor_goal = str((anchor or {}).get("goal_fp") or "")
-    if challenge_goal and anchor_goal and challenge_goal != anchor_goal:
-        reasons.append("challenge goal fingerprint does not match anchor")
-    if not challenge.get("written_at"):
-        reasons.append("challenge has no issuance timestamp")
+    anchor_bound = _is_anchor_derived_challenge(challenge)
+    if anchor_bound:
+        _, challenge_reasons = _validate_anchor_derived_challenge(anchor or {}, challenge)
+        reasons.extend(challenge_reasons)
+    else:
+        challenge_goal = str(challenge.get("goal_fp") or "")
+        anchor_goal = str((anchor or {}).get("goal_fp") or "")
+        if challenge_goal and anchor_goal and challenge_goal != anchor_goal:
+            reasons.append("challenge goal fingerprint does not match anchor")
+        if not challenge.get("written_at"):
+            reasons.append("challenge has no issuance timestamp")
     if not evidence and not independent:
-        reasons.append("evidence receipt missing")
+        reasons.append("independent watcher receipt missing" if anchor_bound else "evidence receipt missing")
     elif evidence and not (evidence.get("operator") or {}).get("coverage_ok", True):
         uncovered = ", ".join((evidence.get("operator") or {}).get("uncovered_paths") or [])
         reasons.append("uncovered diff outside operator receipt: %s" % uncovered)
 
-    using_independent = not evidence and bool(independent)
+    using_independent = bool(independent) and (anchor_bound or not evidence)
     if using_independent:
         independent_challenge = str((independent or {}).get("challenge") or "")
         if independent_challenge and independent_challenge != str(challenge.get("challenge") or ""):
@@ -210,6 +307,8 @@ def cmd_verify():
         }
         criteria_results = _independent_criterion_results(anchor or {}, independent or {})
     else:
+        if anchor_bound and not independent:
+            reasons.append("independent watcher receipt missing for anchor-derived challenge")
         executed = execute_receipt_checks(evidence or {})
         truth = watcher_truth_from_receipt(evidence or {})
         criteria_results = _criterion_results(anchor or {}, evidence or {}, executed)
@@ -338,10 +437,12 @@ def cmd_selftest():
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python3 scripts/watcher_verify.py verify|selftest")
+        print("Usage: python3 scripts/watcher_verify.py issue|verify|selftest")
         sys.exit(2)
     cmd = sys.argv[1]
-    if cmd == "verify":
+    if cmd == "issue":
+        sys.exit(cmd_issue())
+    elif cmd == "verify":
         sys.exit(cmd_verify())
     elif cmd == "selftest":
         cmd_selftest()
