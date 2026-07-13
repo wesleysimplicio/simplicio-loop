@@ -52,7 +52,7 @@ def verify_runtime(runtime: str, root: Path, *, runner=subprocess.run) -> Dict[s
         raise ValueError("unknown runtime: %s" % runtime)
     command = [sys.executable, str(Path(__file__).with_name("verify_adapters.py")), runtime]
     try:
-        result = runner(command, cwd=str(root), capture_output=True, text=True,
+        result = runner(command, cwd=str(root), stdin=subprocess.DEVNULL, capture_output=True, text=True,
                         encoding="utf-8", errors="replace", timeout=180)
         output = (result.stdout or "") + "\n" + (result.stderr or "")
         return _parse_output(runtime, result.returncode, output)
