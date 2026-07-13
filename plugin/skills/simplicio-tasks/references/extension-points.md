@@ -1,4 +1,4 @@
-# Extension points — the 48 named binding points
+# Extension points — the 49 named binding points
 
 These are the named points where work happens. For each, if the host runtime exposes a native
 capability, BIND it (deterministic, local-first, near-zero token). If not, the LLM performs the
@@ -29,6 +29,7 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 | `human_gate` | Async human approval channel | ask user inline |
 | `shell_exec` | Clamped shell execution (structured output, bounded size) | Bash with `\| head -N` |
 | `retry` | Classified retry+backoff by failure class | manual retry loop |
+| `convergence_policy` | Pure `RunProjection → LoopDecision` control policy (issue #261): a Lyapunov-style drift candidate V(t) over open ACs/failed verifiers/unverified effects/backlog/retry-amplification, versioned weights, stall **and** period-2+ oscillation detection, hysteresis before REPLAN/ESCALATE, and a conflict-free backpressure/parallelism recommendation (AIMD-style, no fixed worker count). Runnable form: `simplicio_loop/control_policy.py` (`decide()`) — zero I/O, zero subprocess, zero ledger; the Runtime remains sole owner of queue/lease/attempt-budget and applies the recommendation, it never obeys blindly (see `control-policy.md`). | LLM reasons about retry/parallelism by hand from the run journal and current AC/verifier counts |
 | `status` | Live observability dashboard | `gh` queries |
 | `security` | Supply-chain / secret scan | `rg` for secrets |
 | `intake` | Ingest work from sprint/board link — or, with no board, the local backlog (`task_backlog.py next`) | `gh issue list` |
