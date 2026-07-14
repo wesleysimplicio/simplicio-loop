@@ -27,17 +27,16 @@ spindle handoff, or explicit STOP.
 
 `orient_clamp.py` works as-is. Reference it in `AGENTS.md` so heavy commands are clamped.
 
-## Native bind — MCP (REQUIRED)
+## Native bind — MCP (optional)
 
-`simplicio-runtime` native bind is REQUIRED on OpenCode, not optional. `scripts/install.sh
-opencode` writes this to `opencode.json` for you (`merge_opencode_mcp` in
-`scripts/install_lib.py`):
+`simplicio-runtime` native binding is optional on OpenCode. Add this to `opencode.json` when its
+MCP capabilities are useful:
 
 ```json
 { "mcp": { "simplicio": { "type": "local", "command": ["simplicio", "serve", "--mcp", "--stdio"] } } }
 ```
 
-Verify with `simplicio doctor --json` before relying on the orchestrator.
+Use `simplicio doctor --json` to diagnose the optional integration.
 
 ## Use
 

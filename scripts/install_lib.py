@@ -48,9 +48,11 @@ MARK_A, MARK_B = "<!-- simplicio-loop:begin -->", "<!-- simplicio-loop:end -->"
 
 
 def entry_block(runtime=None):
-    """Build the entry-file block. On a FORCED_BIND_RUNTIMES host, append a REQUIRED line so the
-    host's own standing-instructions file (AGENTS.md/GEMINI.md/copilot-instructions.md/steering)
-    states the native-bind + full-protocol requirement, not just an installer-side log line."""
+    """Build the runtime entry-file block.
+
+    A Simplicio Runtime bind is an optional acceleration: the loop remains usable with its
+    standard-tool fallback when the runtime is absent or unreachable.
+    """
     body = (
         MARK_A + "\n"
         "## simplicio-loop — Unified Core + Loop\n\n"
@@ -62,13 +64,6 @@ def entry_block(runtime=None):
         "never close work without a merged PR or concrete evidence; honor the irreversible-op "
         "human gate and explicit STOP/cancel path.\n"
     )
-    if runtime in FORCED_BIND_RUNTIMES:
-        body += (
-            "\nNative bind to `simplicio-runtime` (MCP or CLI) is REQUIRED on this host, not "
-            "optional — verify with `simplicio doctor --json` before starting; if unreachable, "
-            "STOP and report the gap rather than silently degrading to the unbound LLM-only "
-            "path (install: `pip install -U simplicio-installer && simplicio install --global`).\n"
-        )
     body += "\nInvoke with: `/simplicio-loop <the body of work>`\n" + MARK_B
     return body
 
@@ -320,66 +315,9 @@ def _link_operator_bins():
         _link_console_script(b, kind="operator")
 
 
-# Runtimes where native bind to simplicio-runtime (MCP or CLI) is a REQUIRED policy, not an
-# optional nicety: the loop and ALL simplicio-tasks/simplicio-loop/simplicio-review directives
-# must run bound, never silently degrade to the full LLM-only fallback on these hosts.
-FORCED_BIND_RUNTIMES = {"claude", "codex", "cursor", "vscode", "antigravity",
-                        "kiro", "opencode", "simplicio_agent", "hermes"}  # hermes: legacy alias, compat window
-# Runtimes simplicio-runtime's own `simplicio install --global` auto-detects and registers
-# end-to-end (writes the MCP config for each, idempotent to re-run) — see
-# `simplicio install --global --dry-run --json` -> assistant_adapters.
-RUNTIME_AUTO_BIND = {"claude", "codex", "cursor", "vscode", "kiro"}
-
-
-def ensure_runtime_bind(runtime, cfg):
-    """Force the simplicio-runtime native bind for FORCED_BIND_RUNTIMES (REQUIRED, not optional).
-
-    Mirrors `ensure_operators`'s severity: best-effort registration now, loud unmissable warning
-    if `simplicio` is missing or registration can't be confirmed — the loop is expected to BLOCK
-    on an unbound forced-bind runtime rather than quietly running the degraded LLM-only fallback.
-    No-op for runtimes outside FORCED_BIND_RUNTIMES (gemini/aider/openclaw keep the old optional
-    log line further down in main()).
-    """
-    if runtime not in FORCED_BIND_RUNTIMES:
-        return
-    simplicio_path = shutil.which("simplicio")
-    if not simplicio_path:
-        log("! simplicio-runtime is REQUIRED for '%s' (project policy) and is NOT installed." % runtime)
-        log("  install it: pip install -U simplicio-installer && simplicio install --global")
-        log("  until then simplicio-tasks/simplicio-loop/simplicio-review MUST refuse to claim")
-        log("  native-bind status and should block rather than silently run the LLM-only fallback.")
-        return
-    if runtime in RUNTIME_AUTO_BIND:
-        try:
-            subprocess.run([simplicio_path, "install", "--global"], check=False,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            log("native bind REQUIRED+applied for '%s' -> simplicio install --global" % runtime)
-        except Exception as e:
-            log("! 'simplicio install --global' failed for '%s': %s" % (runtime, e))
-            log("  retry manually: simplicio install --global")
-    elif runtime == "opencode":
-        pass  # merge_opencode_mcp() in main() already does this, with the same forced severity
-    else:
-        # antigravity, simplicio_agent, hermes: no config schema this installer can safely
-        # auto-write (Antigravity's MCP config path/format isn't verified here; Simplicio Agent
-        # (formerly Hermes) binds natively, no MCP file at all).
-        # Verify the runtime itself is healthy so the requirement is at least checked, not assumed.
-        try:
-            import re as _re
-            r = subprocess.run([simplicio_path, "doctor", "--json"], check=False,
-                                capture_output=True, text=True, timeout=30)
-            # doctor --json pretty-prints across lines, so regex over the whole blob rather
-            # than assuming one-JSON-object-per-line (that only holds for the progress events).
-            m = _re.search(r'"overall_status"\s*:\s*"(\w+)"', r.stdout or "")
-            healthy = bool(m) and m.group(1) in ("ok", "warning")
-        except Exception:
-            healthy = False
-        if healthy:
-            log("simplicio-runtime reachable for '%s' — follow adapters/%s/README.md to finish "
-                "the native bind (no safe auto-write for this host's config format)." % (runtime, runtime))
-        else:
-            log("! simplicio doctor did not report healthy for '%s' — native bind is REQUIRED "
-                "here; fix it (simplicio doctor --repair) before relying on simplicio-loop." % runtime)
+# Compatibility export retained for callers that inspect the matrix. Native binds are optional
+# on every runtime; an unavailable simplicio-runtime must never block a loop drive.
+FORCED_BIND_RUNTIMES = set()
 
 
 def detect():
@@ -644,8 +582,7 @@ def main():
     if runtime == "opencode":
         copy_skills_opencode()
         merge_opencode_mcp()
-    ensure_runtime_bind(runtime, cfg)
-    if cfg["mcp"] and runtime not in FORCED_BIND_RUNTIMES:
+    if cfg["mcp"]:
         log("optional native bind:  simplicio install --global   (or: simplicio serve --mcp --stdio)")
     setup_monitor(not minimal)
     if lite:

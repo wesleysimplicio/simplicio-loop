@@ -24,18 +24,17 @@ resumes from the journal.
 `orient_clamp.py` works as-is in the terminal. Reference it in the rules file so the agent
 routes heavy build/test/diff commands through it.
 
-## Native bind — MCP (REQUIRED)
+## Native bind — MCP (optional)
 
-`simplicio-runtime` native bind is REQUIRED on Antigravity, not optional.
+`simplicio-runtime` native binding is optional on Antigravity.
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global
 # or add to the IDE's MCP config:  { "simplicio": { "command": "simplicio", "args": ["serve","--mcp","--stdio"] } }
 ```
 
-Verify with `simplicio doctor --json`; `scripts/install.sh antigravity` checks this for you and
-warns loudly if the bind can't be confirmed (Antigravity's exact MCP config path isn't
-auto-written by the installer yet — finish it by hand from the snippet above if so).
+Use `simplicio doctor --json` to diagnose the optional bind. Antigravity's exact MCP config path
+isn't auto-written by the installer yet, so finish it by hand from the snippet above if desired.
 
 ## Use
 
