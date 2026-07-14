@@ -26,6 +26,8 @@ from .agent_contract import bind_receipt, build_context_pack
 from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONTENT_SCHEMA,
                                OPERATOR_RECEIPT_SCHEMA as _OPERATOR_RECEIPT_CONTENT_SCHEMA,
                                ReceiptStatus, verify_receipt)
+from .planning_gate import content_hash as _planning_content_hash
+from .planning_gate import evaluate_mutation_authority
 
 try:
     from scripts.agent_identity import ensure_identity
@@ -1806,6 +1808,24 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         raise RuntimeError("repository changed after planning; re-run mapper before execution")
     task = tasks[task_index - 1]
     attempt = int((status["state"] or {}).get("attempts", 0)) + 1
+    # #284: opt-in mutation-authority gate. When SIMPLICIO_REQUIRE_MUTATION_AUTHORITY is
+    # truthy, execute_operator() additionally refuses to run without a valid
+    # planning-receipt.json whose mutation_authority token matches THIS run/attempt/
+    # task-contract/plan identity -- any drift (stale plan hash, rotated lease/fence,
+    # missing/invalid receipt) blocks fail-closed instead of silently proceeding. Off by
+    # default so existing callers/fixtures that never build a planning receipt are
+    # unaffected; see simplicio_loop/planning_gate.py and scripts/planning_gate.py.
+    if str(os.environ.get("SIMPLICIO_REQUIRE_MUTATION_AUTHORITY") or "").strip().lower() in ("1", "true", "yes"):
+        authority_verdict = evaluate_mutation_authority(
+            run_dir, run_id=run_id, attempt=attempt,
+            task_contract_hash=str(contract.get("collection_hash") or _planning_content_hash(contract)),
+            plan_hash=_planning_content_hash(plan),
+        )
+        if not authority_verdict["ok"]:
+            raise RuntimeError(
+                "mutation authority required (SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) but "
+                f"{authority_verdict['reason_code']}: {authority_verdict['reason']}"
+            )
     targets = (plan.get("steps") or [])[task_index - 1].get("candidate_targets") or []
     target = targets[0] if targets else status["state"].get("operator", {}).get("target", "")
     if not target:
