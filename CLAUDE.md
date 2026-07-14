@@ -120,11 +120,9 @@ mass-delete, destructive DDL, infra teardown) and secret-laden commits/pushes be
 (exit 2) — Step 5 made mechanical. `python3 hooks/action_gate.py selftest` proves the ruleset.
 
 Claude's native tools satisfy the extension points: sub-agents → `execute`, file tools →
-`deterministic_edit`, the scheduler → `watcher`. `simplicio-runtime` native bind is REQUIRED on
-Claude Code (and on Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Simplicio Agent — see
-`adapters/MATRIX.md` `FORCED_BIND_RUNTIMES`), not optional: `pip install -U simplicio-installer
-&& simplicio install --global` binds them deterministically; verify with `simplicio doctor
---json` before driving the loop.
+`deterministic_edit`, the scheduler → `watcher`. A `simplicio-runtime` native bind is optional on
+Claude Code and every other adapter; install it when its MCP/CLI capabilities are useful, but do
+not block an unbound loop.
 
 ## Other runtimes
 

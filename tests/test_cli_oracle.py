@@ -20,6 +20,15 @@ def _seed(tmp_path: Path):
         "operator-receipt.json": {"schema": "simplicio.operator-receipt/v0"},
         "evidence-receipt.json": {"schema": "simplicio.evidence-receipt/v1", "status": "VERIFIED", "criteria": [{"id": "AC1", "verification_state": "verified"}]},
         "delivery-receipt.json": {"schema": "simplicio.delivery-receipt/v1", "target": "verified", "current_state": "verified", "ready": True, "source_kind": "local", "source_payload": {"evidence_receipt": "evidence-receipt.json", "criteria_verified": 1}},
+        "quality-matrix.json": {
+            "schema": "simplicio.quality-matrix/v1",
+            "coverage_threshold": 85,
+            "requirements": {
+                name: {"status": "pass", "proof_ref": f"tests/{name}"}
+                for name in ("implementation", "unit", "integration", "system", "regression", "benchmark")
+            },
+            "coverage": {"measured": 91.2},
+        },
     }
     for name, payload in files.items():
         (run / name).write_text(json.dumps(payload), encoding="utf-8")

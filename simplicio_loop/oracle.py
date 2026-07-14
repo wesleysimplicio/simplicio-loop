@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Tuple
 
 from .delivery import validate_delivery_receipt
 from .evidence import watcher_truth_from_receipt
+from .quality_matrix import evaluate_quality_matrix
 
 PROMISE_RE = re.compile(r"<promise>\s*(.*?)\s*</promise>", re.IGNORECASE | re.DOTALL)
 COMPLETION_SCHEMA = "simplicio.completion-receipt/v1"
@@ -133,6 +134,14 @@ def _run_artifacts_gate(run_dir: Path) -> Tuple[bool, List[Dict[str, Any]], Dict
     return True, gates, loaded
 
 
+def _quality_matrix_gate(run_dir: Path) -> Tuple[bool, Dict[str, Any], Dict[str, Any]]:
+    """Fail-closed quality gate (#278): implementation/unit/integration/system/
+    regression/benchmark evidence plus minimum coverage, all-or-nothing."""
+    verdict = evaluate_quality_matrix(str(run_dir))
+    gate = _gate("quality_matrix", verdict["ready"], verdict["reason_code"], verdict["reason"])
+    return verdict["ready"], gate, verdict
+
+
 def completion_receipt_path(run_dir: str) -> Path:
     return Path(run_dir) / "completion-receipt.json"
 
@@ -162,6 +171,8 @@ def persist_completion_receipt(payload: Dict[str, Any], loop_dir: str, run_dir: 
         "goal_fp": challenge.get("goal_fp") or anchor.get("goal_fp") or "",
         "watcher_status": watcher_state.get("status", "UNVERIFIED"),
         "watcher_match": bool(watcher_state.get("match", False)),
+        "coverage_threshold": payload.get("coverage_threshold"),
+        "coverage_measured": payload.get("coverage_measured"),
         "gates": payload.get("gates", []),
     }
     if run:
@@ -169,6 +180,7 @@ def persist_completion_receipt(payload: Dict[str, Any], loop_dir: str, run_dir: 
             "manifest": str(run / "manifest.json"),
             "evidence_receipt": str(run / "evidence-receipt.json"),
             "delivery_receipt": str(run / "delivery-receipt.json"),
+            "quality_matrix": str(run / "quality-matrix.json"),
         }
         path = completion_receipt_path(str(run))
     else:
@@ -255,6 +267,15 @@ def evaluate_completion(loop_dir: str, run_dir: str = "", response_text: str = "
         last_fail = next((gate for gate in reversed(artifact_gates) if gate["status"] == "fail"), artifact_gates[-1])
         result["reason_code"] = last_fail["reason_code"]
         result["reason"] = last_fail["detail"]
+        return result
+
+    quality_ok, quality_gate, quality_verdict = _quality_matrix_gate(Path(run_dir))
+    gates.append(quality_gate)
+    result["coverage_threshold"] = quality_verdict.get("coverage_threshold")
+    result["coverage_measured"] = quality_verdict.get("coverage_measured")
+    if not quality_ok:
+        result["reason_code"] = quality_gate["reason_code"]
+        result["reason"] = quality_gate["detail"]
         return result
 
     result.update({

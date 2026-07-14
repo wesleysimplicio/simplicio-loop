@@ -33,18 +33,18 @@ heavy commands through it:
 python3 hooks/orient_clamp.py -- <build/test/diff command>
 ```
 
-## Native bind (REQUIRED)
+## Native bind (optional)
 
-`simplicio-runtime` native bind is REQUIRED on Codex, not optional — `scripts/install.sh codex`
-forces this automatically; by hand:
+`simplicio-runtime` native binding is optional on Codex. An unavailable bind does not block a
+self-paced loop; add it by hand when its MCP capabilities are useful:
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global   # registers Codex's MCP client
 # or use the Python adapter at simplicio-runtime/agent/codex_responses_adapter.py
 ```
 
-Verify with `simplicio doctor --json` before driving the loop; if unreachable, STOP and report
-the gap rather than self-pacing on the unbound LLM-only fallback.
+Use `simplicio doctor --json` to diagnose an installed bind; if it is unreachable, continue with
+the standard-tool fallback.
 
 ## Use
 

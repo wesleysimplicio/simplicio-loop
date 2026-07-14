@@ -36,8 +36,10 @@ def test_missing_or_failed_adapter_is_not_inferred_as_pass(tmp_path: Path):
     assert payload["runtimes"][0]["output_row"] == "FAIL"
 
 
-def test_forced_bind_metadata_matches_install_policy(tmp_path: Path):
+def test_native_runtime_bind_is_optional_for_every_host(tmp_path: Path):
     payload = runtime_matrix.build_matrix(["claude", "aider"], tmp_path, runner=_runner_ok)
     rows = {row["runtime"]: row for row in payload["runtimes"]}
-    assert rows["claude"]["forced_native_bind"] is True
-    assert rows["aider"]["forced_native_bind"] is ("aider" in install_lib.FORCED_BIND_RUNTIMES)
+    assert install_lib.FORCED_BIND_RUNTIMES == set()
+    assert rows["claude"]["forced_native_bind"] is False
+    assert rows["aider"]["forced_native_bind"] is False
+    assert "REQUIRED" not in install_lib.entry_block("codex")

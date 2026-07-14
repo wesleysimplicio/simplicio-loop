@@ -196,6 +196,16 @@ def _seed_verified_run(root, run_id="r1"):
                        "evidence_receipt": "evidence-receipt.json",
                        "criteria_verified": 1,
                    }}, f)
+    with open(os.path.join(run_dir, "quality-matrix.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "schema": "simplicio.quality-matrix/v1",
+            "coverage_threshold": 85,
+            "requirements": {
+                name: {"status": "pass", "proof_ref": f"tests/{name}"}
+                for name in ("implementation", "unit", "integration", "system", "regression", "benchmark")
+            },
+            "coverage": {"measured": 91.2},
+        }, f)
     return run_dir
 
 

@@ -43,10 +43,10 @@ checkpoints compose with (never replace) the loop's own journal + evidence gates
 
 ## Native bind — MCP (optional)
 
-Tier 2, best-effort: the native `simplicio-runtime` bind via Orca's MCP registry is **optional**
-(like Gemini/Aider/OpenClaw — Orca is not in `FORCED_BIND_RUNTIMES`). When the inner agent is one
-of the 8 forced-bind runtimes (e.g. Claude Code), that runtime's own REQUIRED-bind policy still
-applies inside the Orca session; verify with `simplicio doctor --json`.
+Tier 2, best-effort: the native `simplicio-runtime` bind via Orca's MCP registry is an
+**optional acceleration**, never a precondition — an absent or unreachable bind falls back to
+the standard-tool protocol with the same evidence and safety gates. `simplicio doctor --json`
+can diagnose an installed runtime inside the Orca session.
 
 ## Token economy
 

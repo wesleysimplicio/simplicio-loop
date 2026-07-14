@@ -51,18 +51,16 @@ The user invokes it with a target body of work:
 If no argument is given, default to "all open work-items in the default source" and
 confirm scope in one line only if ambiguous.
 
-## Extension points (bind native — REQUIRED on 8 of the 12 runtimes)
+## Extension points (bind native when available)
 
 The skill defines **49 named extension points** (see the Step 1b table in `SKILL.md`).
 For each point, if this runtime exposes a faster native capability, **bind it** —
 the step becomes deterministic and near-zero-token. The skill never requires a specific
 runtime; the binding lives here in the host, not in the skill.
 
-On Claude Code, Codex, Cursor, VS Code, Antigravity, Kiro, OpenCode, and Simplicio Agent, binding to
-`simplicio-runtime` (MCP or CLI) is **REQUIRED project policy, not an optional speed-up** — see
-`adapters/MATRIX.md` `FORCED_BIND_RUNTIMES`. On these 8, an unreachable bind is a STOP-and-report
-condition (verify with `simplicio doctor --json`); only Gemini, Aider, and OpenClaw fall back to
-the plain LLM/native-by-design path silently.
+`simplicio-runtime` (MCP or CLI) is an optional acceleration on every host. When it is absent or
+unreachable, use the standard tool/native fallback and continue to enforce the same evidence and
+safety gates.
 
 ## Canonical source per topic (#119 — avoid re-stating the same pitch in N docs)
 
@@ -107,7 +105,5 @@ path + verdict; a missing toolchain BLOCKS, never a fake pass.
   Self-runs on bare python3 — no CI, no pytest required. Keep it green.
 - **Big refactors/doc rewrites:** run `python3 scripts/check.py --token-budget` and treat a FAIL
   as a real regression to justify or trim, not to silence with `--update-baseline` unreviewed.
-- On Claude/Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Simplicio Agent, the `simplicio-runtime` native
-  bind (MCP or CLI) is REQUIRED before driving the loop — `simplicio doctor --json` must report
-  the runtime reachable. An unbound run on one of these 8 is a blocker to fix
-  (`simplicio install --global`), never a silent fallback to the plain-LLM path.
+- `simplicio-runtime` native binding (MCP or CLI) is optional. `simplicio doctor --json` can
+  diagnose an installed runtime, but an unavailable runtime is not a blocker to driving the loop.
