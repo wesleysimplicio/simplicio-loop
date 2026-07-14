@@ -1,0 +1,139 @@
+# simplicio-loop — CI Quality Gate (#277): block convergence/stability/performance regressions.
+#
+# Four required jobs, each blocking merge on failure (add all four as required status checks in
+# the `main` branch protection rule alongside the existing `ci.yml` jobs):
+#
+#   1. coverage      scripts/coverage_gate.py -- 85% global / 90% critical-path line coverage.
+#   2. perf          scripts/perf_gate.py -- latency/throughput/RSS vs scripts/perf_baseline.json,
+#                     plus a bounded convergence check (drain must always reach a terminal state).
+#   3. flaky         scripts/flaky_gate.py -- repeats the convergence/drain-critical test subset
+#                     5x and flags any test with an inconsistent pass/fail outcome.
+#   4. stress        scripts/flaky_gate.py --stress -- the same detector over the FULL suite, 25x,
+#                     as the issue's "stress tests" criterion; non-blocking speed-wise since it
+#                     only runs on `main` pushes (not every PR) to keep PR feedback fast.
+#   5. regression-test-required   scripts/regression_test_gate.py -- a source change without any
+#                     accompanying tests/ change fails the PR (issue: "todo bug recebe teste de
+#                     regressao").
+#
+# Every job uploads its diagnostics (coverage HTML/XML, perf JSON, per-run pytest logs) as a build
+# artifact on failure via `if: failure()`, so a red check always ships a reviewable trace/state
+# dump -- never just a pass/fail badge (issue: "relatorios de traces, estados e checkpoints em
+# falhas").
+#
+# Kept as a separate workflow from `ci.yml` (rather than folded into jobs there) so the existing
+# claims-audit/matrix gate's fast feedback isn't slowed by the heavier coverage/stress runs, and so
+# branch protection can require this workflow's jobs independently once the team is ready to make
+# the coverage/perf thresholds mandatory.
+
+name: quality-gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: quality-gate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: Coverage gate (85% global / 90% critical)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+          cache: "pip"
+      - name: Install test + coverage tooling
+        run: python3 -m pip install --disable-pip-version-check pytest coverage
+      - name: Run coverage gate
+        run: python3 scripts/coverage_gate.py --diagnostics-dir .simplicio/quality-gate/coverage
+      - name: Upload coverage diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-gate-diagnostics
+          path: .simplicio/quality-gate/coverage
+          retention-days: 14
+
+  perf:
+    name: Performance / convergence gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+          cache: "pip"
+      - name: Run perf/convergence gate
+        run: python3 scripts/perf_gate.py --json --diagnostics-dir .simplicio/quality-gate/perf | tee .simplicio/quality-gate/perf-report.json
+      - name: Upload perf diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-gate-diagnostics
+          path: |
+            .simplicio/quality-gate/perf
+            .simplicio/quality-gate/perf-report.json
+          retention-days: 14
+
+  flaky:
+    name: Flakiness detector (critical subset x5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+          cache: "pip"
+      - name: Install test tooling
+        run: python3 -m pip install --disable-pip-version-check pytest
+      - name: Run flakiness gate
+        run: python3 scripts/flaky_gate.py --repeat 5 --diagnostics-dir .simplicio/quality-gate/flaky
+      - name: Upload flaky-run diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-gate-diagnostics
+          path: .simplicio/quality-gate/flaky
+          retention-days: 14
+
+  stress:
+    name: Stress pass (full suite x25)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+          cache: "pip"
+      - name: Install test tooling
+        run: python3 -m pip install --disable-pip-version-check pytest
+      - name: Run stress/flakiness gate over full suite
+        run: python3 scripts/flaky_gate.py --stress --diagnostics-dir .simplicio/quality-gate/stress
+      - name: Upload stress diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-gate-diagnostics
+          path: .simplicio/quality-gate/stress
+          retention-days: 14
+
+  regression-test-required:
+    name: Regression test required for source changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Verify source changes ship with a test
+        run: python3 scripts/regression_test_gate.py --base origin/${{ github.event.pull_request.base.ref }}

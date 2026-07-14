@@ -42,6 +42,10 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 | `web_verify.py` | `video_evidence.py`; `.github/workflows/web-verify.yml` | active |
 | `pr_evidence.py` | PR-open flow (`pr_evidence.py build --require-evidence`) | active |
 | `toon_codec.py` | imported by `task_anchor.py` / `loop_journal.py` (TOON-rendered `--format toon` output) | active |
+| `coverage_gate.py` | `.github/workflows/quality-gate.yml` (#277) — 85% global / 90% critical-path line coverage gate | active |
+| `perf_gate.py` | `.github/workflows/quality-gate.yml` (#277) — latency/throughput/RSS vs `scripts/perf_baseline.json` + bounded convergence check | active |
+| `flaky_gate.py` | `.github/workflows/quality-gate.yml` (#277) — repeats the convergence/drain-critical test subset (or full suite in `--stress`) N times and flags inconsistent outcomes | active |
+| `regression_test_gate.py` | `.github/workflows/quality-gate.yml` (#277) — fails a PR that changes source without an accompanying `tests/` change | active |
 
 ## Satellite (opt-in / advanced capabilities)
 
