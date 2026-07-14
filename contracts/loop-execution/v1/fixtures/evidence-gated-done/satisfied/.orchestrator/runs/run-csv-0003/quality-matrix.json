@@ -1,0 +1,13 @@
+{
+  "schema": "simplicio.quality-matrix/v1",
+  "coverage_threshold": 85.0,
+  "requirements": {
+    "implementation": {"status": "pass", "proof_ref": "app/reports/export.py"},
+    "unit": {"status": "pass", "proof_ref": "tests/test_reports_export.py"},
+    "integration": {"status": "pass", "proof_ref": "tests/test_reports_export_integration.py"},
+    "system": {"status": "pass", "proof_ref": "tests/test_reports_export_e2e.py"},
+    "regression": {"status": "pass", "proof_ref": "tests/test_reports_export_regression.py"},
+    "benchmark": {"status": "pass", "proof_ref": "tests/test_reports_export_benchmark.py"}
+  },
+  "coverage": {"measured": 91.0}
+}

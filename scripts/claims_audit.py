@@ -110,6 +110,8 @@ SELFTEST_SCRIPTS = [
     "scripts/clean_env_contract.py",
     "scripts/completion_oracle.py",
     "scripts/quality_matrix.py",
+    "scripts/planning_gate.py",
+    "scripts/github_lifecycle.py",
     "scripts/mirror_parity.py",
     "scripts/run_state.py",
     "scripts/claims_manifest.py",
@@ -118,6 +120,7 @@ SELFTEST_SCRIPTS = [
     "scripts/schema_verify.py",
     "scripts/loop_progress.py",
     "hooks/action_gate.py",
+    "scripts/repository_budget.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a
 # `selftest`-shaped function/subcommand that isn't the worker's own self-check, or a script this
