@@ -53,14 +53,29 @@ def _run(script, args, cwd, env):
 @contextlib.contextmanager
 def _s1_loop_progress_deleted():
     """Sabotage 1 — literally rename `scripts/loop_progress.py` out of the way for the duration
-    of the block (issue #304 AC2's own wording: "com loop_progress.py deletado do repo")."""
+    of the block (issue #304 AC2's own wording: "com loop_progress.py deletado do repo").
+
+    Most callers exercise this via a fresh subprocess per `_run()`, so Python's import cache is
+    irrelevant there. `test_s1_loop_stop_helpers_degrade_silently_without_loop_progress` is the
+    one exception — it imports `hooks/loop_stop.py` in-process — so when it runs after any
+    earlier test in the same pytest session that already did `import loop_progress`, the module
+    stays resolvable from `sys.modules` even with the file renamed away, and the "deleted"
+    simulation silently stops proving anything. Evict any cached entry on the way in and put
+    back whatever was there (if anything) on the way out, so this sabotage is real regardless of
+    what ran earlier in the same process."""
     disabled = LOOP_PROGRESS + ".disabled-for-test"
     assert os.path.exists(LOOP_PROGRESS), "precondition: loop_progress.py must exist to sabotage"
     os.replace(LOOP_PROGRESS, disabled)
+    had_cached = "loop_progress" in sys.modules
+    cached = sys.modules.pop("loop_progress", None)
     try:
         yield
     finally:
         os.replace(disabled, LOOP_PROGRESS)
+        if had_cached:
+            sys.modules["loop_progress"] = cached
+        else:
+            sys.modules.pop("loop_progress", None)
 
 
 def test_s1_task_backlog_init_unchanged_without_loop_progress(tmp_path):
