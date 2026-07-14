@@ -1,0 +1,11 @@
+{
+  "schema": "simplicio.delivery-receipt/v1",
+  "target": "verified",
+  "current_state": "verified",
+  "ready": true,
+  "source_kind": "local",
+  "source_payload": {
+    "evidence_receipt": "evidence-receipt.json",
+    "criteria_verified": 1
+  }
+}

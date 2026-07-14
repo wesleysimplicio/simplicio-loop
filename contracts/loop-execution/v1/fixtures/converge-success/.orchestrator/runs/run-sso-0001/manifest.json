@@ -1,0 +1,6 @@
+{
+  "schema": "simplicio.run-manifest/v1",
+  "run_id": "run-sso-0001",
+  "item": "12",
+  "delivery_target": "verified"
+}

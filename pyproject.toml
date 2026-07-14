@@ -33,7 +33,7 @@ dependencies = [
 [project.optional-dependencies]
 # Dev/test: the suite ALSO self-runs on bare python3 (`python3 scripts/check.py`), so pytest is
 # only a convenience for nicer output / IDE integration — never required.
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "pytest-cov>=4"]
 ml = ["model2vec>=0.3", "numpy>=1.21"]
 
 [project.urls]
@@ -50,3 +50,15 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 simplicio_loop = ["_bundle/**/*"]
+
+[tool.coverage.run]
+source = ["simplicio_loop"]
+omit = [
+  "simplicio_loop/_bundle/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "if __name__ == .__main__.:",
+]

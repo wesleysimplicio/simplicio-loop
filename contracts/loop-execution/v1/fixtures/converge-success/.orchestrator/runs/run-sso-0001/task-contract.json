@@ -1,0 +1,8 @@
+{
+  "schema": "simplicio.task-contract-collection/v1",
+  "item": "12",
+  "criteria": [
+    {"id": "AC1", "text": "Login page renders an SSO button"},
+    {"id": "AC2", "text": "Clicking it redirects to the IdP"}
+  ]
+}
