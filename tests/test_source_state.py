@@ -24,10 +24,26 @@ def test_infer_state_deployed_when_smoke_passed():
 
 def test_infer_state_released_when_release_and_smoke_present():
     payload = {
-        "release": {"tag": "v1.0.0", "assets": ["sbom.json"]},
+        "release": {
+            "tag": "v1.0.0",
+            "assets": ["sbom.json"],
+            "checksums_verified": True,
+            "signatures_verified": True,
+            "sbom_present": True,
+        },
         "install_smoke": {"passed": True},
     }
     assert infer_github_delivery_state(payload) == "released"
+
+
+def test_infer_state_not_released_when_release_present_but_unverified():
+    # #290 — presence of a tag/assets is not proof the bytes were checked; without an explicit
+    # verified marker on checksums/signatures/sbom the state must not promote to "released".
+    payload = {
+        "release": {"tag": "v1.0.0", "assets": ["sbom.json"]},
+        "install_smoke": {"passed": True},
+    }
+    assert infer_github_delivery_state(payload) == "verified"
 
 
 def test_infer_state_merged_when_merge_fields_present():
@@ -45,10 +61,22 @@ def test_infer_state_merge_ready_when_pr_checks_reviews_and_branch_all_clear():
     payload = {
         "pr": {"url": "https://example/pr/1", "head_sha": "a", "base_sha": "b"},
         "checks": {"green": True},
-        "reviews": {"approvals": 1, "open_threads": 0},
+        "reviews": {"approvals": 1, "open_threads": 0, "open_threads_verified": True},
         "branch": {"up_to_date": True},
     }
     assert infer_github_delivery_state(payload) == "merge-ready"
+
+
+def test_infer_state_pr_open_when_open_threads_count_present_but_unqueried():
+    # #290 — `open_threads: 0` alone must never mean "verified clear"; without a paginated
+    # review-thread query having actually run (`open_threads_verified`), this must stay pr-open.
+    payload = {
+        "pr": {"url": "https://example/pr/1", "head_sha": "a", "base_sha": "b"},
+        "checks": {"green": True},
+        "reviews": {"approvals": 1, "open_threads": 0},
+        "branch": {"up_to_date": True},
+    }
+    assert infer_github_delivery_state(payload) == "pr-open"
 
 
 def test_infer_state_pr_open_when_pr_present_but_checks_not_green():
@@ -137,6 +165,8 @@ def test_github_delivery_payload_live_mode_pr_view_builds_merge_ready_shape(monk
     assert payload["pr"]["url"] == "https://example/pr/5"
     assert payload["checks"]["green"] is True
     assert payload["reviews"]["approvals"] == 1
+    # #290 — no reviews fixture was set, so the open-threads count was never actually queried.
+    assert payload["reviews"]["open_threads_verified"] is False
     assert payload["branch"]["up_to_date"] is True
     assert "merge" not in payload
 
@@ -157,10 +187,15 @@ def test_github_delivery_payload_live_mode_pr_view_uses_reviews_fixture_and_merg
     })
     monkeypatch.setattr(source_state, "_run_gh", lambda args: _fake_completed(stdout=pr_json))
     payload = github_delivery_payload("acme/widgets", pr=6)
-    assert payload["reviews"] == {"approvals": 2, "open_threads": 1}
+    assert payload["reviews"] == {"approvals": 2, "open_threads": 1, "open_threads_verified": True}
     assert payload["checks"]["green"] is False
+    # #290 — UNSTABLE must not be folded into "up to date": only CLEAN proves it.
+    assert payload["branch"]["up_to_date"] is False
     assert payload["merge"]["commit_sha"] == "mmm"
-    assert payload["merge"]["commit_in_default_branch"] is True
+    # #290 — a merged PR event does not by itself prove the commit is reachable from the real
+    # default branch; no BranchReachabilityVerifier ran, so this must fail closed.
+    assert payload["merge"]["commit_in_default_branch"] is False
+    assert payload["merge"]["commit_in_default_branch_reason_code"] == "merge_reachability_unverified"
 
 
 def test_github_delivery_payload_live_mode_release_view_failure_raises(monkeypatch):
@@ -184,5 +219,10 @@ def test_github_delivery_payload_live_mode_release_view_builds_release_shape(mon
     payload = github_delivery_payload("acme/widgets", tag="v1.0.0")
     assert payload["release"]["tag"] == "v1.0.0"
     assert payload["release"]["assets"] == ["sbom.json", "checksums.txt"]
-    assert payload["release"]["checksums_verified"] is True
-    assert payload["install_smoke"]["passed"] is True
+    # #290 — `gh release view` only proves a tag/asset list exists, not that the bytes were
+    # downloaded and checked. No verifier ran, so these must fail closed instead of asserting a
+    # convenient `true`.
+    assert payload["release"]["checksums_verified"] is False
+    assert payload["release"]["signatures_verified"] is False
+    assert payload["release"]["sbom_present"] is False
+    assert payload["install_smoke"]["passed"] is False
