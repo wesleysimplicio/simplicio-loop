@@ -533,11 +533,16 @@ def main():
     # `--minimal` (alias `--no-monitor`) is the only opt-out, for headless/CI.
     # `--lite`: install skills+hooks instantly (<30s), spawn operator install in background.
     # `--strict`: preserve the current hard-BLOCK behavior (operators required immediately).
+    # `--dry-run`: build and print/return the simplicio.install-transaction/v1 plan (#293
+    #   first slice) and exit WITHOUT any mutation — no skills copy, no operator install,
+    #   no hooks/entry wiring, no monitor setup.
     lite = "--lite" in args
     strict = "--strict" in args
     minimal = "--minimal" in args or "--no-monitor" in args
+    dry_run = "--dry-run" in args
     args = [a for a in args if a not in
-            ("--global", "--skip-operators", "--with-monitor", "--minimal", "--no-monitor", "--lite", "--strict")]
+            ("--global", "--skip-operators", "--with-monitor", "--minimal", "--no-monitor",
+             "--lite", "--strict", "--dry-run")]
     target = None
     if "--target" in args:
         i = args.index("--target")
@@ -554,6 +559,14 @@ def main():
     elif not target:
         cwd = os.getcwd()
         target = cwd if os.path.abspath(cwd) != os.path.abspath(SOURCE) else SOURCE
+
+    if dry_run:
+        import json as _json
+        sys.path.insert(0, HERE)
+        from install_plan import build_plan  # local import: keeps install_plan.py import-light/standalone
+        plan = build_plan(runtime, mode="minimal", scope=("user" if is_global else "project"), target=target)
+        print(_json.dumps(plan, indent=2, sort_keys=True))
+        sys.exit(0 if plan["status"] != "BLOCKED" else 3)
 
     print("simplicio-loop installer - runtime=%s - target=%s" % (runtime, target))
     if lite:
