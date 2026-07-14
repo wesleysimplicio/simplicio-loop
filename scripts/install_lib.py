@@ -119,6 +119,33 @@ def copy_hooks(target, is_global):
         log("hooks -> %s" % dst)
 
 
+def scripts_dir(target, is_global):
+    # global → keep workers tidy under ~/.claude/scripts; project → ./scripts at the repo root
+    return os.path.join(target, ".claude", "scripts") if is_global else os.path.join(target, "scripts")
+
+
+def copy_scripts(target, is_global):
+    """Copy the worker scripts (#303 AC5) into the installed target.
+
+    SKILL.md, the hooks, and `loop_progress.py` itself are all invoked as `python3
+    scripts/<worker>.py ...` — a path relative to the runtime's cwd. Without this, installing
+    into a project OTHER than this source checkout (`--target <other-project>`, which is exactly
+    what every runtime except a self-hosted `claude`/`cursor` project install does) leaves those
+    references dangling: the skill loads, but every worker call 404s and the progress surface
+    (N2 turn-header, N3 PROGRESS.md) can never actually render. Mirrors `copy_hooks`: create-or-
+    merge, skip when the target already IS this source repo (nothing to copy over itself);
+    `__pycache__`/`*.pyc` are never copied (stale bytecode from a different Python build).
+    """
+    src = os.path.join(SOURCE, "scripts")
+    dst = scripts_dir(target, is_global)
+    if os.path.abspath(dst) == os.path.abspath(src):
+        return  # already here (project install inside this repo)
+    if os.path.isdir(src):
+        shutil.copytree(src, dst, dirs_exist_ok=True,
+                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        log("scripts -> %s" % dst)
+
+
 def install_git_precommit_hook(target):
     """Wire `hooks/pre-commit.py` as the target repo's git pre-commit hook (#98).
 
@@ -586,6 +613,7 @@ def main():
     _link_console_script("simplicio-loop", kind="cli")
     copy_skills(target)
     copy_hooks(target, is_global)
+    copy_scripts(target, is_global)
     install_git_precommit_hook(target)
     ensure_entry(target, cfg["entry"], runtime)
     if cfg["hooks"] == "claude":
