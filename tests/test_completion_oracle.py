@@ -15,6 +15,22 @@ def _run(args, cwd, env=None):
                           cwd=cwd, env=full_env, timeout=30, stdin=subprocess.DEVNULL)
 
 
+def _passing_quality_matrix():
+    return {
+        "schema": "simplicio.quality-matrix/v1",
+        "coverage_threshold": 85,
+        "requirements": {
+            "implementation": {"status": "pass", "proof_ref": "operator-receipt.json"},
+            "unit": {"status": "pass", "proof_ref": "tests/unit"},
+            "integration": {"status": "pass", "proof_ref": "tests/integration"},
+            "system": {"status": "pass", "proof_ref": "tests/system"},
+            "regression": {"status": "pass", "proof_ref": "tests/regression"},
+            "benchmark": {"status": "pass", "proof_ref": "bench/quality_matrix_bench.json"},
+        },
+        "coverage": {"measured": 91.2},
+    }
+
+
 def _seed_run(run_dir):
     (run_dir / "manifest.json").write_text(json.dumps({
         "schema": "simplicio.run-manifest/v1",
@@ -31,6 +47,7 @@ def _seed_run(run_dir):
         "source_kind": "local",
         "source_payload": {}
     }), encoding="utf-8")
+    (run_dir / "quality-matrix.json").write_text(json.dumps(_passing_quality_matrix()), encoding="utf-8")
 
 
 def _seed_loop(loop):

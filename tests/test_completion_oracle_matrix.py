@@ -20,6 +20,15 @@ def _seed(tmp_path: Path, *, ready: bool) -> tuple[Path, Path]:
         "operator-receipt.json": {"schema": "simplicio.operator-receipt/v0"},
         "evidence-receipt.json": {"schema": "simplicio.evidence-receipt/v1", "status": "VERIFIED" if ready else "UNVERIFIED", "criteria": [{"id": "AC1", "verification_state": "verified" if ready else "unverified"}], "summary": {"criteria_total": 1, "criteria_verified": 1 if ready else 0, "scenario_total": 1, "scenario_verified": 1 if ready else 0, "rule_total": 1, "rule_verified": 1 if ready else 0}},
         "delivery-receipt.json": {"schema": "simplicio.delivery-receipt/v1", "target": "verified", "current_state": "verified" if ready else "implemented", "ready": ready, "source_kind": "local", "source_payload": {"evidence_receipt": "evidence-receipt.json", "criteria_verified": 1 if ready else 0}},
+        "quality-matrix.json": {
+            "schema": "simplicio.quality-matrix/v1",
+            "coverage_threshold": 85,
+            "requirements": {
+                name: {"status": "pass", "proof_ref": f"tests/{name}"}
+                for name in ("implementation", "unit", "integration", "system", "regression", "benchmark")
+            },
+            "coverage": {"measured": 91.2},
+        },
     }.items():
         (run / name).write_text(json.dumps(payload), encoding="utf-8")
     return loop, run
