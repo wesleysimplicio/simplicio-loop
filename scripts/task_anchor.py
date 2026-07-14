@@ -420,6 +420,9 @@ def cmd_check(opts):
         log(v["reason"])
         if v["pending"]:
             log("pending criteria: %s" % ", ".join(v["pending"]))
+    if v["verdict"] == "DRIFT":
+        _emit_progress("triage", "blocked", outcome="blocked",
+                       detail="DRIFT detectado — re-anchor necessário: %s" % v["reason"])
     if opts.get("exit-code") and v["verdict"] == "DRIFT":
         sys.exit(11)
 

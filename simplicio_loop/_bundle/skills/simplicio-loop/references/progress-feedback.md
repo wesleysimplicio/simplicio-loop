@@ -72,3 +72,24 @@ Every error path (missing/corrupt backlog, missing/corrupt anchor, truncated/cor
 `progress.jsonl`, a `_locked_append` lock timeout) ends in exit 0 with `UNVERIFIED|...` output —
 never an uncaught exception, never a fabricated %. Proven by `scripts/loop_progress.py selftest`
 and `tests/test_loop_progress.py`.
+
+## Turn × event table (issue #300)
+
+Who calls `emit`, and how (in-process `loop_progress.emit_event()` vs. the CLI the agent runs):
+
+| Turn step | Caller | Mechanism | status/outcome |
+|---|---|---|---|
+| preflight | `scripts/preflight.py: build_report()` | in-process | begin → end/pass or blocked/blocked |
+| survey | agent (SKILL.md § Survey) | CLI | begin → end/pass or blocked/blocked |
+| triage | `loop_journal.py: cmd_resume()` | in-process | begin → end/pass |
+| triage (DRIFT) | `task_anchor.py: cmd_check()` | in-process | blocked/blocked, detail contains `DRIFT` |
+| triage (backlog) | `task_backlog.py: init/next/done/skip/block/fail` | in-process | see #299 |
+| decide | agent (SKILL.md § Decide step) | CLI | end, `source: "llm"`, never tagged `MEASURED|` |
+| operate | agent (SKILL.md § Operate step) | CLI | begin → end/pass\|fail |
+| watcher | `watcher_verify.py: cmd_verify()` | in-process, AFTER `watcher_state.json` is written | end/pass\|fail |
+| journal | `loop_journal.py: cmd_record()` | in-process | end, outcome = gate |
+| journal (STALLED) | `loop_journal.py: cmd_stall()` | in-process | blocked/blocked, detail contains `STALLED` |
+
+DRIFT/STALLED are surfaced ahead of everything else: `render_turn_header`/`render_full` prepend
+`⚠ DRIFT ` or `⚠ STALLED ` whenever the LAST event's `status` is `blocked` and its `detail`
+contains that keyword — derived purely from the event trail, never a separate flag.

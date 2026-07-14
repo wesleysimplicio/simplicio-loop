@@ -184,6 +184,16 @@ def log(msg):
     print("  " + msg)
 
 
+def _emit_progress(step, status, **kw):
+    """Fail-open progress-feedback hook (#300) — in-process (no subprocess startup cost per
+    event, AC8), never raises, never changes this worker's own exit code."""
+    try:
+        import loop_progress
+        loop_progress.emit_event(step, status=status, source="loop_journal.py", **kw)
+    except Exception:
+        pass
+
+
 def _read_source(spec):
     if spec is None:
         return ""
@@ -452,6 +462,19 @@ def cmd_record(opts):
     if rec.get("next_action"):
         log("%snext: %s" % (tag, rec["next_action"][:96]))
     print("%srecorded" % tag if wrote else "UNVERIFIED|record-skipped")
+    fp_repeat = ""
+    if rec["gate"] != "pass" and rec.get("fingerprint"):
+        try:
+            prior = [json.loads(line) for line in open(JOURNAL, encoding="utf-8", errors="replace")
+                    if line.strip()]
+            k = sum(1 for r in prior if r.get("fingerprint") == rec.get("fingerprint"))
+            if k > 1:
+                fp_repeat = "fingerprint repetido (%d)" % k
+        except Exception:
+            pass
+    _emit_progress("journal", "end", iteration=rec.get("iteration"),
+                   outcome=rec["gate"] if rec["gate"] in ("pass", "fail", "blocked") else None,
+                   detail=fp_repeat or ("gate=%s" % rec["gate"]))
 
 
 def cmd_fingerprint(opts):
@@ -528,16 +551,23 @@ def cmd_stall(opts):
             if a["dead_ends"]:
                 log("MEASURED|dead-end actions (already tried, same failure): %s" % "; ".join(a["dead_ends"]))
         _warn_corrupt(corrupt)
+    if a["verdict"] == "STALLED":
+        _emit_progress("journal", "blocked", outcome="blocked",
+                       detail="STALLED: %d falhas com mesmo fingerprint — mudar estratégia" %
+                       a["stall_count"])
     if opts.get("exit-code") and a["verdict"] == "STALLED":
         sys.exit(10)
 
 
 def cmd_resume(opts):
     """The read every turn should START with — what was tried, so we never repeat a dead-end."""
+    _emit_progress("triage", "begin", detail="iter %s: triage incremental" %
+                   (opts.get("iteration") or "?"))
     rows, corrupt, _ = _rows_with_dev_cli(opts)  # dev-cli events fold into the streak (#128)
     if not rows:
         print("UNVERIFIED|resume: fresh loop — no prior attempts")
         _warn_corrupt(corrupt)
+        _emit_progress("triage", "end", outcome="pass", detail="0 tentativas anteriores")
         return
     a = analyze(rows, int(opts.get("k", DEFAULT_K)))
     passed = [r for r in rows if r.get("gate") == "pass"]
@@ -565,6 +595,9 @@ def cmd_resume(opts):
     if passed:
         log("MEASURED|resolved fingerprints so far: %d" % len({r.get("fingerprint") for r in passed}))
     _warn_corrupt(corrupt)
+    _emit_progress("triage", "end", outcome="pass",
+                   detail="%d tentativas distintas, %d dead-ends a evitar" %
+                   (len(last_outcome), len(a["dead_ends"])))
 
 
 def cmd_status(opts):
