@@ -586,7 +586,9 @@ def test_sync_source_requeries_github_fixture_for_merge_ready(tmp_path):
     fixture = json.dumps({
         "pr": {"url": "https://example/pr/77", "head_sha": "abc123", "base_sha": "def456", "evidence": "github-pr-view"},
         "checks": {"green": True},
-        "reviews": {"approvals": 1, "open_threads": 0},
+        # #290 — a full test-fixture override asserts a genuinely-verified review-thread query
+        # (unlike the live gh path, which must fail closed when it never queried threads).
+        "reviews": {"approvals": 1, "open_threads": 0, "open_threads_verified": True},
         "branch": {"up_to_date": True}
     })
     synced = _run(CLI + ["sync-source", "--repo", str(repo), run_id, "--source", "github",
@@ -692,7 +694,8 @@ def test_sync_source_reopens_delivery_when_merge_ready_regresses(tmp_path):
     ready_fixture = json.dumps({
         "pr": {"url": "https://example/pr/77", "head_sha": "abc123", "base_sha": "def456", "evidence": "github-pr-view"},
         "checks": {"green": True},
-        "reviews": {"approvals": 1, "open_threads": 0},
+        # #290 — asserts a genuinely-verified review-thread query for this fixture-driven test.
+        "reviews": {"approvals": 1, "open_threads": 0, "open_threads_verified": True},
         "branch": {"up_to_date": True}
     })
     ready = _run(CLI + ["sync-source", "--repo", str(repo), run_id, "--source", "github",
