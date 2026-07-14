@@ -8,16 +8,36 @@ transport agnostic (SQLite and HTTP queues expose the same ``assert_active`` ope
 from __future__ import annotations
 
 import json
+import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .agent_contract import IDENTITY_FIELDS, bind_receipt, build_context_pack, validate_identity
 from .remote_queue import Lease, RemoteQueue
 
 SCHEMA = "simplicio.work-item-attempt/v1"
 EVENT_SCHEMA = "simplicio.work-item-attempt-event/v1"
+
+
+class LeaseLostDuringExecution(RuntimeError):
+    """A heartbeat during a mutating subprocess found the lease no longer active.
+
+    The guarded subprocess is killed immediately when this is detected so a stale
+    worker never keeps mutating a checkout after losing its fence (#183 DoD gap:
+    "não há heartbeat/assert-active durante a mutação").
+    """
+
+    def __init__(self, work_item_id: str, attempt_id: str, cause: BaseException) -> None:
+        super().__init__(
+            "lease lost mid-execution for work_item_id=%r attempt_id=%r: %s"
+            % (work_item_id, attempt_id, cause)
+        )
+        self.work_item_id = work_item_id
+        self.attempt_id = attempt_id
+        self.cause = cause
 
 
 @dataclass(frozen=True)
@@ -127,6 +147,62 @@ class AttemptCoordinator:
                           issue_ref=str(attempt.context.get("issue_ref") or ""),
                           issue_url=str(attempt.context.get("issue_url") or ""))
 
+    def run_guarded(self, attempt: WorkItemAttempt, argv: Sequence[str], *, cwd: str | Path,
+                     timeout: float = 180.0, heartbeat_interval: float = 5.0,
+                     ttl: float = 60.0) -> subprocess.CompletedProcess:
+        """Run a mutating subprocess while heartbeating the lease in the background.
+
+        Fixes the epic-183 gap where a long-running operator invocation (e.g.
+        `simplicio-dev-cli`) held no lease/fencing awareness once started: a worker
+        could lose its lease mid-mutation and keep writing to the checkout. Here a
+        background thread calls ``assert_active`` (via ``heartbeat``) every
+        ``heartbeat_interval`` seconds for the life of the subprocess; the moment the
+        lease is no longer current, the subprocess is killed and
+        :class:`LeaseLostDuringExecution` is raised instead of returning a result that
+        looks successful. On graceful completion the final exit is still fenced by a
+        last :meth:`assert_active` check before the caller sees the result.
+        """
+        self.assert_active(attempt)
+        proc = subprocess.Popen(
+            list(argv), cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdin=subprocess.DEVNULL,
+        )
+        lease_lost: List[BaseException] = []
+        stop = threading.Event()
+
+        def _watch() -> None:
+            while not stop.wait(heartbeat_interval):
+                try:
+                    self.queue.heartbeat(attempt.lease, ttl=ttl)
+                except Exception as exc:  # noqa: BLE001 - any lease failure kills the child
+                    lease_lost.append(exc)
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    return
+
+        watcher = threading.Thread(target=_watch, name="lease-heartbeat", daemon=True)
+        watcher.start()
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            stop.set()
+            watcher.join(timeout=heartbeat_interval + 1)
+            if lease_lost:
+                raise LeaseLostDuringExecution(attempt.work_item_id, attempt.attempt_id, lease_lost[0]) from lease_lost[0]
+            raise
+        stop.set()
+        watcher.join(timeout=heartbeat_interval + 1)
+        if lease_lost:
+            raise LeaseLostDuringExecution(attempt.work_item_id, attempt.attempt_id, lease_lost[0]) from lease_lost[0]
+        # Final fence check: reject a result produced after the lease already expired
+        # even if the watcher hadn't ticked yet (short-lived subprocess race).
+        self.assert_active(attempt)
+        return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
+
     def _path(self, attempt: WorkItemAttempt, name: str = "events") -> Path | None:
         if self.receipt_dir is None:
             return None
@@ -160,4 +236,4 @@ class AttemptCoordinator:
                                        if attempt.context.get("issue_ref") else {})})
 
 
-__all__ = ["AttemptCoordinator", "EVENT_SCHEMA", "SCHEMA", "WorkItemAttempt"]
+__all__ = ["AttemptCoordinator", "EVENT_SCHEMA", "LeaseLostDuringExecution", "SCHEMA", "WorkItemAttempt"]
