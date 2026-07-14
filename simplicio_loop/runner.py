@@ -23,6 +23,9 @@ from .task_contract import compile_many, validate_contract
 from .plan_contract import PLAN_SCHEMA, validate_plan
 from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable
 from .agent_contract import bind_receipt, build_context_pack
+from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONTENT_SCHEMA,
+                               OPERATOR_RECEIPT_SCHEMA as _OPERATOR_RECEIPT_CONTENT_SCHEMA,
+                               ReceiptStatus, verify_receipt)
 
 try:
     from scripts.agent_identity import ensure_identity
@@ -32,6 +35,10 @@ except ImportError:  # pragma: no cover - installed package without scripts name
 RUNNER_SCHEMA = "simplicio.run-manifest/v1"
 STATE_SCHEMA = "simplicio.run-state/v1"
 OPERATOR_RECEIPT_SCHEMA = "simplicio.operator-receipt/v0"
+# Real content/schema/hash/freshness/provenance validation, gating `receipt_status` in
+# `_operator_dispatch_attempt()` below (issue #288: presence of a file must not imply
+# VERIFIED).
+RECEIPT_MAX_AGE_SECONDS = float(os.environ.get("SIMPLICIO_RECEIPT_MAX_AGE_SECONDS", "86400"))
 MAINTENANCE_RECEIPT_SCHEMA = "simplicio.maintenance-receipt/v1"
 PHASES = [
     "intake",
@@ -2299,6 +2306,51 @@ def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _verify_worker_receipt_pair(operator_receipt_path: str, evidence_receipt_path: str) -> Dict[str, str]:
+    """Gate `receipt_status` on real content/schema/hash/freshness/provenance (issue #288).
+
+    Previously this reduced to ``Path(receipt).is_file() and Path(evidence_receipt).is_file()``
+    -- an empty ``{}`` file passed just as readily as a genuine receipt. Both receipts are now
+    parsed and run through ``receipt_verifier.verify_receipt`` against the schema each producer
+    (``_prepare_operator_receipt`` / ``evidence.py::build_evidence_receipt``) actually emits.
+    Only a fully verified pair returns ``VERIFIED``; every other case names a specific,
+    non-existence reason (``STALE``, ``TAMPERED``, ``INVALID_SCHEMA``, ``MISSING_FIELD``, or the
+    legacy ``UNVERIFIED`` when a path is simply absent).
+    """
+    if not operator_receipt_path or not evidence_receipt_path:
+        return {"status": "UNVERIFIED", "reason": "operator or evidence receipt path missing"}
+    op_path = Path(operator_receipt_path)
+    ev_path = Path(evidence_receipt_path)
+    if not op_path.is_file() or not ev_path.is_file():
+        return {"status": "UNVERIFIED", "reason": "operator or evidence receipt file missing"}
+    try:
+        operator_payload = json.loads(op_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"status": ReceiptStatus.INVALID_SCHEMA, "reason": f"operator receipt unreadable: {exc}"}
+    try:
+        evidence_payload = json.loads(ev_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"status": ReceiptStatus.INVALID_SCHEMA, "reason": f"evidence receipt unreadable: {exc}"}
+
+    now = time.time()
+    operator_verdict = verify_receipt(
+        operator_payload, schema=_OPERATOR_RECEIPT_CONTENT_SCHEMA,
+        max_age_seconds=RECEIPT_MAX_AGE_SECONDS, now=now,
+    )
+    if not operator_verdict.verified:
+        return {"status": operator_verdict.status, "reason": f"operator receipt: {operator_verdict.reason}"}
+    evidence_verdict = verify_receipt(
+        evidence_payload, schema=_EVIDENCE_RECEIPT_CONTENT_SCHEMA,
+        max_age_seconds=RECEIPT_MAX_AGE_SECONDS, now=now,
+    )
+    if not evidence_verdict.verified:
+        return {"status": evidence_verdict.status, "reason": f"evidence receipt: {evidence_verdict.reason}"}
+    return {
+        "status": ReceiptStatus.VERIFIED,
+        "reason": "operator and evidence receipts passed content/schema/hash/freshness/provenance checks",
+    }
+
+
 def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Call the production operator and reduce its status to a durable worker record."""
     started = _now()
@@ -2389,6 +2441,7 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
                 {"receipt_ref": receipt}, item["agent_identity"],
                 context_pack=item.get("context_pack"),
             )
+        receipt_verdict = _verify_worker_receipt_pair(receipt, evidence_receipt)
         return {
             **common,
             "status": "succeeded" if success else "failed",
@@ -2398,9 +2451,8 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             "operator_receipt": receipt,
             "evidence_receipt": evidence_receipt,
             "watcher_receipt": watcher_receipt if Path(watcher_receipt).exists() else "",
-            "receipt_status": "VERIFIED" if (
-                receipt and evidence_receipt and Path(receipt).is_file() and Path(evidence_receipt).is_file()
-            ) else "UNVERIFIED",
+            "receipt_status": receipt_verdict["status"],
+            "receipt_verdict_reason": receipt_verdict["reason"],
             "attempt": int(state.get("attempts") or 0),
             "failure_fingerprint": failure_fingerprint,
             "started_at": started,

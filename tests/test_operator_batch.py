@@ -132,8 +132,24 @@ def test_fan_out_receipts_and_retries_are_worker_scoped(monkeypatch, tmp_path):
                                "operator": {"execution_state": "failed"}}}
         operator_receipt = tmp_path / f"operator-{task_index}.json"
         evidence_receipt = tmp_path / f"evidence-{task_index}.json"
-        operator_receipt.write_text("{}", encoding="utf-8")
-        evidence_receipt.write_text("{}", encoding="utf-8")
+        measured_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        operator_receipt.write_text(json.dumps({
+            "schema": "simplicio.operator-receipt/v0",
+            "execution_state": "applied",
+            "target": "file.py",
+            "measured_at": measured_at,
+            "source": "live_cli",
+            "tool": "simplicio-dev-cli",
+            "repo_state_before": {"commit_sha": "deadbeef"},
+        }), encoding="utf-8")
+        evidence_receipt.write_text(json.dumps({
+            "schema": "simplicio.evidence-receipt/v1",
+            "run_id": "r1",
+            "status": "VERIFIED",
+            "measured_at": measured_at,
+            "run": {"commit_sha": "deadbeef"},
+            "operator": {"execution_state": "applied", "receipt_path": str(operator_receipt)},
+        }), encoding="utf-8")
         return {
             "state": {
                 "phase": "validating",
