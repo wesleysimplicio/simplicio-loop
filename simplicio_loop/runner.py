@@ -2017,12 +2017,34 @@ def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
 
 
 def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3) -> Dict[str, Any]:
-    """Arm, execute, and independently verify one run as one durable operation."""
+    """Arm, execute, and independently verify one run as one durable operation.
+
+    Issue #279: this boundary must never leave a run partially armed.  Either the full
+    mapper -> plan -> operator preflight -> batch chain succeeds, or the run is left (and
+    reported) explicitly ``blocked`` with a diagnostic receipt.  ``execute_operator_batch``
+    already fails closed and persists a batch-preflight-block diagnostic before raising when
+    the receipt chain is missing or stale, but that exception must not escape uncaught here --
+    an uncaught exception is itself a partially-armed, undiagnosed state from the CLI's
+    perspective.
+    """
     armed = arm_run(repo, task_path, delivery, max_iterations)
     run_id = armed["manifest"]["run_id"]
     if armed["state"].get("phase") == "blocked":
         return armed
-    batch = execute_operator_batch(repo, run_id, max_workers=1, retry_budget=retry_budget, auto_fan_out=False)
+    try:
+        batch = execute_operator_batch(repo, run_id, max_workers=1, retry_budget=retry_budget, auto_fan_out=False)
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        status = read_status(repo, run_id)
+        run_dir = Path(status["run_dir"])
+        state = status["state"]
+        if state.get("phase") != "blocked":
+            # Defensive fallback: execute_operator_batch's own preflight boundary is
+            # expected to have already persisted a blocked diagnostic before raising, but
+            # guarantee the run never surfaces as anything other than explicitly blocked.
+            _transition(run_dir, state, "blocked",
+                        "batch dispatch failed before dispatch", extra={"error": str(exc)})
+            status = read_status(repo, run_id)
+        return status
     status = read_status(repo, run_id)
     if batch.get("failed_task_indices") or status["state"].get("phase") == "blocked":
         return status
