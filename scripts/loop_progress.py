@@ -254,7 +254,22 @@ def build_snapshot(cap=None):
         "mode": mode,
         "last_status": last.get("status"),
         "last_outcome": last.get("outcome"),
+        "last_detail": last.get("detail") or "",
+        "last_source": last.get("source") or "",
     }
+
+
+def _warning_banner(snapshot):
+    """DRIFT/STALLED are the two most important turn-level events (#300 AC2/AC3) — they must lead
+    the render, not get lost in the transcript. Derived only from the last event's own fields."""
+    if snapshot.get("last_status") != "blocked":
+        return ""
+    detail = snapshot.get("last_detail") or ""
+    if "DRIFT" in detail:
+        return "⚠ DRIFT "
+    if "STALLED" in detail:
+        return "⚠ STALLED "
+    return ""
 
 
 def _atomic_write(path, text):
@@ -308,11 +323,12 @@ def render_turn_header(snapshot):
     iteration = snapshot.get("iteration") or 0
     cap = snapshot.get("cap")
     iter_part = ("iter %s/%s" % (iteration, cap)) if cap else ("iter %s" % iteration)
+    banner = _warning_banner(snapshot)
     if pct is None:
-        return "%s|pct=?" % tag
-    return ("%s|[simplicio-loop] fase %s · etapa %s/%s %s · item %s (%s) · "
+        return "%s|%spct=?" % (tag, banner)
+    return ("%s|%s[simplicio-loop] fase %s · etapa %s/%s %s · item %s (%s) · "
             "ACs %s · %s geral · %s" % (
-                tag, phase, idx, total, step, item, items_part, ac_part,
+                tag, banner, phase, idx, total, step, item, items_part, ac_part,
                 _pct_str(pct), iter_part))
 
 
