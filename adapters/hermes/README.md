@@ -14,3 +14,8 @@ Kept only so existing installs, saved scripts, and `HERMES_PROFILE` env usage ke
 without a breaking change. It will be removed once the deprecation threshold in
 `adapters/MATRIX.md` is reached — migrate to `simplicio_agent` (binary `simplicio-agent`, config
 `~/.simplicio-agent/config.yaml`) when convenient.
+
+## Progresso do run
+
+Same as [`simplicio_agent`](../simplicio_agent/README.md#progresso-do-run) — this is a legacy
+shim, not a separate feedback surface.

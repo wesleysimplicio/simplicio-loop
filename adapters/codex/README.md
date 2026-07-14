@@ -51,3 +51,9 @@ the standard-tool fallback.
 ```
 codex exec "/simplicio-tasks finish all the open issues"
 ```
+
+## Progresso do run
+
+Self-paced (N2): the tick echoes `python3 scripts/loop_progress.py render --turn-header` at the
+start of every turn — the % is right there in the transcript. For a live panel outside the
+transcript (N3, universal): `watch -n5 cat .orchestrator/loop/PROGRESS.md`.

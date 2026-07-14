@@ -62,3 +62,10 @@ simplicio doctor --json
 ```
 /simplicio-tasks finish all the open issues
 ```
+
+## Progresso do run
+
+Hook-bound (N1): `loop_stop.py` injects fase/etapa/item/ACs/% straight into the re-feed header —
+no action needed. Universal fallback (N3, works everywhere): open
+`.orchestrator/loop/PROGRESS.md` in the editor (auto-regenerated every turn), or
+`watch -n5 cat .orchestrator/loop/PROGRESS.md` in a terminal.
