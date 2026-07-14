@@ -196,8 +196,12 @@ an anchor checklist, nor a backlog table, nor a single print, so an evidence-les
 opened by accident. It honors a discovered
 `.github/PULL_REQUEST_TEMPLATE.md` (keeps the maintainer's sections, appends the checklist + prints
 below). `pr_evidence.py comment --item <id> --pr <N>` emits the matching in-source evidence comment
-(PR link + per-AC check + a count of attached prints). Write surrounding comment PROSE in the user's
-language; keep paths/identifiers in English.
+(PR link + per-AC check + a count of attached prints). Add `--publish --issue <N> --repo owner/name`
+(both required explicitly — no implicit git-remote auto-detect) to ALSO post it to the source issue
+via `gh api`, idempotently: a hidden marker lets a re-run on the same issue UPDATE that one comment
+instead of appending a duplicate, and a publish failure BLOCKS (exit 3) instead of silently
+reporting success. Write surrounding comment PROSE in the user's language; keep paths/identifiers
+in English.
 
 **Verify in the workflow, never trust self-report.** When a fan-out drove the run, its FINAL step
 re-verifies reality: the merged build/test, the `smoke` gate, and a source re-query confirming
