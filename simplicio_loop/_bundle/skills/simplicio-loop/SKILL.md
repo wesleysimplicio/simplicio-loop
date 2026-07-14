@@ -93,22 +93,29 @@ gates, the operator dispatch table): **`references/bound-operators.md`**.
 | **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
 | **simplicio-dev-cli** | `simplicio-dev-cli` | `execute` / `deterministic_edit` / `validate` / `diagnostics` | **Operate** — applies a DECIDED change through its 6-layer contract (mapper context → precedent → prompt → diff → test → verify, ≤3 retries). The CLI edits and verifies; the AI does not hand-write the diff. |
 
-**Preflight (MANDATORY, BLOCKING).** Before iteration 1, auto-update the operator package to its
-latest release, then confirm both runtime binaries are on PATH:
+**Preflight (MANDATORY, BLOCKING).** Before iteration 1, announce the step, auto-update the
+operator package to its latest release, then confirm both runtime binaries are on PATH:
 ```bash
+python3 scripts/loop_progress.py emit --step preflight --status begin --detail "operadores: verificação/atualização"
 python3 -m pip install -qU simplicio-cli 2>/dev/null \
   || python3 -m pip install -qU --user --break-system-packages simplicio-cli 2>/dev/null || true
 simplicio-mapper --version   # survey operator (expected transitively from simplicio-cli)
 simplicio-dev-cli --help     # action operator (pkg simplicio-cli; exposes `simplicio-dev-cli`)
+python3 scripts/loop_progress.py emit --step preflight --status end --outcome pass \
+    --detail "simplicio-mapper X.Y.Z; simplicio-dev-cli OK"
 ```
 Best-effort and offline-safe — a network/pip failure leaves the working version in place. The
 action binary is `simplicio-dev-cli` (from `pip install simplicio-cli`) — NOT the bare `simplicio`
 (that's the separate `simplicio-runtime`). If either runtime binary is missing, do NOT fall back to
-LLM survey/editing — STOP and emit `simplicio-loop: BLOCKED — missing operator <name>; run: pip
-install simplicio-cli`.
+LLM survey/editing — emit `python3 scripts/loop_progress.py emit --step preflight --status blocked
+--outcome blocked --detail "missing operator <name>"`, then STOP and print `simplicio-loop:
+BLOCKED — missing operator <name>; run: pip install simplicio-cli`.
 
-**Survey step (each loop start).** `simplicio-mapper scan . --json` (instant macro skeleton +
-background deep index) → gate with `inspect . --json` (artifacts exist on disk) → feed the goal
+**Survey step (each loop start).** `python3 scripts/loop_progress.py emit --step survey --status begin`
+→ `simplicio-mapper scan . --json` (instant macro skeleton + background deep index) → gate with
+`inspect . --json` (artifacts exist on disk) → on a passing gate `emit --step survey --status end
+--outcome pass --detail "context-pack pronto (pack_hash <hash8>)"` (on a failing gate, `--status
+blocked --outcome blocked`) → feed the goal
 from `handoff . --for-llm toon` (a pre-compressed context-pack: files/symbols/deps/`pack_hash`,
 substitutes for re-reading the tree). For triage questions the map alone doesn't answer,
 `simplicio-mapper ask . <impact|tests-for|callers|...> <arg> --json`. Verify-side docs gates:
