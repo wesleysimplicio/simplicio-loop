@@ -18,7 +18,7 @@ Three capabilities decide how rich an adapter is:
 
 ## Runtime tiers
 
-Maintaining real parity across 11 distinct runtimes is infeasible — each host changes its hook/skill
+Maintaining real parity across 12 distinct runtimes is infeasible — each host changes its hook/skill
 format every release. This repo therefore adopts a **two-tier system**:
 
 ### Tier 1 — Guaranteed (gated)
@@ -46,7 +46,7 @@ These three are covered by:
 
 ### Tier 2 — Best-effort (ungated)
 
-Eight runtimes are documented and supported on a best-effort basis — contributions welcome,
+Nine runtimes are documented and supported on a best-effort basis — contributions welcome,
 no gate, no parity promise per release:
 
 | # | Runtime | Skill load | Loop drive | Hooks | Native bind | Adapter |
@@ -59,6 +59,7 @@ no gate, no parity promise per release:
 | 9 | **Aider** | `CONVENTIONS.md` (read) | self-paced | ❌ | — (LLM fallback, no bind exists) | [aider](aider/README.md) |
 | 10 | **Simplicio Agent** *(formerly Hermes)* | native skill recall | native loop | ✅ native | native extension points (optional) | [simplicio_agent](simplicio_agent/README.md) |
 | 11 | **OpenClaw** | plugin SDK / `skills/` | native scheduler | ✅ native | **native** (plugin SDK) | [openclaw](openclaw/README.md) |
+| 12 | **Orca** | via inner agent (`.claude/skills/` + `AGENTS.md`) + skills registry | inner hook / self-paced (scheduled automations) | ⚠️ via inner agent | MCP (optional) | [orca](orca/README.md) |
 
 `hermes` is kept as a **legacy shim** for row 10, not a 12th runtime — see
 [hermes/README.md](hermes/README.md). It installs/binds identically to `simplicio_agent` during
@@ -75,7 +76,7 @@ Native binds are optional accelerators, never a requirement for installing or dr
 bash scripts/install.sh <runtime> [--global]      # macOS/Linux
 pwsh scripts/install.ps1 <runtime> [-Global]      # Windows / pwsh
 # <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent
-#            openclaw   (hermes still accepted as a legacy alias for simplicio_agent)
+#            openclaw orca   (hermes still accepted as a legacy alias for simplicio_agent)
 # omit <runtime> to auto-detect
 ```
 
@@ -100,7 +101,7 @@ available only with an explicit `standalone=True` choice and never claims runtim
 - **No skill loader** (e.g. Aider) → the adapter inlines `SKILL.md` as the runtime's
   conventions/instructions file. Larger context, identical behavior.
 
-The promise: **same protocol, same gates, same safety on all 11 — Tier 1 verified mechanically,
+The promise: **same protocol, same gates, same safety on all 12 — Tier 1 verified mechanically,
 Tier 2 best-effort with contributions welcome.**
 
 ## Verifying an adapter
@@ -112,7 +113,7 @@ asserts each promise — no risk to your real config:
 ```bash
 python3 scripts/verify_adapters.py tier1                        # Tier 1 — gated, run on every commit
 python3 scripts/verify_adapters.py claude codex cursor          # same as above
-python3 scripts/verify_adapters.py                              # all 11 (~45s/runtime — run manually or in a slower CI job)
+python3 scripts/verify_adapters.py                              # all 12 (~45s/runtime — run manually or in a slower CI job)
 python3 scripts/verify_adapters.py antigravity kiro opencode aider   # a Tier-2 subset
 ```
 

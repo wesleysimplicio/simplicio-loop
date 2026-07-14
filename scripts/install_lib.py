@@ -12,7 +12,7 @@ it exposes (`simplicio-dev-cli`, `simplicio-mapper`) unless --skip-operators is 
 Usage:
     python3 scripts/install_lib.py <runtime> [--global] [--target DIR] [--skip-operators] [--lite]
     <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent
-               openclaw (hermes accepted as a legacy alias for simplicio_agent)
+               openclaw orca (hermes accepted as a legacy alias for simplicio_agent)
     omit <runtime> to auto-detect.
 
 --lite mode:
@@ -81,6 +81,10 @@ RUNTIMES = {
     "simplicio_agent": {"entry": None,                          "mcp": None,          "hooks": "native"},
     "hermes":      {"entry": None,                              "mcp": None,          "hooks": "native"},  # legacy alias — see simplicio_agent
     "openclaw":    {"entry": None,                              "mcp": None,          "hooks": "native"},
+    # Orca (onorca.dev) — worktree IDE hosting inner agent CLIs (Claude Code/Codex/Cursor);
+    # skills + AGENTS.md land in the repo and every Orca worktree sees them; loop drive is the
+    # inner agent's hook where it has one, else Orca scheduled automations (self-paced).
+    "orca":        {"entry": "AGENTS.md",                       "mcp": "orca",        "hooks": None},
 }
 
 

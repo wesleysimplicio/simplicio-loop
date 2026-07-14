@@ -1,7 +1,7 @@
 # CLAUDE.md — simplicio-loop (Claude Code)
 
 This repo ships **simplicio-loop**, a runtime-agnostic **super-plugin**: an autonomous
-looping orchestrator (the `/simplicio-loop` skill) plus six satellite skills, packaged for 11
+looping orchestrator (the `/simplicio-loop` skill) plus six satellite skills, packaged for 12
 runtimes.
 
 ## The 7 skills
@@ -127,6 +127,7 @@ not block an unbound loop.
 ## Other runtimes
 
 The same skills run on Codex, VS Code (Copilot), Cursor, Antigravity, Kiro, OpenCode, Gemini,
-Aider, Simplicio Agent (formerly Hermes), and OpenClaw — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
+Aider, Simplicio Agent (formerly Hermes), OpenClaw, and Orca ([onorca.dev](https://www.onorca.dev/docs),
+the worktree IDE — see `adapters/orca/README.md`) — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
 [`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (49 extension points; the binding
 lives in the host, never in the skill).

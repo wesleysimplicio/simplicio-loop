@@ -9,7 +9,7 @@
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
   <a href="#-the-7-skills--5-accelerators"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
-  <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11%20(3%20garantidos%2B8%20best--effort)-2563EB" alt="11 runtimes (3 guaranteed + 8 best-effort)"></a>
+  <a href="#-12-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-12%20(3%20garantidos%2B9%20best--effort)-2563EB" alt="12 runtimes (3 guaranteed + 9 best-effort)"></a>
   <a href="#-the-49-extension-points"><img src="https://img.shields.io/badge/extension%20points-49-00E08A" alt="49 extension points"></a>
   <a href="#-token-economy"><img src="https://img.shields.io/badge/savings-unverified-888888" alt="Savings — unverified"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
@@ -20,7 +20,7 @@
   <a href="#-tldr">TL;DR</a> ·
   <a href="#-the-7-skills--5-accelerators">7 Skills</a> ·
   <a href="#-source-adapters">Source Adapters</a> ·
-  <a href="#-11-runtimes-one-protocol">11 Runtimes</a> ·
+  <a href="#-12-runtimes-one-protocol">12 Runtimes</a> ·
   <a href="#-the-loop">The Loop</a> ·
   <a href="#-token-economy">Token Economy</a> ·
   <a href="#-token-economy">Capture Engine</a> ·
@@ -112,7 +112,7 @@ and keeps watching **24/7** for new work — all behind safety gates and evidenc
 ```
 
 Three things make it different: it is a **super-plugin of focused skills**, it runs the **same
-protocol on 11 runtimes**, and it does all of this with **aggressive, honest token economy**.
+protocol on 12 runtimes**, and it does all of this with **aggressive, honest token economy**.
 
 The skill installs **standalone** too: you do **not** need `simplicio-runtime` or any mandatory
 runtime-native component just to use `simplicio-loop`. Native binds, operators, capture services,
@@ -226,7 +226,7 @@ See each adapter's reference doc under `.claude/skills/simplicio-loop/references
 
 ---
 
-## 🌐 11 runtimes, one protocol — 3 guaranteed + 8 best-effort
+## 🌐 12 runtimes, one protocol — 3 guaranteed + 9 best-effort
 
 One universal skill core + one set of hooks drives every runtime. An adapter is thin: it tells a
 runtime *where to load the skills*, *how to arm the loop*, and *how to bind native speed*. **The
@@ -252,8 +252,9 @@ skill names no runtime; the runtime detects the skill.**
 | **Aider** | `CONVENTIONS.md` | self-paced | — (LLM fallback) |
 | **Simplicio Agent** *(formerly Hermes)* | native recall | native loop | **native** |
 | **OpenClaw** | plugin SDK | native scheduler | **native** |
+| **Orca** | via inner agent + skills registry | inner hook / scheduled automations | MCP |
 
-The promise: **same protocol, same gates, same safety on all 11 — Tier 1 verified mechanically,
+The promise: **same protocol, same gates, same safety on all 12 — Tier 1 verified mechanically,
 Tier 2 best-effort.** `orient_clamp.py` (token economy) works on every runtime with zero wiring. See
 [`adapters/MATRIX.md`](adapters/MATRIX.md) for the promotion/demotion rules.
 
