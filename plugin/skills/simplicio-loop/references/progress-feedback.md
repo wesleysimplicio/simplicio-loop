@@ -93,7 +93,6 @@ Who calls `emit`, and how (in-process `loop_progress.emit_event()` vs. the CLI t
 DRIFT/STALLED are surfaced ahead of everything else: `render_turn_header`/`render_full` prepend
 `⚠ DRIFT ` or `⚠ STALLED ` whenever the LAST event's `status` is `blocked` and its `detail`
 contains that keyword — derived purely from the event trail, never a separate flag.
-
 ## Delivery/entrega instrumentation (issue #301)
 
 | Producer | Emits | Notes |
