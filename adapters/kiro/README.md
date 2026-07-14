@@ -23,16 +23,16 @@ Exit conditions unchanged (evidence-gated promise, cap, STOP).
 
 `orient_clamp.py` works as-is. Add it to the steering file's command conventions.
 
-## Native bind — MCP (REQUIRED)
+## Native bind — MCP (optional)
 
-`simplicio-runtime` native bind is REQUIRED on Kiro, not optional. `simplicio install
---global` (run automatically by `scripts/install.sh kiro`) writes `.kiro/settings/mcp.json`:
+`simplicio-runtime` native binding is optional on Kiro. `simplicio install --global` can write
+`.kiro/settings/mcp.json` when you choose to enable it:
 
 ```json
 { "mcpServers": { "simplicio": { "command": "simplicio", "args": ["serve", "--mcp", "--stdio"] } } }
 ```
 
-Verify with `simplicio doctor --json` before relying on the orchestrator.
+Use `simplicio doctor --json` to diagnose the optional integration.
 
 ## Use
 
