@@ -27,6 +27,10 @@ Verbs:
              there is no checklist and no print to show.
   comment    Emit the shorter source-item evidence comment (PR link + verification summary +
              checklist + a count of attached prints) — the comment Step 6 posts back on the issue.
+             Always prints to stdout; with `--publish --issue N [--repo owner/name]` ALSO posts it
+             to the GitHub issue via `gh api`, idempotently (a hidden marker lets a re-run UPDATE
+             the same comment instead of appending a duplicate). A publish failure BLOCKS (exit 3)
+             rather than silently claiming success.
   progress-comment  Publish/update ONE idempotent progress comment on an issue (#301), marked with
              an invisible HTML anchor so a re-run edits the SAME comment instead of spamming new
              ones. Rate-limited (default 60s between remote updates) and fully fail-open: no `gh`
@@ -38,6 +42,8 @@ Usage:
         --summary "Adds an SSO button and the IdP redirect." \\
         --shots-dir .orchestrator/tee/web --require-evidence --out .orchestrator/pr_body.md
     python3 scripts/pr_evidence.py comment --item 12 --pr 34
+    python3 scripts/pr_evidence.py comment --item 12 --pr 34 --publish --issue 12 \\
+        --repo wesleysimplicio/simplicio-loop
 """
 import json
 import os
@@ -200,6 +206,60 @@ def find_existing_progress_comment(issue, runner=None):
     return None
 
 
+# --- Idempotent GitHub comment publish (#295 audit: "pr_evidence.py comment gera Markdown em
+# stdout, mas não publica nem valida o comentário na issue") ------------------------------------
+#
+# `cmd_comment` always rendered the evidence comment markdown to stdout only -- nothing actually
+# posted it back to the source issue, and nothing verified a post landed. This closes that gap
+# with a real, idempotent publish path: `--publish --repo owner/name --issue N` posts the comment
+# via `gh api` (never `gh issue comment`, which has no built-in "find and update my own prior
+# comment" primitive), tagging the body with a hidden HTML marker so a SECOND run on the same
+# issue UPDATES the existing comment instead of appending a duplicate — the same idempotency
+# discipline the rest of the loop's evidence/receipt path requires (#295 invariant: "Idempotência
+# ponta a ponta: repetir claim, comentário, receipt, merge ou reconciliação não duplica efeitos").
+#
+# The GitHub call is injected as a `runner` (defaults to subprocess.run) so this is unit-testable
+# without ever touching the network or a real repo — same pattern as
+# `scripts/live_issue_183_identity.py`.
+PR_EVIDENCE_COMMENT_MARKER = "<!-- simplicio-loop:pr-evidence-comment -->"
+
+
+class PublishError(RuntimeError):
+    """Raised when the GitHub comment publish could not be completed or verified."""
+
+
+def _run_gh(args, runner, timeout, input_text=None):
+    completed = runner(["gh"] + args, capture_output=True, text=True, timeout=timeout,
+                        check=False, input=input_text)
+    if completed.returncode != 0:
+        stderr = (completed.stderr or completed.stdout or "").strip()
+        raise PublishError("gh %s failed: %s" % (" ".join(args), stderr or "unknown error"))
+    return completed.stdout
+
+
+def find_existing_comment(owner, repo, issue, marker=PR_EVIDENCE_COMMENT_MARKER,
+                           runner=subprocess.run, timeout=20):
+    """Return the numeric id of a prior comment on `issue` whose body carries `marker`, or None.
+
+    Paginates through `gh api repos/{owner}/{repo}/issues/{issue}/comments` and returns the FIRST
+    match (there should only ever be one, since publish always reuses it) so a re-run edits rather
+    than appends.
+    """
+    stdout = _run_gh(
+        ["api", "repos/%s/%s/issues/%s/comments" % (owner, repo, issue), "--paginate"],
+        runner, timeout)
+    try:
+        comments = json.loads(stdout)
+    except ValueError:
+        raise PublishError("gh api returned non-JSON comment list")
+    if not isinstance(comments, list):
+        comments = []
+    for c in comments:
+        if marker in (c.get("body") or ""):
+            return c.get("id")
+    return None
+
+
 def cmd_progress_comment(opts):
     """Publish/update ONE idempotent progress comment on an issue (#301 § 3). Fail-open: no `gh`,
     no network, or any error -> exit 0, silent log, never blocks the loop."""
@@ -237,6 +297,41 @@ def cmd_progress_comment(opts):
     _record_post()
     tag = "MEASURED" if ok else "UNVERIFIED"
     print("%s|progress-comment %s" % (tag, "updated" if ok else "attempted (see stderr for gh output)"))
+
+
+def publish_comment(owner, repo, issue, body, marker=PR_EVIDENCE_COMMENT_MARKER,
+                     runner=subprocess.run, timeout=20):
+    """Publish `body` to `issue` idempotently. Returns {"action": "created"|"updated", "id": int}.
+
+    Tags the body with the hidden marker (added once, not duplicated if already present), then
+    either PATCHes the existing tagged comment or POSTs a new one. Raises `PublishError` on any
+    `gh` failure -- callers must treat that as BLOCKED, never as a silent success, per the
+    "no silent fallback" invariant (#295): a comment that failed to post must never be reported as
+    posted.
+
+    The request body is sent as a JSON payload on stdin (`gh api ... --input -`), never via
+    `-f body=@path`/shell interpolation of the rendered markdown -- this avoids any quoting/shell
+    injection surface from untrusted acceptance-criteria text or file paths ending up in the
+    argument vector.
+    """
+    tagged_body = body if marker in body else (body.rstrip("\n") + "\n\n" + marker + "\n")
+    existing_id = find_existing_comment(owner, repo, issue, marker=marker, runner=runner,
+                                        timeout=timeout)
+    payload = json.dumps({"body": tagged_body})
+    if existing_id is not None:
+        _run_gh(["api", "-X", "PATCH",
+                 "repos/%s/%s/issues/comments/%s" % (owner, repo, existing_id),
+                 "--input", "-"], runner, timeout, input_text=payload)
+        return {"action": "updated", "id": existing_id}
+    stdout = _run_gh(["api", "-X", "POST",
+                      "repos/%s/%s/issues/%s/comments" % (owner, repo, issue),
+                      "--input", "-"], runner, timeout, input_text=payload)
+    try:
+        created = json.loads(stdout)
+        new_id = created.get("id")
+    except ValueError:
+        new_id = None
+    return {"action": "created", "id": new_id}
 
 
 def _load_anchor(opts):
@@ -408,8 +503,32 @@ def cmd_build(opts):
         _emit_progress("end", outcome="pass", detail="PR body -> stdout (%d bytes)" % len(body))
 
 
+def _repo_slug_from_opts(opts):
+    """Resolve 'owner/name' from --repo ONLY.
+
+    Deliberately no implicit fallback to `git remote get-url origin`: a "helpful" auto-detect here
+    would mean a bare `--publish` invocation silently targets whatever repo the CWD happens to be
+    in — exactly the "no silent fallback" anti-pattern (#295) this feature otherwise refuses to
+    allow. Callers (the skill/loop driver) must pass the target explicitly.
+    """
+    repo_opt = opts.get("repo")
+    if isinstance(repo_opt, str) and "/" in repo_opt:
+        return tuple(repo_opt.strip().split("/", 1))
+    return None
+
+
 def cmd_comment(opts):
-    """The shorter evidence comment posted back on the source item."""
+    """The shorter evidence comment posted back on the source item.
+
+    Always renders to stdout (unchanged default behavior). With --publish (and --issue N and
+    --repo owner/name — BOTH required explicitly, no implicit git-remote auto-detect), ALSO posts
+    it to the GitHub issue — idempotently (a second run on the same issue updates the SAME comment
+    via the hidden marker, never appends a duplicate). A publish failure (gh missing, auth,
+    network, non-existent issue) BLOCKS (exit 3) with a clear message rather than silently
+    claiming success — the same never-fake-pass discipline as the evidence producers (#295 audit:
+    "pr_evidence.py comment gera Markdown em stdout, mas não publica nem valida o comentário na
+    issue").
+    """
     anchor = _load_anchor(opts)
     criteria = anchor.get("criteria", [])
     done, total, pending = coverage(criteria)
@@ -430,7 +549,31 @@ def cmd_comment(opts):
     lines.append(render_checklist(criteria))
     if pending:
         lines += ["", "Still open: %s" % ", ".join(pending)]
-    sys.stdout.write("\n".join(lines).rstrip() + "\n")
+    body = "\n".join(lines).rstrip() + "\n"
+    sys.stdout.write(body)
+
+    if not opts.get("publish"):
+        return
+
+    issue = opts.get("issue") or opts.get("item") or anchor.get("item")
+    if not issue:
+        log("BLOCKED — --publish requires --issue N (or an anchored item) to know which issue "
+            "to comment on.")
+        sys.exit(_BLOCKED)
+    slug = _repo_slug_from_opts(opts)
+    if not slug:
+        log("BLOCKED — --publish requires an explicit --repo owner/name (no implicit git-remote "
+            "auto-detect, by design — see _repo_slug_from_opts).")
+        sys.exit(_BLOCKED)
+    owner, repo = slug
+    try:
+        result = publish_comment(owner, repo, str(issue).lstrip("#"), body)
+    except PublishError as exc:
+        log("BLOCKED — could not publish the evidence comment to %s/%s#%s: %s" %
+            (owner, repo, issue, exc))
+        sys.exit(_BLOCKED)
+    log("published (%s) comment id=%s on %s/%s#%s" %
+        (result["action"], result.get("id"), owner, repo, issue))
 
 
 def cmd_selftest(_opts):
@@ -469,6 +612,48 @@ def cmd_selftest(_opts):
         chk("backlog.row", "T1" in table and "1/1" in table)
         chk("backlog.escaping", r"Fix \| pipes" in table)
     chk("backlog.fail_open", _load_backlog({"backlog": "definitely-missing.jsonl"}) == (None, []))
+
+    # publish_comment idempotency: a fake `gh` runner records calls; first call with no existing
+    # marked comment POSTs, second call (marker now present in the fake "comment list") PATCHes
+    # the SAME id instead of creating a duplicate.
+    calls = []
+
+    def fake_runner_no_existing(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["gh", "api"] and "comments" in cmd[2] and "-X" not in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+        if "-X" in cmd and "POST" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"id": 555}), stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected call")
+
+    r1 = publish_comment("acme", "widgets", "12", "hello world", runner=fake_runner_no_existing)
+    chk("publish.creates_when_absent", r1 == {"action": "created", "id": 555})
+    chk("publish.posts_once", sum(1 for c in calls if "-X" in c and "POST" in c) == 1)
+
+    calls2 = []
+
+    def fake_runner_with_existing(cmd, **kw):
+        calls2.append(cmd)
+        if cmd[:2] == ["gh", "api"] and "comments" in cmd[2] and "-X" not in cmd:
+            marked = [{"id": 999, "body": "old\n\n" + PR_EVIDENCE_COMMENT_MARKER + "\n"}]
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(marked), stderr="")
+        if "-X" in cmd and "PATCH" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="{}", stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected call")
+
+    r2 = publish_comment("acme", "widgets", "12", "hello again", runner=fake_runner_with_existing)
+    chk("publish.updates_when_marker_found", r2 == {"action": "updated", "id": 999})
+    chk("publish.never_posts_when_marker_found",
+        not any("-X" in c and "POST" in c for c in calls2))
+
+    def fake_runner_failure(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="HTTP 404: Not Found")
+
+    try:
+        publish_comment("acme", "widgets", "999999", "x", runner=fake_runner_failure)
+        chk("publish.raises_on_gh_failure", False)
+    except PublishError:
+        chk("publish.raises_on_gh_failure", True)
 
     ok = all(checks)
     print("selftest: %s (%d/%d)" % ("PASS" if ok else "FAIL", sum(checks), len(checks)))
@@ -513,6 +698,8 @@ def main():
                 "--min-interval",
                 "--out",
                 "--pr",
+                "--publish",
+                "--repo",
                 "--require-evidence",
                 "--shots-dir",
                 "--summary",
