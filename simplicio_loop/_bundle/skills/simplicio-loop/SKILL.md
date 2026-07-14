@@ -38,8 +38,36 @@ bare LLM) follows them mechanically — no paraphrase, no drift:
    `.orchestrator/loop/done` flag is touched ONLY when the promise is verified.
 6. **Fallback obeys the same contract.** When the host has no hooks, the self-paced scheduler mode
    is first-class and MUST honor invariants 1–5 identically.
+7. **Definition-of-Done gate.** No issue/task item may be marked `done` (`task_backlog.py done`)
+   or closed unless its frozen acceptance criteria cover all seven DoD dimensions — see
+   "Definition of Done" below. A partial pass (e.g. unit tests green but no coverage number, or
+   an implementation with no regression/perf evidence) is NOT done; keep iterating.
 
 The rest of this file is the mechanism that enforces this contract.
+
+## Definition of Done (DoD) — mandatory quality gate
+
+Every task/issue anchored via `task_anchor.py set` MUST include, as explicit acceptance criteria
+(besides any goal-specific ones), evidence for all seven of:
+
+1. ✅ **Implementação** — the change itself, present and working.
+2. ✅ **Testes unitários** — unit-level coverage of the new/changed logic.
+3. ✅ **Testes de integração** — the change verified against its real collaborators (no mocks for
+   the seam under test).
+4. ✅ **Testes de sistema** — an end-to-end pass through the actual command/CLI/API surface a user
+   or caller would hit.
+5. ✅ **Testes de regressão** — the existing suite still green; no prior behavior silently broken.
+6. ✅ **Benchmark de performance** — a measured number (latency/throughput/memory) for any change
+   that touches a hot path, so a regression is caught by a number, not a feeling.
+7. ✅ **Cobertura mínima** — line/branch coverage ≥ 85% (target 90% where the toolchain reports
+   branch coverage) for the touched files, checked with the project's own coverage tool.
+
+Freeze these as ACs at intake (`task_backlog.py init` / `task_anchor.py set`) so
+`task_anchor.py gate` — the same worker already gating "done" on unverified ACs — refuses to let
+the loop declare completion or open the PR (`pr_evidence.py build --require-evidence`) until every
+one of the seven is verified with evidence, not asserted. When a goal is decomposed at Phase 0,
+each backlog item's `plan.json` entry MUST carry all seven as ACs (skip only the ones that
+genuinely do not apply — e.g. no perf benchmark for a pure docs change — and say why in the item).
 
 ## When to use
 

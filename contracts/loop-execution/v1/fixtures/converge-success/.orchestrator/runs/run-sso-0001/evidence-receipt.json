@@ -1,0 +1,13 @@
+{
+  "schema": "simplicio.evidence-receipt/v1",
+  "status": "VERIFIED",
+  "criteria": [
+    {"id": "AC1", "verification_state": "verified"},
+    {"id": "AC2", "verification_state": "verified"}
+  ],
+  "summary": {
+    "criteria_total": 2, "criteria_verified": 2,
+    "scenario_total": 2, "scenario_verified": 2,
+    "rule_total": 2, "rule_verified": 2
+  }
+}
