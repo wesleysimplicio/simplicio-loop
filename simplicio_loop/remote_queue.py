@@ -51,6 +51,9 @@ class Lease:
 
 
 class RemoteQueue(Protocol):
+    def pull(self, agent_id: str, *, capabilities: Optional[Sequence[str]] = None,
+             limit: int = 20) -> List[Dict[str, Any]]: ...
+
     def claim(self, task_id: str, agent_id: str, *, idempotency_key: str,
               ttl: float = 60.0, identity: Optional[Mapping[str, Any]] = None,
               capabilities: Optional[Sequence[str]] = None) -> Lease: ...
@@ -145,6 +148,18 @@ class HTTPRemoteQueue:
 
     def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]:
         return self._request("POST", "/complete", {"lease": _lease_json(lease), "receipt_ref": receipt_ref})
+
+    def pull(self, agent_id: str, *, capabilities: Optional[Sequence[str]] = None,
+             limit: int = 20) -> List[Dict[str, Any]]:
+        """Discover ready, capability-matching work without claiming it.
+
+        Only summaries of tasks this worker is eligible for are returned; the
+        server never serializes the full payload/context of a task this
+        worker cannot or should not see.
+        """
+        result = self._request("POST", "/pull", {"agent_id": agent_id,
+            "capabilities": list(capabilities or ()), "limit": int(limit)})
+        return list(result["tasks"])
 
     def assert_active(self, lease: Lease) -> None:
         self._request("POST", "/assert-active", {"lease": _lease_json(lease)})
@@ -257,6 +272,53 @@ class SQLiteRemoteQueue:
             c.execute("INSERT OR IGNORE INTO tasks(task_id,status,payload,updated_at) VALUES(?,?,?,?)",
                       (task_id, "ready", json.dumps(payload or {}, sort_keys=True), _now()))
             self._event(c, task_id, "enqueued", "system", None, payload or {})
+
+    def pull(self, agent_id: str, *, capabilities: Optional[Sequence[str]] = None,
+             limit: int = 20) -> List[Dict[str, Any]]:
+        """Return ready-to-claim task summaries eligible for ``agent_id``.
+
+        A task is eligible when it is still ``ready`` (unclaimed), every
+        ``depends_on`` entry in its payload is ``completed``, and its declared
+        ``required_capabilities`` (if any) are a subset of the caller's
+        ``capabilities``. Only a summary (task_id, required_capabilities,
+        depends_on) is returned for eligible tasks -- the full payload/context
+        of any task, including ineligible ones, is never serialized here.
+        Independent workers use this instead of ``task()``/``events()`` (which
+        would otherwise be the only way to discover work) to avoid a
+        "list everything" call that leaks unrelated task context.
+        """
+        if not str(agent_id or "").strip():
+            raise ValueError("agent_id is required")
+        limit = max(1, int(limit))
+        caps = {str(cap).strip() for cap in (capabilities or ()) if str(cap).strip()}
+        try:
+            with self._connect() as c:
+                statuses = {row["task_id"]: row["status"]
+                           for row in c.execute("SELECT task_id, status FROM tasks").fetchall()}
+                rows = c.execute(
+                    "SELECT task_id, payload, updated_at FROM tasks WHERE status='ready' "
+                    "ORDER BY updated_at, task_id"
+                ).fetchall()
+                eligible: List[Dict[str, Any]] = []
+                for row in rows:
+                    payload = json.loads(row["payload"] or "{}")
+                    required = sorted({str(cap).strip() for cap in payload.get("required_capabilities", ())
+                                       if str(cap).strip()})
+                    depends_on = sorted({str(dep).strip() for dep in payload.get("depends_on", ())
+                                        if str(dep).strip()})
+                    if required and not set(required).issubset(caps):
+                        continue
+                    unmet = [dep for dep in depends_on if statuses.get(dep) != "completed"]
+                    if unmet:
+                        continue
+                    eligible.append({"task_id": row["task_id"], "status": "ready",
+                                     "required_capabilities": required, "depends_on": depends_on,
+                                     "updated_at": row["updated_at"]})
+                    if len(eligible) >= limit:
+                        break
+                return eligible
+        except sqlite3.Error as exc:
+            raise QueueUnavailable("queue unavailable: %s" % exc) from exc
 
     def claim(self, task_id: str, agent_id: str, *, idempotency_key: str,
               ttl: float = 60.0, identity: Optional[Mapping[str, Any]] = None,
@@ -444,6 +506,10 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
                 if op == "enqueue":
                     queue.enqueue(body["task_id"], body.get("payload"))
                     result = {}
+                elif op == "pull":
+                    tasks = queue.pull(body["agent_id"], capabilities=body.get("capabilities"),
+                                      limit=int(body.get("limit", 20)))
+                    result = {"tasks": tasks}
                 elif op == "claim":
                     lease = queue.claim(body["task_id"], body["agent_id"], idempotency_key=body["idempotency_key"],
                                         ttl=float(body.get("ttl", 60.0)), identity=body.get("identity"),
