@@ -19,6 +19,7 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 | `claims_manifest.py` | imported by `claims_audit.py` (quantitative-claims registry) | active |
 | `check_loop_contract.py` | `check.py` | active |
 | `token_budget.py` | `check.py` (#121) | active |
+| `repository_budget.py` | `check.py` (#294) — tracked-tree size budget, per-file cap + total-growth gate, history untouched | active |
 | `mirror_manifest.py` | imported by `sync_plugin.py` + `claims_audit.py` (single source of truth for the lean hooks/scripts/tests sets) | active |
 | `sync_plugin.py` | manual, after editing `.claude/skills/` or a shipped hook; `tests/test_system_check.py` exercises `--check` | active |
 | `verify_adapters.py` | `claims_audit.py` check 7 (adapter-install-contract) | active |
