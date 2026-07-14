@@ -40,4 +40,4 @@ extension points in the Step 1b table so the steps become deterministic and
 near-zero-token. Otherwise the LLM fallbacks cover 100% of the work.
 
 See [`AGENTS.md`](AGENTS.md) for the full contract and [`adapters/MATRIX.md`](adapters/MATRIX.md)
-for all 11 runtimes.
+for all 12 runtimes.

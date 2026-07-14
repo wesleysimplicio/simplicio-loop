@@ -127,15 +127,15 @@ CLAIMS = [
         ),
     },
     {
-        "id": "runtimes-badge-11pct",
+        "id": "runtimes-badge-12pct",
         "doc": "README.md",
-        "text_glob": "11%",
+        "text_glob": "12%",
         "status": "unverified",
         "receipt": None,
         "note": (
             "False-positive match: the shields.io badge URL "
-            "'runtimes-11%20(3%20garantidos...)' has '11' followed by the URL-encoded space "
-            "'%20', not a percentage — the '11' is the runtime count. Kept in manifest so the "
+            "'runtimes-12%20(3%20garantidos...)' has '12' followed by the URL-encoded space "
+            "'%20', not a percentage — the '12' is the runtime count. Kept in manifest so the "
             "extractor's known false positive is documented rather than silently ignored."
         ),
     },
