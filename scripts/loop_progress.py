@@ -199,7 +199,17 @@ def compute_pct(anchor_state, backlog_state, step_index, steps_total):
     if backlog_state and backlog_state.get("items_total"):
         items_total = backlog_state["items_total"]
         items_done = backlog_state["items_done"]
-        active_pct = pct_item if pct_item is not None else 0.0
+        active_item = backlog_state.get("active_item")
+        anchor_item = (anchor_state or {}).get("item")
+        # Only fold the anchor's pct_item into the active-item fraction when the anchor is
+        # ACTUALLY anchored to the currently-claimed backlog item. A stale anchor left over from
+        # the PREVIOUS item (already counted in items_done) must not double-count its progress —
+        # that would make pct_overall regress the moment the next item resets the anchor, which
+        # looks like fabricated backsliding instead of the deterministic re-baseline it needs to
+        # be tagged as (#304 AC3 — this is exactly the monotonicity bug the e2e test catches).
+        anchor_matches_active = (active_item is None and anchor_item is None) or (
+            active_item is not None and anchor_item == active_item)
+        active_pct = pct_item if (pct_item is not None and anchor_matches_active) else 0.0
         pct_overall = (items_done + active_pct) / float(items_total)
         return pct_item, pct_overall, "drain"
 

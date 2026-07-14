@@ -60,6 +60,17 @@ maintainer's sections, appends checklist + prints below). The **task anchor** is
 stops task deviation: every turn re-checks the frozen goal (`task_anchor.py check`) and the DoD gate
 (`task_anchor.py gate`) blocks "done" while any AC is unverified.
 
+## Progress feedback (real-time, EPIC #296)
+
+`scripts/loop_progress.py` computes "onde estamos / quanto falta" deterministically from the
+backlog + anchor + its own event trail — never fabricated. Three surfaces, one denominator:
+**N1 hook** (Claude/Cursor re-feed header shows fase/etapa/item/ACs/%), **N2 transcript**
+(every turn's first line is `render --turn-header`, normative on all 12 runtimes), **N3 file**
+(`.orchestrator/loop/PROGRESS.md`/`progress.json`, regenerated every turn — the universal
+fallback any host, adapted or not, can read with zero extra code). Status command:
+`python3 scripts/loop_progress.py status --json`. Full contract, event schema, and the
+turn×event/runtime×level tables: `.claude/skills/simplicio-loop/references/progress-feedback.md`.
+
 ## Tests & local checks (no paid CI)
 
 `python3 scripts/check.py` runs the whole gate locally: the `tests/` suite (worker `selftest`s + an
