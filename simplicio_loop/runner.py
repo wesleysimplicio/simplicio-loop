@@ -696,6 +696,20 @@ def _preflight_mapper(repo_path: Path, run_root: Path) -> Dict[str, Any]:
     return receipt
 
 
+def _operator_capability_gaps(help_stdout: str, task_help_stdout: str) -> Tuple[List[str], List[str]]:
+    """Derive dev-cli capability gaps from the exact persisted help surfaces."""
+    capability_surface = " ".join(part for part in (help_stdout, task_help_stdout) if part)
+    missing_tokens = [
+        token for token in DEVCLI_REQUIRED_TOKENS
+        if token not in (" " + capability_surface)
+    ]
+    missing_capabilities = [
+        capability for capability in DEVCLI_REQUIRED_CAPABILITIES
+        if capability not in capability_surface
+    ]
+    return missing_tokens, missing_capabilities
+
+
 def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
     # Issue #135: the operator bridge validates identity + capability + MIN_VERSION,
     # not merely `which`. A wrong homonym (PATH resolves but the stem mismatches) or a
@@ -742,10 +756,8 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         task_help_rc = task_help_result.returncode
         version_stdout = (version_result.stdout or "").strip()
         version_rc = version_result.returncode
-    capability_surface = " ".join(part for part in (help_stdout, task_help_stdout) if part)
-    missing_tokens = [token for token in DEVCLI_REQUIRED_TOKENS if token not in (" " + capability_surface)]
+    missing_tokens, missing_capabilities = _operator_capability_gaps(help_stdout, task_help_stdout)
     parsed_version = _parse_version_tuple(version_stdout)
-    missing_capabilities = [cap for cap in DEVCLI_REQUIRED_CAPABILITIES if cap not in capability_surface]
     receipt = {
         "tool": "simplicio-dev-cli",
         "returncode": help_rc,
@@ -888,7 +900,33 @@ def _validate_run_receipts(
         raise RuntimeError("stale mapper preflight receipt: repository changed")
     if not operator_preflight.get("identity_ok") or not operator_preflight.get("version_ok"):
         raise RuntimeError("operator preflight receipt is not valid")
-    if operator_preflight.get("missing_tokens") or operator_preflight.get("missing_capabilities"):
+    list_fields = (
+        "required_tokens", "missing_tokens", "required_capabilities", "missing_capabilities",
+    )
+    text_fields = ("help_stdout", "task_help_stdout")
+    for field in list_fields:
+        value = operator_preflight.get(field)
+        if field not in operator_preflight:
+            raise RuntimeError(f"operator preflight receipt is missing required field: {field}")
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise RuntimeError(f"operator preflight receipt has invalid field type: {field}")
+    for field in text_fields:
+        if field not in operator_preflight:
+            raise RuntimeError(f"operator preflight receipt is missing required field: {field}")
+        if not isinstance(operator_preflight[field], str):
+            raise RuntimeError(f"operator preflight receipt has invalid field type: {field}")
+    if operator_preflight["required_tokens"] != list(DEVCLI_REQUIRED_TOKENS):
+        raise RuntimeError("operator preflight receipt required_tokens do not match the canonical contract")
+    if operator_preflight["required_capabilities"] != list(DEVCLI_REQUIRED_CAPABILITIES):
+        raise RuntimeError("operator preflight receipt required_capabilities do not match the canonical contract")
+    recomputed_missing_tokens, recomputed_missing_capabilities = _operator_capability_gaps(
+        operator_preflight["help_stdout"], operator_preflight["task_help_stdout"],
+    )
+    if operator_preflight["missing_tokens"] != recomputed_missing_tokens:
+        raise RuntimeError("operator preflight receipt missing_tokens do not match persisted help")
+    if operator_preflight["missing_capabilities"] != recomputed_missing_capabilities:
+        raise RuntimeError("operator preflight receipt missing_capabilities do not match persisted help")
+    if recomputed_missing_tokens or recomputed_missing_capabilities:
         raise RuntimeError("operator preflight receipt is missing required capabilities")
     operator_preflight_state = operator_preflight.get("repo_state") or {}
     if not operator_preflight_state.get("tree_hash") or not _repo_state_equivalent(operator_preflight_state, current_state):
