@@ -148,6 +148,94 @@ def test_watcher_verify_missing_challenge_emits_no_watcher_event(tmp_path):
     assert watcher_events == []
 
 
+def _write_json(path, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+
+
+def test_watcher_verify_match_false_emits_watcher_end_outcome_fail(tmp_path):
+    """AC4 (issue #300) — dedicated FAIL pass: a challenge that cannot be matched against any
+    evidence (no anchor, no independent/evidence receipt) makes watcher_verify write
+    watcher_state.json with match=False and emit a `watcher end outcome=fail` progress event
+    (never `blocked`/`begin`-only — the gate result IS the outcome)."""
+    env = _env(tmp_path)
+    env["SIMPLICIO_LOOP_REPO"] = str(tmp_path)
+    loop_dir = tmp_path / ".orchestrator" / "loop"
+    _write_json(str(loop_dir / "watcher_challenge.json"), {
+        "challenge": "abc123", "goal_fp": "fp1", "iteration": 2,
+        "written_at": "2026-07-10T00:00:00Z",
+    })
+    r = _run(WATCHER, ["verify"], str(tmp_path), env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.startswith("UNVERIFIED|"), r.stdout
+
+    state_path = loop_dir / "watcher_state.json"
+    assert state_path.exists()
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["match"] is False
+    assert state["status"] == "UNVERIFIED"
+
+    events = _events(tmp_path)
+    watcher_events = [e for e in events if e["step"] == "watcher"]
+    assert watcher_events, events
+    assert watcher_events[-1]["status"] == "end"
+    assert watcher_events[-1]["outcome"] == "fail", watcher_events[-1]
+
+
+def test_watcher_verify_match_true_emits_watcher_end_outcome_pass(tmp_path):
+    """AC4 (issue #300) — dedicated PASS pass: the mirror image of the FAIL test above. A
+    challenge bound to an anchor whose criteria are both backed by a verified evidence receipt
+    (with non-empty proof_refs) makes watcher_verify write watcher_state.json with match=True and
+    emit `watcher end outcome=pass`."""
+    env = _env(tmp_path)
+    env["SIMPLICIO_LOOP_REPO"] = str(tmp_path)
+    loop_dir = tmp_path / ".orchestrator" / "loop"
+    _write_json(str(loop_dir / "watcher_challenge.json"), {
+        "challenge": "abc123", "goal_fp": "fp1", "iteration": 2,
+        "written_at": "2026-07-10T00:00:00Z",
+    })
+    _write_json(str(loop_dir / "anchor.json"), {
+        "goal_fp": "fp1",
+        "criteria": [
+            {"id": "AC1", "status": "done"},
+            {"id": "AC2", "status": "done"},
+        ],
+    })
+    run_dir = tmp_path / ".orchestrator" / "runs" / "demo"
+    _write_json(str(run_dir / "evidence-receipt.json"), {
+        "schema": "simplicio.evidence-receipt/v1",
+        "run_id": "demo",
+        "status": "VERIFIED",
+        "run": {"task_contract_hash": "hash1", "plan_hash": "hash2", "commit_sha": "", "diff_hash": ""},
+        "criteria": [
+            {"id": "AC1", "verification_state": "verified", "proof_refs": ["proof-1"]},
+            {"id": "AC2", "verification_state": "verified", "proof_refs": ["proof-2"]},
+        ],
+        "summary": {"criteria_total": 2, "criteria_verified": 2, "scenario_total": 2,
+                   "scenario_verified": 2, "rule_total": 1, "rule_verified": 1},
+        "checks": [],
+    })
+    env["SIMPLICIO_RUN_DIR"] = str(run_dir)
+
+    r = _run(WATCHER, ["verify"], str(tmp_path), env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.startswith("MEASURED|"), r.stdout
+
+    state_path = loop_dir / "watcher_state.json"
+    assert state_path.exists()
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["match"] is True
+    assert state["status"] == "MEASURED"
+    assert len(state["criteria_results"]) == 2
+
+    events = _events(tmp_path)
+    watcher_events = [e for e in events if e["step"] == "watcher"]
+    assert watcher_events, events
+    assert watcher_events[-1]["status"] == "end"
+    assert watcher_events[-1]["outcome"] == "pass", watcher_events[-1]
+
+
 def test_warning_banner_pure_function_drift_and_stalled():
     drift_snap = {"last_status": "blocked", "last_detail": "DRIFT detectado — re-anchor necessário"}
     assert loop_progress._warning_banner(drift_snap) == "⚠ DRIFT "
