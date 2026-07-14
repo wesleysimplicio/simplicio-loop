@@ -979,9 +979,14 @@ def _setup_deterministic_preflight_fixture(
         return payload
 
     def fake_operator_preflight(repo_path, run_root):
+        help_surface = "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target"
         receipt = {
             "tool": "simplicio-dev-cli", "identity_ok": True, "version_ok": True,
-            "missing_tokens": [], "missing_capabilities": [],
+            "help_stdout": help_surface, "task_help_stdout": help_surface,
+            "required_tokens": list(runner_mod.DEVCLI_REQUIRED_TOKENS),
+            "missing_tokens": [],
+            "required_capabilities": list(runner_mod.DEVCLI_REQUIRED_CAPABILITIES),
+            "missing_capabilities": [],
             "repo_state": dict(fingerprint),
         }
         runner_mod._write_json(run_root / "operator-preflight.json", receipt)
@@ -1103,6 +1108,13 @@ def test_execute_operator_batch_accepts_fresh_run_receipt_chain(tmp_path, monkey
     assert (run_dir / "mapper-context.json").exists()
     assert (run_dir / "operator-preflight.json").exists()
     assert (run_dir / "operator-receipt.json").exists()
+    operator_preflight = json.loads(
+        (run_dir / "operator-preflight.json").read_text(encoding="utf-8")
+    )
+    assert operator_preflight["required_tokens"] == list(runner_mod.DEVCLI_REQUIRED_TOKENS)
+    assert operator_preflight["required_capabilities"] == list(runner_mod.DEVCLI_REQUIRED_CAPABILITIES)
+    assert operator_preflight["missing_tokens"] == []
+    assert operator_preflight["missing_capabilities"] == []
 
 
 @pytest.mark.parametrize(
@@ -1161,6 +1173,8 @@ def test_batch_rejects_operator_preflight_missing_capability(
     repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
     preflight_path = run_dir / "operator-preflight.json"
     preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    preflight["help_stdout"] = preflight["help_stdout"].replace(missing_capability, "")
+    preflight["task_help_stdout"] = preflight["task_help_stdout"].replace(missing_capability, "")
     preflight["missing_capabilities"] = [missing_capability]
     preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
 
@@ -1171,6 +1185,109 @@ def test_batch_rejects_operator_preflight_missing_capability(
     assert diagnostic["status"] == "BLOCKED"
     assert diagnostic["blocker"]["scope"] == "global"
     assert not (run_dir / "operator-batch.jsonl").exists()
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "required_tokens", "missing_tokens", "required_capabilities", "missing_capabilities",
+        "help_stdout", "task_help_stdout", "__all__",
+    ],
+)
+def test_batch_rejects_operator_preflight_missing_contract_field(
+    tmp_path, monkeypatch, missing_field,
+):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    preflight_path = run_dir / "operator-preflight.json"
+    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    fields = (
+        "required_tokens", "missing_tokens", "required_capabilities", "missing_capabilities",
+        "help_stdout", "task_help_stdout",
+    )
+    for field in fields if missing_field == "__all__" else (missing_field,):
+        preflight.pop(field)
+    preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="missing required field"):
+        runner_mod.execute_operator_batch(str(repo), armed["manifest"]["run_id"])
+
+    diagnostic = json.loads((run_dir / "operator-batch-preflight.json").read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "BLOCKED"
+    assert diagnostic["blocker"]["scope"] == "global"
+    assert not (run_dir / "operator-batch.jsonl").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("required_tokens", "not-a-list"),
+        ("missing_tokens", None),
+        ("required_capabilities", {}),
+        ("missing_capabilities", [1]),
+        ("help_stdout", []),
+        ("task_help_stdout", None),
+    ],
+)
+def test_batch_rejects_operator_preflight_invalid_contract_field_type(
+    tmp_path, monkeypatch, field, invalid_value,
+):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    preflight_path = run_dir / "operator-preflight.json"
+    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    preflight[field] = invalid_value
+    preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="invalid field type"):
+        runner_mod.execute_operator_batch(str(repo), armed["manifest"]["run_id"])
+
+    diagnostic = json.loads((run_dir / "operator-batch-preflight.json").read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "BLOCKED"
+    assert diagnostic["blocker"]["scope"] == "global"
+
+
+@pytest.mark.parametrize(
+    ("missing_surface", "message"),
+    [
+        ("--json", "missing_tokens do not match persisted help"),
+        ("--target", "missing_capabilities do not match persisted help"),
+    ],
+)
+def test_batch_rejects_forged_empty_capability_gaps_against_deficient_help(
+    tmp_path, monkeypatch, missing_surface, message,
+):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    preflight_path = run_dir / "operator-preflight.json"
+    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    preflight["help_stdout"] = preflight["help_stdout"].replace(missing_surface, "")
+    preflight["task_help_stdout"] = preflight["task_help_stdout"].replace(missing_surface, "")
+    preflight["missing_tokens"] = []
+    preflight["missing_capabilities"] = []
+    preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=message):
+        runner_mod.execute_operator_batch(str(repo), armed["manifest"]["run_id"])
+
+    diagnostic = json.loads((run_dir / "operator-batch-preflight.json").read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "BLOCKED"
+    assert diagnostic["blocker"]["scope"] == "global"
+
+
+@pytest.mark.parametrize("field", ["required_tokens", "required_capabilities"])
+def test_batch_rejects_altered_operator_preflight_required_contract(
+    tmp_path, monkeypatch, field,
+):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    preflight_path = run_dir / "operator-preflight.json"
+    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    preflight[field] = [*preflight[field], "--forged-capability"]
+    preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="canonical contract"):
+        runner_mod.execute_operator_batch(str(repo), armed["manifest"]["run_id"])
+
+    diagnostic = json.loads((run_dir / "operator-batch-preflight.json").read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "BLOCKED"
+    assert diagnostic["blocker"]["scope"] == "global"
 
 
 def test_direct_dispatch_cannot_bypass_run_global_preflight(tmp_path, monkeypatch):
