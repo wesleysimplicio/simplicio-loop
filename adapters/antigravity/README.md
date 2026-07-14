@@ -40,3 +40,8 @@ isn't auto-written by the installer yet, so finish it by hand from the snippet a
 
 Point the agent at: `/simplicio-tasks finish all the open issues` (or paste the goal — the
 rules file makes it follow the protocol).
+
+## Progresso do run
+
+Self-paced (N2): the tick echoes `python3 scripts/loop_progress.py render --turn-header`.
+Universal fallback (N3): open `.orchestrator/loop/PROGRESS.md` (auto-regenerated every turn).

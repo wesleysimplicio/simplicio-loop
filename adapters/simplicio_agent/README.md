@@ -55,3 +55,10 @@ moved from `~/.hermes/config.yaml` to `~/.simplicio-agent/config.yaml` and logs 
 `~/.hermes/logs/` to `~/.simplicio-agent/logs/`. The [`hermes` adapter](../hermes/README.md) is
 kept as a legacy shim for one release cycle; scripts in this repo detect either binary and warn
 when they fall back to the legacy one.
+
+## Progresso do run
+
+Native loop (N1-equivalent): wire the native tick to call `python3 scripts/loop_progress.py emit
+--step <step> --status begin|end` at its own extension points and `render --turn-header` before
+re-feeding — same contract, native transport instead of a hook file. Universal fallback (N3): open
+`.orchestrator/loop/PROGRESS.md` (auto-regenerated every turn) regardless of native wiring.

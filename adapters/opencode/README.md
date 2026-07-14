@@ -43,3 +43,8 @@ Use `simplicio doctor --json` to diagnose the optional integration.
 ```
 opencode run "/simplicio-tasks finish all the open issues"
 ```
+
+## Progresso do run
+
+Self-paced (N2): the tick echoes the turn-header. Universal fallback (N3, works with any config):
+`watch -n5 cat .orchestrator/loop/PROGRESS.md`.

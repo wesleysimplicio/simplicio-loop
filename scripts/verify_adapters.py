@@ -93,6 +93,28 @@ def _check(runtime, target):
             with open(settings, encoding="utf-8") as f:
                 if "loop_stop.py" not in f.read():
                     fails.append("Stop hook (loop_stop.py) not wired into settings.json")
+
+    # 5) skill-load surface carries the turn-header progress contract (#303 AC1) — this is the
+    # N2 fallback EVERY runtime gets, hook or not: SKILL.md § Output requires `render
+    # --turn-header` as the first line of every turn.
+    loop_skill = os.path.join(skills_root, "simplicio-loop", "SKILL.md")
+    if os.path.isfile(loop_skill):
+        with open(loop_skill, encoding="utf-8", errors="replace") as f:
+            if "render --turn-header" not in f.read():
+                fails.append("simplicio-loop/SKILL.md missing the turn-header contract "
+                            "(render --turn-header)")
+    else:
+        fails.append("simplicio-loop/SKILL.md not copied")
+
+    # 6) hook-bound runtimes install the PROGRESS-INJECTING loop_stop.py (#303 AC1/AC6), not a
+    # stale copy — the marker is the private helper `_progress_header_prefix` (#302).
+    if cfg["hooks"] in ("claude", "cursor") and os.path.abspath(target) != os.path.abspath(REPO):
+        hook_path = os.path.join(install_lib.hooks_dir(target, False), "loop_stop.py")
+        if os.path.isfile(hook_path):
+            with open(hook_path, encoding="utf-8", errors="replace") as f:
+                if "_progress_header_prefix" not in f.read():
+                    fails.append("loop_stop.py installed without progress injection "
+                                "(_progress_header_prefix marker missing)")
     return fails
 
 

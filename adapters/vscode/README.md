@@ -49,3 +49,8 @@ diagnose that optional integration.
 
 Open Copilot Chat and type: `/simplicio-tasks finish all the open issues` (or paste the goal —
 the instructions file makes Copilot follow the protocol).
+
+## Progresso do run
+
+Self-paced (N2, via tasks): the task tick echoes the turn-header. Simplest (N3, universal): open
+`.orchestrator/loop/PROGRESS.md` in the editor — it auto-updates every turn, no extension needed.
