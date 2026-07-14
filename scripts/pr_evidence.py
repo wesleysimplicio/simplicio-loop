@@ -34,7 +34,9 @@ Verbs:
   progress-comment  Publish/update ONE idempotent progress comment on an issue (#301), marked with
              an invisible HTML anchor so a re-run edits the SAME comment instead of spamming new
              ones. Rate-limited (default 60s between remote updates) and fully fail-open: no `gh`
-             CLI / network / token ⇒ exit 0, silent log, never blocks the loop.
+             CLI / network / token ⇒ exit 0, silent log, never blocks the loop. `--now-epoch` and
+             `--state-path` are a clock-injection seam (#301 AC7) letting a CLI-level test drive
+             the rate limiter deterministically without sleeping.
   selftest   Prove the assembly + the evidence-gate deterministically — no files, no network.
 
 Usage:
@@ -260,6 +262,22 @@ def find_existing_comment(owner, repo, issue, marker=PR_EVIDENCE_COMMENT_MARKER,
     return None
 
 
+def _resolve_now(opts):
+    """Clock-injection seam for the rate limiter (#301 AC7). Precedence: `--now-epoch` CLI flag >
+    `SIMPLICIO_PROGRESS_COMMENT_NOW` env var > real `time.time()`. Lets a CLI-level test drive
+    `progress-comment` twice with a controlled "now" (e.g. 1s apart vs 61s apart) and assert the
+    rate-limit gate deterministically, without sleeping or mocking internals."""
+    raw = opts.get("now-epoch")
+    if raw is None or raw is True:
+        raw = os.environ.get("SIMPLICIO_PROGRESS_COMMENT_NOW")
+    if raw is None or raw is True:
+        return time.time()
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return time.time()
+
+
 def cmd_progress_comment(opts):
     """Publish/update ONE idempotent progress comment on an issue (#301 § 3). Fail-open: no `gh`,
     no network, or any error -> exit 0, silent log, never blocks the loop."""
@@ -272,11 +290,15 @@ def cmd_progress_comment(opts):
         min_interval = float(opts.get("min-interval") or DEFAULT_MIN_INTERVAL_S)
     except (TypeError, ValueError):
         min_interval = DEFAULT_MIN_INTERVAL_S
+    now = _resolve_now(opts)
+    state_path = opts.get("state-path") or None
+    if opts.get("state-path") is True:
+        state_path = None
     if not shutil.which("gh"):
         print("skip")
         log("gh CLI not found — progress-comment is a no-op (fail-open)")
         return
-    if _rate_limited(min_interval):
+    if _rate_limited(min_interval, now=now, state_path=state_path):
         print("skip")
         log("rate-limited — last update <%.0fs ago" % min_interval)
         return
@@ -294,7 +316,7 @@ def cmd_progress_comment(opts):
         ok = r is not None and r.returncode == 0
     except Exception:
         ok = False
-    _record_post()
+    _record_post(now=now, state_path=state_path)
     tag = "MEASURED" if ok else "UNVERIFIED"
     print("%s|progress-comment %s" % (tag, "updated" if ok else "attempted (see stderr for gh output)"))
 
@@ -696,12 +718,14 @@ def main():
                 "--issue",
                 "--item",
                 "--min-interval",
+                "--now-epoch",
                 "--out",
                 "--pr",
                 "--publish",
                 "--repo",
                 "--require-evidence",
                 "--shots-dir",
+                "--state-path",
                 "--summary",
                 "--template",
                 "--title",
