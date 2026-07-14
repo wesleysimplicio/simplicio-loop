@@ -28,6 +28,20 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+
+def _emit_progress(status: str, outcome: str | None = None, detail: str = "") -> None:
+    """Fail-open progress-feedback hook (#299) — never raises, never blocks preflight itself."""
+    try:
+        import loop_progress
+        loop_progress.emit_event("preflight", status=status, outcome=outcome, detail=detail,
+                                 source="preflight.py")
+    except Exception:
+        pass
+
 SCHEMA = "simplicio.preflight/v1"
 MINIMUMS = {
     "simplicio-mapper": (0, 19, 0),
@@ -158,6 +172,7 @@ def _probe_runtime(cwd: Path) -> Dict[str, Any]:
 
 
 def build_report(cwd: Path) -> Dict[str, Any]:
+    _emit_progress("begin", detail="operadores: verificação/atualização")
     mapper = _probe_component("simplicio-mapper", "simplicio-mapper", cwd,
                               ("--version", "--json"), ("--help",), MAPPER_CAPABILITIES)
     devcli = _probe_component("simplicio-dev-cli", "simplicio-dev-cli", cwd,
@@ -170,6 +185,14 @@ def build_report(cwd: Path) -> Dict[str, Any]:
         and int(item.get("returncode", 1)) == 0
         for item in components
     )
+    if ready:
+        detail = "; ".join("%s %s" % (item["name"], item["version"]) for item in components)
+        _emit_progress("end", outcome="pass", detail=detail)
+    else:
+        missing = [item["name"] for item in components
+                  if not (item.get("identity_ok") and item.get("version_ok"))]
+        _emit_progress("blocked", outcome="blocked",
+                       detail="missing operator %s" % (", ".join(missing) or "unknown"))
     return {
         "schema": SCHEMA,
         "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
