@@ -109,6 +109,7 @@ SELFTEST_SCRIPTS = [
     "scripts/clean_env_contract.py",
     "scripts/completion_oracle.py",
     "scripts/quality_matrix.py",
+    "scripts/github_lifecycle.py",
     "scripts/mirror_parity.py",
     "scripts/run_state.py",
     "scripts/claims_manifest.py",
