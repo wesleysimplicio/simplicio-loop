@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from simplicio_loop import runner as runner_mod
+from scripts.distributed_trust_policy import TrustPolicyError
 
 TASK = """Sistema: PLANES
 Funcionalidade: Tela de Modelagem — Ordenacao de linhas
@@ -985,6 +986,111 @@ def test_distributed_configuration_builds_queue_and_identity_when_url_is_set(mon
     assert queue is not None
     assert captured["args"][1] == "claude-code"
     assert "claim" in captured["args"][2]
+
+
+# ---------------------------------------------------------------------------
+# _distributed_configuration + trust policy (#289): the real, currently-used
+# call site that hands a bearer token to a network destination -- the same
+# exfiltration / confused-deputy risk the now-deleted
+# `.github/workflows/distributed-183-proof.yml` was meant to guard, applied to
+# the surface that actually exists today.
+# ---------------------------------------------------------------------------
+
+def _write_trust_policy(tmp_path, **overrides):
+    policy = {
+        "schema": "simplicio.distributed-trust-policy/v1",
+        "environments": {
+            "staging": {
+                "description": "test",
+                "origin": {
+                    "scheme": "https",
+                    "hostname": "queue.trusted.internal",
+                    "port": 443,
+                    "base_path": "/",
+                },
+                "tls_sha256_pins": ["aa" * 32],
+                "oidc_audience": "aud",
+                "github_environment": "distributed-staging",
+                "allowed_repos": ["acme/widgets"],
+                "allowed_refs": ["refs/heads/main"],
+                "allowed_actors": [],
+                "max_ttl_seconds": 900,
+                "egress": {"allow_redirects": False, "allow_proxy_env": False},
+                "contacts": ["sec@example.com"],
+                "reviewed_at": "2026-07-14",
+                "revocation_procedure": "rotate",
+            }
+        },
+    }
+    policy["environments"]["staging"].update(overrides)
+    path = tmp_path / "trust-policy.json"
+    path.write_text(json.dumps(policy), encoding="utf-8")
+    return path
+
+
+def _arm_trust_env(monkeypatch, tmp_path, *, repo="acme/widgets", ref="refs/heads/main", actor="alice"):
+    policy_path = _write_trust_policy(tmp_path)
+    monkeypatch.setenv("SIMPLICIO_DISTRIBUTED_TRUST_POLICY", str(policy_path))
+    monkeypatch.setenv("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "staging")
+    monkeypatch.setenv("SIMPLICIO_REMOTE_REPO", repo)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_REF", ref)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_ACTOR", actor)
+    monkeypatch.setattr(runner_mod, "ensure_identity", lambda path, runtime, capabilities: {"agent_id": "agent-1"})
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_URL", raising=False)
+
+
+def test_distributed_configuration_resolves_url_from_trust_policy(monkeypatch, tmp_path):
+    _arm_trust_env(monkeypatch, tmp_path)
+
+    queue, identity = runner_mod._distributed_configuration(str(tmp_path))
+
+    assert identity == {"agent_id": "agent-1"}
+    assert queue is not None
+    assert queue.base_url == "https://queue.trusted.internal:443"
+
+
+def test_distributed_configuration_fails_closed_for_unknown_environment_id(monkeypatch, tmp_path):
+    _arm_trust_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "production-does-not-exist")
+
+    with pytest.raises(TrustPolicyError, match="unknown environment_id"):
+        runner_mod._distributed_configuration(str(tmp_path))
+
+
+def test_distributed_configuration_fails_closed_for_unauthorized_repo(monkeypatch, tmp_path):
+    _arm_trust_env(monkeypatch, tmp_path, repo="attacker/fork")
+
+    with pytest.raises(RuntimeError, match="distributed trust policy denied"):
+        runner_mod._distributed_configuration(str(tmp_path))
+
+
+def test_distributed_configuration_rejects_attacker_controlled_queue_url(monkeypatch, tmp_path):
+    """The literal #289 exploit: an actor authorized to run points the queue
+    URL at infrastructure they control. Even though `environment_id` and the
+    repo/ref/actor allow-lists are satisfied, a `SIMPLICIO_REMOTE_QUEUE_URL`
+    that diverges from the reviewed policy origin must never be connected to
+    -- the destination is not user-selectable once an environment_id is set.
+    """
+    _arm_trust_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_URL", "https://attacker.example/api")
+
+    with pytest.raises(RuntimeError, match="does not match the resolved origin"):
+        runner_mod._distributed_configuration(str(tmp_path))
+
+
+def test_distributed_configuration_legacy_url_path_untouched_without_environment_id(monkeypatch, tmp_path):
+    """Backward compatibility: local/dev usage with no environment_id set is
+    unaffected by the trust-policy wiring (still the existing, unmanaged path).
+    """
+    monkeypatch.delenv("SIMPLICIO_REMOTE_ENVIRONMENT_ID", raising=False)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_URL", "https://queue.example/api")
+    monkeypatch.setenv("SIMPLICIO_RUNTIME", "claude-code")
+    monkeypatch.setattr(runner_mod, "ensure_identity", lambda path, runtime, capabilities: {"agent_id": "agent-1"})
+
+    queue, identity = runner_mod._distributed_configuration(str(tmp_path))
+
+    assert identity == {"agent_id": "agent-1"}
+    assert queue.base_url == "https://queue.example/api"
 
 
 # ---------------------------------------------------------------------------
