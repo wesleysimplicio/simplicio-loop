@@ -97,6 +97,31 @@ def _emit_final_progress(reason, outcome):
         pass
 
 
+def _progress_header_prefix(nxt, max_iter):
+    """#302 § 2 — a short ` · fase F1 · etapa 5/9 operate · item T3 · ACs 1/3 · 42% geral` prefix
+    for the re-feed header. Fail-open: any error -> "" (header identical to before this feature).
+    Also regenerates PROGRESS.md (1 call/turn, zero token cost — a file, not context, per #302
+    § 2.3)."""
+    try:
+        lp = _loop_progress_module()
+        if lp is None:
+            return ""
+        snap = lp.build_snapshot(cap=(max_iter or None))
+        try:
+            lp.write_snapshot(snap)
+            _, md = lp.render_full(snap)
+            lp._atomic_write(lp._md_path(), md)
+        except Exception:
+            pass
+        line = lp.render_turn_header(snap)
+        rest = line.split("|", 1)[1] if "|" in line else line
+        rest = rest.replace("[simplicio-loop] ", "").strip()
+        rest = re.sub(r"\s*·\s*iter\s+\S+$", "", rest)  # drop trailing "· iter N/cap" (redundant)
+        return " · " + rest if rest else ""
+    except Exception:
+        return ""
+
+
 def cleanup_and_stop(reason=None, outcome=None):
     if reason:
         _emit_final_progress(reason, outcome)
@@ -1002,6 +1027,12 @@ def main():
                 _call_simplicio_hbp_append(iteration, promise, watcher_tag)
                 refresh_cross_agent_wiki(include_handoff=False)
                 cleanup_and_stop("promise verificada", "pass")  # (3) promise fulfilled → stop
+            elif PROMISE_RE.search(resp):
+                # (#302 § 3) a promise WAS typed this turn but the oracle refused it (no in-turn
+                # evidence / no receipt) — the loop continues, but this is high-signal for the
+                # user ("the model thought it was done, the gate disagreed"). Fail-open, never
+                # blocks the turn.
+                _emit_final_progress("promise REJEITADA: sem evidência no turno", "blocked")
             # A promise is never sufficient without a persisted run receipt.  The old
             # lightweight fallback was a fail-open completion bypass (#138); missing run
             # artifacts remain DELIVERY_PENDING and the loop continues or hands off at cap.
@@ -1059,8 +1090,12 @@ def main():
             else ""
         )
         flow_hint = " Flow-audit gap: %s." % flow_gap if flow_gap else ""
-        header = "[simplicio-loop iteration %d.%s%s%s%s %s]" % (
-            nxt, promise_hint, ac_hint, flow_hint, phase_header_hint(), watcher_tag
+        # #302 — prefix the re-feed header with the progress snapshot (fase/etapa/item/ACs/%),
+        # so the user sees WHERE the loop is even when the model forgets to narrate it. Fail-open:
+        # any error -> empty prefix, header identical to before this feature existed.
+        progress_prefix = _progress_header_prefix(nxt, max_iter)
+        header = "[simplicio-loop iteration %d.%s%s%s%s%s %s]" % (
+            nxt, progress_prefix, promise_hint, ac_hint, flow_hint, phase_header_hint(), watcher_tag
         )
         # Issue the NEXT iteration's watcher challenge before re-feeding (#82) — must be on disk
         # before the next turn's agent acts, so a mid-turn `watcher_verify.py` run can read and
