@@ -50,6 +50,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -516,6 +517,51 @@ def check_skill_pair_parity():
                 if ok else "skill-pair drift: %s" % ", ".join(drift))
 
 
+def check_turn_header_format():
+    """#304 § 2.2 — the turn-header format `render --turn-header` actually prints must match the
+    frozen shape cited in `references/progress-feedback.md`. Prevents doc<->code drift on the
+    contract the user reads every turn: adulterating either side alone makes this check fail."""
+    doc_path = os.path.join(REPO, ".claude", "skills", "simplicio-loop", "references",
+                            "progress-feedback.md")
+    try:
+        with open(doc_path, encoding="utf-8") as f:
+            doc = f.read()
+    except OSError:
+        return False, "progress-feedback.md not found"
+    if "fase F1 · etapa 5/9 operate · item T3" not in doc:
+        return False, "progress-feedback.md no longer cites the frozen turn-header example"
+
+    header_re = re.compile(
+        r"^(MEASURED|UNVERIFIED)\|\[simplicio-loop\] fase F\d+ · etapa \d+/\d+ \S+ · "
+        r"item \S+ \(\d+/\d+ itens\) · ACs \S+ · \d+% geral · iter \d+(/\d+)?$"
+    )
+    with tempfile.TemporaryDirectory(prefix="claims_audit_turnheader_") as tmp:
+        anchor_path = os.path.join(tmp, "anchor.json")
+        backlog_path = os.path.join(tmp, "backlog.jsonl")
+        with open(anchor_path, "w", encoding="utf-8") as f:
+            json.dump({"item": "T3", "criteria": [
+                {"id": "AC1", "status": "done"}, {"id": "AC2", "status": "pending"},
+                {"id": "AC3", "status": "pending"}]}, f)
+        with open(backlog_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"kind": "master", "goal": "g"}) + "\n")
+            for i, st in enumerate(["done", "done", "running", "ready", "ready"], start=1):
+                f.write(json.dumps({"kind": "item", "id": "T%d" % i, "status": st}) + "\n")
+        env = dict(os.environ)
+        env.update({"SIMPLICIO_PROGRESS_DIR": tmp, "SIMPLICIO_ANCHOR_FILE": anchor_path,
+                   "SIMPLICIO_BACKLOG_FILE": backlog_path})
+        script = os.path.join(REPO, "scripts", "loop_progress.py")
+        subprocess.run([sys.executable, script, "emit", "--step", "operate", "--status", "begin",
+                       "--item", "T3"], capture_output=True, text=True, encoding="utf-8",
+                      errors="replace", cwd=tmp, env=env, stdin=subprocess.DEVNULL)
+        r = subprocess.run([sys.executable, script, "render", "--turn-header"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           cwd=tmp, env=env, stdin=subprocess.DEVNULL)
+    line = (r.stdout or "").strip()
+    if not header_re.match(line):
+        return False, "render --turn-header output %r no longer matches the documented shape" % line
+    return True, "turn-header format matches the documented contract"
+
+
 CHECKS = [
     ("1 referenced-scripts-exist", check_scripts_exist),
     ("2 extension-point-count", check_extension_count),
@@ -527,6 +573,7 @@ CHECKS = [
     ("8 quantitative-claims", check_quantitative_claims),
     ("9 prose-commands-valid", check_prose_commands),
     ("10 skill-pair-parity", check_skill_pair_parity),
+    ("11 turn-header-format", check_turn_header_format),
 ]
 
 
