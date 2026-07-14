@@ -59,6 +59,7 @@ DEVCLI_MIN_VERSION = (0, 14, 0)
 DEVCLI_REQUIRED_CAPABILITIES = ("task", "--dry-run-task", "--json", "--bound-paths", "--target")
 DEFAULT_OPERATOR_WORKERS = 6
 BATCH_SCHEMA = "simplicio.operator-batch/v1"
+BATCH_PREFLIGHT_SCHEMA = "simplicio.operator-batch-preflight/v1"
 
 MaintenanceMode = Literal["active", "maintenance_deferred"]
 MaintenanceDisposition = Literal["operator", "backlog_only"]
@@ -678,6 +679,7 @@ def _preflight_mapper(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         "task_aware_flags": list(task_aware_flags),
         "supported_task_aware_flags": supported_task_aware_flags,
         "task_aware_supported": len(supported_task_aware_flags) == len(task_aware_flags),
+        "repo_state": _repo_fingerprint(repo_path),
         "path": identity["path"],
         "identity_ok": identity["identity_ok"],
         "checked_at": _now(),
@@ -761,6 +763,7 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         "version_ok": parsed_version >= DEVCLI_MIN_VERSION,
         "required_capabilities": list(DEVCLI_REQUIRED_CAPABILITIES),
         "missing_capabilities": missing_capabilities,
+        "repo_state": _repo_fingerprint(repo_path),
         "checked_at": _now(),
     }
     _write_json(run_root / "operator-preflight.json", receipt)
@@ -768,7 +771,7 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         raise RuntimeError("simplicio-dev-cli unavailable")
     if not receipt["identity_ok"]:
         raise RuntimeError("simplicio-dev-cli identity mismatch")
-    if missing_tokens:
+    if missing_tokens or missing_capabilities:
         raise RuntimeError("simplicio-dev-cli missing required capabilities")
     if version_rc != 0:
         raise RuntimeError("simplicio-dev-cli version probe failed")
@@ -809,6 +812,186 @@ def _validate_mapper_receipt(payload: Mapping[str, Any], repo_path: Path) -> Non
             candidate.relative_to(repo_path.resolve())
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"mapper returned path outside authorized repo: {raw}") from exc
+
+
+def _require_json_receipt(path: Path, label: str) -> Dict[str, Any]:
+    if not path.is_file():
+        raise RuntimeError(f"missing required {label} receipt: {path.name}")
+    try:
+        payload = _load_json(path)
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"invalid required {label} receipt: {path.name}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"invalid required {label} receipt: {path.name}")
+    return payload
+
+
+def _validate_run_receipts(
+    repo_path: Path,
+    run_dir: Path,
+    contract: Mapping[str, Any],
+    *,
+    state: Mapping[str, Any] | None = None,
+    manifest: Mapping[str, Any] | None = None,
+    require_dry_run: bool = True,
+) -> Dict[str, Any]:
+    """Require a current, run-bound mapper -> plan -> operator receipt chain."""
+    mapper = _require_json_receipt(run_dir / "mapper-context.json", "mapper context")
+    plan = _require_json_receipt(run_dir / "plan.json", "plan")
+    mapper_preflight = _require_json_receipt(run_dir / "mapper-preflight.json", "mapper preflight")
+    operator_preflight = _require_json_receipt(run_dir / "operator-preflight.json", "operator preflight")
+    operator = _require_json_receipt(run_dir / "operator-receipt.json", "operator")
+
+    expected_run_id = str((manifest or {}).get("run_id") or run_dir.name)
+    if run_dir.name != expected_run_id:
+        raise RuntimeError("run receipts are not bound to the current run")
+    if state is not None and str(state.get("run_id") or "") != expected_run_id:
+        raise RuntimeError("run state is not bound to the current run")
+    expected_contract_hash = str((manifest or {}).get("collection_hash") or "")
+    contract_hash = str(contract.get("collection_hash") or "")
+    if expected_contract_hash and contract_hash != expected_contract_hash:
+        raise RuntimeError("task contract is not bound to the current run")
+    if mapper.get("run_id") != expected_run_id or plan.get("run_id") != expected_run_id:
+        raise RuntimeError("mapper and plan receipts are not bound to the current run")
+    if operator.get("run_id") != expected_run_id:
+        raise RuntimeError("operator receipt is not bound to the current run")
+    if mapper.get("task_contract_hash") != contract_hash or plan.get("task_contract_hash") != contract_hash:
+        raise RuntimeError("mapper and plan receipts do not match the task contract")
+    mapper_context_hash = str(plan.get("mapper_context_hash") or "")
+    if not mapper_context_hash:
+        raise RuntimeError("plan receipt has no mapper context hash")
+    actual_mapper_context_hash = hashlib.sha256(
+        (run_dir / "mapper-context.json").read_bytes()
+    ).hexdigest()
+    if actual_mapper_context_hash != mapper_context_hash:
+        raise RuntimeError("plan receipt does not match the current mapper context bytes")
+
+    for name, payload in (("scan", mapper.get("scan")), ("inspect", mapper.get("inspect")),
+                          ("handoff", mapper.get("handoff"))):
+        if not isinstance(payload, Mapping) or payload.get("returncode") != 0:
+            raise RuntimeError(f"stale mapper context: {name} did not complete successfully")
+    _validate_mapper_receipt(mapper, repo_path)
+    planned_state = mapper.get("repo_state_after") or {}
+    current_state = _repo_fingerprint(repo_path)
+    mapper_before = mapper.get("repo_state_before") or {}
+    if not mapper_before.get("tree_hash") or not planned_state.get("tree_hash"):
+        raise RuntimeError("mapper context has no repository fingerprint")
+    if not _repo_state_equivalent(mapper_before, planned_state) or not _repo_state_equivalent(planned_state, current_state):
+        raise RuntimeError("stale mapper context: repository changed after planning")
+
+    if not mapper_preflight.get("identity_ok") or not mapper_preflight.get("version_ok"):
+        raise RuntimeError("mapper preflight receipt is not valid")
+    if mapper_preflight.get("missing_verbs"):
+        raise RuntimeError("mapper preflight receipt is missing required capabilities")
+    mapper_preflight_state = mapper_preflight.get("repo_state") or {}
+    if not mapper_preflight_state.get("tree_hash") or not _repo_state_equivalent(mapper_preflight_state, current_state):
+        raise RuntimeError("stale mapper preflight receipt: repository changed")
+    if not operator_preflight.get("identity_ok") or not operator_preflight.get("version_ok"):
+        raise RuntimeError("operator preflight receipt is not valid")
+    if operator_preflight.get("missing_tokens") or operator_preflight.get("missing_capabilities"):
+        raise RuntimeError("operator preflight receipt is missing required capabilities")
+    operator_preflight_state = operator_preflight.get("repo_state") or {}
+    if not operator_preflight_state.get("tree_hash") or not _repo_state_equivalent(operator_preflight_state, current_state):
+        raise RuntimeError("stale operator preflight receipt: repository changed")
+
+    tasks = list(contract.get("tasks") or [])
+    validation = validate_plan(
+        plan, tasks, repo_path,
+        contract_hash=contract_hash,
+        current_state=current_state,
+    )
+    if not validation["valid"]:
+        raise RuntimeError("stale or invalid plan receipt: " + ", ".join(validation["errors"]))
+    if (plan.get("deterministic") or {}).get("verified") is not True:
+        raise RuntimeError("plan receipt is not deterministic")
+    context_pack = ((mapper.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
+    mapper_pack_hash = str(plan.get("mapper_pack_hash") or "")
+    context_pack_hash = str(context_pack.get("pack_hash") or "")
+    if mapper_pack_hash and context_pack_hash and mapper_pack_hash != context_pack_hash:
+        raise RuntimeError("plan receipt does not match the mapper context fingerprint")
+
+    plan_hash = hashlib.sha256((run_dir / "plan.json").read_bytes()).hexdigest()
+    if operator.get("task_contract_hash") != contract_hash:
+        raise RuntimeError("operator receipt does not match the task contract")
+    if operator.get("plan_hash") != plan_hash:
+        raise RuntimeError("operator receipt does not match the current plan")
+    if operator.get("mapper_pack_hash") != plan.get("mapper_pack_hash"):
+        raise RuntimeError("operator receipt does not match the mapper context")
+    if operator.get("mapper_context_hash") != mapper_context_hash:
+        raise RuntimeError("operator receipt does not match the mapper receipt")
+    operator_state = operator.get("repo_state_before") or {}
+    if not operator_state.get("tree_hash") or not _repo_state_equivalent(operator_state, current_state):
+        raise RuntimeError("stale operator receipt: repository changed")
+    if require_dry_run and (operator.get("execution_state") != "dry_run" or operator.get("returncode") != 0):
+        raise RuntimeError("operator receipt is not a fresh successful dry-run preflight")
+    if not operator.get("target_within_repo") or not operator.get("authorized_targets"):
+        raise RuntimeError("operator receipt has no authorized target")
+    target = str(operator.get("target") or "")
+    authorized_targets = {str(item) for item in operator.get("authorized_targets") or []}
+    planned_targets = {
+        str(item) for step in plan.get("steps") or []
+        if isinstance(step, Mapping) for item in step.get("candidate_targets") or []
+    }
+    try:
+        (repo_path / target).resolve().relative_to(repo_path.resolve())
+    except (OSError, ValueError):
+        raise RuntimeError("operator receipt target is outside the authorized repository")
+    if not target or target not in authorized_targets or target not in planned_targets:
+        raise RuntimeError("operator receipt target is not authorized by the plan")
+    if state is not None:
+        if state.get("phase") in {"blocked", "done", "cancelled"}:
+            raise RuntimeError(f"run is not runnable: {state.get('phase')}")
+        if not (state.get("mapper") or {}).get("ready") or not (state.get("operator") or {}).get("ready"):
+            raise RuntimeError("run is not runnable: mapper/operator receipts are not ready")
+    return {
+        "mapper": mapper,
+        "plan": plan,
+        "operator_preflight": operator_preflight,
+        "operator": operator,
+        "repo_state": current_state,
+        "plan_hash": plan_hash,
+    }
+
+
+def _persist_batch_preflight_block(
+    run_dir: Path,
+    state: Dict[str, Any],
+    repo_path: Path,
+    reason: str,
+    task_indices: Sequence[int] = (),
+) -> Path:
+    diagnostic_path = run_dir / "operator-batch-preflight.json"
+    blocker = {
+        "kind": "operator_batch_preflight",
+        "reason_code": "operator_batch_preflight_failed",
+        "message": reason,
+        "run_id": str(state.get("run_id") or run_dir.name),
+        "scope": "global",
+    }
+    diagnostic = {
+        "schema": BATCH_PREFLIGHT_SCHEMA,
+        "status": "BLOCKED",
+        "run_id": blocker["run_id"],
+        "task_indices": [int(index) for index in task_indices],
+        "blocker": blocker,
+        "repo_state": _repo_fingerprint(repo_path),
+        "checked_at": _now(),
+    }
+    _write_json(diagnostic_path, diagnostic)
+    state["blockers"] = [blocker]
+    state["current_action"] = "operator_batch_preflight_blocked"
+    state["next_action"] = "repair_mapper_or_repo"
+    _write_json(run_dir / "state.json", state)
+    if state.get("phase") not in {"done", "cancelled"}:
+        _transition(
+            run_dir, state, "blocked", "operator batch prerequisite validation failed",
+            receipt=str(diagnostic_path), extra={"error": reason, "scope": "global"},
+        )
+    _emit_event(
+        run_dir, state, "blocked", receipt=str(diagnostic_path),
+        blocker=blocker["reason_code"], message="operator batch blocked before dispatch", scope="global",
+    )
+    return diagnostic_path
 
 
 def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str = "",
@@ -936,7 +1119,7 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
                 "steps": task_steps,
             }
         )
-    return {
+    plan = {
         "schema": PLAN_SCHEMA,
         "task_contract_hash": contract_hash,
         "generated_at": _now(),
@@ -955,6 +1138,21 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
         },
         "steps": steps,
     }
+    deterministic_input = {
+        "schema": plan["schema"],
+        "task_contract_hash": contract_hash,
+        "mapper_pack_hash": plan["mapper_pack_hash"],
+        "repo_state": plan["repo_state"],
+        "steps": plan["steps"],
+    }
+    plan["deterministic"] = {
+        "verified": True,
+        "algorithm": "mapper-derived-v1",
+        "input_hash": hashlib.sha256(
+            json.dumps(deterministic_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest(),
+    }
+    return plan
 
 
 def _fallback_targets(repo_path: Path) -> List[str]:
@@ -1055,6 +1253,7 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
             "timed_out": False,
             "measured_at": _now(),
             "source": "env_override",
+            "repo_state_before": _repo_fingerprint(repo_path),
         }
         _write_json(run_root / "operator-receipt.json", receipt)
         return receipt
@@ -1111,6 +1310,7 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
                 "model": op_env.get("SIMPLICIO_MODEL", ""),
                 "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
             },
+            "repo_state_before": _repo_fingerprint(repo_path),
         }
     except subprocess.TimeoutExpired as exc:
         op_env = _operator_env()
@@ -1132,6 +1332,7 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
                 "model": op_env.get("SIMPLICIO_MODEL", ""),
                 "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
             },
+            "repo_state_before": _repo_fingerprint(repo_path),
         }
     _write_json(run_root / "operator-receipt.json", receipt)
     return receipt
@@ -1231,6 +1432,9 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
             goal=primary_goal,
             task_fingerprint=compiled["collection_hash"],
         )
+        mapper_payload["run_id"] = run_id
+        mapper_payload["task_contract_hash"] = compiled["collection_hash"]
+        _write_json(run_root / "mapper-context.json", mapper_payload)
         state = _load_json(run_root / "state.json")
         state["mapper"] = {
             "ready": True,
@@ -1246,6 +1450,10 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
                     receipt=str(run_root / "mapper-context.json"))
         plan = _build_plan_with_hints(tasks, mapper_payload, repo_path, raw,
                                       contract_hash=compiled["collection_hash"])
+        plan["run_id"] = run_id
+        plan["mapper_context_hash"] = hashlib.sha256(
+            (run_root / "mapper-context.json").read_bytes()
+        ).hexdigest()
         plan_validation = validate_plan(
             plan, tasks, repo_path,
             contract_hash=compiled["collection_hash"],
@@ -1253,47 +1461,54 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         )
         plan["validation"] = plan_validation
         if not plan_validation["valid"]:
+            if any("targets_missing" in error for error in plan_validation["errors"]):
+                raise RuntimeError("mapper-derived plan has no authorized operator target")
             raise RuntimeError("mapper-derived plan failed validation: " + ", ".join(plan_validation["errors"]))
         _write_json(run_root / "plan.json", plan)
         state = _load_json(run_root / "state.json")
         state["current_action"] = "plan_materialized"
         candidates = ((plan.get("steps") or [{}])[0].get("candidate_targets") or [])
-        if candidates:
-            receipt = _prepare_operator_receipt(repo_path, run_root, tasks[0], candidates[0])
-            plan_hash = hashlib.sha256((run_root / "plan.json").read_bytes()).hexdigest()
-            receipt["task_contract_hash"] = compiled["collection_hash"]
-            receipt["plan_hash"] = plan_hash
-            receipt["mapper_pack_hash"] = plan.get("mapper_pack_hash", "")
-            receipt["authorized_targets"] = [candidates[0]]
-            receipt["target_within_repo"] = True
-            _write_json(run_root / "operator-receipt.json", receipt)
-            state["operator"] = {
-                "ready": receipt.get("execution_state") == "dry_run",
-                "receipt": str(run_root / "operator-receipt.json"),
-                "target": candidates[0],
-                "execution_state": receipt.get("execution_state", "proposed"),
-            }
-            evidence = build_evidence_receipt(str(run_root))
-            _write_json(run_root / "evidence-receipt.json", evidence)
-            state["evidence"] = {
-                "ready": False,
-                "receipt": str(run_root / "evidence-receipt.json"),
-                "status": evidence.get("status", "UNVERIFIED"),
-            }
-            delivery_receipt = build_delivery_receipt(str(run_root), delivery, current_state="implemented")
-            write_delivery_receipt(str(run_root), delivery_receipt)
-            state["delivery"] = {
-                "target": delivery,
-                "current_state": delivery_receipt["current_state"],
-                "ready": delivery_receipt["ready"],
-                "receipt": str(run_root / "delivery-receipt.json"),
-                "source_checked_at": delivery_receipt["source_checked_at"],
-            }
-            state["current_action"] = "operator_dry_run_recorded"
-            state["next_action"] = "await_operator_decision"
-        else:
-            state["current_action"] = "plan_materialized"
-            state["next_action"] = "select_target_for_operator"
+        if not candidates:
+            raise RuntimeError("mapper-derived plan has no authorized operator target")
+        receipt = _prepare_operator_receipt(repo_path, run_root, tasks[0], candidates[0])
+        plan_hash = hashlib.sha256((run_root / "plan.json").read_bytes()).hexdigest()
+        receipt["run_id"] = run_id
+        receipt["task_contract_hash"] = compiled["collection_hash"]
+        receipt["plan_hash"] = plan_hash
+        receipt["mapper_pack_hash"] = plan.get("mapper_pack_hash", "")
+        receipt["mapper_context_hash"] = plan.get("mapper_context_hash", "")
+        receipt["authorized_targets"] = [candidates[0]]
+        receipt["target_within_repo"] = True
+        _write_json(run_root / "operator-receipt.json", receipt)
+        if receipt.get("execution_state") != "dry_run" or receipt.get("returncode") != 0:
+            raise RuntimeError(
+                "operator preflight blocked the run: "
+                + str(receipt.get("stderr") or receipt.get("execution_state") or "unknown failure")
+            )
+        state["operator"] = {
+            "ready": True,
+            "receipt": str(run_root / "operator-receipt.json"),
+            "target": candidates[0],
+            "execution_state": receipt.get("execution_state", "proposed"),
+        }
+        evidence = build_evidence_receipt(str(run_root))
+        _write_json(run_root / "evidence-receipt.json", evidence)
+        state["evidence"] = {
+            "ready": False,
+            "receipt": str(run_root / "evidence-receipt.json"),
+            "status": evidence.get("status", "UNVERIFIED"),
+        }
+        delivery_receipt = build_delivery_receipt(str(run_root), delivery, current_state="implemented")
+        write_delivery_receipt(str(run_root), delivery_receipt)
+        state["delivery"] = {
+            "target": delivery,
+            "current_state": delivery_receipt["current_state"],
+            "ready": delivery_receipt["ready"],
+            "receipt": str(run_root / "delivery-receipt.json"),
+            "source_checked_at": delivery_receipt["source_checked_at"],
+        }
+        state["current_action"] = "operator_dry_run_recorded"
+        state["next_action"] = "await_operator_decision"
         _write_json(run_root / "state.json", state)
         _emit_event(run_root, state, "plan_ready", receipt=str(run_root / "plan.json"),
                     message="validated plan materialized")
@@ -1305,9 +1520,49 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
                     receipt=str(run_root / "plan.json"))
     except Exception as exc:
         state = _load_json(run_root / "state.json")
-        state["blockers"] = [str(exc)]
+        message = str(exc)
+        if "no authorized operator target" in message or "operator preflight blocked" in message:
+            state["blockers"] = [{
+                "kind": "run_preflight",
+                "reason_code": "no_authorized_target" if "target" in message else "operator_dry_run_failed",
+                "message": message,
+                "run_id": run_id,
+            }]
+        else:
+            state["blockers"] = [message]
         state["current_action"] = "mapping_failed"
         state["next_action"] = "repair_mapper_or_repo"
+        evidence_path = run_root / "evidence-receipt.json"
+        if not evidence_path.exists():
+            mapper_path = run_root / "mapper-context.json"
+            operator_path = run_root / "operator-receipt.json"
+            plan_path = run_root / "plan.json"
+            if not plan_path.exists() and not mapper_path.exists():
+                _write_json(mapper_path, {
+                    "run_id": run_id,
+                    "task_contract_hash": compiled["collection_hash"],
+                    "status": "blocked",
+                    "error": message,
+                })
+            if not plan_path.exists() and not operator_path.exists():
+                _write_json(operator_path, {
+                    "schema": OPERATOR_RECEIPT_SCHEMA,
+                    "run_id": run_id,
+                    "task_contract_hash": compiled["collection_hash"],
+                    "execution_state": "blocked",
+                    "status": "blocked",
+                    "returncode": None,
+                    "changed_paths": [],
+                    "error": message,
+                })
+            if mapper_path.exists() and operator_path.exists():
+                evidence = build_evidence_receipt(str(run_root))
+                _write_json(evidence_path, evidence)
+                state["evidence"] = {
+                    "ready": False,
+                    "receipt": str(evidence_path),
+                    "status": evidence.get("status", "UNVERIFIED"),
+                }
         _write_json(run_root / "state.json", state)
         _transition(run_root, state, "blocked", "mapper integration failed",
                     receipt=str(run_root / "mapper-context.json"), extra={"error": str(exc)})
@@ -2134,6 +2389,36 @@ def dispatch_operator_batch(
     keys = {(item["repo"], item["run_id"], item["task_index"]) for item in normalized}
     if len(keys) != len(normalized):
         raise ValueError("operator dispatch contains duplicate repo/run/task items")
+    # A persisted run is a privileged execution boundary.  Keep synthetic scheduler
+    # contexts supported, but fail every run-backed dispatch globally before worktree
+    # preparation, journal creation, or worker submission unless its receipt chain is
+    # fresh and bound to this exact run.
+    for item in normalized:
+        repo_path = Path(item["repo"]).resolve()
+        run_dir = repo_path / ".simplicio" / "loop-runs" / item["run_id"]
+        if not run_dir.is_dir():
+            continue
+        try:
+            contract = _require_json_receipt(run_dir / "task-contract.json", "task contract")
+            _validate_run_receipts(
+                repo_path,
+                run_dir,
+                contract,
+                state=_load_json(run_dir / "state.json") if (run_dir / "state.json").is_file() else None,
+                manifest=_load_json(run_dir / "manifest.json") if (run_dir / "manifest.json").is_file() else None,
+                require_dry_run=True,
+            )
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            state_path = run_dir / "state.json"
+            if state_path.is_file():
+                _persist_batch_preflight_block(
+                    run_dir,
+                    _load_json(state_path),
+                    repo_path,
+                    str(exc),
+                    task_indices=[item["task_index"]],
+                )
+            raise
     _prepare_worktree_contexts(normalized, worktree_queue)
     requested_workers = max_workers
     effective_workers = _operator_worker_limit(max_workers, len(normalized))
@@ -2333,9 +2618,27 @@ def execute_operator_batch(
     status = read_status(repo, run_id)
     if (status["state"].get("maintenance") or {}).get("disposition") == "backlog_only":
         raise RuntimeError("maintenance deferred: operator batch is blocked until explicit resume")
-    contract = _load_json(Path(status["run_dir"]) / "task-contract.json")
     run_dir = Path(status["run_dir"])
-    plan = _load_json(run_dir / "plan.json") if (run_dir / "plan.json").exists() else {}
+    try:
+        contract = _require_json_receipt(run_dir / "task-contract.json", "task contract")
+        receipts = _validate_run_receipts(
+            Path(status["manifest"].get("repo") or repo).resolve(),
+            run_dir,
+            contract,
+            state=status["state"],
+            manifest=status["manifest"],
+            require_dry_run=True,
+        )
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        _persist_batch_preflight_block(
+            run_dir,
+            status["state"],
+            Path(status["manifest"].get("repo") or repo).resolve(),
+            str(exc),
+            task_indices=task_indices or (),
+        )
+        raise
+    plan = receipts["plan"]
     task_count = len(contract.get("tasks") or [])
     if task_indices is None:
         indices = list(range(1, task_count + 1))

@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 import pytest
 
 from simplicio_loop import runner as runner_mod
@@ -38,6 +39,18 @@ def _run(cmd, cwd, env=None):
         full_env.update(env)
     return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=30,
                           stdin=subprocess.DEVNULL, env=full_env)
+
+
+def _arm_result(repo, task, *, env=None, delivery="verified", max_iterations=12):
+    """Exercise the explicit preparation API for tests that need an armed intermediate run."""
+    with patch.dict(os.environ, env or {}, clear=False):
+        payload = runner_mod.arm_run(
+            str(repo), str(task), delivery, max_iterations,
+        )
+    return subprocess.CompletedProcess(
+        args=["arm_run"], returncode=0,
+        stdout=json.dumps(payload, ensure_ascii=False), stderr="",
+    )
 
 
 def test_repo_state_equivalent_ignores_dirty_status_noise_when_tree_is_stable():
@@ -197,41 +210,11 @@ def test_build_plan_promotes_explicit_task_file_hints(tmp_path):
     ]
 
 
-def test_run_arms_persisted_state_and_status_resume_cancel(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    src = repo / "src"
-    src.mkdir()
-    (src / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
-    task = tmp_path / "task.md"
-    task.write_text(TASK, encoding="utf-8")
-
-    fake_operator = json.dumps({
-        "execution_state": "dry_run",
-        "returncode": 0,
-        "stdout": {"kind": "operator-proposal", "ok": True},
-        "stderr": "",
-        "argv": ["simplicio-dev-cli", "task", "demo"]
-    })
-    fake_mapper_preflight = json.dumps({
-        "version_stdout": "simplicio-mapper 0.19.0",
-        "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
-        "version_returncode": 0,
-        "help_returncode": 0
-    })
-    fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
-        "help_returncode": 0
-    })
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
-                          "--delivery", "verified", "--max-iterations", "9"], REPO,
-                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
-                        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
-                        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight})
-    assert started.returncode == 0, started.stdout + started.stderr
-    payload = json.loads(started.stdout)
+def test_arm_run_persists_state_for_status_resume_cancel(tmp_path, monkeypatch):
+    repo, task = _setup_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    payload = runner_mod.arm_run(str(repo), str(task), "verified", 9)
     run_id = payload["manifest"]["run_id"]
-    run_dir = repo / ".orchestrator" / "runs" / run_id
+    run_dir = Path(payload["run_dir"])
     assert (run_dir / "manifest.json").exists()
     assert (run_dir / "state.json").exists()
     assert (run_dir / "task-contract.json").exists()
@@ -251,9 +234,7 @@ def test_run_arms_persisted_state_and_status_resume_cancel(tmp_path):
     assert payload["state"]["delivery"]["current_state"] == "implemented"
 
     status = _run(CLI + ["status", "--repo", str(repo), "--run-id", run_id], REPO,
-                  env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
-                       "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
-                       "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight})
+                  env={})
     assert status.returncode == 0, status.stdout + status.stderr
     status_payload = json.loads(status.stdout)
     assert status_payload["state"]["coverage"]["scenarios"]["total"] == 1
@@ -289,7 +270,7 @@ def _start_run_for_maintenance_cli(tmp_path, monkeypatch):
         "help_returncode": 0,
     }))
     monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON", json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
         "help_returncode": 0,
     }))
     monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", json.dumps({
@@ -364,8 +345,9 @@ def test_resume_rejects_terminal_cancelled_run(tmp_path):
         "stderr": "",
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task)], REPO,
-                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator})
+    started = _arm_result(
+        repo, task, env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator}
+    )
     assert started.returncode == 0, started.stdout + started.stderr
     run_id = json.loads(started.stdout)["manifest"]["run_id"]
     cancelled = _run(CLI + ["cancel", "--repo", str(repo), run_id], REPO)
@@ -391,8 +373,9 @@ def test_cancel_rejects_terminal_cancelled_run(tmp_path):
         "stderr": "",
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task)], REPO,
-                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator})
+    started = _arm_result(
+        repo, task, env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator}
+    )
     assert started.returncode == 0, started.stdout + started.stderr
     run_id = json.loads(started.stdout)["manifest"]["run_id"]
     cancelled = _run(CLI + ["cancel", "--repo", str(repo), run_id], REPO)
@@ -403,40 +386,9 @@ def test_cancel_rejects_terminal_cancelled_run(tmp_path):
     assert "run already terminal" in cancelled_again.stderr or "run already terminal" in cancelled_again.stdout
 
 
-def test_status_surfaces_completion_receipt_reason_code(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    src = repo / "src"
-    src.mkdir()
-    (src / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
-    task = tmp_path / "task.md"
-    task.write_text(TASK, encoding="utf-8")
-    fake_operator = json.dumps({
-        "execution_state": "dry_run",
-        "returncode": 0,
-        "stdout": {"kind": "operator-proposal", "ok": True},
-        "stderr": "",
-        "argv": ["simplicio-dev-cli", "task", "demo"]
-    })
-    fake_mapper_preflight = json.dumps({
-        "version_stdout": "simplicio-mapper 0.19.0",
-        "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
-        "version_returncode": 0,
-        "help_returncode": 0
-    })
-    fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
-        "help_returncode": 0
-    })
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
-                          "--delivery", "verified", "--max-iterations", "9"], REPO,
-                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
-                        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
-                        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight})
-    assert started.returncode == 0, started.stdout + started.stderr
-    payload = json.loads(started.stdout)
+def test_status_surfaces_completion_receipt_reason_code(tmp_path, monkeypatch):
+    repo, _, payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
     run_id = payload["manifest"]["run_id"]
-    run_dir = repo / ".orchestrator" / "runs" / run_id
     loop_dir = run_dir / "loop"
     receipt_payload = {
         "ready": False,
@@ -455,39 +407,19 @@ def test_status_surfaces_completion_receipt_reason_code(tmp_path):
     assert status_payload["state"]["completion"]["reason_code"] == "watcher_mismatch"
 
 
-def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    src = repo / "src"
-    src.mkdir()
-    (src / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
-    task = tmp_path / "task.md"
-    task.write_text(TASK, encoding="utf-8")
+def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path, monkeypatch):
+    repo, _, armed_payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
     env = {
-        "SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": json.dumps({
-            "execution_state": "dry_run", "returncode": 0,
-            "stdout": {"kind": "operator-proposal", "ok": True}, "stderr": "",
-        }),
         "SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON": json.dumps({
             "returncode": 0, "stdout": {"kind": "operator-applied", "ok": True}, "stderr": "",
-        }),
-        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": json.dumps({
-            "version_stdout": "simplicio-mapper 0.19.0",
-            "help_stdout": "inspect handoff ask sync drift", "version_returncode": 0,
-            "help_returncode": 0,
-        }),
-        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": json.dumps({
-            "help_stdout": "task --dry-run-task --json", "help_returncode": 0,
+            "write_files": {"src/app.py": "def main():\n    return 'updated'\n"},
         }),
     }
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task)], REPO, env=env)
-    assert started.returncode == 0, started.stdout + started.stderr
-    run_id = json.loads(started.stdout)["manifest"]["run_id"]
-    ticked = _run(CLI + ["tick", "--repo", str(repo), run_id], REPO, env=env)
-    assert ticked.returncode == 0, ticked.stdout + ticked.stderr
-    payload = json.loads(ticked.stdout)
+    run_id = armed_payload["manifest"]["run_id"]
+    with patch.dict(os.environ, env, clear=False):
+        payload = runner_mod.execute_operator(str(repo), run_id)
     assert payload["state"]["phase"] == "validating"
-    receipt = json.loads((repo / ".orchestrator" / "runs" / run_id / "operator-receipt.json").read_text(encoding="utf-8"))
+    receipt = json.loads((run_dir / "operator-receipt.json").read_text(encoding="utf-8"))
     assert receipt["mode"] == "execute"
     assert receipt["execution_state"] == "applied"
     assert receipt["attempt"] == 1
@@ -498,45 +430,24 @@ def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path):
     assert receipt["target_within_repo"] is True
 
 
-def test_tick_rolls_back_failed_operator_when_change_stays_within_authorized_target(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    src = repo / "src"
-    src.mkdir()
-    target = src / "app.py"
-    target.write_text("def main():\n    return 'ok'\n", encoding="utf-8")
+def test_tick_rolls_back_failed_operator_when_change_stays_within_authorized_target(tmp_path, monkeypatch):
+    repo, _, armed_payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    target = repo / "src" / "app.py"
     original = target.read_text(encoding="utf-8")
-    task = tmp_path / "task.md"
-    task.write_text(TASK, encoding="utf-8")
     env = {
-        "SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": json.dumps({
-            "execution_state": "dry_run", "returncode": 0,
-            "stdout": {"kind": "operator-proposal", "ok": True}, "stderr": "",
-        }),
         "SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON": json.dumps({
             "returncode": 1,
             "stdout": {"kind": "operator-applied", "ok": False},
             "stderr": "validation failed",
             "write_files": {"src/app.py": "def main():\n    return 'broken'\n"},
         }),
-        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": json.dumps({
-            "version_stdout": "simplicio-mapper 0.19.0",
-            "help_stdout": "inspect handoff ask sync drift", "version_returncode": 0,
-            "help_returncode": 0,
-        }),
-        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": json.dumps({
-            "help_stdout": "task --dry-run-task --json", "help_returncode": 0,
-        }),
     }
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task)], REPO, env=env)
-    assert started.returncode == 0, started.stdout + started.stderr
-    run_id = json.loads(started.stdout)["manifest"]["run_id"]
-    ticked = _run(CLI + ["tick", "--repo", str(repo), run_id], REPO, env=env)
-    assert ticked.returncode == 0, ticked.stdout + ticked.stderr
-    payload = json.loads(ticked.stdout)
+    run_id = armed_payload["manifest"]["run_id"]
+    with patch.dict(os.environ, env, clear=False):
+        payload = runner_mod.execute_operator(str(repo), run_id)
     assert payload["state"]["phase"] == "blocked"
     assert target.read_text(encoding="utf-8") == original
-    receipt = json.loads((repo / ".orchestrator" / "runs" / run_id / "operator-receipt.json").read_text(encoding="utf-8"))
+    receipt = json.loads((run_dir / "operator-receipt.json").read_text(encoding="utf-8"))
     assert receipt["attempt"] == 1
     assert receipt["retry_budget"] == 3
     assert receipt["failure_fingerprint"]
@@ -568,14 +479,15 @@ def test_deliver_reconciles_external_delivery_state(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
         "help_returncode": 0
     })
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
-                          "--delivery", "merge-ready", "--max-iterations", "9"], REPO,
-                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
-                        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
-                        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight})
+    started = _arm_result(
+        repo, task, delivery="merge-ready", max_iterations=9,
+        env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
+             "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
+             "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight},
+    )
     assert started.returncode == 0, started.stdout + started.stderr
     payload = json.loads(started.stdout)
     run_id = payload["manifest"]["run_id"]
@@ -596,15 +508,8 @@ def test_deliver_reconciles_external_delivery_state(tmp_path):
     assert delivered_payload["state"]["phase"] == "delivering"
 
 
-def test_decide_invalidates_plan_and_receipts_after_human_answer(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    src = repo / "src"
-    src.mkdir()
-    (src / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
-    task = tmp_path / "task.md"
-    task.write_text(
-        TASK + """
+def test_decide_invalidates_plan_and_receipts_after_human_answer(tmp_path, monkeypatch):
+    task_text = TASK + """
 
 3. Requisitos Não Funcionais
 
@@ -620,35 +525,11 @@ Frontend: ✓
 Backend: Possível
 Banco: ✗
 Integrações: ✗
-""",
-        encoding="utf-8",
+"""
+    repo, _, payload, run_dir = _arm_deterministic_preflight_fixture(
+        monkeypatch, tmp_path, task_text=task_text,
     )
-    fake_operator = json.dumps({
-        "execution_state": "dry_run",
-        "returncode": 0,
-        "stdout": {"kind": "operator-proposal", "ok": True},
-        "stderr": "",
-        "argv": ["simplicio-dev-cli", "task", "demo"]
-    })
-    fake_mapper_preflight = json.dumps({
-        "version_stdout": "simplicio-mapper 0.19.0",
-        "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
-        "version_returncode": 0,
-        "help_returncode": 0
-    })
-    fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
-        "help_returncode": 0
-    })
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
-                          "--delivery", "verified", "--max-iterations", "9"], REPO,
-                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
-                        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
-                        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight})
-    assert started.returncode == 0, started.stdout + started.stderr
-    payload = json.loads(started.stdout)
     run_id = payload["manifest"]["run_id"]
-    run_dir = repo / ".orchestrator" / "runs" / run_id
     assert (run_dir / "plan.json").exists()
     assert (run_dir / "operator-receipt.json").exists()
     decided = _run(CLI + ["decide", "--repo", str(repo), run_id, "--decision-id", "Q-LAYER-1",
@@ -690,14 +571,15 @@ def test_sync_source_requeries_github_fixture_for_merge_ready(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
         "help_returncode": 0
     })
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
-                          "--delivery", "merge-ready", "--max-iterations", "9"], REPO,
-                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
-                        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
-                        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight})
+    started = _arm_result(
+        repo, task, delivery="merge-ready", max_iterations=9,
+        env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
+             "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
+             "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight},
+    )
     assert started.returncode == 0, started.stdout + started.stderr
     payload = json.loads(started.stdout)
     run_id = payload["manifest"]["run_id"]
@@ -715,7 +597,7 @@ def test_sync_source_requeries_github_fixture_for_merge_ready(tmp_path):
     assert synced_payload["state"]["delivery"]["current_state"] == "merge-ready"
     assert synced_payload["state"]["delivery"]["ready"] is True
     assert synced_payload["state"]["phase"] == "delivering"
-    receipt = json.loads((repo / ".orchestrator" / "runs" / run_id / "delivery-receipt.json").read_text(encoding="utf-8"))
+    receipt = json.loads((Path(payload["run_dir"]) / "delivery-receipt.json").read_text(encoding="utf-8"))
     assert receipt["source_payload"]["source_query"]["provider"] == "github"
     assert receipt["source_payload"]["source_query"]["repo"] == "wesleysimplicio/simplicio-loop"
 
@@ -742,14 +624,15 @@ def test_sync_source_requeries_github_fixture_for_release(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
         "help_returncode": 0
     })
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
-                          "--delivery", "released", "--max-iterations", "9"], REPO,
-                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
-                        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
-                        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight})
+    started = _arm_result(
+        repo, task, delivery="released", max_iterations=9,
+        env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
+             "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
+             "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight},
+    )
     assert started.returncode == 0, started.stdout + started.stderr
     payload = json.loads(started.stdout)
     run_id = payload["manifest"]["run_id"]
@@ -794,14 +677,15 @@ def test_sync_source_reopens_delivery_when_merge_ready_regresses(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
         "help_returncode": 0
     })
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
-                          "--delivery", "merge-ready", "--max-iterations", "9"], REPO,
-                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
-                        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
-                        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight})
+    started = _arm_result(
+        repo, task, delivery="merge-ready", max_iterations=9,
+        env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
+             "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
+             "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight},
+    )
     assert started.returncode == 0, started.stdout + started.stderr
     run_id = json.loads(started.stdout)["manifest"]["run_id"]
 
@@ -853,7 +737,7 @@ def test_run_blocks_when_mapper_preflight_version_too_old(tmp_path):
                 "help_returncode": 0
             }),
             "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": json.dumps({
-                "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+                "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
                 "help_returncode": 0
             })
         },
@@ -864,33 +748,27 @@ def test_run_blocks_when_mapper_preflight_version_too_old(tmp_path):
     assert "minimum version" in payload["state"]["blockers"][0]
 
 
-def test_run_blocks_when_devcli_preflight_lacks_required_capability(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "src").mkdir()
-    (repo / "src" / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
-    task = tmp_path / "task.md"
-    task.write_text(TASK, encoding="utf-8")
-    started = _run(
-        CLI + ["run", "--repo", str(repo), "--task", str(task), "--delivery", "verified", "--max-iterations", "9"],
-        REPO,
-        env={
-            "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": json.dumps({
-                "version_stdout": "simplicio-mapper 0.19.0",
-                "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
-                "version_returncode": 0,
-                "help_returncode": 0
-            }),
-            "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": json.dumps({
-                "help_stdout": "Usage: simplicio-dev-cli",
-                "help_returncode": 0
-            })
-        },
+@pytest.mark.parametrize("missing_capability", ["--bound-paths", "--target"])
+def test_run_blocks_when_devcli_preflight_lacks_required_capability(
+    tmp_path, monkeypatch, missing_capability,
+):
+    surface = (
+        "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target"
+    ).replace(missing_capability, "")
+    _, task = _setup_deterministic_preflight_fixture(
+        monkeypatch,
+        tmp_path,
+        operator_preflight_surface=surface,
     )
-    assert started.returncode == 0, started.stdout + started.stderr
-    payload = json.loads(started.stdout)
+    payload = runner_mod.arm_run(str(tmp_path / "repo"), str(task), "verified", 9)
+
     assert payload["state"]["phase"] == "blocked"
     assert "required capabilities" in payload["state"]["blockers"][0]
+    receipt = json.loads(
+        (Path(payload["run_dir"]) / "operator-preflight.json").read_text(encoding="utf-8")
+    )
+    assert receipt["missing_tokens"] == []
+    assert receipt["missing_capabilities"] == [missing_capability]
 
 
 def test_sync_source_infers_pr_open_when_merge_ready_target_is_not_yet_satisfied(tmp_path):
@@ -908,9 +786,10 @@ def test_sync_source_infers_pr_open_when_merge_ready_target_is_not_yet_satisfied
         "stderr": "",
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
-                          "--delivery", "merge-ready", "--max-iterations", "9"], REPO,
-                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator})
+    started = _arm_result(
+        repo, task, delivery="merge-ready", max_iterations=9,
+        env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator},
+    )
     assert started.returncode == 0, started.stdout + started.stderr
     payload = json.loads(started.stdout)
     run_id = payload["manifest"]["run_id"]
@@ -946,9 +825,10 @@ def test_sync_source_infers_merged_even_when_target_is_merge_ready(tmp_path):
         "stderr": "",
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
-    started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
-                          "--delivery", "merge-ready", "--max-iterations", "9"], REPO,
-                   env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator})
+    started = _arm_result(
+        repo, task, delivery="merge-ready", max_iterations=9,
+        env={"SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator},
+    )
     assert started.returncode == 0, started.stdout + started.stderr
     payload = json.loads(started.stdout)
     run_id = payload["manifest"]["run_id"]
@@ -1032,6 +912,291 @@ def test_resume_clears_maintenance_backlog_only_transition(tmp_path, monkeypatch
     assert payload["state"]["evidence"]["ready"] is False
     assert payload["state"]["evidence"]["status"] == "INVALIDATED"
     assert payload["state"]["next_action"] == "mapper_scan_required"
+
+
+def _setup_deterministic_preflight_fixture(
+    monkeypatch, tmp_path, *, targets=True, operator=None, task_text=TASK,
+    operator_preflight_surface=None,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(".simplicio/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", ".gitignore", "src/app.py"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Simplicio Tests", "-c", "user.email=tests@simplicio.local",
+         "commit", "-qm", "fixture"],
+        cwd=repo,
+        check=True,
+    )
+    task = tmp_path / "task.md"
+    task.write_text(task_text, encoding="utf-8")
+    fingerprint = {
+        "head": "head-fixed",
+        "tree_hash": "tree-fixed",
+        "dirty_status_hash": "status-fixed",
+    }
+    monkeypatch.setattr(runner_mod, "_now", lambda: "2026-07-14T00:00:00Z")
+    monkeypatch.setattr(runner_mod, "_run_id", lambda: "run-fixed")
+    monkeypatch.setattr(runner_mod, "_rand_token", lambda size: "token-fixed")
+    monkeypatch.setattr(runner_mod, "_repo_fingerprint", lambda path: dict(fingerprint))
+    monkeypatch.setattr(
+        runner_mod,
+        "_changed_paths",
+        lambda path: (
+            ["src/app.py"]
+            if (Path(path) / "src" / "app.py").read_text(encoding="utf-8")
+            != "def main():\n    return 'ok'\n"
+            else []
+        ),
+    )
+
+    def fake_mapper(repo_path, run_root, **kwargs):
+        runner_mod._write_json(run_root / "mapper-preflight.json", {
+            "tool": "simplicio-mapper", "identity_ok": True, "version_ok": True,
+            "missing_verbs": [], "repo_state": dict(fingerprint),
+        })
+        files = [{"path": "src/app.py", "tests": []}] if targets else []
+        payload = {
+            "scan": {"returncode": 0, "stdout": {}, "stderr": ""},
+            "inspect": {"returncode": 0, "stdout": {
+                "status": {"artifacts_present": True, "fresh": True},
+                "evidence": {"artifacts": {
+                    "project_map": {"exists": True},
+                    "precedent_index": {"exists": True},
+                }},
+            }, "stderr": ""},
+            "handoff": {"returncode": 0, "stdout": {
+                "context_pack": {"pack_hash": "pack-fixed", "files": files},
+            }, "stderr": ""},
+            "generated_at": "2026-07-14T00:00:00Z",
+            "repo_state_before": dict(fingerprint),
+            "repo_state_after": dict(fingerprint),
+        }
+        runner_mod._write_json(run_root / "mapper-context.json", payload)
+        return payload
+
+    def fake_operator_preflight(repo_path, run_root):
+        receipt = {
+            "tool": "simplicio-dev-cli", "identity_ok": True, "version_ok": True,
+            "missing_tokens": [], "missing_capabilities": [],
+            "repo_state": dict(fingerprint),
+        }
+        runner_mod._write_json(run_root / "operator-preflight.json", receipt)
+        return receipt
+
+    monkeypatch.setattr(runner_mod, "_run_mapper", fake_mapper)
+    if operator_preflight_surface is None:
+        monkeypatch.setattr(runner_mod, "_preflight_operator", fake_operator_preflight)
+    else:
+        monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON", json.dumps({
+            "help_stdout": operator_preflight_surface,
+            "help_returncode": 0,
+            "version_stdout": "simplicio-py 0.14.0",
+            "version_returncode": 0,
+        }))
+    if not targets:
+        monkeypatch.setattr(runner_mod, "_fallback_targets", lambda path: [])
+    monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", json.dumps(operator or {
+        "execution_state": "dry_run", "returncode": 0,
+        "stdout": {"kind": "operator-proposal", "ok": True}, "stderr": "",
+        "argv": ["simplicio-dev-cli", "task", "demo"],
+    }))
+    return repo, task
+
+
+def _arm_deterministic_preflight_fixture(monkeypatch, tmp_path, **kwargs):
+    repo, task = _setup_deterministic_preflight_fixture(monkeypatch, tmp_path, **kwargs)
+    armed = runner_mod.arm_run(str(repo), str(task), "verified", 12)
+    return repo, task, armed, Path(armed["run_dir"])
+
+
+def test_arm_run_blocks_when_plan_has_no_authorized_target(tmp_path, monkeypatch):
+    repo, task = _setup_deterministic_preflight_fixture(monkeypatch, tmp_path, targets=False)
+    monkeypatch.setattr(runner_mod, "validate_plan", lambda *args, **kwargs: {
+        "valid": True, "errors": [], "warnings": [],
+    })
+    armed = runner_mod.arm_run(str(repo), str(task), "verified", 12)
+    run_dir = Path(armed["run_dir"])
+
+    assert armed["state"]["phase"] == "blocked"
+    assert "no authorized operator target" in armed["state"]["history"][-1]["extra"]["error"]
+    assert (run_dir / "manifest.json").exists()
+    assert (run_dir / "plan.json").exists()
+    assert not (run_dir / "operator-receipt.json").exists()
+
+
+def test_arm_run_blocks_when_operator_dry_run_fails(tmp_path, monkeypatch):
+    _, _, armed, run_dir = _arm_deterministic_preflight_fixture(
+        monkeypatch, tmp_path,
+        operator={"execution_state": "blocked", "returncode": 1,
+                   "stdout": {}, "stderr": "dry run failed"},
+    )
+
+    assert armed["state"]["phase"] == "blocked"
+    assert "dry run failed" in armed["state"]["history"][-1]["extra"]["error"]
+    assert (run_dir / "manifest.json").exists()
+    assert (run_dir / "plan.json").exists()
+    assert (run_dir / "operator-receipt.json").exists()
+
+
+def test_execute_operator_batch_blocks_before_dispatch_when_receipt_missing_or_stale(tmp_path, monkeypatch):
+    for case in ("missing", "stale"):
+        case_dir = tmp_path / case
+        repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, case_dir)
+        operator_receipt = run_dir / "operator-receipt.json"
+        if case == "missing":
+            operator_receipt.unlink()
+        else:
+            payload = json.loads(operator_receipt.read_text(encoding="utf-8"))
+            payload["plan_hash"] = "stale-plan"
+            operator_receipt.write_text(json.dumps(payload), encoding="utf-8")
+        dispatched = []
+        monkeypatch.setattr(
+            runner_mod, "dispatch_operator_batch",
+            lambda *args, **kwargs: dispatched.append((args, kwargs)),
+        )
+
+        with pytest.raises(RuntimeError):
+            runner_mod.execute_operator_batch(str(repo), armed["manifest"]["run_id"])
+
+        diagnostic = json.loads((run_dir / "operator-batch-preflight.json").read_text(encoding="utf-8"))
+        assert diagnostic["schema"] == "simplicio.operator-batch-preflight/v1"
+        assert diagnostic["status"] == "BLOCKED"
+        assert json.loads((run_dir / "state.json").read_text(encoding="utf-8"))["phase"] == "blocked"
+        assert dispatched == []
+        assert not (run_dir / "operator-batch.jsonl").exists()
+        assert not list(run_dir.glob("*dead*letter*"))
+
+
+def test_conduct_run_blocked_preflight_creates_no_batch_dead_letters(tmp_path, monkeypatch):
+    repo, task = _setup_deterministic_preflight_fixture(monkeypatch, tmp_path, targets=False)
+
+    result = runner_mod.conduct_run(str(repo), str(task))
+    run_dir = Path(result["run_dir"])
+
+    assert result["state"]["phase"] == "blocked"
+    assert not (run_dir / "operator-batch.jsonl").exists()
+    assert not list(run_dir.glob("*dead*letter*"))
+
+
+def test_execute_operator_batch_accepts_fresh_run_receipt_chain(tmp_path, monkeypatch):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    dispatched = []
+
+    def fake_dispatch(items, **kwargs):
+        dispatched.extend(list(items))
+        return {"failed_task_indices": [], "dead_letter_task_indices": []}
+
+    monkeypatch.setattr(runner_mod, "dispatch_operator_batch", fake_dispatch)
+    result = runner_mod.execute_operator_batch(
+        str(repo), armed["manifest"]["run_id"], max_workers=1,
+        isolated_contexts={1: {"isolation": "shared"}}, auto_fan_out=False,
+    )
+
+    assert result["failed_task_indices"] == []
+    assert len(dispatched) == 1
+    assert (run_dir / "manifest.json").exists()
+    assert (run_dir / "plan.json").exists()
+    assert (run_dir / "mapper-context.json").exists()
+    assert (run_dir / "operator-preflight.json").exists()
+    assert (run_dir / "operator-receipt.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("receipt_name", "field", "value", "message"),
+    [
+        ("mapper-context.json", "run_id", "run-other", "not bound to the current run"),
+        ("plan.json", "run_id", "run-other", "not bound to the current run"),
+        ("plan.json", "mapper_context_hash", "", "no mapper context hash"),
+        ("operator-receipt.json", "run_id", "run-other", "not bound to the current run"),
+        ("operator-receipt.json", "mapper_context_hash", "tampered", "mapper receipt"),
+        ("operator-receipt.json", "returncode", 1, "successful dry-run"),
+        ("operator-receipt.json", "target", "../outside.py", "authorized repository"),
+    ],
+)
+def test_batch_rejects_cross_run_and_tampered_receipt_bindings(
+    tmp_path, monkeypatch, receipt_name, field, value, message,
+):
+    case_dir = tmp_path / (receipt_name.replace(".json", "") + "-" + field)
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, case_dir)
+    receipt_path = run_dir / receipt_name
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    payload[field] = value
+    receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=message):
+        runner_mod.execute_operator_batch(str(repo), armed["manifest"]["run_id"])
+
+    diagnostic = json.loads((run_dir / "operator-batch-preflight.json").read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "BLOCKED"
+    assert diagnostic["blocker"]["scope"] == "global"
+    assert diagnostic["blocker"]["reason_code"] == "operator_batch_preflight_failed"
+    assert not (run_dir / "operator-batch.jsonl").exists()
+    assert not list(run_dir.glob("*dead*letter*"))
+
+
+def test_batch_rejects_mapper_context_byte_tamper(tmp_path, monkeypatch):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    mapper_path = run_dir / "mapper-context.json"
+    mapper = json.loads(mapper_path.read_text(encoding="utf-8"))
+    mapper["generated_at"] = "2026-07-14T00:00:01Z"
+    mapper_path.write_text(json.dumps(mapper), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="current mapper context bytes"):
+        runner_mod.execute_operator_batch(str(repo), armed["manifest"]["run_id"])
+
+    diagnostic = json.loads((run_dir / "operator-batch-preflight.json").read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "BLOCKED"
+    assert diagnostic["blocker"]["scope"] == "global"
+    assert not (run_dir / "operator-batch.jsonl").exists()
+
+
+@pytest.mark.parametrize("missing_capability", ["--bound-paths", "--target"])
+def test_batch_rejects_operator_preflight_missing_capability(
+    tmp_path, monkeypatch, missing_capability,
+):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    preflight_path = run_dir / "operator-preflight.json"
+    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    preflight["missing_capabilities"] = [missing_capability]
+    preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="missing required capabilities"):
+        runner_mod.execute_operator_batch(str(repo), armed["manifest"]["run_id"])
+
+    diagnostic = json.loads((run_dir / "operator-batch-preflight.json").read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "BLOCKED"
+    assert diagnostic["blocker"]["scope"] == "global"
+    assert not (run_dir / "operator-batch.jsonl").exists()
+
+
+def test_direct_dispatch_cannot_bypass_run_global_preflight(tmp_path, monkeypatch):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    operator_path = run_dir / "operator-receipt.json"
+    operator = json.loads(operator_path.read_text(encoding="utf-8"))
+    operator["plan_hash"] = "tampered"
+    operator_path.write_text(json.dumps(operator), encoding="utf-8")
+    prepared = []
+    monkeypatch.setattr(
+        runner_mod, "_prepare_worktree_contexts",
+        lambda *args, **kwargs: prepared.append((args, kwargs)),
+    )
+
+    with pytest.raises(RuntimeError, match="current plan"):
+        runner_mod.dispatch_operator_batch(
+            [{"repo": str(repo), "run_id": armed["manifest"]["run_id"], "task_index": 1}],
+            journal_dir=str(run_dir),
+        )
+
+    assert prepared == []
+    diagnostic = json.loads((run_dir / "operator-batch-preflight.json").read_text(encoding="utf-8"))
+    assert diagnostic["blocker"]["scope"] == "global"
+    assert json.loads((run_dir / "state.json").read_text(encoding="utf-8"))["phase"] == "blocked"
+    assert not (run_dir / "operator-batch.jsonl").exists()
+    assert not list(run_dir.glob("*dead*letter*"))
 
 
 if __name__ == "__main__":
