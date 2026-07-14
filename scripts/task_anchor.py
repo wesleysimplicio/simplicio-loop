@@ -97,6 +97,15 @@ def log(msg):
     print("  " + msg)
 
 
+def _emit_progress(step, status, **kw):
+    """Fail-open progress-feedback hook (#299) — never raises, never blocks the anchor worker."""
+    try:
+        import loop_progress
+        loop_progress.emit_event(step, status=status, source="task_anchor.py", **kw)
+    except Exception:
+        pass
+
+
 def _now():
     import time
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -316,6 +325,8 @@ def cmd_set(opts):
     log("anchored item=%s · %d criteria (%d already verified) · fp=%s" % (
         anchor["item"] or "-", total, done, fp))
     print("anchored")
+    _emit_progress("triage", "end", item=anchor.get("item") or None,
+                   detail="anchor congelado: %d ACs" % total)
 
 
 def cmd_mark(opts):
@@ -348,6 +359,9 @@ def cmd_mark(opts):
     done, total, _ = coverage(anchor["criteria"])
     log("%s -> %s (%d/%d verified)" % (cid, status, done, total))
     print("marked")
+    if status == "done":
+        _emit_progress("journal", "end", item=anchor.get("item") or None, outcome="pass",
+                       detail="AC %s verificado (%d/%d)" % (cid, done, total))
 
 
 def cmd_status(opts):

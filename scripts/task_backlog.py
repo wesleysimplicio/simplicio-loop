@@ -112,6 +112,15 @@ except Exception:  # pragma: no cover
     ensure_identity = identity_matches = lease_identity = None
 
 
+def _emit_progress(step, status, **kw):
+    """Fail-open progress-feedback hook (#299) — never raises, never blocks the backlog worker."""
+    try:
+        import loop_progress
+        loop_progress.emit_event(step, status=status, source="task_backlog.py", **kw)
+    except Exception:
+        pass
+
+
 def _now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -920,10 +929,15 @@ def cmd_init(opts):
     master["contract"] = {"name": "simplicio.work-items/v1", "graph_hash": master["graph_hash"]}
     _refresh_ready_states(items)
     backlog_path = os.environ.get("SIMPLICIO_BACKLOG_FILE") or BACKLOG
+    rebaseline = os.path.exists(backlog_path)  # re-freeze over an existing backlog (#299 AC6)
     for item in items:
         _freeze_item_workspace(item, master, path=backlog_path)
     _save(master, items, path=backlog_path)
+    total_acs = sum(len(item.get("acs", [])) for item in items)
     print("frozen %d item(s)" % len(items))
+    _emit_progress("triage", "end",
+                  detail="backlog congelado: %d itens, %d ACs, modo drain" % (len(items), total_acs),
+                  rebaseline=rebaseline)
 
 
 @_transactional
@@ -977,6 +991,9 @@ def cmd_next(_opts):
         _record_attempt(item, item["lease"])
         _save(master, items)
         print("%s\t%s\t%s" % (item.get("id"), item.get("goal"), fence))
+        _emit_progress("triage", "begin", item=item.get("id"),
+                       detail="item claimado: %s (lease %s)" % (
+                           (item.get("goal") or "")[:80], item["lease"].get("worker") or "-"))
         return
     _refresh_ready_states(items)
     if master:
@@ -1043,6 +1060,8 @@ def cmd_done(opts):
         })
     _save(master, items)
     print("done %s" % item_id)
+    _emit_progress("triage", "end", item=item_id, outcome="pass",
+                   detail="item done (%d/%d ACs)" % (done, total))
 
 
 @_transactional
@@ -1074,6 +1093,7 @@ def cmd_skip(opts):
             _bump_revision(master)
             _save(master, items)
             print("skipped %s" % item_id)
+            _emit_progress("triage", "skipped", item=item_id, detail=reason)
             return
     print("backlog: no such item %r" % item_id)
     sys.exit(2)
@@ -1110,6 +1130,8 @@ def cmd_block(opts):
             _bump_revision(master)
             _save(master, items)
             print("blocked %s" % item_id)
+            _emit_progress("triage", "blocked", item=item_id, outcome="blocked",
+                           detail="%s (%s)" % (reason, code))
             return
     print("backlog: no such item %r" % item_id)
     sys.exit(2)
@@ -1158,6 +1180,8 @@ def cmd_fail(opts):
             _bump_revision(master)
             _save(master, items)
             print("dead-letter %s" % item_id)
+            _emit_progress("triage", "blocked", item=item_id, outcome="blocked",
+                           detail="dead-letter: %s" % reason)
             return
         item["status"] = "ready"
         item["blocked_reason"] = ""
@@ -1166,6 +1190,8 @@ def cmd_fail(opts):
         _bump_revision(master)
         _save(master, items)
         print("failed %s (%d/%d)" % (item_id, len(failures), max_failures))
+        _emit_progress("triage", "end", item=item_id, outcome="fail",
+                       detail="%s (%d/%d distinct failures)" % (reason, len(failures), max_failures))
         return
     print("backlog: no such item %r" % item_id)
     sys.exit(2)
