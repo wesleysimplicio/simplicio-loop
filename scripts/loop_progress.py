@@ -256,7 +256,25 @@ def build_snapshot(cap=None):
         "last_outcome": last.get("outcome"),
         "last_detail": last.get("detail") or "",
         "last_source": last.get("source") or "",
+        "run_state": _run_state(last),
     }
+
+
+def _run_state(last):
+    """Derive the F3 (encerramento) run_state purely from the last event (#301 § 4). A run stays
+    "running" until a `refeed_exit` event closes it out — never left "in progress" forever."""
+    if (last.get("step") or "") != "refeed_exit":
+        return "running"
+    detail = (last.get("detail") or "").lower()
+    if last.get("outcome") == "pass":
+        return "done"
+    if "cap" in detail:
+        return "capped"
+    if "handoff" in detail:
+        return "handoff"
+    if "stop" in detail:
+        return "stopped"
+    return "blocked"
 
 
 def _warning_banner(snapshot):
@@ -360,6 +378,7 @@ def render_full(snapshot):
         snapshot.get("ac_done"), snapshot.get("ac_total"))
         if snapshot.get("ac_total") is not None else "| ACs do item ativo | sem anchor |")
     lines.append("| modo de cálculo | %s |" % snapshot.get("mode"))
+    lines.append("| run_state | %s |" % snapshot.get("run_state"))
     lines.append("| iteração | %s%s |" % (
         snapshot.get("iteration"), ("/%s" % snapshot["cap"]) if snapshot.get("cap") else ""))
     lines.append("")

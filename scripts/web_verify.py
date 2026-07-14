@@ -51,9 +51,22 @@ DEFAULT_OUT = os.path.join(REPO, ".orchestrator", "tee", "web")
 # same matcher as web-evidence.md "When it fires"
 FE_RE = re.compile(r"\.(tsx|jsx|vue|svelte|css|scss|html)$|^(components|pages|app|public|src/ui)/", re.I)
 
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 
 def log(msg):
     print("  " + msg)
+
+
+def _emit_progress(status, outcome=None, detail=""):
+    """Fail-open progress-feedback hook (#301) — never raises, never blocks web_verify."""
+    try:
+        import loop_progress
+        loop_progress.emit_event("evidence", status=status, outcome=outcome, detail=detail,
+                                 source="web_verify.py")
+    except Exception:
+        pass
 
 
 def _exe(name):
@@ -143,6 +156,7 @@ def _blocked(out, msg):
     _append_ledger(out, "web_verify: BLOCKED — " + msg)
     print("blocked")
     log(msg)
+    _emit_progress("blocked", outcome="blocked", detail=msg[:400])
     sys.exit(3)
 
 
@@ -151,6 +165,7 @@ def cmd_run(opts):
         print("run requires --url")
         sys.exit(2)
     url = opts["url"]
+    _emit_progress("begin", detail="web_verify: %s" % url)
     expect = opts.get("expect", "")
     issue = str(opts.get("issue", "x"))
     out = opts.get("out", DEFAULT_OUT)
@@ -197,6 +212,8 @@ def cmd_run(opts):
     _append_ledger(out, verdict)
     print("done" if ok else "fail")
     log(verdict)
+    _emit_progress("end", outcome=("pass" if ok else "fail"),
+                  detail="%s, screenshots em %s" % (verdict, out))
     if opts.get("upload") and opts.get("pr"):
         _upload(out, str(opts["pr"]), shot, trace_ref)
     sys.exit(0 if ok else 1)
