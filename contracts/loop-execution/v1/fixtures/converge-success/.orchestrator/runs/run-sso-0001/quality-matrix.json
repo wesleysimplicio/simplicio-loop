@@ -1,0 +1,13 @@
+{
+  "schema": "simplicio.quality-matrix/v1",
+  "coverage_threshold": 85.0,
+  "requirements": {
+    "implementation": {"status": "pass", "proof_ref": "operator-receipt.json"},
+    "unit": {"status": "pass", "proof_ref": "tests/unit"},
+    "integration": {"status": "pass", "proof_ref": "tests/integration"},
+    "system": {"status": "pass", "proof_ref": "tests/system"},
+    "regression": {"status": "pass", "proof_ref": "tests/regression"},
+    "benchmark": {"status": "pass", "proof_ref": "bench/quality_matrix_bench.json"}
+  },
+  "coverage": {"measured": 91.2}
+}
