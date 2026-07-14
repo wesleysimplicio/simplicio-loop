@@ -93,6 +93,7 @@ Who calls `emit`, and how (in-process `loop_progress.emit_event()` vs. the CLI t
 DRIFT/STALLED are surfaced ahead of everything else: `render_turn_header`/`render_full` prepend
 `⚠ DRIFT ` or `⚠ STALLED ` whenever the LAST event's `status` is `blocked` and its `detail`
 contains that keyword — derived purely from the event trail, never a separate flag.
+
 ## Delivery/entrega instrumentation (issue #301)
 
 | Producer | Emits | Notes |
@@ -126,3 +127,27 @@ deleting the scratchpad — `loop_progress._run_state()` derives `progress.json`
 from that last event: `done` (outcome pass), `capped`/`handoff`/`stopped` (blocked + a matching
 keyword in `detail`), else `blocked`. Absent a `refeed_exit` event, `run_state` stays `"running"` —
 a run's status file is never silently "eternally in progress" after the run genuinely ended.
+
+## Transcript surfacing (issue #302)
+
+The turn-header contract (SKILL.md § Output) makes progress visible where the user is actually
+looking — the transcript — on all 12 runtimes, hook-bound or not.
+
+- **Re-feed header.** `hooks/loop_stop.py`'s `_progress_header_prefix(nxt, max_iter)` builds a
+  ` · fase F1 · etapa 5/9 operate · item T3 · ACs 1/3 · 42% geral` fragment (via
+  `loop_progress.build_snapshot()` + `render_turn_header()`, stripping the `MEASURED|`/`UNVERIFIED|`
+  tag and the trailing `· iter N` — the outer bracket already carries the iteration) and splices it
+  into the existing `[simplicio-loop iteration N. ...]` re-feed header, right after the iteration
+  number. Also regenerates `PROGRESS.md` (`render --full`) once per turn — a file write, not a
+  context token. Fail-open: any error -> `""`, header identical to before this feature (this
+  repo's implementation of the issue's `hooks/loop_capture.py` § 3 — in THIS codebase promise
+  detection/rejection lives in `hooks/loop_stop.py`, not a separate capture hook; `loop_capture.py`
+  here is Cursor-only stdin transport with no completion logic).
+- **Promise-rejected signal.** When a turn types a `<promise>` but the completion oracle refuses it
+  (no in-turn evidence / no persisted receipt), `loop_stop.py` emits `refeed_exit blocked` with
+  `detail: "promise REJEITADA: sem evidência no turno"` — high-signal ("the model thought it was
+  done, the gate disagreed") that the NEXT turn's `⚠` banner surfaces immediately, even though the
+  loop itself simply continues (no state change beyond the event).
+- **Self-paced tick.** Hostless runtimes call `render --turn-header` at tick-start (echoed) and
+  `render --full` at tick-end (regenerates `PROGRESS.md`) — the identical surface, agent-driven
+  instead of hook-driven.
