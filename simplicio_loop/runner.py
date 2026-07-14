@@ -771,7 +771,7 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         raise RuntimeError("simplicio-dev-cli unavailable")
     if not receipt["identity_ok"]:
         raise RuntimeError("simplicio-dev-cli identity mismatch")
-    if missing_tokens:
+    if missing_tokens or missing_capabilities:
         raise RuntimeError("simplicio-dev-cli missing required capabilities")
     if version_rc != 0:
         raise RuntimeError("simplicio-dev-cli version probe failed")
@@ -857,6 +857,14 @@ def _validate_run_receipts(
         raise RuntimeError("operator receipt is not bound to the current run")
     if mapper.get("task_contract_hash") != contract_hash or plan.get("task_contract_hash") != contract_hash:
         raise RuntimeError("mapper and plan receipts do not match the task contract")
+    mapper_context_hash = str(plan.get("mapper_context_hash") or "")
+    if not mapper_context_hash:
+        raise RuntimeError("plan receipt has no mapper context hash")
+    actual_mapper_context_hash = hashlib.sha256(
+        (run_dir / "mapper-context.json").read_bytes()
+    ).hexdigest()
+    if actual_mapper_context_hash != mapper_context_hash:
+        raise RuntimeError("plan receipt does not match the current mapper context bytes")
 
     for name, payload in (("scan", mapper.get("scan")), ("inspect", mapper.get("inspect")),
                           ("handoff", mapper.get("handoff"))):
@@ -880,7 +888,7 @@ def _validate_run_receipts(
         raise RuntimeError("stale mapper preflight receipt: repository changed")
     if not operator_preflight.get("identity_ok") or not operator_preflight.get("version_ok"):
         raise RuntimeError("operator preflight receipt is not valid")
-    if operator_preflight.get("missing_tokens"):
+    if operator_preflight.get("missing_tokens") or operator_preflight.get("missing_capabilities"):
         raise RuntimeError("operator preflight receipt is missing required capabilities")
     operator_preflight_state = operator_preflight.get("repo_state") or {}
     if not operator_preflight_state.get("tree_hash") or not _repo_state_equivalent(operator_preflight_state, current_state):
@@ -909,7 +917,7 @@ def _validate_run_receipts(
         raise RuntimeError("operator receipt does not match the current plan")
     if operator.get("mapper_pack_hash") != plan.get("mapper_pack_hash"):
         raise RuntimeError("operator receipt does not match the mapper context")
-    if operator.get("mapper_context_hash") != plan.get("mapper_context_hash"):
+    if operator.get("mapper_context_hash") != mapper_context_hash:
         raise RuntimeError("operator receipt does not match the mapper receipt")
     operator_state = operator.get("repo_state_before") or {}
     if not operator_state.get("tree_hash") or not _repo_state_equivalent(operator_state, current_state):

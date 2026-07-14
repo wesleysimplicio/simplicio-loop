@@ -270,7 +270,7 @@ def _start_run_for_maintenance_cli(tmp_path, monkeypatch):
         "help_returncode": 0,
     }))
     monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON", json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
         "help_returncode": 0,
     }))
     monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", json.dumps({
@@ -479,7 +479,7 @@ def test_deliver_reconciles_external_delivery_state(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
         "help_returncode": 0
     })
     started = _arm_result(
@@ -571,7 +571,7 @@ def test_sync_source_requeries_github_fixture_for_merge_ready(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
         "help_returncode": 0
     })
     started = _arm_result(
@@ -624,7 +624,7 @@ def test_sync_source_requeries_github_fixture_for_release(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
         "help_returncode": 0
     })
     started = _arm_result(
@@ -677,7 +677,7 @@ def test_sync_source_reopens_delivery_when_merge_ready_regresses(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
         "help_returncode": 0
     })
     started = _arm_result(
@@ -737,7 +737,7 @@ def test_run_blocks_when_mapper_preflight_version_too_old(tmp_path):
                 "help_returncode": 0
             }),
             "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": json.dumps({
-                "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json",
+                "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
                 "help_returncode": 0
             })
         },
@@ -748,33 +748,27 @@ def test_run_blocks_when_mapper_preflight_version_too_old(tmp_path):
     assert "minimum version" in payload["state"]["blockers"][0]
 
 
-def test_run_blocks_when_devcli_preflight_lacks_required_capability(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "src").mkdir()
-    (repo / "src" / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
-    task = tmp_path / "task.md"
-    task.write_text(TASK, encoding="utf-8")
-    started = _run(
-        CLI + ["run", "--repo", str(repo), "--task", str(task), "--delivery", "verified", "--max-iterations", "9"],
-        REPO,
-        env={
-            "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": json.dumps({
-                "version_stdout": "simplicio-mapper 0.19.0",
-                "help_stdout": "Usage: simplicio-mapper inspect handoff ask sync drift",
-                "version_returncode": 0,
-                "help_returncode": 0
-            }),
-            "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": json.dumps({
-                "help_stdout": "Usage: simplicio-dev-cli",
-                "help_returncode": 0
-            })
-        },
+@pytest.mark.parametrize("missing_capability", ["--bound-paths", "--target"])
+def test_run_blocks_when_devcli_preflight_lacks_required_capability(
+    tmp_path, monkeypatch, missing_capability,
+):
+    surface = (
+        "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target"
+    ).replace(missing_capability, "")
+    _, task = _setup_deterministic_preflight_fixture(
+        monkeypatch,
+        tmp_path,
+        operator_preflight_surface=surface,
     )
-    assert started.returncode == 0, started.stdout + started.stderr
-    payload = json.loads(started.stdout)
+    payload = runner_mod.arm_run(str(tmp_path / "repo"), str(task), "verified", 9)
+
     assert payload["state"]["phase"] == "blocked"
     assert "required capabilities" in payload["state"]["blockers"][0]
+    receipt = json.loads(
+        (Path(payload["run_dir"]) / "operator-preflight.json").read_text(encoding="utf-8")
+    )
+    assert receipt["missing_tokens"] == []
+    assert receipt["missing_capabilities"] == [missing_capability]
 
 
 def test_sync_source_infers_pr_open_when_merge_ready_target_is_not_yet_satisfied(tmp_path):
@@ -922,6 +916,7 @@ def test_resume_clears_maintenance_backlog_only_transition(tmp_path, monkeypatch
 
 def _setup_deterministic_preflight_fixture(
     monkeypatch, tmp_path, *, targets=True, operator=None, task_text=TASK,
+    operator_preflight_surface=None,
 ):
     repo = tmp_path / "repo"
     repo.mkdir(parents=True)
@@ -986,14 +981,22 @@ def _setup_deterministic_preflight_fixture(
     def fake_operator_preflight(repo_path, run_root):
         receipt = {
             "tool": "simplicio-dev-cli", "identity_ok": True, "version_ok": True,
-            "missing_tokens": [], "missing_capabilities": ["--bound-paths"],
+            "missing_tokens": [], "missing_capabilities": [],
             "repo_state": dict(fingerprint),
         }
         runner_mod._write_json(run_root / "operator-preflight.json", receipt)
         return receipt
 
     monkeypatch.setattr(runner_mod, "_run_mapper", fake_mapper)
-    monkeypatch.setattr(runner_mod, "_preflight_operator", fake_operator_preflight)
+    if operator_preflight_surface is None:
+        monkeypatch.setattr(runner_mod, "_preflight_operator", fake_operator_preflight)
+    else:
+        monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON", json.dumps({
+            "help_stdout": operator_preflight_surface,
+            "help_returncode": 0,
+            "version_stdout": "simplicio-py 0.14.0",
+            "version_returncode": 0,
+        }))
     if not targets:
         monkeypatch.setattr(runner_mod, "_fallback_targets", lambda path: [])
     monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", json.dumps(operator or {
@@ -1107,6 +1110,7 @@ def test_execute_operator_batch_accepts_fresh_run_receipt_chain(tmp_path, monkey
     [
         ("mapper-context.json", "run_id", "run-other", "not bound to the current run"),
         ("plan.json", "run_id", "run-other", "not bound to the current run"),
+        ("plan.json", "mapper_context_hash", "", "no mapper context hash"),
         ("operator-receipt.json", "run_id", "run-other", "not bound to the current run"),
         ("operator-receipt.json", "mapper_context_hash", "tampered", "mapper receipt"),
         ("operator-receipt.json", "returncode", 1, "successful dry-run"),
@@ -1132,6 +1136,41 @@ def test_batch_rejects_cross_run_and_tampered_receipt_bindings(
     assert diagnostic["blocker"]["reason_code"] == "operator_batch_preflight_failed"
     assert not (run_dir / "operator-batch.jsonl").exists()
     assert not list(run_dir.glob("*dead*letter*"))
+
+
+def test_batch_rejects_mapper_context_byte_tamper(tmp_path, monkeypatch):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    mapper_path = run_dir / "mapper-context.json"
+    mapper = json.loads(mapper_path.read_text(encoding="utf-8"))
+    mapper["generated_at"] = "2026-07-14T00:00:01Z"
+    mapper_path.write_text(json.dumps(mapper), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="current mapper context bytes"):
+        runner_mod.execute_operator_batch(str(repo), armed["manifest"]["run_id"])
+
+    diagnostic = json.loads((run_dir / "operator-batch-preflight.json").read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "BLOCKED"
+    assert diagnostic["blocker"]["scope"] == "global"
+    assert not (run_dir / "operator-batch.jsonl").exists()
+
+
+@pytest.mark.parametrize("missing_capability", ["--bound-paths", "--target"])
+def test_batch_rejects_operator_preflight_missing_capability(
+    tmp_path, monkeypatch, missing_capability,
+):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    preflight_path = run_dir / "operator-preflight.json"
+    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    preflight["missing_capabilities"] = [missing_capability]
+    preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="missing required capabilities"):
+        runner_mod.execute_operator_batch(str(repo), armed["manifest"]["run_id"])
+
+    diagnostic = json.loads((run_dir / "operator-batch-preflight.json").read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "BLOCKED"
+    assert diagnostic["blocker"]["scope"] == "global"
+    assert not (run_dir / "operator-batch.jsonl").exists()
 
 
 def test_direct_dispatch_cannot_bypass_run_global_preflight(tmp_path, monkeypatch):
