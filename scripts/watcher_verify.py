@@ -29,7 +29,21 @@ ANCHOR_CHALLENGE_SCHEMA = "simplicio.anchor-challenge/v1"
 
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 from simplicio_loop.evidence import execute_receipt_checks, watcher_truth_from_receipt  # noqa: E402
+
+
+def _emit_progress(status, outcome=None, detail=""):
+    """Fail-open progress-feedback hook (#300) — never raises. Called ONLY after the watcher
+    receipt is already written to disk (invariant 2: progress is a projection of the gate, never
+    a substitute for it — it must never fire before watcher_state.json exists)."""
+    try:
+        import loop_progress
+        loop_progress.emit_event("watcher", status=status, outcome=outcome, detail=detail,
+                                 source="watcher_verify.py")
+    except Exception:
+        pass
 
 
 def _set_repo(repo):
@@ -377,6 +391,8 @@ def cmd_verify():
     os.replace(tmp, WATCHER_STATE)
     tag = "MEASURED|" if ready else "UNVERIFIED|"
     print("%swatcher receipt written: match=%s (%s)" % (tag, ready, receipt["reported"]))
+    _emit_progress("end", outcome=("pass" if ready else "fail"),
+                  detail=receipt["reported"][:400])
     return 0
 
 

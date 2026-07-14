@@ -121,16 +121,35 @@ substitutes for re-reading the tree). For triage questions the map alone doesn't
 `simplicio-mapper ask . <impact|tests-for|callers|...> <arg> --json`. Verify-side docs gates:
 `sync . --check --json` / `drift . --check --json` (BLOCK only when the AC itself is docs).
 
+**Decide step (etapa 4/9 — the model's own step, no worker).** Immediately before delegating to the
+operator: `python3 scripts/loop_progress.py emit --step decide --status end --source llm --detail
+"<one-line summary of the decided change, target AC>"` — the only event whose `detail` comes from
+the LLM; the render never tags it `MEASURED|` (it's a decision, not a measurement).
+
 **Operate step (every turn that mutates code).** Delegate the DECIDED, AC-scoped change to the
 operator — never hand-edit inside the loop:
 ```bash
+python3 scripts/loop_progress.py emit --step operate --status begin --detail "operador: <target file>"
 simplicio-dev-cli task "<the decided, AC-scoped change>" --target <file> [--json]
+python3 scripts/loop_progress.py emit --step operate --status end --outcome pass|fail \
+    --detail "verify do operador: <result>, tentativas usadas: n/3"
 ```
 The operator applies the diff, runs the tests, and self-corrects up to 3× — its passing
 verification IS the in-turn evidence the promise gate needs (below).
 
-One turn: `preflight → survey (mapper) → triage (re-read survey) → DECIDE (AI) → operate
-(simplicio-dev-cli task: apply+test+retry ≤3×) → watcher-gate (independent re-execution) → <promise> only if all gates passed`.
+**Watcher step (etapa 6/9).** `scripts/watcher_verify.py verify` emits its own `end` event AFTER
+`watcher_state.json` is written — never before (progress reports the gate, it never substitutes
+for it).
+
+**Journal step (etapa 7/9).** `scripts/loop_journal.py record` emits `end` with `outcome = gate`;
+`scripts/loop_journal.py stall` on `STALLED` emits `blocked` — the NEXT turn's render opens with
+`⚠ STALLED` (or `⚠ DRIFT`, from `task_anchor.py check`) ahead of everything else.
+
+One turn: `preflight → survey (mapper) → triage (re-read survey, journal resume) → DECIDE (AI) →
+operate (simplicio-dev-cli task: apply+test+retry ≤3×) → watcher-gate (independent re-execution) →
+journal record → <promise> only if all gates passed`. `scripts/loop_journal.py`'s `cmd_resume`/
+`cmd_record`/`cmd_stall` call `loop_progress.emit_event()` in-process (no subprocess per event) for
+the `triage`/`journal` steps; `task_anchor.py check` does the same on `DRIFT`.
 
 ## Video evidence producer (hyperframes) — demo videos as proof
 
