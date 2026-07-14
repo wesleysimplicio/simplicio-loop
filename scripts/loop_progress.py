@@ -379,6 +379,69 @@ def _last_n_events(n):
     return out[-n:]
 
 
+# ----- library entry point (other workers import this directly, in-process) -----------------
+
+def emit_event(step, status="begin", item=None, detail=None, outcome=None, source=None,
+              iteration=None, cap=None, phase=None, rebaseline=False):
+    """Append one progress event + refresh the snapshot/PROGRESS.md. Returns the record dict, or
+    None if `step`/`status`/`outcome` are invalid (caller decides whether that's fatal).
+
+    This is the SAME code path `emit` (CLI) uses — callers embedding this in-process (task_backlog,
+    task_anchor, preflight) should wrap the call in try/except for fail-open behavior (AC7 of #299:
+    a progress-instrumentation failure must never fail the underlying worker).
+    """
+    step = (step or "").strip()
+    if step not in STEPS:
+        return None
+    status = (status or "begin").strip()
+    if status not in STATUSES:
+        return None
+    if isinstance(outcome, str):
+        outcome = outcome.strip() or None
+    if outcome not in OUTCOMES:
+        return None
+
+    idx = step_index_of(step)
+    steps_total = len(STEPS)
+    resolved_phase = phase or STEP_PHASE.get(step, "F1")
+    try:
+        iteration = int(iteration if iteration is not None else (read_last_event().get("iteration") or 0))
+    except (TypeError, ValueError):
+        iteration = 0
+
+    anchor_state = read_anchor_state()
+    backlog_state = read_backlog_state()
+    pct_item, pct_overall, mode = compute_pct(anchor_state, backlog_state, idx, steps_total)
+
+    rec = {
+        "ts": _now(),
+        "iteration": iteration,
+        "phase": resolved_phase,
+        "step": step,
+        "step_index": idx,
+        "steps_total": steps_total,
+        "status": status,
+        "outcome": outcome,
+        "item_id": item,
+        "detail": (detail or "")[:500],
+        "source": source or "",
+        "pct_item": pct_item,
+        "pct_overall": pct_overall,
+        "rebaseline": bool(rebaseline),
+    }
+    locked_append_line(_events_path(), json.dumps(rec, ensure_ascii=False))
+
+    try:
+        cap_int = int(cap) if cap else None
+    except (TypeError, ValueError):
+        cap_int = None
+    snapshot = build_snapshot(cap=cap_int)
+    write_snapshot(snapshot)
+    _, md = render_full(snapshot)
+    _atomic_write(_md_path(), md)
+    return rec
+
+
 # ----- CLI verbs -----------------------------------------------------------------------------
 
 def cmd_emit(opts):
@@ -397,49 +460,21 @@ def cmd_emit(opts):
         print("loop_progress: --outcome must be one of pass|fail|blocked")
         sys.exit(2)
 
-    idx = step_index_of(step)
-    steps_total = len(STEPS)
-    phase = (opts.get("phase") or STEP_PHASE.get(step, "F1"))
-    try:
-        iteration = int(opts.get("iteration") or (read_last_event().get("iteration") or 0))
-    except (TypeError, ValueError):
-        iteration = 0
-
-    anchor_state = read_anchor_state()
-    backlog_state = read_backlog_state()
-    pct_item, pct_overall, mode = compute_pct(anchor_state, backlog_state, idx, steps_total)
-
-    rec = {
-        "ts": _now(),
-        "iteration": iteration,
-        "phase": phase,
-        "step": step,
-        "step_index": idx,
-        "steps_total": steps_total,
-        "status": status,
-        "outcome": outcome,
-        "item_id": opts.get("item"),
-        "detail": (opts.get("detail") or "")[:500],
-        "source": opts.get("source") or "",
-        "pct_item": pct_item,
-        "pct_overall": pct_overall,
-        "rebaseline": bool(opts.get("rebaseline")),
-    }
-    locked_append_line(_events_path(), json.dumps(rec, ensure_ascii=False))
-
     cap = None
     try:
         cap = int(opts.get("cap")) if opts.get("cap") else None
     except (TypeError, ValueError):
         cap = None
-    snapshot = build_snapshot(cap=cap)
-    write_snapshot(snapshot)
-    tag, md = render_full(snapshot)
-    _atomic_write(_md_path(), md)
 
-    tag = _tag(pct_overall)
+    rec = emit_event(step, status=status, item=opts.get("item"), detail=opts.get("detail"),
+                     outcome=outcome, source=opts.get("source"), iteration=opts.get("iteration"),
+                     cap=cap, phase=opts.get("phase"), rebaseline=bool(opts.get("rebaseline")))
+
+    tag = _tag(rec["pct_overall"])
+    pct_item, pct_overall, mode = compute_pct(read_anchor_state(), read_backlog_state(),
+                                              rec["step_index"], rec["steps_total"])
     print("%s|emitted step=%s status=%s item=%s pct_overall=%s mode=%s" % (
-        tag, step, status, rec["item_id"] or "-", _pct_str(pct_overall), mode))
+        tag, step, status, rec["item_id"] or "-", _pct_str(rec["pct_overall"]), mode))
 
 
 def cmd_status(opts):
