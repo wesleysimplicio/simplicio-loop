@@ -128,9 +128,11 @@ Tier 2 best-effort with contributions welcome.**
 
 ## Verifying an adapter
 
-The installer's contract (skills copied · entry file marked · hooks present/wired) is verified
-end-to-end per runtime by `scripts/verify_adapters.py`, which installs into a throwaway target and
-asserts each promise — no risk to your real config:
+The installer's contract (skills copied · entry file marked · hooks present/wired · worker
+scripts copied · `scripts/loop_progress.py selftest` runs GREEN from inside the installed
+target — #303 AC5, a dedicated per-runtime assertion, not one inferred from the sweep merely
+exiting 0) is verified end-to-end per runtime by `scripts/verify_adapters.py`, which installs
+into a throwaway target and asserts each promise — no risk to your real config:
 
 ```bash
 python3 scripts/verify_adapters.py tier1                        # Tier 1 — gated, run on every commit

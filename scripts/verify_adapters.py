@@ -3,10 +3,12 @@
 
 Runs the universal installer into a throwaway target for each runtime and asserts the adapter's
 contract actually lands: the 6 skills are copied, the runtime's entry/instructions file exists and
-carries the idempotent marker block, hooks are present where the adapter promises them, and (for
-Claude) the loop hooks are wired into settings.json. This is the runnable half of issue #11 — it
-proves the installer + thin adapters end-to-end on THIS machine, in isolation, with zero risk to
-the user's real config (always `--target <tmpdir>`, never `--global`).
+carries the idempotent marker block, hooks are present where the adapter promises them, (for
+Claude) the loop hooks are wired into settings.json, AND (#303 AC5) `scripts/loop_progress.py
+selftest` actually runs GREEN from inside the installed target — a dedicated, per-runtime
+assertion, not an implicit one inferred from the sweep merely exiting 0. This is the runnable half
+of issue #11 — it proves the installer + thin adapters end-to-end on THIS machine, in isolation,
+with zero risk to the user's real config (always `--target <tmpdir>`, never `--global`).
 
 What it does NOT cover: launching the actual runtime binary (antigravity / kiro / opencode /
 aider) and running `/simplicio-loop` inside it. That manual smoke step is listed per-runtime in
@@ -115,7 +117,43 @@ def _check(runtime, target):
                 if "_progress_header_prefix" not in f.read():
                     fails.append("loop_stop.py installed without progress injection "
                                 "(_progress_header_prefix marker missing)")
+
+    # 7) #303 AC5 — `loop_progress.py selftest` actually runs GREEN from inside the installed
+    # target, for real, for every runtime. Previously this was only checked implicitly (via the
+    # full sweep passing); this is the dedicated, per-runtime assertion the issue asked for.
+    # Every runtime this harness installs (project-local, `--target <tmpdir>`) gets `scripts/`
+    # copied alongside skills/hooks (`install_lib.copy_scripts`, #303 AC5 fix), so the worker is
+    # invoked exactly as the loop itself would: `python3 scripts/loop_progress.py selftest` with
+    # cwd == the installed target, not the source repo. Skipped only when target IS this source
+    # checkout (nothing was copied over itself — the real scripts/ already lives there and is
+    # covered by `tests/test_loop_progress.py`).
+    if os.path.abspath(target) != os.path.abspath(REPO):
+        fails.extend(_check_loop_progress_selftest(target))
     return fails
+
+
+def _check_loop_progress_selftest(target):
+    """Run `python3 <target>/scripts/loop_progress.py selftest` for real; return failure strings.
+
+    Faithful to how every adapter actually invokes it (SKILL.md/hooks call `python3
+    scripts/loop_progress.py ...` relative to the runtime's own cwd) — this runs with
+    `cwd=target`, not the source repo, so it fails loudly if `scripts/` wasn't actually copied
+    into the installed layout rather than passing on the source repo's own copy by accident.
+    """
+    worker = os.path.join(install_lib.scripts_dir(target, False), "loop_progress.py")
+    if not os.path.isfile(worker):
+        return ["scripts not copied (loop_progress.py absent) — #303 AC5"]
+    try:
+        r = subprocess.run([sys.executable, worker, "selftest"], capture_output=True, text=True,
+                           cwd=target, encoding="utf-8", errors="replace", timeout=60)
+    except subprocess.TimeoutExpired:
+        return ["loop_progress.py selftest timed out (>60s) from installed target"]
+    out = (r.stdout or "") + (r.stderr or "")
+    if r.returncode != 0 or "MEASURED|" not in out:
+        tail = "\n".join(ln for ln in out.splitlines() if ln.strip())[-500:]
+        return ["loop_progress.py selftest FAILED from installed target (exit %d): %s"
+                % (r.returncode, tail)]
+    return []
 
 
 def verify(runtime):

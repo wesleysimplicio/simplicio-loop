@@ -108,6 +108,27 @@ def test_check_passes_with_the_real_loop_stop_hook(tmp_path):
     assert not any("progress injection" in f for f in fails), fails
 
 
+def test_check_flags_missing_loop_progress_worker(tmp_path):
+    """#303 AC5 — a target with skills+hooks landed but NO `scripts/` copied (the pre-fix
+    behavior: `install_lib.py` never copied workers into a foreign target) must be flagged by
+    `_check()`, not silently pass. Proves the new assertion isn't tautological/always-green."""
+    target = str(tmp_path)
+    _seed_skills_dir(target, "placeholder")
+    fails = verify_adapters._check("claude", target)
+    assert any("#303 AC5" in f for f in fails), fails
+
+
+def test_check_passes_when_loop_progress_selftest_runs_green_from_target(tmp_path):
+    """#303 AC5 — positive control: once `scripts/` is copied into the installed target (as the
+    real `install_lib.copy_scripts` now does), `loop_progress.py selftest` must run GREEN from
+    INSIDE that target (cwd=target, not the source repo) and the dedicated check must accept it."""
+    target = str(tmp_path)
+    _seed_skills_dir(target, "placeholder")
+    verify_adapters.install_lib.copy_scripts(target, False)
+    fails = verify_adapters._check_loop_progress_selftest(target)
+    assert fails == [], fails
+
+
 def test_progress_md_updates_with_zero_host_specific_code(tmp_path):
     """#303 AC7 — the "universal denominator" proof: a completely unadapted/unknown runtime
     (no adapter, no hook, nothing host-specific) still gets a correct, live PROGRESS.md/
