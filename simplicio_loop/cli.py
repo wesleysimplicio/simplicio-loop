@@ -498,6 +498,10 @@ def main(argv=None) -> int:
         ),
     )
     parser.add_argument("-V", "--version", action="version", version=f"simplicio-loop {__version__}")
+    # Bare `simplicio-loop` (no subcommand at all) falls through to `install` below with these
+    # defaults — mirror p_install's own defaults here so that fallback doesn't crash with
+    # AttributeError when no subparser ever ran to populate args.target/args.globally.
+    parser.set_defaults(target=".", globally=False)
     sub = parser.add_subparsers(dest="command")
 
     p_install = sub.add_parser("install", help="install bundled skills + hooks into a runtime")
