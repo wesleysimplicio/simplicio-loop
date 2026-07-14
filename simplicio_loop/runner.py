@@ -34,6 +34,19 @@ try:
 except ImportError:  # pragma: no cover - installed package without scripts namespace
     ensure_identity = None
 
+try:
+    from scripts.distributed_trust_policy import (
+        TrustPolicyError,
+        authorize as _trust_authorize,
+        load_policy as _load_trust_policy,
+        resolve_environment as _resolve_trust_environment,
+    )
+except ImportError:  # pragma: no cover - installed package without scripts namespace
+    TrustPolicyError = RuntimeError  # type: ignore[assignment,misc]
+    _trust_authorize = None
+    _load_trust_policy = None
+    _resolve_trust_environment = None
+
 RUNNER_SCHEMA = "simplicio.run-manifest/v1"
 STATE_SCHEMA = "simplicio.run-state/v1"
 OPERATOR_RECEIPT_SCHEMA = "simplicio.operator-receipt/v0"
@@ -123,6 +136,56 @@ def _rand_token(n: int = 10) -> str:
     return "".join(random.choice(chars) for _ in range(n))
 
 
+def _resolve_trusted_queue_url(url: str) -> str:
+    """Resolve the distributed-queue destination via the #289 trust policy.
+
+    ``.github/workflows/distributed-183-proof.yml`` -- the workflow this issue's
+    exploit scenario named -- was removed repo-wide in #311, but the same
+    exfiltration/confused-deputy risk applies to this call site: it is the real,
+    currently-used way to hand a bearer token (``SIMPLICIO_REMOTE_QUEUE_TOKEN``)
+    to a network destination. Setting ``SIMPLICIO_REMOTE_ENVIRONMENT_ID`` opts
+    into fail-closed resolution: the destination comes from the versioned,
+    CODEOWNERS-reviewed ``.github/security/distributed-trust-policy.json``, not
+    from ``SIMPLICIO_REMOTE_QUEUE_URL``. A freeform ``SIMPLICIO_REMOTE_QUEUE_URL``
+    may still be set for local corroboration, but it must match the policy's
+    origin exactly -- an attacker-chosen destination is rejected before any
+    identity/queue object (and therefore any token) is created.
+
+    Environments without ``SIMPLICIO_REMOTE_ENVIRONMENT_ID`` set fall back to the
+    legacy unmanaged path (whatever ``SIMPLICIO_REMOTE_QUEUE_URL`` names) for
+    local/dev use; production/CI callers should set the environment id so the
+    destination is policy-resolved.
+    """
+    environment_id = os.environ.get("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "").strip()
+    if not environment_id:
+        return url
+    if _resolve_trust_environment is None or _load_trust_policy is None or _trust_authorize is None:
+        raise RuntimeError("distributed trust policy module unavailable")
+    policy_path = os.environ.get("SIMPLICIO_DISTRIBUTED_TRUST_POLICY", "").strip()
+    policy = _load_trust_policy(Path(policy_path)) if policy_path else _load_trust_policy()
+    env = _resolve_trust_environment(policy, environment_id)
+    repo_slug = os.environ.get("SIMPLICIO_REMOTE_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
+    ref = os.environ.get("SIMPLICIO_REMOTE_REF") or os.environ.get("GITHUB_REF", "")
+    actor = os.environ.get("SIMPLICIO_REMOTE_ACTOR") or os.environ.get("GITHUB_ACTOR", "")
+    ok, reason = _trust_authorize(policy, environment_id, repo_slug.strip(), ref.strip(), actor.strip())
+    if not ok:
+        raise RuntimeError("distributed trust policy denied: %s" % reason)
+    origin = env["origin"]
+    trusted_url = "%s://%s:%s%s" % (
+        origin["scheme"], origin["hostname"], origin["port"], origin.get("base_path", "/"),
+    )
+    if url and url.rstrip("/") != trusted_url.rstrip("/"):
+        # This is the literal #289 exploit replayed against the real call site:
+        # a caller-supplied destination must never override the reviewed
+        # policy, or an attacker who controls SIMPLICIO_REMOTE_QUEUE_URL could
+        # redirect the bearer token to infrastructure they control.
+        raise RuntimeError(
+            "distributed trust policy denied: SIMPLICIO_REMOTE_QUEUE_URL does not match the "
+            "resolved origin for environment_id '%s'" % environment_id
+        )
+    return trusted_url
+
+
 def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]]:
     """Return the opt-in network coordinator and stable worker identity.
 
@@ -131,8 +194,9 @@ def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]
     without a remote claim.
     """
     url = os.environ.get("SIMPLICIO_REMOTE_QUEUE_URL", "").strip()
-    if not url:
+    if not url and not os.environ.get("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "").strip():
         return None, None
+    url = _resolve_trusted_queue_url(url)
     if ensure_identity is None:
         raise RuntimeError("distributed identity adapter unavailable")
     identity = ensure_identity(
