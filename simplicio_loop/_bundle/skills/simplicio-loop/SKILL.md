@@ -300,6 +300,21 @@ the human_gate with the fingerprint + dead-ends, or (headless) stop blocked. Thi
 invariant 3 (Deterministic continuation): the next iteration re-feeds the goal **and** the attempt
 memory.
 
+## Progress feedback (issue #298, EPIC #296)
+
+`scripts/loop_progress.py` is the ONE place "onde estamos / quanto falta" is computed —
+deterministically, from `task_backlog.py` items + `task_anchor.py` ACs + its own event trail, never
+fabricated. It writes `.orchestrator/loop/progress.jsonl` (events), `progress.json` (snapshot,
+never authoritative — always recomputed) and `PROGRESS.md` (human render). Every stage calls
+`emit`; the transcript re-feed header calls `render --turn-header`. Full contract:
+**`references/progress-feedback.md`**.
+
+```bash
+python3 scripts/loop_progress.py emit --step operate --status begin --item T3
+python3 scripts/loop_progress.py render --turn-header   # MEASURED|... 42% geral · iter 7/24
+python3 scripts/loop_progress.py status --json          # machine-readable snapshot
+```
+
 ## The promise is evidence-gated (the simplicio hardening) + watcher-gate (pre-promise)
 
 The classic Ralph loop trusts the model to be honest. We do not. A `<promise>` is accepted

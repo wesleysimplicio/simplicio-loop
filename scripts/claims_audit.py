@@ -115,6 +115,7 @@ SELFTEST_SCRIPTS = [
     "scripts/fan_out.py",
     "scripts/worktree_queue.py",
     "scripts/schema_verify.py",
+    "scripts/loop_progress.py",
     "hooks/action_gate.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a

@@ -352,8 +352,25 @@ def cmd_mark(opts):
 
 def cmd_status(opts):
     anchor = _load()
+    as_json = bool(opts.get("json"))
     if not anchor.get("criteria"):
-        print("anchor: none set")
+        if as_json:
+            print(json.dumps({"set": False, "item": None, "goal_fp": None, "frozen_at": None,
+                              "criteria": [], "done": 0, "total": 0, "pending": []},
+                             ensure_ascii=False))
+        else:
+            print("anchor: none set")
+        return
+    done, total, pending = coverage(anchor["criteria"])
+    if as_json:
+        print(json.dumps({
+            "set": True,
+            "item": anchor.get("item") or None,
+            "goal_fp": anchor.get("goal_fp"),
+            "frozen_at": anchor.get("frozen_at"),
+            "criteria": anchor["criteria"],
+            "done": done, "total": total, "pending": pending,
+        }, ensure_ascii=False))
         return
     print("anchor: item=%s · goal_fp=%s · frozen=%s" % (
         anchor.get("item") or "-", anchor.get("goal_fp"), anchor.get("frozen_at")))
@@ -364,7 +381,6 @@ def cmd_status(opts):
         if c.get("evidence"):
             detail += "  <%s>" % c["evidence"]
         log("[%-7s] %-4s %s" % (c.get("status"), c.get("id"), detail))
-    done, total, pending = coverage(anchor["criteria"])
     log("coverage: %d/%d verified%s" % (
         done, total, ("" if not pending else " · pending: " + ", ".join(pending))))
 
@@ -517,7 +533,7 @@ def main():
             "verbs": ["set", "mark", "status", "checklist", "check", "gate", "selftest"],
             "flags": ["--item", "--goal", "--ac", "--ac-file", "--force", "--id", "--status",
                       "--evidence", "--format", "--exit-code", "--lint", "--require-evidence",
-                      "--out", "--help"],
+                      "--out", "--json", "--help"],
         }))
         sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])
