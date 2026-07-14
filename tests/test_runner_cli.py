@@ -1087,6 +1087,51 @@ def test_conduct_run_blocked_preflight_creates_no_batch_dead_letters(tmp_path, m
     assert not list(run_dir.glob("*dead*letter*"))
 
 
+def test_conduct_run_fails_explicitly_blocked_when_batch_preflight_raises(tmp_path, monkeypatch):
+    """Issue #279 regression: a fully armed run whose batch boundary rejects a stale or
+    unbound receipt chain must surface as an explicit ``blocked`` result from `run` -- never
+    as an uncaught exception that leaves the run in an undiagnosed, partially armed state.
+    """
+    repo, task = _setup_deterministic_preflight_fixture(monkeypatch, tmp_path)
+
+    def fail_batch(repo_arg, run_id, **kwargs):
+        run_dir = Path(repo_arg) / ".simplicio" / "loop-runs" / run_id
+        state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+        runner_mod._persist_batch_preflight_block(
+            run_dir, state, Path(repo_arg), "stale operator receipt: repository changed",
+        )
+        raise RuntimeError("stale operator receipt: repository changed")
+
+    monkeypatch.setattr(runner_mod, "execute_operator_batch", fail_batch)
+
+    result = runner_mod.conduct_run(str(repo), str(task))
+    run_dir = Path(result["run_dir"])
+
+    assert result["state"]["phase"] == "blocked"
+    assert "stale operator receipt" in json.dumps(result["state"]["history"][-1])
+    assert (run_dir / "operator-batch-preflight.json").exists()
+    assert not (run_dir / "operator-batch.jsonl").exists()
+    assert not list(run_dir.glob("*dead*letter*"))
+
+
+def test_conduct_run_force_blocks_when_batch_boundary_raises_without_diagnostic(tmp_path, monkeypatch):
+    """Defensive fallback: even if the batch boundary somehow raises without persisting its
+    own blocked diagnostic, `run` must still surface an explicit blocked result rather than
+    propagating the exception or leaving the run's phase ambiguous.
+    """
+    repo, task = _setup_deterministic_preflight_fixture(monkeypatch, tmp_path)
+
+    def fail_batch_no_diagnostic(repo_arg, run_id, **kwargs):
+        raise RuntimeError("unexpected batch boundary failure")
+
+    monkeypatch.setattr(runner_mod, "execute_operator_batch", fail_batch_no_diagnostic)
+
+    result = runner_mod.conduct_run(str(repo), str(task))
+
+    assert result["state"]["phase"] == "blocked"
+    assert "unexpected batch boundary failure" in json.dumps(result["state"]["history"][-1])
+
+
 def test_execute_operator_batch_accepts_fresh_run_receipt_chain(tmp_path, monkeypatch):
     repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
     dispatched = []
