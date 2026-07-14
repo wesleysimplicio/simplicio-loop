@@ -69,8 +69,22 @@ VIDEO_VERB = (r"fa[çc]a|fazer|crie|criar|gere|gerar|grav[ae]r?|demonstr|"
 VIDEO_RE = re.compile(r"(?=.*(%s))(?=.*(%s))" % (VIDEO_NOUN, VIDEO_VERB), re.I | re.S)
 
 
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+
 def log(msg):
     print("  " + msg)
+
+
+def _emit_progress(status, outcome=None, detail=""):
+    """Fail-open progress-feedback hook (#301) — never raises, never blocks video_evidence."""
+    try:
+        import loop_progress
+        loop_progress.emit_event("evidence", status=status, outcome=outcome, detail=detail,
+                                 source="video_evidence.py")
+    except Exception:
+        pass
 
 
 def _exe(name):
@@ -253,6 +267,7 @@ def _blocked(out, msg):
     _append_ledger(out, "video_evidence: BLOCKED — " + msg)
     print("blocked")
     log(msg)
+    _emit_progress("blocked", outcome="blocked", detail=msg[:400])
     sys.exit(3)
 
 
@@ -352,6 +367,7 @@ def cmd_record(opts):
     issue = str(opts.get("issue", "x"))
     url = opts.get("url")
     os.makedirs(out, exist_ok=True)
+    _emit_progress("begin", detail="video_evidence: %s (%s)" % (url or "no-url", name))
     if not url:
         _blocked(out, "the playwright engine needs --url (the screen to record) — or use --engine hyperframes")
     if shutil.which("npx") is None:
@@ -394,6 +410,7 @@ def cmd_record(opts):
     _append_ledger(out, verdict)
     print("done" if ok else "fail")
     log(verdict)
+    _emit_progress("end", outcome=("pass" if ok else "fail"), detail=verdict)
     if ok and opts.get("upload") and opts.get("pr"):
         _upload(out, str(opts["pr"]), produced, engine="playwright")
     sys.exit(0 if ok else 1)

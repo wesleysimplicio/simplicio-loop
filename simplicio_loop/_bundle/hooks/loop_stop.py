@@ -70,7 +70,36 @@ def allow_stop():
     sys.exit(0)
 
 
-def cleanup_and_stop():
+def _loop_progress_module():
+    """Best-effort import of scripts/loop_progress.py — same pattern as _flow_audit_module()."""
+    try:
+        repo_root = os.getcwd()
+        scripts_dir = os.path.join(repo_root, "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import loop_progress as _lp  # noqa: local import, optional dependency
+        return _lp
+    except Exception:
+        return None
+
+
+def _emit_final_progress(reason, outcome):
+    """Fail-open final progress event (#301 § 4) — the F3/`refeed_exit` event that closes out
+    `progress.json`'s `run_state` (running -> done|capped|handoff|stopped) so it never stays
+    "in progress" forever after the run actually ended."""
+    try:
+        lp = _loop_progress_module()
+        if lp is None:
+            return
+        lp.emit_event("refeed_exit", status="end", outcome=outcome, detail=reason,
+                      source="loop_stop.py")
+    except Exception:
+        pass
+
+
+def cleanup_and_stop(reason=None, outcome=None):
+    if reason:
+        _emit_final_progress(reason, outcome)
     for p in (SCRATCHPAD, DONE_FLAG, LEGACY_DONE_FLAG, LAST_RESP, WATCHER_STATE, WATCHER_CHALLENGE):
         try:
             if os.path.exists(p):
@@ -896,7 +925,7 @@ def main():
         if os.path.exists(STOP_SIGNAL):
             if meta is not None:
                 write_handoff("manual STOP signal", meta, body)
-            cleanup_and_stop()
+            cleanup_and_stop("STOP: manual STOP signal", "blocked")
         # Waiting on a background gate (workflow / CI / long task)? Let the turn end WITHOUT
         # consuming an iteration or re-feeding — we are blocked on that gate, not idle. The gate's
         # completion re-invokes the agent; the loop resumes then (lock is gone). Preserves state.
@@ -907,12 +936,12 @@ def main():
             allow_stop()
         # (2) Corrupt state.
         if meta is None:
-            cleanup_and_stop()
+            cleanup_and_stop("corrupt loop state (unparseable frontmatter)", "blocked")
         try:
             iteration = int(meta.get("iteration", "1"))
             max_iter = int(meta.get("max_iterations", "0"))
         except ValueError:
-            cleanup_and_stop()
+            cleanup_and_stop("corrupt loop state (bad iteration/max_iterations)", "blocked")
         promise = meta.get("completion_promise", "null")
         promise = None if promise in (None, "null", "") else promise
         evidence_required = str(meta.get("evidence_required", "true")).lower() != "false"
@@ -929,7 +958,7 @@ def main():
                 "fingerprint": _journal_stall()[0], "attempt": iteration, "reason": reason,
             })
             write_handoff(reason, meta, body)
-            cleanup_and_stop()
+            cleanup_and_stop(reason, "blocked")
 
         stdin = read_stdin_json()
         resp = last_assistant_text(stdin)
@@ -966,13 +995,13 @@ def main():
         deferred_receipt = maintenance_deferred_receipt()
         if deferred_receipt:
             write_handoff("maintenance deferred (backlog-only mode active)", meta, body)
-            cleanup_and_stop()
+            cleanup_and_stop("maintenance deferred (backlog-only mode active)", "blocked")
         if promise and resp:
             oracle = completion_oracle_payload(resp, flow_gap or "")
             if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
                 _call_simplicio_hbp_append(iteration, promise, watcher_tag)
                 refresh_cross_agent_wiki(include_handoff=False)
-                cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
+                cleanup_and_stop("promise verificada", "pass")  # (3) promise fulfilled → stop
             # A promise is never sufficient without a persisted run receipt.  The old
             # lightweight fallback was a fail-open completion bypass (#138); missing run
             # artifacts remain DELIVERY_PENDING and the loop continues or hands off at cap.
@@ -980,7 +1009,7 @@ def main():
         if os.path.exists(DONE_FLAG) or os.path.exists(LEGACY_DONE_FLAG):
             oracle = completion_oracle_payload(flow_gap=flow_gap or "")
             if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
-                cleanup_and_stop()
+                cleanup_and_stop("promise verificada (done flag)", "pass")
         # (4) Iteration cap — incomplete stop, hand off.
         if max_iter > 0 and iteration >= max_iter:
             _call_simplicio_hbp_append_topic("loop-run-blocked", {
@@ -988,7 +1017,7 @@ def main():
                 "reason": "max_iterations cap reached",
             })
             write_handoff("max_iterations cap reached", meta, body)
-            cleanup_and_stop()
+            cleanup_and_stop("cap atingido: max_iterations cap reached", "blocked")
         # (5) Spindle handoff — latched handoff overrides re-feed.
         if spindle_latched():
             next_agent = "?"
@@ -999,7 +1028,7 @@ def main():
             except Exception:
                 pass
             write_handoff("spindle handoff (latched — waiting for '%s')" % next_agent, meta, body)
-            cleanup_and_stop()
+            cleanup_and_stop("handoff latched (waiting for '%s')" % next_agent, "blocked")
         # (6) Continue: bump iteration in place, re-feed the goal body.
         nxt = iteration + 1
         with open(SCRATCHPAD, encoding="utf-8") as f:

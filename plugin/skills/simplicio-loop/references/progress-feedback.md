@@ -93,3 +93,36 @@ Who calls `emit`, and how (in-process `loop_progress.emit_event()` vs. the CLI t
 DRIFT/STALLED are surfaced ahead of everything else: `render_turn_header`/`render_full` prepend
 `⚠ DRIFT ` or `⚠ STALLED ` whenever the LAST event's `status` is `blocked` and its `detail`
 contains that keyword — derived purely from the event trail, never a separate flag.
+## Delivery/entrega instrumentation (issue #301)
+
+| Producer | Emits | Notes |
+|---|---|---|
+| `web_verify.py: cmd_run()` | `evidence` begin → end/pass\|fail, or blocked/blocked (`_blocked()`) | in-process |
+| `video_evidence.py: cmd_record()` | `evidence` begin → end/pass\|fail, or blocked/blocked | in-process, playwright engine only |
+| `pr_evidence.py: cmd_build()` | `evidence` begin → end/pass, or blocked/blocked (`--require-evidence` gate) | in-process |
+| `hooks/loop_stop.py: cleanup_and_stop()` | `refeed_exit` end/pass\|blocked | every stop path (STOP signal, corrupt state, missing operators, promise verified, done-flag, cap reached, spindle handoff) now passes a `(reason, outcome)` pair |
+
+**PR body — `## Progresso do run`.** `pr_evidence.build_body()` calls
+`render_progress_section()`, which calls `loop_progress.build_snapshot()` +
+`render_turn_header()` directly (no subprocess) and always includes the section — with a backlog/
+anchor present it shows the real `%`; with neither, it shows `UNVERIFIED|pct=?`, never a fabricated
+number. This never affects the `--require-evidence` gate (`cmd_build`'s `has_evidence` check is
+unchanged — the progress section does not count as evidence).
+
+**Idempotent progress comment — `pr_evidence.py progress-comment --issue N [--pr N] [--min-interval S]`.**
+Publishes/updates ONE comment per issue, matched by the invisible HTML anchor
+`<!-- simplicio-loop:progress -->` (`find_existing_progress_comment()` greps `gh api
+.../issues/N/comments` for the marker; a hit PATCHes that comment id, a miss POSTs a new one).
+Rate-limited: `.orchestrator/loop/progress_comment_state.json` records `last_posted_at`; a call
+within `--min-interval` (default 60s) of the last one is a no-op (`skip`). Fully fail-open: no `gh`
+on PATH, no `--issue`, or any `gh api` failure all resolve to exit 0 with a log line — remote
+progress delivery must never block the loop. The `_gh_run()` call is an injectable function
+(tests pass a fake in its place) so `find_existing_progress_comment`/rate-limit logic is unit-
+tested without shelling out to a real `gh` or touching the network.
+
+**Run-state closure (F3).** `hooks/loop_stop.py`'s `cleanup_and_stop(reason, outcome)` now emits
+the final `refeed_exit` event (fail-open, best-effort import of `scripts/loop_progress.py`) BEFORE
+deleting the scratchpad — `loop_progress._run_state()` derives `progress.json`'s `run_state` purely
+from that last event: `done` (outcome pass), `capped`/`handoff`/`stopped` (blocked + a matching
+keyword in `detail`), else `blocked`. Absent a `refeed_exit` event, `run_state` stays `"running"` —
+a run's status file is never silently "eternally in progress" after the run genuinely ended.

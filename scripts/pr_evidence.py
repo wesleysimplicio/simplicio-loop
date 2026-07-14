@@ -31,6 +31,10 @@ Verbs:
              to the GitHub issue via `gh api`, idempotently (a hidden marker lets a re-run UPDATE
              the same comment instead of appending a duplicate). A publish failure BLOCKS (exit 3)
              rather than silently claiming success.
+  progress-comment  Publish/update ONE idempotent progress comment on an issue (#301), marked with
+             an invisible HTML anchor so a re-run edits the SAME comment instead of spamming new
+             ones. Rate-limited (default 60s between remote updates) and fully fail-open: no `gh`
+             CLI / network / token ⇒ exit 0, silent log, never blocks the loop.
   selftest   Prove the assembly + the evidence-gate deterministically — no files, no network.
 
 Usage:
@@ -43,8 +47,11 @@ Usage:
 """
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
+import time
 
 try:  # Windows consoles default to cp1252 and choke on non-ASCII — force UTF-8.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -103,6 +110,102 @@ def log(msg):
     print("  " + msg, file=sys.stderr)
 
 
+def _emit_progress(status, outcome=None, detail=""):
+    """Fail-open progress-feedback hook (#301) — never raises, never blocks pr_evidence."""
+    try:
+        import loop_progress
+        loop_progress.emit_event("evidence", status=status, outcome=outcome, detail=detail,
+                                 source="pr_evidence.py")
+    except Exception:
+        pass
+
+
+def render_progress_section():
+    """`## Progresso do run` — auto-included whenever a backlog/anchor exists on disk. Never
+    fabricates a %: with neither source, prints the converge-mode ACs x/y line, no invented number
+    (#301 AC2)."""
+    try:
+        import loop_progress
+        snap = loop_progress.build_snapshot()
+        header = loop_progress.render_turn_header(snap)
+    except Exception:
+        return ""
+    lines = ["### Progresso do run", "", header, ""]
+    return "\n".join(lines)
+
+
+# ----- progress-comment (idempotent, rate-limited, fail-open) --------------------------------
+
+PROGRESS_COMMENT_MARKER = "<!-- simplicio-loop:progress -->"
+PROGRESS_COMMENT_STATE = os.path.join(REPO, ".orchestrator", "loop", "progress_comment_state.json")
+DEFAULT_MIN_INTERVAL_S = 60.0
+
+
+def _gh_run(cmd, timeout=30):
+    """Injectable gh-CLI runner — tests pass a fake in place of this. None on any failure."""
+    try:
+        return subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+
+
+def build_progress_comment_body():
+    try:
+        import loop_progress
+        snap = loop_progress.build_snapshot()
+        header = loop_progress.render_turn_header(snap)
+    except Exception:
+        header = "UNVERIFIED|pct=?"
+    return "\n".join([
+        PROGRESS_COMMENT_MARKER, "",
+        "**simplicio-loop progress**", "",
+        header, "",
+        "_updated: %s_" % time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    ]) + "\n"
+
+
+def _rate_limited(min_interval=DEFAULT_MIN_INTERVAL_S, now=None, state_path=None):
+    state_path = state_path or PROGRESS_COMMENT_STATE
+    now = now if now is not None else time.time()
+    last = 0.0
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            last = float(json.load(f).get("last_posted_at") or 0)
+    except Exception:
+        last = 0.0
+    return (now - last) < min_interval
+
+
+def _record_post(now=None, state_path=None):
+    state_path = state_path or PROGRESS_COMMENT_STATE
+    now = now if now is not None else time.time()
+    try:
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump({"last_posted_at": now}, f)
+    except Exception:
+        pass
+
+
+def find_existing_progress_comment(issue, runner=None):
+    """Return the comment id whose body contains the anchor marker, or None. `runner` is
+    injectable so tests never shell out to a real `gh`."""
+    runner = runner or _gh_run
+    r = runner(["gh", "api", "repos/:owner/:repo/issues/%s/comments" % issue, "--paginate"])
+    if r is None or r.returncode != 0:
+        return None
+    try:
+        comments = json.loads(r.stdout or "[]")
+    except ValueError:
+        return None
+    if not isinstance(comments, list):
+        return None
+    for c in comments:
+        if isinstance(c, dict) and PROGRESS_COMMENT_MARKER in (c.get("body") or ""):
+            return c.get("id")
+    return None
+
+
 # --- Idempotent GitHub comment publish (#295 audit: "pr_evidence.py comment gera Markdown em
 # stdout, mas não publica nem valida o comentário na issue") ------------------------------------
 #
@@ -118,7 +221,7 @@ def log(msg):
 # The GitHub call is injected as a `runner` (defaults to subprocess.run) so this is unit-testable
 # without ever touching the network or a real repo — same pattern as
 # `scripts/live_issue_183_identity.py`.
-PROGRESS_COMMENT_MARKER = "<!-- simplicio-loop:pr-evidence-comment -->"
+PR_EVIDENCE_COMMENT_MARKER = "<!-- simplicio-loop:pr-evidence-comment -->"
 
 
 class PublishError(RuntimeError):
@@ -134,7 +237,7 @@ def _run_gh(args, runner, timeout, input_text=None):
     return completed.stdout
 
 
-def find_existing_comment(owner, repo, issue, marker=PROGRESS_COMMENT_MARKER,
+def find_existing_comment(owner, repo, issue, marker=PR_EVIDENCE_COMMENT_MARKER,
                            runner=subprocess.run, timeout=20):
     """Return the numeric id of a prior comment on `issue` whose body carries `marker`, or None.
 
@@ -157,7 +260,46 @@ def find_existing_comment(owner, repo, issue, marker=PROGRESS_COMMENT_MARKER,
     return None
 
 
-def publish_comment(owner, repo, issue, body, marker=PROGRESS_COMMENT_MARKER,
+def cmd_progress_comment(opts):
+    """Publish/update ONE idempotent progress comment on an issue (#301 § 3). Fail-open: no `gh`,
+    no network, or any error -> exit 0, silent log, never blocks the loop."""
+    issue = opts.get("issue")
+    if not issue:
+        print("blocked")
+        log("progress-comment requires --issue")
+        return
+    try:
+        min_interval = float(opts.get("min-interval") or DEFAULT_MIN_INTERVAL_S)
+    except (TypeError, ValueError):
+        min_interval = DEFAULT_MIN_INTERVAL_S
+    if not shutil.which("gh"):
+        print("skip")
+        log("gh CLI not found — progress-comment is a no-op (fail-open)")
+        return
+    if _rate_limited(min_interval):
+        print("skip")
+        log("rate-limited — last update <%.0fs ago" % min_interval)
+        return
+    body = build_progress_comment_body()
+    ok = False
+    try:
+        existing = find_existing_progress_comment(issue)
+        if existing:
+            r = _gh_run(["gh", "api", "-X", "PATCH",
+                        "repos/:owner/:repo/issues/comments/%s" % existing,
+                        "-f", "body=%s" % body])
+        else:
+            r = _gh_run(["gh", "api", "repos/:owner/:repo/issues/%s/comments" % issue,
+                        "-f", "body=%s" % body])
+        ok = r is not None and r.returncode == 0
+    except Exception:
+        ok = False
+    _record_post()
+    tag = "MEASURED" if ok else "UNVERIFIED"
+    print("%s|progress-comment %s" % (tag, "updated" if ok else "attempted (see stderr for gh output)"))
+
+
+def publish_comment(owner, repo, issue, body, marker=PR_EVIDENCE_COMMENT_MARKER,
                      runner=subprocess.run, timeout=20):
     """Publish `body` to `issue` idempotently. Returns {"action": "created"|"updated", "id": int}.
 
@@ -313,11 +455,15 @@ def build_body(opts):
     how = opts.get("how") or "Run the project's test gate (`python3 scripts/check.py`) and the " \
                              "captured `web_verify` / `video_evidence` flow above."
 
+    progress_md = render_progress_section()
+
     blocks = []
     if summary:
         blocks += ["### Summary", summary, ""]
     if item:
         blocks += ["Closes #%s" % str(item).lstrip("#"), ""]
+    if progress_md:
+        blocks += [progress_md, ""]
     if backlog_md:
         blocks += [backlog_md, ""]
     blocks += [checklist_md, "", evidence_md, "", "### How to verify", how, ""]
@@ -336,12 +482,14 @@ def build_body(opts):
 
 
 def cmd_build(opts):
+    _emit_progress("begin", detail="pr_evidence.py build")
     body, has_evidence = build_body(opts)
     if opts.get("require-evidence") and not has_evidence:
         print("blocked")
         log("BLOCKED — no acceptance-criteria checklist and no prints to attach. "
             "Anchor the ACs (task_anchor.py set) and capture prints (web_verify.py) before "
             "opening the PR. Refusing to open an evidence-less PR.")
+        _emit_progress("blocked", outcome="blocked", detail="no checklist and no prints")
         sys.exit(_BLOCKED)
     out = opts.get("out")
     if isinstance(out, str):
@@ -349,8 +497,10 @@ def cmd_build(opts):
             f.write(body)
         log("wrote PR body -> %s (%d bytes)" % (out, len(body)))
         print("done %s" % out)
+        _emit_progress("end", outcome="pass", detail="PR body -> %s" % out)
     else:
         sys.stdout.write(body)
+        _emit_progress("end", outcome="pass", detail="PR body -> stdout (%d bytes)" % len(body))
 
 
 def _repo_slug_from_opts(opts):
@@ -485,7 +635,7 @@ def cmd_selftest(_opts):
     def fake_runner_with_existing(cmd, **kw):
         calls2.append(cmd)
         if cmd[:2] == ["gh", "api"] and "comments" in cmd[2] and "-X" not in cmd:
-            marked = [{"id": 999, "body": "old\n\n" + PROGRESS_COMMENT_MARKER + "\n"}]
+            marked = [{"id": 999, "body": "old\n\n" + PR_EVIDENCE_COMMENT_MARKER + "\n"}]
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(marked), stderr="")
         if "-X" in cmd and "PATCH" in cmd:
             return subprocess.CompletedProcess(cmd, 0, stdout="{}", stderr="")
@@ -537,7 +687,7 @@ def main():
     if argv[0] == "--describe-cli":
         import json
         print(json.dumps({
-            "verbs": ["build", "comment", "selftest"],
+            "verbs": ["build", "comment", "progress-comment", "selftest"],
             "flags": [
                 "--anchor",
                 "--backlog",
@@ -545,6 +695,7 @@ def main():
                 "--how",
                 "--issue",
                 "--item",
+                "--min-interval",
                 "--out",
                 "--pr",
                 "--publish",
@@ -559,9 +710,10 @@ def main():
         }))
         sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])
-    {"build": cmd_build, "comment": cmd_comment, "selftest": cmd_selftest}.get(
-        sub, lambda _o: (print("unknown command '%s'. choices: build comment selftest" % sub),
-                         sys.exit(2)))(opts)
+    {"build": cmd_build, "comment": cmd_comment, "progress-comment": cmd_progress_comment,
+     "selftest": cmd_selftest}.get(
+        sub, lambda _o: (print("unknown command '%s'. choices: build comment progress-comment "
+                               "selftest" % sub), sys.exit(2)))(opts)
 
 
 if __name__ == "__main__":

@@ -341,6 +341,13 @@ python3 scripts/loop_progress.py render --turn-header   # MEASURED|... 42% geral
 python3 scripts/loop_progress.py status --json          # machine-readable snapshot
 ```
 
+Delivery/entrega (issue #301): `web_verify.py`/`video_evidence.py`/`pr_evidence.py build` all emit
+`evidence` begin/end/blocked; `pr_evidence.py build` auto-includes a `## Progresso do run` section
+whenever a backlog/anchor exists (never a fabricated %); `pr_evidence.py progress-comment --issue N`
+publishes ONE idempotent, rate-limited, fail-open progress comment on the issue. `hooks/loop_stop.py`
+emits the final `refeed_exit` event on every stop path, so `progress.json`'s `run_state`
+(`running|done|capped|handoff|stopped`) never stays stuck mid-run.
+
 ## The promise is evidence-gated (the simplicio hardening) + watcher-gate (pre-promise)
 
 The classic Ralph loop trusts the model to be honest. We do not. A `<promise>` is accepted
