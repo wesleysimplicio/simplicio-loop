@@ -41,6 +41,9 @@ def _exec_env(extra=None):
 def test_default_unset_blocks_without_receipt_fail_closed(tmp_path, monkeypatch):
     # Mandatory-by-default: with the flag unset entirely (no opt-out), no receipt on
     # disk must block execution exactly like the explicit `=1` case used to.
+    # Auto-build is ALSO mandatory-by-default (#284 follow-up) -- disable it explicitly
+    # so `arm_run()` does not self-satisfy the very gate this test exercises.
+    monkeypatch.setenv("SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT", "0")
     repo, _, armed_payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
     run_id = armed_payload["manifest"]["run_id"]
     assert not receipt_path(run_dir).exists()
@@ -54,6 +57,7 @@ def test_default_unset_blocks_without_receipt_fail_closed(tmp_path, monkeypatch)
 def test_explicit_opt_out_restores_zero_behavior_change(tmp_path, monkeypatch):
     # Legacy escape hatch: an explicit falsy value disables the gate entirely, same as
     # the old (pre-#284) unconditional behavior.
+    monkeypatch.setenv("SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT", "0")
     repo, _, armed_payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
     run_id = armed_payload["manifest"]["run_id"]
     assert not receipt_path(run_dir).exists()
@@ -63,6 +67,7 @@ def test_explicit_opt_out_restores_zero_behavior_change(tmp_path, monkeypatch):
 
 
 def test_flag_set_without_receipt_blocks_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT", "0")
     repo, _, armed_payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
     run_id = armed_payload["manifest"]["run_id"]
     assert not receipt_path(run_dir).exists()
@@ -158,6 +163,7 @@ def test_flag_set_allows_execution_when_source_snapshot_unchanged(tmp_path, monk
 
 
 def test_batch_default_unset_blocks_without_receipt_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT", "0")
     repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
 
     def fake_dispatch(items, **kwargs):
@@ -192,6 +198,7 @@ def test_batch_explicit_opt_out_restores_zero_behavior_change(tmp_path, monkeypa
 
 
 def test_batch_flag_set_without_receipt_blocks_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT", "0")
     repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
     assert not receipt_path(run_dir).exists()
 

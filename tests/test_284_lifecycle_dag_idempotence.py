@@ -36,23 +36,24 @@ AUTO_FLAG = "SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT"
 # 1. Real dispatch-path wiring: arm_run() auto-builds the planning receipt
 # ---------------------------------------------------------------------------
 
-def test_arm_run_does_not_auto_build_receipt_by_default(tmp_path, monkeypatch):
-    """Default (flag unset) behavior must be byte-for-byte unchanged: no receipt
-    materializes unless a caller opts in. This is what every pre-existing #284
-    gate test relies on (e.g. ``test_default_unset_blocks_without_receipt_fail_closed``)."""
-    monkeypatch.delenv(AUTO_FLAG, raising=False)
+def test_arm_run_does_not_auto_build_receipt_when_explicitly_disabled(tmp_path, monkeypatch):
+    """#284 mandatory-by-default flip: an explicit falsy value is the ONLY way to
+    keep the legacy (pre-flip) no-receipt behavior. This is what a caller that
+    truly cannot satisfy the gate yet must set (mirrors
+    ``SIMPLICIO_REQUIRE_MUTATION_AUTHORITY``'s opt-out polarity, #284/#360)."""
+    monkeypatch.setenv(AUTO_FLAG, "0")
     _, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
     assert armed["state"]["phase"] == "awaiting_decision"
     assert not receipt_path(run_dir).exists()
 
 
-def test_arm_run_auto_builds_valid_receipt_when_flag_enabled(tmp_path, monkeypatch):
-    """With the flag on, the REAL arm_run() dispatch path builds a
-    planning-receipt.json whose mutation authority is immediately valid for the
-    current run/attempt/contract/plan identity -- no external
-    ``scripts/planning_gate.py build`` call or ``stage_valid_planning_receipt()``
-    test fixture required."""
-    monkeypatch.setenv(AUTO_FLAG, "1")
+def test_arm_run_auto_builds_valid_receipt_by_default(tmp_path, monkeypatch):
+    """Mandatory-by-default (#284 follow-up): with the flag unset, the REAL
+    arm_run() dispatch path builds a planning-receipt.json whose mutation
+    authority is immediately valid for the current run/attempt/contract/plan
+    identity -- no external ``scripts/planning_gate.py build`` call or
+    ``stage_valid_planning_receipt()`` test fixture required."""
+    monkeypatch.delenv(AUTO_FLAG, raising=False)
     repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
     assert armed["state"]["phase"] == "awaiting_decision"
 

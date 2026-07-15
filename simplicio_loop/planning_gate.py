@@ -59,22 +59,23 @@ and records a semantic diff instead of blocking forever. All four are
 strictly additive: `build_planning_receipt()`'s new params default to
 `None`/`0`, so a caller that never builds these artifacts is unaffected.
 
-This round (see issue #284's post-#373 remaining-gap comment) additionally lands:
-`plan_contract.validate_plan()`'s optional `dag`/`parallel_groups`/step-`depends_on`
-fields (a compatible plan/v1 evolution, not a new schema string -- a plan that
-never sets `dag` is unaffected; one that does gets a fail-closed check that a
-"parallelizable" group never actually contains a dependent pair); and
-`simplicio_loop/runner.py::_maybe_auto_build_planning_receipt()`, which wires
-`build_planning_receipt()` (and, when a GitHub source is present, this module's
-own `publish_planning_receipt()`) into the REAL `arm_run()` dispatch path,
-opt-in via `SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT` so every existing gate test
-that deliberately exercises fail-closed behavior with no receipt on disk is
-unaffected when the flag is unset.
+The post-#373 round additionally landed `plan_contract.validate_plan()`'s optional
+`dag`/`parallel_groups`/step-`depends_on` fields (a compatible plan/v1 evolution,
+not a new schema string -- a plan that never sets `dag` is unaffected; one that
+does gets a fail-closed check that a "parallelizable" group never actually
+contains a dependent pair); and `simplicio_loop/runner.py::_maybe_auto_build_planning_receipt()`,
+which wires `build_planning_receipt()` (and, when a GitHub source is present,
+this module's own `publish_planning_receipt()`) into the REAL `arm_run()`
+dispatch path.
 
-Still tracked as follow-up, not claimed here: rollout/feature-flag +
-migration-strategy fields on the plan itself, and making
-`SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT` mandatory-by-default (today it mirrors
-the pre-#360 opt-in posture of `SIMPLICIO_REQUIRE_MUTATION_AUTHORITY`).
+This round makes `_maybe_auto_build_planning_receipt()` **mandatory-by-default**,
+via `auto_planning_receipt_enabled()` -- the same polarity-flip pattern
+`mutation_authority_required()` used for `SIMPLICIO_REQUIRE_MUTATION_AUTHORITY`
+(#284/#360): unset/blank now means ON, and a caller that truly needs the legacy
+opt-in posture (or a test asserting the missing-receipt fail-closed path) sets
+`SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT` to an explicit falsy value
+(`0/false/no/off/legacy`). See `docs/adr/0004-planning-gate-rollout.md` for the
+rollout/migration strategy (backward-compat shims, what breaks, how to opt out).
 """
 from __future__ import annotations
 
@@ -435,6 +436,29 @@ def mutation_authority_required(env: Optional[Mapping[str, str]] = None) -> bool
     return str(raw).strip().lower() not in ("0", "false", "no", "off", "legacy")
 
 
+def auto_planning_receipt_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Mandatory-by-default (#284 follow-up): the real ``arm_run()`` dispatch path
+    self-builds ``planning-receipt.json`` unless the caller explicitly opts out via
+    ``SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT=0/false/no/off/legacy`` -- the exact same
+    polarity-flip pattern ``mutation_authority_required()`` used for
+    ``SIMPLICIO_REQUIRE_MUTATION_AUTHORITY`` (#284/#360).
+
+    Historically this env var was opt-IN (default off), because dozens of tests
+    deliberately exercised the mutation-authority gate's fail-closed behavior with
+    NO receipt on disk. Those tests now stage a receipt explicitly via
+    ``tests/planning_gate_fixtures.py`` (or a fixture-local
+    ``SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT=0`` opt-out) when they intend to assert
+    the missing-receipt path; every other real dispatch is safer with the receipt
+    auto-built than without one. Unrecognized values are treated as "on" (fail
+    closed toward requiring the receipt), matching ``mutation_authority_required()``.
+    """
+    import os as _os
+    raw = (env if env is not None else _os.environ).get("SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT")
+    if raw is None or not str(raw).strip():
+        return True
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "legacy")
+
+
 __all__ = [
     "PLANNING_RECEIPT_SCHEMA",
     "RECEIPT_FILENAME",
@@ -446,6 +470,7 @@ __all__ = [
     "load_planning_receipt",
     "evaluate_mutation_authority",
     "mutation_authority_required",
+    "auto_planning_receipt_enabled",
     "publish_planning_receipt",
     "replan_on_drift",
 ]
