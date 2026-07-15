@@ -47,6 +47,7 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 | `perf_gate.py` | `.github/workflows/quality-gate.yml` (#277) — latency/throughput/RSS vs `scripts/perf_baseline.json` + bounded convergence check | active |
 | `flaky_gate.py` | `.github/workflows/quality-gate.yml` (#277) — repeats the convergence/drain-critical test subset (or full suite in `--stress`) N times and flags inconsistent outcomes | active |
 | `regression_test_gate.py` | `.github/workflows/quality-gate.yml` (#277) — fails a PR that changes source without an accompanying `tests/` change | active |
+| `test_categories.py` | `quality_matrix.py populate`/`independent_reverify_quality_matrix` (#283) — per-category (`unit`/`integration`/`system`/`regression`) test-runner split, reads the `tests/*_<category>.py` filename convention | active |
 
 ## Satellite (opt-in / advanced capabilities)
 

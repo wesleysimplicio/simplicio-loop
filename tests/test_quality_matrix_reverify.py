@@ -145,10 +145,14 @@ def test_reverify_missing_receipt_is_not_ready(tmp_path):
 
 
 def test_cli_populate_fills_regression_and_justified_na_benchmark(tmp_path):
+    # #283: unit/integration/system are now ALSO auto-filled by populate (via
+    # scripts/test_categories.py) -- explicitly skipped here since this test targets
+    # regression/benchmark only and those three lanes take much longer to actually execute
+    # (see test_cli_populate_fills_unit_and_system_categories below for that coverage).
     proc = subprocess.run(
         [PY, os.path.join(REPO, "scripts", "quality_matrix.py"), "populate",
          "--run-dir", str(tmp_path), "--base", "HEAD", "--benchmark-na", "smoke test, no perf path touched",
-         "--skip-coverage"],
+         "--skip-coverage", "--skip-unit", "--skip-integration", "--skip-system"],
         cwd=REPO, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
     )
     assert proc.returncode in (0, 1), proc.stderr  # 1 is expected: implementation/unit/etc still unset
@@ -159,6 +163,25 @@ def test_cli_populate_fills_regression_and_justified_na_benchmark(tmp_path):
         "status": "not_applicable", "justification": "smoke test, no perf path touched",
     }
     assert receipt["policy"]["allow_justified_not_applicable"] is True
+
+
+def test_cli_populate_fills_unit_and_system_categories(tmp_path):
+    # #283: the per-category test-runner split (scripts/test_categories.py) auto-fills unit and
+    # system the same way regression/benchmark/coverage were already auto-filled -- `system` is
+    # the fast lane (one file) so this stays cheap; `unit` legitimately takes tens of seconds
+    # (346 real tests), hence the wider timeout.
+    proc = subprocess.run(
+        [PY, os.path.join(REPO, "scripts", "quality_matrix.py"), "populate",
+         "--run-dir", str(tmp_path), "--base", "HEAD",
+         "--skip-coverage", "--skip-integration", "--skip-regression", "--skip-benchmark"],
+        cwd=REPO, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=180,
+    )
+    assert proc.returncode in (0, 1), proc.stderr
+    receipt = json.loads((tmp_path / "quality-matrix.json").read_text(encoding="utf-8"))
+    assert receipt["requirements"]["unit"]["status"] == "pass", receipt["requirements"]["unit"]
+    assert receipt["requirements"]["system"]["status"] == "pass", receipt["requirements"]["system"]
+    assert (tmp_path / "unit-test-gate-report.json").exists()
+    assert (tmp_path / "system-test-gate-report.json").exists()
 
 
 def test_cli_tdd_red_rejects_a_test_that_is_already_passing(tmp_path):

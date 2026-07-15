@@ -484,7 +484,7 @@ def _rerun_gate_script(script: str, argv: List[str], repo: str) -> "Tuple[bool, 
     """
     try:
         completed = subprocess.run(
-            [sys.executable, script] + argv, cwd=repo, capture_output=True, text=True, timeout=120,
+            [sys.executable, script] + argv, cwd=repo, capture_output=True, text=True, timeout=240,
             stdin=subprocess.DEVNULL,
         )
         return completed.returncode == 0, (completed.stdout or completed.stderr or "").strip()[-2000:]
@@ -502,6 +502,11 @@ def independent_reverify_quality_matrix(run_dir: str, *, repo: "str | None" = No
     agrees. This is the piece #283's remaining scope calls out explicitly: "an independent watcher
     that re-derives each quality-matrix lane's verdict from raw test/CI output instead of trusting
     the receipt's self-reported status" -- wired into `scripts/watcher_verify.py cmd_verify`.
+
+    `unit`/`integration`/`system` are re-verified the same way as `regression`/`benchmark`: a
+    fresh, live re-run of the relevant gate script (`scripts/test_categories.py run --category
+    <lane>`, the per-category test-runner split -- see that script's docstring for exactly which
+    `tests/*_<lane>.py` files it covers) right now, against the current working tree.
     """
     self_reported = evaluate_quality_matrix(run_dir)
     lane_checks: List[Dict[str, Any]] = []
@@ -519,7 +524,11 @@ def independent_reverify_quality_matrix(run_dir: str, *, repo: "str | None" = No
         import os
 
         here = Path(__file__).resolve().parents[1] / "scripts"
+        test_categories_script = str(here / "test_categories.py")
         for lane, script, argv_builder in (
+            ("unit", test_categories_script, lambda: ["run", "--category", "unit"]),
+            ("integration", test_categories_script, lambda: ["run", "--category", "integration"]),
+            ("system", test_categories_script, lambda: ["run", "--category", "system"]),
             ("regression", str(here / "regression_test_gate.py"), lambda: ["--base", "origin/main"]),
             ("benchmark", str(here / "perf_gate.py"), lambda: []),
         ):

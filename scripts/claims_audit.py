@@ -142,6 +142,7 @@ SELFTEST_SCRIPTS = [
     "scripts/history_migration_plan.py",
     "scripts/canonical_manifest.py",
     "scripts/package_content_check.py",
+    "scripts/test_categories.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a
 # `selftest`-shaped function/subcommand that isn't the worker's own self-check, or a script this
