@@ -199,7 +199,17 @@ def compute_pct(anchor_state, backlog_state, step_index, steps_total):
     if backlog_state and backlog_state.get("items_total"):
         items_total = backlog_state["items_total"]
         items_done = backlog_state["items_done"]
-        active_pct = pct_item if pct_item is not None else 0.0
+        active_item = backlog_state.get("active_item")
+        anchor_item = (anchor_state or {}).get("item")
+        # Only fold the anchor's pct_item into the active-item fraction when the anchor is
+        # ACTUALLY anchored to the currently-claimed backlog item. A stale anchor left over from
+        # the PREVIOUS item (already counted in items_done) must not double-count its progress —
+        # that would make pct_overall regress the moment the next item resets the anchor, which
+        # looks like fabricated backsliding instead of the deterministic re-baseline it needs to
+        # be tagged as (#304 AC3 — this is exactly the monotonicity bug the e2e test catches).
+        anchor_matches_active = (active_item is None and anchor_item is None) or (
+            active_item is not None and anchor_item == active_item)
+        active_pct = pct_item if (pct_item is not None and anchor_matches_active) else 0.0
         pct_overall = (items_done + active_pct) / float(items_total)
         return pct_item, pct_overall, "drain"
 
@@ -256,7 +266,25 @@ def build_snapshot(cap=None):
         "last_outcome": last.get("outcome"),
         "last_detail": last.get("detail") or "",
         "last_source": last.get("source") or "",
+        "run_state": _run_state(last),
     }
+
+
+def _run_state(last):
+    """Derive the F3 (encerramento) run_state purely from the last event (#301 § 4). A run stays
+    "running" until a `refeed_exit` event closes it out — never left "in progress" forever."""
+    if (last.get("step") or "") != "refeed_exit":
+        return "running"
+    detail = (last.get("detail") or "").lower()
+    if last.get("outcome") == "pass":
+        return "done"
+    if "cap" in detail:
+        return "capped"
+    if "handoff" in detail:
+        return "handoff"
+    if "stop" in detail:
+        return "stopped"
+    return "blocked"
 
 
 def _warning_banner(snapshot):
@@ -360,6 +388,7 @@ def render_full(snapshot):
         snapshot.get("ac_done"), snapshot.get("ac_total"))
         if snapshot.get("ac_total") is not None else "| ACs do item ativo | sem anchor |")
     lines.append("| modo de cálculo | %s |" % snapshot.get("mode"))
+    lines.append("| run_state | %s |" % snapshot.get("run_state"))
     lines.append("| iteração | %s%s |" % (
         snapshot.get("iteration"), ("/%s" % snapshot["cap"]) if snapshot.get("cap") else ""))
     lines.append("")

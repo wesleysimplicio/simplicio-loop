@@ -25,11 +25,11 @@ format every release. This repo therefore adopts a **two-tier system**:
 
 Three runtimes are **verified mechanically on every commit** and enjoy real parity:
 
-| # | Runtime | Skill load | Loop drive | Hooks | Native bind | Adapter |
-|---|---|---|---|---|---|---|
-| 1 | **Claude Code** | `.claude/skills/` + `.claude-plugin/` | `Stop` hook | ✅ full | MCP (optional) | [claude](claude/README.md) |
-| 2 | **Codex** | `AGENTS.md` → `SKILL.md` | self-paced | ⚠️ partial | MCP / Python adapter (optional) | [codex](codex/README.md) |
-| 3 | **Cursor** | `.cursor-plugin/` + `.claude/skills/` | `stop` + `afterAgentResponse` | ✅ full | MCP / rules (optional) | [cursor](cursor/README.md) |
+| # | Runtime | Skill load | Loop drive | Hooks | Native bind | Feedback | Adapter |
+|---|---|---|---|---|---|---|---|
+| 1 | **Claude Code** | `.claude/skills/` + `.claude-plugin/` | `Stop` hook | ✅ full | MCP (optional) | N1 (hook) + N3 | [claude](claude/README.md) |
+| 2 | **Codex** | `AGENTS.md` → `SKILL.md` | self-paced | ⚠️ partial | MCP / Python adapter (optional) | N2 (transcript) + N3 | [codex](codex/README.md) |
+| 3 | **Cursor** | `.cursor-plugin/` + `.claude/skills/` | `stop` + `afterAgentResponse` | ✅ full | MCP / rules (optional) | N1 (hook) + N3 | [cursor](cursor/README.md) |
 
 These three are covered by:
 - `scripts/verify_adapters.py` running against each tier-1 runtime's install contract
@@ -49,17 +49,17 @@ These three are covered by:
 Nine runtimes are documented and supported on a best-effort basis — contributions welcome,
 no gate, no parity promise per release:
 
-| # | Runtime | Skill load | Loop drive | Hooks | Native bind | Adapter |
-|---|---|---|---|---|---|---|
-| 4 | **VS Code (Copilot)** | `.github/copilot-instructions.md` | self-paced (tasks) | ⚠️ tasks | MCP (optional) | [vscode](vscode/README.md) |
-| 5 | **Antigravity** | rules / `AGENTS.md` | self-paced | ⚠️ | MCP (optional) | [antigravity](antigravity/README.md) |
-| 6 | **Kiro** | `.kiro/steering/` | self-paced (specs) | ⚠️ | MCP (optional) | [kiro](kiro/README.md) |
-| 7 | **OpenCode** | `AGENTS.md` + config | self-paced | ⚠️ | MCP (optional) | [opencode](opencode/README.md) |
-| 8 | **Gemini** | `GEMINI.md` → `SKILL.md` | self-paced | ⚠️ | MCP / native adapter (optional) | [gemini](gemini/README.md) |
-| 9 | **Aider** | `CONVENTIONS.md` (read) | self-paced | ❌ | — (LLM fallback, no bind exists) | [aider](aider/README.md) |
-| 10 | **Simplicio Agent** *(formerly Hermes)* | native skill recall | native loop | ✅ native | native extension points (optional) | [simplicio_agent](simplicio_agent/README.md) |
-| 11 | **OpenClaw** | plugin SDK / `skills/` | native scheduler | ✅ native | **native** (plugin SDK) | [openclaw](openclaw/README.md) |
-| 12 | **Orca** | via inner agent (`.claude/skills/` + `AGENTS.md`) + skills registry | inner hook / self-paced (scheduled automations) | ⚠️ via inner agent | MCP (optional) | [orca](orca/README.md) |
+| # | Runtime | Skill load | Loop drive | Hooks | Native bind | Feedback | Adapter |
+|---|---|---|---|---|---|---|---|
+| 4 | **VS Code (Copilot)** | `.github/copilot-instructions.md` | self-paced (tasks) | ⚠️ tasks | MCP (optional) | N2 (transcript) + N3 | [vscode](vscode/README.md) |
+| 5 | **Antigravity** | rules / `AGENTS.md` | self-paced | ⚠️ | MCP (optional) | N2 (transcript) + N3 | [antigravity](antigravity/README.md) |
+| 6 | **Kiro** | `.kiro/steering/` | self-paced (specs) | ⚠️ | MCP (optional) | N2 (transcript) + N3 | [kiro](kiro/README.md) |
+| 7 | **OpenCode** | `AGENTS.md` + config | self-paced | ⚠️ | MCP (optional) | N2 (transcript) + N3 | [opencode](opencode/README.md) |
+| 8 | **Gemini** | `GEMINI.md` → `SKILL.md` | self-paced | ⚠️ | MCP / native adapter (optional) | N2 (transcript) + N3 | [gemini](gemini/README.md) |
+| 9 | **Aider** | `CONVENTIONS.md` (read) | self-paced | ❌ | — (LLM fallback, no bind exists) | N2 (inlined transcript) + N3 | [aider](aider/README.md) |
+| 10 | **Simplicio Agent** *(formerly Hermes)* | native skill recall | native loop | ✅ native | native extension points (optional) | N1-equiv (native tick) + N3 | [simplicio_agent](simplicio_agent/README.md) |
+| 11 | **OpenClaw** | plugin SDK / `skills/` | native scheduler | ✅ native | **native** (plugin SDK) | N1-equiv (native tick) + N3 | [openclaw](openclaw/README.md) |
+| 12 | **Orca** | via inner agent (`.claude/skills/` + `AGENTS.md`) + skills registry | inner hook / self-paced (scheduled automations) | ⚠️ via inner agent | MCP (optional) | N1/N2 (inner agent) + N3 | [orca](orca/README.md) |
 
 `hermes` is kept as a **legacy shim** for row 10, not a 12th runtime — see
 [hermes/README.md](hermes/README.md). It installs/binds identically to `simplicio_agent` during
@@ -68,6 +68,28 @@ a regression report), per the adapter-rebrand rollback policy (#262).
 
 Legend: ✅ first-class · ⚠️ partial / via a generic mechanism · ❌ none (degrade to fallback).
 Native binds are optional accelerators, never a requirement for installing or driving the loop.
+
+## Acompanhando o progresso (issue #303, EPIC #296)
+
+Three feedback levels, each a strict superset of the one before — no runtime needs new code to
+get the last one:
+
+- **N1 (hook).** Where a real stop-hook exists (Claude Code, Cursor, and the native loops of
+  Simplicio Agent/OpenClaw), the host injects fase/etapa/item/ACs/% directly into the re-feed
+  header (`hooks/loop_stop.py`) — zero extra action from the user.
+- **N2 (transcript).** The turn-header contract (SKILL.md § Output: first line of every turn =
+  `render --turn-header`) is normative for ALL 12 runtimes, hook or not — it must be reflected in
+  whichever surface that host loads the skill FROM (`AGENTS.md`, `GEMINI.md`, `CONVENTIONS.md`,
+  `.github/copilot-instructions.md`, `.kiro/steering/`, OpenCode config, …), never forked by hand.
+- **N3 (file, universal denominator).** `.orchestrator/loop/PROGRESS.md` + `progress.json` are
+  regenerated every turn regardless of runtime — any editor, `watch`, or CI panel reads it with
+  ZERO adapter code. This is the fallback for every runtime not yet adapted, and for any future
+  host: a brand-new runtime gets N3 for free the moment it runs `scripts/loop_progress.py`.
+
+Each adapter README has a "Progresso do run" section naming its own N1/N2 step plus the N3
+fallback. `scripts/verify_adapters.py` asserts (Tier 1, gated) that the installed skill-load
+surface actually contains the turn-header contract string, and that hook-bound runtimes install
+the progress-injecting `loop_stop.py`.
 
 ## Install (any runtime)
 
@@ -106,9 +128,11 @@ Tier 2 best-effort with contributions welcome.**
 
 ## Verifying an adapter
 
-The installer's contract (skills copied · entry file marked · hooks present/wired) is verified
-end-to-end per runtime by `scripts/verify_adapters.py`, which installs into a throwaway target and
-asserts each promise — no risk to your real config:
+The installer's contract (skills copied · entry file marked · hooks present/wired · worker
+scripts copied · `scripts/loop_progress.py selftest` runs GREEN from inside the installed
+target — #303 AC5, a dedicated per-runtime assertion, not one inferred from the sweep merely
+exiting 0) is verified end-to-end per runtime by `scripts/verify_adapters.py`, which installs
+into a throwaway target and asserts each promise — no risk to your real config:
 
 ```bash
 python3 scripts/verify_adapters.py tier1                        # Tier 1 — gated, run on every commit

@@ -341,6 +341,13 @@ python3 scripts/loop_progress.py render --turn-header   # MEASURED|... 42% geral
 python3 scripts/loop_progress.py status --json          # machine-readable snapshot
 ```
 
+Delivery/entrega (issue #301): `web_verify.py`/`video_evidence.py`/`pr_evidence.py build` all emit
+`evidence` begin/end/blocked; `pr_evidence.py build` auto-includes a `## Progresso do run` section
+whenever a backlog/anchor exists (never a fabricated %); `pr_evidence.py progress-comment --issue N`
+publishes ONE idempotent, rate-limited, fail-open progress comment on the issue. `hooks/loop_stop.py`
+emits the final `refeed_exit` event on every stop path, so `progress.json`'s `run_state`
+(`running|done|capped|handoff|stopped`) never stays stuck mid-run.
+
 ## The promise is evidence-gated (the simplicio hardening) + watcher-gate (pre-promise)
 
 The classic Ralph loop trusts the model to be honest. We do not. A `<promise>` is accepted
@@ -410,8 +417,9 @@ watcher mechanism (Step 3b "Arming the watcher"). Default to self-pacing wheneve
 uncertain rather than assuming a hook will re-feed the goal:
 
 - Host-native durable scheduler / OS cron / a session `/loop` re-invoking this skill.
-- Each tick: read scratchpad → do one iteration → check the promise+evidence → if true,
-  delete state and stop; else increment and reschedule.
+- Each tick: `render --turn-header` first (echoed) → read scratchpad → do one iteration → check
+  the promise+evidence → `render --full` last (regenerates `PROGRESS.md`) → if true, delete state
+  and stop; else increment and reschedule.
 - Same exit conditions: promise verified, cap reached, spindle handoff latched, or explicit STOP.
 
 ## Cancel
@@ -468,6 +476,14 @@ If any of these cannot be shown, the run was NOT a valid completion — treat it
 
 Every output line MUST be prefixed with `MEASURED|` or `UNVERIFIED|`. A bare claim
 without a tag is a contract violation.
+
+**Turn-header contract (issue #302).** The FIRST line of every turn's response MUST be
+`python3 scripts/loop_progress.py render --turn-header`, echoed verbatim — a turn without it is
+incomplete (same severity as a turn without verification). The LAST section MUST include a line
+`próximo passo: <next step>`. On hook-bound runtimes (Claude, Cursor) `loop_stop.py` ALSO prefixes
+the re-feed header with the same snapshot, fail-open — the user sees the % even if a turn forgets
+to narrate it. Self-paced runtimes (no hooks) run the same `render --turn-header` at tick-start and
+`render --full` at tick-end (§ Self-paced drive). Full contract: `references/progress-feedback.md`.
 
 Confirm the loop is armed (goal, cap, promise, hook-bound vs self-paced), then start
 iteration 1 immediately.

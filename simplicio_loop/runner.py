@@ -23,15 +23,37 @@ from .task_contract import compile_many, validate_contract
 from .plan_contract import PLAN_SCHEMA, validate_plan
 from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable
 from .agent_contract import bind_receipt, build_context_pack
+from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONTENT_SCHEMA,
+                               OPERATOR_RECEIPT_SCHEMA as _OPERATOR_RECEIPT_CONTENT_SCHEMA,
+                               ReceiptStatus, verify_receipt)
+from .planning_gate import content_hash as _planning_content_hash
+from .planning_gate import evaluate_mutation_authority
 
 try:
     from scripts.agent_identity import ensure_identity
 except ImportError:  # pragma: no cover - installed package without scripts namespace
     ensure_identity = None
 
+try:
+    from scripts.distributed_trust_policy import (
+        TrustPolicyError,
+        authorize as _trust_authorize,
+        load_policy as _load_trust_policy,
+        resolve_environment as _resolve_trust_environment,
+    )
+except ImportError:  # pragma: no cover - installed package without scripts namespace
+    TrustPolicyError = RuntimeError  # type: ignore[assignment,misc]
+    _trust_authorize = None
+    _load_trust_policy = None
+    _resolve_trust_environment = None
+
 RUNNER_SCHEMA = "simplicio.run-manifest/v1"
 STATE_SCHEMA = "simplicio.run-state/v1"
 OPERATOR_RECEIPT_SCHEMA = "simplicio.operator-receipt/v0"
+# Real content/schema/hash/freshness/provenance validation, gating `receipt_status` in
+# `_operator_dispatch_attempt()` below (issue #288: presence of a file must not imply
+# VERIFIED).
+RECEIPT_MAX_AGE_SECONDS = float(os.environ.get("SIMPLICIO_RECEIPT_MAX_AGE_SECONDS", "86400"))
 MAINTENANCE_RECEIPT_SCHEMA = "simplicio.maintenance-receipt/v1"
 PHASES = [
     "intake",
@@ -114,6 +136,56 @@ def _rand_token(n: int = 10) -> str:
     return "".join(random.choice(chars) for _ in range(n))
 
 
+def _resolve_trusted_queue_url(url: str) -> str:
+    """Resolve the distributed-queue destination via the #289 trust policy.
+
+    ``.github/workflows/distributed-183-proof.yml`` -- the workflow this issue's
+    exploit scenario named -- was removed repo-wide in #311, but the same
+    exfiltration/confused-deputy risk applies to this call site: it is the real,
+    currently-used way to hand a bearer token (``SIMPLICIO_REMOTE_QUEUE_TOKEN``)
+    to a network destination. Setting ``SIMPLICIO_REMOTE_ENVIRONMENT_ID`` opts
+    into fail-closed resolution: the destination comes from the versioned,
+    CODEOWNERS-reviewed ``.github/security/distributed-trust-policy.json``, not
+    from ``SIMPLICIO_REMOTE_QUEUE_URL``. A freeform ``SIMPLICIO_REMOTE_QUEUE_URL``
+    may still be set for local corroboration, but it must match the policy's
+    origin exactly -- an attacker-chosen destination is rejected before any
+    identity/queue object (and therefore any token) is created.
+
+    Environments without ``SIMPLICIO_REMOTE_ENVIRONMENT_ID`` set fall back to the
+    legacy unmanaged path (whatever ``SIMPLICIO_REMOTE_QUEUE_URL`` names) for
+    local/dev use; production/CI callers should set the environment id so the
+    destination is policy-resolved.
+    """
+    environment_id = os.environ.get("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "").strip()
+    if not environment_id:
+        return url
+    if _resolve_trust_environment is None or _load_trust_policy is None or _trust_authorize is None:
+        raise RuntimeError("distributed trust policy module unavailable")
+    policy_path = os.environ.get("SIMPLICIO_DISTRIBUTED_TRUST_POLICY", "").strip()
+    policy = _load_trust_policy(Path(policy_path)) if policy_path else _load_trust_policy()
+    env = _resolve_trust_environment(policy, environment_id)
+    repo_slug = os.environ.get("SIMPLICIO_REMOTE_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
+    ref = os.environ.get("SIMPLICIO_REMOTE_REF") or os.environ.get("GITHUB_REF", "")
+    actor = os.environ.get("SIMPLICIO_REMOTE_ACTOR") or os.environ.get("GITHUB_ACTOR", "")
+    ok, reason = _trust_authorize(policy, environment_id, repo_slug.strip(), ref.strip(), actor.strip())
+    if not ok:
+        raise RuntimeError("distributed trust policy denied: %s" % reason)
+    origin = env["origin"]
+    trusted_url = "%s://%s:%s%s" % (
+        origin["scheme"], origin["hostname"], origin["port"], origin.get("base_path", "/"),
+    )
+    if url and url.rstrip("/") != trusted_url.rstrip("/"):
+        # This is the literal #289 exploit replayed against the real call site:
+        # a caller-supplied destination must never override the reviewed
+        # policy, or an attacker who controls SIMPLICIO_REMOTE_QUEUE_URL could
+        # redirect the bearer token to infrastructure they control.
+        raise RuntimeError(
+            "distributed trust policy denied: SIMPLICIO_REMOTE_QUEUE_URL does not match the "
+            "resolved origin for environment_id '%s'" % environment_id
+        )
+    return trusted_url
+
+
 def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]]:
     """Return the opt-in network coordinator and stable worker identity.
 
@@ -122,8 +194,9 @@ def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]
     without a remote claim.
     """
     url = os.environ.get("SIMPLICIO_REMOTE_QUEUE_URL", "").strip()
-    if not url:
+    if not url and not os.environ.get("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "").strip():
         return None, None
+    url = _resolve_trusted_queue_url(url)
     if ensure_identity is None:
         raise RuntimeError("distributed identity adapter unavailable")
     identity = ensure_identity(
@@ -1799,6 +1872,24 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         raise RuntimeError("repository changed after planning; re-run mapper before execution")
     task = tasks[task_index - 1]
     attempt = int((status["state"] or {}).get("attempts", 0)) + 1
+    # #284: opt-in mutation-authority gate. When SIMPLICIO_REQUIRE_MUTATION_AUTHORITY is
+    # truthy, execute_operator() additionally refuses to run without a valid
+    # planning-receipt.json whose mutation_authority token matches THIS run/attempt/
+    # task-contract/plan identity -- any drift (stale plan hash, rotated lease/fence,
+    # missing/invalid receipt) blocks fail-closed instead of silently proceeding. Off by
+    # default so existing callers/fixtures that never build a planning receipt are
+    # unaffected; see simplicio_loop/planning_gate.py and scripts/planning_gate.py.
+    if str(os.environ.get("SIMPLICIO_REQUIRE_MUTATION_AUTHORITY") or "").strip().lower() in ("1", "true", "yes"):
+        authority_verdict = evaluate_mutation_authority(
+            run_dir, run_id=run_id, attempt=attempt,
+            task_contract_hash=str(contract.get("collection_hash") or _planning_content_hash(contract)),
+            plan_hash=_planning_content_hash(plan),
+        )
+        if not authority_verdict["ok"]:
+            raise RuntimeError(
+                "mutation authority required (SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) but "
+                f"{authority_verdict['reason_code']}: {authority_verdict['reason']}"
+            )
     targets = (plan.get("steps") or [])[task_index - 1].get("candidate_targets") or []
     target = targets[0] if targets else status["state"].get("operator", {}).get("target", "")
     if not target:
@@ -2299,6 +2390,51 @@ def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _verify_worker_receipt_pair(operator_receipt_path: str, evidence_receipt_path: str) -> Dict[str, str]:
+    """Gate `receipt_status` on real content/schema/hash/freshness/provenance (issue #288).
+
+    Previously this reduced to ``Path(receipt).is_file() and Path(evidence_receipt).is_file()``
+    -- an empty ``{}`` file passed just as readily as a genuine receipt. Both receipts are now
+    parsed and run through ``receipt_verifier.verify_receipt`` against the schema each producer
+    (``_prepare_operator_receipt`` / ``evidence.py::build_evidence_receipt``) actually emits.
+    Only a fully verified pair returns ``VERIFIED``; every other case names a specific,
+    non-existence reason (``STALE``, ``TAMPERED``, ``INVALID_SCHEMA``, ``MISSING_FIELD``, or the
+    legacy ``UNVERIFIED`` when a path is simply absent).
+    """
+    if not operator_receipt_path or not evidence_receipt_path:
+        return {"status": "UNVERIFIED", "reason": "operator or evidence receipt path missing"}
+    op_path = Path(operator_receipt_path)
+    ev_path = Path(evidence_receipt_path)
+    if not op_path.is_file() or not ev_path.is_file():
+        return {"status": "UNVERIFIED", "reason": "operator or evidence receipt file missing"}
+    try:
+        operator_payload = json.loads(op_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"status": ReceiptStatus.INVALID_SCHEMA, "reason": f"operator receipt unreadable: {exc}"}
+    try:
+        evidence_payload = json.loads(ev_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"status": ReceiptStatus.INVALID_SCHEMA, "reason": f"evidence receipt unreadable: {exc}"}
+
+    now = time.time()
+    operator_verdict = verify_receipt(
+        operator_payload, schema=_OPERATOR_RECEIPT_CONTENT_SCHEMA,
+        max_age_seconds=RECEIPT_MAX_AGE_SECONDS, now=now,
+    )
+    if not operator_verdict.verified:
+        return {"status": operator_verdict.status, "reason": f"operator receipt: {operator_verdict.reason}"}
+    evidence_verdict = verify_receipt(
+        evidence_payload, schema=_EVIDENCE_RECEIPT_CONTENT_SCHEMA,
+        max_age_seconds=RECEIPT_MAX_AGE_SECONDS, now=now,
+    )
+    if not evidence_verdict.verified:
+        return {"status": evidence_verdict.status, "reason": f"evidence receipt: {evidence_verdict.reason}"}
+    return {
+        "status": ReceiptStatus.VERIFIED,
+        "reason": "operator and evidence receipts passed content/schema/hash/freshness/provenance checks",
+    }
+
+
 def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Call the production operator and reduce its status to a durable worker record."""
     started = _now()
@@ -2389,6 +2525,7 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
                 {"receipt_ref": receipt}, item["agent_identity"],
                 context_pack=item.get("context_pack"),
             )
+        receipt_verdict = _verify_worker_receipt_pair(receipt, evidence_receipt)
         return {
             **common,
             "status": "succeeded" if success else "failed",
@@ -2398,9 +2535,8 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             "operator_receipt": receipt,
             "evidence_receipt": evidence_receipt,
             "watcher_receipt": watcher_receipt if Path(watcher_receipt).exists() else "",
-            "receipt_status": "VERIFIED" if (
-                receipt and evidence_receipt and Path(receipt).is_file() and Path(evidence_receipt).is_file()
-            ) else "UNVERIFIED",
+            "receipt_status": receipt_verdict["status"],
+            "receipt_verdict_reason": receipt_verdict["reason"],
             "attempt": int(state.get("attempts") or 0),
             "failure_fingerprint": failure_fingerprint,
             "started_at": started,

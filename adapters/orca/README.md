@@ -64,3 +64,10 @@ Open a task in Orca (it allocates the worktree), then in the task's agent sessio
 Manual smoke (the one step a file-level harness can't do): run a small `/simplicio-loop` task in
 an Orca worktree, confirm the loop drives (hook or scheduled tick), the gates fire, and the state
 stays inside that worktree's `.orchestrator/`.
+
+## Progresso do run
+
+Inner-agent hook or self-paced tick (N1/N2 depending on how the inner agent is configured): the
+turn-header contract applies identically inside the Orca worktree. Universal fallback (N3): open
+`.orchestrator/loop/PROGRESS.md` inside that worktree (auto-regenerated every turn, scoped to the
+worktree like all other loop state).
