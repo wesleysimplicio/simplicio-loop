@@ -200,6 +200,11 @@ python3 scripts/github_lifecycle.py reconcile --owner acme --repo widgets --issu
   embeds evidence text, `close` is fail-closed and re-query-confirmed, outbox round-trip.
 * `tests/test_github_lifecycle_concurrency_e2e.py` — the real two-process concurrency proof
   (§ 10).
+* `tests/test_github_lifecycle_live_e2e.py` — opt-in (`SIMPLICIO_LIVE_GH_E2E=1`, real `gh` auth
+  required, skipped otherwise) full-cycle live proof: CLAIMED → IN_PROGRESS → VERIFYING (with
+  evidence) → CLOSED against a real, disposable scratch issue, all on the SAME canonical comment
+  id, ending in a real `close_source_issue` and a final independent re-query confirming
+  `state == "closed"` and exactly one lifecycle comment.
 * `tests/test_oracle_source_lifecycle_gate.py` — the COMPLETE-gate wiring (§ 9): passes with no
   receipt, blocks on `CLOSE_PENDING_RECONCILIATION`, passes again once reconciled.
 
@@ -224,13 +229,16 @@ document) — only `cmd_comment`'s own marker choice changed.
 
 ## Explicitly NOT implemented here (tracked, not claimed done)
 
-* Full duplicate-comment **election** across two independent authors/leases beyond "first marker
-  match, oldest id wins" (`get_details`'s current tie-break) — no `SUPERSEDED` marking or
-  safe-removal policy for a genuinely duplicated marker comment (e.g. two different lease-holders
-  each having briefly believed they owned the issue and both posted before the queue's exclusivity
-  caught up).
-* `≥90%` branch **coverage measurement** specifically scoped to `github_lifecycle.py`/
-  `source_adapter.py` (not measured/enforced as its own number in this change; the repo-wide
-  `scripts/check.py` quality gates still apply).
-* `WORK_ITEM_ATTEMPTS.md` / `PHASE_EVENT_CONTRACT.md` updates describing the `_sync_github_lifecycle`
-  projection in those documents' own terms (this file documents it from the adapter's side).
+* A CI gate that isolates `≥90%` branch **coverage** as its own enforced number scoped just to
+  `github_lifecycle.py`/`source_adapter.py` — `scripts/coverage_gate.py::CRITICAL_MODULES` tracks
+  a fixed `scripts/*.py` list (#277) and does not (yet) include these `simplicio_loop/` modules.
+  Measured out-of-band with `pytest --cov=simplicio_loop.github_lifecycle
+  --cov=simplicio_loop.source_adapter --cov-branch`: 98% branch / 99% line coverage as of the
+  #285 final audit — comfortably above the issue's `≥90%` bar, just not wired into an automated
+  per-module gate.
+
+Previously listed here and since closed: duplicate-comment **election** (`elect_canonical_comment`
++ `mark_comment_superseded` + `reconcile_duplicate_comments`, § above, tests in
+`test_github_lifecycle_unit.py`) and the `docs/PHASE_EVENT_CONTRACT.md` write-up of the
+`_sync_github_lifecycle` projection (its own "GitHub lifecycle projection (#285)" section) are
+both implemented and documented — do not re-open them without checking current code first.
