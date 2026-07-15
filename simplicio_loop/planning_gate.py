@@ -76,16 +76,50 @@ opt-in posture (or a test asserting the missing-receipt fail-closed path) sets
 `SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT` to an explicit falsy value
 (`0/false/no/off/legacy`). See `docs/adr/0004-planning-gate-rollout.md` for the
 rollout/migration strategy (backward-compat shims, what breaks, how to opt out).
+
+This round additionally folds in a typed `verdict` field across the receipt and
+`evaluate_mutation_authority()` (`COMPLETE`/`BLOCKED`/`STALE_SOURCE`/
+`LEASE_LOST`/`AWAITING_DECISION`/`AUTHORITY_EXPIRED`, exported as `VERDICT_*`
+constants) plus two more gates: `awaiting_decision`/`awaiting_reason` on
+`build_planning_receipt()` marks a receipt `AWAITING_DECISION` (never ready for
+mutation, even over an otherwise-valid plan) when an ambiguity needs a human
+call; `authority_ttl_seconds` (default `DEFAULT_AUTHORITY_TTL_SECONDS`) stamps
+an `authority_expires_at` on the receipt so `evaluate_mutation_authority()`
+returns `AUTHORITY_EXPIRED` once the TTL elapses instead of trusting a receipt
+indefinitely. A distinct `source_revision` (a raw revision string, e.g. a
+GitHub issue `updated_at`) is folded into the mutation-authority identity
+tuple alongside the existing `source_snapshot_hash`; a caller that supplies
+`current_source_revision` to `evaluate_mutation_authority()` gets a
+`STALE_SOURCE` verdict the moment it drifts, and a lease/fencing mismatch is
+now reported as the more specific `LEASE_LOST` instead of a generic
+`mutation_authority_invalid`. All of this is additive -- every new parameter
+defaults to `""`/`False`/the TTL default, so a caller that never sets them
+keeps the exact previous receipt shape and verdict behavior.
 """
 from __future__ import annotations
 
+import calendar
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence
 
 PLANNING_RECEIPT_SCHEMA = "simplicio.planning-receipt/v1"
 RECEIPT_FILENAME = "planning-receipt.json"
+
+# Typed verdict codes shared by build_planning_receipt() and
+# evaluate_mutation_authority() (#284 follow-up).
+VERDICT_COMPLETE = "COMPLETE"
+VERDICT_BLOCKED = "BLOCKED"
+VERDICT_STALE_SOURCE = "STALE_SOURCE"
+VERDICT_LEASE_LOST = "LEASE_LOST"
+VERDICT_AWAITING_DECISION = "AWAITING_DECISION"
+VERDICT_AUTHORITY_EXPIRED = "AUTHORITY_EXPIRED"
+
+# Default mutation-authority TTL in seconds (30 minutes); callers may override
+# or pass 0 to disable expiry entirely (omits `authority_expires_at`).
+DEFAULT_AUTHORITY_TTL_SECONDS = 1800
 
 
 def _canonical(obj: Any) -> str:
@@ -99,13 +133,16 @@ def content_hash(obj: Any) -> str:
 
 def mutation_authority_token(*, run_id: str, attempt: int, task_contract_hash: str,
                             plan_hash: str, lease_id: str = "", fencing_token: str = "",
-                            source_snapshot_hash: str = "") -> str:
+                            source_snapshot_hash: str = "", source_revision: str = "") -> str:
     """Derive the mutation-authority token from the exact identity tuple it authorizes.
 
-    Any change to run/attempt/contract/plan/lease/fence/source-snapshot changes the
-    token, so an authority minted for one identity can never silently validate a
-    different one. `source_snapshot_hash` defaults to `""` -- a run that never
-    captures a GitHub source snapshot (local/non-GitHub sources) is unaffected.
+    Any change to run/attempt/contract/plan/lease/fence/source-snapshot/source-revision
+    changes the token, so an authority minted for one identity can never silently
+    validate a different one. `source_snapshot_hash` defaults to `""` -- a run that
+    never captures a GitHub source snapshot (local/non-GitHub sources) is unaffected.
+    `source_revision` is a distinct, optional raw revision string (e.g. a GitHub issue
+    `updated_at`) that a caller may fold in instead of/alongside the snapshot hash to
+    get a `STALE_SOURCE` verdict from `evaluate_mutation_authority()`.
     """
     payload = {
         "run_id": str(run_id or ""),
@@ -115,6 +152,7 @@ def mutation_authority_token(*, run_id: str, attempt: int, task_contract_hash: s
         "lease_id": str(lease_id or ""),
         "fencing_token": str(fencing_token or ""),
         "source_snapshot_hash": str(source_snapshot_hash or ""),
+        "source_revision": str(source_revision or ""),
     }
     return content_hash(payload)
 
@@ -122,14 +160,14 @@ def mutation_authority_token(*, run_id: str, attempt: int, task_contract_hash: s
 def verify_mutation_authority(authority: str, *, run_id: str, attempt: int,
                               task_contract_hash: str, plan_hash: str,
                               lease_id: str = "", fencing_token: str = "",
-                              source_snapshot_hash: str = "") -> bool:
+                              source_snapshot_hash: str = "", source_revision: str = "") -> bool:
     """Fail-closed re-check: recompute the token from the CURRENT identity and compare."""
     if not str(authority or "").strip():
         return False
     expected = mutation_authority_token(
         run_id=run_id, attempt=attempt, task_contract_hash=task_contract_hash,
         plan_hash=plan_hash, lease_id=lease_id, fencing_token=fencing_token,
-        source_snapshot_hash=source_snapshot_hash,
+        source_snapshot_hash=source_snapshot_hash, source_revision=source_revision,
     )
     return expected == authority
 
@@ -148,6 +186,10 @@ def build_planning_receipt(
     impact_map: Optional[Mapping[str, Any]] = None,
     traceability_matrix: Optional[Mapping[str, Any]] = None,
     plan_revision: int = 0,
+    source_revision: str = "",
+    awaiting_decision: bool = False,
+    awaiting_reason: str = "",
+    authority_ttl_seconds: int = DEFAULT_AUTHORITY_TTL_SECONDS,
 ) -> Dict[str, Any]:
     """Build the #284 planning receipt from already-computed intake artifacts.
 
@@ -176,27 +218,53 @@ def build_planning_receipt(
     mutation, the same fail-closed treatment as an invalid `plan_validation`
     — a caller that never builds a matrix is unaffected. `plan_revision`
     defaults to 0 (first planning pass); `replan_on_drift()` bumps it.
+
+    `source_revision` is a distinct, optional raw revision string (e.g. a GitHub
+    issue `updated_at`) folded into the mutation-authority identity tuple
+    alongside `source_snapshot_hash`. `awaiting_decision`/`awaiting_reason` mark
+    the receipt `AWAITING_DECISION` (never ready for mutation, even over an
+    otherwise-valid plan) when an ambiguity needs a human call.
+    `authority_ttl_seconds` (default `DEFAULT_AUTHORITY_TTL_SECONDS`, pass `0`
+    to disable) stamps an `authority_expires_at` timestamp so the authority is
+    not trusted indefinitely (`evaluate_mutation_authority()` returns
+    `AUTHORITY_EXPIRED` once it elapses).
     """
     task_contract_hash = str(contract.get("collection_hash") or content_hash(contract))
     plan_hash = content_hash(plan)
     plan_valid = bool(plan_validation.get("valid"))
     matrix_ok = True if traceability_matrix is None else bool(traceability_matrix.get("coverage_ok"))
-    ready = plan_valid and matrix_ok
+    plan_ready = plan_valid and matrix_ok
+
+    if awaiting_decision:
+        verdict = VERDICT_AWAITING_DECISION
+        ready = False
+    elif not plan_ready:
+        verdict = VERDICT_BLOCKED
+        ready = False
+    else:
+        verdict = VERDICT_COMPLETE
+        ready = True
+
     source = dict((source_snapshot or {}).get("source") or {})
     source_snapshot_hash = str(source.get("snapshot_hash") or "")
     authority = ""
+    authority_expires_at = ""
     if ready:
         authority = mutation_authority_token(
             run_id=run_id, attempt=attempt, task_contract_hash=task_contract_hash,
             plan_hash=plan_hash, lease_id=lease_id, fencing_token=fencing_token,
-            source_snapshot_hash=source_snapshot_hash,
+            source_snapshot_hash=source_snapshot_hash, source_revision=source_revision,
         )
+        if authority_ttl_seconds and authority_ttl_seconds > 0:
+            expires_ts = time.time() + authority_ttl_seconds
+            authority_expires_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires_ts))
     receipt: Dict[str, Any] = {
         "schema": PLANNING_RECEIPT_SCHEMA,
         "run_id": str(run_id or ""),
         "attempt": int(attempt or 0),
         "lease_id": str(lease_id or ""),
         "fencing_token": str(fencing_token or ""),
+        "source_revision": str(source_revision or ""),
         "task_contract_hash": task_contract_hash,
         "plan_hash": plan_hash,
         "plan_revision": int(plan_revision or 0),
@@ -206,8 +274,12 @@ def build_planning_receipt(
             "warnings": list(plan_validation.get("warnings") or []),
             "checked_tasks": plan_validation.get("checked_tasks", 0),
         },
+        "awaiting_decision": bool(awaiting_decision),
+        "awaiting_reason": str(awaiting_reason or ""),
+        "verdict": verdict,
         "ready_for_mutation": ready,
         "mutation_authority": authority,
+        "authority_expires_at": authority_expires_at,
     }
     if source:
         receipt["source"] = source
@@ -248,6 +320,7 @@ def evaluate_mutation_authority(
     run_dir: str | Path, *, run_id: str, attempt: int, task_contract_hash: str,
     plan_hash: str, lease_id: str = "", fencing_token: str = "",
     source_snapshot_hash: str = "",
+    source_revision: str = "", current_source_revision: str = "",
 ) -> Dict[str, Any]:
     """Fail-closed gate: load the on-disk receipt and re-verify its authority
     against the CURRENT identity tuple the caller is about to execute with.
@@ -255,33 +328,86 @@ def evaluate_mutation_authority(
     `source_snapshot_hash`, when supplied, must match the hash the receipt was
     minted with -- a GitHub issue edited between planning and execution (source
     drift) invalidates the authority exactly like a stale plan hash does.
+    `current_source_revision`, when supplied, is compared against the receipt's
+    own `source_revision` for the same drift check via a distinct raw revision
+    string, returning `STALE_SOURCE` on mismatch.
 
     Returns a structured verdict (never raises) so callers can render a clear
-    BLOCKED reason instead of a bare exception.
+    BLOCKED reason instead of a bare exception. Every response carries a typed
+    `verdict` (`COMPLETE`/`BLOCKED`/`STALE_SOURCE`/`LEASE_LOST`/
+    `AWAITING_DECISION`/`AUTHORITY_EXPIRED`) alongside the legacy `reason_code`.
     """
     receipt = load_planning_receipt(run_dir)
     if not receipt:
-        return {"ok": False, "reason_code": "planning_receipt_missing",
+        return {"ok": False, "verdict": VERDICT_BLOCKED,
+                "reason_code": "planning_receipt_missing",
                 "reason": f"{RECEIPT_FILENAME} is missing or unreadable"}
     if receipt.get("schema") != PLANNING_RECEIPT_SCHEMA:
-        return {"ok": False, "reason_code": "planning_receipt_schema_invalid",
+        return {"ok": False, "verdict": VERDICT_BLOCKED,
+                "reason_code": "planning_receipt_schema_invalid",
                 "reason": "planning receipt schema mismatch"}
+
+    # AWAITING_DECISION gate (checked before ready_for_mutation so the reason is clear).
+    if receipt.get("awaiting_decision"):
+        return {"ok": False, "verdict": VERDICT_AWAITING_DECISION,
+                "reason_code": "planning_awaiting_decision",
+                "reason": str(receipt.get("awaiting_reason") or "planning blocked — awaiting human decision")}
+
     if not receipt.get("ready_for_mutation"):
-        return {"ok": False, "reason_code": "planning_not_ready",
+        return {"ok": False, "verdict": VERDICT_BLOCKED,
+                "reason_code": "planning_not_ready",
                 "reason": "planning receipt is not ready_for_mutation"}
+
+    # AUTHORITY_EXPIRED gate.
+    expires_at = str(receipt.get("authority_expires_at") or "")
+    if expires_at:
+        try:
+            # calendar.timegm (not time.mktime) so the UTC string is parsed
+            # correctly regardless of the local timezone.
+            expiry_ts = calendar.timegm(time.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ"))
+            if time.time() > expiry_ts:
+                return {"ok": False, "verdict": VERDICT_AUTHORITY_EXPIRED,
+                        "reason_code": "authority_expired",
+                        "reason": f"mutation authority expired at {expires_at}; replanning required"}
+        except (ValueError, OverflowError):
+            pass  # malformed timestamp — don't block on our own formatting error
+
+    # STALE_SOURCE gate (distinct raw source_revision, independent of source_snapshot_hash).
+    if current_source_revision:
+        recorded_revision = str(receipt.get("source_revision") or "")
+        if recorded_revision and recorded_revision != current_source_revision:
+            return {"ok": False, "verdict": VERDICT_STALE_SOURCE,
+                    "reason_code": "source_revision_changed",
+                    "reason": (
+                        f"source revision changed since planning "
+                        f"(recorded={recorded_revision!r}, current={current_source_revision!r}); "
+                        "replanning required"
+                    )}
+
     authority = str(receipt.get("mutation_authority") or "")
     receipt_source_hash = str((receipt.get("source") or {}).get("snapshot_hash") or "")
+    receipt_source_revision = str(receipt.get("source_revision") or "")
     if not verify_mutation_authority(
         authority, run_id=run_id, attempt=attempt, task_contract_hash=task_contract_hash,
         plan_hash=plan_hash, lease_id=lease_id, fencing_token=fencing_token,
-        source_snapshot_hash=receipt_source_hash,
+        source_snapshot_hash=receipt_source_hash, source_revision=receipt_source_revision,
     ):
-        return {"ok": False, "reason_code": "mutation_authority_invalid",
+        receipt_lease = str(receipt.get("lease_id") or "")
+        receipt_fence = str(receipt.get("fencing_token") or "")
+        if (receipt_lease and receipt_lease != lease_id) or \
+                (receipt_fence and receipt_fence != fencing_token):
+            return {"ok": False, "verdict": VERDICT_LEASE_LOST,
+                    "reason_code": "lease_or_fence_mismatch",
+                    "reason": "lease_id or fencing_token changed since planning; another worker may hold this item"}
+        return {"ok": False, "verdict": VERDICT_BLOCKED,
+                "reason_code": "mutation_authority_invalid",
                 "reason": "mutation authority does not match the current run/attempt/contract/plan/lease/fence identity"}
     if source_snapshot_hash and receipt_source_hash and source_snapshot_hash != receipt_source_hash:
-        return {"ok": False, "reason_code": "source_drift",
+        return {"ok": False, "verdict": VERDICT_STALE_SOURCE,
+                "reason_code": "source_drift",
                 "reason": "GitHub source snapshot changed since planning; authority invalidated"}
-    return {"ok": True, "reason_code": "mutation_authority_verified",
+    return {"ok": True, "verdict": VERDICT_COMPLETE,
+            "reason_code": "mutation_authority_verified",
             "reason": "mutation authority verified for the current identity tuple"}
 
 
@@ -462,6 +588,13 @@ def auto_planning_receipt_enabled(env: Optional[Mapping[str, str]] = None) -> bo
 __all__ = [
     "PLANNING_RECEIPT_SCHEMA",
     "RECEIPT_FILENAME",
+    "VERDICT_COMPLETE",
+    "VERDICT_BLOCKED",
+    "VERDICT_STALE_SOURCE",
+    "VERDICT_LEASE_LOST",
+    "VERDICT_AWAITING_DECISION",
+    "VERDICT_AUTHORITY_EXPIRED",
+    "DEFAULT_AUTHORITY_TTL_SECONDS",
     "content_hash",
     "mutation_authority_token",
     "verify_mutation_authority",
