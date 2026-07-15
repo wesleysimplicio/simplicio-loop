@@ -156,6 +156,51 @@ def test_forced_failure_mid_install_leaves_a_genuinely_clean_target(tmp_path):
         "a rolled-back mid-transaction failure must leave the target exactly as clean as before"
 
 
+def test_clean_install_survives_unicode_and_spaces_in_target_path(tmp_path):
+    """#293 "Testes obrigatórios > Sistema": "caminhos com espaços e Unicode". A target directory
+    whose name has embedded spaces AND non-ASCII characters (accents + CJK) must install,
+    smoke-check, and roll back exactly like the plain-ASCII clean target above — proves the
+    executor's hashing/backup/receipt path-handling (`_hash_path`, `install-mutations.json`
+    normalization) doesn't choke on paths that aren't just `[a-zA-Z0-9_/]`."""
+    target = tmp_path / "clean tärget with späces 目录 293"
+    target.mkdir()
+    home = tmp_path / "clean home"
+    home.mkdir()
+    baseline = _snapshot(target)
+    assert baseline == []
+
+    apply = subprocess.run(
+        [sys.executable, str(INSTALL_LIB), "claude", "--target", str(target),
+         "--skip-operators", "--minimal", "--transactional"],
+        capture_output=True, text=True, timeout=120, env=_clean_env(home),
+        stdin=subprocess.DEVNULL,
+    )
+    assert apply.returncode == 0, apply.stdout + apply.stderr
+
+    for s in SKILLS:
+        skill_md = target / ".claude" / "skills" / s / "SKILL.md"
+        assert skill_md.is_file(), "%s not installed cleanly into a unicode/space path" % s
+
+    receipts = list((target / ".simplicio" / "receipts").glob("*.json"))
+    assert len(receipts) == 1
+    receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert receipt["status"] == "APPLIED"
+
+    rb = subprocess.run(
+        [sys.executable, str(INSTALL_LIB), "rollback", receipt["transaction_id"],
+         "--target", str(target)],
+        capture_output=True, text=True, timeout=60, env=_clean_env(home),
+        stdin=subprocess.DEVNULL,
+    )
+    assert rb.returncode == 0, rb.stdout + rb.stderr
+    assert json.loads(rb.stdout)["status"] == "ROLLED_BACK"
+
+    remaining_content = [p for p in _snapshot(target) if not p.startswith(".simplicio")]
+    assert remaining_content == [], \
+        "rollback of a unicode/space-path install must leave no installed content behind: %r" \
+        % remaining_content
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module

@@ -82,8 +82,9 @@ MUTATIONS = [
      "user (`~/.local/bin`)", "yes (remove symlink)",
      "no (best-effort, never fails the install)"),
     ("install_lib.py", "install_all_deps()",
-     "`pip install -U .[onnx]` / `simplicio-loop[onnx]` + tray dep (`pystray`+`pillow` or "
-     "`rumps` on macOS)",
+     "`pip install -U .[ml]` / `simplicio-loop[ml]` + tray dep (`pystray`+`pillow` or "
+     "`rumps` on macOS) — #293 audit fix: was `.[onnx]`, an extra pyproject.toml no longer "
+     "declares (removed in CHANGELOG 3.11.0)",
      "global Python environment", "not reversible by this installer",
      "**yes** — only runs when `--with-service`/`--full-stack` consent is given "
      "(#293 fix: no longer runs by default)"),
