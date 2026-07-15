@@ -46,6 +46,10 @@ Usage:
     python3 scripts/check.py --clean-env-only
     python3 scripts/check.py --token-budget   # token-budget guard only
     python3 scripts/check.py --repo-budget    # repository size budget guard only
+    python3 scripts/check.py --package-content  # wheel/sdist/npm pack content check (#294 AC11)
+                                               # -- opt-in only: ~20-30s, builds real artifacts,
+                                               # a release-time check, not part of the default
+                                               # gate or --core-gate.
     python3 scripts/check.py --core-gate      # mandatory/fast gate only (#118): audit + loop-
                                                # contract + token-budget + CORE tests, skipping
                                                # satellite-only tests (adapters, autoresearch,
@@ -187,13 +191,29 @@ def run_repository_budget():
     return r.returncode == 0
 
 
+def run_package_content():
+    # #294 AC11 — deliberately NOT part of the default/core gate: it actually builds a real
+    # sdist + wheel + runs `npm pack --dry-run`, ~20-30s and requires the `build` module + `npm`
+    # on PATH. This is a release-time check (issue step 6: "provar que wheel/npm/plugin não
+    # carregam mídia ou mirrors desnecessários"), run explicitly via
+    # `python3 scripts/check.py --package-content`, not on every push.
+    _hr("package-content (#294 AC11)")
+    path = os.path.join(HERE, "package_content_check.py")
+    if not os.path.exists(path):
+        print("scripts/package_content_check.py not found — skipping")
+        return True
+    r = subprocess.run([sys.executable, path], cwd=REPO)
+    return r.returncode == 0
+
+
 def main():
     args = sys.argv[1:]
     core_gate = "--core-gate" in args
     only_flags = {"--audit-only", "--tests-only", "--mirror-parity-only", "--loop-contract-only",
-                  "--clean-env-only", "--token-budget", "--repo-budget"}
+                  "--clean-env-only", "--token-budget", "--repo-budget", "--package-content"}
     any_only = any(a in args for a in only_flags) or core_gate
     audit_ok = mirror_ok = tests_ok = contract_ok = clean_env_ok = budget_ok = repo_budget_ok = True
+    package_content_ok = True
     if not any_only or "--audit-only" in args or core_gate:
         audit_ok = run_audit()
     if not any_only or "--mirror-parity-only" in args or core_gate:
@@ -208,8 +228,12 @@ def main():
         budget_ok = run_token_budget()
     if not any_only or "--repo-budget" in args or core_gate:
         repo_budget_ok = run_repository_budget()
+    if "--package-content" in args:
+        # Deliberately NOT included in "not any_only" (the default full run) or core_gate — see
+        # run_package_content()'s docstring: opt-in only, ~20-30s, a release-time check.
+        package_content_ok = run_package_content()
     ok = (audit_ok and mirror_ok and tests_ok and contract_ok and clean_env_ok and budget_ok
-          and repo_budget_ok)
+          and repo_budget_ok and package_content_ok)
     if core_gate:
         print("\ncore-gate: %s  (audit=%s · mirror-parity=%s · core-tests=%s · loop-contract=%s · clean-env=%s · token-budget=%s · repo-budget=%s)" % (
             "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if mirror_ok else "FAIL",

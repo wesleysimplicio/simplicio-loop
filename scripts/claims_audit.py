@@ -6,7 +6,7 @@ the code. Deterministic, stdlib-only, no network. Exits 0 when every check passe
 so it can gate a commit/push (`scripts/check.py`, or a git pre-push hook). NOT a GitHub Action;
 runs locally, free.
 
-Ten checks:
+Thirteen checks:
   1. referenced-scripts-exist  Every `scripts/<name>.py` mentioned in the docs actually exists.
   2. extension-point-count      Every "<N> extension points / named (binding) points" figure agrees
                                 with EACH OTHER *and* with the actual row count of the extension-points
@@ -44,6 +44,14 @@ Ten checks:
                                 `.claude/skills/simplicio-tasks/` are byte-identical for every file
                                 that exists in BOTH `references/` trees (the tasks tree is a
                                 deliberate subset; `SKILL.md` differs by design and is excluded).
+  11. turn-header-format        `loop_progress.py render --turn-header` output still matches the
+                                documented contract shape.
+  12. install-mutations-doc     `docs/INSTALL_MUTATIONS.md` matches its generator.
+  13. canonical-manifest        `scripts/canonical_manifest.py check` (#294 AC6/AC7): version
+                                (release_manifest), skill count, and CHANGELOG.md's latest
+                                released version all agree, AND the runtime/adapter count in
+                                README/adapters/MATRIX.md agrees with the actual `adapters/` tree
+                                (legacy compat shims collapsed to their canonical runtime).
 
 Usage:
     python3 scripts/claims_audit.py [--json] [--only 1,2,3,4]
@@ -69,6 +77,12 @@ from mirror_manifest import LEAN_SCRIPTS, LEAN_TESTS  # noqa: E402 — single so
 from claims_manifest import CLAIMS, extract_claims, QUANT_RE  # noqa: E402 — quantitative claims (#96)
 
 DOC_GLOBS = ["README.md", "AGENTS.md", "CLAUDE.md", "INSTALL.md", "PYPI.md"]
+# CHANGELOG.md is deliberately NOT in DOC_GLOBS: it is a historical log whose entries correctly
+# describe counts as they were AT THE TIME of that change (e.g. "6 skills" in an old entry, now
+# 7) — checking it against skill-count/extension-point-count checks 2/6 would false-positive on
+# every entry that predates the current count. Its version-drift exposure (#294 AC7) is instead
+# checked narrowly and correctly in `scripts/canonical_manifest.py` (latest released entry vs
+# `pyproject.toml`, not a skill/extension-point count comparison).
 DOC_DIRS = [os.path.join(".claude", "skills")]
 EXTENSION_POINTS_DOC = os.path.join(
     REPO, ".claude", "skills", "simplicio-tasks", "references", "extension-points.md")
@@ -124,6 +138,10 @@ SELFTEST_SCRIPTS = [
     "scripts/loop_progress.py",
     "hooks/action_gate.py",
     "scripts/repository_budget.py",
+    "scripts/repo_history_scan.py",
+    "scripts/history_migration_plan.py",
+    "scripts/canonical_manifest.py",
+    "scripts/package_content_check.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a
 # `selftest`-shaped function/subcommand that isn't the worker's own self-check, or a script this
@@ -643,6 +661,22 @@ def check_install_mutations_doc_generated():
     return True, "docs/INSTALL_MUTATIONS.md matches its generator"
 
 
+def check_canonical_manifest():
+    """#294 AC6/AC7: `scripts/canonical_manifest.py check` — the single canonical manifest that
+    ties version (release_manifest), skill count, runtime/adapter count, and CHANGELOG.md version
+    drift together. Existing checks 2/6 already cover extension-point/skill-count drift against
+    README/AGENTS/CLAUDE/INSTALL/PYPI/CHANGELOG; this check adds the runtime-count cross-check and
+    the CHANGELOG-vs-pyproject version cross-check no other check owned."""
+    path = os.path.join(REPO, "scripts", "canonical_manifest.py")
+    if not os.path.exists(path):
+        return False, "missing scripts/canonical_manifest.py"
+    r = subprocess.run([sys.executable, path, "check"], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", cwd=REPO, stdin=subprocess.DEVNULL)
+    ok = r.returncode == 0
+    detail = [ln for ln in (r.stdout or r.stderr or "").splitlines() if ln.strip()]
+    return ok, ("; ".join(detail) if detail else ("canonical manifest ready" if ok else "canonical-manifest check failed"))
+
+
 CHECKS = [
     ("1 referenced-scripts-exist", check_scripts_exist),
     ("2 extension-point-count", check_extension_count),
@@ -656,6 +690,7 @@ CHECKS = [
     ("10 skill-pair-parity", check_skill_pair_parity),
     ("11 turn-header-format", check_turn_header_format),
     ("12 install-mutations-doc-generated", check_install_mutations_doc_generated),
+    ("13 canonical-manifest", check_canonical_manifest),
 ]
 
 
