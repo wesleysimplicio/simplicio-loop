@@ -63,6 +63,14 @@ NOT_APPLICABLE_ELIGIBLE = frozenset({"benchmark"})
 DEFAULT_COVERAGE_THRESHOLD = 85.0
 RECEIPT_FILENAME = "quality-matrix.json"
 
+# #283: the four lanes the issue's example `simplicio.quality-gate/v1` envelope nests
+# under a "tests" object (implementation/benchmark/tdd stay top-level in that same
+# example). `evaluate_quality_matrix` still reads these from the flat `requirements`
+# dict for backward compatibility with every #278/#283 receipt already in the wild,
+# but now also accepts them nested under "tests" -- see `_merge_tests_envelope` and
+# `sync_tests_envelope` below, which keep the two views in lockstep.
+TESTS_ENVELOPE_CATEGORIES: Tuple[str, ...] = ("unit", "integration", "system", "regression")
+
 # #283 deterministic change classification (bug/task/feat/fix/chore). Order matters:
 # first matching keyword wins, checked against labels first (authoritative), then
 # title (heuristic fallback) — mirrors `scripts/repo_conventions.py`'s classifier
@@ -129,6 +137,41 @@ def _gate(name: str, ok: bool, reason_code: str, detail: str) -> Dict[str, Any]:
 
 def receipt_path(run_dir: str) -> Path:
     return Path(run_dir) / RECEIPT_FILENAME
+
+
+def _merge_tests_envelope(requirements: Dict[str, Any], receipt: Dict[str, Any]) -> Dict[str, Any]:
+    """#283: accept the issue's literal envelope shape (`tests.unit`/`tests.integration`/
+    `tests.system`/`tests.regression`) as an alternative to the flat `requirements.<lane>`
+    entries these same four categories have always used. A flat `requirements` entry always
+    wins when both are present (never silently overridden by a stale "tests" mirror); "tests"
+    only fills in a category the flat dict is missing entirely.
+    """
+    tests_obj = receipt.get("tests")
+    if not isinstance(tests_obj, dict):
+        return requirements
+    merged = dict(requirements)
+    for name in TESTS_ENVELOPE_CATEGORIES:
+        if name not in merged and isinstance(tests_obj.get(name), dict):
+            merged[name] = tests_obj[name]
+    return merged
+
+
+def sync_tests_envelope(receipt: Dict[str, Any]) -> Dict[str, Any]:
+    """#283: (re)compute the nested `tests` mirror from the canonical `requirements` lanes.
+
+    Call this after writing/updating `receipt["requirements"]` so the receipt satisfies the
+    issue's literal `simplicio.quality-gate/v1` example shape (`tests.unit`/`tests.integration`/
+    `tests.system`/`tests.regression`) as well as the flat shape every existing #278/#283
+    producer and consumer already reads/writes. Returns the same receipt for chaining.
+    """
+    requirements = receipt.get("requirements")
+    if not isinstance(requirements, dict):
+        requirements = {}
+    receipt["tests"] = {
+        name: requirements.get(name, {"status": "unset", "proof_ref": "", "detail": ""})
+        for name in TESTS_ENVELOPE_CATEGORIES
+    }
+    return receipt
 
 
 def _load_json(path: Path) -> Dict[str, Any] | None:
@@ -249,6 +292,9 @@ def evaluate_quality_matrix(run_dir: str) -> Dict[str, Any]:
     requirements = receipt.get("requirements")
     if not isinstance(requirements, dict):
         requirements = {}
+    # #283: also accept the issue's literal envelope shape ("tests.unit"/"tests.integration"/
+    # "tests.system"/"tests.regression") for any of those four lanes the flat dict is missing.
+    requirements = _merge_tests_envelope(requirements, receipt)
 
     # #283: policy block is optional and defaults to the exact #278 behavior —
     # every REQUIRED_REQUIREMENTS lane mandatory, TDD not evaluated, no lane may be
@@ -308,17 +354,29 @@ def evaluate_quality_matrix(run_dir: str) -> Dict[str, Any]:
 
 
 def build_quality_matrix_template(coverage_threshold: float = DEFAULT_COVERAGE_THRESHOLD,
-                                  change_type: str | None = None) -> Dict[str, Any]:
+                                  change_type: str | None = None,
+                                  run_id: str | None = None,
+                                  work_item: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Return an all-failing template receipt — a starting point, never a passing default.
 
     ``change_type`` is optional (#283); when given (one of `CHANGE_TYPES`) the
     template is seeded with `default_policy_for_change_type`'s policy block and,
     if that policy requires TDD, an unset ``tdd`` lane. Omitting it keeps the
     exact #278 template shape.
+
+    ``run_id``/``work_item`` are optional (#283, closing the last gap of the issue's
+    literal ``simplicio.quality-gate/v1`` envelope example): when given they are
+    recorded verbatim for cross-linking with the delivery/evidence receipts and the
+    task anchor. Omitting both keeps every existing field exactly as before; a
+    ``tests`` nested mirror of the four ``TESTS_ENVELOPE_CATEGORIES`` lanes is always
+    added (see `sync_tests_envelope`) so the template already satisfies both the flat
+    and the nested reading of the schema.
     """
     validate_coverage_threshold(coverage_threshold)
     template: Dict[str, Any] = {
         "schema": SCHEMA,
+        "run_id": run_id or "",
+        "work_item": dict(work_item) if work_item else {},
         "coverage_threshold": coverage_threshold,
         "requirements": {
             name: {"status": "unset", "proof_ref": "", "detail": ""}
@@ -333,6 +391,7 @@ def build_quality_matrix_template(coverage_threshold: float = DEFAULT_COVERAGE_T
             template["requirements"][OPTIONAL_TDD_REQUIREMENT] = {
                 "status": "unset", "red_proof_ref": "", "green_proof_ref": "", "detail": "",
             }
+    sync_tests_envelope(template)
     return template
 
 
@@ -450,6 +509,7 @@ def independent_reverify_quality_matrix(run_dir: str, *, repo: "str | None" = No
 
     receipt = _load_json(receipt_path(run_dir)) or {}
     requirements = receipt.get("requirements") if isinstance(receipt.get("requirements"), dict) else {}
+    requirements = _merge_tests_envelope(requirements, receipt)
     policy = receipt.get("policy") if isinstance(receipt.get("policy"), dict) else {}
 
     if policy.get("tdd_required"):
@@ -509,6 +569,7 @@ __all__ = [
     "NOT_APPLICABLE_ELIGIBLE",
     "CHANGE_TYPES",
     "RERUNNABLE_LANES",
+    "TESTS_ENVELOPE_CATEGORIES",
     "classify_change_type",
     "default_policy_for_change_type",
     "DEFAULT_COVERAGE_THRESHOLD",
@@ -517,6 +578,7 @@ __all__ = [
     "validate_coverage_threshold",
     "evaluate_quality_matrix",
     "build_quality_matrix_template",
+    "sync_tests_envelope",
     "independent_reverify_tdd_lane",
     "independent_reverify_quality_matrix",
 ]
