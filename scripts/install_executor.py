@@ -37,10 +37,68 @@ if HERE not in sys.path:
 import install_lib as _lib  # noqa: E402
 from install_plan import build_plan  # noqa: E402
 
-# Deterministic order: skills/hooks/scripts first (pure copies), then the generated files that
-# reference them (entry block, Claude settings.json hook-wiring), so a failure never wires a
-# hook to a skill tree that didn't make it in.
-STEP_ORDER = ("skills", "hooks", "scripts", "entry", "claude_settings")
+# Deterministic order: reconcile (drop stale N-1 leftovers) runs FIRST — before anything from
+# the current version is (re)written — then skills/hooks/scripts (pure copies), then the
+# generated files that reference them (entry block, Claude settings.json hook-wiring), so a
+# failure never wires a hook to a skill tree that didn't make it in.
+STEP_ORDER = ("reconcile", "skills", "hooks", "scripts", "entry", "claude_settings")
+
+MANIFEST_SCHEMA = "simplicio.install-manifest/v1"
+
+
+def _manifest_path(target: str) -> str:
+    return os.path.join(target, ".simplicio", "manifest.json")
+
+
+def _read_manifest(target: str) -> Optional[Dict[str, Any]]:
+    path = _manifest_path(target)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None  # corrupt/unreadable manifest is treated as "no prior manifest known"
+
+
+def _write_manifest(target: str, manifest: Dict[str, Any]) -> str:
+    path = _manifest_path(target)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, sort_keys=True, default=str)
+    return path
+
+
+def resolved_installer_version() -> str:
+    """Best-effort resolved version of the simplicio-loop package driving this install, for the
+    manifest's `version` field (#293 §4, "resolver versões a partir do release manifest único").
+    Falls back through importlib.metadata -> the package's own __version__ constant -> "unknown"
+    so a dev checkout without the package installed still produces a usable (if generic) manifest
+    instead of raising."""
+    try:
+        import importlib.metadata as _im
+        return _im.version("simplicio-loop")
+    except Exception:
+        pass
+    try:
+        sys.path.insert(0, os.path.dirname(HERE))
+        import simplicio_loop  # noqa: E402
+        return getattr(simplicio_loop, "__version__", "unknown")
+    except Exception:
+        return "unknown"
+
+
+def _stale_skills(target: str, current_skills: List[str]) -> List[str]:
+    """Skills recorded in a PRIOR manifest that are no longer part of the currently-declared
+    skill set — leftovers from an older release (N-1) that a plain re-copy would never remove,
+    since `copy_skills()` only ever ADDS/UPDATES paths it knows about (#293 §4: "eliminar extras
+    inexistentes"). Only ever returns names the prior manifest itself claims IT installed —
+    never anything the manifest doesn't know about (no guessing at foreign directories)."""
+    manifest = _read_manifest(target)
+    if not manifest:
+        return []
+    old_skills = set(manifest.get("skills", []))
+    return sorted(old_skills - set(current_skills))
 
 
 class InstallTransactionError(RuntimeError):
@@ -149,13 +207,16 @@ def _write_receipt(target: str, transaction_id: str, receipt: Dict[str, Any]) ->
     return path
 
 
-def _step_paths(target: str, is_global: bool, runtime: str) -> "Dict[str, List[str]]":
+def _step_paths(target: str, is_global: bool, runtime: str,
+                stale_skills: Optional[List[str]] = None) -> "Dict[str, List[str]]":
     cfg = _lib.RUNTIMES[runtime]
     paths: Dict[str, List[str]] = {
         "skills": [os.path.join(target, ".claude", "skills", s) for s in _lib.SKILLS],
         "hooks": [_lib.hooks_dir(target, is_global)],
         "scripts": [_lib.scripts_dir(target, is_global)],
     }
+    if stale_skills:
+        paths["reconcile"] = [os.path.join(target, ".claude", "skills", s) for s in stale_skills]
     if cfg["entry"]:
         paths["entry"] = [os.path.join(target, cfg["entry"])]
     if cfg["hooks"] == "claude":
@@ -163,9 +224,17 @@ def _step_paths(target: str, is_global: bool, runtime: str) -> "Dict[str, List[s
     return paths
 
 
-def _run_step(step: str, target: str, is_global: bool, runtime: str) -> None:
+def _run_step(step: str, target: str, is_global: bool, runtime: str,
+             stale_skills: Optional[List[str]] = None) -> None:
     cfg = _lib.RUNTIMES[runtime]
-    if step == "skills":
+    if step == "reconcile":
+        # Version reconciliation (#293 §4): remove skill directories the PRIOR manifest recorded
+        # as installed but that the current release no longer declares. Backup/rollback of these
+        # paths is handled generically by apply()'s _backup()/_restore() — same as any other
+        # step — so an upgrade that fails partway restores the stale N-1 content exactly.
+        for name in (stale_skills or []):
+            _remove_and_prune(os.path.join(target, ".claude", "skills", name), target)
+    elif step == "skills":
         _lib.copy_skills(target)
     elif step == "hooks":
         _lib.copy_hooks(target, is_global)
@@ -201,13 +270,19 @@ def apply(runtime: str, *, target: str, is_global: bool = False, mode: str = "mi
 
     transaction_id = plan["transaction_id"]
     backup_root = _backups_dir(target, transaction_id)
-    step_paths = _step_paths(target, is_global, runtime)
+    prior_manifest = _read_manifest(target)
+    stale = _stale_skills(target, _lib.SKILLS)
+    step_paths = _step_paths(target, is_global, runtime, stale_skills=stale)
     order = [s for s in STEP_ORDER if s in step_paths]
 
     applied: List[Tuple[str, str, Optional[str], Optional[str]]] = []
     receipt: Dict[str, Any] = dict(plan)
     receipt["backup_path"] = backup_root
     receipt["steps"] = []
+    resolved_version = resolved_installer_version()
+    receipt["resolved_version"] = resolved_version
+    receipt["previous_version"] = (prior_manifest or {}).get("version")
+    receipt["reconciled_stale_skills"] = stale
 
     try:
         for step in order:
@@ -218,7 +293,27 @@ def apply(runtime: str, *, target: str, is_global: bool = False, mode: str = "mi
                 key = os.path.join(step, os.path.basename(path.rstrip(os.sep)) or "root")
                 backup_path = _backup(path, backup_root, key)
                 applied.append((step, path, hash_before, backup_path))
-            _run_step(step, target, is_global, runtime)
+            _run_step(step, target, is_global, runtime, stale_skills=stale)
+        # Manifest write is itself a tracked, backed-up, rollback-eligible step: back up whatever
+        # manifest.json existed before (matching the standard hash_before/backup_path shape used
+        # by every other path), THEN overwrite it — so `rollback()` restores the PRIOR manifest
+        # right alongside the file effects, and a rolled-back upgrade never leaves a manifest
+        # claiming the new version is installed when its files were just undone.
+        manifest_path = _manifest_path(target)
+        manifest_hash_before = _hash_path(manifest_path)
+        manifest_backup = _backup(manifest_path, backup_root,
+                                  os.path.join("manifest", "manifest.json"))
+        applied.append(("manifest", manifest_path, manifest_hash_before, manifest_backup))
+        _write_manifest(target, {
+            "schema": MANIFEST_SCHEMA,
+            "version": resolved_version,
+            "previous_version": receipt["previous_version"],
+            "skills": list(_lib.SKILLS),
+            "runtime": runtime,
+            "transaction_id": transaction_id,
+            "reconciled_stale_skills": stale,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
         receipt["steps"] = [
             {"step": s, "path": p, "hash_before": hb, "hash_after": _hash_path(p),
              "backup_path": bp}
@@ -242,6 +337,9 @@ def apply(runtime: str, *, target: str, is_global: bool = False, mode: str = "mi
         receipt["error"] = str(e)
         receipt["rolled_back_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         _write_receipt(target, transaction_id, receipt)
+        # A rolled-back transaction must not leave a stale/partial manifest claiming success —
+        # if the prior manifest existed, it is already untouched on disk (this function never
+        # wrote a new one); if there was none, none exists now either. Nothing to undo here.
         raise InstallTransactionError(str(e), receipt) from e
 
 

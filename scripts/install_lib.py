@@ -271,36 +271,83 @@ def print_claude_snippet():
     log("add to .claude/settings.json manually — see adapters/claude/README.md")
 
 
-def ensure_operators(skip_install=False):
+def _is_externally_managed_error(stderr):
+    """Detect PEP 668's specific `externally-managed-environment` refusal in a pip stderr blob,
+    as opposed to some unrelated failure (network down, bad package name, permission denied for
+    a different reason). Only THIS specific signal should ever justify offering
+    `--break-system-packages` — escalating on every failure was the unconditional blanket
+    behavior issue #293 §3 asks to remove."""
+    return "externally-managed-environment" in (stderr or "").lower()
+
+
+def _pip_install(pkgs, *, allow_break_system_packages=False, extra_args=None, cwd=None):
+    """Run `pip install -U <pkgs>` with a PEP-668-aware fallback ladder. Never passes
+    `--break-system-packages` unless BOTH (a) pip's own stderr identifies this specific
+    externally-managed-environment refusal and (b) the caller explicitly opted in via
+    `allow_break_system_packages=True` (CLI `--allow-break-system-packages` or
+    `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1`). Returns (ok, detail) where detail is a short
+    string describing which path succeeded, for logging/receipts."""
+    base = [sys.executable, "-m", "pip", "install", "-U"] + list(extra_args or [])
+    run_kw = {"capture_output": True, "text": True}
+    if cwd:
+        run_kw["cwd"] = cwd
+    plain = subprocess.run(base + pkgs, **run_kw)
+    if plain.returncode == 0:
+        return True, "plain"
+    if _is_externally_managed_error(plain.stderr):
+        if not allow_break_system_packages:
+            log("! pip refused (PEP 668 externally-managed environment). NOT applying "
+                "--break-system-packages without explicit consent.")
+            log("  safe options: use a venv/pipx/uvx, OR re-run with "
+                "--allow-break-system-packages (or SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1) "
+                "if you understand the risk.")
+            return False, "externally_managed_blocked"
+        user_run = subprocess.run(base + ["--user", "--break-system-packages"] + pkgs, **run_kw)
+        if user_run.returncode == 0:
+            log("! installed with --break-system-packages (explicit consent given) — this "
+                "bypasses your OS package manager's protection; prefer a venv/pipx/uvx next time.")
+            return True, "break_system_packages_consented"
+        return False, "break_system_packages_failed"
+    # Some other failure (network, permissions unrelated to PEP 668, ...): retry into the user
+    # site WITHOUT --break-system-packages first — that's always safe to attempt.
+    user_run = subprocess.run(base + ["--user"] + pkgs, **run_kw)
+    if user_run.returncode == 0:
+        return True, "user_site"
+    return False, "failed"
+
+
+def ensure_operators(skip_install=False, allow_break_system_packages=False):
     """Install + verify the REQUIRED operator package and the runtime bins it exposes.
 
     The loop still invokes `simplicio-mapper` and `simplicio-dev-cli` directly, so both binaries
     must be present on PATH at runtime; but the supported install surface is the single package
     `simplicio-cli`, which brings `simplicio-mapper` transitively.
+
+    `allow_break_system_packages`: only when True (CLI `--allow-break-system-packages` or
+    `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1`) may a PEP-668 externally-managed refusal escalate
+    to `--break-system-packages` — see `_pip_install`. Without it, a blocked install falls
+    through to the `uv tool install` path or a manual-install message; it never silently mutates
+    the system Python's protected package set.
     """
     pkgs = [OPERATOR_PACKAGE]
+    allow_bsp = allow_break_system_packages or os.environ.get(
+        "SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES") == "1"
     if not skip_install:
-        base = [sys.executable, "-m", "pip", "install", "-U"]
-        try:
-            subprocess.run(base + pkgs, check=True)
-            log("operators installed -> %s" % ", ".join(pkgs))
-        except Exception:
-            # PEP 668 / externally-managed env (Homebrew/Debian python): retry into the user site.
+        ok, detail = _pip_install(pkgs, allow_break_system_packages=allow_bsp)
+        if ok:
+            log("operators installed (%s) -> %s" % (detail, ", ".join(pkgs)))
+        else:
+            # Try uv tool install if pip failed (uv-managed Python)
             try:
-                subprocess.run(base + ["--user", "--break-system-packages"] + pkgs, check=True)
-                log("operators installed (user site) -> %s" % ", ".join(pkgs))
-            except Exception as e:
-                # Try uv tool install if pip failed (uv-managed Python)
-                try:
-                    uv_path = shutil.which("uv")
-                    if uv_path:
-                        subprocess.run([uv_path, "tool", "install"] + pkgs, check=True)
-                        log("operators installed (uv tool) -> %s" % ", ".join(pkgs))
-                    else:
-                        raise
-                except Exception as e2:
-                    log("! pip install of operators failed (%s) — install manually: pip install %s"
-                        % (e, " ".join(pkgs)))
+                uv_path = shutil.which("uv")
+                if uv_path:
+                    subprocess.run([uv_path, "tool", "install"] + pkgs, check=True)
+                    log("operators installed (uv tool) -> %s" % ", ".join(pkgs))
+                else:
+                    raise RuntimeError("uv not on PATH")
+            except Exception as e2:
+                log("! pip install of operators failed (%s) — install manually: pip install %s"
+                    % (detail, " ".join(pkgs)))
     # A --user install can land the console-scripts in a dir not on PATH (e.g. macOS
     # ~/Library/Python/X.Y/bin). Find each operator binary and symlink it into ~/.local/bin.
     _link_operator_bins()
@@ -437,28 +484,32 @@ def merge_opencode_mcp():
             '"command":["simplicio","serve","--mcp","--stdio"]}}}')
 
 
-def _pip(args_):
-    """pip install with a PEP-668 fallback into the user site. Best-effort (never raises)."""
-    base = [sys.executable or "python3", "-m", "pip", "install", "-U"]
-    for extra in ([], ["--user", "--break-system-packages"]):
-        try:
-            subprocess.run(base + extra + args_, check=True, cwd=SOURCE)
-            return True
-        except Exception:
-            continue
-    return False
+def _pip(args_, allow_break_system_packages=None):
+    """pip install with a PEP-668-aware fallback into the user site. Best-effort (never raises).
+
+    Delegates to `_pip_install` so `install_all_deps()` gets the same hardening as
+    `ensure_operators()`: `--break-system-packages` is only ever attempted when pip's stderr
+    specifically names the externally-managed-environment refusal AND the caller opted in.
+    `allow_break_system_packages=None` reads the `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1` env
+    var (same convention as `ensure_operators`)."""
+    allow_bsp = allow_break_system_packages
+    if allow_bsp is None:
+        allow_bsp = os.environ.get("SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES") == "1"
+    ok, _detail = _pip_install(args_, allow_break_system_packages=allow_bsp, cwd=SOURCE)
+    return ok
 
 
-def install_all_deps():
+def install_all_deps(allow_break_system_packages=False):
     """MANDATORY full install — every capability in simplicio-loop, not opt-in. Installs the package
     with ALL extras (the ONNX models backend: onnxruntime + huggingface_hub + tokenizers + pillow) so
     `simplicio-cli kompress/router/embed/image` work, plus the menu-bar tray dep. Heavy but complete;
     `--minimal` skips it. Best-effort: a single heavy dep failing won't abort the install."""
     spec = ".[onnx]" if os.path.exists(os.path.join(SOURCE, "pyproject.toml")) else "simplicio-loop[onnx]"
     log("full install: package + ONNX models backend (%s)..." % spec)
-    _pip([spec]) or log("! full-stack pip failed — run manually: pip install '%s'" % spec)
+    _pip([spec], allow_break_system_packages=allow_break_system_packages) or \
+        log("! full-stack pip failed — run manually: pip install '%s'" % spec)
     tray = ["rumps"] if sys.platform == "darwin" else ["pystray", "pillow"]
-    _pip(tray)
+    _pip(tray, allow_break_system_packages=allow_break_system_packages)
 
 
 def _open_dashboard_first_run():
@@ -598,6 +649,10 @@ def main():
     minimal = "--minimal" in args or "--no-monitor" in args
     dry_run = "--dry-run" in args
     transactional = "--transactional" in args
+    # #293 §3 hardening: --break-system-packages is NEVER applied unconditionally. This flag
+    # (or SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1) is the one explicit opt-in that lets a PEP-668
+    # externally-managed refusal escalate to it; see _pip_install()/ensure_operators() above.
+    allow_break_system_packages = "--allow-break-system-packages" in args
     test_fail_step = None
     if "--test-fail-step" in args:
         i = args.index("--test-fail-step")
@@ -605,7 +660,7 @@ def main():
         del args[i:i + 2]
     args = [a for a in args if a not in
             ("--global", "--skip-operators", "--with-monitor", "--minimal", "--no-monitor",
-             "--lite", "--strict", "--dry-run", "--transactional")]
+             "--lite", "--strict", "--dry-run", "--transactional", "--allow-break-system-packages")]
     target = None
     if "--target" in args:
         i = args.index("--target")
@@ -637,13 +692,15 @@ def main():
         # Skip operators now, spawn in background
         import threading as _threading
         def _bg_install():
-            ensure_operators(skip_install=False)
+            ensure_operators(skip_install=False,
+                            allow_break_system_packages=allow_break_system_packages)
         _threading.Thread(target=_bg_install, daemon=True).start()
         log("LITE mode: operator install running in background. Loop will auto-upgrade at turn boundary.")
     elif not skip_operators:
-        ensure_operators(skip_install=False)
+        ensure_operators(skip_install=False,
+                        allow_break_system_packages=allow_break_system_packages)
     if not minimal:
-        install_all_deps()
+        install_all_deps(allow_break_system_packages=allow_break_system_packages)
     # Make the `simplicio-loop` console-script typeable on PATH (so `simplicio-loop dashboard` works);
     # a --user install can drop it in a dir off PATH (macOS ~/Library/Python/*/bin). Best-effort.
     _link_console_script("simplicio-loop", kind="cli")
