@@ -1,0 +1,331 @@
+"""Tests for the #285 read-side verbs (`list_ready`/`get_details`/`requery`/`reconcile`),
+the outbox, lease-gated publish, and the fail-closed `close_source_issue` wiring.
+
+Same discipline as `tests/test_github_lifecycle_unit.py`: no real `gh`/network call is
+ever made -- every test drives a fake `runner` callable.
+"""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from pr_evidence import publish_comment  # noqa: E402
+
+from simplicio_loop.github_lifecycle import (  # noqa: E402
+    GitHubTransportError,
+    LIFECYCLE_COMMENT_MARKER,
+    close_source_issue,
+    get_details,
+    list_pending_operations,
+    list_ready,
+    mark_operation_done,
+    publish_lifecycle_state,
+    record_pending_operation,
+    reconcile,
+    requery,
+)
+
+
+def _issue_payload(number=12, state="open", title="fix the thing", labels=None,
+                   assignees=None, milestone=None, body="do the thing", pull_request=False):
+    payload = {
+        "number": number, "title": title, "state": state, "state_reason": None,
+        "body": body, "html_url": "https://github.com/acme/widgets/issues/%d" % number,
+        "labels": [{"name": l} for l in (labels or [])],
+        "assignees": [{"login": a} for a in (assignees or [])],
+        "milestone": {"title": milestone} if milestone else None,
+        "user": {"login": "author-a"},
+        "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
+    }
+    if pull_request:
+        payload["pull_request"] = {"url": "https://api.github.com/x"}
+    return payload
+
+
+def _fake_gh(*, issue=None, comments=None, list_items=None, close_ok=True, closed_after=True):
+    """A single fake runner covering issue view / comments list / close / (re)view-after-close."""
+    comments = list(comments or [])
+    state = {"closed": False}
+
+    def runner(cmd, **kw):
+        joined = cmd
+        if joined[:2] == ["gh", "issue"] and "close" in joined:
+            state["closed"] = True
+            return subprocess.CompletedProcess(cmd, 0 if close_ok else 1, stdout="",
+                                               stderr="" if close_ok else "HTTP 403: Forbidden")
+        if joined[:2] == ["gh", "api"] and len(joined) >= 3:
+            url = joined[2]
+            if "/issues/" in url and "/comments" not in url and "?" not in url.split("/issues/")[0]:
+                # single-issue view: repos/{owner}/{repo}/issues/{n}
+                data = dict(issue or _issue_payload())
+                if state["closed"] and closed_after:
+                    data["state"] = "closed"
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+            if "/comments" in url and "/issues/comments/" not in url:
+                page = 1
+                for part in url.split("&"):
+                    if part.startswith("page="):
+                        page = int(part.split("=", 1)[1])
+                batch = comments if page == 1 else []
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(batch), stderr="")
+            if "/issues/comments/" in url:
+                cid = int(url.rsplit("/", 1)[-1])
+                match = next((c for c in comments if c.get("id") == cid), None)
+                if match is None:
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="not found")
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(match), stderr="")
+            if "/issues?" in url:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(list_items or []), stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected call: %r" % (cmd,))
+
+    return runner, state
+
+
+# --- list_ready -----------------------------------------------------------------------
+
+
+def test_list_ready_excludes_pull_requests_and_sorts_deterministically():
+    items = [_issue_payload(number=5), _issue_payload(number=2, pull_request=True),
+             _issue_payload(number=9)]
+    runner, _ = _fake_gh(list_items=items)
+    result = list_ready("acme", "widgets", runner=runner)
+    numbers = [item["number"] for item in result["items"]]
+    assert numbers == [5, 9]  # PR (2) excluded; ascending order
+    assert result["count"] == 2
+    assert result["schema"] == "simplicio.github-list-ready/v1"
+
+
+def test_list_ready_query_is_reflected_in_receipt():
+    runner, _ = _fake_gh(list_items=[])
+    result = list_ready("acme", "widgets", state="open", labels=["bug"], assignee="dev-a", runner=runner)
+    assert result["query"] == {"state": "open", "labels": ["bug"], "assignee": "dev-a", "milestone": ""}
+
+
+# --- get_details ------------------------------------------------------------------------
+
+
+def test_get_details_separates_canonical_from_human_comments():
+    human = {"id": 1, "user": {"login": "someone"}, "body": "looks good", "created_at": "t"}
+    canonical = {"id": 2, "user": {"login": "loop-bot"},
+                "body": "status\n" + LIFECYCLE_COMMENT_MARKER, "created_at": "t2"}
+    runner, _ = _fake_gh(comments=[human, canonical])
+    snapshot = get_details("acme", "widgets", "12", runner=runner)
+    assert len(snapshot["human_comments"]) == 1
+    assert snapshot["human_comments"][0]["body"] == "looks good"
+    assert snapshot["canonical_comment"]["id"] == 2
+    assert snapshot["source_revision"]
+
+
+def test_get_details_rejects_pull_requests():
+    runner, _ = _fake_gh(issue=_issue_payload(pull_request=True))
+    try:
+        get_details("acme", "widgets", "12", runner=runner)
+    except GitHubTransportError as exc:
+        assert exc.reason_code == "SOURCE_NOT_FOUND"
+    else:
+        raise AssertionError("expected GitHubTransportError")
+
+
+def test_get_details_source_revision_ignores_the_canonical_comment_but_not_human_edits():
+    base_comments = []
+    runner1, _ = _fake_gh(comments=base_comments)
+    snap1 = get_details("acme", "widgets", "12", runner=runner1)
+
+    # adding the Loop's OWN comment must not change source_revision materially in a way
+    # that looks like a human edit -- but here we simply confirm two different snapshots
+    # (no canonical comment vs. one canonical comment) still hash identically because the
+    # canonical comment is excluded from `authoritative`.
+    canonical = {"id": 9, "user": {"login": "loop-bot"}, "body": "x\n" + LIFECYCLE_COMMENT_MARKER, "created_at": "t"}
+    runner2, _ = _fake_gh(comments=[canonical])
+    snap2 = get_details("acme", "widgets", "12", runner=runner2)
+    assert snap1["source_revision"] == snap2["source_revision"]
+
+    human = {"id": 3, "user": {"login": "someone"}, "body": "material change request", "created_at": "t"}
+    runner3, _ = _fake_gh(comments=[human])
+    snap3 = get_details("acme", "widgets", "12", runner=runner3)
+    assert snap3["source_revision"] != snap1["source_revision"]
+
+
+# --- requery --------------------------------------------------------------------------
+
+
+def test_requery_reports_comment_hash_for_a_known_id():
+    canonical = {"id": 42, "user": {"login": "loop-bot"}, "body": "hello\n" + LIFECYCLE_COMMENT_MARKER, "created_at": "t"}
+    runner, _ = _fake_gh(comments=[canonical])
+    snapshot = requery("acme", "widgets", "12", comment_id=42, runner=runner)
+    assert snapshot["requeried_comment"]["found"] is True
+    assert snapshot["requeried_comment"]["id"] == 42
+    assert "requeried_at" in snapshot
+
+
+def test_requery_reports_missing_comment():
+    runner, _ = _fake_gh(comments=[])
+    snapshot = requery("acme", "widgets", "12", comment_id=999, runner=runner)
+    assert snapshot["requeried_comment"]["found"] is False
+
+
+# --- outbox + reconcile -----------------------------------------------------------------
+
+
+def test_outbox_round_trip(tmp_path):
+    op_id = "op-1"
+    record_pending_operation(tmp_path, op_id, {"issue": "12"})
+    pending = list_pending_operations(tmp_path)
+    assert len(pending) == 1 and pending[0]["operation_id"] == op_id
+
+    mark_operation_done(tmp_path, op_id, {"verified": True})
+    assert list_pending_operations(tmp_path) == []
+
+
+def test_reconcile_recovers_a_confirmed_write_without_a_second_comment(tmp_path):
+    canonical_body = "state\n" + LIFECYCLE_COMMENT_MARKER
+    canonical = {"id": 7, "user": {"login": "loop-bot"}, "body": canonical_body, "created_at": "t"}
+    runner, _ = _fake_gh(comments=[canonical])
+    from simplicio_loop.github_lifecycle import content_hash
+    expected_hash = content_hash(canonical_body)
+
+    op_id = "op-2"
+    record_pending_operation(tmp_path, op_id, {"issue": "12", "expected_body_hash": expected_hash})
+    receipt = reconcile(op_id, outbox_dir=tmp_path, owner="acme", repo="widgets", issue="12",
+                        comment_id=7, expected_body_hash=expected_hash, runner=runner)
+    assert receipt["outcome"] == "reconciled"
+    assert list_pending_operations(tmp_path) == []  # marked done, not left pending
+
+
+def test_reconcile_reports_still_pending_when_body_does_not_match(tmp_path):
+    canonical = {"id": 7, "user": {"login": "loop-bot"}, "body": "different\n" + LIFECYCLE_COMMENT_MARKER, "created_at": "t"}
+    runner, _ = _fake_gh(comments=[canonical])
+    op_id = "op-3"
+    record_pending_operation(tmp_path, op_id, {"issue": "12"})
+    receipt = reconcile(op_id, outbox_dir=tmp_path, owner="acme", repo="widgets", issue="12",
+                        comment_id=7, expected_body_hash="deadbeef", runner=runner)
+    assert receipt["outcome"] == "still_pending"
+    assert len(list_pending_operations(tmp_path)) == 1
+
+
+def test_reconcile_unknown_operation_id_is_not_found(tmp_path):
+    receipt = reconcile("nope", outbox_dir=tmp_path, owner="acme", repo="widgets", issue="12")
+    assert receipt["outcome"] == "not_found"
+    assert receipt["reason_code"] == "OPERATION_NOT_FOUND"
+
+
+# --- lease/fencing-gated publish --------------------------------------------------------
+
+
+def test_publish_lifecycle_state_blocks_on_lost_lease():
+    def _fake_transport_runner(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+
+    class LeaseLost(RuntimeError):
+        pass
+
+    def require_active():
+        raise LeaseLost("fencing token stale")
+
+    try:
+        publish_lifecycle_state(owner="acme", repo="widgets", issue="12", state="CLAIMED",
+                                run_id="run-1", attempt_id="issue-12-1",
+                                publish_comment_fn=publish_comment, runner=_fake_transport_runner,
+                                require_active=require_active)
+    except LeaseLost:
+        pass
+    else:
+        raise AssertionError("expected the lease check to block the write")
+
+
+def test_publish_lifecycle_state_outbox_records_then_clears_on_success(tmp_path):
+    calls = {"n": 0}
+
+    def runner(cmd, **kw):
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "comments" in cmd[2] and "-X" not in cmd and "/comments/" not in cmd[2]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+        if "-X" in cmd and "POST" in cmd:
+            calls["n"] += 1
+            body = json.loads(kw.get("input") or "{}").get("body", "")
+            runner.body = body  # type: ignore[attr-defined]
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"id": 501}), stderr="")
+        if "/comments/" in cmd[2]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"id": 501, "body": getattr(runner, "body", "")}), stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected")
+
+    receipt = publish_lifecycle_state(owner="acme", repo="widgets", issue="12", state="CLAIMED",
+                                      run_id="run-1", attempt_id="issue-12-1",
+                                      publish_comment_fn=publish_comment, runner=runner,
+                                      outbox_dir=tmp_path)
+    assert receipt["verified"] is True
+    assert list_pending_operations(tmp_path) == []  # cleared after confirmation
+
+
+# --- close_source_issue (fail-closed) ----------------------------------------------------
+
+
+def test_close_source_issue_fails_closed_when_gh_close_call_fails():
+    runner, _ = _fake_gh(close_ok=False)
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", runner=runner)
+    assert receipt["outcome"] == "blocked"
+    assert receipt["reason_code"] == "SOURCE_CLOSE_FAILED"
+    assert receipt["verified"] is False
+
+
+def test_close_source_issue_fails_closed_when_reopen_state_unconfirmed():
+    runner, _ = _fake_gh(close_ok=True, closed_after=False)
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", runner=runner)
+    assert receipt["outcome"] == "blocked"
+    assert receipt["reason_code"] == "SOURCE_CLOSE_UNCONFIRMED"
+
+
+def test_close_source_issue_succeeds_and_updates_the_canonical_comment():
+    def runner(cmd, **kw):
+        if cmd[:2] == ["gh", "issue"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3:
+            url = cmd[2]
+            if "/comments" in url and "/issues/comments/" not in url:
+                return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+            if "/issues/comments/" in url:
+                cid = int(url.rsplit("/", 1)[-1])
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"id": cid, "body": getattr(runner, "body", "")}), stderr="")
+            if "-X" in cmd and "POST" in cmd:
+                pass
+            if "/issues/" in url:
+                data = _issue_payload()
+                data["state"] = "closed"
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+        if "-X" in cmd and "POST" in cmd:
+            body = json.loads(kw.get("input") or "{}").get("body", "")
+            runner.body = body  # type: ignore[attr-defined]
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"id": 88}), stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected: %r" % (cmd,))
+
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", publish_comment_fn=publish_comment,
+                                 runner=runner)
+    assert receipt["source_state"] == "closed"
+    assert receipt["outcome"] == "closed"
+    assert receipt["verified"] is True
+
+
+def test_close_source_issue_reports_pending_reconciliation_when_comment_update_fails():
+    def runner(cmd, **kw):
+        if cmd[:2] == ["gh", "issue"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3:
+            url = cmd[2]
+            if "/comments" in url and "/issues/comments/" not in url:
+                return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+            if "/issues/" in url:
+                data = _issue_payload()
+                data["state"] = "closed"
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+        if "-X" in cmd and "POST" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="rate limited")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected: %r" % (cmd,))
+
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", publish_comment_fn=publish_comment,
+                                 runner=runner)
+    assert receipt["source_state"] == "closed"  # the issue really did close
+    assert receipt["outcome"] == "CLOSE_PENDING_RECONCILIATION"  # but the comment write did not confirm

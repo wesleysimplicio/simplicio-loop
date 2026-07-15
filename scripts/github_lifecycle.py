@@ -4,13 +4,22 @@
     python3 scripts/github_lifecycle.py render --state PLANNED --run-id r1 --attempt-id a1
     python3 scripts/github_lifecycle.py publish --owner acme --repo widgets --issue 12 \
         --state CLAIMED --run-id r1 --attempt-id a1
+    python3 scripts/github_lifecycle.py list-ready --owner acme --repo widgets
+    python3 scripts/github_lifecycle.py get-details --owner acme --repo widgets --issue 12
+    python3 scripts/github_lifecycle.py requery --owner acme --repo widgets --issue 12
+    python3 scripts/github_lifecycle.py reconcile --owner acme --repo widgets --issue 12 \
+        --operation-id <op-id> --outbox-dir .orchestrator/github-outbox
+    python3 scripts/github_lifecycle.py close --owner acme --repo widgets --issue 12 \
+        --run-id r1 --attempt-id a1
     python3 scripts/github_lifecycle.py selftest
 
-`publish` shells out to the real `gh` CLI (via `scripts/pr_evidence.py::publish_comment`,
-the same #295 idempotent create-or-update primitive) and re-queries the same comment to
-confirm the id/body-hash match before reporting success -- see
-`simplicio_loop/github_lifecycle.py` for the full contract and what remains out of scope
-for issue #285 (list_ready/get_details/reconcile, lease/fencing-gated ownership, outbox).
+`publish`/`close` shell out to the real `gh` CLI (via `scripts/pr_evidence.py::publish_comment`,
+the same #295 idempotent create-or-update primitive) and re-query the same comment to
+confirm the id/body-hash match before reporting success. `close` is fail-closed: it only
+reports the issue closed after a post-close re-query confirms `state == closed`, and it
+reports `CLOSE_PENDING_RECONCILIATION` (never a fake success) when the remote close
+succeeds but the final comment update cannot be confirmed -- see
+`simplicio_loop/github_lifecycle.py` for the full contract.
 """
 from __future__ import annotations
 
@@ -30,8 +39,13 @@ from pr_evidence import publish_comment  # noqa: E402
 
 from simplicio_loop.github_lifecycle import (  # noqa: E402
     LIFECYCLE_STATES,
+    close_source_issue,
+    get_details,
+    list_ready,
     publish_lifecycle_state,
+    reconcile,
     render_lifecycle_comment,
+    requery,
 )
 
 
@@ -50,6 +64,46 @@ def cmd_publish(args: argparse.Namespace) -> int:
     )
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
     return 0 if receipt["verified"] else 1
+
+
+def cmd_list_ready(args: argparse.Namespace) -> int:
+    labels = [l for l in (args.labels or "").split(",") if l]
+    result = list_ready(args.owner, args.repo, state=args.state, labels=labels,
+                       assignee=args.assignee or "", milestone=args.milestone or "")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_get_details(args: argparse.Namespace) -> int:
+    snapshot = get_details(args.owner, args.repo, args.issue)
+    print(json.dumps(snapshot, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_requery(args: argparse.Namespace) -> int:
+    comment_id = int(args.comment_id) if args.comment_id else None
+    snapshot = requery(args.owner, args.repo, args.issue, comment_id=comment_id)
+    print(json.dumps(snapshot, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    comment_id = int(args.comment_id) if args.comment_id else None
+    receipt = reconcile(args.operation_id, outbox_dir=args.outbox_dir, owner=args.owner,
+                        repo=args.repo, issue=args.issue, comment_id=comment_id,
+                        expected_body_hash=args.expected_body_hash or "")
+    print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    return 0 if receipt.get("outcome") == "reconciled" else 1
+
+
+def cmd_close(args: argparse.Namespace) -> int:
+    receipt = close_source_issue(
+        owner=args.owner, repo=args.repo, issue=args.issue, run_id=args.run_id,
+        attempt_id=args.attempt_id, fencing_token=args.fencing_token,
+        publish_comment_fn=publish_comment, outbox_dir=args.outbox_dir, goal=args.goal or "",
+    )
+    print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    return 0 if receipt.get("outcome") == "closed" else 1
 
 
 def cmd_selftest(_args: argparse.Namespace) -> int:
@@ -98,6 +152,49 @@ def build_parser() -> argparse.ArgumentParser:
     p_publish.add_argument("--fencing-token", default="")
     p_publish.add_argument("--goal", default="")
     p_publish.set_defaults(func=cmd_publish)
+
+    p_list_ready = sub.add_parser("list-ready")
+    p_list_ready.add_argument("--owner", required=True)
+    p_list_ready.add_argument("--repo", required=True)
+    p_list_ready.add_argument("--state", default="open")
+    p_list_ready.add_argument("--labels", default="")
+    p_list_ready.add_argument("--assignee", default="")
+    p_list_ready.add_argument("--milestone", default="")
+    p_list_ready.set_defaults(func=cmd_list_ready)
+
+    p_details = sub.add_parser("get-details")
+    p_details.add_argument("--owner", required=True)
+    p_details.add_argument("--repo", required=True)
+    p_details.add_argument("--issue", required=True)
+    p_details.set_defaults(func=cmd_get_details)
+
+    p_requery = sub.add_parser("requery")
+    p_requery.add_argument("--owner", required=True)
+    p_requery.add_argument("--repo", required=True)
+    p_requery.add_argument("--issue", required=True)
+    p_requery.add_argument("--comment-id", default="")
+    p_requery.set_defaults(func=cmd_requery)
+
+    p_reconcile = sub.add_parser("reconcile")
+    p_reconcile.add_argument("--owner", required=True)
+    p_reconcile.add_argument("--repo", required=True)
+    p_reconcile.add_argument("--issue", required=True)
+    p_reconcile.add_argument("--operation-id", required=True)
+    p_reconcile.add_argument("--outbox-dir", required=True)
+    p_reconcile.add_argument("--comment-id", default="")
+    p_reconcile.add_argument("--expected-body-hash", default="")
+    p_reconcile.set_defaults(func=cmd_reconcile)
+
+    p_close = sub.add_parser("close")
+    p_close.add_argument("--owner", required=True)
+    p_close.add_argument("--repo", required=True)
+    p_close.add_argument("--issue", required=True)
+    p_close.add_argument("--run-id", required=True)
+    p_close.add_argument("--attempt-id", required=True)
+    p_close.add_argument("--fencing-token", default="")
+    p_close.add_argument("--outbox-dir", default=None)
+    p_close.add_argument("--goal", default="")
+    p_close.set_defaults(func=cmd_close)
 
     p_self = sub.add_parser("selftest")
     p_self.set_defaults(func=cmd_selftest)
