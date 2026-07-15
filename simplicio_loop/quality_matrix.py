@@ -492,6 +492,35 @@ def _rerun_gate_script(script: str, argv: List[str], repo: str) -> "Tuple[bool, 
         return False, f"re-run failed: {exc}"
 
 
+def _rerun_coverage_gate(repo: str) -> "float | None":
+    """Re-execute ``coverage_gate.py`` fresh, right now, and return the measured global %.
+
+    Returns ``None`` (never fabricates a number) if the script is missing, the subprocess
+    fails to produce a parseable report, or ``global_pct`` isn't a real number -- callers must
+    treat ``None`` as "coverage could not be independently re-measured", not as a pass.
+    """
+    import os
+    import tempfile
+
+    script = os.path.join(repo, "scripts", "coverage_gate.py")
+    if not os.path.exists(script):
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "coverage-reverify-report.json"
+            subprocess.run(
+                [sys.executable, script, "--diagnostics-dir", tmp, "--emit-json", str(report_path)],
+                cwd=repo, capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL,
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        measured = report.get("global_pct")
+    except Exception:  # pragma: no cover - defensive
+        return None
+    if isinstance(measured, bool) or not isinstance(measured, (int, float)):
+        return None
+    return float(measured)
+
+
 def independent_reverify_quality_matrix(run_dir: str, *, repo: "str | None" = None,
                                         rerun: bool = True) -> Dict[str, Any]:
     """Independently re-derive the quality-matrix verdict, not just re-parse the self-reported one.
@@ -507,6 +536,13 @@ def independent_reverify_quality_matrix(run_dir: str, *, repo: "str | None" = No
     fresh, live re-run of the relevant gate script (`scripts/test_categories.py run --category
     <lane>`, the per-category test-runner split -- see that script's docstring for exactly which
     `tests/*_<lane>.py` files it covers) right now, against the current working tree.
+
+    Coverage gets the same treatment plus a drift check: `populate` already writes a REAL
+    measured percentage into the receipt, but nothing previously caught a receipt whose
+    `coverage.measured` was hand-edited (or simply stale) to claim MORE than an independent,
+    fresh re-run of `coverage_gate.py` actually measures right now. When that happens this
+    appends a `quality_coverage_drift` lane check and the combined verdict is not ready --
+    the receipt is never trusted over a live probe.
     """
     self_reported = evaluate_quality_matrix(run_dir)
     lane_checks: List[Dict[str, Any]] = []
@@ -554,6 +590,33 @@ def independent_reverify_quality_matrix(run_dir: str, *, repo: "str | None" = No
                  f"claimed '{lane}' pass but a fresh re-run of {Path(script).name} now fails: {detail}"),
             ))
 
+        # Coverage drift: the receipt's claimed `coverage.measured` must never exceed what an
+        # independent, fresh re-run of coverage_gate.py actually measures right now. A stale or
+        # hand-edited claim (higher than reality) is refused rather than trusted.
+        coverage_block = receipt.get("coverage")
+        claimed_coverage = coverage_block.get("measured") if isinstance(coverage_block, dict) else None
+        if isinstance(claimed_coverage, (int, float)) and not isinstance(claimed_coverage, bool):
+            claimed_coverage = float(claimed_coverage)
+            measured_coverage = _rerun_coverage_gate(repo_root)
+            if measured_coverage is None:
+                lane_checks.append(_gate(
+                    "coverage", True, "quality_coverage_reverify_unmeasurable",
+                    "independent coverage re-run did not yield a numeric measurement (script "
+                    "missing or probe failed); drift check skipped",
+                ))
+            elif claimed_coverage > measured_coverage + 0.01:
+                lane_checks.append(_gate(
+                    "coverage", False, "quality_coverage_drift",
+                    f"receipt claims {claimed_coverage}% coverage but an independent re-run of "
+                    f"coverage_gate.py just measured {measured_coverage}% -- refusing to trust the receipt",
+                ))
+            else:
+                lane_checks.append(_gate(
+                    "coverage", True, "quality_coverage_reverify_verified",
+                    f"independent re-run of coverage_gate.py measured {measured_coverage}%, "
+                    f"consistent with the claimed {claimed_coverage}%",
+                ))
+
     all_lanes_ok = all(check["status"] == "pass" for check in lane_checks)
     ready = bool(self_reported["ready"]) and all_lanes_ok
     return {
@@ -590,4 +653,5 @@ __all__ = [
     "sync_tests_envelope",
     "independent_reverify_tdd_lane",
     "independent_reverify_quality_matrix",
+    "_rerun_coverage_gate",
 ]
