@@ -8,6 +8,7 @@ import pytest
 
 from simplicio_loop import runner as runner_mod
 from simplicio_loop.oracle import persist_completion_receipt
+from tests.planning_gate_fixtures import stage_valid_planning_receipt
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLI = [sys.executable, "-m", "simplicio_loop.cli"]
@@ -409,6 +410,8 @@ def test_status_surfaces_completion_receipt_reason_code(tmp_path, monkeypatch):
 
 def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path, monkeypatch):
     repo, _, armed_payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    stage_valid_planning_receipt(repo=repo, run_dir=run_dir, armed_payload=armed_payload,
+                                 run_id=armed_payload["manifest"]["run_id"])
     env = {
         "SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON": json.dumps({
             "returncode": 0, "stdout": {"kind": "operator-applied", "ok": True}, "stderr": "",
@@ -432,6 +435,8 @@ def test_tick_executes_real_operator_boundary_and_binds_receipt(tmp_path, monkey
 
 def test_tick_rolls_back_failed_operator_when_change_stays_within_authorized_target(tmp_path, monkeypatch):
     repo, _, armed_payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    stage_valid_planning_receipt(repo=repo, run_dir=run_dir, armed_payload=armed_payload,
+                                 run_id=armed_payload["manifest"]["run_id"])
     target = repo / "src" / "app.py"
     original = target.read_text(encoding="utf-8")
     env = {
@@ -1137,6 +1142,8 @@ def test_conduct_run_force_blocks_when_batch_boundary_raises_without_diagnostic(
 
 def test_execute_operator_batch_accepts_fresh_run_receipt_chain(tmp_path, monkeypatch):
     repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    stage_valid_planning_receipt(repo=repo, run_dir=run_dir, armed_payload=armed,
+                                 run_id=armed["manifest"]["run_id"])
     dispatched = []
 
     def fake_dispatch(items, **kwargs):

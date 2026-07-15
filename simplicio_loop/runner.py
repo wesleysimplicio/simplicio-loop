@@ -28,7 +28,7 @@ from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONT
                                OPERATOR_RECEIPT_SCHEMA as _OPERATOR_RECEIPT_CONTENT_SCHEMA,
                                ReceiptStatus, verify_receipt)
 from .planning_gate import content_hash as _planning_content_hash
-from .planning_gate import evaluate_mutation_authority
+from .planning_gate import evaluate_mutation_authority, mutation_authority_required
 
 try:
     from scripts.agent_identity import ensure_identity
@@ -1921,14 +1921,14 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         raise RuntimeError("repository changed after planning; re-run mapper before execution")
     task = tasks[task_index - 1]
     attempt = int((status["state"] or {}).get("attempts", 0)) + 1
-    # #284: opt-in mutation-authority gate. When SIMPLICIO_REQUIRE_MUTATION_AUTHORITY is
-    # truthy, execute_operator() additionally refuses to run without a valid
-    # planning-receipt.json whose mutation_authority token matches THIS run/attempt/
-    # task-contract/plan identity -- any drift (stale plan hash, rotated lease/fence,
-    # missing/invalid receipt) blocks fail-closed instead of silently proceeding. Off by
-    # default so existing callers/fixtures that never build a planning receipt are
-    # unaffected; see simplicio_loop/planning_gate.py and scripts/planning_gate.py.
-    if str(os.environ.get("SIMPLICIO_REQUIRE_MUTATION_AUTHORITY") or "").strip().lower() in ("1", "true", "yes"):
+    # #284: mutation-authority gate, mandatory by default. execute_operator()
+    # refuses to run without a valid planning-receipt.json whose mutation_authority
+    # token matches THIS run/attempt/task-contract/plan identity -- any drift (stale
+    # plan hash, rotated lease/fence, missing/invalid receipt) blocks fail-closed
+    # instead of silently proceeding. Opt out only via an explicit falsy
+    # SIMPLICIO_REQUIRE_MUTATION_AUTHORITY (see planning_gate.mutation_authority_required());
+    # see simplicio_loop/planning_gate.py and scripts/planning_gate.py.
+    if mutation_authority_required():
         # GitHub source drift: if the caller re-captured a fresh source snapshot
         # immediately before this tick (`scripts/planning_gate.py capture-source`,
         # written to `source-snapshot-current.json`), compare its hash against the
@@ -2898,10 +2898,12 @@ def execute_operator_batch(
         )
         raise
     plan = receipts["plan"]
-    # #284: same opt-in mutation-authority gate as execute_operator() (single-task tick),
-    # extended to the batch boundary -- "execute_operator() e batch recusam execução sem
-    # mutation authority válida" applies to both. Off by default; see execute_operator().
-    if str(os.environ.get("SIMPLICIO_REQUIRE_MUTATION_AUTHORITY") or "").strip().lower() in ("1", "true", "yes"):
+    # #284: mutation-authority gate, mandatory by default -- same as execute_operator()
+    # (single-task tick), extended to the batch boundary. "execute_operator() e batch
+    # recusam execução sem mutation authority válida" now applies unconditionally
+    # (opt out only via an explicit falsy SIMPLICIO_REQUIRE_MUTATION_AUTHORITY; see
+    # planning_gate.mutation_authority_required()).
+    if mutation_authority_required():
         batch_attempt = int((status["state"] or {}).get("attempts", 0)) + 1
         current_source_hash = ""
         current_snapshot_path = run_dir / "source-snapshot-current.json"

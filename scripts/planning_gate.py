@@ -33,6 +33,7 @@ from simplicio_loop.planning_gate import (
     build_planning_receipt,
     content_hash,
     evaluate_mutation_authority,
+    publish_planning_receipt,
     receipt_path,
 )
 from simplicio_loop.source_snapshot import capture_github_issue_snapshot
@@ -85,6 +86,16 @@ def cmd_build(args: argparse.Namespace) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    if args.publish and receipt.get("source"):
+        # #284: project the just-built receipt onto the #285 canonical status
+        # comment (PLANNED when ready_for_mutation, BLOCKED otherwise) instead of
+        # leaving that wiring as a documented-but-disconnected capability.
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        from pr_evidence import publish_comment  # local import: scripts/ has no package __init__
+
+        lifecycle_receipt = publish_planning_receipt(receipt, publish_comment_fn=publish_comment)
+        if lifecycle_receipt is not None:
+            print(json.dumps(lifecycle_receipt, ensure_ascii=False, indent=2))
     return 0 if receipt["ready_for_mutation"] else 1
 
 
@@ -238,6 +249,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--lease-id", default="")
     p_build.add_argument("--fencing-token", default="")
     p_build.add_argument("--source-snapshot", default="", help="path to a source-snapshot JSON from capture-source")
+    p_build.add_argument("--publish", action="store_true",
+                         help="also publish the receipt verdict (PLANNED/BLOCKED) to the canonical "
+                              "GitHub status comment via github_lifecycle.publish_lifecycle_state()")
     p_build.set_defaults(func=cmd_build)
 
     p_check = sub.add_parser("check")

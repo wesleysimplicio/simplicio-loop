@@ -3,8 +3,9 @@
 `simplicio_loop/planning_gate.py` packages an already-computed `validate_plan()`
 verdict into one hash-bound `simplicio.planning-receipt/v1` receipt and derives a
 mutation-authority token from the run/attempt/contract/plan/lease/fence identity
-tuple -- the token that `execute_operator()` can (opt-in, via
-SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) require before mutating the repository.
+tuple -- the token that `execute_operator()`/`execute_operator_batch()` require
+BY DEFAULT (mandatory, not opt-in) before mutating the repository;
+`SIMPLICIO_REQUIRE_MUTATION_AUTHORITY` only lets a caller explicitly opt back out.
 """
 import json
 
@@ -15,10 +16,30 @@ from simplicio_loop.planning_gate import (
     content_hash,
     evaluate_mutation_authority,
     load_planning_receipt,
+    mutation_authority_required,
     mutation_authority_token,
     receipt_path,
     verify_mutation_authority,
 )
+
+
+def test_mutation_authority_required_defaults_true_when_unset():
+    assert mutation_authority_required({}) is True
+
+
+def test_mutation_authority_required_true_for_explicit_truthy_values():
+    for value in ("1", "true", "True", "yes", "YES"):
+        assert mutation_authority_required({"SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": value}) is True
+
+
+def test_mutation_authority_required_false_only_for_explicit_falsy_opt_out():
+    for value in ("0", "false", "False", "no", "off", "legacy"):
+        assert mutation_authority_required({"SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": value}) is False
+
+
+def test_mutation_authority_required_true_for_unrecognized_value():
+    # Fail closed: an unrecognized value (typo) does NOT silently disable the gate.
+    assert mutation_authority_required({"SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": "nope"}) is True
 
 
 def _contract():
