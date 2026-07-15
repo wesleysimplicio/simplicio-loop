@@ -11,6 +11,8 @@
         --operation-id <op-id> --outbox-dir .orchestrator/github-outbox
     python3 scripts/github_lifecycle.py close --owner acme --repo widgets --issue 12 \
         --run-id r1 --attempt-id a1
+    python3 scripts/github_lifecycle.py reconcile-duplicates --owner acme --repo widgets \
+        --issue 12
     python3 scripts/github_lifecycle.py selftest
 
 `publish`/`close` shell out to the real `gh` CLI (via `scripts/pr_evidence.py::publish_comment`,
@@ -45,6 +47,7 @@ from simplicio_loop.github_lifecycle import (  # noqa: E402
     persist_lifecycle_receipt,
     publish_lifecycle_state,
     reconcile,
+    reconcile_duplicate_comments,
     render_lifecycle_comment,
     requery,
 )
@@ -114,8 +117,20 @@ def cmd_close(args: argparse.Namespace) -> int:
     return 0 if receipt.get("outcome") == "closed" else 1
 
 
+def cmd_reconcile_duplicates(args: argparse.Namespace) -> int:
+    receipt = reconcile_duplicate_comments(args.owner, args.repo, args.issue,
+                                           own_login=args.own_login or None)
+    print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_selftest(_args: argparse.Namespace) -> int:
-    from simplicio_loop.github_lifecycle import validate_transition
+    from simplicio_loop.github_lifecycle import (
+        elect_canonical_comment,
+        find_marker_comments,
+        mark_comment_superseded,
+        validate_transition,
+    )
 
     checks = []
 
@@ -133,6 +148,21 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
     body = render_lifecycle_comment(state="CLAIMED", run_id="r", attempt_id="a")
     chk("render.has_marker", "simplicio-loop:lifecycle-status:v1" in body, True)
     chk("all_states_valid_arg", set(LIFECYCLE_STATES) >= {"CLAIMED", "PLANNED", "CLOSED"}, True)
+
+    marker_comments = find_marker_comments([
+        {"id": 5, "body": body, "user": {"login": "bot-a"}},
+        {"id": 2, "body": body, "user": {"login": "bot-a"}},
+        {"id": 9, "body": "no marker here", "user": {"login": "human"}},
+    ])
+    chk("dedupe.finds_only_marker_comments", len(marker_comments), 2)
+    canonical, duplicates = elect_canonical_comment(marker_comments)
+    chk("dedupe.elects_lowest_id", canonical["id"] if canonical else None, 2)
+    chk("dedupe.duplicate_count", len(duplicates), 1)
+    foreign_action = mark_comment_superseded(
+        "acme", "widgets", {"id": 5, "body": body, "user": {"login": "someone-else"}},
+        own_login="bot-a",
+    )
+    chk("dedupe.never_touches_foreign_author", foreign_action["action"], "skipped_foreign_author")
 
     ok = all(checks)
     print("selftest: %s (%d/%d) github-lifecycle" % ("PASS" if ok else "FAIL", sum(checks), len(checks)))
@@ -209,6 +239,15 @@ def build_parser() -> argparse.ArgumentParser:
                          help="if given, persist the receipt to <run-dir>/%s for the "
                               "completion oracle to read" % "github-lifecycle-receipt.json")
     p_close.set_defaults(func=cmd_close)
+
+    p_dedupe = sub.add_parser("reconcile-duplicates")
+    p_dedupe.add_argument("--owner", required=True)
+    p_dedupe.add_argument("--repo", required=True)
+    p_dedupe.add_argument("--issue", required=True)
+    p_dedupe.add_argument("--own-login", default="",
+                          help="skip the live gh-authenticated-login lookup and scope "
+                               "SUPERSEDED edits to this login instead")
+    p_dedupe.set_defaults(func=cmd_reconcile_duplicates)
 
     p_self = sub.add_parser("selftest")
     p_self.set_defaults(func=cmd_selftest)

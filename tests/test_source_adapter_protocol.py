@@ -151,3 +151,47 @@ def test_adapter_without_outbox_reports_empty_pending_list_but_reconcile_require
         assert False, "expected ValueError for a missing outbox_dir"
     except ValueError:
         pass
+
+
+def test_adapter_without_outbox_raises_on_record_and_mark_pending_operation():
+    fake = _FakeGitHub()
+    adapter = _adapter(fake, outbox_dir=None)
+    try:
+        adapter.record_pending_operation("op-1", {"kind": "test"})
+        assert False, "expected ValueError for a missing outbox_dir"
+    except ValueError:
+        pass
+    try:
+        adapter.mark_operation_done("op-1", {"ok": True})
+        assert False, "expected ValueError for a missing outbox_dir"
+    except ValueError:
+        pass
+
+
+def test_list_ready_delegates_and_excludes_pull_requests():
+    fake = _FakeGitHub()
+    adapter = _adapter(fake)
+    result = adapter.list_ready(state="open")
+    assert result["schema"] == "simplicio.github-list-ready/v1"
+    assert result["provider"] == "github"
+    assert result["items"] == []
+
+
+def test_requery_delegates_to_get_details_and_reads_the_live_state():
+    fake = _FakeGitHub()
+    adapter = _adapter(fake)
+    snapshot = adapter.requery("42")
+    assert snapshot["schema"] == "simplicio.github-source-snapshot/v1"
+    assert snapshot["state"] == "open"
+    assert "requeried_at" in snapshot
+
+
+def test_reconcile_with_outbox_configured_recovers_a_pending_operation(tmp_path):
+    fake = _FakeGitHub()
+    adapter = _adapter(fake, outbox_dir=tmp_path / "outbox")
+    claimed = adapter.claim("42", run_id="run-1", attempt_id="42-1")
+    op_id = "op-reconcile-1"
+    adapter.record_pending_operation(op_id, {"kind": "test"})
+    receipt = adapter.reconcile(op_id, "42", comment_id=claimed["comment_id"],
+                                expected_body_hash=claimed["expected_body_hash"])
+    assert receipt["outcome"] == "reconciled"

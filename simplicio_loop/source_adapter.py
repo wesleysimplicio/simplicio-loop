@@ -44,54 +44,54 @@ class SourceAdapter(Protocol):
     def list_ready(self, *, state: str = "open", labels: Sequence[str] = (),
                    assignee: str = "", milestone: str = "") -> Mapping[str, Any]:
         """Metadata-only triage listing of ready work items, paginated, PR-excluding."""
-        ...
+        ...  # pragma: no cover -- Protocol stub, never executed
 
     def get_details(self, ref: str) -> Mapping[str, Any]:
         """Full snapshot of one work item: title/body/state/labels/comments/`source_revision`."""
-        ...
+        ...  # pragma: no cover -- Protocol stub, never executed
 
     def requery(self, ref: str, *, comment_id: Optional[int] = None) -> Mapping[str, Any]:
         """Re-read the source of truth immediately before/after a mutation."""
-        ...
+        ...  # pragma: no cover -- Protocol stub, never executed
 
     def claim(self, ref: str, *, run_id: str, attempt_id: str,
               require_active: Optional[Callable[[], None]] = None,
               **render_kwargs: Any) -> Mapping[str, Any]:
         """Transition the work item into the adapter's initial "claimed" lifecycle state."""
-        ...
+        ...  # pragma: no cover -- Protocol stub, never executed
 
     def update_status(self, ref: str, state: str, *, run_id: str, attempt_id: str,
                        fencing_token: str = "", lifecycle_revision: int = 0,
                        require_active: Optional[Callable[[], None]] = None,
                        **render_kwargs: Any) -> Mapping[str, Any]:
         """Publish one lifecycle state transition, verified by publish-then-re-query."""
-        ...
+        ...  # pragma: no cover -- Protocol stub, never executed
 
     def attach_evidence(self, ref: str, evidence_text: str, *, state: str, run_id: str,
                          attempt_id: str, require_active: Optional[Callable[[], None]] = None,
                          **render_kwargs: Any) -> Mapping[str, Any]:
         """Attach test/evidence text to the canonical status artifact for this work item."""
-        ...
+        ...  # pragma: no cover -- Protocol stub, never executed
 
     def close(self, ref: str, *, run_id: str, attempt_id: str, reason: str = "completed",
               require_active: Optional[Callable[[], None]] = None,
               **render_kwargs: Any) -> Mapping[str, Any]:
         """Close the work item at the source, fail-closed (re-query-confirmed)."""
-        ...
+        ...  # pragma: no cover -- Protocol stub, never executed
 
     def reconcile(self, operation_id: str, ref: str, *,
                   comment_id: Optional[int] = None, expected_body_hash: str = "") -> Mapping[str, Any]:
         """Recover a pending operation after a crash, without a duplicate mutation."""
-        ...
+        ...  # pragma: no cover -- Protocol stub, never executed
 
     def record_pending_operation(self, operation_id: str, payload: Mapping[str, Any]) -> Any:
-        ...
+        ...  # pragma: no cover -- Protocol stub, never executed
 
     def mark_operation_done(self, operation_id: str, receipt: Mapping[str, Any]) -> Any:
-        ...
+        ...  # pragma: no cover -- Protocol stub, never executed
 
     def list_pending_operations(self) -> List[Mapping[str, Any]]:
-        ...
+        ...  # pragma: no cover -- Protocol stub, never executed
 
 
 class GitHubSourceAdapter:
