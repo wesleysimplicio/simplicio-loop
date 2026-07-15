@@ -91,5 +91,22 @@ billing-locked) or claim OIDC/Sigstore coverage that doesn't exist, this change 
 platform-agnostic subset of Fase 4, Fase 6, and Fase 7 as real, tested, local CLI tools (see
 docs/SUPPLY_CHAIN.md), and leaves Fases 2/3/5/8, and the PyPI/npm legs of 6/9, explicitly open
 pending either (a) GitHub Actions billing being restored, or (b) `simplicio-runtime`'s replacement
-CI substrate landing with OIDC-equivalent capability. Issue #292 stays open; it is not closeable
-under its own Definition of Done today.
+CI substrate landing with OIDC-equivalent capability.
+
+This is now a formal, signed-off decision, not a running judgment call re-litigated every round:
+see `docs/adr/0004-release-oidc-trusted-publishing-permanently-blocked.md` for the durable ADR
+that freezes Fase 5 (and its structural dependents — Fases 2/3/8, and the PyPI/npm legs of 6/9)
+as permanently blocked pending a CI substrate, with the exact precondition for revisiting it.
+
+## Real end-to-end dry run (verification of the local pipeline)
+
+`scripts/release_rehearsal.py run --repo .` was re-run against the actual `main` HEAD (not a
+fixture) as part of confirming this document. It produced a consistent artifact set in one pass:
+the built wheel's SHA-256 digest matched byte-for-byte across `SHA256SUMS.json`, `sbom.json`'s
+`artifact.sha256`, and `provenance.json`'s `subject[0].digest.sha256`; the SBOM's `source_sha` and
+the provenance statement's `predicate.invocation.configSource.digest.sha1` both matched the real
+`git rev-parse HEAD` of the source tree the scratch copy was exported from; and the clean-room
+install-smoke installed that exact wheel into a fresh venv and confirmed the observed version and
+module path resolve to the venv, not the checkout. The receipt's final `"ok": true` reflects every
+step (export → version-bump → build → checksums → SBOM → provenance → install-smoke) actually
+running and passing, not a presumed/short-circuited result.

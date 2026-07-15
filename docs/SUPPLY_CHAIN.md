@@ -113,4 +113,7 @@ composing end-to-end against a disposable scratch copy, without publishing anywh
 GitHub-Release leg of Fase 7/9 already does real byte-level, registry-side verification via
 `simplicio_loop/external_verifiers.py`. Fases 2, 3, 5, 8, and the PyPI/npm legs of 6/9 remain
 genuinely blocked on GitHub Actions billing being restored or an equivalent CI/OIDC substrate
-landing — see docs/RELEASE.md for the phase-by-phase reasoning.
+landing — see docs/RELEASE.md for the phase-by-phase reasoning, and
+`docs/adr/0004-release-oidc-trusted-publishing-permanently-blocked.md` for the formal, signed-off
+ADR freezing that as a permanent structural blocker (not an open judgment call) until a CI
+identity provider exists in this repository again.
