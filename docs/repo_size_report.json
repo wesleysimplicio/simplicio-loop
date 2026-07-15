@@ -1,0 +1,221 @@
+{
+  "by_extension": [
+    {
+      "bytes": 2172618776,
+      "count": 1119,
+      "ext": ".rlib"
+    },
+    {
+      "bytes": 1123878673,
+      "count": 1340,
+      "ext": ".rmeta"
+    },
+    {
+      "bytes": 436236608,
+      "count": 1131,
+      "ext": ".o"
+    },
+    {
+      "bytes": 211120807,
+      "count": 1791,
+      "ext": "(no ext)"
+    },
+    {
+      "bytes": 180672520,
+      "count": 78,
+      "ext": ".dylib"
+    },
+    {
+      "bytes": 110845096,
+      "count": 6,
+      "ext": ".bin"
+    },
+    {
+      "bytes": 48990710,
+      "count": 14,
+      "ext": ".wav"
+    },
+    {
+      "bytes": 28723921,
+      "count": 2,
+      "ext": ".mp4"
+    },
+    {
+      "bytes": 22358784,
+      "count": 951,
+      "ext": ".md"
+    },
+    {
+      "bytes": 21118217,
+      "count": 1057,
+      "ext": ".py"
+    },
+    {
+      "bytes": 14734673,
+      "count": 1,
+      "ext": ".whl"
+    },
+    {
+      "bytes": 12962362,
+      "count": 9,
+      "ext": ".png"
+    },
+    {
+      "bytes": 10424738,
+      "count": 1431,
+      "ext": ".d"
+    },
+    {
+      "bytes": 6261732,
+      "count": 12,
+      "ext": ".aiff"
+    },
+    {
+      "bytes": 3831718,
+      "count": 1913,
+      "ext": ".json"
+    },
+    {
+      "bytes": 2601856,
+      "count": 179,
+      "ext": ".rs"
+    },
+    {
+      "bytes": 648398,
+      "count": 2,
+      "ext": ".jpg"
+    },
+    {
+      "bytes": 421888,
+      "count": 2,
+      "ext": ".db"
+    },
+    {
+      "bytes": 361485,
+      "count": 12,
+      "ext": ".html"
+    },
+    {
+      "bytes": 241920,
+      "count": 110,
+      "ext": ".toml"
+    },
+    {
+      "bytes": 231125,
+      "count": 2,
+      "ext": ".lock"
+    },
+    {
+      "bytes": 199803,
+      "count": 31,
+      "ext": ".sh"
+    },
+    {
+      "bytes": 70856,
+      "count": 1,
+      "ext": ".zip"
+    },
+    {
+      "bytes": 57619,
+      "count": 6,
+      "ext": ".svg"
+    },
+    {
+      "bytes": 55076,
+      "count": 12,
+      "ext": ".yml"
+    },
+    {
+      "bytes": 27457,
+      "count": 12,
+      "ext": ".srt"
+    },
+    {
+      "bytes": 10686,
+      "count": 10,
+      "ext": ".jsonl"
+    },
+    {
+      "bytes": 7500,
+      "count": 1,
+      "ext": ".c"
+    },
+    {
+      "bytes": 5384,
+      "count": 6,
+      "ext": ".txt"
+    },
+    {
+      "bytes": 3597,
+      "count": 2,
+      "ext": ".js"
+    },
+    {
+      "bytes": 1610,
+      "count": 2,
+      "ext": ".ps1"
+    },
+    {
+      "bytes": 1237,
+      "count": 1,
+      "ext": ".upstream"
+    },
+    {
+      "bytes": 177,
+      "count": 1,
+      "ext": ".tag"
+    },
+    {
+      "bytes": 75,
+      "count": 1,
+      "ext": ".in"
+    },
+    {
+      "bytes": 48,
+      "count": 1,
+      "ext": ".timestamp"
+    }
+  ],
+  "distinct_blobs_ever_committed": 11249,
+  "generated_at": "2026-07-15T15:09:23Z",
+  "git_count_objects": {
+    "count": "29",
+    "garbage": "1",
+    "in-pack": "16496",
+    "packs": "2",
+    "prune-packable": "0",
+    "size": "148.34 KiB",
+    "size-garbage": "0 bytes",
+    "size-pack": "1.40 GiB"
+  },
+  "git_count_objects_parsed_bytes": {
+    "size_loose_bytes": 151900,
+    "size_pack_bytes": 1503238553
+  },
+  "schema": "simplicio.repo-history-scan/v1",
+  "top_blobs": [
+    {
+      "paths": [
+        "rust/target/debug/deps/simplicio_core-01a80cbc859a4ee7"
+      ],
+      "sha": "8a6c8fb44f5900a10e7b378ea27544611c87da91",
+      "size_bytes": 78985376
+    },
+    {
+      "paths": [
+        "rust/target/debug/deps/libort_sys-f9eaead2d2fb28e6.rlib"
+      ],
+      "sha": "cc0a91795ecdf98fbd1cecf8010f90cbc0c8a342",
+      "size_bytes": 75152584
+    },
+    {
+      "paths": [
+        "rust/target/release/deps/libort_sys-13ff4a644381b453.rlib"
+      ],
+      "sha": "213d6e1953bfbf5c8e73b4393aa0283cb3e78ef1",
+      "size_bytes": 74765824
+    }
+  ],
+  "total_historical_blob_bytes": 4409727132,
+  "total_historical_blob_human": "4.1GB"
+}

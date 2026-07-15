@@ -119,7 +119,7 @@ runtime-native component just to use `simplicio-loop`. Native binds, operators, 
 and the wider Simplicio runtime stack are optional accelerators on top of the core skill bundle.
 
 <p align="center">
-  <img src="assets/simplicio-loop-infographic.png" alt="simplicio-loop detailed infographic: standalone install, optional native binds, 7 skills, 5 accelerators, 11 runtimes, 5 source adapters, and proof gates" width="920" />
+  <img src="assets/simplicio-loop-infographic.png" alt="simplicio-loop detailed infographic: standalone install, optional native binds, 7 skills, 5 accelerators, 12 runtimes, 5 source adapters, and proof gates" width="920" />
 </p>
 
 Within the Simplicio product line, this repo is also the **current reference task flow** for
