@@ -86,6 +86,20 @@ That architecture lets one goal become a governed delivery system: from a single
 </p>
 <!-- visual-story:end -->
 
+## 🆕 What's new in v3.35.0
+
+- **Real multi-device execution** — atomic claim/discovery over a live remote queue, worker heartbeat + cancellation, receipt verification on *both* the client and the server, and an installable worker/supervisor/queue-server console-script surface, plus a `doctor.py` `LOCAL_ONLY` / `REMOTE_READY` / `REMOTE_MEASURED` tri-state so "remote" is never claimed without a passing cross-process proof.
+- **Real multi-LLM routing** — a deterministic model registry/router with fallback and circuit-breaker, task-contract-driven routing fields, and a genuine, verified `codex exec` run producing an auditable `runtime-execution-receipt` (Claude-side execution is implemented too, gated only by org policy in this environment — never faked).
+- **Evidence-gated delivery, wired for real** — fail-closed receipt verification (content/hash/schema/freshness), heartbeat-guarded dispatch, a merge executor that reconciles *after* merging (not just after opening the PR), chaos-tested crash recovery, and a cross-receipt commit-binding gate that closes a real "two green receipts, two different commits" gap.
+- **Security hardening** — an enumerated environment allow-list, short-lived HMAC credentials with `jti` revocation and per-operation scoping, DNS/TLS-pinned transport proven against live redirect/rebinding/proxy-injection attempts, structured audit logging, and CODEOWNERS coverage of every security-critical module.
+- **Delivery truth** — no more presumed proof: paginated live GraphQL queries, byte-level release-artifact verification (real SHA-256 + `gh attestation verify`), branch-reachability/issue-state/freshness checks, and a real concurrency + crash + fault-injection test matrix (including crashes *during* the external call itself).
+- **Quality gate, for real** — an independent watcher that re-derives every quality-matrix lane (including coverage drift) instead of trusting a self-reported receipt, all 192 test files sorted into a real unit/integration/system/regression convention, and measured coverage raised from 16.6% / 9.4% to 28.45% / 24.02% (global / critical) on the widened scope.
+- **A local, CI-less determinism story** — since GitHub Actions isn't available on this repo, a fail-closed local pre-push gate now stands in as the mandatory, impossible-to-bypass check, and the release pipeline (version bump → build → checksum → SBOM → local provenance → install-smoke) runs end-to-end against the real checkout with `scripts/release_rehearsal.py`.
+- **A transactional installer** — backup-before-mutate, real rollback, N-1→N upgrade tests, explicit consent gating before installing a service/proxy, and a machine-readable mutation manifest.
+- **Repository governance** — LFS-scoped media, a budget gate blocking accidental build-artifact commits, a canonical version/skill/claims manifest, and a dry-run-only history-migration plan (the actual rewrite stays a separate, explicit maintainer action, by design).
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the full list and the [v3.35.0 release](https://github.com/wesleysimplicio/simplicio-loop/releases/tag/v3.35.0) for signed artifacts (wheel, sdist, SBOM, provenance).
+
 ## ⚡ TL;DR
 
 **simplicio-loop** is a runtime-agnostic **super-plugin** — one autonomous looping

@@ -140,6 +140,20 @@ CLAIMS = [
         ),
     },
     {
+        "id": "coverage-283-baseline-fase-b",
+        "doc": "README.md",
+        "text_glob": "16.6% / 9.4% to 28.45% / 24.02%",
+        "status": "verified",
+        "receipt": "quality/coverage-baseline.json",
+        "note": (
+            "Claim: '#283 measured coverage raised from 16.6% / 9.4% to 28.45% / 24.02% "
+            "(global / critical) on the widened scope.' Real numbers from "
+            "scripts/coverage_gate.py, receipt at quality/coverage-baseline.json "
+            "(global_pct/critical_pct + previous_baseline.global_pct/critical_pct), bound to "
+            "commit d37b28d2b1f67b776dcc06a5acd7348369abe150 (PR #407)."
+        ),
+    },
+    {
         "id": "infographic-90pct-fewer-tokens",
         "doc": "README.md",
         "text_glob": "90%",
