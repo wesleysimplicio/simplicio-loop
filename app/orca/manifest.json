@@ -1,0 +1,10 @@
+{
+  "schema":"simplicio.orca-agent-preset/v1",
+  "executors":["simplicio_agent","hermes"],
+  "executor_model":"openrouter/tencent/hy3:free",
+  "reviewer":{"agent":"codex","model":"gpt-5.6-terra","effort":"medium"},
+  "conflicts":{"agent":"claude","model":"sonnet","effort":"medium"},
+  "final_reviewer":"codex-fresh-session",
+  "runtime_mcp":{"command":"simplicio","args":["serve","--mcp","--stdio"]},
+  "secrets_included":false
+}
