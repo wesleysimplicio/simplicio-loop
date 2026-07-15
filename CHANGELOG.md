@@ -2,6 +2,61 @@
 
 ## [Unreleased]
 
+## [3.35.0] — 2026-07-15
+
+Large multi-agent push closing the P0/P1/P2 backlog opened by #183/#283-#296. Highlights:
+
+- **#286 multi-device protocol**: atomic claim/discovery over a real remote queue, worker
+  heartbeat/cancellation, receipt verification on both client and server sides, an installable
+  worker/supervisor/queue-server console-script surface, a `doctor.py` LOCAL_ONLY/REMOTE_READY/
+  REMOTE_MEASURED tri-state, and a real 2-process HTTP-loopback E2E. Closed with the genuine
+  two-physical-machine proof still open (single-machine sandbox).
+- **#287 multi-LLM routing**: deterministic `ModelCapabilityRegistry`/router with fallback and
+  circuit-breaker, task-contract routing fields, `runtime-execution-receipt`, and real
+  `CodexRuntimeDriver` execution (`codex exec`, verified receipt). Closed with Claude-side
+  execution still blocked by an org policy (`ANTHROPIC_API_KEY` unavailable in this environment).
+- **#288 pipeline convergence**: `receipt_verifier.py` fail-closed content/hash/schema/freshness
+  checks, `AttemptCoordinator.run_guarded()` heartbeat+kill-on-lease-loss, `MergeExecutor` with a
+  real reconcile-after-merge step and chaos-tested crash recovery, multi-PR batch fan-in, and
+  `LoopRuntimeAdapter`/`VerifiedAgentDelivery` finally wired into the real dispatch path.
+- **#289 security**: enumerated environment allow-list (`distributed_trust_policy.py`),
+  short-lived HMAC credentials with `jti` revocation and per-operation scoping, DNS/TLS-pinned
+  secure transport with live redirect/rebinding/proxy-injection fault-injection tests, structured
+  audit logging, and CODEOWNERS coverage of the security-critical modules.
+- **#290 delivery truth**: fail-closed `source_state.py`, paginated GraphQL review-thread queries,
+  byte-level release-artifact verification (real sha256 + `gh attestation verify`),
+  `BranchReachabilityVerifier`/`IssueStateVerifier`/TTL-freshness policy, `DeploymentVerifier`, a
+  concurrency/crash/fault-injection matrix (including crashes mid-external-call), and a
+  cross-receipt commit-binding gate closing a real merge-ready/quality-matrix SHA-mismatch gap.
+- **#284 intake contract**: `simplicio.task-intake/v1` envelope, `impact-map.json`,
+  AC-traceability matrix, `replan_on_drift`, mandatory-by-default mutation-authority enforcement,
+  and a live GitHub-backed E2E.
+- **#285 GitHub lifecycle adapter**: typed `SourceAdapter` Protocol, full read/write/lease/outbox
+  surface, duplicate-comment election, `SOURCE_CHANGED` pre-close drift detection, and a
+  `CLOSE_PENDING_RECONCILIATION` completion-oracle gate — 100% branch/line coverage on the core
+  modules.
+- **#283 quality gate**: independent watcher re-verification (including coverage-drift detection),
+  auto-populated `quality-matrix.json` from real gate scripts, the full `run_id`/`work_item`/`tests`
+  envelope, a real per-category (unit/integration/system/regression) test-runner split across all
+  192 test files, and a fixed `coverage_gate.py` crash on `coverage.py` 7.15.x + Python 3.14.
+  Global/critical coverage raised from 16.6%/9.4% to 28.45%/24.02% on the widened scope.
+- **#291 CI-less determinism**: a fail-closed local pre-push gate (`hooks/action_gate.py`)
+  standing in for the GitHub Actions removed in #311, plus a real Windows subprocess-handling fix
+  in `check_e2e_installed.py`.
+- **#292 release/supply chain**: `version_sync.py` single-source-of-truth version bump,
+  checksum/GPG-sign/SBOM/install-smoke tooling, a local-provenance substitute for OIDC attestation,
+  and `release_rehearsal.py` chaining the whole pipeline end-to-end against the real checkout.
+- **#293 installer**: a transactional executor with backup/rollback, N-1→N upgrade + real smoke
+  tests, explicit consent gating for service/proxy installs, distinct executor modes, and a
+  machine-readable mutation manifest.
+- **#294 repository governance**: LFS-scoped `.gitattributes`, forbidden-path/large-media budget
+  gates, a canonical version/skill/claims manifest, and a dry-run-only (never-executing) history
+  migration plan — the actual history rewrite stays an explicit, separate maintainer action.
+- **#295/#296/#183**: the production-grade and real-time-progress umbrella epics, and the
+  original multi-agent-parallelism epic, closed as their tracked child issues resolved.
+
+## [Unreleased]
+
 - #293: fix `install_lib.py::install_all_deps()` (`--full-stack`/`--with-service` full install)
   referencing a `.[onnx]` optional-dependency extra that `pyproject.toml` stopped declaring back
   in `3.11.0` (the ONNX model engine — `kompress`/`router`/`embed`/`image` — was removed that

@@ -254,7 +254,7 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
         rotated = evaluate_mutation_authority(run_dir, run_id="run-1", attempt=1,
                                               task_contract_hash=task_contract_hash, plan_hash=plan_hash,
                                               lease_id="lease-2", fencing_token="8")
-        assert rotated["ok"] is False and rotated["reason_code"] == "mutation_authority_invalid", rotated
+        assert rotated["ok"] is False and rotated["reason_code"] == "lease_or_fence_mismatch", rotated
 
         # missing receipt fails closed
         missing = evaluate_mutation_authority(Path(tmp) / "nope", run_id="run-1", attempt=1,
