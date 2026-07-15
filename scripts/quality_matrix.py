@@ -25,7 +25,9 @@ from simplicio_loop.quality_matrix import (
     classify_change_type,
     default_policy_for_change_type,
     evaluate_quality_matrix,
+    populate_quality_matrix,
     receipt_path,
+    watchdog_verify,
 )
 
 
@@ -49,6 +51,23 @@ def cmd_classify(args: argparse.Namespace) -> int:
     policy = default_policy_for_change_type(change_type)
     print(json.dumps({"change_type": change_type, "policy": policy}, ensure_ascii=False, indent=2))
     return 0
+
+
+def cmd_watchdog(args: argparse.Namespace) -> int:
+    """#283: independent watcher — re-derive every lane from raw gate output."""
+    verdict = watchdog_verify(args.run_dir, trust_receipt=args.trust_receipt)
+    print(json.dumps(verdict, ensure_ascii=False, indent=2))
+    return 0 if verdict.get("ready") else 1
+
+
+def cmd_populate(args: argparse.Namespace) -> int:
+    """#283: auto-populate the receipt from the real gate scripts."""
+    receipt = populate_quality_matrix(args.run_dir)
+    print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    # Surface a non-zero exit when any mandatory lane did not pass, so CI can gate.
+    failed = [n for n, e in receipt.get("requirements", {}).items()
+              if isinstance(e, dict) and e.get("status") != "pass"]
+    return 1 if failed else 0
 
 
 def cmd_selftest(_args: argparse.Namespace) -> int:
@@ -129,6 +148,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_classify.set_defaults(func=cmd_classify)
     p_self = sub.add_parser("selftest")
     p_self.set_defaults(func=cmd_selftest)
+
+    p_watch = sub.add_parser("watchdog")
+    p_watch.add_argument("--run-dir", required=True)
+    p_watch.add_argument("--trust-receipt", action="store_true",
+                         help="DANGEROUS: trust the self-reported receipt instead of recomputing")
+    p_watch.set_defaults(func=cmd_watchdog)
+
+    p_pop = sub.add_parser("populate")
+    p_pop.add_argument("--run-dir", required=True)
+    p_pop.set_defaults(func=cmd_populate)
     return parser
 
 
