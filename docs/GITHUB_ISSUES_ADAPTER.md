@@ -190,6 +190,25 @@ python3 scripts/github_lifecycle.py reconcile --owner acme --repo widgets --issu
 * `tests/test_oracle_source_lifecycle_gate.py` — the COMPLETE-gate wiring (§ 9): passes with no
   receipt, blocks on `CLOSE_PENDING_RECONCILIATION`, passes again once reconciled.
 
+## Evidence-comment delegation (`pr_evidence.py comment --publish`)
+
+`scripts/pr_evidence.py::cmd_comment --publish` used to call `publish_comment(...)` directly with
+its own `PR_EVIDENCE_COMMENT_MARKER`, opening/updating a SECOND, separate comment on the issue —
+distinct from the ONE canonical `LIFECYCLE_COMMENT_MARKER` comment `claim`/`PLANNED` already
+maintain. That was a direct gap against #285's "Um comentário canônico: claim, planejamento,
+progresso, evidência e fechamento atualizam o mesmo comment ID."
+
+`publish_evidence_via_lifecycle(...)` (in `scripts/pr_evidence.py`) closes it: it projects the
+same rendered evidence body (PR link, verification coverage, item-by-item checklist, print/video
+counts) as the `tests_and_evidence` field of `github_lifecycle.publish_lifecycle_state`, using
+state `PR_OPEN` when `--pr` is given, else `VERIFYING` — the exact same comment id `PLANNED`
+posted to, verified end to end in
+`tests/test_pr_evidence_lifecycle_delegation.py::test_publish_evidence_reuses_the_same_comment_as_the_planning_receipt`.
+`cmd_comment --publish` now delegates through this helper; `--run-id`/`--attempt-id`/`--state`
+let a caller override the identity/state. `publish_comment`/`PR_EVIDENCE_COMMENT_MARKER` remain
+the underlying idempotent primitive (still the injected `publish_comment_fn` everywhere in this
+document) — only `cmd_comment`'s own marker choice changed.
+
 ## Explicitly NOT implemented here (tracked, not claimed done)
 
 * Full duplicate-comment **election** across two independent authors/leases beyond "first marker
@@ -197,9 +216,6 @@ python3 scripts/github_lifecycle.py reconcile --owner acme --repo widgets --issu
   safe-removal policy for a genuinely duplicated marker comment (e.g. two different lease-holders
   each having briefly believed they owned the issue and both posted before the queue's exclusivity
   caught up).
-* `pr_evidence.py`'s own evidence-comment path (`PR_EVIDENCE_COMMENT_MARKER`) does not delegate to
-  this adapter — it remains a separate marker/comment, by design (#285's own text: "distinct from
-  #295's evidence-comment marker").
 * `≥90%` branch **coverage measurement** specifically scoped to `github_lifecycle.py`/
   `source_adapter.py` (not measured/enforced as its own number in this change; the repo-wide
   `scripts/check.py` quality gates still apply).

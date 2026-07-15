@@ -14,9 +14,16 @@ top of that primitive this module adds:
     current state is rejected with a reason code, never silently accepted;
   * a deterministic, sanitized renderer for the canonical status comment
     (`render_lifecycle_comment`), using ITS OWN marker
-    (`<!-- simplicio-loop:lifecycle-status:v1 -->`) distinct from the #295
-    evidence-comment marker, so the two comments never collide on the same
-    issue;
+    (`<!-- simplicio-loop:lifecycle-status:v1 -->`), distinct from the #295
+    evidence-comment marker `PR_EVIDENCE_COMMENT_MARKER` so the two never
+    collide when both happen to be searched for on the same issue. The two
+    markers being distinct constants does NOT mean two active comments: since
+    `scripts/pr_evidence.py::publish_evidence_via_lifecycle` was added, the
+    evidence-comment CALLER (`cmd_comment --publish`) delegates through THIS
+    module's `publish_lifecycle_state` and lands on the SAME canonical
+    comment as `claim`/`PLANNED` — `PR_EVIDENCE_COMMENT_MARKER` now only
+    matters as the underlying idempotent-primitive's own default marker
+    parameter, not as a second comment on the issue;
   * `publish_lifecycle_state`: publish (create-or-update, idempotent, via the
     #295 primitive) THEN immediately re-query the same comment and compare the
     observed body hash against the expected one — the issue's "só retornar
