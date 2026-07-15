@@ -6,7 +6,7 @@ half).
 throwaway venv, run `simplicio-loop --help` for real). This module proves the other half: once
 `install_executor.apply()` has copied the worker scripts into a `--target` directory, the copies
 that landed there must actually RUN and produce real, meaningful output — not just parse as valid
-Python (that was the previous, weaker bar in `tests/test_system_clean_install.py`).
+Python (that was the previous, weaker bar in `tests/test_system_clean_install_system.py`).
 
 Concretely, against the installed `<target>/scripts/` copies:
 

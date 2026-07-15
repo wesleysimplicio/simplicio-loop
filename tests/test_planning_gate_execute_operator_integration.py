@@ -20,7 +20,7 @@ from simplicio_loop import runner as runner_mod
 from simplicio_loop.plan_contract import validate_plan
 from simplicio_loop.planning_gate import build_planning_receipt, content_hash, receipt_path
 
-from tests.test_runner_cli import _arm_deterministic_preflight_fixture
+from tests.test_runner_cli_integration import _arm_deterministic_preflight_fixture
 from tests.planning_gate_fixtures import stage_valid_planning_receipt
 
 ENV_FLAG = "SIMPLICIO_REQUIRE_MUTATION_AUTHORITY"

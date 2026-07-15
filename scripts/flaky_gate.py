@@ -17,7 +17,7 @@ enough trace to reproduce it without re-running the whole matrix.
 
 Usage:
     python3 scripts/flaky_gate.py                          # 5x tests/, default critical subset
-    python3 scripts/flaky_gate.py --repeat 10 --target tests/test_drain.py tests/test_fan_out_unit.py
+    python3 scripts/flaky_gate.py --repeat 10 --target tests/test_drain_integration.py tests/test_fan_out_unit.py
     python3 scripts/flaky_gate.py --stress --repeat 25      # heavier stress pass (issue's "stress tests")
 
 Exit codes: 0 = stable across every run, 1 = flaky and/or consistently-failing tests found.
@@ -38,14 +38,14 @@ REPO = os.path.dirname(HERE)
 # "Critical" default subset: the loop-contract / convergence / drain surfaces this issue is
 # specifically about. Kept small on purpose -- a full-suite x N-repeat run is the `--stress` mode.
 DEFAULT_TARGETS = [
-    "tests/test_drain.py",
-    "tests/test_drain_cli.py",
+    "tests/test_drain_integration.py",
+    "tests/test_drain_cli_integration.py",
     "tests/test_fan_out_unit.py",
-    "tests/test_fan_out_flow.py",
-    "tests/test_fan_out_scheduler.py",
-    "tests/test_completion_oracle.py",
-    "tests/test_completion_oracle_matrix.py",
-    "tests/test_control_policy.py",
+    "tests/test_fan_out_flow_system.py",
+    "tests/test_fan_out_scheduler_integration.py",
+    "tests/test_completion_oracle_system.py",
+    "tests/test_completion_oracle_matrix_unit.py",
+    "tests/test_control_policy_unit.py",
     "tests/test_run_state.py",
 ]
 

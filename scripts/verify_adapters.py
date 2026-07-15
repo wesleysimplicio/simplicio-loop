@@ -126,7 +126,7 @@ def _check(runtime, target):
     # invoked exactly as the loop itself would: `python3 scripts/loop_progress.py selftest` with
     # cwd == the installed target, not the source repo. Skipped only when target IS this source
     # checkout (nothing was copied over itself — the real scripts/ already lives there and is
-    # covered by `tests/test_loop_progress.py`).
+    # covered by `tests/test_loop_progress_integration.py`).
     if os.path.abspath(target) != os.path.abspath(REPO):
         fails.extend(_check_loop_progress_selftest(target))
     return fails

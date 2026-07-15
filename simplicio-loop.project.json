@@ -661,7 +661,7 @@
     "cost": "Roda local, zero CI cost. Self-runs em bare python3 (sem pytest); pip install 'simplicio-loop[dev]' adiciona pytest.",
     "test_suite": "tests/ — selftests determinísticos dos workers + e2e do loop driver (hooks/loop_stop.py) provando: stops on evidence, ignora bare <promise>, stops on cap; + producers BLOCK (nunca fake-pass) quando toolchain ausente",
     "claims_audit_4_checks": ["referenced scripts exist", "extension-point count consistente", "cited commands run", "_bundle ≡ source byte-idêntico"],
-    "test_files": ["tests/_selfrun.py", "tests/test_action_gate.py", "tests/test_loop_e2e.py", "tests/test_worker_selftests.py", "tests/test_worker_smoke.py"],
+    "test_files": ["tests/_selfrun.py", "tests/test_action_gate_system.py", "tests/test_loop_e2e_system.py", "tests/test_worker_selftests_system.py", "tests/test_worker_smoke_system.py"],
     "pre_push_hook": "printf '#!/bin/sh\\npython3 scripts/check.py\\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push",
     "ci_workflow": ".github/workflows/web-verify.yml"
   },
