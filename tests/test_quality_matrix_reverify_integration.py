@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
 
+from simplicio_loop import quality_matrix as qm
 from simplicio_loop.quality_matrix import (
     independent_reverify_quality_matrix,
     independent_reverify_tdd_lane,
@@ -139,6 +140,63 @@ def test_reverify_missing_receipt_is_not_ready(tmp_path):
     verdict = independent_reverify_quality_matrix(str(tmp_path), repo=REPO, rerun=False)
     assert verdict["ready"] is False
     assert verdict["self_reported"]["reason_code"] == "quality_matrix_missing"
+
+
+# --- coverage drift: a receipt claiming MORE than a fresh coverage_gate.py re-run measures -------
+
+
+def test_reverify_catches_coverage_drift(tmp_path, monkeypatch):
+    """A receipt claiming 95% coverage when an independent, fresh re-run of coverage_gate.py
+    just measured 70% must be refused -- the receipt is never trusted over a live probe."""
+    receipt = _base_receipt()
+    receipt["requirements"]["regression"] = {"status": "pass", "proof_ref": "tests/regression"}
+    receipt["requirements"]["benchmark"] = {"status": "pass", "proof_ref": "tests/benchmark"}
+    receipt["coverage"] = {"measured": 95.0}
+    (tmp_path / "quality-matrix.json").write_text(json.dumps(receipt), encoding="utf-8")
+
+    monkeypatch.setattr(qm, "_rerun_coverage_gate", lambda repo: 70.0)
+    monkeypatch.setattr(qm, "_rerun_gate_script", lambda script, argv, repo: (True, "stubbed pass"))
+    verdict = independent_reverify_quality_matrix(str(tmp_path), repo=REPO, rerun=True)
+    assert verdict["ready"] is False
+    assert verdict["reason_code"] == "quality_coverage_drift"
+
+
+def test_reverify_accepts_coverage_within_measured_bounds(tmp_path, monkeypatch):
+    """A claimed coverage at/below what the fresh probe measures is not drift."""
+    receipt = _base_receipt()
+    receipt["requirements"]["regression"] = {"status": "pass", "proof_ref": "tests/regression"}
+    receipt["requirements"]["benchmark"] = {"status": "pass", "proof_ref": "tests/benchmark"}
+    receipt["coverage"] = {"measured": 88.0}
+    (tmp_path / "quality-matrix.json").write_text(json.dumps(receipt), encoding="utf-8")
+
+    monkeypatch.setattr(qm, "_rerun_coverage_gate", lambda repo: 90.0)
+    monkeypatch.setattr(qm, "_rerun_gate_script", lambda script, argv, repo: (True, "stubbed pass"))
+    verdict = independent_reverify_quality_matrix(str(tmp_path), repo=REPO, rerun=True)
+    assert verdict["ready"] is True, verdict
+    coverage_checks = [c for c in verdict["lane_checks"] if c["name"] == "coverage"]
+    assert coverage_checks and coverage_checks[0]["status"] == "pass"
+    assert coverage_checks[0]["reason_code"] == "quality_coverage_reverify_verified"
+
+
+def test_reverify_skips_drift_check_when_coverage_unmeasurable(tmp_path, monkeypatch):
+    """If the independent probe can't produce a number (script missing/broken env), the drift
+    check is skipped rather than fabricating a pass or fail."""
+    receipt = _base_receipt()
+    receipt["requirements"]["regression"] = {"status": "pass", "proof_ref": "tests/regression"}
+    receipt["requirements"]["benchmark"] = {"status": "pass", "proof_ref": "tests/benchmark"}
+    receipt["coverage"] = {"measured": 95.0}
+    (tmp_path / "quality-matrix.json").write_text(json.dumps(receipt), encoding="utf-8")
+
+    monkeypatch.setattr(qm, "_rerun_coverage_gate", lambda repo: None)
+    monkeypatch.setattr(qm, "_rerun_gate_script", lambda script, argv, repo: (True, "stubbed pass"))
+    verdict = independent_reverify_quality_matrix(str(tmp_path), repo=REPO, rerun=True)
+    assert verdict["ready"] is True, verdict
+    coverage_checks = [c for c in verdict["lane_checks"] if c["name"] == "coverage"]
+    assert coverage_checks and coverage_checks[0]["reason_code"] == "quality_coverage_reverify_unmeasurable"
+
+
+def test_rerun_coverage_gate_returns_none_when_script_missing(tmp_path):
+    assert qm._rerun_coverage_gate(str(tmp_path)) is None
 
 
 # --- CLI: populate / tdd-red / tdd-green / reverify ---------------------------------------------

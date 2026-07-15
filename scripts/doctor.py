@@ -26,6 +26,7 @@ from pathlib import Path
 
 HOME = Path.home()
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
 PROXY_PORT = int(os.environ.get("SIMPLICIO_PROXY_PORT", "8788"))
 PY = sys.executable or "python3"
 DARWIN = sys.platform == "darwin"
@@ -289,9 +290,53 @@ def _importable(mod):
         return False
 
 
+def chk_remote_worker():
+    """LOCAL_ONLY / REMOTE_READY / REMOTE_MEASURED tri-state for the remote-worker
+    capability (#286). See simplicio_loop/remote_worker_measurement.py for the full
+    contract: doctor never infers REMOTE_MEASURED from source code existing, only
+    from a receipt a genuinely-passing cross-process proof recorded."""
+    try:
+        from simplicio_loop.remote_worker_measurement import remote_worker_status
+        result = remote_worker_status(str(REPO))
+    except Exception as exc:  # never let this check crash doctor
+        return dict(name="remote worker (#286)", tier="OPTIONAL", status=WARN,
+                     msg="could not evaluate: %s" % exc, repair=None)
+
+    status = result["status"]
+    if status == "REMOTE_MEASURED":
+        m = result["measurement"] or {}
+        msg = "REMOTE_MEASURED -- proven by %s at %s" % (m.get("proof", "?"), m.get("measured_at", "?"))
+        dstatus = OK
+    elif status == "REMOTE_READY":
+        msg = ("REMOTE_READY -- remote queue configured but never proven cross-process on this "
+               "checkout; `python3 scripts/remote_worker_measurement.py record` to prove it")
+        dstatus = WARN
+    else:
+        msg = "LOCAL_ONLY -- no remote queue configured (SIMPLICIO_REMOTE_QUEUE_URL/SIMPLICIO_REMOTE_ENVIRONMENT_ID unset); this is the default, not a failure"
+        dstatus = OK
+
+    def repair():
+        # Only meaningful when REMOTE_READY: actually re-run the strongest local proof and
+        # record it for real. LOCAL_ONLY has nothing to fix (no config to fabricate);
+        # REMOTE_MEASURED is already the best state.
+        if status != "REMOTE_READY":
+            return status in ("LOCAL_ONLY", "REMOTE_MEASURED")
+        try:
+            from simplicio_loop.remote_worker_measurement import DEFAULT_PROOF, record_measurement, run_proof
+            proc = run_proof(str(REPO), DEFAULT_PROOF, timeout=300)
+            if proc.returncode != 0:
+                return False
+            record_measurement(str(REPO), proof=DEFAULT_PROOF)
+            return True
+        except Exception:
+            return False
+
+    return dict(name="remote worker (#286)", tier="OPTIONAL", status=dstatus, msg=msg, repair=repair)
+
+
 CHECKS = [chk_python, chk_operators, chk_mapper_capabilities, chk_skills,
           chk_hooks, chk_git_precommit_hook, chk_git_prepush_hook, chk_proxy, chk_wire,
-          chk_tray_dep]
+          chk_tray_dep, chk_remote_worker]
 
 
 def main(argv=None):
