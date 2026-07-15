@@ -151,27 +151,6 @@ journal record → <promise> only if all gates passed`. `scripts/loop_journal.py
 `cmd_record`/`cmd_stall` call `loop_progress.emit_event()` in-process (no subprocess per event) for
 the `triage`/`journal` steps; `task_anchor.py check` does the same on `DRIFT`.
 
-## Planning gate: task-intake contract + mutation authority (issue #284)
-
-Between "claim the task" and "mutate the repo" the loop enforces a **fail-closed planning gate**
-so deep planning is a mechanical barrier, not prompt guidance. `simplicio_loop/runner.py::arm_run()`
-compiles the task contract, mapper context, and plan, then self-builds a
-`planning-receipt.json` (`simplicio_loop/planning_gate.py::build_planning_receipt()`) binding
-`run_id`/`attempt`/`task_contract_hash`/`plan_hash`/lease/fencing (and, on a GitHub source, the
-source-snapshot hash) into a single-use `mutation_authority` token. `execute_operator()` and
-`execute_operator_batch()` refuse to mutate without a receipt whose token matches the CURRENT
-identity tuple — a stale plan hash, rotated lease/fence, or edited GitHub issue invalidates it
-(`reason_code` in `planning_not_ready`/`mutation_authority_invalid`/`source_drift`).
-
-Both halves of this gate are **mandatory by default**:
-`SIMPLICIO_REQUIRE_MUTATION_AUTHORITY` (checking) and `SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT`
-(the real dispatch path building the receipt the check needs) are unset-means-ON; only an
-explicit falsy value (`0`/`false`/`no`/`off`/`legacy`) opts a caller out, and an unrecognized
-value is treated as ON (fail-closed, never silently disabled by a typo). See
-`docs/adr/0004-planning-gate-rollout.md` for the rollout/migration strategy and
-**`references/planning-gate.md`** for the full schema, reason codes, and replan-on-drift
-mechanics.
-
 ## Video evidence producer (hyperframes) — demo videos as proof
 
 The loop can be asked to **create a demonstration video** of a screen/feature — e.g.
