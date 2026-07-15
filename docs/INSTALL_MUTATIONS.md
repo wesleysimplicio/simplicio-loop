@@ -6,6 +6,10 @@ the "mapear todos os efeitos" + "matriz Windows/macOS/Linux e runtime por runtim
 read alongside the machine-checkable plan a `--dry-run` prints
 (`contracts/install-transaction/v1/schema.json`, produced by `scripts/install_plan.py`).
 
+**Generated file — do not hand-edit.** Run `python3 scripts/gen_install_mutations_doc.py`
+after changing `MUTATIONS`/`OS_DIFFS`/`_consent_rows()` in that script; `scripts/claims_audit.py`
+fails the gate if this file drifts from what the generator produces.
+
 ## 1. Effect inventory, by source file
 
 | Source | Function | Effect | Scope | Reversible | Consent required |
@@ -16,13 +20,14 @@ read alongside the machine-checkable plan a `--dry-run` prints
 | `install_lib.py` | `ensure_entry()` | creates/updates the runtime's entry file (`AGENTS.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `.kiro/steering/simplicio-loop.md`, `CONVENTIONS.md`) between `<!-- simplicio-loop:begin/end -->` markers | project/user | yes (marker-delimited block is removable without touching the rest of the file) | no |
 | `install_lib.py` | `merge_claude_hooks()` | merges `Stop` (+ project-local `PreToolUse`) hook entries into `.claude/settings.json` | project/user | yes (JSON merge; existing unrelated keys untouched) | no |
 | `install_lib.py` | `install_git_precommit_hook()` | writes `.git/hooks/pre-commit` (only if the target is a git repo and no foreign hook already lives there) | project only | yes (file replace/delete) | no — but a *foreign* existing hook is never overwritten (logged, not clobbered) |
-| `install_lib.py` | `ensure_operators()` / `_pip_install()` | `pip install -U simplicio-cli` (the 2 required operator binaries) | **global** Python environment (whatever `sys.executable` resolves to — a venv if active, else the system/user Python) | **not reversible by this installer** (a real `pip uninstall` is a separate, manual step) | **yes for `--break-system-packages`** — only attempted when pip's stderr specifically reports `externally-managed-environment` AND `--allow-break-system-packages` (or `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1`) was explicitly passed (#293 §3 hardening, see below) |
-| `install_lib.py` | `_link_console_script()` / `_link_operator_bins()` | symlinks console-scripts (`simplicio-dev-cli`, `simplicio-mapper`, `simplicio-loop`) into `~/.local/bin` when a `--user` pip install dropped them off PATH | user (`~/.local/bin`) | yes (remove symlink) | no (best-effort, never fails the install) |
-| `install_lib.py` | `install_all_deps()` | `pip install -U .[onnx]` / `simplicio-loop[onnx]` + tray dep (`pystray`+`pillow` or `rumps` on macOS) — skipped by `--minimal` | global Python environment | not reversible by this installer | same `--allow-break-system-packages` gate as above |
-| `install_lib.py` | `setup_monitor()` | registers the always-on capture proxy (`install_services.py install`/`wire` on Linux/Windows, `setup_simplicio.sh` — launchd — on macOS) + opens the Token Monitor dashboard once | **system service scope** (`full-stack`-equivalent effect even under the default non-`--minimal` flow — see "Known gap" below) | services: yes (`install_services.py uninstall`); dashboard open: not applicable (no persistent mutation) | should require `with_service`/`full-stack` consent per the issue's mode contract — **not yet gated this way**, see Known gaps |
-| `install_services.py` | `install()` / `wire()` | Linux: writes a `systemd --user` unit; Windows: registers a Startup-folder shim; wiring: edits provider base-URL env for Claude/Codex/Simplicio Agent | user/system, OS-specific | yes (`uninstall()`) | same as above |
-| `install_executor.py` | `apply()` | wraps every one of the above FILE effects (skills/hooks/scripts/entry/claude_settings) with a pre-mutation backup + before/after hash + persisted receipt under `<target>/.simplicio/receipts/<id>.json`; automatic rollback of every already-applied step if a later step raises | project/user | yes, byte-for-byte via `rollback()` | governed entirely by the plan's `permissions_required` (see `install_plan.py`) |
-| `install_executor.py` | manifest reconciliation (`_stale_skills()` + the `reconcile` step) | removes a skill directory that a PRIOR install's manifest recorded but the CURRENT release no longer declares (an N-1 → N upgrade cleanup) | project/user | yes (same backup/restore mechanism as every other step) | no (this only ever removes paths the transaction's OWN prior manifest claims responsibility for) |
+| `install_lib.py` | `ensure_operators() / _pip_install()` | `pip install -U simplicio-cli` (the 2 required operator binaries) | **global** Python environment (whatever `sys.executable` resolves to — a venv if active, else the system/user Python) | **not reversible by this installer** (a real `pip uninstall` is a separate, manual step) | **yes for `--break-system-packages`** — only attempted when pip's stderr specifically reports `externally-managed-environment` AND `--allow-break-system-packages` (or `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1`) was explicitly passed (#293 §3 hardening, see below) |
+| `install_lib.py` | `_link_console_script() / _link_operator_bins()` | symlinks console-scripts (`simplicio-dev-cli`, `simplicio-mapper`, `simplicio-loop`) into `~/.local/bin` when a `--user` pip install dropped them off PATH | user (`~/.local/bin`) | yes (remove symlink) | no (best-effort, never fails the install) |
+| `install_lib.py` | `install_all_deps()` | `pip install -U .[onnx]` / `simplicio-loop[onnx]` + tray dep (`pystray`+`pillow` or `rumps` on macOS) | global Python environment | not reversible by this installer | **yes** — only runs when `--with-service`/`--full-stack` consent is given (#293 fix: no longer runs by default) |
+| `install_lib.py` | `copy_full_stack()` | copies `engine/` (capture-proxy code) and `app/` (tray code) into the target — the file surface of `full-stack` mode | project/user | yes (delete dir) | **yes** — only in `--mode full-stack` with explicit `--with-service`/`--with-proxy` |
+| `install_lib.py` | `setup_monitor()` | registers the always-on capture proxy (`install_services.py install`/`wire` on Linux/Windows, `setup_simplicio.sh` — launchd — on macOS) + opens the Token Monitor dashboard once | system service scope | services: yes (`install_services.py uninstall`); dashboard open: not applicable (no persistent mutation) | **yes** — requires `--with-service` (or `--full-stack`); OFF by default (#293 fix: was previously default-on, gated only by opt-out `--minimal`) |
+| `install_services.py` | `install() / wire()` | Linux: writes a `systemd --user` unit; Windows: registers a Startup-folder shim; wiring: edits provider base-URL env for Claude/Codex/Simplicio Agent | user/system, OS-specific | yes (`uninstall()`) | same as `setup_monitor()` above |
+| `install_executor.py` | `apply()` | wraps every one of the above FILE effects (skills/hooks/scripts/entry/claude_settings, + `engine`/`app` in full-stack mode) with a pre-mutation backup + before/after hash + persisted receipt under `<target>/.simplicio/receipts/<id>.json`; automatic rollback of every already-applied step if a later step raises | project/user | yes, byte-for-byte via `rollback()` | governed entirely by the plan's `permissions_required` (see `install_plan.py`) |
+| `install_executor.py` | `manifest reconciliation (_stale_skills() + the reconcile step)` | removes a skill directory that a PRIOR install's manifest recorded but the CURRENT release no longer declares (an N-1 → N upgrade cleanup) | project/user | yes (same backup/restore mechanism as every other step) | no (this only ever removes paths the transaction's OWN prior manifest claims responsibility for) |
 
 ## 2. OS-specific differences
 
@@ -38,32 +43,39 @@ read alongside the machine-checkable plan a `--dry-run` prints
 
 ## 3. Consent matrix (what requires an explicit flag)
 
-Per `install_plan.py::_permissions_required()`:
+Per `install_plan.py::_permissions_required()` and `build_plan()`'s `blocked_reasons` gate:
 
 | Effect | Trigger | Required consent |
 |---|---|---|
 | `global_package` | `scope in (user, system)` or `mode == full-stack` | scope/mode itself is the explicit choice (no separate flag) |
-| `break_system_packages` | pip refuses with PEP 668's `externally-managed-environment` | `--allow-break-system-packages` / `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1` — **never applied unconditionally** (#293 §3, hardened this round: see `install_lib.py::_pip_install()`) |
-| `path_write` / `symlink` | `scope != project` | implied by `--global` |
-| `service` | `--with-service` or `mode == full-stack` | explicit flag/mode |
-| `proxy` | `--with-proxy` or `mode == full-stack` | explicit flag/mode |
+| `break_system_packages` | pip refuses with PEP 668's `externally-managed-environment` | `--allow-break-system-packages` / `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1` — **never applied unconditionally** |
+| `path_write / symlink` | `scope != project` | implied by `--global` |
+| `service` | `--with-service` or `mode == full-stack` | explicit flag; **`mode == full-stack` alone is NOT enough** — full-stack additionally requires `--with-service` **and** `--with-proxy` together, or the plan stays `BLOCKED` (`blocked_reasons: ["full_stack_confirmation"]`, #293 fix: mode name is never itself treated as consent) |
+| `proxy` | `--with-proxy` or `mode == full-stack` | same as `service` above |
 
-A plan with an ungated `break_system_packages` permission is returned with `status: "BLOCKED"`
-and mutates nothing (`install_plan.py` is a pure planner; `install_executor.py::apply()` returns
-the BLOCKED plan as-is without persisting a transaction).
+A plan with an ungated `break_system_packages` permission, or a `full-stack` mode selected
+without both `--with-service` and `--with-proxy`, is returned with `status: "BLOCKED"`
+and mutates nothing (`install_plan.py` is a pure planner; `install_executor.py::apply()`
+returns the BLOCKED plan as-is without persisting a transaction).
 
-## 4. Known gaps (honest, not fixed by this document)
+## 4. Status (this round)
 
-- `setup_monitor()` (capture proxy + dashboard + tray) currently runs by default (opt-out via
-  `--minimal`) in the CURRENT (non-transactional) `install_lib.py main()` flow, which predates
-  the mode/consent model this issue introduces. It is **not yet gated behind the planner's
-  `service`/`proxy` permission flags** the way `install_plan.py`/`install_executor.py`'s
-  transactional path is. Wiring the legacy default-install flow's `setup_monitor()` call through
-  the same consent gate as the transactional executor is real remaining work, tracked as part of
-  the still-open `runtime`/`full-stack`/`ci` executor-mode gap (see the PR that introduced this
-  document for the full remaining-gap list).
-- This document is maintained by hand against the source above, not generated from a single
-  manifest file, because no single machine-readable "effects manifest" exists yet distinct from
-  the per-run `install-transaction/v1` plan (which describes one run's effects, not the
-  installer's full static capability surface). A generated version (§7 of the issue) remains a
-  separate, larger piece of work.
+- `setup_monitor()` (capture proxy + dashboard + tray) in the legacy (non-transactional)
+  `install_lib.py main()` flow now requires the SAME explicit `--with-service`/`--full-stack`
+  consent the transactional path already required — it no longer runs by default. A plain
+  `install_lib.py <runtime>` with no flags registers no service, rewrites no `OPENAI_BASE_URL`/
+  `ANTHROPIC_BASE_URL`, and opens no browser (#293 AC1).
+- `install_executor.py` now has a real, distinct file surface per mode: `minimal`/`runtime`/`ci`
+  apply the same skills/hooks/scripts/entry/settings steps (no services, no engine/app code);
+  `full-stack` additionally copies `engine/`+`app/` (the capture-proxy/dashboard/tray CODE) —
+  but, like the legacy flow, never itself invokes an OS service manager; actually registering
+  the capture proxy as an auto-start service stays the separate, explicit `python3 scripts/install_services.py install` command, so `apply()` remains safe to run in any
+  CI/test host without mutating the machine's service manager.
+- This document is now GENERATED from `scripts/gen_install_mutations_doc.py`, not hand-maintained
+  prose, closing the drift risk called out in an earlier round of #293. A single machine-readable
+  "effects manifest" distinct from the per-run `install-transaction/v1` plan (which describes
+  one run's effects, not the installer's full static capability surface) remains future work if
+  a THIRD consumer (beyond this doc and `install_plan.py`) ever needs the same data.
+- Real container/VM-level clean-install tests (`tests/system/test_clean_install.py`'s matrix
+  entry) remain infeasible in this sandbox: no Docker/VM runtime is available here (`docker --version`
+  fails with "command not found"). Not fabricated; tracked as a genuine, environment-limited gap.

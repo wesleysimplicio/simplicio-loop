@@ -40,8 +40,15 @@ from install_plan import build_plan  # noqa: E402
 # Deterministic order: reconcile (drop stale N-1 leftovers) runs FIRST — before anything from
 # the current version is (re)written — then skills/hooks/scripts (pure copies), then the
 # generated files that reference them (entry block, Claude settings.json hook-wiring), so a
-# failure never wires a hook to a skill tree that didn't make it in.
-STEP_ORDER = ("reconcile", "skills", "hooks", "scripts", "entry", "claude_settings")
+# failure never wires a hook to a skill tree that didn't make it in. `full_stack` runs LAST: it
+# only ever applies in full-stack mode (#293 modes) and is purely additive on top of the other
+# steps, so ordering it last keeps the minimal/runtime/ci step sequence byte-identical to before.
+STEP_ORDER = ("reconcile", "skills", "hooks", "scripts", "entry", "claude_settings", "full_stack")
+
+# Steps that ONLY apply to `full-stack` mode — every other mode (minimal/runtime/ci) gets exactly
+# the same file surface as before this mode support was added, proven by
+# tests/test_install_transaction.py::test_non_full_stack_modes_never_touch_engine_or_app.
+FULL_STACK_ONLY_STEPS = ("full_stack",)
 
 MANIFEST_SCHEMA = "simplicio.install-manifest/v1"
 
@@ -207,7 +214,7 @@ def _write_receipt(target: str, transaction_id: str, receipt: Dict[str, Any]) ->
     return path
 
 
-def _step_paths(target: str, is_global: bool, runtime: str,
+def _step_paths(target: str, is_global: bool, runtime: str, mode: str,
                 stale_skills: Optional[List[str]] = None) -> "Dict[str, List[str]]":
     cfg = _lib.RUNTIMES[runtime]
     paths: Dict[str, List[str]] = {
@@ -221,6 +228,9 @@ def _step_paths(target: str, is_global: bool, runtime: str,
         paths["entry"] = [os.path.join(target, cfg["entry"])]
     if cfg["hooks"] == "claude":
         paths["claude_settings"] = [os.path.join(target, ".claude", "settings.json")]
+    if mode == "full-stack":
+        full_stack_root = _lib.full_stack_dir(target, is_global)
+        paths["full_stack"] = [os.path.join(full_stack_root, name) for name in ("engine", "app")]
     return paths
 
 
@@ -244,19 +254,32 @@ def _run_step(step: str, target: str, is_global: bool, runtime: str,
         _lib.ensure_entry(target, cfg["entry"], runtime)
     elif step == "claude_settings":
         _lib.merge_claude_hooks(target, is_global)
+    elif step == "full_stack":
+        # File-surface only: operator/capture-proxy/dashboard CODE lands on disk here, reversibly,
+        # under the same backup/rollback discipline as every other step. Actually REGISTERING the
+        # capture proxy as an OS-level auto-start service remains the separate, explicit
+        # `python3 scripts/install_services.py install` step — apply() never invokes an OS service
+        # manager itself, so this stays safe to exercise in tests on any host/CI.
+        _lib.copy_full_stack(target, is_global)
     else:
         raise ValueError("unknown install step: %r" % step)
 
 
 def apply(runtime: str, *, target: str, is_global: bool = False, mode: str = "minimal",
+         with_service: bool = False, with_proxy: bool = False,
          fail_step: Optional[str] = None) -> Dict[str, Any]:
     """Apply the file-effect portion of the plan for `runtime` into `target`, transactionally.
 
     Returns the persisted receipt (status APPLIED) on success. On any failure — including the
-    planner itself returning BLOCKED (e.g. an ungated break-system-packages permission) — no
+    planner itself returning BLOCKED (e.g. an ungated break-system-packages permission, or
+    mode="full-stack" without the explicit `with_service`/`with_proxy` consent it requires) — no
     partial state is left: either nothing ran yet (BLOCKED, returned as-is, never persisted as a
     transaction) or every step that DID commit is undone and `InstallTransactionError` is raised
     with the ROLLED_BACK receipt attached.
+
+    `with_service`/`with_proxy`: the explicit consent flags required to move mode="full-stack"
+    out of BLOCKED (see `install_plan.build_plan`'s `full_stack_confirmation` gate — the mode name
+    alone is never treated as consent). Ignored (harmless) for every other mode.
 
     `fail_step`: test-only. Raise a synthetic failure right before the named step would run, to
     prove rollback undoes every step that already committed. Never set this in a real install —
@@ -264,7 +287,8 @@ def apply(runtime: str, *, target: str, is_global: bool = False, mode: str = "mi
     crash the interpreter.
     """
     scope = "user" if is_global else "project"
-    plan = build_plan(runtime, mode=mode, scope=scope, target=target)
+    plan = build_plan(runtime, mode=mode, scope=scope, target=target,
+                      with_service=with_service, with_proxy=with_proxy)
     if plan["status"] == "BLOCKED":
         return plan  # planner refused before any mutation — nothing to roll back
 
@@ -272,7 +296,7 @@ def apply(runtime: str, *, target: str, is_global: bool = False, mode: str = "mi
     backup_root = _backups_dir(target, transaction_id)
     prior_manifest = _read_manifest(target)
     stale = _stale_skills(target, _lib.SKILLS)
-    step_paths = _step_paths(target, is_global, runtime, stale_skills=stale)
+    step_paths = _step_paths(target, is_global, runtime, mode, stale_skills=stale)
     order = [s for s in STEP_ORDER if s in step_paths]
 
     applied: List[Tuple[str, str, Optional[str], Optional[str]]] = []
@@ -378,6 +402,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_apply.add_argument("--target", required=True)
     p_apply.add_argument("--global", dest="is_global", action="store_true")
     p_apply.add_argument("--mode", default="minimal")
+    p_apply.add_argument("--with-service", action="store_true",
+                         help="explicit consent for service registration (required, with "
+                              "--with-proxy, to unblock --mode full-stack)")
+    p_apply.add_argument("--with-proxy", action="store_true",
+                         help="explicit consent for proxy/base-URL wiring (required, with "
+                              "--with-service, to unblock --mode full-stack)")
     p_apply.add_argument("--test-fail-step", default=None, help=argparse.SUPPRESS)
 
     p_rollback = sub.add_parser("rollback", help="roll back a transaction id under --target")
@@ -388,7 +418,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "apply":
         try:
             receipt = apply(args.runtime, target=args.target, is_global=args.is_global,
-                           mode=args.mode, fail_step=args.test_fail_step)
+                           mode=args.mode, with_service=args.with_service,
+                           with_proxy=args.with_proxy, fail_step=args.test_fail_step)
         except InstallTransactionError as e:
             print(json.dumps(e.receipt, indent=2, sort_keys=True, default=str))
             return 4

@@ -106,7 +106,17 @@ def build_plan(runtime: str, *, mode: str = "minimal", scope: str = "project",
     files = _file_effects(target, is_global, runtime)
     permissions = _permissions_required(mode, scope, allow_break_system_packages,
                                         with_service, with_proxy)
-    status = "BLOCKED" if ("break_system_packages" in permissions and not allow_break_system_packages) else "PLANNED"
+    # #293 step 2.4: "impedir que --global, serviço ou proxy sejam inferidos silenciosamente" —
+    # choosing mode="full-stack" must NOT by itself grant the service/proxy consent it requires.
+    # full-stack only reaches PLANNED when the caller ALSO passes the same explicit
+    # --with-service/--with-proxy flags that gate a plain service/proxy request in any other
+    # mode; the mode name alone is never treated as approval.
+    blocked_reasons: List[str] = []
+    if "break_system_packages" in permissions and not allow_break_system_packages:
+        blocked_reasons.append("break_system_packages")
+    if mode == "full-stack" and not (with_service and with_proxy):
+        blocked_reasons.append("full_stack_confirmation")
+    status = "BLOCKED" if blocked_reasons else "PLANNED"
     plan = {
         "schema": SCHEMA,
         "transaction_id": _transaction_id(runtime, mode, scope, target),
@@ -125,6 +135,7 @@ def build_plan(runtime: str, *, mode: str = "minimal", scope: str = "project",
         "permissions_required": permissions,
         "backup_path": None,
         "status": status,
+        "blocked_reasons": blocked_reasons,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     plan["receipt_hash"] = hashlib.sha256(
