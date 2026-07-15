@@ -552,8 +552,35 @@ def setup_monitor(enable):
     log("  tray:      bash scripts/simplicio-economy.sh tray   ·   or just ask the agent to open it")
 
 
+def _main_rollback(args):
+    """`install_lib.py rollback <transaction_id> --target DIR` — undo a prior --transactional
+    install from its persisted receipt. See scripts/install_executor.py."""
+    target = None
+    if "--target" in args:
+        i = args.index("--target")
+        target = args[i + 1]
+        del args[i:i + 2]
+    if not args:
+        print("usage: install_lib.py rollback <transaction_id> --target DIR")
+        sys.exit(2)
+    transaction_id = args[0]
+    target = target or os.getcwd()
+    sys.path.insert(0, HERE)
+    import install_executor
+    try:
+        receipt = install_executor.rollback(transaction_id, target)
+    except FileNotFoundError as e:
+        print("! %s" % e)
+        sys.exit(3)
+    print(json.dumps(receipt, indent=2, sort_keys=True, default=str))
+    sys.exit(0)
+
+
 def main():
     args = sys.argv[1:]
+    if args and args[0] == "rollback":
+        _main_rollback(args[1:])
+        return
     is_global = "--global" in args
     skip_operators = "--skip-operators" in args
     # The install is COMPLETE by default — operators, full deps (ONNX models), monitor, tray, wiring.
@@ -563,13 +590,22 @@ def main():
     # `--dry-run`: build and print/return the simplicio.install-transaction/v1 plan (#293
     #   first slice) and exit WITHOUT any mutation — no skills copy, no operator install,
     #   no hooks/entry wiring, no monitor setup.
+    # `--transactional`: apply the file effects (skills/hooks/scripts/entry/settings) through
+    #   scripts/install_executor.py — backup-before-mutate + a persisted receipt + automatic
+    #   rollback of everything already applied if any step fails partway (#293 step 5).
     lite = "--lite" in args
     strict = "--strict" in args
     minimal = "--minimal" in args or "--no-monitor" in args
     dry_run = "--dry-run" in args
+    transactional = "--transactional" in args
+    test_fail_step = None
+    if "--test-fail-step" in args:
+        i = args.index("--test-fail-step")
+        test_fail_step = args[i + 1]
+        del args[i:i + 2]
     args = [a for a in args if a not in
             ("--global", "--skip-operators", "--with-monitor", "--minimal", "--no-monitor",
-             "--lite", "--strict", "--dry-run")]
+             "--lite", "--strict", "--dry-run", "--transactional")]
     target = None
     if "--target" in args:
         i = args.index("--target")
@@ -611,18 +647,38 @@ def main():
     # Make the `simplicio-loop` console-script typeable on PATH (so `simplicio-loop dashboard` works);
     # a --user install can drop it in a dir off PATH (macOS ~/Library/Python/*/bin). Best-effort.
     _link_console_script("simplicio-loop", kind="cli")
-    copy_skills(target)
-    copy_hooks(target, is_global)
-    copy_scripts(target, is_global)
+    if transactional:
+        sys.path.insert(0, HERE)
+        import install_executor
+        try:
+            receipt = install_executor.apply(runtime, target=target, is_global=is_global,
+                                            mode="minimal", fail_step=test_fail_step)
+        except install_executor.InstallTransactionError as e:
+            log("! transaction ROLLED_BACK (no partial state left): %s" % e)
+            log("  receipt: %s" % os.path.join(target, ".simplicio", "receipts",
+                                                e.receipt["transaction_id"] + ".json"))
+            sys.exit(4)
+        if receipt["status"] == "BLOCKED":
+            log("! plan BLOCKED before any mutation — missing consent: %s"
+                % ", ".join(receipt["permissions_required"]))
+            sys.exit(3)
+        log("transactional install APPLIED -> %s (transaction %s)"
+            % (target, receipt["transaction_id"]))
+        log("  rollback anytime:  python3 scripts/install_lib.py rollback %s --target %s"
+            % (receipt["transaction_id"], target))
+    else:
+        copy_skills(target)
+        copy_hooks(target, is_global)
+        copy_scripts(target, is_global)
+        ensure_entry(target, cfg["entry"], runtime)
+        if cfg["hooks"] == "claude":
+            merge_claude_hooks(target, is_global)
     install_git_precommit_hook(target)
-    ensure_entry(target, cfg["entry"], runtime)
-    if cfg["hooks"] == "claude":
-        merge_claude_hooks(target, is_global)
-    elif cfg["hooks"] == "cursor":
+    if cfg["hooks"] == "cursor":
         log("loop hooks active via hooks/hooks.json (Cursor format)")
     elif cfg["hooks"] == "native":
         log("native runtime — extension points bind directly (no shell hooks needed)")
-    else:
+    elif cfg["hooks"] != "claude":
         log("loop runs self-paced (no stop-hook) — see adapters/%s/README.md" % runtime)
     if runtime == "opencode":
         copy_skills_opencode()
