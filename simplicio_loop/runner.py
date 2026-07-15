@@ -19,6 +19,7 @@ from .delivery import (build_delivery_receipt, normalize_delivery_target,
                        reconcile_delivery_observation, write_delivery_receipt)
 from .evidence import build_evidence_receipt, redact_sensitive_text
 from .source_state import github_delivery_payload, infer_github_delivery_state
+from . import github_lifecycle as _github_lifecycle
 from .task_contract import compile_many, validate_contract
 from .plan_contract import PLAN_SCHEMA, validate_plan
 from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable
@@ -699,7 +700,55 @@ def _record_event(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any],
     state["updated_at"] = event["ts"]
     _write_json(run_dir / "state.json", state)
     _append_jsonl(run_dir / "events.jsonl", event)
+    _sync_github_lifecycle(run_dir, state, event)
     return state
+
+
+def _sync_github_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any]) -> None:
+    """Project one phase event onto the #285 GitHub lifecycle canonical comment.
+
+    Best-effort and fail-open, exactly like the existing `pr_evidence.py
+    progress-comment` command it complements: disabled unless
+    ``SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC`` is truthy AND the run state carries a
+    ``source_issue`` dict (``{"owner": ..., "repo": ..., "issue": ...}``); any
+    failure (no `gh`, no network, transport error, import error) is logged to
+    ``lifecycle-sync-errors.jsonl`` under the run directory and swallowed -- this
+    sync must never abort or fail the run. It only ever handles the intermediate
+    lifecycle projection (CLAIMED/PLANNED/IN_PROGRESS/...); the authoritative,
+    fail-closed close operation is
+    :func:`simplicio_loop.github_lifecycle.close_source_issue`, invoked explicitly at
+    completion time by the caller that owns that decision, never automatically from
+    this generic per-event hook.
+    """
+    if str(os.environ.get("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC") or "").strip().lower() not in ("1", "true", "yes"):
+        return
+    source_issue = state.get("source_issue") or {}
+    owner, repo, issue = source_issue.get("owner"), source_issue.get("repo"), source_issue.get("issue")
+    if not (owner and repo and issue):
+        return
+    lifecycle_state = _github_lifecycle.lifecycle_state_for_phase_event(
+        str(event.get("kind") or event.get("phase") or ""))
+    if not lifecycle_state:
+        return
+    try:
+        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from pr_evidence import publish_comment as _publish_comment  # local import: optional dep
+
+        _github_lifecycle.publish_lifecycle_state(
+            owner=str(owner), repo=str(repo), issue=str(issue), state=lifecycle_state,
+            run_id=str(state.get("run_id") or ""),
+            attempt_id=str(event.get("task_id") or state.get("run_id") or ""),
+            publish_comment_fn=_publish_comment,
+            progress=str(event.get("message") or ""),
+        )
+    except Exception as exc:  # noqa: BLE001 -- best-effort sync, never blocks the loop
+        try:
+            _append_jsonl(run_dir / "lifecycle-sync-errors.jsonl",
+                         {"ts": _now(), "kind": event.get("kind"), "error": str(exc)})
+        except Exception:
+            pass
 
 
 def _emit_event(run_dir: Path, state: Dict[str, Any], kind: str, *,

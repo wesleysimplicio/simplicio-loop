@@ -2,13 +2,12 @@
 
 Issue #285 asks for the full GitHub source adapter: `list_ready`/`get_details`/
 `claim`/`update_status`/`attach_evidence`/`close`/`requery`/`reconcile`, an
-outbox, lease/fencing integration, and duplicate-comment recovery. That is a
-multi-week surface. This module lands the real, testable core the rest of that
-surface depends on and reuses rather than duplicates: `#295` already built a
-fail-closed, idempotent, marker-based create-or-update primitive
+outbox, lease/fencing integration, and duplicate-comment recovery. This module
+reuses rather than duplicates prior work: `#295` already built a fail-closed,
+idempotent, marker-based create-or-update primitive
 (`scripts/pr_evidence.py::publish_comment`/`find_existing_comment` — no shell
-interpolation, JSON payload on stdin, `PublishError` on any `gh` failure). This
-module adds, on top of that primitive:
+interpolation, JSON payload on stdin, `PublishError` on any `gh` failure). On
+top of that primitive this module adds:
 
   * a minimal, VALIDATED lifecycle state machine (`LIFECYCLE_STATES`,
     `validate_transition`) — an event that isn't a legal transition from the
@@ -23,23 +22,115 @@ module adds, on top of that primitive:
     observed body hash against the expected one — the issue's "só retornar
     sucesso se o ID e body hash observados coincidirem" requirement — producing
     a `simplicio.github-lifecycle-receipt/v1` receipt rather than a bare bool.
+    It now also accepts an optional `require_active` callable (typically
+    `AttemptCoordinator.assert_active`, #183) invoked immediately before the
+    remote write — a stale/lost lease raises and blocks the write, never
+    silently proceeds — and an optional `outbox_dir` so a pending-operation
+    record is persisted BEFORE the remote call and only cleared after the
+    write is confirmed by re-query (crash-after-POST recovery, see
+    `reconcile`);
+  * `list_ready`/`get_details`/`requery` — real, paginated read-side verbs
+    against `gh api`, metadata-only for `list_ready` (never fetching bodies/
+    comments during triage), full paginated comments + a deterministic
+    `source_revision` hash (excluding the adapter's own canonical comment) for
+    `get_details`;
+  * a lightweight outbox (`record_pending_operation`/`mark_operation_done`/
+    `list_pending_operations`) and `reconcile(operation_id)` that re-queries
+    the source and the marker-tagged comment to recover a crash between a
+    confirmed remote write and the local receipt, without ever posting a
+    second comment;
+  * `close_source_issue`: real `gh issue close` wiring, fail-closed — the
+    issue is only reported closed after a post-close re-query confirms
+    `state == "closed"`, and a close that succeeds remotely but whose final
+    comment update cannot be confirmed reports `CLOSE_PENDING_RECONCILIATION`
+    (kept in the outbox for `reconcile`) instead of a fake success.
 
-Deliberately out of scope for this increment (tracked, not claimed done):
-lease/fencing-gated ownership of the comment, an outbox for crash recovery
-between the remote write and the local receipt, duplicate-comment reconciliation
-across two authors, and the `list_ready`/`get_details`/`reconcile` read-side
-verbs. See the module docstring cross-references in the PR body for the exact
-remaining checklist.
+Still out of scope for this increment (tracked, not claimed done): full
+duplicate-comment election across two authors beyond "first marker match",
+and `claim`/`update_status`/`attach_evidence` as a single unified `Protocol`
+class (the equivalent operations exist today as free functions plus the
+runner wiring in `simplicio_loop/runner.py::_sync_github_lifecycle`).
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
+import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 LIFECYCLE_SCHEMA = "simplicio.github-lifecycle-receipt/v1"
+SNAPSHOT_SCHEMA = "simplicio.github-source-snapshot/v1"
+LIST_READY_SCHEMA = "simplicio.github-list-ready/v1"
 LIFECYCLE_COMMENT_MARKER = "<!-- simplicio-loop:lifecycle-status:v1 -->"
+
+# #285 "Definir reason codes no mínimo para": the minimum set the issue enumerates.
+REASON_CODES = frozenset({
+    "AUTH_REQUIRED", "PERMISSION_DENIED", "RATE_LIMITED", "NETWORK_UNAVAILABLE",
+    "SOURCE_NOT_FOUND", "SOURCE_CLOSED", "SOURCE_CHANGED", "CLAIM_CONFLICT",
+    "LEASE_LOST", "FENCE_MISMATCH", "COMMENT_NOT_FOUND", "COMMENT_AUTHOR_MISMATCH",
+    "COMMENT_HASH_MISMATCH", "REMOTE_WRITE_UNCONFIRMED", "EVIDENCE_INCOMPLETE",
+    "DELIVERY_PENDING", "CLOSE_PENDING_RECONCILIATION",
+    # additions this increment needed in practice:
+    "SOURCE_CLOSE_FAILED", "SOURCE_CLOSE_UNCONFIRMED", "OPERATION_NOT_FOUND",
+})
+
+
+class GitHubTransportError(RuntimeError):
+    """A `gh` invocation failed or returned unparsable data. Carries a typed reason_code."""
+
+    def __init__(self, reason_code: str, message: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code if reason_code in REASON_CODES else "NETWORK_UNAVAILABLE"
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _classify_gh_failure(returncode: int, stderr: str) -> str:
+    """Best-effort HTTP/CLI status -> reason_code mapping (#285 "401/403/404/... devem
+    ser diferenciados")."""
+    text = (stderr or "").lower()
+    for code, reason in (
+        ("401", "AUTH_REQUIRED"), ("403", "PERMISSION_DENIED"), ("404", "SOURCE_NOT_FOUND"),
+        ("409", "CLAIM_CONFLICT"), ("422", "SOURCE_CHANGED"), ("429", "RATE_LIMITED"),
+    ):
+        if code in text:
+            return reason
+    if "rate limit" in text:
+        return "RATE_LIMITED"
+    if "could not resolve host" in text or "timeout" in text or "connection" in text:
+        return "NETWORK_UNAVAILABLE"
+    return "NETWORK_UNAVAILABLE"
+
+
+def _paginated_gh_api(path_base: str, *, runner: Callable, timeout: int,
+                      per_page: int = 100, max_pages: int = 50) -> List[Dict[str, Any]]:
+    """GET every page of a `gh api` list endpoint, in order. #285: "paginação completa"."""
+    items: List[Dict[str, Any]] = []
+    page = 1
+    while page <= max_pages:
+        sep = "&" if "?" in path_base else "?"
+        url = f"{path_base}{sep}per_page={per_page}&page={page}"
+        completed = runner(["gh", "api", url], capture_output=True, text=True, timeout=timeout, check=False,
+                          encoding="utf-8", errors="replace")
+        if completed.returncode != 0:
+            raise GitHubTransportError(_classify_gh_failure(completed.returncode, completed.stderr),
+                                       "gh api %s failed: %s" % (url, (completed.stderr or "").strip()))
+        try:
+            batch = json.loads(completed.stdout or "[]")
+        except ValueError as exc:
+            raise GitHubTransportError("NETWORK_UNAVAILABLE", "gh api returned non-JSON page: %s" % exc)
+        if not isinstance(batch, list):
+            batch = []
+        items.extend(batch)
+        if len(batch) < per_page:
+            break
+        page += 1
+    return items
 
 # #285 "Estados mínimos"
 LIFECYCLE_STATES: Tuple[str, ...] = (
@@ -237,11 +328,256 @@ def operation_id(*, provider: str, repo: str, issue: str, run_id: str, attempt_i
     return content_hash(json.dumps(payload, sort_keys=True, ensure_ascii=False))
 
 
+def list_ready(
+    owner: str,
+    repo: str,
+    *,
+    state: str = "open",
+    labels: Sequence[str] = (),
+    assignee: str = "",
+    milestone: str = "",
+    runner: Callable = subprocess.run,
+    timeout: int = 20,
+) -> Dict[str, Any]:
+    """`list_ready` (#285): metadata-only triage listing, paginated, deterministic order.
+
+    Filters explicit state/labels/assignee/milestone at the query level (not fetched
+    then filtered client-side, so triage never over-fetches). GitHub's issues list
+    endpoint also returns pull requests -- every item carrying a `pull_request` key is
+    dropped so a PR is never returned as an executable issue by mistake. Bodies and
+    comments are never requested here; only the metadata list-ready needs.
+    """
+    path = f"repos/{owner}/{repo}/issues?state={state}&sort=created&direction=asc"
+    if labels:
+        path += "&labels=" + ",".join(str(l) for l in labels)
+    if assignee:
+        path += f"&assignee={assignee}"
+    if milestone:
+        path += f"&milestone={milestone}"
+    raw_items = _paginated_gh_api(path, runner=runner, timeout=timeout)
+    ready = [item for item in raw_items if isinstance(item, dict) and "pull_request" not in item]
+    ready.sort(key=lambda item: int(item.get("number") or 0))
+    summaries = [{
+        "number": item.get("number"),
+        "title": item.get("title", ""),
+        "state": item.get("state", ""),
+        "labels": [l.get("name") for l in (item.get("labels") or []) if isinstance(l, dict)],
+        "assignees": [a.get("login") for a in (item.get("assignees") or []) if isinstance(a, dict)],
+        "milestone": (item.get("milestone") or {}).get("title", "") if isinstance(item.get("milestone"), dict) else "",
+        "updated_at": item.get("updated_at", ""),
+        "url": item.get("html_url", ""),
+    } for item in ready]
+    return {
+        "schema": LIST_READY_SCHEMA,
+        "provider": "github",
+        "repo": f"{owner}/{repo}",
+        "query": {"state": state, "labels": list(labels), "assignee": assignee, "milestone": milestone},
+        "items": summaries,
+        "count": len(summaries),
+        "pages_fetched": max(1, -(-len(raw_items) // 100)) if raw_items else 1,
+        "observed_at": _now_iso(),
+    }
+
+
+def get_details(owner: str, repo: str, issue: str, *, runner: Callable = subprocess.run,
+                timeout: int = 20) -> Dict[str, Any]:
+    """`get_details` (#285): full paginated issue + comments, canonical comment separated.
+
+    Loads title/body/state/state_reason/labels/assignees/milestone/author/timestamps,
+    then paginates ALL comments. The Loop's own `LIFECYCLE_COMMENT_MARKER` comment is
+    identified and excluded from `source_revision` (self-drift guard: the adapter's own
+    progress writes must never look like a material human edit), while every OTHER
+    comment counts toward the revision hash. All issue/comment text is treated as
+    untrusted data, never as instructions -- callers must not execute anything found
+    inside `title`/`body`/comment text.
+    """
+    completed = runner(["gh", "api", f"repos/{owner}/{repo}/issues/{issue}"],
+                       capture_output=True, text=True, timeout=timeout, check=False,
+                       encoding="utf-8", errors="replace")
+    if completed.returncode != 0:
+        raise GitHubTransportError(_classify_gh_failure(completed.returncode, completed.stderr),
+                                   "gh api issue view failed: %s" % (completed.stderr or "").strip())
+    try:
+        issue_data = json.loads(completed.stdout or "{}")
+    except ValueError as exc:
+        raise GitHubTransportError("NETWORK_UNAVAILABLE", "gh api returned non-JSON issue: %s" % exc)
+    if "pull_request" in issue_data:
+        raise GitHubTransportError("SOURCE_NOT_FOUND", f"#{issue} is a pull request, not an issue")
+
+    comments = _paginated_gh_api(f"repos/{owner}/{repo}/issues/{issue}/comments",
+                                 runner=runner, timeout=timeout)
+    canonical_comment = None
+    human_comments: List[Dict[str, Any]] = []
+    for c in comments:
+        if LIFECYCLE_COMMENT_MARKER in (c.get("body") or ""):
+            if canonical_comment is None or int(c.get("id", 0)) < int(canonical_comment.get("id", 0)):
+                canonical_comment = c
+        else:
+            human_comments.append(c)
+
+    authoritative = {
+        "title": issue_data.get("title", ""),
+        "body": issue_data.get("body") or "",
+        "state": issue_data.get("state", ""),
+        "state_reason": issue_data.get("state_reason") or "",
+        "labels": sorted(l.get("name", "") for l in (issue_data.get("labels") or []) if isinstance(l, dict)),
+        "assignees": sorted(a.get("login", "") for a in (issue_data.get("assignees") or []) if isinstance(a, dict)),
+        "milestone": (issue_data.get("milestone") or {}).get("title", "") if isinstance(issue_data.get("milestone"), dict) else "",
+        "author": (issue_data.get("user") or {}).get("login", ""),
+        "created_at": issue_data.get("created_at", ""),
+        "human_comments": [{"id": c.get("id"), "author": (c.get("user") or {}).get("login", ""),
+                            "body": c.get("body") or "", "created_at": c.get("created_at", "")}
+                           for c in sorted(human_comments, key=lambda c: int(c.get("id") or 0))],
+    }
+    source_revision = content_hash(json.dumps(authoritative, sort_keys=True, ensure_ascii=False))
+
+    return {
+        "schema": SNAPSHOT_SCHEMA,
+        "provider": "github",
+        "repo": f"{owner}/{repo}",
+        "issue": str(issue),
+        "url": issue_data.get("html_url", ""),
+        "title": authoritative["title"],
+        "body": authoritative["body"],
+        "state": authoritative["state"],
+        "state_reason": authoritative["state_reason"],
+        "labels": authoritative["labels"],
+        "assignees": authoritative["assignees"],
+        "milestone": authoritative["milestone"],
+        "author": authoritative["author"],
+        "created_at": authoritative["created_at"],
+        "updated_at": issue_data.get("updated_at", ""),
+        "human_comments": authoritative["human_comments"],
+        "canonical_comment": ({"id": canonical_comment.get("id"),
+                               "body": canonical_comment.get("body") or "",
+                               "body_hash": content_hash(canonical_comment.get("body") or "")}
+                              if canonical_comment else None),
+        "source_revision": source_revision,
+        "observed_at": _now_iso(),
+    }
+
+
+def requery(owner: str, repo: str, issue: str, *, comment_id: Optional[int] = None,
+           runner: Callable = subprocess.run, timeout: int = 20) -> Dict[str, Any]:
+    """`requery` (#285): re-read the source of truth immediately before/after a mutation.
+
+    A thin, explicitly-named wrapper over `get_details` (paginates everything again,
+    never trusts a cached snapshot) plus, when `comment_id` is supplied, an extra
+    direct fetch of that exact comment so a caller can compare its OWN expected body
+    hash against what GitHub currently serves for that id (the "confirmed by re-query"
+    requirement for every write).
+    """
+    snapshot = get_details(owner, repo, issue, runner=runner, timeout=timeout)
+    snapshot["requeried_at"] = _now_iso()
+    if comment_id is not None:
+        body = _get_comment_body(owner, repo, comment_id, runner, timeout)
+        snapshot["requeried_comment"] = {
+            "id": comment_id,
+            "body_hash": content_hash(body) if body is not None else "",
+            "found": body is not None,
+        }
+    return snapshot
+
+
+# --- outbox: persist intent before a remote mutation, clear only after confirmation ----
+
+
+def _outbox_path(outbox_dir: str | Path, op_id: str) -> Path:
+    return Path(outbox_dir) / f"{op_id}.json"
+
+
+def record_pending_operation(outbox_dir: str | Path, op_id: str, payload: Mapping[str, Any]) -> Path:
+    """Persist a pending operation BEFORE the remote call (#285 step 10: "persistir
+    operação pendente antes da chamada remota"). Atomic write via a temp-file rename so
+    a crash mid-write never leaves a half-written record."""
+    directory = Path(outbox_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    record = {"operation_id": op_id, "status": "pending", "recorded_at": _now_iso(), **dict(payload)}
+    target = _outbox_path(directory, op_id)
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+    os.replace(tmp, target)
+    return target
+
+
+def mark_operation_done(outbox_dir: str | Path, op_id: str, receipt: Mapping[str, Any]) -> Path:
+    """Mark a pending operation confirmed. Kept (not deleted) for audit, with `status`
+    flipped to `done` -- `list_pending_operations` only ever returns `status == pending`."""
+    directory = Path(outbox_dir)
+    target = _outbox_path(directory, op_id)
+    existing: Dict[str, Any] = {}
+    if target.exists():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except ValueError:
+            existing = {}
+    existing.update({"operation_id": op_id, "status": "done", "confirmed_at": _now_iso(), "receipt": dict(receipt)})
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(json.dumps(existing, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+    os.replace(tmp, target)
+    return target
+
+
+def list_pending_operations(outbox_dir: str | Path) -> List[Dict[str, Any]]:
+    directory = Path(outbox_dir)
+    if not directory.exists():
+        return []
+    pending = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        if record.get("status") == "pending":
+            pending.append(record)
+    return pending
+
+
+def reconcile(op_id: str, *, outbox_dir: str | Path, owner: str, repo: str, issue: str,
+             comment_id: Optional[int] = None, expected_body_hash: str = "",
+             runner: Callable = subprocess.run, timeout: int = 20) -> Dict[str, Any]:
+    """`reconcile` (#285): recover a pending operation after a crash between a
+    confirmed remote write and the local receipt, without ever posting a second
+    comment. Re-queries the source; if the observed comment/issue state now matches
+    what the pending record expected, the operation is marked `done` and `reconciled`
+    is returned. Never creates or edits anything itself -- purely observational.
+    """
+    directory = Path(outbox_dir)
+    record_path = _outbox_path(directory, op_id)
+    if not record_path.exists():
+        return {"schema": LIFECYCLE_SCHEMA, "operation_id": op_id, "outcome": "not_found",
+                "reason_code": "OPERATION_NOT_FOUND"}
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except ValueError:
+        record = {}
+    if record.get("status") == "done":
+        return {"schema": LIFECYCLE_SCHEMA, "operation_id": op_id, "outcome": "reconciled",
+                "receipt": record.get("receipt")}
+
+    snapshot = requery(owner, repo, issue, comment_id=comment_id, runner=runner, timeout=timeout)
+    observed_hash = ""
+    if comment_id is not None:
+        observed_hash = (snapshot.get("requeried_comment") or {}).get("body_hash", "")
+    elif snapshot.get("canonical_comment"):
+        observed_hash = snapshot["canonical_comment"]["body_hash"]
+    matches = bool(expected_body_hash) and observed_hash == expected_body_hash
+    if matches:
+        receipt = {"schema": LIFECYCLE_SCHEMA, "operation_id": op_id, "outcome": "reconciled",
+                  "observed_body_hash": observed_hash, "source_revision": snapshot.get("source_revision")}
+        mark_operation_done(directory, op_id, receipt)
+        return receipt
+    return {"schema": LIFECYCLE_SCHEMA, "operation_id": op_id, "outcome": "still_pending",
+            "observed_body_hash": observed_hash, "expected_body_hash": expected_body_hash,
+            "source_revision": snapshot.get("source_revision")}
+
+
 def _get_comment_body(owner: str, repo: str, comment_id: int,
                       runner: Callable, timeout: int) -> Optional[str]:
     completed = runner(
         ["gh", "api", "repos/%s/%s/issues/comments/%s" % (owner, repo, comment_id)],
         capture_output=True, text=True, timeout=timeout, check=False,
+        encoding="utf-8", errors="replace",
     )
     if completed.returncode != 0:
         return None
@@ -264,6 +600,8 @@ def publish_lifecycle_state(
     publish_comment_fn: Callable,
     runner: Callable = subprocess.run,
     timeout: int = 20,
+    require_active: Optional[Callable[[], None]] = None,
+    outbox_dir: Optional[str | Path] = None,
     **render_kwargs: Any,
 ) -> Dict[str, Any]:
     """Publish one lifecycle state to the ONE canonical comment, then re-query and
@@ -277,6 +615,15 @@ def publish_lifecycle_state(
     reported as `verified: False`, `outcome: "blocked"` instead), but a
     `PublishError` from the underlying transport (auth/network/permission)
     propagates -- fail-closed, never silently swallowed into a fake "verified".
+
+    `require_active`, when given, is called with no arguments IMMEDIATELY before the
+    remote write (e.g. `AttemptCoordinator.assert_active`, #183) -- a lost/stale lease
+    raises there and the write never happens (#285 "verificar lease/fence imediatamente
+    antes da escrita"). `outbox_dir`, when given, persists a pending-operation record
+    before the remote call and clears it only after the write is confirmed (#285's
+    outbox: "Uma queda após o GitHub aceitar a escrita, mas antes do receipt local,
+    deve ser recuperada pelo marker + body hash sem novo comentário" -- see
+    `reconcile`).
     """
     body = render_lifecycle_comment(state=state, run_id=run_id, attempt_id=attempt_id,
                                     fencing_token=fencing_token, **render_kwargs)
@@ -285,6 +632,16 @@ def publish_lifecycle_state(
                         run_id=run_id, attempt_id=attempt_id, fencing_token=fencing_token,
                         lifecycle_revision=lifecycle_revision, operation_kind=f"update_status:{state}")
 
+    if require_active is not None:
+        require_active()  # raises (e.g. LeaseLostDuringExecution) -- never caught here, fail-closed
+
+    if outbox_dir is not None:
+        record_pending_operation(outbox_dir, op_id, {
+            "repo": f"{owner}/{repo}", "issue": str(issue), "run_id": run_id,
+            "attempt_id": attempt_id, "operation_kind": f"update_status:{state}",
+            "expected_body_hash": expected_hash,
+        })
+
     result = publish_comment_fn(owner, repo, str(issue), body, marker=LIFECYCLE_COMMENT_MARKER,
                                 runner=runner, timeout=timeout)
     comment_id = result.get("id")
@@ -292,7 +649,7 @@ def publish_lifecycle_state(
     observed_hash = content_hash(observed_body) if observed_body is not None else ""
     verified = comment_id is not None and observed_hash == expected_hash
 
-    return {
+    receipt = {
         "schema": LIFECYCLE_SCHEMA,
         "operation_id": op_id,
         "run_id": run_id,
@@ -308,16 +665,154 @@ def publish_lifecycle_state(
         "outcome": (result.get("action") or "blocked") if verified else "blocked",
         "verified": verified,
     }
+    if outbox_dir is not None:
+        if verified:
+            mark_operation_done(outbox_dir, op_id, receipt)
+        # else: leave the pending record for `reconcile()` -- a crash/race between the
+        # confirmed remote write (if any actually landed) and this local receipt must
+        # stay recoverable, never silently dropped.
+    return receipt
+
+
+def close_source_issue(
+    *,
+    owner: str,
+    repo: str,
+    issue: str,
+    run_id: str,
+    attempt_id: str,
+    fencing_token: str = "",
+    lifecycle_revision: int = 0,
+    reason: str = "completed",
+    require_active: Optional[Callable[[], None]] = None,
+    publish_comment_fn: Optional[Callable] = None,
+    runner: Callable = subprocess.run,
+    timeout: int = 20,
+    outbox_dir: Optional[str | Path] = None,
+    **render_kwargs: Any,
+) -> Dict[str, Any]:
+    """`close` (#285): real `gh issue close` wiring, fail-closed.
+
+    Order of operations mirrors the issue's DoD: (1) lease/fence check via
+    `require_active`, (2) the actual `gh issue close --reason <reason>` call using
+    structured argv (never shell interpolation) -- any non-zero exit is reported as
+    `SOURCE_CLOSE_FAILED` and NOTHING further happens (no comment update, no false
+    "closed"); (3) an immediate re-query (`get_details`) confirms `state == "closed"`
+    -- if it does not, `SOURCE_CLOSE_UNCONFIRMED` is returned rather than trusting the
+    exit code alone; (4) only then is the canonical comment moved to `CLOSED` via
+    `publish_lifecycle_state`. If steps 1-3 succeed but the final comment update
+    cannot be confirmed, this returns `outcome: "CLOSE_PENDING_RECONCILIATION"` (the
+    source IS closed; the operation stays in the outbox for `reconcile()`) instead of
+    silently reporting a clean success.
+    """
+    if require_active is not None:
+        require_active()
+
+    op_id = operation_id(provider="github", repo=f"{owner}/{repo}", issue=str(issue),
+                        run_id=run_id, attempt_id=attempt_id, fencing_token=fencing_token,
+                        lifecycle_revision=lifecycle_revision, operation_kind="close")
+    if outbox_dir is not None:
+        record_pending_operation(outbox_dir, op_id, {
+            "repo": f"{owner}/{repo}", "issue": str(issue), "run_id": run_id,
+            "attempt_id": attempt_id, "operation_kind": "close",
+        })
+
+    completed = runner(["gh", "issue", "close", str(issue), "--repo", f"{owner}/{repo}",
+                        "--reason", reason], capture_output=True, text=True, timeout=timeout, check=False,
+                       encoding="utf-8", errors="replace")
+    if completed.returncode != 0:
+        return {
+            "schema": LIFECYCLE_SCHEMA, "operation_id": op_id, "repo": f"{owner}/{repo}",
+            "issue": str(issue), "outcome": "blocked", "reason_code": "SOURCE_CLOSE_FAILED",
+            "reason": (completed.stderr or completed.stdout or "").strip(), "verified": False,
+        }
+
+    snapshot = get_details(owner, repo, issue, runner=runner, timeout=timeout)
+    if snapshot.get("state") != "closed":
+        return {
+            "schema": LIFECYCLE_SCHEMA, "operation_id": op_id, "repo": f"{owner}/{repo}",
+            "issue": str(issue), "outcome": "blocked", "reason_code": "SOURCE_CLOSE_UNCONFIRMED",
+            "observed_state": snapshot.get("state"), "verified": False,
+        }
+
+    comment_receipt: Dict[str, Any]
+    if publish_comment_fn is None:
+        comment_receipt = {"verified": False, "reason_code": "REMOTE_WRITE_UNCONFIRMED",
+                          "reason": "no publish_comment_fn supplied; comment not updated to CLOSED"}
+    else:
+        try:
+            comment_receipt = publish_lifecycle_state(
+                owner=owner, repo=repo, issue=issue, state="CLOSED", run_id=run_id,
+                attempt_id=attempt_id, fencing_token=fencing_token,
+                lifecycle_revision=lifecycle_revision, publish_comment_fn=publish_comment_fn,
+                runner=runner, timeout=timeout, **render_kwargs,
+            )
+        except Exception as exc:  # noqa: BLE001 -- surfaced as unverified, never a fake pass
+            comment_receipt = {"verified": False, "reason_code": "REMOTE_WRITE_UNCONFIRMED", "reason": str(exc)}
+
+    if outbox_dir is not None:
+        if comment_receipt.get("verified"):
+            mark_operation_done(outbox_dir, op_id, comment_receipt)
+        # else: source IS closed (confirmed above) but the final comment write is not --
+        # leave the pending record so `reconcile()` can recover it without a second close.
+
+    return {
+        **comment_receipt,
+        "operation_id": op_id,
+        "repo": f"{owner}/{repo}",
+        "issue": str(issue),
+        "source_state": "closed",
+        "outcome": "closed" if comment_receipt.get("verified") else "CLOSE_PENDING_RECONCILIATION",
+    }
 
 
 __all__ = [
     "LIFECYCLE_SCHEMA",
+    "SNAPSHOT_SCHEMA",
+    "LIST_READY_SCHEMA",
     "LIFECYCLE_COMMENT_MARKER",
     "LIFECYCLE_STATES",
     "REGRESSION_REASON_CODES",
+    "REASON_CODES",
+    "GitHubTransportError",
     "validate_transition",
     "render_lifecycle_comment",
     "content_hash",
     "operation_id",
     "publish_lifecycle_state",
+    "list_ready",
+    "get_details",
+    "requery",
+    "reconcile",
+    "record_pending_operation",
+    "mark_operation_done",
+    "list_pending_operations",
+    "close_source_issue",
+    "lifecycle_state_for_phase_event",
 ]
+
+
+# --- runner event-stream projection (best-effort, see simplicio_loop/runner.py) --------
+
+_PHASE_EVENT_TO_LIFECYCLE_STATE: Dict[str, str] = {
+    "intake": "DISCOVERED",
+    "worker_claimed": "CLAIMED",
+    "planning": "PLANNED",
+    "mapping": "PLANNED",
+    "executing": "IN_PROGRESS",
+    "validating": "VERIFYING",
+    "watching": "VERIFYING",
+    "watcher_challenge": "VERIFYING",
+    "blocked": "BLOCKED",
+    "awaiting_decision": "AWAITING_DECISION",
+    "delivering": "PR_OPEN",
+}
+
+
+def lifecycle_state_for_phase_event(kind: str) -> Optional[str]:
+    """Map one runner phase-event `kind` (see `simplicio_loop/runner.py::_PHASE_EVENT_KINDS`)
+    to the lifecycle state it should project onto the canonical comment, or `None` if
+    that event kind has no lifecycle projection (e.g. terminal `done`/`partial`, which
+    the runner does not auto-close through -- see `close_source_issue` for the
+    explicit, fail-closed close path)."""
+    return _PHASE_EVENT_TO_LIFECYCLE_STATE.get(str(kind or ""))

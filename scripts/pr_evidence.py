@@ -231,8 +231,13 @@ class PublishError(RuntimeError):
 
 
 def _run_gh(args, runner, timeout, input_text=None):
+    # `text=True` without an explicit encoding falls back to the platform's default
+    # locale encoding (cp1252 on Windows), which raises `UnicodeDecodeError` on any
+    # issue title/body/comment containing non-Latin1 characters (emoji, non-ASCII
+    # names, ...) -- a real failure observed live against wesleysimplicio/simplicio-loop
+    # issue #347 during the #285 lifecycle-adapter E2E. `gh` always emits UTF-8.
     completed = runner(["gh"] + args, capture_output=True, text=True, timeout=timeout,
-                        check=False, input=input_text)
+                        check=False, input=input_text, encoding="utf-8", errors="replace")
     if completed.returncode != 0:
         stderr = (completed.stderr or completed.stdout or "").strip()
         raise PublishError("gh %s failed: %s" % (" ".join(args), stderr or "unknown error"))
