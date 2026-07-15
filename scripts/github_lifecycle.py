@@ -103,10 +103,15 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
 
 
 def cmd_close(args: argparse.Namespace) -> int:
+    planning_snapshot = None
+    if args.planning_snapshot:
+        with open(args.planning_snapshot, "r", encoding="utf-8") as fh:
+            planning_snapshot = json.load(fh)
     receipt = close_source_issue(
         owner=args.owner, repo=args.repo, issue=args.issue, run_id=args.run_id,
         attempt_id=args.attempt_id, fencing_token=args.fencing_token,
         publish_comment_fn=publish_comment, outbox_dir=args.outbox_dir, goal=args.goal or "",
+        planning_snapshot=planning_snapshot,
     )
     if args.run_dir:
         # Persists even a CLOSE_PENDING_RECONCILIATION outcome -- the completion oracle
@@ -235,6 +240,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_close.add_argument("--fencing-token", default="")
     p_close.add_argument("--outbox-dir", default=None)
     p_close.add_argument("--goal", default="")
+    p_close.add_argument("--planning-snapshot", default="",
+                         help="path to a get_details()-shaped JSON snapshot captured at "
+                              "planning/claim time -- if given, a material human edit or new "
+                              "human comment since then blocks the close with SOURCE_CHANGED")
     p_close.add_argument("--run-dir", default="",
                          help="if given, persist the receipt to <run-dir>/%s for the "
                               "completion oracle to read" % "github-lifecycle-receipt.json")

@@ -75,8 +75,11 @@ class SourceAdapter(Protocol):
 
     def close(self, ref: str, *, run_id: str, attempt_id: str, reason: str = "completed",
               require_active: Optional[Callable[[], None]] = None,
+              planning_snapshot: Optional[Mapping[str, Any]] = None,
               **render_kwargs: Any) -> Mapping[str, Any]:
-        """Close the work item at the source, fail-closed (re-query-confirmed)."""
+        """Close the work item at the source, fail-closed (re-query-confirmed). When
+        `planning_snapshot` is supplied, a material human edit or new human comment since
+        that snapshot blocks the close with `reason_code: "SOURCE_CHANGED"`."""
         ...  # pragma: no cover -- Protocol stub, never executed
 
     def reconcile(self, operation_id: str, ref: str, *,
@@ -156,11 +159,13 @@ class GitHubSourceAdapter:
 
     def close(self, ref: str, *, run_id: str, attempt_id: str, reason: str = "completed",
               require_active: Optional[Callable[[], None]] = None,
+              planning_snapshot: Optional[Mapping[str, Any]] = None,
               **render_kwargs: Any) -> Dict[str, Any]:
         return _gl.close_source_issue(
             owner=self.owner, repo=self.repo, issue=ref, run_id=run_id, attempt_id=attempt_id,
             reason=reason, require_active=require_active, publish_comment_fn=self._publish_comment_fn,
-            runner=self._runner, timeout=self._timeout, outbox_dir=self._outbox_dir, **render_kwargs,
+            runner=self._runner, timeout=self._timeout, outbox_dir=self._outbox_dir,
+            planning_snapshot=planning_snapshot, **render_kwargs,
         )
 
     def reconcile(self, operation_id: str, ref: str, *,
