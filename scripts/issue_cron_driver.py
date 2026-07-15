@@ -59,7 +59,10 @@ LEDGER_PATH = LEDGER_DIR / "ledger.jsonl"
 INFRA_BLOCKED_PREFIXES: Tuple[str, ...] = ("[P0][EPIC]", "[EPIC][P0]")
 
 # Terminal statuses — already have a stable work item; no re-arm unless prior failure.
-RESUME_SKIP_STATUSES = {"Done", "Blocked", "Quarantined"}
+# 'Todo' is included: the cron only does intake/mapping/planning (never mutates source),
+# so a Todo work item with a written intake-contract is stable and must NOT be re-armed
+# on the next tick (that would duplicate the ledger row every run).
+RESUME_SKIP_STATUSES = {"Todo", "Done", "Blocked", "Quarantined"}
 
 
 def _now() -> str:
@@ -76,15 +79,21 @@ def _gh(*args: str, timeout: int = 60) -> Any:
     return json.loads(proc.stdout)
 
 
-def fetch_open_issues(limit: int) -> List[Dict[str, Any]]:
-    data: List[Dict[str, Any]] = _gh("list", "--state", "open", "--limit", str(limit))
+def fetch_open_issues(limit: int, gh_repo: Optional[str] = None) -> List[Dict[str, Any]]:
+    cmd = ["list", "--state", "open", "--limit", str(limit)]
+    if gh_repo:
+        cmd += ["--repo", gh_repo]
+    data: List[Dict[str, Any]] = _gh(*cmd)
     return sorted(data, key=lambda i: str(i.get("createdAt") or ""))
 
 
 def issue_source_revision(issue: Dict[str, Any]) -> str:
     body = issue.get("body") or ""
     labels = ",".join(sorted(l["name"] for l in issue.get("labels") or []))
-    blob = f"{issue.get('updatedAt')}|{body}|{labels}"
+    # Stable across ticks: GitHub bumps updatedAt on every touch, so using it would
+    # defeat the resume-skip (source_revision would change every run -> re-append).
+    # Hash only immutable identity + content fields.
+    blob = f"{issue.get('number')}|{issue.get('title')}|{body}|{labels}"
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
@@ -94,12 +103,12 @@ def _impact_not_applicable() -> Dict[str, str]:
     return {c: "not_applicable: intake gate only; mutation blocked until planning receipt COMPLETE" for c in cats}
 
 
-def do_intake(issue: Dict[str, Any]) -> Tuple[Dict[str, Any], str, List[str]]:
+def do_intake(issue: Dict[str, Any], gh_repo: str = "wesleysimplicio/simplicio-loop") -> Tuple[Dict[str, Any], str, List[str]]:
     """Run the real #284 intake contract. Returns (envelope, hash, errors)."""
     n = issue["number"]
     rev = issue_source_revision(issue)
     snap = make_source_snapshot(
-        provider="github", repo="wesleysimplicio/simplicio-loop", item_id=str(n),
+        provider="github", repo=gh_repo, item_id=str(n),
         revision=issue.get("updatedAt") or rev, snapshot_hash=rev,
         url=issue.get("url") or "", title_hash=hashlib.sha256((issue.get("title") or "").encode()).hexdigest()[:16],
         body_hash=hashlib.sha256((issue.get("body") or "").encode()).hexdigest()[:16],
@@ -210,7 +219,8 @@ def load_ledger() -> List[Dict[str, Any]]:
 def ledger_index() -> Dict[str, Dict[str, Any]]:
     idx: Dict[str, Dict[str, Any]] = {}
     for row in load_ledger():
-        idx[str(row.get("issue"))] = row
+        key = f"{row.get('gh_repo')}#{row.get('issue')}"
+        idx[key] = row
     return idx
 
 
@@ -223,16 +233,33 @@ def append_ledger(row: Dict[str, Any]) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo", default=".")
+    ap.add_argument("--gh-repo", default=None,
+                   help="GitHub 'owner/name' to list issues from (defaults to --repo's remote)")
     ap.add_argument("--limit", type=int, default=50)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--per-issue-timeout", type=int, default=20)
     ap.add_argument("--total-budget", type=int, default=250)
     args = ap.parse_args()
 
-    print(f"MEASURED| cron driver start repo={args.repo} dry_run={args.dry_run}", flush=True)
+    # Resolve the GitHub repo: explicit --gh-repo wins; else derive from CWD remote.
+    gh_repo = args.gh_repo
+    if not gh_repo:
+        try:
+            out = subprocess.run(
+                ["git", "-C", args.repo, "remote", "get-url", "origin"],
+                capture_output=True, text=True, timeout=20, check=False,
+            ).stdout.strip()
+            if out:
+                out = out.rsplit("/", 1)[-1]
+                out = out.removesuffix(".git")
+                owner = out.split("/")[-2] if "/" in out else "wesleysimplicio"
+                gh_repo = f"{owner}/{out.split('/')[-1]}"
+        except Exception:
+            gh_repo = None
+    print(f"MEASURED| cron driver start repo={args.repo} gh_repo={gh_repo} dry_run={args.dry_run}", flush=True)
     start = time.time()
     try:
-        issues = fetch_open_issues(args.limit)
+        issues = fetch_open_issues(args.limit, gh_repo)
     except Exception as exc:
         print(f"UNVERIFIED| failed to list issues: {exc}", flush=True)
         return 1
@@ -244,10 +271,16 @@ def main() -> int:
     for issue in issues:
         n = issue["number"]
         rev = issue_source_revision(issue)
-        prev = ledger.get(str(n))
+        prev = ledger.get(f"{gh_repo}#{n}")
         prior_failed = prev and any(b in str(prev.get("blockers")) for b in ("intake_blocked", "gh_error"))
-        if prev and prev.get("source_revision") == rev and prev.get("status") in RESUME_SKIP_STATUSES and not prior_failed:
-            print(f"MEASURED| issue {n}: already armed (prev={prev['status']}) — resume, skip", flush=True)
+        # Disk-backed resume: the intake-contract.json artifact is the ground truth.
+        # This survives source_revision hash-formula migrations (we no longer trust a
+        # stored hash that may have been computed with a different formula).
+        contract_exists = (LEDGER_DIR / f"issue-{n}" / "intake-contract.json").exists()
+        prev_status = prev.get("status") if prev else None
+        status_ok = prev_status in RESUME_SKIP_STATUSES
+        if not prior_failed and contract_exists and status_ok:
+            print(f"MEASURED| issue {n}: already armed (contract present, prev={prev_status}) — resume, skip", flush=True)
             continue
         if time.time() - start > args.total_budget:
             print(f"MEASURED| budget exhausted ({args.total_budget}s) — defer remaining", flush=True)
@@ -257,13 +290,13 @@ def main() -> int:
         if args.dry_run:
             env, h, blockers = {"schema": "simplicio.task-intake/v1", "intake_hash": "dry"}, "dry", []
         else:
-            env, h, blockers = do_intake(issue)
+            env, h, blockers = do_intake(issue, gh_repo or "wesleysimplicio/simplicio-loop")
         intake_ok = bool(env) and not blockers
         status = classify_status(issue, intake_ok, blockers)
         proj = projected_state(status)
         receipt = write_records(issue, env, h, blockers, status)
         row = {
-            "ts": _now(), "issue": n, "url": issue.get("url"), "title": issue.get("title"),
+            "ts": _now(), "issue": n, "gh_repo": gh_repo, "url": issue.get("url"), "title": issue.get("title"),
             "labels": [l["name"] for l in issue.get("labels") or []],
             "source_revision": rev, "status": status, "projected": proj,
             "intake_ok": intake_ok, "intake_hash": h[:16], "blockers": blockers,
