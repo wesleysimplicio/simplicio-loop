@@ -857,8 +857,16 @@ def main():
         import json as _json
         sys.path.insert(0, HERE)
         from install_plan import build_plan  # local import: keeps install_plan.py import-light/standalone
+        # #293 AC2 ("dry-run mostra ... versões ... antes da execução"): for `--ci`, resolve the
+        # ACTUAL version that would be pinned so the dry-run plan shows the real number, not just
+        # the "pinned" intent — a read-only query (already-installed / `pip index versions`), no
+        # mutation, so this stays a true dry-run. Falls back to "" (never fabricated) if
+        # unresolvable (offline sandbox) — `version_pinning` still correctly reads "pinned".
+        resolved = resolve_pinned_version(OPERATOR_PACKAGE) if ci_mode else ""
         plan = build_plan(runtime, mode=install_mode, scope=("user" if is_global else "project"),
-                          target=target, with_service=with_service, with_proxy=with_proxy)
+                          target=target, with_service=with_service, with_proxy=with_proxy,
+                          requested_version=(OPERATOR_PACKAGE if ci_mode else ""),
+                          resolved_version=(resolved or ""))
         print(_json.dumps(plan, indent=2, sort_keys=True))
         sys.exit(0 if plan["status"] != "BLOCKED" else 3)
 
