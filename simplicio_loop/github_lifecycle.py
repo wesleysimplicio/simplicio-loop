@@ -319,6 +319,40 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+LIFECYCLE_RECEIPT_FILENAME = "github-lifecycle-receipt.json"
+
+
+def lifecycle_receipt_path(run_dir: str | Path) -> Path:
+    return Path(run_dir) / LIFECYCLE_RECEIPT_FILENAME
+
+
+def persist_lifecycle_receipt(receipt: Mapping[str, Any], run_dir: str | Path) -> str:
+    """Persist the latest lifecycle receipt into the run directory (#285: oracle/COMPLETE-gate
+    integration). This is what lets `simplicio_loop.oracle.evaluate_completion` see
+    `CLOSE_PENDING_RECONCILIATION` and block "done" instead of it being an inert status only
+    ever visible in the GitHub comment/outbox. Atomic write via temp-file rename."""
+    directory = Path(run_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = lifecycle_receipt_path(directory)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(dict(receipt), ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return str(path)
+
+
+def load_lifecycle_receipt(run_dir: str | Path) -> Optional[Dict[str, Any]]:
+    """Load the last-persisted lifecycle receipt for a run, or `None` if no lifecycle sync/close
+    has ever persisted one for this run directory (a source-less run, or a run predating this
+    integration -- both must be treated as "no opinion", never as a block)."""
+    path = lifecycle_receipt_path(run_dir)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
 def operation_id(*, provider: str, repo: str, issue: str, run_id: str, attempt_id: str,
                  fencing_token: str, lifecycle_revision: int, operation_kind: str) -> str:
     """Deterministic operation id (#285's idempotency-key tuple)."""
@@ -884,6 +918,10 @@ __all__ = [
     "list_pending_operations",
     "close_source_issue",
     "lifecycle_state_for_phase_event",
+    "LIFECYCLE_RECEIPT_FILENAME",
+    "lifecycle_receipt_path",
+    "persist_lifecycle_receipt",
+    "load_lifecycle_receipt",
 ]
 
 

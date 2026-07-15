@@ -736,13 +736,19 @@ def _sync_github_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str
             sys.path.insert(0, scripts_dir)
         from pr_evidence import publish_comment as _publish_comment  # local import: optional dep
 
-        _github_lifecycle.publish_lifecycle_state(
+        receipt = _github_lifecycle.publish_lifecycle_state(
             owner=str(owner), repo=str(repo), issue=str(issue), state=lifecycle_state,
             run_id=str(state.get("run_id") or ""),
             attempt_id=str(event.get("task_id") or state.get("run_id") or ""),
             publish_comment_fn=_publish_comment,
             progress=str(event.get("message") or ""),
         )
+        # Persist the receipt into the run dir so the completion oracle (#285's remaining gap:
+        # "CLOSE_PENDING_RECONCILIATION" must actually gate COMPLETE, not sit inert) can see it.
+        # This hook only ever projects intermediate states; a genuine
+        # CLOSE_PENDING_RECONCILIATION comes from the explicit `close_source_issue` call, which
+        # persists its own receipt the same way -- see `simplicio_loop/oracle.py`.
+        _github_lifecycle.persist_lifecycle_receipt(receipt, run_dir)
     except Exception as exc:  # noqa: BLE001 -- best-effort sync, never blocks the loop
         try:
             _append_jsonl(run_dir / "lifecycle-sync-errors.jsonl",
