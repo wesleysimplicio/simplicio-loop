@@ -5,6 +5,46 @@ other runtimes. A task is mutated only while its lease is valid and its
 fencing token is current. A worker that loses connectivity must pause and
 produce a handoff; it must not continue mutating a checkout offline.
 
+## Installed binaries (issue #286 step 11)
+
+`pip install simplicio-loop` installs three console scripts backed by
+`simplicio_loop/remote_queue_server_cli.py`, `simplicio_loop/remote_worker_cli.py`, and
+`simplicio_loop/remote_worker_supervisor_cli.py` -- real, packaged binaries, not source that only
+runs from a git checkout:
+
+| Console script | What it runs |
+|---|---|
+| `simplicio-remote-queue-server` | the HTTP facade (same flags as `scripts/remote_queue_server.py`) |
+| `simplicio-remote-worker` | the worker daemon (`claim`/`cancel`/`enqueue`/`serve` subcommands, same as `scripts/remote_worker_daemon.py`) |
+| `simplicio-remote-worker-supervisor` | the lifecycle supervisor (same flags as `scripts/remote_worker_supervisor.py`) |
+
+The historical `scripts/remote_queue_server.py`, `scripts/remote_worker_daemon.py`, and
+`scripts/remote_worker_supervisor.py` remain as thin backward-compatible shims over these
+modules for repo-local tooling/tests; the supervisor spawns its workers via
+`python -m simplicio_loop.remote_worker_cli serve`, which resolves regardless of whether
+`scripts/` is present on disk.
+
+## Server-side receipt verification (issue #286 step 9)
+
+`RemoteQueue.complete(lease, *, receipt_ref, receipt=None)` accepts an optional wire receipt in
+addition to the historical opaque `receipt_ref` string. When `receipt` is supplied, the **queue
+server itself** -- not merely the client presenting it -- independently:
+
+1. runs it through `receipt_verifier.verify_receipt()` against
+   `receipt_verifier.QUEUE_RECEIPT_SCHEMA` (schema literal, required fields, hash/tamper check,
+   optional freshness window);
+2. cross-checks the receipt's declared `task_id`/`agent_id`/`fencing_token` against the *active*
+   lease presenting it.
+
+A receipt that fails either check raises `QueueConflict` (HTTP 409) and leaves the task/lease
+untouched -- fail closed, never a silent downgrade to "trust the ref". Both `RemoteWorkerDaemon`
+(`simplicio_loop/worker_daemon.py`) and `AttemptCoordinator`
+(`simplicio_loop/work_item_claims.py`) build this receipt automatically via
+`simplicio_loop.remote_queue.build_completion_receipt`, so every genuine worker/coordinator
+completion is now server-verified without any caller having to opt in. `receipt=None` still works
+(existence-only, the pre-#286-step-9 contract) for callers that only exercise the lease/fencing
+mechanics.
+
 ## Development backend
 
 `simplicio_loop.remote_queue.SQLiteRemoteQueue` is a real transactional backend
