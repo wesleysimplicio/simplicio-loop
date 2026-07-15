@@ -8,8 +8,10 @@ is already exercised end-to-end by `scripts/check.py` in CI).
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
@@ -193,6 +195,127 @@ def test_skill_pair_parity_flags_divergent_shared_reference():
             ok, detail = claims_audit.check_skill_pair_parity()
             assert not ok, "shared reference drift must fail: %s" % detail
             assert "quality-safety-delivery.md" in detail
+        finally:
+            restore()
+
+
+def _init_git_repo(tmp):
+    """Real git repo with one commit; returns its full sha. Used to prove receipt validation
+    (#294) checks against ACTUAL git history, not a stubbed lookup.
+
+    Retries each `git` invocation on a transient process-spawn error: rapid back-to-back
+    subprocess creation on Windows occasionally raises `OSError: [WinError 50]` (request not
+    supported) with no relation to git itself — a host/AV quirk, not a logic bug."""
+    def _run(args):
+        last_exc = None
+        for attempt in range(5):
+            try:
+                r = subprocess.run(["git"] + args, cwd=tmp, capture_output=True, text=True)
+                if r.returncode != 0:
+                    raise RuntimeError("git %s failed: %s" % (args, r.stderr))
+                return r
+            except OSError as e:
+                last_exc = e
+                time.sleep(0.05 * (attempt + 1))
+        raise last_exc
+    _run(["init", "-q"])
+    _run(["config", "user.email", "test@example.com"])
+    _run(["config", "user.name", "Test"])
+    _write(os.path.join(tmp, "README.md"), "hello\n")
+    _run(["add", "."])
+    _run(["commit", "-q", "-m", "init"])
+    r = _run(["rev-parse", "HEAD"])
+    return r.stdout.strip()
+
+
+def _claims_patched(fixture_root, claims):
+    restore_repo = _patched(fixture_root)
+    saved_claims = claims_audit.CLAIMS
+    claims_audit.CLAIMS = claims
+
+    def restore():
+        restore_repo()
+        claims_audit.CLAIMS = saved_claims
+    return restore
+
+
+def test_verified_claim_with_receipt_bound_to_real_commit_passes():
+    with tempfile.TemporaryDirectory() as tmp:
+        sha = _init_git_repo(tmp)
+        _write(os.path.join(tmp, "receipts", "r1.json"),
+               json.dumps({"commit": sha, "generated_at": "2026-01-01T00:00:00Z"}))
+        claims = [{"id": "c1", "doc": "README.md", "text_glob": "x", "status": "verified",
+                   "receipt": "receipts/r1.json", "note": "n"}]
+        restore = _claims_patched(tmp, claims)
+        try:
+            ok, detail = claims_audit.check_quantitative_claims()
+            assert ok, detail
+        finally:
+            restore()
+
+
+def test_verified_claim_with_foreign_commit_receipt_is_rejected():
+    # #294: a receipt whose `commit` field is a fabricated/foreign hash (not reachable in this
+    # repo's history) must NOT be able to back a "verified" claim.
+    with tempfile.TemporaryDirectory() as tmp:
+        _init_git_repo(tmp)
+        foreign_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+        _write(os.path.join(tmp, "receipts", "r2.json"),
+               json.dumps({"commit": foreign_sha, "generated_at": "2026-01-01T00:00:00Z"}))
+        claims = [{"id": "c2", "doc": "README.md", "text_glob": "x", "status": "verified",
+                   "receipt": "receipts/r2.json", "note": "n"}]
+        restore = _claims_patched(tmp, claims)
+        try:
+            ok, detail = claims_audit.check_quantitative_claims()
+            assert not ok, "a receipt citing a foreign/fabricated commit must be rejected"
+            assert "another commit/version rejected" in detail or "does not resolve" in detail
+        finally:
+            restore()
+
+
+def test_verified_claim_with_receipt_missing_commit_field_is_rejected():
+    with tempfile.TemporaryDirectory() as tmp:
+        _init_git_repo(tmp)
+        _write(os.path.join(tmp, "receipts", "r3.json"),
+               json.dumps({"generated_at": "2026-01-01T00:00:00Z"}))
+        claims = [{"id": "c3", "doc": "README.md", "text_glob": "x", "status": "verified",
+                   "receipt": "receipts/r3.json", "note": "n"}]
+        restore = _claims_patched(tmp, claims)
+        try:
+            ok, detail = claims_audit.check_quantitative_claims()
+            assert not ok, "a receipt with no 'commit' field must be rejected"
+            assert "missing 'commit'" in detail
+        finally:
+            restore()
+
+
+def test_verified_claim_with_receipt_missing_timestamp_is_rejected():
+    with tempfile.TemporaryDirectory() as tmp:
+        sha = _init_git_repo(tmp)
+        _write(os.path.join(tmp, "receipts", "r4.json"), json.dumps({"commit": sha}))
+        claims = [{"id": "c4", "doc": "README.md", "text_glob": "x", "status": "verified",
+                   "receipt": "receipts/r4.json", "note": "n"}]
+        restore = _claims_patched(tmp, claims)
+        try:
+            ok, detail = claims_audit.check_quantitative_claims()
+            assert not ok, "a receipt with no timestamp must be rejected"
+            assert "missing 'generated_at'/'created_at'" in detail
+        finally:
+            restore()
+
+
+def test_unverified_claim_with_receipt_still_requires_the_file_to_exist():
+    # Unverified claims are not required to have a git-bound receipt, but if a receipt path IS
+    # declared it must still exist (pre-existing behavior, unchanged by #294).
+    with tempfile.TemporaryDirectory() as tmp:
+        _init_git_repo(tmp)
+        claims = [{"id": "c5", "doc": "README.md", "text_glob": "x", "status": "unverified",
+                   "receipt": "receipts/missing.json", "note": "n"}]
+        restore = _claims_patched(tmp, claims)
+        try:
+            ok, detail = claims_audit.check_quantitative_claims()
+            assert not ok
+            assert "receipt missing" in detail
         finally:
             restore()
 

@@ -226,3 +226,68 @@ def test_legacy_receipt_without_source_fingerprint_is_readable():
     result = validate_delivery_receipt(receipt)
     assert result["ok"] is True
     assert any(g["reason_code"] == "source_identity_legacy_unbound" for g in result["gates"])
+
+
+# ---------------------------------------------------------------------------
+# #290 TTL/freshness gate wired into validate_delivery_receipt
+# ---------------------------------------------------------------------------
+
+def test_receipt_without_source_checked_at_is_freshness_legacy_unbound():
+    payload = {
+        "pr": {"url": "u", "head_sha": "h", "base_sha": "b"},
+        "checks": {"green": True},
+        "reviews": {"approvals": 1, "open_threads": 0},
+        "branch": {"up_to_date": True},
+    }
+    result = validate_delivery_receipt(_receipt(current_state="merge-ready", source_payload=payload))
+    assert result["ok"] is True
+    assert result["gates"][-1]["reason_code"] == "freshness_legacy_unbound"
+
+
+def test_receipt_with_fresh_source_checked_at_passes():
+    import datetime as _dt
+    now = _dt.datetime(2026, 7, 15, 12, 0, 0, tzinfo=_dt.timezone.utc)
+    payload = {
+        "pr": {"url": "u", "head_sha": "h", "base_sha": "b"},
+        "checks": {"green": True},
+        "reviews": {"approvals": 1, "open_threads": 0},
+        "branch": {"up_to_date": True},
+    }
+    receipt = _receipt(current_state="merge-ready", source_payload=payload,
+                       source_checked_at="2026-07-15T11:58:00Z")
+    result = validate_delivery_receipt(receipt, now=now)
+    assert result["ok"] is True
+    assert result["gates"][-1]["reason_code"] == "observation_fresh"
+
+
+def test_receipt_with_stale_source_checked_at_blocks():
+    import datetime as _dt
+    now = _dt.datetime(2026, 7, 15, 12, 0, 0, tzinfo=_dt.timezone.utc)
+    payload = {
+        "pr": {"url": "u", "head_sha": "h", "base_sha": "b"},
+        "checks": {"green": True},
+        "reviews": {"approvals": 1, "open_threads": 0},
+        "branch": {"up_to_date": True},
+    }
+    # merge-ready TTL default is 120s; this observation is ~1 hour old.
+    receipt = _receipt(current_state="merge-ready", source_payload=payload,
+                       source_checked_at="2026-07-15T11:00:00Z")
+    result = validate_delivery_receipt(receipt, now=now)
+    assert result["ok"] is False
+    assert result["gates"][-1]["reason_code"] == "observation_stale"
+
+
+def test_receipt_freshness_ttl_override_lets_an_old_observation_through():
+    import datetime as _dt
+    now = _dt.datetime(2026, 7, 15, 12, 0, 0, tzinfo=_dt.timezone.utc)
+    payload = {
+        "pr": {"url": "u", "head_sha": "h", "base_sha": "b"},
+        "checks": {"green": True},
+        "reviews": {"approvals": 1, "open_threads": 0},
+        "branch": {"up_to_date": True},
+    }
+    receipt = _receipt(current_state="merge-ready", source_payload=payload,
+                       source_checked_at="2026-07-15T11:00:00Z")
+    result = validate_delivery_receipt(receipt, now=now, ttl_overrides={"merge-ready": 7200})
+    assert result["ok"] is True
+    assert result["gates"][-1]["reason_code"] == "observation_fresh"

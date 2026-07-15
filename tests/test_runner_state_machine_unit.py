@@ -971,6 +971,7 @@ def test_distributed_configuration_raises_without_identity_adapter(monkeypatch):
 def test_distributed_configuration_builds_queue_and_identity_when_url_is_set(monkeypatch, tmp_path):
     monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_URL", "https://queue.example/api")
     monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN", "tok-123")
+    monkeypatch.setenv("SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN", "1")
     monkeypatch.setenv("SIMPLICIO_RUNTIME", "claude-code")
     captured = {}
 
@@ -1093,6 +1094,95 @@ def test_distributed_configuration_legacy_url_path_untouched_without_environment
     assert queue.base_url == "https://queue.example/api"
 
 
+def test_distributed_configuration_wires_environment_id_and_policy_into_the_queue(monkeypatch, tmp_path):
+    """#289: the resolved environment_id/policy must reach HTTPRemoteQueue so its
+    connect-time secure-transport enforcement (check_endpoint) can activate --
+    not just the resolved URL."""
+    _arm_trust_env(monkeypatch, tmp_path)
+
+    queue, _identity = runner_mod._distributed_configuration(str(tmp_path))
+
+    assert queue._trusted_endpoint is not None
+    assert queue._trusted_endpoint.environment_id == "staging"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_queue_token (#289): short-lived credential issuance replacing a bare
+# static SIMPLICIO_REMOTE_QUEUE_TOKEN when a signing secret is configured.
+# ---------------------------------------------------------------------------
+
+def test_resolve_queue_token_fails_closed_without_secret_or_opt_in(monkeypatch):
+    """#289: the static SIMPLICIO_REMOTE_QUEUE_TOKEN fallback is no longer silent --
+    without SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN=1 it must fail closed, not quietly
+    downgrade to an indefinitely-lived shared secret."""
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN", "static-tok")
+    monkeypatch.delenv("SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN", raising=False)
+
+    with pytest.raises(RuntimeError, match="no longer silent"):
+        runner_mod._resolve_queue_token(None, None, {"agent_id": "agent-1"})
+
+
+def test_resolve_queue_token_falls_back_to_static_token_with_explicit_opt_in(monkeypatch):
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN", "static-tok")
+    monkeypatch.setenv("SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN", "1")
+
+    token = runner_mod._resolve_queue_token(None, None, {"agent_id": "agent-1"})
+
+    assert token == "static-tok"
+
+
+def test_resolve_queue_token_returns_none_when_neither_secret_nor_static_token_set(monkeypatch):
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN", raising=False)
+    monkeypatch.delenv("SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN", raising=False)
+
+    token = runner_mod._resolve_queue_token(None, None, {"agent_id": "agent-1"})
+
+    assert token is None
+
+
+def test_resolve_queue_token_short_lived_mode_is_scoped_to_worker_operations(monkeypatch):
+    from scripts.short_lived_credentials import verify_token
+
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", "sign-secret")
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS", raising=False)
+    policy = {"environments": {"staging": {"max_ttl_seconds": 900}}}
+
+    token = runner_mod._resolve_queue_token("staging", policy, {"agent_id": "agent-9"})
+
+    verify_token("sign-secret", token, expected_scope="staging", expected_operation="claim")
+    with pytest.raises(Exception):
+        verify_token("sign-secret", token, expected_scope="staging", expected_operation="enqueue")
+
+
+def test_resolve_queue_token_issues_a_short_lived_token_when_secret_is_set(monkeypatch):
+    from scripts.short_lived_credentials import verify_token
+
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", "sign-secret")
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS", raising=False)
+    policy = {"environments": {"staging": {"max_ttl_seconds": 900}}}
+
+    token = runner_mod._resolve_queue_token("staging", policy, {"agent_id": "agent-9"})
+
+    claims = verify_token("sign-secret", token, expected_subject="agent-9", expected_scope="staging")
+    assert claims["exp"] - claims["iat"] == pytest.approx(900, abs=1)
+
+
+def test_resolve_queue_token_ttl_override_is_capped_by_policy_max_ttl(monkeypatch):
+    from scripts.short_lived_credentials import verify_token
+
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", "sign-secret")
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS", "999999")
+    policy = {"environments": {"staging": {"max_ttl_seconds": 120}}}
+
+    token = runner_mod._resolve_queue_token("staging", policy, {"agent_id": "agent-9"})
+
+    claims = verify_token("sign-secret", token)
+    assert claims["exp"] - claims["iat"] == pytest.approx(120, abs=1)
+
+
 # ---------------------------------------------------------------------------
 # reconcile_delivery: a corrupt prior receipt is tolerated, not fatal
 # ---------------------------------------------------------------------------
@@ -1193,7 +1283,7 @@ def test_operator_dispatch_attempt_fails_closed_on_worktree_error(tmp_path):
 
 
 def test_operator_dispatch_attempt_wraps_unexpected_exception(tmp_path, monkeypatch):
-    def raising_execute_operator(repo, run_id, task_index=1):
+    def raising_execute_operator(repo, run_id, task_index=1, **kwargs):
         raise RuntimeError("execute_operator exploded")
 
     monkeypatch.setattr(runner_mod, "execute_operator", raising_execute_operator)

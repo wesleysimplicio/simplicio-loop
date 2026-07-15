@@ -37,6 +37,8 @@ What the installer does (all reversible — copies + a config edit):
 - prints `simplicio-cli mcp register --client <runtime>` for optional native binding.
 
 See [`adapters/MATRIX.md`](adapters/MATRIX.md) and `adapters/<runtime>/README.md` for details.
+For the exact per-OS mutation inventory (what mutates on disk, PATH, or a service, and which
+effects require an explicit flag), see [`docs/INSTALL_MUTATIONS.md`](docs/INSTALL_MUTATIONS.md).
 
 ## 3. Run it
 

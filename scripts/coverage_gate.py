@@ -24,15 +24,23 @@ Usage:
     python3 scripts/coverage_gate.py
     python3 scripts/coverage_gate.py --global-threshold 85 --critical-threshold 90
     python3 scripts/coverage_gate.py --diagnostics-dir .simplicio/quality-gate/coverage
+    python3 scripts/coverage_gate.py --emit-json coverage-report.json
+
+#283: `--emit-json PATH` unconditionally (pass or fail) writes the measured percentages plus the
+report paths as a plain dict, so `scripts/quality_matrix.py populate` (and any independent
+re-verifier) can read the exact number this run measured instead of a hand-typed
+`coverage.measured` value.
 
 Exit codes: 0 = both thresholds met, 1 = a threshold missed (or coverage unavailable).
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -63,6 +71,14 @@ def main() -> int:
     parser.add_argument("--global-threshold", type=float, default=85.0)
     parser.add_argument("--critical-threshold", type=float, default=90.0)
     parser.add_argument("--diagnostics-dir", default=None)
+    parser.add_argument("--emit-json", default=None,
+                        help="#283: unconditionally write the measured percentages/report paths here")
+    parser.add_argument("--tests-path", action="append", default=None,
+                        help="#283: scope the instrumented pytest run to these path(s) instead of the "
+                             "whole tests/ tree (repeatable). Used to measure a defined, fast, "
+                             "reliable subset -- e.g. quality/coverage-baseline.json's Fase A baseline "
+                             "-- instead of the full suite, which includes slow/live/e2e tests. Default "
+                             "(omitted) preserves the original full-suite behavior.")
     args = parser.parse_args()
 
     if not _coverage_available():
@@ -71,20 +87,31 @@ def main() -> int:
             "(`pip install coverage`). Fail-closed: not skipping the gate.",
             file=sys.stderr,
         )
+        if args.emit_json:
+            with open(args.emit_json, "w", encoding="utf-8") as fh:
+                json.dump({
+                    "schema": "simplicio.coverage-gate/v1", "ok": False,
+                    "global_pct": None, "critical_pct": None,
+                    "detail": "coverage package not installed",
+                    "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }, fh, indent=2, sort_keys=True)
+                fh.write("\n")
         return 1
 
     diagnostics_dir = args.diagnostics_dir or os.path.join(REPO, ".simplicio", "quality-gate", "coverage")
     os.makedirs(diagnostics_dir, exist_ok=True)
     data_file = os.path.join(diagnostics_dir, ".coverage")
 
+    tests_path = args.tests_path or ["tests/"]
     run = subprocess.run(
         [
             sys.executable, "-m", "coverage", "run",
             f"--data-file={data_file}",
             "--source=simplicio_loop,engine,scripts",
-            "-m", "pytest", "-q", "tests/",
+            "-m", "pytest", "-q", *tests_path,
         ],
         cwd=REPO,
+        stdin=subprocess.DEVNULL,
     )
     if run.returncode != 0:
         print("[coverage-gate] FAILED: test suite did not pass under coverage instrumentation.", file=sys.stderr)
@@ -118,9 +145,15 @@ def main() -> int:
         total_missing = 0
         for rel_path in critical_present:
             abs_path = os.path.join(REPO, rel_path)
-            analysis = cov._analyze(cov._get_file_reporter(abs_path))
-            total_stmts += len(analysis.statements)
-            total_missing += len(analysis.missing)
+            # #283: `Coverage.analysis2` is the PUBLIC API for per-file statement/missing-line
+            # counts (`filename, statements, excluded, missing, missing_formatted`). The private
+            # `cov._analyze(cov._get_file_reporter(...))` pair this replaced broke outright on
+            # coverage.py 7.15.x/Python 3.14 (`PythonFileReporter` became unhashable, so
+            # `_analyze`'s internal dict-keyed cache raised `TypeError` -- this crashed the gate
+            # on every invocation, before any threshold was even checked).
+            _, statements, _excluded, missing, _formatted = cov.analysis2(abs_path)
+            total_stmts += len(statements)
+            total_missing += len(missing)
         critical_pct = (
             100.0 * (total_stmts - total_missing) / total_stmts if total_stmts else 100.0
         )
@@ -139,6 +172,26 @@ def main() -> int:
         failures.append(f"global coverage {global_pct:.2f}% < {args.global_threshold:.2f}%")
     if critical_pct < args.critical_threshold:
         failures.append(f"critical coverage {critical_pct:.2f}% < {args.critical_threshold:.2f}%")
+
+    if args.emit_json:
+        with open(args.emit_json, "w", encoding="utf-8") as fh:
+            json.dump({
+                "schema": "simplicio.coverage-gate/v1",
+                "ok": not failures,
+                "tests_scope": tests_path,
+                "global_pct": round(global_pct, 4),
+                "critical_pct": round(critical_pct, 4),
+                "global_threshold": args.global_threshold,
+                "critical_threshold": args.critical_threshold,
+                "critical_present": critical_present,
+                "critical_missing": critical_missing,
+                "xml_report": xml_path,
+                "html_report": html_dir,
+                "test_suite_returncode": run.returncode,
+                "failures": failures,
+                "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }, fh, indent=2, sort_keys=True)
+            fh.write("\n")
 
     if failures:
         print("\n[coverage-gate] FAILED:", file=sys.stderr)

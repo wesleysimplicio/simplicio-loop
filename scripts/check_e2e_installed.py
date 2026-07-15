@@ -46,7 +46,12 @@ def _run(cmd, cwd=None, env=None, timeout=60):
     try:
         return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd or REPO, env=env,
                               timeout=timeout, stdin=subprocess.DEVNULL)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+    except (OSError, subprocess.TimeoutExpired) as e:
+        # OSError (not just FileNotFoundError) covers Windows WinError 1920/1921
+        # ("cannot be resolved by the system"), raised when CreateProcess is asked
+        # to launch a .cmd/.bat shim directly without going through cmd.exe. A
+        # toolchain-resolution failure must degrade to a diagnostic row, never an
+        # unhandled traceback (issue #291: "nunca produz traceback enganoso").
         return e
 
 

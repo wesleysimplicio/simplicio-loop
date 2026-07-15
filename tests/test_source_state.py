@@ -122,6 +122,7 @@ def test_github_delivery_payload_uses_fixture_env_var(monkeypatch):
         "pr": 9,
         "tag": "",
         "target_state": "pr-open",
+        "environment": "",
         "mode": "fixture",
     }
 
@@ -136,6 +137,7 @@ def test_github_delivery_payload_live_mode_with_no_pr_or_tag_returns_bare_source
             "pr": None,
             "tag": "",
             "target_state": "",
+            "environment": "",
             "mode": "live",
         }
     }
@@ -421,3 +423,94 @@ def test_github_delivery_payload_release_target_verifier_failure_stays_unverifie
     assert payload["release"]["checksums_verified"] is False
     assert payload["release"]["reason_codes"]["checksum_reason_code"] == "checksum_manifest_absent"
     assert infer_github_delivery_state(payload) == "verified"
+
+
+# ---------------------------------------------------------------------------
+# github_delivery_payload — BranchReachabilityVerifier wiring (#290 Fase 3)
+# ---------------------------------------------------------------------------
+
+def _merged_pr_json(pr=8):
+    return json.dumps({
+        "url": f"https://example/pr/{pr}",
+        "headRefOid": "abc",
+        "baseRefOid": "def",
+        "reviewDecision": "APPROVED",
+        "mergeStateStatus": "CLEAN",
+        "mergedAt": "2026-07-01T00:00:00Z",
+        "mergeCommit": {"oid": "mmm"},
+        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+    })
+
+
+def test_should_verify_branch_reachability_defaults_to_target_state(monkeypatch):
+    monkeypatch.delenv("SIMPLICIO_LOOP_VERIFY_BRANCH_REACHABILITY", raising=False)
+    assert source_state._should_verify_branch_reachability("merged", None) is True
+    assert source_state._should_verify_branch_reachability("released", None) is True
+    assert source_state._should_verify_branch_reachability("pr-open", None) is False
+    assert source_state._should_verify_branch_reachability("merge-ready", None) is False
+
+
+def test_should_verify_branch_reachability_explicit_arg_wins(monkeypatch):
+    monkeypatch.delenv("SIMPLICIO_LOOP_VERIFY_BRANCH_REACHABILITY", raising=False)
+    assert source_state._should_verify_branch_reachability("pr-open", True) is True
+    assert source_state._should_verify_branch_reachability("merged", False) is False
+
+
+def test_should_verify_branch_reachability_env_override(monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_LOOP_VERIFY_BRANCH_REACHABILITY", "1")
+    assert source_state._should_verify_branch_reachability("pr-open", None) is True
+    monkeypatch.setenv("SIMPLICIO_LOOP_VERIFY_BRANCH_REACHABILITY", "0")
+    assert source_state._should_verify_branch_reachability("merged", None) is False
+
+
+def test_github_delivery_payload_without_target_state_stays_unverified_for_merge(monkeypatch):
+    # No target_state given -> the (cheap but non-zero cost) reachability query must not
+    # run at all; the historical fail-closed default is preserved.
+    monkeypatch.delenv("SIMPLICIO_LOOP_GITHUB_FIXTURE_JSON", raising=False)
+    monkeypatch.setenv("SIMPLICIO_LOOP_GITHUB_REVIEWS_FIXTURE_JSON", json.dumps({"approvals": 1, "open_threads": 0}))
+    monkeypatch.delenv("SIMPLICIO_LOOP_VERIFY_BRANCH_REACHABILITY", raising=False)
+    monkeypatch.setattr(source_state, "_run_gh", lambda args: _fake_completed(stdout=_merged_pr_json()))
+    payload = github_delivery_payload("acme/widgets", pr=8)
+    assert payload["merge"]["commit_in_default_branch"] is False
+    assert payload["merge"]["commit_in_default_branch_reason_code"] == "merge_reachability_unverified"
+    assert payload["merge"]["default_branch"] == ""
+
+
+def test_github_delivery_payload_merged_target_calls_real_reachability_verifier_and_promotes(monkeypatch):
+    monkeypatch.delenv("SIMPLICIO_LOOP_GITHUB_FIXTURE_JSON", raising=False)
+    monkeypatch.setenv("SIMPLICIO_LOOP_GITHUB_REVIEWS_FIXTURE_JSON", json.dumps({"approvals": 1, "open_threads": 0}))
+    monkeypatch.delenv("SIMPLICIO_LOOP_VERIFY_BRANCH_REACHABILITY", raising=False)
+    monkeypatch.setattr(source_state, "_run_gh", lambda args: _fake_completed(stdout=_merged_pr_json()))
+
+    def _fake_verify_branch_reachability(repo, commit_sha, expected_default_branch=None):
+        assert commit_sha == "mmm"
+        return {"ok": True, "reachable": True, "default_branch": "main", "compare_status": "behind"}
+
+    import simplicio_loop.external_verifiers as external_verifiers
+    monkeypatch.setattr(external_verifiers, "verify_branch_reachability", _fake_verify_branch_reachability)
+    payload = github_delivery_payload("acme/widgets", pr=8, target_state="merged")
+    assert payload["merge"]["commit_in_default_branch"] is True
+    assert payload["merge"]["default_branch"] == "main"
+    assert payload["merge"]["evidence"] == "github-compare-reachability"
+    assert "commit_in_default_branch_reason_code" not in payload["merge"]
+    assert infer_github_delivery_state(payload) == "merged"
+
+
+def test_github_delivery_payload_merged_target_reachability_failure_stays_unverified(monkeypatch):
+    monkeypatch.delenv("SIMPLICIO_LOOP_GITHUB_FIXTURE_JSON", raising=False)
+    monkeypatch.setenv("SIMPLICIO_LOOP_GITHUB_REVIEWS_FIXTURE_JSON", json.dumps({"approvals": 1, "open_threads": 0}))
+    monkeypatch.delenv("SIMPLICIO_LOOP_VERIFY_BRANCH_REACHABILITY", raising=False)
+    monkeypatch.setattr(source_state, "_run_gh", lambda args: _fake_completed(stdout=_merged_pr_json()))
+
+    def _fake_verify_branch_reachability(repo, commit_sha, expected_default_branch=None):
+        return {"ok": True, "reachable": False, "default_branch": "main", "compare_status": "diverged",
+                "reason_code": "merge_commit_not_reachable"}
+
+    import simplicio_loop.external_verifiers as external_verifiers
+    monkeypatch.setattr(external_verifiers, "verify_branch_reachability", _fake_verify_branch_reachability)
+    payload = github_delivery_payload("acme/widgets", pr=8, target_state="merged")
+    assert payload["merge"]["commit_in_default_branch"] is False
+    assert payload["merge"]["commit_in_default_branch_reason_code"] == "merge_commit_not_reachable"
+    # merge is unproven, but the PR itself still satisfies merge-ready (checks/reviews/branch
+    # all clear) -- the reducer must not silently promote to "merged" without reachability.
+    assert infer_github_delivery_state(payload) == "merge-ready"

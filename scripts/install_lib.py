@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """simplicio-loop — universal installer (one logic, all runtimes).
 
-Copies the 6 skills + hooks into a target, wires the loop where the runtime supports it,
+Copies the 7 skills + hooks into a target, wires the loop where the runtime supports it,
 ensures the runtime's entry/instructions file references the skill, and prints the MCP-bind
 line. Pure Python ->identical on Windows/macOS/Linux. Safe: create-or-merge, never clobbers
 unrelated config; idempotent marker blocks.
@@ -37,7 +37,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.dirname(HERE)
 HOME = os.path.expanduser("~")
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
-          "simplicio-review", "simplicio-compress", "simplicio-learn"]
+          "simplicio-review", "simplicio-compress", "simplicio-learn",
+          "simplicio-autoresearch"]
 # The simplicio-loop drive REQUIRES the operator package `simplicio-cli`; it exposes
 # `simplicio-dev-cli` and also brings the survey binary `simplicio-mapper` transitively.
 # (the bare `simplicio` command is reserved for the separate `simplicio-runtime`, not this operator.)
@@ -58,7 +59,8 @@ def entry_block(runtime=None):
         "## simplicio-loop — Unified Core + Loop\n\n"
         "Load and follow the protocol in `.claude/skills/simplicio-loop/SKILL.md` and its "
         "companion skills (`simplicio-tasks` as legacy alias, `simplicio-orient`, "
-        "`simplicio-review`, `simplicio-compress`, `simplicio-learn`) IN FULL — every step, "
+        "`simplicio-review`, `simplicio-compress`, `simplicio-learn`, `simplicio-autoresearch`) "
+        "IN FULL — every step, "
         "no partial subset. Run "
         "commands for real; clamp heavy output via `python3 hooks/orient_clamp.py -- <cmd>`; "
         "never close work without a merged PR or concrete evidence; honor the irreversible-op "
@@ -146,6 +148,29 @@ def copy_scripts(target, is_global):
         log("scripts -> %s" % dst)
 
 
+# The extra file surface `full-stack` mode installs on top of `minimal`/`runtime`: the capture
+# engine (`engine/`) and the tray app (`app/`) — the CODE for operators/capture-proxy/dashboard
+# (#293 modes: "full-stack — instala operadores, capture proxy, dashboard e serviços somente
+# mediante flag explícita"). Registering these as OS-level auto-start services remains a
+# separate, explicit step (`scripts/install_services.py install`) — this only lays the files
+# down, reversibly, under the same backup/rollback discipline as every other install effect.
+def full_stack_dir(target, is_global):
+    return os.path.join(target, ".claude", "full-stack") if is_global else target
+
+
+def copy_full_stack(target, is_global):
+    dst_root = full_stack_dir(target, is_global)
+    for name in ("engine", "app"):
+        src = os.path.join(SOURCE, name)
+        dst = os.path.join(dst_root, name)
+        if os.path.abspath(dst) == os.path.abspath(src):
+            continue  # already here (project install inside this repo)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True,
+                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            log("full-stack:%s -> %s" % (name, dst))
+
+
 def install_git_precommit_hook(target):
     """Wire `hooks/pre-commit.py` as the target repo's git pre-commit hook (#98).
 
@@ -193,6 +218,60 @@ def install_git_precommit_hook(target):
         log("git pre-commit hook installed -> %s (auto-syncs plugin/+_bundle/, #98)" % dst)
     except OSError as e:
         log("! could not install git pre-commit hook (fail-open, non-fatal): %s" % e)
+
+
+def install_git_prepush_hook(target):
+    """Wire `hooks/action_gate.py pre-push` as the target repo's git pre-push hook (#291).
+
+    With the repo's GitHub Actions CI substrate removed (#311), there is no more Actions-enforced
+    branch protection anywhere upstream — the local git pre-push hook is the only mechanical,
+    fail-closed choke point every push from every clone actually runs through. `action_gate.py
+    pre-push` secret-scans the real push range and requires a green
+    `scripts/check.py --core-gate` (fast/mandatory subset), BLOCKING the push (exit 2) on either
+    failure — see `hooks/action_gate.py`'s `cmd_pre_push` docstring.
+
+    Project-local concept only, like `install_git_precommit_hook`: no-op for a `--global` install
+    (target has no `.git`) or a non-git target. Installing the HOOK FILE itself is fail-open (a
+    write error here never aborts the install); once installed, the hook it writes is
+    fail-closed by design — that asymmetry is deliberate, not a bug.
+    """
+    git_dir = os.path.join(target, ".git")
+    if not os.path.isdir(git_dir):
+        return  # not a git repo (or a --global target) — nothing to wire
+    src_hook = os.path.join(hooks_dir(target, False), "action_gate.py")
+    if not os.path.exists(src_hook):
+        src_hook = os.path.join(SOURCE, "hooks", "action_gate.py")  # fallback: this repo's copy
+    if not os.path.exists(src_hook):
+        return
+    try:
+        hooks_out = os.path.join(git_dir, "hooks")
+        os.makedirs(hooks_out, exist_ok=True)
+        dst = os.path.join(hooks_out, "pre-push")
+        if os.path.exists(dst):
+            existing = ""
+            try:
+                with open(dst, encoding="utf-8", errors="replace") as f:
+                    existing = f.read()
+            except OSError:
+                pass
+            if "simplicio-loop" not in existing and "action_gate.py" not in existing:
+                log("! .git/hooks/pre-push already exists and isn't ours — leaving it alone. "
+                    "Wire manually: see hooks/README.md")
+                return
+        shebang = "#!/bin/sh\n" if os.name != "nt" else "#!/usr/bin/env sh\n"
+        body = shebang + (
+            "# simplicio-loop: fail-closed secret-scan + local gate before every push (#291)\n"
+            'exec python3 "%s" pre-push "$@"\n' % os.path.abspath(src_hook).replace("\\", "/")
+        )
+        with open(dst, "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+        try:
+            os.chmod(dst, 0o755)
+        except OSError:
+            pass  # e.g. some Windows filesystems — git only needs the file to be runnable via sh
+        log("git pre-push hook installed -> %s (secret-scan + core-gate before push, #291)" % dst)
+    except OSError as e:
+        log("! could not install git pre-push hook (fail-open, non-fatal): %s" % e)
 
 
 def ensure_entry(target, rel, runtime=None):
@@ -271,36 +350,144 @@ def print_claude_snippet():
     log("add to .claude/settings.json manually — see adapters/claude/README.md")
 
 
-def ensure_operators(skip_install=False):
+def _is_externally_managed_error(stderr):
+    """Detect PEP 668's specific `externally-managed-environment` refusal in a pip stderr blob,
+    as opposed to some unrelated failure (network down, bad package name, permission denied for
+    a different reason). Only THIS specific signal should ever justify offering
+    `--break-system-packages` — escalating on every failure was the unconditional blanket
+    behavior issue #293 §3 asks to remove."""
+    return "externally-managed-environment" in (stderr or "").lower()
+
+
+def _pip_install(pkgs, *, allow_break_system_packages=False, extra_args=None, cwd=None,
+                 upgrade=True):
+    """Run `pip install [-U] <pkgs>` with a PEP-668-aware fallback ladder. Never passes
+    `--break-system-packages` unless BOTH (a) pip's own stderr identifies this specific
+    externally-managed-environment refusal and (b) the caller explicitly opted in via
+    `allow_break_system_packages=True` (CLI `--allow-break-system-packages` or
+    `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1`). Returns (ok, detail) where detail is a short
+    string describing which path succeeded, for logging/receipts.
+
+    `upgrade=False` (used by `--mode ci`'s pinned installs, #293 mode `ci`: "versões fixadas")
+    drops `-U`: `pkgs` is expected to already carry an exact `==version` pin in that case, so
+    "upgrade to latest" would be a contradiction — re-running the SAME pinned spec must be a
+    no-op/idempotent re-affirmation of that exact version, never a silent drift to whatever is
+    newest on the day the command happens to run."""
+    base = [sys.executable, "-m", "pip", "install"] + (["-U"] if upgrade else []) + list(extra_args or [])
+    run_kw = {"capture_output": True, "text": True}
+    if cwd:
+        run_kw["cwd"] = cwd
+    plain = subprocess.run(base + pkgs, **run_kw)
+    if plain.returncode == 0:
+        return True, "plain"
+    if _is_externally_managed_error(plain.stderr):
+        if not allow_break_system_packages:
+            log("! pip refused (PEP 668 externally-managed environment). NOT applying "
+                "--break-system-packages without explicit consent.")
+            log("  safe options: use a venv/pipx/uvx, OR re-run with "
+                "--allow-break-system-packages (or SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1) "
+                "if you understand the risk.")
+            return False, "externally_managed_blocked"
+        user_run = subprocess.run(base + ["--user", "--break-system-packages"] + pkgs, **run_kw)
+        if user_run.returncode == 0:
+            log("! installed with --break-system-packages (explicit consent given) — this "
+                "bypasses your OS package manager's protection; prefer a venv/pipx/uvx next time.")
+            return True, "break_system_packages_consented"
+        return False, "break_system_packages_failed"
+    # Some other failure (network, permissions unrelated to PEP 668, ...): retry into the user
+    # site WITHOUT --break-system-packages first — that's always safe to attempt.
+    user_run = subprocess.run(base + ["--user"] + pkgs, **run_kw)
+    if user_run.returncode == 0:
+        return True, "user_site"
+    return False, "failed"
+
+
+def resolve_pinned_version(pkg, timeout=20):
+    """Best-effort resolve an EXACT version to pin `pkg` to for `--mode ci` reproducibility
+    (#293 mode `ci`: "instalação não interativa ... com versões fixadas" — vs `minimal`'s
+    potentially-floating `pip install -U`). Two sources, in order:
+
+    1. A version of `pkg` ALREADY installed in this interpreter — reusing it means re-running a
+       `ci` install on a host that already has the operator package never silently re-resolves to
+       a *different* "latest" on a later day; the pin stays whatever this environment already
+       settled on.
+    2. `pip index versions <pkg>` (network) — the newest version PyPI currently serves, when
+       nothing is installed yet (first-ever `ci` install on a clean host).
+
+    Returns None — never a fabricated/guessed version string — if neither source is reachable
+    (offline sandbox, index API down); the caller (`ensure_operators`) must fall back to a
+    floating install with an explicit warning in that case rather than claim a pin that isn't
+    real.
+    """
+    try:
+        import importlib.metadata as _im
+        return _im.version(pkg)
+    except Exception:
+        pass
+    try:
+        r = subprocess.run([sys.executable, "-m", "pip", "index", "versions", pkg],
+                           capture_output=True, text=True, timeout=timeout)
+        if r.returncode == 0:
+            import re as _re
+            m = _re.search(r"\(([^)]+)\)", r.stdout or "")
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def ensure_operators(skip_install=False, allow_break_system_packages=False, pin_versions=False):
     """Install + verify the REQUIRED operator package and the runtime bins it exposes.
 
     The loop still invokes `simplicio-mapper` and `simplicio-dev-cli` directly, so both binaries
     must be present on PATH at runtime; but the supported install surface is the single package
     `simplicio-cli`, which brings `simplicio-mapper` transitively.
+
+    `allow_break_system_packages`: only when True (CLI `--allow-break-system-packages` or
+    `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1`) may a PEP-668 externally-managed refusal escalate
+    to `--break-system-packages` — see `_pip_install`. Without it, a blocked install falls
+    through to the `uv tool install` path or a manual-install message; it never silently mutates
+    the system Python's protected package set.
+
+    `pin_versions` (CLI `--ci` / `--mode ci`): resolve an exact version via
+    `resolve_pinned_version()` and install `pkg==version` WITHOUT `-U`, instead of the default
+    floating `pip install -U pkg` — #293's "ci — ... com versões fixadas" requirement. If
+    resolution fails (offline, index unreachable, nothing installed yet), this logs an explicit
+    warning and falls back to the normal floating install rather than silently claiming a
+    reproducibility guarantee it can't deliver.
     """
     pkgs = [OPERATOR_PACKAGE]
+    upgrade = True
+    if pin_versions:
+        pinned = resolve_pinned_version(OPERATOR_PACKAGE)
+        if pinned:
+            pkgs = ["%s==%s" % (OPERATOR_PACKAGE, pinned)]
+            upgrade = False
+            log("ci mode: pinning %s==%s for reproducibility (#293 ci mode)"
+                % (OPERATOR_PACKAGE, pinned))
+        else:
+            log("! ci mode: could not resolve a pinned version for %s (offline / index "
+                "unreachable / not yet installed) — falling back to a floating install; "
+                "reproducibility is NOT guaranteed for this run" % OPERATOR_PACKAGE)
+    allow_bsp = allow_break_system_packages or os.environ.get(
+        "SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES") == "1"
     if not skip_install:
-        base = [sys.executable, "-m", "pip", "install", "-U"]
-        try:
-            subprocess.run(base + pkgs, check=True)
-            log("operators installed -> %s" % ", ".join(pkgs))
-        except Exception:
-            # PEP 668 / externally-managed env (Homebrew/Debian python): retry into the user site.
+        ok, detail = _pip_install(pkgs, allow_break_system_packages=allow_bsp, upgrade=upgrade)
+        if ok:
+            log("operators installed (%s) -> %s" % (detail, ", ".join(pkgs)))
+        else:
+            # Try uv tool install if pip failed (uv-managed Python)
             try:
-                subprocess.run(base + ["--user", "--break-system-packages"] + pkgs, check=True)
-                log("operators installed (user site) -> %s" % ", ".join(pkgs))
-            except Exception as e:
-                # Try uv tool install if pip failed (uv-managed Python)
-                try:
-                    uv_path = shutil.which("uv")
-                    if uv_path:
-                        subprocess.run([uv_path, "tool", "install"] + pkgs, check=True)
-                        log("operators installed (uv tool) -> %s" % ", ".join(pkgs))
-                    else:
-                        raise
-                except Exception as e2:
-                    log("! pip install of operators failed (%s) — install manually: pip install %s"
-                        % (e, " ".join(pkgs)))
+                uv_path = shutil.which("uv")
+                if uv_path:
+                    subprocess.run([uv_path, "tool", "install"] + pkgs, check=True)
+                    log("operators installed (uv tool) -> %s" % ", ".join(pkgs))
+                else:
+                    raise RuntimeError("uv not on PATH")
+            except Exception as e2:
+                log("! pip install of operators failed (%s) — install manually: pip install %s"
+                    % (detail, " ".join(pkgs)))
     # A --user install can land the console-scripts in a dir not on PATH (e.g. macOS
     # ~/Library/Python/X.Y/bin). Find each operator binary and symlink it into ~/.local/bin.
     _link_operator_bins()
@@ -437,28 +624,38 @@ def merge_opencode_mcp():
             '"command":["simplicio","serve","--mcp","--stdio"]}}}')
 
 
-def _pip(args_):
-    """pip install with a PEP-668 fallback into the user site. Best-effort (never raises)."""
-    base = [sys.executable or "python3", "-m", "pip", "install", "-U"]
-    for extra in ([], ["--user", "--break-system-packages"]):
-        try:
-            subprocess.run(base + extra + args_, check=True, cwd=SOURCE)
-            return True
-        except Exception:
-            continue
-    return False
+def _pip(args_, allow_break_system_packages=None):
+    """pip install with a PEP-668-aware fallback into the user site. Best-effort (never raises).
+
+    Delegates to `_pip_install` so `install_all_deps()` gets the same hardening as
+    `ensure_operators()`: `--break-system-packages` is only ever attempted when pip's stderr
+    specifically names the externally-managed-environment refusal AND the caller opted in.
+    `allow_break_system_packages=None` reads the `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1` env
+    var (same convention as `ensure_operators`)."""
+    allow_bsp = allow_break_system_packages
+    if allow_bsp is None:
+        allow_bsp = os.environ.get("SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES") == "1"
+    ok, _detail = _pip_install(args_, allow_break_system_packages=allow_bsp, cwd=SOURCE)
+    return ok
 
 
-def install_all_deps():
+def install_all_deps(allow_break_system_packages=False):
     """MANDATORY full install — every capability in simplicio-loop, not opt-in. Installs the package
-    with ALL extras (the ONNX models backend: onnxruntime + huggingface_hub + tokenizers + pillow) so
-    `simplicio-cli kompress/router/embed/image` work, plus the menu-bar tray dep. Heavy but complete;
-    `--minimal` skips it. Best-effort: a single heavy dep failing won't abort the install."""
-    spec = ".[onnx]" if os.path.exists(os.path.join(SOURCE, "pyproject.toml")) else "simplicio-loop[onnx]"
-    log("full install: package + ONNX models backend (%s)..." % spec)
-    _pip([spec]) or log("! full-stack pip failed — run manually: pip install '%s'" % spec)
+    with ALL extras declared in `pyproject.toml` (currently `ml`: the real embedding backend for
+    `simplicio-cli semantic --ml` / `simplicio-cli rag --ml`), plus the menu-bar tray dep. Heavy but
+    complete; `--minimal` skips it. Best-effort: a single heavy dep failing won't abort the install.
+
+    #293 audit fix: this used to reference a `.[onnx]` extra for the ONNX model engine (`kompress`/
+    `router`/`embed`/`image`) that CHANGELOG 3.11.0 removed from both the engine and pyproject.toml
+    ("eliminar extras inexistentes" — the extra this installer asked pip for had not existed in the
+    package for many releases). `ml` is the one extra `pyproject.toml` actually declares today.
+    """
+    spec = ".[ml]" if os.path.exists(os.path.join(SOURCE, "pyproject.toml")) else "simplicio-loop[ml]"
+    log("full install: package + ml embedding backend (%s)..." % spec)
+    _pip([spec], allow_break_system_packages=allow_break_system_packages) or \
+        log("! full-stack pip failed — run manually: pip install '%s'" % spec)
     tray = ["rumps"] if sys.platform == "darwin" else ["pystray", "pillow"]
-    _pip(tray)
+    _pip(tray, allow_break_system_packages=allow_break_system_packages)
 
 
 def _open_dashboard_first_run():
@@ -529,15 +726,25 @@ def _open_dashboard_first_run():
 def setup_monitor(enable):
     """Token monitor = machine-level capture proxy + dashboard + tray + always-capture wiring.
 
-    Default-on (the install is complete by default; `--minimal` disables it). Registers the
-    always-on capture proxy (launchd via setup_simplicio.sh on macOS · systemd/Startup via
-    install_services.py elsewhere) and routes Claude + Codex + Simplicio Agent through the proxy. The
-    dashboard opens ONCE on the first install (then on-demand); the tray is on-demand.
+    #293 AC1 ("O modo padrão é mínimo e não cria serviços, não altera proxy/base URL global e não
+    abre browser"): this is OFF by default. It only runs when the caller passes explicit consent
+    — `--with-service` or `--full-stack` — the same explicit-flag pattern
+    `install_plan.py`/`install_executor.py` use to gate the transactional path's `service`/`proxy`
+    permissions. `enable` is that already-resolved consent boolean, not a raw "not minimal" flip:
+    a plain `install_lib.py claude` run with NO flags must never register a service, rewrite
+    `OPENAI_BASE_URL`/`ANTHROPIC_BASE_URL`, or open a browser.
+
+    Registers the always-on capture proxy (launchd via setup_simplicio.sh on macOS ·
+    systemd/Startup via install_services.py elsewhere) and routes Claude + Codex + Simplicio
+    Agent through the proxy. The dashboard opens ONCE on the first install (then on-demand); the
+    tray is on-demand.
     """
     svc = os.path.join(HERE, "install_services.py")
     setup_sh = os.path.join(HERE, "setup_simplicio.sh")
     if not enable:
-        log("token monitor SKIPPED (--minimal). Enable later: bash scripts/setup_simplicio.sh")
+        log("token monitor SKIPPED (default: minimal mode installs no service/proxy/browser). "
+            "Enable explicitly: --with-service (or --full-stack), or later: "
+            "bash scripts/setup_simplicio.sh")
         return
     py = sys.executable or "python3"
     log("token capture: always-on proxy + always-capture wiring (dashboard/tray are on-demand)...")
@@ -552,24 +759,79 @@ def setup_monitor(enable):
     log("  tray:      bash scripts/simplicio-economy.sh tray   ·   or just ask the agent to open it")
 
 
+def _main_rollback(args):
+    """`install_lib.py rollback <transaction_id> --target DIR` — undo a prior --transactional
+    install from its persisted receipt. See scripts/install_executor.py."""
+    target = None
+    if "--target" in args:
+        i = args.index("--target")
+        target = args[i + 1]
+        del args[i:i + 2]
+    if not args:
+        print("usage: install_lib.py rollback <transaction_id> --target DIR")
+        sys.exit(2)
+    transaction_id = args[0]
+    target = target or os.getcwd()
+    sys.path.insert(0, HERE)
+    import install_executor
+    try:
+        receipt = install_executor.rollback(transaction_id, target)
+    except FileNotFoundError as e:
+        print("! %s" % e)
+        sys.exit(3)
+    print(json.dumps(receipt, indent=2, sort_keys=True, default=str))
+    sys.exit(0)
+
+
 def main():
     args = sys.argv[1:]
+    if args and args[0] == "rollback":
+        _main_rollback(args[1:])
+        return
     is_global = "--global" in args
     skip_operators = "--skip-operators" in args
-    # The install is COMPLETE by default — operators, full deps (ONNX models), monitor, tray, wiring.
-    # `--minimal` (alias `--no-monitor`) is the only opt-out, for headless/CI.
+    # #293 AC1: the DEFAULT install is minimal — operators + skills only. Service/proxy/browser
+    # (the token-monitor capture proxy + wiring + first-run dashboard open) require the EXPLICIT
+    # `--with-service` or `--full-stack` consent flag; `--minimal`/`--no-monitor` remain accepted
+    # as explicit no-ops (they were already the "stay minimal" spelling and still work), but
+    # minimal is no longer something you have to opt INTO — it's what happens with no flags at all.
+    # `--full-stack` additionally installs the heavier deps (`install_all_deps`) that used to run
+    # by default too — same "no implicit global effect" rule.
     # `--lite`: install skills+hooks instantly (<30s), spawn operator install in background.
     # `--strict`: preserve the current hard-BLOCK behavior (operators required immediately).
     # `--dry-run`: build and print/return the simplicio.install-transaction/v1 plan (#293
     #   first slice) and exit WITHOUT any mutation — no skills copy, no operator install,
     #   no hooks/entry wiring, no monitor setup.
+    # `--transactional`: apply the file effects (skills/hooks/scripts/entry/settings) through
+    #   scripts/install_executor.py — backup-before-mutate + a persisted receipt + automatic
+    #   rollback of everything already applied if any step fails partway (#293 step 5).
+    # `--ci`: mode `ci` (#293 modes) — non-interactive, no browser/services (same no-service
+    #   posture as --minimal) AND pins the operator package to an exact resolved version instead
+    #   of a floating `pip install -U` ("com versões fixadas"), for a reproducible CI install.
     lite = "--lite" in args
     strict = "--strict" in args
-    minimal = "--minimal" in args or "--no-monitor" in args
+    full_stack = "--full-stack" in args
+    ci_mode = "--ci" in args
+    explicit_minimal = "--minimal" in args or "--no-monitor" in args or ci_mode
+    # --minimal/--no-monitor/--ci is an unconditional opt-out: it wins even if --with-service or
+    # --full-stack is also (redundantly/contradictorily) passed on the same command line.
+    with_service = ("--with-service" in args or full_stack) and not explicit_minimal
+    minimal = explicit_minimal or not with_service
     dry_run = "--dry-run" in args
+    transactional = "--transactional" in args
+    # #293 §3 hardening: --break-system-packages is NEVER applied unconditionally. This flag
+    # (or SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1) is the one explicit opt-in that lets a PEP-668
+    # externally-managed refusal escalate to it; see _pip_install()/ensure_operators() above.
+    allow_break_system_packages = "--allow-break-system-packages" in args
+    test_fail_step = None
+    if "--test-fail-step" in args:
+        i = args.index("--test-fail-step")
+        test_fail_step = args[i + 1]
+        del args[i:i + 2]
     args = [a for a in args if a not in
             ("--global", "--skip-operators", "--with-monitor", "--minimal", "--no-monitor",
-             "--lite", "--strict", "--dry-run")]
+             "--with-service", "--full-stack", "--ci",
+             "--lite", "--strict", "--dry-run", "--transactional", "--allow-break-system-packages")]
     target = None
     if "--target" in args:
         i = args.index("--target")
@@ -587,11 +849,32 @@ def main():
         cwd = os.getcwd()
         target = cwd if os.path.abspath(cwd) != os.path.abspath(SOURCE) else SOURCE
 
+    install_mode = "full-stack" if full_stack else ("ci" if ci_mode else "minimal")
+    # `--full-stack` is ITSELF the explicit consent the legacy flow has always required for
+    # service/proxy (see `with_service` above); mirror that same consent into the
+    # planner/executor's `with_service`/`with_proxy` flags so choosing `--full-stack` here
+    # doesn't newly BLOCK on install_plan.build_plan's `full_stack_confirmation` gate, which
+    # requires both explicitly.
+    with_proxy = full_stack and not explicit_minimal
+    if ci_mode:
+        # #293 mode `ci`: "não interativa, sem browser/serviços" — same no-service posture as
+        # --minimal (already handled above via explicit_minimal), plus no first-run browser open.
+        os.environ.setdefault("SIMPLICIO_NO_BROWSER", "1")
+
     if dry_run:
         import json as _json
         sys.path.insert(0, HERE)
         from install_plan import build_plan  # local import: keeps install_plan.py import-light/standalone
-        plan = build_plan(runtime, mode="minimal", scope=("user" if is_global else "project"), target=target)
+        # #293 AC2 ("dry-run mostra ... versões ... antes da execução"): for `--ci`, resolve the
+        # ACTUAL version that would be pinned so the dry-run plan shows the real number, not just
+        # the "pinned" intent — a read-only query (already-installed / `pip index versions`), no
+        # mutation, so this stays a true dry-run. Falls back to "" (never fabricated) if
+        # unresolvable (offline sandbox) — `version_pinning` still correctly reads "pinned".
+        resolved = resolve_pinned_version(OPERATOR_PACKAGE) if ci_mode else ""
+        plan = build_plan(runtime, mode=install_mode, scope=("user" if is_global else "project"),
+                          target=target, with_service=with_service, with_proxy=with_proxy,
+                          requested_version=(OPERATOR_PACKAGE if ci_mode else ""),
+                          resolved_version=(resolved or ""))
         print(_json.dumps(plan, indent=2, sort_keys=True))
         sys.exit(0 if plan["status"] != "BLOCKED" else 3)
 
@@ -601,35 +884,66 @@ def main():
         # Skip operators now, spawn in background
         import threading as _threading
         def _bg_install():
-            ensure_operators(skip_install=False)
+            ensure_operators(skip_install=False,
+                            allow_break_system_packages=allow_break_system_packages,
+                            pin_versions=ci_mode)
         _threading.Thread(target=_bg_install, daemon=True).start()
         log("LITE mode: operator install running in background. Loop will auto-upgrade at turn boundary.")
     elif not skip_operators:
-        ensure_operators(skip_install=False)
+        ensure_operators(skip_install=False,
+                        allow_break_system_packages=allow_break_system_packages,
+                        pin_versions=ci_mode)
     if not minimal:
-        install_all_deps()
+        install_all_deps(allow_break_system_packages=allow_break_system_packages)
     # Make the `simplicio-loop` console-script typeable on PATH (so `simplicio-loop dashboard` works);
     # a --user install can drop it in a dir off PATH (macOS ~/Library/Python/*/bin). Best-effort.
     _link_console_script("simplicio-loop", kind="cli")
-    copy_skills(target)
-    copy_hooks(target, is_global)
-    copy_scripts(target, is_global)
+    if transactional:
+        sys.path.insert(0, HERE)
+        import install_executor
+        try:
+            receipt = install_executor.apply(runtime, target=target, is_global=is_global,
+                                            mode=install_mode, with_service=with_service,
+                                            with_proxy=with_proxy, fail_step=test_fail_step)
+        except install_executor.InstallTransactionError as e:
+            log("! transaction ROLLED_BACK (no partial state left): %s" % e)
+            log("  receipt: %s" % os.path.join(target, ".simplicio", "receipts",
+                                                e.receipt["transaction_id"] + ".json"))
+            sys.exit(4)
+        if receipt["status"] == "BLOCKED":
+            log("! plan BLOCKED before any mutation — missing consent: %s"
+                % ", ".join(receipt["permissions_required"]))
+            sys.exit(3)
+        log("transactional install APPLIED -> %s (transaction %s)"
+            % (target, receipt["transaction_id"]))
+        log("  rollback anytime:  python3 scripts/install_lib.py rollback %s --target %s"
+            % (receipt["transaction_id"], target))
+    else:
+        copy_skills(target)
+        copy_hooks(target, is_global)
+        copy_scripts(target, is_global)
+        ensure_entry(target, cfg["entry"], runtime)
+        if cfg["hooks"] == "claude":
+            merge_claude_hooks(target, is_global)
     install_git_precommit_hook(target)
-    ensure_entry(target, cfg["entry"], runtime)
-    if cfg["hooks"] == "claude":
-        merge_claude_hooks(target, is_global)
-    elif cfg["hooks"] == "cursor":
+    install_git_prepush_hook(target)
+    if cfg["hooks"] == "cursor":
         log("loop hooks active via hooks/hooks.json (Cursor format)")
     elif cfg["hooks"] == "native":
         log("native runtime — extension points bind directly (no shell hooks needed)")
-    else:
+    elif cfg["hooks"] != "claude":
         log("loop runs self-paced (no stop-hook) — see adapters/%s/README.md" % runtime)
     if runtime == "opencode":
         copy_skills_opencode()
         merge_opencode_mcp()
     if cfg["mcp"]:
         log("optional native bind:  simplicio install --global   (or: simplicio serve --mcp --stdio)")
-    setup_monitor(not minimal)
+    if not transactional:
+        # `--transactional` already registered the service (if `with_service`) as its own
+        # backed-up/rollback-eligible "service" step (#293 gap 1, install_executor.py) — calling
+        # setup_monitor() here too would be redundant (harmless, since it rewrites the identical
+        # unit/shim, but pointless double work and a second, untracked subprocess invocation).
+        setup_monitor(with_service)
     if lite:
         log("LITE mode active. Run `python3 scripts/doctor.py` to check install status.")
         log("When operators are ready, next loop turn auto-promotes to FULL.")

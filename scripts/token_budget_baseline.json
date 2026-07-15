@@ -3,106 +3,51 @@
   "artifacts": {
     ".claude/skills/simplicio-loop/SKILL.md": {
       "label": "SKILL.md (simplicio-loop)",
-      "tokens": 7022,
-      "words": 3988
-    },
-    ".simplicio\\architecture-inventory.json": {
-      "label": "mapper artifact (architecture-inventory.json)",
-      "tokens": 134195,
-      "words": 31356
-    },
-    ".simplicio\\call-graph.json": {
-      "label": "mapper artifact (call-graph.json)",
-      "tokens": 77146,
-      "words": 15934
-    },
-    ".simplicio\\endpoint-inventory.json": {
-      "label": "mapper artifact (endpoint-inventory.json)",
-      "tokens": 227,
-      "words": 1
-    },
-    ".simplicio\\index-state.json": {
-      "label": "mapper artifact (index-state.json)",
-      "tokens": 131,
-      "words": 34
-    },
-    ".simplicio\\map-job.json": {
-      "label": "mapper artifact (map-job.json)",
-      "tokens": 1102,
-      "words": 354
-    },
-    ".simplicio\\precedent-index.json": {
-      "label": "mapper artifact (precedent-index.json)",
-      "tokens": 38662,
-      "words": 12389
-    },
-    ".simplicio\\project-map.json": {
-      "label": "mapper artifact (project-map.json)",
-      "tokens": 129051,
-      "words": 26985
-    },
-    ".simplicio\\runtime-project-map.json": {
-      "label": "mapper artifact (runtime-project-map.json)",
-      "tokens": 416,
-      "words": 1
-    },
-    ".simplicio\\runtime-resource-map.json": {
-      "label": "mapper artifact (runtime-resource-map.json)",
-      "tokens": 37086,
-      "words": 5100
-    },
-    ".simplicio\\screen-inventory.json": {
-      "label": "mapper artifact (screen-inventory.json)",
-      "tokens": 34,
-      "words": 1
-    },
-    ".simplicio\\symbol-index.json": {
-      "label": "mapper artifact (symbol-index.json)",
-      "tokens": 270829,
-      "words": 66401
+      "tokens": 8570,
+      "words": 4812
     },
     "AGENTS.md": {
       "label": "AGENTS.md",
-      "tokens": 1744,
-      "words": 988
+      "tokens": 1652,
+      "words": 940
     },
     "CLAUDE.md": {
       "label": "CLAUDE.md",
-      "tokens": 2115,
-      "words": 1089
+      "tokens": 2297,
+      "words": 1178
     },
     "scripts/check.py": {
       "label": "check.py",
-      "tokens": 2288,
-      "words": 920
+      "tokens": 2581,
+      "words": 1036
     },
     "scripts/claims_audit.py": {
       "label": "claims_audit.py",
-      "tokens": 6293,
-      "words": 2591
+      "tokens": 7967,
+      "words": 3299
     },
     "scripts/loop_journal.py": {
       "label": "loop_journal.py",
-      "tokens": 10736,
-      "words": 4578
+      "tokens": 11157,
+      "words": 4724
     },
     "scripts/task_anchor.py": {
       "label": "task_anchor.py",
-      "tokens": 5769,
-      "words": 2516
+      "tokens": 6141,
+      "words": 2634
     },
     "scripts/video_evidence.py": {
       "label": "video_evidence.py",
-      "tokens": 5068,
-      "words": 2335
+      "tokens": 5234,
+      "words": 2386
     },
     "simplicio_loop/cli.py": {
       "label": "cli.py",
-      "tokens": 8112,
-      "words": 2707
+      "tokens": 8409,
+      "words": 2828
     }
   },
   "estimator": "heuristic:chars-div-4",
-  "generated_at": "2026-07-11T14:58:25Z",
+  "generated_at": "2026-07-15T00:42:33Z",
   "threshold_growth": 0.25
 }

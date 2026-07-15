@@ -154,6 +154,19 @@ def infer_github_delivery_state(payload: Dict[str, Any]) -> str:
     return "verified"
 
 
+def _should_verify_branch_reachability(target_state: str, verify_reachability: bool | None) -> bool:
+    if verify_reachability is not None:
+        return verify_reachability
+    override = os.environ.get("SIMPLICIO_LOOP_VERIFY_BRANCH_REACHABILITY", "").strip().lower()
+    if override:
+        return override not in ("0", "false", "no")
+    # #290 Fase 3 — only pay the two extra live `gh api` calls (default-branch discovery +
+    # compare) when the caller is actually trying to promote to `merged` or beyond; earlier
+    # targets (pr-open, merge-ready) never need proof the commit already reached the
+    # default branch.
+    return target_state in ("merged", "released", "deployed")
+
+
 def _should_verify_release_artifacts(target_state: str, verify_artifacts: bool | None) -> bool:
     if verify_artifacts is not None:
         return verify_artifacts
@@ -166,8 +179,24 @@ def _should_verify_release_artifacts(target_state: str, verify_artifacts: bool |
     return target_state in ("released", "deployed")
 
 
+def _should_verify_deployment(target_state: str, verify_deployment: bool | None) -> bool:
+    if verify_deployment is not None:
+        return verify_deployment
+    override = os.environ.get("SIMPLICIO_LOOP_VERIFY_DEPLOYMENT", "").strip().lower()
+    if override:
+        return override not in ("0", "false", "no")
+    # #290 Fase 5 — the deployment verifier (release reachability + byte verification +
+    # install smoke against the downloaded bytes) only runs when the caller is actually
+    # trying to promote to `deployed`; every earlier target stays fast and never pays this
+    # cost.
+    return target_state == "deployed"
+
+
 def github_delivery_payload(repo: str, pr: int | None = None, tag: str = "", target_state: str = "",
-                            verify_artifacts: bool | None = None) -> Dict[str, Any]:
+                            verify_artifacts: bool | None = None,
+                            verify_reachability: bool | None = None,
+                            environment: str = "",
+                            verify_deployment: bool | None = None) -> Dict[str, Any]:
     fixture = _fixture_payload("SIMPLICIO_LOOP_GITHUB_FIXTURE_JSON")
     if fixture is not None:
         fixture.setdefault("source_query", {
@@ -176,6 +205,7 @@ def github_delivery_payload(repo: str, pr: int | None = None, tag: str = "", tar
             "pr": pr,
             "tag": tag,
             "target_state": target_state,
+            "environment": environment,
             "mode": "fixture",
         })
         return fixture
@@ -186,6 +216,7 @@ def github_delivery_payload(repo: str, pr: int | None = None, tag: str = "", tar
         "pr": pr,
         "tag": tag,
         "target_state": target_state,
+        "environment": environment,
         "mode": "live",
     }
     if pr is not None:
@@ -246,15 +277,33 @@ def github_delivery_payload(repo: str, pr: int | None = None, tag: str = "", tar
         if str(prj.get("mergedAt") or "").strip():
             # #290 — a merged PR proves the PR event, not that the merge commit is reachable
             # from the real default branch right now (branch protection changes, rebases, or a
-            # revert could all diverge this). No BranchReachabilityVerifier exists yet, so this
-            # must fail closed rather than assert `commit_in_default_branch: true` for free.
+            # revert could all diverge this). By default this stays fail-closed
+            # (`commit_in_default_branch=False`) unless the caller actually asks for the proof
+            # (`target_state` promoting to `merged`+, or `verify_reachability=True`/env
+            # override) -- see `_should_verify_branch_reachability`. When requested, the real
+            # `BranchReachabilityVerifier` (`external_verifiers.verify_branch_reachability`)
+            # discovers the *real* default branch and proves ancestry via the GitHub compare
+            # API before this is ever set True.
+            merge_commit_sha = (prj.get("mergeCommit") or {}).get("oid") or ""
             payload["merge"] = {
-                "commit_sha": ((prj.get("mergeCommit") or {}).get("oid") or ""),
-                "default_branch": "main",
+                "commit_sha": merge_commit_sha,
+                "default_branch": "",
                 "merged_at": prj.get("mergedAt"),
                 "commit_in_default_branch": False,
                 "commit_in_default_branch_reason_code": "merge_reachability_unverified",
             }
+            if _should_verify_branch_reachability(target_state, verify_reachability):
+                from .external_verifiers import verify_branch_reachability
+                reach = verify_branch_reachability(repo, merge_commit_sha)
+                payload["merge"]["default_branch"] = reach.get("default_branch", "")
+                if reach.get("ok") and reach.get("reachable"):
+                    payload["merge"]["commit_in_default_branch"] = True
+                    payload["merge"].pop("commit_in_default_branch_reason_code", None)
+                    payload["merge"]["evidence"] = "github-compare-reachability"
+                    payload["merge"]["compare_status"] = reach.get("compare_status")
+                else:
+                    payload["merge"]["commit_in_default_branch_reason_code"] = reach.get(
+                        "reason_code", "merge_reachability_unverified")
     if tag:
         release = _run_gh(["release", "view", tag, "--repo", repo, "--json", "tagName,isDraft,isPrerelease,assets"])
         if release.returncode != 0:
@@ -297,4 +346,36 @@ def github_delivery_payload(repo: str, pr: int | None = None, tag: str = "", tar
             else:
                 payload["release"].pop("verification_reason_code", None)
             payload["install_smoke"] = verify_result["install_smoke"]
+        # #290 Fase 5 — `deployment` used to be caller-supplied only: an adapter or test could
+        # simply hand in `{"environment": "prod", "smoke": {"passed": True}}` and
+        # `infer_github_delivery_state` would trust it as "deployed" with zero live proof. By
+        # default this stays fail-closed (`deployed_unqueried`) unless the caller actually asks
+        # for the `DeploymentVerifier` to run (`target_state="deployed"`, `environment=` set, or
+        # `verify_deployment=True` / `SIMPLICIO_LOOP_VERIFY_DEPLOYMENT=1`). When it runs, it
+        # composes the same byte-level `verify_release_artifacts`/`run_install_smoke` used by
+        # `released` — "deployed" for a package repo means "installable from the published,
+        # reachability-proven artifact", not a fabricated boolean.
+        payload["deployment"] = {
+            "environment": environment,
+            "verified_at": None,
+            "smoke": {"passed": False, "reason_code": "deployment_unqueried"},
+            "reason_code": "deployment_unverified",
+        }
+        if environment and _should_verify_deployment(target_state, verify_deployment):
+            from .external_verifiers import DeploymentVerifier
+            merge_commit_sha = ((payload.get("merge") or {}).get("commit_sha")) or None
+            deployment_result = DeploymentVerifier().verify(
+                repo, rel.get("tagName", tag), environment,
+                asset_names=asset_names, expected_commit_sha=merge_commit_sha,
+            )
+            payload["deployment"] = {
+                "environment": deployment_result.get("environment", environment),
+                "commit_sha": deployment_result.get("commit_sha"),
+                "artifact_digest": deployment_result.get("artifact_digest"),
+                "verified_at": deployment_result.get("verified_at"),
+                "smoke": deployment_result.get("smoke", {"passed": False, "reason_code": "deployment_unqueried"}),
+                "evidence": deployment_result.get("evidence", "external-verifiers-deployment-install-smoke"),
+            }
+            if not deployment_result.get("ok"):
+                payload["deployment"]["reason_code"] = deployment_result.get("reason_code", "deployment_unverified")
     return payload

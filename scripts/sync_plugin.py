@@ -6,7 +6,7 @@ marketplace plugin. A marketplace install copies the WHOLE plugin source to the 
 plugin must NOT carry the heavy pip-only assets. `plugin/` is therefore a SLIM mirror containing only
 what the plugin actually loads or transitively depends on at runtime:
 
-  plugin/skills/   <- byte-identical copy of .claude/skills/  (the 6 skills)
+  plugin/skills/   <- byte-identical copy of .claude/skills/  (the 7 skills)
   plugin/hooks/    <- ONLY the hooks wired by hooks.claude.json (+ orient_clamp, a runtime dep)
   plugin/scripts/  <- helper scripts invoked by the shipped loop hook
   plugin/tests/    <- minimal parity/self-run tests for the shipped loop behavior

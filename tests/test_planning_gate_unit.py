@@ -3,8 +3,9 @@
 `simplicio_loop/planning_gate.py` packages an already-computed `validate_plan()`
 verdict into one hash-bound `simplicio.planning-receipt/v1` receipt and derives a
 mutation-authority token from the run/attempt/contract/plan/lease/fence identity
-tuple -- the token that `execute_operator()` can (opt-in, via
-SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) require before mutating the repository.
+tuple -- the token that `execute_operator()`/`execute_operator_batch()` require
+BY DEFAULT (mandatory, not opt-in) before mutating the repository;
+`SIMPLICIO_REQUIRE_MUTATION_AUTHORITY` only lets a caller explicitly opt back out.
 """
 import json
 
@@ -15,10 +16,30 @@ from simplicio_loop.planning_gate import (
     content_hash,
     evaluate_mutation_authority,
     load_planning_receipt,
+    mutation_authority_required,
     mutation_authority_token,
     receipt_path,
     verify_mutation_authority,
 )
+
+
+def test_mutation_authority_required_defaults_true_when_unset():
+    assert mutation_authority_required({}) is True
+
+
+def test_mutation_authority_required_true_for_explicit_truthy_values():
+    for value in ("1", "true", "True", "yes", "YES"):
+        assert mutation_authority_required({"SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": value}) is True
+
+
+def test_mutation_authority_required_false_only_for_explicit_falsy_opt_out():
+    for value in ("0", "false", "False", "no", "off", "legacy"):
+        assert mutation_authority_required({"SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": value}) is False
+
+
+def test_mutation_authority_required_true_for_unrecognized_value():
+    # Fail closed: an unrecognized value (typo) does NOT silently disable the gate.
+    assert mutation_authority_required({"SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": "nope"}) is True
 
 
 def _contract():
@@ -186,3 +207,83 @@ def test_evaluate_mutation_authority_blocks_on_wrong_schema(tmp_path):
                                           task_contract_hash="c1", plan_hash="p1")
     assert verdict["ok"] is False
     assert verdict["reason_code"] == "planning_receipt_schema_invalid"
+
+
+# --- #284 item 1: GitHub source-revision capture folded into the identity tuple ----
+
+
+def _source_snapshot(snapshot_hash: str) -> dict:
+    return {
+        "schema": "simplicio.source-snapshot/v1",
+        "source": {
+            "provider": "github", "repo": "acme/repo", "item_id": "284",
+            "revision": "2026-01-01T00:00:00Z#comments=0",
+            "snapshot_hash": snapshot_hash, "observed_at": "2026-01-01T00:00:00Z",
+        },
+    }
+
+
+def test_mutation_authority_token_changes_with_source_snapshot_hash():
+    base = dict(run_id="r1", attempt=1, task_contract_hash="c1", plan_hash="p1")
+    without_source = mutation_authority_token(**base)
+    with_source_a = mutation_authority_token(**base, source_snapshot_hash="hash-a")
+    with_source_b = mutation_authority_token(**base, source_snapshot_hash="hash-b")
+    assert without_source != with_source_a
+    assert with_source_a != with_source_b
+
+
+def test_build_planning_receipt_embeds_source_snapshot_and_folds_hash_into_authority(tmp_path):
+    plan_validation = _valid_plan_validation(tmp_path)
+    snapshot = _source_snapshot("hash-a")
+    receipt = build_planning_receipt(run_id="run-1", attempt=1, contract=_contract(),
+                                     plan=_plan(tmp_path), plan_validation=plan_validation,
+                                     source_snapshot=snapshot)
+    assert receipt["ready_for_mutation"] is True
+    assert receipt["source"]["snapshot_hash"] == "hash-a"
+    # the authority must NOT equal the one minted without a source snapshot
+    no_source_receipt = build_planning_receipt(run_id="run-1", attempt=1, contract=_contract(),
+                                               plan=_plan(tmp_path), plan_validation=plan_validation)
+    assert receipt["mutation_authority"] != no_source_receipt["mutation_authority"]
+
+
+def test_build_planning_receipt_omits_source_block_when_no_snapshot_given(tmp_path):
+    plan_validation = _valid_plan_validation(tmp_path)
+    receipt = build_planning_receipt(run_id="run-1", attempt=1, contract=_contract(),
+                                     plan=_plan(tmp_path), plan_validation=plan_validation)
+    assert "source" not in receipt
+
+
+def test_evaluate_mutation_authority_blocks_on_source_drift(tmp_path):
+    plan_validation = _valid_plan_validation(tmp_path)
+    receipt = build_planning_receipt(run_id="run-1", attempt=1, contract=_contract(),
+                                     plan=_plan(tmp_path), plan_validation=plan_validation,
+                                     source_snapshot=_source_snapshot("hash-a"))
+    receipt_path(tmp_path).write_text(json.dumps(receipt), encoding="utf-8")
+
+    unchanged = evaluate_mutation_authority(
+        tmp_path, run_id="run-1", attempt=1, task_contract_hash=receipt["task_contract_hash"],
+        plan_hash=receipt["plan_hash"], source_snapshot_hash="hash-a",
+    )
+    assert unchanged["ok"] is True, unchanged
+
+    drifted = evaluate_mutation_authority(
+        tmp_path, run_id="run-1", attempt=1, task_contract_hash=receipt["task_contract_hash"],
+        plan_hash=receipt["plan_hash"], source_snapshot_hash="hash-b-after-issue-edit",
+    )
+    assert drifted["ok"] is False
+    assert drifted["reason_code"] == "source_drift"
+
+
+def test_evaluate_mutation_authority_ignores_source_hash_when_receipt_has_none(tmp_path):
+    # a receipt built WITHOUT a source snapshot (local/non-GitHub run) must not be
+    # penalized just because the caller happens to pass a source_snapshot_hash.
+    plan_validation = _valid_plan_validation(tmp_path)
+    receipt = build_planning_receipt(run_id="run-1", attempt=1, contract=_contract(),
+                                     plan=_plan(tmp_path), plan_validation=plan_validation)
+    receipt_path(tmp_path).write_text(json.dumps(receipt), encoding="utf-8")
+
+    verdict = evaluate_mutation_authority(
+        tmp_path, run_id="run-1", attempt=1, task_contract_hash=receipt["task_contract_hash"],
+        plan_hash=receipt["plan_hash"], source_snapshot_hash="irrelevant-because-receipt-has-no-source",
+    )
+    assert verdict["ok"] is True, verdict

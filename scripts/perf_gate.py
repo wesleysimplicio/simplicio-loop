@@ -178,6 +178,10 @@ def main() -> int:
     parser.add_argument("--update-baseline", action="store_true", help="regenerate the committed baseline")
     parser.add_argument("--json", action="store_true", help="print machine-readable report")
     parser.add_argument("--diagnostics-dir", default=None, help="on failure, dump a diagnostic report here")
+    parser.add_argument("--emit-json", default=None,
+                        help="#283: unconditionally write {report, baseline, failures, ok} here, "
+                             "so scripts/quality_matrix.py populate / an independent re-verifier "
+                             "can consume the exact structured verdict this run computed")
     args = parser.parse_args()
 
     report = run_benchmark(args.cycles)
@@ -239,6 +243,19 @@ def main() -> int:
                 print(f"  - {f}", file=sys.stderr)
         else:
             print("\n[perf-gate] OK: no regression past threshold, drain converged.")
+
+    if args.emit_json:
+        payload = {
+            "schema": "simplicio.perf-gate/v1",
+            "ok": not failures,
+            "report": report,
+            "baseline": baseline,
+            "failures": failures,
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        with open(args.emit_json, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+            fh.write("\n")
 
     if failures:
         if args.diagnostics_dir:

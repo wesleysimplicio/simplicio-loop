@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from .delivery import validate_delivery_receipt
+from .delivery import delivery_rank, validate_delivery_receipt
 from .evidence import watcher_truth_from_receipt
+from .github_lifecycle import load_lifecycle_receipt
 from .quality_matrix import evaluate_quality_matrix
 
 PROMISE_RE = re.compile(r"<promise>\s*(.*?)\s*</promise>", re.IGNORECASE | re.DOTALL)
@@ -134,12 +135,86 @@ def _run_artifacts_gate(run_dir: Path) -> Tuple[bool, List[Dict[str, Any]], Dict
     return True, gates, loaded
 
 
+def _source_lifecycle_gate(run_dir: Path) -> Tuple[bool, Dict[str, Any]]:
+    """#285's remaining gap: wire `CLOSE_PENDING_RECONCILIATION` into the COMPLETE gate.
+
+    `simplicio_loop/github_lifecycle.py::close_source_issue` can report
+    `CLOSE_PENDING_RECONCILIATION` when the source issue closed for real but the final
+    lifecycle-comment write could not be confirmed (see its docstring). Before this gate, that
+    reason code was inert -- returned to a caller but never checked by anything deciding
+    completion. If a lifecycle receipt has been persisted for this run
+    (`github_lifecycle.persist_lifecycle_receipt`, wired from `runner.py::_sync_github_lifecycle`
+    and `scripts/github_lifecycle.py`'s `publish`/`close --run-dir`) and it reports
+    `CLOSE_PENDING_RECONCILIATION`, completion is blocked until `reconcile()` clears it. A run
+    with no lifecycle receipt at all (no GitHub source, or lifecycle sync never enabled) is not
+    penalized -- this gate is additive, never a new hard requirement for sourceless runs.
+    """
+    receipt = load_lifecycle_receipt(run_dir)
+    if receipt is None:
+        return True, _gate("source_lifecycle", True, "source_lifecycle_not_configured",
+                           "no lifecycle receipt persisted for this run (no GitHub source, or sync disabled)")
+    pending = receipt.get("outcome") == "CLOSE_PENDING_RECONCILIATION" or \
+        receipt.get("reason_code") == "CLOSE_PENDING_RECONCILIATION"
+    if pending:
+        return False, _gate("source_lifecycle", False, "source_close_pending_reconciliation",
+                            "the source issue close is pending reconciliation "
+                            "(source closed but the final comment write is unconfirmed) -- "
+                            "run `github_lifecycle.py reconcile` before completion")
+    return True, _gate("source_lifecycle", True, "source_lifecycle_clear",
+                       "persisted lifecycle receipt reports no pending reconciliation")
+
+
 def _quality_matrix_gate(run_dir: Path) -> Tuple[bool, Dict[str, Any], Dict[str, Any]]:
     """Fail-closed quality gate (#278): implementation/unit/integration/system/
     regression/benchmark evidence plus minimum coverage, all-or-nothing."""
     verdict = evaluate_quality_matrix(str(run_dir))
     gate = _gate("quality_matrix", verdict["ready"], verdict["reason_code"], verdict["reason"])
     return verdict["ready"], gate, verdict
+
+
+def _commit_binding_gate(run_dir: Path, delivery_receipt: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    """#290: two green receipts for two different commits must never satisfy the same gate.
+
+    `_run_artifacts_gate` (delivery/#288 evidence) and `_quality_matrix_gate` (#283) are each
+    validated independently against the run directory, but neither previously proved they were
+    talking about the *same* commit. A stale or mismatched #283 receipt could sit next to a fresh
+    #288/delivery receipt and both read PASS while covering different SHAs. This gate only applies
+    once the delivery state has actually reached `merge-ready` or higher (i.e. real external
+    convergence is being claimed); lower states (`implemented`/`verified`/local-fixture work) are
+    unaffected. Per the "Unknown is not pass" invariant, an absent identity on either side blocks
+    rather than defaulting to a pass.
+    """
+    current_state = (delivery_receipt.get("current_state") or "").strip().lower()
+    if delivery_rank(current_state) < delivery_rank("merge-ready"):
+        return True, _gate("commit_binding", True, "commit_binding_not_applicable",
+                           "commit binding only applies at merge-ready or a higher delivery state")
+    payload = delivery_receipt.get("source_payload") or {}
+    expected_sha = (
+        str((payload.get("merge") or {}).get("commit_sha") or "").strip()
+        or str((payload.get("pr") or {}).get("head_sha") or "").strip()
+    )
+    if not expected_sha:
+        return False, _gate("commit_binding", False, "commit_binding_sha_missing",
+                            "delivery source payload has no head/commit sha to bind evidence against")
+    quality_receipt = _load_json(run_dir / "quality-matrix.json") or {}
+    quality_sha = str((quality_receipt.get("work_item") or {}).get("head_sha") or "").strip()
+    if not quality_sha:
+        return False, _gate("commit_binding", False, "quality_matrix_commit_unbound",
+                            "quality-matrix receipt does not declare work_item.head_sha; cannot "
+                            "prove the #283 evidence was gathered for this commit")
+    if quality_sha != expected_sha:
+        return False, _gate("commit_binding", False, "quality_matrix_commit_mismatch",
+                            f"quality-matrix work_item.head_sha {quality_sha!r} does not match "
+                            f"the delivery receipt sha {expected_sha!r}")
+    merge_queue_receipt = _load_json(run_dir / "merge-queue-receipt.json")
+    if merge_queue_receipt is not None:
+        mq_sha = str(merge_queue_receipt.get("head_sha") or merge_queue_receipt.get("commit_sha") or "").strip()
+        if mq_sha and mq_sha != expected_sha:
+            return False, _gate("commit_binding", False, "merge_queue_commit_mismatch",
+                                f"merge-queue receipt sha {mq_sha!r} does not match the delivery "
+                                f"receipt sha {expected_sha!r}")
+    return True, _gate("commit_binding", True, "commit_binding_verified",
+                       f"quality-matrix and delivery evidence are bound to the same commit {expected_sha!r}")
 
 
 def completion_receipt_path(run_dir: str) -> Path:
@@ -276,6 +351,21 @@ def evaluate_completion(loop_dir: str, run_dir: str = "", response_text: str = "
     if not quality_ok:
         result["reason_code"] = quality_gate["reason_code"]
         result["reason"] = quality_gate["detail"]
+        return result
+
+    delivery_receipt = _loaded.get("delivery_receipt") if _loaded else None
+    binding_ok, binding_gate = _commit_binding_gate(Path(run_dir), delivery_receipt or {})
+    gates.append(binding_gate)
+    if not binding_ok:
+        result["reason_code"] = binding_gate["reason_code"]
+        result["reason"] = binding_gate["detail"]
+        return result
+
+    lifecycle_ok, lifecycle_gate = _source_lifecycle_gate(Path(run_dir))
+    gates.append(lifecycle_gate)
+    if not lifecycle_ok:
+        result["reason_code"] = lifecycle_gate["reason_code"]
+        result["reason"] = lifecycle_gate["detail"]
         return result
 
     result.update({

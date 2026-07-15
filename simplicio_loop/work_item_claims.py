@@ -16,10 +16,27 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .agent_contract import IDENTITY_FIELDS, bind_receipt, build_context_pack, validate_identity
-from .remote_queue import Lease, RemoteQueue
+from .receipt_verifier import ReceiptSchema, ReceiptVerdict, canonical_content_hash, verify_receipt
+from .remote_queue import Lease, RemoteQueue, build_completion_receipt
 
 SCHEMA = "simplicio.work-item-attempt/v1"
 EVENT_SCHEMA = "simplicio.work-item-attempt-event/v1"
+
+
+class ReceiptVerificationFailed(RuntimeError):
+    """A receipt offered for completion failed schema/hash/freshness/provenance checks.
+
+    Closes the #286 gap where the remote-queue completion path (``AttemptCoordinator``)
+    accepted any receipt shape without running it through ``receipt_verifier.verify_receipt``
+    (issue #288) -- unlike ``runner.py``, which already gates on it. Only a
+    :class:`~simplicio_loop.receipt_verifier.ReceiptStatus.VERIFIED` verdict may complete a
+    lease through :meth:`AttemptCoordinator.verify_and_complete`; every other verdict raises
+    here instead of silently completing the task.
+    """
+
+    def __init__(self, verdict: ReceiptVerdict) -> None:
+        super().__init__("receipt verification failed: %s (%s)" % (verdict.status, verdict.reason))
+        self.verdict = verdict
 
 
 class LeaseLostDuringExecution(RuntimeError):
@@ -113,25 +130,79 @@ class AttemptCoordinator:
         self._append_json(attempt, event)
         return event
 
-    def accept_receipt(self, attempt: WorkItemAttempt, receipt: Mapping[str, Any]) -> Dict[str, Any]:
-        """Accept a worker result only while its lease is current."""
+    def accept_receipt(self, attempt: WorkItemAttempt, receipt: Mapping[str, Any], *,
+                        schema: Optional[ReceiptSchema] = None,
+                        max_age_seconds: Optional[float] = None) -> Dict[str, Any]:
+        """Accept a worker result only while its lease is current.
+
+        When ``schema`` is given the bound receipt is additionally run through
+        ``receipt_verifier.verify_receipt`` (schema/hash/freshness/provenance -- issue #288)
+        before being recorded; the verdict is attached under ``verification`` and a
+        non-``VERIFIED`` result raises :class:`ReceiptVerificationFailed` instead of being
+        recorded as if it were trustworthy. ``schema=None`` preserves the previous
+        existence-only behavior for callers not yet passing a schema.
+        """
         self.assert_active(attempt)
         result = bind_receipt(receipt, attempt.lease.identity or {"agent_id": attempt.lease.agent_id},
                               context_pack=attempt.context)
         result.update({"schema": result.get("schema") or SCHEMA, "run_id": self.run_id,
                        "work_item_id": attempt.work_item_id, "attempt_id": attempt.attempt_id,
                        "fencing_token": attempt.lease.fencing_token, "lease_id": attempt.lease.lease_id})
+        if schema is not None:
+            verdict = verify_receipt(result, schema=schema, max_age_seconds=max_age_seconds)
+            result["verification"] = verdict.to_dict()
+            if not verdict.verified:
+                raise ReceiptVerificationFailed(verdict)
         self._append_json(attempt, result, name="receipt")
         return result
 
-    def complete(self, attempt: WorkItemAttempt, *, receipt_ref: str) -> Dict[str, Any]:
+    def complete(self, attempt: WorkItemAttempt, *, receipt_ref: str,
+                receipt: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        """Transition the queue lease to ``completed``.
+
+        ``receipt`` (issue #286 step 9), when omitted, is built automatically from the
+        attempt's own task/agent/fence so every completion through this coordinator still
+        presents a wire receipt the queue server independently verifies (schema/hash/
+        task-agent-fence binding) rather than a bare, unverifiable ``receipt_ref`` string.
+        Pass an explicit ``receipt`` (see :meth:`verify_and_complete`) to additionally bind
+        the server-side check to a client-verified content hash.
+        """
         self.assert_active(attempt)
-        result = self.queue.complete(attempt.lease, receipt_ref=receipt_ref)
+        queue_receipt = receipt if receipt is not None else build_completion_receipt(
+            task_id=attempt.lease.task_id, agent_id=attempt.lease.agent_id,
+            fencing_token=attempt.lease.fencing_token, receipt_ref=receipt_ref,
+        )
+        result = self.queue.complete(attempt.lease, receipt_ref=receipt_ref, receipt=queue_receipt)
         # The queue transition makes the lease terminal; record the child event after it
         # without re-checking a lease that is intentionally no longer active.
         self._append_terminal(attempt, "completed", {"receipt_ref": receipt_ref})
         return {**result, "run_id": self.run_id, "work_item_id": attempt.work_item_id,
                 "attempt_id": attempt.attempt_id}
+
+    def verify_and_complete(self, attempt: WorkItemAttempt, receipt: Mapping[str, Any], *,
+                            receipt_ref: str, schema: ReceiptSchema,
+                            max_age_seconds: Optional[float] = None) -> Dict[str, Any]:
+        """Gate ``complete`` on a passing ``receipt_verifier`` verdict, not just file existence.
+
+        This is the wiring the #286 remote-worker flow was missing: a worker cannot
+        transition a lease to ``completed`` in the shared queue merely by presenting a
+        ``receipt_ref`` path -- the receipt content itself must pass schema, hash,
+        freshness and provenance checks first (:class:`ReceiptVerificationFailed` is raised
+        otherwise, and the lease is left active so a corrected receipt/retry can follow).
+
+        The client-verified content's hash is folded into the wire receipt handed to
+        ``complete`` (step 9), so the *queue server* -- not merely this in-process
+        coordinator -- also independently rejects a stale fence or a receipt for the wrong
+        task/agent before ever marking the task ``completed``.
+        """
+        accepted = self.accept_receipt(attempt, receipt, schema=schema, max_age_seconds=max_age_seconds)
+        queue_receipt = build_completion_receipt(
+            task_id=attempt.lease.task_id, agent_id=attempt.lease.agent_id,
+            fencing_token=attempt.lease.fencing_token, receipt_ref=receipt_ref,
+            extra={"content_sha": canonical_content_hash(accepted), "schema_name": schema.name},
+        )
+        completed = self.complete(attempt, receipt_ref=receipt_ref, receipt=queue_receipt)
+        return {**completed, "verification": accepted["verification"]}
 
     def retry(self, attempt: WorkItemAttempt, *, reason: str = "retry") -> WorkItemAttempt:
         """Release a bounded attempt; the next claim receives a new fence and attempt id."""
@@ -149,7 +220,7 @@ class AttemptCoordinator:
 
     def run_guarded(self, attempt: WorkItemAttempt, argv: Sequence[str], *, cwd: str | Path,
                      timeout: float = 180.0, heartbeat_interval: float = 5.0,
-                     ttl: float = 60.0) -> subprocess.CompletedProcess:
+                     ttl: float = 60.0, env: Optional[Mapping[str, str]] = None) -> subprocess.CompletedProcess:
         """Run a mutating subprocess while heartbeating the lease in the background.
 
         Fixes the epic-183 gap where a long-running operator invocation (e.g.
@@ -161,11 +232,15 @@ class AttemptCoordinator:
         :class:`LeaseLostDuringExecution` is raised instead of returning a result that
         looks successful. On graceful completion the final exit is still fenced by a
         last :meth:`assert_active` check before the caller sees the result.
+
+        ``env`` lets a caller (e.g. ``runner.py::execute_operator``) pass its own operator
+        environment through the guard instead of silently falling back to this process's
+        environment -- a guarded dispatch must see the exact env an unguarded dispatch would.
         """
         self.assert_active(attempt)
         proc = subprocess.Popen(
             list(argv), cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=dict(env) if env is not None else None,
         )
         lease_lost: List[BaseException] = []
         stop = threading.Event()
@@ -236,4 +311,5 @@ class AttemptCoordinator:
                                        if attempt.context.get("issue_ref") else {})})
 
 
-__all__ = ["AttemptCoordinator", "EVENT_SCHEMA", "LeaseLostDuringExecution", "SCHEMA", "WorkItemAttempt"]
+__all__ = ["AttemptCoordinator", "EVENT_SCHEMA", "LeaseLostDuringExecution", "ReceiptVerificationFailed",
+           "SCHEMA", "WorkItemAttempt"]

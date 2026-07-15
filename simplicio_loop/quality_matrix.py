@@ -63,6 +63,14 @@ NOT_APPLICABLE_ELIGIBLE = frozenset({"benchmark"})
 DEFAULT_COVERAGE_THRESHOLD = 85.0
 RECEIPT_FILENAME = "quality-matrix.json"
 
+# #283: the four lanes the issue's example `simplicio.quality-gate/v1` envelope nests
+# under a "tests" object (implementation/benchmark/tdd stay top-level in that same
+# example). `evaluate_quality_matrix` still reads these from the flat `requirements`
+# dict for backward compatibility with every #278/#283 receipt already in the wild,
+# but now also accepts them nested under "tests" -- see `_merge_tests_envelope` and
+# `sync_tests_envelope` below, which keep the two views in lockstep.
+TESTS_ENVELOPE_CATEGORIES: Tuple[str, ...] = ("unit", "integration", "system", "regression")
+
 # #283 deterministic change classification (bug/task/feat/fix/chore). Order matters:
 # first matching keyword wins, checked against labels first (authoritative), then
 # title (heuristic fallback) — mirrors `scripts/repo_conventions.py`'s classifier
@@ -129,6 +137,41 @@ def _gate(name: str, ok: bool, reason_code: str, detail: str) -> Dict[str, Any]:
 
 def receipt_path(run_dir: str) -> Path:
     return Path(run_dir) / RECEIPT_FILENAME
+
+
+def _merge_tests_envelope(requirements: Dict[str, Any], receipt: Dict[str, Any]) -> Dict[str, Any]:
+    """#283: accept the issue's literal envelope shape (`tests.unit`/`tests.integration`/
+    `tests.system`/`tests.regression`) as an alternative to the flat `requirements.<lane>`
+    entries these same four categories have always used. A flat `requirements` entry always
+    wins when both are present (never silently overridden by a stale "tests" mirror); "tests"
+    only fills in a category the flat dict is missing entirely.
+    """
+    tests_obj = receipt.get("tests")
+    if not isinstance(tests_obj, dict):
+        return requirements
+    merged = dict(requirements)
+    for name in TESTS_ENVELOPE_CATEGORIES:
+        if name not in merged and isinstance(tests_obj.get(name), dict):
+            merged[name] = tests_obj[name]
+    return merged
+
+
+def sync_tests_envelope(receipt: Dict[str, Any]) -> Dict[str, Any]:
+    """#283: (re)compute the nested `tests` mirror from the canonical `requirements` lanes.
+
+    Call this after writing/updating `receipt["requirements"]` so the receipt satisfies the
+    issue's literal `simplicio.quality-gate/v1` example shape (`tests.unit`/`tests.integration`/
+    `tests.system`/`tests.regression`) as well as the flat shape every existing #278/#283
+    producer and consumer already reads/writes. Returns the same receipt for chaining.
+    """
+    requirements = receipt.get("requirements")
+    if not isinstance(requirements, dict):
+        requirements = {}
+    receipt["tests"] = {
+        name: requirements.get(name, {"status": "unset", "proof_ref": "", "detail": ""})
+        for name in TESTS_ENVELOPE_CATEGORIES
+    }
+    return receipt
 
 
 def _load_json(path: Path) -> Dict[str, Any] | None:
@@ -249,6 +292,9 @@ def evaluate_quality_matrix(run_dir: str) -> Dict[str, Any]:
     requirements = receipt.get("requirements")
     if not isinstance(requirements, dict):
         requirements = {}
+    # #283: also accept the issue's literal envelope shape ("tests.unit"/"tests.integration"/
+    # "tests.system"/"tests.regression") for any of those four lanes the flat dict is missing.
+    requirements = _merge_tests_envelope(requirements, receipt)
 
     # #283: policy block is optional and defaults to the exact #278 behavior —
     # every REQUIRED_REQUIREMENTS lane mandatory, TDD not evaluated, no lane may be
@@ -258,15 +304,6 @@ def evaluate_quality_matrix(run_dir: str) -> Dict[str, Any]:
     if not isinstance(policy, dict):
         policy = {}
     result["policy"] = policy
-
-    # #283: propagate the full envelope (run_id, work_item, nested tests) so a
-    # single receipt maps every lane to its category with its own proof_ref.
-    if isinstance(receipt.get("run_id"), str):
-        result["run_id"] = receipt["run_id"]
-    if isinstance(receipt.get("work_item"), dict):
-        result["work_item"] = receipt["work_item"]
-    if isinstance(receipt.get("tests"), dict):
-        result["tests"] = receipt["tests"]
 
     for name in REQUIRED_REQUIREMENTS:
         if policy.get(f"{name}_required") is False:
@@ -317,17 +354,29 @@ def evaluate_quality_matrix(run_dir: str) -> Dict[str, Any]:
 
 
 def build_quality_matrix_template(coverage_threshold: float = DEFAULT_COVERAGE_THRESHOLD,
-                                  change_type: str | None = None) -> Dict[str, Any]:
+                                  change_type: str | None = None,
+                                  run_id: str | None = None,
+                                  work_item: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Return an all-failing template receipt — a starting point, never a passing default.
 
     ``change_type`` is optional (#283); when given (one of `CHANGE_TYPES`) the
     template is seeded with `default_policy_for_change_type`'s policy block and,
     if that policy requires TDD, an unset ``tdd`` lane. Omitting it keeps the
     exact #278 template shape.
+
+    ``run_id``/``work_item`` are optional (#283, closing the last gap of the issue's
+    literal ``simplicio.quality-gate/v1`` envelope example): when given they are
+    recorded verbatim for cross-linking with the delivery/evidence receipts and the
+    task anchor. Omitting both keeps every existing field exactly as before; a
+    ``tests`` nested mirror of the four ``TESTS_ENVELOPE_CATEGORIES`` lanes is always
+    added (see `sync_tests_envelope`) so the template already satisfies both the flat
+    and the nested reading of the schema.
     """
     validate_coverage_threshold(coverage_threshold)
     template: Dict[str, Any] = {
         "schema": SCHEMA,
+        "run_id": run_id or "",
+        "work_item": dict(work_item) if work_item else {},
         "coverage_threshold": coverage_threshold,
         "requirements": {
             name: {"status": "unset", "proof_ref": "", "detail": ""}
@@ -342,315 +391,183 @@ def build_quality_matrix_template(coverage_threshold: float = DEFAULT_COVERAGE_T
             template["requirements"][OPTIONAL_TDD_REQUIREMENT] = {
                 "status": "unset", "red_proof_ref": "", "green_proof_ref": "", "detail": "",
             }
+    sync_tests_envelope(template)
     return template
 
 
-# ---------------------------------------------------------------------------
-# #283 remaining work: independent watcher + receipt auto-population
-# ---------------------------------------------------------------------------
-#
-# The three gaps left open on issue #283 (per the issue's own comment thread):
-#   1. an *independent* watcher that re-derives each quality-matrix lane's
-#      verdict from the raw gate scripts' output instead of trusting the
-#      receipt's self-reported status;
-#   2. auto-populating the receipt from coverage_gate.py / regression_test_gate.py
-#      / perf_gate.py / quality_matrix_bench.py (which already run in CI under
-#      .github/workflows/quality-gate.yml but whose output isn't yet wired into
-#      quality-matrix.json automatically);
-#   3. the full simplicio.quality-gate/v1 envelope (run_id, work_item, nested
-#      per-category `tests` object).
+# #283 remaining item: "independent watcher re-verification of TDD lane claims" — the pieces
+# below re-derive a lane's verdict from the RAW artifact a lane's proof_ref points to (exit codes,
+# commit shas, freshly re-executed gate output) instead of trusting the receipt's self-reported
+# ``status`` string. This is deliberately a second, independent code path from
+# `evaluate_quality_matrix` above (which only reads what the receipt claims) — a receipt that
+# lies about its own status (or whose evidence has gone stale) is exactly what this catches.
 
-# Maps a quality-matrix lane to the raw gate script that can recompute it.
-_RAW_GATE_SCRIPT: Dict[str, str] = {
-    "coverage": "coverage_gate.py",
-    "regression": "regression_test_gate.py",
-    "benchmark": "perf_gate.py",
-}
-
-# Lanes whose raw probe yields a numeric `measured` coverage percentage.
-_COVERAGE_LIKE = frozenset({"coverage"})
+RERUNNABLE_LANES: Tuple[str, ...] = ("regression", "benchmark")
 
 
-def _probe_raw_gate(gate_name: str, run_dir: str) -> Dict[str, Any]:
-    """Recompute one lane's evidence from the raw gate script, NOT from the receipt.
+def _resolve_ref(run_dir: Path, ref: str) -> "Path | None":
+    """Resolve a proof_ref that may be relative to the run dir or to the repo root."""
+    if not ref:
+        return None
+    candidate = Path(ref)
+    if candidate.is_absolute() and candidate.exists():
+        return candidate
+    run_candidate = run_dir / ref
+    if run_candidate.exists():
+        return run_candidate
+    repo_candidate = run_dir.parent.parent.parent / ref  # best-effort: .orchestrator/runs/<id>/..
+    if repo_candidate.exists():
+        return repo_candidate
+    return None
 
-    Returns ``{"status", "measured", "proof_ref", "detail"}`` derived by actually
-    executing the underlying CI gate (or parsing its output). This is the core of
-    the independent watcher: it never reads ``requirements[gate_name].status`` from
-    the self-reported receipt. Fail-closed — any error becomes a ``fail`` probe so a
-    broken probe can never silently pass the gate.
 
-    Lanes without a dedicated gate script are derived from first principles:
-      * ``implementation`` — proven by the presence of non-test source changes in the
-        working tree (fail-closed: if git is unavailable or nothing changed, it fails);
-      * ``unit`` / ``integration`` / ``system`` — exercised by the per-category test
-        markers in the bench harness; without a measurable artifact they fall back to
-        the self-reported proof_ref rather than inventing a pass.
+def independent_reverify_tdd_lane(run_dir: str, entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Structurally re-derive the TDD lane from the RAW red/green receipt files.
+
+    Unlike `_tdd_gate` (which only checks that ``red_proof_ref``/``green_proof_ref`` are two
+    non-empty, distinct strings), this loads the JSON receipt each ref points to and validates the
+    raw fields a producer (``scripts/quality_matrix.py tdd-red``/``tdd-green``) actually recorded:
+    the RED run's exit code must be non-zero (it genuinely failed), the GREEN run's exit code must
+    be zero (it genuinely passed), both must reference the same test id, and the two receipts must
+    come from different commits (proving production code changed between RED and GREEN). A
+    receipt whose ``status`` claims "pass" but whose raw evidence doesn't hold up is reported as
+    ``quality_tdd_reverify_mismatch`` -- the self-reported claim is not trusted at face value.
     """
-    script = _RAW_GATE_SCRIPT.get(gate_name)
-    repo_root = Path(__file__).resolve().parents[1]
-    if script:
-        script_path = repo_root / "scripts" / script
-        if not script_path.exists():
-            return {"status": "fail", "measured": None, "proof_ref": str(script_path),
-                    "detail": "raw gate script missing"}
-        try:
-            if gate_name == "coverage":
-                # coverage_gate.py prints "[coverage-gate] global coverage:   NN.NN%"
-                proc = subprocess.run(
-                    [sys.executable, str(script_path), "--diagnostics-dir",
-                     str(Path(run_dir) / ".diag" / "coverage")],
-                    capture_output=True, text=True, cwd=str(repo_root), timeout=600,
-                )
-                m = re.search(r"global coverage:\s*([0-9]+(?:\.[0-9]+)?)%", proc.stdout + proc.stderr)
-                measured = float(m.group(1)) if m else None
-                status = "pass" if proc.returncode == 0 and measured is not None else "fail"
-                return {"status": status, "measured": measured,
-                        "proof_ref": f"coverage.xml (rc={proc.returncode})",
-                        "detail": (proc.stderr or proc.stdout).strip()[-500:]}
-            if gate_name == "benchmark":
-                # perf_gate.py --json prints {"report": ..., "baseline": ..., "failures": [...]}
-                proc = subprocess.run(
-                    [sys.executable, str(script_path), "--json"],
-                    capture_output=True, text=True, cwd=str(repo_root), timeout=600,
-                )
-                try:
-                    payload = json.loads(proc.stdout)
-                    failures = payload.get("failures") or []
-                except Exception:
-                    failures = ["unparseable perf output"]
-                status = "pass" if proc.returncode == 0 and not failures else "fail"
-                return {"status": status, "measured": None,
-                        "proof_ref": f"perf_gate.json (rc={proc.returncode})",
-                        "detail": "; ".join(failures)[:500]}
-            if gate_name == "regression":
-                # regression_test_gate.py exit 0 = tests accompany source changes.
-                proc = subprocess.run(
-                    [sys.executable, str(script_path), "--base", "origin/main"],
-                    capture_output=True, text=True, cwd=str(repo_root), timeout=300,
-                )
-                status = "pass" if proc.returncode == 0 else "fail"
-                return {"status": status, "measured": None,
-                        "proof_ref": f"regression_test_gate (rc={proc.returncode})",
-                        "detail": (proc.stderr or proc.stdout).strip()[-500:]}
-        except Exception as exc:  # fail-closed
-            return {"status": "fail", "measured": None, "proof_ref": str(script_path),
-                    "detail": f"raw gate probe error: {exc}"}
-
-    # Lanes without a dedicated script:
-    if gate_name == "implementation":
-        # Proven by non-test source changes in the working tree.
-        try:
-            proc = subprocess.run(
-                ["git", "diff", "--name-only", "origin/main...HEAD"],
-                capture_output=True, text=True, cwd=str(repo_root), timeout=30,
-            )
-            changed = [l for l in proc.stdout.splitlines() if l.strip()]
-        except Exception:
-            changed = []
-        src = [f for f in changed if f.endswith(".py") and "test_" not in f
-               and not f.startswith("tests/")]
-        if src:
-            return {"status": "pass", "measured": None, "proof_ref": "git diff (source files changed)",
-                    "detail": f"{len(src)} non-test source file(s) changed"}
-        return {"status": "fail", "measured": None, "proof_ref": "",
-                "detail": "no non-test source changes detected (implementation unproven)"}
-
-    # unit / integration / system: exercised by the bench harness's per-category
-    # markers when present; absent markers fall back to the self-reported proof_ref
-    # rather than fabricating a pass.
-    return {"status": "pass", "measured": None,
-            "proof_ref": f"quality_matrix_bench.py (category={gate_name})",
-            "detail": "raw probe: category exercised by test markers"}
+    name = OPTIONAL_TDD_REQUIREMENT
+    if str(entry.get("status") or "").strip().lower() != "pass":
+        return _gate(name, True, "quality_tdd_reverify_not_claimed",
+                     "TDD lane not claimed as passing; nothing to independently re-verify")
+    run_path = Path(run_dir)
+    red_ref = str(entry.get("red_proof_ref") or "").strip()
+    green_ref = str(entry.get("green_proof_ref") or "").strip()
+    red_path = _resolve_ref(run_path, red_ref)
+    green_path = _resolve_ref(run_path, green_ref)
+    if red_path is None or green_path is None:
+        return _gate(name, False, "quality_tdd_reverify_receipt_missing",
+                     "claimed TDD pass but red/green proof_ref does not resolve to a readable receipt file "
+                     "on disk -- cannot independently confirm the claim")
+    red = _load_json(red_path)
+    green = _load_json(green_path)
+    if not isinstance(red, dict) or not isinstance(green, dict):
+        return _gate(name, False, "quality_tdd_reverify_receipt_unreadable",
+                     "red/green proof_ref points to a file that is not a readable JSON receipt")
+    red_exit = red.get("exit_code")
+    green_exit = green.get("exit_code")
+    if not isinstance(red_exit, int) or red_exit == 0:
+        return _gate(name, False, "quality_tdd_reverify_red_not_failing",
+                     f"RED receipt's raw exit_code is {red_exit!r}; a genuine RED run must have failed (non-zero)")
+    if not isinstance(green_exit, int) or green_exit != 0:
+        return _gate(name, False, "quality_tdd_reverify_green_not_passing",
+                     f"GREEN receipt's raw exit_code is {green_exit!r}; a genuine GREEN run must have passed (zero)")
+    red_test = str(red.get("test_id") or "").strip()
+    green_test = str(green.get("test_id") or "").strip()
+    if not red_test or red_test != green_test:
+        return _gate(name, False, "quality_tdd_reverify_test_id_mismatch",
+                     f"RED test_id {red_test!r} does not match GREEN test_id {green_test!r}")
+    red_commit = str(red.get("commit_sha") or "").strip()
+    green_commit = str(green.get("commit_sha") or "").strip()
+    if not red_commit or not green_commit or red_commit == green_commit:
+        return _gate(name, False, "quality_tdd_reverify_no_commit_delta",
+                     "RED and GREEN receipts must be bound to two different commits -- "
+                     "otherwise nothing is proven to have changed between failing and passing")
+    return _gate(name, True, "quality_tdd_reverify_verified",
+                 f"independently confirmed: {red_test} failed at {red_commit[:12]} (RED) and "
+                 f"passed at {green_commit[:12]} (GREEN)")
 
 
-def watchdog_verify(run_dir: str, trust_receipt: bool = False) -> Dict[str, Any]:
-    """#283: independent watcher — recompute every lane from raw gate output.
+def _rerun_gate_script(script: str, argv: List[str], repo: str) -> "Tuple[bool, str]":
+    """Re-execute one of the standalone gate scripts fresh, right now, and report pass/fail.
 
-    When ``trust_receipt`` is False (the default, and the only safe mode for a
-    close-gate), the watcher ignores the receipt's self-reported `requirements`
-    statuses and re-derives each lane by calling :func:`_probe_raw_gate`. A receipt
-    that claims every lane ``pass`` but whose raw gates actually fail is reported
-    BLOCKED with ``reason_code`` carrying the ``independent`` marker.
-
-    Returns the same shape as :func:`evaluate_quality_matrix` (``ready``,
-    ``reason_code``, ``reason``, ``gates``, ``coverage_measured``), plus a
-    ``watcher`` block listing the raw probe used per lane.
+    Used only for lanes whose verdict is a function of the CURRENT working tree/commit (regression
+    diff-vs-base, perf benchmark) -- there is no time-travel problem re-running these live, unlike
+    TDD's RED state which the implementation has since overwritten.
     """
-    gates: List[Dict[str, Any]] = []
-    watcher: Dict[str, Any] = {}
-    result: Dict[str, Any] = {
-        "schema": SCHEMA,
-        "ready": False,
-        "reason_code": "quality_watcher_incomplete",
-        "reason": "independent watcher gates not satisfied",
-        "coverage_threshold": DEFAULT_COVERAGE_THRESHOLD,
-        "coverage_measured": None,
-        "gates": gates,
-        "watcher": watcher,
-    }
-
-    path = receipt_path(run_dir)
-    receipt = _load_json(path)
-    if not receipt:
-        gate = _gate("quality_watcher", False, "quality_watcher_receipt_missing",
-                     f"{RECEIPT_FILENAME} is missing or unreadable")
-        gates.append(gate)
-        result["reason_code"] = gate["reason_code"]
-        result["reason"] = gate["detail"]
-        return result
-    gates.append(_gate("quality_watcher", True, "quality_watcher_present",
-                       f"{RECEIPT_FILENAME} loaded for independent re-derivation"))
-
-    raw_threshold = receipt.get("coverage_threshold", DEFAULT_COVERAGE_THRESHOLD)
     try:
-        threshold = validate_coverage_threshold(raw_threshold)
-    except QualityMatrixError as exc:
-        gate = _gate("coverage_threshold", False, "coverage_threshold_invalid", str(exc))
-        gates.append(gate)
-        result["reason_code"] = gate["reason_code"]
-        result["reason"] = gate["detail"]
-        return result
-    result["coverage_threshold"] = threshold
-
-    policy = receipt.get("policy") if isinstance(receipt.get("policy"), dict) else {}
-    for name in REQUIRED_REQUIREMENTS:
-        if policy.get(f"{name}_required") is False:
-            gates.append(_gate(name, True, f"quality_{name}_waived",
-                               f"'{name}' lane waived by policy.{name}_required=false"))
-            continue
-        probe = _probe_raw_gate(name, run_dir)
-        watcher[name] = probe
-        if probe["status"] != "pass":
-            gate = _gate(name, False, f"quality_{name}_independent_fail",
-                         f"independent watcher: raw gate for '{name}' failed — "
-                         f"{probe.get('detail') or probe.get('proof_ref')}")
-            gates.append(gate)
-            result["reason_code"] = gate["reason_code"]
-            result["reason"] = gate["detail"]
-            return result
-        # coverage drift check: receipt must not claim more than the raw probe measured.
-        if name in _COVERAGE_LIKE and probe.get("measured") is not None:
-            claimed = (receipt.get("coverage") or {}).get("measured")
-            if isinstance(claimed, (int, float)) and float(claimed) > float(probe["measured"]) + 0.01:
-                gate = _gate("coverage", False, "quality_coverage_drift",
-                             f"receipt claims {claimed}% but independent watcher measured "
-                             f"{probe['measured']}% — refusing to trust the receipt")
-                gates.append(gate)
-                result["reason_code"] = gate["reason_code"]
-                result["reason"] = gate["detail"]
-                return result
-            result["coverage_measured"] = float(probe["measured"])
-            if float(probe["measured"]) < threshold:
-                gate = _gate("coverage", False, "coverage_below_threshold",
-                             f"independent watcher measured coverage {probe['measured']}% "
-                             f"below required {threshold}%")
-                gates.append(gate)
-                result["reason_code"] = gate["reason_code"]
-                result["reason"] = gate["detail"]
-                return result
-            gates.append(_gate("coverage", True, "coverage_sufficient",
-                               f"independent watcher measured coverage {probe['measured']}% "
-                               f"meets required {threshold}%"))
-            continue
-        gates.append(_gate(name, True, f"quality_{name}_independent_verified",
-                           f"independent watcher verified '{name}' via {probe.get('proof_ref')}"))
-
-    # Coverage is a special lane (not in REQUIRED_REQUIREMENTS) — re-derive it
-    # independently too, then apply the drift check and threshold gate.
-    coverage_probe = _probe_raw_gate("coverage", run_dir)
-    watcher["coverage"] = coverage_probe
-    if coverage_probe["status"] != "pass" or coverage_probe.get("measured") is None:
-        gate = _gate("coverage", False, "quality_coverage_independent_fail",
-                     f"independent watcher: raw coverage gate failed — "
-                     f"{coverage_probe.get('detail') or coverage_probe.get('proof_ref')}")
-        gates.append(gate)
-        result["reason_code"] = gate["reason_code"]
-        result["reason"] = gate["detail"]
-        return result
-    claimed = (receipt.get("coverage") or {}).get("measured")
-    if isinstance(claimed, (int, float)) and float(claimed) > float(coverage_probe["measured"]) + 0.01:
-        gate = _gate("coverage", False, "quality_coverage_drift",
-                     f"receipt claims {claimed}% but independent watcher measured "
-                     f"{coverage_probe['measured']}% — refusing to trust the receipt")
-        gates.append(gate)
-        result["reason_code"] = gate["reason_code"]
-        result["reason"] = gate["detail"]
-        return result
-    result["coverage_measured"] = float(coverage_probe["measured"])
-    if float(coverage_probe["measured"]) < threshold:
-        gate = _gate("coverage", False, "coverage_below_threshold",
-                     f"independent watcher measured coverage {coverage_probe['measured']}% "
-                     f"below required {threshold}%")
-        gates.append(gate)
-        result["reason_code"] = gate["reason_code"]
-        result["reason"] = gate["detail"]
-        return result
-    gates.append(_gate("coverage", True, "coverage_sufficient",
-                       f"independent watcher measured coverage {coverage_probe['measured']}% "
-                       f"meets required {threshold}%"))
-
-    # Propagate envelope fields so the watcher result is self-describing.
-    if isinstance(receipt.get("run_id"), str):
-        result["run_id"] = receipt["run_id"]
-    if isinstance(receipt.get("work_item"), dict):
-        result["work_item"] = receipt["work_item"]
-
-    result.update({
-        "ready": True,
-        "reason_code": "quality_watcher_verified",
-        "reason": "independent watcher re-derived every mandatory lane from raw gate output",
-    })
-    return result
+        completed = subprocess.run(
+            [sys.executable, script] + argv, cwd=repo, capture_output=True, text=True, timeout=240,
+            stdin=subprocess.DEVNULL,
+        )
+        return completed.returncode == 0, (completed.stdout or completed.stderr or "").strip()[-2000:]
+    except Exception as exc:  # pragma: no cover - defensive
+        return False, f"re-run failed: {exc}"
 
 
-def populate_quality_matrix(run_dir: str) -> Dict[str, Any]:
-    """#283: auto-populate a quality-matrix receipt from the raw gate scripts.
+def independent_reverify_quality_matrix(run_dir: str, *, repo: "str | None" = None,
+                                        rerun: bool = True) -> Dict[str, Any]:
+    """Independently re-derive the quality-matrix verdict, not just re-parse the self-reported one.
 
-    Runs :func:`_probe_raw_gate` for every mandatory lane and writes the real
-    evidence (status + proof_ref + measured coverage) back into
-    ``<run_dir>/quality-matrix.json``. The receipt's own `status` fields are
-    overwritten with the independently-measured values so the file reflects
-    reality, not a hand-edited claim. Returns the updated receipt dict.
+    Returns a dict with the self-reported verdict (``evaluate_quality_matrix``), a
+    ``lane_checks`` list of independently-recomputed lane results, and a combined ``ready`` that
+    is true only when BOTH the self-reported receipt is ready AND every independently-checked lane
+    agrees. This is the piece #283's remaining scope calls out explicitly: "an independent watcher
+    that re-derives each quality-matrix lane's verdict from raw test/CI output instead of trusting
+    the receipt's self-reported status" -- wired into `scripts/watcher_verify.py cmd_verify`.
 
-    This is the bridge the issue asked for: the per-category gate scripts already
-    run in CI (#277) but their output was never wired into ``quality-matrix.json``
-    automatically — now ``populate`` does exactly that.
+    `unit`/`integration`/`system` are re-verified the same way as `regression`/`benchmark`: a
+    fresh, live re-run of the relevant gate script (`scripts/test_categories.py run --category
+    <lane>`, the per-category test-runner split -- see that script's docstring for exactly which
+    `tests/*_<lane>.py` files it covers) right now, against the current working tree.
     """
-    path = receipt_path(run_dir)
-    receipt = _load_json(path)
-    if not receipt:
-        # No template yet — seed one so populate has something to fill.
-        receipt = build_quality_matrix_template(DEFAULT_COVERAGE_THRESHOLD)
-        receipt["requirements"] = {
-            name: {"status": "unset", "proof_ref": "", "detail": ""}
-            for name in REQUIRED_REQUIREMENTS
-        }
-        receipt["coverage"] = {"measured": None}
+    self_reported = evaluate_quality_matrix(run_dir)
+    lane_checks: List[Dict[str, Any]] = []
+    repo_root = repo or str(Path(run_dir).resolve().parents[0])
 
-    requirements = receipt.setdefault("requirements", {})
-    for name in REQUIRED_REQUIREMENTS:
-        probe = _probe_raw_gate(name, run_dir)
-        entry = requirements.setdefault(name, {})
-        entry["status"] = probe["status"]
-        entry["proof_ref"] = probe.get("proof_ref", "")
-        entry["detail"] = probe.get("detail", "")
-        if name in _COVERAGE_LIKE and probe.get("measured") is not None:
-            receipt.setdefault("coverage", {})["measured"] = probe["measured"]
+    receipt = _load_json(receipt_path(run_dir)) or {}
+    requirements = receipt.get("requirements") if isinstance(receipt.get("requirements"), dict) else {}
+    requirements = _merge_tests_envelope(requirements, receipt)
+    policy = receipt.get("policy") if isinstance(receipt.get("policy"), dict) else {}
 
-    # Coverage is a special lane (not in REQUIRED_REQUIREMENTS) — populate it too.
-    coverage_probe = _probe_raw_gate("coverage", run_dir)
-    cov_entry = receipt.setdefault("coverage", {})
-    cov_entry["status"] = coverage_probe["status"]
-    cov_entry["proof_ref"] = coverage_probe.get("proof_ref", "")
-    cov_entry["detail"] = coverage_probe.get("detail", "")
-    if coverage_probe.get("measured") is not None:
-        cov_entry["measured"] = coverage_probe["measured"]
+    if policy.get("tdd_required"):
+        lane_checks.append(independent_reverify_tdd_lane(run_dir, requirements.get("tdd") or {}))
 
-    # Preserve an explicit nested `tests` envelope if present in the receipt.
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return receipt
+    if rerun:
+        import os
+
+        here = Path(__file__).resolve().parents[1] / "scripts"
+        test_categories_script = str(here / "test_categories.py")
+        for lane, script, argv_builder in (
+            ("unit", test_categories_script, lambda: ["run", "--category", "unit"]),
+            ("integration", test_categories_script, lambda: ["run", "--category", "integration"]),
+            ("system", test_categories_script, lambda: ["run", "--category", "system"]),
+            ("regression", str(here / "regression_test_gate.py"), lambda: ["--base", "origin/main"]),
+            ("benchmark", str(here / "perf_gate.py"), lambda: []),
+        ):
+            entry = requirements.get(lane) or {}
+            claimed = str(entry.get("status") or "").strip().lower()
+            if claimed == "not_applicable":
+                lane_checks.append(_gate(lane, True, f"quality_{lane}_reverify_not_applicable",
+                                         f"'{lane}' was excused NOT_APPLICABLE; not re-executed"))
+                continue
+            if claimed != "pass":
+                lane_checks.append(_gate(lane, True, f"quality_{lane}_reverify_not_claimed",
+                                         f"'{lane}' not claimed as passing; nothing to independently re-verify"))
+                continue
+            if not os.path.exists(script):
+                lane_checks.append(_gate(lane, True, f"quality_{lane}_reverify_script_missing",
+                                         f"gate script {script} not present in this checkout; skipped"))
+                continue
+            ok, detail = _rerun_gate_script(script, argv_builder(), repo_root)
+            lane_checks.append(_gate(
+                lane, ok,
+                f"quality_{lane}_reverify_verified" if ok else f"quality_{lane}_reverify_mismatch",
+                (f"independent re-run of {Path(script).name} confirmed '{lane}' still passes" if ok else
+                 f"claimed '{lane}' pass but a fresh re-run of {Path(script).name} now fails: {detail}"),
+            ))
+
+    all_lanes_ok = all(check["status"] == "pass" for check in lane_checks)
+    ready = bool(self_reported["ready"]) and all_lanes_ok
+    return {
+        "schema": "simplicio.quality-matrix-reverify/v1",
+        "ready": ready,
+        "self_reported": self_reported,
+        "lane_checks": lane_checks,
+        "reason_code": "quality_matrix_reverified" if ready else (
+            next((c["reason_code"] for c in lane_checks if c["status"] != "pass"), self_reported["reason_code"])
+        ),
+        "reason": "self-reported verdict and independent re-verification agree" if ready else (
+            next((c["detail"] for c in lane_checks if c["status"] != "pass"), self_reported["reason"])
+        ),
+    }
 
 
 __all__ = [
@@ -660,6 +577,8 @@ __all__ = [
     "OPTIONAL_TDD_REQUIREMENT",
     "NOT_APPLICABLE_ELIGIBLE",
     "CHANGE_TYPES",
+    "RERUNNABLE_LANES",
+    "TESTS_ENVELOPE_CATEGORIES",
     "classify_change_type",
     "default_policy_for_change_type",
     "DEFAULT_COVERAGE_THRESHOLD",
@@ -668,7 +587,7 @@ __all__ = [
     "validate_coverage_threshold",
     "evaluate_quality_matrix",
     "build_quality_matrix_template",
-    "watchdog_verify",
-    "populate_quality_matrix",
-    "_probe_raw_gate",
+    "sync_tests_envelope",
+    "independent_reverify_tdd_lane",
+    "independent_reverify_quality_matrix",
 ]

@@ -25,7 +25,7 @@ break that. We charge for **running it for you** (the watcher, the operators, th
 fleet), which is exactly the part that costs us compute.
 
 ### What is free forever (never gated)
-- The orchestrator loop + all 6 skills + hooks.
+- The orchestrator loop + all 7 skills + hooks.
 - Local token economy: `orient_clamp.py`, the capture engine, `savings_ledger` on disk, the
   local dashboard at `http://127.0.0.1:9090`.
 - `video_evidence` **local** render (hyperframes via local Node 22+/FFmpeg).

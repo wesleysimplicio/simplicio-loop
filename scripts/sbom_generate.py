@@ -108,7 +108,7 @@ def _artifact_digest(path: Path) -> Dict[str, Any]:
     }
 
 
-def build_sbom(repo: Path, *, artifact: Optional[Path] = None) -> Dict[str, Any]:
+def build_sbom(repo: Path, *, artifact: Optional[Path] = None, source_sha: Optional[str] = None) -> Dict[str, Any]:
     repo = _repo_root(repo)
     pyproject = repo / "pyproject.toml"
     direct_deps = _parse_pyproject_dependencies(pyproject) if pyproject.exists() else []
@@ -118,7 +118,11 @@ def build_sbom(repo: Path, *, artifact: Optional[Path] = None) -> Dict[str, Any]
         "schema": SCHEMA,
         "bomFormat": "CycloneDX",
         "specVersion": CYCLONEDX_SPEC_VERSION,
-        "source_sha": _git_sha(repo),
+        # An explicit `source_sha` lets a caller building from a `.git`-less export (e.g.
+        # `scripts/release_rehearsal.py`'s `git archive` scratch copy) still link the SBOM to the
+        # real commit it was exported from, instead of silently falling back to "unknown" just
+        # because `git rev-parse` has no `.git` directory to run against in that directory.
+        "source_sha": source_sha or _git_sha(repo),
         "generated_locally": True,
         "ci_attested": False,
         "note": (

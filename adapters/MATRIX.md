@@ -1,6 +1,6 @@
 # Runtime adapter matrix — simplicio-loop super-plugin
 
-One universal skill core (`.claude/skills/`, 6 skills) + one set of hooks (`hooks/`) drives
+One universal skill core (`.claude/skills/`, 7 skills) + one set of hooks (`hooks/`) drives
 **every** runtime. An adapter is thin: it tells a runtime *where to load the skills*, *how to
 arm the loop*, and *how to bind native speed*. Nothing in the protocol is runtime-specific —
 this is the inverted dependency (the skill names no runtime; the runtime detects the skill).
@@ -102,7 +102,7 @@ pwsh scripts/install.ps1 <runtime> [-Global]      # Windows / pwsh
 # omit <runtime> to auto-detect
 ```
 
-The installer copies the 6 skills into the runtime's skills location and wires the loop hooks
+The installer copies the 7 skills into the runtime's skills location and wires the loop hooks
 where supported. A native MCP/CLI bind may be installed separately when desired; it is never a
 precondition for loop execution.
 

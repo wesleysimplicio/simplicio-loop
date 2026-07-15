@@ -156,9 +156,31 @@ def run_smoke(repo: Path, *, expected_version: Optional[str], keep: bool) -> Dic
         receipt["observed_version"] = observed_version
         receipt["module_file"] = module_file
         receipt["module_from_repo_checkout"] = from_repo
-        receipt["ok"] = (not from_repo) and version_ok
+
+        # Actually RUN the installed `simplicio-loop` console-script entrypoint (not just import
+        # the module) so `--help` is real, asserted output from the clean-room install — #293 §6
+        # ("executar simplicio-loop --help"), not a parse-only or import-only proxy for it.
+        console_script = venv_dir / ("Scripts/simplicio-loop.exe" if os.name == "nt"
+                                     else "bin/simplicio-loop")
+        if console_script.exists():
+            help_run = subprocess.run([str(console_script), "--help"], capture_output=True,
+                                      text=True, cwd=str(workdir), env=env,
+                                      stdin=subprocess.DEVNULL, timeout=30)
+            receipt["cli_help"] = {
+                "command": "%s --help" % console_script.name,
+                "returncode": help_run.returncode,
+                "stdout_tail": help_run.stdout.strip().splitlines()[-15:] if help_run.stdout else [],
+                "ok": help_run.returncode == 0 and "usage" in help_run.stdout.lower(),
+            }
+        else:
+            receipt["cli_help"] = {"ok": False, "reason": "console_script_not_found",
+                                   "expected_path": str(console_script)}
+
+        isolation_and_version_ok = (not from_repo) and version_ok
+        receipt["ok"] = isolation_and_version_ok and receipt["cli_help"]["ok"]
         if not receipt["ok"]:
-            receipt["reason_code"] = "version_or_isolation_mismatch"
+            receipt["reason_code"] = ("version_or_isolation_mismatch" if not isolation_and_version_ok
+                                      else "cli_help_failed")
         return receipt
     finally:
         if keep:

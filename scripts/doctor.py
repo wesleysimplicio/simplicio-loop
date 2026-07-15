@@ -4,7 +4,7 @@
 Two tiers, and the distinction is the whole point:
   • REQUIRED   — the orchestrator + token capture need these (python3, the loop operator package and
                  its runtime bins, the
-                 6 skills, the loop hooks, the always-on capture proxy). `--repair` installs/wires them.
+                 7 skills, the loop hooks, the always-on capture proxy). `--repair` installs/wires them.
   • OPTIONAL   — nice-to-have accelerators (the menu-bar tray dep). **Missing them is NOT a
                  failure** — the Python engine + the deterministic path cover everything.
                  `--repair` installs them best-effort and never fails the run because an
@@ -30,7 +30,8 @@ PROXY_PORT = int(os.environ.get("SIMPLICIO_PROXY_PORT", "8788"))
 PY = sys.executable or "python3"
 DARWIN = sys.platform == "darwin"
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
-          "simplicio-review", "simplicio-compress", "simplicio-learn"]
+          "simplicio-review", "simplicio-compress", "simplicio-learn",
+          "simplicio-autoresearch"]
 OPERATOR_PKG = "simplicio-cli"
 OPERATOR_BINS = ("simplicio-dev-cli", "simplicio-mapper")
 
@@ -152,7 +153,7 @@ def chk_skills():
 
     return dict(name="skills (global)", tier="REQUIRED",
                 status=OK if len(present) == len(SKILLS) else FAIL,
-                msg="%d/6 in ~/.claude/skills" % len(present), repair=repair)
+                msg="%d/%d in ~/.claude/skills" % (len(present), len(SKILLS)), repair=repair)
 
 
 def chk_hooks():
@@ -199,6 +200,34 @@ def chk_git_precommit_hook():
     return dict(name="git pre-commit hook (auto-sync #98)", tier="RECOMMENDED",
                 status=OK if ok else WARN,
                 msg="wired -> auto-syncs plugin/+_bundle/ on commit" if ok
+                    else "not installed — `python3 scripts/install.sh claude` wires it, or --repair",
+                repair=repair)
+
+
+def chk_git_prepush_hook():
+    """Verify this repo's own git pre-push hook enforces the local gate (#291).
+
+    RECOMMENDED, not REQUIRED, for the same reason as `chk_git_precommit_hook`: the hook is what
+    makes the gate mandatory-and-impossible-to-bypass FROM THIS CLONE, but a clone without it
+    installed doesn't corrupt anything by itself — the receiving side (code review / the next
+    `scripts/check.py` run) is the actual backstop. Still worth flagging: with GitHub Actions
+    removed (#311), a clone missing this hook has NO mechanical gate between "git push" and
+    "main", only human discipline.
+    """
+    hook_path = REPO / ".git" / "hooks" / "pre-push"
+    txt = hook_path.read_text(errors="replace") if hook_path.is_file() else ""
+    ok = "action_gate.py" in txt and "pre-push" in txt
+
+    def repair():
+        sys.path.insert(0, str(REPO / "scripts"))
+        import install_lib
+        install_lib.install_git_prepush_hook(str(REPO))
+        t = hook_path.read_text(errors="replace") if hook_path.is_file() else ""
+        return "action_gate.py" in t and "pre-push" in t
+
+    return dict(name="git pre-push hook (local gate #291)", tier="RECOMMENDED",
+                status=OK if ok else WARN,
+                msg="wired -> secret-scan + core-gate before every push" if ok
                     else "not installed — `python3 scripts/install.sh claude` wires it, or --repair",
                 repair=repair)
 
@@ -261,7 +290,8 @@ def _importable(mod):
 
 
 CHECKS = [chk_python, chk_operators, chk_mapper_capabilities, chk_skills,
-          chk_hooks, chk_git_precommit_hook, chk_proxy, chk_wire, chk_tray_dep]
+          chk_hooks, chk_git_precommit_hook, chk_git_prepush_hook, chk_proxy, chk_wire,
+          chk_tray_dep]
 
 
 def main(argv=None):

@@ -2,7 +2,7 @@
 """simplicio-loop — adapter install-contract verifier (per-runtime e2e).
 
 Runs the universal installer into a throwaway target for each runtime and asserts the adapter's
-contract actually lands: the 6 skills are copied, the runtime's entry/instructions file exists and
+contract actually lands: the 7 skills are copied, the runtime's entry/instructions file exists and
 carries the idempotent marker block, hooks are present where the adapter promises them, (for
 Claude) the loop hooks are wired into settings.json, AND (#303 AC5) `scripts/loop_progress.py
 selftest` actually runs GREEN from inside the installed target — a dedicated, per-runtime
@@ -59,7 +59,7 @@ def _check(runtime, target):
     fails = []
     cfg = install_lib.RUNTIMES[runtime]
 
-    # 1) all 6 skills copied
+    # 1) all 7 skills copied
     skills_root = os.path.join(target, ".claude", "skills")
     for s in install_lib.SKILLS:
         if not os.path.isdir(os.path.join(skills_root, s)):

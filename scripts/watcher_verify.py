@@ -32,6 +32,10 @@ if REPO not in sys.path:
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 from simplicio_loop.evidence import execute_receipt_checks, watcher_truth_from_receipt  # noqa: E402
+from simplicio_loop.quality_matrix import (  # noqa: E402
+    independent_reverify_quality_matrix,
+    receipt_path as quality_matrix_receipt_path,
+)
 
 
 def _emit_progress(status, outcome=None, detail=""):
@@ -270,6 +274,23 @@ def cmd_issue():
     return 0
 
 
+def _quality_gate_reverify(run_dir):
+    """#283: independently re-derive the quality-matrix verdict for this run, instead of just
+    trusting the receipt's own self-reported ``status``. Returns None when there is no
+    quality-matrix.json for this run at all (nothing to re-verify -- callers must not treat that
+    as a pass; the oracle's own quality-matrix gate already fails closed on a missing receipt)."""
+    if not run_dir:
+        return None
+    if not quality_matrix_receipt_path(str(run_dir)).exists():
+        return None
+    try:
+        rerun = os.environ.get("SIMPLICIO_WATCHER_QUALITY_RERUN", "1").strip() != "0"
+        return independent_reverify_quality_matrix(str(run_dir), repo=REPO, rerun=rerun)
+    except Exception as exc:  # pragma: no cover - defensive, fail-closed below
+        return {"ready": False, "reason_code": "quality_gate_reverify_error", "reason": str(exc),
+                "self_reported": {}, "lane_checks": []}
+
+
 def cmd_verify():
     challenge = _read_json(CHALLENGE)
     if not challenge:
@@ -281,7 +302,11 @@ def cmd_verify():
     run_dir = _find_run_dir()
     evidence, independent = _load_run_artifacts(run_dir)
 
+    quality_reverify = _quality_gate_reverify(run_dir)
+
     reasons = []
+    if quality_reverify is not None and not quality_reverify.get("ready"):
+        reasons.append("quality-matrix independent re-verification failed: %s" % quality_reverify.get("reason", ""))
     if not anchor or not anchor_items:
         reasons.append("anchor missing or has no criteria")
     anchor_ids = [item["id"] for item in anchor_items]
@@ -378,6 +403,16 @@ def cmd_verify():
         },
         "criteria_results": criteria_results,
         "check_results": executed["results"],
+        # #283: independent re-derivation of the quality-matrix verdict (not a re-parse of its
+        # self-reported status) -- matches the issue's requested watcher promise-gate shape:
+        # {"quality_gate": "VERIFIED", "match": true, "status": "MEASURED"}. `None` means this run
+        # has no quality-matrix.json at all (nothing for the watcher to independently confirm);
+        # that case is still fail-closed further up the stack via the oracle's own quality gate.
+        "quality_gate": (
+            "VERIFIED" if (quality_reverify and quality_reverify.get("ready"))
+            else ("BLOCKED" if quality_reverify is not None else "NOT_PRESENT")
+        ),
+        "quality_gate_detail": quality_reverify,
         "producer": {
             "pid": os.getpid(),
             "repo": REPO,

@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wesleysimplicio/simplicio-loop/actions/workflows/ci.yml"><img src="https://github.com/wesleysimplicio/simplicio-loop/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="docs/REPOSITORY_GOVERNANCE.md"><img src="https://img.shields.io/badge/CI-locally%20enforced%20(gate%20PR%20pending)-888888" alt="CI status: enforced locally via scripts/check.py; GitHub Actions pending per docs/RELEASE.md #311"></a>
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
   <a href="#-the-7-skills--5-accelerators"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
@@ -119,7 +119,7 @@ runtime-native component just to use `simplicio-loop`. Native binds, operators, 
 and the wider Simplicio runtime stack are optional accelerators on top of the core skill bundle.
 
 <p align="center">
-  <img src="assets/simplicio-loop-infographic.png" alt="simplicio-loop detailed infographic: standalone install, optional native binds, 7 skills, 5 accelerators, 11 runtimes, 5 source adapters, and proof gates" width="920" />
+  <img src="assets/simplicio-loop-infographic.png" alt="simplicio-loop detailed infographic: standalone install, optional native binds, 7 skills, 5 accelerators, 12 runtimes, 5 source adapters, and proof gates" width="920" />
 </p>
 
 Within the Simplicio product line, this repo is also the **current reference task flow** for
@@ -289,6 +289,15 @@ flowchart LR
   MEMORY --> WATCH["9 · Re-feed · watcher · STOP path"]
   WATCH -->|"new work"| IN
 ```
+
+**Planning gate (issue #284).** Steps 1–3 above are not just guidance — `simplicio_loop/planning_gate.py`
+makes them a fail-closed mechanical barrier between "claimed" and "mutating": every real
+`arm_run()` self-builds a `planning-receipt.json` binding run/attempt/contract/plan/lease/fence
+(and, on a GitHub source, the source-snapshot hash) into a single-use `mutation_authority` token,
+and `execute_operator()`/`execute_operator_batch()` refuse to run without a matching one. Both
+halves of the gate (`SIMPLICIO_REQUIRE_MUTATION_AUTHORITY`, `SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT`)
+are mandatory by default — see `.claude/skills/simplicio-loop/references/planning-gate.md` and
+`docs/adr/0004-planning-gate-rollout.md`.
 
 ---
 

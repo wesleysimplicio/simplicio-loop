@@ -1,54 +1,164 @@
-# GitHub issue lifecycle — one canonical status comment (#285)
+# GitHub issue lifecycle — the #285 `SourceAdapter` (GitHub binding)
 
 Issue #285 asks for a full, typed `SourceAdapter` for GitHub — `list_ready` / `get_details` /
 `claim` / `update_status` / `attach_evidence` / `close` / `requery` / `reconcile`, an outbox,
-lease/fencing-gated ownership, duplicate-comment recovery, and a live sandbox E2E. That is a
-multi-week surface. This document describes the real, tested slice landed so far — not the
-aspirational full spec — and calls out explicitly what is still missing.
+lease/fencing-gated ownership, duplicate-comment recovery, a real concurrency proof, and a
+COMPLETE-gate integration. This document describes what is now **implemented and tested**, and
+calls out what remains, honestly, at the bottom.
 
-## What already existed (issue #295, merged before this work)
+## Modules
 
-`scripts/pr_evidence.py::publish_comment` / `find_existing_comment` already provide a fail-closed,
-idempotent, marker-based create-or-update primitive for a GitHub issue comment:
+| Module | Role |
+|---|---|
+| `scripts/pr_evidence.py::publish_comment`/`find_existing_comment` | #295's fail-closed, idempotent, marker-based create-or-update primitive for one GitHub comment. Everything below builds on this rather than duplicating it. |
+| `simplicio_loop/github_lifecycle.py` | The state machine, renderer, publish/close/read-side verbs, outbox, and lifecycle-receipt persistence. |
+| `simplicio_loop/source_adapter.py` | The unified `SourceAdapter` `Protocol` + `GitHubSourceAdapter`, the formal contract a future non-GitHub source would implement. |
+| `simplicio_loop/oracle.py` | `evaluate_completion`'s `source_lifecycle` gate — blocks COMPLETE while `CLOSE_PENDING_RECONCILIATION` is open. |
+| `scripts/github_lifecycle.py` | CLI shell over all of the above. |
 
-* discovers a prior comment by a hidden marker (paginated `gh api .../issues/{n}/comments`);
-* creates once, or PATCHes the SAME comment id on every subsequent call — never appends a second
-  comment for the same marker;
-* sends the body as a JSON payload on stdin (`gh api ... --input -`), never via shell
-  interpolation of untrusted issue/AC text;
-* raises `PublishError` (never a silent "success") on any `gh` failure — auth, network, a
-  non-existent issue, etc.
+## 1. The lifecycle state machine
 
-## What #285 adds on top of that (this change)
+`LIFECYCLE_STATES`: `DISCOVERED → CLAIMED → PLANNED → IN_PROGRESS → VERIFYING → PR_OPEN →
+MERGE_READY → MERGED → CLOSING → CLOSED → RELEASED`, plus the side states `BLOCKED` /
+`PAUSED_NETWORK` / `AWAITING_DECISION` / `CLOSE_PENDING_RECONCILIATION`.
+`validate_transition(from, to, reason_code=...)` rejects any hop that is not a valid forward
+transition unless an authorized regression `reason_code` is given (`SOURCE_CHANGED`,
+`CHECKS_REGRESSED`, `REVIEW_REOPENED`, `LEASE_REASSIGNED`, `DELIVERY_REGRESSED`). A duplicate
+event (same state twice) is always a no-op.
 
-`simplicio_loop/github_lifecycle.py` (CLI: `scripts/github_lifecycle.py`) adds, reusing the #295
-primitive rather than duplicating it:
+## 2. The renderer and publish/re-query confirmation
 
-1. **A validated lifecycle state machine** — `LIFECYCLE_STATES` (`DISCOVERED` → `CLAIMED` →
-   `PLANNED` → `IN_PROGRESS` → `VERIFYING` → `PR_OPEN` → `MERGE_READY` → `MERGED` → `CLOSING` →
-   `CLOSED` → `RELEASED`, plus the side states `BLOCKED` / `PAUSED_NETWORK` /
-   `AWAITING_DECISION` / `CLOSE_PENDING_RECONCILIATION`). `validate_transition(from, to,
-   reason_code=...)` rejects any hop that isn't a valid forward transition unless an authorized
-   regression `reason_code` is given (`SOURCE_CHANGED`, `CHECKS_REGRESSED`, `REVIEW_REOPENED`,
-   `LEASE_REASSIGNED`, `DELIVERY_REGRESSED`) — a duplicate event (same state twice) is always a
-   no-op.
-2. **A deterministic, sanitized renderer** — `render_lifecycle_comment(...)` renders the exact
-   table + sections shape the issue describes (identity/lease/fence/branch header table,
-   Objetivo e escopo, Critérios de aceite checklist, Plano passo a passo, Progresso e blockers,
-   Testes e evidências, Entrega), using its OWN hidden marker
-   (`<!-- simplicio-loop:lifecycle-status:v1 -->`) so it never collides with the #295
-   evidence-comment marker on the same issue. Every field is redacted (token/secret patterns)
-   before rendering.
-3. **Publish-then-re-query confirmation** — `publish_lifecycle_state(...)` publishes via the #295
-   primitive, then immediately re-fetches the same comment and compares the observed body hash
-   against the expected one, producing a `simplicio.github-lifecycle-receipt/v1` receipt with
-   `verified: bool`. A write that "succeeds" per `gh`'s exit code but whose re-query observes a
-   different body (e.g. a race) is reported `verified: False` / `outcome: "blocked"`, never
-   silently accepted as done.
-4. **Deterministic operation ids** — `operation_id(provider, repo, issue, run_id, attempt_id,
-   fencing_token, lifecycle_revision, operation_kind)` for future idempotency-key/outbox wiring.
+`render_lifecycle_comment(...)` renders the ONE canonical status comment (identity/lease/fence/
+branch header table, Objetivo e escopo, Critérios de aceite checklist, Plano passo a passo,
+Progresso e blockers, Testes e evidências, Entrega), tagged with its own hidden marker
+(`<!-- simplicio-loop:lifecycle-status:v1 -->`, distinct from #295's evidence-comment marker), and
+redacts anything that looks like a token/secret before it ever reaches a public comment.
 
-### Example
+`publish_lifecycle_state(...)` publishes via the #295 primitive, then immediately re-fetches the
+same comment and compares the observed body hash against the expected one, producing a
+`simplicio.github-lifecycle-receipt/v1` receipt with `verified: bool`. Two extra hooks:
+
+* `require_active`, when given (typically `AttemptCoordinator.assert_active`, #183), is called
+  immediately before the remote write — a lost/stale lease raises there and the write never
+  happens.
+* `outbox_dir`, when given, persists a pending-operation record (`record_pending_operation`)
+  *before* the remote call and clears it (`mark_operation_done`) only after the write is
+  confirmed — see § 5.
+
+## 3. The read-side verbs
+
+* `list_ready(owner, repo, *, state, labels, assignee, milestone)` — metadata-only, paginated,
+  excludes pull requests.
+* `get_details(owner, repo, issue)` — full paginated issue + all comments; separates the
+  adapter's own canonical comment from human comments and computes a deterministic
+  `source_revision` hash over everything else (a self-drift guard: the adapter's own progress
+  writes never count as a material human edit).
+* `requery(owner, repo, issue, *, comment_id=None)` — re-reads the source of truth immediately
+  before/after a mutation; with `comment_id`, also fetches that exact comment's current body hash.
+
+## 4. `close`: real `gh issue close`, fail-closed
+
+`close_source_issue(...)`: (1) `require_active()` if given; (1.5) if a `planning_snapshot` was
+supplied, `detect_close_source_drift` re-fetches the CURRENT issue via `get_details` and compares
+it against the snapshot — any material human edit (title/body/state/labels/milestone/assignees) or
+a new HUMAN comment posted since the snapshot blocks the close with `reason_code: "SOURCE_CHANGED"`,
+fail-closed, WITHOUT ever calling `gh issue close`; (2) the real `gh issue close --reason <reason>`
+call (structured argv, never shell interpolation) — any non-zero exit reports `SOURCE_CLOSE_FAILED`
+and stops there, no comment update, no false "closed"; (3) an immediate re-query confirms
+`state == "closed"` — if not, `SOURCE_CLOSE_UNCONFIRMED`; (4) only then does the canonical comment
+move to `CLOSED`. If steps 1–3 succeed but the final comment write cannot be confirmed, the outcome
+is `CLOSE_PENDING_RECONCILIATION` (the source **is** closed; the operation stays in the outbox for
+`reconcile()`) — never a fake clean success.
+
+`planning_snapshot` may be any `get_details()`-shaped mapping (e.g. captured at claim/plan time via
+`capture_close_precheck_snapshot`) or an already-wrapped `simplicio.source-snapshot/v1` mapping.
+The comparison reuses #284's exact primitive (`source_snapshot.detect_source_drift`) rather than
+reinventing hash comparison, but is built on `get_details()`'s `source_revision` — which already
+excludes the adapter's own canonical lifecycle comment — on BOTH sides, so the comment's own
+rewrite on every lifecycle transition (CLAIMED → PLANNED → ... → CLOSING) never counts as drift.
+`planning_snapshot` defaults to `None`, so existing callers are unaffected; the CLI's
+`close --planning-snapshot <path-to-json>` wires it in.
+
+## 5. The outbox + `reconcile`
+
+`record_pending_operation`/`mark_operation_done`/`list_pending_operations` persist pending
+mutations to disk (atomic temp-file-rename writes) before every remote write in
+`publish_lifecycle_state`/`close_source_issue`, keyed by a deterministic `operation_id` (the
+provider/repo/issue/run/attempt/fencing-token/revision/kind tuple). `reconcile(operation_id, ...)`
+re-queries the source and, if the observed comment/issue state now matches what the pending
+record expected, marks the operation `done` — recovering a crash between a confirmed remote write
+and the local receipt **without ever posting a second comment**.
+
+## 6. Lease/fencing-gated ownership
+
+`publish_lifecycle_state`/`close_source_issue` both take `require_active`, wired in practice to
+`AttemptCoordinator.assert_active` (`simplicio_loop/work_item_claims.py`, #183) rather than
+reinventing lease/fencing — a lost/stale lease blocks the write, fail-closed, before any `gh`
+call is made.
+
+## 7. The unified `SourceAdapter` Protocol
+
+`simplicio_loop/source_adapter.py` defines `SourceAdapter`, a `typing.Protocol`
+(`@runtime_checkable`) capturing every verb above: `list_ready`, `get_details`, `requery`,
+`claim`, `update_status`, `attach_evidence`, `close`, `reconcile`, `record_pending_operation`,
+`mark_operation_done`, `list_pending_operations`. `GitHubSourceAdapter` is a thin, stateful
+binding — bound to one `owner/repo` (+ optional outbox dir/runner/timeout) — that formally
+satisfies it by delegating every call to the already-tested free functions in
+`github_lifecycle.py`; no new behavior, just a single object a future GitLab/Jira/Azure-Boards
+adapter can be written against instead of duck-typing the free functions.
+
+```python
+from simplicio_loop.source_adapter import GitHubSourceAdapter, SourceAdapter
+from scripts.pr_evidence import publish_comment
+
+adapter = GitHubSourceAdapter("acme", "widgets", publish_comment_fn=publish_comment,
+                              outbox_dir=".orchestrator/github-outbox")
+assert isinstance(adapter, SourceAdapter)  # runtime-checkable structural check
+
+adapter.claim("12", run_id="run-1", attempt_id="12-1")
+adapter.update_status("12", "PLANNED", run_id="run-1", attempt_id="12-1")
+adapter.attach_evidence("12", "12/12 tests pass", state="VERIFYING", run_id="run-1", attempt_id="12-1")
+adapter.close("12", run_id="run-1", attempt_id="12-1")
+```
+
+## 8. Runner wiring
+
+`simplicio_loop/runner.py::_record_event` calls `_sync_github_lifecycle` on every phase event,
+projecting mapped phases (`intake→DISCOVERED`, `worker_claimed→CLAIMED`, `planning/mapping→
+PLANNED`, `executing→IN_PROGRESS`, `validating/watching/watcher_challenge→VERIFYING`,
+`blocked→BLOCKED`, `awaiting_decision→AWAITING_DECISION`, `delivering→PR_OPEN`) onto the canonical
+comment when `SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC` + a `source_issue` are set on the run state.
+Best-effort/fail-open (like the existing `progress-comment` command); any failure is logged to
+`lifecycle-sync-errors.jsonl` under the run directory and swallowed. The fail-closed `close` path
+is a separate, explicit call — never automatic from this per-event hook.
+
+## 9. Oracle / COMPLETE-gate integration for `CLOSE_PENDING_RECONCILIATION`
+
+Every successful lifecycle publish now persists its receipt into the run directory
+(`github_lifecycle.persist_lifecycle_receipt`, file `github-lifecycle-receipt.json`) —
+`runner.py::_sync_github_lifecycle` does this automatically, and
+`scripts/github_lifecycle.py publish/close --run-dir <dir>` does it from the CLI.
+`simplicio_loop.oracle.evaluate_completion` reads it via a new gate, `source_lifecycle`
+(`_source_lifecycle_gate`): if the persisted receipt reports `outcome ==
+"CLOSE_PENDING_RECONCILIATION"` (or `reason_code == "CLOSE_PENDING_RECONCILIATION"`), completion
+is **blocked** (`ready: False`, `reason_code: "source_close_pending_reconciliation"`) until
+`reconcile()` clears it. A run with no lifecycle receipt at all (no GitHub source, or sync never
+enabled) is not penalized — the gate reports `source_lifecycle_not_configured` and passes,
+additive rather than a new hard requirement for sourceless runs. See
+`tests/test_oracle_source_lifecycle_gate.py`.
+
+## 10. A real two-lease/two-device concurrency E2E
+
+`tests/test_github_lifecycle_concurrency_e2e.py` spawns two independent OS **processes** (not
+threads) that race to claim the SAME work item against a shared on-disk SQLite queue
+(`simplicio_loop.remote_queue.SQLiteRemoteQueue`) and a shared on-disk fake-GitHub comment store.
+Only one process ever wins the lease (real `BEGIN IMMEDIATE` transactional locking); the loser
+gets a clean, typed `QueueConflict` rejection and NEVER calls
+`GitHubSourceAdapter.claim`/`publish_lifecycle_state`, so it can never post or corrupt a comment.
+The winner's write is confirmed end-to-end, and the shared comment store ends up with exactly one
+canonical comment, authored by the winner only.
+
+## Example
 
 ```python
 from scripts.pr_evidence import publish_comment
@@ -64,36 +174,63 @@ receipt = publish_lifecycle_state(
 # receipt["verified"] is True only if the re-queried body hash matches what was just sent
 ```
 
-CLI: `python3 scripts/github_lifecycle.py publish --owner acme --repo widgets --issue 12
---state PLANNED --run-id run-1 --attempt-id issue-12-1`.
+CLI:
+
+```bash
+python3 scripts/github_lifecycle.py publish --owner acme --repo widgets --issue 12 \
+  --state PLANNED --run-id run-1 --attempt-id issue-12-1 --run-dir .orchestrator/run/run-1
+python3 scripts/github_lifecycle.py list-ready --owner acme --repo widgets
+python3 scripts/github_lifecycle.py get-details --owner acme --repo widgets --issue 12
+python3 scripts/github_lifecycle.py close --owner acme --repo widgets --issue 12 \
+  --run-id run-1 --attempt-id issue-12-1 --outbox-dir .orchestrator/github-outbox \
+  --run-dir .orchestrator/run/run-1
+python3 scripts/github_lifecycle.py reconcile --owner acme --repo widgets --issue 12 \
+  --operation-id <op-id> --outbox-dir .orchestrator/github-outbox
+```
 
 ## Tests
 
-`tests/test_github_lifecycle_unit.py` (18 tests, no real `gh`/network call — a fake `runner`
-callable services the fake transport, same style as `scripts/pr_evidence.py`'s own selftest):
-state-machine coverage (happy path, duplicate no-op, invalid jump, authorized regression),
-renderer coverage (marker present, AC checklist rendering, secret redaction, determinism,
-unknown-state rejection), and the publish/re-query path (first claim creates one comment, every
-subsequent state update reuses the SAME comment id across the full CLAIMED→CLOSED path, and a
-simulated race where the re-query observes a different body is reported unverified/blocked, never
-a fake pass).
+* `tests/test_github_lifecycle_unit.py` (18 tests) — state machine, renderer, publish/re-query,
+  fake transport only.
+* `tests/test_github_lifecycle_readside.py` / `tests/test_github_lifecycle_runner_wiring.py` (40
+  tests) — `list_ready`/`get_details`/`requery`/`reconcile`, outbox, runner projection, fake
+  transport plus one hand-run live E2E (issue #347, closed and cleaned up).
+* `tests/test_source_adapter_protocol.py` — `GitHubSourceAdapter` satisfies `SourceAdapter` at
+  runtime (`isinstance`), claim→update_status reuse the same comment id, `attach_evidence`
+  embeds evidence text, `close` is fail-closed and re-query-confirmed, outbox round-trip.
+* `tests/test_github_lifecycle_concurrency_e2e.py` — the real two-process concurrency proof
+  (§ 10).
+* `tests/test_oracle_source_lifecycle_gate.py` — the COMPLETE-gate wiring (§ 9): passes with no
+  receipt, blocks on `CLOSE_PENDING_RECONCILIATION`, passes again once reconciled.
+
+## Evidence-comment delegation (`pr_evidence.py comment --publish`)
+
+`scripts/pr_evidence.py::cmd_comment --publish` used to call `publish_comment(...)` directly with
+its own `PR_EVIDENCE_COMMENT_MARKER`, opening/updating a SECOND, separate comment on the issue —
+distinct from the ONE canonical `LIFECYCLE_COMMENT_MARKER` comment `claim`/`PLANNED` already
+maintain. That was a direct gap against #285's "Um comentário canônico: claim, planejamento,
+progresso, evidência e fechamento atualizam o mesmo comment ID."
+
+`publish_evidence_via_lifecycle(...)` (in `scripts/pr_evidence.py`) closes it: it projects the
+same rendered evidence body (PR link, verification coverage, item-by-item checklist, print/video
+counts) as the `tests_and_evidence` field of `github_lifecycle.publish_lifecycle_state`, using
+state `PR_OPEN` when `--pr` is given, else `VERIFYING` — the exact same comment id `PLANNED`
+posted to, verified end to end in
+`tests/test_pr_evidence_lifecycle_delegation.py::test_publish_evidence_reuses_the_same_comment_as_the_planning_receipt`.
+`cmd_comment --publish` now delegates through this helper; `--run-id`/`--attempt-id`/`--state`
+let a caller override the identity/state. `publish_comment`/`PR_EVIDENCE_COMMENT_MARKER` remain
+the underlying idempotent primitive (still the injected `publish_comment_fn` everywhere in this
+document) — only `cmd_comment`'s own marker choice changed.
 
 ## Explicitly NOT implemented here (tracked, not claimed done)
 
-* `list_ready` / `get_details` / `requery` / `reconcile` — the read-side verbs of the full
-  `SourceAdapter` protocol.
-* Lease/fencing-gated comment ownership (`CLAIM_CONFLICT` when another active lease owns the
-  comment) — today `publish_lifecycle_state` will happily update whatever comment the marker
-  finds, with no lease check of its own (the runner-level lease/fencing from
-  `simplicio_loop/work_item_claims.py` is a separate, already-existing mechanism this module does
-  not yet call into).
-* An outbox for crash recovery between the remote write and a persisted local receipt.
-* Duplicate-comment detection/repair across two authors/devices.
-* The close-transaction two-re-query flow (`CLOSING` → re-query issue state=`closed` → update
-  comment to `CLOSED` → re-query again) — the state machine models the states, but nothing here
-  yet calls `gh issue close` or the second re-query.
-* A live, opt-in sandbox-repo E2E test.
-* Wiring `scripts/pr_evidence.py comment --publish` (or an equivalent runner event) to actually
-  call `publish_lifecycle_state` for CLAIMED/PLANNED/etc. — this PR adds the primitive; wiring it
-  into the runner's real event stream (`_emit_event` in `simplicio_loop/runner.py`) is follow-up
-  work.
+* Full duplicate-comment **election** across two independent authors/leases beyond "first marker
+  match, oldest id wins" (`get_details`'s current tie-break) — no `SUPERSEDED` marking or
+  safe-removal policy for a genuinely duplicated marker comment (e.g. two different lease-holders
+  each having briefly believed they owned the issue and both posted before the queue's exclusivity
+  caught up).
+* `≥90%` branch **coverage measurement** specifically scoped to `github_lifecycle.py`/
+  `source_adapter.py` (not measured/enforced as its own number in this change; the repo-wide
+  `scripts/check.py` quality gates still apply).
+* `WORK_ITEM_ATTEMPTS.md` / `PHASE_EVENT_CONTRACT.md` updates describing the `_sync_github_lifecycle`
+  projection in those documents' own terms (this file documents it from the adapter's side).
