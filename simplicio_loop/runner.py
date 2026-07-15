@@ -137,7 +137,7 @@ def _rand_token(n: int = 10) -> str:
     return "".join(random.choice(chars) for _ in range(n))
 
 
-def _resolve_trusted_queue_url(url: str) -> str:
+def _resolve_trusted_queue_context(url: str) -> tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     """Resolve the distributed-queue destination via the #289 trust policy.
 
     ``.github/workflows/distributed-183-proof.yml`` -- the workflow this issue's
@@ -156,10 +156,14 @@ def _resolve_trusted_queue_url(url: str) -> str:
     legacy unmanaged path (whatever ``SIMPLICIO_REMOTE_QUEUE_URL`` names) for
     local/dev use; production/CI callers should set the environment id so the
     destination is policy-resolved.
+
+    Returns ``(url, environment_id, policy)``; ``environment_id``/``policy`` are
+    ``None`` on the legacy unmanaged path so callers can tell whether
+    connect-time enforcement (:mod:`simplicio_loop.secure_transport`) applies.
     """
     environment_id = os.environ.get("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "").strip()
     if not environment_id:
-        return url
+        return url, None, None
     if _resolve_trust_environment is None or _load_trust_policy is None or _trust_authorize is None:
         raise RuntimeError("distributed trust policy module unavailable")
     policy_path = os.environ.get("SIMPLICIO_DISTRIBUTED_TRUST_POLICY", "").strip()
@@ -184,7 +188,13 @@ def _resolve_trusted_queue_url(url: str) -> str:
             "distributed trust policy denied: SIMPLICIO_REMOTE_QUEUE_URL does not match the "
             "resolved origin for environment_id '%s'" % environment_id
         )
-    return trusted_url
+    return trusted_url, environment_id, policy
+
+
+def _resolve_trusted_queue_url(url: str) -> str:
+    """Backward-compatible wrapper returning only the resolved URL."""
+    resolved, _environment_id, _policy = _resolve_trusted_queue_context(url)
+    return resolved
 
 
 def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]]:
@@ -197,7 +207,7 @@ def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]
     url = os.environ.get("SIMPLICIO_REMOTE_QUEUE_URL", "").strip()
     if not url and not os.environ.get("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "").strip():
         return None, None
-    url = _resolve_trusted_queue_url(url)
+    url, environment_id, policy = _resolve_trusted_queue_context(url)
     if ensure_identity is None:
         raise RuntimeError("distributed identity adapter unavailable")
     identity = ensure_identity(
@@ -205,12 +215,48 @@ def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]
         runtime=os.environ.get("SIMPLICIO_RUNTIME", "unknown-runtime"),
         capabilities=["claim", "heartbeat", "fencing", "receipts", "events", "evidence", "completion"],
     )
+    token = _resolve_queue_token(environment_id, policy, identity)
     queue = HTTPRemoteQueue(
         url,
-        token=os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN") or None,
+        token=token,
         timeout=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TIMEOUT", "5")),
+        environment_id=environment_id,
+        policy=policy,
     )
     return queue, identity
+
+
+def _resolve_queue_token(environment_id: Optional[str], policy: Optional[Dict[str, Any]],
+                          identity: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Resolve the bearer credential for the distributed queue (#289).
+
+    Preferred path: ``SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET`` is a long-lived
+    HMAC *signing* secret (never sent on the wire); a fresh short-lived token
+    (:mod:`scripts.short_lived_credentials`) is minted for this process, bound
+    to the worker's agent identity as subject and the environment_id as scope,
+    with a TTL taken from the policy's ``max_ttl_seconds`` (capped by
+    ``SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS`` if set lower). This is not the
+    OIDC broker exchange #289 describes -- there is no CI identity provider to
+    issue the initial trust -- but it replaces an indefinitely-lived static
+    secret with one that expires on its own and carries a revocable ``jti``.
+
+    Falls back to the legacy static ``SIMPLICIO_REMOTE_QUEUE_TOKEN`` when no
+    signing secret is configured, for local/dev use and backward compatibility.
+    """
+    secret = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", "").strip()
+    if not secret:
+        return os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN") or None
+    try:
+        from scripts.short_lived_credentials import issue_token
+    except ImportError as exc:  # pragma: no cover - installed package without scripts namespace
+        raise RuntimeError("short-lived credential module unavailable") from exc
+    max_ttl = float((policy or {}).get("environments", {}).get(environment_id, {}).get("max_ttl_seconds", 900)) \
+        if policy and environment_id else 900.0
+    override_ttl = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS", "").strip()
+    ttl_seconds = min(float(override_ttl), max_ttl) if override_ttl else max_ttl
+    subject = (identity or {}).get("agent_id", "unknown-agent")
+    scope = environment_id or "queue"
+    return issue_token(secret, subject=subject, scope=scope, ttl_seconds=ttl_seconds)
 
 
 def _run_id() -> str:
