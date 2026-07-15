@@ -44,7 +44,7 @@ JSON_SCHEMA = "simplicio.install-mutations/v1"
 # (source, function, effect, scope, reversible, consent_required)
 MUTATIONS = [
     ("install_lib.py", "copy_skills()",
-     "copies the 6 skills into `<target>/.claude/skills/<skill>`",
+     "copies the 7 skills into `<target>/.claude/skills/<skill>`",
      "project/user", "yes (delete dir)", "no (default-mode effect)"),
     ("install_lib.py", "copy_hooks()",
      "copies `hooks/` into `<target>/hooks` (project) or `<target>/.claude/hooks` (global)",

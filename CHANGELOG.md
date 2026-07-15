@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- #293: close the last audit-flagged installer gap — `simplicio-autoresearch` is now included in
+  `install_lib.py`/`install_plan.py`/`doctor.py`'s `SKILLS` list (was 6, is 7), so the installer,
+  planner, and `doctor` health-check actually copy/validate the seven skills the project declares
+  instead of six. Docs (`adapters/MATRIX.md`, the OpenClaw/Orca/Simplicio-Agent adapter READMEs,
+  `PRICING.md`, `plugin/README.md`, `simplicio_loop/__init__.py`, `docs/INSTALL_MUTATIONS.md`)
+  updated to match; `scripts/claims_audit.py` skill-count check already read the tree as 7.
 - #262: `simplicio_agent` is now the canonical adapter ID (formerly `hermes`); `hermes` is kept
   as a legacy shim (same install/native-bind contract) for the compat window. Config/log paths
   move from `~/.hermes/` to `~/.simplicio-agent/`; the `HERMES_PROFILE` env var is superseded by

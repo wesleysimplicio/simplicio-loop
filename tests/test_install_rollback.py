@@ -14,7 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_LIB = ROOT / "scripts" / "install_lib.py"
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
-          "simplicio-review", "simplicio-compress", "simplicio-learn"]
+          "simplicio-review", "simplicio-compress", "simplicio-learn",
+          "simplicio-autoresearch"]
 
 
 def _env(home):

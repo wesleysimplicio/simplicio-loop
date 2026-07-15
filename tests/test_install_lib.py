@@ -17,7 +17,8 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INSTALL_LIB = os.path.join(REPO, "scripts", "install_lib.py")
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
-          "simplicio-review", "simplicio-compress", "simplicio-learn"]
+          "simplicio-review", "simplicio-compress", "simplicio-learn",
+          "simplicio-autoresearch"]
 
 
 def _safe_env(tmp_home):
