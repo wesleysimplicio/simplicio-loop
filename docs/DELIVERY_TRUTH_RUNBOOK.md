@@ -43,6 +43,7 @@ manual override, and never hand-edit a receipt file to make a gate pass.
 |---|---|---|
 | `source_fingerprint_mismatch`, `delivery_target_mismatch`, `deployment_commit_mismatch`, `delivery_state_invalid` | A receipt refers to a different SHA/tree/target than the one currently in play (e.g. a new push landed after the receipt was produced). | This is a correct rejection, not a bug. Re-run the full verification chain against the *current* head/tag; do not reuse the stale receipt. |
 | `merge_reachability_unverified`, `deployment_reachability_unverified` | The commit could not be proven reachable from the real default branch at query time. | Confirm the default branch is what you expect (`gh repo view --json defaultBranchRef`); if the branch legitimately advanced mid-query, re-run — the verifier already retries once for a moving target, but a second real divergence (force-push, rebase) requires re-establishing the expected SHA before re-querying. |
+| `quality_matrix_commit_unbound`, `quality_matrix_commit_mismatch`, `merge_queue_commit_mismatch` | (#290) `merge-ready`+ requires the `#283` quality-matrix receipt and the delivery/`#288` evidence to point at the *same* commit (`oracle.py::_commit_binding_gate`) — a green receipt for the wrong SHA must not satisfy the gate. `_unbound` means the quality-matrix receipt never declared `work_item.head_sha` at all. | Re-run `scripts/quality_matrix.py build\|populate --work-item-head-sha <current head sha>` against the actual commit under test, then re-evaluate. Never hand-edit the sha to make the gate pass. |
 
 ### Genuine negative facts (do not retry blindly — inspect first)
 
@@ -91,6 +92,33 @@ projection must regress, completion must be invalidated, and the run must reopen
 precise reason code from the table above. Do not force the run back to `COMPLETE`; address the
 regression at its source (resolve the new thread, re-publish the release, redeploy) and let the
 pipeline observe the fix live.
+
+## Status surface: where each field of a blocked gate actually lives
+
+Issue #290 asks that "CLI/status" show origin, trust level, age, identity, gates, and reason for
+every `FAIL`/`UNVERIFIED`, without exposing secrets. There is no single new dashboard command for
+this; the fields are all present today, split across the existing JSON surfaces rather than
+merged into one view:
+
+- **origin / identity**: `delivery-receipt.json`'s `source_kind`, `source_payload.source_query`
+  (`provider`, `repo`, `pr`/`tag`, `mode: "live"|"fixture"`), and `source_fingerprint`.
+- **trust level**: `source_query.mode` (`"live"` vs `"fixture"`) at the top of every payload, plus
+  the explicit `trust_level: "test-fixture"` marker on the reviews-fixture override
+  (`source_state.py`) — no other trust level is ever forged as `"provider-live"`, since a real
+  query has no need to self-attest what it already proves by having actually run.
+- **age**: `source_checked_at` (receipt) and each verifier's `expires_at`/TTL class
+  (`freshness.py`).
+- **gates / reason**: every gate in `delivery-receipt.json["gates"]`,
+  `quality-matrix.json`'s `evaluate_quality_matrix` output, and `completion-receipt.json["gates"]`
+  carries `{name, status, reason_code, detail}` uniformly.
+- **secrets**: never present in any of the above — `github_lifecycle.py::_redact` sanitizes before
+  anything is persisted or printed.
+
+`python3 scripts/loop_progress.py status --json`, `simplicio_loop/cli.py sync-source`, and
+`scripts/completion_oracle.py` each print one or more of these JSON documents directly; an
+operator or script composing all three gets the full picture the AC asks for. Building one
+additional command that merely re-prints the union of these existing fields was judged not worth
+the added surface for this round — flagged here rather than silently dropped.
 
 ## Where to look for more detail
 
