@@ -32,7 +32,10 @@ Ten checks:
                                 runtime) for this fast local gate.
   8. quantitative-claims        Every quantitative number in README/SKILLs has a corresponding entry
                                 in `scripts/claims_manifest.py` with a receipt or "unverified" label.
-                                Unknown/missing numbers => check red.
+                                Unknown/missing numbers => check red. Any claim marked "verified"
+                                must additionally cite a receipt bound to a REAL commit reachable
+                                in this repo's git history (`commit` + `generated_at`/`created_at`
+                                fields) — a fabricated or foreign-commit receipt is rejected (#294).
   9. prose-commands-valid       Every doc-cited worker invocation (flags + verbs) is validated against
                                 the worker's real CLI via `--describe-cli`. Workers that emit
                                 `--describe-cli` JSON are checked for flag existence; divergences are
@@ -355,12 +358,69 @@ def check_adapter_contract():
     return ok, ("adapter install-contract verified (claude)" if ok else "; ".join(detail[-8:]))
 
 
+def _git_commit_exists(sha, repo_root):
+    """True if `sha` resolves to a real, reachable commit object inside `repo_root`'s git
+    history. A fabricated hash, a hash from an unrelated repo, or a non-hex string all fail this
+    (#294 step 4/step 5: 'claim quantitativo com receipt de outro commit/versão é rejeitado')."""
+    if not sha or not re.match(r"^[0-9a-fA-F]{7,40}$", str(sha)):
+        return False
+    # Retry on a transient process-spawn error (observed on Windows as `OSError: [WinError 50]`
+    # under rapid subprocess creation) — a host quirk, not a verdict on the commit itself.
+    for attempt in range(3):
+        try:
+            r = subprocess.run(["git", "cat-file", "-e", str(sha) + "^{commit}"],
+                               capture_output=True, text=True, cwd=repo_root)
+            return r.returncode == 0
+        except OSError:
+            if attempt == 2:
+                return False
+            import time as _time
+            _time.sleep(0.05 * (attempt + 1))
+    return False
+
+
+def validate_receipt(receipt_path, repo_root=REPO):
+    """A receipt backing a 'verified' claim must be a real artifact bound to THIS repo's git
+    history, not an arbitrary/copied JSON blob (#294 step 4: 'claims quantitativos com receipt,
+    data, commit e validade').
+
+    Required fields:
+      - `commit`:  a git commit sha that actually resolves inside `repo_root`'s object db.
+      - `generated_at` (or `created_at`): an ISO-ish timestamp string.
+
+    Returns (ok, reason). A receipt whose `commit` doesn't resolve to a real reachable commit
+    (fabricated, foreign-repo, or stale-format hash) is rejected — this is the mechanical answer
+    to "receipt de outro commit/versão é rejeitado".
+    """
+    try:
+        with open(receipt_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        return False, "receipt %s: unreadable/invalid JSON (%s)" % (receipt_path, e)
+    if not isinstance(data, dict):
+        return False, "receipt %s: not a JSON object" % receipt_path
+    commit = data.get("commit")
+    ts = data.get("generated_at") or data.get("created_at")
+    if not commit:
+        return False, "receipt %s: missing 'commit' field" % receipt_path
+    if not ts:
+        return False, "receipt %s: missing 'generated_at'/'created_at' timestamp" % receipt_path
+    if not _git_commit_exists(commit, repo_root):
+        return False, ("receipt %s: commit '%s' does not resolve to a real commit reachable in "
+                        "this repo's history — receipt from another commit/version rejected" %
+                        (receipt_path, commit))
+    return True, "receipt %s bound to real commit %s" % (receipt_path, commit)
+
+
 def check_quantitative_claims():
-    """#96: every quantitative number in README/SKILLs must cite a receipt or be 'unverified'.
+    """#96/#294: every quantitative number in README/SKILLs must cite a receipt or be
+    'unverified', and any claim marked 'verified' must cite a receipt genuinely bound to this
+    repo's history (not a fabricated or foreign-commit artifact).
 
     Checks:
       a) All claims in CLAIMS manifest have valid status.
       b) Unknown quantitative numbers in scanned docs are flagged.
+      c) Any claim marked 'verified' has a receipt that validates (real commit + timestamp).
     """
     failures = []
     # a) Manifest integrity
@@ -371,6 +431,13 @@ def check_quantitative_claims():
             rpath = os.path.join(REPO, c["receipt"])
             if not os.path.exists(rpath):
                 failures.append("claim %s: receipt missing: %s" % (c["id"], c["receipt"]))
+                continue
+            # c) a claim asserting "verified" must have a receipt genuinely bound to this repo's
+            # history — a stale/foreign/fabricated commit can't back a "measured" claim.
+            if c["status"] == "verified":
+                r_ok, r_reason = validate_receipt(rpath, REPO)
+                if not r_ok:
+                    failures.append("claim %s: %s" % (c["id"], r_reason))
     # Manifest must not be empty
     if not CLAIMS:
         failures.append("claims_manifest.CLAIMS is empty — no claims registered")
