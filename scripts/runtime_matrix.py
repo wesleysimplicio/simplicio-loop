@@ -115,6 +115,22 @@ def build_matrix(runtimes: Iterable[str], root: Path, *, runner=subprocess.run,
         # ``False``/``UNVERIFIED`` behavior byte-for-byte for existing callers.
         launch_rows = [attempt_external_launch(runtime) for runtime in selected
                        if runtime in {"codex", "claude"}]
+    if attempt_launch:
+        # Per-runtime real evidence, independent of the aggregate below. A structural
+        # block on one runtime (e.g. Claude behind an org policy) must never bury the
+        # genuine, individually-measured PASS/FAIL of another (e.g. Codex) -- see #287
+        # comment history: "Codex real execution: done" while Claude stayed blocked.
+        # Only added when ``attempt_launch`` is requested, so the default (no-flag)
+        # payload stays byte-for-byte identical to the prior hardcoded contract.
+        launch_by_runtime = {row["runtime"]: row for row in launch_rows}
+        for row in rows:
+            launch_row = launch_by_runtime.get(row["runtime"])
+            if launch_row is not None:
+                row["external_launch_status"] = launch_row["status"] if launch_row["attempted"] else "UNVERIFIED"
+                row["external_launch_verified"] = bool(launch_row["attempted"] and launch_row["status"] == "PASS")
+            else:
+                row["external_launch_status"] = "UNVERIFIED"
+                row["external_launch_verified"] = False
     launch_attempted = bool(launch_rows) and all(row["attempted"] for row in launch_rows)
     launch_verified = launch_attempted and all(row["status"] == "PASS" for row in launch_rows)
     payload = {
@@ -124,11 +140,19 @@ def build_matrix(runtimes: Iterable[str], root: Path, *, runner=subprocess.run,
         "requested": len(rows),
         "passed": sum(bool(row["contract_verified"]) for row in rows),
         "ready": bool(rows) and all(bool(row["contract_verified"]) for row in rows),
+        # Aggregate: only True when every attempted runtime in this call genuinely
+        # passed a real launch. This intentionally stays False while Claude is
+        # structurally blocked even though Codex passes -- see the per-runtime
+        # ``external_launch_verified`` on each row in ``runtimes`` (and
+        # ``external_launch_verified_by_runtime`` below) for the ungrouped truth.
         "external_launch_verified": launch_verified,
         "external_launch_status": "MEASURED" if launch_rows else "UNVERIFIED",
     }
     if launch_rows:
         payload["external_launch_attempts"] = launch_rows
+        payload["external_launch_verified_by_runtime"] = {
+            row["runtime"]: bool(row["attempted"] and row["status"] == "PASS") for row in launch_rows
+        }
     return payload
 
 
