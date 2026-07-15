@@ -39,14 +39,19 @@ like a stale plan hash or rotated lease does. Omitting it (the default, `""`)
 preserves the exact previous behavior for local/non-GitHub runs and every
 existing fixture.
 
+`SIMPLICIO_REQUIRE_MUTATION_AUTHORITY` is now mandatory-BY-DEFAULT (see
+`mutation_authority_required()`): both `execute_operator()` and
+`execute_operator_batch()` refuse to mutate without a valid, on-disk, hash-bound
+mutation authority unless the caller explicitly opts out. This is intentionally
+strict -- no auto-generated fallback -- a caller MUST run the real planning-gate
+step (`scripts/planning_gate.py build`, or `build_planning_receipt()` directly)
+before it can mutate anything; every test that previously assumed no gate was
+in effect now stages a real receipt fixture first (see
+`tests/planning_gate_fixtures.py`).
+
 Not yet implemented (tracked as follow-up, not claimed here): the full
 `simplicio.task-intake/v1` envelope (scope in/out, dependencies, risks,
-rollback, impact map), plan v2's DAG/parallelizable-step metadata, and making
-`execute_operator()` require this receipt unconditionally (today it is opt-in
-via `SIMPLICIO_REQUIRE_MUTATION_AUTHORITY`, since flipping the default to
-mandatory for `execute_operator_batch()` too would need every batch-dispatch
-test fixture in the suite updated first -- a materially larger, separate
-change from wiring the gate itself).
+rollback, impact map) and plan v2's DAG/parallelizable-step metadata.
 """
 from __future__ import annotations
 
@@ -219,6 +224,80 @@ def evaluate_mutation_authority(
             "reason": "mutation authority verified for the current identity tuple"}
 
 
+def publish_planning_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    publish_comment_fn: Any,
+    runner: Any = None,
+    timeout: int = 20,
+    require_active: Any = None,
+    outbox_dir: Optional[str | Path] = None,
+    **render_kwargs: Any,
+) -> Optional[Dict[str, Any]]:
+    """Wire the #284 planning receipt into the #285 canonical GitHub status comment.
+
+    Closes the remaining #284 gap "wiring github_lifecycle.py's comment publish into
+    the gate itself": a receipt with `ready_for_mutation=True` is projected as a
+    `PLANNED` status update on the SAME canonical comment `github_lifecycle.py`
+    already uses for `CLAIMED` (idempotent create-or-update, re-query verified); a
+    receipt that is NOT ready is projected as `BLOCKED` with its validator errors as
+    blockers, instead of the issue silently staying on whatever state it was last in.
+
+    Returns ``None`` (no-op) when the receipt carries no GitHub `source` block --
+    the #284 requirement that non-GitHub/local sources register
+    `source_sync=not_applicable` rather than fake a publish. Otherwise returns the
+    `simplicio.github-lifecycle-receipt/v1` produced by
+    `github_lifecycle.publish_lifecycle_state()` (never raises for an ordinary
+    publish/re-query mismatch -- that surfaces as `verified: False` in the receipt --
+    but a transport failure from `publish_comment_fn` propagates, fail-closed).
+    """
+    from . import github_lifecycle as _gh  # local import: no import cycle with runner.py
+
+    source = dict(receipt.get("source") or {})
+    if source.get("provider") != "github":
+        return None
+    owner_repo = str(source.get("repo") or "")
+    issue = str(source.get("item_id") or "")
+    if "/" not in owner_repo or not issue:
+        return None
+    owner, repo_name = owner_repo.split("/", 1)
+    ready = bool(receipt.get("ready_for_mutation"))
+    state = "PLANNED" if ready else "BLOCKED"
+    render_kwargs = dict(render_kwargs)
+    if not ready:
+        errors = list((receipt.get("plan_validation") or {}).get("errors") or [])
+        render_kwargs.setdefault("blockers", errors or ["planning gate: ready_for_mutation is False"])
+    kwargs: Dict[str, Any] = dict(
+        owner=owner, repo=repo_name, issue=issue, state=state,
+        run_id=str(receipt.get("run_id") or ""), attempt_id=str(receipt.get("attempt") or ""),
+        fencing_token=str(receipt.get("fencing_token") or ""),
+        publish_comment_fn=publish_comment_fn, timeout=timeout,
+        require_active=require_active, outbox_dir=outbox_dir,
+        **render_kwargs,
+    )
+    if runner is not None:
+        kwargs["runner"] = runner
+    return _gh.publish_lifecycle_state(**kwargs)
+
+
+def mutation_authority_required(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Mandatory-by-default (#284): the mutation-authority gate is ON unless the caller
+    explicitly opts out via `SIMPLICIO_REQUIRE_MUTATION_AUTHORITY=0/false/no/off/legacy`.
+
+    Historically this env var was opt-IN (default off). Flipping the polarity is the
+    #284 DoD item "execute_operator() e batch recusam execução sem mutation authority
+    válida" -- unconditionally, not only when a caller remembered to turn it on. The
+    same name is kept (only the default changes) so existing opt-in `=1` deployments
+    are unaffected; a legacy caller that truly cannot satisfy the gate yet must now
+    set the var to an explicit falsy value instead of just never setting it.
+    """
+    import os as _os
+    raw = (env if env is not None else _os.environ).get("SIMPLICIO_REQUIRE_MUTATION_AUTHORITY")
+    if raw is None or not str(raw).strip():
+        return True
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "legacy")
+
+
 __all__ = [
     "PLANNING_RECEIPT_SCHEMA",
     "RECEIPT_FILENAME",
@@ -229,4 +308,6 @@ __all__ = [
     "receipt_path",
     "load_planning_receipt",
     "evaluate_mutation_authority",
+    "mutation_authority_required",
+    "publish_planning_receipt",
 ]
