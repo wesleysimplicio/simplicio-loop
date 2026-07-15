@@ -48,6 +48,7 @@ class Lease:
     idempotency_key: str
     identity: Optional[Dict[str, Any]] = None
     capabilities: tuple[str, ...] = ()
+    cancelled: bool = False
 
 
 class RemoteQueue(Protocol):
@@ -64,20 +65,22 @@ class RemoteQueue(Protocol):
 
     def assert_active(self, lease: Lease) -> None: ...
 
+    def request_cancel(self, task_id: str, *, reason: str = "cancelled") -> Dict[str, Any]: ...
+
 
 def _lease_from_json(value: Mapping[str, Any]) -> Lease:
     """Decode the wire representation without trusting client-controlled fields."""
     return Lease(str(value["task_id"]), str(value["agent_id"]), str(value["lease_id"]),
                  int(value["fencing_token"]), float(value["expires_at"]),
                  str(value["idempotency_key"]), value.get("identity"),
-                 tuple(value.get("capabilities") or ()))
+                 tuple(value.get("capabilities") or ()), bool(value.get("cancelled", False)))
 
 
 def _lease_json(lease: Lease) -> Dict[str, Any]:
     return {"task_id": lease.task_id, "agent_id": lease.agent_id, "lease_id": lease.lease_id,
             "fencing_token": lease.fencing_token, "expires_at": lease.expires_at,
             "idempotency_key": lease.idempotency_key, "identity": lease.identity,
-            "capabilities": list(lease.capabilities)}
+            "capabilities": list(lease.capabilities), "cancelled": lease.cancelled}
 
 
 class HTTPRemoteQueue:
@@ -164,6 +167,10 @@ class HTTPRemoteQueue:
     def assert_active(self, lease: Lease) -> None:
         self._request("POST", "/assert-active", {"lease": _lease_json(lease)})
 
+    def request_cancel(self, task_id: str, *, reason: str = "cancelled") -> Dict[str, Any]:
+        """Ask the current claimant to stop cooperatively (checked on its next heartbeat)."""
+        return self._request("POST", "/cancel", {"task_id": task_id, "reason": reason})
+
     def release(self, lease: Lease, *, reason: str = "handoff") -> Dict[str, Any]:
         return self._request("POST", "/release", {"lease": _lease_json(lease), "reason": reason})
 
@@ -240,6 +247,8 @@ class SQLiteRemoteQueue:
                 c.execute("ALTER TABLE leases ADD COLUMN identity TEXT")
             if "capabilities" not in columns:
                 c.execute("ALTER TABLE leases ADD COLUMN capabilities TEXT")
+            if "cancel_requested" not in columns:
+                c.execute("ALTER TABLE leases ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
             c.execute("INSERT OR IGNORE INTO queue_meta(key, value) VALUES('schema', ?)", (SCHEMA,))
 
     @contextlib.contextmanager
@@ -346,7 +355,8 @@ class SQLiteRemoteQueue:
                             raise QueueConflict("idempotency key is bound to another agent identity")
                         return Lease(row["task_id"], row["agent_id"], row["lease_id"], row["fencing_token"],
                                      row["expires_at"], row["idempotency_key"], stored_identity,
-                                     tuple(json.loads(row["capabilities"] or "[]")))
+                                     tuple(json.loads(row["capabilities"] or "[]")),
+                                     bool(row["cancel_requested"]))
                 task = c.execute("SELECT status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
                 if task is None:
                     raise KeyError("unknown task: %s" % task_id)
@@ -359,7 +369,8 @@ class SQLiteRemoteQueue:
                 expires = now + ttl
                 c.execute(
                     "INSERT OR REPLACE INTO leases(task_id,agent_id,lease_id,fencing_token,"
-                    "idempotency_key,expires_at,status,receipt_ref,updated_at,identity,capabilities) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "idempotency_key,expires_at,status,receipt_ref,updated_at,identity,capabilities,"
+                    "cancel_requested) VALUES(?,?,?,?,?,?,?,?,?,?,?,0)",
                           (task_id, agent_id, lid, token, idempotency_key, expires, "active", None, now,
                            json.dumps(normalized_identity, sort_keys=True) if normalized_identity else None,
                            json.dumps(list(normalized_caps))))
@@ -370,7 +381,7 @@ class SQLiteRemoteQueue:
                 c.execute("UPDATE tasks SET status='claimed',updated_at=? WHERE task_id=?", (now, task_id))
                 self._event(c, task_id, "claimed", agent_id, token, {"lease_id": lid, "expires_at": expires})
                 return Lease(task_id, agent_id, lid, token, expires, idempotency_key,
-                             normalized_identity, normalized_caps)
+                             normalized_identity, normalized_caps, False)
         except sqlite3.Error as exc:
             raise QueueUnavailable("queue unavailable: %s" % exc) from exc
 
@@ -388,17 +399,40 @@ class SQLiteRemoteQueue:
         if ttl <= 0:
             raise ValueError("positive ttl is required")
         with self._tx() as c:
-            self._owned(c, lease)
+            row = self._owned(c, lease)
             expires = _now() + ttl
             c.execute("UPDATE leases SET expires_at=?,updated_at=? WHERE task_id=?", (expires, _now(), lease.task_id))
             self._event(c, lease.task_id, "heartbeat", lease.agent_id, lease.fencing_token, {"expires_at": expires})
             return Lease(lease.task_id, lease.agent_id, lease.lease_id, lease.fencing_token,
-                         expires, lease.idempotency_key, lease.identity, lease.capabilities)
+                         expires, lease.idempotency_key, lease.identity, lease.capabilities,
+                         bool(row["cancel_requested"]))
 
     def assert_active(self, lease: Lease) -> None:
         """Validate fencing without extending the lease or mutating queue state."""
         with self._tx() as c:
             self._owned(c, lease)
+
+    def request_cancel(self, task_id: str, *, reason: str = "cancelled") -> Dict[str, Any]:
+        """Ask the current claimant to stop cooperatively at its next heartbeat/assert.
+
+        This never kills the claimant's process directly -- cancellation here is
+        cooperative: the flag is durably recorded against the *current* fencing
+        token, and the claimant discovers it (and must itself release/abort) the
+        next time it heartbeats or checks ``assert_active``. A claimant that never
+        calls back in still loses the task the ordinary way, once its lease TTL
+        expires.
+        """
+        task_id = str(task_id).strip()
+        if not task_id:
+            raise ValueError("task_id is required")
+        with self._tx() as c:
+            row = c.execute("SELECT * FROM leases WHERE task_id=?", (task_id,)).fetchone()
+            if row is None or row["status"] != "active" or row["expires_at"] <= _now():
+                raise QueueConflict("no active lease to cancel for task %s" % task_id)
+            c.execute("UPDATE leases SET cancel_requested=1,updated_at=? WHERE task_id=?", (_now(), task_id))
+            self._event(c, task_id, "cancel_requested", row["agent_id"], row["fencing_token"], {"reason": reason})
+            return {"task_id": task_id, "cancel_requested": True, "fencing_token": row["fencing_token"],
+                    "reason": reason}
 
     def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]:
         if not receipt_ref:
@@ -523,6 +557,8 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
                 elif op == "assert-active":
                     queue.assert_active(_lease_from_json(body["lease"]))
                     result = {"active": True}
+                elif op == "cancel":
+                    result = queue.request_cancel(body["task_id"], reason=body.get("reason", "cancelled"))
                 elif op == "release":
                     result = queue.release(_lease_from_json(body["lease"]), reason=body.get("reason", "handoff"))
                 elif op == "events":
