@@ -33,8 +33,16 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 from urllib.parse import urlsplit
+
+try:  # pragma: no cover - script executed directly vs imported as package
+    from scripts.security_audit_log import append_event as _audit_append
+except ImportError:  # pragma: no cover
+    try:
+        from security_audit_log import append_event as _audit_append  # type: ignore
+    except ImportError:  # pragma: no cover
+        _audit_append = None
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY_PATH = REPO_ROOT / ".github" / "security" / "distributed-trust-policy.json"
@@ -94,12 +102,53 @@ def validate_schema(policy: Dict[str, Any]) -> None:
             )
         if origin.get("scheme") != "https":
             raise TrustPolicyError(f"environment '{env_id}' origin scheme must be https")
-        pins = env.get("tls_sha256_pins")
-        if not isinstance(pins, list) or not pins or not all(isinstance(p, str) and p for p in pins):
-            raise TrustPolicyError(f"environment '{env_id}' tls_sha256_pins must be a non-empty list of strings")
+        pin_entries = _validate_pins(env_id, env.get("tls_sha256_pins"))
+        if not any(entry["status"] == "current" for entry in pin_entries):
+            raise TrustPolicyError(
+                f"environment '{env_id}' tls_sha256_pins must include at least one 'current' pin"
+            )
         for list_field in ("allowed_repos", "allowed_refs", "allowed_actors"):
             if not isinstance(env.get(list_field), list):
                 raise TrustPolicyError(f"environment '{env_id}' {list_field} must be a list")
+
+
+_ALLOWED_PIN_STATUSES = {"current", "next", "retired"}
+
+
+def _validate_pins(env_id: str, pins: Any) -> List[Dict[str, str]]:
+    """Normalize ``tls_sha256_pins`` to ``[{"sha256": ..., "status": ...}]``.
+
+    #289 pin rotation: each entry may be a bare string (legacy shape, treated
+    as an implicit ``"current"`` pin so existing policy files keep validating
+    unchanged) or an object ``{"sha256": "...", "status": "current"|"next"}``.
+    Declaring a ``"next"`` pin alongside the ``"current"`` one lets a cert
+    rotation happen by first adding the new pin as ``next`` (deployed, but not
+    yet the primary), rotating the certificate, then promoting it to
+    ``current`` and retiring the old one -- without a single commit that must
+    change the policy and the certificate at the same instant.
+    """
+    if not isinstance(pins, list) or not pins:
+        raise TrustPolicyError(f"environment '{env_id}' tls_sha256_pins must be a non-empty list")
+    out: List[Dict[str, str]] = []
+    for entry in pins:
+        if isinstance(entry, str):
+            if not entry:
+                raise TrustPolicyError(f"environment '{env_id}' tls_sha256_pins entries must be non-empty")
+            out.append({"sha256": entry, "status": "current"})
+            continue
+        if isinstance(entry, dict):
+            sha256 = entry.get("sha256")
+            status = entry.get("status", "current")
+            if not isinstance(sha256, str) or not sha256:
+                raise TrustPolicyError(f"environment '{env_id}' pin entry missing non-empty 'sha256'")
+            if status not in _ALLOWED_PIN_STATUSES:
+                raise TrustPolicyError(
+                    f"environment '{env_id}' pin status '{status}' must be one of {sorted(_ALLOWED_PIN_STATUSES)}"
+                )
+            out.append({"sha256": sha256, "status": status})
+            continue
+        raise TrustPolicyError(f"environment '{env_id}' tls_sha256_pins entries must be strings or objects")
+    return out
 
 
 def resolve_environment(policy: Dict[str, Any], environment_id: str) -> Dict[str, Any]:
@@ -112,22 +161,32 @@ def resolve_environment(policy: Dict[str, Any], environment_id: str) -> Dict[str
 
 
 def authorize(
-    policy: Dict[str, Any], environment_id: str, repo: str, ref: str, actor: str
+    policy: Dict[str, Any], environment_id: str, repo: str, ref: str, actor: str,
+    *, audit_log_path: Any = None,
 ) -> Tuple[bool, str]:
+    def _decide(ok: bool, reason: str) -> Tuple[bool, str]:
+        if _audit_append is not None:
+            _audit_append(
+                audit_log_path, event="distributed_trust_policy.authorize",
+                decision="accept" if ok else "reject", who=actor, operation=environment_id,
+                reason=reason, extra={"repo": repo, "ref": ref},
+            )
+        return ok, reason
+
     try:
         env = resolve_environment(policy, environment_id)
     except TrustPolicyError as exc:
-        return False, str(exc)
+        return _decide(False, str(exc))
     allowed_repos = env.get("allowed_repos") or []
     allowed_refs = env.get("allowed_refs") or []
     allowed_actors = env.get("allowed_actors") or []
     if repo not in allowed_repos:
-        return False, f"repo '{repo}' is not authorized for environment '{environment_id}'"
+        return _decide(False, f"repo '{repo}' is not authorized for environment '{environment_id}'")
     if ref not in allowed_refs:
-        return False, f"ref '{ref}' is not authorized for environment '{environment_id}'"
+        return _decide(False, f"ref '{ref}' is not authorized for environment '{environment_id}'")
     if allowed_actors and actor not in allowed_actors:
-        return False, f"actor '{actor}' is not authorized for environment '{environment_id}'"
-    return True, "authorized"
+        return _decide(False, f"actor '{actor}' is not authorized for environment '{environment_id}'")
+    return _decide(True, "authorized")
 
 
 def _normalized_origin(scheme: str, hostname: str, port: int) -> str:
@@ -140,39 +199,57 @@ def check_endpoint(
     queue_url: str,
     tls_hostname: str,
     tls_sha256: str,
+    *, audit_log_path: Any = None,
 ) -> Tuple[bool, str]:
     """Fail closed unless the operationally-configured endpoint matches the policy exactly.
 
     The policy is always the anchor: this never derives trust from `queue_url` /
     `tls_hostname` / `tls_sha256` themselves, it only checks whether an out-of-band value
     (e.g. a GitHub Environment variable) still matches what the reviewed policy expects.
+
+    Every call -- accepted or rejected -- appends a #289 audit-log line
+    recording the environment id, resolved origin and which pin id (never the
+    full fingerprint verbatim is withheld; the pin itself is not secret, but
+    the log still ties the decision to a specific pin/status) matched, so an
+    incident responder can see which pin authorized (or failed to authorize)
+    a given connection without re-deriving it from code.
     """
+    def _decide(ok: bool, reason: str, *, pin_status: str = "") -> Tuple[bool, str]:
+        if _audit_append is not None:
+            _audit_append(
+                audit_log_path, event="distributed_trust_policy.check_endpoint",
+                decision="accept" if ok else "reject", operation=environment_id,
+                reason=reason, extra={"tls_hostname": tls_hostname, "pin_status": pin_status},
+            )
+        return ok, reason
+
     try:
         env = resolve_environment(policy, environment_id)
     except TrustPolicyError as exc:
-        return False, str(exc)
+        return _decide(False, str(exc))
     origin_cfg = env["origin"]
     expected_origin = _normalized_origin(origin_cfg["scheme"], origin_cfg["hostname"], int(origin_cfg["port"]))
 
     parsed = urlsplit(queue_url or "")
     if parsed.scheme != "https" or not parsed.hostname:
-        return False, "queue_url must be an https URL with a hostname"
+        return _decide(False, "queue_url must be an https URL with a hostname")
     if parsed.username or parsed.password:
-        return False, "queue_url must not carry userinfo"
+        return _decide(False, "queue_url must not carry userinfo")
     actual_port = parsed.port or 443
     actual_origin = _normalized_origin(parsed.scheme, parsed.hostname, actual_port)
     if actual_origin != expected_origin:
-        return False, f"queue_url origin '{actual_origin}' does not match policy origin '{expected_origin}'"
+        return _decide(False, f"queue_url origin '{actual_origin}' does not match policy origin '{expected_origin}'")
 
     if tls_hostname.lower().rstrip(".") != origin_cfg["hostname"].lower().rstrip("."):
-        return False, "tls_hostname does not match policy hostname"
+        return _decide(False, "tls_hostname does not match policy hostname")
 
     normalized_fp = (tls_sha256 or "").replace(":", "").lower()
-    pins = {p.replace(":", "").lower() for p in env["tls_sha256_pins"]}
-    if normalized_fp not in pins:
-        return False, "tls_sha256 does not match any pin in the policy"
+    pin_entries = _validate_pins(environment_id, env["tls_sha256_pins"])
+    active_pins = {e["sha256"].replace(":", "").lower(): e["status"] for e in pin_entries if e["status"] != "retired"}
+    if normalized_fp not in active_pins:
+        return _decide(False, "tls_sha256 does not match any active pin in the policy")
 
-    return True, "endpoint matches trust policy"
+    return _decide(True, "endpoint matches trust policy", pin_status=active_pins[normalized_fp])
 
 
 def _cmd_validate_schema(args: argparse.Namespace) -> int:
