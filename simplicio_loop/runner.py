@@ -29,6 +29,8 @@ from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONT
                                ReceiptStatus, verify_receipt)
 from .planning_gate import content_hash as _planning_content_hash
 from .planning_gate import evaluate_mutation_authority, mutation_authority_required
+from .planning_gate import build_planning_receipt as _build_planning_receipt
+from .planning_gate import publish_planning_receipt as _publish_planning_receipt
 from .work_item_claims import AttemptCoordinator, LeaseLostDuringExecution
 from .merge_executor import MergeExecutor, MergeExecutorError
 from .model_registry import ModelCapabilityRegistry, ModelRegistryError
@@ -1013,6 +1015,78 @@ def _sync_github_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str
             pass
 
 
+def _maybe_auto_build_planning_receipt(
+    run_root: Path, state: Dict[str, Any], run_id: str,
+    contract: Dict[str, Any], plan: Dict[str, Any], plan_validation: Dict[str, Any],
+) -> None:
+    """#284 remaining gap: wire ``planning_gate.build_planning_receipt()`` into the
+    REAL ``arm_run()`` dispatch path so the mutation-authority gate in
+    ``execute_operator()``/``execute_operator_batch()`` is self-sufficient, instead
+    of only ever being satisfiable by a caller remembering to run the separate
+    ``scripts/planning_gate.py build`` CLI first.
+
+    Opt-in via ``SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT`` (default OFF) -- this is
+    intentionally NOT mandatory-by-default the way ``mutation_authority_required()``
+    is: dozens of existing tests deliberately exercise the gate's fail-closed
+    behavior with NO receipt on disk (see ``tests/planning_gate_fixtures.py``), and
+    an unconditional auto-build here would silently make every one of those runs
+    "ready", defeating the "no auto-generated fallback" guarantee documented in
+    ``planning_gate.py``. A caller that wants the real dispatch path to self-gate
+    turns this flag on explicitly; every existing run/test is unaffected when unset.
+
+    When a GitHub ``source_issue`` is present on the run state AND
+    ``SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC`` is also enabled, this additionally
+    captures a fresh source snapshot (folding it into the mutation-authority
+    identity so a later source edit invalidates the authority) and publishes the
+    resulting receipt as PLANNED/BLOCKED on the canonical GitHub comment via
+    ``planning_gate.publish_planning_receipt()`` -- the #284-specific projection,
+    distinct from (and complementary to) the generic per-phase-event sync
+    ``_sync_github_lifecycle()`` already performs for CLAIMED/DISCOVERED/etc.
+
+    Best-effort and fail-open: any failure here (bad `gh` auth, no network, import
+    error) is logged to ``lifecycle-sync-errors.jsonl`` and swallowed, exactly like
+    ``_sync_github_lifecycle()`` -- this must never abort or fail the run.
+    """
+    if str(os.environ.get("SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT") or "").strip().lower() not in ("1", "true", "yes"):
+        return
+    try:
+        attempt = int((state or {}).get("attempts", 0)) + 1
+        source_snapshot = None
+        source_issue = (state or {}).get("source_issue") or {}
+        owner, repo_name, issue = source_issue.get("owner"), source_issue.get("repo"), source_issue.get("issue")
+        lifecycle_sync_on = str(os.environ.get("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC") or "").strip().lower() in (
+            "1", "true", "yes",
+        )
+        if lifecycle_sync_on and owner and repo_name and issue:
+            try:
+                from .source_snapshot import capture_github_issue_snapshot
+                source_snapshot = capture_github_issue_snapshot(f"{owner}/{repo_name}", str(issue))
+            except Exception:
+                source_snapshot = None
+        receipt = _build_planning_receipt(
+            run_id=run_id, attempt=attempt, contract=contract, plan=plan,
+            plan_validation=plan_validation, source_snapshot=source_snapshot,
+        )
+        (run_root / "planning-receipt.json").write_text(
+            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
+        if source_snapshot is not None and lifecycle_sync_on:
+            scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from pr_evidence import publish_comment as _publish_comment  # local import: optional dep
+
+            lifecycle_receipt = _publish_planning_receipt(receipt, publish_comment_fn=_publish_comment)
+            if lifecycle_receipt is not None:
+                _github_lifecycle.persist_lifecycle_receipt(lifecycle_receipt, run_root)
+    except Exception as exc:  # noqa: BLE001 -- best-effort, never blocks the run
+        try:
+            _append_jsonl(run_root / "lifecycle-sync-errors.jsonl",
+                         {"ts": _now(), "kind": "planning_receipt_auto_build", "error": str(exc)})
+        except Exception:
+            pass
+
+
 def _emit_event(run_dir: Path, state: Dict[str, Any], kind: str, *,
                 receipt: str = "", blocker: str = "", message: str = "",
                 **extra: Any) -> Dict[str, Any]:
@@ -1889,6 +1963,7 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         _write_json(run_root / "plan.json", plan)
         state = _load_json(run_root / "state.json")
         state["current_action"] = "plan_materialized"
+        _maybe_auto_build_planning_receipt(run_root, state, run_id, compiled, plan, plan_validation)
         candidates = ((plan.get("steps") or [{}])[0].get("candidate_targets") or [])
         if not candidates:
             raise RuntimeError("mapper-derived plan has no authorized operator target")
