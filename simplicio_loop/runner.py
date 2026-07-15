@@ -2644,6 +2644,29 @@ def _verify_worker_receipt_pair(operator_receipt_path: str, evidence_receipt_pat
     }
 
 
+def _test_only_stall_before_dispatch(task_id: str) -> None:
+    """Test-only hook (issue #288 cross-process recovery test): block one named task for a
+    controlled number of real wall-clock seconds before it claims/executes.
+
+    This exists solely so a test can start a real orchestrator OS process, let it durably
+    journal an earlier task, and then kill the process (a genuine crash, not a simulated
+    exception) while it is deterministically stalled mid-batch on a *different* task --
+    proving a restarted orchestrator resumes/reconciles cleanly. It is a no-op unless both
+    ``SIMPLICIO_LOOP_TEST_SLOW_TASK_ID`` matches this exact task and
+    ``SIMPLICIO_LOOP_TEST_SLOW_TASK_SECONDS`` is set, mirroring the project's existing
+    ``SIMPLICIO_LOOP_FAKE_*`` opt-in test hooks -- never active in a normal run.
+    """
+    target = os.environ.get("SIMPLICIO_LOOP_TEST_SLOW_TASK_ID", "").strip()
+    if not target or target != str(task_id).strip():
+        return
+    try:
+        seconds = float(os.environ.get("SIMPLICIO_LOOP_TEST_SLOW_TASK_SECONDS", "0") or "0")
+    except ValueError:
+        seconds = 0.0
+    if seconds > 0:
+        time.sleep(seconds)
+
+
 def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Call the production operator and reduce its status to a durable worker record."""
     started = _now()
@@ -2715,6 +2738,11 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
                     "reason_code": "network_paused", "error": str(exc), "dead_letter": True,
                     "started_at": started, "finished_at": _now()}
+    if lease is not None:
+        # Only stall a task that is genuinely claimed/leased -- this is what lets the
+        # cross-process recovery test kill the orchestrator mid-attempt with a real,
+        # in-flight (not merely queued) lease abandoned behind it.
+        _test_only_stall_before_dispatch(str(common.get("task_id") or ""))
     if item.get("worktree_error"):
         return {
             **common,
@@ -2853,11 +2881,38 @@ def dispatch_operator_batch(
     keys = {(item["repo"], item["run_id"], item["task_index"]) for item in normalized}
     if len(keys) != len(normalized):
         raise ValueError("operator dispatch contains duplicate repo/run/task items")
+
+    # Issue #288 cross-process recovery: load the journal *before* preflight so a resumed
+    # batch can tell "already durably succeeded" items apart from ones still needing a fresh
+    # dry-run preflight. A succeeded item's operator-receipt.json has already been
+    # overwritten by `execute_operator` with a *post-execution* receipt (no `run_id` field,
+    # a different shape than the pre-execution dry-run receipt `_validate_run_receipts`
+    # expects) -- re-validating it as if it were still a pending dry-run would always fail
+    # and permanently block every resumed batch that contains even one completed item.
+    journal_path: Optional[Path] = None
+    if journal_dir:
+        journal_path = Path(journal_dir).resolve() / "operator-batch.jsonl"
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+    prior: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+    if journal_path and journal_path.exists():
+        for line in journal_path.read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(line)
+                key = (str(rec.get("repo")), str(rec.get("run_id")), int(rec.get("task_index")))
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+            prior[key] = rec
+
     # A persisted run is a privileged execution boundary.  Keep synthetic scheduler
     # contexts supported, but fail every run-backed dispatch globally before worktree
     # preparation, journal creation, or worker submission unless its receipt chain is
-    # fresh and bound to this exact run.
+    # fresh and bound to this exact run -- except an item already durably journaled as
+    # succeeded, which is never re-dispatched and so must never be re-validated as if it
+    # still needed a fresh dry run.
     for item in normalized:
+        key = (item["repo"], item["run_id"], item["task_index"])
+        if prior.get(key, {}).get("status") == "succeeded":
+            continue
         repo_path = Path(item["repo"]).resolve()
         run_dir = repo_path / ".simplicio" / "loop-runs" / item["run_id"]
         if not run_dir.is_dir():
@@ -2893,19 +2948,6 @@ def dispatch_operator_batch(
         serial_fallback_reason = "shared_run_state"
     retry_budget = max(0, int(retry_budget))
 
-    journal_path: Optional[Path] = None
-    if journal_dir:
-        journal_path = Path(journal_dir).resolve() / "operator-batch.jsonl"
-        journal_path.parent.mkdir(parents=True, exist_ok=True)
-    prior: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
-    if journal_path and journal_path.exists():
-        for line in journal_path.read_text(encoding="utf-8").splitlines():
-            try:
-                rec = json.loads(line)
-                key = (str(rec.get("repo")), str(rec.get("run_id")), int(rec.get("task_index")))
-            except (ValueError, TypeError, json.JSONDecodeError):
-                continue
-            prior[key] = rec
     pending = deque(
         item for item in normalized
         if prior.get((item["repo"], item["run_id"], item["task_index"]), {}).get("status") != "succeeded"
