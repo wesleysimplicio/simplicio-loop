@@ -122,6 +122,7 @@ def test_github_delivery_payload_uses_fixture_env_var(monkeypatch):
         "pr": 9,
         "tag": "",
         "target_state": "pr-open",
+        "environment": "",
         "mode": "fixture",
     }
 
@@ -136,6 +137,7 @@ def test_github_delivery_payload_live_mode_with_no_pr_or_tag_returns_bare_source
             "pr": None,
             "tag": "",
             "target_state": "",
+            "environment": "",
             "mode": "live",
         }
     }

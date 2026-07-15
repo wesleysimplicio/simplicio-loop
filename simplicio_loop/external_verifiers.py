@@ -26,8 +26,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 def _run(args, cwd=None, timeout=180):
@@ -346,6 +347,158 @@ def git_is_ancestor(cwd: str, commit_sha: str, branch_ref: str, *, timeout: int 
         "ok": False, "reachable": False, "reason_code": "git_merge_base_error",
         "error": (result.stderr or "").strip(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Transient-failure retry (#290 fault-injection requirement: "falha transitória da API
+# do GitHub durante reconciliação" must never corrupt state or produce a false PASS —
+# it must retry a bounded number of times against a *fresh* live call and, absent a
+# real success, stay UNVERIFIED with the last observed reason code).
+# ---------------------------------------------------------------------------
+
+_DEFAULT_TRANSIENT_REASON_CODES = frozenset({
+    "default_branch_query_failed",
+    "compare_query_failed",
+    "release_download_failed",
+    "review_threads_query_failed",
+    "deployment_release_query_failed",
+})
+
+
+def retry_transient(fn: Callable[[], Dict[str, Any]], *, attempts: int = 3, backoff: float = 0.0,
+                     is_transient: Optional[Callable[[Dict[str, Any]], bool]] = None,
+                     sleep: Callable[[float], None] = time.sleep) -> Dict[str, Any]:
+    """Call ``fn()`` up to ``attempts`` times, retrying only while the result looks like a
+    *transient* transport failure (rate limit, 5xx, timeout) rather than a real, observed
+    negative verdict. Each retry is a genuinely fresh live call — never a cached/replayed
+    result — so a real transient failure that clears on the provider side is picked up, and
+    a real negative fact (mismatch, missing asset, unresolved thread) is never retried into
+    a false PASS: it is returned as-is on the very first attempt because it does not match
+    ``is_transient``.
+    """
+    checker = is_transient or (
+        lambda result: bool(result.get("reason_code")) and result.get("reason_code") in _DEFAULT_TRANSIENT_REASON_CODES
+    )
+    last: Dict[str, Any] = {}
+    for attempt in range(1, max(1, attempts) + 1):
+        last = fn()
+        if not checker(last):
+            return last
+        if backoff and attempt < attempts:
+            sleep(backoff)
+    return last
+
+
+def resolve_release_commit(repo: str, tag: str) -> Dict[str, Any]:
+    """Resolve the commit a release *tag* actually points at, via `gh api
+    repos/{repo}/releases/tags/{tag}` (`target_commitish` — which GitHub resolves to a real
+    commit sha for a lightweight tag, or the branch name for an annotated one created via the
+    UI; either way this is the provider's own claim, never inferred locally). Fails closed on
+    any transport error or malformed response, and reports draft/prerelease status so a
+    caller can reject those explicitly rather than assume a "release" is always final."""
+    try:
+        result = _run(["gh", "api", f"repos/{repo}/releases/tags/{tag}"])
+    except (subprocess.SubprocessError, OSError) as exc:
+        return {"ok": False, "reason_code": "deployment_release_query_failed", "error": str(exc)}
+    if result.returncode != 0:
+        return {"ok": False, "reason_code": "deployment_release_query_failed",
+                "error": (result.stderr or "").strip()}
+    try:
+        data = json.loads(result.stdout or "{}")
+        target_commitish = str(data["target_commitish"])
+    except (ValueError, KeyError, TypeError):
+        return {"ok": False, "reason_code": "deployment_release_response_malformed"}
+    return {
+        "ok": True,
+        "target_commitish": target_commitish,
+        "draft": bool(data.get("draft")),
+        "prerelease": bool(data.get("prerelease")),
+    }
+
+
+class DeploymentVerifier:
+    """`DeploymentVerifier` (#290 Fase 5): a real check that a claimed "deployed" state
+    corresponds to something observable.
+
+    This repo ships a Python/npm package, not a long-running service with its own health
+    endpoint — there is no server to curl. The closest real, honest analog to "deployed" for
+    a package is: the exact bytes published under the claimed release tag are (a) reachable
+    from the real default branch (so "deployed" cannot silently point at an orphaned/rejected
+    commit), (b) byte-verified (checksum/signature/SBOM, composing the existing
+    `ReleaseArtifactVerifier` slice — `verify_release_artifacts` — rather than reinventing byte
+    verification here), and (c) genuinely installable from those same downloaded bytes
+    (`run_install_smoke`) into a clean environment. "environment" is therefore modeled as the
+    *install target* (e.g. `"pypi-index"`, `"local-venv"`, a CI runner image) that the smoke
+    ran against — never a bare hostname/environment-name claim with nothing behind it.
+
+    Every dimension fails closed with a stable `reason_code` on any missing/mismatched/
+    unavailable proof — "unknown is not pass" — and a `verify()` call is a fresh live
+    observation every time; nothing here is cached across calls.
+    """
+
+    def __init__(self, *, workdir: Optional[str] = None) -> None:
+        self._workdir = workdir
+
+    def verify(self, repo: str, tag: str, environment: str, *,
+               asset_names: Optional[List[str]] = None,
+               module_name: str = "simplicio_loop",
+               expected_commit_sha: Optional[str] = None) -> Dict[str, Any]:
+        if not str(environment or "").strip():
+            return {"ok": False, "environment": environment, "reason_code": "deployment_environment_missing"}
+
+        release = resolve_release_commit(repo, tag)
+        if not release.get("ok"):
+            return {"ok": False, "environment": environment,
+                    "reason_code": release.get("reason_code", "deployment_release_query_failed")}
+        if release.get("draft") or release.get("prerelease"):
+            return {"ok": False, "environment": environment,
+                    "reason_code": "deployment_release_not_promotable",
+                    "draft": release.get("draft"), "prerelease": release.get("prerelease")}
+
+        commit_sha = release["target_commitish"]
+        if expected_commit_sha and expected_commit_sha != commit_sha:
+            return {"ok": False, "environment": environment, "commit_sha": commit_sha,
+                    "reason_code": "deployment_commit_mismatch",
+                    "expected_commit_sha": expected_commit_sha}
+
+        reachability = verify_branch_reachability(repo, commit_sha)
+        if not reachability.get("ok") or not reachability.get("reachable"):
+            return {"ok": False, "environment": environment, "commit_sha": commit_sha,
+                    "reason_code": reachability.get("reason_code", "deployment_reachability_unverified")}
+
+        workdir = self._workdir or tempfile.mkdtemp(prefix="simplicio-loop-deployment-verify-")
+        cleanup = self._workdir is None
+        try:
+            artifacts = verify_release_artifacts(repo, tag, asset_names or [], workdir=workdir)
+            if not artifacts.get("checksums_verified"):
+                return {
+                    "ok": False, "environment": environment, "commit_sha": commit_sha,
+                    "reason_code": artifacts.get("checksum_reason_code", "deployment_artifact_unverified"),
+                }
+            wheel_path = next(
+                (str(Path(workdir) / name) for name in artifacts.get("assets_verified", [])
+                 if name.endswith(".whl") and (Path(workdir) / name).is_file()),
+                None,
+            )
+            if wheel_path is None:
+                smoke = {"passed": False, "reason_code": "wheel_not_verified"}
+            else:
+                smoke = run_install_smoke(wheel_path, module_name=module_name)
+            artifact_digest = artifacts["digests"].get(Path(wheel_path).name) if wheel_path else None
+            deployed = bool(smoke.get("passed")) and bool(artifact_digest)
+            return {
+                "ok": deployed,
+                "environment": environment,
+                "commit_sha": commit_sha,
+                "artifact_digest": artifact_digest,
+                "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "smoke": smoke,
+                "reason_code": None if deployed else smoke.get("reason_code", "deployment_smoke_failed"),
+                "evidence": "external-verifiers-deployment-install-smoke",
+            }
+        finally:
+            if cleanup:
+                shutil.rmtree(workdir, ignore_errors=True)
 
 
 def run_install_smoke(wheel_path: str, *, module_name: str = "simplicio_loop") -> Dict[str, Any]:
