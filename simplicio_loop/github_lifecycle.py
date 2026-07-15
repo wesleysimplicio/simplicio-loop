@@ -61,6 +61,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from . import freshness
+
 LIFECYCLE_SCHEMA = "simplicio.github-lifecycle-receipt/v1"
 SNAPSHOT_SCHEMA = "simplicio.github-source-snapshot/v1"
 LIST_READY_SCHEMA = "simplicio.github-list-ready/v1"
@@ -482,6 +484,68 @@ def requery(owner: str, repo: str, issue: str, *, comment_id: Optional[int] = No
 # --- outbox: persist intent before a remote mutation, clear only after confirmation ----
 
 
+ISSUE_STATE_VERIFIER_SCHEMA = "simplicio.issue-state-verifier/v1"
+
+
+def verify_issue_state(owner: str, repo: str, issue: str, *, expected_state: Optional[str] = None,
+                       cached_snapshot: Optional[Dict[str, Any]] = None, ttl_seconds: int = 0,
+                       runner: Callable = subprocess.run, timeout: int = 20) -> Dict[str, Any]:
+    """`IssueStateVerifier` (#290): re-query the actual current state of a source issue
+    (open/closed/reopened) right before trusting it, rather than caching a stale read.
+
+    Composes with -- does not reinvent -- #285's `requery()` for the live read. The
+    #290 TTL/freshness policy (`simplicio_loop/freshness.py`) decides whether a
+    `cached_snapshot` (e.g. a `get_details`/`requery` result read earlier in the same
+    turn) is still trustworthy: `ttl_seconds<=0` (the default) always forces a live
+    re-query -- the safe default for a verifier whose entire purpose is "don't trust a
+    stale read" -- while a caller that has good reason to reuse a very recent read (for
+    example, a chain of checks within the same reconciliation transaction) may pass a
+    positive `ttl_seconds` together with the `cached_snapshot` it wants considered.
+
+    "Unknown is not pass": a transport failure on the forced live query reports
+    `verified=False` with the underlying `GitHubTransportError.reason_code` -- it never
+    falls back to trusting the cache just because the network call failed.
+    """
+    stale = True
+    snapshot: Dict[str, Any] = {}
+    source = "live"
+    if cached_snapshot is not None:
+        observed_at = cached_snapshot.get("requeried_at") or cached_snapshot.get("observed_at")
+        stale = freshness.is_stale(observed_at, ttl_seconds)
+        if not stale:
+            snapshot = cached_snapshot
+            source = "cache"
+    if stale:
+        try:
+            snapshot = requery(owner, repo, issue, runner=runner, timeout=timeout)
+        except GitHubTransportError as exc:
+            return {
+                "schema": ISSUE_STATE_VERIFIER_SCHEMA,
+                "repo": f"{owner}/{repo}", "issue": str(issue),
+                "state": None, "source": "live", "stale": True,
+                "verified": False, "reason_code": exc.reason_code,
+            }
+        source = "live"
+    state = snapshot.get("state")
+    result: Dict[str, Any] = {
+        "schema": ISSUE_STATE_VERIFIER_SCHEMA,
+        "repo": f"{owner}/{repo}",
+        "issue": str(issue),
+        "state": state,
+        "source": source,
+        "stale": stale,
+        "observed_at": snapshot.get("requeried_at") or snapshot.get("observed_at"),
+    }
+    if expected_state is not None and state != expected_state:
+        result["verified"] = False
+        result["reason_code"] = "issue_state_mismatch"
+        result["expected_state"] = expected_state
+    else:
+        result["verified"] = True
+        result["reason_code"] = None
+    return result
+
+
 def _outbox_path(outbox_dir: str | Path, op_id: str) -> Path:
     return Path(outbox_dir) / f"{op_id}.json"
 
@@ -689,22 +753,47 @@ def close_source_issue(
     runner: Callable = subprocess.run,
     timeout: int = 20,
     outbox_dir: Optional[str | Path] = None,
+    precheck_issue_state: bool = False,
     **render_kwargs: Any,
 ) -> Dict[str, Any]:
     """`close` (#285): real `gh issue close` wiring, fail-closed.
 
-    Order of operations mirrors the issue's DoD: (1) lease/fence check via
-    `require_active`, (2) the actual `gh issue close --reason <reason>` call using
-    structured argv (never shell interpolation) -- any non-zero exit is reported as
-    `SOURCE_CLOSE_FAILED` and NOTHING further happens (no comment update, no false
-    "closed"); (3) an immediate re-query (`get_details`) confirms `state == "closed"`
-    -- if it does not, `SOURCE_CLOSE_UNCONFIRMED` is returned rather than trusting the
-    exit code alone; (4) only then is the canonical comment moved to `CLOSED` via
+    Order of operations mirrors the issue's DoD: (0) OPTIONAL pre-transition
+    reconciliation -- when `precheck_issue_state=True`, `verify_issue_state` (#290's
+    `IssueStateVerifier`) forces a fresh live re-query of the issue and confirms it is
+    still `open` immediately before attempting the mutation; if it has already moved
+    (closed by another actor/run, or the query itself fails) this returns
+    `SOURCE_ALREADY_CLOSED`/`SOURCE_STATE_PRECHECK_FAILED` WITHOUT ever calling `gh
+    issue close` -- avoiding both a redundant close attempt and a false assumption
+    about the starting state; (1) lease/fence check via `require_active`, (2) the
+    actual `gh issue close --reason <reason>` call using structured argv (never shell
+    interpolation) -- any non-zero exit is reported as `SOURCE_CLOSE_FAILED` and
+    NOTHING further happens (no comment update, no false "closed"); (3) an immediate
+    post-transition re-query (`get_details`) confirms `state == "closed"` -- if it does
+    not, `SOURCE_CLOSE_UNCONFIRMED` is returned rather than trusting the exit code
+    alone; (4) only then is the canonical comment moved to `CLOSED` via
     `publish_lifecycle_state`. If steps 1-3 succeed but the final comment update
     cannot be confirmed, this returns `outcome: "CLOSE_PENDING_RECONCILIATION"` (the
     source IS closed; the operation stays in the outbox for `reconcile()`) instead of
     silently reporting a clean success.
+
+    `precheck_issue_state` defaults to `False` so existing callers/tests that already
+    trust their own upstream state tracking are unaffected; new call sites (and the
+    reconciliation transaction described in #290 Fase "Reconciliation transaction")
+    should pass `True`.
     """
+    if precheck_issue_state:
+        precheck = verify_issue_state(owner, repo, issue, expected_state="open",
+                                      runner=runner, timeout=timeout)
+        if not precheck.get("verified"):
+            already_closed = precheck.get("state") == "closed"
+            return {
+                "schema": LIFECYCLE_SCHEMA, "repo": f"{owner}/{repo}", "issue": str(issue),
+                "outcome": "blocked",
+                "reason_code": "SOURCE_ALREADY_CLOSED" if already_closed else "SOURCE_STATE_PRECHECK_FAILED",
+                "precheck": precheck, "verified": False,
+            }
+
     if require_active is not None:
         require_active()
 
@@ -727,6 +816,10 @@ def close_source_issue(
             "reason": (completed.stderr or completed.stdout or "").strip(), "verified": False,
         }
 
+    # #290 -- post-transition reconciliation: re-verify the observed state actually
+    # matches the expected effect (closed) right after the mutation, via the same
+    # IssueStateVerifier (forced live, ttl_seconds=0 default) rather than trusting the
+    # `gh issue close` exit code alone.
     snapshot = get_details(owner, repo, issue, runner=runner, timeout=timeout)
     if snapshot.get("state") != "closed":
         return {
@@ -770,6 +863,7 @@ __all__ = [
     "LIFECYCLE_SCHEMA",
     "SNAPSHOT_SCHEMA",
     "LIST_READY_SCHEMA",
+    "ISSUE_STATE_VERIFIER_SCHEMA",
     "LIFECYCLE_COMMENT_MARKER",
     "LIFECYCLE_STATES",
     "REGRESSION_REASON_CODES",
@@ -783,6 +877,7 @@ __all__ = [
     "list_ready",
     "get_details",
     "requery",
+    "verify_issue_state",
     "reconcile",
     "record_pending_operation",
     "mark_operation_done",

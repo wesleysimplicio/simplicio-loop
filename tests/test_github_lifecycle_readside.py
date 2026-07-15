@@ -24,6 +24,7 @@ from simplicio_loop.github_lifecycle import (  # noqa: E402
     record_pending_operation,
     reconcile,
     requery,
+    verify_issue_state,
 )
 
 
@@ -329,3 +330,109 @@ def test_close_source_issue_reports_pending_reconciliation_when_comment_update_f
                                  runner=runner)
     assert receipt["source_state"] == "closed"  # the issue really did close
     assert receipt["outcome"] == "CLOSE_PENDING_RECONCILIATION"  # but the comment write did not confirm
+
+
+# --- verify_issue_state (IssueStateVerifier, #290) --------------------------------------
+
+
+def test_verify_issue_state_live_open_matches_expected():
+    runner, _ = _fake_gh(issue=_issue_payload(state="open"))
+    result = verify_issue_state("acme", "widgets", "12", expected_state="open", runner=runner)
+    assert result["state"] == "open"
+    assert result["source"] == "live"
+    assert result["verified"] is True
+    assert result["reason_code"] is None
+
+
+def test_verify_issue_state_mismatch_is_unverified_with_reason_code():
+    runner, _ = _fake_gh(issue=_issue_payload(state="closed"))
+    result = verify_issue_state("acme", "widgets", "12", expected_state="open", runner=runner)
+    assert result["state"] == "closed"
+    assert result["verified"] is False
+    assert result["reason_code"] == "issue_state_mismatch"
+    assert result["expected_state"] == "open"
+
+
+def test_verify_issue_state_no_expectation_just_reports_observed_state():
+    runner, _ = _fake_gh(issue=_issue_payload(state="closed"))
+    result = verify_issue_state("acme", "widgets", "12", runner=runner)
+    assert result["state"] == "closed"
+    assert result["verified"] is True
+
+
+def test_verify_issue_state_transport_failure_is_unverified_never_falls_back_to_cache():
+    def failing_runner(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="HTTP 403: Forbidden")
+
+    result = verify_issue_state("acme", "widgets", "12", expected_state="open", runner=failing_runner)
+    assert result["verified"] is False
+    assert result["state"] is None
+    assert result["reason_code"] == "PERMISSION_DENIED"
+
+
+def test_verify_issue_state_default_ttl_zero_forces_live_requery_even_with_fresh_cache():
+    # ttl_seconds defaults to 0 -- "always re-query" -- so even a `cached_snapshot`
+    # stamped one second ago must not short-circuit the live call.
+    calls = {"n": 0}
+    runner, _ = _fake_gh(issue=_issue_payload(state="open"))
+
+    def counting_runner(cmd, **kw):
+        calls["n"] += 1
+        return runner(cmd, **kw)
+
+    cached = {"state": "closed", "observed_at": "2026-07-15T11:59:59Z"}
+    result = verify_issue_state("acme", "widgets", "12", expected_state="open",
+                                cached_snapshot=cached, runner=counting_runner)
+    assert calls["n"] > 0  # the live path really ran
+    assert result["source"] == "live"
+    assert result["state"] == "open"  # trusts the live read, not the stale cached "closed"
+
+
+def test_verify_issue_state_uses_fresh_cache_within_positive_ttl():
+    def _boom(cmd, **kw):
+        raise AssertionError("must not hit the network when the cache is fresh")
+
+    from simplicio_loop.freshness import now_iso
+    cached = {"state": "open", "observed_at": now_iso()}
+    result = verify_issue_state("acme", "widgets", "12", expected_state="open",
+                                cached_snapshot=cached, ttl_seconds=300, runner=_boom)
+    assert result["source"] == "cache"
+    assert result["state"] == "open"
+    assert result["verified"] is True
+
+
+# --- close_source_issue with precheck_issue_state (#290 pre/post reconciliation) --------
+
+
+def test_close_source_issue_precheck_blocks_when_already_closed():
+    runner, _ = _fake_gh(issue=_issue_payload(state="closed"))
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", runner=runner, precheck_issue_state=True)
+    assert receipt["outcome"] == "blocked"
+    assert receipt["reason_code"] == "SOURCE_ALREADY_CLOSED"
+    assert receipt["precheck"]["state"] == "closed"
+
+
+def test_close_source_issue_precheck_blocks_on_transport_failure_without_attempting_close():
+    close_attempted = {"called": False}
+
+    def failing_view_runner(cmd, **kw):
+        if cmd[:2] == ["gh", "issue"] and "close" in cmd:
+            close_attempted["called"] = True
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="HTTP 500")
+
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", runner=failing_view_runner,
+                                 precheck_issue_state=True)
+    assert receipt["outcome"] == "blocked"
+    assert receipt["reason_code"] == "SOURCE_STATE_PRECHECK_FAILED"
+    assert close_attempted["called"] is False  # never reached the mutation
+
+
+def test_close_source_issue_precheck_passes_when_open_and_proceeds_to_close():
+    runner, _ = _fake_gh(issue=_issue_payload(state="open"), close_ok=True, closed_after=True)
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", runner=runner, precheck_issue_state=True)
+    assert receipt["source_state"] == "closed"
+    assert receipt.get("reason_code") not in ("SOURCE_ALREADY_CLOSED", "SOURCE_STATE_PRECHECK_FAILED")

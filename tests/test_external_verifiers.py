@@ -204,3 +204,139 @@ def test_download_release_assets_real_repo_computes_real_digest():
         assert wheel_path.stat().st_size > 0
         digest = ev.sha256_file(wheel_path)
         assert len(digest) == 64
+
+
+# ---------------------------------------------------------------------------
+# BranchReachabilityVerifier (#290 Fase 3) — discover_default_branch / compare_commits /
+# verify_branch_reachability / git_is_ancestor
+# ---------------------------------------------------------------------------
+
+def test_discover_default_branch_parses_real_shape(monkeypatch):
+    monkeypatch.setattr(ev, "_run", lambda args, cwd=None, timeout=180:
+                        _fake_completed(stdout=json.dumps({"default_branch": "trunk"})))
+    result = ev.discover_default_branch("acme/widgets")
+    assert result == {"ok": True, "default_branch": "trunk"}
+
+
+def test_discover_default_branch_fails_closed_on_transport_error(monkeypatch):
+    monkeypatch.setattr(ev, "_run", lambda args, cwd=None, timeout=180:
+                        _fake_completed(returncode=1, stderr="HTTP 404"))
+    result = ev.discover_default_branch("acme/widgets")
+    assert result["ok"] is False
+    assert result["reason_code"] == "default_branch_query_failed"
+
+
+def test_discover_default_branch_fails_closed_on_malformed_json(monkeypatch):
+    monkeypatch.setattr(ev, "_run", lambda args, cwd=None, timeout=180: _fake_completed(stdout="not json"))
+    result = ev.discover_default_branch("acme/widgets")
+    assert result["ok"] is False
+    assert result["reason_code"] == "default_branch_response_malformed"
+
+
+def test_compare_commits_parses_status_and_counts(monkeypatch):
+    monkeypatch.setattr(ev, "_run", lambda args, cwd=None, timeout=180:
+                        _fake_completed(stdout=json.dumps({"status": "behind", "ahead_by": 0, "behind_by": 3})))
+    result = ev.compare_commits("acme/widgets", "main", "deadbeef")
+    assert result == {"ok": True, "status": "behind", "ahead_by": 0, "behind_by": 3}
+
+
+def test_compare_commits_fails_closed_on_transport_error(monkeypatch):
+    monkeypatch.setattr(ev, "_run", lambda args, cwd=None, timeout=180:
+                        _fake_completed(returncode=1, stderr="rate limited"))
+    result = ev.compare_commits("acme/widgets", "main", "deadbeef")
+    assert result["ok"] is False
+    assert result["reason_code"] == "compare_query_failed"
+
+
+def test_verify_branch_reachability_identical_is_reachable(monkeypatch):
+    monkeypatch.setattr(ev, "discover_default_branch", lambda repo: {"ok": True, "default_branch": "main"})
+    monkeypatch.setattr(ev, "compare_commits", lambda repo, base, head: {"ok": True, "status": "identical"})
+    result = ev.verify_branch_reachability("acme/widgets", "deadbeef")
+    assert result["ok"] is True
+    assert result["reachable"] is True
+    assert result["default_branch"] == "main"
+    assert result["reason_code"] is None
+
+
+def test_verify_branch_reachability_behind_is_reachable(monkeypatch):
+    monkeypatch.setattr(ev, "discover_default_branch", lambda repo: {"ok": True, "default_branch": "main"})
+    monkeypatch.setattr(ev, "compare_commits", lambda repo, base, head: {"ok": True, "status": "behind"})
+    result = ev.verify_branch_reachability("acme/widgets", "deadbeef")
+    assert result["reachable"] is True
+
+
+def test_verify_branch_reachability_diverged_is_not_reachable(monkeypatch):
+    monkeypatch.setattr(ev, "discover_default_branch", lambda repo: {"ok": True, "default_branch": "main"})
+    monkeypatch.setattr(ev, "compare_commits", lambda repo, base, head: {"ok": True, "status": "diverged"})
+    result = ev.verify_branch_reachability("acme/widgets", "deadbeef")
+    assert result["reachable"] is False
+    assert result["reason_code"] == "merge_commit_not_reachable"
+
+
+def test_verify_branch_reachability_ahead_is_not_reachable(monkeypatch):
+    # `ahead` means the claimed commit is not yet on the default branch at all (e.g. a
+    # squash-merge whose PR head never became part of main's history under a different sha).
+    monkeypatch.setattr(ev, "discover_default_branch", lambda repo: {"ok": True, "default_branch": "main"})
+    monkeypatch.setattr(ev, "compare_commits", lambda repo, base, head: {"ok": True, "status": "ahead"})
+    result = ev.verify_branch_reachability("acme/widgets", "deadbeef")
+    assert result["reachable"] is False
+    assert result["reason_code"] == "merge_commit_not_reachable"
+
+
+def test_verify_branch_reachability_missing_commit_sha_fails_closed():
+    result = ev.verify_branch_reachability("acme/widgets", "")
+    assert result["ok"] is False
+    assert result["reachable"] is False
+    assert result["reason_code"] == "commit_sha_missing"
+
+
+def test_verify_branch_reachability_default_branch_discovery_failure_fails_closed(monkeypatch):
+    monkeypatch.setattr(ev, "discover_default_branch",
+                        lambda repo: {"ok": False, "reason_code": "default_branch_query_failed"})
+    result = ev.verify_branch_reachability("acme/widgets", "deadbeef")
+    assert result["ok"] is False
+    assert result["reachable"] is False
+    assert result["reason_code"] == "default_branch_query_failed"
+
+
+def test_verify_branch_reachability_expected_default_branch_mismatch_fails_closed(monkeypatch):
+    monkeypatch.setattr(ev, "discover_default_branch", lambda repo: {"ok": True, "default_branch": "trunk"})
+    result = ev.verify_branch_reachability("acme/widgets", "deadbeef", expected_default_branch="main")
+    assert result["ok"] is False
+    assert result["reachable"] is False
+    assert result["reason_code"] == "default_branch_mismatch"
+
+
+def test_git_is_ancestor_exit_zero_is_reachable(monkeypatch):
+    monkeypatch.setattr(ev, "_run", lambda args, cwd=None, timeout=180: _fake_completed(returncode=0))
+    result = ev.git_is_ancestor("/repo", "deadbeef", "origin/main")
+    assert result == {"ok": True, "reachable": True, "reason_code": None}
+
+
+def test_git_is_ancestor_exit_one_is_not_ancestor(monkeypatch):
+    monkeypatch.setattr(ev, "_run", lambda args, cwd=None, timeout=180: _fake_completed(returncode=1))
+    result = ev.git_is_ancestor("/repo", "deadbeef", "origin/main")
+    assert result == {"ok": True, "reachable": False, "reason_code": "merge_commit_not_reachable"}
+
+
+def test_git_is_ancestor_other_exit_code_fails_closed(monkeypatch):
+    monkeypatch.setattr(ev, "_run", lambda args, cwd=None, timeout=180: _fake_completed(returncode=128, stderr="fatal: bad object"))
+    result = ev.git_is_ancestor("/repo", "deadbeef", "origin/main")
+    assert result["ok"] is False
+    assert result["reachable"] is False
+    assert result["reason_code"] == "git_merge_base_error"
+
+
+def test_git_is_ancestor_real_local_repo_proves_ancestry():
+    """MEASURED: runs the real `git merge-base --is-ancestor` subprocess (no mock) against
+    this checkout's own history -- the current HEAD's parent commit must be a real ancestor
+    of HEAD, and an unrelated/unknown sha must not be."""
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_root, capture_output=True, text=True, timeout=20)
+    parent = subprocess.run(["git", "rev-parse", "HEAD~1"], cwd=repo_root, capture_output=True, text=True, timeout=20)
+    if head.returncode != 0 or parent.returncode != 0:
+        pytest.skip("not enough git history in this checkout")
+    result = ev.git_is_ancestor(repo_root, parent.stdout.strip(), head.stdout.strip())
+    assert result == {"ok": True, "reachable": True, "reason_code": None}
