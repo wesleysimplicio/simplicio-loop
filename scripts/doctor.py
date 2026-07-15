@@ -203,6 +203,34 @@ def chk_git_precommit_hook():
                 repair=repair)
 
 
+def chk_git_prepush_hook():
+    """Verify this repo's own git pre-push hook enforces the local gate (#291).
+
+    RECOMMENDED, not REQUIRED, for the same reason as `chk_git_precommit_hook`: the hook is what
+    makes the gate mandatory-and-impossible-to-bypass FROM THIS CLONE, but a clone without it
+    installed doesn't corrupt anything by itself — the receiving side (code review / the next
+    `scripts/check.py` run) is the actual backstop. Still worth flagging: with GitHub Actions
+    removed (#311), a clone missing this hook has NO mechanical gate between "git push" and
+    "main", only human discipline.
+    """
+    hook_path = REPO / ".git" / "hooks" / "pre-push"
+    txt = hook_path.read_text(errors="replace") if hook_path.is_file() else ""
+    ok = "action_gate.py" in txt and "pre-push" in txt
+
+    def repair():
+        sys.path.insert(0, str(REPO / "scripts"))
+        import install_lib
+        install_lib.install_git_prepush_hook(str(REPO))
+        t = hook_path.read_text(errors="replace") if hook_path.is_file() else ""
+        return "action_gate.py" in t and "pre-push" in t
+
+    return dict(name="git pre-push hook (local gate #291)", tier="RECOMMENDED",
+                status=OK if ok else WARN,
+                msg="wired -> secret-scan + core-gate before every push" if ok
+                    else "not installed — `python3 scripts/install.sh claude` wires it, or --repair",
+                repair=repair)
+
+
 def chk_proxy():
     up = _port_up(PROXY_PORT)
 
@@ -261,7 +289,8 @@ def _importable(mod):
 
 
 CHECKS = [chk_python, chk_operators, chk_mapper_capabilities, chk_skills,
-          chk_hooks, chk_git_precommit_hook, chk_proxy, chk_wire, chk_tray_dep]
+          chk_hooks, chk_git_precommit_hook, chk_git_prepush_hook, chk_proxy, chk_wire,
+          chk_tray_dep]
 
 
 def main(argv=None):

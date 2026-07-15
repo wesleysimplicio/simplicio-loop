@@ -195,6 +195,60 @@ def install_git_precommit_hook(target):
         log("! could not install git pre-commit hook (fail-open, non-fatal): %s" % e)
 
 
+def install_git_prepush_hook(target):
+    """Wire `hooks/action_gate.py pre-push` as the target repo's git pre-push hook (#291).
+
+    With the repo's GitHub Actions CI substrate removed (#311), there is no more Actions-enforced
+    branch protection anywhere upstream — the local git pre-push hook is the only mechanical,
+    fail-closed choke point every push from every clone actually runs through. `action_gate.py
+    pre-push` secret-scans the real push range and requires a green
+    `scripts/check.py --core-gate` (fast/mandatory subset), BLOCKING the push (exit 2) on either
+    failure — see `hooks/action_gate.py`'s `cmd_pre_push` docstring.
+
+    Project-local concept only, like `install_git_precommit_hook`: no-op for a `--global` install
+    (target has no `.git`) or a non-git target. Installing the HOOK FILE itself is fail-open (a
+    write error here never aborts the install); once installed, the hook it writes is
+    fail-closed by design — that asymmetry is deliberate, not a bug.
+    """
+    git_dir = os.path.join(target, ".git")
+    if not os.path.isdir(git_dir):
+        return  # not a git repo (or a --global target) — nothing to wire
+    src_hook = os.path.join(hooks_dir(target, False), "action_gate.py")
+    if not os.path.exists(src_hook):
+        src_hook = os.path.join(SOURCE, "hooks", "action_gate.py")  # fallback: this repo's copy
+    if not os.path.exists(src_hook):
+        return
+    try:
+        hooks_out = os.path.join(git_dir, "hooks")
+        os.makedirs(hooks_out, exist_ok=True)
+        dst = os.path.join(hooks_out, "pre-push")
+        if os.path.exists(dst):
+            existing = ""
+            try:
+                with open(dst, encoding="utf-8", errors="replace") as f:
+                    existing = f.read()
+            except OSError:
+                pass
+            if "simplicio-loop" not in existing and "action_gate.py" not in existing:
+                log("! .git/hooks/pre-push already exists and isn't ours — leaving it alone. "
+                    "Wire manually: see hooks/README.md")
+                return
+        shebang = "#!/bin/sh\n" if os.name != "nt" else "#!/usr/bin/env sh\n"
+        body = shebang + (
+            "# simplicio-loop: fail-closed secret-scan + local gate before every push (#291)\n"
+            'exec python3 "%s" pre-push "$@"\n' % os.path.abspath(src_hook).replace("\\", "/")
+        )
+        with open(dst, "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+        try:
+            os.chmod(dst, 0o755)
+        except OSError:
+            pass  # e.g. some Windows filesystems — git only needs the file to be runnable via sh
+        log("git pre-push hook installed -> %s (secret-scan + core-gate before push, #291)" % dst)
+    except OSError as e:
+        log("! could not install git pre-push hook (fail-open, non-fatal): %s" % e)
+
+
 def ensure_entry(target, rel, runtime=None):
     if not rel:
         return
@@ -731,6 +785,7 @@ def main():
         if cfg["hooks"] == "claude":
             merge_claude_hooks(target, is_global)
     install_git_precommit_hook(target)
+    install_git_prepush_hook(target)
     if cfg["hooks"] == "cursor":
         log("loop hooks active via hooks/hooks.json (Cursor format)")
     elif cfg["hooks"] == "native":

@@ -193,6 +193,108 @@ def test_runtime_gate_absent_binary_behaves_as_before():
     assert r.returncode == 0, r.stdout
 
 
+def _fake_project(tmp_path, check_rc=0, core_gate_only=True):
+    """A throwaway git project shaped like a real simplicio-loop install: its OWN
+    hooks/action_gate.py (a real copy — `pre-push`'s REPO resolves relative to the running
+    script's own path, so a hermetic test needs its own copy, not the real repo's) and a fake,
+    instant `scripts/check.py` that just exits `check_rc` — standing in for the real (slow)
+    gate so these tests stay fast without weakening what `cmd_pre_push` actually calls.
+    """
+    proj = tmp_path / "proj"
+    hooks_out = proj / "hooks"
+    scripts_out = proj / "scripts"
+    hooks_out.mkdir(parents=True)
+    scripts_out.mkdir(parents=True)
+    with open(GATE, encoding="utf-8") as f:
+        gate_src = f.read()
+    (hooks_out / "action_gate.py").write_text(gate_src, encoding="utf-8")
+    core_gate_check = (
+        'assert "--core-gate" in sys.argv[1:], sys.argv\n' if core_gate_only else ""
+    )
+    (scripts_out / "check.py").write_text(
+        "import sys\n%ssys.exit(%d)\n" % (core_gate_check, check_rc), encoding="utf-8",
+    )
+    d = str(proj)
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git"] + args, cwd=d, capture_output=True, stdin=subprocess.DEVNULL)
+    (proj / "ok.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "ok.py"], cwd=d, capture_output=True, stdin=subprocess.DEVNULL)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=d, capture_output=True,
+                   stdin=subprocess.DEVNULL)
+    return proj
+
+
+def _run_pre_push(proj, extra_args=()):
+    return subprocess.run(
+        [sys.executable, str(proj / "hooks" / "action_gate.py"), "pre-push", *extra_args],
+        capture_output=True, text=True, cwd=str(proj), stdin=subprocess.DEVNULL,
+    )
+
+
+def test_pre_push_clean_commit_green_gate_allows(tmp_path):
+    proj = _fake_project(tmp_path, check_rc=0)
+    r = _run_pre_push(proj)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "allow" in r.stdout.lower()
+
+
+def test_pre_push_blocks_when_core_gate_fails(tmp_path):
+    proj = _fake_project(tmp_path, check_rc=1)
+    r = _run_pre_push(proj)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "gate" in r.stdout.lower()
+
+
+def test_pre_push_full_flag_runs_full_gate_not_core_gate(tmp_path):
+    # core_gate_only=True makes the fake check.py assert `--core-gate` is present; `--full`
+    # must omit that flag, so the fake script's own assertion would fail (non-2 traceback) if
+    # `--full` were ignored and `--core-gate` were passed anyway.
+    proj = _fake_project(tmp_path, check_rc=0, core_gate_only=False)
+    (proj / "scripts" / "check.py").write_text(
+        "import sys\nassert '--core-gate' not in sys.argv[1:], sys.argv\nsys.exit(0)\n",
+        encoding="utf-8",
+    )
+    r = _run_pre_push(proj, extra_args=["--full"])
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_pre_push_blocks_on_secret_in_push_diff(tmp_path):
+    proj = _fake_project(tmp_path, check_rc=0)
+    fake_key = "AKIA" + "QRSTUVWX01234567"  # built at runtime so this file stays clean
+    (proj / "cfg.py").write_text('AWS = "%s"\n' % fake_key, encoding="utf-8")
+    subprocess.run(["git", "add", "cfg.py"], cwd=str(proj), capture_output=True,
+                   stdin=subprocess.DEVNULL)
+    subprocess.run(["git", "commit", "-m", "secret"], cwd=str(proj), capture_output=True,
+                   stdin=subprocess.DEVNULL)
+    r = _run_pre_push(proj)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "secret" in r.stdout.lower()
+
+
+def test_pre_push_missing_check_py_skips_gate_step(tmp_path):
+    # A project that doesn't ship scripts/check.py (this hook copied somewhere unusual) must
+    # not block a push it has no gate to verify against — only the secret-scan still applies.
+    proj = _fake_project(tmp_path, check_rc=1)  # rc=1 would block IF check.py were invoked
+    os.remove(str(proj / "scripts" / "check.py"))
+    r = _run_pre_push(proj)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_push_diff_scans_new_branch_without_upstream(tmp_path):
+    # No upstream configured (fresh single-commit repo) — `_push_diff` must fall back to
+    # scanning the tip commit against the empty tree rather than reporting "nothing to scan".
+    proj = _fake_project(tmp_path, check_rc=0)
+    fake_key = "AKIA" + "QRSTUVWX01234567"
+    (proj / "cfg2.py").write_text('AWS = "%s"\n' % fake_key, encoding="utf-8")
+    subprocess.run(["git", "add", "cfg2.py"], cwd=str(proj), capture_output=True,
+                   stdin=subprocess.DEVNULL)
+    subprocess.run(["git", "commit", "--amend", "-m", "init+secret"], cwd=str(proj),
+                   capture_output=True, stdin=subprocess.DEVNULL)
+    r = _run_pre_push(proj)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "secret" in r.stdout.lower()
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module

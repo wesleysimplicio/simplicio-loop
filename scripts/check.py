@@ -28,8 +28,11 @@ Runs the whole verification gate locally — deterministic, stdlib-only, cross-p
                     (`scripts/repository_budget_baseline.json`); pre-existing large assets are
                     grandfathered so this never retroactively fails on history it didn't create.
 
-Exit 0 only when everything passes — so it gates a commit/push. Wire it as a git pre-push hook to
-keep `main` honest with zero CI cost:
+Exit 0 only when everything passes — so it gates a commit/push. The installer wires
+`hooks/action_gate.py pre-push` as `.git/hooks/pre-push` (#291), which runs `--core-gate` (this
+script's fast/mandatory subset) plus a secret-scan of the actual push range, fail-closed — see
+`hooks/README.md` § "The safety gate". To wire this script directly instead (no secret-scan,
+full gate every push):
 
     printf '#!/bin/sh\\npython3 scripts/check.py\\n' > .git/hooks/pre-push
     chmod +x .git/hooks/pre-push
