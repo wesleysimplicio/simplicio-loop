@@ -11,3 +11,14 @@
 # open item.
 /.github/security/distributed-trust-policy.json @wesleysimplicio
 /.github/security/ @wesleysimplicio
+
+# The authorizer, secure transport client, and credential/audit modules that
+# enforce the trust policy above are equally security-critical -- a change to
+# any of them can silently widen what the policy allows, so they get the same
+# owner-review requirement as the policy data file itself.
+/scripts/distributed_trust_policy.py @wesleysimplicio
+/simplicio_loop/secure_transport.py @wesleysimplicio
+/scripts/security_audit_log.py @wesleysimplicio
+/scripts/short_lived_credentials.py @wesleysimplicio
+/docs/adr/0003-distributed-proof-trust-boundaries.md @wesleysimplicio
+/docs/security/distributed-credentials-runbook.md @wesleysimplicio
