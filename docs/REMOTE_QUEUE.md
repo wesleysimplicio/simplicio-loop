@@ -154,6 +154,50 @@ Once that's set:
   `.github/workflows/distributed-183-proof.yml` has been removed (#311) --
   see the issue thread for the current, re-scoped remaining gaps.
 
+### The coordinator no longer executes remotely-dispatched tasks itself (issue #286)
+
+`simplicio_loop.runner._operator_dispatch_attempt` used to claim and call `execute_operator()`
+in its own process regardless of which `RemoteQueue` backend was configured -- so a real,
+networked `HTTPRemoteQueue` never actually left the coordinator's process. It now switches on
+the queue's *type*: `SQLiteRemoteQueue` keeps the co-located, guarded-dispatch path from #288
+unchanged; a real `HTTPRemoteQueue` takes the new `_operator_dispatch_attempt_remote_worker`
+path instead, which only enqueues the `simplicio.remote-worker/v2` task envelope
+(`contracts/remote-worker/v2/schema.json`) and polls `queue.task()` for a terminal `completed`
+status -- it never claims and never calls `execute_operator()`. See
+`docs/adr/0002-remote-worker-v2-protocol.md` for the full rationale, and opt back into the old
+in-process shortcut only for a deliberate same-host smoke test via
+`SIMPLICIO_REMOTE_WORKER_ONLY=0`.
+
+### Worker-daemon lifecycle supervisor (issue #286)
+
+`scripts/remote_worker_supervisor.py` runs as its own OS process, spawns `--workers` real
+`scripts/remote_worker_daemon.py serve` child processes, polls each child's liveness every
+`--health-interval` seconds, and respawns any child that has exited -- crashed, killed, or
+otherwise -- after `--restart-backoff-seconds`:
+
+```powershell
+python scripts/remote_worker_supervisor.py --db .orchestrator/shared-queue.db --workers 3 --status-dir .orchestrator/worker-status
+```
+
+`tests/test_remote_worker_supervisor.py` hard-kills a real supervised worker process by PID
+(discovered only through the status file the supervisor writes, exactly as an operator would
+find it) and proves the supervisor detects the exit, spawns a genuinely new PID, and that the
+*new* worker actually completes a real task -- not merely stays alive.
+
+### Real HTTP client/server two-process proof (issue #286)
+
+`tests/test_remote_worker_http_e2e.py` removes even the shared-SQLite-file proxy: it spawns
+`scripts/remote_queue_server.py` as its own OS process bound to `127.0.0.1` on an OS-assigned
+port, then drives `scripts/remote_worker_daemon.py`'s `claim`/`cancel`/`enqueue` subcommands
+(`--http URL`) as separate OS processes making real HTTP requests over that loopback socket --
+the closest achievable local proxy for two physically separate devices without a second
+machine. Every claim, heartbeat, cancel, and complete crosses a real TCP connection between two
+independent processes.
+
+```powershell
+python -m pytest -q tests/test_remote_worker_http_e2e.py tests/test_remote_worker_supervisor.py
+```
+
 ### Receipt verification wired into the remote-queue completion path (issue #288)
 
 `work_item_claims.AttemptCoordinator.accept_receipt(..., schema=...)` now optionally runs
