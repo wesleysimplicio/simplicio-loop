@@ -1245,7 +1245,7 @@ def test_operator_dispatch_attempt_fails_closed_on_worktree_error(tmp_path):
 
 
 def test_operator_dispatch_attempt_wraps_unexpected_exception(tmp_path, monkeypatch):
-    def raising_execute_operator(repo, run_id, task_index=1):
+    def raising_execute_operator(repo, run_id, task_index=1, **kwargs):
         raise RuntimeError("execute_operator exploded")
 
     monkeypatch.setattr(runner_mod, "execute_operator", raising_execute_operator)
