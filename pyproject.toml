@@ -43,6 +43,11 @@ Issues = "https://github.com/wesleysimplicio/simplicio-loop/issues"
 
 [project.scripts]
 simplicio-loop = "simplicio_loop.cli:main"
+# issue #286 step 11: the multi-device remote-worker protocol's server + worker + supervisor
+# are genuinely installable binaries, not source that only runs from a git checkout.
+simplicio-remote-queue-server = "simplicio_loop.remote_queue_server_cli:main"
+simplicio-remote-worker = "simplicio_loop.remote_worker_cli:main"
+simplicio-remote-worker-supervisor = "simplicio_loop.remote_worker_supervisor_cli:main"
 
 [tool.setuptools]
 packages = ["simplicio_loop"]

@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .agent_contract import IDENTITY_FIELDS, bind_receipt, build_context_pack, validate_identity
-from .receipt_verifier import ReceiptSchema, ReceiptVerdict, verify_receipt
-from .remote_queue import Lease, RemoteQueue
+from .receipt_verifier import ReceiptSchema, ReceiptVerdict, canonical_content_hash, verify_receipt
+from .remote_queue import Lease, RemoteQueue, build_completion_receipt
 
 SCHEMA = "simplicio.work-item-attempt/v1"
 EVENT_SCHEMA = "simplicio.work-item-attempt-event/v1"
@@ -156,9 +156,23 @@ class AttemptCoordinator:
         self._append_json(attempt, result, name="receipt")
         return result
 
-    def complete(self, attempt: WorkItemAttempt, *, receipt_ref: str) -> Dict[str, Any]:
+    def complete(self, attempt: WorkItemAttempt, *, receipt_ref: str,
+                receipt: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        """Transition the queue lease to ``completed``.
+
+        ``receipt`` (issue #286 step 9), when omitted, is built automatically from the
+        attempt's own task/agent/fence so every completion through this coordinator still
+        presents a wire receipt the queue server independently verifies (schema/hash/
+        task-agent-fence binding) rather than a bare, unverifiable ``receipt_ref`` string.
+        Pass an explicit ``receipt`` (see :meth:`verify_and_complete`) to additionally bind
+        the server-side check to a client-verified content hash.
+        """
         self.assert_active(attempt)
-        result = self.queue.complete(attempt.lease, receipt_ref=receipt_ref)
+        queue_receipt = receipt if receipt is not None else build_completion_receipt(
+            task_id=attempt.lease.task_id, agent_id=attempt.lease.agent_id,
+            fencing_token=attempt.lease.fencing_token, receipt_ref=receipt_ref,
+        )
+        result = self.queue.complete(attempt.lease, receipt_ref=receipt_ref, receipt=queue_receipt)
         # The queue transition makes the lease terminal; record the child event after it
         # without re-checking a lease that is intentionally no longer active.
         self._append_terminal(attempt, "completed", {"receipt_ref": receipt_ref})
@@ -175,9 +189,19 @@ class AttemptCoordinator:
         ``receipt_ref`` path -- the receipt content itself must pass schema, hash,
         freshness and provenance checks first (:class:`ReceiptVerificationFailed` is raised
         otherwise, and the lease is left active so a corrected receipt/retry can follow).
+
+        The client-verified content's hash is folded into the wire receipt handed to
+        ``complete`` (step 9), so the *queue server* -- not merely this in-process
+        coordinator -- also independently rejects a stale fence or a receipt for the wrong
+        task/agent before ever marking the task ``completed``.
         """
         accepted = self.accept_receipt(attempt, receipt, schema=schema, max_age_seconds=max_age_seconds)
-        completed = self.complete(attempt, receipt_ref=receipt_ref)
+        queue_receipt = build_completion_receipt(
+            task_id=attempt.lease.task_id, agent_id=attempt.lease.agent_id,
+            fencing_token=attempt.lease.fencing_token, receipt_ref=receipt_ref,
+            extra={"content_sha": canonical_content_hash(accepted), "schema_name": schema.name},
+        )
+        completed = self.complete(attempt, receipt_ref=receipt_ref, receipt=queue_receipt)
         return {**completed, "verification": accepted["verification"]}
 
     def retry(self, attempt: WorkItemAttempt, *, reason: str = "retry") -> WorkItemAttempt:

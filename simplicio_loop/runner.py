@@ -22,7 +22,7 @@ from .source_state import github_delivery_payload, infer_github_delivery_state
 from . import github_lifecycle as _github_lifecycle
 from .task_contract import compile_many, validate_contract
 from .plan_contract import PLAN_SCHEMA, validate_plan
-from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable
+from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable, build_completion_receipt
 from .agent_contract import bind_receipt, build_context_pack
 from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONTENT_SCHEMA,
                                OPERATOR_RECEIPT_SCHEMA as _OPERATOR_RECEIPT_CONTENT_SCHEMA,
@@ -3187,10 +3187,17 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
                 # a readable receipt; the scheduler will use the bounded exception path.
                 failure_fingerprint = ""
         if lease is not None and success:
+            receipt_ref_value = receipt or f"{run_dir}/operator-receipt.json"
             if attempt_coordinator is not None and attempt_obj is not None:
-                attempt_coordinator.complete(attempt_obj, receipt_ref=receipt or f"{run_dir}/operator-receipt.json")
+                attempt_coordinator.complete(attempt_obj, receipt_ref=receipt_ref_value)
             else:
-                queue.complete(lease, receipt_ref=receipt or f"{run_dir}/operator-receipt.json")
+                # #286 step 9: present a wire receipt the queue server itself independently
+                # verifies (schema/hash/task-agent-fence binding), not just an opaque
+                # ``receipt_ref`` path it has no way to open or trust.
+                queue.complete(lease, receipt_ref=receipt_ref_value, receipt=build_completion_receipt(
+                    task_id=lease.task_id, agent_id=lease.agent_id, fencing_token=lease.fencing_token,
+                    receipt_ref=receipt_ref_value,
+                ))
         if item.get("agent_identity") and receipt:
             # Keep the worker result itself immutable and independently attributable.
             common["receipt_binding"] = bind_receipt(

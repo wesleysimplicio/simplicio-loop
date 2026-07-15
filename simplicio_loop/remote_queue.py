@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence
 
 from .agent_contract import validate_identity
+from .receipt_verifier import QUEUE_RECEIPT_SCHEMA, canonical_content_hash, verify_receipt
 from .secure_transport import SecureTransportError, TrustedEndpoint
 from .secure_transport import request_json as _secure_request_json
 
@@ -74,7 +75,8 @@ class RemoteQueue(Protocol):
 
     def heartbeat(self, lease: Lease, *, ttl: float = 60.0) -> Lease: ...
 
-    def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]: ...
+    def complete(self, lease: Lease, *, receipt_ref: str,
+                 receipt: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]: ...
 
     def assert_active(self, lease: Lease) -> None: ...
 
@@ -94,6 +96,32 @@ def _lease_json(lease: Lease) -> Dict[str, Any]:
             "fencing_token": lease.fencing_token, "expires_at": lease.expires_at,
             "idempotency_key": lease.idempotency_key, "identity": lease.identity,
             "capabilities": list(lease.capabilities), "cancelled": lease.cancelled}
+
+
+def build_completion_receipt(*, task_id: str, agent_id: str, fencing_token: int, receipt_ref: str,
+                             extra: Optional[Mapping[str, Any]] = None,
+                             now: Optional[float] = None) -> Dict[str, Any]:
+    """Build the wire receipt a caller passes as ``RemoteQueue.complete(..., receipt=...)``.
+
+    This is what makes server-side verification of issue #286 step 9 real rather than
+    aspirational: the queue independently recomputes ``receipt_sha`` over this exact payload
+    (:data:`simplicio_loop.receipt_verifier.QUEUE_RECEIPT_SCHEMA`) and cross-checks
+    ``task_id``/``agent_id``/``fencing_token`` against the *active* lease before ever marking a
+    task ``completed`` -- a forged or stale receipt for the wrong task/attempt/fence is rejected
+    even if the presenting client insists it is legitimate.
+    """
+    body: Dict[str, Any] = {
+        "schema": "simplicio.queue-receipt/v1",
+        "task_id": str(task_id),
+        "agent_id": str(agent_id),
+        "fencing_token": int(fencing_token),
+        "receipt_ref": str(receipt_ref),
+        "measured_at": _now() if now is None else float(now),
+    }
+    if extra:
+        body["detail"] = json.loads(json.dumps(dict(extra), default=str))
+    body["receipt_sha"] = canonical_content_hash(body)
+    return body
 
 
 class HTTPRemoteQueue:
@@ -199,8 +227,12 @@ class HTTPRemoteQueue:
         result = self._request("POST", "/heartbeat", {"lease": _lease_json(lease), "ttl": ttl})
         return _lease_from_json(result["lease"])
 
-    def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]:
-        return self._request("POST", "/complete", {"lease": _lease_json(lease), "receipt_ref": receipt_ref})
+    def complete(self, lease: Lease, *, receipt_ref: str,
+                receipt: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"lease": _lease_json(lease), "receipt_ref": receipt_ref}
+        if receipt is not None:
+            payload["receipt"] = dict(receipt)
+        return self._request("POST", "/complete", payload)
 
     def pull(self, agent_id: str, *, capabilities: Optional[Sequence[str]] = None,
              limit: int = 20) -> List[Dict[str, Any]]:
@@ -247,9 +279,15 @@ class SQLiteRemoteQueue:
     complete, or release after another worker has reclaimed the task.
     """
 
-    def __init__(self, path: str, *, busy_timeout: float = 10.0) -> None:
+    def __init__(self, path: str, *, busy_timeout: float = 10.0,
+                receipt_max_age_seconds: Optional[float] = None) -> None:
         self.path = path
         self.busy_timeout = busy_timeout
+        # issue #286 step 9: how old a *verified* completion receipt's own ``measured_at``
+        # may be before the server itself rejects it as stale. ``None`` (the default) skips
+        # the freshness check but the schema/hash/task-agent-fence binding checks below
+        # still run whenever a caller supplies ``receipt=`` to ``complete()``.
+        self.receipt_max_age_seconds = receipt_max_age_seconds
         try:
             parent = os.path.dirname(os.path.abspath(path))
             if parent:
@@ -299,6 +337,10 @@ class SQLiteRemoteQueue:
                 c.execute("ALTER TABLE leases ADD COLUMN capabilities TEXT")
             if "cancel_requested" not in columns:
                 c.execute("ALTER TABLE leases ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
+            if "receipt_sha" not in columns:
+                c.execute("ALTER TABLE leases ADD COLUMN receipt_sha TEXT")
+            if "receipt_verdict" not in columns:
+                c.execute("ALTER TABLE leases ADD COLUMN receipt_verdict TEXT")
             c.execute("INSERT OR IGNORE INTO queue_meta(key, value) VALUES('schema', ?)", (SCHEMA,))
 
     @contextlib.contextmanager
@@ -484,19 +526,57 @@ class SQLiteRemoteQueue:
             return {"task_id": task_id, "cancel_requested": True, "fencing_token": row["fencing_token"],
                     "reason": reason}
 
-    def complete(self, lease: Lease, *, receipt_ref: str) -> Dict[str, Any]:
+    def complete(self, lease: Lease, *, receipt_ref: str,
+                receipt: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        """Transition a task to ``completed`` -- the queue is the *server-side* authority.
+
+        When ``receipt`` is supplied (issue #286 step 9), it is independently verified here,
+        never merely trusted because a client asserts it:
+
+        1. schema/hash/provenance/freshness via ``receipt_verifier.verify_receipt`` against
+           :data:`~simplicio_loop.receipt_verifier.QUEUE_RECEIPT_SCHEMA` -- a mismatched
+           ``receipt_sha`` (tampering) or missing field is rejected before any state changes;
+        2. the receipt's declared ``task_id``/``agent_id``/``fencing_token`` must match the
+           *active* lease presenting it -- a genuinely-signed receipt for a different task,
+           agent, or a superseded (stale) fence is rejected exactly like a forged one.
+
+        A rejected receipt raises :class:`QueueConflict` and leaves the lease/task untouched
+        (fail closed) so a corrected receipt or a fresh claim can still follow. ``receipt=None``
+        preserves the legacy existence-only contract for callers that have not adopted the
+        wire receipt yet (e.g. tests exercising only the lease/fencing mechanics).
+        """
         if not receipt_ref:
             raise ValueError("receipt_ref is required")
+        verdict = None
+        if receipt is not None:
+            verdict = verify_receipt(receipt, schema=QUEUE_RECEIPT_SCHEMA,
+                                     max_age_seconds=self.receipt_max_age_seconds)
+            if not verdict.verified:
+                raise QueueConflict("receipt rejected: %s - %s" % (verdict.status, verdict.reason))
+            if str(receipt.get("task_id") or "") != lease.task_id:
+                raise QueueConflict("receipt task_id does not match the active lease")
+            if str(receipt.get("agent_id") or "") != lease.agent_id:
+                raise QueueConflict("receipt agent_id does not match the active lease")
+            try:
+                receipt_fence = int(receipt.get("fencing_token"))
+            except (TypeError, ValueError):
+                raise QueueConflict("receipt fencing_token is missing or not an integer")
+            if receipt_fence != lease.fencing_token:
+                raise QueueConflict("receipt fencing_token does not match the active lease (stale receipt)")
         with self._tx() as c:
             self._owned(c, lease)
             now = _now()
-            c.execute("UPDATE leases SET status='completed',receipt_ref=?,updated_at=? WHERE task_id=?",
-                      (receipt_ref, now, lease.task_id))
+            receipt_sha = str(receipt.get("receipt_sha") or "") if receipt is not None else None
+            c.execute("UPDATE leases SET status='completed',receipt_ref=?,receipt_sha=?,"
+                      "receipt_verdict=?,updated_at=? WHERE task_id=?",
+                      (receipt_ref, receipt_sha, verdict.status if verdict is not None else None,
+                       now, lease.task_id))
             c.execute("UPDATE tasks SET status='completed',updated_at=? WHERE task_id=?", (now, lease.task_id))
             self._event(c, lease.task_id, "completed", lease.agent_id, lease.fencing_token,
-                        {"receipt_ref": receipt_ref})
+                        {"receipt_ref": receipt_ref, "receipt_verified": verdict.verified if verdict else False})
             return {"schema": SCHEMA, "task_id": lease.task_id, "status": "completed",
                     "fencing_token": lease.fencing_token, "receipt_ref": receipt_ref,
+                    "receipt_verified": verdict.verified if verdict is not None else False,
                     "agent": lease.identity or {"agent_id": lease.agent_id}}
 
     def release(self, lease: Lease, *, reason: str = "handoff") -> Dict[str, Any]:
@@ -665,7 +745,8 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
                     lease = queue.heartbeat(_lease_from_json(body["lease"]), ttl=float(body.get("ttl", 60.0)))
                     result = {"lease": _lease_json(lease)}
                 elif op == "complete":
-                    result = queue.complete(_lease_from_json(body["lease"]), receipt_ref=body["receipt_ref"])
+                    result = queue.complete(_lease_from_json(body["lease"]), receipt_ref=body["receipt_ref"],
+                                            receipt=body.get("receipt"))
                 elif op == "assert-active":
                     queue.assert_active(_lease_from_json(body["lease"]))
                     result = {"active": True}
