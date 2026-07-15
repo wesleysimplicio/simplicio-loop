@@ -74,6 +74,25 @@ def _seed_run(run_dir):
         }),
         encoding="utf-8",
     )
+    # The completion oracle requires a quality-matrix receipt as part of the
+    # run-artifacts gate (quality_matrix_gate). Seed a fully-passing matrix so the
+    # success-path benchmark actually reaches ready=True.
+    (run_dir / "quality-matrix.json").write_text(
+        json.dumps({
+            "schema": "simplicio.quality-matrix/v1",
+            "coverage_threshold": 0.0,
+            "coverage": {"measured": 100.0},
+            "requirements": {
+                "implementation": {"status": "pass", "proof_ref": "evidence-receipt.json"},
+                "unit": {"status": "pass", "proof_ref": "evidence-receipt.json"},
+                "integration": {"status": "pass", "proof_ref": "evidence-receipt.json"},
+                "system": {"status": "pass", "proof_ref": "evidence-receipt.json"},
+                "regression": {"status": "pass", "proof_ref": "evidence-receipt.json"},
+                "benchmark": {"status": "pass", "proof_ref": "evidence-receipt.json"},
+            },
+        }),
+        encoding="utf-8",
+    )
 
 
 def test_evaluate_completion_stays_within_time_budget(tmp_path):

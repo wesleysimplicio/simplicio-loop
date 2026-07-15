@@ -251,10 +251,13 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
         assert stale["ok"] is False and stale["reason_code"] == "mutation_authority_invalid", stale
 
         # a rotated lease/fence (lost lease, new attempt owner) invalidates the authority
+        # with a distinct verdict (LEASE_LOST / lease_or_fence_mismatch) so callers can
+        # tell a stale plan hash apart from a lost lease — see #284 verdict codes.
         rotated = evaluate_mutation_authority(run_dir, run_id="run-1", attempt=1,
                                               task_contract_hash=task_contract_hash, plan_hash=plan_hash,
                                               lease_id="lease-2", fencing_token="8")
-        assert rotated["ok"] is False and rotated["reason_code"] == "lease_or_fence_mismatch", rotated
+        assert rotated["ok"] is False and rotated["verdict"] == "LEASE_LOST" \
+            and rotated["reason_code"] == "lease_or_fence_mismatch", rotated
 
         # missing receipt fails closed
         missing = evaluate_mutation_authority(Path(tmp) / "nope", run_id="run-1", attempt=1,

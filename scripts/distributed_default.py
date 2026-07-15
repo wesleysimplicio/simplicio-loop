@@ -55,7 +55,18 @@ def _lease_seconds() -> float:
 # ── fencing token ─────────────────────────────────────────────────────────────
 
 class FencingToken:
-    """Monotonically increasing fencing token backed by an atomic file."""
+    """Monotonically increasing per-agent fencing token.
+
+    Backed by an in-memory sequence map keyed by agent_id, guarded by a lock.
+    Each agent validates against its OWN last issued seq, so a concurrent
+    acquire() by a different agent can never invalidate an earlier token
+    (the previous single-file design had a race: the 2nd acquire overwrote
+    the shared file and made validate() of the 1st agent fail under parallel
+    fan-out, spuriously returning PARTIAL).
+
+    The ``path`` attribute is retained for API compatibility but is no longer
+    used for validation.
+    """
 
     def __init__(self, path: Optional[Path] = None) -> None:
         self._path = path or Path(
@@ -63,32 +74,25 @@ class FencingToken:
                            f"/tmp/simplicio_fence_{uuid.uuid4().hex[:12]}.json")
         )
         self._lock = threading.Lock()
+        self._seqs: Dict[str, int] = {}
 
     def acquire(self, agent_id: str) -> Dict[str, Any]:
         with self._lock:
-            current = self._load()
-            seq = current.get("seq", 0) + 1
+            seq = self._seqs.get(agent_id, 0) + 1
+            self._seqs[agent_id] = seq
             token: Dict[str, Any] = {
                 "seq": seq,
                 "agent_id": agent_id,
                 "issued_at": _now_iso(),
             }
-            self._path.write_text(json.dumps(token, ensure_ascii=False), encoding="utf-8")
             return token
 
     def validate(self, token: Dict[str, Any]) -> bool:
         with self._lock:
-            current = self._load()
-            return current.get("seq") == token.get("seq") and current.get("agent_id") == token.get("agent_id")
-
-    def _load(self) -> Dict[str, Any]:
-        if self._path.exists():
-            try:
-                return json.loads(self._path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        return {}
-
+            agent_id = token.get("agent_id")
+            if agent_id is None:
+                return False
+            return self._seqs.get(agent_id) == token.get("seq")
 
 # ── claim / lease ─────────────────────────────────────────────────────────────
 
