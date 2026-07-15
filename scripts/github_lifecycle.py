@@ -42,6 +42,7 @@ from simplicio_loop.github_lifecycle import (  # noqa: E402
     close_source_issue,
     get_details,
     list_ready,
+    persist_lifecycle_receipt,
     publish_lifecycle_state,
     reconcile,
     render_lifecycle_comment,
@@ -62,6 +63,8 @@ def cmd_publish(args: argparse.Namespace) -> int:
         run_id=args.run_id, attempt_id=args.attempt_id, fencing_token=args.fencing_token,
         publish_comment_fn=publish_comment, goal=args.goal or "",
     )
+    if args.run_dir:
+        persist_lifecycle_receipt(receipt, args.run_dir)
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
     return 0 if receipt["verified"] else 1
 
@@ -102,6 +105,11 @@ def cmd_close(args: argparse.Namespace) -> int:
         attempt_id=args.attempt_id, fencing_token=args.fencing_token,
         publish_comment_fn=publish_comment, outbox_dir=args.outbox_dir, goal=args.goal or "",
     )
+    if args.run_dir:
+        # Persists even a CLOSE_PENDING_RECONCILIATION outcome -- the completion oracle
+        # (`simplicio_loop.oracle.evaluate_completion`) reads this file and blocks COMPLETE
+        # while it says so, rather than that reason code being an inert status (#285).
+        persist_lifecycle_receipt(receipt, args.run_dir)
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
     return 0 if receipt.get("outcome") == "closed" else 1
 
@@ -151,6 +159,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_publish.add_argument("--attempt-id", required=True)
     p_publish.add_argument("--fencing-token", default="")
     p_publish.add_argument("--goal", default="")
+    p_publish.add_argument("--run-dir", default="",
+                           help="if given, persist the receipt to <run-dir>/%s for the "
+                                "completion oracle to read" % "github-lifecycle-receipt.json")
     p_publish.set_defaults(func=cmd_publish)
 
     p_list_ready = sub.add_parser("list-ready")
@@ -194,6 +205,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_close.add_argument("--fencing-token", default="")
     p_close.add_argument("--outbox-dir", default=None)
     p_close.add_argument("--goal", default="")
+    p_close.add_argument("--run-dir", default="",
+                         help="if given, persist the receipt to <run-dir>/%s for the "
+                              "completion oracle to read" % "github-lifecycle-receipt.json")
     p_close.set_defaults(func=cmd_close)
 
     p_self = sub.add_parser("selftest")

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Tuple
 
 from .delivery import validate_delivery_receipt
 from .evidence import watcher_truth_from_receipt
+from .github_lifecycle import load_lifecycle_receipt
 from .quality_matrix import evaluate_quality_matrix
 
 PROMISE_RE = re.compile(r"<promise>\s*(.*?)\s*</promise>", re.IGNORECASE | re.DOTALL)
@@ -132,6 +133,35 @@ def _run_artifacts_gate(run_dir: Path) -> Tuple[bool, List[Dict[str, Any]], Dict
     if not validation["ok"]:
         return False, gates, loaded
     return True, gates, loaded
+
+
+def _source_lifecycle_gate(run_dir: Path) -> Tuple[bool, Dict[str, Any]]:
+    """#285's remaining gap: wire `CLOSE_PENDING_RECONCILIATION` into the COMPLETE gate.
+
+    `simplicio_loop/github_lifecycle.py::close_source_issue` can report
+    `CLOSE_PENDING_RECONCILIATION` when the source issue closed for real but the final
+    lifecycle-comment write could not be confirmed (see its docstring). Before this gate, that
+    reason code was inert -- returned to a caller but never checked by anything deciding
+    completion. If a lifecycle receipt has been persisted for this run
+    (`github_lifecycle.persist_lifecycle_receipt`, wired from `runner.py::_sync_github_lifecycle`
+    and `scripts/github_lifecycle.py`'s `publish`/`close --run-dir`) and it reports
+    `CLOSE_PENDING_RECONCILIATION`, completion is blocked until `reconcile()` clears it. A run
+    with no lifecycle receipt at all (no GitHub source, or lifecycle sync never enabled) is not
+    penalized -- this gate is additive, never a new hard requirement for sourceless runs.
+    """
+    receipt = load_lifecycle_receipt(run_dir)
+    if receipt is None:
+        return True, _gate("source_lifecycle", True, "source_lifecycle_not_configured",
+                           "no lifecycle receipt persisted for this run (no GitHub source, or sync disabled)")
+    pending = receipt.get("outcome") == "CLOSE_PENDING_RECONCILIATION" or \
+        receipt.get("reason_code") == "CLOSE_PENDING_RECONCILIATION"
+    if pending:
+        return False, _gate("source_lifecycle", False, "source_close_pending_reconciliation",
+                            "the source issue close is pending reconciliation "
+                            "(source closed but the final comment write is unconfirmed) -- "
+                            "run `github_lifecycle.py reconcile` before completion")
+    return True, _gate("source_lifecycle", True, "source_lifecycle_clear",
+                       "persisted lifecycle receipt reports no pending reconciliation")
 
 
 def _quality_matrix_gate(run_dir: Path) -> Tuple[bool, Dict[str, Any], Dict[str, Any]]:
@@ -276,6 +306,13 @@ def evaluate_completion(loop_dir: str, run_dir: str = "", response_text: str = "
     if not quality_ok:
         result["reason_code"] = quality_gate["reason_code"]
         result["reason"] = quality_gate["detail"]
+        return result
+
+    lifecycle_ok, lifecycle_gate = _source_lifecycle_gate(Path(run_dir))
+    gates.append(lifecycle_gate)
+    if not lifecycle_ok:
+        result["reason_code"] = lifecycle_gate["reason_code"]
+        result["reason"] = lifecycle_gate["detail"]
         return result
 
     result.update({
