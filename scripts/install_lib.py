@@ -357,14 +357,21 @@ def _is_externally_managed_error(stderr):
     return "externally-managed-environment" in (stderr or "").lower()
 
 
-def _pip_install(pkgs, *, allow_break_system_packages=False, extra_args=None, cwd=None):
-    """Run `pip install -U <pkgs>` with a PEP-668-aware fallback ladder. Never passes
+def _pip_install(pkgs, *, allow_break_system_packages=False, extra_args=None, cwd=None,
+                 upgrade=True):
+    """Run `pip install [-U] <pkgs>` with a PEP-668-aware fallback ladder. Never passes
     `--break-system-packages` unless BOTH (a) pip's own stderr identifies this specific
     externally-managed-environment refusal and (b) the caller explicitly opted in via
     `allow_break_system_packages=True` (CLI `--allow-break-system-packages` or
     `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1`). Returns (ok, detail) where detail is a short
-    string describing which path succeeded, for logging/receipts."""
-    base = [sys.executable, "-m", "pip", "install", "-U"] + list(extra_args or [])
+    string describing which path succeeded, for logging/receipts.
+
+    `upgrade=False` (used by `--mode ci`'s pinned installs, #293 mode `ci`: "versões fixadas")
+    drops `-U`: `pkgs` is expected to already carry an exact `==version` pin in that case, so
+    "upgrade to latest" would be a contradiction — re-running the SAME pinned spec must be a
+    no-op/idempotent re-affirmation of that exact version, never a silent drift to whatever is
+    newest on the day the command happens to run."""
+    base = [sys.executable, "-m", "pip", "install"] + (["-U"] if upgrade else []) + list(extra_args or [])
     run_kw = {"capture_output": True, "text": True}
     if cwd:
         run_kw["cwd"] = cwd
@@ -393,7 +400,42 @@ def _pip_install(pkgs, *, allow_break_system_packages=False, extra_args=None, cw
     return False, "failed"
 
 
-def ensure_operators(skip_install=False, allow_break_system_packages=False):
+def resolve_pinned_version(pkg, timeout=20):
+    """Best-effort resolve an EXACT version to pin `pkg` to for `--mode ci` reproducibility
+    (#293 mode `ci`: "instalação não interativa ... com versões fixadas" — vs `minimal`'s
+    potentially-floating `pip install -U`). Two sources, in order:
+
+    1. A version of `pkg` ALREADY installed in this interpreter — reusing it means re-running a
+       `ci` install on a host that already has the operator package never silently re-resolves to
+       a *different* "latest" on a later day; the pin stays whatever this environment already
+       settled on.
+    2. `pip index versions <pkg>` (network) — the newest version PyPI currently serves, when
+       nothing is installed yet (first-ever `ci` install on a clean host).
+
+    Returns None — never a fabricated/guessed version string — if neither source is reachable
+    (offline sandbox, index API down); the caller (`ensure_operators`) must fall back to a
+    floating install with an explicit warning in that case rather than claim a pin that isn't
+    real.
+    """
+    try:
+        import importlib.metadata as _im
+        return _im.version(pkg)
+    except Exception:
+        pass
+    try:
+        r = subprocess.run([sys.executable, "-m", "pip", "index", "versions", pkg],
+                           capture_output=True, text=True, timeout=timeout)
+        if r.returncode == 0:
+            import re as _re
+            m = _re.search(r"\(([^)]+)\)", r.stdout or "")
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def ensure_operators(skip_install=False, allow_break_system_packages=False, pin_versions=False):
     """Install + verify the REQUIRED operator package and the runtime bins it exposes.
 
     The loop still invokes `simplicio-mapper` and `simplicio-dev-cli` directly, so both binaries
@@ -405,12 +447,31 @@ def ensure_operators(skip_install=False, allow_break_system_packages=False):
     to `--break-system-packages` — see `_pip_install`. Without it, a blocked install falls
     through to the `uv tool install` path or a manual-install message; it never silently mutates
     the system Python's protected package set.
+
+    `pin_versions` (CLI `--ci` / `--mode ci`): resolve an exact version via
+    `resolve_pinned_version()` and install `pkg==version` WITHOUT `-U`, instead of the default
+    floating `pip install -U pkg` — #293's "ci — ... com versões fixadas" requirement. If
+    resolution fails (offline, index unreachable, nothing installed yet), this logs an explicit
+    warning and falls back to the normal floating install rather than silently claiming a
+    reproducibility guarantee it can't deliver.
     """
     pkgs = [OPERATOR_PACKAGE]
+    upgrade = True
+    if pin_versions:
+        pinned = resolve_pinned_version(OPERATOR_PACKAGE)
+        if pinned:
+            pkgs = ["%s==%s" % (OPERATOR_PACKAGE, pinned)]
+            upgrade = False
+            log("ci mode: pinning %s==%s for reproducibility (#293 ci mode)"
+                % (OPERATOR_PACKAGE, pinned))
+        else:
+            log("! ci mode: could not resolve a pinned version for %s (offline / index "
+                "unreachable / not yet installed) — falling back to a floating install; "
+                "reproducibility is NOT guaranteed for this run" % OPERATOR_PACKAGE)
     allow_bsp = allow_break_system_packages or os.environ.get(
         "SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES") == "1"
     if not skip_install:
-        ok, detail = _pip_install(pkgs, allow_break_system_packages=allow_bsp)
+        ok, detail = _pip_install(pkgs, allow_break_system_packages=allow_bsp, upgrade=upgrade)
         if ok:
             log("operators installed (%s) -> %s" % (detail, ", ".join(pkgs)))
         else:
@@ -736,11 +797,15 @@ def main():
     # `--transactional`: apply the file effects (skills/hooks/scripts/entry/settings) through
     #   scripts/install_executor.py — backup-before-mutate + a persisted receipt + automatic
     #   rollback of everything already applied if any step fails partway (#293 step 5).
+    # `--ci`: mode `ci` (#293 modes) — non-interactive, no browser/services (same no-service
+    #   posture as --minimal) AND pins the operator package to an exact resolved version instead
+    #   of a floating `pip install -U` ("com versões fixadas"), for a reproducible CI install.
     lite = "--lite" in args
     strict = "--strict" in args
     full_stack = "--full-stack" in args
-    explicit_minimal = "--minimal" in args or "--no-monitor" in args
-    # --minimal/--no-monitor is an unconditional opt-out: it wins even if --with-service or
+    ci_mode = "--ci" in args
+    explicit_minimal = "--minimal" in args or "--no-monitor" in args or ci_mode
+    # --minimal/--no-monitor/--ci is an unconditional opt-out: it wins even if --with-service or
     # --full-stack is also (redundantly/contradictorily) passed on the same command line.
     with_service = ("--with-service" in args or full_stack) and not explicit_minimal
     minimal = explicit_minimal or not with_service
@@ -757,7 +822,7 @@ def main():
         del args[i:i + 2]
     args = [a for a in args if a not in
             ("--global", "--skip-operators", "--with-monitor", "--minimal", "--no-monitor",
-             "--with-service", "--full-stack",
+             "--with-service", "--full-stack", "--ci",
              "--lite", "--strict", "--dry-run", "--transactional", "--allow-break-system-packages")]
     target = None
     if "--target" in args:
@@ -776,11 +841,32 @@ def main():
         cwd = os.getcwd()
         target = cwd if os.path.abspath(cwd) != os.path.abspath(SOURCE) else SOURCE
 
+    install_mode = "full-stack" if full_stack else ("ci" if ci_mode else "minimal")
+    # `--full-stack` is ITSELF the explicit consent the legacy flow has always required for
+    # service/proxy (see `with_service` above); mirror that same consent into the
+    # planner/executor's `with_service`/`with_proxy` flags so choosing `--full-stack` here
+    # doesn't newly BLOCK on install_plan.build_plan's `full_stack_confirmation` gate, which
+    # requires both explicitly.
+    with_proxy = full_stack and not explicit_minimal
+    if ci_mode:
+        # #293 mode `ci`: "não interativa, sem browser/serviços" — same no-service posture as
+        # --minimal (already handled above via explicit_minimal), plus no first-run browser open.
+        os.environ.setdefault("SIMPLICIO_NO_BROWSER", "1")
+
     if dry_run:
         import json as _json
         sys.path.insert(0, HERE)
         from install_plan import build_plan  # local import: keeps install_plan.py import-light/standalone
-        plan = build_plan(runtime, mode="minimal", scope=("user" if is_global else "project"), target=target)
+        # #293 AC2 ("dry-run mostra ... versões ... antes da execução"): for `--ci`, resolve the
+        # ACTUAL version that would be pinned so the dry-run plan shows the real number, not just
+        # the "pinned" intent — a read-only query (already-installed / `pip index versions`), no
+        # mutation, so this stays a true dry-run. Falls back to "" (never fabricated) if
+        # unresolvable (offline sandbox) — `version_pinning` still correctly reads "pinned".
+        resolved = resolve_pinned_version(OPERATOR_PACKAGE) if ci_mode else ""
+        plan = build_plan(runtime, mode=install_mode, scope=("user" if is_global else "project"),
+                          target=target, with_service=with_service, with_proxy=with_proxy,
+                          requested_version=(OPERATOR_PACKAGE if ci_mode else ""),
+                          resolved_version=(resolved or ""))
         print(_json.dumps(plan, indent=2, sort_keys=True))
         sys.exit(0 if plan["status"] != "BLOCKED" else 3)
 
@@ -791,12 +877,14 @@ def main():
         import threading as _threading
         def _bg_install():
             ensure_operators(skip_install=False,
-                            allow_break_system_packages=allow_break_system_packages)
+                            allow_break_system_packages=allow_break_system_packages,
+                            pin_versions=ci_mode)
         _threading.Thread(target=_bg_install, daemon=True).start()
         log("LITE mode: operator install running in background. Loop will auto-upgrade at turn boundary.")
     elif not skip_operators:
         ensure_operators(skip_install=False,
-                        allow_break_system_packages=allow_break_system_packages)
+                        allow_break_system_packages=allow_break_system_packages,
+                        pin_versions=ci_mode)
     if not minimal:
         install_all_deps(allow_break_system_packages=allow_break_system_packages)
     # Make the `simplicio-loop` console-script typeable on PATH (so `simplicio-loop dashboard` works);
@@ -807,7 +895,8 @@ def main():
         import install_executor
         try:
             receipt = install_executor.apply(runtime, target=target, is_global=is_global,
-                                            mode="minimal", fail_step=test_fail_step)
+                                            mode=install_mode, with_service=with_service,
+                                            with_proxy=with_proxy, fail_step=test_fail_step)
         except install_executor.InstallTransactionError as e:
             log("! transaction ROLLED_BACK (no partial state left): %s" % e)
             log("  receipt: %s" % os.path.join(target, ".simplicio", "receipts",
@@ -841,7 +930,12 @@ def main():
         merge_opencode_mcp()
     if cfg["mcp"]:
         log("optional native bind:  simplicio install --global   (or: simplicio serve --mcp --stdio)")
-    setup_monitor(with_service)
+    if not transactional:
+        # `--transactional` already registered the service (if `with_service`) as its own
+        # backed-up/rollback-eligible "service" step (#293 gap 1, install_executor.py) — calling
+        # setup_monitor() here too would be redundant (harmless, since it rewrites the identical
+        # unit/shim, but pointless double work and a second, untracked subprocess invocation).
+        setup_monitor(with_service)
     if lite:
         log("LITE mode active. Run `python3 scripts/doctor.py` to check install status.")
         log("When operators are ready, next loop turn auto-promotes to FULL.")

@@ -40,15 +40,73 @@ from install_plan import build_plan  # noqa: E402
 # Deterministic order: reconcile (drop stale N-1 leftovers) runs FIRST — before anything from
 # the current version is (re)written — then skills/hooks/scripts (pure copies), then the
 # generated files that reference them (entry block, Claude settings.json hook-wiring), so a
-# failure never wires a hook to a skill tree that didn't make it in. `full_stack` runs LAST: it
+# failure never wires a hook to a skill tree that didn't make it in. `full_stack` runs LAST-1: it
 # only ever applies in full-stack mode (#293 modes) and is purely additive on top of the other
-# steps, so ordering it last keeps the minimal/runtime/ci step sequence byte-identical to before.
-STEP_ORDER = ("reconcile", "skills", "hooks", "scripts", "entry", "claude_settings", "full_stack")
+# steps, so ordering it late keeps the minimal/runtime/ci step sequence byte-identical to before.
+# `service` runs absolutely last: OS-level service registration (#293 gap 1, "wire OS-level
+# service registration into apply() for full-stack mode") only ever makes sense once the file
+# surface it depends on (the `full_stack` engine/app copy, when present) is already on disk.
+STEP_ORDER = ("reconcile", "skills", "hooks", "scripts", "entry", "claude_settings", "full_stack",
+              "service")
 
 # Steps that ONLY apply to `full-stack` mode — every other mode (minimal/runtime/ci) gets exactly
 # the same file surface as before this mode support was added, proven by
 # tests/test_install_transaction.py::test_non_full_stack_modes_never_touch_engine_or_app.
 FULL_STACK_ONLY_STEPS = ("full_stack",)
+
+# The install_services.py worker this module drives for the "service" step. Imported
+# in-process (not shelled out) so `apply()` stays a single fast Python call with no extra
+# subprocess-spawn overhead/flakiness — `install_services.service_paths()`/`.linux_install()`/
+# `.windows_install()` all read HOME/APPDATA/XDG_CONFIG_HOME from `os.environ` FRESH at call
+# time (never a value cached from whenever the module happened to first import), so a caller
+# that redirects those vars for a test/CI run governs both (a) the paths this module computes
+# to back up and (b) the paths actually written — a single source of truth, current environment,
+# every time.
+def _install_services():
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import install_services
+    return install_services
+
+
+def _service_paths() -> List[str]:
+    """What `install_services.py install` would create/update on THIS OS, in the CURRENT
+    environment — empty list (no-op step) on macOS/other, where OS-level service registration
+    remains the separate, explicit `bash scripts/setup_simplicio.sh` (launchd) path documented in
+    `docs/INSTALL_MUTATIONS.md`."""
+    try:
+        return _install_services().service_paths()
+    except Exception:
+        return []
+
+
+def _service_install() -> None:
+    """Actually register the service for THIS OS (best-effort — never raises; mirrors the
+    `check=False` best-effort discipline `install_lib.setup_monitor()` already uses for the
+    same call)."""
+    try:
+        svc = _install_services()
+        osname = svc.platform.system()
+        if osname == "Linux":
+            svc.linux_install()
+        elif osname == "Windows":
+            svc.windows_install()
+        elif osname == "Darwin":
+            svc.macos_note()
+    except Exception as e:
+        print("! service step failed (best-effort, no partial OS state expected): %s" % e)
+
+
+def _service_uninstall() -> None:
+    try:
+        svc = _install_services()
+        osname = svc.platform.system()
+        if osname == "Linux":
+            svc.linux_uninstall()
+        elif osname == "Windows":
+            svc.windows_uninstall()
+    except Exception:
+        pass
 
 MANIFEST_SCHEMA = "simplicio.install-manifest/v1"
 
@@ -215,7 +273,8 @@ def _write_receipt(target: str, transaction_id: str, receipt: Dict[str, Any]) ->
 
 
 def _step_paths(target: str, is_global: bool, runtime: str, mode: str,
-                stale_skills: Optional[List[str]] = None) -> "Dict[str, List[str]]":
+                stale_skills: Optional[List[str]] = None,
+                with_service: bool = False) -> "Dict[str, List[str]]":
     cfg = _lib.RUNTIMES[runtime]
     paths: Dict[str, List[str]] = {
         "skills": [os.path.join(target, ".claude", "skills", s) for s in _lib.SKILLS],
@@ -231,6 +290,15 @@ def _step_paths(target: str, is_global: bool, runtime: str, mode: str,
     if mode == "full-stack":
         full_stack_root = _lib.full_stack_dir(target, is_global)
         paths["full_stack"] = [os.path.join(full_stack_root, name) for name in ("engine", "app")]
+    if with_service:
+        # #293 gap 1: OS-level service registration wired into the SAME transactional
+        # backup/rollback flow — instead of requiring a separate, easy-to-forget manual
+        # `python3 scripts/install_services.py install` step after apply() returns. Only ever
+        # runs when the SAME explicit `--with-service` consent the planner already requires is
+        # given (see build_plan's permissions_required/blocked_reasons gate above this call);
+        # [] on macOS/other (see _service_paths()) makes this a documented no-op there, not a
+        # silent skip.
+        paths["service"] = _service_paths()
     return paths
 
 
@@ -256,11 +324,14 @@ def _run_step(step: str, target: str, is_global: bool, runtime: str,
         _lib.merge_claude_hooks(target, is_global)
     elif step == "full_stack":
         # File-surface only: operator/capture-proxy/dashboard CODE lands on disk here, reversibly,
-        # under the same backup/rollback discipline as every other step. Actually REGISTERING the
-        # capture proxy as an OS-level auto-start service remains the separate, explicit
-        # `python3 scripts/install_services.py install` step — apply() never invokes an OS service
-        # manager itself, so this stays safe to exercise in tests on any host/CI.
+        # under the same backup/rollback discipline as every other step. Actually registering it
+        # as an OS-level auto-start service is the separate "service" step below.
         _lib.copy_full_stack(target, is_global)
+    elif step == "service":
+        # #293 gap 1: actually REGISTER the OS-level auto-start service (systemd --user unit on
+        # Linux, Startup-folder shim on Windows; macOS stays the documented separate
+        # `setup_simplicio.sh` launchd path — install_services.py itself is a no-op there).
+        _service_install()
     else:
         raise ValueError("unknown install step: %r" % step)
 
@@ -268,18 +339,24 @@ def _run_step(step: str, target: str, is_global: bool, runtime: str,
 def apply(runtime: str, *, target: str, is_global: bool = False, mode: str = "minimal",
          with_service: bool = False, with_proxy: bool = False,
          fail_step: Optional[str] = None) -> Dict[str, Any]:
-    """Apply the file-effect portion of the plan for `runtime` into `target`, transactionally.
+    """Apply the plan for `runtime` into `target`, transactionally — file effects (skills/hooks/
+    scripts/entry/settings, + `engine`/`app` in full-stack mode) AND, when `with_service=True`,
+    the real OS-level service registration too (#293 gap 1: systemd `--user` unit on Linux,
+    Startup-folder shim on Windows — see the `"service"` step; macOS stays the separate, documented
+    `bash scripts/setup_simplicio.sh` path).
 
     Returns the persisted receipt (status APPLIED) on success. On any failure — including the
     planner itself returning BLOCKED (e.g. an ungated break-system-packages permission, or
     mode="full-stack" without the explicit `with_service`/`with_proxy` consent it requires) — no
     partial state is left: either nothing ran yet (BLOCKED, returned as-is, never persisted as a
-    transaction) or every step that DID commit is undone and `InstallTransactionError` is raised
-    with the ROLLED_BACK receipt attached.
+    transaction) or every step that DID commit is undone (including uninstalling any service that
+    was registered) and `InstallTransactionError` is raised with the ROLLED_BACK receipt attached.
 
-    `with_service`/`with_proxy`: the explicit consent flags required to move mode="full-stack"
-    out of BLOCKED (see `install_plan.build_plan`'s `full_stack_confirmation` gate — the mode name
-    alone is never treated as consent). Ignored (harmless) for every other mode.
+    `with_service`: explicit consent that ALSO governs the real service registration step in
+    every mode (not just full-stack) — the SAME flag `install_plan.build_plan` already reports
+    under `permissions_required`. `with_proxy`: together with `with_service`, the explicit consent
+    required to move mode="full-stack" out of BLOCKED (see `build_plan`'s `full_stack_confirmation`
+    gate — the mode name alone is never treated as consent).
 
     `fail_step`: test-only. Raise a synthetic failure right before the named step would run, to
     prove rollback undoes every step that already committed. Never set this in a real install —
@@ -296,7 +373,8 @@ def apply(runtime: str, *, target: str, is_global: bool = False, mode: str = "mi
     backup_root = _backups_dir(target, transaction_id)
     prior_manifest = _read_manifest(target)
     stale = _stale_skills(target, _lib.SKILLS)
-    step_paths = _step_paths(target, is_global, runtime, mode, stale_skills=stale)
+    step_paths = _step_paths(target, is_global, runtime, mode, stale_skills=stale,
+                             with_service=with_service)
     order = [s for s in STEP_ORDER if s in step_paths]
 
     applied: List[Tuple[str, str, Optional[str], Optional[str]]] = []
@@ -348,7 +426,14 @@ def apply(runtime: str, *, target: str, is_global: bool = False, mode: str = "mi
         _write_receipt(target, transaction_id, receipt)
         return receipt
     except Exception as e:  # noqa: BLE001 — deliberately broad: ANY failure must roll back
+        _uninstalled_service = False
         for step, path, hash_before, backup_path in reversed(applied):
+            if step == "service" and not _uninstalled_service:
+                # Undo the OS-level registration itself (systemctl disable / remove the
+                # Startup shim), not just the unit/launcher FILE — file-only restore would leave
+                # a systemd unit re-materialized without ever having been (re-)enabled.
+                _service_uninstall()
+                _uninstalled_service = True
             if hash_before is None:
                 _remove_and_prune(path, target)
             else:
@@ -379,7 +464,11 @@ def rollback(transaction_id: str, target: str) -> Dict[str, Any]:
         receipt = json.load(f)
     if receipt.get("status") == "ROLLED_BACK":
         return receipt
+    _uninstalled_service = False
     for entry in reversed(receipt.get("steps", [])):
+        if entry.get("step") == "service" and not _uninstalled_service:
+            _service_uninstall()
+            _uninstalled_service = True
         if entry.get("hash_before") is None:
             _remove_and_prune(entry["path"], target)
         else:
