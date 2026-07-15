@@ -45,11 +45,36 @@ top of that primitive this module adds:
     comment update cannot be confirmed reports `CLOSE_PENDING_RECONCILIATION`
     (kept in the outbox for `reconcile`) instead of a fake success.
 
-Still out of scope for this increment (tracked, not claimed done): full
-duplicate-comment election across two authors beyond "first marker match",
-and `claim`/`update_status`/`attach_evidence` as a single unified `Protocol`
+Still out of scope for this increment (tracked, not claimed done):
+`claim`/`update_status`/`attach_evidence` as a single unified `Protocol`
 class (the equivalent operations exist today as free functions plus the
-runner wiring in `simplicio_loop/runner.py::_sync_github_lifecycle`).
+runner wiring in `simplicio_loop/runner.py::_sync_github_lifecycle` --
+see `simplicio_loop/source_adapter.py` for the formal `Protocol`, added
+separately).
+
+## Duplicate-comment election (#285 "Recuperação de duplicatas")
+
+The normal path never produces a duplicate: `publish_lifecycle_state` always
+create-or-updates via the marker, guarded by the lease. But a legacy comment
+from before this system existed, or a race that landed two POSTs before the
+lease fully serialized writers, can still leave two-or-more marker-tagged
+comments on the same issue. `reconcile_duplicate_comments` recovers from that:
+
+  * paginate every comment and collect every one carrying
+    `LIFECYCLE_COMMENT_MARKER` (`find_marker_comments`);
+  * elect ONE canonical comment deterministically -- lowest comment `id` wins
+    (`elect_canonical_comment`), matching `get_details`'s own canonical-comment
+    rule so the two never disagree;
+  * every OTHER marker-tagged comment is a duplicate. For each one,
+    `mark_comment_superseded` edits it to append a `SUPERSEDED` banner --
+    but ONLY when its author matches the adapter's own authenticated login
+    (`get_authenticated_login`). A duplicate authored by a different login
+    (another human, another bot, another actor entirely) is left completely
+    untouched and reported as `skipped_foreign_author` -- "nunca editar/apagar
+    comentário de outro usuário" is absolute, not best-effort;
+  * marking is itself idempotent: a comment that already carries the
+    `SUPERSEDED` banner is left alone (`already_superseded`), so re-running
+    reconciliation never appends the banner twice.
 """
 from __future__ import annotations
 
@@ -66,7 +91,14 @@ from . import freshness
 LIFECYCLE_SCHEMA = "simplicio.github-lifecycle-receipt/v1"
 SNAPSHOT_SCHEMA = "simplicio.github-source-snapshot/v1"
 LIST_READY_SCHEMA = "simplicio.github-list-ready/v1"
+DUPLICATE_ELECTION_SCHEMA = "simplicio.github-duplicate-election/v1"
 LIFECYCLE_COMMENT_MARKER = "<!-- simplicio-loop:lifecycle-status:v1 -->"
+SUPERSEDED_MARKER = "<!-- simplicio-loop:lifecycle-status:superseded/v1 -->"
+SUPERSEDED_BANNER = (
+    "\n> ⚠️ **SUPERSEDED** — a newer canonical status comment now "
+    "tracks this issue's Simplicio Loop lifecycle; this one is kept for audit "
+    "only and is no longer updated.\n" + SUPERSEDED_MARKER
+)
 
 # #285 "Definir reason codes no mínimo para": the minimum set the issue enumerates.
 REASON_CODES = frozenset({
@@ -515,6 +547,120 @@ def requery(owner: str, repo: str, issue: str, *, comment_id: Optional[int] = No
     return snapshot
 
 
+# --- duplicate-comment election (#285 "Recuperação de duplicatas") ---------------------
+
+
+def get_authenticated_login(runner: Callable = subprocess.run, timeout: int = 20) -> Optional[str]:
+    """Return the `gh`-authenticated actor's login, or `None` if it cannot be determined
+    (no auth, network failure, unparsable response). Used to scope `SUPERSEDED` edits to
+    comments this adapter itself authored -- never another actor's comment."""
+    completed = runner(["gh", "api", "user"], capture_output=True, text=True, timeout=timeout,
+                       check=False, encoding="utf-8", errors="replace")
+    if completed.returncode != 0:
+        return None
+    try:
+        data = json.loads(completed.stdout or "{}")
+    except ValueError:
+        return None
+    login = data.get("login") if isinstance(data, dict) else None
+    return login or None
+
+
+def find_marker_comments(comments: Sequence[Mapping[str, Any]],
+                         marker: str = LIFECYCLE_COMMENT_MARKER) -> List[Dict[str, Any]]:
+    """Every comment (in `comments`, e.g. from a paginated `gh api .../comments` call)
+    whose body carries `marker`, in the order given."""
+    return [dict(c) for c in comments if isinstance(c, dict) and marker in (c.get("body") or "")]
+
+
+def elect_canonical_comment(
+    marker_comments: Sequence[Mapping[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Deterministically elect ONE canonical comment among every marker-tagged comment
+    found on the issue: the lowest `id` wins (the first one ever created), matching
+    `get_details`'s own canonical-comment tie-break so the two never disagree. Returns
+    `(canonical, duplicates)` -- `duplicates` is every other marker-tagged comment,
+    oldest first, regardless of author (author filtering happens at edit time, in
+    `mark_comment_superseded`, never at election time)."""
+    ordered = sorted((dict(c) for c in marker_comments), key=lambda c: int(c.get("id") or 0))
+    if not ordered:
+        return None, []
+    return ordered[0], ordered[1:]
+
+
+def mark_comment_superseded(
+    owner: str,
+    repo: str,
+    comment: Mapping[str, Any],
+    *,
+    own_login: Optional[str],
+    runner: Callable = subprocess.run,
+    timeout: int = 20,
+) -> Dict[str, Any]:
+    """Edit ONE duplicate comment to append the `SUPERSEDED` banner -- but ONLY when its
+    author matches `own_login`. A comment authored by anyone else is left completely
+    untouched (#285: "nunca editar/apagar comentário de outro usuário" -- absolute, not
+    best-effort) and reported as `skipped_foreign_author` so a human/reconciliation job
+    can decide what (if anything) to do about it. Idempotent: a comment that already
+    carries `SUPERSEDED_MARKER` is left alone (`already_superseded`), so a repeated
+    reconciliation run never double-appends the banner."""
+    comment_id = comment.get("id")
+    author = (comment.get("user") or {}).get("login") or ""
+    body = comment.get("body") or ""
+    if own_login is None or author != own_login:
+        return {"comment_id": comment_id, "author": author, "action": "skipped_foreign_author"}
+    if SUPERSEDED_MARKER in body:
+        return {"comment_id": comment_id, "author": author, "action": "already_superseded"}
+    new_body = body.rstrip("\n") + "\n" + SUPERSEDED_BANNER + "\n"
+    completed = runner(
+        ["gh", "api", "-X", "PATCH", "repos/%s/%s/issues/comments/%s" % (owner, repo, comment_id),
+         "--input", "-"],
+        capture_output=True, text=True, timeout=timeout, check=False,
+        encoding="utf-8", errors="replace", input=json.dumps({"body": new_body}),
+    )
+    if completed.returncode != 0:
+        return {"comment_id": comment_id, "author": author, "action": "failed",
+                "reason_code": _classify_gh_failure(completed.returncode, completed.stderr)}
+    return {"comment_id": comment_id, "author": author, "action": "marked_superseded"}
+
+
+def reconcile_duplicate_comments(
+    owner: str,
+    repo: str,
+    issue: str,
+    *,
+    own_login: Optional[str] = None,
+    marker: str = LIFECYCLE_COMMENT_MARKER,
+    runner: Callable = subprocess.run,
+    timeout: int = 20,
+) -> Dict[str, Any]:
+    """Full duplicate-comment election + safe repair (#285 "Recuperação de duplicatas"):
+    paginate every comment, find every marker match, elect the canonical one
+    deterministically, and mark every OTHER match authored by `own_login` as
+    `SUPERSEDED`. `own_login` defaults to the live `gh`-authenticated login
+    (`get_authenticated_login`) when not supplied -- callers with a cached identity
+    may pass it explicitly to skip that extra call. Never creates, deletes, or edits
+    the canonical comment itself; purely a repair pass over its duplicates."""
+    if own_login is None:
+        own_login = get_authenticated_login(runner=runner, timeout=timeout)
+    comments = _paginated_gh_api(f"repos/{owner}/{repo}/issues/{issue}/comments",
+                                 runner=runner, timeout=timeout)
+    marker_comments = find_marker_comments(comments, marker=marker)
+    canonical, duplicates = elect_canonical_comment(marker_comments)
+    actions = [mark_comment_superseded(owner, repo, dup, own_login=own_login,
+                                       runner=runner, timeout=timeout)
+              for dup in duplicates]
+    return {
+        "schema": DUPLICATE_ELECTION_SCHEMA,
+        "repo": f"{owner}/{repo}",
+        "issue": str(issue),
+        "canonical_comment_id": canonical.get("id") if canonical else None,
+        "duplicate_count": len(duplicates),
+        "actions": actions,
+        "observed_at": _now_iso(),
+    }
+
+
 # --- outbox: persist intent before a remote mutation, clear only after confirmation ----
 
 
@@ -897,8 +1043,10 @@ __all__ = [
     "LIFECYCLE_SCHEMA",
     "SNAPSHOT_SCHEMA",
     "LIST_READY_SCHEMA",
+    "DUPLICATE_ELECTION_SCHEMA",
     "ISSUE_STATE_VERIFIER_SCHEMA",
     "LIFECYCLE_COMMENT_MARKER",
+    "SUPERSEDED_MARKER",
     "LIFECYCLE_STATES",
     "REGRESSION_REASON_CODES",
     "REASON_CODES",
@@ -917,6 +1065,11 @@ __all__ = [
     "mark_operation_done",
     "list_pending_operations",
     "close_source_issue",
+    "get_authenticated_login",
+    "find_marker_comments",
+    "elect_canonical_comment",
+    "mark_comment_superseded",
+    "reconcile_duplicate_comments",
     "lifecycle_state_for_phase_event",
     "LIFECYCLE_RECEIPT_FILENAME",
     "lifecycle_receipt_path",

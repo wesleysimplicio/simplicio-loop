@@ -128,6 +128,30 @@ def test_get_details_rejects_pull_requests():
         raise AssertionError("expected GitHubTransportError")
 
 
+def test_get_details_raises_typed_error_on_gh_failure():
+    def runner(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="HTTP 403: Forbidden")
+
+    try:
+        get_details("acme", "widgets", "12", runner=runner)
+    except GitHubTransportError as exc:
+        assert exc.reason_code == "PERMISSION_DENIED"
+    else:
+        raise AssertionError("expected GitHubTransportError")
+
+
+def test_get_details_raises_typed_error_on_non_json_issue_body():
+    def runner(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 0, stdout="not json", stderr="")
+
+    try:
+        get_details("acme", "widgets", "12", runner=runner)
+    except GitHubTransportError as exc:
+        assert exc.reason_code == "NETWORK_UNAVAILABLE"
+    else:
+        raise AssertionError("expected GitHubTransportError")
+
+
 def test_get_details_source_revision_ignores_the_canonical_comment_but_not_human_edits():
     base_comments = []
     runner1, _ = _fake_gh(comments=base_comments)
@@ -205,10 +229,73 @@ def test_reconcile_reports_still_pending_when_body_does_not_match(tmp_path):
     assert len(list_pending_operations(tmp_path)) == 1
 
 
+def test_reconcile_treats_a_corrupted_outbox_record_as_still_pending(tmp_path):
+    from simplicio_loop.github_lifecycle import _outbox_path
+    path = _outbox_path(tmp_path, "op-corrupt-record")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not valid json", encoding="utf-8")
+
+    canonical = {"id": 7, "user": {"login": "loop-bot"}, "body": "state\n" + LIFECYCLE_COMMENT_MARKER, "created_at": "t"}
+    runner, _ = _fake_gh(comments=[canonical])
+    receipt = reconcile("op-corrupt-record", outbox_dir=tmp_path, owner="acme", repo="widgets",
+                        issue="12", comment_id=7, expected_body_hash="deadbeef", runner=runner)
+    assert receipt["outcome"] == "still_pending"
+
+
 def test_reconcile_unknown_operation_id_is_not_found(tmp_path):
     receipt = reconcile("nope", outbox_dir=tmp_path, owner="acme", repo="widgets", issue="12")
     assert receipt["outcome"] == "not_found"
     assert receipt["reason_code"] == "OPERATION_NOT_FOUND"
+
+
+def test_reconcile_already_done_short_circuits_without_a_live_requery(tmp_path):
+    def runner(cmd, **kw):
+        raise AssertionError("an already-done operation must never re-query the source: %r" % (cmd,))
+
+    op_id = "op-already-done"
+    record_pending_operation(tmp_path, op_id, {"issue": "12"})
+    mark_operation_done(tmp_path, op_id, {"schema": "x", "outcome": "reconciled"})
+    receipt = reconcile(op_id, outbox_dir=tmp_path, owner="acme", repo="widgets", issue="12", runner=runner)
+    assert receipt["outcome"] == "reconciled"
+    assert receipt["receipt"] == {"schema": "x", "outcome": "reconciled"}
+
+
+def test_reconcile_without_a_comment_id_falls_back_to_the_canonical_comment(tmp_path):
+    canonical_body = "state\n" + LIFECYCLE_COMMENT_MARKER
+    canonical = {"id": 7, "user": {"login": "loop-bot"}, "body": canonical_body, "created_at": "t"}
+    runner, _ = _fake_gh(comments=[canonical])
+    from simplicio_loop.github_lifecycle import content_hash
+    expected_hash = content_hash(canonical_body)
+
+    op_id = "op-canonical-fallback"
+    record_pending_operation(tmp_path, op_id, {"issue": "12"})
+    receipt = reconcile(op_id, outbox_dir=tmp_path, owner="acme", repo="widgets", issue="12",
+                        expected_body_hash=expected_hash, runner=runner)  # no comment_id given
+    assert receipt["outcome"] == "reconciled"
+    assert receipt["observed_body_hash"] == expected_hash
+
+
+def test_mark_operation_done_recovers_from_a_corrupted_existing_record(tmp_path):
+    # Simulate a half-written/corrupt outbox record on disk before mark_operation_done runs --
+    # it must not crash, just treat it as if there were no prior record.
+    from simplicio_loop.github_lifecycle import _outbox_path
+    path = _outbox_path(tmp_path, "op-corrupt")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not valid json", encoding="utf-8")
+    mark_operation_done(tmp_path, "op-corrupt", {"ok": True})
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["status"] == "done"
+
+
+def test_list_pending_operations_on_a_missing_directory_returns_empty(tmp_path):
+    assert list_pending_operations(tmp_path / "does-not-exist") == []
+
+
+def test_list_pending_operations_skips_corrupted_files(tmp_path):
+    record_pending_operation(tmp_path, "op-good", {"issue": "12"})
+    (tmp_path / "op-bad.json").write_text("{not valid json", encoding="utf-8")
+    pending = list_pending_operations(tmp_path)
+    assert [p["operation_id"] for p in pending] == ["op-good"]
 
 
 # --- lease/fencing-gated publish --------------------------------------------------------
@@ -307,6 +394,45 @@ def test_close_source_issue_succeeds_and_updates_the_canonical_comment():
     assert receipt["source_state"] == "closed"
     assert receipt["outcome"] == "closed"
     assert receipt["verified"] is True
+
+
+def test_close_source_issue_checks_lease_and_clears_outbox_on_success(tmp_path):
+    """Covers the `require_active` lease-check call immediately before the `gh issue close`
+    mutation, and the outbox record being recorded then marked done on a fully-verified close
+    (#285 steps 1/10/13)."""
+    def runner(cmd, **kw):
+        if cmd[:2] == ["gh", "issue"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3:
+            url = cmd[2]
+            if "/comments" in url and "/issues/comments/" not in url:
+                return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+            if "/issues/comments/" in url:
+                cid = int(url.rsplit("/", 1)[-1])
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"id": cid, "body": getattr(runner, "body", "")}), stderr="")
+            if "/issues/" in url:
+                data = _issue_payload()
+                data["state"] = "closed"
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+        if "-X" in cmd and "POST" in cmd:
+            body = json.loads(kw.get("input") or "{}").get("body", "")
+            runner.body = body  # type: ignore[attr-defined]
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"id": 88}), stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected: %r" % (cmd,))
+
+    lease_checks = []
+
+    def require_active():
+        lease_checks.append(True)
+
+    outbox_dir = tmp_path / "outbox"
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", publish_comment_fn=publish_comment,
+                                 runner=runner, require_active=require_active,
+                                 outbox_dir=outbox_dir)
+    assert receipt["outcome"] == "closed"
+    assert lease_checks == [True]
+    assert list_pending_operations(outbox_dir) == []  # cleared once the close was confirmed
 
 
 def test_close_source_issue_reports_pending_reconciliation_when_comment_update_fails():
