@@ -106,3 +106,128 @@ def test_flag_set_with_stale_receipt_blocks_after_plan_drift(tmp_path, monkeypat
     with patch.dict(os.environ, _exec_env({ENV_FLAG: "1"}), clear=False):
         with pytest.raises(RuntimeError, match="mutation authority required"):
             runner_mod.execute_operator(str(repo), run_id)
+
+
+def test_flag_set_blocks_on_github_source_drift_between_planning_and_execution(tmp_path, monkeypatch):
+    # #284 item 1: the receipt was minted while the GitHub issue had content hash
+    # "hash-a"; a caller that re-captures the source right before mutation and
+    # writes source-snapshot-current.json with a DIFFERENT hash (the issue was
+    # edited in between) must block execution instead of silently proceeding.
+    repo, _, armed_payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    run_id = armed_payload["manifest"]["run_id"]
+
+    contract = json.loads((run_dir / "task-contract.json").read_text(encoding="utf-8"))
+    plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
+    tasks = contract.get("tasks") or []
+    plan_validation = validate_plan(plan, tasks, str(repo), contract_hash=contract.get("collection_hash", ""))
+    attempt = int((armed_payload["state"] or {}).get("attempts", 0)) + 1
+    source_at_planning = {"schema": "simplicio.source-snapshot/v1",
+                          "source": {"provider": "github", "repo": "acme/repo", "item_id": "284",
+                                     "revision": "r1", "snapshot_hash": "hash-a", "observed_at": "t1"}}
+    receipt = build_planning_receipt(run_id=run_id, attempt=attempt, contract=contract, plan=plan,
+                                     plan_validation=plan_validation, source_snapshot=source_at_planning)
+    assert receipt["ready_for_mutation"] is True
+    receipt_path(run_dir).write_text(json.dumps(receipt), encoding="utf-8")
+
+    # a fresh re-query right before mutation observes a DIFFERENT issue content hash
+    (run_dir / "source-snapshot-current.json").write_text(
+        json.dumps({"source": {"snapshot_hash": "hash-b-after-edit"}}), encoding="utf-8",
+    )
+
+    with patch.dict(os.environ, _exec_env({ENV_FLAG: "1"}), clear=False):
+        with pytest.raises(RuntimeError, match="source_drift"):
+            runner_mod.execute_operator(str(repo), run_id)
+
+
+def test_flag_set_allows_execution_when_source_snapshot_unchanged(tmp_path, monkeypatch):
+    repo, _, armed_payload, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    run_id = armed_payload["manifest"]["run_id"]
+
+    contract = json.loads((run_dir / "task-contract.json").read_text(encoding="utf-8"))
+    plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
+    tasks = contract.get("tasks") or []
+    plan_validation = validate_plan(plan, tasks, str(repo), contract_hash=contract.get("collection_hash", ""))
+    attempt = int((armed_payload["state"] or {}).get("attempts", 0)) + 1
+    source_snapshot = {"schema": "simplicio.source-snapshot/v1",
+                       "source": {"provider": "github", "repo": "acme/repo", "item_id": "284",
+                                  "revision": "r1", "snapshot_hash": "hash-a", "observed_at": "t1"}}
+    receipt = build_planning_receipt(run_id=run_id, attempt=attempt, contract=contract, plan=plan,
+                                     plan_validation=plan_validation, source_snapshot=source_snapshot)
+    receipt_path(run_dir).write_text(json.dumps(receipt), encoding="utf-8")
+    (run_dir / "source-snapshot-current.json").write_text(
+        json.dumps({"source": {"snapshot_hash": "hash-a"}}), encoding="utf-8",
+    )
+
+    with patch.dict(os.environ, _exec_env({ENV_FLAG: "1"}), clear=False):
+        payload = runner_mod.execute_operator(str(repo), run_id)
+    assert payload["state"]["phase"] == "validating"
+    op_receipt = json.loads((run_dir / "operator-receipt.json").read_text(encoding="utf-8"))
+    assert op_receipt["execution_state"] == "applied"
+
+
+# --- same opt-in gate extended to execute_operator_batch() -------------------------
+
+
+def test_batch_flag_unset_is_zero_behavior_change(tmp_path, monkeypatch):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    dispatched = []
+
+    def fake_dispatch(items, **kwargs):
+        dispatched.extend(list(items))
+        return {"failed_task_indices": [], "dead_letter_task_indices": []}
+
+    monkeypatch.setattr(runner_mod, "dispatch_operator_batch", fake_dispatch)
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop(ENV_FLAG, None)
+        result = runner_mod.execute_operator_batch(
+            str(repo), armed["manifest"]["run_id"], max_workers=1,
+            isolated_contexts={1: {"isolation": "shared"}}, auto_fan_out=False,
+        )
+    assert result["failed_task_indices"] == []
+    assert len(dispatched) == 1
+
+
+def test_batch_flag_set_without_receipt_blocks_fail_closed(tmp_path, monkeypatch):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    assert not receipt_path(run_dir).exists()
+
+    def fake_dispatch(items, **kwargs):
+        raise AssertionError("dispatch must not be reached without a valid mutation authority")
+
+    monkeypatch.setattr(runner_mod, "dispatch_operator_batch", fake_dispatch)
+    with patch.dict(os.environ, {ENV_FLAG: "1"}, clear=False):
+        with pytest.raises(RuntimeError, match="mutation authority required"):
+            runner_mod.execute_operator_batch(
+                str(repo), armed["manifest"]["run_id"], max_workers=1,
+                isolated_contexts={1: {"isolation": "shared"}}, auto_fan_out=False,
+            )
+
+
+def test_batch_flag_set_with_valid_receipt_dispatches(tmp_path, monkeypatch):
+    repo, _, armed, run_dir = _arm_deterministic_preflight_fixture(monkeypatch, tmp_path)
+    run_id = armed["manifest"]["run_id"]
+
+    contract = json.loads((run_dir / "task-contract.json").read_text(encoding="utf-8"))
+    plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
+    tasks = contract.get("tasks") or []
+    plan_validation = validate_plan(plan, tasks, str(repo), contract_hash=contract.get("collection_hash", ""))
+    attempt = int((armed["state"] or {}).get("attempts", 0)) + 1
+    receipt = build_planning_receipt(run_id=run_id, attempt=attempt, contract=contract, plan=plan,
+                                     plan_validation=plan_validation)
+    assert receipt["ready_for_mutation"] is True
+    receipt_path(run_dir).write_text(json.dumps(receipt), encoding="utf-8")
+
+    dispatched = []
+
+    def fake_dispatch(items, **kwargs):
+        dispatched.extend(list(items))
+        return {"failed_task_indices": [], "dead_letter_task_indices": []}
+
+    monkeypatch.setattr(runner_mod, "dispatch_operator_batch", fake_dispatch)
+    with patch.dict(os.environ, {ENV_FLAG: "1"}, clear=False):
+        result = runner_mod.execute_operator_batch(
+            str(repo), run_id, max_workers=1,
+            isolated_contexts={1: {"isolation": "shared"}}, auto_fan_out=False,
+        )
+    assert result["failed_task_indices"] == []
+    assert len(dispatched) == 1
