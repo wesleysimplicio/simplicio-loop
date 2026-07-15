@@ -7,7 +7,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 SCHEMA = "simplicio.task-contract/v1"
 
@@ -20,6 +20,7 @@ SECTION_PATTERNS = {
     "dependencies": re.compile(r"^\s*6\.\s*Depend[êe]ncias\b", re.I),
     "impact_signals": re.compile(r"^\s*7\.\s*Sinais de Impacto\b", re.I),
     "additional_information": re.compile(r"^\s*8\.\s*Informa[çc][õo]es Adicionais\b", re.I),
+    "routing": re.compile(r"^\s*9\.\s*Roteamento\b", re.I),
 }
 SCENARIO_RE = re.compile(r"^\s*Cen[áa]rio\s+(?P<num>\d+)\s*:\s*(?P<title>.+?)\s*$", re.I)
 RULE_RE = re.compile(r"^\s*(?P<id>RN\d+)\s*[–-]\s*(?P<text>.+?)\s*$", re.I)
@@ -32,6 +33,42 @@ THEN_RE = re.compile(r"^\s*Ent[aã]o\s+(.+?)\s*$", re.I)
 MULTI_TASK_SPLIT_RE = re.compile(r"(?=^\s*Sistema\s*:)", re.I | re.M)
 WS_RE = re.compile(r"\s+")
 URL_RE = re.compile(r"https?://\S+", re.I)
+
+# -- routing (issue #287: role/capability/budget/fallback fields on the task ----
+# contract, so simplicio_loop/model_router.py::route()/route_with_fallback() can
+# be driven by a real, frozen task contract instead of a synthetic requirements
+# dict handed in ad hoc.
+ROUTING_LINE_RE = re.compile(r"^\s*-?\s*(?P<key>[^:]+):\s*(?P<value>.*)$")
+ROUTING_LABELS = {
+    "papel": "role",
+    "role": "role",
+    "capacidades obrigatórias": "required_capabilities",
+    "capacidades obrigatorias": "required_capabilities",
+    "required_capabilities": "required_capabilities",
+    "capacidades preferenciais": "preferred_capabilities",
+    "preferred_capabilities": "preferred_capabilities",
+    "providers permitidos": "allowed_providers",
+    "allowed_providers": "allowed_providers",
+    "providers proibidos": "denied_providers",
+    "denied_providers": "denied_providers",
+    "budget tokens": "budget_tokens",
+    "budget_tokens": "budget_tokens",
+    "budget usd": "budget_usd",
+    "budget_usd": "budget_usd",
+    "budget segundos": "budget_seconds",
+    "budget_seconds": "budget_seconds",
+    "política de fallback": "fallback_policy",
+    "politica de fallback": "fallback_policy",
+    "fallback_policy": "fallback_policy",
+    "máximo de routes": "max_routes",
+    "maximo de routes": "max_routes",
+    "max_routes": "max_routes",
+    "review independente": "independent_review",
+    "independent_review": "independent_review",
+}
+DEFAULT_ROUTING_ROLE = "executor"
+ROUTING_ROLES = frozenset(("planner", "executor", "reviewer", "tester"))
+FALLBACK_POLICIES = frozenset(("block", "retry_same_route", "fallback_route"))
 
 
 def _now() -> str:
@@ -313,6 +350,113 @@ def _parse_impact(lines: Iterable[str]) -> Dict[str, Dict[str, str]]:
     return impact
 
 
+def _split_csv(value: str) -> List[str]:
+    return [v.strip() for v in re.split(r"[,;]", value or "") if v.strip()]
+
+
+def _parse_bool_pt(value: str) -> bool:
+    return (value or "").strip().lower() in {"sim", "yes", "true", "1", "s", "y"}
+
+
+def _parse_number(value: str) -> Any:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        if "." in text:
+            return float(text)
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _empty_routing() -> Dict[str, Any]:
+    return {
+        "state": "unspecified",
+        "role": DEFAULT_ROUTING_ROLE,
+        "required_capabilities": [],
+        "preferred_capabilities": [],
+        "allowed_providers": [],
+        "denied_providers": [],
+        "budget": {"tokens": None, "usd": None, "seconds": None, "state": "unspecified"},
+        "fallback_policy": "block",
+        "max_routes": 1,
+        "independent_review": False,
+    }
+
+
+def _parse_routing(lines: Iterable[str]) -> Dict[str, Any]:
+    """Parse the optional '9. Roteamento' section into role/capability/budget/
+    fallback-policy fields the router can consume directly (see
+    :func:`routing_requirements`). Absent section => explicit ``state:
+    "unspecified"`` defaults, never a silently-invented role/policy."""
+    fields: Dict[str, str] = {}
+    for raw in lines:
+        if not _norm(raw):
+            continue
+        m = ROUTING_LINE_RE.match(raw)
+        if not m:
+            continue
+        label = _norm(m.group("key")).lower()
+        canonical = ROUTING_LABELS.get(label)
+        if canonical:
+            fields[canonical] = _norm(m.group("value"))
+    if not fields:
+        return _empty_routing()
+
+    role = (fields.get("role") or "").strip().lower() or DEFAULT_ROUTING_ROLE
+    if role not in ROUTING_ROLES:
+        role = DEFAULT_ROUTING_ROLE
+
+    budget_tokens = _parse_number(fields.get("budget_tokens", ""))
+    budget_usd = _parse_number(fields.get("budget_usd", ""))
+    budget_seconds = _parse_number(fields.get("budget_seconds", ""))
+    budget_state = "declared" if any(v is not None for v in (budget_tokens, budget_usd, budget_seconds)) else "unspecified"
+
+    fallback_policy = (fields.get("fallback_policy") or "").strip().lower() or "block"
+    if fallback_policy not in FALLBACK_POLICIES:
+        fallback_policy = "block"
+
+    max_routes_raw = _parse_number(fields.get("max_routes", ""))
+    max_routes = int(max_routes_raw) if isinstance(max_routes_raw, (int, float)) and max_routes_raw >= 1 else 1
+
+    return {
+        "state": "declared",
+        "role": role,
+        "required_capabilities": _split_csv(fields.get("required_capabilities", "")),
+        "preferred_capabilities": _split_csv(fields.get("preferred_capabilities", "")),
+        "allowed_providers": _split_csv(fields.get("allowed_providers", "")),
+        "denied_providers": _split_csv(fields.get("denied_providers", "")),
+        "budget": {
+            "tokens": budget_tokens,
+            "usd": budget_usd,
+            "seconds": budget_seconds,
+            "state": budget_state,
+        },
+        "fallback_policy": fallback_policy,
+        "max_routes": max_routes,
+        "independent_review": _parse_bool_pt(fields.get("independent_review", "")),
+    }
+
+
+def routing_requirements(contract: Mapping[str, Any]) -> Dict[str, Any]:
+    """Project a compiled contract's ``routing`` section onto the requirements
+    shape ``simplicio_loop.model_router.route()``/``route_with_fallback()``
+    expect. Budget/fallback_policy/max_routes are not part of registry
+    eligibility (they drive the fallback layer, not candidate filtering) so
+    they are intentionally left out of the returned dict; read them from
+    ``contract["routing"]`` directly when driving retries."""
+    routing = contract.get("routing") or _empty_routing()
+    return {
+        "role": routing.get("role") or DEFAULT_ROUTING_ROLE,
+        "required_capabilities": list(routing.get("required_capabilities") or []),
+        "preferred_capabilities": list(routing.get("preferred_capabilities") or []),
+        "allowed_providers": list(routing.get("allowed_providers") or []),
+        "denied_providers": list(routing.get("denied_providers") or []),
+        "independent_review": bool(routing.get("independent_review")),
+    }
+
+
 def _parse_additional_information(lines: Iterable[str]) -> Tuple[List[str], str]:
     items = [_norm(line.lstrip("-*")) for line in lines if _norm(line)]
     production = ""
@@ -415,6 +559,7 @@ def compile_task(text: str, source_path: str = "") -> Dict[str, Any]:
     additional_information, production_signal = _parse_additional_information(
         sections["additional_information"]
     )
+    routing = _parse_routing(sections["routing"])
     contract = {
         "schema": SCHEMA,
         "source": {
@@ -435,6 +580,7 @@ def compile_task(text: str, source_path: str = "") -> Dict[str, Any]:
         "constraints": [],
         "additional_information": additional_information,
         "production_signal": production_signal,
+        "routing": routing,
         "questions": [],
         "assumptions": [],
         "blockers": [],
@@ -443,7 +589,7 @@ def compile_task(text: str, source_path: str = "") -> Dict[str, Any]:
         "raw_sections": [
             {"name": name, "content": "\n".join(v).strip()}
             for name, v in sections.items()
-            if name not in {"acceptance_criteria", "business_rules"} and "\n".join(v).strip()
+            if name not in {"acceptance_criteria", "business_rules", "routing"} and "\n".join(v).strip()
         ],
     }
     questions, assumptions, blockers, decision_ledger = _classify_ambiguities(contract)
@@ -465,6 +611,7 @@ def compile_task(text: str, source_path: str = "") -> Dict[str, Any]:
         "constraints": contract["constraints"],
         "additional_information": contract["additional_information"],
         "production_signal": contract["production_signal"],
+        "routing": contract["routing"],
         "questions": contract["questions"],
         "assumptions": contract["assumptions"],
         "blockers": contract["blockers"],
@@ -523,6 +670,9 @@ def validate_contract(contract: Dict[str, Any]) -> Dict[str, List[str]]:
         warnings.append("nfrs require validation")
     if (contract.get("dependencies") or {}).get("state") == "unknown":
         warnings.append("dependencies require validation")
+    routing = contract.get("routing") or {}
+    if routing.get("state") == "unspecified":
+        warnings.append("routing section not declared; defaulting to role=executor, fallback_policy=block")
     return {"errors": errors, "warnings": warnings}
 
 
