@@ -80,11 +80,45 @@ def _gh(*args: str, timeout: int = 60) -> Any:
 
 
 def fetch_open_issues(limit: int, gh_repo: Optional[str] = None) -> List[Dict[str, Any]]:
-    cmd = ["list", "--state", "open", "--limit", str(limit)]
-    if gh_repo:
-        cmd += ["--repo", gh_repo]
-    data: List[Dict[str, Any]] = _gh(*cmd)
-    return sorted(data, key=lambda i: str(i.get("createdAt") or ""))
+    """Page through ALL open issues so old issues are never truncated at --limit.
+
+    GitHub's `gh issue list` returns issues newest-first and caps at --limit, which
+    silently drops older open issues when the repo has more than `limit` open items.
+    We paginate in chunks of 100 up to a hard ceiling (1000, the gh max) so every open
+    issue is seen at least once per tick. `limit` is then a PER-TICK SAFETY CAP applied
+    AFTER the full fetch: if there are more open issues than `limit`, the oldest extras
+    are deferred to the next tick (already-armed ones are skipped, so progress is made).
+    """
+    collected: List[Dict[str, Any]] = []
+    seen: set = set()
+    page = 100
+    ceiling = 1000  # gh issue list hard maximum per call
+    while len(collected) < ceiling:
+        cmd = ["list", "--state", "open", "--limit", str(page)]
+        if gh_repo:
+            cmd += ["--repo", gh_repo]
+        try:
+            chunk: List[Dict[str, Any]] = _gh(*cmd)
+        except Exception:
+            break
+        if not chunk:
+            break
+        for it in chunk:
+            if it["number"] not in seen:
+                seen.add(it["number"])
+                collected.append(it)
+        # gh returns at most `page` items; if fewer, we've reached the end
+        if len(chunk) < page:
+            break
+        page = min(page + 100, ceiling)
+    collected.sort(key=lambda i: str(i.get("createdAt") or ""))
+    if limit and limit < len(collected):
+        # Per-tick safety cap: defer the newest extras (oldest processed first).
+        print(f"UNVERIFIED| fetch_open_issues: {len(collected)} open issues, "
+              f"capping this tick at {limit} (oldest-first); {len(collected) - limit} deferred",
+              flush=True)
+        return collected[:limit]
+    return collected
 
 
 def issue_source_revision(issue: Dict[str, Any]) -> str:
@@ -288,9 +322,29 @@ def main() -> int:
 
         print(f"MEASURED| issue {n}: {issue.get('title')!r} — intake+mapping+planning", flush=True)
         if args.dry_run:
+            # Dry-run is strictly read-only: compute the projected row but never
+            # write the intake-contract, planning-receipt, or ledger. A dry run must
+            # not mutate state (the previous behavior appended ledger rows, which
+            # made the subsequent real run a no-op and broke idempotency checks).
             env, h, blockers = {"schema": "simplicio.task-intake/v1", "intake_hash": "dry"}, "dry", []
-        else:
-            env, h, blockers = do_intake(issue, gh_repo or "wesleysimplicio/simplicio-loop")
+            intake_ok = bool(env) and not blockers
+            status = classify_status(issue, intake_ok, blockers)
+            proj = projected_state(status)
+            receipt = {"verdict": "DRY_RUN", "ready_for_mutation": False}
+            row = {
+                "ts": _now(), "issue": n, "gh_repo": gh_repo, "url": issue.get("url"), "title": issue.get("title"),
+                "labels": [l["name"] for l in issue.get("labels") or []],
+                "source_revision": rev, "status": status, "projected": proj,
+                "intake_ok": intake_ok, "intake_hash": h[:16], "blockers": blockers,
+                "planning_receipt_verdict": receipt.get("verdict"),
+                "ready_for_mutation": receipt.get("ready_for_mutation"),
+                "intake_contract_path": str(LEDGER_DIR / f"issue-{n}" / "intake-contract.json"),
+            }
+            new_rows.append(row)
+            print(f"MEASURED| issue {n}: [DRY] status={status} projected={proj} "
+                  f"would_append=True", flush=True)
+            continue
+        env, h, blockers = do_intake(issue, gh_repo or "wesleysimplicio/simplicio-loop")
         intake_ok = bool(env) and not blockers
         status = classify_status(issue, intake_ok, blockers)
         proj = projected_state(status)
