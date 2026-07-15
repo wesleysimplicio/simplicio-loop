@@ -94,6 +94,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import freshness
+from . import source_snapshot as _source_snapshot
 
 LIFECYCLE_SCHEMA = "simplicio.github-lifecycle-receipt/v1"
 SNAPSHOT_SCHEMA = "simplicio.github-source-snapshot/v1"
@@ -925,6 +926,62 @@ def publish_lifecycle_state(
     return receipt
 
 
+def _wrap_source_revision_as_snapshot(snapshot_like: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Normalize either a raw `get_details()`-shaped mapping (has `source_revision`) or an
+    already-wrapped `simplicio.source-snapshot/v1` mapping (has `source.snapshot_hash`) into the
+    latter shape -- the one `source_snapshot.detect_source_drift`/`snapshot_hash_of` expect.
+    A falsy/empty input normalizes to `{}` (no snapshot -> "no_snapshot", never a false drift)."""
+    if not snapshot_like:
+        return {}
+    source = snapshot_like.get("source")
+    if isinstance(source, Mapping) and "snapshot_hash" in source:
+        return dict(snapshot_like)
+    return {"source": {"snapshot_hash": str(snapshot_like.get("source_revision") or "")}}
+
+
+def capture_close_precheck_snapshot(owner: str, repo: str, issue: str, *,
+                                    runner: Callable = subprocess.run, timeout: int = 20) -> Dict[str, Any]:
+    """Capture a `get_details()` snapshot suitable for the #285 close-time material-edit
+    check (`detect_close_source_drift`) -- callable at claim/plan time so a caller has a
+    `planning_snapshot` to hand to `close_source_issue` later, or again right before close
+    to build the "current" side of the comparison."""
+    return get_details(owner, repo, issue, runner=runner, timeout=timeout)
+
+
+def detect_close_source_drift(
+    owner: str,
+    repo: str,
+    issue: str,
+    planning_snapshot: Mapping[str, Any],
+    *,
+    runner: Callable = subprocess.run,
+    timeout: int = 20,
+) -> Dict[str, Any]:
+    """#285 remaining gap: detect a material human edit (title/body/labels/milestone/
+    assignees) or a new human comment on `issue` between planning/claim time and close time.
+
+    Reuses #284's exact comparison primitive (`source_snapshot.detect_source_drift`) rather
+    than reinventing hash comparison. Deliberately does NOT feed it raw
+    `source_snapshot.capture_github_issue_snapshot()` output on either side: that primitive
+    hashes every comment INCLUDING the adapter's own canonical lifecycle status comment,
+    which is rewritten on every lifecycle transition (CLAIMED -> PLANNED -> ... -> CLOSING)
+    between planning time and close time -- comparing on that basis would self-drift on
+    every single close. `get_details()`'s `source_revision` is built exactly to avoid this:
+    it hashes title/body/state/state_reason/labels/assignees/milestone/author/created_at
+    plus every HUMAN comment, explicitly excluding the adapter's own marker-tagged comment
+    (see `get_details` docstring). `planning_snapshot` may be either a raw `get_details()`
+    mapping (has `source_revision`) or an already-wrapped `simplicio.source-snapshot/v1`
+    mapping (has `source.snapshot_hash`) -- both are accepted via
+    `_wrap_source_revision_as_snapshot`.
+    """
+    current_details = get_details(owner, repo, issue, runner=runner, timeout=timeout)
+    baseline = _wrap_source_revision_as_snapshot(planning_snapshot)
+    current = _wrap_source_revision_as_snapshot(current_details)
+    verdict = _source_snapshot.detect_source_drift(baseline, current)
+    verdict["current_snapshot"] = current_details
+    return verdict
+
+
 def close_source_issue(
     *,
     owner: str,
@@ -941,6 +998,7 @@ def close_source_issue(
     timeout: int = 20,
     outbox_dir: Optional[str | Path] = None,
     precheck_issue_state: bool = False,
+    planning_snapshot: Optional[Mapping[str, Any]] = None,
     **render_kwargs: Any,
 ) -> Dict[str, Any]:
     """`close` (#285): real `gh issue close` wiring, fail-closed.
@@ -968,15 +1026,33 @@ def close_source_issue(
     trust their own upstream state tracking are unaffected; new call sites (and the
     reconciliation transaction described in #290 Fase "Reconciliation transaction")
     should pass `True`.
+
+    `planning_snapshot`, when supplied, is a snapshot of the issue captured at
+    planning/claim time (any `get_details()`-shaped mapping, e.g. from
+    `capture_close_precheck_snapshot` called earlier in the run). Immediately before
+    the actual `gh issue close` call, the CURRENT issue state is re-fetched and
+    compared against it via `detect_close_source_drift` (#285's still-open gap: "não
+    exige que a fonte continue compatível com o snapshot planejado"). Any material
+    difference -- title, body, state, state_reason, labels, milestone, assignees, or a
+    new HUMAN comment posted since the snapshot (the adapter's own canonical lifecycle
+    comment is excluded, so its own progress updates never trigger a false positive) --
+    blocks the close with `reason_code: "SOURCE_CHANGED"`, fail-closed, WITHOUT ever
+    calling `gh issue close`. Omitting `planning_snapshot` (the default, `None`) skips
+    this check entirely -- existing callers that have not wired a planning-time capture
+    are unaffected, exactly like `precheck_issue_state`.
     """
+    op_id = operation_id(provider="github", repo=f"{owner}/{repo}", issue=str(issue),
+                        run_id=run_id, attempt_id=attempt_id, fencing_token=fencing_token,
+                        lifecycle_revision=lifecycle_revision, operation_kind="close")
+
     if precheck_issue_state:
         precheck = verify_issue_state(owner, repo, issue, expected_state="open",
                                       runner=runner, timeout=timeout)
         if not precheck.get("verified"):
             already_closed = precheck.get("state") == "closed"
             return {
-                "schema": LIFECYCLE_SCHEMA, "repo": f"{owner}/{repo}", "issue": str(issue),
-                "outcome": "blocked",
+                "schema": LIFECYCLE_SCHEMA, "operation_id": op_id, "repo": f"{owner}/{repo}",
+                "issue": str(issue), "outcome": "blocked",
                 "reason_code": "SOURCE_ALREADY_CLOSED" if already_closed else "SOURCE_STATE_PRECHECK_FAILED",
                 "precheck": precheck, "verified": False,
             }
@@ -984,9 +1060,16 @@ def close_source_issue(
     if require_active is not None:
         require_active()
 
-    op_id = operation_id(provider="github", repo=f"{owner}/{repo}", issue=str(issue),
-                        run_id=run_id, attempt_id=attempt_id, fencing_token=fencing_token,
-                        lifecycle_revision=lifecycle_revision, operation_kind="close")
+    if planning_snapshot is not None:
+        drift = detect_close_source_drift(owner, repo, issue, planning_snapshot,
+                                          runner=runner, timeout=timeout)
+        if drift.get("drifted"):
+            return {
+                "schema": LIFECYCLE_SCHEMA, "operation_id": op_id, "repo": f"{owner}/{repo}",
+                "issue": str(issue), "outcome": "blocked", "reason_code": "SOURCE_CHANGED",
+                "drift": drift, "verified": False,
+            }
+
     if outbox_dir is not None:
         record_pending_operation(outbox_dir, op_id, {
             "repo": f"{owner}/{repo}", "issue": str(issue), "run_id": run_id,
@@ -1077,6 +1160,8 @@ __all__ = [
     "elect_canonical_comment",
     "mark_comment_superseded",
     "reconcile_duplicate_comments",
+    "capture_close_precheck_snapshot",
+    "detect_close_source_drift",
     "lifecycle_state_for_phase_event",
     "LIFECYCLE_RECEIPT_FILENAME",
     "lifecycle_receipt_path",

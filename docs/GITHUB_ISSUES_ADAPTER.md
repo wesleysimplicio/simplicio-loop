@@ -58,13 +58,26 @@ same comment and compares the observed body hash against the expected one, produ
 
 ## 4. `close`: real `gh issue close`, fail-closed
 
-`close_source_issue(...)`: (1) `require_active()` if given; (2) the real `gh issue close --reason
-<reason>` call (structured argv, never shell interpolation) — any non-zero exit reports
-`SOURCE_CLOSE_FAILED` and stops there, no comment update, no false "closed"; (3) an immediate
-re-query confirms `state == "closed"` — if not, `SOURCE_CLOSE_UNCONFIRMED`; (4) only then does the
-canonical comment move to `CLOSED`. If steps 1–3 succeed but the final comment write cannot be
-confirmed, the outcome is `CLOSE_PENDING_RECONCILIATION` (the source **is** closed; the operation
-stays in the outbox for `reconcile()`) — never a fake clean success.
+`close_source_issue(...)`: (1) `require_active()` if given; (1.5) if a `planning_snapshot` was
+supplied, `detect_close_source_drift` re-fetches the CURRENT issue via `get_details` and compares
+it against the snapshot — any material human edit (title/body/state/labels/milestone/assignees) or
+a new HUMAN comment posted since the snapshot blocks the close with `reason_code: "SOURCE_CHANGED"`,
+fail-closed, WITHOUT ever calling `gh issue close`; (2) the real `gh issue close --reason <reason>`
+call (structured argv, never shell interpolation) — any non-zero exit reports `SOURCE_CLOSE_FAILED`
+and stops there, no comment update, no false "closed"; (3) an immediate re-query confirms
+`state == "closed"` — if not, `SOURCE_CLOSE_UNCONFIRMED`; (4) only then does the canonical comment
+move to `CLOSED`. If steps 1–3 succeed but the final comment write cannot be confirmed, the outcome
+is `CLOSE_PENDING_RECONCILIATION` (the source **is** closed; the operation stays in the outbox for
+`reconcile()`) — never a fake clean success.
+
+`planning_snapshot` may be any `get_details()`-shaped mapping (e.g. captured at claim/plan time via
+`capture_close_precheck_snapshot`) or an already-wrapped `simplicio.source-snapshot/v1` mapping.
+The comparison reuses #284's exact primitive (`source_snapshot.detect_source_drift`) rather than
+reinventing hash comparison, but is built on `get_details()`'s `source_revision` — which already
+excludes the adapter's own canonical lifecycle comment — on BOTH sides, so the comment's own
+rewrite on every lifecycle transition (CLAIMED → PLANNED → ... → CLOSING) never counts as drift.
+`planning_snapshot` defaults to `None`, so existing callers are unaffected; the CLI's
+`close --planning-snapshot <path-to-json>` wires it in.
 
 ## 5. The outbox + `reconcile`
 

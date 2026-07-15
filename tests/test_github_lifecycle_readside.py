@@ -458,6 +458,125 @@ def test_close_source_issue_reports_pending_reconciliation_when_comment_update_f
     assert receipt["outcome"] == "CLOSE_PENDING_RECONCILIATION"  # but the comment write did not confirm
 
 
+# --- close_source_issue: planning_snapshot / SOURCE_CHANGED (#285 remaining gap) --------
+
+
+def _close_runner_factory(*, issue_title="fix the thing", comments=None):
+    """Like `_fake_gh`, but also serves a `-X POST` comment create/update, so it can back
+    BOTH the `planning_snapshot`-time `get_details()` call and the full `close_source_issue`
+    flow (pre-close drift re-query, `gh issue close`, post-close re-query, comment publish)
+    with one runner. Returns `(runner, state)`; `state["closed"]` flips only once `gh issue
+    close` is actually invoked -- tests assert it stays `False` when the close was blocked."""
+    state = {"closed": False}
+    comments = list(comments or [])
+
+    def runner(cmd, **kw):
+        if cmd[:2] == ["gh", "issue"] and "close" in cmd:
+            state["closed"] = True
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3:
+            url = cmd[2]
+            if "/comments" in url and "/issues/comments/" not in url:
+                page = 1
+                for part in url.split("&"):
+                    if part.startswith("page="):
+                        page = int(part.split("=", 1)[1])
+                batch = comments if page == 1 else []
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(batch), stderr="")
+            if "/issues/comments/" in url:
+                cid = int(url.rsplit("/", 1)[-1])
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps({"id": cid, "body": getattr(runner, "body", "")}), stderr="")
+            if "/issues/" in url:
+                data = _issue_payload(title=issue_title)
+                if state["closed"]:
+                    data["state"] = "closed"
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+        if "-X" in cmd and ("POST" in cmd or "PATCH" in cmd):
+            body = json.loads(kw.get("input") or "{}").get("body", "")
+            runner.body = body  # type: ignore[attr-defined]
+            comment_id = comments[0]["id"] if ("PATCH" in cmd and comments) else 88
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"id": comment_id}), stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected: %r" % (cmd,))
+
+    return runner, state
+
+
+def test_close_source_issue_succeeds_when_planning_snapshot_matches_current_state():
+    """Nothing changed between planning/claim time and close: the close proceeds normally."""
+    runner, state = _close_runner_factory()
+    planning_snapshot = get_details("acme", "widgets", "12", runner=runner)
+
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", publish_comment_fn=publish_comment,
+                                 runner=runner, planning_snapshot=planning_snapshot)
+    assert receipt["outcome"] == "closed"
+    assert receipt["verified"] is True
+    assert state["closed"] is True
+
+
+def test_close_source_issue_blocks_with_source_changed_when_title_changed():
+    """A material human edit (title) between planning and close blocks the close with
+    SOURCE_CHANGED and `gh issue close` is never invoked."""
+    baseline_runner, _ = _close_runner_factory(issue_title="fix the thing")
+    planning_snapshot = get_details("acme", "widgets", "12", runner=baseline_runner)
+
+    close_runner, close_state = _close_runner_factory(issue_title="fix the OTHER thing entirely")
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", publish_comment_fn=publish_comment,
+                                 runner=close_runner, planning_snapshot=planning_snapshot)
+    assert receipt["outcome"] == "blocked"
+    assert receipt["reason_code"] == "SOURCE_CHANGED"
+    assert receipt["verified"] is False
+    assert receipt["drift"]["drifted"] is True
+    assert close_state["closed"] is False  # never reached `gh issue close`
+
+
+def test_close_source_issue_blocks_with_source_changed_when_new_human_comment_appears():
+    """A new HUMAN comment posted after the planning snapshot also blocks the close with
+    SOURCE_CHANGED, without ever calling `gh issue close`."""
+    baseline_runner, _ = _close_runner_factory(comments=[])
+    planning_snapshot = get_details("acme", "widgets", "12", runner=baseline_runner)
+
+    new_human_comment = {"id": 5, "user": {"login": "human-reviewer"},
+                         "body": "wait, don't close this yet", "created_at": "t"}
+    close_runner, close_state = _close_runner_factory(comments=[new_human_comment])
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", publish_comment_fn=publish_comment,
+                                 runner=close_runner, planning_snapshot=planning_snapshot)
+    assert receipt["outcome"] == "blocked"
+    assert receipt["reason_code"] == "SOURCE_CHANGED"
+    assert close_state["closed"] is False
+
+
+def test_close_source_issue_does_not_self_drift_on_its_own_canonical_comment_rewrite():
+    """The adapter's OWN canonical lifecycle comment is rewritten on every transition
+    between planning and close (CLAIMED -> PLANNED -> ... -> CLOSING) -- that must NEVER
+    look like a material human edit and block the close."""
+    baseline_runner, _ = _close_runner_factory(comments=[])
+    planning_snapshot = get_details("acme", "widgets", "12", runner=baseline_runner)
+
+    canonical_comment = {"id": 9, "user": {"login": "loop-bot"},
+                         "body": "state: IN_PROGRESS\n" + LIFECYCLE_COMMENT_MARKER, "created_at": "t"}
+    close_runner, state = _close_runner_factory(comments=[canonical_comment])
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", publish_comment_fn=publish_comment,
+                                 runner=close_runner, planning_snapshot=planning_snapshot)
+    assert receipt["outcome"] == "closed"
+    assert state["closed"] is True
+
+
+def test_close_source_issue_without_planning_snapshot_skips_the_drift_check():
+    """Omitting `planning_snapshot` (the default) is a no-op for this check -- existing
+    callers that have not wired a planning-time capture are unaffected."""
+    runner, state = _close_runner_factory(issue_title="fix the thing")
+    receipt = close_source_issue(owner="acme", repo="widgets", issue="12", run_id="run-1",
+                                 attempt_id="issue-12-1", publish_comment_fn=publish_comment,
+                                 runner=runner)
+    assert receipt["outcome"] == "closed"
+    assert state["closed"] is True
+
+
 # --- verify_issue_state (IssueStateVerifier, #290) --------------------------------------
 
 
