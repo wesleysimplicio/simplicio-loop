@@ -29,6 +29,7 @@ from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONT
                                ReceiptStatus, verify_receipt)
 from .planning_gate import content_hash as _planning_content_hash
 from .planning_gate import evaluate_mutation_authority, mutation_authority_required
+from .planning_gate import auto_planning_receipt_enabled
 from .planning_gate import build_planning_receipt as _build_planning_receipt
 from .planning_gate import publish_planning_receipt as _publish_planning_receipt
 from .work_item_claims import AttemptCoordinator, LeaseLostDuringExecution
@@ -1076,14 +1077,18 @@ def _maybe_auto_build_planning_receipt(
     of only ever being satisfiable by a caller remembering to run the separate
     ``scripts/planning_gate.py build`` CLI first.
 
-    Opt-in via ``SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT`` (default OFF) -- this is
-    intentionally NOT mandatory-by-default the way ``mutation_authority_required()``
-    is: dozens of existing tests deliberately exercise the gate's fail-closed
-    behavior with NO receipt on disk (see ``tests/planning_gate_fixtures.py``), and
-    an unconditional auto-build here would silently make every one of those runs
-    "ready", defeating the "no auto-generated fallback" guarantee documented in
-    ``planning_gate.py``. A caller that wants the real dispatch path to self-gate
-    turns this flag on explicitly; every existing run/test is unaffected when unset.
+    Mandatory-by-default via ``planning_gate.auto_planning_receipt_enabled()`` --
+    the same polarity-flip pattern ``mutation_authority_required()`` used for
+    ``SIMPLICIO_REQUIRE_MUTATION_AUTHORITY`` (#284/#360). Unset/blank now means
+    ON: every real ``arm_run()`` dispatch self-builds a matching
+    ``planning-receipt.json`` so ``execute_operator()``/``execute_operator_batch()``
+    are self-sufficient, instead of only ever being satisfiable by a caller
+    remembering to run the separate ``scripts/planning_gate.py build`` CLI first.
+    A caller that truly needs the legacy opt-in posture (or a test asserting the
+    missing-receipt fail-closed path) sets ``SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT``
+    to an explicit falsy value (``0/false/no/off/legacy``); see
+    ``tests/planning_gate_fixtures.py`` and
+    ``docs/adr/0004-planning-gate-rollout.md`` for the rollout/migration strategy.
 
     When a GitHub ``source_issue`` is present on the run state AND
     ``SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC`` is also enabled, this additionally
@@ -1098,7 +1103,7 @@ def _maybe_auto_build_planning_receipt(
     error) is logged to ``lifecycle-sync-errors.jsonl`` and swallowed, exactly like
     ``_sync_github_lifecycle()`` -- this must never abort or fail the run.
     """
-    if str(os.environ.get("SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT") or "").strip().lower() not in ("1", "true", "yes"):
+    if not auto_planning_receipt_enabled():
         return
     try:
         attempt = int((state or {}).get("attempts", 0)) + 1

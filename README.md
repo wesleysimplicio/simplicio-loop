@@ -290,6 +290,15 @@ flowchart LR
   WATCH -->|"new work"| IN
 ```
 
+**Planning gate (issue #284).** Steps 1–3 above are not just guidance — `simplicio_loop/planning_gate.py`
+makes them a fail-closed mechanical barrier between "claimed" and "mutating": every real
+`arm_run()` self-builds a `planning-receipt.json` binding run/attempt/contract/plan/lease/fence
+(and, on a GitHub source, the source-snapshot hash) into a single-use `mutation_authority` token,
+and `execute_operator()`/`execute_operator_batch()` refuse to run without a matching one. Both
+halves of the gate (`SIMPLICIO_REQUIRE_MUTATION_AUTHORITY`, `SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT`)
+are mandatory by default — see `.claude/skills/simplicio-loop/references/planning-gate.md` and
+`docs/adr/0004-planning-gate-rollout.md`.
+
 ---
 
 ## 🔁 The loop

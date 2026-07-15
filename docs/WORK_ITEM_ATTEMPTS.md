@@ -78,6 +78,18 @@ a `ready_for_mutation=True` receipt is projected onto the SAME canonical status 
 receipt without a GitHub `source` block is a documented no-op (`None`), never a fake publish.
 `scripts/planning_gate.py build --publish` drives this from the CLI.
 
+**The receipt itself is now also mandatory-by-default.** `simplicio_loop/runner.py
+::_maybe_auto_build_planning_receipt()`, wired into the real `arm_run()` dispatch path, self-builds
+`planning-receipt.json` after every plan is materialized and validated —
+`simplicio_loop.planning_gate.auto_planning_receipt_enabled()` returns `True` unless the caller
+explicitly opts out via `SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT=0|false|no|off|legacy`, mirroring
+`mutation_authority_required()`'s polarity exactly. Before this flip, the mutation-authority check
+was mandatory but nothing forced the dispatch path to ever produce a receipt for it to check — a
+caller unaware of the separate `scripts/planning_gate.py build` CLI could run `arm_run()` to
+completion with no receipt and hit the gate as an opaque failure. Now both halves are on by
+default: check `docs/adr/0004-planning-gate-rollout.md` for the rollout/migration strategy
+(what breaks, the backward-compat shims, how to opt out temporarily).
+
 Still not yet implemented: the full `simplicio.task-intake/v1` envelope (scope in/out,
 dependencies, risks, rollback, impact map), the `impact-map.json` artifact, the AC↔step↔test↔
 evidence matrix artifact, plan v2's DAG/parallelizable-step metadata, and a genuine
@@ -87,6 +99,10 @@ Tests: `tests/test_planning_gate_unit.py` (token determinism, receipt building, 
 re-verification, `mutation_authority_required()` default/opt-out matrix),
 `tests/test_planning_gate_execute_operator_integration.py` (mandatory-by-default blocks without
 a receipt, an explicit opt-out restores the old zero-gate behavior, a valid receipt allows
-execution, a drifted plan/source blocks again), and
-`tests/test_planning_gate_github_publish.py` (the receipt-to-comment wiring, fake transport, no
-real `gh`/network call).
+execution, a drifted plan/source blocks again), `tests/test_planning_gate_github_publish.py` (the
+receipt-to-comment wiring, fake transport, no real `gh`/network call),
+`tests/test_284_lifecycle_dag_idempotence.py` (auto-build mandatory-by-default vs. explicit
+opt-out, plan v2 DAG validation, crash/resume/replan idempotence), and
+`tests/test_planning_gate_live_e2e.py` (opt-in, `SIMPLICIO_LIVE_GH_E2E=1`: a REAL scratch GitHub
+issue, a real source snapshot, a real CLAIMED→PLANNED canonical-comment update, and a trivial
+guarded mutation through the real `execute_operator()` gate — no fake GitHub transport).
