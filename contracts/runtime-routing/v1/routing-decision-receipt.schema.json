@@ -12,7 +12,11 @@
     "selected",
     "blocked",
     "block_reason",
-    "timestamp"
+    "timestamp",
+    "previous_route_id",
+    "fallback_reason_code",
+    "fallback_decision",
+    "retry_backoff_seconds"
   ],
   "properties": {
     "schema": { "const": "simplicio.routing-decision-receipt/v1" },
@@ -101,6 +105,28 @@
       "description": "True iff no candidate satisfied mandatory requirements/policy; the router never silently falls back to a default."
     },
     "block_reason": { "type": "string" },
-    "timestamp": { "type": "string" }
+    "timestamp": { "type": "string" },
+    "previous_route_id": {
+      "type": "string",
+      "description": "Links this decision to the route it supersedes when produced by route_with_fallback(); empty for a first-hop decision."
+    },
+    "fallback_reason_code": {
+      "type": "string",
+      "description": "The failure reason code (e.g. timeout, rate_limited, auth_missing) that triggered this fallback hop; empty for a first-hop decision."
+    },
+    "fallback_decision": {
+      "description": "retry_same_route / fallback_route / terminal, or null for a first-hop decision.",
+      "oneOf": [
+        { "type": "null" },
+        { "enum": ["retry_same_route", "fallback_route", "terminal"] }
+      ]
+    },
+    "retry_backoff_seconds": {
+      "description": "Deterministic backoff+jitter delay before the caller should act on this receipt, or null when no backoff applies (first-hop or terminal decisions).",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "number", "minimum": 0 }
+      ]
+    }
   }
 }
