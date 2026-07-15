@@ -73,6 +73,12 @@ def main() -> int:
     parser.add_argument("--diagnostics-dir", default=None)
     parser.add_argument("--emit-json", default=None,
                         help="#283: unconditionally write the measured percentages/report paths here")
+    parser.add_argument("--tests-path", action="append", default=None,
+                        help="#283: scope the instrumented pytest run to these path(s) instead of the "
+                             "whole tests/ tree (repeatable). Used to measure a defined, fast, "
+                             "reliable subset -- e.g. quality/coverage-baseline.json's Fase A baseline "
+                             "-- instead of the full suite, which includes slow/live/e2e tests. Default "
+                             "(omitted) preserves the original full-suite behavior.")
     args = parser.parse_args()
 
     if not _coverage_available():
@@ -96,12 +102,13 @@ def main() -> int:
     os.makedirs(diagnostics_dir, exist_ok=True)
     data_file = os.path.join(diagnostics_dir, ".coverage")
 
+    tests_path = args.tests_path or ["tests/"]
     run = subprocess.run(
         [
             sys.executable, "-m", "coverage", "run",
             f"--data-file={data_file}",
             "--source=simplicio_loop,engine,scripts",
-            "-m", "pytest", "-q", "tests/",
+            "-m", "pytest", "-q", *tests_path,
         ],
         cwd=REPO,
         stdin=subprocess.DEVNULL,
@@ -138,9 +145,15 @@ def main() -> int:
         total_missing = 0
         for rel_path in critical_present:
             abs_path = os.path.join(REPO, rel_path)
-            analysis = cov._analyze(cov._get_file_reporter(abs_path))
-            total_stmts += len(analysis.statements)
-            total_missing += len(analysis.missing)
+            # #283: `Coverage.analysis2` is the PUBLIC API for per-file statement/missing-line
+            # counts (`filename, statements, excluded, missing, missing_formatted`). The private
+            # `cov._analyze(cov._get_file_reporter(...))` pair this replaced broke outright on
+            # coverage.py 7.15.x/Python 3.14 (`PythonFileReporter` became unhashable, so
+            # `_analyze`'s internal dict-keyed cache raised `TypeError` -- this crashed the gate
+            # on every invocation, before any threshold was even checked).
+            _, statements, _excluded, missing, _formatted = cov.analysis2(abs_path)
+            total_stmts += len(statements)
+            total_missing += len(missing)
         critical_pct = (
             100.0 * (total_stmts - total_missing) / total_stmts if total_stmts else 100.0
         )
@@ -165,6 +178,7 @@ def main() -> int:
             json.dump({
                 "schema": "simplicio.coverage-gate/v1",
                 "ok": not failures,
+                "tests_scope": tests_path,
                 "global_pct": round(global_pct, 4),
                 "critical_pct": round(critical_pct, 4),
                 "global_threshold": args.global_threshold,

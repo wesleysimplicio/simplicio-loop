@@ -110,14 +110,17 @@ def _save_receipt(run_dir: Path, receipt: dict) -> None:
 
 
 def cmd_populate(args: argparse.Namespace) -> int:
-    """#283: auto-populate the regression/benchmark/coverage lanes from the real gate scripts.
+    """#283: auto-populate the unit/integration/system/regression/benchmark/coverage lanes from
+    the real gate scripts.
 
-    `implementation`/`unit`/`integration`/`system` have no dedicated standalone gate script in
-    this repo (no test-category split exists yet -- see the issue's Fase B/C migration plan), so
-    those lanes are left untouched here; only the three lanes that DO have a script producing a
-    measurable, single verdict are auto-filled: regression (scripts/regression_test_gate.py),
-    benchmark (scripts/perf_gate.py), coverage (scripts/coverage_gate.py). Manual/injected values
-    for the remaining lanes are still required until a per-category test runner exists.
+    `implementation` still has no dedicated standalone gate script (it is inherently
+    change-specific -- there is no generic "did you implement it" check to run), so that lane is
+    left untouched here. Every other measurable lane now has one:
+    `scripts/test_categories.py run --category {unit,integration,system}` (the per-category
+    test-runner split -- reads the `tests/*_<category>.py` filename convention, see that script's
+    module docstring for exactly which files are and are not covered by it today),
+    regression (`scripts/regression_test_gate.py`), benchmark (`scripts/perf_gate.py`), coverage
+    (`scripts/coverage_gate.py`).
     """
     run_dir = Path(args.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +131,35 @@ def cmd_populate(args: argparse.Namespace) -> int:
     work_item = _work_item_from_args(args)
     if work_item and not receipt.get("work_item"):
         receipt["work_item"] = work_item
+
+    skip_category = {
+        "unit": args.skip_unit,
+        "integration": args.skip_integration,
+        "system": args.skip_system,
+    }
+    for category, skip in skip_category.items():
+        if skip:
+            continue
+        report_path = run_dir / f"{category}-test-gate-report.json"
+        proc = subprocess.run(
+            [sys.executable, os.path.join(HERE, "test_categories.py"),
+             "run", "--category", category, "--emit-json", str(report_path)],
+            cwd=REPO, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+        if report.get("status") == "blocked":
+            requirements[category] = {
+                "status": "blocked",
+                "proof_ref": str(report_path),
+                "detail": report.get("detail", "category has zero matching test files"),
+            }
+        else:
+            ok = proc.returncode == 0
+            requirements[category] = {
+                "status": "pass" if ok else "fail",
+                "proof_ref": str(report_path),
+                "detail": report.get("detail", "") or (proc.stdout or proc.stderr or "").strip()[-500:],
+            }
 
     if not args.skip_regression:
         report_path = run_dir / "regression-gate-report.json"
@@ -392,6 +424,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_populate.add_argument("--coverage-threshold", type=float, default=DEFAULT_COVERAGE_THRESHOLD)
     p_populate.add_argument("--change-type", choices=list(CHANGE_TYPES), default=None)
     p_populate.add_argument("--benchmark-na", default=None, help="excuse benchmark as justified NOT_APPLICABLE instead of running perf_gate.py")
+    p_populate.add_argument("--skip-unit", action="store_true")
+    p_populate.add_argument("--skip-integration", action="store_true")
+    p_populate.add_argument("--skip-system", action="store_true")
     p_populate.add_argument("--skip-regression", action="store_true")
     p_populate.add_argument("--skip-benchmark", action="store_true")
     p_populate.add_argument("--skip-coverage", action="store_true")
