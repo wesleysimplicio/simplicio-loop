@@ -35,6 +35,23 @@ script works in isolation. Nothing under the real repo checkout is mutated:
      copy: fresh venv, `--no-deps --no-index`, `PYTHONPATH` cleared, isolation + version asserted,
      `--help` actually executed.
 
+Governance gate (#294 scope item 6: "Integrar ao CI/release")
+----------------------------------------------------------------
+Before any of the above runs, this script also gates on — and snapshots — the repository's own
+size/claims governance: `scripts/repository_budget.py --check` (the blob-budget guard) and
+`scripts/claims_audit.py --only 8,13` (quantitative-claims + canonical-manifest — the "claims
+parity" checks; the OTHER claims_audit checks, e.g. the e2e-installed-toolchain probe, are
+deliberately excluded here because they gate on optional local toolchain state unrelated to
+release governance, not on the repo's own claims/size surface). Both run against the REAL repo
+checkout (not the scratch export), since `repository_budget.py` needs `git ls-files`/history that
+a `git archive` export doesn't carry, and the canonical-manifest/claims data lives in the real
+tree anyway. The rehearsal receipt's `governance` key snapshots the current measured repo size
+(`docs/repo_size_report.json`) and history-migration candidate set
+(`docs/history_migration_plan.json`) so every rehearsal run captures a size+claims snapshot, and
+`docs/REPO_SIZE_REPORT.md` + `docs/HISTORY_MIGRATION_PLAN.md` are copied alongside the checksums/
+SBOM/provenance in `dist/` — the "anexar relatório de tamanho e claims à release" requirement —
+without this script ever running a history rewrite itself.
+
 The rehearsal receipt records a Fase-8-shaped state machine —
 `planned -> built -> checksummed -> signed|sign_blocked -> sbom -> provenance -> smoke-verified`
 — and `ok` is true only if every REQUIRED link succeeded. Signing is optional/best-effort by
@@ -66,6 +83,59 @@ from version_sync import VersionSyncError, apply_version  # noqa: E402
 from provenance_generate import build_provenance  # noqa: E402
 
 SCHEMA = "simplicio.release-rehearsal/v1"
+
+
+def _load_json_text(text: str) -> Optional[Dict[str, Any]]:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _load_json_file(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        return _load_json_text(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
+def run_governance_gate(repo: Path) -> Dict[str, Any]:
+    """#294 scope item 6: gate + snapshot the repo's own size/claims governance against the REAL
+    checkout (repository_budget.py needs git history a `git archive` export doesn't carry).
+    Returns a dict with `ok` plus the two sub-results and a size/claims snapshot for the receipt.
+    """
+    here = Path(__file__).resolve().parent
+    budget_proc = subprocess.run(
+        [sys.executable, str(here / "repository_budget.py"), "--check"],
+        cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+    )
+    budget = {
+        "ok": budget_proc.returncode == 0,
+        "output": (budget_proc.stdout + budget_proc.stderr).strip(),
+    }
+
+    claims_proc = subprocess.run(
+        [sys.executable, str(here / "claims_audit.py"), "--only", "8,13", "--json"],
+        cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+    )
+    claims = _load_json_text(claims_proc.stdout) or {
+        "ok": False,
+        "results": [],
+        "error": (claims_proc.stdout + claims_proc.stderr).strip() or "claims_audit produced no JSON",
+    }
+    if claims_proc.returncode != 0 and "error" not in claims:
+        claims["ok"] = False
+
+    size_snapshot = _load_json_file(repo / "docs" / "repo_size_report.json")
+    migration_snapshot = _load_json_file(repo / "docs" / "history_migration_plan.json")
+
+    return {
+        "ok": budget["ok"] and bool(claims.get("ok")),
+        "repository_budget": budget,
+        "claims_parity": claims,
+        "size_snapshot": size_snapshot,
+        "history_migration_snapshot": migration_snapshot,
+    }
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -115,6 +185,17 @@ def run_rehearsal(
         "steps": {},
     }
     try:
+        # Step: governance gate (#294) — blob budget + claims parity, gated + snapshotted against
+        # the REAL repo checkout before anything else runs. Fail-closed: a release built on top
+        # of an over-budget tree or a claims/canonical-manifest drift never proceeds to build.
+        governance = run_governance_gate(repo)
+        receipt["governance"] = governance
+        receipt["steps"]["governance_gate"] = {"ok": governance["ok"]}
+        if not governance["ok"]:
+            receipt["ok"] = False
+            receipt["reason_code"] = "governance_gate_failed"
+            return receipt
+
         # Step: export a byte-exact scratch copy of HEAD.
         try:
             source_sha = _export_tracked_tree(repo, scratch)
@@ -167,6 +248,18 @@ def run_rehearsal(
             return receipt
         wheel_path = wheels[-1]
         receipt["state"] = "checksummed"
+
+        # Step: attach the size + history-migration governance reports to the release artifact
+        # set (#294 "anexar relatório de tamanho e claims à release") — copied from the REAL
+        # repo (governance gate already ran against it above), not the scratch export.
+        governance_reports = []
+        for report_name in ("docs/REPO_SIZE_REPORT.md", "docs/HISTORY_MIGRATION_PLAN.md"):
+            src = repo / report_name
+            if src.exists():
+                dest = dist_dir / Path(report_name).name
+                dest.write_bytes(src.read_bytes())
+                governance_reports.append(str(dest))
+        receipt["steps"]["governance_gate"]["attached_reports"] = governance_reports
 
         # Step: checksums generate + verify.
         checksums = generate_checksums(dist_dir)
