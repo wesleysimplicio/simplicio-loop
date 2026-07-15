@@ -1,5 +1,10 @@
 # Remote queue contract (`simplicio.queue/v1`)
 
+Operational runbook (starting/monitoring a worker, lease-expiry triage, the
+receipt-verification failure reason codes, and the LOCAL_ONLY/REMOTE_READY/
+REMOTE_MEASURED tri-state `scripts/doctor.py` reports): see
+[`docs/REMOTE_WORKER_RUNBOOK.md`](REMOTE_WORKER_RUNBOOK.md).
+
 The queue is the shared coordination boundary for Codex, Claude, Cursor, and
 other runtimes. A task is mutated only while its lease is valid and its
 fencing token is current. A worker that loses connectivity must pause and
