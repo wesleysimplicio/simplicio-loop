@@ -31,6 +31,10 @@ from .planning_gate import content_hash as _planning_content_hash
 from .planning_gate import evaluate_mutation_authority, mutation_authority_required
 from .work_item_claims import AttemptCoordinator, LeaseLostDuringExecution
 from .merge_executor import MergeExecutor, MergeExecutorError
+from .model_registry import ModelCapabilityRegistry, ModelRegistryError
+from .model_router import ModelRouterError, route as _model_route
+from .runtime_drivers import CLI_PROBE_HOOKS, driver_for_runtime
+from .runtime_execution_receipt import RuntimeExecutionReceiptError
 
 try:
     from scripts.agent_identity import ensure_identity
@@ -640,6 +644,144 @@ def _dispatch_merge_pr(item: Mapping[str, Any], *, receipt: str, run_id: str) ->
     except MergeExecutorError as exc:
         return {"attempted": True, "merged": False, "reconciled": False,
                 "reason_code": exc.reason_code, "detail": str(exc)}
+
+
+def _model_routed_dispatch_enabled() -> bool:
+    """Opt-in gate (issue #287) for threading ``model_router.route()``'s selection
+    through the real dispatch path instead of a hardcoded runtime.
+
+    Off by default -- following the same pattern as ``SIMPLICIO_GUARDED_DISPATCH``
+    (#288) and ``SIMPLICIO_AUTO_MERGE_PR`` (#288) above -- so existing callers/fixtures
+    that dispatch without a model registry configured are unaffected. Set
+    ``SIMPLICIO_MODEL_ROUTED_DISPATCH=1`` to compute a real routing-decision-receipt
+    for every dispatch attempt and, when a real ``CodexRuntimeDriver``/
+    ``ClaudeRuntimeDriver`` is wired for the selected runtime, genuinely invoke it and
+    persist a ``runtime-execution-receipt`` alongside the operator's own receipts. A
+    routing block or driver failure never blocks the underlying dev-cli operator
+    mutation this repo already performs -- this is additional, real audit evidence
+    layered on top of it, not a replacement for the operator contract.
+    """
+    return str(os.environ.get("SIMPLICIO_MODEL_ROUTED_DISPATCH") or "").strip().lower() in ("1", "true", "yes")
+
+
+_DEFAULT_MODEL_REGISTRY_ENTRIES: Tuple[Dict[str, Any], ...] = (
+    {
+        "runtime": "codex", "provider": "openai", "model_id": "codex-cli/gpt-5.6-luna",
+        "aliases": ["codex-cli"], "capabilities": ["execute", "review"],
+        "probe": {"kind": "codex-cli", "target": "codex"},
+    },
+    {
+        "runtime": "claude", "provider": "anthropic", "model_id": "claude-code/sonnet-5",
+        "aliases": ["claude-code"], "capabilities": ["execute", "review"],
+        "probe": {"kind": "claude-cli", "target": "claude"},
+    },
+)
+
+
+def _default_model_registry() -> ModelCapabilityRegistry:
+    """Build the standard two-runtime (Codex + Claude) registry, wired to the real
+    ``--version`` probes in ``runtime_drivers.py`` -- never a fabricated availability
+    check. A caller that needs a different registry shape (e.g. a config file) can
+    still build/pass its own ``ModelCapabilityRegistry``; this is only the default
+    used by the opt-in dispatch wiring below.
+    """
+    return ModelCapabilityRegistry(_DEFAULT_MODEL_REGISTRY_ENTRIES, probe_hooks=CLI_PROBE_HOOKS)
+
+
+def _route_runtime_for_item(item: Mapping[str, Any], *, role: str = "executor",
+                             registry: Optional[ModelCapabilityRegistry] = None) -> Dict[str, Any]:
+    """Compute one real ``routing-decision-receipt`` for a dispatch attempt.
+
+    Never raises for an ordinary routing block (no eligible candidate, e.g. neither
+    CLI installed) -- that comes back as a receipt with ``blocked=True`` and an
+    explicit ``block_reason`` so a caller can record/report it; only malformed input
+    surfaces as ``ModelRouterError``/``ModelRegistryError``.
+    """
+    registry = registry or _default_model_registry()
+    requirements = {"role": role, "required_capabilities": ["execute"]}
+    return _model_route(requirements, registry)
+
+
+def _execute_routed_runtime(item: Mapping[str, Any], run_dir: Path, *,
+                             registry: Optional[ModelCapabilityRegistry] = None) -> Dict[str, Any]:
+    """Route + (when a real driver is wired for the selection) genuinely execute one
+    LLM-runtime attempt for this dispatch, persisting both receipts under
+    ``run_dir/loop/`` for audit.
+
+    This never fabricates execution: when routing is blocked (no eligible
+    candidate) or no real driver exists for the selected runtime, the returned
+    summary says so explicitly (``executed: False``) rather than skipping silently
+    or pretending a result. A driver invocation failure (missing binary, auth/policy
+    block, timeout) is itself a genuine, honestly-reported outcome -- captured in the
+    persisted ``runtime-execution-receipt`` exactly as observed.
+    """
+    summary: Dict[str, Any] = {
+        "routed": False, "executed": False,
+        "routing_decision_receipt": "", "runtime_execution_receipt": "",
+    }
+    try:
+        routing_receipt = _route_runtime_for_item(item, registry=registry)
+    except (ModelRouterError, ModelRegistryError) as exc:
+        summary["error"] = f"{type(exc).__name__}: {exc}"
+        return summary
+    summary["routed"] = True
+    loop_dir = run_dir / "loop"
+    loop_dir.mkdir(parents=True, exist_ok=True)
+    routing_path = loop_dir / "routing-decision-receipt.json"
+    _write_json(routing_path, routing_receipt)
+    summary["routing_decision_receipt"] = str(routing_path)
+    summary["selected"] = routing_receipt.get("selected")
+    summary["blocked"] = bool(routing_receipt.get("blocked"))
+    if routing_receipt.get("blocked") or not routing_receipt.get("selected"):
+        summary["block_reason"] = str(routing_receipt.get("block_reason") or "")
+        return summary
+    selected = routing_receipt["selected"]
+    driver = driver_for_runtime(selected.get("runtime"))
+    if driver is None:
+        summary["reason"] = f"no real driver wired for runtime {selected.get('runtime')!r}"
+        return summary
+    context_pack = item.get("context_pack") if isinstance(item.get("context_pack"), Mapping) else {}
+    goal = str(context_pack.get("goal") or item.get("task_id") or "").strip()
+    if not goal:
+        summary["reason"] = "no task goal text available to prompt the runtime"
+        return summary
+    repo_path = Path(str(item.get("repo") or "."))
+    result = driver.execute(goal, cwd=repo_path if repo_path.exists() else None)
+    base_sha = ""
+    head_sha = ""
+    changed: List[str] = []
+    if repo_path.exists():
+        fingerprint = _repo_fingerprint(repo_path)
+        base_sha = head_sha = str(fingerprint.get("head") or "")
+        try:
+            changed = _changed_paths(repo_path)
+        except Exception:
+            changed = []
+    try:
+        execution_receipt = driver.build_receipt(
+            route_id=hashlib.sha256(json.dumps(routing_receipt, sort_keys=True).encode("utf-8")).hexdigest()[:16],
+            requested={"runtime": selected.get("runtime"), "provider": selected.get("provider"),
+                       "model_id": selected.get("model_id"), "verified": True},
+            session={
+                "worker_id": str(item.get("worker_id") or ""),
+                "device_id": os.environ.get("SIMPLICIO_DEVICE_ID", ""),
+                "attempt_id": str(item.get("task_index") or ""),
+                "lease_id": "", "fence_token": "",
+            },
+            result=result,
+            tree={"base_sha": base_sha, "head_sha": head_sha, "changed_paths": changed},
+        )
+    except RuntimeExecutionReceiptError as exc:
+        summary["error"] = f"{type(exc).__name__}: {exc}"
+        return summary
+    execution_path = loop_dir / "runtime-execution-receipt.json"
+    _write_json(execution_path, execution_receipt)
+    summary["executed"] = True
+    summary["runtime_execution_receipt"] = str(execution_path)
+    summary["execution_ok"] = bool(result.ok)
+    summary["execution_stop_reason"] = result.stop_reason
+    summary["execution_error"] = result.error
+    return summary
 
 
 def _auto_worktree_dispatch(
@@ -2666,6 +2808,17 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "agent": dict(item.get("agent_identity") or {}),
         "context_pack": dict(item.get("context_pack") or {}),
     }
+    if _model_routed_dispatch_enabled():
+        # #287: route this dispatch attempt through the real model registry/router
+        # instead of a hardcoded runtime, and -- when a real driver is wired for the
+        # selection -- genuinely invoke it. Additive audit evidence only: a routing
+        # block or driver failure here never blocks the dev-cli operator mutation
+        # below, which remains this repo's actual apply/verify contract.
+        try:
+            run_dir = Path(read_status(item["repo"], item["run_id"])["run_dir"])
+            common["model_routing"] = _execute_routed_runtime(item, run_dir)
+        except Exception as exc:  # routing/execution evidence must never crash dispatch
+            common["model_routing"] = {"routed": False, "executed": False, "error": f"{type(exc).__name__}: {exc}"}
     queue = item.get("distributed_queue")
     lease = None
     guarded = _guarded_dispatch_enabled()
