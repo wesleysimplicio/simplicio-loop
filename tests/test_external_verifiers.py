@@ -340,3 +340,180 @@ def test_git_is_ancestor_real_local_repo_proves_ancestry():
         pytest.skip("not enough git history in this checkout")
     result = ev.git_is_ancestor(repo_root, parent.stdout.strip(), head.stdout.strip())
     assert result == {"ok": True, "reachable": True, "reason_code": None}
+
+
+# ---------------------------------------------------------------------------
+# retry_transient (#290 fault-injection: transient GitHub API failure retries,
+# a real negative fact never gets retried into a false PASS)
+# ---------------------------------------------------------------------------
+
+def test_retry_transient_succeeds_after_n_transient_failures():
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return {"ok": False, "reason_code": "default_branch_query_failed"}
+        return {"ok": True, "default_branch": "main"}
+
+    result = ev.retry_transient(flaky, attempts=5, backoff=0, sleep=lambda s: None)
+    assert result == {"ok": True, "default_branch": "main"}
+    assert calls["n"] == 3
+
+
+def test_retry_transient_exhausts_budget_and_stays_unverified():
+    calls = {"n": 0}
+
+    def always_flaky():
+        calls["n"] += 1
+        return {"ok": False, "reason_code": "compare_query_failed"}
+
+    result = ev.retry_transient(always_flaky, attempts=3, backoff=0, sleep=lambda s: None)
+    assert result["ok"] is False
+    assert result["reason_code"] == "compare_query_failed"
+    assert calls["n"] == 3
+
+
+def test_retry_transient_never_retries_a_real_negative_verdict():
+    """A real observed fact (e.g. commit not reachable) is not a transport failure -- it must
+    come back on the very first attempt, never retried into a different, possibly favorable,
+    outcome."""
+    calls = {"n": 0}
+
+    def real_fail():
+        calls["n"] += 1
+        return {"ok": True, "reachable": False, "reason_code": "merge_commit_not_reachable"}
+
+    result = ev.retry_transient(real_fail, attempts=5, backoff=0, sleep=lambda s: None)
+    assert result == {"ok": True, "reachable": False, "reason_code": "merge_commit_not_reachable"}
+    assert calls["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# resolve_release_commit
+# ---------------------------------------------------------------------------
+
+def test_resolve_release_commit_parses_real_shape(monkeypatch):
+    monkeypatch.setattr(ev, "_run", lambda args, cwd=None, timeout=180: _fake_completed(
+        stdout=json.dumps({"target_commitish": "deadbeef", "draft": False, "prerelease": False})))
+    result = ev.resolve_release_commit("acme/widgets", "v1.0.0")
+    assert result == {"ok": True, "target_commitish": "deadbeef", "draft": False, "prerelease": False}
+
+
+def test_resolve_release_commit_fails_closed_on_transport_error(monkeypatch):
+    monkeypatch.setattr(ev, "_run", lambda args, cwd=None, timeout=180:
+                        _fake_completed(returncode=1, stderr="HTTP 404"))
+    result = ev.resolve_release_commit("acme/widgets", "v1.0.0")
+    assert result["ok"] is False
+    assert result["reason_code"] == "deployment_release_query_failed"
+
+
+def test_resolve_release_commit_fails_closed_on_malformed_json(monkeypatch):
+    monkeypatch.setattr(ev, "_run", lambda args, cwd=None, timeout=180: _fake_completed(stdout="not json"))
+    result = ev.resolve_release_commit("acme/widgets", "v1.0.0")
+    assert result["ok"] is False
+    assert result["reason_code"] == "deployment_release_response_malformed"
+
+
+# ---------------------------------------------------------------------------
+# DeploymentVerifier (#290 Fase 5) — composes ReleaseArtifactVerifier + InstallSmokeVerifier
+# with BranchReachabilityVerifier to represent "deployed" as "installable from the
+# reachability-proven, byte-verified release artifact".
+# ---------------------------------------------------------------------------
+
+def test_deployment_verifier_missing_environment_fails_closed():
+    result = ev.DeploymentVerifier().verify("acme/widgets", "v1.0.0", "")
+    assert result["ok"] is False
+    assert result["reason_code"] == "deployment_environment_missing"
+
+
+def test_deployment_verifier_release_query_failure_fails_closed(monkeypatch):
+    monkeypatch.setattr(ev, "resolve_release_commit",
+                        lambda repo, tag: {"ok": False, "reason_code": "deployment_release_query_failed"})
+    result = ev.DeploymentVerifier().verify("acme/widgets", "v1.0.0", "prod")
+    assert result["ok"] is False
+    assert result["reason_code"] == "deployment_release_query_failed"
+
+
+def test_deployment_verifier_draft_release_blocks(monkeypatch):
+    monkeypatch.setattr(ev, "resolve_release_commit",
+                        lambda repo, tag: {"ok": True, "target_commitish": "deadbeef", "draft": True, "prerelease": False})
+    result = ev.DeploymentVerifier().verify("acme/widgets", "v1.0.0", "prod")
+    assert result["ok"] is False
+    assert result["reason_code"] == "deployment_release_not_promotable"
+
+
+def test_deployment_verifier_commit_mismatch_blocks(monkeypatch):
+    monkeypatch.setattr(ev, "resolve_release_commit",
+                        lambda repo, tag: {"ok": True, "target_commitish": "deadbeef", "draft": False, "prerelease": False})
+    result = ev.DeploymentVerifier().verify("acme/widgets", "v1.0.0", "prod", expected_commit_sha="cafebabe")
+    assert result["ok"] is False
+    assert result["reason_code"] == "deployment_commit_mismatch"
+
+
+def test_deployment_verifier_unreachable_commit_blocks(monkeypatch):
+    monkeypatch.setattr(ev, "resolve_release_commit",
+                        lambda repo, tag: {"ok": True, "target_commitish": "deadbeef", "draft": False, "prerelease": False})
+    monkeypatch.setattr(ev, "verify_branch_reachability",
+                        lambda repo, sha, **kw: {"ok": True, "reachable": False, "reason_code": "merge_commit_not_reachable"})
+    result = ev.DeploymentVerifier().verify("acme/widgets", "v1.0.0", "prod")
+    assert result["ok"] is False
+    assert result["reason_code"] == "merge_commit_not_reachable"
+
+
+def test_deployment_verifier_unverified_artifact_blocks(tmp_path, monkeypatch):
+    monkeypatch.setattr(ev, "resolve_release_commit",
+                        lambda repo, tag: {"ok": True, "target_commitish": "deadbeef", "draft": False, "prerelease": False})
+    monkeypatch.setattr(ev, "verify_branch_reachability",
+                        lambda repo, sha, **kw: {"ok": True, "reachable": True, "reason_code": None})
+    monkeypatch.setattr(ev, "verify_release_artifacts", lambda repo, tag, names, workdir=None: {
+        "checksums_verified": False, "checksum_reason_code": "checksum_manifest_absent",
+        "signatures_verified": False, "sbom_present": False, "digests": {}, "assets_verified": [],
+    })
+    result = ev.DeploymentVerifier(workdir=str(tmp_path)).verify("acme/widgets", "v1.0.0", "prod")
+    assert result["ok"] is False
+    assert result["reason_code"] == "checksum_manifest_absent"
+
+
+def test_deployment_verifier_all_dimensions_pass_reports_deployed(tmp_path, monkeypatch):
+    wheel = tmp_path / "pkg-1.0.0-py3-none-any.whl"
+    wheel.write_bytes(b"real wheel bytes")
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    monkeypatch.setattr(ev, "resolve_release_commit",
+                        lambda repo, tag: {"ok": True, "target_commitish": "deadbeef", "draft": False, "prerelease": False})
+    monkeypatch.setattr(ev, "verify_branch_reachability",
+                        lambda repo, sha, **kw: {"ok": True, "reachable": True, "reason_code": None})
+    monkeypatch.setattr(ev, "verify_release_artifacts", lambda repo, tag, names, workdir=None: {
+        "checksums_verified": True, "signatures_verified": True, "sbom_present": True,
+        "digests": {wheel.name: digest}, "assets_verified": [wheel.name],
+    })
+    monkeypatch.setattr(ev, "run_install_smoke", lambda path, module_name="simplicio_loop":
+                        {"passed": True, "reason_code": None, "version": "1.0.0"})
+    result = ev.DeploymentVerifier(workdir=str(tmp_path)).verify("acme/widgets", "v1.0.0", "prod")
+    assert result["ok"] is True
+    assert result["environment"] == "prod"
+    assert result["commit_sha"] == "deadbeef"
+    assert result["artifact_digest"] == digest
+    assert result["smoke"]["passed"] is True
+    assert result["reason_code"] is None
+    assert result["verified_at"]
+
+
+def test_deployment_verifier_smoke_failure_reports_not_deployed(tmp_path, monkeypatch):
+    wheel = tmp_path / "pkg-1.0.0-py3-none-any.whl"
+    wheel.write_bytes(b"real wheel bytes")
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    monkeypatch.setattr(ev, "resolve_release_commit",
+                        lambda repo, tag: {"ok": True, "target_commitish": "deadbeef", "draft": False, "prerelease": False})
+    monkeypatch.setattr(ev, "verify_branch_reachability",
+                        lambda repo, sha, **kw: {"ok": True, "reachable": True, "reason_code": None})
+    monkeypatch.setattr(ev, "verify_release_artifacts", lambda repo, tag, names, workdir=None: {
+        "checksums_verified": True, "signatures_verified": True, "sbom_present": True,
+        "digests": {wheel.name: digest}, "assets_verified": [wheel.name],
+    })
+    monkeypatch.setattr(ev, "run_install_smoke", lambda path, module_name="simplicio_loop":
+                        {"passed": False, "reason_code": "import_smoke_failed"})
+    result = ev.DeploymentVerifier(workdir=str(tmp_path)).verify("acme/widgets", "v1.0.0", "prod")
+    assert result["ok"] is False
+    assert result["smoke"]["passed"] is False
+    assert result["reason_code"] == "import_smoke_failed"

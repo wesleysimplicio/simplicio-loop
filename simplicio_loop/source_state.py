@@ -179,9 +179,24 @@ def _should_verify_release_artifacts(target_state: str, verify_artifacts: bool |
     return target_state in ("released", "deployed")
 
 
+def _should_verify_deployment(target_state: str, verify_deployment: bool | None) -> bool:
+    if verify_deployment is not None:
+        return verify_deployment
+    override = os.environ.get("SIMPLICIO_LOOP_VERIFY_DEPLOYMENT", "").strip().lower()
+    if override:
+        return override not in ("0", "false", "no")
+    # #290 Fase 5 — the deployment verifier (release reachability + byte verification +
+    # install smoke against the downloaded bytes) only runs when the caller is actually
+    # trying to promote to `deployed`; every earlier target stays fast and never pays this
+    # cost.
+    return target_state == "deployed"
+
+
 def github_delivery_payload(repo: str, pr: int | None = None, tag: str = "", target_state: str = "",
                             verify_artifacts: bool | None = None,
-                            verify_reachability: bool | None = None) -> Dict[str, Any]:
+                            verify_reachability: bool | None = None,
+                            environment: str = "",
+                            verify_deployment: bool | None = None) -> Dict[str, Any]:
     fixture = _fixture_payload("SIMPLICIO_LOOP_GITHUB_FIXTURE_JSON")
     if fixture is not None:
         fixture.setdefault("source_query", {
@@ -190,6 +205,7 @@ def github_delivery_payload(repo: str, pr: int | None = None, tag: str = "", tar
             "pr": pr,
             "tag": tag,
             "target_state": target_state,
+            "environment": environment,
             "mode": "fixture",
         })
         return fixture
@@ -200,6 +216,7 @@ def github_delivery_payload(repo: str, pr: int | None = None, tag: str = "", tar
         "pr": pr,
         "tag": tag,
         "target_state": target_state,
+        "environment": environment,
         "mode": "live",
     }
     if pr is not None:
@@ -329,4 +346,36 @@ def github_delivery_payload(repo: str, pr: int | None = None, tag: str = "", tar
             else:
                 payload["release"].pop("verification_reason_code", None)
             payload["install_smoke"] = verify_result["install_smoke"]
+        # #290 Fase 5 — `deployment` used to be caller-supplied only: an adapter or test could
+        # simply hand in `{"environment": "prod", "smoke": {"passed": True}}` and
+        # `infer_github_delivery_state` would trust it as "deployed" with zero live proof. By
+        # default this stays fail-closed (`deployed_unqueried`) unless the caller actually asks
+        # for the `DeploymentVerifier` to run (`target_state="deployed"`, `environment=` set, or
+        # `verify_deployment=True` / `SIMPLICIO_LOOP_VERIFY_DEPLOYMENT=1`). When it runs, it
+        # composes the same byte-level `verify_release_artifacts`/`run_install_smoke` used by
+        # `released` — "deployed" for a package repo means "installable from the published,
+        # reachability-proven artifact", not a fabricated boolean.
+        payload["deployment"] = {
+            "environment": environment,
+            "verified_at": None,
+            "smoke": {"passed": False, "reason_code": "deployment_unqueried"},
+            "reason_code": "deployment_unverified",
+        }
+        if environment and _should_verify_deployment(target_state, verify_deployment):
+            from .external_verifiers import DeploymentVerifier
+            merge_commit_sha = ((payload.get("merge") or {}).get("commit_sha")) or None
+            deployment_result = DeploymentVerifier().verify(
+                repo, rel.get("tagName", tag), environment,
+                asset_names=asset_names, expected_commit_sha=merge_commit_sha,
+            )
+            payload["deployment"] = {
+                "environment": deployment_result.get("environment", environment),
+                "commit_sha": deployment_result.get("commit_sha"),
+                "artifact_digest": deployment_result.get("artifact_digest"),
+                "verified_at": deployment_result.get("verified_at"),
+                "smoke": deployment_result.get("smoke", {"passed": False, "reason_code": "deployment_unqueried"}),
+                "evidence": deployment_result.get("evidence", "external-verifiers-deployment-install-smoke"),
+            }
+            if not deployment_result.get("ok"):
+                payload["deployment"]["reason_code"] = deployment_result.get("reason_code", "deployment_unverified")
     return payload
