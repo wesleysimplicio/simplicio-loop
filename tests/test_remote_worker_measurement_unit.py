@@ -129,4 +129,4 @@ def test_cli_record_physical_tier_requires_note():
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module
-    run_module(globals(), "test_remote_worker_measurement")
+    run_module(globals(), "test_remote_worker_measurement_unit")

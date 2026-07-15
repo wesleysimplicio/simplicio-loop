@@ -27,7 +27,7 @@ from simplicio_loop.planning_gate import (
     replan_on_drift,
 )
 
-from tests.test_runner_cli import _arm_deterministic_preflight_fixture
+from tests.test_runner_cli_integration import _arm_deterministic_preflight_fixture
 
 AUTO_FLAG = "SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT"
 

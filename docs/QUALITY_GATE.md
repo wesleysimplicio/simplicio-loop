@@ -48,45 +48,62 @@ so a claimed `pass` in any of these lanes is independently re-executed, not just
 self-reported string.
 
 **How categorization works, honestly:** the script reads the **existing** filename convention —
-`tests/test_*_unit.py`, `_integration.py`, `_system.py`, `_regression.py` — 21 files out of the
-~190 in `tests/` follow it today. Every other file is reported as `uncategorized`
-(`test_categories.py list --category uncategorized`), not silently folded into one of the four
-buckets. An earlier draft of this tool tried keyword-matching (`pytest -k unit`) against the
-whole test-name corpus instead; that was dropped because it is unreliable — it sweeps in
-unrelated tests whose *name* happens to contain the substring, including slow/live/e2e tests that
-hang for minutes. Only the deliberate suffix convention is treated as ground truth.
+`tests/test_*_unit.py`, `_integration.py`, `_system.py`, `_regression.py`. As of this PR **all 189**
+files in `tests/` follow it (0 `uncategorized`): 76 `unit`, 69 `integration`, 37 `system`, 7
+`regression`. Every file was renamed by actually reading its docstring, imports, and
+subprocess/network usage — never guessed from its old name or swept in by keyword-matching test
+names. An earlier draft of this tool tried exactly that (`pytest -k unit` against the whole
+test-name corpus) and it was dropped because it is unreliable — it sweeps in unrelated tests whose
+*name* happens to contain the substring, including slow/live/e2e tests that hang for minutes.
+Only the deliberate suffix convention (now complete) is treated as ground truth; renaming to it is
+what this PR did for the ~165 files that didn't yet have a suffix. `list --category uncategorized`
+still exists and still reports honestly — it now returns nothing, and will again the moment a new
+test file is added without a suffix.
 
-**What this does NOT claim:** it does not classify the other ~165 test files into a category.
-Growing the `_unit.py`/`_integration.py`/`_system.py`/`_regression.py`-suffixed set (renaming or
-splitting existing files) is future work, tracked as part of the coverage migration below —
-category coverage and line coverage are the same kind of debt.
+**What this now means for coverage (Fase B):** with the convention complete, `unit`/`integration`
+gained ~50 additional subprocess-free files that are fast enough to add to a measured coverage
+scope without hitting the environment's live-test-hang/`WinError 6` issues (see § 3 below) — the
+65-file scope `quality/coverage-baseline.json` now measures. The 37 `system` files (real
+multi-process concurrency, live `gh`/GitHub e2e gated behind env vars, full-stack install/CI
+black-box tests) are exactly the slice Fase A/B's scope rationale excludes for environment
+reasons, not because they're uncategorized anymore — they are categorized, just not yet safe to
+run unattended under coverage instrumentation in this sandboxed shell.
 
 ## 3. Coverage baseline and migration (issue's Fase A–D plan)
 
-**Fase A (done, this PR):** a real, measured baseline exists at
+**Fase A (done, PR #401):** a real, measured baseline was recorded at
 [`quality/coverage-baseline.json`](../quality/coverage-baseline.json) — produced by
-`scripts/coverage_gate.py`, not invented. It measures a **defined critical subset**: the same 21
-files the per-category split above formalizes (`unit`+`integration`+`system`+`regression`), plus
-whichever `CRITICAL_MODULES` (see `scripts/coverage_gate.py`) those files happen to exercise. The
-full `tests/` tree (~1700 tests, including live/e2e/network-touching suites) was not used for the
-baseline: in this repo's sandboxed CI-equivalent shell, running the whole suite under coverage
-instrumentation intermittently hangs (some live/e2e tests wait on external state) well past a
-reasonable local-gate budget. `scripts/coverage_gate.py` gained a `--tests-path` flag (repeatable)
-specifically so a defined subset like this can be measured reproducibly instead of only ever
-running full-or-nothing; the flag defaults to `tests/` (the full tree) when omitted, so existing
-`--tests-path`-less invocations (CI, `scripts/check.py`) are unaffected.
+`scripts/coverage_gate.py`, not invented: 16.60% global / 9.40% critical over the 21 files the
+per-category split formalized at the time. `scripts/coverage_gate.py` gained a `--tests-path` flag
+(repeatable) specifically so a defined subset like this can be measured reproducibly instead of
+only ever running full-or-nothing; the flag defaults to `tests/` (the full tree) when omitted, so
+existing `--tests-path`-less invocations (CI, `scripts/check.py`) are unaffected. That number is
+preserved in the baseline file under `previous_baseline` for an honest before/after.
 
-The measured numbers (16.60% global / 9.40% critical over that 21-file scope — see the file for
-the full detail) are an honest under-estimate of the repo's real coverage, not a claim about the
-whole codebase: only 21 of ~190 test files were exercised. `coverage_gate.py` does not yet compare
-a fresh run against this baseline automatically (no `--baseline-file` flag) — it only checks the
-fixed `--global-threshold`/`--critical-threshold` CLI flags. Wiring that comparison is Fase B/C
-work (see below), deliberately not bundled into "record a real number" in this PR.
+**Fase B (in progress, this PR):** the categorization convention (§2 above) is now 100% complete —
+0 of 189 files uncategorized, up from 165. That let the measured coverage scope widen from 21 to
+**65** files (every `unit`/`integration` file that makes no subprocess call and touches no live
+network/multi-process concurrency), re-measured with the same `scripts/coverage_gate.py`:
 
-**Fase B (not yet started):** raise coverage module-by-module, remove temporary exclusions, add
-tests for modules with clear gaps. Not attempted in this PR — the issue's own text frames this as
-follow-on work, not a Fase A deliverable, and doing it well requires reading each undercovered
-module rather than mechanically padding a number.
+- **global coverage: 16.60% -> 28.45%**
+- **critical coverage: 9.40% -> 24.02%**
+- all 757 tests in the new scope pass (`test_suite_returncode: 0`)
+
+The full `tests/` tree (189 files, ~1775 tests, including live/e2e/network-touching suites) was
+still NOT used for this baseline: in this repo's sandboxed CI-equivalent shell, running the newly
+`system`-tagged files (real multi-process concurrency, live `gh` e2e, full install black-box
+tests) and a handful of subprocess-heavy `integration` files under coverage instrumentation still
+intermittently hangs (some wait on external state) or hits a Windows-sandbox-specific `WinError 6`
+— both pre-existing environment limitations documented in Fase A, unchanged by this PR. The
+measured numbers are still an honest under-estimate, not a claim about the whole codebase — 65 of
+189 test files were exercised, chosen the same defined-subset-with-a-stated-rationale way Fase A
+chose its 21. `coverage_gate.py` still does not compare a fresh run against this baseline file
+automatically (no `--baseline-file` flag); wiring that comparison remains Fase B/C follow-up.
+
+Genuinely still open for Fase B: the remaining 124 categorized-but-out-of-scope files (mostly
+`system`) still need a safe way to be folded into a measured scope (or an explicit, separate
+"system coverage" measurement), and modules with clear line-coverage gaps still need new tests —
+neither is claimed done by this PR.
 
 **Fase C (blocked, not by this repo):** `fail_under = 85` globally requires a fast, reliable
 full-suite coverage run. That is blocked today by two things this PR found and only partially

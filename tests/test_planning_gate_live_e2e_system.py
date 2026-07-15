@@ -52,7 +52,7 @@ from simplicio_loop import planning_gate  # noqa: E402
 from simplicio_loop import runner as runner_mod  # noqa: E402
 from simplicio_loop.source_snapshot import capture_github_issue_snapshot  # noqa: E402
 
-from tests.test_runner_cli import _arm_deterministic_preflight_fixture  # noqa: E402
+from tests.test_runner_cli_integration import _arm_deterministic_preflight_fixture  # noqa: E402
 
 LIVE_REPO = os.environ.get("SIMPLICIO_LIVE_GH_REPO", "wesleysimplicio/simplicio-loop")
 

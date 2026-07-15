@@ -115,7 +115,7 @@ def run_tests(only_core=False):
     if not os.path.isdir(tests_dir):
         print("no tests/ dir — skipping")
         return True
-    # `tests/test_system_check.py` exercises this wrapper by spawning `scripts/check.py`
+    # `tests/test_system_check_system.py` exercises this wrapper by spawning `scripts/check.py`
     # again. When this wrapper itself is already the active top-level gate, propagate the
     # nested guard so those tests do not recursively ask for another full `--tests-only`
     # or no-flags gate inside the same run. The cheaper system variants still run.

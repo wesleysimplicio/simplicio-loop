@@ -12,7 +12,7 @@ measured watcher pass lets it through, and with the flag off (default) behavior 
 import json
 
 from simplicio_loop import runner as runner_mod
-from tests.test_dispatch_merge_wiring import (
+from tests.test_dispatch_merge_wiring_integration import (
     IDENTITY,
     _arm_fixture,
     _built_context_pack,

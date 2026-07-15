@@ -322,7 +322,7 @@ def hop_verify(store, item, out_dir):
     # needs dev-cli#88 (not shipped), so this is the honest state, not a rubber stamp.
     marks = [
         ("AC1", "done", "scripts/e2e_demo.py selftest; registered in claims_audit.py "
-                        "SELFTEST_SCRIPTS + tests/test_worker_selftests.py"),
+                        "SELFTEST_SCRIPTS + tests/test_worker_selftests_system.py"),
         ("AC2", "done", ".orchestrator/savings/e2e-demo-events.jsonl (4 records, one per hop)"),
         ("AC3", "done", ".orchestrator/savings/e2e-demo.md"),
         ("AC4", "partial", "local TOON-vs-JSON stand-in attached (EDIT hop note); the live "

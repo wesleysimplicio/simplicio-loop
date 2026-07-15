@@ -51,7 +51,7 @@ STEP_ORDER = ("reconcile", "skills", "hooks", "scripts", "entry", "claude_settin
 
 # Steps that ONLY apply to `full-stack` mode — every other mode (minimal/runtime/ci) gets exactly
 # the same file surface as before this mode support was added, proven by
-# tests/test_install_transaction.py::test_non_full_stack_modes_never_touch_engine_or_app.
+# tests/test_install_transaction_unit.py::test_non_full_stack_modes_never_touch_engine_or_app.
 FULL_STACK_ONLY_STEPS = ("full_stack",)
 
 # The install_services.py worker this module drives for the "service" step. Imported
