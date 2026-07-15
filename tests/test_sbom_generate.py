@@ -73,6 +73,21 @@ def test_cli_generate_exits_zero_on_repo_root():
     assert payload["ci_attested"] is False
 
 
+def test_build_sbom_accepts_explicit_source_sha_for_git_less_export(tmp_path):
+    # scripts/release_rehearsal.py builds from a `git archive` export with no `.git` directory —
+    # build_sbom must still link the SBOM to the real commit via an explicit override rather than
+    # silently falling back to an unresolved source_sha because `git rev-parse` has nothing to run
+    # against in that directory (#292 Fase 6 rehearsal).
+    repo = tmp_path / "no_git_repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "1.2.3"\ndependencies = []\n', encoding="utf-8",
+    )
+    sbom = build_sbom(repo, source_sha="deadbeef" * 5)
+    assert sbom["source_sha"] == "deadbeef" * 5
+    assert sbom["ok"] is True
+
+
 def test_cli_generate_fails_on_missing_artifact(tmp_path):
     result = subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts" / "sbom_generate.py"), "--repo", str(REPO_ROOT),

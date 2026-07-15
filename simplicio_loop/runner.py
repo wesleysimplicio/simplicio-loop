@@ -31,6 +31,10 @@ from .planning_gate import content_hash as _planning_content_hash
 from .planning_gate import evaluate_mutation_authority, mutation_authority_required
 from .work_item_claims import AttemptCoordinator, LeaseLostDuringExecution
 from .merge_executor import MergeExecutor, MergeExecutorError
+from .model_registry import ModelCapabilityRegistry, ModelRegistryError
+from .model_router import ModelRouterError, route as _model_route
+from .runtime_drivers import CLI_PROBE_HOOKS, driver_for_runtime
+from .runtime_execution_receipt import RuntimeExecutionReceiptError
 
 try:
     from scripts.agent_identity import ensure_identity
@@ -640,6 +644,144 @@ def _dispatch_merge_pr(item: Mapping[str, Any], *, receipt: str, run_id: str) ->
     except MergeExecutorError as exc:
         return {"attempted": True, "merged": False, "reconciled": False,
                 "reason_code": exc.reason_code, "detail": str(exc)}
+
+
+def _model_routed_dispatch_enabled() -> bool:
+    """Opt-in gate (issue #287) for threading ``model_router.route()``'s selection
+    through the real dispatch path instead of a hardcoded runtime.
+
+    Off by default -- following the same pattern as ``SIMPLICIO_GUARDED_DISPATCH``
+    (#288) and ``SIMPLICIO_AUTO_MERGE_PR`` (#288) above -- so existing callers/fixtures
+    that dispatch without a model registry configured are unaffected. Set
+    ``SIMPLICIO_MODEL_ROUTED_DISPATCH=1`` to compute a real routing-decision-receipt
+    for every dispatch attempt and, when a real ``CodexRuntimeDriver``/
+    ``ClaudeRuntimeDriver`` is wired for the selected runtime, genuinely invoke it and
+    persist a ``runtime-execution-receipt`` alongside the operator's own receipts. A
+    routing block or driver failure never blocks the underlying dev-cli operator
+    mutation this repo already performs -- this is additional, real audit evidence
+    layered on top of it, not a replacement for the operator contract.
+    """
+    return str(os.environ.get("SIMPLICIO_MODEL_ROUTED_DISPATCH") or "").strip().lower() in ("1", "true", "yes")
+
+
+_DEFAULT_MODEL_REGISTRY_ENTRIES: Tuple[Dict[str, Any], ...] = (
+    {
+        "runtime": "codex", "provider": "openai", "model_id": "codex-cli/gpt-5.6-luna",
+        "aliases": ["codex-cli"], "capabilities": ["execute", "review"],
+        "probe": {"kind": "codex-cli", "target": "codex"},
+    },
+    {
+        "runtime": "claude", "provider": "anthropic", "model_id": "claude-code/sonnet-5",
+        "aliases": ["claude-code"], "capabilities": ["execute", "review"],
+        "probe": {"kind": "claude-cli", "target": "claude"},
+    },
+)
+
+
+def _default_model_registry() -> ModelCapabilityRegistry:
+    """Build the standard two-runtime (Codex + Claude) registry, wired to the real
+    ``--version`` probes in ``runtime_drivers.py`` -- never a fabricated availability
+    check. A caller that needs a different registry shape (e.g. a config file) can
+    still build/pass its own ``ModelCapabilityRegistry``; this is only the default
+    used by the opt-in dispatch wiring below.
+    """
+    return ModelCapabilityRegistry(_DEFAULT_MODEL_REGISTRY_ENTRIES, probe_hooks=CLI_PROBE_HOOKS)
+
+
+def _route_runtime_for_item(item: Mapping[str, Any], *, role: str = "executor",
+                             registry: Optional[ModelCapabilityRegistry] = None) -> Dict[str, Any]:
+    """Compute one real ``routing-decision-receipt`` for a dispatch attempt.
+
+    Never raises for an ordinary routing block (no eligible candidate, e.g. neither
+    CLI installed) -- that comes back as a receipt with ``blocked=True`` and an
+    explicit ``block_reason`` so a caller can record/report it; only malformed input
+    surfaces as ``ModelRouterError``/``ModelRegistryError``.
+    """
+    registry = registry or _default_model_registry()
+    requirements = {"role": role, "required_capabilities": ["execute"]}
+    return _model_route(requirements, registry)
+
+
+def _execute_routed_runtime(item: Mapping[str, Any], run_dir: Path, *,
+                             registry: Optional[ModelCapabilityRegistry] = None) -> Dict[str, Any]:
+    """Route + (when a real driver is wired for the selection) genuinely execute one
+    LLM-runtime attempt for this dispatch, persisting both receipts under
+    ``run_dir/loop/`` for audit.
+
+    This never fabricates execution: when routing is blocked (no eligible
+    candidate) or no real driver exists for the selected runtime, the returned
+    summary says so explicitly (``executed: False``) rather than skipping silently
+    or pretending a result. A driver invocation failure (missing binary, auth/policy
+    block, timeout) is itself a genuine, honestly-reported outcome -- captured in the
+    persisted ``runtime-execution-receipt`` exactly as observed.
+    """
+    summary: Dict[str, Any] = {
+        "routed": False, "executed": False,
+        "routing_decision_receipt": "", "runtime_execution_receipt": "",
+    }
+    try:
+        routing_receipt = _route_runtime_for_item(item, registry=registry)
+    except (ModelRouterError, ModelRegistryError) as exc:
+        summary["error"] = f"{type(exc).__name__}: {exc}"
+        return summary
+    summary["routed"] = True
+    loop_dir = run_dir / "loop"
+    loop_dir.mkdir(parents=True, exist_ok=True)
+    routing_path = loop_dir / "routing-decision-receipt.json"
+    _write_json(routing_path, routing_receipt)
+    summary["routing_decision_receipt"] = str(routing_path)
+    summary["selected"] = routing_receipt.get("selected")
+    summary["blocked"] = bool(routing_receipt.get("blocked"))
+    if routing_receipt.get("blocked") or not routing_receipt.get("selected"):
+        summary["block_reason"] = str(routing_receipt.get("block_reason") or "")
+        return summary
+    selected = routing_receipt["selected"]
+    driver = driver_for_runtime(selected.get("runtime"))
+    if driver is None:
+        summary["reason"] = f"no real driver wired for runtime {selected.get('runtime')!r}"
+        return summary
+    context_pack = item.get("context_pack") if isinstance(item.get("context_pack"), Mapping) else {}
+    goal = str(context_pack.get("goal") or item.get("task_id") or "").strip()
+    if not goal:
+        summary["reason"] = "no task goal text available to prompt the runtime"
+        return summary
+    repo_path = Path(str(item.get("repo") or "."))
+    result = driver.execute(goal, cwd=repo_path if repo_path.exists() else None)
+    base_sha = ""
+    head_sha = ""
+    changed: List[str] = []
+    if repo_path.exists():
+        fingerprint = _repo_fingerprint(repo_path)
+        base_sha = head_sha = str(fingerprint.get("head") or "")
+        try:
+            changed = _changed_paths(repo_path)
+        except Exception:
+            changed = []
+    try:
+        execution_receipt = driver.build_receipt(
+            route_id=hashlib.sha256(json.dumps(routing_receipt, sort_keys=True).encode("utf-8")).hexdigest()[:16],
+            requested={"runtime": selected.get("runtime"), "provider": selected.get("provider"),
+                       "model_id": selected.get("model_id"), "verified": True},
+            session={
+                "worker_id": str(item.get("worker_id") or ""),
+                "device_id": os.environ.get("SIMPLICIO_DEVICE_ID", ""),
+                "attempt_id": str(item.get("task_index") or ""),
+                "lease_id": "", "fence_token": "",
+            },
+            result=result,
+            tree={"base_sha": base_sha, "head_sha": head_sha, "changed_paths": changed},
+        )
+    except RuntimeExecutionReceiptError as exc:
+        summary["error"] = f"{type(exc).__name__}: {exc}"
+        return summary
+    execution_path = loop_dir / "runtime-execution-receipt.json"
+    _write_json(execution_path, execution_receipt)
+    summary["executed"] = True
+    summary["runtime_execution_receipt"] = str(execution_path)
+    summary["execution_ok"] = bool(result.ok)
+    summary["execution_stop_reason"] = result.stop_reason
+    summary["execution_error"] = result.error
+    return summary
 
 
 def _auto_worktree_dispatch(
@@ -2667,6 +2809,122 @@ def _test_only_stall_before_dispatch(task_id: str) -> None:
         time.sleep(seconds)
 
 
+def _remote_worker_dispatch_enabled() -> bool:
+    """#286: once the queue is a genuine network ``HTTPRemoteQueue``, the coordinator must
+    not execute the operator in its own process -- it enqueues the task envelope and waits
+    for an independent ``RemoteWorkerDaemon`` (a different device/process, reachable only
+    over the wire) to pull, claim, run, and complete it. This is the fix for the exact gap
+    issue #286 named: "execute_operator_batch() cria HTTPRemoteQueue, mas continua
+    submetendo _operator_dispatch_attempt() a um ThreadPoolExecutor local; o proprio
+    coordenador chama execute_operator()."
+
+    ``SQLiteRemoteQueue`` (issue #288's co-located, same-process guarded-dispatch path) is
+    deliberately unaffected -- that queue backend models a single-host attempt coordinator,
+    not a remote worker, so every existing #288 test using it keeps its current behavior.
+    Opt out with ``SIMPLICIO_REMOTE_WORKER_ONLY=0`` only for a deliberate same-host smoke
+    test that wants the old in-process shortcut against a real HTTP queue.
+    """
+    return str(os.environ.get("SIMPLICIO_REMOTE_WORKER_ONLY") or "1").strip().lower() not in (
+        "0", "false", "no", "off", "disabled",
+    )
+
+
+def _operator_dispatch_attempt_remote_worker(
+    item: Mapping[str, Any], common: Dict[str, Any], queue: HTTPRemoteQueue, started: float,
+) -> Dict[str, Any]:
+    """Enqueue-and-wait dispatch for a genuine remote (``HTTPRemoteQueue``) worker (#286).
+
+    The coordinator itself never claims and never calls ``execute_operator()`` here -- it
+    publishes the immutable task envelope once (idempotent: ``enqueue`` is a no-op if the
+    task_id already exists) and polls ``queue.task()`` (the same authority a remote
+    ``RemoteWorkerDaemon`` mutates) until the task reaches a terminal ``completed`` status or
+    the dispatch timeout elapses. A timeout is reported as a specific, non-fabricated failure
+    (``remote_worker_timeout``) rather than silently falling back to local execution.
+    """
+    task_id = common["task_id"]
+    context_pack = dict(item.get("context_pack") or {})
+    payload = {
+        "run_id": common["run_id"], "worker_id": common["worker_id"],
+        "task_index": common["task_index"], "goal": context_pack.get("goal", ""),
+        "acs": list(context_pack.get("acs") or ()),
+        "depends_on": list(context_pack.get("depends_on") or ()),
+        "allowed_paths": list(context_pack.get("allowed_paths") or ()),
+        "issue_ref": context_pack.get("issue_ref", ""), "issue_url": context_pack.get("issue_url", ""),
+        "context_pack": context_pack,
+        "worktree_context": dict(item.get("worktree_context") or {}),
+    }
+    common["dispatch_mode"] = "remote_worker_pull"
+    try:
+        queue.enqueue(task_id, payload)
+    except (QueueConflict, QueueUnavailable, ValueError) as exc:
+        return {**common, "status": "failed", "phase": "blocked", "execution_state": "error",
+                "receipt": "", "operator_receipt": "", "evidence_receipt": "",
+                "receipt_status": "UNVERIFIED", "attempt": 0,
+                "reason_code": "remote_enqueue_failed", "error": str(exc), "dead_letter": True,
+                "started_at": started, "finished_at": _now()}
+
+    timeout = float(os.environ.get("SIMPLICIO_REMOTE_DISPATCH_TIMEOUT_SECONDS", "3600"))
+    poll_interval = float(os.environ.get("SIMPLICIO_REMOTE_DISPATCH_POLL_INTERVAL_SECONDS", "2"))
+    deadline = time.monotonic() + max(0.0, timeout)
+    task_state: Dict[str, Any] = {}
+    while True:
+        try:
+            task_state = queue.task(task_id)
+        except (QueueUnavailable, KeyError) as exc:
+            return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
+                    "receipt": "", "operator_receipt": "", "evidence_receipt": "",
+                    "receipt_status": "UNVERIFIED", "attempt": 0,
+                    "reason_code": "network_paused", "error": str(exc), "dead_letter": True,
+                    "started_at": started, "finished_at": _now()}
+        if str(task_state.get("status") or "") == "completed":
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_interval, remaining))
+
+    if str(task_state.get("status") or "") != "completed":
+        return {**common, "status": "failed", "phase": "blocked", "execution_state": "timeout",
+                "receipt": "", "operator_receipt": "", "evidence_receipt": "",
+                "receipt_status": "UNVERIFIED", "attempt": 0,
+                "reason_code": "remote_worker_timeout",
+                "error": "no remote worker completed task %s within %.0fs" % (task_id, timeout),
+                "dead_letter": True, "started_at": started, "finished_at": _now()}
+
+    lease_info = dict(task_state.get("lease") or {})
+    receipt = str(lease_info.get("receipt_ref") or "")
+    # The remote worker's evidence receipt lives on its own device; the coordinator only
+    # treats it as readable when both files genuinely exist on this filesystem (true, for
+    # instance, of the same-host loopback proxy this repo's E2E uses). A cross-device
+    # deployment without a receipt-fetch endpoint honestly reports UNVERIFIED here rather
+    # than fabricating a VERIFIED pair it cannot see.
+    evidence_receipt = str(Path(receipt).parent / "evidence-receipt.json") if receipt else ""
+    if not (evidence_receipt and Path(evidence_receipt).is_file()):
+        evidence_receipt = ""
+    receipt_verdict = _verify_worker_receipt_pair(receipt, evidence_receipt)
+    merge: Optional[Dict[str, Any]] = None
+    if receipt_verdict["status"] == ReceiptStatus.VERIFIED and _auto_merge_enabled():
+        merge = _dispatch_merge_pr(item, receipt=receipt, run_id=common["run_id"])
+    return {
+        **common,
+        "status": "succeeded",
+        "phase": "delivered",
+        "execution_state": "applied",
+        "receipt": receipt,
+        "operator_receipt": receipt,
+        "evidence_receipt": evidence_receipt,
+        "watcher_receipt": "",
+        "receipt_status": receipt_verdict["status"],
+        "receipt_verdict_reason": receipt_verdict["reason"],
+        "attempt": 1,
+        "failure_fingerprint": "",
+        "merge": merge,
+        "remote_task": {"task_id": task_id, "lease": lease_info},
+        "started_at": started,
+        "finished_at": _now(),
+    }
+
+
 def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Call the production operator and reduce its status to a durable worker record."""
     started = _now()
@@ -2689,7 +2947,23 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "agent": dict(item.get("agent_identity") or {}),
         "context_pack": dict(item.get("context_pack") or {}),
     }
+    if _model_routed_dispatch_enabled():
+        # #287: route this dispatch attempt through the real model registry/router
+        # instead of a hardcoded runtime, and -- when a real driver is wired for the
+        # selection -- genuinely invoke it. Additive audit evidence only: a routing
+        # block or driver failure here never blocks the dev-cli operator mutation
+        # below, which remains this repo's actual apply/verify contract.
+        try:
+            run_dir = Path(read_status(item["repo"], item["run_id"])["run_dir"])
+            common["model_routing"] = _execute_routed_runtime(item, run_dir)
+        except Exception as exc:  # routing/execution evidence must never crash dispatch
+            common["model_routing"] = {"routed": False, "executed": False, "error": f"{type(exc).__name__}: {exc}"}
     queue = item.get("distributed_queue")
+    if queue is not None and isinstance(queue, HTTPRemoteQueue) and _remote_worker_dispatch_enabled():
+        # #286: a genuine network queue means genuine remote workers -- the coordinator
+        # enqueues and waits, it never claims/executes the operator itself. See
+        # `_remote_worker_dispatch_enabled` for the opt-out and rationale.
+        return _operator_dispatch_attempt_remote_worker(item, common, queue, started)
     lease = None
     guarded = _guarded_dispatch_enabled()
     attempt_coordinator: Optional[AttemptCoordinator] = None
