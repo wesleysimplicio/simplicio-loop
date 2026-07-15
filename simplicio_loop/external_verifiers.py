@@ -218,6 +218,136 @@ def verify_release(repo: str, tag: str, asset_names: List[str], *,
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def discover_default_branch(repo: str) -> Dict[str, Any]:
+    """Consult the real default branch of `repo` via `gh api repos/{repo}` — #290 Fase 3.2
+    ("Consultar a default branch real no instante da prova"). Never assumes `main`; fails
+    closed with a stable reason code on any transport error or malformed response."""
+    try:
+        result = _run(["gh", "api", f"repos/{repo}"])
+    except (subprocess.SubprocessError, OSError) as exc:
+        return {"ok": False, "reason_code": "default_branch_query_failed", "error": str(exc)}
+    if result.returncode != 0:
+        return {"ok": False, "reason_code": "default_branch_query_failed",
+                "error": (result.stderr or "").strip()}
+    try:
+        data = json.loads(result.stdout or "{}")
+        default_branch = data["default_branch"]
+    except (ValueError, KeyError, TypeError):
+        return {"ok": False, "reason_code": "default_branch_response_malformed"}
+    if not default_branch:
+        return {"ok": False, "reason_code": "default_branch_response_malformed"}
+    return {"ok": True, "default_branch": default_branch}
+
+
+# #290 — `BranchReachabilityVerifier`: "provar reachability do commit com API compare/
+# commit/ref, registrando base/head consultados e resposta." GitHub's compare API
+# (`repos/{repo}/compare/{base}...{head}`) reports `status` as one of
+# `identical` | `ahead` | `behind` | `diverged` relative to `base`. When `head` is the
+# claimed merge commit and `base` is the real default branch tip: `identical` means the
+# commit *is* the branch tip; `behind` means the commit is strictly an ancestor of the
+# tip (i.e. reachable, just not the very latest); `ahead`/`diverged` mean the commit is
+# NOT part of the default branch's history — it must never be reported reachable.
+_REACHABLE_COMPARE_STATUSES = frozenset({"identical", "behind"})
+
+
+def compare_commits(repo: str, base: str, head: str) -> Dict[str, Any]:
+    """Real `gh api repos/{repo}/compare/{base}...{head}` call. Fails closed on any
+    transport error, non-2xx response, or unparseable body."""
+    try:
+        result = _run(["gh", "api", f"repos/{repo}/compare/{base}...{head}"])
+    except (subprocess.SubprocessError, OSError) as exc:
+        return {"ok": False, "reason_code": "compare_query_failed", "error": str(exc)}
+    if result.returncode != 0:
+        return {"ok": False, "reason_code": "compare_query_failed",
+                "error": (result.stderr or "").strip()}
+    try:
+        data = json.loads(result.stdout or "{}")
+        status = str(data["status"])
+    except (ValueError, KeyError, TypeError):
+        return {"ok": False, "reason_code": "compare_response_malformed"}
+    return {
+        "ok": True,
+        "status": status,
+        "ahead_by": data.get("ahead_by"),
+        "behind_by": data.get("behind_by"),
+    }
+
+
+def verify_branch_reachability(repo: str, commit_sha: str, *,
+                                expected_default_branch: Optional[str] = None) -> Dict[str, Any]:
+    """`BranchReachabilityVerifier` (#290): prove a claimed merge commit is actually
+    reachable from the *real* default branch's current tip — not merely "a PR says
+    merged". Composes two live calls: (1) discover the real default branch (never
+    trusts a caller-supplied name), (2) `compare` that branch's tip against
+    `commit_sha` and only reports `reachable=True` when the compare status proves
+    ancestry (`identical` or `behind`).
+
+    "Unknown is not pass": any transport failure, malformed response, or a compare
+    status that does NOT prove ancestry (`ahead`, `diverged`) reports
+    `reachable=False` with a stable `reason_code` — never a favorable default.
+    """
+    if not commit_sha:
+        return {"ok": False, "reachable": False, "reason_code": "commit_sha_missing"}
+    branch_result = discover_default_branch(repo)
+    if not branch_result.get("ok"):
+        return {
+            "ok": False, "reachable": False,
+            "reason_code": branch_result.get("reason_code", "default_branch_query_failed"),
+        }
+    default_branch = branch_result["default_branch"]
+    if expected_default_branch and expected_default_branch != default_branch:
+        # The caller assumed a branch name that does not match reality (e.g. hardcoded
+        # "main" on a repo whose default is "trunk"). Surface the mismatch rather than
+        # silently substituting the discovered branch into an assertion the caller did
+        # not ask for.
+        return {
+            "ok": False, "reachable": False, "default_branch": default_branch,
+            "reason_code": "default_branch_mismatch",
+            "expected_default_branch": expected_default_branch,
+        }
+    compare_result = compare_commits(repo, default_branch, commit_sha)
+    if not compare_result.get("ok"):
+        return {
+            "ok": False, "reachable": False, "default_branch": default_branch,
+            "reason_code": compare_result.get("reason_code", "compare_query_failed"),
+        }
+    status = compare_result["status"]
+    reachable = status in _REACHABLE_COMPARE_STATUSES
+    return {
+        "ok": True,
+        "reachable": reachable,
+        "default_branch": default_branch,
+        "compare_status": status,
+        "ahead_by": compare_result.get("ahead_by"),
+        "behind_by": compare_result.get("behind_by"),
+        "reason_code": None if reachable else "merge_commit_not_reachable",
+    }
+
+
+def git_is_ancestor(cwd: str, commit_sha: str, branch_ref: str, *, timeout: int = 30) -> Dict[str, Any]:
+    """Local, network-free `BranchReachabilityVerifier` alternative: real
+    `git merge-base --is-ancestor <commit_sha> <branch_ref>` in a local clone/worktree
+    at `cwd` (e.g. used by a sandbox E2E that already has the repo checked out, or as a
+    fallback when the GitHub API is unavailable). Exit code 0 means ancestor (reachable);
+    exit code 1 means not-an-ancestor; anything else (missing object, not a git repo,
+    timeout) fails closed rather than assumes either answer.
+    """
+    if not commit_sha or not branch_ref:
+        return {"ok": False, "reachable": False, "reason_code": "missing_commit_or_branch"}
+    try:
+        result = _run(["git", "merge-base", "--is-ancestor", commit_sha, branch_ref], cwd=cwd, timeout=timeout)
+    except (subprocess.SubprocessError, OSError) as exc:
+        return {"ok": False, "reachable": False, "reason_code": "git_merge_base_failed", "error": str(exc)}
+    if result.returncode == 0:
+        return {"ok": True, "reachable": True, "reason_code": None}
+    if result.returncode == 1:
+        return {"ok": True, "reachable": False, "reason_code": "merge_commit_not_reachable"}
+    return {
+        "ok": False, "reachable": False, "reason_code": "git_merge_base_error",
+        "error": (result.stderr or "").strip(),
+    }
+
+
 def run_install_smoke(wheel_path: str, *, module_name: str = "simplicio_loop") -> Dict[str, Any]:
     """Real install smoke: create a throwaway venv, `pip install` the given wheel bytes into
     it (no reuse of the local checkout or any ambient site-packages), and import the package

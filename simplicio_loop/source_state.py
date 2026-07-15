@@ -154,6 +154,19 @@ def infer_github_delivery_state(payload: Dict[str, Any]) -> str:
     return "verified"
 
 
+def _should_verify_branch_reachability(target_state: str, verify_reachability: bool | None) -> bool:
+    if verify_reachability is not None:
+        return verify_reachability
+    override = os.environ.get("SIMPLICIO_LOOP_VERIFY_BRANCH_REACHABILITY", "").strip().lower()
+    if override:
+        return override not in ("0", "false", "no")
+    # #290 Fase 3 — only pay the two extra live `gh api` calls (default-branch discovery +
+    # compare) when the caller is actually trying to promote to `merged` or beyond; earlier
+    # targets (pr-open, merge-ready) never need proof the commit already reached the
+    # default branch.
+    return target_state in ("merged", "released", "deployed")
+
+
 def _should_verify_release_artifacts(target_state: str, verify_artifacts: bool | None) -> bool:
     if verify_artifacts is not None:
         return verify_artifacts
@@ -167,7 +180,8 @@ def _should_verify_release_artifacts(target_state: str, verify_artifacts: bool |
 
 
 def github_delivery_payload(repo: str, pr: int | None = None, tag: str = "", target_state: str = "",
-                            verify_artifacts: bool | None = None) -> Dict[str, Any]:
+                            verify_artifacts: bool | None = None,
+                            verify_reachability: bool | None = None) -> Dict[str, Any]:
     fixture = _fixture_payload("SIMPLICIO_LOOP_GITHUB_FIXTURE_JSON")
     if fixture is not None:
         fixture.setdefault("source_query", {
@@ -246,15 +260,33 @@ def github_delivery_payload(repo: str, pr: int | None = None, tag: str = "", tar
         if str(prj.get("mergedAt") or "").strip():
             # #290 — a merged PR proves the PR event, not that the merge commit is reachable
             # from the real default branch right now (branch protection changes, rebases, or a
-            # revert could all diverge this). No BranchReachabilityVerifier exists yet, so this
-            # must fail closed rather than assert `commit_in_default_branch: true` for free.
+            # revert could all diverge this). By default this stays fail-closed
+            # (`commit_in_default_branch=False`) unless the caller actually asks for the proof
+            # (`target_state` promoting to `merged`+, or `verify_reachability=True`/env
+            # override) -- see `_should_verify_branch_reachability`. When requested, the real
+            # `BranchReachabilityVerifier` (`external_verifiers.verify_branch_reachability`)
+            # discovers the *real* default branch and proves ancestry via the GitHub compare
+            # API before this is ever set True.
+            merge_commit_sha = (prj.get("mergeCommit") or {}).get("oid") or ""
             payload["merge"] = {
-                "commit_sha": ((prj.get("mergeCommit") or {}).get("oid") or ""),
-                "default_branch": "main",
+                "commit_sha": merge_commit_sha,
+                "default_branch": "",
                 "merged_at": prj.get("mergedAt"),
                 "commit_in_default_branch": False,
                 "commit_in_default_branch_reason_code": "merge_reachability_unverified",
             }
+            if _should_verify_branch_reachability(target_state, verify_reachability):
+                from .external_verifiers import verify_branch_reachability
+                reach = verify_branch_reachability(repo, merge_commit_sha)
+                payload["merge"]["default_branch"] = reach.get("default_branch", "")
+                if reach.get("ok") and reach.get("reachable"):
+                    payload["merge"]["commit_in_default_branch"] = True
+                    payload["merge"].pop("commit_in_default_branch_reason_code", None)
+                    payload["merge"]["evidence"] = "github-compare-reachability"
+                    payload["merge"]["compare_status"] = reach.get("compare_status")
+                else:
+                    payload["merge"]["commit_in_default_branch_reason_code"] = reach.get(
+                        "reason_code", "merge_reachability_unverified")
     if tag:
         release = _run_gh(["release", "view", tag, "--repo", repo, "--json", "tagName,isDraft,isPrerelease,assets"])
         if release.returncode != 0:

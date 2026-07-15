@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import hashlib
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping, Optional
+
+from . import freshness
 
 DELIVERY_SCHEMA = "simplicio.delivery-receipt/v1"
 RECONCILIATION_SCHEMA = "simplicio.delivery-reconciliation/v1"
@@ -115,7 +118,28 @@ def _require(payload: Dict[str, Any], path: str):
     return cur
 
 
-def validate_delivery_receipt(receipt: Dict[str, Any], target: str = "") -> Dict[str, Any]:
+def _freshness_check(receipt: Dict[str, Any], *, now: Optional[datetime] = None,
+                     ttl_overrides: Optional[Mapping[str, int]] = None) -> Dict[str, Any]:
+    """#290 invariant: "Freshness" -- any cached `source_checked_at` older than its class
+    TTL must be treated as stale and re-queried before being trusted for a terminal
+    transition. Mirrors the `source_fingerprint` legacy-migration precedent a few lines
+    below: a receipt that never carried `source_checked_at` (pre-dates this policy) stays
+    readable so historical/synthetic receipts are not retroactively broken, but any
+    receipt that DOES carry the field (every receipt `build_delivery_receipt` produces
+    today) is held to the real TTL.
+    """
+    checked_at = receipt.get("source_checked_at")
+    if not checked_at:
+        return _gate("delivery_freshness", True, "freshness_legacy_unbound",
+                     "delivery receipt has no source_checked_at; freshness policy not enforced")
+    current_state = (receipt.get("current_state") or "").strip().lower()
+    gate = freshness.freshness_gate(checked_at, current_state, overrides=ttl_overrides, now=now)
+    return _gate("delivery_freshness", gate["status"] == "pass", gate["reason_code"], gate["detail"])
+
+
+def validate_delivery_receipt(receipt: Dict[str, Any], target: str = "", *,
+                              now: Optional[datetime] = None,
+                              ttl_overrides: Optional[Mapping[str, int]] = None) -> Dict[str, Any]:
     gates: List[Dict[str, Any]] = []
     if receipt.get("schema") != DELIVERY_SCHEMA:
         gates.append(_gate("delivery_schema", False, "delivery_schema_invalid", "unexpected delivery receipt schema"))
@@ -231,6 +255,10 @@ def validate_delivery_receipt(receipt: Dict[str, Any], target: str = "") -> Dict
         return {"ok": False, "gates": gates}
     gates.append(_gate("delivery_source", True, "delivery_source_complete",
                        f"delivery source payload satisfies state {current_state!r}"))
+    freshness_gate_result = _freshness_check(receipt, now=now, ttl_overrides=ttl_overrides)
+    gates.append(freshness_gate_result)
+    if freshness_gate_result["status"] != "pass":
+        return {"ok": False, "gates": gates}
     return {"ok": True, "gates": gates}
 
 
