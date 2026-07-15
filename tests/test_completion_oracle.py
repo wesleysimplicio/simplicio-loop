@@ -172,6 +172,12 @@ def test_oracle_distinguishes_verified_from_merge_ready(tmp_path):
             "branch": {"up_to_date": True}
         }
     }), encoding="utf-8")
+    # #290: merge-ready now also requires the #283 quality-matrix receipt to be bound to the
+    # same head sha the delivery receipt claims (see test_oracle_*_commit_binding_* below);
+    # without this the run would newly block on "quality_matrix_commit_unbound".
+    quality = _passing_quality_matrix()
+    quality["work_item"] = {"head_sha": "abc"}
+    (run_dir / "quality-matrix.json").write_text(json.dumps(quality), encoding="utf-8")
     ok = _run(["--loop-dir", str(loop), "--run-dir", str(run_dir),
                "--response-text", "<promise>SIMPLICIO_DONE</promise>"], str(tmp_path))
     assert ok.returncode == 0, ok.stdout + ok.stderr
@@ -288,6 +294,124 @@ def test_oracle_requires_release_proofs_for_released_target(tmp_path):
     assert blocked.returncode == 1, blocked.stdout + blocked.stderr
     payload = json.loads(blocked.stdout)
     assert payload["reason_code"] == "install_smoke_failed"
+
+
+def _seed_merge_ready_run(run_dir, head_sha="cafef00d"):
+    """A fully-green merge-ready delivery/evidence pair (#283 + #288-shaped), for the #290
+    commit-binding gate tests below: `_run_artifacts_gate` and `_quality_matrix_gate` alone
+    both PASS here, so any block below is attributable to `_commit_binding_gate`."""
+    (run_dir / "manifest.json").write_text(json.dumps({
+        "schema": "simplicio.run-manifest/v1",
+        "delivery_target": "merge-ready"
+    }), encoding="utf-8")
+    (run_dir / "evidence-receipt.json").write_text(json.dumps({
+        "schema": "simplicio.evidence-receipt/v1",
+        "status": "VERIFIED",
+        "criteria": [{"id": "AC1", "verification_state": "verified"}],
+        "summary": {"criteria_total": 1, "criteria_verified": 1,
+                    "scenario_total": 1, "scenario_verified": 1, "rule_total": 1, "rule_verified": 1}
+    }), encoding="utf-8")
+    (run_dir / "delivery-receipt.json").write_text(json.dumps({
+        "schema": "simplicio.delivery-receipt/v1",
+        "target": "merge-ready",
+        "current_state": "merge-ready",
+        "source_kind": "github",
+        "source_payload": {
+            "pr": {"url": "https://example/pr/1", "head_sha": head_sha, "base_sha": "def"},
+            "checks": {"green": True},
+            "reviews": {"approvals": 1, "open_threads": 0},
+            "branch": {"up_to_date": True}
+        },
+        "ready": True
+    }), encoding="utf-8")
+
+
+def test_oracle_blocks_merge_ready_when_quality_matrix_has_no_commit_binding(tmp_path):
+    """#290: a green #283 receipt that never declares which commit it covers must not
+    satisfy `merge-ready` -- it could be stale evidence for an unrelated SHA."""
+    loop = tmp_path / ".orchestrator" / "loop"
+    loop.mkdir(parents=True)
+    run_dir = tmp_path / ".orchestrator" / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    _seed_loop(loop)
+    _seed_run(run_dir)
+    _seed_merge_ready_run(run_dir, head_sha="cafef00d")
+    # _seed_run already wrote quality-matrix.json via _passing_quality_matrix(), which has no
+    # work_item.head_sha -- that is exactly the gap under test.
+    blocked = _run(["--loop-dir", str(loop), "--run-dir", str(run_dir),
+                    "--response-text", "<promise>SIMPLICIO_DONE</promise>"], str(tmp_path))
+    assert blocked.returncode == 1, blocked.stdout + blocked.stderr
+    payload = json.loads(blocked.stdout)
+    assert payload["reason_code"] == "quality_matrix_commit_unbound"
+
+
+def test_oracle_blocks_merge_ready_when_quality_matrix_commit_mismatches_delivery(tmp_path):
+    """#290: #283 and #288/delivery evidence for two different SHAs must never both PASS
+    the same merge-ready gate, even though each is green in isolation."""
+    loop = tmp_path / ".orchestrator" / "loop"
+    loop.mkdir(parents=True)
+    run_dir = tmp_path / ".orchestrator" / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    _seed_loop(loop)
+    _seed_run(run_dir)
+    _seed_merge_ready_run(run_dir, head_sha="cafef00d")
+    quality = _passing_quality_matrix()
+    quality["work_item"] = {"head_sha": "stale123"}
+    (run_dir / "quality-matrix.json").write_text(json.dumps(quality), encoding="utf-8")
+    blocked = _run(["--loop-dir", str(loop), "--run-dir", str(run_dir),
+                    "--response-text", "<promise>SIMPLICIO_DONE</promise>"], str(tmp_path))
+    assert blocked.returncode == 1, blocked.stdout + blocked.stderr
+    payload = json.loads(blocked.stdout)
+    assert payload["reason_code"] == "quality_matrix_commit_mismatch"
+
+
+def test_oracle_completes_merge_ready_when_quality_matrix_commit_matches_delivery(tmp_path):
+    """#290: once #283's receipt is bound to the same head sha the delivery receipt claims,
+    the commit-binding gate passes and completion proceeds (no other gate blocks it here)."""
+    loop = tmp_path / ".orchestrator" / "loop"
+    loop.mkdir(parents=True)
+    run_dir = tmp_path / ".orchestrator" / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    _seed_loop(loop)
+    _seed_run(run_dir)
+    _seed_merge_ready_run(run_dir, head_sha="cafef00d")
+    quality = _passing_quality_matrix()
+    quality["work_item"] = {"head_sha": "cafef00d"}
+    (run_dir / "quality-matrix.json").write_text(json.dumps(quality), encoding="utf-8")
+    ok = _run(["--loop-dir", str(loop), "--run-dir", str(run_dir),
+               "--response-text", "<promise>SIMPLICIO_DONE</promise>"], str(tmp_path))
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    payload = json.loads(ok.stdout)
+    assert payload["verdict"] == "COMPLETE"
+
+
+def test_oracle_commit_binding_gate_not_applicable_below_merge_ready(tmp_path):
+    """#290: the commit-binding gate must not newly block pre-existing `verified`-target runs
+    that never carried a head sha at all -- it only activates at merge-ready or above."""
+    loop = tmp_path / ".orchestrator" / "loop"
+    loop.mkdir(parents=True)
+    run_dir = tmp_path / ".orchestrator" / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    _seed_loop(loop)
+    _seed_run(run_dir)
+    (run_dir / "evidence-receipt.json").write_text(json.dumps({
+        "schema": "simplicio.evidence-receipt/v1",
+        "status": "VERIFIED",
+        "criteria": [{"id": "AC1", "verification_state": "verified"}],
+        "summary": {"criteria_total": 1, "criteria_verified": 1,
+                    "scenario_total": 1, "scenario_verified": 1, "rule_total": 1, "rule_verified": 1}
+    }), encoding="utf-8")
+    (run_dir / "delivery-receipt.json").write_text(json.dumps({
+        "schema": "simplicio.delivery-receipt/v1",
+        "target": "verified",
+        "current_state": "verified",
+        "ready": True,
+        "source_kind": "local",
+        "source_payload": {"evidence_receipt": "evidence-receipt.json", "criteria_verified": 1}
+    }), encoding="utf-8")
+    ok = _run(["--loop-dir", str(loop), "--run-dir", str(run_dir),
+               "--response-text", "<promise>SIMPLICIO_DONE</promise>"], str(tmp_path))
+    assert ok.returncode == 0, ok.stdout + ok.stderr
 
 
 def test_oracle_writes_completion_receipt_bound_to_run_and_challenge(tmp_path):

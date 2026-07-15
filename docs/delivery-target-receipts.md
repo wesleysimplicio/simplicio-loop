@@ -36,6 +36,28 @@ This is a deterministic local receipt contract. It does not claim that GitHub,
 release registries, signatures, or credentials are available; adapters must still
 perform the real external requery and supply its payload.
 
+## Commit binding between #283 (quality gate) and #288/delivery evidence
+
+`merge-ready` (and every state above it) is derived from two receipts that are validated
+independently: the `#278`/`#283` quality-matrix receipt (`quality-matrix.json`,
+`evaluate_quality_matrix`) and the delivery/`#288` evidence (`delivery-receipt.json`,
+`validate_delivery_receipt`). Validating each in isolation is not enough — a stale, green
+quality-matrix receipt from an earlier commit could sit next to a fresh, green delivery receipt
+for the *current* commit, and the oracle would see two passes without either one actually
+covering the same code.
+
+`simplicio_loop/oracle.py::_commit_binding_gate` closes this gap: once the delivery receipt's
+`current_state` reaches `merge-ready` or higher, completion additionally requires the
+quality-matrix receipt to declare `work_item.head_sha` (populated via
+`scripts/quality_matrix.py build|populate --work-item-head-sha <sha>`) equal to the delivery
+receipt's `pr.head_sha` (or `merge.commit_sha` once merged). Per the "Unknown is not pass"
+invariant, an absent `work_item.head_sha` on the quality-matrix side blocks with
+`quality_matrix_commit_unbound` rather than defaulting to a pass; a real mismatch blocks with
+`quality_matrix_commit_mismatch`. States below `merge-ready` (`implemented`, `verified`,
+local-fixture work) are unaffected — this gate only activates once external convergence is
+actually being claimed. If a `merge-queue-receipt.json` (`#288`) is present in the run directory,
+its `head_sha`/`commit_sha` is cross-checked the same way (`merge_queue_commit_mismatch`).
+
 ## Scope note: `deployed` means "installable from verified bytes," not live rollout
 
 Issue #290's semantics table describes `deployed` in terms that read naturally for a

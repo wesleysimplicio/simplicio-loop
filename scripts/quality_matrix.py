@@ -58,6 +58,7 @@ def _work_item_from_args(args: argparse.Namespace) -> dict | None:
         "id": getattr(args, "work_item_id", None),
         "type": getattr(args, "work_item_type", None),
         "title": getattr(args, "work_item_title", None),
+        "head_sha": getattr(args, "work_item_head_sha", None),
     }
     fields = {k: v for k, v in fields.items() if v}
     return fields or None
@@ -354,12 +355,17 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
 def _add_work_item_args(parser: argparse.ArgumentParser) -> None:
     """#283: --run-id/--work-item-* flags populate the issue's literal envelope example
     (`run_id`, `work_item.source`/`.id`/`.type`/`.title`). All optional/additive -- omitting
-    them keeps the exact pre-existing receipt shape (empty string/dict, never fabricated)."""
+    them keeps the exact pre-existing receipt shape (empty string/dict, never fabricated).
+
+    `--work-item-head-sha` (#290) additionally binds this quality-matrix receipt to the commit
+    the delivery/#288 evidence claims for `merge-ready`+ targets -- `oracle.py`'s
+    `_commit_binding_gate` rejects completion when this is absent or mismatched at those states."""
     parser.add_argument("--run-id", default=None, help="cross-link this receipt to a run id (delivery/evidence receipt, task anchor)")
     parser.add_argument("--work-item-source", default=None, help="e.g. github")
     parser.add_argument("--work-item-id", default=None)
     parser.add_argument("--work-item-type", default=None, choices=["bug", "task", "feat", "fix", "chore"])
     parser.add_argument("--work-item-title", default=None)
+    parser.add_argument("--work-item-head-sha", default=None, help="commit sha this evidence was gathered for (#290 commit binding)")
 
 
 def build_parser() -> argparse.ArgumentParser:
