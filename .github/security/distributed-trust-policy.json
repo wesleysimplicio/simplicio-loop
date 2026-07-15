@@ -11,7 +11,10 @@
         "base_path": "/"
       },
       "tls_sha256_pins": [
-        "0000000000000000000000000000000000000000000000000000000000000000"
+        {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "status": "current"
+        }
       ],
       "oidc_audience": "simplicio-distributed-staging",
       "github_environment": "distributed-staging",

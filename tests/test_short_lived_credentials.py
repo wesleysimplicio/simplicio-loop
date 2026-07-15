@@ -141,6 +141,68 @@ def test_revocation_store_prunes_expired_entries(tmp_path):
     assert is_revoked(store, "jti-2") is True
 
 
+# ---------------------------------------------------------------------------
+# Operation-level scoping (#289): a token's `ops` claim, when present, must be
+# enforced per-operation in addition to the coarser environment `scope`.
+# ---------------------------------------------------------------------------
+
+def test_token_with_operations_authorizes_only_those_operations():
+    token = issue_token("s3cret", subject="agent-1", scope="staging", ttl_seconds=60,
+                        operations=["pull", "heartbeat"])
+    claims = verify_token("s3cret", token, expected_operation="pull")
+    assert claims["ops"] == ["heartbeat", "pull"]
+    verify_token("s3cret", token, expected_operation="heartbeat")
+    with pytest.raises(CredentialError, match="not scoped for operation 'claim'"):
+        verify_token("s3cret", token, expected_operation="claim")
+    with pytest.raises(CredentialError, match="not scoped for operation 'complete'"):
+        verify_token("s3cret", token, expected_operation="complete")
+
+
+def test_token_without_operations_claim_is_unrestricted_legacy_shape():
+    token = issue_token("s3cret", subject="agent-1", scope="staging", ttl_seconds=60)
+    claims = verify_token("s3cret", token, expected_operation="claim")
+    assert "ops" not in claims
+    verify_token("s3cret", token, expected_operation="complete")
+
+
+def test_empty_operations_list_is_rejected_at_issue_time():
+    with pytest.raises(CredentialError, match="must not be empty"):
+        issue_token("s3cret", subject="agent-1", scope="staging", ttl_seconds=60, operations=[])
+
+
+# ---------------------------------------------------------------------------
+# Audit logging (#289): every verify_token() decision -- accept or reject --
+# is appended to the structured audit log, never the token/secret itself.
+# ---------------------------------------------------------------------------
+
+def test_verify_token_appends_audit_log_entries(tmp_path):
+    from scripts.security_audit_log import read_events
+
+    audit_path = tmp_path / "audit.jsonl"
+    token = issue_token("s3cret", subject="agent-42", scope="staging", ttl_seconds=60)
+    verify_token("s3cret", token, expected_scope="staging", expected_operation="pull",
+                audit_log_path=audit_path)
+    with pytest.raises(CredentialError):
+        verify_token("wrong-secret", token, audit_log_path=audit_path)
+
+    events = read_events(audit_path)
+    assert len(events) == 2
+    assert events[0]["decision"] == "accept"
+    assert events[0]["who"] == "agent-42"
+    assert events[0]["operation"] == "pull"
+    assert events[1]["decision"] == "reject"
+    # never leak the token or secret into the audit trail
+    for event in events:
+        blob = json_dumps_no_import(event)
+        assert "s3cret" not in blob
+        assert token not in blob
+
+
+def json_dumps_no_import(event):
+    import json as _json
+    return _json.dumps(event)
+
+
 def test_missing_jti_is_rejected(monkeypatch):
     # Simulate a forged/legacy token that omits jti by round-tripping through
     # the same signing primitives issue_token uses, but stripping the claim.

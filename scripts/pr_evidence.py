@@ -27,10 +27,14 @@ Verbs:
              there is no checklist and no print to show.
   comment    Emit the shorter source-item evidence comment (PR link + verification summary +
              checklist + a count of attached prints) — the comment Step 6 posts back on the issue.
-             Always prints to stdout; with `--publish --issue N [--repo owner/name]` ALSO posts it
-             to the GitHub issue via `gh api`, idempotently (a hidden marker lets a re-run UPDATE
-             the same comment instead of appending a duplicate). A publish failure BLOCKS (exit 3)
-             rather than silently claiming success.
+             Always prints to stdout; with `--publish --issue N [--repo owner/name]` ALSO delegates
+             it to the #285 canonical GitHub lifecycle comment
+             (`simplicio_loop.github_lifecycle.publish_lifecycle_state`, state `PR_OPEN` when
+             `--pr` is given, else `VERIFYING`) — the SAME single status comment `claim`/`PLANNED`
+             already use, never a second stray comment. `--run-id`/`--attempt-id`/`--state`
+             override the identity/state used for that publish. A publish failure, or a
+             publish that a re-query cannot confirm, BLOCKS (exit 3) rather than silently
+             claiming success.
   progress-comment  Publish/update ONE idempotent progress comment on an issue (#301), marked with
              an invisible HTML anchor so a re-run edits the SAME comment instead of spamming new
              ones. Rate-limited (default 60s between remote updates) and fully fail-open: no `gh`
@@ -63,6 +67,8 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+if REPO not in sys.path:  # so `from simplicio_loop import github_lifecycle` resolves (#285)
+    sys.path.insert(0, REPO)
 DEFAULT_SHOTS = os.path.join(REPO, ".orchestrator", "tee", "web")
 # video_evidence.py's REAL default output dir (see its DEFAULT_OUT) — a separate directory from
 # DEFAULT_SHOTS. #81 found this drift: docs claimed recordings land under tee/web too, but the
@@ -223,6 +229,23 @@ def find_existing_progress_comment(issue, runner=None):
 # The GitHub call is injected as a `runner` (defaults to subprocess.run) so this is unit-testable
 # without ever touching the network or a real repo — same pattern as
 # `scripts/live_issue_183_identity.py`.
+#
+# `publish_comment`/`find_existing_comment`/`PR_EVIDENCE_COMMENT_MARKER` remain the general
+# idempotent create-or-update PRIMITIVE (no shell interpolation, JSON payload on stdin,
+# `PublishError` fail-closed on any `gh` failure) — `simplicio_loop/github_lifecycle.py` itself
+# takes this exact function in as its injected `publish_comment_fn`. What changed for #285 is
+# WHO calls it and with WHICH marker: `cmd_comment --publish` used to call it directly with
+# `PR_EVIDENCE_COMMENT_MARKER`, opening a SECOND, stray comment on the issue distinct from the
+# canonical `LIFECYCLE_COMMENT_MARKER` one — a direct violation of #285's "Um comentário
+# canônico: claim, planejamento, progresso, evidência e fechamento atualizam o mesmo comment
+# ID." `publish_evidence_via_lifecycle` below now routes the SAME rendered evidence body through
+# `github_lifecycle.publish_lifecycle_state` as the `tests_and_evidence`/`delivery` fields of the
+# ONE canonical lifecycle comment (state `VERIFYING`/`PR_OPEN`), so there is only ever one active
+# status comment per issue, matching the `PLANNED` wiring `planning_gate.publish_planning_receipt`
+# already does for the planning receipt. `PR_EVIDENCE_COMMENT_MARKER` is kept only as the
+# underlying primitive's default marker (used directly by `github_lifecycle.py`'s own CLI and by
+# `cmd_progress_comment`'s separate progress-comment, which is intentionally its own lightweight,
+# rate-limited, fail-open comment and out of scope for the #285 lifecycle machinery).
 PR_EVIDENCE_COMMENT_MARKER = "<!-- simplicio-loop:pr-evidence-comment -->"
 
 
@@ -359,6 +382,41 @@ def publish_comment(owner, repo, issue, body, marker=PR_EVIDENCE_COMMENT_MARKER,
     except ValueError:
         new_id = None
     return {"action": "created", "id": new_id}
+
+
+def publish_evidence_via_lifecycle(owner, repo, issue, body, *, pr=None, run_id="", attempt_id="",
+                                    state=None, runner=None, timeout=20, require_active=None,
+                                    outbox_dir=None, **render_kwargs):
+    """Delegate the source-item evidence comment to the #285 canonical lifecycle comment.
+
+    Projects `body` (the same PR-link + coverage + checklist markdown `cmd_comment` always
+    rendered) as the `tests_and_evidence` section of `github_lifecycle.py`'s ONE canonical
+    status comment, updating state to `PR_OPEN` when a `pr` number is known, else `VERIFYING` —
+    instead of posting a second, separate comment. Mirrors
+    `simplicio_loop.planning_gate.publish_planning_receipt`'s wiring of the `PLANNED` state onto
+    the same comment: same `publish_comment_fn` primitive, same re-query-verified
+    `simplicio.github-lifecycle-receipt/v1` return type. `run_id`/`attempt_id` default to
+    stable, non-empty placeholders (never blank) so the receipt's `operation_id` stays
+    deterministic even when the caller (a bare CLI invocation) has no run/attempt identity to
+    hand in. A transport failure from `publish_comment_fn` (`PublishError`) propagates
+    fail-closed, same as the direct `publish_comment` path this replaces.
+    """
+    from simplicio_loop import github_lifecycle as _gh
+
+    resolved_state = state or ("PR_OPEN" if pr else "VERIFYING")
+    render_kwargs = dict(render_kwargs)
+    render_kwargs.setdefault("tests_and_evidence", body)
+    if pr and "delivery" not in render_kwargs:
+        render_kwargs["delivery"] = "PR #%s" % str(pr).lstrip("#")
+    kwargs = dict(
+        owner=owner, repo=repo, issue=str(issue).lstrip("#"), state=resolved_state,
+        run_id=run_id or "pr-evidence", attempt_id=attempt_id or ("issue-%s" % str(issue).lstrip("#")),
+        publish_comment_fn=publish_comment, timeout=timeout,
+        require_active=require_active, outbox_dir=outbox_dir, **render_kwargs,
+    )
+    if runner is not None:
+        kwargs["runner"] = runner
+    return _gh.publish_lifecycle_state(**kwargs)
 
 
 def _load_anchor(opts):
@@ -594,13 +652,28 @@ def cmd_comment(opts):
         sys.exit(_BLOCKED)
     owner, repo = slug
     try:
-        result = publish_comment(owner, repo, str(issue).lstrip("#"), body)
+        lifecycle_receipt = publish_evidence_via_lifecycle(
+            owner, repo, issue, body, pr=pr,
+            run_id=opts.get("run-id") if isinstance(opts.get("run-id"), str) else "",
+            attempt_id=opts.get("attempt-id") if isinstance(opts.get("attempt-id"), str) else "",
+            state=opts.get("state") if isinstance(opts.get("state"), str) else None,
+        )
     except PublishError as exc:
         log("BLOCKED — could not publish the evidence comment to %s/%s#%s: %s" %
             (owner, repo, issue, exc))
         sys.exit(_BLOCKED)
-    log("published (%s) comment id=%s on %s/%s#%s" %
-        (result["action"], result.get("id"), owner, repo, issue))
+    except Exception as exc:  # e.g. the github_lifecycle adapter failed to import
+        log("BLOCKED — could not delegate the evidence comment to the #285 lifecycle adapter "
+            "for %s/%s#%s: %s" % (owner, repo, issue, exc))
+        sys.exit(_BLOCKED)
+    if not lifecycle_receipt.get("verified"):
+        log("BLOCKED — evidence comment published but NOT confirmed by re-query on %s/%s#%s "
+            "(comment_id=%s) — treating as failed, never a silent success." %
+            (owner, repo, issue, lifecycle_receipt.get("comment_id")))
+        sys.exit(_BLOCKED)
+    log("published (%s) comment id=%s on %s/%s#%s via the #285 canonical lifecycle comment "
+        "(state=%s)" % (lifecycle_receipt.get("action"), lifecycle_receipt.get("comment_id"),
+                        owner, repo, issue, lifecycle_receipt.get("state")))
 
 
 def cmd_selftest(_opts):
@@ -717,6 +790,7 @@ def main():
             "verbs": ["build", "comment", "progress-comment", "selftest"],
             "flags": [
                 "--anchor",
+                "--attempt-id",
                 "--backlog",
                 "--help",
                 "--how",
@@ -729,7 +803,9 @@ def main():
                 "--publish",
                 "--repo",
                 "--require-evidence",
+                "--run-id",
                 "--shots-dir",
+                "--state",
                 "--state-path",
                 "--summary",
                 "--template",

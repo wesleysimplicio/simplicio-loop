@@ -29,6 +29,8 @@ from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONT
                                ReceiptStatus, verify_receipt)
 from .planning_gate import content_hash as _planning_content_hash
 from .planning_gate import evaluate_mutation_authority, mutation_authority_required
+from .planning_gate import build_planning_receipt as _build_planning_receipt
+from .planning_gate import publish_planning_receipt as _publish_planning_receipt
 from .work_item_claims import AttemptCoordinator, LeaseLostDuringExecution
 from .merge_executor import MergeExecutor, MergeExecutorError
 from .model_registry import ModelCapabilityRegistry, ModelRegistryError
@@ -53,6 +55,11 @@ except ImportError:  # pragma: no cover - installed package without scripts name
     _trust_authorize = None
     _load_trust_policy = None
     _resolve_trust_environment = None
+
+try:
+    from scripts.security_audit_log import append_event as _audit_append
+except ImportError:  # pragma: no cover - installed package without scripts namespace
+    _audit_append = None
 
 RUNNER_SCHEMA = "simplicio.run-manifest/v1"
 STATE_SCHEMA = "simplicio.run-state/v1"
@@ -232,6 +239,17 @@ def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]
     return queue, identity
 
 
+STATIC_QUEUE_TOKEN_OPT_IN_VAR = "SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN"
+
+# #289: the queue operations a worker's short-lived credential is scoped to.
+# `enqueue` is deliberately excluded -- workers claim/heartbeat/complete/cancel
+# existing tasks, they do not create new ones, so a stolen worker credential
+# cannot be used to inject work into the queue.
+WORKER_QUEUE_OPERATIONS = (
+    "pull", "claim", "heartbeat", "complete", "assert-active", "cancel", "release", "events", "task",
+)
+
+
 def _resolve_queue_token(environment_id: Optional[str], policy: Optional[Dict[str, Any]],
                           identity: Optional[Dict[str, Any]]) -> Optional[str]:
     """Resolve the bearer credential for the distributed queue (#289).
@@ -241,17 +259,51 @@ def _resolve_queue_token(environment_id: Optional[str], policy: Optional[Dict[st
     (:mod:`scripts.short_lived_credentials`) is minted for this process, bound
     to the worker's agent identity as subject and the environment_id as scope,
     with a TTL taken from the policy's ``max_ttl_seconds`` (capped by
-    ``SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS`` if set lower). This is not the
-    OIDC broker exchange #289 describes -- there is no CI identity provider to
-    issue the initial trust -- but it replaces an indefinitely-lived static
-    secret with one that expires on its own and carries a revocable ``jti``.
+    ``SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS`` if set lower), and restricted
+    to :data:`WORKER_QUEUE_OPERATIONS` (operation-level scoping, so a leaked
+    token cannot be replayed against an operation this worker never needed).
+    This is not the OIDC broker exchange #289 describes -- there is no CI
+    identity provider to issue the initial trust, and that gap stays
+    permanently blocked absent one -- but it replaces an indefinitely-lived
+    static secret with one that expires on its own and carries a revocable
+    ``jti``.
 
-    Falls back to the legacy static ``SIMPLICIO_REMOTE_QUEUE_TOKEN`` when no
-    signing secret is configured, for local/dev use and backward compatibility.
+    The legacy static ``SIMPLICIO_REMOTE_QUEUE_TOKEN`` is no longer a silent
+    fallback: it is only honored when the caller has *also* set
+    ``SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN=1`` (explicit opt-in), and every use
+    of it appends a ``reject``-adjacent warning line to the #289 audit log
+    (:mod:`scripts.security_audit_log`) so an indefinitely-lived credential in
+    use is discoverable, not invisible. Without the opt-in flag, a missing
+    signing secret fails closed with ``RuntimeError`` rather than silently
+    downgrading to the weaker auth mode.
     """
     secret = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", "").strip()
     if not secret:
-        return os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN") or None
+        static_token = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN", "").strip() or None
+        opted_in = os.environ.get(STATIC_QUEUE_TOKEN_OPT_IN_VAR, "").strip().lower() in ("1", "true", "yes")
+        if static_token and not opted_in:
+            if _audit_append is not None:
+                _audit_append(
+                    None, event="runner.resolve_queue_token", decision="reject",
+                    operation=environment_id or "queue",
+                    reason="static SIMPLICIO_REMOTE_QUEUE_TOKEN present without "
+                           f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1 opt-in",
+                )
+            raise RuntimeError(
+                "SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET is not set and the legacy static "
+                "SIMPLICIO_REMOTE_QUEUE_TOKEN fallback is no longer silent (#289). Set "
+                f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1 to explicitly opt into the deprecated "
+                "static-token auth mode for local/dev use, or configure "
+                "SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET to use short-lived credentials instead."
+            )
+        if static_token and _audit_append is not None:
+            _audit_append(
+                None, event="runner.resolve_queue_token", decision="accept",
+                operation=environment_id or "queue",
+                reason="deprecated static-token auth mode explicitly opted into via "
+                       f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1",
+            )
+        return static_token
     try:
         from scripts.short_lived_credentials import issue_token
     except ImportError as exc:  # pragma: no cover - installed package without scripts namespace
@@ -262,7 +314,8 @@ def _resolve_queue_token(environment_id: Optional[str], policy: Optional[Dict[st
     ttl_seconds = min(float(override_ttl), max_ttl) if override_ttl else max_ttl
     subject = (identity or {}).get("agent_id", "unknown-agent")
     scope = environment_id or "queue"
-    return issue_token(secret, subject=subject, scope=scope, ttl_seconds=ttl_seconds)
+    return issue_token(secret, subject=subject, scope=scope, ttl_seconds=ttl_seconds,
+                       operations=WORKER_QUEUE_OPERATIONS)
 
 
 def _run_id() -> str:
@@ -1009,6 +1062,78 @@ def _sync_github_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str
         try:
             _append_jsonl(run_dir / "lifecycle-sync-errors.jsonl",
                          {"ts": _now(), "kind": event.get("kind"), "error": str(exc)})
+        except Exception:
+            pass
+
+
+def _maybe_auto_build_planning_receipt(
+    run_root: Path, state: Dict[str, Any], run_id: str,
+    contract: Dict[str, Any], plan: Dict[str, Any], plan_validation: Dict[str, Any],
+) -> None:
+    """#284 remaining gap: wire ``planning_gate.build_planning_receipt()`` into the
+    REAL ``arm_run()`` dispatch path so the mutation-authority gate in
+    ``execute_operator()``/``execute_operator_batch()`` is self-sufficient, instead
+    of only ever being satisfiable by a caller remembering to run the separate
+    ``scripts/planning_gate.py build`` CLI first.
+
+    Opt-in via ``SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT`` (default OFF) -- this is
+    intentionally NOT mandatory-by-default the way ``mutation_authority_required()``
+    is: dozens of existing tests deliberately exercise the gate's fail-closed
+    behavior with NO receipt on disk (see ``tests/planning_gate_fixtures.py``), and
+    an unconditional auto-build here would silently make every one of those runs
+    "ready", defeating the "no auto-generated fallback" guarantee documented in
+    ``planning_gate.py``. A caller that wants the real dispatch path to self-gate
+    turns this flag on explicitly; every existing run/test is unaffected when unset.
+
+    When a GitHub ``source_issue`` is present on the run state AND
+    ``SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC`` is also enabled, this additionally
+    captures a fresh source snapshot (folding it into the mutation-authority
+    identity so a later source edit invalidates the authority) and publishes the
+    resulting receipt as PLANNED/BLOCKED on the canonical GitHub comment via
+    ``planning_gate.publish_planning_receipt()`` -- the #284-specific projection,
+    distinct from (and complementary to) the generic per-phase-event sync
+    ``_sync_github_lifecycle()`` already performs for CLAIMED/DISCOVERED/etc.
+
+    Best-effort and fail-open: any failure here (bad `gh` auth, no network, import
+    error) is logged to ``lifecycle-sync-errors.jsonl`` and swallowed, exactly like
+    ``_sync_github_lifecycle()`` -- this must never abort or fail the run.
+    """
+    if str(os.environ.get("SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT") or "").strip().lower() not in ("1", "true", "yes"):
+        return
+    try:
+        attempt = int((state or {}).get("attempts", 0)) + 1
+        source_snapshot = None
+        source_issue = (state or {}).get("source_issue") or {}
+        owner, repo_name, issue = source_issue.get("owner"), source_issue.get("repo"), source_issue.get("issue")
+        lifecycle_sync_on = str(os.environ.get("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC") or "").strip().lower() in (
+            "1", "true", "yes",
+        )
+        if lifecycle_sync_on and owner and repo_name and issue:
+            try:
+                from .source_snapshot import capture_github_issue_snapshot
+                source_snapshot = capture_github_issue_snapshot(f"{owner}/{repo_name}", str(issue))
+            except Exception:
+                source_snapshot = None
+        receipt = _build_planning_receipt(
+            run_id=run_id, attempt=attempt, contract=contract, plan=plan,
+            plan_validation=plan_validation, source_snapshot=source_snapshot,
+        )
+        (run_root / "planning-receipt.json").write_text(
+            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
+        if source_snapshot is not None and lifecycle_sync_on:
+            scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from pr_evidence import publish_comment as _publish_comment  # local import: optional dep
+
+            lifecycle_receipt = _publish_planning_receipt(receipt, publish_comment_fn=_publish_comment)
+            if lifecycle_receipt is not None:
+                _github_lifecycle.persist_lifecycle_receipt(lifecycle_receipt, run_root)
+    except Exception as exc:  # noqa: BLE001 -- best-effort, never blocks the run
+        try:
+            _append_jsonl(run_root / "lifecycle-sync-errors.jsonl",
+                         {"ts": _now(), "kind": "planning_receipt_auto_build", "error": str(exc)})
         except Exception:
             pass
 
@@ -1889,6 +2014,7 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         _write_json(run_root / "plan.json", plan)
         state = _load_json(run_root / "state.json")
         state["current_action"] = "plan_materialized"
+        _maybe_auto_build_planning_receipt(run_root, state, run_id, compiled, plan, plan_validation)
         candidates = ((plan.get("steps") or [{}])[0].get("candidate_targets") or [])
         if not candidates:
             raise RuntimeError("mapper-derived plan has no authorized operator target")

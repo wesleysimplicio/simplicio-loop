@@ -193,3 +193,102 @@ def test_check_endpoint_fails_closed_for_unknown_environment():
         policy, "unknown-env", "https://queue.example.internal:443/", "queue.example.internal", "aa" * 32
     )
     assert not ok
+
+
+# ---------------------------------------------------------------------------
+# SPKI pin rotation (#289): current + next pin set
+# ---------------------------------------------------------------------------
+
+def test_structured_pins_accept_current_and_next():
+    policy = _base_policy()
+    policy["environments"]["staging"]["tls_sha256_pins"] = [
+        {"sha256": "aa" * 32, "status": "current"},
+        {"sha256": "bb" * 32, "status": "next"},
+    ]
+    validate_schema(policy)  # must not raise
+    ok_current, _ = check_endpoint(
+        policy, "staging", "https://queue.example.internal:443/", "queue.example.internal", "aa" * 32,
+    )
+    ok_next, _ = check_endpoint(
+        policy, "staging", "https://queue.example.internal:443/", "queue.example.internal", "bb" * 32,
+    )
+    assert ok_current is True
+    assert ok_next is True
+
+
+def test_legacy_string_pins_are_treated_as_implicit_current():
+    policy = _base_policy()
+    policy["environments"]["staging"]["tls_sha256_pins"] = ["aa" * 32]
+    validate_schema(policy)  # must not raise -- backward compatible
+
+
+def test_pins_without_any_current_entry_are_rejected():
+    policy = _base_policy()
+    policy["environments"]["staging"]["tls_sha256_pins"] = [
+        {"sha256": "bb" * 32, "status": "next"},
+    ]
+    with pytest.raises(TrustPolicyError, match="at least one 'current' pin"):
+        validate_schema(policy)
+
+
+def test_retired_pin_no_longer_authorizes_a_connection():
+    policy = _base_policy()
+    policy["environments"]["staging"]["tls_sha256_pins"] = [
+        {"sha256": "aa" * 32, "status": "current"},
+        {"sha256": "cc" * 32, "status": "retired"},
+    ]
+    ok, reason = check_endpoint(
+        policy, "staging", "https://queue.example.internal:443/", "queue.example.internal", "cc" * 32,
+    )
+    assert not ok
+    assert "active pin" in reason
+
+
+def test_pin_entry_with_invalid_status_is_rejected():
+    policy = _base_policy()
+    policy["environments"]["staging"]["tls_sha256_pins"] = [
+        {"sha256": "aa" * 32, "status": "bogus"},
+    ]
+    with pytest.raises(TrustPolicyError, match="pin status"):
+        validate_schema(policy)
+
+
+# ---------------------------------------------------------------------------
+# Audit logging (#289): authorize()/check_endpoint() append a structured line
+# per decision, never the credential itself.
+# ---------------------------------------------------------------------------
+
+def test_authorize_appends_audit_log_entries(tmp_path):
+    from scripts.security_audit_log import read_events
+
+    audit_path = tmp_path / "audit.jsonl"
+    policy = _base_policy()
+    authorize(policy, "staging", "acme/widgets", "refs/heads/main", "alice", audit_log_path=audit_path)
+    authorize(policy, "staging", "attacker/fork", "refs/heads/main", "mallory", audit_log_path=audit_path)
+
+    events = read_events(audit_path)
+    assert len(events) == 2
+    assert events[0]["decision"] == "accept"
+    assert events[0]["who"] == "alice"
+    assert events[1]["decision"] == "reject"
+    assert events[1]["who"] == "mallory"
+
+
+def test_check_endpoint_appends_audit_log_entries(tmp_path):
+    from scripts.security_audit_log import read_events
+
+    audit_path = tmp_path / "audit.jsonl"
+    policy = _base_policy()
+    check_endpoint(
+        policy, "staging", "https://queue.example.internal:443/", "queue.example.internal", "aa" * 32,
+        audit_log_path=audit_path,
+    )
+    check_endpoint(
+        policy, "staging", "https://queue.example.internal:443/", "queue.example.internal", "wrong" * 12,
+        audit_log_path=audit_path,
+    )
+
+    events = read_events(audit_path)
+    assert len(events) == 2
+    assert events[0]["decision"] == "accept"
+    assert events[1]["decision"] == "reject"

@@ -12,6 +12,7 @@ import json
 from simplicio_loop.intake_contract import (
     INTAKE_SCHEMA,
     build_task_intake,
+    intake_path,
     lint_task_intake,
 )
 from simplicio_loop.plan_contract import validate_plan
@@ -22,7 +23,7 @@ from simplicio_loop.planning_gate import (
     receipt_path,
     replan_on_drift,
 )
-from simplicio_loop.traceability_matrix import MATRIX_SCHEMA, build_matrix
+from simplicio_loop.traceability_matrix import MATRIX_SCHEMA, build_matrix, matrix_path
 
 CONTRACT = {
     "schema": "simplicio.task-contract-collection/v1",
@@ -248,6 +249,93 @@ def test_replan_on_drift_without_a_previous_receipt_starts_at_revision_zero(tmp_
     )
     assert replanned["plan_revision"] == 0
     assert replanned["replan"]["replanned"] is False
+
+
+# -- branch-coverage gap fills (#284: measured >= 90% branch coverage) -------
+
+def test_build_task_intake_skips_scenarios_without_an_id():
+    contract_missing_id = {
+        "schema": "simplicio.task-contract-collection/v1", "collection_hash": "c-noid",
+        "tasks": [{
+            "id": "T1",
+            "scenarios": [
+                {"title": "no id here"},  # dropped: no stable id to project
+                {"id": "SCN1", "title": "Faz X"},
+            ],
+        }],
+    }
+    intake = build_task_intake(run_id="r1", attempt=1, contract=contract_missing_id, plan_hash="p1")
+    assert [ac["id"] for ac in intake["acceptance_criteria"]] == ["SCN1"]
+
+
+def test_lint_task_intake_flags_missing_id_and_duplicate_id():
+    intake = build_task_intake(run_id="r1", attempt=1, contract=CONTRACT, plan_hash="p1")
+    no_id = dict(intake, acceptance_criteria=[{"id": "", "text": "x", "origin": "source"}])
+    verdict = lint_task_intake(no_id)
+    assert verdict["valid"] is False
+    assert "acceptance_criterion_missing_id" in verdict["errors"]
+
+    duplicate = dict(intake, acceptance_criteria=[
+        {"id": "AC-1", "text": "a", "origin": "source"},
+        {"id": "AC-1", "text": "b", "origin": "derived"},
+    ])
+    verdict2 = lint_task_intake(duplicate)
+    assert verdict2["valid"] is False
+    assert "duplicate_acceptance_criterion_id:AC-1" in verdict2["errors"]
+
+
+def test_intake_path_points_under_the_run_dir(tmp_path):
+    path = intake_path(tmp_path)
+    assert path.parent == tmp_path
+    assert path.name == "task-intake.json"
+
+
+def test_build_matrix_skips_scenarios_without_an_id():
+    contract_missing_id = {
+        "schema": "simplicio.task-contract-collection/v1", "collection_hash": "c-noid",
+        "tasks": [{
+            "id": "T1",
+            "scenarios": [
+                {"title": "no id here"},
+                {"id": "SCN1", "title": "Faz X"},
+            ],
+        }],
+    }
+    plan = json.loads(json.dumps(PLAN_COVERED))
+    matrix = build_matrix(contract_missing_id, plan)
+    assert [row["ac_id"] for row in matrix["rows"]] == ["SCN1"]
+
+
+def test_build_matrix_declared_evidence_without_test_commands_is_covered():
+    """An AC that carries no test command but DOES declare an evidence_type is
+    `evidence_status=declared`, not `missing` -- and is still `covered` (via
+    `no_code_change` OR test_commands is the ONLY hard requirement; a declared
+    evidence type on its own describes the proof method, not coverage)."""
+    plan = json.loads(json.dumps(PLAN_COVERED))
+    plan["steps"][0]["steps"][0]["plan"] = {
+        "test_commands": ["pytest tests/test_a.py"],
+        "evidence_type": "screenshot",
+    }
+    matrix = build_matrix(CONTRACT, plan)
+    row = matrix["rows"][0]
+    assert row["evidence_status"] == "declared"
+    assert row["evidence_justification"] == ""
+    assert row["covered"] is True
+
+
+def test_matrix_path_points_under_the_run_dir(tmp_path):
+    path = matrix_path(tmp_path)
+    assert path.parent == tmp_path
+    assert path.name == "ac-matrix.json"
+
+
+def test_build_matrix_skips_non_mapping_and_idless_plan_steps():
+    plan = json.loads(json.dumps(PLAN_COVERED))
+    plan["steps"][0]["steps"] = ["not-a-mapping", {"rule_ids": ["RN1"]}]  # no scenario_id/id
+    matrix = build_matrix(CONTRACT, plan)
+    row = matrix["rows"][0]
+    assert row["evidence_status"] == "missing"
+    assert row["covered"] is False
 
 
 def test_replan_on_drift_never_removes_an_explicit_ac():

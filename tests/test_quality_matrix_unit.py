@@ -7,10 +7,12 @@ from simplicio_loop.quality_matrix import (
     DEFAULT_COVERAGE_THRESHOLD,
     QualityMatrixError,
     REQUIRED_REQUIREMENTS,
+    TESTS_ENVELOPE_CATEGORIES,
     build_quality_matrix_template,
     classify_change_type,
     default_policy_for_change_type,
     evaluate_quality_matrix,
+    sync_tests_envelope,
     validate_coverage_threshold,
 )
 
@@ -285,6 +287,72 @@ def test_build_template_with_change_type_seeds_policy_and_tdd_lane():
     chore_template = build_quality_matrix_template(change_type="chore")
     assert chore_template["policy"]["tdd_required"] is False
     assert "tdd" not in chore_template["requirements"]
+
+
+# --- #283: full envelope shape (run_id, work_item, nested "tests") -----------------
+
+
+def test_template_defaults_run_id_and_work_item_to_empty_never_fabricated():
+    template = build_quality_matrix_template()
+    assert template["run_id"] == ""
+    assert template["work_item"] == {}
+
+
+def test_template_records_run_id_and_work_item_verbatim():
+    work_item = {"source": "github", "id": "283", "type": "feat", "title": "Quality Gate"}
+    template = build_quality_matrix_template(run_id="run-abc123", work_item=work_item)
+    assert template["run_id"] == "run-abc123"
+    assert template["work_item"] == work_item
+    # mutating the caller's dict afterwards must not affect the stored template
+    work_item["id"] = "mutated"
+    assert template["work_item"]["id"] == "283"
+
+
+def test_template_always_has_tests_mirror_in_sync_with_requirements():
+    template = build_quality_matrix_template()
+    assert set(template["tests"]) == set(TESTS_ENVELOPE_CATEGORIES)
+    for name in TESTS_ENVELOPE_CATEGORIES:
+        assert template["tests"][name] == template["requirements"][name]
+
+
+def test_sync_tests_envelope_recomputes_from_requirements():
+    receipt = _passing_receipt()
+    del receipt["requirements"]["unit"]  # simulate a stale/incomplete flat dict
+    sync_tests_envelope(receipt)
+    assert receipt["tests"]["unit"] == {"status": "unset", "proof_ref": "", "detail": ""}
+    for name in ("integration", "system", "regression"):
+        assert receipt["tests"][name] == receipt["requirements"][name]
+
+
+def test_evaluate_accepts_nested_tests_shape_for_missing_flat_lane(tmp_path):
+    # A lane present ONLY under "tests" (the issue's literal envelope shape) must be
+    # accepted exactly as if it were under "requirements" directly.
+    receipt = _passing_receipt()
+    unit_entry = receipt["requirements"].pop("unit")
+    receipt["tests"] = {"unit": unit_entry}
+    (tmp_path / "quality-matrix.json").write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = evaluate_quality_matrix(str(tmp_path))
+    assert verdict["ready"] is True
+
+
+def test_evaluate_flat_requirement_wins_over_stale_tests_mirror(tmp_path):
+    # A flat requirements.<lane> entry is canonical -- a stale/contradictory "tests"
+    # mirror for the same lane must never override it.
+    receipt = _passing_receipt()
+    receipt["tests"] = {"unit": {"status": "fail", "proof_ref": "stale"}}
+    (tmp_path / "quality-matrix.json").write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = evaluate_quality_matrix(str(tmp_path))
+    assert verdict["ready"] is True  # requirements.unit (pass) wins, not tests.unit (fail)
+
+
+def test_evaluate_missing_lane_in_both_shapes_still_blocks(tmp_path):
+    receipt = _passing_receipt()
+    del receipt["requirements"]["integration"]
+    receipt["tests"] = {}  # present but doesn't supply the missing lane either
+    (tmp_path / "quality-matrix.json").write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = evaluate_quality_matrix(str(tmp_path))
+    assert verdict["ready"] is False
+    assert verdict["reason_code"] == "quality_integration_missing"
 
 
 if __name__ == "__main__":
