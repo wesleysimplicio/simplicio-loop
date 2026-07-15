@@ -74,9 +74,9 @@ def test_clean_install_then_smoke_check_then_uninstall_leaves_no_trace(tmp_path)
         skill_md = target / ".claude" / "skills" / s / "SKILL.md"
         assert skill_md.is_file(), "%s not installed cleanly" % s
 
-    # 3. smoke test (issue #293 step 6): every installed .py hook/worker must at least PARSE —
-    # proof the copy landed intact, not truncated/corrupted, on a machine with none of this
-    # repo's own tooling pre-installed.
+    # 3a. smoke test (issue #293 step 6, baseline): every installed .py hook/worker must at
+    # least PARSE — proof the copy landed intact, not truncated/corrupted, on a machine with
+    # none of this repo's own tooling pre-installed.
     checked = 0
     for py_file in (target / "hooks").glob("*.py"):
         ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
@@ -85,6 +85,14 @@ def test_clean_install_then_smoke_check_then_uninstall_leaves_no_trace(tmp_path)
         ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
         checked += 1
     assert checked >= 5, "expected to smoke-check several installed worker scripts"
+
+    # 3b. richer smoke (issue #293 step 6, the actual ask): don't just parse — RUN the
+    # installed copies for real and assert on their real output. `--help`/doctor/preflight and a
+    # real minimal task (`task_anchor.py selftest`), all against THIS clean target's copies.
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import install_post_smoke  # noqa: E402  (imported late: keeps this file import-light otherwise)
+    smoke = install_post_smoke.run_post_install_smoke(str(target))
+    assert smoke["ok"], smoke
 
     receipts = list((target / ".simplicio" / "receipts").glob("*.json"))
     assert len(receipts) == 1
