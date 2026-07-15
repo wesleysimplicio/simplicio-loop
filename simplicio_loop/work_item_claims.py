@@ -196,7 +196,7 @@ class AttemptCoordinator:
 
     def run_guarded(self, attempt: WorkItemAttempt, argv: Sequence[str], *, cwd: str | Path,
                      timeout: float = 180.0, heartbeat_interval: float = 5.0,
-                     ttl: float = 60.0) -> subprocess.CompletedProcess:
+                     ttl: float = 60.0, env: Optional[Mapping[str, str]] = None) -> subprocess.CompletedProcess:
         """Run a mutating subprocess while heartbeating the lease in the background.
 
         Fixes the epic-183 gap where a long-running operator invocation (e.g.
@@ -208,11 +208,15 @@ class AttemptCoordinator:
         :class:`LeaseLostDuringExecution` is raised instead of returning a result that
         looks successful. On graceful completion the final exit is still fenced by a
         last :meth:`assert_active` check before the caller sees the result.
+
+        ``env`` lets a caller (e.g. ``runner.py::execute_operator``) pass its own operator
+        environment through the guard instead of silently falling back to this process's
+        environment -- a guarded dispatch must see the exact env an unguarded dispatch would.
         """
         self.assert_active(attempt)
         proc = subprocess.Popen(
             list(argv), cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=dict(env) if env is not None else None,
         )
         lease_lost: List[BaseException] = []
         stop = threading.Event()

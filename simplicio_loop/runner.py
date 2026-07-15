@@ -29,6 +29,8 @@ from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONT
                                ReceiptStatus, verify_receipt)
 from .planning_gate import content_hash as _planning_content_hash
 from .planning_gate import evaluate_mutation_authority, mutation_authority_required
+from .work_item_claims import AttemptCoordinator, LeaseLostDuringExecution
+from .merge_executor import MergeExecutor, MergeExecutorError
 
 try:
     from scripts.agent_identity import ensure_identity
@@ -572,6 +574,72 @@ def _auto_fan_out_enabled() -> bool:
     """
     raw = os.environ.get("SIMPLICIO_LOOP_AUTO_FAN_OUT", "1").strip().lower()
     return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def _guarded_dispatch_enabled() -> bool:
+    """Opt-in gate (issue #288) for threading ``AttemptCoordinator.run_guarded`` through the
+    real operator dispatch path instead of a raw, unguarded ``subprocess.run``.
+
+    Off by default -- following the same pattern as ``SIMPLICIO_REQUIRE_MUTATION_AUTHORITY``
+    in #284's ``planning_gate.py`` wiring -- so existing callers/fixtures that pass a
+    distributed queue without the fuller identity/heartbeat contract are unaffected. Set
+    ``SIMPLICIO_GUARDED_DISPATCH=1`` to require a heartbeat-guarded, lease-fenced attempt for
+    every distributed-queue dispatch (a real worker whose lease is stolen mid-mutation is
+    killed and reported as ``lease_lost_during_execution`` instead of finishing unguarded).
+    """
+    return str(os.environ.get("SIMPLICIO_GUARDED_DISPATCH") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _auto_merge_enabled() -> bool:
+    """Opt-in gate (issue #288) for calling ``MergeExecutor`` for real once a dispatch
+    attempt's receipt pair is ``VERIFIED``.
+
+    Off by default: creating/merging a real PR is a side effect with real consequences (an
+    actual GitHub API call, a real merge), so it must be explicitly requested via
+    ``SIMPLICIO_AUTO_MERGE_PR=1`` plus a resolvable repo slug
+    (``SIMPLICIO_REMOTE_REPO``/``GITHUB_REPOSITORY``) and a worktree branch on the item -- any
+    of those missing is reported as ``attempted: False`` rather than silently skipped.
+    """
+    return str(os.environ.get("SIMPLICIO_AUTO_MERGE_PR") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _merge_repo_slug() -> str:
+    return str(os.environ.get("SIMPLICIO_REMOTE_REPO") or os.environ.get("GITHUB_REPOSITORY") or "").strip()
+
+
+def _dispatch_merge_pr(item: Mapping[str, Any], *, receipt: str, run_id: str) -> Dict[str, Any]:
+    """Create/poll/merge the PR for a claimed item's worktree branch and reconcile the merge
+    against the remote (issue #288).
+
+    Formalizes the ad-hoc ``gh pr create`` / ``gh pr merge --squash --delete-branch`` pattern
+    this project's own delivery workflow already performs by hand at the end of every task
+    (CLAUDE.md / AGENTS.md "Process" sections) as a real, reusable call instead of prose an
+    operator must remember. Never raises for an ordinary "cannot merge yet/here" outcome --
+    those come back as ``attempted: True, merged: False`` with a specific reason so a caller
+    can retry or escalate; only a hard `gh` transport failure surfaces as an error field.
+    """
+    context = item.get("worktree_context") or {}
+    branch = str(context.get("branch") or "").strip()
+    repo_slug = _merge_repo_slug()
+    if not branch or not repo_slug:
+        return {"attempted": False, "reason": "missing_branch_or_repo_slug", "merged": False}
+    base = str(os.environ.get("SIMPLICIO_MERGE_BASE") or "main").strip()
+    task_id = str(item.get("task_id") or "")
+    title = ("simplicio-loop: %s" % task_id) if task_id else "simplicio-loop: automated delivery"
+    body = ("Automated delivery for work item `%s` (run `%s`).\n\nOperator receipt: `%s`\n"
+            % (task_id, run_id, receipt))
+    try:
+        executor = MergeExecutor(repo=repo_slug)
+        pr = executor.ensure_pr(branch=branch, base=base, title=title, body=body)
+        pr_number = int(pr.get("number") or 0)
+        if not pr_number:
+            return {"attempted": True, "merged": False, "reason_code": "NO_PR_NUMBER",
+                    "detail": "ensure_pr did not resolve a PR number", "pr": pr}
+        result = executor.merge(pr_number)
+        return {"attempted": True, "pr": pr, **result.to_dict()}
+    except MergeExecutorError as exc:
+        return {"attempted": True, "merged": False, "reconciled": False,
+                "reason_code": exc.reason_code, "detail": str(exc)}
 
 
 def _auto_worktree_dispatch(
@@ -1940,11 +2008,24 @@ def conclude_run(repo: str, run_id: str, *, force: bool = False) -> Dict[str, An
     return read_status(repo, run_id)
 
 
-def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, Any]:
+def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
+                      attempt_coordinator: Optional[AttemptCoordinator] = None,
+                      guarded_attempt: Any = None) -> Dict[str, Any]:
     """Execute one planned task through the real dev-cli and persist an immutable receipt.
 
     `run` intentionally arms and dry-runs only.  This explicit tick is the mutation boundary;
     it cannot run without the mapper/plan/operator preflight artifacts created by `arm_run`.
+
+    When both ``attempt_coordinator`` and ``guarded_attempt`` (a ``WorkItemAttempt``) are
+    supplied (issue #288's guarded dispatch path, gated by ``SIMPLICIO_GUARDED_DISPATCH`` in
+    ``_operator_dispatch_attempt``), the mutating dev-cli invocation runs through
+    ``AttemptCoordinator.run_guarded`` instead of a raw ``subprocess.run`` -- a background
+    thread heartbeats the lease for the life of the subprocess and kills it the instant the
+    lease is no longer current, instead of letting a worker that lost its fence keep mutating
+    the checkout (the #183 gap). ``LeaseLostDuringExecution`` propagates to the caller, which
+    already treats any exception here as a receipted (not scheduler-crashing) failure.
+    ``guarded_attempt`` is deliberately named apart from this function's own ``attempt``
+    local (the per-task retry counter) so the two can never collide.
     """
     status = read_status(repo, run_id)
     if (status["state"].get("maintenance") or {}).get("disposition") == "backlog_only":
@@ -2061,14 +2142,20 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         source = "env_override"
     else:
         try:
-            result = subprocess.run(
-                argv,
-                cwd=str(repo_path),
-                capture_output=True,
-                text=True,
-                timeout=_operator_timeout("execute"),
-                env=op_env,
-            )
+            if attempt_coordinator is not None and guarded_attempt is not None:
+                # Guarded dispatch (#288/#183): heartbeat-fenced, kill-on-lease-loss.
+                result = attempt_coordinator.run_guarded(
+                    guarded_attempt, argv, cwd=repo_path, timeout=_operator_timeout("execute"), env=op_env,
+                )
+            else:
+                result = subprocess.run(
+                    argv,
+                    cwd=str(repo_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=_operator_timeout("execute"),
+                    env=op_env,
+                )
             returncode = result.returncode
             raw_stdout = (result.stdout or "").strip()
             try:
@@ -2121,6 +2208,13 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         "timed_out": returncode is None,
         "started_at": _now(),
         "finished_at": _now(),
+        # #288: receipt_verifier.OPERATOR_RECEIPT_SCHEMA requires "measured_at" for its
+        # freshness check. This receipt never carried it, so every real (non-mocked)
+        # execute_operator() dispatch was permanently INVALID_SCHEMA/MISSING_FIELD in
+        # _verify_worker_receipt_pair() -- the merge gate below could never fire for a genuine
+        # attempt. Same instant as finished_at; this is a receipt-completeness fix, not a new
+        # measurement.
+        "measured_at": _now(),
         "source": source,
         "provider_config": provider_config,
         "checkpoint": checkpoint,
@@ -2574,21 +2668,45 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
     }
     queue = item.get("distributed_queue")
     lease = None
+    guarded = _guarded_dispatch_enabled()
+    attempt_coordinator: Optional[AttemptCoordinator] = None
+    attempt_obj: Any = None
     if queue is not None:
         identity = item.get("agent_identity")
         try:
-            lease = queue.claim(
-                common["task_id"], common["worker_id"],
-                idempotency_key=f"{common['run_id']}:{common['task_id']}:{common['worker_id']}",
-                ttl=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TTL", "3600")),
-                identity=identity,
-                capabilities=(identity or {}).get("capabilities", ()),
-            )
+            if guarded and identity:
+                # #288/#183: real dispatch attempts get a heartbeat-guarded, fenced attempt
+                # object instead of a bare lease -- the same lease/fencing contract, plus the
+                # ability to run the mutating subprocess through ``run_guarded`` below.
+                attempt_coordinator = AttemptCoordinator(queue, run_id=common["run_id"])
+                context_pack = item.get("context_pack") if isinstance(item.get("context_pack"), Mapping) else {}
+                attempt_obj = attempt_coordinator.claim(
+                    work_item_id=common["task_id"],
+                    identity=identity,
+                    goal=str(context_pack.get("goal") or common["task_id"]),
+                    acs=tuple(context_pack.get("acs") or ()),
+                    depends_on=tuple(context_pack.get("depends_on") or ()),
+                    source_refs=tuple(context_pack.get("source_refs") or ()),
+                    allowed_paths=tuple(context_pack.get("allowed_paths") or ()),
+                    issue_ref=str(context_pack.get("issue_ref") or ""),
+                    issue_url=str(context_pack.get("issue_url") or ""),
+                    ttl=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TTL", "3600")),
+                )
+                lease = attempt_obj.lease
+            else:
+                lease = queue.claim(
+                    common["task_id"], common["worker_id"],
+                    idempotency_key=f"{common['run_id']}:{common['task_id']}:{common['worker_id']}",
+                    ttl=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TTL", "3600")),
+                    identity=identity,
+                    capabilities=(identity or {}).get("capabilities", ()),
+                )
             common["lease"] = {
                 "lease_id": lease.lease_id,
                 "fencing_token": lease.fencing_token,
                 "expires_at": lease.expires_at,
             }
+            common["guarded_dispatch"] = attempt_obj is not None
         except QueueConflict as exc:
             return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
                     "reason_code": "claim_conflict", "error": str(exc), "dead_letter": True,
@@ -2614,7 +2732,10 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             "finished_at": _now(),
         }
     try:
-        payload = execute_operator(item["repo"], item["run_id"], task_index=item["task_index"])
+        payload = execute_operator(
+            item["repo"], item["run_id"], task_index=item["task_index"],
+            attempt_coordinator=attempt_coordinator, guarded_attempt=attempt_obj,
+        )
         state = payload.get("state") or {}
         operator = state.get("operator") or {}
         execution_state = str(operator.get("execution_state") or "")
@@ -2633,7 +2754,10 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
                 # a readable receipt; the scheduler will use the bounded exception path.
                 failure_fingerprint = ""
         if lease is not None and success:
-            queue.complete(lease, receipt_ref=receipt or f"{run_dir}/operator-receipt.json")
+            if attempt_coordinator is not None and attempt_obj is not None:
+                attempt_coordinator.complete(attempt_obj, receipt_ref=receipt or f"{run_dir}/operator-receipt.json")
+            else:
+                queue.complete(lease, receipt_ref=receipt or f"{run_dir}/operator-receipt.json")
         if item.get("agent_identity") and receipt:
             # Keep the worker result itself immutable and independently attributable.
             common["receipt_binding"] = bind_receipt(
@@ -2641,6 +2765,13 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
                 context_pack=item.get("context_pack"),
             )
         receipt_verdict = _verify_worker_receipt_pair(receipt, evidence_receipt)
+        merge: Optional[Dict[str, Any]] = None
+        if success and receipt_verdict["status"] == ReceiptStatus.VERIFIED and _auto_merge_enabled():
+            # #288: once the receipt pair is genuinely VERIFIED, create/poll/merge the real
+            # PR and reconcile against the remote before this dispatch attempt is reported
+            # as done -- replaces the ad-hoc, hand-run "gh pr create / gh pr merge" pattern
+            # this project's own delivery process previously left as prose only.
+            merge = _dispatch_merge_pr(item, receipt=receipt, run_id=common["run_id"])
         return {
             **common,
             "status": "succeeded" if success else "failed",
@@ -2654,6 +2785,28 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             "receipt_verdict_reason": receipt_verdict["reason"],
             "attempt": int(state.get("attempts") or 0),
             "failure_fingerprint": failure_fingerprint,
+            "merge": merge,
+            "started_at": started,
+            "finished_at": _now(),
+        }
+    except LeaseLostDuringExecution as exc:
+        # #183/#288: the guarded subprocess was killed the instant the lease was no longer
+        # current -- report this distinctly from a generic operator exception so a scheduler
+        # can tell "lost the fence mid-mutation" apart from an ordinary tool crash.
+        return {
+            **common,
+            "status": "failed",
+            "phase": "blocked",
+            "execution_state": "error",
+            "receipt": "",
+            "operator_receipt": "",
+            "evidence_receipt": "",
+            "receipt_status": "UNVERIFIED",
+            "attempt": 0,
+            "error": str(exc),
+            "reason_code": "lease_lost_during_execution",
+            "dead_letter": True,
+            "failure_fingerprint": hashlib.sha256(str(exc).encode("utf-8", "replace")).hexdigest()[:16],
             "started_at": started,
             "finished_at": _now(),
         }
