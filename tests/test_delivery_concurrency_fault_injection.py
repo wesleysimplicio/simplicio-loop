@@ -7,6 +7,12 @@ delivery-truth path, proving no state corruption and no false-positive "verified
   3. a transient GitHub API failure during reconciliation (a fake transport that fails N
      times, then succeeds) -- proving a retry recovers cleanly and a real negative fact is
      never smoothed over into a false PASS.
+  4. a process crashing (real `kill()`, not a mocked "pretend the call failed") **while
+     genuinely blocked inside** the external network call itself -- `MergeExecutor.merge()`'s
+     `gh pr merge` invocation, and `DeploymentVerifier`'s byte-verification call -- proving the
+     interrupted call never gets to fabricate a favorable result and that only a fresh
+     post-crash re-query (`reconcile()` / a fresh `github_delivery_payload()` call) determines
+     the truth.
 
 Reuses the same real primitives the rest of the suite already exercises for real (no new
 transport layer invented here): `simplicio_loop.remote_queue.SQLiteRemoteQueue` (real
@@ -80,9 +86,11 @@ def test_two_processes_race_to_claim_same_work_item_only_one_wins(tmp_path):
     }
 
     proc_a = subprocess.Popen([sys.executable, "-c", script_a],
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              stdin=subprocess.DEVNULL)
     proc_b = subprocess.Popen([sys.executable, "-c", script_b],
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              stdin=subprocess.DEVNULL)
     try:
         # Both processes are now spinning on the "go" file -- drop it to release them
         # together, as simultaneously as the OS scheduler allows.
@@ -111,8 +119,8 @@ def test_two_processes_race_to_claim_same_work_item_only_one_wins(tmp_path):
     # exactly one agent, and the queue file itself is still a valid, single row of truth.
     queue = SQLiteRemoteQueue(db_path)
     task = queue.task(work_item_id)
-    assert task["status"] == "leased"
-    assert task["agent_id"] in (IDENTITY_A["agent_id"], IDENTITY_B["agent_id"])
+    assert task["status"] == "claimed"
+    assert task["lease"]["agent_id"] in (IDENTITY_A["agent_id"], IDENTITY_B["agent_id"])
     claimed_events = [e for e in queue.events(after=0, limit=1000)
                       if e.get("task_id") == work_item_id and e.get("kind") == "claimed"]
     assert len(claimed_events) == 1, "exactly one claim must be durably recorded, got %r" % claimed_events
@@ -165,7 +173,8 @@ def test_crash_between_intent_and_effect_recovers_without_duplicating_the_effect
         "ttl": ttl, "handoff_path": handoff_path,
     }
     proc = subprocess.Popen([sys.executable, "-c", script],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            stdin=subprocess.DEVNULL)
     try:
         deadline = time.time() + 10.0
         line = ""
@@ -301,3 +310,246 @@ def test_transient_failure_never_masks_a_real_negative_reachability_verdict(monk
     assert result["reachable"] is False
     assert result["reason_code"] == "merge_commit_not_reachable"
     assert calls["n"] == 1, "a real negative verdict must never be retried into a false PASS"
+
+
+# ---------------------------------------------------------------------------
+# 4a. Real process crash WHILE BLOCKED INSIDE `MergeExecutor.merge()`'s own `gh pr merge`
+#     network call (not merely around a lease claim) -- the interrupted call must never
+#     produce a fabricated "merged" result; only a fresh `reconcile()` re-query afterward may.
+# ---------------------------------------------------------------------------
+
+_CRASH_DURING_MERGE_CALL_SCRIPT = r"""
+import json, subprocess, sys, time
+sys.path.insert(0, %(repo_root)r)
+from simplicio_loop.merge_executor import MergeExecutor
+
+class _Completed:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+def fake_runner(args, capture_output=True, text=True, timeout=30):
+    # args is ["gh", "pr", "view"/"merge", ...]
+    if "view" in args:
+        return _Completed(0, json.dumps({"state": "OPEN", "mergeable": "MERGEABLE",
+                                          "mergeStateStatus": "CLEAN"}))
+    if "merge" in args:
+        # This is the exact network call the real `gh pr merge` performs. Mark that we are
+        # now genuinely inside it, then hang -- standing in for the process being killed
+        # while GitHub's request is in flight, i.e. BEFORE we know whether it landed.
+        with open(%(marker_path)r, "w", encoding="utf-8") as fh:
+            fh.write("IN_MERGE_CALL")
+        time.sleep(300)
+    raise AssertionError("unexpected gh args: %%r" %% (args,))
+
+executor = MergeExecutor(repo="acme/widgets", runner=fake_runner)
+result = executor.merge(42, poll_interval=0, mergeable_timeout=5)
+
+# Only reachable if the (fake) network call returned -- must never happen once killed.
+with open(%(result_path)r, "w", encoding="utf-8") as fh:
+    json.dump(result.to_dict(), fh)
+print("UNEXPECTED_RETURN", flush=True)
+"""
+
+
+def test_crash_during_merge_command_network_call_produces_no_false_positive_receipt(tmp_path):
+    """Kill the OS process for real while it is blocked inside the `gh pr merge` call itself
+    (not at a lease boundary) -- proves no `MergeResult(merged=True)` is ever fabricated from
+    an interrupted call, and that recovery must re-query (`reconcile()`) rather than assume."""
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    marker_path = str(tmp_path / "in_merge_call.marker")
+    result_path = str(tmp_path / "merge_result.json")
+
+    script = _CRASH_DURING_MERGE_CALL_SCRIPT % {
+        "repo_root": repo_root, "marker_path": marker_path, "result_path": result_path,
+    }
+    # File-redirected stdout/stderr (never `subprocess.PIPE`) -- this test's own point is a
+    # real OS-level `kill()` of an in-flight child; piping through inheritable duplicated
+    # handles is an orthogonal OS resource concern this test must not depend on.
+    stdout_path = tmp_path / "child.stdout"
+    with open(stdout_path, "w", encoding="utf-8") as stdout_fh:
+        proc = subprocess.Popen([sys.executable, "-c", script],
+                                stdout=stdout_fh, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 10.0
+            while time.time() < deadline and not Path(marker_path).exists():
+                time.sleep(0.02)
+            assert Path(marker_path).exists(), "child never reached the in-flight gh pr merge call"
+            # The real crash: kill the process while it is genuinely blocked mid network call,
+            # i.e. GitHub's own outcome for this request is still unknown to the client.
+            proc.kill()
+            proc.wait(timeout=10)
+        finally:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    # No result was ever written -- the interrupted call produced nothing, favorable or not.
+    assert not Path(result_path).exists(), (
+        "a killed mid-call process must never leave behind a fabricated merge receipt")
+    assert stdout_path.read_text(encoding="utf-8").strip() != "UNEXPECTED_RETURN"
+
+    # --- Recovery scenario A: GitHub actually finished the merge asynchronously despite the
+    # client's death. Truth can ONLY come from a fresh re-query, never from the dead call.
+    from simplicio_loop.merge_executor import MergeExecutor
+
+    def post_crash_runner_merged(args, capture_output=True, text=True, timeout=30):
+        assert "view" in args, "recovery must re-query, not replay the dead call's args"
+        return subprocess.CompletedProcess(
+            args, 0,
+            stdout=json.dumps({"state": "MERGED",
+                               "mergeCommit": {"oid": "deadbeefcafe"},
+                               "baseRefName": "main"}),
+            stderr="",
+        )
+
+    recovered = MergeExecutor(repo="acme/widgets", runner=post_crash_runner_merged)
+    reconciled = recovered.reconcile(42)
+    assert reconciled["merged"] is True
+    assert reconciled["merge_commit_sha"] == "deadbeefcafe"
+
+    # --- Recovery scenario B: GitHub never processed the request before the client died.
+    # The fresh re-query must report the real negative -- never a leftover optimistic default.
+    def post_crash_runner_not_merged(args, capture_output=True, text=True, timeout=30):
+        assert "view" in args
+        return subprocess.CompletedProcess(
+            args, 0,
+            stdout=json.dumps({"state": "OPEN", "mergeCommit": None, "baseRefName": "main"}),
+            stderr="",
+        )
+
+    recovered_b = MergeExecutor(repo="acme/widgets", runner=post_crash_runner_not_merged)
+    reconciled_b = recovered_b.reconcile(42)
+    assert reconciled_b["merged"] is False
+
+
+# ---------------------------------------------------------------------------
+# 4b. Real process crash WHILE BLOCKED INSIDE `DeploymentVerifier`'s byte-verification network
+#     call -- the interrupted call must never leave a fabricated `deployed=True` payload;
+#     `github_delivery_payload()` must stay fail-closed until a fresh call actually completes.
+# ---------------------------------------------------------------------------
+
+_CRASH_DURING_DEPLOYMENT_VERIFY_SCRIPT = r"""
+import json, sys, time
+sys.path.insert(0, %(repo_root)r)
+import simplicio_loop.source_state as ss
+import simplicio_loop.external_verifiers as ev
+
+class _Completed:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+def fake_run_gh(args):
+    if args[:2] == ["release", "view"]:
+        return _Completed(0, json.dumps({
+            "tagName": "v1.2.3", "isDraft": False, "isPrerelease": False, "assets": [],
+        }))
+    return _Completed(0, "{}")
+
+ss._run_gh = fake_run_gh
+
+def hanging_verify(self, repo, tag, environment, **kwargs):
+    # Stands in for the real network call inside DeploymentVerifier.verify() (downloading
+    # release bytes / running install smoke) -- mark that we are genuinely inside it, then
+    # hang, standing in for the process being killed before GitHub's own state is known.
+    with open(%(marker_path)r, "w", encoding="utf-8") as fh:
+        fh.write("IN_DEPLOYMENT_VERIFY")
+    time.sleep(300)
+
+ev.DeploymentVerifier.verify = hanging_verify
+
+payload = ss.github_delivery_payload(
+    "acme/widgets", tag="v1.2.3", target_state="deployed",
+    environment="pypi-index", verify_deployment=True,
+)
+
+# Only reachable if the (fake) network call returned -- must never happen once killed.
+with open(%(result_path)r, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh)
+print("UNEXPECTED_RETURN", flush=True)
+"""
+
+
+def test_crash_during_deployment_verifier_network_call_produces_no_false_positive_payload(tmp_path):
+    """Kill the OS process for real while it is blocked inside `DeploymentVerifier.verify()`'s
+    own byte-verification network call -- proves the interrupted call can never leave behind a
+    fabricated `deployment.smoke.passed=True`, and that only a completed, fresh call may set it."""
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    marker_path = str(tmp_path / "in_deployment_verify.marker")
+    result_path = str(tmp_path / "deployment_payload.json")
+
+    script = _CRASH_DURING_DEPLOYMENT_VERIFY_SCRIPT % {
+        "repo_root": repo_root, "marker_path": marker_path, "result_path": result_path,
+    }
+    # File-redirected stdout/stderr (never `subprocess.PIPE`) -- same rationale as the merge
+    # crash test above: the point under test is a real `kill()` mid in-flight call, not pipe
+    # plumbing.
+    stdout_path = tmp_path / "child.stdout"
+    with open(stdout_path, "w", encoding="utf-8") as stdout_fh:
+        proc = subprocess.Popen([sys.executable, "-c", script],
+                                stdout=stdout_fh, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 10.0
+            while time.time() < deadline and not Path(marker_path).exists():
+                time.sleep(0.02)
+            assert Path(marker_path).exists(), "child never reached the in-flight deployment verify call"
+            proc.kill()
+            proc.wait(timeout=10)
+        finally:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    assert not Path(result_path).exists(), (
+        "a killed mid-call process must never leave behind a fabricated deployment payload")
+    assert stdout_path.read_text(encoding="utf-8").strip() != "UNEXPECTED_RETURN"
+
+    # Recovery: a fresh, COMPLETED call is the only thing allowed to report `deployed`. Here it
+    # genuinely fails (no wheel verified) -- proving the crash left no residue that could be
+    # mistaken for a pass, and the real negative reason code surfaces cleanly.
+    import simplicio_loop.source_state as ss
+    import simplicio_loop.external_verifiers as ev
+
+    original_run_gh = ss._run_gh
+    original_verify = ev.DeploymentVerifier.verify
+
+    def fake_run_gh(args):
+        class _Completed:
+            def __init__(self, returncode=0, stdout="", stderr=""):
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+        if args[:2] == ["release", "view"]:
+            return _Completed(0, json.dumps({
+                "tagName": "v1.2.3", "isDraft": False, "isPrerelease": False, "assets": [],
+            }))
+        return _Completed(0, "{}")
+
+    def fresh_ok_but_no_wheel_verify(self, repo, tag, environment, **kwargs):
+        return {"ok": False, "environment": environment, "reason_code": "wheel_not_verified",
+                "smoke": {"passed": False, "reason_code": "wheel_not_verified"}}
+
+    try:
+        ss._run_gh = fake_run_gh
+        ev.DeploymentVerifier.verify = fresh_ok_but_no_wheel_verify
+        recovered_payload = ss.github_delivery_payload(
+            "acme/widgets", tag="v1.2.3", target_state="deployed",
+            environment="pypi-index", verify_deployment=True,
+        )
+    finally:
+        # Restore both patched globals -- this mutates a *class* method directly (not via
+        # `monkeypatch`, since the child-process recovery scenario needs the same shape), so
+        # an un-restored patch here would silently corrupt every other test in this process
+        # that constructs a real `DeploymentVerifier` after this one runs.
+        ss._run_gh = original_run_gh
+        ev.DeploymentVerifier.verify = original_verify
+
+    assert recovered_payload["deployment"]["smoke"]["passed"] is False
+    assert recovered_payload["deployment"]["reason_code"] == "wheel_not_verified"
