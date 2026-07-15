@@ -93,7 +93,7 @@
     },
     {
       "consent_required": "**yes** — only runs when `--with-service`/`--full-stack` consent is given (#293 fix: no longer runs by default)",
-      "effect": "`pip install -U .[onnx]` / `simplicio-loop[onnx]` + tray dep (`pystray`+`pillow` or `rumps` on macOS)",
+      "effect": "`pip install -U .[ml]` / `simplicio-loop[ml]` + tray dep (`pystray`+`pillow` or `rumps` on macOS) — #293 audit fix: was `.[onnx]`, an extra pyproject.toml no longer declares (removed in CHANGELOG 3.11.0)",
       "function": "install_all_deps()",
       "reversible": "not reversible by this installer",
       "scope": "global Python environment",

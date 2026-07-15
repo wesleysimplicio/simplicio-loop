@@ -641,11 +641,17 @@ def _pip(args_, allow_break_system_packages=None):
 
 def install_all_deps(allow_break_system_packages=False):
     """MANDATORY full install — every capability in simplicio-loop, not opt-in. Installs the package
-    with ALL extras (the ONNX models backend: onnxruntime + huggingface_hub + tokenizers + pillow) so
-    `simplicio-cli kompress/router/embed/image` work, plus the menu-bar tray dep. Heavy but complete;
-    `--minimal` skips it. Best-effort: a single heavy dep failing won't abort the install."""
-    spec = ".[onnx]" if os.path.exists(os.path.join(SOURCE, "pyproject.toml")) else "simplicio-loop[onnx]"
-    log("full install: package + ONNX models backend (%s)..." % spec)
+    with ALL extras declared in `pyproject.toml` (currently `ml`: the real embedding backend for
+    `simplicio-cli semantic --ml` / `simplicio-cli rag --ml`), plus the menu-bar tray dep. Heavy but
+    complete; `--minimal` skips it. Best-effort: a single heavy dep failing won't abort the install.
+
+    #293 audit fix: this used to reference a `.[onnx]` extra for the ONNX model engine (`kompress`/
+    `router`/`embed`/`image`) that CHANGELOG 3.11.0 removed from both the engine and pyproject.toml
+    ("eliminar extras inexistentes" — the extra this installer asked pip for had not existed in the
+    package for many releases). `ml` is the one extra `pyproject.toml` actually declares today.
+    """
+    spec = ".[ml]" if os.path.exists(os.path.join(SOURCE, "pyproject.toml")) else "simplicio-loop[ml]"
+    log("full install: package + ml embedding backend (%s)..." % spec)
     _pip([spec], allow_break_system_packages=allow_break_system_packages) or \
         log("! full-stack pip failed — run manually: pip install '%s'" % spec)
     tray = ["rumps"] if sys.platform == "darwin" else ["pystray", "pillow"]

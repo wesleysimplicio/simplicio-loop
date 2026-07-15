@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- #293: fix `install_lib.py::install_all_deps()` (`--full-stack`/`--with-service` full install)
+  referencing a `.[onnx]` optional-dependency extra that `pyproject.toml` stopped declaring back
+  in `3.11.0` (the ONNX model engine — `kompress`/`router`/`embed`/`image` — was removed that
+  release, taking the extra with it) — the exact "referência a extra que não existe no
+  pyproject.toml" the issue's audit flagged. Now installs the `ml` extra `pyproject.toml` actually
+  declares (the real embedding backend for `simplicio-cli semantic --ml`/`rag --ml`).
+  `docs/INSTALL_MUTATIONS.md`/`docs/install-mutations.json` regenerated to match. Also adds a
+  system test proving a clean install/rollback round-trip survives a target path with embedded
+  spaces and non-ASCII (accented + CJK) characters (`tests/test_system_clean_install.py`) — the
+  "caminhos com espaços e Unicode" system-test requirement.
 - #293: close the last audit-flagged installer gap — `simplicio-autoresearch` is now included in
   `install_lib.py`/`install_plan.py`/`doctor.py`'s `SKILLS` list (was 6, is 7), so the installer,
   planner, and `doctor` health-check actually copy/validate the seven skills the project declares
