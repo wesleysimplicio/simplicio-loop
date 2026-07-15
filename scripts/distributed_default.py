@@ -242,10 +242,15 @@ class DistributedExecutor:
             if len(group) == 1:
                 self._run_task(group[0])
             else:
-                # parallel fan-out
+                # parallel fan-out — ALL tasks in the group, not capped
+                # (max_workers limits concurrency via semaphore, not truncation)
+                sem = threading.Semaphore(self._run.max_workers)
+                def _bounded(task: DistributedTask, _sem: threading.Semaphore = sem) -> None:
+                    with _sem:
+                        self._run_task(task)
                 threads = [
-                    threading.Thread(target=self._run_task, args=(t,), daemon=True)
-                    for t in group[: self._run.max_workers]
+                    threading.Thread(target=_bounded, kwargs={"task": t}, daemon=True)
+                    for t in group
                 ]
                 for th in threads:
                     th.start()
@@ -311,11 +316,17 @@ class DistributedExecutor:
     def _serial_fallback(self) -> Dict[str, Any]:
         for task in self._run.tasks:
             self._run_task(task)
+        all_receipts = self._store.converged()
+        converged = all_receipts and not self._errors
         return {
             "schema": SCHEMA,
             "run_id": self._run.run_id,
-            "status": "COMPLETE" if self._store.converged() else "PARTIAL",
-            "converged": self._store.converged(),
+            "status": "COMPLETE" if converged else "PARTIAL",
+            "converged": converged,
+            "loop_engine": "simplicio-loop",
+            "scheduler": "threading",
+            "tokio_only": False,
+            "max_concurrency": self._run.max_workers,
             "mode": "serial_fallback",
             "claims": self._store.list_claims(),
             "errors": self._errors,
