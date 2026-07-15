@@ -24,11 +24,12 @@ SCHEMA = "simplicio.install-transaction/v1"
 MODES = ("minimal", "runtime", "full-stack", "ci", "dry-run", "rollback")
 SCOPES = ("project", "user", "system")
 
-# The 6 skills the installer actually copies today (install_lib.py SKILLS) — kept as a
+# The 7 skills the installer actually copies today (install_lib.py SKILLS) — kept as a
 # local constant rather than importing install_lib to keep the planner import-light and
 # side-effect-free even if install_lib.py grows heavier module-level behavior later.
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
-          "simplicio-review", "simplicio-compress", "simplicio-learn"]
+          "simplicio-review", "simplicio-compress", "simplicio-learn",
+          "simplicio-autoresearch"]
 
 # Runtimes whose entry file lives outside .claude/ and therefore counts as a "create or
 # update" file effect distinct from the skills copy.

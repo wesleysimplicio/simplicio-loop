@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """simplicio-loop — universal installer (one logic, all runtimes).
 
-Copies the 6 skills + hooks into a target, wires the loop where the runtime supports it,
+Copies the 7 skills + hooks into a target, wires the loop where the runtime supports it,
 ensures the runtime's entry/instructions file references the skill, and prints the MCP-bind
 line. Pure Python ->identical on Windows/macOS/Linux. Safe: create-or-merge, never clobbers
 unrelated config; idempotent marker blocks.
@@ -37,7 +37,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.dirname(HERE)
 HOME = os.path.expanduser("~")
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
-          "simplicio-review", "simplicio-compress", "simplicio-learn"]
+          "simplicio-review", "simplicio-compress", "simplicio-learn",
+          "simplicio-autoresearch"]
 # The simplicio-loop drive REQUIRES the operator package `simplicio-cli`; it exposes
 # `simplicio-dev-cli` and also brings the survey binary `simplicio-mapper` transitively.
 # (the bare `simplicio` command is reserved for the separate `simplicio-runtime`, not this operator.)
@@ -58,7 +59,8 @@ def entry_block(runtime=None):
         "## simplicio-loop — Unified Core + Loop\n\n"
         "Load and follow the protocol in `.claude/skills/simplicio-loop/SKILL.md` and its "
         "companion skills (`simplicio-tasks` as legacy alias, `simplicio-orient`, "
-        "`simplicio-review`, `simplicio-compress`, `simplicio-learn`) IN FULL — every step, "
+        "`simplicio-review`, `simplicio-compress`, `simplicio-learn`, `simplicio-autoresearch`) "
+        "IN FULL — every step, "
         "no partial subset. Run "
         "commands for real; clamp heavy output via `python3 hooks/orient_clamp.py -- <cmd>`; "
         "never close work without a merged PR or concrete evidence; honor the irreversible-op "

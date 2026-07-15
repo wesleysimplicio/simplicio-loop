@@ -16,7 +16,7 @@ bash scripts/install.sh orca            # macOS/Linux
 pwsh scripts/install.ps1 orca           # Windows
 ```
 
-The installer copies the 6 skills into `.claude/skills/` and writes the idempotent
+The installer copies the 7 skills into `.claude/skills/` and writes the idempotent
 `simplicio-loop` marker block into `AGENTS.md` — the two discovery surfaces the inner agents use
 (Claude Code/Cursor read the skills tree; Codex reads `AGENTS.md`). Both are committed repo
 files, so **every Orca worktree inherits them automatically** — no per-task setup.
