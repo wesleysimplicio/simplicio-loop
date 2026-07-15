@@ -13,13 +13,14 @@ import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Tuple, TypedDict
+from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Tuple, TypedDict
 
 from .delivery import (build_delivery_receipt, normalize_delivery_target,
                        reconcile_delivery_observation, write_delivery_receipt)
 from .evidence import build_evidence_receipt, redact_sensitive_text
 from .source_state import github_delivery_payload, infer_github_delivery_state
 from . import github_lifecycle as _github_lifecycle
+from .source_adapter import GitHubSourceAdapter
 from .task_contract import compile_many, validate_contract
 from .plan_contract import PLAN_SCHEMA, validate_plan
 from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable, build_completion_receipt
@@ -420,6 +421,64 @@ def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
 
 def _run_cmd(argv: List[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, timeout=180)
+
+
+def _run_repo_path(run_dir: Path) -> Optional[Path]:
+    """Best-effort recovery of a run's repo checkout path from its ``manifest.json``,
+    for the #285 lifecycle-comment identity/branch projection. Returns ``None``
+    instead of raising when the manifest is missing/malformed (e.g. a test fixture
+    that writes a bare ``state.json`` with no manifest) -- callers treat that as
+    "no repo context available", never a hard failure.
+    """
+    try:
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        repo = manifest.get("repo")
+        return Path(repo).resolve() if repo else None
+    except Exception:
+        return None
+
+
+def _git_current_branch(repo_path: Path) -> str:
+    """Best-effort current branch name for the #285 lifecycle comment's
+    Branch/worktree field. Never raises -- any git failure (detached HEAD, no
+    repo, missing git binary) just yields an empty projection rather than a
+    fabricated branch name."""
+    try:
+        result = _run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo_path)
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    branch = (result.stdout or "").strip()
+    return branch if branch and branch != "HEAD" else ""
+
+
+def _dispatch_identity_fields(repo_path: Optional[Path]) -> Dict[str, str]:
+    """Best-effort local agent identity for the #285 lifecycle comment's
+    Agente/Runtime/Device fields.
+
+    Reuses the same stable per-repo identity file ``_distributed_configuration()``
+    creates for the real distributed dispatch path, so a sequential
+    (non-distributed) run projects the same genuine ``agent_id``/``runtime``/
+    ``device_id`` instead of leaving those fields blank. Never raises -- an
+    unavailable ``scripts.agent_identity`` module (installed package without the
+    scripts namespace), a missing repo path, or any I/O failure just yields an
+    empty projection rather than fabricated identity.
+    """
+    if ensure_identity is None or repo_path is None:
+        return {}
+    try:
+        identity = ensure_identity(
+            path=os.environ.get("SIMPLICIO_IDENTITY_FILE") or str(repo_path / ".orchestrator" / "agent-identity.json"),
+            runtime=os.environ.get("SIMPLICIO_RUNTIME", "unknown-runtime"),
+        )
+    except Exception:
+        return {}
+    return {
+        "agent_id": str(identity.get("agent_id") or ""),
+        "runtime": str(identity.get("runtime") or ""),
+        "device": str(identity.get("device_id") or ""),
+    }
 
 
 def _operator_env() -> Dict[str, str]:
@@ -1014,6 +1073,17 @@ def _record_event(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any],
     return state
 
 
+def _github_source_adapter(owner: str, repo: str, *, publish_comment_fn: Callable,
+                           outbox_dir: Optional[str | Path] = None) -> GitHubSourceAdapter:
+    """One construction point for the #285 `GitHubSourceAdapter` binding runner.py uses,
+    so every runner call site goes through the `SourceAdapter` Protocol surface instead
+    of calling `github_lifecycle.py`'s free functions directly. Same defaults
+    (``subprocess.run``, 20s timeout) `github_lifecycle.publish_lifecycle_state()` itself
+    defaults to -- this is a binding, not a behavior change.
+    """
+    return GitHubSourceAdapter(owner, repo, publish_comment_fn=publish_comment_fn, outbox_dir=outbox_dir)
+
+
 def _sync_github_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any]) -> None:
     """Project one phase event onto the #285 GitHub lifecycle canonical comment.
 
@@ -1046,12 +1116,42 @@ def _sync_github_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str
             sys.path.insert(0, scripts_dir)
         from pr_evidence import publish_comment as _publish_comment  # local import: optional dep
 
-        receipt = _github_lifecycle.publish_lifecycle_state(
-            owner=str(owner), repo=str(repo), issue=str(issue), state=lifecycle_state,
+        # #285 remaining gap: project the run's real identity/runtime/device/lease/
+        # branch onto the rendered comment instead of leaving those fields blank even
+        # though `render_lifecycle_comment` supports them. `event` wins over derived
+        # defaults when the emitting call site already knows its lease/branch (e.g.
+        # `execute_operator()`'s guarded dispatch, which has a real `WorkItemAttempt`
+        # lease and worktree branch on hand); otherwise fall back to a best-effort
+        # local identity/branch lookup so a plain sequential run is not blank either.
+        repo_path = _run_repo_path(run_dir)
+        identity = _dispatch_identity_fields(repo_path)
+        lease = state.get("lease") if isinstance(state.get("lease"), Mapping) else {}
+        lease_id = str(event.get("lease_id") or lease.get("lease_id") or "")
+        fencing_token = str(event.get("fencing_token") or lease.get("fencing_token") or "")
+        branch = str(
+            event.get("branch") or state.get("branch")
+            or (_git_current_branch(repo_path) if repo_path is not None else "")
+        )
+        worktree = str(event.get("worktree_path") or state.get("worktree_path") or "")
+
+        # #285 remaining gap: go through the `GitHubSourceAdapter` Protocol binding
+        # instead of calling `github_lifecycle.publish_lifecycle_state()` directly --
+        # same underlying call (no behavior change), but now expressed through the
+        # single adapter surface every source (GitHub or otherwise) is meant to plug
+        # into.
+        adapter = _github_source_adapter(str(owner), str(repo), publish_comment_fn=_publish_comment)
+        receipt = adapter.update_status(
+            str(issue), lifecycle_state,
             run_id=str(state.get("run_id") or ""),
             attempt_id=str(event.get("task_id") or state.get("run_id") or ""),
-            publish_comment_fn=_publish_comment,
+            fencing_token=fencing_token,
             progress=str(event.get("message") or ""),
+            agent_id=identity.get("agent_id", ""),
+            runtime=identity.get("runtime", ""),
+            device=identity.get("device", ""),
+            lease_id=lease_id,
+            branch=branch,
+            worktree=worktree,
         )
         # Persist the receipt into the run dir so the completion oracle (#285's remaining gap:
         # "CLOSE_PENDING_RECONCILIATION" must actually gate COMPLETE, not sit inert) can see it.
@@ -1070,6 +1170,7 @@ def _sync_github_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str
 def _maybe_auto_build_planning_receipt(
     run_root: Path, state: Dict[str, Any], run_id: str,
     contract: Dict[str, Any], plan: Dict[str, Any], plan_validation: Dict[str, Any],
+    repo_path: Optional[Path] = None,
 ) -> None:
     """#284 remaining gap: wire ``planning_gate.build_planning_receipt()`` into the
     REAL ``arm_run()`` dispatch path so the mutation-authority gate in
@@ -1132,7 +1233,28 @@ def _maybe_auto_build_planning_receipt(
                 sys.path.insert(0, scripts_dir)
             from pr_evidence import publish_comment as _publish_comment  # local import: optional dep
 
-            lifecycle_receipt = _publish_planning_receipt(receipt, publish_comment_fn=_publish_comment)
+            # #285 remaining gap: project real identity/runtime/device/branch/plan onto
+            # the PLANNED comment instead of leaving those fields blank, the same
+            # projection `_sync_github_lifecycle()` now performs for CLAIMED/etc. No
+            # lease/fencing token exists yet at this point in `arm_run()` (it is minted
+            # only when a distributed claim happens later), so that field is left blank
+            # here rather than fabricated.
+            identity = _dispatch_identity_fields(repo_path)
+            branch = _git_current_branch(repo_path) if repo_path is not None else ""
+            plan_steps = [
+                str(step.get("description") or step.get("goal") or step.get("id") or "").strip()
+                for step in (plan.get("steps") or [])
+                if isinstance(step, Mapping)
+                and str(step.get("description") or step.get("goal") or step.get("id") or "").strip()
+            ]
+            lifecycle_receipt = _publish_planning_receipt(
+                receipt, publish_comment_fn=_publish_comment,
+                agent_id=identity.get("agent_id", ""),
+                runtime=identity.get("runtime", ""),
+                device=identity.get("device", ""),
+                branch=branch,
+                plan_steps=plan_steps,
+            )
             if lifecycle_receipt is not None:
                 _github_lifecycle.persist_lifecycle_receipt(lifecycle_receipt, run_root)
     except Exception as exc:  # noqa: BLE001 -- best-effort, never blocks the run
@@ -2019,7 +2141,7 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         _write_json(run_root / "plan.json", plan)
         state = _load_json(run_root / "state.json")
         state["current_action"] = "plan_materialized"
-        _maybe_auto_build_planning_receipt(run_root, state, run_id, compiled, plan, plan_validation)
+        _maybe_auto_build_planning_receipt(run_root, state, run_id, compiled, plan, plan_validation, repo_path)
         candidates = ((plan.get("steps") or [{}])[0].get("candidate_targets") or [])
         if not candidates:
             raise RuntimeError("mapper-derived plan has no authorized operator target")
@@ -2388,11 +2510,18 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         target,
     )
     checkpoint = _capture_operator_checkpoint(run_dir, repo_path, targets or [target])
+    # #285 remaining gap: this dispatch has a real guarded lease (when the caller wired
+    # one) and a real repo checkout/branch on hand -- surface them on the event so
+    # `_sync_github_lifecycle()` projects the actual lease/fencing token and branch onto
+    # the CLAIMED comment instead of falling back to a blank/best-effort default.
     _emit_event(run_dir, status["state"], "worker_claimed",
                 receipt=str(run_dir / "task-contract.json"),
                 task_id=str(task.get("id") or ""),
                 ac_ids=_task_ac_ids(task),
-                message="operator worker claimed task")
+                message="operator worker claimed task",
+                lease_id=str(getattr(getattr(guarded_attempt, "lease", None), "lease_id", "") or ""),
+                fencing_token=str(getattr(getattr(guarded_attempt, "lease", None), "fencing_token", "") or ""),
+                branch=_git_current_branch(repo_path))
     if item_context := (status["state"].get("operator") or {}).get("worktree_context"):
         _emit_event(run_dir, status["state"], "worktree_created",
                     receipt=str(item_context.get("lock_receipt") or operator_path),
