@@ -2644,6 +2644,122 @@ def _verify_worker_receipt_pair(operator_receipt_path: str, evidence_receipt_pat
     }
 
 
+def _remote_worker_dispatch_enabled() -> bool:
+    """#286: once the queue is a genuine network ``HTTPRemoteQueue``, the coordinator must
+    not execute the operator in its own process -- it enqueues the task envelope and waits
+    for an independent ``RemoteWorkerDaemon`` (a different device/process, reachable only
+    over the wire) to pull, claim, run, and complete it. This is the fix for the exact gap
+    issue #286 named: "execute_operator_batch() cria HTTPRemoteQueue, mas continua
+    submetendo _operator_dispatch_attempt() a um ThreadPoolExecutor local; o proprio
+    coordenador chama execute_operator()."
+
+    ``SQLiteRemoteQueue`` (issue #288's co-located, same-process guarded-dispatch path) is
+    deliberately unaffected -- that queue backend models a single-host attempt coordinator,
+    not a remote worker, so every existing #288 test using it keeps its current behavior.
+    Opt out with ``SIMPLICIO_REMOTE_WORKER_ONLY=0`` only for a deliberate same-host smoke
+    test that wants the old in-process shortcut against a real HTTP queue.
+    """
+    return str(os.environ.get("SIMPLICIO_REMOTE_WORKER_ONLY") or "1").strip().lower() not in (
+        "0", "false", "no", "off", "disabled",
+    )
+
+
+def _operator_dispatch_attempt_remote_worker(
+    item: Mapping[str, Any], common: Dict[str, Any], queue: HTTPRemoteQueue, started: float,
+) -> Dict[str, Any]:
+    """Enqueue-and-wait dispatch for a genuine remote (``HTTPRemoteQueue``) worker (#286).
+
+    The coordinator itself never claims and never calls ``execute_operator()`` here -- it
+    publishes the immutable task envelope once (idempotent: ``enqueue`` is a no-op if the
+    task_id already exists) and polls ``queue.task()`` (the same authority a remote
+    ``RemoteWorkerDaemon`` mutates) until the task reaches a terminal ``completed`` status or
+    the dispatch timeout elapses. A timeout is reported as a specific, non-fabricated failure
+    (``remote_worker_timeout``) rather than silently falling back to local execution.
+    """
+    task_id = common["task_id"]
+    context_pack = dict(item.get("context_pack") or {})
+    payload = {
+        "run_id": common["run_id"], "worker_id": common["worker_id"],
+        "task_index": common["task_index"], "goal": context_pack.get("goal", ""),
+        "acs": list(context_pack.get("acs") or ()),
+        "depends_on": list(context_pack.get("depends_on") or ()),
+        "allowed_paths": list(context_pack.get("allowed_paths") or ()),
+        "issue_ref": context_pack.get("issue_ref", ""), "issue_url": context_pack.get("issue_url", ""),
+        "context_pack": context_pack,
+        "worktree_context": dict(item.get("worktree_context") or {}),
+    }
+    common["dispatch_mode"] = "remote_worker_pull"
+    try:
+        queue.enqueue(task_id, payload)
+    except (QueueConflict, QueueUnavailable, ValueError) as exc:
+        return {**common, "status": "failed", "phase": "blocked", "execution_state": "error",
+                "receipt": "", "operator_receipt": "", "evidence_receipt": "",
+                "receipt_status": "UNVERIFIED", "attempt": 0,
+                "reason_code": "remote_enqueue_failed", "error": str(exc), "dead_letter": True,
+                "started_at": started, "finished_at": _now()}
+
+    timeout = float(os.environ.get("SIMPLICIO_REMOTE_DISPATCH_TIMEOUT_SECONDS", "3600"))
+    poll_interval = float(os.environ.get("SIMPLICIO_REMOTE_DISPATCH_POLL_INTERVAL_SECONDS", "2"))
+    deadline = time.monotonic() + max(0.0, timeout)
+    task_state: Dict[str, Any] = {}
+    while True:
+        try:
+            task_state = queue.task(task_id)
+        except (QueueUnavailable, KeyError) as exc:
+            return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
+                    "receipt": "", "operator_receipt": "", "evidence_receipt": "",
+                    "receipt_status": "UNVERIFIED", "attempt": 0,
+                    "reason_code": "network_paused", "error": str(exc), "dead_letter": True,
+                    "started_at": started, "finished_at": _now()}
+        if str(task_state.get("status") or "") == "completed":
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_interval, remaining))
+
+    if str(task_state.get("status") or "") != "completed":
+        return {**common, "status": "failed", "phase": "blocked", "execution_state": "timeout",
+                "receipt": "", "operator_receipt": "", "evidence_receipt": "",
+                "receipt_status": "UNVERIFIED", "attempt": 0,
+                "reason_code": "remote_worker_timeout",
+                "error": "no remote worker completed task %s within %.0fs" % (task_id, timeout),
+                "dead_letter": True, "started_at": started, "finished_at": _now()}
+
+    lease_info = dict(task_state.get("lease") or {})
+    receipt = str(lease_info.get("receipt_ref") or "")
+    # The remote worker's evidence receipt lives on its own device; the coordinator only
+    # treats it as readable when both files genuinely exist on this filesystem (true, for
+    # instance, of the same-host loopback proxy this repo's E2E uses). A cross-device
+    # deployment without a receipt-fetch endpoint honestly reports UNVERIFIED here rather
+    # than fabricating a VERIFIED pair it cannot see.
+    evidence_receipt = str(Path(receipt).parent / "evidence-receipt.json") if receipt else ""
+    if not (evidence_receipt and Path(evidence_receipt).is_file()):
+        evidence_receipt = ""
+    receipt_verdict = _verify_worker_receipt_pair(receipt, evidence_receipt)
+    merge: Optional[Dict[str, Any]] = None
+    if receipt_verdict["status"] == ReceiptStatus.VERIFIED and _auto_merge_enabled():
+        merge = _dispatch_merge_pr(item, receipt=receipt, run_id=common["run_id"])
+    return {
+        **common,
+        "status": "succeeded",
+        "phase": "delivered",
+        "execution_state": "applied",
+        "receipt": receipt,
+        "operator_receipt": receipt,
+        "evidence_receipt": evidence_receipt,
+        "watcher_receipt": "",
+        "receipt_status": receipt_verdict["status"],
+        "receipt_verdict_reason": receipt_verdict["reason"],
+        "attempt": 1,
+        "failure_fingerprint": "",
+        "merge": merge,
+        "remote_task": {"task_id": task_id, "lease": lease_info},
+        "started_at": started,
+        "finished_at": _now(),
+    }
+
+
 def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Call the production operator and reduce its status to a durable worker record."""
     started = _now()
@@ -2667,6 +2783,11 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "context_pack": dict(item.get("context_pack") or {}),
     }
     queue = item.get("distributed_queue")
+    if queue is not None and isinstance(queue, HTTPRemoteQueue) and _remote_worker_dispatch_enabled():
+        # #286: a genuine network queue means genuine remote workers -- the coordinator
+        # enqueues and waits, it never claims/executes the operator itself. See
+        # `_remote_worker_dispatch_enabled` for the opt-out and rationale.
+        return _operator_dispatch_attempt_remote_worker(item, common, queue, started)
     lease = None
     guarded = _guarded_dispatch_enabled()
     attempt_coordinator: Optional[AttemptCoordinator] = None
