@@ -1816,10 +1816,24 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
     # default so existing callers/fixtures that never build a planning receipt are
     # unaffected; see simplicio_loop/planning_gate.py and scripts/planning_gate.py.
     if str(os.environ.get("SIMPLICIO_REQUIRE_MUTATION_AUTHORITY") or "").strip().lower() in ("1", "true", "yes"):
+        # GitHub source drift: if the caller re-captured a fresh source snapshot
+        # immediately before this tick (`scripts/planning_gate.py capture-source`,
+        # written to `source-snapshot-current.json`), compare its hash against the
+        # one the receipt/authority was minted with. Absent that file (local/
+        # non-GitHub runs, or a caller that hasn't wired re-capture yet), this is a
+        # no-op -- identical to previous behavior.
+        current_source_hash = ""
+        current_snapshot_path = run_dir / "source-snapshot-current.json"
+        if current_snapshot_path.exists():
+            try:
+                current_source_hash = str((_load_json(current_snapshot_path).get("source") or {}).get("snapshot_hash") or "")
+            except Exception:
+                current_source_hash = ""
         authority_verdict = evaluate_mutation_authority(
             run_dir, run_id=run_id, attempt=attempt,
             task_contract_hash=str(contract.get("collection_hash") or _planning_content_hash(contract)),
             plan_hash=_planning_content_hash(plan),
+            source_snapshot_hash=current_source_hash,
         )
         if not authority_verdict["ok"]:
             raise RuntimeError(
@@ -2771,6 +2785,37 @@ def execute_operator_batch(
         )
         raise
     plan = receipts["plan"]
+    # #284: same opt-in mutation-authority gate as execute_operator() (single-task tick),
+    # extended to the batch boundary -- "execute_operator() e batch recusam execução sem
+    # mutation authority válida" applies to both. Off by default; see execute_operator().
+    if str(os.environ.get("SIMPLICIO_REQUIRE_MUTATION_AUTHORITY") or "").strip().lower() in ("1", "true", "yes"):
+        batch_attempt = int((status["state"] or {}).get("attempts", 0)) + 1
+        current_source_hash = ""
+        current_snapshot_path = run_dir / "source-snapshot-current.json"
+        if current_snapshot_path.exists():
+            try:
+                current_source_hash = str((_load_json(current_snapshot_path).get("source") or {}).get("snapshot_hash") or "")
+            except Exception:
+                current_source_hash = ""
+        authority_verdict = evaluate_mutation_authority(
+            run_dir, run_id=run_id, attempt=batch_attempt,
+            task_contract_hash=str(contract.get("collection_hash") or _planning_content_hash(contract)),
+            plan_hash=_planning_content_hash(plan),
+            source_snapshot_hash=current_source_hash,
+        )
+        if not authority_verdict["ok"]:
+            _persist_batch_preflight_block(
+                run_dir,
+                status["state"],
+                Path(status["manifest"].get("repo") or repo).resolve(),
+                f"mutation authority required (SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) but "
+                f"{authority_verdict['reason_code']}: {authority_verdict['reason']}",
+                task_indices=task_indices or (),
+            )
+            raise RuntimeError(
+                "mutation authority required (SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) but "
+                f"{authority_verdict['reason_code']}: {authority_verdict['reason']}"
+            )
     task_count = len(contract.get("tasks") or [])
     if task_indices is None:
         indices = list(range(1, task_count + 1))
