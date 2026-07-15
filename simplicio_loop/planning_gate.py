@@ -49,9 +49,20 @@ before it can mutate anything; every test that previously assumed no gate was
 in effect now stages a real receipt fixture first (see
 `tests/planning_gate_fixtures.py`).
 
-Not yet implemented (tracked as follow-up, not claimed here): the full
-`simplicio.task-intake/v1` envelope (scope in/out, dependencies, risks,
-rollback, impact map) and plan v2's DAG/parallelizable-step metadata.
+This increment adds the full `simplicio.task-intake/v1` envelope
+(`intake_contract.py`), the `impact-map.json` artifact (wired via
+`scripts/impact_audit.py`'s existing dependency audit), the AC<->step<->
+test<->evidence matrix (`traceability_matrix.py`, whose `coverage_ok` gates
+`ready_for_mutation` exactly like an invalid `plan_validation` does), and a
+genuine replan-on-drift path (`replan_on_drift()`) that bumps `plan_revision`
+and records a semantic diff instead of blocking forever. All four are
+strictly additive: `build_planning_receipt()`'s new params default to
+`None`/`0`, so a caller that never builds these artifacts is unaffected.
+
+Still tracked as follow-up, not claimed here: plan v2's own DAG/
+parallelizable-step schema field (today a plan is still validated as a flat
+list of task-aligned steps by `plan_contract.validate_plan()`), and rollout/
+feature-flag + migration-strategy fields on the plan itself.
 """
 from __future__ import annotations
 
@@ -120,6 +131,10 @@ def build_planning_receipt(
     lease_id: str = "",
     fencing_token: str = "",
     source_snapshot: Optional[Mapping[str, Any]] = None,
+    intake: Optional[Mapping[str, Any]] = None,
+    impact_map: Optional[Mapping[str, Any]] = None,
+    traceability_matrix: Optional[Mapping[str, Any]] = None,
+    plan_revision: int = 0,
 ) -> Dict[str, Any]:
     """Build the #284 planning receipt from already-computed intake artifacts.
 
@@ -135,11 +150,25 @@ def build_planning_receipt(
     hash does) and the `source` block is embedded in the receipt for
     traceability. Omitting it keeps the receipt identical to before this
     increment.
+
+    Three more artifacts are optional and strictly additive (#284 follow-up
+    gaps): `intake` (a `simplicio.task-intake/v1` envelope from
+    `intake_contract.build_task_intake()`), `impact_map` (a
+    `simplicio.impact-audit/v1` result from `scripts/impact_audit.py audit`),
+    and `traceability_matrix` (a `simplicio.ac-matrix/v1` result from
+    `traceability_matrix.build_matrix()`). Each, when supplied, is folded into
+    the receipt as a hash + summary for traceability. A `traceability_matrix`
+    with a non-empty `gaps` list (an AC that needs a code change but has no
+    test command and no declared evidence) makes the receipt NOT ready for
+    mutation, the same fail-closed treatment as an invalid `plan_validation`
+    — a caller that never builds a matrix is unaffected. `plan_revision`
+    defaults to 0 (first planning pass); `replan_on_drift()` bumps it.
     """
     task_contract_hash = str(contract.get("collection_hash") or content_hash(contract))
     plan_hash = content_hash(plan)
     plan_valid = bool(plan_validation.get("valid"))
-    ready = plan_valid
+    matrix_ok = True if traceability_matrix is None else bool(traceability_matrix.get("coverage_ok"))
+    ready = plan_valid and matrix_ok
     source = dict((source_snapshot or {}).get("source") or {})
     source_snapshot_hash = str(source.get("snapshot_hash") or "")
     authority = ""
@@ -157,6 +186,7 @@ def build_planning_receipt(
         "fencing_token": str(fencing_token or ""),
         "task_contract_hash": task_contract_hash,
         "plan_hash": plan_hash,
+        "plan_revision": int(plan_revision or 0),
         "plan_validation": {
             "valid": plan_valid,
             "errors": list(plan_validation.get("errors") or []),
@@ -168,6 +198,24 @@ def build_planning_receipt(
     }
     if source:
         receipt["source"] = source
+    if intake:
+        receipt["intake_hash"] = str(intake.get("intake_hash") or content_hash(intake))
+        receipt["intake_summary"] = {
+            "acceptance_criteria": len(intake.get("acceptance_criteria") or []),
+            "delivery_target": (intake.get("understanding") or {}).get("delivery_target", ""),
+        }
+    if impact_map:
+        receipt["impact_map_hash"] = content_hash(impact_map)
+        receipt["impact_map_summary"] = dict(impact_map.get("counts") or {})
+    if traceability_matrix:
+        receipt["traceability_matrix_hash"] = str(
+            traceability_matrix.get("matrix_hash") or content_hash(traceability_matrix)
+        )
+        receipt["traceability_summary"] = {
+            "coverage_ok": matrix_ok,
+            "gaps": list(traceability_matrix.get("gaps") or []),
+            "counts": dict(traceability_matrix.get("counts") or {}),
+        }
     return receipt
 
 
@@ -222,6 +270,83 @@ def evaluate_mutation_authority(
                 "reason": "GitHub source snapshot changed since planning; authority invalidated"}
     return {"ok": True, "reason_code": "mutation_authority_verified",
             "reason": "mutation authority verified for the current identity tuple"}
+
+
+def replan_on_drift(
+    run_dir: str | Path,
+    *,
+    run_id: str,
+    attempt: int,
+    contract: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    plan_validation: Mapping[str, Any],
+    lease_id: str = "",
+    fencing_token: str = "",
+    baseline_source_snapshot: Optional[Mapping[str, Any]] = None,
+    current_source_snapshot: Optional[Mapping[str, Any]] = None,
+    intake: Optional[Mapping[str, Any]] = None,
+    impact_map: Optional[Mapping[str, Any]] = None,
+    traceability_matrix: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """#284 Fase 6 -- genuine replanning/diff-on-drift.
+
+    `evaluate_mutation_authority()` blocks fail-closed forever once source or
+    repo drift is detected: it never re-plans, it just keeps saying no. This
+    function is the missing recovery path: given a FRESH `contract`/`plan`
+    (already re-derived by the caller against the current source/repo state)
+    plus the freshest source snapshot, it builds a brand-new planning receipt,
+    bumps `plan_revision` past whatever the previous on-disk receipt carried,
+    and records a semantic diff (`replan.diff`) of exactly what changed --
+    task-contract hash, plan hash, and source-snapshot hash -- instead of
+    silently discarding the history of why a replan happened.
+
+    `baseline_source_snapshot`/`current_source_snapshot` are compared via
+    `source_snapshot.detect_source_drift()`; both may be omitted for a replan
+    driven purely by repo drift (`plan_validation` already re-checked repo
+    state via `plan_contract.validate_plan(..., current_state=...)`).
+
+    This never removes or weakens an AC: it is a thin wrapper around
+    `build_planning_receipt()` with the SAME contract passed in by the caller
+    -- issue #284's rule that a replan may only add, never silently drop, an
+    explicit acceptance criterion is enforced by the caller supplying a
+    contract that still carries every `origin=source` AC, not by this
+    function inventing one.
+    """
+    from .source_snapshot import detect_source_drift
+
+    previous = load_planning_receipt(run_dir)
+    previous_revision = int((previous or {}).get("plan_revision") or 0)
+    drift = detect_source_drift(baseline_source_snapshot, current_source_snapshot)
+
+    new_receipt = build_planning_receipt(
+        run_id=run_id, attempt=attempt, contract=contract, plan=plan,
+        plan_validation=plan_validation, lease_id=lease_id, fencing_token=fencing_token,
+        source_snapshot=current_source_snapshot, intake=intake, impact_map=impact_map,
+        traceability_matrix=traceability_matrix,
+        plan_revision=previous_revision + 1 if previous else previous_revision,
+    )
+
+    prev_contract_hash = str((previous or {}).get("task_contract_hash") or "")
+    prev_plan_hash = str((previous or {}).get("plan_hash") or "")
+    new_receipt["replan"] = {
+        "replanned": bool(previous),
+        "drift_detected": bool(drift["drifted"]),
+        "drift_reason_code": drift["reason_code"],
+        "previous_revision": previous_revision,
+        "diff": {
+            "task_contract_changed": bool(previous) and prev_contract_hash != new_receipt["task_contract_hash"],
+            "plan_changed": bool(previous) and prev_plan_hash != new_receipt["plan_hash"],
+            "previous_task_contract_hash": prev_contract_hash,
+            "previous_plan_hash": prev_plan_hash,
+            "source_snapshot_before": drift["before"],
+            "source_snapshot_after": drift["after"],
+        },
+    }
+
+    path = receipt_path(run_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(new_receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return new_receipt
 
 
 def publish_planning_receipt(
@@ -310,4 +435,5 @@ __all__ = [
     "evaluate_mutation_authority",
     "mutation_authority_required",
     "publish_planning_receipt",
+    "replan_on_drift",
 ]
