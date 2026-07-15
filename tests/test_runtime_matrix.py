@@ -52,6 +52,10 @@ def test_attempt_launch_default_off_keeps_prior_behavior(tmp_path: Path):
     assert payload["external_launch_verified"] is False
     assert payload["external_launch_status"] == "UNVERIFIED"
     assert "external_launch_attempts" not in payload
+    assert "external_launch_verified_by_runtime" not in payload
+    for row in payload["runtimes"]:
+        assert "external_launch_status" not in row
+        assert "external_launch_verified" not in row
 
 
 def test_attempt_launch_reports_real_measured_outcomes_never_fabricated(tmp_path: Path, monkeypatch):
@@ -95,6 +99,16 @@ def test_attempt_launch_reports_real_measured_outcomes_never_fabricated(tmp_path
     # One real failure among the attempts means the aggregate is honestly not verified.
     assert payload["external_launch_verified"] is False
     assert payload["external_launch_status"] == "MEASURED"
+    # #287: the aggregate must never bury a genuine per-runtime PASS. Codex's real
+    # success is independently visible both on its own matrix row and in the
+    # ungrouped by-runtime map, even while Claude stays structurally blocked.
+    codex_row = next(row for row in payload["runtimes"] if row["runtime"] == "codex")
+    claude_row = next(row for row in payload["runtimes"] if row["runtime"] == "claude")
+    assert codex_row["external_launch_verified"] is True
+    assert codex_row["external_launch_status"] == "PASS"
+    assert claude_row["external_launch_verified"] is False
+    assert claude_row["external_launch_status"] == "FAIL"
+    assert payload["external_launch_verified_by_runtime"] == {"codex": True, "claude": False}
 
 
 def test_attempt_launch_reports_unverified_for_runtime_with_no_driver(tmp_path: Path):
