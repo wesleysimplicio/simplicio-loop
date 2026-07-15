@@ -9,4 +9,4 @@ Install PyYAML first. The installer backs up local configuration and never copie
 
 ## Validation
 
-`tests/test_orca_preset.py` validates the manifest contract and runs the macOS/Linux installer against an isolated home with fake CLIs. PowerShell syntax and end-to-end execution must run on a Windows runner.
+`tests/test_orca_preset_integration.py` validates the manifest contract and runs the macOS/Linux installer against an isolated home with fake CLIs. PowerShell syntax and end-to-end execution must run on a Windows runner.
