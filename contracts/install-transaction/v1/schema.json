@@ -33,6 +33,7 @@
     "target": { "type": "string", "minLength": 1 },
     "requested_version": { "type": "string" },
     "resolved_version": { "type": "string" },
+    "version_pinning": { "enum": ["pinned", "floating"] },
     "files": {
       "type": "array",
       "items": {

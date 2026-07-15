@@ -15,6 +15,13 @@ Usage:
   python3 scripts/install_services.py install     # register + start all services
   python3 scripts/install_services.py uninstall   # stop + remove them
   python3 scripts/install_services.py status       # report
+  python3 scripts/install_services.py paths        # JSON list of paths install() would touch
+
+`install()`/`uninstall()`/`service_paths()` are also called internally (in-process import) by
+`scripts/install_executor.py`'s "service" step (#293 gap 1) when `apply()` is called with
+`with_service=True` — so OS-level service registration is wired into the SAME transactional,
+backed-up, rollback-eligible flow as every other install effect, instead of being a separate
+manual step a human has to remember to run after `apply()` returns.
 """
 import os
 import platform
@@ -223,6 +230,30 @@ def selftest():
     return 0 if (ok and wok) else 1
 
 
+def service_paths():
+    """The exact file path(s) `install()` would create/update on THIS OS, for the transactional
+    executor to back up before mutating (#293 gap 1: "wire OS-level service registration into
+    apply() for full-stack mode"). Always freshly computed from the CURRENT environment (HOME/
+    APPDATA/XDG_CONFIG_HOME) — never cached — so a caller that redirects those env vars (tests;
+    a non-default install root) gets paths matching where `install()` will actually write.
+    Returns [] on macOS/other (handled by the separate `setup_simplicio.sh` launchd path, not
+    wired into the transactional executor)."""
+    osname = platform.system()
+    if osname == "Linux":
+        d = _systemd_dir()
+        return [str(d / ("simplicio-%s.service" % name)) for name in AUTOSTART]
+    if osname == "Windows":
+        d = _startup_dir()
+        return [str(d / ("simplicio-%s.bat" % name)) for name in AUTOSTART]
+    return []
+
+
+def cmd_paths():
+    import json as _json
+    print(_json.dumps(service_paths()))
+    return 0
+
+
 def cmd_status():
     import socket
     print(f"⬡ Simplicio services · {platform.system()}")
@@ -245,6 +276,8 @@ def main():
         return cmd_wire(True)
     if action == "unwire":
         return cmd_wire(False)
+    if action == "paths":
+        sys.exit(cmd_paths())
     if osname == "Darwin":
         return macos_note()
     if osname == "Linux":

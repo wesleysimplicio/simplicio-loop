@@ -12,18 +12,33 @@ mirrors — so a future change to what requires consent can't silently leave the
 `scripts/claims_audit.py`'s `check_install_mutations_doc` re-renders this module and fails the
 gate if `docs/INSTALL_MUTATIONS.md` on disk differs by a single byte.
 
+Also emits `docs/install-mutations.json` (schema `simplicio.install-mutations/v1`) from the exact
+SAME `MUTATIONS`/`OS_DIFFS`/`_consent_rows()` data — a structured, machine-readable rendering for
+a third consumer that shouldn't have to scrape markdown tables (#293 gap: "machine-readable
+effects manifest").
+
 Usage:
-    python3 scripts/gen_install_mutations_doc.py            # regenerate the doc in place
-    python3 scripts/gen_install_mutations_doc.py --check     # exit 1 if the doc has drifted
+    python3 scripts/gen_install_mutations_doc.py            # regenerate .md + .json in place
+    python3 scripts/gen_install_mutations_doc.py --json      # print the JSON manifest to stdout
+    python3 scripts/gen_install_mutations_doc.py --check     # exit 1 if either file has drifted
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
+
+try:  # Windows consoles default to cp1252 and choke on the non-ASCII arrows/checkmarks below.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 DOC_PATH = os.path.join(REPO, "docs", "INSTALL_MUTATIONS.md")
+JSON_PATH = os.path.join(REPO, "docs", "install-mutations.json")
+JSON_SCHEMA = "simplicio.install-mutations/v1"
 
 # ── 1. Effect inventory, by source file — the "mapear todos os efeitos" deliverable ────────────
 # (source, function, effect, scope, reversible, consent_required)
@@ -154,6 +169,31 @@ def _consent_rows():
     ]
 
 
+def build_manifest_dict() -> dict:
+    """The SAME `MUTATIONS`/`OS_DIFFS`/`_consent_rows()` source-of-truth data `render_doc()`
+    turns into prose, structured instead for a programmatic/non-prose consumer (#293 gap 4:
+    "machine-readable effects manifest" beyond the per-run `install-transaction/v1` plan — this
+    describes the installer's static mutation SURFACE, not one run's effects). Field names are
+    the tuple positions in `MUTATIONS`/`OS_DIFFS` given explicit keys so a consumer never has to
+    guess column order."""
+    return {
+        "schema": JSON_SCHEMA,
+        "mutations": [
+            {"source": source, "function": fn, "effect": effect, "scope": scope,
+             "reversible": reversible, "consent_required": consent}
+            for source, fn, effect, scope, reversible, consent in MUTATIONS
+        ],
+        "os_differences": [
+            {"concern": concern, "linux": linux, "macos": macos, "windows": windows}
+            for concern, linux, macos, windows in OS_DIFFS
+        ],
+        "consent_matrix": [
+            {"effect": effect, "trigger": trigger, "required_consent": consent}
+            for effect, trigger, consent in _consent_rows()
+        ],
+    }
+
+
 def render_doc() -> str:
     lines = []
     a = lines.append
@@ -218,22 +258,38 @@ def render_doc() -> str:
     a("  apply the same skills/hooks/scripts/entry/settings steps (no services, no engine/app "
       "code);")
     a("  `full-stack` additionally copies `engine/`+`app/` (the capture-proxy/dashboard/tray "
-      "CODE) —")
-    a("  but, like the legacy flow, never itself invokes an OS service manager; actually "
-      "registering")
-    a("  the capture proxy as an auto-start service stays the separate, explicit "
-      "`python3 scripts/install_services.py install` command, so `apply()` remains safe to run "
-      "in any")
-    a("  CI/test host without mutating the machine's service manager.")
+      "CODE).")
+    a("  OS-level service registration (systemd `--user` unit on Linux, Startup-folder shim on "
+      "Windows)")
+    a("  is now wired into `apply()` itself as a backed-up, rollback-eligible `\"service\"` "
+      "step whenever")
+    a("  `with_service=True` — no longer a separate manual "
+      "`python3 scripts/install_services.py install`")
+    a("  step a human has to remember to run afterward. macOS stays the documented separate "
+      "`bash")
+    a("  scripts/setup_simplicio.sh` (launchd) path — `install_services.py` has no launchd "
+      "backend to wire in.")
+    a("- `--ci` (mode `ci`) now resolves and PINS an exact operator-package version "
+      "(`simplicio-cli==X.Y.Z`,")
+    a("  via `install_lib.resolve_pinned_version()`) instead of a floating "
+      "`pip install -U`, for a")
+    a("  reproducible CI install; the plan's `version_pinning` field "
+      "(`\"pinned\"`/`\"floating\"`) surfaces this")
+    a("  intent even in `--dry-run`, before any pip call runs. If neither an already-installed "
+      "version nor")
+    a("  `pip index versions` is reachable (offline), it falls back to a floating install with "
+      "an explicit")
+    a("  warning — never a fabricated pin.")
     a("- This document is now GENERATED from `scripts/gen_install_mutations_doc.py`, not "
       "hand-maintained")
-    a("  prose, closing the drift risk called out in an earlier round of #293. A single "
-      "machine-readable")
-    a("  \"effects manifest\" distinct from the per-run `install-transaction/v1` plan (which "
-      "describes")
-    a("  one run's effects, not the installer's full static capability surface) remains future "
-      "work if")
-    a("  a THIRD consumer (beyond this doc and `install_plan.py`) ever needs the same data.")
+    a("  prose, closing the drift risk called out in an earlier round of #293. A machine-"
+      "readable JSON")
+    a("  rendering of the SAME source-of-truth data (`docs/install-mutations.json`, schema "
+      "`%s`) is" % JSON_SCHEMA)
+    a("  emitted alongside this `.md` (`python3 scripts/gen_install_mutations_doc.py` writes "
+      "both; `--check`")
+    a("  fails the gate if either drifts) — a third, non-prose consumer no longer has to "
+      "scrape markdown.")
     a("- Real container/VM-level clean-install tests (`tests/system/test_clean_install.py`'s "
       "matrix")
     a("  entry) remain infeasible in this sandbox: no Docker/VM runtime is available here "
@@ -247,20 +303,38 @@ def render_doc() -> str:
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     rendered = render_doc()
+    rendered_json = json.dumps(build_manifest_dict(), indent=2, sort_keys=True,
+                               ensure_ascii=False) + "\n"
     if "--check" in argv:
         current = ""
         if os.path.exists(DOC_PATH):
             with open(DOC_PATH, encoding="utf-8") as f:
                 current = f.read()
+        current_json = ""
+        if os.path.exists(JSON_PATH):
+            with open(JSON_PATH, encoding="utf-8") as f:
+                current_json = f.read()
+        stale = []
         if current != rendered:
-            print("! docs/INSTALL_MUTATIONS.md is stale — run: "
-                  "python3 scripts/gen_install_mutations_doc.py")
+            stale.append("docs/INSTALL_MUTATIONS.md")
+        if current_json != rendered_json:
+            stale.append("docs/install-mutations.json")
+        if stale:
+            print("! %s stale — run: python3 scripts/gen_install_mutations_doc.py"
+                  % " and ".join(stale))
             return 1
-        print("docs/INSTALL_MUTATIONS.md matches the generator output")
+        print("docs/INSTALL_MUTATIONS.md and docs/install-mutations.json match the generator "
+              "output")
+        return 0
+    if "--json" in argv:
+        print(rendered_json, end="")
         return 0
     with open(DOC_PATH, "w", encoding="utf-8", newline="\n") as f:
         f.write(rendered)
+    with open(JSON_PATH, "w", encoding="utf-8", newline="\n") as f:
+        f.write(rendered_json)
     print("wrote %s" % DOC_PATH)
+    print("wrote %s" % JSON_PATH)
     return 0
 
 

@@ -67,15 +67,23 @@ returns the BLOCKED plan as-is without persisting a transaction).
   `ANTHROPIC_BASE_URL`, and opens no browser (#293 AC1).
 - `install_executor.py` now has a real, distinct file surface per mode: `minimal`/`runtime`/`ci`
   apply the same skills/hooks/scripts/entry/settings steps (no services, no engine/app code);
-  `full-stack` additionally copies `engine/`+`app/` (the capture-proxy/dashboard/tray CODE) —
-  but, like the legacy flow, never itself invokes an OS service manager; actually registering
-  the capture proxy as an auto-start service stays the separate, explicit `python3 scripts/install_services.py install` command, so `apply()` remains safe to run in any
-  CI/test host without mutating the machine's service manager.
+  `full-stack` additionally copies `engine/`+`app/` (the capture-proxy/dashboard/tray CODE).
+  OS-level service registration (systemd `--user` unit on Linux, Startup-folder shim on Windows)
+  is now wired into `apply()` itself as a backed-up, rollback-eligible `"service"` step whenever
+  `with_service=True` — no longer a separate manual `python3 scripts/install_services.py install`
+  step a human has to remember to run afterward. macOS stays the documented separate `bash
+  scripts/setup_simplicio.sh` (launchd) path — `install_services.py` has no launchd backend to wire in.
+- `--ci` (mode `ci`) now resolves and PINS an exact operator-package version (`simplicio-cli==X.Y.Z`,
+  via `install_lib.resolve_pinned_version()`) instead of a floating `pip install -U`, for a
+  reproducible CI install; the plan's `version_pinning` field (`"pinned"`/`"floating"`) surfaces this
+  intent even in `--dry-run`, before any pip call runs. If neither an already-installed version nor
+  `pip index versions` is reachable (offline), it falls back to a floating install with an explicit
+  warning — never a fabricated pin.
 - This document is now GENERATED from `scripts/gen_install_mutations_doc.py`, not hand-maintained
-  prose, closing the drift risk called out in an earlier round of #293. A single machine-readable
-  "effects manifest" distinct from the per-run `install-transaction/v1` plan (which describes
-  one run's effects, not the installer's full static capability surface) remains future work if
-  a THIRD consumer (beyond this doc and `install_plan.py`) ever needs the same data.
+  prose, closing the drift risk called out in an earlier round of #293. A machine-readable JSON
+  rendering of the SAME source-of-truth data (`docs/install-mutations.json`, schema `simplicio.install-mutations/v1`) is
+  emitted alongside this `.md` (`python3 scripts/gen_install_mutations_doc.py` writes both; `--check`
+  fails the gate if either drifts) — a third, non-prose consumer no longer has to scrape markdown.
 - Real container/VM-level clean-install tests (`tests/system/test_clean_install.py`'s matrix
   entry) remain infeasible in this sandbox: no Docker/VM runtime is available here (`docker --version`
   fails with "command not found"). Not fabricated; tracked as a genuine, environment-limited gap.

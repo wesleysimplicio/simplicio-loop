@@ -13,6 +13,7 @@ Fields present today:
 | `mode` | One of `minimal \| runtime \| full-stack \| ci \| dry-run \| rollback` (#293 § Modos). `minimal`/`runtime`/`ci` apply the same real file-effect steps (skills/hooks/scripts/entry/settings) via `scripts/install_executor.py::apply()`; `full-stack` additionally installs the `engine/`+`app/` file surface — but only once the caller has passed BOTH `--with-service` and `--with-proxy` explicitly (choosing the mode name alone is never treated as consent, see `blocked_reasons` below). |
 | `scope` | `project \| user \| system` — where the mutation lands. |
 | `files` | Every file the installer would create or update, each tagged `reversible: true/false` and an `action` (`create`/`update`/`skip` when already present). |
+| `version_pinning` | `"pinned"` when `mode == "ci"`, else `"floating"` (#293 mode `ci`: "com versões fixadas"). Purely a function of `mode` — kept here so a `--dry-run` shows the intent up front; the actual version RESOLUTION (local/`pip index`) happens in `install_lib.ensure_operators(pin_versions=...)`, not in this pure planner. |
 | `permissions_required` | Explicit list of consent-requiring effects this plan would trigger (`global_package`, `break_system_packages`, `path_write`, `symlink`, `service`, `proxy`, `browser`, `secrets`) — empty for a `minimal` project install, non-empty the moment `--global`, a service, or a proxy is requested. |
 | `status` | `PLANNED` when every required consent is present; `BLOCKED` when it isn't (see `blocked_reasons`) — a `BLOCKED` plan is returned as-is by `install_executor.py::apply()` without persisting a transaction or mutating anything. `APPLIED`/`ROLLED_BACK` are receipt-only statuses `apply()`/`rollback()` add after a plan is actually executed (see `scripts/install_executor.py`). |
 | `blocked_reasons` | Present when `status == "BLOCKED"`: `break_system_packages` (pip's PEP 668 refusal without `--allow-break-system-packages`) and/or `full_stack_confirmation` (`mode == "full-stack"` without both `--with-service` and `--with-proxy`). |
@@ -27,12 +28,19 @@ step already applied if a later one raises. `scripts/install_executor.py rollbac
 <transaction_id> --target DIR` (or `install_lib.py rollback ...`) undoes a previously
 applied transaction from that same receipt.
 
+Registering the capture proxy as an OS-level auto-start service (systemd `--user` unit,
+Windows Startup shim) is wired into `apply()` itself as a `"service"` step — backed up
+and rollback-eligible exactly like every other step — whenever the caller passes the
+same explicit `with_service=True` consent the plan already requires (#293 gap-closure:
+this used to be a separate, easy-to-forget manual `python3 scripts/install_services.py
+install` command). macOS stays the documented separate `bash scripts/setup_simplicio.sh`
+(launchd) path — `install_services.py` has no launchd backend to wire in.
+
 ## Non-goals of this slice
 
-- Registering the capture proxy as an OS-level auto-start service (systemd unit,
-  Windows Startup shim, launchd agent) is intentionally NOT part of what `apply()`
-  itself does, even in `full-stack` mode — that stays the separate, explicit
-  `python3 scripts/install_services.py install` command, so `apply()` is always safe
-  to exercise in a test/CI host without touching the machine's service manager.
 - No hash-based idempotency check against a PRIOR transaction receipt beyond the N-1→N
   skill-set reconciliation `install_executor.py` already performs (`_stale_skills()`).
+- No fully separate machine-readable "effects manifest" beyond this plan schema itself —
+  `scripts/gen_install_mutations_doc.py --json` now emits `docs/install-mutations.json`,
+  a structured rendering of the SAME static mutation-inventory data as
+  `docs/INSTALL_MUTATIONS.md`, for a third, non-prose consumer.

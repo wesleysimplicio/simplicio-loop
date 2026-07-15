@@ -164,7 +164,21 @@ def test_full_stack_apply_is_blocked_without_consent_and_mutates_nothing(tmp_pat
     assert not (target / ".simplicio").exists()
 
 
-def test_full_stack_apply_with_consent_copies_engine_and_app(tmp_path):
+def test_full_stack_apply_with_consent_copies_engine_and_app(tmp_path, monkeypatch):
+    # #293 gap 1: with_service=True now ALSO runs a real "service" step (install_executor.py
+    # shells out to install_services.py) — redirect HOME/APPDATA/XDG_CONFIG_HOME into tmp_path
+    # first (same safety pattern as every subprocess invocation in this file) so this in-process
+    # apply() call can never register a real systemd unit / Windows Startup shim on the host
+    # actually running the test suite.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("SIMPLICIO_NO_BROWSER", "1")
+    # Distinct, unlikely-to-collide port — avoids fighting a real dev proxy that may already be
+    # bound to the module's own default (8788) on the host running this test.
+    monkeypatch.setenv("SIMPLICIO_PROXY_PORT", "18799")
     target = tmp_path / "project"
     target.mkdir()
     receipt = install_executor.apply("claude", target=str(target), is_global=False,
@@ -174,6 +188,15 @@ def test_full_stack_apply_with_consent_copies_engine_and_app(tmp_path):
     assert (target / "app" / "simplicio_tray.py").is_file()
     steps = {s["step"] for s in receipt["steps"]}
     assert "full_stack" in steps
+    import platform as _platform
+    if _platform.system() in ("Linux", "Windows"):
+        # Only these two OSes have a concrete file the executor registers/backs up (#293 gap 1);
+        # macOS stays the documented separate `setup_simplicio.sh` (launchd) path.
+        assert "service" in steps
+        service_step = next(s for s in receipt["steps"] if s["step"] == "service")
+        # The service step actually registered something under the REDIRECTED home, never the
+        # real host's Startup folder / systemd --user dir.
+        assert str(home) in service_step["path"]
 
 
 def test_minimal_and_runtime_and_ci_apply_never_copy_engine_or_app(tmp_path):

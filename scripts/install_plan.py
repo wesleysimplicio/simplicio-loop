@@ -126,6 +126,12 @@ def build_plan(runtime: str, *, mode: str = "minimal", scope: str = "project",
         "target": os.path.normpath(target),
         "requested_version": requested_version,
         "resolved_version": resolved_version,
+        # #293 mode `ci`: "instalação não interativa ... com versões fixadas" — vs `minimal`'s
+        # potentially-floating `pip install -U`. This field is purely a function of `mode`
+        # (keeping this planner side-effect-free, per its own module docstring); the actual
+        # version RESOLUTION (network/local pip query) happens in
+        # `install_lib.ensure_operators(pin_versions=...)`, not here.
+        "version_pinning": "pinned" if mode == "ci" else "floating",
         "files": files,
         "symlinks": [],
         "path_additions": [],

@@ -99,6 +99,20 @@ def test_unknown_mode_and_scope_are_rejected(tmp_path):
         build_plan("claude", mode="minimal", scope="bogus", target=str(tmp_path))
 
 
+def test_ci_mode_plan_is_pinned_other_modes_are_floating(tmp_path):
+    # #293 mode `ci`: "não interativa ... com versões fixadas" — vs minimal/runtime/full-stack's
+    # normal floating install. The plan surfaces the INTENT (pure, no I/O); the actual version
+    # resolution happens in install_lib.ensure_operators(pin_versions=...).
+    ci_plan = build_plan("claude", mode="ci", scope="project", target=str(tmp_path))
+    assert ci_plan["version_pinning"] == "pinned"
+    for mode in ("minimal", "runtime"):
+        plan = build_plan("claude", mode=mode, scope="project", target=str(tmp_path))
+        assert plan["version_pinning"] == "floating", mode
+    fs_plan = build_plan("claude", mode="full-stack", scope="project", target=str(tmp_path),
+                         with_service=True, with_proxy=True)
+    assert fs_plan["version_pinning"] == "floating"
+
+
 def test_plan_matches_declared_schema_shape(tmp_path):
     schema_path = ROOT / "contracts" / "install-transaction" / "v1" / "schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
