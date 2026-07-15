@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 """CLI shell for the fail-closed quality-matrix gate (#278, extended by #283).
 
-    python3 scripts/quality_matrix.py build --run-dir <dir> [--coverage-threshold N] [--change-type T]
+    python3 scripts/quality_matrix.py build --run-dir <dir> [--coverage-threshold N] [--change-type T] [--run-id ID] [--work-item-source github --work-item-id 283 --work-item-type feat --work-item-title "..."]
     python3 scripts/quality_matrix.py check --run-dir <dir>
     python3 scripts/quality_matrix.py classify --title "..." [--label L ...]
-    python3 scripts/quality_matrix.py populate --run-dir <dir> [--base origin/main] [--benchmark-na "..."]
+    python3 scripts/quality_matrix.py populate --run-dir <dir> [--base origin/main] [--benchmark-na "..."] [--run-id ID] [--work-item-source github --work-item-id 283]
     python3 scripts/quality_matrix.py tdd-red --run-dir <dir> --test-id <pytest-node-id>
     python3 scripts/quality_matrix.py tdd-green --run-dir <dir> --test-id <pytest-node-id>
     python3 scripts/quality_matrix.py reverify --run-dir <dir> [--no-rerun]
     python3 scripts/quality_matrix.py selftest
 
-`populate`/`tdd-red`/`tdd-green`/`reverify` are #283's remaining scope: auto-populating the receipt
+`populate`/`tdd-red`/`tdd-green`/`reverify` are #283's scope: auto-populating the receipt
 from `scripts/coverage_gate.py`/`scripts/regression_test_gate.py`/`scripts/perf_gate.py` instead of
 hand-typed values, structurally re-checkable TDD RED/GREEN evidence, and an independent watcher
 re-verification pass (also wired into `scripts/watcher_verify.py cmd_verify`).
+
+`--run-id`/`--work-item-*` and the receipt's nested `tests.{unit,integration,system,regression}`
+mirror (kept in lockstep via `simplicio_loop.quality_matrix.sync_tests_envelope`) close #283's last
+documented gap: the literal `simplicio.quality-gate/v1` envelope example in the issue body
+(`run_id`, `work_item`, nested per-category `tests` object). `evaluate_quality_matrix` reads a
+lane from either the flat `requirements.<lane>` entry (still the canonical/authoritative one) or
+the nested `tests.<lane>` entry, so a receipt authored in either shape evaluates identically.
 """
 from __future__ import annotations
 
@@ -39,11 +46,28 @@ from simplicio_loop.quality_matrix import (
     evaluate_quality_matrix,
     independent_reverify_quality_matrix,
     receipt_path,
+    sync_tests_envelope,
 )
 
 
+def _work_item_from_args(args: argparse.Namespace) -> dict | None:
+    """#283: build the optional `work_item` block from --work-item-* flags, matching the
+    issue's literal envelope example (`work_item.source`/`.id`/`.type`/`.title`)."""
+    fields = {
+        "source": getattr(args, "work_item_source", None),
+        "id": getattr(args, "work_item_id", None),
+        "type": getattr(args, "work_item_type", None),
+        "title": getattr(args, "work_item_title", None),
+    }
+    fields = {k: v for k, v in fields.items() if v}
+    return fields or None
+
+
 def cmd_build(args: argparse.Namespace) -> int:
-    template = build_quality_matrix_template(args.coverage_threshold, change_type=args.change_type)
+    template = build_quality_matrix_template(
+        args.coverage_threshold, change_type=args.change_type,
+        run_id=args.run_id, work_item=_work_item_from_args(args),
+    )
     out = receipt_path(args.run_dir)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(template, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -98,6 +122,11 @@ def cmd_populate(args: argparse.Namespace) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     receipt = _load_receipt(run_dir, args.coverage_threshold, args.change_type)
     requirements = receipt.setdefault("requirements", {})
+    if args.run_id and not receipt.get("run_id"):
+        receipt["run_id"] = args.run_id
+    work_item = _work_item_from_args(args)
+    if work_item and not receipt.get("work_item"):
+        receipt["work_item"] = work_item
 
     if not args.skip_regression:
         report_path = run_dir / "regression-gate-report.json"
@@ -149,6 +178,7 @@ def cmd_populate(args: argparse.Namespace) -> int:
             print(proc.stdout, file=sys.stderr)
             print(proc.stderr, file=sys.stderr)
 
+    sync_tests_envelope(receipt)  # #283: keep the nested "tests" mirror in lockstep
     _save_receipt(run_dir, receipt)
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
     verdict = evaluate_quality_matrix(str(run_dir))
@@ -321,6 +351,17 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _add_work_item_args(parser: argparse.ArgumentParser) -> None:
+    """#283: --run-id/--work-item-* flags populate the issue's literal envelope example
+    (`run_id`, `work_item.source`/`.id`/`.type`/`.title`). All optional/additive -- omitting
+    them keeps the exact pre-existing receipt shape (empty string/dict, never fabricated)."""
+    parser.add_argument("--run-id", default=None, help="cross-link this receipt to a run id (delivery/evidence receipt, task anchor)")
+    parser.add_argument("--work-item-source", default=None, help="e.g. github")
+    parser.add_argument("--work-item-id", default=None)
+    parser.add_argument("--work-item-type", default=None, choices=["bug", "task", "feat", "fix", "chore"])
+    parser.add_argument("--work-item-title", default=None)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="quality_matrix")
     sub = parser.add_subparsers(dest="verb", required=True)
@@ -328,6 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--run-dir", required=True)
     p_build.add_argument("--coverage-threshold", type=float, default=DEFAULT_COVERAGE_THRESHOLD)
     p_build.add_argument("--change-type", choices=list(CHANGE_TYPES), default=None)
+    _add_work_item_args(p_build)
     p_build.set_defaults(func=cmd_build)
     p_check = sub.add_parser("check")
     p_check.add_argument("--run-dir", required=True)
@@ -347,6 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_populate.add_argument("--skip-regression", action="store_true")
     p_populate.add_argument("--skip-benchmark", action="store_true")
     p_populate.add_argument("--skip-coverage", action="store_true")
+    _add_work_item_args(p_populate)
     p_populate.set_defaults(func=cmd_populate)
     p_tdd_red = sub.add_parser("tdd-red")
     p_tdd_red.add_argument("--run-dir", required=True)

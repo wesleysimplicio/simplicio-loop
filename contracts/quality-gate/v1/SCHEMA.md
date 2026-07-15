@@ -156,6 +156,33 @@ closed on that case separately). A `BLOCKED` quality gate is folded into the wat
 overall `match`/`status`, so a claim the independent pass can't confirm blocks the same way
 a missing challenge or a stale commit already did.
 
+## 7. The literal `simplicio.quality-gate/v1` envelope (`run_id`, `work_item`, nested `tests`)
+
+The issue body's example schema shows `run_id`, `work_item` (`source`/`id`/`type`/`title`),
+and the four test-category lanes nested under a `tests` object rather than flat under
+`requirements`. All three are now supported, additively, on top of the same receipt:
+
+```bash
+python3 scripts/quality_matrix.py build --run-dir <dir> --change-type feat \
+    --run-id abc123 --work-item-source github --work-item-id 283 \
+    --work-item-type feat --work-item-title "Quality Gate obrigatório"
+```
+
+* `run_id` (string) and `work_item` (`{source, id, type, title}`) are recorded verbatim
+  when the CLI flags are given; omitting them keeps `run_id: ""`/`work_item: {}` (never
+  fabricated placeholders). `scripts/quality_matrix.py populate` accepts the same flags and
+  only fills them in when the existing receipt does not already have them set.
+* `tests.unit`/`.integration`/`.system`/`.regression` is a nested mirror of the same four
+  `requirements.<lane>` entries, kept in lockstep by
+  `simplicio_loop.quality_matrix.sync_tests_envelope` (called by
+  `build_quality_matrix_template` and by `scripts/quality_matrix.py populate` after it
+  writes `requirements.regression`). `evaluate_quality_matrix` and
+  `independent_reverify_quality_matrix` read a lane from **either** the flat
+  `requirements.<lane>` entry (canonical, wins if both present) **or** the nested
+  `tests.<lane>` entry — a receipt authored in either shape evaluates identically, so
+  external tooling that only knows the issue's literal envelope example can write
+  `tests.unit`/etc. directly without needing to also duplicate it under `requirements`.
+
 ## Not yet covered by this contract
 
 * CI wiring (`.github/workflows/`) was removed repo-wide in #311 (unrelated billing
