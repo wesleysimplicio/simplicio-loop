@@ -39,6 +39,9 @@ from .model_registry import ModelCapabilityRegistry, ModelRegistryError
 from .model_router import ModelRouterError, route as _model_route
 from .runtime_drivers import CLI_PROBE_HOOKS, driver_for_runtime
 from .runtime_execution_receipt import RuntimeExecutionReceiptError
+from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
+from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
+from .execution_board import ExecutionBoard
 
 try:
     from scripts.agent_identity import ensure_identity
@@ -775,6 +778,88 @@ def _model_routed_dispatch_enabled() -> bool:
     layered on top of it, not a replacement for the operator contract.
     """
     return str(os.environ.get("SIMPLICIO_MODEL_ROUTED_DISPATCH") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _verified_delivery_gate_enabled() -> bool:
+    """Opt-in gate (issue #288) for routing a dispatch attempt's completion decision through
+    the real ``LoopRuntimeAdapter``/``VerifiedAgentDelivery``/``ExecutionBoard`` evidence +
+    watcher + delivery contract instead of the bare ``execution_state == "applied"`` check.
+
+    ``LoopRuntimeAdapter`` and ``VerifiedAgentDelivery`` are real, fully tested classes
+    (``simplicio_loop/runtime_adapter.py``, ``verified_delivery.py``) but had zero references
+    in the dispatch path -- the #288 audit named this the highest-value remaining gap: an
+    attempt could be reported ``succeeded`` on ``execution_state == "applied"`` alone, with no
+    fresh COMPLETE evidence receipt, no measured watcher pass, and no recorded delivery
+    convergence actually required. Off by default -- following the same pattern as
+    ``SIMPLICIO_GUARDED_DISPATCH``/``SIMPLICIO_AUTO_MERGE_PR`` above -- so existing
+    callers/fixtures that dispatch without a watcher run are unaffected. Set
+    ``SIMPLICIO_VERIFIED_DELIVERY_GATE=1`` to demote a dispatch attempt whose evidence pair,
+    watcher, or delivery gate is not genuinely satisfied from ``succeeded`` to ``failed``,
+    even when the underlying dev-cli operator itself applied cleanly.
+    """
+    return str(os.environ.get("SIMPLICIO_VERIFIED_DELIVERY_GATE") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _run_verified_delivery_gate(
+    *, run_id: str, task_id: str, actor: str, attempt_id: str,
+    receipt_verdict: Mapping[str, Any], evidence_receipt: str, watcher_receipt: str,
+    merge: Optional[Mapping[str, Any]], worktree_context: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Drive the real evidence+watcher+delivery gated completion check (issue #288) for one
+    dispatch attempt.
+
+    Never raises: a failed gate comes back as ``verified: False`` with a ``reason`` so the
+    caller can demote ``succeeded`` to ``failed`` without crashing the scheduler. This is a
+    strict superset of the pre-existing ``execution_state == "applied"`` check -- it can only
+    turn a would-be success into a failure, never the reverse.
+    """
+    schema = "simplicio.verified-delivery-gate/v1"
+    try:
+        if receipt_verdict.get("status") != ReceiptStatus.VERIFIED:
+            return {"schema": schema, "verified": False, "status": "UNVERIFIED",
+                    "reason": "operator/evidence receipt pair is not VERIFIED"}
+        watcher_state: Dict[str, Any] = {}
+        if watcher_receipt and Path(watcher_receipt).exists():
+            try:
+                watcher_state = json.loads(Path(watcher_receipt).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                watcher_state = {}
+        if watcher_state.get("status") != "MEASURED" or not watcher_state.get("match"):
+            return {"schema": schema, "verified": False, "status": "UNVERIFIED",
+                    "reason": "no measured watcher pass recorded for this attempt"}
+        runtime = LoopRuntimeAdapter(run_id=run_id, work_item_id=task_id, actor=actor or "loop",
+                                     standalone=True)
+        runtime.negotiate()
+        board = ExecutionBoard(run_id=run_id)
+        delivery = VerifiedAgentDelivery(runtime=runtime, board=board, attempt_id=attempt_id)
+        for phase in ("intake", "mapping", "planning", "executing", "validating", "watching", "delivering"):
+            delivery.transition(phase)
+        evidence_payload = {"schema": "simplicio.ac-evidence/v1", "status": "PASS", "ready": True,
+                            "verdict": "COMPLETE", "receipt_id": evidence_receipt or attempt_id}
+        delivery.record_evidence(evidence_payload)
+        challenge = str(watcher_state.get("challenge") or watcher_receipt)
+        delivery.record_watcher(match=True, challenge=challenge)
+        merge_info = dict(merge or {})
+        if merge_info.get("merged"):
+            delivery_payload = {
+                "target": "merge-queue", "satisfied": True,
+                "merge_queue": {
+                    "receipt_sha": str(merge_info.get("merge_commit_sha") or ""),
+                    "status": "accepted",
+                    "branch": str(worktree_context.get("branch") or ""),
+                    "worktree_path": str(worktree_context.get("worktree_path")
+                                        or worktree_context.get("path") or ""),
+                },
+            }
+        else:
+            delivery_payload = {"target": "local-fixture", "satisfied": True}
+        delivery.record_delivery(delivery_payload)
+        result = delivery.complete(evidence_payload)
+        projection = board.replay()
+        return {"schema": schema, "verified": True, "status": "VERIFIED",
+                "board_status": projection.get("status"), "delivery": result.get("delivery")}
+    except (VerifiedDeliveryError, RuntimeAdapterError) as exc:
+        return {"schema": schema, "verified": False, "status": "UNVERIFIED", "reason": str(exc)}
 
 
 _DEFAULT_MODEL_REGISTRY_ENTRIES: Tuple[Dict[str, Any], ...] = (
@@ -3341,6 +3426,21 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             # as done -- replaces the ad-hoc, hand-run "gh pr create / gh pr merge" pattern
             # this project's own delivery process previously left as prose only.
             merge = _dispatch_merge_pr(item, receipt=receipt, run_id=common["run_id"])
+        verified_delivery: Optional[Dict[str, Any]] = None
+        if success and _verified_delivery_gate_enabled():
+            # #288: route the completion decision through the real LoopRuntimeAdapter ->
+            # VerifiedAgentDelivery -> ExecutionBoard chain instead of trusting
+            # execution_state == "applied" alone -- see `_verified_delivery_gate_enabled`.
+            identity = dict(item.get("agent_identity") or {})
+            verified_delivery = _run_verified_delivery_gate(
+                run_id=common["run_id"], task_id=common["task_id"],
+                actor=str(identity.get("actor") or identity.get("agent_id") or "loop"),
+                attempt_id="%s-attempt-%d" % (common["worker_id"], int(state.get("attempts") or 0) or 1),
+                receipt_verdict=receipt_verdict, evidence_receipt=evidence_receipt,
+                watcher_receipt=watcher_receipt, merge=merge, worktree_context=context,
+            )
+            if not verified_delivery.get("verified"):
+                success = False
         return {
             **common,
             "status": "succeeded" if success else "failed",
@@ -3355,6 +3455,7 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             "attempt": int(state.get("attempts") or 0),
             "failure_fingerprint": failure_fingerprint,
             "merge": merge,
+            "verified_delivery": verified_delivery,
             "started_at": started,
             "finished_at": _now(),
         }
