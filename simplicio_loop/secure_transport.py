@@ -54,6 +54,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping
 from urllib.parse import urlsplit
 
+try:  # pragma: no cover - installed package without scripts namespace
+    from scripts.security_audit_log import append_event as _audit_append
+except ImportError:  # pragma: no cover
+    _audit_append = None
+
 METADATA_ADDRESSES = {
     "169.254.169.254",  # AWS/GCP/Azure instance metadata
     "fd00:ec2::254",    # AWS IMDSv2 IPv6
@@ -152,14 +157,26 @@ def request_json(
     surfaced to the caller as a plain dict with a ``_status`` key rather than
     silently retried or redirected.
     """
+    def _audit(decision: str, reason: str) -> None:
+        if _audit_append is not None:
+            _audit_append(
+                None, event="secure_transport.request_json", decision=decision,
+                operation=endpoint.environment_id, reason=reason,
+                extra={"method": method},
+            )
+
     parsed = urlsplit(url)
     if parsed.scheme != "https":
+        _audit("reject", "secure transport requires an https URL")
         raise SecureTransportError("secure transport requires an https URL")
     if not parsed.hostname:
+        _audit("reject", "URL must include a hostname")
         raise SecureTransportError("URL must include a hostname")
     if parsed.username or parsed.password:
+        _audit("reject", "URL must not carry userinfo")
         raise SecureTransportError("URL must not carry userinfo")
     if parsed.fragment:
+        _audit("reject", "URL must not carry a fragment")
         raise SecureTransportError("URL must not carry a fragment")
     hostname = parsed.hostname
     port = parsed.port or 443
@@ -167,7 +184,11 @@ def request_json(
     if parsed.query:
         path += "?" + parsed.query
 
-    pinned_address = resolve_pinned_address(hostname, port)
+    try:
+        pinned_address = resolve_pinned_address(hostname, port)
+    except SecureTransportError as exc:
+        _audit("reject", str(exc))
+        raise
     conn = _PinnedHTTPSConnection(hostname, pinned_address, port, timeout=timeout)
     try:
         conn.connect()
@@ -176,6 +197,11 @@ def request_json(
             endpoint.policy, endpoint.environment_id, url, hostname, measured_sha256,
         )
         if not ok:
+            # `check_endpoint()` (distributed_trust_policy.py) already appends
+            # its own audit line with the pin/hostname detail; this call site
+            # additionally records that the *connection attempt itself* was
+            # aborted before any request bytes were written.
+            _audit("reject", f"connect-time trust check failed: {reason}")
             raise SecureTransportError(f"connect-time trust check failed: {reason}")
 
         conn.request(method, path, body=body, headers=dict(headers))
@@ -186,6 +212,7 @@ def request_json(
         conn.close()
 
     if status in (301, 302, 303, 307, 308):
+        _audit("reject", f"refused redirect (status {status})")
         raise SecureTransportError(
             f"refusing to follow redirect (status {status}); zero redirects is the fail-closed default"
         )
@@ -193,8 +220,11 @@ def request_json(
     try:
         decoded = json.loads(raw.decode("utf-8")) if raw else {}
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        _audit("reject", f"non-JSON response body: {exc}")
         raise SecureTransportError(f"non-JSON response body: {exc}") from exc
     if not isinstance(decoded, dict):
+        _audit("reject", "response body must be a JSON object")
         raise SecureTransportError("response body must be a JSON object")
     decoded["_status"] = status
+    _audit("accept", "request completed within trust policy")
     return decoded

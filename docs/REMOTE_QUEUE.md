@@ -144,15 +144,43 @@ Once that's set:
   sent on the wire) and the runner mints a fresh token per process via
   `scripts/short_lived_credentials.py`, bound to the worker's agent identity
   and the environment_id, expiring in `max_ttl_seconds` (or
-  `SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS` if lower). Run the queue server
-  with `--token-secret`/`--token-scope`/`--revocation-store` (or the
-  matching `SIMPLICIO_QUEUE_*` env vars) to verify it and support immediate
-  revocation by `jti` (`scripts/short_lived_credentials.py revoke`).
+  `SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS` if lower) and restricted to
+  `runner.WORKER_QUEUE_OPERATIONS` (pull/claim/heartbeat/complete/... --
+  never `enqueue`; see "Operation-level credential scoping" below). Run the
+  queue server with `--token-secret`/`--token-scope`/`--revocation-store` (or
+  the matching `SIMPLICIO_QUEUE_*` env vars) to verify it and support
+  immediate revocation by `jti` (`scripts/short_lived_credentials.py revoke`).
+* The legacy static `SIMPLICIO_REMOTE_QUEUE_TOKEN` is **not** a silent
+  fallback when `SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET` is unset: the runner
+  raises `RuntimeError` unless `SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN=1` is also
+  set, and every use of the opt-in path appends a line to the audit log
+  (`.orchestrator/security/audit-log.jsonl`, `scripts/security_audit_log.py`)
+  so an indefinitely-lived shared secret in production is discoverable, not
+  invisible.
+* Operation-level credential scoping: a short-lived token's `ops` claim (set
+  via `issue_token(..., operations=[...])`) is checked per-operation on the
+  server (`create_http_queue_server`/`verify_token(expected_operation=...)`)
+  -- a token scoped to `pull` does not authorize `claim`/`complete` even
+  though its coarser environment `scope` claim matches.
+* Authorization decisions are audited: `distributed_trust_policy.authorize()`
+  / `.check_endpoint()`, `secure_transport.request_json()`, and
+  `short_lived_credentials.verify_token()` each append a structured line
+  (who/what/when/verdict/reason, never the credential itself) to the #289
+  audit log; see `docs/security/distributed-credentials-runbook.md`.
+* `tls_sha256_pins` supports a `current`+`next` rotation set: entries may be
+  either bare strings (implicit `current`, legacy shape) or
+  `{"sha256": "...", "status": "current"|"next"|"retired"}`, so a certificate
+  rotation adds the new pin as `next` before the certificate changes, then
+  promotes it once the rotation is live -- no single commit has to change the
+  policy and the certificate at the same instant.
 * This is not the full OIDC broker exchange #289 describes (no CI identity
-  provider exists in this repo to issue the initial trust), and job
-  separation / GitHub Environment protection do not apply now that
-  `.github/workflows/distributed-183-proof.yml` has been removed (#311) --
-  see the issue thread for the current, re-scoped remaining gaps.
+  provider exists in this repo to issue the initial trust -- **this gap is
+  permanently blocked** absent a CI identity provider and is not attempted
+  here), and job separation / GitHub Environment protection do not apply now
+  that `.github/workflows/distributed-183-proof.yml` has been removed (#311)
+  -- see the issue thread and
+  `docs/security/distributed-credentials-runbook.md` for the current,
+  re-scoped remaining gaps.
 
 ### The coordinator no longer executes remotely-dispatched tasks itself (issue #286)
 

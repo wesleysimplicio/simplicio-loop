@@ -103,3 +103,49 @@ def test_token_and_token_secret_are_mutually_exclusive(tmp_path):
     backend = SQLiteRemoteQueue(str(tmp_path / "queue.db"))
     with pytest.raises(ValueError, match="mutually exclusive"):
         create_http_queue_server(backend, token="static", token_secret="secret")
+
+
+# ---------------------------------------------------------------------------
+# Operation-level credential scoping (#289): a token minted for `pull` must
+# not be usable against `/claim` or `/complete` even though its coarser
+# environment `scope` claim matches.
+# ---------------------------------------------------------------------------
+
+def test_pull_scoped_token_cannot_claim(short_lived_queue_server):
+    url, backend, _store = short_lived_queue_server
+    backend.enqueue("T-scoped")
+    token = issue_token("signing-secret", subject="agent-1", scope="staging", ttl_seconds=60,
+                        operations=["pull"])
+
+    status, result = _post(url, "/pull", token, {"agent_id": "agent-1", "capabilities": [], "limit": 10})
+    assert status == 200
+
+    with pytest.raises(HTTPError) as exc_info:
+        _post(url, "/claim", token, {"task_id": "T-scoped", "agent_id": "agent-1",
+                                     "idempotency_key": "k1", "ttl": 30})
+    assert exc_info.value.code == 401
+    assert backend.task("T-scoped")["status"] == "ready"
+
+
+def test_claim_scoped_token_cannot_complete_a_different_operation(short_lived_queue_server):
+    url, backend, _store = short_lived_queue_server
+    backend.enqueue("T-scoped-2")
+    claim_token = issue_token("signing-secret", subject="agent-1", scope="staging", ttl_seconds=60,
+                              operations=["claim", "heartbeat"])
+
+    status, result = _post(url, "/claim", claim_token, {"task_id": "T-scoped-2", "agent_id": "agent-1",
+                                                        "idempotency_key": "k2", "ttl": 30})
+    assert status == 200
+
+    with pytest.raises(HTTPError) as exc_info:
+        _post(url, "/complete", claim_token, {"lease": result["lease"], "receipt_ref": "r1"})
+    assert exc_info.value.code == 401
+
+
+def test_token_without_operations_claim_authorizes_any_operation(short_lived_queue_server):
+    url, backend, _store = short_lived_queue_server
+    token = issue_token("signing-secret", subject="agent-1", scope="staging", ttl_seconds=60)
+    status, _ = _post(url, "/enqueue", token, {"task_id": "T-unrestricted", "payload": {}})
+    assert status == 200
+    status, _ = _post(url, "/pull", token, {"agent_id": "agent-1", "capabilities": [], "limit": 10})
+    assert status == 200

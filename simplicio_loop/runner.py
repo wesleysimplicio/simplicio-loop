@@ -56,6 +56,11 @@ except ImportError:  # pragma: no cover - installed package without scripts name
     _load_trust_policy = None
     _resolve_trust_environment = None
 
+try:
+    from scripts.security_audit_log import append_event as _audit_append
+except ImportError:  # pragma: no cover - installed package without scripts namespace
+    _audit_append = None
+
 RUNNER_SCHEMA = "simplicio.run-manifest/v1"
 STATE_SCHEMA = "simplicio.run-state/v1"
 OPERATOR_RECEIPT_SCHEMA = "simplicio.operator-receipt/v0"
@@ -234,6 +239,17 @@ def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]
     return queue, identity
 
 
+STATIC_QUEUE_TOKEN_OPT_IN_VAR = "SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN"
+
+# #289: the queue operations a worker's short-lived credential is scoped to.
+# `enqueue` is deliberately excluded -- workers claim/heartbeat/complete/cancel
+# existing tasks, they do not create new ones, so a stolen worker credential
+# cannot be used to inject work into the queue.
+WORKER_QUEUE_OPERATIONS = (
+    "pull", "claim", "heartbeat", "complete", "assert-active", "cancel", "release", "events", "task",
+)
+
+
 def _resolve_queue_token(environment_id: Optional[str], policy: Optional[Dict[str, Any]],
                           identity: Optional[Dict[str, Any]]) -> Optional[str]:
     """Resolve the bearer credential for the distributed queue (#289).
@@ -243,17 +259,51 @@ def _resolve_queue_token(environment_id: Optional[str], policy: Optional[Dict[st
     (:mod:`scripts.short_lived_credentials`) is minted for this process, bound
     to the worker's agent identity as subject and the environment_id as scope,
     with a TTL taken from the policy's ``max_ttl_seconds`` (capped by
-    ``SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS`` if set lower). This is not the
-    OIDC broker exchange #289 describes -- there is no CI identity provider to
-    issue the initial trust -- but it replaces an indefinitely-lived static
-    secret with one that expires on its own and carries a revocable ``jti``.
+    ``SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS`` if set lower), and restricted
+    to :data:`WORKER_QUEUE_OPERATIONS` (operation-level scoping, so a leaked
+    token cannot be replayed against an operation this worker never needed).
+    This is not the OIDC broker exchange #289 describes -- there is no CI
+    identity provider to issue the initial trust, and that gap stays
+    permanently blocked absent one -- but it replaces an indefinitely-lived
+    static secret with one that expires on its own and carries a revocable
+    ``jti``.
 
-    Falls back to the legacy static ``SIMPLICIO_REMOTE_QUEUE_TOKEN`` when no
-    signing secret is configured, for local/dev use and backward compatibility.
+    The legacy static ``SIMPLICIO_REMOTE_QUEUE_TOKEN`` is no longer a silent
+    fallback: it is only honored when the caller has *also* set
+    ``SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN=1`` (explicit opt-in), and every use
+    of it appends a ``reject``-adjacent warning line to the #289 audit log
+    (:mod:`scripts.security_audit_log`) so an indefinitely-lived credential in
+    use is discoverable, not invisible. Without the opt-in flag, a missing
+    signing secret fails closed with ``RuntimeError`` rather than silently
+    downgrading to the weaker auth mode.
     """
     secret = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", "").strip()
     if not secret:
-        return os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN") or None
+        static_token = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN", "").strip() or None
+        opted_in = os.environ.get(STATIC_QUEUE_TOKEN_OPT_IN_VAR, "").strip().lower() in ("1", "true", "yes")
+        if static_token and not opted_in:
+            if _audit_append is not None:
+                _audit_append(
+                    None, event="runner.resolve_queue_token", decision="reject",
+                    operation=environment_id or "queue",
+                    reason="static SIMPLICIO_REMOTE_QUEUE_TOKEN present without "
+                           f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1 opt-in",
+                )
+            raise RuntimeError(
+                "SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET is not set and the legacy static "
+                "SIMPLICIO_REMOTE_QUEUE_TOKEN fallback is no longer silent (#289). Set "
+                f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1 to explicitly opt into the deprecated "
+                "static-token auth mode for local/dev use, or configure "
+                "SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET to use short-lived credentials instead."
+            )
+        if static_token and _audit_append is not None:
+            _audit_append(
+                None, event="runner.resolve_queue_token", decision="accept",
+                operation=environment_id or "queue",
+                reason="deprecated static-token auth mode explicitly opted into via "
+                       f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1",
+            )
+        return static_token
     try:
         from scripts.short_lived_credentials import issue_token
     except ImportError as exc:  # pragma: no cover - installed package without scripts namespace
@@ -264,7 +314,8 @@ def _resolve_queue_token(environment_id: Optional[str], policy: Optional[Dict[st
     ttl_seconds = min(float(override_ttl), max_ttl) if override_ttl else max_ttl
     subject = (identity or {}).get("agent_id", "unknown-agent")
     scope = environment_id or "queue"
-    return issue_token(secret, subject=subject, scope=scope, ttl_seconds=ttl_seconds)
+    return issue_token(secret, subject=subject, scope=scope, ttl_seconds=ttl_seconds,
+                       operations=WORKER_QUEUE_OPERATIONS)
 
 
 def _run_id() -> str:

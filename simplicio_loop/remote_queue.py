@@ -34,6 +34,11 @@ try:  # pragma: no cover - installed package without scripts namespace
 except ImportError:  # pragma: no cover
     _check_endpoint = None
 
+try:  # pragma: no cover - installed package without scripts namespace
+    from scripts.security_audit_log import append_event as _audit_append
+except ImportError:  # pragma: no cover
+    _audit_append = None
+
 
 SCHEMA = "simplicio.queue/v1"
 
@@ -544,7 +549,8 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
                              token_secret: Optional[str] = None,
                              token_scope: Optional[str] = None,
                              revocation_store: Optional[Path] = None,
-                             ssl_context: Optional[ssl.SSLContext] = None) -> ThreadingHTTPServer:
+                             ssl_context: Optional[ssl.SSLContext] = None,
+                             audit_log_path: Optional[Path] = None) -> ThreadingHTTPServer:
     """Create a small authenticated HTTP facade over a transactional queue.
 
     The returned server is not started, allowing tests and embedding runtimes to
@@ -564,8 +570,18 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
       closes "credential exchange is a bare static secret" without needing an
       OIDC broker.
 
+      Operation-level scoping (#289): if the presented token carries an
+      ``ops`` claim (see :func:`scripts.short_lived_credentials.issue_token`),
+      it is checked against the specific queue operation in the request path
+      (``pull``, ``claim``, ``complete``, ...) -- a token minted with
+      ``operations=["pull"]`` is rejected on ``/claim`` or ``/complete`` even
+      though its coarser ``scope`` claim matches. Tokens without an ``ops``
+      claim are unaffected (legacy/unrestricted shape).
+
     A missing/invalid/expired/revoked bearer token is rejected (401) before
-    any queue operation runs.
+    any queue operation runs. Every accept/reject is appended to the #289
+    audit log (:mod:`scripts.security_audit_log`) with the operation and
+    auth mode, never the token itself.
     """
     if not _is_loopback_host(host) and ssl_context is None:
         raise ValueError("TLS is required for non-loopback queue binds")
@@ -578,10 +594,11 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
         except ImportError as exc:  # pragma: no cover - installed package without scripts namespace
             raise RuntimeError("short-lived credential module unavailable") from exc
 
-        def _verify_short_lived(presented: str) -> bool:
+        def _verify_short_lived(presented: str, operation: str) -> bool:
             try:
                 verify_token(token_secret, presented, expected_scope=token_scope,
-                            revocation_store=revocation_store)
+                            expected_operation=operation,
+                            revocation_store=revocation_store, audit_log_path=audit_log_path)
                 return True
             except CredentialError:
                 return False
@@ -608,14 +625,24 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
             return value
 
         def do_POST(self) -> None:  # noqa: N802
+            operation = self.path.rsplit("/", 1)[-1] if "/" in self.path else self.path
             auth_header = self.headers.get("Authorization", "")
             presented = auth_header[len("Bearer "):] if auth_header.startswith("Bearer ") else ""
             if token is not None and auth_header != "Bearer " + token:
+                if _audit_append is not None:
+                    _audit_append(audit_log_path, event="remote_queue.auth", decision="reject",
+                                  operation=operation, reason="invalid static queue token")
                 self._send(401, {"error": "invalid queue token"})
                 return
-            if _verify_short_lived is not None and not _verify_short_lived(presented):
+            if _verify_short_lived is not None and not _verify_short_lived(presented, operation):
+                # verify_token() already appended the detailed accept/reject
+                # line (subject, jti, scope, operation, reason); nothing
+                # further to log here since we only have a boolean.
                 self._send(401, {"error": "invalid, expired, or revoked queue credential"})
                 return
+            if token is not None and _audit_append is not None:
+                _audit_append(audit_log_path, event="remote_queue.auth", decision="accept",
+                              operation=operation, reason="static queue token matched")
             if not self.path.startswith("/v1/queue/"):
                 self._send(404, {"error": "unknown queue endpoint"})
                 return
