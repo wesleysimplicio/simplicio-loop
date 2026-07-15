@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -334,6 +336,171 @@ def build_quality_matrix_template(coverage_threshold: float = DEFAULT_COVERAGE_T
     return template
 
 
+# #283 remaining item: "independent watcher re-verification of TDD lane claims" — the pieces
+# below re-derive a lane's verdict from the RAW artifact a lane's proof_ref points to (exit codes,
+# commit shas, freshly re-executed gate output) instead of trusting the receipt's self-reported
+# ``status`` string. This is deliberately a second, independent code path from
+# `evaluate_quality_matrix` above (which only reads what the receipt claims) — a receipt that
+# lies about its own status (or whose evidence has gone stale) is exactly what this catches.
+
+RERUNNABLE_LANES: Tuple[str, ...] = ("regression", "benchmark")
+
+
+def _resolve_ref(run_dir: Path, ref: str) -> "Path | None":
+    """Resolve a proof_ref that may be relative to the run dir or to the repo root."""
+    if not ref:
+        return None
+    candidate = Path(ref)
+    if candidate.is_absolute() and candidate.exists():
+        return candidate
+    run_candidate = run_dir / ref
+    if run_candidate.exists():
+        return run_candidate
+    repo_candidate = run_dir.parent.parent.parent / ref  # best-effort: .orchestrator/runs/<id>/..
+    if repo_candidate.exists():
+        return repo_candidate
+    return None
+
+
+def independent_reverify_tdd_lane(run_dir: str, entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Structurally re-derive the TDD lane from the RAW red/green receipt files.
+
+    Unlike `_tdd_gate` (which only checks that ``red_proof_ref``/``green_proof_ref`` are two
+    non-empty, distinct strings), this loads the JSON receipt each ref points to and validates the
+    raw fields a producer (``scripts/quality_matrix.py tdd-red``/``tdd-green``) actually recorded:
+    the RED run's exit code must be non-zero (it genuinely failed), the GREEN run's exit code must
+    be zero (it genuinely passed), both must reference the same test id, and the two receipts must
+    come from different commits (proving production code changed between RED and GREEN). A
+    receipt whose ``status`` claims "pass" but whose raw evidence doesn't hold up is reported as
+    ``quality_tdd_reverify_mismatch`` -- the self-reported claim is not trusted at face value.
+    """
+    name = OPTIONAL_TDD_REQUIREMENT
+    if str(entry.get("status") or "").strip().lower() != "pass":
+        return _gate(name, True, "quality_tdd_reverify_not_claimed",
+                     "TDD lane not claimed as passing; nothing to independently re-verify")
+    run_path = Path(run_dir)
+    red_ref = str(entry.get("red_proof_ref") or "").strip()
+    green_ref = str(entry.get("green_proof_ref") or "").strip()
+    red_path = _resolve_ref(run_path, red_ref)
+    green_path = _resolve_ref(run_path, green_ref)
+    if red_path is None or green_path is None:
+        return _gate(name, False, "quality_tdd_reverify_receipt_missing",
+                     "claimed TDD pass but red/green proof_ref does not resolve to a readable receipt file "
+                     "on disk -- cannot independently confirm the claim")
+    red = _load_json(red_path)
+    green = _load_json(green_path)
+    if not isinstance(red, dict) or not isinstance(green, dict):
+        return _gate(name, False, "quality_tdd_reverify_receipt_unreadable",
+                     "red/green proof_ref points to a file that is not a readable JSON receipt")
+    red_exit = red.get("exit_code")
+    green_exit = green.get("exit_code")
+    if not isinstance(red_exit, int) or red_exit == 0:
+        return _gate(name, False, "quality_tdd_reverify_red_not_failing",
+                     f"RED receipt's raw exit_code is {red_exit!r}; a genuine RED run must have failed (non-zero)")
+    if not isinstance(green_exit, int) or green_exit != 0:
+        return _gate(name, False, "quality_tdd_reverify_green_not_passing",
+                     f"GREEN receipt's raw exit_code is {green_exit!r}; a genuine GREEN run must have passed (zero)")
+    red_test = str(red.get("test_id") or "").strip()
+    green_test = str(green.get("test_id") or "").strip()
+    if not red_test or red_test != green_test:
+        return _gate(name, False, "quality_tdd_reverify_test_id_mismatch",
+                     f"RED test_id {red_test!r} does not match GREEN test_id {green_test!r}")
+    red_commit = str(red.get("commit_sha") or "").strip()
+    green_commit = str(green.get("commit_sha") or "").strip()
+    if not red_commit or not green_commit or red_commit == green_commit:
+        return _gate(name, False, "quality_tdd_reverify_no_commit_delta",
+                     "RED and GREEN receipts must be bound to two different commits -- "
+                     "otherwise nothing is proven to have changed between failing and passing")
+    return _gate(name, True, "quality_tdd_reverify_verified",
+                 f"independently confirmed: {red_test} failed at {red_commit[:12]} (RED) and "
+                 f"passed at {green_commit[:12]} (GREEN)")
+
+
+def _rerun_gate_script(script: str, argv: List[str], repo: str) -> "Tuple[bool, str]":
+    """Re-execute one of the standalone gate scripts fresh, right now, and report pass/fail.
+
+    Used only for lanes whose verdict is a function of the CURRENT working tree/commit (regression
+    diff-vs-base, perf benchmark) -- there is no time-travel problem re-running these live, unlike
+    TDD's RED state which the implementation has since overwritten.
+    """
+    try:
+        completed = subprocess.run(
+            [sys.executable, script] + argv, cwd=repo, capture_output=True, text=True, timeout=120,
+            stdin=subprocess.DEVNULL,
+        )
+        return completed.returncode == 0, (completed.stdout or completed.stderr or "").strip()[-2000:]
+    except Exception as exc:  # pragma: no cover - defensive
+        return False, f"re-run failed: {exc}"
+
+
+def independent_reverify_quality_matrix(run_dir: str, *, repo: "str | None" = None,
+                                        rerun: bool = True) -> Dict[str, Any]:
+    """Independently re-derive the quality-matrix verdict, not just re-parse the self-reported one.
+
+    Returns a dict with the self-reported verdict (``evaluate_quality_matrix``), a
+    ``lane_checks`` list of independently-recomputed lane results, and a combined ``ready`` that
+    is true only when BOTH the self-reported receipt is ready AND every independently-checked lane
+    agrees. This is the piece #283's remaining scope calls out explicitly: "an independent watcher
+    that re-derives each quality-matrix lane's verdict from raw test/CI output instead of trusting
+    the receipt's self-reported status" -- wired into `scripts/watcher_verify.py cmd_verify`.
+    """
+    self_reported = evaluate_quality_matrix(run_dir)
+    lane_checks: List[Dict[str, Any]] = []
+    repo_root = repo or str(Path(run_dir).resolve().parents[0])
+
+    receipt = _load_json(receipt_path(run_dir)) or {}
+    requirements = receipt.get("requirements") if isinstance(receipt.get("requirements"), dict) else {}
+    policy = receipt.get("policy") if isinstance(receipt.get("policy"), dict) else {}
+
+    if policy.get("tdd_required"):
+        lane_checks.append(independent_reverify_tdd_lane(run_dir, requirements.get("tdd") or {}))
+
+    if rerun:
+        import os
+
+        here = Path(__file__).resolve().parents[1] / "scripts"
+        for lane, script, argv_builder in (
+            ("regression", str(here / "regression_test_gate.py"), lambda: ["--base", "origin/main"]),
+            ("benchmark", str(here / "perf_gate.py"), lambda: []),
+        ):
+            entry = requirements.get(lane) or {}
+            claimed = str(entry.get("status") or "").strip().lower()
+            if claimed == "not_applicable":
+                lane_checks.append(_gate(lane, True, f"quality_{lane}_reverify_not_applicable",
+                                         f"'{lane}' was excused NOT_APPLICABLE; not re-executed"))
+                continue
+            if claimed != "pass":
+                lane_checks.append(_gate(lane, True, f"quality_{lane}_reverify_not_claimed",
+                                         f"'{lane}' not claimed as passing; nothing to independently re-verify"))
+                continue
+            if not os.path.exists(script):
+                lane_checks.append(_gate(lane, True, f"quality_{lane}_reverify_script_missing",
+                                         f"gate script {script} not present in this checkout; skipped"))
+                continue
+            ok, detail = _rerun_gate_script(script, argv_builder(), repo_root)
+            lane_checks.append(_gate(
+                lane, ok,
+                f"quality_{lane}_reverify_verified" if ok else f"quality_{lane}_reverify_mismatch",
+                (f"independent re-run of {Path(script).name} confirmed '{lane}' still passes" if ok else
+                 f"claimed '{lane}' pass but a fresh re-run of {Path(script).name} now fails: {detail}"),
+            ))
+
+    all_lanes_ok = all(check["status"] == "pass" for check in lane_checks)
+    ready = bool(self_reported["ready"]) and all_lanes_ok
+    return {
+        "schema": "simplicio.quality-matrix-reverify/v1",
+        "ready": ready,
+        "self_reported": self_reported,
+        "lane_checks": lane_checks,
+        "reason_code": "quality_matrix_reverified" if ready else (
+            next((c["reason_code"] for c in lane_checks if c["status"] != "pass"), self_reported["reason_code"])
+        ),
+        "reason": "self-reported verdict and independent re-verification agree" if ready else (
+            next((c["detail"] for c in lane_checks if c["status"] != "pass"), self_reported["reason"])
+        ),
+    }
+
+
 __all__ = [
     "SCHEMA",
     "RECEIPT_FILENAME",
@@ -341,6 +508,7 @@ __all__ = [
     "OPTIONAL_TDD_REQUIREMENT",
     "NOT_APPLICABLE_ELIGIBLE",
     "CHANGE_TYPES",
+    "RERUNNABLE_LANES",
     "classify_change_type",
     "default_policy_for_change_type",
     "DEFAULT_COVERAGE_THRESHOLD",
@@ -349,4 +517,6 @@ __all__ = [
     "validate_coverage_threshold",
     "evaluate_quality_matrix",
     "build_quality_matrix_template",
+    "independent_reverify_tdd_lane",
+    "independent_reverify_quality_matrix",
 ]

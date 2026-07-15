@@ -69,6 +69,10 @@
         "measured": {
           "type": ["number", "null"],
           "description": "the actually-measured coverage percentage (e.g. from scripts/coverage_gate.py); null/non-numeric fails closed as coverage_unmeasured"
+        },
+        "report_ref": {
+          "type": "string",
+          "description": "#283: optional pointer to the raw coverage-gate report (scripts/quality_matrix.py populate writes <run_dir>/coverage-gate-report.json here) backing `measured` -- not required by evaluate_quality_matrix, but read by an independent re-verifier that wants to cross-check the number against its source artifact"
         }
       }
     }
