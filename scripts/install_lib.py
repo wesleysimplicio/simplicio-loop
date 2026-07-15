@@ -146,6 +146,29 @@ def copy_scripts(target, is_global):
         log("scripts -> %s" % dst)
 
 
+# The extra file surface `full-stack` mode installs on top of `minimal`/`runtime`: the capture
+# engine (`engine/`) and the tray app (`app/`) — the CODE for operators/capture-proxy/dashboard
+# (#293 modes: "full-stack — instala operadores, capture proxy, dashboard e serviços somente
+# mediante flag explícita"). Registering these as OS-level auto-start services remains a
+# separate, explicit step (`scripts/install_services.py install`) — this only lays the files
+# down, reversibly, under the same backup/rollback discipline as every other install effect.
+def full_stack_dir(target, is_global):
+    return os.path.join(target, ".claude", "full-stack") if is_global else target
+
+
+def copy_full_stack(target, is_global):
+    dst_root = full_stack_dir(target, is_global)
+    for name in ("engine", "app"):
+        src = os.path.join(SOURCE, name)
+        dst = os.path.join(dst_root, name)
+        if os.path.abspath(dst) == os.path.abspath(src):
+            continue  # already here (project install inside this repo)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True,
+                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            log("full-stack:%s -> %s" % (name, dst))
+
+
 def install_git_precommit_hook(target):
     """Wire `hooks/pre-commit.py` as the target repo's git pre-commit hook (#98).
 
@@ -634,15 +657,25 @@ def _open_dashboard_first_run():
 def setup_monitor(enable):
     """Token monitor = machine-level capture proxy + dashboard + tray + always-capture wiring.
 
-    Default-on (the install is complete by default; `--minimal` disables it). Registers the
-    always-on capture proxy (launchd via setup_simplicio.sh on macOS · systemd/Startup via
-    install_services.py elsewhere) and routes Claude + Codex + Simplicio Agent through the proxy. The
-    dashboard opens ONCE on the first install (then on-demand); the tray is on-demand.
+    #293 AC1 ("O modo padrão é mínimo e não cria serviços, não altera proxy/base URL global e não
+    abre browser"): this is OFF by default. It only runs when the caller passes explicit consent
+    — `--with-service` or `--full-stack` — the same explicit-flag pattern
+    `install_plan.py`/`install_executor.py` use to gate the transactional path's `service`/`proxy`
+    permissions. `enable` is that already-resolved consent boolean, not a raw "not minimal" flip:
+    a plain `install_lib.py claude` run with NO flags must never register a service, rewrite
+    `OPENAI_BASE_URL`/`ANTHROPIC_BASE_URL`, or open a browser.
+
+    Registers the always-on capture proxy (launchd via setup_simplicio.sh on macOS ·
+    systemd/Startup via install_services.py elsewhere) and routes Claude + Codex + Simplicio
+    Agent through the proxy. The dashboard opens ONCE on the first install (then on-demand); the
+    tray is on-demand.
     """
     svc = os.path.join(HERE, "install_services.py")
     setup_sh = os.path.join(HERE, "setup_simplicio.sh")
     if not enable:
-        log("token monitor SKIPPED (--minimal). Enable later: bash scripts/setup_simplicio.sh")
+        log("token monitor SKIPPED (default: minimal mode installs no service/proxy/browser). "
+            "Enable explicitly: --with-service (or --full-stack), or later: "
+            "bash scripts/setup_simplicio.sh")
         return
     py = sys.executable or "python3"
     log("token capture: always-on proxy + always-capture wiring (dashboard/tray are on-demand)...")
@@ -688,8 +721,13 @@ def main():
         return
     is_global = "--global" in args
     skip_operators = "--skip-operators" in args
-    # The install is COMPLETE by default — operators, full deps (ONNX models), monitor, tray, wiring.
-    # `--minimal` (alias `--no-monitor`) is the only opt-out, for headless/CI.
+    # #293 AC1: the DEFAULT install is minimal — operators + skills only. Service/proxy/browser
+    # (the token-monitor capture proxy + wiring + first-run dashboard open) require the EXPLICIT
+    # `--with-service` or `--full-stack` consent flag; `--minimal`/`--no-monitor` remain accepted
+    # as explicit no-ops (they were already the "stay minimal" spelling and still work), but
+    # minimal is no longer something you have to opt INTO — it's what happens with no flags at all.
+    # `--full-stack` additionally installs the heavier deps (`install_all_deps`) that used to run
+    # by default too — same "no implicit global effect" rule.
     # `--lite`: install skills+hooks instantly (<30s), spawn operator install in background.
     # `--strict`: preserve the current hard-BLOCK behavior (operators required immediately).
     # `--dry-run`: build and print/return the simplicio.install-transaction/v1 plan (#293
@@ -700,7 +738,12 @@ def main():
     #   rollback of everything already applied if any step fails partway (#293 step 5).
     lite = "--lite" in args
     strict = "--strict" in args
-    minimal = "--minimal" in args or "--no-monitor" in args
+    full_stack = "--full-stack" in args
+    explicit_minimal = "--minimal" in args or "--no-monitor" in args
+    # --minimal/--no-monitor is an unconditional opt-out: it wins even if --with-service or
+    # --full-stack is also (redundantly/contradictorily) passed on the same command line.
+    with_service = ("--with-service" in args or full_stack) and not explicit_minimal
+    minimal = explicit_minimal or not with_service
     dry_run = "--dry-run" in args
     transactional = "--transactional" in args
     # #293 §3 hardening: --break-system-packages is NEVER applied unconditionally. This flag
@@ -714,6 +757,7 @@ def main():
         del args[i:i + 2]
     args = [a for a in args if a not in
             ("--global", "--skip-operators", "--with-monitor", "--minimal", "--no-monitor",
+             "--with-service", "--full-stack",
              "--lite", "--strict", "--dry-run", "--transactional", "--allow-break-system-packages")]
     target = None
     if "--target" in args:
@@ -797,7 +841,7 @@ def main():
         merge_opencode_mcp()
     if cfg["mcp"]:
         log("optional native bind:  simplicio install --global   (or: simplicio serve --mcp --stdio)")
-    setup_monitor(not minimal)
+    setup_monitor(with_service)
     if lite:
         log("LITE mode active. Run `python3 scripts/doctor.py` to check install status.")
         log("When operators are ready, next loop turn auto-promotes to FULL.")

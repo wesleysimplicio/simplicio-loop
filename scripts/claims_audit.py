@@ -629,6 +629,20 @@ def check_turn_header_format():
     return True, "turn-header format matches the documented contract"
 
 
+def check_install_mutations_doc_generated():
+    """#293 §7: `docs/INSTALL_MUTATIONS.md` is generated from `scripts/gen_install_mutations_doc.py`,
+    not hand-maintained — this re-renders it and fails if the file on disk differs by a byte, the
+    same drift-check contract as `check_bundle_parity()`/`check_plugin_sync()` above."""
+    generator = os.path.join(REPO, "scripts", "gen_install_mutations_doc.py")
+    if not os.path.exists(generator):
+        return False, "missing scripts/gen_install_mutations_doc.py"
+    r = subprocess.run([sys.executable, generator, "--check"], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", cwd=REPO, stdin=subprocess.DEVNULL)
+    if r.returncode != 0:
+        return False, (r.stdout + r.stderr).strip() or "docs/INSTALL_MUTATIONS.md has drifted"
+    return True, "docs/INSTALL_MUTATIONS.md matches its generator"
+
+
 CHECKS = [
     ("1 referenced-scripts-exist", check_scripts_exist),
     ("2 extension-point-count", check_extension_count),
@@ -641,6 +655,7 @@ CHECKS = [
     ("9 prose-commands-valid", check_prose_commands),
     ("10 skill-pair-parity", check_skill_pair_parity),
     ("11 turn-header-format", check_turn_header_format),
+    ("12 install-mutations-doc-generated", check_install_mutations_doc_generated),
 ]
 
 
