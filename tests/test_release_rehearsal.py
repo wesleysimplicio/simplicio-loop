@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scripts.release_rehearsal import run_rehearsal
+from scripts.release_rehearsal import run_governance_gate, run_rehearsal
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,6 +32,48 @@ def test_run_rehearsal_chains_every_local_link_end_to_end():
     assert result["ok"] is True
     # Never mutates the real repo checkout.
     assert (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8").count(result["rehearsal_version"]) == 0
+    # #294 scope item 6: the rehearsal gates on + snapshots repo-size/claims governance, and
+    # attaches the size/history-migration reports alongside the checksums/SBOM/provenance.
+    assert result["steps"]["governance_gate"]["ok"] is True
+    assert result["governance"]["repository_budget"]["ok"] is True
+    assert result["governance"]["claims_parity"]["ok"] is True
+    assert result["governance"]["size_snapshot"] is not None
+    assert result["governance"]["history_migration_snapshot"] is not None
+    attached = result["steps"]["governance_gate"]["attached_reports"]
+    assert any(name.endswith("REPO_SIZE_REPORT.md") for name in attached)
+    assert any(name.endswith("HISTORY_MIGRATION_PLAN.md") for name in attached)
+
+
+# Real, in-process (no wheel build): proves the governance gate itself measures the ACTUAL repo
+# checkout (not a hand-fed fixture) and reports both sub-checks truthfully.
+def test_run_governance_gate_measures_the_real_repo():
+    result = run_governance_gate(REPO_ROOT)
+
+    assert result["ok"] is True
+    assert result["repository_budget"]["ok"] is True
+    assert result["claims_parity"]["ok"] is True
+    assert result["claims_parity"]["results"]  # ran checks 8+13, not an empty/fallback shape
+    assert result["size_snapshot"] is not None
+    assert "by_extension" in result["size_snapshot"]
+    assert result["history_migration_snapshot"] is not None
+    assert "candidate_blob_count" in result["history_migration_snapshot"]
+
+
+def test_run_rehearsal_fails_closed_when_governance_gate_fails(monkeypatch):
+    import scripts.release_rehearsal as release_rehearsal
+
+    def _fake_gate(_repo):
+        return {"ok": False, "repository_budget": {"ok": False, "output": "fake failure"},
+                "claims_parity": {"ok": True, "results": []}, "size_snapshot": None,
+                "history_migration_snapshot": None}
+
+    monkeypatch.setattr(release_rehearsal, "run_governance_gate", _fake_gate)
+    result = release_rehearsal.run_rehearsal(REPO_ROOT, keep=False)
+
+    assert result["ok"] is False
+    assert result["reason_code"] == "governance_gate_failed"
+    # Fails BEFORE ever touching the export/build steps.
+    assert "export" not in result["steps"]
 
 
 def test_run_rehearsal_fails_closed_on_invalid_explicit_version():

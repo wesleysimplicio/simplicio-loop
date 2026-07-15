@@ -39,14 +39,23 @@ blocked. It exists so nobody has to reconstruct that history from the issue thre
    ```
 
    `scripts/release_rehearsal.py` (#292 Fase 6, local subset) proves the WHOLE local pipeline
-   composes end-to-end, not just that each script works standalone: it `git archive`-exports the
-   tracked tree at `HEAD` into a disposable scratch copy, bumps the version in that scratch copy
-   only (a safe `+rehearsalNNNN` local-version label by default — never the real repo's version
-   files), builds a real wheel, generates+verifies checksums, best-effort gpg-signs them,
-   generates an SBOM and a provenance statement (see docs/SUPPLY_CHAIN.md), and clean-room
-   install-smokes the result. It never touches the real repo's version files, never tags, and
-   never publishes anywhere. Pass `--version X.Y.Z` to rehearse an explicit real bump instead of
-   the safe label, or `--require-signing` to fail closed if no gpg key is configured.
+   composes end-to-end, not just that each script works standalone: it first runs the #294
+   governance gate (`scripts/repository_budget.py --check` + `scripts/claims_audit.py --only
+   8,13` — blob budget + quantitative-claims/canonical-manifest parity) against the real
+   checkout, failing closed before anything else runs if the tracked tree is over budget or a
+   claim has drifted; then it `git archive`-exports the tracked tree at `HEAD` into a disposable
+   scratch copy, bumps the version in that scratch copy only (a safe `+rehearsalNNNN`
+   local-version label by default — never the real repo's version files), builds a real wheel,
+   generates+verifies checksums, best-effort gpg-signs them, generates an SBOM and a provenance
+   statement (see docs/SUPPLY_CHAIN.md), and clean-room install-smokes the result. The receipt's
+   `governance` key snapshots the current measured repo size (`docs/repo_size_report.json`) and
+   history-migration candidate set (`docs/history_migration_plan.json`), and
+   `docs/REPO_SIZE_REPORT.md`/`docs/HISTORY_MIGRATION_PLAN.md` are copied into `dist/` alongside
+   the checksums/SBOM/provenance — the #294 "attach the size/claims report to the release"
+   requirement, satisfied locally in the absence of a hosted release pipeline. It never touches
+   the real repo's version files, never tags, and never publishes anywhere. Pass `--version
+   X.Y.Z` to rehearse an explicit real bump instead of the safe label, or `--require-signing` to
+   fail closed if no gpg key is configured.
 
 4. **Publish.** PyPI publishing is still the pre-#292 manual/token-based flow described in the
    issue's "Fluxo atual problemático" section. It has NOT been migrated to OIDC/Trusted
