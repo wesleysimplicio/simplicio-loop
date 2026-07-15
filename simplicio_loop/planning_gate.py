@@ -59,10 +59,22 @@ and records a semantic diff instead of blocking forever. All four are
 strictly additive: `build_planning_receipt()`'s new params default to
 `None`/`0`, so a caller that never builds these artifacts is unaffected.
 
-Still tracked as follow-up, not claimed here: plan v2's own DAG/
-parallelizable-step schema field (today a plan is still validated as a flat
-list of task-aligned steps by `plan_contract.validate_plan()`), and rollout/
-feature-flag + migration-strategy fields on the plan itself.
+This round (see issue #284's post-#373 remaining-gap comment) additionally lands:
+`plan_contract.validate_plan()`'s optional `dag`/`parallel_groups`/step-`depends_on`
+fields (a compatible plan/v1 evolution, not a new schema string -- a plan that
+never sets `dag` is unaffected; one that does gets a fail-closed check that a
+"parallelizable" group never actually contains a dependent pair); and
+`simplicio_loop/runner.py::_maybe_auto_build_planning_receipt()`, which wires
+`build_planning_receipt()` (and, when a GitHub source is present, this module's
+own `publish_planning_receipt()`) into the REAL `arm_run()` dispatch path,
+opt-in via `SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT` so every existing gate test
+that deliberately exercises fail-closed behavior with no receipt on disk is
+unaffected when the flag is unset.
+
+Still tracked as follow-up, not claimed here: rollout/feature-flag +
+migration-strategy fields on the plan itself, and making
+`SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT` mandatory-by-default (today it mirrors
+the pre-#360 opt-in posture of `SIMPLICIO_REQUIRE_MUTATION_AUTHORITY`).
 """
 from __future__ import annotations
 

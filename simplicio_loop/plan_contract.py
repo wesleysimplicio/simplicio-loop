@@ -9,7 +9,7 @@ becoming operator authority.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 PLAN_SCHEMA = "simplicio.plan/v1"
 
@@ -21,6 +21,61 @@ def _state_matches(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
         left.get("head") == right.get("head")
         and left.get("tree_hash") == right.get("tree_hash")
     )
+
+
+def _step_ancestors(step_id: str, depends_on: Mapping[str, Sequence[str]],
+                    seen: set[str] | None = None) -> set[str]:
+    """Transitive closure of ``depends_on`` for one step id (cycle-safe)."""
+    seen = seen if seen is not None else set()
+    for dep in depends_on.get(step_id, ()):  # already validated to be strings
+        if dep not in seen:
+            seen.add(dep)
+            _step_ancestors(dep, depends_on, seen)
+    return seen
+
+
+def _validate_dag(plan: Mapping[str, Any], steps: Sequence[Mapping[str, Any]],
+                  errors: list[str]) -> None:
+    """#284 plan/v1 DAG + parallelizable-step field (compatible evolution, not v2).
+
+    Optional and strictly additive: a plan that never sets ``dag`` is completely
+    unaffected (this function is a no-op). When present, ``plan["dag"]`` may carry:
+
+      * ``parallel_groups``: a list of step-id lists the planner asserts can run
+        concurrently.
+      * each step may declare ``depends_on`` (a list of predecessor step ids).
+
+    A parallel group is rejected -- fail closed, same discipline as the rest of
+    this validator -- if any two of its members have a (possibly transitive)
+    dependency edge between them: that is not a genuinely parallelizable pair,
+    it is a mislabeled sequential dependency.
+    """
+    dag = plan.get("dag") or {}
+    if not dag:
+        return
+    step_ids = [str(step.get("id") or f"T{index + 1}") for index, step in enumerate(steps)]
+    step_id_set = set(step_ids)
+    depends_on: Dict[str, list[str]] = {}
+    for index, step_id in enumerate(step_ids):
+        raw_deps = steps[index].get("depends_on") or [] if index < len(steps) else []
+        deps = [str(d) for d in raw_deps if str(d).strip()]
+        depends_on[step_id] = deps
+        for dep in deps:
+            if dep not in step_id_set:
+                errors.append(f"dag_depends_on_unknown_step:{step_id}->{dep}")
+    groups = dag.get("parallel_groups") or []
+    for group in groups:
+        members = [str(m) for m in group]
+        for member in members:
+            if member not in step_id_set:
+                errors.append(f"dag_parallel_group_unknown_step:{member}")
+        for left in members:
+            ancestors = _step_ancestors(left, depends_on)
+            for right in members:
+                if left != right and right in ancestors:
+                    errors.append(
+                        f"dag_parallel_group_conflicts_with_dependency:{left}<-{right}"
+                    )
 
 
 def validate_plan(
@@ -103,6 +158,8 @@ def validate_plan(
             to_create = {str(item).replace("\\", "/").strip() for item in step.get("to_create") or []}
             if not path.exists() and value not in to_create:
                 errors.append(f"task[{index}] target_missing_without_to_create:{value}")
+
+    _validate_dag(plan, steps, errors)
 
     return {
         "schema": "simplicio.plan-validation/v1",
