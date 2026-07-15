@@ -22,9 +22,17 @@ import urllib.request
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence
 
 from .agent_contract import validate_identity
+from .secure_transport import SecureTransportError, TrustedEndpoint
+from .secure_transport import request_json as _secure_request_json
+
+try:  # pragma: no cover - installed package without scripts namespace
+    from scripts.distributed_trust_policy import check_endpoint as _check_endpoint
+except ImportError:  # pragma: no cover
+    _check_endpoint = None
 
 
 SCHEMA = "simplicio.queue/v1"
@@ -91,11 +99,27 @@ class HTTPRemoteQueue:
     off rather than mutating a checkout while disconnected.
     """
 
-    def __init__(self, base_url: str, *, token: Optional[str] = None, timeout: float = 5.0) -> None:
+    def __init__(self, base_url: str, *, token: Optional[str] = None, timeout: float = 5.0,
+                 environment_id: Optional[str] = None, policy: Optional[Mapping[str, Any]] = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
         self._require_secure_transport()
+        # #289: when the caller resolved a trust-policy environment for this queue
+        # (see `runner._resolve_trusted_queue_url`), every request below is forced
+        # through `secure_transport.request_json`, which performs its own DNS
+        # resolution/TLS handshake and calls `check_endpoint()` with the
+        # *measured* certificate fingerprint before sending anything -- the
+        # connect-time enforcement `check_endpoint()` previously lacked.
+        self._trusted_endpoint: Optional[TrustedEndpoint] = None
+        if environment_id and policy is not None:
+            if _check_endpoint is None:
+                raise QueueUnavailable(
+                    "distributed trust policy module unavailable; cannot enforce connect-time checks"
+                )
+            self._trusted_endpoint = TrustedEndpoint(
+                environment_id=environment_id, policy=policy, check_endpoint=_check_endpoint,
+            )
 
     def _require_secure_transport(self) -> None:
         parsed = urllib.parse.urlsplit(self.base_url)
@@ -109,10 +133,31 @@ class HTTPRemoteQueue:
     def _request(self, method: str, path: str, payload: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         self._require_secure_transport()
         body = json.dumps(payload or {}, sort_keys=True).encode("utf-8")
-        req = urllib.request.Request(self.base_url + "/v1/queue" + path, data=body,
-                                     headers={"Content-Type": "application/json",
-                                              **({"Authorization": "Bearer " + self.token} if self.token else {})},
-                                     method=method)
+        headers = {"Content-Type": "application/json",
+                   **({"Authorization": "Bearer " + self.token} if self.token else {})}
+        url = self.base_url + "/v1/queue" + path
+
+        if self._trusted_endpoint is not None:
+            try:
+                result = _secure_request_json(
+                    method, url, body=body, headers=headers, timeout=self.timeout,
+                    endpoint=self._trusted_endpoint,
+                )
+            except SecureTransportError as exc:
+                raise QueueUnavailable("connect-time trust check failed: %s" % exc) from exc
+            status = result.pop("_status", 200)
+            if status == 200:
+                return result
+            message = str(result.get("error") or "queue request failed")
+            if status == 409:
+                raise QueueConflict(message)
+            if status == 404:
+                raise KeyError(message)
+            if status in (400, 401):
+                raise ValueError(message)
+            raise QueueUnavailable(message)
+
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as response:  # noqa: S310
                 raw = response.read()
@@ -496,16 +541,51 @@ def tls_context_from_files(certfile: str, keyfile: str) -> ssl.SSLContext:
 
 def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", port: int = 0,
                              *, token: Optional[str] = None,
+                             token_secret: Optional[str] = None,
+                             token_scope: Optional[str] = None,
+                             revocation_store: Optional[Path] = None,
                              ssl_context: Optional[ssl.SSLContext] = None) -> ThreadingHTTPServer:
     """Create a small authenticated HTTP facade over a transactional queue.
 
     The returned server is not started, allowing tests and embedding runtimes to
-    choose a thread, process, or service manager. Set ``token`` in any network
-    deployment; a missing/incorrect bearer token is rejected before dispatch.
-    Non-loopback binds require an explicit TLS context.
+    choose a thread, process, or service manager. Non-loopback binds require an
+    explicit TLS context.
+
+    Two mutually exclusive auth modes (#289):
+
+    * ``token`` -- legacy static bearer secret, compared verbatim. Never
+      expires and cannot be individually revoked; kept only for local/dev use
+      and backward compatibility.
+    * ``token_secret`` (+ optional ``token_scope``/``revocation_store``) --
+      short-lived credential mode (:mod:`scripts.short_lived_credentials`).
+      Every request must present a token signed with ``token_secret`` that has
+      not expired, is not before its ``nbf``, matches ``token_scope`` if given,
+      and whose ``jti`` is not present in the revocation store. This is what
+      closes "credential exchange is a bare static secret" without needing an
+      OIDC broker.
+
+    A missing/invalid/expired/revoked bearer token is rejected (401) before
+    any queue operation runs.
     """
     if not _is_loopback_host(host) and ssl_context is None:
         raise ValueError("TLS is required for non-loopback queue binds")
+    if token and token_secret:
+        raise ValueError("token and token_secret are mutually exclusive auth modes")
+    _verify_short_lived = None
+    if token_secret:
+        try:
+            from scripts.short_lived_credentials import CredentialError, verify_token
+        except ImportError as exc:  # pragma: no cover - installed package without scripts namespace
+            raise RuntimeError("short-lived credential module unavailable") from exc
+
+        def _verify_short_lived(presented: str) -> bool:
+            try:
+                verify_token(token_secret, presented, expected_scope=token_scope,
+                            revocation_store=revocation_store)
+                return True
+            except CredentialError:
+                return False
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "simplicio-queue/1"
 
@@ -528,8 +608,13 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
             return value
 
         def do_POST(self) -> None:  # noqa: N802
-            if token is not None and self.headers.get("Authorization") != "Bearer " + token:
+            auth_header = self.headers.get("Authorization", "")
+            presented = auth_header[len("Bearer "):] if auth_header.startswith("Bearer ") else ""
+            if token is not None and auth_header != "Bearer " + token:
                 self._send(401, {"error": "invalid queue token"})
+                return
+            if _verify_short_lived is not None and not _verify_short_lived(presented):
+                self._send(401, {"error": "invalid, expired, or revoked queue credential"})
                 return
             if not self.path.startswith("/v1/queue/"):
                 self._send(404, {"error": "unknown queue endpoint"})

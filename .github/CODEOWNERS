@@ -1,0 +1,13 @@
+# Distributed-queue trust policy (#289): exfiltration / confused-deputy gate.
+#
+# This file requires GitHub to have "Require review from Code Owners" enabled
+# under branch protection for the target branch (Settings -> Branches -> main
+# -> Require a pull request before merging -> Require review from Code
+# Owners). CODEOWNERS itself is honored by GitHub independently of GitHub
+# Actions -- it does not need any workflow to exist -- but it only *requires*
+# review once that branch-protection option is turned on for this repo.
+# Enabling it is a repo-admin action outside the scope of what this change
+# modifies (branch protection is an access-control setting); see #289 for the
+# open item.
+/.github/security/distributed-trust-policy.json @wesleysimplicio
+/.github/security/ @wesleysimplicio

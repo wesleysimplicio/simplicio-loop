@@ -125,6 +125,35 @@ then successfully claims and completes the same task once A's lease genuinely ex
 A second scenario proves cooperative cancellation across three real processes (claimant,
 canceller, and the queue file) without killing anything.
 
+### Trust-policy hardening for network destinations (issue #289)
+
+Setting `SIMPLICIO_REMOTE_ENVIRONMENT_ID` on the `simplicio_loop.runner` side
+(see `_distributed_configuration`) turns the queue destination into a
+policy-resolved, enumerated `environment_id` instead of a freeform URL
+(`.github/security/distributed-trust-policy.json`, `scripts/distributed_trust_policy.py`).
+Once that's set:
+
+* `HTTPRemoteQueue` requires every request to pass `check_endpoint()` -- DNS
+  resolved once and pinned to the connection to avoid rebinding, disallowed
+  addresses (loopback/link-local/private/metadata) rejected before connecting,
+  zero HTTP redirects, and the *measured* TLS leaf certificate hashed and
+  compared against the policy's pins -- before any bearer token is written to
+  the socket (`simplicio_loop.secure_transport`).
+* The bearer credential itself can be short-lived instead of a static secret:
+  set `SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET` (an HMAC signing secret, never
+  sent on the wire) and the runner mints a fresh token per process via
+  `scripts/short_lived_credentials.py`, bound to the worker's agent identity
+  and the environment_id, expiring in `max_ttl_seconds` (or
+  `SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS` if lower). Run the queue server
+  with `--token-secret`/`--token-scope`/`--revocation-store` (or the
+  matching `SIMPLICIO_QUEUE_*` env vars) to verify it and support immediate
+  revocation by `jti` (`scripts/short_lived_credentials.py revoke`).
+* This is not the full OIDC broker exchange #289 describes (no CI identity
+  provider exists in this repo to issue the initial trust), and job
+  separation / GitHub Environment protection do not apply now that
+  `.github/workflows/distributed-183-proof.yml` has been removed (#311) --
+  see the issue thread for the current, re-scoped remaining gaps.
+
 ### Receipt verification wired into the remote-queue completion path (issue #288)
 
 `work_item_claims.AttemptCoordinator.accept_receipt(..., schema=...)` now optionally runs
