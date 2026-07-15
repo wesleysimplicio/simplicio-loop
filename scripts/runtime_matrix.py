@@ -65,22 +65,71 @@ def verify_runtime(runtime: str, root: Path, *, runner=subprocess.run) -> Dict[s
         }
 
 
-def build_matrix(runtimes: Iterable[str], root: Path, *, runner=subprocess.run) -> Dict[str, Any]:
+def attempt_external_launch(runtime: str, *,
+                             prompt: str = "Reply with exactly: SIMPLICIO_RUNTIME_MATRIX_PROBE_OK",
+                             timeout: int = 60) -> Dict[str, Any]:
+    """Genuinely attempt a real, non-interactive launch of ``runtime``'s CLI (issue
+    #287) -- never a fabricated pass. Only ``codex``/``claude`` have a real driver
+    wired (``simplicio_loop/runtime_drivers.py``); every other runtime honestly
+    reports ``UNVERIFIED`` (no probe implemented) rather than a guessed result. A
+    missing binary or a real invocation failure (auth/policy block, timeout) is
+    reported as ``UNAVAILABLE``/``FAIL`` with the actual observed detail -- this
+    function's job is to *attempt* the check, not to guarantee it passes.
+    """
+    try:
+        from simplicio_loop.runtime_drivers import driver_for_runtime
+    except ImportError as exc:  # pragma: no cover - packaging edge case
+        return {"runtime": runtime, "attempted": False, "status": "UNVERIFIED",
+                "detail": f"runtime_drivers unavailable: {exc}"}
+    driver = driver_for_runtime(runtime)
+    if driver is None:
+        return {"runtime": runtime, "attempted": False, "status": "UNVERIFIED",
+                "detail": "no real launch driver implemented for this runtime"}
+    if not driver.is_installed():
+        return {"runtime": runtime, "attempted": True, "status": "UNAVAILABLE",
+                "detail": f"{driver.binary} binary not found on PATH"}
+    result = driver.execute(prompt, timeout=timeout)
+    return {
+        "runtime": runtime,
+        "attempted": True,
+        "status": "PASS" if result.ok else "FAIL",
+        "exit_status": result.exit_status,
+        "stop_reason": result.stop_reason,
+        "duration_seconds": result.duration_seconds,
+        "detail": result.stdout.strip()[:200] if result.ok else (result.error or "launch failed"),
+    }
+
+
+def build_matrix(runtimes: Iterable[str], root: Path, *, runner=subprocess.run,
+                  attempt_launch: bool = False) -> Dict[str, Any]:
     selected = list(runtimes)
     unknown = sorted(set(selected) - set(install_lib.RUNTIMES))
     if unknown:
         raise ValueError("unknown runtime(s): %s" % ", ".join(unknown))
     rows = [verify_runtime(runtime, root, runner=runner) for runtime in selected]
-    return {
+    launch_rows: List[Dict[str, Any]] = []
+    if attempt_launch:
+        # #287: a real, best-effort attempt -- opt-in because it shells out to real
+        # CLIs (slower, environment-dependent) unlike the rest of this fast, hermetic
+        # matrix build. Default (``attempt_launch=False``) keeps the prior hardcoded
+        # ``False``/``UNVERIFIED`` behavior byte-for-byte for existing callers.
+        launch_rows = [attempt_external_launch(runtime) for runtime in selected
+                       if runtime in {"codex", "claude"}]
+    launch_attempted = bool(launch_rows) and all(row["attempted"] for row in launch_rows)
+    launch_verified = launch_attempted and all(row["status"] == "PASS" for row in launch_rows)
+    payload = {
         "schema": SCHEMA,
         "repo": str(root.resolve()),
         "runtimes": rows,
         "requested": len(rows),
         "passed": sum(bool(row["contract_verified"]) for row in rows),
         "ready": bool(rows) and all(bool(row["contract_verified"]) for row in rows),
-        "external_launch_verified": False,
-        "external_launch_status": "UNVERIFIED",
+        "external_launch_verified": launch_verified,
+        "external_launch_status": "MEASURED" if launch_rows else "UNVERIFIED",
     }
+    if launch_rows:
+        payload["external_launch_attempts"] = launch_rows
+    return payload
 
 
 def build_issue_183_criterion6(root: Path, *, runner=subprocess.run) -> Dict[str, Any]:
@@ -131,11 +180,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--repo", default=".")
     parser.add_argument("--tier1", action="store_true", help="verify only Tier 1 adapters")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--attempt-launch", action="store_true",
+                        help="genuinely attempt a real headless codex/claude CLI launch (#287) "
+                             "instead of leaving external_launch_verified hardcoded UNVERIFIED")
     args = parser.parse_args(argv)
     runtimes = list(args.runtimes) or sorted(install_lib.RUNTIMES)
     if args.tier1:
         runtimes = [name for name in runtimes if name in TIER1]
-    payload = build_matrix(runtimes, Path(args.repo).resolve())
+    payload = build_matrix(runtimes, Path(args.repo).resolve(), attempt_launch=args.attempt_launch)
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     else:
@@ -143,7 +195,11 @@ def main(argv: Sequence[str] | None = None) -> int:
               ("READY" if payload["ready"] else "BLOCKED", payload["passed"], payload["requested"]))
         for row in payload["runtimes"]:
             print("- %-12s %s [%s]" % (row["runtime"], row["status"], row["tier"]))
-        print("- external launch: UNVERIFIED")
+        if payload.get("external_launch_attempts"):
+            for attempt in payload["external_launch_attempts"]:
+                print("- launch %-8s %s (%s)" % (attempt["runtime"], attempt["status"], attempt["detail"]))
+        else:
+            print("- external launch: %s" % payload["external_launch_status"])
     return 0 if payload["ready"] else 1
 
 
