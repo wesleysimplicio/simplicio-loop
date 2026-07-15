@@ -47,13 +47,13 @@ DEFAULT_EXEMPT_GLOBS = [
 def _changed_files(base: str) -> list:
     out = subprocess.run(
         ["git", "diff", "--name-only", f"{base}...HEAD"],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     if out.returncode != 0:
         # Fallback: diff against merge-base failed (e.g. shallow clone) -- try a plain diff.
         out = subprocess.run(
             ["git", "diff", "--name-only", base, "HEAD"],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
         )
     return [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
 
@@ -62,7 +62,7 @@ def _is_trivial_diff(base: str, path: str) -> bool:
     """True if every changed line in `path` is blank or looks like a comment/docstring line."""
     out = subprocess.run(
         ["git", "diff", f"{base}...HEAD", "--", path],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     changed_lines = [
         ln[1:] for ln in out.stdout.splitlines()

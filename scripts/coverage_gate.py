@@ -104,6 +104,7 @@ def main() -> int:
             "-m", "pytest", "-q", "tests/",
         ],
         cwd=REPO,
+        stdin=subprocess.DEVNULL,
     )
     if run.returncode != 0:
         print("[coverage-gate] FAILED: test suite did not pass under coverage instrumentation.", file=sys.stderr)

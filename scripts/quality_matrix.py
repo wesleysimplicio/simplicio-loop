@@ -104,7 +104,7 @@ def cmd_populate(args: argparse.Namespace) -> int:
         proc = subprocess.run(
             [sys.executable, os.path.join(HERE, "regression_test_gate.py"),
              "--base", args.base, "--emit-json", str(report_path)],
-            cwd=REPO, capture_output=True, text=True,
+            cwd=REPO, capture_output=True, text=True, stdin=subprocess.DEVNULL,
         )
         report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
         ok = proc.returncode == 0
@@ -121,7 +121,7 @@ def cmd_populate(args: argparse.Namespace) -> int:
         report_path = run_dir / "benchmark-gate-report.json"
         proc = subprocess.run(
             [sys.executable, os.path.join(HERE, "perf_gate.py"), "--emit-json", str(report_path)],
-            cwd=REPO, capture_output=True, text=True,
+            cwd=REPO, capture_output=True, text=True, stdin=subprocess.DEVNULL,
         )
         report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
         ok = proc.returncode == 0
@@ -138,7 +138,7 @@ def cmd_populate(args: argparse.Namespace) -> int:
             [sys.executable, os.path.join(HERE, "coverage_gate.py"),
              "--global-threshold", str(args.coverage_threshold),
              "--diagnostics-dir", str(diag_dir), "--emit-json", str(report_path)],
-            cwd=REPO, capture_output=True, text=True,
+            cwd=REPO, capture_output=True, text=True, stdin=subprocess.DEVNULL,
         )
         report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
         receipt["coverage"] = {
@@ -161,8 +161,8 @@ def cmd_tdd_red(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     proc = subprocess.run([sys.executable, "-m", "pytest", "-q", args.test_id], cwd=REPO,
-                          capture_output=True, text=True)
-    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip()
+                          capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout.strip()
     receipt = {
         "schema": "simplicio.tdd-red-receipt/v1",
         "test_id": args.test_id,
@@ -197,8 +197,8 @@ def cmd_tdd_green(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     proc = subprocess.run([sys.executable, "-m", "pytest", "-q", args.test_id], cwd=REPO,
-                          capture_output=True, text=True)
-    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip()
+                          capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout.strip()
     receipt = {
         "schema": "simplicio.tdd-green-receipt/v1",
         "test_id": args.test_id,

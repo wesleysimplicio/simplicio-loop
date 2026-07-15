@@ -426,6 +426,7 @@ def _rerun_gate_script(script: str, argv: List[str], repo: str) -> "Tuple[bool, 
     try:
         completed = subprocess.run(
             [sys.executable, script] + argv, cwd=repo, capture_output=True, text=True, timeout=120,
+            stdin=subprocess.DEVNULL,
         )
         return completed.returncode == 0, (completed.stdout or completed.stderr or "").strip()[-2000:]
     except Exception as exc:  # pragma: no cover - defensive
