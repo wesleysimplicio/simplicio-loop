@@ -14,12 +14,12 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 
 | Script | Invoker | Status |
 |---|---|---|
-| `check.py` | manual (`python3 scripts/check.py`) · git pre-push hook · `.github/workflows/ci.yml` | active |
+| `check.py` | manual (`python3 scripts/check.py`) · git pre-push hook (fail-closed) · **no GitHub Actions** (`.github/workflows/` removed in #311 for billing — see docs/REPOSITORY_GOVERNANCE.md) | active |
 | `claims_audit.py` | `check.py` | active |
 | `claims_manifest.py` | imported by `claims_audit.py` (quantitative-claims registry) | active |
 | `check_loop_contract.py` | `check.py` | active |
 | `token_budget.py` | `check.py` (#121) | active |
-| `repository_budget.py` | `check.py` (#294) — tracked-tree size budget, per-file cap + total-growth gate, history untouched | active |
+| `repository_budget.py` | `check.py` (#294) — tracked-tree size budget: per-file cap (2 MiB) + total-growth gate + **forbidden-media rule** (video/out/, rust/target/, node_modules/, dist/, build/ blocked; large media only exempt under `assets/_lfs/` LFS per `.gitattributes`); read-only, history untouched | active |
 | `mirror_manifest.py` | imported by `sync_plugin.py` + `claims_audit.py` (single source of truth for the lean hooks/scripts/tests sets) | active |
 | `sync_plugin.py` | manual, after editing `.claude/skills/` or a shipped hook; `tests/test_system_check.py` exercises `--check` | active |
 | `verify_adapters.py` | `claims_audit.py` check 7 (adapter-install-contract) | active |

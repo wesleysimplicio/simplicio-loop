@@ -36,6 +36,7 @@ Exit codes: 0 = within budget, 1 = budget exceeded (total growth or a single ove
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -43,6 +44,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 BASELINE_PATH = os.path.join(HERE, "repository_budget_baseline.json")
+GITATTRIBUTES_PATH = os.path.join(REPO, ".gitattributes")
 
 # A single tracked file over this size fails the gate immediately, independent of the baseline.
 # 2 MiB is generous for source/docs/small fixtures but catches an accidentally-committed video,
@@ -54,6 +56,95 @@ MAX_SINGLE_FILE_BYTES = 2 * 1024 * 1024
 THRESHOLD_GROWTH = 0.25
 
 DEFAULT_TOP_N = 20
+
+# Paths that must NEVER carry raw (non-LFS) media. A committed file under one of
+# these prefixes that is NOT routed to LFS by .gitattributes fails the gate — the
+# media must be served via LFS / GitHub Releases / release artifacts instead
+# (#294 step 2.2/2.4, AC "mídia em caminho proibido bloqueia").
+FORBIDDEN_RAW_MEDIA_PREFIXES = (
+    "video/out/",
+    "rust/target/",
+    "node_modules/",
+    "dist/",
+    "build/",
+)
+
+# Extensions that count as "large generated media" and therefore require LFS
+# routing (or must not be committed at all). Mirrors .gitattributes' LFS filters.
+LFS_MEDIA_SUFFIXES = (
+    ".mp4", ".mov", ".webm", ".avi", ".wav", ".mp3", ".m4a", ".flac", ".ogg",
+    ".zip", ".tar.gz", ".tgz", ".iso", ".bin",
+)
+
+# `.gitattributes` patterns that declare LFS routing. We parse them so the gate
+# can recognize, from the committed .gitattributes, exactly which suffixes/prefixes
+# are LFS-exempt. Kept in sync with the LFS filters in .gitattributes.
+_LFS_SUFFIX_PAT = re.compile(r"^\*\.(mp4|mov|webm|avi|wav|mp3|m4a|flac|ogg|zip|tar\.gz|tgz|iso|bin)\s+filter=lfs", re.M)
+_LFS_PREFIX_PAT = re.compile(r"^([^\s#]+?)\s+filter=lfs", re.M)
+
+
+def _lfs_exempt_patterns():
+    """Return (set_of_lower_suffixes, set_of_prefixes) declared LFS in .gitattributes."""
+    suffixes = set()
+    prefixes = set()
+    if not os.path.exists(GITATTRIBUTES_PATH):
+        return suffixes, prefixes
+    text = ""
+    try:
+        with open(GITATTRIBUTES_PATH, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return suffixes, prefixes
+    for m in _LFS_SUFFIX_PAT.finditer(text):
+        suffixes.add("." + m.group(1).lower())
+    for m in _LFS_PREFIX_PAT.finditer(text):
+        p = m.group(1).strip()
+        # `*.foo` handled above; anything else is a path prefix / glob.
+        if p.startswith("*.") or p == "*":
+            continue
+        prefixes.add(p.rstrip("*").rstrip("/"))
+    return suffixes, prefixes
+
+
+def _is_lfs_exempt(rel):
+    """True if `rel` is routed to LFS per the committed .gitattributes."""
+    suffixes, prefixes = _lfs_exempt_patterns()
+    low = rel.lower()
+    ext = os.path.splitext(low)[1]
+    if ext in suffixes:
+        return True
+    for p in prefixes:
+        if low.startswith(p.lower()):
+            return True
+    return False
+
+
+def _new_forbidden_raw_media(entries):
+    """Block media that should not be a raw git blob.
+
+    Two distinct rules, evaluated in order:
+
+    1. FORBIDDEN PREFIX — `video/out/`, `rust/target/`, `node_modules/`, `dist/`,
+       `build/` are ephemeral / gitignored outputs that must NEVER be committed to
+       the git tree at all, raw OR LFS. They are blocked unconditionally (AC
+       "mídia em caminho proibido bloqueia"). They are reproduced by build tooling
+       or fetched from GitHub Releases / artifact storage, never stored in git.
+
+    2. LARGE MEDIA SUFFIX — a `.mp4`/`.zip`/etc. committed anywhere ELSE (e.g.
+       `assets/_lfs/demo.mp4`) is only allowed if `.gitattributes` routes it to LFS
+       (`filter=lfs`). An LFS-routed file is a small pointer, not a raw blob, so it
+       does not inflate the pack (AC "asset LFS permitido passa"). A large-media
+       suffix with no LFS filter is a raw blob and is blocked.
+    """
+    flagged = []
+    for rel, size in entries:
+        low = rel.lower()
+        if low.startswith(FORBIDDEN_RAW_MEDIA_PREFIXES):
+            flagged.append((rel, size, "forbidden-path"))  # rule 1: always block
+            continue
+        if low.endswith(LFS_MEDIA_SUFFIXES) and not _is_lfs_exempt(rel):
+            flagged.append((rel, size, "forbidden-raw-media"))  # rule 2: must be LFS
+    return flagged
 
 
 def _run_git(args):
@@ -153,7 +244,8 @@ def report(entries, total, baseline, top_n, quiet=False):
     """Print the report and return True if everything is within budget."""
     ok = True
     oversized = _new_oversized_files(entries, baseline)
-    if oversized:
+    forbidden = _new_forbidden_raw_media(entries)
+    if oversized or forbidden:
         ok = False
 
     lines = []
@@ -164,6 +256,12 @@ def report(entries, total, baseline, top_n, quiet=False):
     for rel, size in largest:
         flag = " [OVER %s CAP]" % _fmt_bytes(MAX_SINGLE_FILE_BYTES) if size > MAX_SINGLE_FILE_BYTES else ""
         lines.append("  %10s  %s%s" % (_fmt_bytes(size), rel, flag))
+
+    if forbidden:
+        lines.append("[FAIL] %d forbidden raw media path(s) (large media/archive must be LFS-routed "
+                      "or not committed — see .gitattributes + docs/REPOSITORY_GOVERNANCE.md):" % len(forbidden))
+        for rel, size, _ in forbidden:
+            lines.append("  %10s  %s" % (_fmt_bytes(size), rel))
 
     if baseline is not None:
         base_total = baseline.get("total_bytes", 0)
@@ -245,6 +343,29 @@ def selftest():
         checks.append(("measure() raised: %s" % exc, False))
     checks.append(("MAX_SINGLE_FILE_BYTES is positive", MAX_SINGLE_FILE_BYTES > 0))
     checks.append(("THRESHOLD_GROWTH is between 0 and 1", 0 < THRESHOLD_GROWTH < 1))
+    # Forbidden-path / LFS-exemption logic (P2 acceptance tests — no subprocess, pure checks).
+    rel_entries = [("docs/REPO_SIZE_REPORT.md", 1024), ("assets/simplicio-loop-logo.png", 4924 * 1024)]
+    checks.append(("no false-positive forbidden media on real tracked source",
+                   _new_forbidden_raw_media(rel_entries) == []))
+    # An mp4 under a forbidden prefix with NO LFS exemption must be flagged.
+    bad = [("video/out/demo.mp4", 50 * 1024 * 1024)]
+    flagged = _new_forbidden_raw_media(bad)
+    checks.append(("forbidden raw .mp4 under video/out/ is flagged", len(flagged) == 1))
+    # video/out/ is a forbidden PREFIX — blocked even if the suffix were LFS-routable.
+    checks.append(("forbidden prefix video/out/ always blocked (raw or lfs)",
+                   _new_forbidden_raw_media([("video/out/x.mp4", 1)]) != []))
+    checks.append(("forbidden prefix rust/target/ always blocked",
+                   _new_forbidden_raw_media([("rust/target/big.o", 1)]) != []))
+    # The same media routed through the LFS staging area is exempt (AC: asset LFS permitido passa).
+    suffixes, prefixes = _lfs_exempt_patterns()
+    checks.append((".gitattributes declares LFS for the assets/_lfs/ staging area",
+                   any("assets/_lfs" in p for p in prefixes)))
+    checks.append(("no GLOBAL suffix LFS rule (stray root media must stay blocked)",
+                   not suffixes))  # only a scoped prefix is LFS-exempt, never bare *.ext
+    checks.append(("LFS-exempt .mp4 is recognized as exempt",
+                   _is_lfs_exempt("assets/_lfs/demo.mp4") is True))
+    checks.append(("plain source .py is NOT LFS-exempt",
+                   _is_lfs_exempt("scripts/check.py") is False))
     ok = all(v for _, v in checks)
     for name, v in checks:
         print("  [%s] %s" % ("ok" if v else "XX", name))

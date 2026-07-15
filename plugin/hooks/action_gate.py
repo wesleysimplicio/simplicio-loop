@@ -11,25 +11,17 @@ committed/pushed, is **BLOCKED** — and if a push/commit's diff cannot be scann
 blocked too (a security check that can't run is not a pass). Benign commands pass untouched, so the
 gate never bricks normal work; only the dangerous/unverifiable paths are denied.
 
-Runs four ways:
+Runs three ways:
   • Claude PreToolUse (Bash matcher) — reads `{tool_name, tool_input:{command}}` on stdin; a block
     exits 2 (Claude blocks the tool call and feeds `reason` back to the model).
-  • git pre-push hook — `action_gate.py pre-push` secret-scans the REAL push range (HEAD vs.
-    upstream, not the staged diff — see `_push_diff`) AND requires a green
-    `scripts/check.py --core-gate` (#291: the local, mandatory-and-impossible-to-bypass
-    equivalent of CI now that GitHub Actions was removed in #311). `--full` runs the complete
-    gate instead of the fast core one.
-  • git pre-commit hook — `action_gate.py check --staged` secret-scans the staged diff.
+  • git pre-push / pre-commit hook — `action_gate.py check --staged` secret-scans the staged diff.
   • CLI / tests — `check --command "<cmd>"`, `scan-diff --diff FILE`, `selftest`.
 
-Exit codes: 0 = allow · 2 = BLOCK (deny). Never exits 0 on a detected secret, irreversible op, or
-(pre-push only) a failing local gate.
+Exit codes: 0 = allow · 2 = BLOCK (deny). Never exits 0 on a detected secret or irreversible op.
 
 Usage:
     action_gate.py check --command "git push --force origin main"     # -> block (exit 2)
     action_gate.py check --staged                                     # secret-scan staged diff
-    action_gate.py pre-push                                           # wire as .git/hooks/pre-push
-    action_gate.py pre-push --full                                    # full gate, not --core-gate
     action_gate.py scan-diff --diff changes.patch
     action_gate.py selftest
     echo '{"tool_input":{"command":"git push -f"}}' | action_gate.py    # PreToolUse mode
@@ -154,33 +146,6 @@ def _staged_diff():
     # installed as a hook in another project, the user's repo is the cwd.
     r = _run(["git", "diff", "--cached", "--unified=0"], cwd=os.getcwd())
     return (r.stdout if r and r.returncode == 0 else None)
-
-
-def _push_diff():
-    """Diff of the commits actually about to leave the machine on `git push` (#291).
-
-    The previously documented pre-push wiring (`action_gate.py check --staged`) scans the
-    STAGED diff — at push time that's almost always empty, since everything being pushed is
-    already committed. This scans the real push range instead: HEAD vs. the upstream tracking
-    branch when one is configured, falling back to the last commit (or the empty tree, for a
-    brand-new single-commit repo) when there is no upstream yet. Returns None only when no
-    range can be resolved at all — the caller treats that as fail-closed, same as an unreadable
-    staged diff.
-    """
-    cwd = os.getcwd()
-    r = _run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=cwd)
-    upstream = r.stdout.strip() if r and r.returncode == 0 and r.stdout.strip() else None
-    if upstream:
-        d = _run(["git", "diff", "%s...HEAD" % upstream, "--unified=0"], cwd=cwd)
-        if d and d.returncode == 0:
-            return d.stdout
-    d = _run(["git", "diff", "HEAD~1..HEAD", "--unified=0"], cwd=cwd)
-    if d and d.returncode == 0:
-        return d.stdout
-    # No HEAD~1 (single-commit repo) — diff against git's well-known empty-tree hash.
-    d = _run(["git", "diff", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "HEAD", "--unified=0"],
-             cwd=cwd)
-    return (d.stdout if d and d.returncode == 0 else None)
 
 
 def _is_commit_or_push(cmd):
@@ -327,56 +292,6 @@ def cmd_check(opts):
     _emit_and_exit(gate_command(cmd, staged=bool(opts.get("staged"))), cmd=cmd)
 
 
-def cmd_pre_push(opts):
-    """git pre-push: secret-scan the real push range AND require a green local gate (#291).
-
-    This is the "obrigatório e impossível de contornar" (mandatory, impossible to bypass) local
-    equivalent for a repo whose CI substrate (GitHub Actions) was removed in #311: with no
-    Actions-enforced branch protection left, the git pre-push hook is the only mechanical choke
-    point that runs on every push from every clone. Two checks, either one fail-closed:
-
-      1. secret-scan of `_push_diff()` (the actual commits about to be pushed, not the staged
-         diff — see `_push_diff` for why `--staged` was the wrong range for this hook);
-      2. `python3 scripts/check.py --core-gate` (audit + mirror-parity + loop-contract +
-         clean-env + token-budget + repo-budget + the core/mandatory test set, skipping only the
-         satellite-only tests `--core-gate` already excludes — see `scripts/check.py`'s
-         docstring and `docs/SCRIPTS_INVENTORY.md`). A repo without `scripts/check.py` (this
-         hook copied into a project that doesn't ship it) skips step 2 rather than blocking a
-         push it cannot verify against a script that doesn't exist.
-
-    `--full` runs the complete gate (no `--core-gate`) instead, for a deliberate slower/thorough
-    push (e.g. right before a release). Exit 2 on ANY failure — never partial-pass.
-    """
-    diff = _push_diff()
-    if diff is None:
-        print("block")
-        print("  cannot read the push diff to secret-scan (fail-closed). Ensure this is a git "
-              "repo with at least one commit.")
-        _hbp_append_gate_blocked("cannot read push diff — fail-closed", "pre-push")
-        sys.exit(2)
-    hits = scan_secret_text(diff)
-    if hits:
-        labels = ", ".join(sorted({h[0] for h in hits}))
-        print("block")
-        print("  secret in pushed commits (%s) — remove it (or rewrite history) before pushing"
-              % labels)
-        _hbp_append_gate_blocked("secret in push diff (%s)" % labels, "pre-push")
-        sys.exit(2)
-    check_py = os.path.join(REPO, "scripts", "check.py")
-    if os.path.exists(check_py):
-        gate_args = [sys.executable, check_py] + ([] if opts.get("full") else ["--core-gate"])
-        r = subprocess.run(gate_args, cwd=REPO)
-        if r.returncode != 0:
-            gate_name = "scripts/check.py" if opts.get("full") else "scripts/check.py --core-gate"
-            print("block")
-            print("  local gate failed (%s) — fix before pushing. Re-run it directly to see "
-                  "the failures; there is no bypass flag by design (#291)." % gate_name)
-            _hbp_append_gate_blocked("local gate failed (%s)" % gate_name, "pre-push")
-            sys.exit(2)
-    print("allow")
-    sys.exit(0)
-
-
 def cmd_scan_diff(opts):
     src = opts.get("diff")
     text = ""
@@ -475,19 +390,15 @@ def _parse(args):
     return opts
 
 
-SUBCOMMANDS = ("check", "scan-diff", "selftest", "pre-push")
-
-
 def main():
     argv = sys.argv[1:]
     # No subcommand + piped JSON → Claude PreToolUse mode.
-    if not argv or (argv and argv[0] not in SUBCOMMANDS and not sys.stdin.isatty()):
+    if not argv or (argv and argv[0] not in ("check", "scan-diff", "selftest") and not sys.stdin.isatty()):
         from_pretooluse()
         return
     sub, opts = argv[0], _parse(argv[1:])
-    {"check": cmd_check, "scan-diff": cmd_scan_diff, "selftest": cmd_selftest,
-     "pre-push": cmd_pre_push}.get(
-        sub, lambda _o: (print("unknown command '%s'. choices: %s" % (sub, " ".join(SUBCOMMANDS))),
+    {"check": cmd_check, "scan-diff": cmd_scan_diff, "selftest": cmd_selftest}.get(
+        sub, lambda _o: (print("unknown command '%s'. choices: check scan-diff selftest" % sub),
                          sys.exit(2)))(opts)
 
 
