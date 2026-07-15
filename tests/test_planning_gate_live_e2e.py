@@ -67,7 +67,12 @@ def _live_gate_open():
 
 
 def _gh(args, check=True):
-    r = subprocess.run(["gh"] + args, capture_output=True, text=True)
+    # encoding="utf-8" explicitly (not the platform default, e.g. cp1252 on Windows) --
+    # real GitHub content (emoji in the rendered lifecycle comment, non-ASCII issue text)
+    # otherwise raises/garbles under the locale codec, exactly the failure mode
+    # `scripts/pr_evidence.py::_run_gh` already guards against the same way.
+    r = subprocess.run(["gh"] + args, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     if check and r.returncode != 0:
         raise RuntimeError("gh %s failed: %s" % (" ".join(args), r.stderr or r.stdout))
     return r
@@ -129,7 +134,8 @@ def test_planning_gate_claimed_then_planned_lands_on_live_issue_and_gates_real_m
             "freshness": {"verified": True,
                           "current_state": {"head": "head-fixed", "tree_hash": "tree-fixed"}},
             "steps": [{
-                "id": "T1", "candidate_targets": ["src/app.py"], "rule_ids": ["RN1"],
+                "id": "T1", "candidate_targets": ["src/app.py"], "to_create": ["src/app.py"],
+                "rule_ids": ["RN1"],
                 "steps": [{
                     "scenario_id": "SCN1", "rule_ids": ["RN1"],
                     "plan": {"read_paths": ["src/app.py"], "change_paths": ["src/app.py"],
