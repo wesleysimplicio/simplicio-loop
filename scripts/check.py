@@ -191,6 +191,20 @@ def run_repository_budget():
     return r.returncode == 0
 
 
+def run_conformance():
+    # #432 — stage-agent conformance: prove the 12 canonical roles materialize
+    # and produce equivalent receipts on every supported runtime. Fast (pure
+    # in-process validation against the canonical stage graph), so it is safe
+    # to include in the core gate.
+    _hr("conformance (#432) — stage-agent roles across 15 runtimes")
+    path = os.path.join(HERE, "conformance_suite.py")
+    if not os.path.exists(path):
+        print("scripts/conformance_suite.py not found — skipping")
+        return True
+    r = subprocess.run([sys.executable, path], cwd=REPO)
+    return r.returncode == 0
+
+
 def run_package_content():
     # #294 AC11 — deliberately NOT part of the default/core gate: it actually builds a real
     # sdist + wheel + runs `npm pack --dry-run`, ~20-30s and requires the `build` module + `npm`
@@ -214,6 +228,7 @@ def main():
     any_only = any(a in args for a in only_flags) or core_gate
     audit_ok = mirror_ok = tests_ok = contract_ok = clean_env_ok = budget_ok = repo_budget_ok = True
     package_content_ok = True
+    conformance_ok = True
     if not any_only or "--audit-only" in args or core_gate:
         audit_ok = run_audit()
     if not any_only or "--mirror-parity-only" in args or core_gate:
@@ -228,23 +243,25 @@ def main():
         budget_ok = run_token_budget()
     if not any_only or "--repo-budget" in args or core_gate:
         repo_budget_ok = run_repository_budget()
+    if not any_only or "--conformance" in args or core_gate:
+        conformance_ok = run_conformance()
     if "--package-content" in args:
         # Deliberately NOT included in "not any_only" (the default full run) or core_gate — see
         # run_package_content()'s docstring: opt-in only, ~20-30s, a release-time check.
         package_content_ok = run_package_content()
     ok = (audit_ok and mirror_ok and tests_ok and contract_ok and clean_env_ok and budget_ok
-          and repo_budget_ok and package_content_ok)
+          and repo_budget_ok and package_content_ok and conformance_ok)
     if core_gate:
-        print("\ncore-gate: %s  (audit=%s · mirror-parity=%s · core-tests=%s · loop-contract=%s · clean-env=%s · token-budget=%s · repo-budget=%s)" % (
+        print("\ncore-gate: %s  (audit=%s · mirror-parity=%s · core-tests=%s · loop-contract=%s · clean-env=%s · token-budget=%s · repo-budget=%s · conformance=%s)" % (
             "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if mirror_ok else "FAIL",
             "ok" if tests_ok else "FAIL", "ok" if contract_ok else "FAIL",
             "ok" if clean_env_ok else "FAIL", "ok" if budget_ok else "FAIL",
-            "ok" if repo_budget_ok else "FAIL"))
-    print("\ncheck: %s  (audit=%s · mirror-parity=%s · tests=%s · loop-contract=%s · clean-env=%s · token-budget=%s · repo-budget=%s)" % (
+            "ok" if repo_budget_ok else "FAIL", "ok" if conformance_ok else "FAIL"))
+    print("\ncheck: %s  (audit=%s · mirror-parity=%s · tests=%s · loop-contract=%s · clean-env=%s · token-budget=%s · repo-budget=%s · conformance=%s)" % (
         "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if mirror_ok else "FAIL",
         "ok" if tests_ok else "FAIL", "ok" if contract_ok else "FAIL",
         "ok" if clean_env_ok else "FAIL", "ok" if budget_ok else "FAIL",
-        "ok" if repo_budget_ok else "FAIL"))
+        "ok" if repo_budget_ok else "FAIL", "ok" if conformance_ok else "FAIL"))
     sys.exit(0 if ok else 1)
 
 
