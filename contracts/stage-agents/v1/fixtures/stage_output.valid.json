@@ -1,0 +1,17 @@
+{
+  "schema": "simplicio.stage-output/v1",
+  "stage_id": "implement",
+  "agent_instance_id": "ai-implement-0001",
+  "run_id": "run-1",
+  "task_id": "task-1",
+  "attempt_id": "attempt-1",
+  "fence": 1,
+  "plan_revision": 1,
+  "payload": {
+    "diff_ref": "patches/0001.diff"
+  },
+  "output_hash": "sha256:6caa1c4e2813bdc354829b0bef56d2abaa7ab037db7af85eb39d9ae350d2135c",
+  "acs_covered": [
+    "tests pass"
+  ]
+}

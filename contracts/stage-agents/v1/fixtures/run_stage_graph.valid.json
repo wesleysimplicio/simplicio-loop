@@ -1,0 +1,36 @@
+{
+  "schema": "simplicio.run-stage-graph/v1",
+  "run_id": "run-1",
+  "task_id": "task-1",
+  "stages": [
+    "coordinate",
+    "implement",
+    "review",
+    "test",
+    "integrate"
+  ],
+  "edges": [
+    {
+      "from": "coordinate",
+      "to": "implement"
+    },
+    {
+      "from": "implement",
+      "to": "review"
+    },
+    {
+      "from": "implement",
+      "to": "test"
+    },
+    {
+      "from": "review",
+      "to": "integrate"
+    },
+    {
+      "from": "test",
+      "to": "integrate"
+    }
+  ],
+  "generated_at": "2026-07-16T10:00:00Z",
+  "source_manifest_hash": "sha256:396c00555fb67668f7c41d51f3d03277dd3d8084b862af6d35abdd0705c35980"
+}

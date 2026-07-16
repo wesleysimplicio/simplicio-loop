@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/stage-agents/v1/stage-output.schema.json",
+  "title": "simplicio.stage-output/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "stage_id", "agent_instance_id", "run_id", "task_id",
+    "attempt_id", "fence", "plan_revision", "payload", "output_hash", "acs_covered"
+  ],
+  "properties": {
+    "schema": { "const": "simplicio.stage-output/v1" },
+    "stage_id": { "type": "string" },
+    "agent_instance_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "attempt_id": { "type": "string" },
+    "fence": { "type": "integer", "minimum": 0 },
+    "plan_revision": { "type": "integer", "minimum": 0 },
+    "payload": { "type": "object" },
+    "output_hash": { "type": "string" },
+    "acs_covered": { "type": "array", "items": { "type": "string" } }
+  }
+}

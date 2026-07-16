@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/stage-agents/v1/run-stage-graph.schema.json",
+  "title": "simplicio.run-stage-graph/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "task_id", "stages", "edges", "generated_at", "source_manifest_hash"],
+  "properties": {
+    "schema": { "const": "simplicio.run-stage-graph/v1" },
+    "run_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "stages": { "type": "array", "items": { "type": "string" } },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to"],
+        "properties": {
+          "from": { "type": "string" },
+          "to": { "type": "string" }
+        }
+      }
+    },
+    "generated_at": { "type": "string" },
+    "source_manifest_hash": { "type": "string" }
+  }
+}

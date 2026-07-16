@@ -1,0 +1,14 @@
+{
+  "schema": "simplicio.agent-receipt/v1",
+  "status": "VERIFIED",
+  "agent": {
+    "agent_id": "codex-a",
+    "runtime": "codex",
+    "device_id": "laptop-a",
+    "session_id": "s1",
+    "capabilities": [
+      "claim"
+    ],
+    "protocol": "simplicio-distributed/v1"
+  }
+}

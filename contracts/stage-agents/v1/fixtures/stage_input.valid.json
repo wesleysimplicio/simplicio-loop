@@ -1,0 +1,17 @@
+{
+  "schema": "simplicio.stage-input/v1",
+  "stage_id": "implement",
+  "agent_instance_id": "ai-implement-0001",
+  "run_id": "run-1",
+  "task_id": "task-1",
+  "attempt_id": "attempt-1",
+  "fence": 1,
+  "plan_revision": 1,
+  "payload": {
+    "goal": "fix docs",
+    "acs": [
+      "tests pass"
+    ]
+  },
+  "input_hash": "sha256:f7218970d1a5858b1d37bd7f2935222ceb12c787fc91ee5e9ebf03584d5b2a02"
+}

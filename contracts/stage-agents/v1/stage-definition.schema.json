@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/stage-agents/v1/stage-definition.schema.json",
+  "title": "simplicio.stage-definition/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "stage_id", "version", "title", "role_id",
+    "depends_on", "activation_condition", "required_capabilities",
+    "isolation_requirement", "authorized_actions", "forbidden_actions",
+    "input_schema_ref", "output_schema_ref", "receipt_schema_ref",
+    "timeout_seconds", "max_attempts", "retryable_reason_codes",
+    "failure_policy", "success_gate", "next_stages", "optional_when"
+  ],
+  "properties": {
+    "schema": { "const": "simplicio.stage-definition/v1" },
+    "stage_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "title": { "type": "string" },
+    "role_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "depends_on": { "type": "array", "items": { "type": "string" } },
+    "activation_condition": { "type": "string" },
+    "required_capabilities": { "type": "array", "items": { "type": "string" } },
+    "isolation_requirement": {
+      "enum": ["none", "fresh-context", "separate-process", "separate-actor", "human"]
+    },
+    "authorized_actions": { "type": "array", "items": { "type": "string" } },
+    "forbidden_actions": { "type": "array", "items": { "type": "string" } },
+    "input_schema_ref": { "type": "string" },
+    "output_schema_ref": { "type": "string" },
+    "receipt_schema_ref": { "type": "string" },
+    "timeout_seconds": { "type": "integer", "minimum": 1 },
+    "max_attempts": { "type": "integer", "minimum": 1 },
+    "retryable_reason_codes": { "type": "array", "items": { "type": "string" } },
+    "failure_policy": { "enum": ["block", "retry", "quarantine", "human-gate"] },
+    "success_gate": { "type": "string" },
+    "next_stages": { "type": "array", "items": { "type": "string" } },
+    "optional_when": { "type": "string" }
+  }
+}

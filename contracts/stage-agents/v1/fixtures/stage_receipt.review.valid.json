@@ -1,0 +1,43 @@
+{
+  "schema": "simplicio.stage-receipt/v1",
+  "agent_instance_id": "ai-review-0001",
+  "role_id": "reviewer",
+  "role_version": "1.0.0",
+  "stage_id": "review",
+  "stage_version": "1.0.0",
+  "run_id": "run-1",
+  "task_id": "task-1",
+  "work_item_id": "wi-1",
+  "attempt_id": "attempt-1",
+  "fence": 1,
+  "plan_revision": 1,
+  "status": "PASSED",
+  "reason_code": "all_acs_verified",
+  "input_hash": "sha256:f7218970d1a5858b1d37bd7f2935222ceb12c787fc91ee5e9ebf03584d5b2a02",
+  "output_hash": "sha256:6caa1c4e2813bdc354829b0bef56d2abaa7ab037db7af85eb39d9ae350d2135c",
+  "context_hash": "sha256:9bf558cf47fd57b0ad02a89e8b135c1ef619ddf5b842ac1746bc8a8a271cd460",
+  "manifest_hash": "sha256:396c00555fb67668f7c41d51f3d03277dd3d8084b862af6d35abdd0705c35980",
+  "evidence_refs": [
+    ".orchestrator/tee/web/implement.png"
+  ],
+  "commands": [
+    {
+      "cmd": "python3 -m pytest -q",
+      "exit_code": 0
+    }
+  ],
+  "artifact_refs": [
+    "patches/0001.diff"
+  ],
+  "created_at": "2026-07-16T10:05:00Z",
+  "observed_at": "2026-07-16T10:05:01Z",
+  "ttl_seconds": 3600,
+  "previous_receipt_hashes": [
+    "sha256:c2343b1aee2b4e13f87dec761e1dda1823df2cb0af4b6a07c8c663a950a3d63b"
+  ],
+  "integrity_hash": "sha256:49ebea570607c3a2ef51e018adbe6da03435ade09ea8d28af619b1a0eeaf302b",
+  "acs_covered": [
+    "tests pass"
+  ],
+  "next_stage_recommendation": "integrate"
+}

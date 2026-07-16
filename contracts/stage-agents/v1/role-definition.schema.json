@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/stage-agents/v1/role-definition.schema.json",
+  "title": "simplicio.role-definition/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "role_id", "version", "mission", "boundary",
+    "allowed_tools", "allowed_capabilities", "min_context",
+    "required_outputs", "independence_invariants", "pass_fail_criteria",
+    "prompt_template_ref", "prompt_template_hash", "language_policy"
+  ],
+  "properties": {
+    "schema": { "const": "simplicio.role-definition/v1" },
+    "role_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "mission": { "type": "string" },
+    "boundary": { "type": "string" },
+    "allowed_tools": { "type": "array", "items": { "type": "string" } },
+    "allowed_capabilities": { "type": "array", "items": { "type": "string" } },
+    "min_context": { "type": "array", "items": { "type": "string" } },
+    "required_outputs": { "type": "array", "items": { "type": "string" } },
+    "independence_invariants": { "type": "array", "items": { "type": "string" } },
+    "pass_fail_criteria": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pass", "fail", "blocked"],
+      "properties": {
+        "pass": { "type": "array", "items": { "type": "string" } },
+        "fail": { "type": "array", "items": { "type": "string" } },
+        "blocked": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "prompt_template_ref": { "type": "string" },
+    "prompt_template_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "language_policy": { "enum": ["machine", "human", "both"] }
+  }
+}

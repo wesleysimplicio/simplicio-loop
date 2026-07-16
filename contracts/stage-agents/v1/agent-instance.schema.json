@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/stage-agents/v1/agent-instance.schema.json",
+  "title": "simplicio.agent-instance/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "agent_instance_id", "role_id", "role_version", "stage_id", "stage_version",
+    "run_id", "task_id", "work_item_id", "attempt_id", "fence", "plan_revision",
+    "coordinator_agent_id", "parent_instance_id", "runtime", "provider", "model", "driver",
+    "capabilities", "isolation_level", "context_hash", "input_hash", "manifest_hash",
+    "status", "created_at", "ready_at", "running_at", "terminal_at", "idempotency_key"
+  ],
+  "properties": {
+    "schema": { "const": "simplicio.agent-instance/v1" },
+    "agent_instance_id": { "type": "string" },
+    "role_id": { "type": "string" },
+    "role_version": { "type": "string" },
+    "stage_id": { "type": "string" },
+    "stage_version": { "type": "string" },
+    "run_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "work_item_id": { "type": "string" },
+    "attempt_id": { "type": "string" },
+    "fence": { "type": "integer", "minimum": 0 },
+    "plan_revision": { "type": "integer", "minimum": 0 },
+    "coordinator_agent_id": { "type": "string" },
+    "parent_instance_id": { "type": "string" },
+    "runtime": { "type": "string" },
+    "provider": { "type": "string" },
+    "model": { "type": "string" },
+    "driver": { "type": "string" },
+    "capabilities": { "type": "array", "items": { "type": "string" } },
+    "isolation_level": {
+      "enum": ["none", "fresh-context", "separate-process", "separate-actor", "human"]
+    },
+    "context_hash": { "type": "string" },
+    "input_hash": { "type": "string" },
+    "manifest_hash": { "type": "string" },
+    "status": {
+      "enum": ["created", "ready", "running", "passed", "failed", "blocked", "cancelled", "timed_out"]
+    },
+    "created_at": { "type": "string" },
+    "ready_at": { "type": "string" },
+    "running_at": { "type": "string" },
+    "terminal_at": { "type": "string" },
+    "idempotency_key": { "type": "string" }
+  }
+}
