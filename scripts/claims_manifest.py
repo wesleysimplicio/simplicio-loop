@@ -127,16 +127,18 @@ CLAIMS = [
         ),
     },
     {
-        "id": "runtimes-badge-12pct",
+        "id": "runtimes-badge-15pct",
         "doc": "README.md",
-        "text_glob": "12%",
+        "text_glob": "15%",
         "status": "unverified",
         "receipt": None,
         "note": (
             "False-positive match: the shields.io badge URL "
-            "'runtimes-12%20(3%20garantidos...)' has '12' followed by the URL-encoded space "
-            "'%20', not a percentage — the '12' is the runtime count. Kept in manifest so the "
-            "extractor's known false positive is documented rather than silently ignored."
+            "'runtimes-15%20(3%20garantidos...)' has '15' followed by the URL-encoded space "
+            "'%20', not a percentage — the '15' is the runtime count (bumped from 12 when the "
+            "simplicio-runtime MCP multi-host docs added kimi/qwen/deepseek adapters). Kept in "
+            "manifest so the extractor's known false positive is documented rather than "
+            "silently ignored."
         ),
     },
     {

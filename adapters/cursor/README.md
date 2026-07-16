@@ -31,17 +31,39 @@ Detection and termination are decoupled — neither parses the other's state inl
 `orient_clamp.py` works as-is. For automatic clamping, add a `beforeShellExecution`-style
 rewrite in your Cursor hooks pointing at `orient_rewrite.py` (opt-in; conservative + fail-open).
 
-## Native bind — MCP / rules (optional)
+## Native bind — MCP / rules (REQUIRED)
 
-`simplicio-runtime` native binding is optional on Cursor. Install it by hand when you want MCP
-or model-router capabilities:
+`simplicio-runtime` native binding is **REQUIRED** on Cursor — a missing/unreachable bind BLOCKS
+the loop preflight (CLAUDE.md § Hooks):
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global   # registers Cursor's MCP config
 ```
 
-Use `simplicio doctor --json` to diagnose an installed bind. A `.cursor/rules/` entry can pin
+Use `simplicio doctor --json` to confirm the bind. A `.cursor/rules/` entry can pin
 model-per-role choices (pstack-style) if you use the simplicio-runtime model router.
+
+## MCP config
+
+- **Config file:** `.cursor/mcp.json` (project scope) or `~/.cursor/mcp.json` (global scope),
+  under an `mcpServers` key.
+- **Snippet:**
+
+```json
+{
+  "mcpServers": {
+    "simplicio": {
+      "command": "simplicio",
+      "args": ["serve", "--mcp", "--stdio"],
+      "cwd": "/path/to/your/repo"
+    }
+  }
+}
+```
+
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration`, or Cursor → Settings →
+  MCP, confirm `simplicio` shows a green/connected status. Tier: **verified** — Cursor is a gated
+  Tier 1 runtime (`scripts/verify_adapters.py cursor`).
 
 ## Use
 

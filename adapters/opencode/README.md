@@ -27,16 +27,41 @@ spindle handoff, or explicit STOP.
 
 `orient_clamp.py` works as-is. Reference it in `AGENTS.md` so heavy commands are clamped.
 
-## Native bind — MCP (optional)
+## Native bind — MCP (REQUIRED)
 
-`simplicio-runtime` native binding is optional on OpenCode. Add this to `opencode.json` when its
-MCP capabilities are useful:
+`simplicio-runtime` native binding is **REQUIRED** on OpenCode — a missing/unreachable bind
+BLOCKS the loop preflight (CLAUDE.md § Hooks). Add this to `opencode.json`:
 
 ```json
 { "mcp": { "simplicio": { "type": "local", "command": ["simplicio", "serve", "--mcp", "--stdio"] } } }
 ```
 
-Use `simplicio doctor --json` to diagnose the optional integration.
+Use `simplicio doctor --json` to confirm the bind.
+
+## MCP config
+
+- **Config file:** `opencode.json` (or `opencode.jsonc`) at the repo root, under the **`mcp`**
+  key — OpenCode's schema uses `type: "local"` + a `command` array, not `command`/`args` split
+  like most other hosts.
+- **Snippet:**
+
+```json
+{
+  "mcp": {
+    "simplicio": {
+      "type": "local",
+      "command": ["simplicio", "serve", "--mcp", "--stdio"],
+      "environment": {}
+    }
+  }
+}
+```
+
+  (OpenCode inherits the working directory it was launched from; run `opencode` from the target
+  repo, or set `environment`/`cwd` per your OpenCode version's config reference.)
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration`, or `opencode mcp list`
+  if your version ships that subcommand. Tier: **best-effort** — OpenCode is Tier 2 (provider-
+  agnostic MCP support is documented upstream but not mechanically gated here).
 
 ## Use
 

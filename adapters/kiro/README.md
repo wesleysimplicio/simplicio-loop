@@ -23,16 +23,39 @@ Exit conditions unchanged (evidence-gated promise, cap, STOP).
 
 `orient_clamp.py` works as-is. Add it to the steering file's command conventions.
 
-## Native bind — MCP (optional)
+## Native bind — MCP (REQUIRED)
 
-`simplicio-runtime` native binding is optional on Kiro. `simplicio install --global` can write
-`.kiro/settings/mcp.json` when you choose to enable it:
+`simplicio-runtime` native binding is **REQUIRED** on Kiro — a missing/unreachable bind BLOCKS
+the loop preflight (CLAUDE.md § Hooks). `simplicio install --global` writes
+`.kiro/settings/mcp.json`:
 
 ```json
 { "mcpServers": { "simplicio": { "command": "simplicio", "args": ["serve", "--mcp", "--stdio"] } } }
 ```
 
-Use `simplicio doctor --json` to diagnose the optional integration.
+Use `simplicio doctor --json` to confirm the bind.
+
+## MCP config
+
+- **Config file:** `.kiro/settings/mcp.json` (project/workspace scope, AWS Kiro's own path), or
+  the equivalent global path under the OS user config dir for a user-level install.
+- **Snippet:**
+
+```json
+{
+  "mcpServers": {
+    "simplicio": {
+      "command": "simplicio",
+      "args": ["serve", "--mcp", "--stdio"],
+      "cwd": "/path/to/your/repo"
+    }
+  }
+}
+```
+
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration`, or Kiro's MCP panel in
+  the IDE (lists connected servers). Tier: **best-effort** — Kiro is Tier 2 (documented, installer
+  writes the file, but not run under the gated per-commit sweep).
 
 ## Use
 

@@ -41,21 +41,44 @@ the `max_iterations` cap, spindle handoff, or explicit STOP. `orient_rewrite` (B
 `orient_clamp.py` works immediately: `python3 hooks/orient_clamp.py -- go test ./...`. The
 `PreToolUse` hook makes it automatic for read-only commands.
 
-## Native bind (optional, near-zero token)
+## Native bind (REQUIRED, near-zero token)
 
-`simplicio-runtime` via MCP is an optional acceleration on Claude Code. The same loop protocol
-can run with the standard-tool fallback when it is not installed. To add the bind by hand:
+`simplicio-runtime` via MCP is **REQUIRED** on Claude Code — the loop BLOCKS on preflight if
+the `simplicio` binary/MCP server is missing or unreachable (see CLAUDE.md § Hooks). Install it
+before running `/simplicio-loop`:
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global
 ```
 
 This registers the MCP server (`simplicio serve --mcp --stdio`) for Claude in one pass (plus
-Codex/Cursor/VS Code/Kiro if present). Diagnose the optional bind with:
+Codex/Cursor/VS Code/Kiro if present). Verify the bind with:
 
 ```bash
-simplicio doctor --json
+simplicio doctor --json | grep -A2 mcp-host-registration
 ```
+
+## MCP config
+
+- **Config file:** `~/.claude.json` (user scope, under an `mcpServers` key) or a project-local
+  `.mcp.json` at the repo root. `simplicio install --global` writes the user-scope entry.
+- **Snippet** (either file):
+
+```json
+{
+  "mcpServers": {
+    "simplicio": {
+      "command": "simplicio",
+      "args": ["serve", "--mcp", "--stdio"],
+      "cwd": "/path/to/your/repo"
+    }
+  }
+}
+```
+
+- **Verify:** `simplicio doctor --json` → look for `"name":"mcp-host-registration","status":"ok"`
+  (it reports registration against `~/.claude.json` and confirms the server is responding). Tier:
+  **verified** — this is one of the three gated Tier 1 runtimes (`scripts/verify_adapters.py claude`).
 
 ## Use
 

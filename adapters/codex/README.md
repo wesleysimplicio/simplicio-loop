@@ -33,18 +33,33 @@ heavy commands through it:
 python3 hooks/orient_clamp.py -- <build/test/diff command>
 ```
 
-## Native bind (optional)
+## Native bind (REQUIRED)
 
-`simplicio-runtime` native binding is optional on Codex. An unavailable bind does not block a
-self-paced loop; add it by hand when its MCP capabilities are useful:
+`simplicio-runtime` native binding is **REQUIRED** on Codex — a missing/unreachable bind BLOCKS
+the loop preflight (CLAUDE.md § Hooks), even though drive itself stays self-paced:
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global   # registers Codex's MCP client
 # or use the Python adapter at simplicio-runtime/agent/codex_responses_adapter.py
 ```
 
-Use `simplicio doctor --json` to diagnose an installed bind; if it is unreachable, continue with
-the standard-tool fallback.
+Use `simplicio doctor --json` to confirm the bind before scheduling ticks.
+
+## MCP config
+
+- **Config file:** `~/.codex/config.toml`, under an `[mcp_servers.<name>]` table.
+- **Snippet:**
+
+```toml
+[mcp_servers.simplicio]
+command = "simplicio"
+args = ["serve", "--mcp", "--stdio"]
+cwd = "/path/to/your/repo"
+```
+
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration`, or `codex mcp list` if
+  your Codex CLI version ships that subcommand. Tier: **verified** — Codex is a gated Tier 1
+  runtime (`scripts/verify_adapters.py codex`).
 
 ## Use
 
