@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://simplicio.dev/contracts/stage-agents/v1/stage-receipt.schema.json",
+  "title": "simplicio.stage-receipt/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "receipt_id",
+    "agent_instance_id",
+    "role_id",
+    "stage_id",
+    "run_id",
+    "task_id",
+    "attempt_id",
+    "fence",
+    "plan_revision",
+    "created_at",
+    "verdict",
+    "evidence_refs",
+    "accepted"
+  ],
+  "properties": {
+    "schema": { "const": "simplicio.stage-receipt/v1" },
+    "receipt_id": { "type": "string", "minLength": 1 },
+    "agent_instance_id": { "type": "string", "minLength": 1 },
+    "role_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "stage_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "task_id": { "type": "string", "minLength": 1 },
+    "attempt_id": { "type": "string", "minLength": 1 },
+    "fence": { "type": "string", "minLength": 1 },
+    "plan_revision": { "type": "integer", "minimum": 0 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "verdict": { "enum": ["pass", "fail", "blocked", "skip"] },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "accepted": { "type": "boolean" },
+    "rejection_reason": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

@@ -25,7 +25,7 @@ class FakeApi:
         self.calls.append(("GRAPHQL", query, variables))
         if query.lstrip().startswith("mutation"):
             return {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}
-        return {"organization": {"projectV2": {
+        return {"repository": {"projectV2": {
             "id": "project-1",
             "fields": {"nodes": [{"id": "status-1", "name": "Status",
                                     "options": [{"id": "todo", "name": "Todo"},
@@ -49,7 +49,8 @@ def test_sync_event_updates_label_and_project_for_any_runtime():
         "action": "created", "issue": {"number": 415}, "comment": {"body": body},
     }, project_number=7, project_owner="acme")
     assert result == {"status": "synced", "issue": 415, "state": "IN_PROGRESS",
-                      "label": "simplicio:status:in_progress", "project_moved": True}
+                      "label": "simplicio:status:in_progress", "project_moved": True,
+                      "project_number": 7, "project_reason": "moved"}
     assert any(call[0] == "GRAPHQL" and str(call[2].get("option")) == "progress"
                for call in api.calls)
 
@@ -70,6 +71,36 @@ def test_issue_close_and_reopen_are_reconciled_without_comments():
     reopened = sync_event(api, "acme/repo", "issues", {"action": "reopened", "issue": {"number": 415}})
     assert closed["state"] == "CLOSED"
     assert reopened["state"] == "IN_PROGRESS"
+
+
+class AutoProjectApi(FakeApi):
+    def graphql(self, query, variables):
+        self.calls.append(("GRAPHQL", query, variables))
+        if "projectsV2" in query:
+            return {"repository": {"projectsV2": {"nodes": [{"number": 9, "title": "repo"}]}}}
+        if "addProjectV2ItemById" in query:
+            return {"addProjectV2ItemById": {"item": {"id": "item-added"}}}
+        if "issue(number" in query:
+            return {"repository": {"issue": {"id": "issue-1"}}}
+        if query.lstrip().startswith("mutation"):
+            return {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-added"}}}
+        return {"repository": {"projectV2": {
+            "id": "project-1",
+            "fields": {"nodes": [{"id": "status-1", "name": "Status",
+                                    "options": [{"id": "progress", "name": "In Progress"}]}]},
+            "items": {"nodes": []},
+        }}}
+
+
+def test_sync_event_discovers_repo_project_and_adds_missing_issue():
+    api = AutoProjectApi()
+    body = "| Estado | IN_PROGRESS |\n" + LIFECYCLE_MARKER
+    result = sync_event(api, "acme/repo", "issue_comment", {
+        "action": "created", "issue": {"number": 415}, "comment": {"body": body},
+    })
+    assert result["project_number"] == 9
+    assert result["project_moved"] is True
+    assert any("addProjectV2ItemById" in call[1] for call in api.calls if call[0] == "GRAPHQL")
 
 
 if __name__ == "__main__":

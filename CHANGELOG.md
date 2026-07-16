@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [3.36.1] — 2026-07-16
+
+- **Repository-owned GitHub Projects:** lifecycle sync now autodiscovers the
+  repository's Project, adds the source issue when it is missing, and moves its
+  `Status` field without requiring a manually configured project number.
+- Explicit project numbers remain supported and take precedence over discovery.
+
 ## [3.36.0] — 2026-07-16
 
 - **GitHub workflow lifecycle:** added runtime-neutral, idempotent GitHub Project status

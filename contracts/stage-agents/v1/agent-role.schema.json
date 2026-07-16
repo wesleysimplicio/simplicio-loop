@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://simplicio.dev/contracts/stage-agents/v1/agent-role.schema.json",
+  "title": "simplicio.agent-role/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "role_id",
+    "version",
+    "title",
+    "description",
+    "required_capabilities",
+    "forbidden_to_self_sign",
+    "independent_of_roles"
+  ],
+  "properties": {
+    "schema": { "const": "simplicio.agent-role/v1" },
+    "role_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$", "minLength": 1 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "required_capabilities": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "forbidden_to_self_sign": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Receipt types this role may NEVER sign for itself (e.g. reviewer cannot sign its own review).",
+      "uniqueItems": true
+    },
+    "independent_of_roles": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+      "description": "Roles that must be a DIFFERENT instance/context from this one (no fake independence).",
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false
+}

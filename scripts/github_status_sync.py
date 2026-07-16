@@ -117,28 +117,72 @@ def sync_issue_label(api: GitHubApi, repo: str, issue_number: int, state: str) -
     return label
 
 
-def _project_query(owner_type: str) -> str:
-    root = "organization" if owner_type == "organization" else "user"
-    return f"""query($login:String!, $number:Int!) {{
-      {root}(login:$login) {{ projectV2(number:$number) {{
+def _project_query() -> str:
+    return """query($owner:String!, $repo:String!, $number:Int!) {
+      repository(owner:$owner, name:$repo) { projectV2(number:$number) {
         id
-        fields(first:100) {{ nodes {{ ... on ProjectV2SingleSelectField {{ id name options {{ id name }} }} }} }}
-        items(first:100) {{ nodes {{ id content {{ ... on Issue {{ number repository {{ nameWithOwner }} }} }} }} }}
-      }} }}
-    }}"""
+        fields(first:100) { nodes { ... on ProjectV2SingleSelectField { id name options { id name } } } }
+        items(first:100) { nodes { id content { ... on Issue { number repository { nameWithOwner } } } } }
+      } }
+    }"""
+
+
+def _projects_query() -> str:
+    return """query($owner:String!, $repo:String!) {
+      repository(owner:$owner, name:$repo) {
+        projectsV2(first:100, orderBy:{field:UPDATED_AT,direction:DESC}) {
+          nodes { id number title }
+        }
+      }
+    }"""
+
+
+def _issue_node_query() -> str:
+    return """query($owner:String!, $repo:String!, $number:Int!) {
+      repository(owner:$owner, name:$repo) { issue(number:$number) { id } }
+    }"""
+
+
+def _repo_parts(repo: str) -> tuple[str, str]:
+    parts = repo.split("/", 1)
+    if len(parts) != 2 or not all(parts):
+        raise ValueError(f"repository must be owner/name, got {repo!r}")
+    return parts[0], parts[1]
+
+
+def discover_project_number(api: GitHubApi, repo: str) -> Optional[int]:
+    """Find the repository-owned Project, conservatively and deterministically."""
+    owner, name = _repo_parts(repo)
+    data = api.graphql(_projects_query(), {"owner": owner, "repo": name})
+    projects = (((data.get("repository") or {}).get("projectsV2") or {}).get("nodes") or [])
+    if len(projects) == 1:
+        return int(projects[0]["number"])
+    accepted = {name.casefold(), name.replace("-", " ").casefold()}
+    matches = [p for p in projects if str(p.get("title") or "").strip().casefold() in accepted]
+    return int(matches[0]["number"]) if len(matches) == 1 else None
+
+
+def _add_issue_to_project(api: GitHubApi, repo: str, issue_number: int, project_id: str) -> str:
+    owner, name = _repo_parts(repo)
+    data = api.graphql(_issue_node_query(), {"owner": owner, "repo": name, "number": issue_number})
+    issue_id = str((((data.get("repository") or {}).get("issue") or {}).get("id")) or "")
+    if not issue_id:
+        return ""
+    mutation = """mutation($project:ID!, $content:ID!) {
+      addProjectV2ItemById(input:{projectId:$project, contentId:$content}) { item { id } }
+    }"""
+    data = api.graphql(mutation, {"project": project_id, "content": issue_id})
+    return str(((((data.get("addProjectV2ItemById") or {}).get("item")) or {}).get("id")) or "")
 
 
 def sync_project_item(api: GitHubApi, repo: str, issue_number: int, state: str,
                       *, owner: str, project_number: int,
-                      owner_type: str = "organization", status_field: str = "Status") -> bool:
-    """Move an issue in a Project v2 when the repository variable configured one.
-
-    Projects are optional: labels remain the durable fallback if no project is
-    configured or the project uses a different set of status options.
-    """
-    data = api.graphql(_project_query(owner_type), {"login": owner, "number": project_number})
-    root = data.get(owner_type) or {}
-    project = root.get("projectV2") if isinstance(root, dict) else None
+                      owner_type: str = "repository", status_field: str = "Status") -> bool:
+    """Add the issue to, then move it within, the repository-owned Project."""
+    del owner, owner_type  # repository ownership is canonical; kept for CLI compatibility
+    repo_owner, repo_name = _repo_parts(repo)
+    data = api.graphql(_project_query(), {"owner": repo_owner, "repo": repo_name, "number": project_number})
+    project = ((data.get("repository") or {}).get("projectV2"))
     if not project:
         return False
     issue_item = None
@@ -149,7 +193,10 @@ def sync_project_item(api: GitHubApi, repo: str, issue_number: int, state: str,
             issue_item = item
             break
     if not issue_item:
-        return False
+        item_id = _add_issue_to_project(api, repo, issue_number, str(project.get("id") or ""))
+        if not item_id:
+            return False
+        issue_item = {"id": item_id}
     field = None
     for candidate in project.get("fields", {}).get("nodes", []) or []:
         if str(candidate.get("name", "")).casefold() == status_field.casefold():
@@ -191,7 +238,7 @@ def event_state(event_name: str, event: Mapping[str, Any], forced_state: str = "
 
 def sync_event(api: GitHubApi, repo: str, event_name: str, event: Mapping[str, Any], *,
                project_number: Optional[int] = None, project_owner: str = "",
-               project_owner_type: str = "organization", status_field: str = "Status",
+               project_owner_type: str = "repository", status_field: str = "Status",
                forced_state: str = "") -> Dict[str, Any]:
     state = event_state(event_name, event, forced_state)
     issue = event.get("issue") or {}
@@ -201,13 +248,16 @@ def sync_event(api: GitHubApi, repo: str, event_name: str, event: Mapping[str, A
     if state not in LIFECYCLE_STATES:
         return {"status": "skipped", "reason": "invalid lifecycle state"}
     label = sync_issue_label(api, repo, int(issue_number), state)
-    moved = False
-    if project_number and project_owner:
-        moved = sync_project_item(api, repo, int(issue_number), state, owner=project_owner,
-                                   project_number=project_number, owner_type=project_owner_type,
-                                   status_field=status_field)
+    selected_number = project_number or discover_project_number(api, repo)
+    moved = bool(selected_number and sync_project_item(
+        api, repo, int(issue_number), state, owner=project_owner or repo.split("/", 1)[0],
+        project_number=int(selected_number), owner_type=project_owner_type,
+        status_field=status_field,
+    ))
     return {"status": "synced", "issue": int(issue_number), "state": state,
-            "label": label, "project_moved": moved}
+            "label": label, "project_moved": moved,
+            "project_number": selected_number,
+            "project_reason": "moved" if moved else ("project_not_found" if not selected_number else "not_moved")}
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
@@ -218,7 +268,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--token", default=os.environ.get("GITHUB_TOKEN", ""))
     parser.add_argument("--project-number", type=int, default=0)
     parser.add_argument("--project-owner", default="")
-    parser.add_argument("--project-owner-type", choices=("organization", "user"), default="organization")
+    parser.add_argument("--project-owner-type", choices=("repository", "organization", "user"), default="repository")
     parser.add_argument("--status-field", default="Status")
     parser.add_argument("--state", default="")
     parser.add_argument("--issue-number", type=int, default=0)

@@ -71,3 +71,15 @@ Inner-agent hook or self-paced tick (N1/N2 depending on how the inner agent is c
 turn-header contract applies identically inside the Orca worktree. Universal fallback (N3): open
 `.orchestrator/loop/PROGRESS.md` inside that worktree (auto-regenerated every turn, scoped to the
 worktree like all other loop state).
+
+## Status e comentários automáticos
+
+Quando o run está dentro de um worktree Orca ativo, o loop consulta `orca worktree current`
+e atualiza somente o card desse worktree com `orca worktree set`: o status usa `todo`,
+`in-progress`, `in-review` ou `completed`, e o comentário contém o estado lifecycle, run e
+uma mensagem curta. Fora do Orca, a sincronização é um no-op tipado e não toca outro card.
+
+No GitHub, o workflow de lifecycle mantém o comentário canônico, a label e o `Status` do
+Project pertencente ao próprio repositório; se a issue ainda não estiver no Project, ela é
+adicionada antes da movimentação. `SIMPLICIO_PROJECT_NUMBER` continua sendo aceito para
+selecionar explicitamente um Project quando houver mais de um.
