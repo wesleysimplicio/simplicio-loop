@@ -558,3 +558,39 @@ def test_human_report_and_machine_payload():
     receipt = ca.build_completion_receipt(result)
     payload = ca.machine_payload(result, receipt)
     assert payload["completion_receipt"]["receipt_id"] == receipt["receipt_id"]
+
+
+# --------------------------------------------------------------------------- #
+# CLI-level fail-closed: a missing anchor.json must BLOCK, never vacuously
+# pass AC coverage (adversarial-review follow-up on PR #450).
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_blocks_when_anchor_file_missing(tmp_path, monkeypatch):
+    import importlib.util
+    import os as _os
+
+    repo_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "scripts.completion_auditor", _os.path.join(repo_root, "scripts", "completion_auditor.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    fake_repo = tmp_path / "repo"
+    (fake_repo / ".orchestrator" / "loop").mkdir(parents=True)
+    (fake_repo / ".simplicio").mkdir(parents=True)
+    (fake_repo / ".orchestrator" / "loop" / "stage_instances.json").write_text("[]", encoding="utf-8")
+    (fake_repo / ".orchestrator" / "loop" / "stage_receipts.json").write_text("[]", encoding="utf-8")
+
+    mod._set_repo(str(fake_repo))
+    monkeypatch.setattr(mod.sa, "STAGES_FILE", str(fake_repo / ".simplicio" / "stages.json"), raising=False)
+    (fake_repo / ".simplicio" / "stages.json").write_text(json.dumps({"stages": []}), encoding="utf-8")
+    monkeypatch.setenv("SIMPLICIO_AUDITOR_INSTANCE_ID", "auditor-test-1")
+
+    exit_code = mod.cmd_audit(None)
+
+    assert exit_code == 1
+    audit_out = json.loads((fake_repo / ".orchestrator" / "loop" / "completion_audit.json").read_text(encoding="utf-8"))
+    assert audit_out["verdict"] == ca.VERDICT_BLOCKED
+    assert audit_out["reason_code"] == ca.REASON_AC_COVERAGE_INCOMPLETE
