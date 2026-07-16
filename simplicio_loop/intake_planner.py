@@ -136,15 +136,30 @@ def assert_boundary_ok(
 # --------------------------------------------------------------------------- #
 # Risk register -- "riscos têm mitigação ou blocker"
 # --------------------------------------------------------------------------- #
-def build_risk_register(risks: Optional[Sequence[Mapping[str, Any]]]) -> Dict[str, Any]:
+def build_risk_register(
+    risks: Optional[Sequence[Mapping[str, Any]]],
+    *,
+    no_risks_identified: bool = False,
+) -> Dict[str, Any]:
     """Normalize a risk register and gate it: every risk needs `mitigation` OR `is_blocker`.
+
+    An EMPTY risk list is NOT vacuously OK: an intake_planner run that never
+    actually assessed risk (the common bug -- silently passing because
+    `risks` was never supplied) must not pass this gate. The caller must
+    explicitly assert `no_risks_identified=True` to record "risk assessment
+    was performed and found nothing" as a distinct, auditable fact from
+    "risk assessment never happened". A non-empty `risks` list is itself
+    that assertion and does not also need the flag.
 
     Returns `{"risks": [...], "errors": [...], "ok": bool}` -- never raises,
     same discipline as `intake_contract.lint_task_intake`.
     """
     rows: List[Dict[str, Any]] = []
     errors: List[str] = []
-    for idx, risk in enumerate(risks or ()):
+    risk_list = list(risks or ())
+    if not risk_list and not no_risks_identified:
+        errors.append("risk_assessment_missing")
+    for idx, risk in enumerate(risk_list):
         rid = str((risk or {}).get("id") or f"R{idx + 1}")
         text = str((risk or {}).get("text") or "").strip()
         mitigation = str((risk or {}).get("mitigation") or "").strip()
@@ -161,7 +176,12 @@ def build_risk_register(risks: Optional[Sequence[Mapping[str, Any]]]) -> Dict[st
             "mitigation": mitigation,
             "is_blocker": is_blocker,
         })
-    return {"risks": rows, "errors": errors, "ok": not errors}
+    return {
+        "risks": rows,
+        "errors": errors,
+        "ok": not errors,
+        "no_risks_identified": bool(no_risks_identified and not risk_list),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -238,6 +258,7 @@ def build_intake_planner_receipt(
     impact_map: Optional[Mapping[str, Any]] = None,
     flow_audit_result: Optional[Mapping[str, Any]] = None,
     risks: Optional[Sequence[Mapping[str, Any]]] = None,
+    no_risks_identified: bool = False,
     dependencies: Optional[Sequence[Mapping[str, Any]]] = None,
     conventions_consulted: bool = False,
     precedents_consulted: bool = False,
@@ -257,16 +278,27 @@ def build_intake_planner_receipt(
     enforcement, risk-register gate, dependency DAG explicitness, impact-gap
     threshold, and the single-clarifying-question path. Never mutates
     anything; this is a pure data assembly + gate, exactly like its siblings.
+
+    `touched_paths` MUST be supplied (an explicit list, possibly empty when
+    nothing was touched) for the boundary check to actually run: omitting it
+    is treated as "the boundary was never checked" and fails the
+    `no_mutation_before_mutation_capability` gate closed, rather than silently
+    passing. `risks`/`no_risks_identified` follow the same discipline (see
+    `build_risk_register`): an omitted/empty risk list without the explicit
+    `no_risks_identified=True` assertion fails `risks_mitigated_or_blocked`.
     """
     from . import planning_gate as _pg
 
     # Boundary: this role may only ever touch its own allowlisted artifacts.
     # Fail-closed -- raises rather than silently downgrading to BLOCKED, since
     # an out-of-boundary write is a contract violation, not an ordinary gap.
-    if touched_paths:
+    # A caller that omits `touched_paths` entirely gets `boundary_checked=False`
+    # below (the gate then blocks) instead of a check that silently never ran.
+    boundary_checked = touched_paths is not None
+    if boundary_checked:
         assert_boundary_ok(touched_paths)
 
-    risk_register = build_risk_register(risks)
+    risk_register = build_risk_register(risks, no_risks_identified=no_risks_identified)
     dependency_dag = build_dependency_dag(dependencies)
     intake_lint = _intake_lint(intake)
     matrix_ok = bool(traceability_matrix.get("coverage_ok"))
@@ -290,12 +322,17 @@ def build_intake_planner_receipt(
         "source_read_and_revision_frozen": source_ok,
         "every_ac_has_step_and_proof": matrix_ok,
         "every_step_maps_to_ac": matrix_ok,
-        "blocked_dependencies_explicit": True,  # the DAG artifact itself makes this explicit
+        # explicit dependency DAG must show no *unresolved* blocked dependency
+        # left implicit -- a real blocked dependency fails this gate for real,
+        # it is not automatically "explicit enough" just by existing.
+        "blocked_dependencies_explicit": not dependency_dag["has_blocked"],
         "impact_audit_below_threshold": impact_ok,
         "architecture_conventions_consulted": bool(conventions_consulted),
         "delivery_target_defined": delivery_target_ok,
         "risks_mitigated_or_blocked": bool(risk_register["ok"]),
-        "no_mutation_before_mutation_capability": True,  # enforced above via assert_boundary_ok
+        # only True when the boundary check actually ran (touched_paths was
+        # supplied) AND it passed (assert_boundary_ok above did not raise).
+        "no_mutation_before_mutation_capability": boundary_checked,
         "intake_lint_ok": bool(intake_lint["valid"]),
         "no_clarification_pending": not needs_clarification,
     }
@@ -313,6 +350,8 @@ def build_intake_planner_receipt(
         "failing_checks": failing,
         "needs_clarification": bool(needs_clarification),
         "clarification_question": str(clarification_question or ""),
+        "boundary_checked": boundary_checked,
+        "touched_paths": list(touched_paths) if touched_paths is not None else None,
         "risk_register": risk_register,
         "dependency_dag": dependency_dag,
         "delivery_target": delivery_target,

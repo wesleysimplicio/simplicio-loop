@@ -36,6 +36,9 @@ def _cmd_receipt(args: argparse.Namespace) -> int:
         return 1
     text = json.dumps(receipt, ensure_ascii=False, indent=2)
     if args.out:
+        if not ip.is_path_in_boundary(args.out):
+            print(f"RECEIPT BLOCKED (boundary): out-of-boundary --out path: {args.out}", file=sys.stderr)
+            return 1
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(text + "\n")
     else:

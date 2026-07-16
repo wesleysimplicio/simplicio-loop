@@ -86,6 +86,7 @@ def _base_kwargs(**overrides):
         plan_validation=PLAN_VALIDATION_OK, intake=_intake(), traceability_matrix=_matrix(),
         source_snapshot=SOURCE, risks=RISK_OK, dependencies=DEPS_OK,
         conventions_consulted=True, precedents_consulted=True,
+        touched_paths=[],  # explicit "boundary was checked, nothing touched"
     )
     kwargs.update(overrides)
     return kwargs
@@ -275,6 +276,69 @@ def test_to_stage_receipt_projects_blocked_verdict():
         task_id="task-1", attempt_id="att-1", fence="fence-1",
     )
     assert stage_receipt["verdict"] == "blocked"
+
+
+# --------------------------------------------------------------------------- #
+# Regression: gate must not vacuously pass when a check never actually ran
+# (the #440 adversarial-review findings).
+# --------------------------------------------------------------------------- #
+def test_omitted_touched_paths_blocks_the_receipt_even_if_everything_else_is_fine():
+    kwargs = _base_kwargs()
+    del kwargs["touched_paths"]  # never explicitly asserted the boundary was checked
+    receipt = build_intake_planner_receipt(**kwargs)
+    assert receipt["verdict"] == VERDICT_BLOCKED
+    assert "no_mutation_before_mutation_capability" in receipt["failing_checks"]
+    assert receipt["boundary_checked"] is False
+    assert receipt["touched_paths"] is None
+
+
+def test_empty_touched_paths_list_passes_the_boundary_check():
+    receipt = build_intake_planner_receipt(**_base_kwargs(touched_paths=[]))
+    assert receipt["boundary_checked"] is True
+    assert "no_mutation_before_mutation_capability" not in receipt["failing_checks"]
+
+
+def test_blocked_dependency_gates_the_receipt_for_real():
+    deps = [
+        {"id": "D1", "depends_on": [], "state": "open"},
+        {"id": "D2", "depends_on": ["D1"], "state": "open"},
+    ]
+    receipt = build_intake_planner_receipt(**_base_kwargs(dependencies=deps))
+    assert receipt["verdict"] == VERDICT_BLOCKED
+    assert "blocked_dependencies_explicit" in receipt["failing_checks"]
+    assert receipt["dependency_dag"]["has_blocked"] is True
+
+
+def test_no_dependencies_supplied_does_not_falsely_block_on_blocked_dependencies():
+    receipt = build_intake_planner_receipt(**_base_kwargs(dependencies=None))
+    assert "blocked_dependencies_explicit" not in receipt["failing_checks"]
+
+
+def test_omitted_risks_without_no_risks_identified_flag_blocks_the_receipt():
+    receipt = build_intake_planner_receipt(**_base_kwargs(risks=None))
+    assert receipt["verdict"] == VERDICT_BLOCKED
+    assert "risks_mitigated_or_blocked" in receipt["failing_checks"]
+    assert "risk_assessment_missing" in receipt["risk_register"]["errors"]
+
+
+def test_empty_risks_with_explicit_no_risks_identified_passes_the_gate():
+    receipt = build_intake_planner_receipt(
+        **_base_kwargs(risks=[], no_risks_identified=True)
+    )
+    assert "risks_mitigated_or_blocked" not in receipt["failing_checks"]
+    assert receipt["risk_register"]["no_risks_identified"] is True
+
+
+def test_build_risk_register_empty_without_flag_is_not_ok():
+    result = build_risk_register(None)
+    assert result["ok"] is False
+    assert "risk_assessment_missing" in result["errors"]
+
+
+def test_build_risk_register_empty_with_explicit_flag_is_ok():
+    result = build_risk_register([], no_risks_identified=True)
+    assert result["ok"] is True
+    assert result["no_risks_identified"] is True
 
 
 # --------------------------------------------------------------------------- #
