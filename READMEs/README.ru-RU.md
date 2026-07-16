@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop с конкретными агентами этапов и подключённой отчётностью" width="920" />
 </p>
 
 <p align="center">
@@ -80,6 +80,31 @@
   <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
 </p>
 <!-- visual-story:end -->
+
+<!-- stage-agents-roadmap:start -->
+## 🤖 Дорожная карта — конкретный агент за каждым этапом
+
+> **Статус:** планируемая архитектура из [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436). Канонический lifecycle-комментарий GitHub уже существует; полный gate агентов этапов и обязательного reporting реализуется в [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433).
+
+Intake/планирование, реализация, безопасность, delivery, recovery и финальный аудит получат по ответственному агенту. Review разветвляется на четыре независимых агента — безопасность/корректность, качество, воспроизведение runtime/E2E и blast radius — и только затем сходится.
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="агенты этапов simplicio-loop и комментарии в work tracker" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Агент intake + планирования"] --> I["Агент реализации"] --> S["Агент безопасности"]
+  S --> R["4 независимых review-агента"] --> D["Агент delivery"] --> A["Аудитор завершения"]
+  D --> F["Агент feedback + recovery"] --> I
+  P -.-> E["События + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["Комментарии GitHub · ОБЯЗАТЕЛЬНЫ"]
+  E -. "только при подключении" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**Политика:** для run, связанных с GitHub, комментарии GitHub обязательны, а `COMPLETE` ждёт удалённого подтверждения. Azure DevOps, Jira, Asana и Trello получают комментарии только после подтверждения подключения, аутентификации, прав и цели; `NOT_CONNECTED` — явный неблокирующий skip. Контракт и тесты: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436).
+<!-- stage-agents-roadmap:end -->
 
 ## ⚡ TL;DR
 

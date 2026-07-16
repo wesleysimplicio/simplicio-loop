@@ -5,7 +5,7 @@
 </div>
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop مع وكلاء فعليين لكل مرحلة وتقارير متصلة" width="920" />
 </p>
 
 <p align="center">
@@ -84,6 +84,31 @@
   <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
 </p>
 <!-- visual-story:end -->
+
+<!-- stage-agents-roadmap:start -->
+## 🤖 خارطة الطريق — وكيل فعلي خلف كل مرحلة
+
+> **الحالة:** بنية مخططة ومتابعة في [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436). تعليق lifecycle القانوني في GitHub موجود اليوم؛ أما gate الكامل لوكلاء المراحل وreporting الإلزامي فما زال قيد التنفيذ في [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433).
+
+سيكون لكل من intake/التخطيط والتنفيذ والسلامة والتسليم وrecovery والتدقيق النهائي وكيل مسؤول. تتفرع review إلى أربعة وكلاء مستقلين — الأمن/الصحة، الجودة، إعادة إنتاج runtime/E2E، ونطاق التأثير — قبل أن تتقارب.
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="وكلاء مراحل simplicio-loop وتعليقات work tracker" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["وكيل intake + التخطيط"] --> I["وكيل التنفيذ"] --> S["وكيل السلامة"]
+  S --> R["4 وكلاء review مستقلين"] --> D["وكيل التسليم"] --> A["مدقق الاكتمال"]
+  D --> F["وكيل feedback + recovery"] --> I
+  P -.-> E["أحداث + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["تعليقات GitHub · إلزامية"]
+  E -. "فقط عند الاتصال" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**السياسة:** تعليقات GitHub إلزامية للـ runs المرتبطة بـ GitHub، وينتظر `COMPLETE` تأكيداً بعيداً. لا تتلقى Azure DevOps وJira وAsana وTrello التعليقات إلا بعد إثبات الاتصال والمصادقة والتفويض وحل الهدف؛ `NOT_CONNECTED` هو skip صريح وغير حاجب. العقد والاختبارات: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436).
+<!-- stage-agents-roadmap:end -->
 
 <div dir="rtl">
 

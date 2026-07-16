@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="हर चरण के ठोस agents और connected reporting वाला simplicio-loop" width="920" />
 </p>
 
 <p align="center">
@@ -80,6 +80,31 @@
   <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
 </p>
 <!-- visual-story:end -->
+
+<!-- stage-agents-roadmap:start -->
+## 🤖 रोडमैप — हर चरण के पीछे एक ठोस agent
+
+> **स्थिति:** [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436) में track की गई नियोजित architecture। GitHub का canonical lifecycle comment आज मौजूद है; stage agents और mandatory reporting का पूरा gate अभी [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433) में implement हो रहा है।
+
+Intake/planning, implementation, safety, delivery, recovery और final audit में एक-एक उत्तरदायी agent होगा। Review converge होने से पहले चार independent agents में बँटेगा — security/correctness, quality, runtime/E2E reproduction और blast radius।
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="simplicio-loop stage agents और work tracker comments" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Intake + planning agent"] --> I["Implementation agent"] --> S["Safety agent"]
+  S --> R["4 independent review agents"] --> D["Delivery agent"] --> A["Completion auditor"]
+  D --> F["Feedback + recovery agent"] --> I
+  P -.-> E["Events + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["GitHub comments · अनिवार्य"]
+  E -. "केवल connected होने पर" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**नीति:** GitHub से जुड़े run में GitHub comments अनिवार्य हैं और `COMPLETE` remote confirmation की प्रतीक्षा करता है। Azure DevOps, Jira, Asana और Trello को comments तभी मिलते हैं जब connection, authentication, authorization और target resolution प्रमाणित हों; `NOT_CONNECTED` एक स्पष्ट, non-blocking skip है। Contract और tests: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436)।
+<!-- stage-agents-roadmap:end -->
 
 ## ⚡ TL;DR
 

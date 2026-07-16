@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="단계별 구체적 에이전트와 연결된 보고를 갖춘 simplicio-loop" width="920" />
 </p>
 
 <p align="center">
@@ -80,6 +80,31 @@
   <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
 </p>
 <!-- visual-story:end -->
+
+<!-- stage-agents-roadmap:start -->
+## 🤖 로드맵 — 모든 단계 뒤에 구체적인 에이전트
+
+> **상태:** [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436)에서 추적하는 계획 아키텍처입니다. 표준 GitHub lifecycle 댓글은 현재 존재하지만, 단계별 에이전트와 필수 reporting의 전체 gate는 [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433)에서 구현 중입니다.
+
+Intake/계획, 구현, 안전, delivery, recovery, 최종 감사마다 책임 에이전트 한 명을 둡니다. Review는 security/correctness, quality, runtime/E2E 재현, blast radius의 네 독립 에이전트로 분기한 뒤에만 다시 합쳐집니다.
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="simplicio-loop 단계 에이전트와 work tracker 댓글" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Intake + 계획 에이전트"] --> I["구현 에이전트"] --> S["안전 에이전트"]
+  S --> R["4개 독립 review 에이전트"] --> D["Delivery 에이전트"] --> A["완료 감사 에이전트"]
+  D --> F["Feedback + recovery 에이전트"] --> I
+  P -.-> E["이벤트 + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["GitHub 댓글 · 필수"]
+  E -. "연결된 경우에만" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**정책:** GitHub에 연결된 run에서는 GitHub 댓글이 필수이며 `COMPLETE`는 원격 확인을 기다립니다. Azure DevOps, Jira, Asana, Trello는 연결·인증·권한·대상 확인이 증명된 경우에만 댓글을 받으며, `NOT_CONNECTED`는 명시적이고 비차단적인 skip입니다. 계약 및 테스트: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436).
+<!-- stage-agents-roadmap:end -->
 
 ## ⚡ 요약
 

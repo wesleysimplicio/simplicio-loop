@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop portable stage agents, evidence gates, durable memory, and connected work-item reporting" width="920" />
 </p>
 
 <p align="center">
@@ -85,6 +85,68 @@ That architecture lets one goal become a governed delivery system: from a single
   <img src="assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
 </p>
 <!-- visual-story:end -->
+
+<!-- stage-agents-roadmap:start -->
+## 🤖 Roadmap — a concrete agent behind every stage
+
+> **Implementation status:** this is the tracked target architecture in [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436), not a claim that every stage agent and tracker adapter already ships. The canonical GitHub lifecycle comment exists today; the full mandatory stage-reporting gate is tracked in [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433).
+
+The portable driver will assign one accountable agent to intake/planning, implementation, safety,
+delivery, feedback/recovery, and final completion audit. Review fans out to four independent agents
+— security/correctness, code quality, runtime reproduction, and blast radius — before it can
+reconverge. Every transition emits an event and receipt; the completion auditor accepts evidence,
+never self-reported confidence.
+
+<p align="center">
+  <img src="assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="simplicio-loop stage agents with four-way review, evidence ledger, recovery, completion audit, and work-item comments" width="920" />
+</p>
+
+### Work-item comment policy
+
+| Work tracker | Reporting policy | Completion meaning |
+|---|---|---|
+| **GitHub Issues / PRs** | **Required** for GitHub-bound runs | `COMPLETE` waits for a remotely observed comment receipt |
+| **Azure DevOps** | Only when its connector is detected, authenticated, authorized, and target-resolved | Connected providers report; `NOT_CONNECTED` is an explicit, non-blocking skip |
+| **Jira** | Only when connected | Same canonical timeline, provider-specific confirmation |
+| **Asana** | Only when connected | Same canonical timeline, provider-specific confirmation |
+| **Trello** | Only when connected | Same canonical timeline, provider-specific confirmation |
+
+```mermaid
+flowchart LR
+  SOURCE["Issue · task · queue"] --> COORD["Portable coordinator"]
+  COORD --> PLAN["Intake + Planner agent"]
+  PLAN --> BUILD["Implementation agent"]
+  BUILD --> SAFE["Safety agent"]
+  SAFE --> R1["Review agent · security"]
+  SAFE --> R2["Review agent · quality"]
+  SAFE --> R3["Review agent · runtime/E2E"]
+  SAFE --> R4["Review agent · blast radius"]
+  R1 --> DELIVER["Delivery agent"]
+  R2 --> DELIVER
+  R3 --> DELIVER
+  R4 --> DELIVER
+  DELIVER --> RECOVER["Feedback + Recovery agent"]
+  RECOVER --> BUILD
+  DELIVER --> AUDIT["Completion auditor"]
+  AUDIT --> VERDICT{"COMPLETE · PARTIAL · BLOCKED · REGRESSED"}
+  PLAN -. "events + receipts" .-> LEDGER["Append-only stage ledger"]
+  BUILD -.-> LEDGER
+  SAFE -.-> LEDGER
+  DELIVER -.-> LEDGER
+  AUDIT -.-> LEDGER
+  LEDGER --> GH["GitHub comments · REQUIRED"]
+  LEDGER -. "only if connected" .-> AZ["Azure DevOps comments"]
+  LEDGER -. "only if connected" .-> JIRA["Jira comments"]
+  LEDGER -. "only if connected" .-> ASANA["Asana comments"]
+  LEDGER -. "only if connected" .-> TRELLO["Trello comments"]
+  GH --> AUDIT
+```
+
+The provider-neutral contract, capability probes, idempotent markers, durable outboxes, recovery
+rules, sandbox E2E matrix, and acceptance criteria are specified in
+[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436). An optional provider is never
+treated as connected merely because a CLI exists, and no remote acknowledgment is ever invented.
+<!-- stage-agents-roadmap:end -->
 
 ## 🆕 What's new in v3.35.0
 
@@ -230,9 +292,12 @@ The orchestrator discovers work from any source via pluggable adapters. Each exp
 
 | Source | Adapter | Purpose |
 |---|---|---|
-| GitHub Issues/PRs | `gh` CLI (native) | Primary work-item source |
-| Jira / Asana / ClickUp / Linear / Notion | host connector | Board/project management |
-| Trello / Azure DevOps | `az boards` adapter | Azure work tracking |
+| GitHub Issues/PRs | `gh` CLI (native) | Primary work-item source; canonical lifecycle comments ship today |
+| Azure DevOps | `az boards` / host connector | Azure Boards discovery; stage comments only after a real connected-capability probe |
+| Jira | host connector | Jira discovery; stage comments only when connected |
+| Asana | host connector | Asana discovery; stage comments only when connected |
+| Trello | host connector | Trello discovery; stage comments only when connected |
+| ClickUp / Linear / Notion | host connector | Board/project discovery; no stage-comment claim without a certified adapter |
 | **agentsview sessions** | `scripts/agentsview_adapter.py` | Stalled session recovery + cost observability |
 | Local files / CI queue | filesystem / CI API | Internal work tracking |
 
@@ -680,7 +745,7 @@ opt-in capabilities you reach for when the task calls for them.
 MIT
 
 <!-- simplicio-loop:github-comment-coordination:v1 -->
-## 🌐 GitHub comment coordination across runtimes
+## 🌐 Work-item comment coordination across runtimes
 
 `simplicio-loop` can run at the same time in Claude Code, Codex, Cursor, Gemini, and Hermes. When a run is bound to a GitHub issue, it publishes idempotent lifecycle updates to that issue's canonical comment: claim, plan, progress, evidence, PR, and close. Agents on different machines can coordinate through the same GitHub thread without a shared local filesystem.
 
@@ -692,7 +757,7 @@ pwsh scripts/install.ps1 gemini -Global
 pwsh scripts/install.ps1 hermes -Global   # legacy alias for simplicio_agent
 ```
 
-Local queues, leases, worktrees, heartbeats, and evidence remain active on every machine; GitHub comments are the shared coordination projection. This flow is GitHub-only: Jira, Azure DevOps, and other trackers do not receive these comments. If GitHub is unavailable or unauthenticated, the loop remains usable locally and records the sync failure without inventing a remote acknowledgment. Give every runtime GitHub access and bind runs to the same `source_issue`.
+Local queues, leases, worktrees, heartbeats, and evidence remain active on every machine; GitHub comments are the shipped shared coordination projection. Today, an unavailable or unauthenticated GitHub records a sync failure without inventing a remote acknowledgment. The stage-agent roadmap tightens this for GitHub-bound runs: [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433) makes the comment confirmation mandatory before `COMPLETE`. [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436) adds the same projection to Azure DevOps, Jira, Asana, and Trello only when each connector is proven connected; disconnected optional trackers are explicitly skipped.
 
 The repository workflow `.github/workflows/simplicio-status-sync.yml` turns the canonical lifecycle
 state into a managed `simplicio:status:<state>` label and, when configured, moves the issue in a

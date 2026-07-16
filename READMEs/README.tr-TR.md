@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="aşama başına somut ajanlar ve bağlı raporlama ile simplicio-loop" width="920" />
 </p>
 
 <p align="center">
@@ -80,6 +80,31 @@ Bu mimari tek bir hedefi yönetilen teslimat sistemine dönüştürür: zor bir 
   <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
 </p>
 <!-- visual-story:end -->
+
+<!-- stage-agents-roadmap:start -->
+## 🤖 Yol haritası — her aşamanın arkasında somut bir ajan
+
+> **Durum:** [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436) içinde planlanan mimari. Kanonik GitHub lifecycle yorumu bugün mevcut; aşama ajanları ve zorunlu reporting için tam gate [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433) kapsamında uygulanıyor.
+
+Intake/planlama, uygulama, güvenlik, teslimat, recovery ve son denetimin her birinde sorumlu bir ajan olacak. Review, birleşmeden önce dört bağımsız ajana ayrılır: güvenlik/doğruluk, kalite, runtime/E2E yeniden üretimi ve blast radius.
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="simplicio-loop aşama ajanları ve work tracker yorumları" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Intake + planlama ajanı"] --> I["Uygulama ajanı"] --> S["Güvenlik ajanı"]
+  S --> R["4 bağımsız review ajanı"] --> D["Teslimat ajanı"] --> A["Tamamlanma denetçisi"]
+  D --> F["Feedback + recovery ajanı"] --> I
+  P -.-> E["Olaylar + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["GitHub yorumları · ZORUNLU"]
+  E -. "yalnızca bağlıysa" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**Politika:** GitHub’a bağlı run’larda GitHub zorunludur ve `COMPLETE` uzak onayı bekler. Azure DevOps, Jira, Asana ve Trello yalnızca bağlantı, kimlik doğrulama, yetki ve hedef çözümleme kanıtlandıktan sonra yorum alır; `NOT_CONNECTED` açık ve engellemeyen bir skip’tir. Sözleşme ve testler: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436).
+<!-- stage-agents-roadmap:end -->
 
 ## ⚡ TL;DR
 
