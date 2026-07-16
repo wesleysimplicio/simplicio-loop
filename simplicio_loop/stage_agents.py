@@ -344,12 +344,19 @@ class StageGraphState:
     fence/plan_revision of a stage unlocks its dependents (invariant 9).
     """
 
-    def __init__(self, manifest: Mapping[str, Any], *, run_id: str, task_id: str):
+    def __init__(self, manifest: Mapping[str, Any], *, run_id: str, task_id: str,
+                 expected_attempts: Mapping[str, str] | None = None):
         self.manifest = validate_manifest(manifest)
         self.run_id = run_id
         self.task_id = task_id
         self.passed_stages: dict[str, dict[str, Any]] = {}
         self.rejected: list[dict[str, Any]] = []
+        # Per-stage expected attempt_id (invariant 2/5: a receipt from another attempt is
+        # stale/rejected). Seeded from `expected_attempts` when the caller already knows the
+        # authoritative attempt (e.g. from the stage input it handed out); otherwise the FIRST
+        # receipt seen for a stage establishes the fence for that stage, and every later receipt
+        # for that same stage is checked against it — never against its own value.
+        self._stage_attempt: dict[str, str] = dict(expected_attempts or {})
 
     def _stage(self, stage_id: str) -> dict[str, Any]:
         return stage_by_id(self.manifest, stage_id)
@@ -366,13 +373,17 @@ class StageGraphState:
         except StageAgentError:
             self.rejected.append({"receipt": dict(receipt), "reason_code": "unknown_stage"})
             return False
+        # The expected attempt_id for this stage is fixed the first time a receipt is seen for
+        # it (or pre-seeded via `expected_attempts`) — never re-derived from the receipt under
+        # test, or a receipt could never be rejected for naming the wrong attempt (invariant 2).
+        expected_attempt_id = self._stage_attempt.setdefault(stage_id, receipt.get("attempt_id"))
         try:
             check_receipt_freshness(
                 receipt,
                 expected={
                     "run_id": self.run_id, "task_id": self.task_id,
                     "fence": fence, "plan_revision": plan_revision,
-                    "attempt_id": receipt.get("attempt_id"),
+                    "attempt_id": expected_attempt_id,
                 },
             )
         except StageAgentError as exc:

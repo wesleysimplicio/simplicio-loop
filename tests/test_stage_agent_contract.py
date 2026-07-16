@@ -322,6 +322,34 @@ def test_reducer_rejects_stale_fence_receipt():
     assert state.rejected[0]["reason_code"] == "stale_receipt"
 
 
+def test_reducer_rejects_receipt_with_wrong_attempt_id_via_apply_receipt():
+    """Regression: apply_receipt used to compare a receipt's attempt_id against itself,
+    so a stale/wrong-attempt receipt could never be rejected (invariant 2). The first
+    receipt for a stage now fixes the expected attempt_id; a later receipt for the same
+    stage naming a different attempt_id must be rejected by apply_receipt itself, not just
+    by calling check_receipt_freshness directly.
+    """
+    manifest = sa.load_manifest()
+    state = sa.StageGraphState(manifest, run_id="run-1", task_id="task-1")
+    coord = dict(_load("stage_receipt.coordinate.valid.json"))
+    assert coord["attempt_id"] == "attempt-1"
+    accepted_first = state.apply_receipt(coord, fence=1, plan_revision=1)
+    assert accepted_first is True
+    assert "coordinate" in state.passed_stages
+
+    stale_attempt_receipt = dict(coord)
+    stale_attempt_receipt["attempt_id"] = "attempt-2"  # a different, wrong attempt
+    # Force re-acceptance to be considered fresh from the reducer's perspective: bypass the
+    # "already passed" idempotency short-circuit isn't needed here since apply_receipt checks
+    # freshness BEFORE the idempotent-replay check, so the stale attempt_id must still surface.
+    state_for_stale = sa.StageGraphState(manifest, run_id="run-1", task_id="task-1",
+                                         expected_attempts={"coordinate": "attempt-1"})
+    accepted_stale = state_for_stale.apply_receipt(stale_attempt_receipt, fence=1, plan_revision=1)
+    assert accepted_stale is False
+    assert state_for_stale.rejected[0]["reason_code"] == "stale_receipt"
+    assert "coordinate" not in state_for_stale.passed_stages
+
+
 def test_no_terminal_reachable_with_a_required_stage_missing():
     manifest = sa.load_manifest()
     state = sa.StageGraphState(manifest, run_id="run-1", task_id="task-1")
