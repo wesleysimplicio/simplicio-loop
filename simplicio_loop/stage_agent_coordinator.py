@@ -152,6 +152,17 @@ class AgentInstance:
     output: dict[str, Any] | None = None
     receipt: dict[str, Any] | None = None
     error_reason_code: str | None = None
+    # Fields added by the #423 contract after this module's original authoring — kept in
+    # sync here so `to_contract_instance()` never falls behind `stage_agents.validate_instance`
+    # (the exact "producer not rewired after the validator moved" drift class this repo's
+    # conformance suite, #432, exists to catch).
+    role_version: str = "1.0.0"
+    stage_version: str = "1.0.0"
+    work_item_id: str = ""
+    attempt_ordinal: int = 1
+    coordinator_agent_id: str = COORDINATOR_AGENT_ID
+    parent_instance_id: str = COORDINATOR_AGENT_ID
+    idempotency_key: str = ""
 
     def to_contract_instance(self) -> dict[str, Any]:
         now = _now_iso()
@@ -159,10 +170,14 @@ class AgentInstance:
             "schema": "simplicio.agent-instance/v1",
             "agent_instance_id": self.instance_id,
             "role_id": self.role_id,
+            "role_version": self.role_version,
             "stage_id": self.stage_id,
+            "stage_version": self.stage_version,
             "run_id": self.run_id,
             "task_id": self.task_id,
+            "work_item_id": self.work_item_id or self.task_id,
             "attempt_id": self.attempt_id,
+            "attempt_ordinal": self.attempt_ordinal,
             "fence": self.fence,
             "plan_revision": self.plan_revision,
             "runtime": self.runtime or self.adapter_kind,
@@ -170,6 +185,9 @@ class AgentInstance:
             "model": self.model or "n/a",
             "driver": self.adapter_kind,
             "parent_agent_id": COORDINATOR_AGENT_ID,
+            "coordinator_agent_id": self.coordinator_agent_id or COORDINATOR_AGENT_ID,
+            "parent_instance_id": self.parent_instance_id or COORDINATOR_AGENT_ID,
+            "idempotency_key": self.idempotency_key or self.instance_id,
             "isolation_level": self.isolation_level,
             "negotiated_capabilities": list(self.negotiated_capabilities) or ["receipts"],
             "context_hash": self.context_hash or _sha256({"empty": True}),
@@ -693,7 +711,11 @@ class StageAgentCoordinator:
         ok, errors = sa.validate_graph(self.graph)
         if not ok:
             raise StageCoordinatorError("invalid stage graph: " + "; ".join(errors), reason_code="invalid_graph")
-        self.manifest_hash = _sha256(self.graph)
+        # The graph carries its own pinned self-hash (`manifest_hash`, checked by
+        # `stage_agents.validate_receipt` against the graph/instance/receipt triple) — use it
+        # verbatim rather than recomputing an ad hoc hash of the graph dict, which would never
+        # match the canonical value receipts are validated against.
+        self.manifest_hash = str(self.graph.get("manifest_hash") or _sha256(self.graph))
         self.run_id = run_id
         self.task_id = task_id
         self.registry = AdapterRegistry(adapters)
@@ -763,6 +785,13 @@ class StageAgentCoordinator:
         instance.fence, instance.plan_revision = fence, plan_revision
         instance.context_hash, instance.manifest_hash = context_hash, self.manifest_hash
         instance.negotiated_capabilities = tuple(stage.get("required_capabilities", ()))
+        instance.role_version = str(role.get("version", "1.0.0"))
+        instance.stage_version = str(stage.get("version", "1.0.0"))
+        instance.work_item_id = self.task_id
+        instance.attempt_ordinal = 1
+        instance.coordinator_agent_id = COORDINATOR_AGENT_ID
+        instance.parent_instance_id = COORDINATOR_AGENT_ID
+        instance.idempotency_key = f"{self.run_id}:{stage_id}:{attempt_id}"
         self._log("instance_created", {"stage_id": stage_id, "instance_id": instance.instance_id, "adapter": adapter.kind})
 
         deadline = time.time() + (deadline_seconds if deadline_seconds is not None else stage.get("timeout_seconds", 600))
@@ -811,7 +840,8 @@ class StageAgentCoordinator:
         inst_ok, inst_errors = sa.validate_instance(
             instance_record,
             run_identity={"run_id": self.run_id, "task_id": self.task_id, "attempt_id": attempt_id,
-                          "fence": fence, "plan_revision": plan_revision},
+                          "fence": fence, "plan_revision": plan_revision,
+                          "attempt_ordinal": instance.attempt_ordinal},
         )
         if not inst_ok:
             self._log("rejected", {"stage_id": stage_id, "reason_code": REASON_INVALID_INSTANCE, "errors": inst_errors})
