@@ -219,6 +219,10 @@ Status: done | partial | blocked
 
 ## Step 6b — Close the feedback loop until merge-ready
 Opening a Draft PR is `dev_done`, NOT `merge_ready`. Pursue these loops, POLLED like intake:
+0. **Cadenced PR patrol → route.** Every two delivered items with open PRs, run
+   `python3 scripts/pr_patrol.py --repo <owner/name> --completed-items <N>`. Before declaring the
+   body of work finished, run it with `--final`. It is read-only and does not block independent
+   workers; its actionable rows become normal Step 6b repair/review work.
 1. **CI → fix.** Check status; on a failed check fetch the log, parse via `diagnostics`, fix the
    ROOT CAUSE, push. Loop until green. Never disable a test to go green.
 2. **Review comments → adjust.** Read PR review threads + the source item's comments. For each
@@ -234,6 +238,11 @@ Opening a Draft PR is `dev_done`, NOT `merge_ready`. Pursue these loops, POLLED 
    messages, paths, and identifiers in English.
 5. **Merge-readiness.** `merge_ready` only when CI green AND review approved AND ACs met.
    `done` in the tracker ≠ merge-ready.
+6. **After every merge → re-patrol siblings.** A merge changes `main` and can make another open
+   PR behind or conflicting. `MergeExecutor.merge()` automatically emits a post-merge patrol
+   receipt; standalone flows must run `python3 scripts/pr_patrol.py --repo <owner/name>
+   --post-merge` and route every actionable sibling back through this section before another
+   completion claim.
 
 The Step 3b watcher therefore polls THREE things: new work-items, open PRs (comments/checks), and
 branches behind the default branch.

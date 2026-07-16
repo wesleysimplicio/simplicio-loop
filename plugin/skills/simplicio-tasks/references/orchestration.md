@@ -146,6 +146,14 @@ review/requested-changes, branches behind main) → reopen the feedback loop (St
 `dry=0` whenever the poll finds anything new.** The run FINISHES only when queue empty AND no
 worker busy AND `dry >= 2` consecutive empty polls (plus hard stops: time-box, scope, STOP).
 
+**PR patrol cadence (mandatory, non-blocking).** After every **two** work-items are delivered
+and their PRs are open, run the read-only patrol before starting the next delivery wave:
+`python3 scripts/pr_patrol.py --repo <owner/name> --completed-items <N>`. It classifies open
+PRs as conflict/rebase, review-required/requested-changes, failed checks, or clean; every
+actionable result returns to Step 6b instead of being deferred. Run the same patrol with
+`--final` before the run can claim completion. It is a priority signal, not a queue lock: local
+work may continue while independent PR repair workers run.
+
 **agentsview (optional).** If configured (`scripts/agentsview_adapter.py` authed), poll
 agentsview for stalled sessions each cycle and convert them into work-items of type 'resume
 abandoned session'.

@@ -108,6 +108,7 @@ def test_merge_happy_path_reconciles_true():
         (0, _pr_view_json(state="OPEN", mergeable="MERGEABLE", mergeStateStatus="CLEAN"), ""),  # poll
         (0, "", ""),  # pr merge
         (0, _pr_view_json(state="MERGED", mergeCommit={"oid": "abc123"}, baseRefName="main"), ""),  # reconcile
+        (0, "[]", ""),  # post-merge patrol: no remaining open PRs
     ])
     ex = MergeExecutor(repo="o/r", runner=runner)
     result = ex.merge(42, sleep=lambda s: None)
@@ -116,6 +117,8 @@ def test_merge_happy_path_reconciles_true():
     assert result.reason_code == "OK"
     assert result.merge_commit_sha == "abc123"
     assert result.base_ref == "main"
+    assert result.post_merge_patrol["reason"] == "post_merge"
+    assert result.post_merge_patrol["action_required"] == []
     merge_calls = [c for c in runner.calls if "merge" in c]
     assert merge_calls and "--squash" in merge_calls[0] and "--delete-branch" in merge_calls[0]
 
@@ -157,6 +160,36 @@ def test_merge_command_exits_zero_but_reconcile_disagrees():
     result = ex.merge(42, sleep=lambda s: None)
     assert result.merged is False
     assert result.reason_code == "RECONCILE_MISMATCH"
+
+
+def test_post_merge_patrol_records_conflicted_sibling_without_undoing_merge():
+    runner = ScriptedRunner([
+        (0, _pr_view_json(state="OPEN", mergeable="MERGEABLE", mergeStateStatus="CLEAN"), ""),
+        (0, "", ""),
+        (0, _pr_view_json(state="MERGED", mergeCommit={"oid": "abc123"}, baseRefName="main"), ""),
+        (0, json.dumps([{
+            "number": 9, "url": "https://github.com/o/r/pull/9", "headRefName": "feat/other",
+            "baseRefName": "main", "isDraft": False, "mergeable": "CONFLICTING",
+            "mergeStateStatus": "DIRTY", "reviewDecision": "", "statusCheckRollup": [],
+        }]), ""),
+    ])
+    result = MergeExecutor(repo="o/r", runner=runner).merge(42, sleep=lambda _s: None)
+    assert result.merged is True
+    assert result.post_merge_patrol["action_required"][0]["number"] == 9
+    assert "CONFLICTING" in result.post_merge_patrol["action_required"][0]["signals"]
+
+
+def test_post_merge_patrol_failure_is_explicitly_unverified():
+    runner = ScriptedRunner([
+        (0, _pr_view_json(state="OPEN", mergeable="MERGEABLE", mergeStateStatus="CLEAN"), ""),
+        (0, "", ""),
+        (0, _pr_view_json(state="MERGED", mergeCommit={"oid": "abc123"}, baseRefName="main"), ""),
+        (1, "", "gh: authentication required"),
+    ])
+    result = MergeExecutor(repo="o/r", runner=runner).merge(42, sleep=lambda _s: None)
+    assert result.merged is True
+    assert result.post_merge_patrol["status"] == "unverified"
+    assert result.post_merge_patrol["reason_code"] == "POST_MERGE_PATROL_FAILED"
 
 
 def test_find_existing_pr_swallows_list_failure_returns_none():
