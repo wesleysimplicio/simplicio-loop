@@ -54,8 +54,8 @@ MARK_A, MARK_B = "<!-- simplicio-loop:begin -->", "<!-- simplicio-loop:end -->"
 def entry_block(runtime=None):
     """Build the runtime entry-file block.
 
-    A Simplicio Runtime bind is an optional acceleration: the loop remains usable with its
-    standard-tool fallback when the runtime is absent or unreachable.
+    A Simplicio Runtime bind is REQUIRED by `simplicio-loop`: `hooks/loop_stop.py` blocks the
+    running driver when the runtime is absent or unreachable (see `missing_bound_operators()`).
     """
     body = (
         MARK_A + "\n"
@@ -636,9 +636,11 @@ def _link_operator_bins():
         _link_console_script(b, kind="operator")
 
 
-# Compatibility export retained for callers that inspect the matrix. Native binds are optional
-# on every runtime; an unavailable simplicio-runtime must never block a loop drive.
-FORCED_BIND_RUNTIMES = set()
+# Compatibility export retained for callers that inspect the matrix. simplicio-runtime is now a
+# required bound operator (hooks/loop_stop.py::BOUND_OPERATORS) on every runtime that ships the
+# simplicio-loop skill; an unavailable simplicio-runtime blocks that loop's running driver.
+FORCED_BIND_RUNTIMES = {"claude", "codex", "cursor", "vscode", "kiro", "antigravity", "opencode",
+                        "gemini", "orca", "aider", "hermes", "openclaw", "simplicio_agent"}
 
 
 def detect():
@@ -1042,7 +1044,7 @@ def main():
         copy_skills_opencode()
         merge_opencode_mcp()
     if cfg["mcp"]:
-        log("optional native bind:  simplicio install --global   (or: simplicio serve --mcp --stdio)")
+        log("required native bind:  simplicio install --global   (or: simplicio serve --mcp --stdio)")
     if not transactional:
         # `--transactional` already registered the service (if `with_service`) as its own
         # backed-up/rollback-eligible "service" step (#293 gap 1, install_executor.py) — calling
