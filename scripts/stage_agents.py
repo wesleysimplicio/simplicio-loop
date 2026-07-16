@@ -15,8 +15,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Any
+
+# Make the repo root importable when run directly (python3 scripts/stage_agents.py)
+# as well as via module form (python3 -m scripts.stage_agents).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from simplicio_loop import stage_agents as sa
 from simplicio_loop.agent_contract import validate_stage_identity
