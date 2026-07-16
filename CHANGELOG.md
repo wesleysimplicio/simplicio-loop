@@ -2,14 +2,17 @@
 
 ## [Unreleased]
 
-### [3.35.1]
-- **#411 default GitHub issue coordination**: flipped the GitHub lifecycle sync
-  (`_sync_github_lifecycle`) from opt-IN to **default-on** — it now fires automatically
-  whenever a run state carries a `source_issue` dict, keeping one idempotent canonical
-  GitHub-only issue comment as the cross-machine coordination record. Retained an explicit
-  `SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0` (or `false`/`no`) offline/legacy opt-out.
-  Synchronized `docs/GITHUB_ISSUES_ADAPTER.md` to document the new default. Fail-open
-  behavior and the fail-closed `close` path are unchanged.
+## [3.35.1] — 2026-07-16
+
+- **#294 repository governance:** refreshed the measured repository-size report and
+  canonical claims/quality surfaces on the current `main` tip.
+- **Distributed loop reconciliation:** synchronized the local distributed-loop changes,
+  including the issue-cron driver and intake/progress coverage added after 3.35.0.
+- **Cross-machine GitHub coordination:** lifecycle synchronization is now enabled by
+  default whenever a run has a GitHub source issue, using one idempotent canonical
+  issue comment for planning, claims, progress, evidence, PR, merge, and release
+  state. `SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0` is the explicit offline/legacy opt-out.
+- Release is a patch-only republish of the verified `main` tree; no API contract changes.
 
 ## [3.35.0] — 2026-07-15
 

@@ -71,11 +71,13 @@ The canonical implementation and tests are `simplicio_loop/phase_events.py` and
 ## GitHub lifecycle projection (#285)
 
 When a run is bound to a GitHub source issue (`run state.source_issue = {"owner",
-"repo", "issue"}`) and `SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC` is truthy, the runner's
+"repo", "issue"}`), the runner's
 per-event hook `simplicio_loop.runner._sync_github_lifecycle()` projects each emitted
-phase event onto the **single canonical lifecycle comment** of that issue (the
+phase event, by default, onto the **single canonical GitHub lifecycle comment** of that issue (the
 `simplicio-loop:lifecycle-status:v1` marker, rendered by
 `simplicio_loop.github_lifecycle.render_lifecycle_comment` / `publish_lifecycle_state`).
+This coordination-comment flow is GitHub-only; set
+`SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0` only for an intentional offline/legacy run.
 
 The projection is a translation table, not a second source of truth: the GitHub
 issue/comment is re-read before and after every write, and a publish is only

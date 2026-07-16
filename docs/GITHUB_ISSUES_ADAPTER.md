@@ -127,10 +127,10 @@ adapter.close("12", run_id="run-1", attempt_id="12-1")
 projecting mapped phases (`intake→DISCOVERED`, `worker_claimed→CLAIMED`, `planning/mapping→
 PLANNED`, `executing→IN_PROGRESS`, `validating/watching/watcher_challenge→VERIFYING`,
 `blocked→BLOCKED`, `awaiting_decision→AWAITING_DECISION`, `delivering→PR_OPEN`) onto the canonical
-comment when a `source_issue` is set on the run state. **Default-on since #411**: the sync fires
-automatically whenever `source_issue` is present; set `SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0`
-(or `false`/`no`) to opt out for offline/legacy runs. Best-effort/fail-open (like the existing
-`progress-comment` command); any failure is logged to
+GitHub issue comment whenever a `source_issue` is set on the run state. This coordination-comment
+flow is intentionally **GitHub-only**; it does not project comments to other issue trackers.
+It is enabled by default, with `SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0` as the explicit
+offline/legacy opt-out. Best-effort/fail-open (like the existing `progress-comment` command); any failure is logged to
 `lifecycle-sync-errors.jsonl` under the run directory and swallowed. The fail-closed `close` path
 is a separate, explicit call — never automatic from this per-event hook.
 
