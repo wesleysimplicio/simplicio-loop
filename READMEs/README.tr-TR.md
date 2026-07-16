@@ -495,3 +495,18 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 ## 📄 Lisans
 
 MIT
+
+<!-- simplicio-loop:github-comment-coordination:v1 -->
+## 🌐 Runtime’lar arasında GitHub yorumlarıyla koordinasyon
+
+`simplicio-loop`, Claude Code, Codex, Cursor, Gemini ve Hermes içinde aynı anda çalışabilir. GitHub issue’suna bağlı bir run, kanonik yorumda claim, plan, ilerleme, kanıt, PR ve kapatma durumlarını idempotent biçimde yayınlar. Farklı makinelerdeki agent’lar ortak yerel dosya sistemi olmadan aynı GitHub başlığında koordinasyon kurabilir.
+
+```powershell
+pwsh scripts/install.ps1 claude -Global
+pwsh scripts/install.ps1 codex -Global
+pwsh scripts/install.ps1 cursor -Global
+pwsh scripts/install.ps1 gemini -Global
+pwsh scripts/install.ps1 hermes -Global   # simplicio_agent için eski takma ad
+```
+
+Yerel kuyruk, lease, worktree, heartbeat ve kanıtlar çalışmaya devam eder; GitHub yorumları ortak koordinasyon yansıtmasıdır. Akış yalnızca GitHub içindir; Jira, Azure DevOps ve diğer tracker’lara yorum gönderilmez. GitHub kullanılamazsa loop yerel çalışır ve hatayı kaydeder, uzak onay uydurmaz. Her runtime’a GitHub erişimi verin ve aynı `source_issue` kullanın.

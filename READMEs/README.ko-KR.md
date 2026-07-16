@@ -485,3 +485,18 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 ## 📄 라이선스
 
 MIT
+
+<!-- simplicio-loop:github-comment-coordination:v1 -->
+## 🌐 GitHub 댓글을 통한 런타임 간 조정
+
+`simplicio-loop`는 Claude Code, Codex, Cursor, Gemini, Hermes에서 동시에 실행할 수 있습니다. GitHub 이슈에 연결된 run은 표준 댓글 하나에 claim, 계획, 진행 상황, 증거, PR, 종료를 멱등적으로 기록합니다. 여러 컴퓨터의 agent가 공유 로컬 파일 시스템 없이 같은 GitHub 스레드에서 조정할 수 있습니다.
+
+```powershell
+pwsh scripts/install.ps1 claude -Global
+pwsh scripts/install.ps1 codex -Global
+pwsh scripts/install.ps1 cursor -Global
+pwsh scripts/install.ps1 gemini -Global
+pwsh scripts/install.ps1 hermes -Global   # simplicio_agent의 레거시 별칭
+```
+
+로컬 큐, lease, worktree, heartbeat, 증거는 계속 활성화되고 GitHub 댓글은 공유 조정 정보를 투영합니다. 이 흐름은 GitHub 전용이며 Jira, Azure DevOps 및 다른 tracker에는 댓글을 보내지 않습니다. GitHub에 연결할 수 없어도 loop는 로컬에서 계속 실행되고 실패를 기록하며 원격 확인을 만들지 않습니다. 모든 runtime에 GitHub 권한을 주고 같은 `source_issue`를 사용하세요.
