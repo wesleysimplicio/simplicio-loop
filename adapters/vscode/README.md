@@ -94,17 +94,43 @@ headless. In interactive chat, just keep saying "continue" — the protocol is i
 `orient_clamp.py` works as-is in the integrated terminal. Reference it in
 `copilot-instructions.md` so Copilot routes heavy commands through it.
 
-## Native bind — MCP (optional)
+## Native bind — MCP (REQUIRED)
 
-`simplicio-runtime` native binding is optional on VS Code/Copilot. `simplicio install --global`
-can write `.vscode/mcp.json` when you choose to enable it:
+`simplicio-runtime` native binding is **REQUIRED** on VS Code/Copilot — a missing/unreachable
+bind BLOCKS the loop preflight (CLAUDE.md § Hooks). `simplicio install --global` writes
+`.vscode/mcp.json`:
 
 ```json
 { "servers": { "simplicio": { "command": "simplicio", "args": ["serve", "--mcp", "--stdio"] } } }
 ```
 
 Then the extension points bind to `simplicio-runtime` natively. Use `simplicio doctor --json` to
-diagnose that optional integration.
+confirm the bind.
+
+## MCP config
+
+- **Config file (project):** `.vscode/mcp.json`, under a **`servers`** key (note: not
+  `mcpServers` — VS Code's MCP schema differs from Claude/Cursor).
+- **Config file (user-global):** see the OS table above (`%APPDATA%\Code\User\mcp.json` etc.).
+- **Snippet:**
+
+```json
+{
+  "servers": {
+    "simplicio": {
+      "type": "stdio",
+      "command": "simplicio",
+      "args": ["serve", "--mcp", "--stdio"],
+      "cwd": "/path/to/your/repo"
+    }
+  }
+}
+```
+
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration`, or VS Code Command
+  Palette → "MCP: List Servers" → confirm `simplicio` is running. Tier: **best-effort** — VS Code
+  is Tier 2 (not run under the gated per-commit sweep, though `scripts/verify_adapters.py vscode`
+  exists and can be run manually).
 
 ## Use
 

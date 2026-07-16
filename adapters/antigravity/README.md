@@ -24,17 +24,35 @@ resumes from the journal.
 `orient_clamp.py` works as-is in the terminal. Reference it in the rules file so the agent
 routes heavy build/test/diff commands through it.
 
-## Native bind — MCP (optional)
+## Native bind — MCP (REQUIRED)
 
-`simplicio-runtime` native binding is optional on Antigravity.
+`simplicio-runtime` native binding is **REQUIRED** on Antigravity — a missing/unreachable bind
+BLOCKS the loop preflight (CLAUDE.md § Hooks).
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global
-# or add to the IDE's MCP config:  { "simplicio": { "command": "simplicio", "args": ["serve","--mcp","--stdio"] } }
 ```
 
-Use `simplicio doctor --json` to diagnose the optional bind. Antigravity's exact MCP config path
-isn't auto-written by the installer yet, so finish it by hand from the snippet above if desired.
+Use `simplicio doctor --json` to confirm the bind. Antigravity's exact MCP config path isn't
+auto-written by the installer yet, so finish it by hand from the snippet below.
+
+## MCP config
+
+- **Config file:** Antigravity (Google's agentic IDE, a VS Code fork) reads MCP servers from its
+  own settings surface, documented by Google as following the same shape as the Gemini Code
+  Assist / VS Code MCP settings — typically an IDE settings JSON with an `mcpServers` block, or
+  the workspace `.vscode/mcp.json`-style file if the fork keeps that convention. **Not verified
+  against a real Antigravity install in this repo** — confirm the exact path in your IDE's MCP
+  settings UI before relying on the snippet below.
+- **Snippet (best-effort, mirrors the VS Code/Gemini shape):**
+
+```json
+{ "mcpServers": { "simplicio": { "command": "simplicio", "args": ["serve", "--mcp", "--stdio"], "cwd": "/path/to/your/repo" } } }
+```
+
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration` confirms the `simplicio`
+  binary/runtime side; confirm the IDE side from Antigravity's own MCP status panel if it has
+  one. Tier: **best-effort / not mechanically gated** — Antigravity is Tier 2.
 
 ## Use
 

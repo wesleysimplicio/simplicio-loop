@@ -41,12 +41,28 @@ command; that registration is optional and never replaces the repo-level install
 scratchpad, one journal, one anchor per task, with no cross-task interference. Orca's worktree
 checkpoints compose with (never replace) the loop's own journal + evidence gates.
 
-## Native bind — MCP (optional)
+## Native bind — MCP (REQUIRED)
 
-Tier 2, best-effort: the native `simplicio-runtime` bind via Orca's MCP registry is an
-**optional acceleration**, never a precondition — an absent or unreachable bind falls back to
-the standard-tool protocol with the same evidence and safety gates. `simplicio doctor --json`
-can diagnose an installed runtime inside the Orca session.
+`simplicio-runtime` via Orca's MCP registry is **REQUIRED** — a missing/unreachable bind BLOCKS
+the loop preflight (CLAUDE.md § Hooks), same as inside a bare Claude Code/Cursor session.
+`simplicio doctor --json` confirms an installed runtime inside the Orca session.
+
+## MCP config
+
+- **Config file:** Orca's own skills/MCP registry (per [onorca.dev docs](https://www.onorca.dev/docs)),
+  which registers servers available to every inner agent session in a worktree. Where the inner
+  agent is Claude Code or Cursor, its own MCP config file (see the
+  [claude](../claude/README.md#mcp-config) / [cursor](../cursor/README.md#mcp-config) sections)
+  also applies inside that worktree.
+- **Snippet** (generic form registered with Orca's registry):
+
+```json
+{ "mcpServers": { "simplicio": { "command": "simplicio", "args": ["serve", "--mcp", "--stdio"], "cwd": "/path/to/worktree" } } }
+```
+
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration` from inside the Orca
+  worktree terminal. Tier: **best-effort** — Orca is Tier 2; the registry's own MCP-status surface
+  (if any) is the more authoritative check when available.
 
 ## Token economy
 

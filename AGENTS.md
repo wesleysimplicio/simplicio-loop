@@ -1,7 +1,7 @@
 # AGENTS.md — simplicio-loop
 
 This repository ships a runtime-agnostic **super-plugin**: the Universal Looping AI
-Orchestrator plus five satellite skills, packaged for 12 runtimes. Any agent runtime that
+Orchestrator plus five satellite skills, packaged for 15 runtimes. Any agent runtime that
 reads `AGENTS.md` / skill folders can run it.
 
 ## What to load
@@ -33,10 +33,12 @@ auto-clamp). See [`hooks/README.md`](hooks/README.md).
 
 ## Runtimes
 
-Install for any of the 12 runtimes with `scripts/install.sh <runtime>` (or `install.ps1`). See
-[`adapters/MATRIX.md`](adapters/MATRIX.md): Claude Code · Codex · VS Code (Copilot) · Cursor ·
-Antigravity · Kiro · OpenCode · Gemini · Aider · Simplicio Agent (formerly Hermes) · OpenClaw ·
-Orca.
+15 runtimes are documented in [`adapters/MATRIX.md`](adapters/MATRIX.md): Claude Code · Codex ·
+VS Code (Copilot) · Cursor · Antigravity · Kiro · OpenCode · Gemini (CLI/Code Assist) · Kimi ·
+Qwen (Code/CLI) · DeepSeek · Aider · Simplicio Agent (formerly Hermes) · OpenClaw · Orca. Install
+12 of them with `scripts/install.sh <runtime>` (or `install.ps1`); Kimi/Qwen/DeepSeek are not yet
+wired into the installer — see their adapter READMEs for manual/best-effort steps. The native
+`simplicio-runtime` MCP bind is REQUIRED on all 15 — see [`docs/MCP_SETUP.md`](docs/MCP_SETUP.md).
 
 ## Activation
 

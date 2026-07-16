@@ -65,7 +65,7 @@ stops task deviation: every turn re-checks the frozen goal (`task_anchor.py chec
 `scripts/loop_progress.py` computes "onde estamos / quanto falta" deterministically from the
 backlog + anchor + its own event trail — never fabricated. Three surfaces, one denominator:
 **N1 hook** (Claude/Cursor re-feed header shows fase/etapa/item/ACs/%), **N2 transcript**
-(every turn's first line is `render --turn-header`, normative on all 12 runtimes), **N3 file**
+(every turn's first line is `render --turn-header`, normative on all 15 runtimes), **N3 file**
 (`.orchestrator/loop/PROGRESS.md`/`progress.json`, regenerated every turn — the universal
 fallback any host, adapted or not, can read with zero extra code). Status command:
 `python3 scripts/loop_progress.py status --json`. Full contract, event schema, and the
@@ -131,14 +131,20 @@ mass-delete, destructive DDL, infra teardown) and secret-laden commits/pushes be
 (exit 2) — Step 5 made mechanical. `python3 hooks/action_gate.py selftest` proves the ruleset.
 
 Claude's native tools satisfy the extension points: sub-agents → `execute`, file tools →
-`deterministic_edit`, the scheduler → `watcher`. A `simplicio-runtime` native bind is optional on
-Claude Code and every other adapter; install it when its MCP/CLI capabilities are useful, but do
-not block an unbound loop.
+`deterministic_edit`, the scheduler → `watcher`. The `simplicio-runtime` native bind (the
+`simplicio` CLI / MCP server, package `simplicio-runtime`) is **REQUIRED** on Claude Code and every
+other adapter — it MUST be installed and reachable (`simplicio --version` / the `simplicio-runtime`
+MCP tools resolved) before the loop proceeds. If it is missing or unreachable, the loop BLOCKS
+exactly like a missing `simplicio-mapper`/`simplicio-dev-cli` operator: emit
+`python3 scripts/loop_progress.py emit --step preflight --status blocked --outcome blocked --detail
+"missing simplicio-runtime"`, then stop and print `simplicio-loop: BLOCKED — missing
+simplicio-runtime; install it before continuing`.
 
 ## Other runtimes
 
-The same skills run on Codex, VS Code (Copilot), Cursor, Antigravity, Kiro, OpenCode, Gemini,
-Aider, Simplicio Agent (formerly Hermes), OpenClaw, and Orca ([onorca.dev](https://www.onorca.dev/docs),
-the worktree IDE — see `adapters/orca/README.md`) — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
+The same skills run on Codex, VS Code (Copilot), Cursor, Antigravity, Kiro, OpenCode, Gemini (CLI
+and Code Assist), Kimi, Qwen (Code/CLI), DeepSeek, Aider, Simplicio Agent (formerly Hermes),
+OpenClaw, and Orca ([onorca.dev](https://www.onorca.dev/docs), the worktree IDE — see
+`adapters/orca/README.md`) — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
 [`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (49 extension points; the binding
 lives in the host, never in the skill).

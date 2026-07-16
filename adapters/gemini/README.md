@@ -24,18 +24,36 @@ No stop-hook → self-pace via cron / CI tick:
 
 `orient_clamp.py` works as-is. Add it to `GEMINI.md` command conventions.
 
-## Native bind — MCP / native adapter
+## Native bind — MCP / native adapter (REQUIRED)
+
+`simplicio-runtime` native binding is **REQUIRED** on Gemini — a missing/unreachable bind BLOCKS
+the loop preflight (CLAUDE.md § Hooks).
 
 ```bash
-simplicio-cli mcp register --client gemini
+pip install -U simplicio-installer && simplicio install --global
 # or use simplicio-runtime/agent/gemini_native_adapter.py for the native REST path
 ```
 
-`.gemini/settings.json`:
+## MCP config
+
+Two related surfaces share the Gemini name; treat them separately:
+
+- **Gemini CLI** — **Config file:** `~/.gemini/settings.json` (user scope) or `.gemini/settings.json`
+  (project scope), under an `mcpServers` key. **Verified** conceptually (documented Gemini CLI MCP
+  format); this repo's installer writes this file.
 
 ```json
-{ "mcpServers": { "simplicio": { "command": "simplicio", "args": ["mcp", "serve"] } } }
+{ "mcpServers": { "simplicio": { "command": "simplicio", "args": ["serve", "--mcp", "--stdio"], "cwd": "/path/to/your/repo" } } }
 ```
+
+- **Gemini Code Assist** (the IDE/VS Code extension side, distinct from the CLI) — uses its own
+  IDE-level MCP settings surface, not the `.gemini/settings.json` file above. **Not verified**
+  against a real Code Assist install in this repo — best-effort; check the extension's own MCP
+  settings UI for the current field names before relying on a JSON snippet here.
+
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration`, or `gemini mcp list` if
+  your Gemini CLI version ships that subcommand. Tier: **best-effort** — Gemini is Tier 2 overall;
+  the CLI path is the more reliable of the two surfaces.
 
 ## Use
 
