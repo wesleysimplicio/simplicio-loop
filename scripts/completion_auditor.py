@@ -106,6 +106,14 @@ def cmd_audit(_opts):
         _write_json(paths["audit_out"], ca.blocked_result(ca.REASON_INVALID_GRAPH, ["stage graph unreadable"]))
         return 1
 
+    if not os.path.exists(paths["anchor"]):
+        # Fail-closed: an absent anchor.json makes ac_items == [] and would make
+        # build_ac_coverage_matrix() vacuously "complete" (no ACs to fail) --
+        # never treat "we couldn't read the AC list" as "all ACs satisfied".
+        print("BLOCKED|completion_auditor: task anchor (anchor.json) missing/unreadable -- AC coverage cannot be verified")
+        _write_json(paths["audit_out"], ca.blocked_result(ca.REASON_AC_COVERAGE_INCOMPLETE, ["anchor.json unreadable"]))
+        return 1
+
     result = ca.audit(
         graph=graph,
         instances=instances,
