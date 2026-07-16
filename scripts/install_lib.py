@@ -94,8 +94,46 @@ def log(msg):
     print("  " + msg)
 
 
-def copy_skills(target):
-    dst_root = os.path.join(target, ".claude", "skills")
+def vscode_user_level_dirs(home):
+    """Resolve the real user-level VS Code / GitHub Copilot surfaces per OS.
+
+    The generic ``--global`` target is just ``HOME`` (see main()), which lands skills
+    under ``~/.claude/skills``. But GitHub Copilot + VS Code on a real machine consume a
+    *different* user-level surface than the repo-local ``.vscode/`` / ``.github/`` story.
+    This resolver returns those real paths so a global install can wire the active runtime
+    surfaces instead of only the generic home-level one. (Issue #415.)
+
+    Returns a dict with:
+      - ``skills``:   user-level dir where the Copilot/VS Code agent loads our skills
+      - ``mcp``:      user-level MCP config file (VS Code ``mcp.json`` shape)
+      - ``settings``: user-level VS Code ``settings.json`` (where ``mcp.servers`` lives)
+    """
+    home = os.path.expanduser(home)
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
+        user_dir = os.path.join(appdata, "Code", "User")
+        # GitHub Copilot global skills surface on Windows: the user-level
+        # `.vscode` extensions data isn't where skills load; the agent reads
+        # skills from the configured instructions/skills root. We mirror our
+        # skills into the user-level `.vscode` skills root so they are discoverable.
+        skills = os.path.join(home, ".vscode", "simplicio-skills")
+        mcp = os.path.join(user_dir, "mcp.json")
+        settings = os.path.join(user_dir, "settings.json")
+    elif sys.platform == "darwin":
+        user_dir = os.path.join(home, "Library", "Application Support", "Code", "User")
+        skills = os.path.join(home, ".vscode", "simplicio-skills")
+        mcp = os.path.join(user_dir, "mcp.json")
+        settings = os.path.join(user_dir, "settings.json")
+    else:  # linux / other
+        user_dir = os.path.join(home, ".config", "Code", "User")
+        skills = os.path.join(home, ".vscode", "simplicio-skills")
+        mcp = os.path.join(user_dir, "mcp.json")
+        settings = os.path.join(user_dir, "settings.json")
+    return {"skills": skills, "mcp": mcp, "settings": settings, "user_dir": user_dir}
+
+
+def copy_skills(target, skills_dst=None):
+    dst_root = skills_dst if skills_dst else os.path.join(target, ".claude", "skills")
     os.makedirs(dst_root, exist_ok=True)
     for s in SKILLS:
         src = os.path.join(SOURCE, ".claude", "skills", s)
@@ -104,6 +142,36 @@ def copy_skills(target):
             continue
         shutil.copytree(src, os.path.join(dst_root, s), dirs_exist_ok=True)
     log("skills -> %s" % dst_root)
+
+
+def write_vscode_user_mcp(user_dir, settings_path, mcp_path):
+    """Write/merge the user-level VS Code MCP server config (idempotent, fail-open).
+
+    VS Code reads user-level MCP servers from ``<user>/mcp.json`` (same shape as the
+    project-local ``.vscode/mcp.json``). We create-or-merge so we never clobber an
+    existing user config. (Issue #415.)
+    """
+    os.makedirs(user_dir, exist_ok=True)
+    server = {
+        "simplicio": {
+            "command": "simplicio",
+            "args": ["serve", "--mcp", "--stdio"],
+        }
+    }
+    # mcp.json
+    cfg = {}
+    if os.path.exists(mcp_path):
+        try:
+            with open(mcp_path, encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            cfg = {}
+    cfg.setdefault("servers", {})
+    cfg["servers"].update(server)
+    with open(mcp_path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    log("user-level VS Code MCP -> %s" % mcp_path)
 
 
 def hooks_dir(target, is_global):
@@ -925,6 +993,13 @@ def main():
         ensure_entry(target, cfg["entry"], runtime)
         if cfg["hooks"] == "claude":
             merge_claude_hooks(target, is_global)
+        # #415: global VS Code/Copilot must wire the REAL user-level surfaces, not
+        # only the generic home-level target. Mirror skills into the user-level
+        # skill root and register the user-level MCP server (idempotent).
+        if runtime == "vscode" and is_global:
+            _vdirs = vscode_user_level_dirs(HOME)
+            copy_skills(_vdirs["skills"], skills_dst=_vdirs["skills"])
+            write_vscode_user_mcp(_vdirs["user_dir"], _vdirs["settings"], _vdirs["mcp"])
     install_git_precommit_hook(target)
     install_git_prepush_hook(target)
     if cfg["hooks"] == "cursor":
