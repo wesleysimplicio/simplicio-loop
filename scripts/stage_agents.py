@@ -104,8 +104,76 @@ def main(argv: list[str] | None = None) -> int:
     p_st.add_argument("--identity", required=True)
     p_st.set_defaults(func=_cmd_status)
 
+    p_safety = sub.add_parser(
+        "safety", help="evaluate a mutation-boundary action intent (fail-closed decision)"
+    )
+    p_safety.add_argument("--intent", required=True, help="path to action-intent JSON")
+    p_safety.add_argument("--policy-hash", required=True)
+    p_safety.add_argument("--expiry", required=True)
+    p_safety.add_argument("--human-receipt", default="")
+    p_safety.add_argument("--human-fresh", action="store_true")
+    p_safety.add_argument("--secret-scan-ok", action="store_true",
+                          help="assert the secret scan passed (do not use without a real scan)")
+    p_safety.add_argument("--allow-compound-unsafe", action="store_true")
+    p_safety.set_defaults(func=_cmd_safety)
+
     args = parser.parse_args(argv)
     return args.func(args)
+
+
+def _cmd_safety(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from simplicio_loop.safety_agents.safety_gate_agent import (
+        ActionIntent,
+        Decision,
+        decide,
+    )
+
+    with open(args.intent, encoding="utf-8") as fh:
+        raw = _json.load(fh)
+    intent = ActionIntent(
+        intent_id=raw["intent_id"],
+        action_class=raw["action_class"],
+        command=raw["command"],
+        actor=raw["actor"],
+        scope=raw["scope"],
+        idempotency_key=raw.get("idempotency_key", ""),
+        policy_hash=raw.get("policy_hash", args.policy_hash),
+        segments=tuple(raw.get("segments", [])),
+        created_at=raw.get("created_at", ""),
+    )
+    scanners = []
+    if args.secret_scan_ok and intent.action_class in (
+        "commit",
+        "push",
+        "pull_request",
+        "deploy_release",
+        "secret_network_access",
+    ):
+        # Only asserted when a real scan actually passed.
+        scanners.append(type("S", (), {"name": "secret_scan", "ok": True})())
+    d = decide(
+        intent,
+        scanner_receipts=scanners,
+        human_receipt=args.human_receipt,
+        human_receipt_fresh=args.human_fresh,
+        policy_hash=args.policy_hash,
+        expiry=args.expiry,
+        allow_compound_unsafe=args.allow_compound_unsafe,
+    )
+    print(
+        _json.dumps(
+            {
+                "decision": d.decision.value,
+                "reason_code": d.reason_code,
+                "action_hash": d.action_hash,
+                "constraints": list(d.constraints),
+            },
+            indent=2,
+        )
+    )
+    return 0 if d.decision in (Decision.ALLOW, Decision.ALLOW_WITH_CONSTRAINTS) else 2
 
 
 if __name__ == "__main__":
