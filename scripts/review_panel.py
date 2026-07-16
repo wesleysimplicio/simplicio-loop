@@ -52,7 +52,12 @@ def cmd_waves(opts) -> int:
 
 def cmd_synthesize(opts) -> int:
     receipts = json.loads(Path(opts.receipts).read_text(encoding="utf-8"))
-    result = rp.synthesize(receipts)
+    result = rp.synthesize(
+        receipts,
+        expected_context_hash=opts.context_hash,
+        expected_panel_signature=opts.panel_signature,
+        implementer_instance_id=opts.implementer_instance_id,
+    )
     return _emit({"ok": True, **result}, exit_code=0 if result["verdict"] == rp.VERDICT_PASS else 1)
 
 
@@ -106,6 +111,9 @@ def main() -> int:
 
     p_synth = sub.add_parser("synthesize", help="synthesize a panel verdict from a JSON list of receipts")
     p_synth.add_argument("--receipts", required=True, help="path to a JSON file containing a list of receipts")
+    p_synth.add_argument("--context-hash", default=None, help="expected panel context bundle hash; when set, each receipt is validated (rejects forged/stale/cross-head receipts) before synthesis")
+    p_synth.add_argument("--panel-signature", default=None, help="expected panel signature (diff/head/plan_revision); required alongside --context-hash")
+    p_synth.add_argument("--implementer-instance-id", default=None, help="implementer's agent_instance_id, to reject same-actor receipts")
     p_synth.set_defaults(func=cmd_synthesize)
 
     sub.add_parser("selftest", help="deterministic self-check, no fixtures needed").set_defaults(func=cmd_selftest)

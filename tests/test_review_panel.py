@@ -383,6 +383,57 @@ def test_fix_then_re_review_then_pass():
 
 
 # --------------------------------------------------------------------------
+# Adversarial: synthesis must actually validate receipts, not trust them.
+# --------------------------------------------------------------------------
+
+
+def test_synthesize_rejects_forged_context_hash_when_validation_wired():
+    receipts = _full_panel()
+    receipts[0]["context_hash"] = "d" * 64  # forged/cross-head artifact
+    result = rp.synthesize(
+        receipts, expected_context_hash="c" * 64, expected_panel_signature="p" * 64,
+    )
+    assert result["verdict"] == rp.VERDICT_BLOCKED
+    assert result["reason_code"] == "invalid_receipt"
+
+
+def test_synthesize_rejects_stale_receipt_when_validation_wired():
+    receipts = _full_panel()
+    receipts[0]["panel_signature"] = "stale" * 12 + "x" * 4
+    result = rp.synthesize(
+        receipts, expected_context_hash="c" * 64, expected_panel_signature="p" * 64,
+    )
+    assert result["verdict"] == rp.VERDICT_BLOCKED
+    assert result["reason_code"] == "invalid_receipt"
+
+
+def test_synthesize_rejects_same_actor_receipt_when_validation_wired():
+    receipts = _full_panel()
+    result = rp.synthesize(
+        receipts, expected_context_hash="c" * 64, expected_panel_signature="p" * 64,
+        implementer_instance_id=receipts[0]["agent_instance_id"],
+    )
+    assert result["verdict"] == rp.VERDICT_BLOCKED
+    assert result["reason_code"] == "invalid_receipt"
+
+
+def test_synthesize_still_passes_a_genuinely_valid_panel_when_validated():
+    receipts = _full_panel()
+    result = rp.synthesize(
+        receipts, expected_context_hash="c" * 64, expected_panel_signature="p" * 64,
+        implementer_instance_id="implementer-not-in-panel",
+    )
+    assert result["verdict"] == rp.VERDICT_PASS
+
+
+def test_synthesize_without_expected_hash_args_skips_validation_backward_compatibly():
+    receipts = _full_panel()
+    receipts[0]["context_hash"] = "d" * 64  # would be forged, but no validation args passed
+    result = rp.synthesize(receipts)
+    assert result["verdict"] == rp.VERDICT_PASS
+
+
+# --------------------------------------------------------------------------
 # System: panel with enough slots / across two waves.
 # --------------------------------------------------------------------------
 

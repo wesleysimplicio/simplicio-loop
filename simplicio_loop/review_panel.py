@@ -434,7 +434,9 @@ def validate_review_receipt(receipt: Mapping[str, Any], *, expected_context_hash
 # --------------------------------------------------------------------------- #
 
 
-def synthesize(receipts: Sequence[Mapping[str, Any]], *, quorum_roles: Sequence[str] = REVIEWER_ROLE_IDS) -> dict[str, Any]:
+def synthesize(receipts: Sequence[Mapping[str, Any]], *, quorum_roles: Sequence[str] = REVIEWER_ROLE_IDS,
+               expected_context_hash: str | None = None, expected_panel_signature: str | None = None,
+               implementer_instance_id: str | None = None) -> dict[str, Any]:
     """Synthesize the four reviewer receipts into one gate verdict.
 
     Rules (issue #427 "Síntese"):
@@ -445,6 +447,11 @@ def synthesize(receipts: Sequence[Mapping[str, Any]], *, quorum_roles: Sequence[
     - any reviewer BLOCKED (or missing) keeps the gate non-terminal
       (``blocked``, reason ``independent_reviewer_unavailable``/``panel_incomplete``);
     - PASS only when all required receipts are present, valid and accepted.
+
+    When ``expected_context_hash``/``expected_panel_signature`` are supplied,
+    every receipt is first passed through :func:`validate_review_receipt` —
+    a forged, stale, cross-head, wrong-rubric, or same-actor receipt is
+    rejected here rather than trusted at face value.
     """
     by_role = {r.get("role_id"): r for r in receipts}
     missing = [role_id for role_id in quorum_roles if role_id not in by_role]
@@ -466,6 +473,26 @@ def synthesize(receipts: Sequence[Mapping[str, Any]], *, quorum_roles: Sequence[
             "blocked_roles": sorted(blocked_roles),
             "findings": [],
         }
+
+    if expected_context_hash is not None and expected_panel_signature is not None:
+        invalid_roles: dict[str, list[str]] = {}
+        for role_id, r in by_role.items():
+            ok, errors = validate_review_receipt(
+                r,
+                expected_context_hash=expected_context_hash,
+                expected_panel_signature=expected_panel_signature,
+                implementer_instance_id=implementer_instance_id,
+            )
+            if not ok:
+                invalid_roles[role_id] = errors
+        if invalid_roles:
+            return {
+                "verdict": VERDICT_BLOCKED,
+                "reason_code": "invalid_receipt",
+                "missing_roles": [],
+                "invalid_roles": invalid_roles,
+                "findings": [],
+            }
 
     all_findings: list[dict[str, Any]] = []
     for r in receipts:
