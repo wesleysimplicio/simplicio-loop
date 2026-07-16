@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [3.36.0] — 2026-07-16
+
+- **GitHub workflow lifecycle:** added runtime-neutral, idempotent GitHub Project status
+  synchronization driven by the canonical issue lifecycle comment, with an explicit
+  non-GitHub/local-only path.
+- **PR patrol:** the delivery loop now inspects open PRs every two completed items,
+  at final verification, and immediately after merges so conflicts and review gaps
+  re-enter the workflow before closure.
+- **Cross-agent review and claims:** Claude, Codex, Cursor, Gemini, Kiro,
+  Antigravity, Hermes/Simplicio Agent, OpenClaw, and human contributors share
+  evidence-linked acceptance-criteria review comments; implementation workers post a
+  canonical `CLAIMED` lifecycle comment before mutation.
+
 ## [3.35.1] — 2026-07-16
 
 - **#294 repository governance:** refreshed the measured repository-size report and
@@ -68,7 +81,6 @@ Large multi-agent push closing the P0/P1/P2 backlog opened by #183/#283-#296. Hi
   original multi-agent-parallelism epic, closed as their tracked child issues resolved.
 
 ## [Unreleased]
-
 - #293: fix `install_lib.py::install_all_deps()` (`--full-stack`/`--with-service` full install)
   referencing a `.[onnx]` optional-dependency extra that `pyproject.toml` stopped declaring back
   in `3.11.0` (the ONNX model engine — `kompress`/`router`/`embed`/`image` — was removed that
