@@ -20,6 +20,7 @@ from .delivery import (build_delivery_receipt, normalize_delivery_target,
 from .evidence import build_evidence_receipt, redact_sensitive_text
 from .source_state import github_delivery_payload, infer_github_delivery_state
 from . import github_lifecycle as _github_lifecycle
+from .orca_lifecycle import sync_orca_status
 from .source_adapter import GitHubSourceAdapter
 from .task_contract import compile_many, validate_contract
 from .plan_contract import PLAN_SCHEMA, validate_plan
@@ -1155,7 +1156,37 @@ def _record_event(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any],
     _write_json(run_dir / "state.json", state)
     _append_jsonl(run_dir / "events.jsonl", event)
     _sync_github_lifecycle(run_dir, state, event)
+    _sync_orca_lifecycle(run_dir, state, event)
     return state
+
+
+def _sync_orca_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any]) -> None:
+    """Project the same lifecycle event onto the active Orca Dev card.
+
+    Orca is optional and host-local: a missing Orca context is recorded as a
+    typed skip rather than treated as a failed delivery or a reason to touch a
+    different worktree.
+    """
+    lifecycle_state = _github_lifecycle.lifecycle_state_for_phase_event(
+        str(event.get("kind") or event.get("phase") or ""))
+    if not lifecycle_state:
+        return
+    try:
+        receipt = sync_orca_status(
+            state, {**event, "lifecycle_state": lifecycle_state},
+        )
+        _append_jsonl(run_dir / "orca-sync.jsonl", {
+            "run_id": str(state.get("run_id") or ""),
+            "event": str(event.get("kind") or event.get("phase") or ""),
+            **receipt,
+        })
+    except Exception as exc:  # noqa: BLE001 -- optional host integration is fail-open
+        try:
+            _append_jsonl(run_dir / "orca-sync-errors.jsonl", {
+                "run_id": str(state.get("run_id") or ""), "error": str(exc),
+            })
+        except Exception:
+            pass
 
 
 def _github_source_adapter(owner: str, repo: str, *, publish_comment_fn: Callable,
