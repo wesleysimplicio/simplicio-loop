@@ -37,7 +37,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.dirname(HERE)
 # Explicit override keeps portable profiles and isolated installer tests honest;
 # normal installs still use the platform's real user home.
-HOME = os.environ.get("SIMPLICIO_HOME") or os.path.expanduser("~")
+HOME = (os.environ.get("SIMPLICIO_HOME") or os.environ.get("HOME")
+        or os.path.expanduser("~"))
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
           "simplicio-review", "simplicio-compress", "simplicio-learn",
           "simplicio-autoresearch"]
@@ -96,8 +97,48 @@ def log(msg):
     print("  " + msg)
 
 
-def copy_skills(target):
-    dst_root = os.path.join(target, ".claude", "skills")
+def vscode_user_level_dirs(home):
+    """Resolve the real user-level VS Code / GitHub Copilot surfaces per OS.
+
+    The generic ``--global`` target is just ``HOME`` (see main()), which lands skills
+    under ``~/.claude/skills``. But GitHub Copilot + VS Code on a real machine consume a
+    *different* user-level surface than the repo-local ``.vscode/`` / ``.github/`` story.
+    This resolver returns those real paths so a global install can wire the active runtime
+    surfaces instead of only the generic home-level one. (Issue #415.)
+
+    Returns a dict with:
+      - ``skills``:   user-level dir where the Copilot/VS Code agent loads our skills
+      - ``mcp``:      user-level MCP config file (VS Code ``mcp.json`` shape)
+      - ``settings``: user-level VS Code ``settings.json`` (where ``mcp.servers`` lives)
+    """
+    # Do not reinterpret an explicit test/portable path through the host's
+    # Windows USERPROFILE. Only expand the conventional ``~`` spelling.
+    home = os.path.expanduser(home) if str(home).startswith("~") else str(home)
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
+        user_dir = os.path.join(appdata, "Code", "User")
+        # GitHub Copilot global skills surface on Windows: the user-level
+        # `.vscode` extensions data isn't where skills load; the agent reads
+        # skills from the configured instructions/skills root. We mirror our
+        # skills into the user-level `.vscode` skills root so they are discoverable.
+        skills = os.path.join(home, ".vscode", "simplicio-skills")
+        mcp = os.path.join(user_dir, "mcp.json")
+        settings = os.path.join(user_dir, "settings.json")
+    elif sys.platform == "darwin":
+        user_dir = os.path.join(home, "Library", "Application Support", "Code", "User")
+        skills = os.path.join(home, ".vscode", "simplicio-skills")
+        mcp = os.path.join(user_dir, "mcp.json")
+        settings = os.path.join(user_dir, "settings.json")
+    else:  # linux / other
+        user_dir = os.path.join(home, ".config", "Code", "User")
+        skills = os.path.join(home, ".vscode", "simplicio-skills")
+        mcp = os.path.join(user_dir, "mcp.json")
+        settings = os.path.join(user_dir, "settings.json")
+    return {"skills": skills, "mcp": mcp, "settings": settings, "user_dir": user_dir}
+
+
+def copy_skills(target, skills_dst=None):
+    dst_root = skills_dst if skills_dst else os.path.join(target, ".claude", "skills")
     os.makedirs(dst_root, exist_ok=True)
     for s in SKILLS:
         src = os.path.join(SOURCE, ".claude", "skills", s)
@@ -122,10 +163,50 @@ def sync_global_vscode_copilot():
         log("Copilot instructions -> %s" % result["instructions"])
         log("Copilot MCP -> %s" % result["copilot_mcp"])
         log("VS Code user MCP -> %s" % result["vscode_mcp"])
+
+        # Keep the historical Simplicio user-level VS Code skills mirror as a
+        # compatibility surface for older Copilot/VS Code clients. The official
+        # Copilot paths above remain canonical; this mirror is additive.
+        vdirs = vscode_user_level_dirs(HOME)
+        copy_skills(vdirs["skills"], skills_dst=vdirs["skills"])
+        write_vscode_user_mcp(vdirs["user_dir"], vdirs["settings"], vdirs["mcp"])
     except Exception as exc:
         # Global installation should remain usable for project-local VS Code
         # setups, but the doctor must expose this missing global surface.
         log("! global VS Code/Copilot sync failed: %s" % exc)
+
+
+def write_vscode_user_mcp(user_dir, settings_path, mcp_path):
+    """Write/merge the user-level VS Code MCP server config (idempotent, fail-open).
+
+    VS Code reads user-level MCP servers from ``<user>/mcp.json`` (same shape as the
+    project-local ``.vscode/mcp.json``). We create-or-merge so we never clobber an
+    existing user config. (Issue #415.)
+    """
+    os.makedirs(user_dir, exist_ok=True)
+    server = {
+        "simplicio": {
+            "command": "simplicio",
+            "args": ["serve", "--mcp", "--stdio"],
+        }
+    }
+    # mcp.json
+    cfg = {}
+    if os.path.exists(mcp_path):
+        try:
+            with open(mcp_path, encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                cfg = loaded
+        except Exception:
+            log("! user-level VS Code MCP is invalid — leaving it untouched: %s" % mcp_path)
+            return
+    cfg.setdefault("servers", {})
+    cfg["servers"].update(server)
+    with open(mcp_path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    log("user-level VS Code MCP -> %s" % mcp_path)
 
 
 def hooks_dir(target, is_global):

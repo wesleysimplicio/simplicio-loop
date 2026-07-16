@@ -194,6 +194,15 @@ def chk_vscode_copilot_global():
         return dict(name="VS Code/Copilot global surfaces", tier="OPTIONAL", status=WARN,
                     msg="verification unavailable: %s" % exc, repair=None)
 
+    # A normal Claude/Codex/etc. host may never have requested a global VS Code
+    # install. Do not report that untouched optional surface as drift.
+    official_paths = (Path(report["skills_root"]), Path(report["instructions"]),
+                      Path(report["copilot_mcp"]), Path(report["vscode_mcp"]))
+    if not any(path.exists() for path in official_paths):
+        return dict(name="VS Code/Copilot global surfaces", tier="OPTIONAL", status=OK,
+                    msg="no global VS Code/Copilot install detected — nothing to verify",
+                    repair=None)
+
     keys = ("skills_present", "instructions_present", "copilot_mcp_valid", "vscode_mcp_valid")
     ok = all(report.get(key) for key in keys)
 
@@ -368,9 +377,73 @@ def chk_remote_worker():
     return dict(name="remote worker (#286)", tier="OPTIONAL", status=dstatus, msg=msg, repair=repair)
 
 
+def check_vscode_global():
+    """#415: detect drift in a user-level VS Code/Copilot global install.
+
+    If the user ever ran `install_lib.py vscode --global`, the skills were mirrored
+    into a user-level skill root and a user-level MCP server was registered. This check
+    reports drift when those surfaces no longer match the installed source, or the MCP
+    server is missing/stale. If no global VS Code install is present, this is a no-op
+    (OPTIONAL tier — never blocks doctor).
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "install_lib_415", str(REPO / "scripts" / "install_lib.py"))
+    if spec is None or spec.loader is None:
+        return {"status": OK, "tier": "OPTIONAL", "name": "vscode_global",
+                "msg": "could not import install_lib resolver (skipped)"}
+    try:
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        vdirs = mod.vscode_user_level_dirs(str(HOME))
+    except Exception:
+        return {"status": OK, "tier": "OPTIONAL", "name": "vscode_global",
+                "msg": "could not import install_lib resolver (skipped)"}
+
+    skills_dst = Path(vdirs["skills"])
+    mcp_path = Path(vdirs["mcp"])
+    # No global install evidence -> nothing to verify (non-fatal).
+    if not skills_dst.is_dir() and not mcp_path.exists():
+        return {"status": OK, "tier": "OPTIONAL", "name": "vscode_global",
+                "msg": "no global VS Code/Copilot install detected — nothing to verify"}
+
+    problems = []
+    # Skills drift: every source skill must exist and be a dir in the user-level root.
+    if skills_dst.is_dir():
+        missing = [s for s in SKILLS
+                   if not (skills_dst / s).is_dir()]
+        if missing:
+            problems.append("skills missing/stale: %s" % ", ".join(missing))
+    else:
+        problems.append("user-level skills root missing: %s" % skills_dst)
+    # MCP drift: server must be registered.
+    if mcp_path.exists():
+        try:
+            cfg = json.loads(mcp_path.read_text(encoding="utf-8"))
+            if "simplicio" not in cfg.get("servers", {}):
+                problems.append("user-level MCP server 'simplicio' not registered")
+        except Exception:
+            problems.append("user-level MCP config unreadable: %s" % mcp_path)
+    else:
+        problems.append("user-level MCP config missing: %s" % mcp_path)
+
+    if problems:
+        def _repair():
+            try:
+                mod.copy_skills(str(skills_dst), skills_dst=str(skills_dst))
+                mod.write_vscode_user_mcp(vdirs["user_dir"], vdirs["settings"], vdirs["mcp"])
+                return True
+            except Exception:
+                return False
+        return {"status": WARN, "tier": "OPTIONAL", "name": "vscode_global",
+                "msg": "drift: " + "; ".join(problems), "repair": _repair}
+    return {"status": OK, "tier": "OPTIONAL", "name": "vscode_global",
+            "msg": "global VS Code/Copilot surfaces aligned with source"}
+
+
 CHECKS = [chk_python, chk_operators, chk_mapper_capabilities, chk_skills,
-          chk_hooks, chk_vscode_copilot_global, chk_git_precommit_hook, chk_git_prepush_hook, chk_proxy, chk_wire,
-          chk_tray_dep, chk_remote_worker]
+          chk_hooks, chk_git_precommit_hook, chk_git_prepush_hook, chk_proxy, chk_wire,
+          chk_tray_dep, chk_remote_worker, check_vscode_global]
 
 
 def main(argv=None):
