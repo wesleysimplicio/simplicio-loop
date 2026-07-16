@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://simplicio.dev/contracts/stage-agents/v1/review-finding.schema.json",
+  "title": "simplicio.review-finding/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "role_id",
+    "file",
+    "line",
+    "claim",
+    "normalized_claim",
+    "class",
+    "confidence",
+    "evidence_refs"
+  ],
+  "properties": {
+    "schema": { "const": "simplicio.review-finding/v1" },
+    "role_id": {
+      "enum": [
+        "security_correctness_reviewer",
+        "maintainability_reviewer",
+        "runtime_reproduction_verifier",
+        "blast_radius_reviewer"
+      ]
+    },
+    "file": { "type": "string", "minLength": 1 },
+    "line": { "type": "integer", "minimum": 0 },
+    "claim": { "type": "string", "minLength": 1 },
+    "normalized_claim": { "type": "string", "minLength": 1 },
+    "class": {
+      "enum": ["security", "correctness", "maintainability", "runtime", "blast_radius"]
+    },
+    "confidence": { "enum": ["low", "medium", "high"] },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "additionalProperties": false
+}
