@@ -43,6 +43,37 @@ python3 scripts/doctor.py --repair  # re-syncs skills + MCP if drift detected
 
 Idempotent: a second `--global` run is a clean refresh, never a nested copy.
 
+### Global Windows install (VS Code + GitHub Copilot)
+
+Project-local files are not enough for a user-global Copilot setup. Run the official installer
+from this repository with `vscode --global`:
+
+```powershell
+pwsh scripts/install.ps1 vscode -Global
+```
+
+The global path keeps the project-compatible copy under `~/.claude/skills/`, and also refreshes
+the active Copilot surfaces:
+
+- `%USERPROFILE%/.copilot/skills/` — the personal Agent Skills directory;
+- `%USERPROFILE%/.copilot/instructions/simplicio-loop.instructions.md` — personal instructions;
+- `%USERPROFILE%/.copilot/mcp-config.json` — Copilot CLI user MCP;
+- `%APPDATA%/Code/User/mcp.json` — VS Code user MCP.
+
+The installer merges only the `simplicio` server and preserves unrelated skills, instructions,
+servers, and settings. It resolves the installed `simplicio` executable (or uses the portable
+`simplicio` command name when the runtime is not installed yet). Verify the active surfaces with:
+
+```powershell
+python scripts/doctor.py --json
+python scripts/doctor.py --repair
+```
+
+The VS Code/Copilot global adapter is one surface of the same runtime-neutral loop contract used
+by Claude, Codex, Cursor, Gemini, Kiro, Antigravity, Hermes/Simplicio Agent, OpenClaw, and other
+providers. GitHub lifecycle comments identify the runtime/device but coordinate all of them through
+the same `source_issue`.
+
 ## Loop drive — self-paced via tasks
 
 Copilot has no stop-hook. Drive the loop with a VS Code task that re-invokes the agent, or run

@@ -46,6 +46,12 @@ MUTATIONS = [
     ("install_lib.py", "copy_skills()",
      "copies the 7 skills into `<target>/.claude/skills/<skill>`",
      "project/user", "yes (delete dir)", "no (default-mode effect)"),
+    ("install_lib.py", "sync_global_vscode_copilot()",
+     "for global VS Code installs, copies skills into `~/.copilot/skills`, writes the personal "
+     "Copilot instructions file, and merges the `simplicio` MCP server into "
+     "`~/.copilot/mcp-config.json` and the VS Code user `mcp.json`",
+     "user (global vscode only)", "yes (delete/restore the managed files)",
+     "no (default-mode effect; unrelated config is preserved)"),
     ("install_lib.py", "copy_hooks()",
      "copies `hooks/` into `<target>/hooks` (project) or `<target>/.claude/hooks` (global)",
      "project/user", "yes", "no"),

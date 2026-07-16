@@ -179,6 +179,49 @@ def chk_hooks():
                 repair=repair)
 
 
+def chk_vscode_copilot_global():
+    """Verify the user-level Copilot/VS Code surfaces (#415).
+
+    This is OPTIONAL because Claude/Codex-only hosts do not need VS Code.  When
+    a user has opted into the global VS Code install, the same check proves the
+    active Copilot skills, personal instructions, Copilot CLI MCP, and VS Code
+    user MCP are all present and parseable.
+    """
+    try:
+        from copilot_global import verify_global_copilot
+        report = verify_global_copilot(home=HOME)
+    except Exception as exc:
+        return dict(name="VS Code/Copilot global surfaces", tier="OPTIONAL", status=WARN,
+                    msg="verification unavailable: %s" % exc, repair=None)
+
+    # A normal Claude/Codex/etc. host may never have requested a global VS Code
+    # install. Do not report that untouched optional surface as drift.
+    official_paths = (Path(report["skills_root"]), Path(report["instructions"]),
+                      Path(report["copilot_mcp"]), Path(report["vscode_mcp"]))
+    if not any(path.exists() for path in official_paths):
+        return dict(name="VS Code/Copilot global surfaces", tier="OPTIONAL", status=OK,
+                    msg="no global VS Code/Copilot install detected — nothing to verify",
+                    repair=None)
+
+    keys = ("skills_present", "instructions_present", "copilot_mcp_valid", "vscode_mcp_valid")
+    ok = all(report.get(key) for key in keys)
+
+    def repair():
+        _run([PY, str(REPO / "scripts" / "install_lib.py"), "vscode", "--global",
+              "--skip-operators"])
+        try:
+            from copilot_global import verify_global_copilot
+            return all(verify_global_copilot(home=HOME).get(key) for key in keys)
+        except Exception:
+            return False
+
+    return dict(name="VS Code/Copilot global surfaces", tier="OPTIONAL",
+                status=OK if ok else WARN,
+                msg="Copilot skills/instructions + both user MCP configs aligned"
+                if ok else "run the global vscode installer to align user-level surfaces",
+                repair=repair)
+
+
 def chk_git_precommit_hook():
     """Verify this repo's own git pre-commit hook auto-syncs plugin/+_bundle/ (#98).
 

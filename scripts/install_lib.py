@@ -35,7 +35,10 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.dirname(HERE)
-HOME = os.path.expanduser("~")
+# Explicit override keeps portable profiles and isolated installer tests honest;
+# normal installs still use the platform's real user home.
+HOME = (os.environ.get("SIMPLICIO_HOME") or os.environ.get("HOME")
+        or os.path.expanduser("~"))
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
           "simplicio-review", "simplicio-compress", "simplicio-learn",
           "simplicio-autoresearch"]
@@ -108,7 +111,9 @@ def vscode_user_level_dirs(home):
       - ``mcp``:      user-level MCP config file (VS Code ``mcp.json`` shape)
       - ``settings``: user-level VS Code ``settings.json`` (where ``mcp.servers`` lives)
     """
-    home = os.path.expanduser(home)
+    # Do not reinterpret an explicit test/portable path through the host's
+    # Windows USERPROFILE. Only expand the conventional ``~`` spelling.
+    home = os.path.expanduser(home) if str(home).startswith("~") else str(home)
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
         user_dir = os.path.join(appdata, "Code", "User")
@@ -144,6 +149,33 @@ def copy_skills(target, skills_dst=None):
     log("skills -> %s" % dst_root)
 
 
+def sync_global_vscode_copilot():
+    """Update the real user-level Copilot/VS Code surfaces for global VS Code installs.
+
+    The generic ``~/.claude/skills`` copy remains for compatibility, while this
+    explicit adapter also updates ``~/.copilot`` and VS Code's user ``mcp.json``.
+    """
+    try:
+        from copilot_global import sync_global_copilot
+        result = sync_global_copilot(SOURCE, SKILLS, home=HOME)
+        log("Copilot global skills -> %s (%s)" %
+            (result["skills_root"], result["skills_copied"]))
+        log("Copilot instructions -> %s" % result["instructions"])
+        log("Copilot MCP -> %s" % result["copilot_mcp"])
+        log("VS Code user MCP -> %s" % result["vscode_mcp"])
+
+        # Keep the historical Simplicio user-level VS Code skills mirror as a
+        # compatibility surface for older Copilot/VS Code clients. The official
+        # Copilot paths above remain canonical; this mirror is additive.
+        vdirs = vscode_user_level_dirs(HOME)
+        copy_skills(vdirs["skills"], skills_dst=vdirs["skills"])
+        write_vscode_user_mcp(vdirs["user_dir"], vdirs["settings"], vdirs["mcp"])
+    except Exception as exc:
+        # Global installation should remain usable for project-local VS Code
+        # setups, but the doctor must expose this missing global surface.
+        log("! global VS Code/Copilot sync failed: %s" % exc)
+
+
 def write_vscode_user_mcp(user_dir, settings_path, mcp_path):
     """Write/merge the user-level VS Code MCP server config (idempotent, fail-open).
 
@@ -163,9 +195,12 @@ def write_vscode_user_mcp(user_dir, settings_path, mcp_path):
     if os.path.exists(mcp_path):
         try:
             with open(mcp_path, encoding="utf-8") as f:
-                cfg = json.load(f)
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                cfg = loaded
         except Exception:
-            cfg = {}
+            log("! user-level VS Code MCP is invalid — leaving it untouched: %s" % mcp_path)
+            return
     cfg.setdefault("servers", {})
     cfg["servers"].update(server)
     with open(mcp_path, "w", encoding="utf-8", newline="\n") as f:
@@ -988,18 +1023,13 @@ def main():
             % (receipt["transaction_id"], target))
     else:
         copy_skills(target)
+        if runtime == "vscode" and is_global:
+            sync_global_vscode_copilot()
         copy_hooks(target, is_global)
         copy_scripts(target, is_global)
         ensure_entry(target, cfg["entry"], runtime)
         if cfg["hooks"] == "claude":
             merge_claude_hooks(target, is_global)
-        # #415: global VS Code/Copilot must wire the REAL user-level surfaces, not
-        # only the generic home-level target. Mirror skills into the user-level
-        # skill root and register the user-level MCP server (idempotent).
-        if runtime == "vscode" and is_global:
-            _vdirs = vscode_user_level_dirs(HOME)
-            copy_skills(_vdirs["skills"], skills_dst=_vdirs["skills"])
-            write_vscode_user_mcp(_vdirs["user_dir"], _vdirs["settings"], _vdirs["mcp"])
     install_git_precommit_hook(target)
     install_git_prepush_hook(target)
     if cfg["hooks"] == "cursor":

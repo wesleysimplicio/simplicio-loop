@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import types
 
 import pytest
 
@@ -38,31 +39,20 @@ def _import_install_lib():
 def test_vscode_user_level_dirs_per_os(monkeypatch):
     mod = _import_install_lib()
     home = "/home/tester"
-    for plat, expected_user in (
+    cases = (
         ("win32", os.path.join(home, "AppData", "Roaming", "Code", "User")),
         ("darwin", os.path.join(home, "Library", "Application Support", "Code", "User")),
         ("linux", os.path.join(home, ".config", "Code", "User")),
-    ):
-        monkeypatch.setattr(mod, "sys", __import__("sys"))
-        monkeypatch.setattr("sys.platform", plat)
-        # re-evaluate the function body against the patched platform
-        import types
-        ns = {}
-        src = '''
-import os, sys
-def f(home):
-    home = os.path.expanduser(home)
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
-        user_dir = os.path.join(appdata, "Code", "User")
-    elif sys.platform == "darwin":
-        user_dir = os.path.join(home, "Library", "Application Support", "Code", "User")
-    else:
-        user_dir = os.path.join(home, ".config", "Code", "User")
-    return user_dir
-'''
-        exec(src, ns)
-        assert ns["f"](home) == expected_user
+    )
+    for plat, expected_user in cases:
+        # Replace only install_lib's platform view; mutating the process-global
+        # sys.platform breaks subprocess on Windows for later tests.
+        monkeypatch.setattr(mod, "sys", types.SimpleNamespace(platform=plat))
+        if plat == "win32":
+            monkeypatch.setenv("APPDATA", os.path.join(home, "AppData", "Roaming"))
+        else:
+            monkeypatch.delenv("APPDATA", raising=False)
+        assert mod.vscode_user_level_dirs(home)["user_dir"] == expected_user
 
 
 def test_copy_skills_override_dst(tmp_path):
