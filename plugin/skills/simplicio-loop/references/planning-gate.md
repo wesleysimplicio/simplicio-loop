@@ -61,7 +61,7 @@ with the reason code and message embedded — never a silent pass.
 ## GitHub source drift and replanning
 
 When a GitHub `source_issue` is present on the run state and
-`SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=1`, the auto-build step also captures a fresh source
+`SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC` is not explicitly falsy, the auto-build step also captures a fresh source
 snapshot (`source_snapshot.py::capture_github_issue_snapshot()`) and folds its hash into the
 mutation-authority identity, and publishes the receipt as a `PLANNED`/`BLOCKED` state on the
 canonical issue comment via `publish_planning_receipt()`. An issue edited between planning and
@@ -83,6 +83,16 @@ configured.
 
 ## Opting out (temporary, legacy callers only)
 
+GitHub lifecycle coordination is enabled by default for every real run with a
+`source_issue`, so different machines coordinate through the same canonical
+idempotent issue comment. Set the following only for an intentionally offline or
+legacy local run; the runtime records the missing remote coordination rather than
+pretending that the issue was synchronized:
+
+```bash
+export SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0
+```
+
 ```bash
 export SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT=0   # arm_run() stops self-building the receipt
 export SIMPLICIO_REQUIRE_MUTATION_AUTHORITY=0   # execute_operator()/batch stop requiring one
@@ -99,4 +109,4 @@ This gate covers the mutation-authority boundary; it does not yet implement the 
 `simplicio.task-intake/v1` envelope (scope in/out, dependencies, risks, rollback), a persisted
 `impact-map.json`, the bidirectional AC↔step↔test↔evidence matrix as its own artifact, or
 automatic (not opt-in) GitHub `CLAIMED`/`PLANNED` comment publishing on every real run. See the
-issue for the full remaining scope.
+issue for the remaining lifecycle states and full scope.
