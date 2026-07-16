@@ -1,0 +1,9 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://simplicio.dev/contracts/stage-agents/v1/stage-input.schema.json",
+  "title": "simplicio.stage-input/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","run_id","task_id","stage_id","attempt_id","attempt_ordinal","fence","plan_revision","context_hash","payload"],
+  "properties": {"schema": {"const": "simplicio.stage-input/v1"},"run_id": {"type": "string","minLength": 1},"task_id": {"type": "string","minLength": 1},"stage_id": {"type": "string","pattern": "^[a-z][a-z0-9_-]*$"},"attempt_id": {"type": "string","minLength": 1},"attempt_ordinal": {"type": "integer","minimum": 1},"fence": {"type": "string","minLength": 1},"plan_revision": {"type": "integer","minimum": 0},"context_hash": {"type": "string","pattern": "^[0-9a-f]{64}$"},"payload": {"type": "object","additionalProperties": true}}
+}

@@ -17,6 +17,14 @@ IDENTITY_FIELDS = ("agent_id", "runtime", "device_id", "session_id")
 CONTEXT_FIELDS = (
     "schema", "task_id", "goal", "acs", "source_refs", "depends_on",
     "assigned_to", "capabilities", "issue_ref", "issue_url",
+    "role_id", "role_version", "stage_id", "stage_version", "run_id",
+    "work_item_id", "attempt_id", "fence", "plan_revision",
+    "coordinator_agent_id", "parent_instance_id", "idempotency_key",
+)
+STAGE_CONTEXT_FIELDS = (
+    "role_id", "role_version", "stage_id", "stage_version", "run_id",
+    "task_id", "work_item_id", "attempt_id", "fence", "plan_revision",
+    "coordinator_agent_id", "parent_instance_id", "idempotency_key",
 )
 CAPABILITIES = frozenset(("claim", "heartbeat", "fencing", "receipts", "events", "evidence", "completion"))
 _ISSUE_REF_RE = re.compile(r"^(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)#(?P<number>[1-9][0-9]*)$")
@@ -70,6 +78,19 @@ def validate_identity(identity: Mapping[str, Any], *, capabilities: Sequence[str
         raise AgentContractError("unsupported capabilities: " + ", ".join(unknown))
     result["capabilities"] = normalized
     result["protocol"] = str(identity.get("protocol") or "simplicio-distributed/v1")
+    for field in STAGE_CONTEXT_FIELDS:
+        if field not in identity or identity.get(field) is None:
+            continue
+        value = identity[field]
+        if field == "plan_revision":
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise AgentContractError("plan_revision must be a non-negative integer")
+            result[field] = value
+        else:
+            value = str(value).strip()
+            if not value:
+                raise AgentContractError(field + " must be non-empty when provided")
+            result[field] = value
     return result
 
 
@@ -93,6 +114,13 @@ def validate_context_pack(context_pack: Mapping[str, Any], identity: Mapping[str
         "assigned_to": dict(assigned_to),
         "capabilities": list(context_pack.get("capabilities") or ()),
     }
+    for field in STAGE_CONTEXT_FIELDS:
+        if field in context_pack and context_pack[field] is not None:
+            expected = normalized.get(field)
+            actual = context_pack[field]
+            if expected is not None and actual != expected:
+                raise AgentContractError("context pack " + field + " does not match agent identity")
+            result[field] = actual
     result["issue_ref"], result["issue_url"] = _canonical_issue_fields(
         context_pack.get("issue_ref"),
         context_pack.get("issue_url"),
@@ -111,12 +139,20 @@ def validate_context_pack(context_pack: Mapping[str, Any], identity: Mapping[str
 def build_context_pack(*, task_id: str, goal: str, identity: Mapping[str, Any],
                        acs: Sequence[str] = (), source_refs: Sequence[str] = (),
                        depends_on: Sequence[str] = (), allowed_paths: Sequence[str] = (),
-                       issue_ref: str = "", issue_url: str = "") -> dict[str, Any]:
+                       issue_ref: str = "", issue_url: str = "",
+                       role_id: str | None = None, role_version: str | None = None,
+                       stage_id: str | None = None, stage_version: str | None = None,
+                       run_id: str | None = None, work_item_id: str | None = None,
+                       attempt_id: str | None = None, fence: str | None = None,
+                       plan_revision: int | None = None,
+                       coordinator_agent_id: str | None = None,
+                       parent_instance_id: str | None = None,
+                       idempotency_key: str | None = None) -> dict[str, Any]:
     """Build a deterministic, minimum-necessary context for one worker."""
     normalized = validate_identity(identity)
     allow = {str(path).strip() for path in allowed_paths if str(path).strip()}
     refs = [str(path).strip() for path in source_refs if str(path).strip() and str(path).strip() in allow]
-    return validate_context_pack({
+    payload = {
         "schema": SCHEMA,
         "task_id": str(task_id).strip(),
         "goal": str(goal).strip(),
@@ -127,7 +163,21 @@ def build_context_pack(*, task_id: str, goal: str, identity: Mapping[str, Any],
         "capabilities": list(normalized["capabilities"]),
         "issue_ref": str(issue_ref).strip(),
         "issue_url": str(issue_url).strip(),
-    }, normalized)
+    }
+    overrides = {
+        "role_id": role_id, "role_version": role_version, "stage_id": stage_id,
+        "stage_version": stage_version, "run_id": run_id, "task_id": task_id,
+        "work_item_id": work_item_id, "attempt_id": attempt_id, "fence": fence,
+        "plan_revision": plan_revision, "coordinator_agent_id": coordinator_agent_id,
+        "parent_instance_id": parent_instance_id, "idempotency_key": idempotency_key,
+    }
+    for field, value in overrides.items():
+        if value is not None:
+            payload[field] = value
+    for field in STAGE_CONTEXT_FIELDS:
+        if field not in payload and field in normalized:
+            payload[field] = normalized[field]
+    return validate_context_pack(payload, normalized)
 
 
 def bind_receipt(receipt: Mapping[str, Any], identity: Mapping[str, Any], *, context_pack: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -137,11 +187,22 @@ def bind_receipt(receipt: Mapping[str, Any], identity: Mapping[str, Any], *, con
     existing = result.get("agent")
     if existing is not None and validate_identity(existing) != normalized:
         raise AgentContractError("receipt agent identity mismatch")
+    for field in STAGE_CONTEXT_FIELDS:
+        if field in result and field in normalized and result[field] != normalized[field]:
+            raise AgentContractError("receipt " + field + " does not match agent identity")
     result["schema"] = result.get("schema") or RECEIPT_SCHEMA
     result["agent"] = normalized
+    if result["schema"] == RECEIPT_SCHEMA:
+        result["legacy_unbound"] = True
+    for field in STAGE_CONTEXT_FIELDS:
+        if field in normalized:
+            result[field] = normalized[field]
     if context_pack is not None:
         context = deepcopy(validate_context_pack(context_pack, normalized))
         result["context"] = context
+        for field in STAGE_CONTEXT_FIELDS:
+            if field in context:
+                result[field] = context[field]
         if context.get("issue_ref"):
             result["issue_ref"] = context["issue_ref"]
             result["issue_url"] = context["issue_url"]

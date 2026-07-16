@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -33,10 +34,14 @@ def _inst(role="impl", stage="a", inst_id="i1", status="completed", drift=False)
         "schema": "simplicio.agent-instance/v1",
         "agent_instance_id": inst_id,
         "role_id": role,
+        "role_version": "1.0.0",
         "stage_id": stage,
+        "stage_version": "1.0.0",
         "run_id": "run-1",
         "task_id": "task-1",
+        "work_item_id": "work-item-1",
         "attempt_id": "att-1",
+        "attempt_ordinal": 1,
         "fence": "fence-1",
         "plan_revision": 0,
         "runtime": "python",
@@ -44,6 +49,9 @@ def _inst(role="impl", stage="a", inst_id="i1", status="completed", drift=False)
         "model": "none",
         "driver": "portable",
         "parent_agent_id": "coord",
+        "coordinator_agent_id": "coord",
+        "parent_instance_id": "parent",
+        "idempotency_key": "idem-" + inst_id,
         "isolation_level": "process",
         "negotiated_capabilities": ["claim"],
         "context_hash": _hash("ctx"),
@@ -58,7 +66,7 @@ def _inst(role="impl", stage="a", inst_id="i1", status="completed", drift=False)
 
 
 def _rec(inst, verdict="pass", inst_id=None):
-    return {
+    rec = {
         "schema": "simplicio.stage-receipt/v1",
         "receipt_id": "r1",
         "agent_instance_id": inst_id or inst["agent_instance_id"],
@@ -67,13 +75,32 @@ def _rec(inst, verdict="pass", inst_id=None):
         "run_id": inst["run_id"],
         "task_id": inst["task_id"],
         "attempt_id": inst["attempt_id"],
+        "attempt_ordinal": inst["attempt_ordinal"],
         "fence": inst["fence"],
         "plan_revision": inst["plan_revision"],
         "created_at": "2026-07-16T00:00:04Z",
+        "observed_at": "2026-07-16T00:00:05Z",
+        "ttl_seconds": 86400,
+        "context_hash": inst["context_hash"],
+        "manifest_hash": inst["manifest_hash"],
         "verdict": verdict,
         "evidence_refs": ["ev1"],
-        "accepted": True,
+        "accepted": verdict == "pass",
+        "reason_code": "ok" if verdict == "pass" else "not-accepted",
+        "input_hash": _hash("input"),
+        "output_hash": _hash("output"),
+        "integrity_hash": "0" * 64,
+        "previous_receipt_hashes": [],
+        "covered_acceptance_criteria": ["AC-test"],
+        "commands": ["pytest -q"],
+        "exit_codes": {"pytest -q": 0},
+        "artifact_refs": ["artifact://test"],
+        "next_stage_recommendation": "none",
     }
+    if verdict != "pass":
+        rec["rejection_reason"] = "stage did not produce an accepted receipt"
+    rec["integrity_hash"] = sa.receipt_integrity_hash(rec)
+    return rec
 
 
 # --- Invariant 1: each stage created an instance with correct context ------- #
@@ -81,6 +108,15 @@ def test_graph_valid_passes():
     graph = json.load(open(CANON))
     ok, errors = sa.validate_graph(graph)
     assert ok, errors
+
+
+def test_packaged_contracts_match_repository_contracts():
+    source = os.path.join(os.path.dirname(os.path.dirname(__file__)), "contracts", "stage-agents", "v1")
+    packaged = sa.CONTRACT_DIR
+    names = sorted(name for name in os.listdir(source) if name.endswith(".json"))
+    assert names
+    assert names == sorted(name for name in os.listdir(packaged) if name.endswith(".json"))
+    assert all(open(os.path.join(source, name), "rb").read() == open(os.path.join(packaged, name), "rb").read() for name in names)
 
 
 # --- Invariant 2: instance receives correct + exclusive stage context ------- #
@@ -109,6 +145,94 @@ def test_receipt_schema_valid():
     rec = _rec(inst)
     ok, errors = sa.validate_receipt(rec, inst)
     assert ok, errors
+
+
+def test_instance_running_lifecycle_is_materializable():
+    inst = _inst(status="running")
+    inst.pop("ended_at")
+    ok, errors = sa.validate_instance(inst, {"run_id": "run-1", "task_id": "task-1", "attempt_id": "att-1", "fence": "fence-1", "plan_revision": 0})
+    assert ok, errors
+
+
+@pytest.mark.parametrize("status", ["ready", "running", "failed", "blocked", "cancelled", "timed_out"])
+def test_accepted_receipt_requires_completed_instance_even_without_graph(status):
+    inst = _inst(status=status)
+    if status == "ready":
+        inst.pop("started_at")
+        inst.pop("ended_at")
+    elif status == "running":
+        inst.pop("ended_at")
+    rec = _rec(inst)
+    ok, errors = sa.validate_receipt(rec, inst)
+    assert not ok and "accepted pass receipt requires completed instance" in errors
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "blocked", "cancelled", "timed_out"])
+def test_instance_terminal_lifecycles_are_materializable(status):
+    inst = _inst(status=status)
+    ok, errors = sa.validate_instance(inst, {"run_id": "run-1", "task_id": "task-1", "attempt_id": "att-1", "fence": "fence-1", "plan_revision": 0})
+    assert ok, errors
+
+
+def test_instance_lifecycle_rejects_incoherent_timestamps():
+    inst = _inst()
+    inst["ended_at"] = "2026-07-16T00:00:01Z"
+    ok, errors = sa.validate_instance(inst, {"run_id": "run-1", "task_id": "task-1", "attempt_id": "att-1", "fence": "fence-1", "plan_revision": 0})
+    assert not ok and any("ended_at" in error for error in errors)
+
+
+@pytest.mark.parametrize("verdict", ["timed_out", "cancelled", "stale"])
+def test_nonterminal_receipts_are_valid_but_not_accepted(verdict):
+    inst = _inst()
+    if verdict in {"timed_out", "cancelled"}:
+        inst["terminal_status"] = verdict
+    rec = _rec(inst, verdict=verdict)
+    ok, errors = sa.validate_receipt(rec, inst, now=datetime(2026, 7, 16, 0, 10, tzinfo=timezone.utc))
+    assert ok, errors
+    assert rec["accepted"] is False
+
+
+def test_graph_rejects_missing_referenced_schema_file(monkeypatch, tmp_path):
+    import shutil
+    graph = json.load(open(CANON))
+    contract_dir = tmp_path / "contracts"
+    shutil.copytree(sa.CONTRACT_DIR, contract_dir)
+    os.remove(contract_dir / "stage-input.schema.json")
+    monkeypatch.setattr(sa, "CONTRACT_DIR", str(contract_dir))
+    ok, errors = sa.validate_graph(graph)
+    assert not ok and any("schema file is missing" in error for error in errors)
+
+
+def test_graph_reauthenticates_invalid_referenced_schema_file(tmp_path):
+    import shutil
+    graph = json.load(open(CANON))
+    contract_dir = tmp_path / "contracts"
+    shutil.copytree(sa.CONTRACT_DIR, contract_dir)
+    ok, errors = sa.validate_graph(graph, contract_dir=str(contract_dir))
+    assert ok, errors
+    role_schema = contract_dir / "agent-role.schema.json"
+    corrupted = json.loads(role_schema.read_text(encoding="utf-8"))
+    corrupted["properties"]["schema"]["const"] = "tampered"
+    role_schema.write_text(json.dumps(corrupted), encoding="utf-8")
+    ok, errors = sa.validate_graph(graph, contract_dir=str(contract_dir))
+    assert not ok and any("agent-role.schema.json has wrong schema const" in error for error in errors)
+
+
+def test_graph_rejects_schema_pin_drift_and_source_package_parity(monkeypatch, tmp_path):
+    graph = json.load(open(CANON))
+    graph["schema_pins"] = dict(graph["schema_pins"])
+    graph["schema_pins"]["simplicio.agent-role/v1"] = "0" * 64
+    ok, errors = sa.validate_graph(graph)
+    assert not ok and any("schema_pins" in error for error in errors)
+
+    packaged = tmp_path / "packaged"
+    import shutil
+    shutil.copytree(sa.CONTRACT_DIR, packaged)
+    (packaged / "agent-role.schema.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(sa, "_PACKAGED_CONTRACT_DIR", str(packaged))
+    monkeypatch.setattr(sa, "CONTRACT_DIR", str(packaged))
+    ok, errors = sa.validate_graph(json.load(open(CANON)))
+    assert not ok and any("source/package schema parity mismatch" in error for error in errors)
 
 
 # --- Invariant 5: receipt belongs to same task/run/attempt/fence/revision --- #
@@ -252,6 +376,9 @@ def test_validate_receipt_with_graph_param():
     inst = _inst(role="impl", stage="a", inst_id="i-impl")
     rec = _rec(inst)
     rec["verdict"] = "skip"
+    rec["accepted"] = False
+    rec["rejection_reason"] = "not-needed"
+    rec["integrity_hash"] = sa.receipt_integrity_hash(rec)
     ok, errors = sa.validate_receipt(rec, inst, graph)
     assert ok, errors
 

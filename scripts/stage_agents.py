@@ -29,6 +29,18 @@ from simplicio_loop import stage_agents as sa
 from simplicio_loop.agent_contract import validate_stage_identity
 
 
+def _read_json(path: str, label: str) -> dict[str, Any]:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        detail = getattr(exc, "msg", str(exc))
+        raise sa.StageAgentError(f"{label}_invalid_json: {detail}") from exc
+    if not isinstance(value, dict):
+        raise sa.StageAgentError(f"{label}_invalid_json: expected object")
+    return value
+
+
 def _cmd_validate(args: argparse.Namespace) -> int:
     try:
         graph = sa.load_graph(args.graph)
@@ -56,10 +68,14 @@ def _cmd_graph(args: argparse.Namespace) -> int:
 
 
 def _cmd_receipt(args: argparse.Namespace) -> int:
-    rec = json.load(open(args.receipt, encoding="utf-8"))
-    inst = json.load(open(args.instance, encoding="utf-8"))
-    graph = sa.load_graph(args.graph) if args.graph else None
-    ok, errors = sa.validate_receipt(rec, inst, graph)
+    try:
+        rec = _read_json(args.receipt, "receipt")
+        inst = _read_json(args.instance, "instance")
+        graph = sa.load_graph(args.graph) if args.graph else None
+        ok, errors = sa.validate_receipt(rec, inst, graph)
+    except sa.StageAgentError as exc:
+        print(f"RECEIPT FAIL: {exc}", file=sys.stderr)
+        return 1
     if not ok:
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
@@ -69,9 +85,13 @@ def _cmd_receipt(args: argparse.Namespace) -> int:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    inst = json.load(open(args.instance, encoding="utf-8"))
-    identity = json.load(open(args.identity, encoding="utf-8"))
-    ok, errors = sa.validate_instance(inst, identity)
+    try:
+        inst = _read_json(args.instance, "instance")
+        identity = _read_json(args.identity, "identity")
+        ok, errors = sa.validate_instance(inst, identity)
+    except sa.StageAgentError as exc:
+        print(f"INSTANCE FAIL: {exc}", file=sys.stderr)
+        return 1
     if not ok:
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
