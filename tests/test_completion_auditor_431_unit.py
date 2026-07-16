@@ -68,10 +68,13 @@ def _receipt(stage_id: str, role_id: str, inst_id: str, *, verdict="pass", accep
 STAGE_ROLES = {
     "intake": "intake_planner",
     "planning": "intake_planner",
+    "safety": "safety_gate",
     "executing": "implementation_agent",
     "validating": "review_panel",
     "watching": "review_panel",
+    "recovery": "feedback_recovery_agent",
     "delivering": "delivery_agent",
+    "reporting": "github_reporter",
 }
 
 
