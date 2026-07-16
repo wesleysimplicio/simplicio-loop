@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://simplicio.dev/contracts/stage-agents/v1/run-stage-graph.schema.json",
+  "title": "simplicio.run-stage-graph/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "graph_id",
+    "version",
+    "stages",
+    "roles"
+  ],
+  "properties": {
+    "schema": { "const": "simplicio.run-stage-graph/v1" },
+    "graph_id": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "stages": {
+      "type": "array",
+      "items": { "$ref": "stage-definition.schema.json" },
+      "minItems": 1
+    },
+    "roles": {
+      "type": "array",
+      "items": { "$ref": "agent-role.schema.json" },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false
+}

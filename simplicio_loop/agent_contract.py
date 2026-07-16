@@ -23,6 +23,7 @@ _ISSUE_REF_RE = re.compile(r"^(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]
 _ISSUE_URL_RE = re.compile(
     r"^https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)/issues/(?P<number>[1-9][0-9]*)/?$"
 )
+_STAGE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 class AgentContractError(ValueError):
@@ -147,5 +148,38 @@ def bind_receipt(receipt: Mapping[str, Any], identity: Mapping[str, Any], *, con
     return result
 
 
+# --- Stage-agent contract glue (EPIC #422) --------------------------------- #
+STAGE_AGENT_SCHEMA = "simplicio.stage-agent-binding/v1"
+LIFECYCLE = ("created", "ready", "running", "terminal")
+TERMINAL_STATUS = frozenset(("completed", "failed", "blocked", "cancelled", "quarantined"))
+RECEIPT_TYPES = frozenset(("pass", "fail", "blocked", "skip"))
+
+
+def validate_stage_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a stage-agent identity carrying role_id/stage_id/lifecycle.
+
+    Extends ``validate_identity`` with the stage-agent-specific fields required
+    by the portable stage-agent contract (EPIC #422): ``role_id`` and
+    ``stage_id`` must be present and lowercase-kebab, and ``lifecycle`` must be
+    one of the known phases.
+    """
+    base = validate_identity(identity)
+    role_id = str(identity.get("role_id") or "").strip()
+    stage_id = str(identity.get("stage_id") or "").strip()
+    lifecycle = str(identity.get("lifecycle") or "created").strip()
+    if not role_id or not _STAGE_ID_RE.match(role_id):
+        raise AgentContractError("stage identity requires a valid role_id")
+    if not stage_id or not _STAGE_ID_RE.match(stage_id):
+        raise AgentContractError("stage identity requires a valid stage_id")
+    if lifecycle not in LIFECYCLE:
+        raise AgentContractError("lifecycle must be one of: " + ", ".join(LIFECYCLE))
+    base["role_id"] = role_id
+    base["stage_id"] = stage_id
+    base["lifecycle"] = lifecycle
+    return base
+
+
 __all__ = ["AgentContractError", "CAPABILITIES", "CONTEXT_FIELDS", "IDENTITY_FIELDS", "RECEIPT_SCHEMA",
-           "SCHEMA", "bind_receipt", "build_context_pack", "validate_context_pack", "validate_identity"]
+           "SCHEMA", "STAGE_AGENT_SCHEMA", "LIFECYCLE", "TERMINAL_STATUS", "RECEIPT_TYPES",
+           "bind_receipt", "build_context_pack", "validate_context_pack", "validate_identity",
+           "validate_stage_identity"]
