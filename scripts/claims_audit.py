@@ -679,6 +679,21 @@ def check_canonical_manifest():
     return ok, ("; ".join(detail) if detail else ("canonical manifest ready" if ok else "canonical-manifest check failed"))
 
 
+def check_contract_parity():
+    """#458 item 2: the canonical stage-agents contracts tree (`contracts/stage-agents/v1/`)
+    must be byte-identical to its pip-bundle mirror (`simplicio_loop/_contracts/stage-agents/v1/`).
+    `scripts/sync_plugin.py --check-contracts` is the source of truth for what 'in sync' means."""
+    path = os.path.join(REPO, "scripts", "sync_plugin.py")
+    if not os.path.exists(path):
+        return False, "missing scripts/sync_plugin.py"
+    r = subprocess.run([sys.executable, path, "--check-contracts"],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", cwd=REPO, stdin=subprocess.DEVNULL)
+    ok = r.returncode == 0
+    detail = [ln for ln in (r.stdout or r.stderr or "").splitlines() if ln.strip()]
+    return ok, ("contracts ≡ source (stage-agents/v1)" if ok else "; ".join(detail[-6:]))
+
+
 CHECKS = [
     ("1 referenced-scripts-exist", check_scripts_exist),
     ("2 extension-point-count", check_extension_count),
@@ -693,6 +708,7 @@ CHECKS = [
     ("11 turn-header-format", check_turn_header_format),
     ("12 install-mutations-doc-generated", check_install_mutations_doc_generated),
     ("13 canonical-manifest", check_canonical_manifest),
+    ("14 contract-parity", check_contract_parity),
 ]
 
 

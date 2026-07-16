@@ -40,6 +40,12 @@ DST_SCRIPTS = os.path.join(REPO, "plugin", "scripts")
 SRC_TESTS = os.path.join(REPO, "tests")
 DST_TESTS = os.path.join(REPO, "plugin", "tests")
 
+# #458 item 2: the canonical stage-agents contracts tree must be mirrored into the
+# pip-package bundle so `simplicio_loop/_contracts/stage-agents/v1/` never drifts from
+# `contracts/stage-agents/v1/` (the source of truth). Byte-identical, bidirectional.
+SRC_CONTRACTS = os.path.join(REPO, "contracts", "stage-agents", "v1")
+DST_CONTRACTS = os.path.join(REPO, "simplicio_loop", "_contracts", "stage-agents", "v1")
+
 
 def _read(p):
     with open(p, "rb") as f:
@@ -86,9 +92,38 @@ def sync():
         src = os.path.join(SRC_TESTS, name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(DST_TESTS, name))
+    # contracts: the canonical stage-agents tree mirrored into the pip bundle (#458)
+    if os.path.isdir(DST_CONTRACTS):
+        shutil.rmtree(DST_CONTRACTS)
+    if os.path.isdir(SRC_CONTRACTS):
+        shutil.copytree(SRC_CONTRACTS, DST_CONTRACTS,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     print("synced plugin/: %d skill files, %d hook files, %d script files, %d test files" % (
         len(_walk_rel(DST_SKILLS)), len(_walk_rel(DST_HOOKS)),
         len(_walk_rel(DST_SCRIPTS)), len(_walk_rel(DST_TESTS))))
+    if os.path.isdir(DST_CONTRACTS):
+        print("synced contracts/: %d stage-agent contract files" % len(_walk_rel(DST_CONTRACTS)))
+
+
+def check_contracts():
+    """#458 item 2: drift between contracts/stage-agents/v1/ (source) and
+    simplicio_loop/_contracts/stage-agents/v1/ (pip bundle). Returns drift list
+    (empty == in sync), checked in BOTH directions."""
+    drift = []
+    if not os.path.isdir(SRC_CONTRACTS):
+        return ["contracts/stage-agents/v1 missing — source of truth gone"]
+    if not os.path.isdir(DST_CONTRACTS):
+        return ["simplicio_loop/_contracts/stage-agents/v1 missing — run scripts/sync_plugin.py"]
+    src = set(_walk_rel(SRC_CONTRACTS))
+    dst = set(_walk_rel(DST_CONTRACTS))
+    for rel in sorted(src - dst):
+        drift.append("contracts: missing in bundle: %s" % rel)
+    for rel in sorted(dst - src):
+        drift.append("contracts: orphan in bundle (no matching source): %s" % rel)
+    for rel in sorted(src & dst):
+        if _read(os.path.join(SRC_CONTRACTS, rel)) != _read(os.path.join(DST_CONTRACTS, rel)):
+            drift.append("contracts: differs: %s" % rel)
+    return drift
 
 
 def check():
@@ -139,14 +174,30 @@ def check():
 
 
 def main():
+    if "--check-contracts" in sys.argv[1:]:
+        drift = check_contracts()
+        if drift:
+            print("contracts sync: DRIFT (%d)" % len(drift))
+            for d in drift:
+                print("  " + d)
+            sys.exit(1)
+        print("contracts sync: ok (simplicio_loop/_contracts/stage-agents/v1 == contracts/stage-agents/v1)")
+        sys.exit(0)
     if "--check" in sys.argv[1:]:
         drift = check()
+        cdrift = check_contracts()
         if drift:
             print("plugin sync: DRIFT (%d)" % len(drift))
             for d in drift:
                 print("  " + d)
+        if cdrift:
+            print("contracts sync: DRIFT (%d)" % len(cdrift))
+            for d in cdrift:
+                print("  " + d)
+        if drift or cdrift:
             sys.exit(1)
         print("plugin sync: ok (plugin/ == source)")
+        print("contracts sync: ok (simplicio_loop/_contracts/stage-agents/v1 == contracts/stage-agents/v1)")
         sys.exit(0)
     sync()
 

@@ -12,27 +12,12 @@
     "run_id",
     "task_id",
     "attempt_id",
-    "attempt_ordinal",
     "fence",
     "plan_revision",
     "created_at",
-    "observed_at",
-    "ttl_seconds",
-    "context_hash",
-    "manifest_hash",
     "verdict",
     "evidence_refs",
-    "accepted",
-    "reason_code",
-    "input_hash",
-    "output_hash",
-    "integrity_hash",
-    "previous_receipt_hashes",
-    "covered_acceptance_criteria",
-    "commands",
-    "exit_codes",
-    "artifact_refs",
-    "next_stage_recommendation"
+    "accepted"
   ],
   "properties": {
     "schema": { "const": "simplicio.stage-receipt/v1" },
@@ -43,60 +28,16 @@
     "run_id": { "type": "string", "minLength": 1 },
     "task_id": { "type": "string", "minLength": 1 },
     "attempt_id": { "type": "string", "minLength": 1 },
-    "attempt_ordinal": { "type": "integer", "minimum": 1 },
     "fence": { "type": "string", "minLength": 1 },
     "plan_revision": { "type": "integer", "minimum": 0 },
     "created_at": { "type": "string", "format": "date-time" },
-    "observed_at": { "type": "string", "format": "date-time" },
-    "ttl_seconds": { "type": "integer", "minimum": 1 },
-    "context_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "manifest_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "verdict": { "enum": ["pass", "fail", "blocked", "skip", "timed_out", "cancelled", "stale"] },
+    "verdict": { "enum": ["pass", "fail", "blocked", "skip"] },
     "evidence_refs": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
     "accepted": { "type": "boolean" },
-    "reason_code": { "type": "string", "minLength": 1 },
-    "input_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "output_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "integrity_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "previous_receipt_hashes": {
-      "type": "array",
-      "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-      "uniqueItems": true
-    },
-    "covered_acceptance_criteria": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 },
-      "minItems": 1
-    },
-    "commands": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 },
-      "minItems": 1
-    },
-    "exit_codes": {
-      "type": "object",
-      "additionalProperties": { "type": "integer" }
-    },
-    "artifact_refs": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "next_stage_recommendation": { "type": "string", "minLength": 1 },
-    "rejection_reason": { "type": "string", "minLength": 1 },
-    "supersedes_receipt_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+    "rejection_reason": { "type": "string", "minLength": 1 }
   },
-  "allOf": [
-    {
-      "if": { "properties": { "verdict": { "const": "pass" } } },
-      "then": { "properties": { "accepted": { "const": true } } }
-    },
-    {
-      "if": { "properties": { "verdict": { "enum": ["fail", "blocked", "skip", "timed_out", "cancelled", "stale"] } } },
-      "then": { "required": ["rejection_reason"], "properties": { "accepted": { "const": false } } }
-    }
-  ],
   "additionalProperties": false
 }
