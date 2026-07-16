@@ -423,6 +423,22 @@ def test_build_receipt_passes_when_all_invariants_hold():
     assert receipt["receipt_hash"]
 
 
+def test_build_receipt_wires_forbidden_schema_guard(monkeypatch):
+    # Invariant 6 exercised through the real entrypoint, not just the
+    # isolated assert_receipt_schema_allowed() unit tests above: if this
+    # role's own receipt schema ever collided with a forbidden
+    # reviewer/safety/delivery schema, the receipt builder must refuse to
+    # build it rather than silently succeed.
+    import simplicio_loop.implementation_agent as ia_mod
+
+    monkeypatch.setattr(
+        ia_mod, "FORBIDDEN_RECEIPT_SCHEMAS",
+        frozenset(ia_mod.FORBIDDEN_RECEIPT_SCHEMAS | {IMPLEMENTATION_STAGE_RECEIPT_SCHEMA}),
+    )
+    with pytest.raises(ForbiddenReceiptError):
+        build_implementation_stage_receipt(**_receipt_kwargs())
+
+
 def test_build_receipt_raises_on_invalid_capability():
     with pytest.raises(MutationCapabilityError):
         build_implementation_stage_receipt(**_receipt_kwargs(capability=None))

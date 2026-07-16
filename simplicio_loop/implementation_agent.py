@@ -530,6 +530,11 @@ def build_implementation_stage_receipt(
     the task is complete -- see `next_stage_hint` below, always
     `"review"`/`"safety"` never `"delivered"`/`"complete"`.
     """
+    # Invariant 6, wired at the real entrypoint (not just unit-tested in
+    # isolation): this role's receipt schema must never collide with a
+    # forbidden reviewer/safety/delivery schema.
+    assert_receipt_schema_allowed(IMPLEMENTATION_STAGE_RECEIPT_SCHEMA)
+
     assigned_acs = assignment.get("acs") or []
     allowed_paths = assignment.get("allowed_paths") or []
 
