@@ -525,3 +525,18 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 MIT
 
 </div>
+
+<!-- simplicio-loop:github-comment-coordination:v1 -->
+## 🌐 تنسيق التعليقات عبر GitHub بين بيئات التشغيل
+
+يمكن تشغيل `simplicio-loop` بالتزامن داخل Claude Code وCodex وCursor وGemini وHermes. عند ربط التشغيل بمشكلة في GitHub، ينشر تحديثات دورة الحياة بشكل idempotent في التعليق الأساسي: المطالبة والتخطيط والتقدم والأدلة وطلب الدمج والإغلاق. وهكذا تتعاون الوكلاء على أجهزة مختلفة عبر سلسلة تعليقات GitHub نفسها دون نظام ملفات محلي مشترك.
+
+```powershell
+pwsh scripts/install.ps1 claude -Global
+pwsh scripts/install.ps1 codex -Global
+pwsh scripts/install.ps1 cursor -Global
+pwsh scripts/install.ps1 gemini -Global
+pwsh scripts/install.ps1 hermes -Global   # اسم قديم لـ simplicio_agent
+```
+
+تبقى الطوابير المحلية والتأجير ومساحات العمل ونبضات الحياة والأدلة فعّالة على كل جهاز؛ وتعليقات GitHub هي إسقاط التنسيق المشترك. هذا التدفق خاص بـ GitHub؛ لا تُرسل التعليقات إلى Jira أو Azure DevOps أو متتبعات أخرى. عند تعذر GitHub يستمر التشغيل محلياً ويسجل فشل المزامنة دون اختلاق تأكيد بعيد. استخدم نفس `source_issue` مع صلاحية GitHub لكل بيئة.

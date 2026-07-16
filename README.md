@@ -678,3 +678,18 @@ opt-in capabilities you reach for when the task calls for them.
 ## 📄 License
 
 MIT
+
+<!-- simplicio-loop:github-comment-coordination:v1 -->
+## 🌐 GitHub comment coordination across runtimes
+
+`simplicio-loop` can run at the same time in Claude Code, Codex, Cursor, Gemini, and Hermes. When a run is bound to a GitHub issue, it publishes idempotent lifecycle updates to that issue's canonical comment: claim, plan, progress, evidence, PR, and close. Agents on different machines can coordinate through the same GitHub thread without a shared local filesystem.
+
+```powershell
+pwsh scripts/install.ps1 claude -Global
+pwsh scripts/install.ps1 codex -Global
+pwsh scripts/install.ps1 cursor -Global
+pwsh scripts/install.ps1 gemini -Global
+pwsh scripts/install.ps1 hermes -Global   # legacy alias for simplicio_agent
+```
+
+Local queues, leases, worktrees, heartbeats, and evidence remain active on every machine; GitHub comments are the shared coordination projection. This flow is GitHub-only: Jira, Azure DevOps, and other trackers do not receive these comments. If GitHub is unavailable or unauthenticated, the loop remains usable locally and records the sync failure without inventing a remote acknowledgment. Give every runtime GitHub access and bind runs to the same `source_issue`.

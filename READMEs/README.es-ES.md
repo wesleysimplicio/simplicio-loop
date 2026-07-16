@@ -501,3 +501,18 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 ## 📄 Licencia
 
 MIT
+
+<!-- simplicio-loop:github-comment-coordination:v1 -->
+## 🌐 Coordinación mediante comentarios de GitHub entre runtimes
+
+`simplicio-loop` puede ejecutarse simultáneamente en Claude Code, Codex, Cursor, Gemini y Hermes. Cuando está vinculado a una issue de GitHub, publica actualizaciones idempotentes en el comentario canónico: reclamación, planificación, progreso, evidencias, PR y cierre. Los agentes de distintas máquinas coordinan así el trabajo en el mismo hilo de GitHub sin compartir un sistema de archivos local.
+
+```powershell
+pwsh scripts/install.ps1 claude -Global
+pwsh scripts/install.ps1 codex -Global
+pwsh scripts/install.ps1 cursor -Global
+pwsh scripts/install.ps1 gemini -Global
+pwsh scripts/install.ps1 hermes -Global   # alias heredado de simplicio_agent
+```
+
+La cola local, leases, worktrees, heartbeats y evidencias siguen activos; los comentarios de GitHub son la proyección compartida. El flujo es exclusivo de GitHub: Jira, Azure DevOps y otros trackers no reciben estos comentarios. Si GitHub no está disponible, el loop sigue funcionando localmente y registra el fallo sin inventar confirmaciones remotas. Usa el mismo `source_issue` y acceso a GitHub en cada runtime.

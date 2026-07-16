@@ -501,3 +501,18 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 ## 📄 Licentie
 
 MIT
+
+<!-- simplicio-loop:github-comment-coordination:v1 -->
+## 🌐 Coördinatie via GitHub-opmerkingen tussen runtimes
+
+`simplicio-loop` kan tegelijk draaien in Claude Code, Codex, Cursor, Gemini en Hermes. Een run die aan een GitHub-issue is gekoppeld, publiceert idempotente lifecycle-updates in de canonieke opmerking: claim, planning, voortgang, bewijs, PR en afsluiting. Agents op verschillende machines werken zo in dezelfde GitHub-thread zonder gedeeld lokaal bestandssysteem.
+
+```powershell
+pwsh scripts/install.ps1 claude -Global
+pwsh scripts/install.ps1 codex -Global
+pwsh scripts/install.ps1 cursor -Global
+pwsh scripts/install.ps1 gemini -Global
+pwsh scripts/install.ps1 hermes -Global   # legacy-alias voor simplicio_agent
+```
+
+Lokale queue, leases, worktrees, heartbeats en bewijs blijven actief; GitHub-opmerkingen zijn de gedeelde coördinatieprojectie. Deze flow is alleen voor GitHub: Jira, Azure DevOps en andere trackers ontvangen niets. Zonder GitHub blijft de loop lokaal bruikbaar en wordt de synchronisatiefout vastgelegd, zonder externe bevestiging te verzinnen. Gebruik hetzelfde `source_issue` en GitHub-toegang voor elke runtime.
