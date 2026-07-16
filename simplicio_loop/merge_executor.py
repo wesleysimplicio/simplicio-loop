@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional
 
 SCHEMA = "simplicio.merge-result/v1"
@@ -53,6 +53,7 @@ class MergeResult:
     detail: str
     merge_commit_sha: str = ""
     base_ref: str = ""
+    post_merge_patrol: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -65,6 +66,7 @@ class MergeResult:
             "detail": self.detail,
             "merge_commit_sha": self.merge_commit_sha,
             "base_ref": self.base_ref,
+            "post_merge_patrol": self.post_merge_patrol,
         }
 
 
@@ -161,6 +163,7 @@ class MergeExecutor:
 
     def merge(self, pr_number: int, *, strategy: str = "squash", delete_branch: bool = True,
                poll_interval: float = 2.0, mergeable_timeout: float = 120.0,
+               post_merge_patrol: bool = True,
                sleep: Callable[[float], None] = time.sleep,
                clock: Callable[[], float] = time.time) -> MergeResult:
         """Wait for mergeability, merge, then reconcile against the remote. Never raises for
@@ -192,8 +195,39 @@ class MergeExecutor:
             return MergeResult(SCHEMA, pr_number, "", False, False, "RECONCILE_MISMATCH",
                                "gh pr merge exited 0 but re-query shows state=%r merge_commit=%r"
                                % (reconciled["state"], reconciled["merge_commit_sha"]))
+        patrol: Dict[str, Any] = {}
+        if post_merge_patrol:
+            # A merge changes main's conflict surface for every other open branch.
+            # Re-query them immediately; this is read-only and never changes the
+            # already-proven merged result into a fabricated failure.
+            patrol = self.patrol_open_prs()
         return MergeResult(SCHEMA, pr_number, "", True, True, "OK", "merged and reconciled",
-                           merge_commit_sha=reconciled["merge_commit_sha"], base_ref=reconciled["base_ref"])
+                           merge_commit_sha=reconciled["merge_commit_sha"], base_ref=reconciled["base_ref"],
+                           post_merge_patrol=patrol)
+
+    def patrol_open_prs(self) -> Dict[str, Any]:
+        """Inspect every remaining open PR after a merge, without mutating it.
+
+        A patrol transport failure is an explicit ``unverified`` receipt rather
+        than an assumption that the other branches are conflict-free.
+        """
+        from .pr_patrol import PrPatrol, PrPatrolError, SCHEMA as PATROL_SCHEMA
+
+        try:
+            return PrPatrol(self.repo, runner=self.runner, timeout=self.timeout).inspect(post_merge=True)
+        except PrPatrolError as exc:
+            return {
+                "schema": PATROL_SCHEMA,
+                "repo": self.repo,
+                "due": True,
+                "reason": "post_merge",
+                "status": "unverified",
+                "reason_code": "POST_MERGE_PATROL_FAILED",
+                "detail": str(exc),
+                "open_prs": [],
+                "action_required": [],
+                "clean": [],
+            }
 
     # ------------------------------------------------------- remote-target reconciliation
 
