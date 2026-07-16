@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="各段階の具体的なエージェントと接続済みレポートを備えた simplicio-loop" width="920" />
 </p>
 
 <p align="center">
@@ -80,6 +80,31 @@
   <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
 </p>
 <!-- visual-story:end -->
+
+<!-- stage-agents-roadmap:start -->
+## 🤖 ロードマップ — 各段階の背後に具体的なエージェント
+
+> **状態:** [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436) で追跡中の計画アーキテクチャです。GitHub の標準 lifecycle コメントは現在利用できますが、段階別エージェントと必須 reporting の完全な gate は [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433) で実装中です。
+
+Intake/計画、実装、安全性、delivery、recovery、最終監査にそれぞれ責任を持つエージェントを割り当てます。Review は security/correctness、quality、runtime/E2E 再現、blast radius の4つの独立エージェントへ分岐し、その後にだけ収束します。
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="simplicio-loop の段階別エージェントと work tracker コメント" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Intake + 計画エージェント"] --> I["実装エージェント"] --> S["安全性エージェント"]
+  S --> R["4つの独立 review エージェント"] --> D["Delivery エージェント"] --> A["完了監査エージェント"]
+  D --> F["Feedback + recovery エージェント"] --> I
+  P -.-> E["イベント + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["GitHub コメント · 必須"]
+  E -. "接続済みの場合のみ" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**ポリシー:** GitHub に紐づく run では GitHub コメントが必須で、`COMPLETE` はリモート確認を待ちます。Azure DevOps、Jira、Asana、Trello は接続・認証・権限・対象解決が確認された場合のみコメントを受け取り、`NOT_CONNECTED` は明示的で非 blocking な skip です。契約とテスト: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436)。
+<!-- stage-agents-roadmap:end -->
 
 ## ⚡ TL;DR
 

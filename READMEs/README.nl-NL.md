@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop met concrete agents per fase en gekoppelde rapportage" width="920" />
 </p>
 
 <p align="center">
@@ -80,6 +80,31 @@ Deze architectuur maakt van één doel een bestuurd leveringssysteem: van een mo
   <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
 </p>
 <!-- visual-story:end -->
+
+<!-- stage-agents-roadmap:start -->
+## 🤖 Roadmap — een concrete agent achter elke fase
+
+> **Status:** geplande architectuur in [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436). De canonieke GitHub-lifecyclecomment bestaat al; de volledige gate voor stage-agents en verplichte rapportage wordt nog gebouwd in [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433).
+
+Intake/planning, implementatie, veiligheid, levering, recovery en de eindaudit krijgen elk één verantwoordelijke agent. Review vertakt naar vier onafhankelijke agents — beveiliging/correctheid, kwaliteit, runtime/E2E-reproductie en blast radius — en convergeert daarna pas.
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="simplicio-loop stage-agents en opmerkingen in work trackers" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Intake- + plannings-agent"] --> I["Implementatie-agent"] --> S["Veiligheids-agent"]
+  S --> R["4 onafhankelijke review-agents"] --> D["Delivery-agent"] --> A["Completion auditor"]
+  D --> F["Feedback- + recovery-agent"] --> I
+  P -.-> E["Events + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["GitHub-comments · VERPLICHT"]
+  E -. "alleen indien gekoppeld" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**Beleid:** GitHub is verplicht voor aan GitHub gebonden runs en `COMPLETE` wacht op remote bevestiging. Azure DevOps, Jira, Asana en Trello krijgen alleen comments na bewezen verbinding, authenticatie, autorisatie en target-resolutie; `NOT_CONNECTED` is een expliciete, niet-blokkerende skip. Contract en tests: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436).
+<!-- stage-agents-roadmap:end -->
 
 ## ⚡ TL;DR
 

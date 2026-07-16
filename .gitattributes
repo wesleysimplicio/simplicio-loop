@@ -30,6 +30,7 @@ assets/_lfs/**  filter=lfs diff=lfs merge=lfs -text
 # them and never stores a re-encoded (size-changing) copy in the pack.
 *       text=auto eol=lf
 *.png   binary
+*.webp  binary
 *.jpg   binary
 *.jpeg  binary
 *.gif   binary

@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="每阶段具体智能体与已连接报告的 simplicio-loop" width="920" />
 </p>
 
 <p align="center">
@@ -80,6 +80,31 @@
   <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
 </p>
 <!-- visual-story:end -->
+
+<!-- stage-agents-roadmap:start -->
+## 🤖 路线图 — 每个阶段背后都有一个具体智能体
+
+> **状态：**这是 [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436) 中跟踪的规划架构。GitHub 标准 lifecycle 评论今天已经存在；完整的阶段智能体与强制 reporting gate 仍在 [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433) 中实现。
+
+Intake/规划、实现、安全、delivery、recovery 和最终审计各有一个负责的智能体。Review 会分成四个独立智能体——安全/正确性、质量、runtime/E2E 复现和 blast radius——之后才能汇聚。
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="simplicio-loop 阶段智能体和 work tracker 评论" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Intake + 规划智能体"] --> I["实现智能体"] --> S["安全智能体"]
+  S --> R["4 个独立 review 智能体"] --> D["Delivery 智能体"] --> A["完成审计智能体"]
+  D --> F["Feedback + recovery 智能体"] --> I
+  P -.-> E["事件 + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["GitHub 评论 · 必须"]
+  E -. "仅在已连接时" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**策略：**绑定 GitHub 的 run 必须写入 GitHub 评论，`COMPLETE` 等待远程确认。Azure DevOps、Jira、Asana 和 Trello 只有在连接、认证、授权和目标解析被证明后才接收评论；`NOT_CONNECTED` 是明确且不阻塞的 skip。契约与测试：[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436)。
+<!-- stage-agents-roadmap:end -->
 
 ## ⚡ TL;DR
 

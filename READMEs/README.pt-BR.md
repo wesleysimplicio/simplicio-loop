@@ -1,7 +1,7 @@
 # 🔁 simplicio-loop — O Orquestrador de IA Universal em Loop
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop com agents concretos por etapa e reporting conectado" width="920" />
 </p>
 
 <p align="center">
@@ -80,6 +80,31 @@ Essa arquitetura transforma um único objetivo em um sistema governado de entreg
   <img src="../assets/simplicio-loop-architecture-2026.svg" alt="simplicio-loop control execution evidence and delivery planes" width="920" />
 </p>
 <!-- visual-story:end -->
+
+<!-- stage-agents-roadmap:start -->
+## 🤖 Roadmap — um agent concreto atrás de cada etapa
+
+> **Status:** arquitetura planejada nas issues [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436). O comentário canônico de lifecycle no GitHub já existe; o gate completo de agents por etapa e reporting obrigatório ainda está em implementação em [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433).
+
+Intake/planejamento, implementação, segurança, entrega, recuperação e auditoria final terão um agent responsável. O review abre quatro agents independentes — segurança/correção, qualidade, reprodução runtime/E2E e raio de impacto — antes de convergir.
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="agents por etapa do simplicio-loop e comentários em work trackers" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Agent de intake + planejamento"] --> I["Agent de implementação"] --> S["Agent de segurança"]
+  S --> R["4 agents de review independentes"] --> D["Agent de entrega"] --> A["Auditor de conclusão"]
+  D --> F["Agent de feedback + recuperação"] --> I
+  P -.-> E["Eventos + recibos"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["Comentários GitHub · OBRIGATÓRIOS"]
+  E -. "somente se conectado" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**Política:** GitHub é obrigatório para runs vinculados ao GitHub e `COMPLETE` aguarda confirmação remota. Azure DevOps, Jira, Asana e Trello recebem comentários somente após prova de conexão, autenticação, autorização e resolução do item; `NOT_CONNECTED` é um skip explícito e não bloqueante. Contrato e testes: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436).
+<!-- stage-agents-roadmap:end -->
 
 ## ⚡ TL;DR
 
