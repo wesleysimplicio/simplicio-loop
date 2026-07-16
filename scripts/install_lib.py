@@ -35,7 +35,9 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.dirname(HERE)
-HOME = os.path.expanduser("~")
+# Explicit override keeps portable profiles and isolated installer tests honest;
+# normal installs still use the platform's real user home.
+HOME = os.environ.get("SIMPLICIO_HOME") or os.path.expanduser("~")
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
           "simplicio-review", "simplicio-compress", "simplicio-learn",
           "simplicio-autoresearch"]
@@ -104,6 +106,26 @@ def copy_skills(target):
             continue
         shutil.copytree(src, os.path.join(dst_root, s), dirs_exist_ok=True)
     log("skills -> %s" % dst_root)
+
+
+def sync_global_vscode_copilot():
+    """Update the real user-level Copilot/VS Code surfaces for global VS Code installs.
+
+    The generic ``~/.claude/skills`` copy remains for compatibility, while this
+    explicit adapter also updates ``~/.copilot`` and VS Code's user ``mcp.json``.
+    """
+    try:
+        from copilot_global import sync_global_copilot
+        result = sync_global_copilot(SOURCE, SKILLS, home=HOME)
+        log("Copilot global skills -> %s (%s)" %
+            (result["skills_root"], result["skills_copied"]))
+        log("Copilot instructions -> %s" % result["instructions"])
+        log("Copilot MCP -> %s" % result["copilot_mcp"])
+        log("VS Code user MCP -> %s" % result["vscode_mcp"])
+    except Exception as exc:
+        # Global installation should remain usable for project-local VS Code
+        # setups, but the doctor must expose this missing global surface.
+        log("! global VS Code/Copilot sync failed: %s" % exc)
 
 
 def hooks_dir(target, is_global):
@@ -920,6 +942,8 @@ def main():
             % (receipt["transaction_id"], target))
     else:
         copy_skills(target)
+        if runtime == "vscode" and is_global:
+            sync_global_vscode_copilot()
         copy_hooks(target, is_global)
         copy_scripts(target, is_global)
         ensure_entry(target, cfg["entry"], runtime)

@@ -36,6 +36,14 @@
       "source": "install_lib.py"
     },
     {
+      "consent_required": "no (default-mode effect; unrelated config is preserved)",
+      "effect": "for global VS Code installs, copies skills into `~/.copilot/skills`, writes the personal Copilot instructions file, and merges the `simplicio` MCP server into `~/.copilot/mcp-config.json` and the VS Code user `mcp.json`",
+      "function": "sync_global_vscode_copilot()",
+      "reversible": "yes (delete/restore the managed files)",
+      "scope": "user (global vscode only)",
+      "source": "install_lib.py"
+    },
+    {
       "consent_required": "no",
       "effect": "copies `hooks/` into `<target>/hooks` (project) or `<target>/.claude/hooks` (global)",
       "function": "copy_hooks()",

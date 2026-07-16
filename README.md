@@ -693,3 +693,21 @@ pwsh scripts/install.ps1 hermes -Global   # legacy alias for simplicio_agent
 ```
 
 Local queues, leases, worktrees, heartbeats, and evidence remain active on every machine; GitHub comments are the shared coordination projection. This flow is GitHub-only: Jira, Azure DevOps, and other trackers do not receive these comments. If GitHub is unavailable or unauthenticated, the loop remains usable locally and records the sync failure without inventing a remote acknowledgment. Give every runtime GitHub access and bind runs to the same `source_issue`.
+
+The repository workflow `.github/workflows/simplicio-status-sync.yml` turns the canonical lifecycle
+state into a managed `simplicio:status:<state>` label and, when configured, moves the issue in a
+GitHub Projects v2 Status field. It is runtime-neutral: the same workflow accepts Claude, Codex,
+Cursor, Gemini, Kiro, Antigravity, Hermes/Simplicio Agent, OpenClaw, and future providers. Set
+these repository variables to enable Project v2 movement:
+
+```text
+SIMPLICIO_PROJECT_NUMBER       # project number, for example 7
+SIMPLICIO_PROJECT_OWNER        # optional; defaults to the repository owner
+SIMPLICIO_PROJECT_OWNER_TYPE   # organization (default) or user
+SIMPLICIO_PROJECT_STATUS_FIELD # optional; defaults to Status
+```
+
+Labels still update when no Project is configured. Human comments do not move cards; only the
+marked Simplicio lifecycle comment, issue open/close/reopen events, or an explicit workflow
+dispatch can change the status. The workflow uses `issues: write` and `repository-projects: write`
+and never posts a second coordination comment.

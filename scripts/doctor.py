@@ -179,6 +179,40 @@ def chk_hooks():
                 repair=repair)
 
 
+def chk_vscode_copilot_global():
+    """Verify the user-level Copilot/VS Code surfaces (#415).
+
+    This is OPTIONAL because Claude/Codex-only hosts do not need VS Code.  When
+    a user has opted into the global VS Code install, the same check proves the
+    active Copilot skills, personal instructions, Copilot CLI MCP, and VS Code
+    user MCP are all present and parseable.
+    """
+    try:
+        from copilot_global import verify_global_copilot
+        report = verify_global_copilot(home=HOME)
+    except Exception as exc:
+        return dict(name="VS Code/Copilot global surfaces", tier="OPTIONAL", status=WARN,
+                    msg="verification unavailable: %s" % exc, repair=None)
+
+    keys = ("skills_present", "instructions_present", "copilot_mcp_valid", "vscode_mcp_valid")
+    ok = all(report.get(key) for key in keys)
+
+    def repair():
+        _run([PY, str(REPO / "scripts" / "install_lib.py"), "vscode", "--global",
+              "--skip-operators"])
+        try:
+            from copilot_global import verify_global_copilot
+            return all(verify_global_copilot(home=HOME).get(key) for key in keys)
+        except Exception:
+            return False
+
+    return dict(name="VS Code/Copilot global surfaces", tier="OPTIONAL",
+                status=OK if ok else WARN,
+                msg="Copilot skills/instructions + both user MCP configs aligned"
+                if ok else "run the global vscode installer to align user-level surfaces",
+                repair=repair)
+
+
 def chk_git_precommit_hook():
     """Verify this repo's own git pre-commit hook auto-syncs plugin/+_bundle/ (#98).
 
@@ -335,7 +369,7 @@ def chk_remote_worker():
 
 
 CHECKS = [chk_python, chk_operators, chk_mapper_capabilities, chk_skills,
-          chk_hooks, chk_git_precommit_hook, chk_git_prepush_hook, chk_proxy, chk_wire,
+          chk_hooks, chk_vscode_copilot_global, chk_git_precommit_hook, chk_git_prepush_hook, chk_proxy, chk_wire,
           chk_tray_dep, chk_remote_worker]
 
 
