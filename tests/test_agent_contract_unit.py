@@ -50,6 +50,34 @@ def test_context_pack_canonicalizes_issue_url_and_rejects_mismatched_issue_ident
         validate_context_pack({**pack, "issue_ref": "issue #183"}, IDENTITY)
 
 
+def test_stage_identity_fields_round_trip_and_legacy_receipt_is_unbound():
+    identity = {
+        **IDENTITY,
+        "role_id": "reviewer",
+        "role_version": "1.0.0",
+        "stage_id": "review",
+        "stage_version": "1.0.0",
+        "run_id": "run-1",
+        "work_item_id": "wi-1",
+        "attempt_id": "attempt-1",
+        "fence": "fence-1",
+        "plan_revision": 0,
+        "coordinator_agent_id": "coord",
+        "parent_instance_id": "parent",
+        "idempotency_key": "idem-1",
+    }
+    pack = build_context_pack(task_id="T1", goal="review", identity=identity,
+                              allowed_paths=["README.md"], source_refs=["README.md"])
+    assert pack["role_id"] == "reviewer"
+    assert pack["attempt_id"] == "attempt-1"
+    receipt = bind_receipt({"status": "VERIFIED"}, identity, context_pack=pack)
+    assert receipt["stage_id"] == "review"
+    assert receipt["idempotency_key"] == "idem-1"
+    assert receipt["legacy_unbound"] is True
+    with pytest.raises(AgentContractError, match="fence"):
+        bind_receipt({"status": "VERIFIED", "fence": "other"}, identity, context_pack=pack)
+
+
 def test_queue_persists_identity_and_rejects_replayed_identity(tmp_path):
     q = SQLiteRemoteQueue(str(tmp_path / "queue.db"))
     q.enqueue("T1")

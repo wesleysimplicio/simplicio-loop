@@ -54,7 +54,7 @@ packages = ["simplicio_loop"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-simplicio_loop = ["_bundle/**/*"]
+simplicio_loop = ["_bundle/**/*", "_contracts/**/*.json"]
 
 [tool.coverage.run]
 source = ["simplicio_loop"]

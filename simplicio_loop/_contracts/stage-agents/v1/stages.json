@@ -116,46 +116,6 @@
     },
     {
       "schema": "simplicio.agent-role/v1",
-      "role_id": "security_correctness_reviewer",
-      "version": "1.0.0",
-      "title": "Security & Correctness Reviewer",
-      "description": "Independent reviewer for ACs, logic, race, authz, injection, secrets, unsafe I/O, broken callers, placeholders and debug leaks.",
-      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
-      "forbidden_to_self_sign": ["implementation", "security_signoff", "delivery", "completion"],
-      "independent_of_roles": ["blast_radius_reviewer", "completion_auditor", "delivery_agent", "implementation_agent", "maintainability_reviewer", "runtime_reproduction_verifier", "safety_gate"]
-    },
-    {
-      "schema": "simplicio.agent-role/v1",
-      "role_id": "maintainability_reviewer",
-      "version": "1.0.0",
-      "title": "Maintainability Reviewer",
-      "description": "Independent reviewer for structural simplicity, boundaries, duplication, architecture boundaries, naming, dead code and empty tests.",
-      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
-      "forbidden_to_self_sign": ["implementation", "security_signoff", "delivery", "completion"],
-      "independent_of_roles": ["blast_radius_reviewer", "completion_auditor", "delivery_agent", "implementation_agent", "runtime_reproduction_verifier", "safety_gate", "security_correctness_reviewer"]
-    },
-    {
-      "schema": "simplicio.agent-role/v1",
-      "role_id": "runtime_reproduction_verifier",
-      "version": "1.0.0",
-      "title": "Runtime/Reproduction Verifier",
-      "description": "Independent verifier that executes the real path, target tests, web/flow/schema evidence, and checks for zero runtime errors.",
-      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
-      "forbidden_to_self_sign": ["implementation", "security_signoff", "delivery", "completion"],
-      "independent_of_roles": ["blast_radius_reviewer", "completion_auditor", "delivery_agent", "implementation_agent", "maintainability_reviewer", "safety_gate", "security_correctness_reviewer"]
-    },
-    {
-      "schema": "simplicio.agent-role/v1",
-      "role_id": "blast_radius_reviewer",
-      "version": "1.0.0",
-      "title": "Blast-Radius Reviewer",
-      "description": "Independent reviewer that recomputes impact/flow: planned surface vs actual diff vs reverse dependents vs sibling patterns.",
-      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
-      "forbidden_to_self_sign": ["implementation", "security_signoff", "delivery", "completion"],
-      "independent_of_roles": ["completion_auditor", "delivery_agent", "implementation_agent", "maintainability_reviewer", "runtime_reproduction_verifier", "safety_gate", "security_correctness_reviewer"]
-    },
-    {
-      "schema": "simplicio.agent-role/v1",
       "role_id": "delivery_agent",
       "version": "1.0.0",
       "title": "Delivery Agent",

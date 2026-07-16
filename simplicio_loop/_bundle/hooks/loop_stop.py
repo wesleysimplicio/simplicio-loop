@@ -70,61 +70,7 @@ def allow_stop():
     sys.exit(0)
 
 
-def _loop_progress_module():
-    """Best-effort import of scripts/loop_progress.py — same pattern as _flow_audit_module()."""
-    try:
-        repo_root = os.getcwd()
-        scripts_dir = os.path.join(repo_root, "scripts")
-        if scripts_dir not in sys.path:
-            sys.path.insert(0, scripts_dir)
-        import loop_progress as _lp  # noqa: local import, optional dependency
-        return _lp
-    except Exception:
-        return None
-
-
-def _emit_final_progress(reason, outcome):
-    """Fail-open final progress event (#301 § 4) — the F3/`refeed_exit` event that closes out
-    `progress.json`'s `run_state` (running -> done|capped|handoff|stopped) so it never stays
-    "in progress" forever after the run actually ended."""
-    try:
-        lp = _loop_progress_module()
-        if lp is None:
-            return
-        lp.emit_event("refeed_exit", status="end", outcome=outcome, detail=reason,
-                      source="loop_stop.py")
-    except Exception:
-        pass
-
-
-def _progress_header_prefix(nxt, max_iter):
-    """#302 § 2 — a short ` · fase F1 · etapa 5/9 operate · item T3 · ACs 1/3 · 42% geral` prefix
-    for the re-feed header. Fail-open: any error -> "" (header identical to before this feature).
-    Also regenerates PROGRESS.md (1 call/turn, zero token cost — a file, not context, per #302
-    § 2.3)."""
-    try:
-        lp = _loop_progress_module()
-        if lp is None:
-            return ""
-        snap = lp.build_snapshot(cap=(max_iter or None))
-        try:
-            lp.write_snapshot(snap)
-            _, md = lp.render_full(snap)
-            lp._atomic_write(lp._md_path(), md)
-        except Exception:
-            pass
-        line = lp.render_turn_header(snap)
-        rest = line.split("|", 1)[1] if "|" in line else line
-        rest = rest.replace("[simplicio-loop] ", "").strip()
-        rest = re.sub(r"\s*·\s*iter\s+\S+$", "", rest)  # drop trailing "· iter N/cap" (redundant)
-        return " · " + rest if rest else ""
-    except Exception:
-        return ""
-
-
-def cleanup_and_stop(reason=None, outcome=None):
-    if reason:
-        _emit_final_progress(reason, outcome)
+def cleanup_and_stop():
     for p in (SCRATCHPAD, DONE_FLAG, LEGACY_DONE_FLAG, LAST_RESP, WATCHER_STATE, WATCHER_CHALLENGE):
         try:
             if os.path.exists(p):
@@ -954,7 +900,7 @@ def main():
         if os.path.exists(STOP_SIGNAL):
             if meta is not None:
                 write_handoff("manual STOP signal", meta, body)
-            cleanup_and_stop("STOP: manual STOP signal", "blocked")
+            cleanup_and_stop()
         # Waiting on a background gate (workflow / CI / long task)? Let the turn end WITHOUT
         # consuming an iteration or re-feeding — we are blocked on that gate, not idle. The gate's
         # completion re-invokes the agent; the loop resumes then (lock is gone). Preserves state.
@@ -965,12 +911,12 @@ def main():
             allow_stop()
         # (2) Corrupt state.
         if meta is None:
-            cleanup_and_stop("corrupt loop state (unparseable frontmatter)", "blocked")
+            cleanup_and_stop()
         try:
             iteration = int(meta.get("iteration", "1"))
             max_iter = int(meta.get("max_iterations", "0"))
         except ValueError:
-            cleanup_and_stop("corrupt loop state (bad iteration/max_iterations)", "blocked")
+            cleanup_and_stop()
         promise = meta.get("completion_promise", "null")
         promise = None if promise in (None, "null", "") else promise
         evidence_required = str(meta.get("evidence_required", "true")).lower() != "false"
@@ -987,7 +933,7 @@ def main():
                 "fingerprint": _journal_stall()[0], "attempt": iteration, "reason": reason,
             })
             write_handoff(reason, meta, body)
-            cleanup_and_stop(reason, "blocked")
+            cleanup_and_stop()
 
         stdin = read_stdin_json()
         resp = last_assistant_text(stdin)
@@ -1024,19 +970,13 @@ def main():
         deferred_receipt = maintenance_deferred_receipt()
         if deferred_receipt:
             write_handoff("maintenance deferred (backlog-only mode active)", meta, body)
-            cleanup_and_stop("maintenance deferred (backlog-only mode active)", "blocked")
+            cleanup_and_stop()
         if promise and resp:
             oracle = completion_oracle_payload(resp, flow_gap or "")
             if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
                 _call_simplicio_hbp_append(iteration, promise, watcher_tag)
                 refresh_cross_agent_wiki(include_handoff=False)
-                cleanup_and_stop("promise verificada", "pass")  # (3) promise fulfilled → stop
-            elif PROMISE_RE.search(resp):
-                # (#302 § 3) a promise WAS typed this turn but the oracle refused it (no in-turn
-                # evidence / no receipt) — the loop continues, but this is high-signal for the
-                # user ("the model thought it was done, the gate disagreed"). Fail-open, never
-                # blocks the turn.
-                _emit_final_progress("promise REJEITADA: sem evidência no turno", "blocked")
+                cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
             # A promise is never sufficient without a persisted run receipt.  The old
             # lightweight fallback was a fail-open completion bypass (#138); missing run
             # artifacts remain DELIVERY_PENDING and the loop continues or hands off at cap.
@@ -1044,7 +984,7 @@ def main():
         if os.path.exists(DONE_FLAG) or os.path.exists(LEGACY_DONE_FLAG):
             oracle = completion_oracle_payload(flow_gap=flow_gap or "")
             if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
-                cleanup_and_stop("promise verificada (done flag)", "pass")
+                cleanup_and_stop()
         # (4) Iteration cap — incomplete stop, hand off.
         if max_iter > 0 and iteration >= max_iter:
             _call_simplicio_hbp_append_topic("loop-run-blocked", {
@@ -1052,7 +992,7 @@ def main():
                 "reason": "max_iterations cap reached",
             })
             write_handoff("max_iterations cap reached", meta, body)
-            cleanup_and_stop("cap atingido: max_iterations cap reached", "blocked")
+            cleanup_and_stop()
         # (5) Spindle handoff — latched handoff overrides re-feed.
         if spindle_latched():
             next_agent = "?"
@@ -1063,7 +1003,7 @@ def main():
             except Exception:
                 pass
             write_handoff("spindle handoff (latched — waiting for '%s')" % next_agent, meta, body)
-            cleanup_and_stop("handoff latched (waiting for '%s')" % next_agent, "blocked")
+            cleanup_and_stop()
         # (6) Continue: bump iteration in place, re-feed the goal body.
         nxt = iteration + 1
         with open(SCRATCHPAD, encoding="utf-8") as f:
@@ -1094,12 +1034,8 @@ def main():
             else ""
         )
         flow_hint = " Flow-audit gap: %s." % flow_gap if flow_gap else ""
-        # #302 — prefix the re-feed header with the progress snapshot (fase/etapa/item/ACs/%),
-        # so the user sees WHERE the loop is even when the model forgets to narrate it. Fail-open:
-        # any error -> empty prefix, header identical to before this feature existed.
-        progress_prefix = _progress_header_prefix(nxt, max_iter)
-        header = "[simplicio-loop iteration %d.%s%s%s%s%s %s]" % (
-            nxt, progress_prefix, promise_hint, ac_hint, flow_hint, phase_header_hint(), watcher_tag
+        header = "[simplicio-loop iteration %d.%s%s%s%s %s]" % (
+            nxt, promise_hint, ac_hint, flow_hint, phase_header_hint(), watcher_tag
         )
         # Issue the NEXT iteration's watcher challenge before re-feeding (#82) — must be on disk
         # before the next turn's agent acts, so a mid-turn `watcher_verify.py` run can read and

@@ -196,12 +196,8 @@ an anchor checklist, nor a backlog table, nor a single print, so an evidence-les
 opened by accident. It honors a discovered
 `.github/PULL_REQUEST_TEMPLATE.md` (keeps the maintainer's sections, appends the checklist + prints
 below). `pr_evidence.py comment --item <id> --pr <N>` emits the matching in-source evidence comment
-(PR link + per-AC check + a count of attached prints). Add `--publish --issue <N> --repo owner/name`
-(both required explicitly — no implicit git-remote auto-detect) to ALSO post it to the source issue
-via `gh api`, idempotently: a hidden marker lets a re-run on the same issue UPDATE that one comment
-instead of appending a duplicate, and a publish failure BLOCKS (exit 3) instead of silently
-reporting success. Write surrounding comment PROSE in the user's language; keep paths/identifiers
-in English.
+(PR link + per-AC check + a count of attached prints). Write surrounding comment PROSE in the user's
+language; keep paths/identifiers in English.
 
 **Verify in the workflow, never trust self-report.** When a fan-out drove the run, its FINAL step
 re-verifies reality: the merged build/test, the `smoke` gate, and a source re-query confirming
@@ -219,10 +215,6 @@ Status: done | partial | blocked
 
 ## Step 6b — Close the feedback loop until merge-ready
 Opening a Draft PR is `dev_done`, NOT `merge_ready`. Pursue these loops, POLLED like intake:
-0. **Cadenced PR patrol → route.** Every two delivered items with open PRs, run
-   `python3 scripts/pr_patrol.py --repo <owner/name> --completed-items <N>`. Before declaring the
-   body of work finished, run it with `--final`. It is read-only and does not block independent
-   workers; its actionable rows become normal Step 6b repair/review work.
 1. **CI → fix.** Check status; on a failed check fetch the log, parse via `diagnostics`, fix the
    ROOT CAUSE, push. Loop until green. Never disable a test to go green.
 2. **Review comments → adjust.** Read PR review threads + the source item's comments. For each
@@ -238,18 +230,6 @@ Opening a Draft PR is `dev_done`, NOT `merge_ready`. Pursue these loops, POLLED 
    messages, paths, and identifiers in English.
 5. **Merge-readiness.** `merge_ready` only when CI green AND review approved AND ACs met.
    `done` in the tracker ≠ merge-ready.
-6. **After every merge → re-patrol siblings.** A merge changes `main` and can make another open
-   PR behind or conflicting. `MergeExecutor.merge()` automatically emits a post-merge patrol
-   receipt; standalone flows must run `python3 scripts/pr_patrol.py --repo <owner/name>
-   --post-merge` and route every actionable sibling back through this section before another
-   completion claim.
-7. **Review any provider's PR against its ACs.** Before a reviewer writes a verdict, load the
-   PR packet/diff and compare it with the explicit AC checklist and evidence. Publish one
-   idempotent PR comment through `scripts/pr_patrol.py review ... --publish`: `accepted` only with
-   fully evidenced ACs, otherwise `changes_requested` or `unverified` with a concrete note. Never
-   auto-approve a PR. The implementation worker must have signed/claimed the source GitHub issue
-   before mutation; a reviewer comment is a separate coordination receipt and does not steal that
-   lease.
 
 The Step 3b watcher therefore polls THREE things: new work-items, open PRs (comments/checks), and
 branches behind the default branch.
