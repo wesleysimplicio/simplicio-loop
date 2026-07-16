@@ -276,6 +276,17 @@ def evaluate_quality_matrix(run_dir: str) -> Dict[str, Any]:
         return result
     gates.append(_gate("quality_matrix", True, "quality_matrix_present", f"{RECEIPT_FILENAME} loaded"))
 
+    # #283: always propagate the issue-envelope fields + nested tests mirror onto the
+    # verdict, regardless of pass/fail, so a consumer reading run_id/work_item/tests off
+    # the verdict (not the raw receipt) gets a complete, round-trippable picture. This
+    # must run before any early return below.
+    if isinstance(receipt, dict):
+        if receipt.get("run_id") is not None:
+            result["run_id"] = receipt["run_id"]
+        if receipt.get("work_item") is not None:
+            result["work_item"] = receipt["work_item"]
+        result["tests"] = receipt.get("tests", sync_tests_envelope(dict(receipt)).get("tests", {}))
+
     raw_threshold = receipt.get("coverage_threshold", DEFAULT_COVERAGE_THRESHOLD)
     try:
         threshold = validate_coverage_threshold(raw_threshold)

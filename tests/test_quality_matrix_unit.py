@@ -177,6 +177,45 @@ def test_tdd_lane_not_evaluated_without_policy_opt_in(tmp_path):
     assert verdict["ready"] is True  # tdd absent, but policy doesn't require it
 
 
+def test_verdict_propagates_run_id_and_work_item(tmp_path):
+    # #283: the issue-envelope fields run_id / work_item must surface on the
+    # verdict (result) regardless of pass/fail, so a consumer reading them off
+    # the verdict -- not the raw receipt -- gets a complete, round-trippable view.
+    receipt = _passing_receipt(
+        run_id="run-abc123",
+        work_item={"source": "github", "id": 283},
+    )
+    (tmp_path / "quality-matrix.json").write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = evaluate_quality_matrix(str(tmp_path))
+    assert verdict["run_id"] == "run-abc123"
+    assert verdict["work_item"] == {"source": "github", "id": 283}
+
+
+def test_verdict_propagates_nested_tests_mirror(tmp_path):
+    # #283: a receipt carrying the nested "tests" envelope must expose it on the
+    # verdict; when absent, sync_tests_envelope fills a derived mirror.
+    receipt = _passing_receipt(
+        tests={
+            "unit": {"status": "pass", "proof_ref": "tests/unit"},
+            "integration": {"status": "pass", "proof_ref": "tests/integration"},
+        },
+    )
+    (tmp_path / "quality-matrix.json").write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = evaluate_quality_matrix(str(tmp_path))
+    assert "tests" in verdict
+    assert verdict["tests"]["unit"]["status"] == "pass"
+    assert verdict["tests"]["integration"]["status"] == "pass"
+
+
+def test_verdict_tests_mirror_derived_when_absent(tmp_path):
+    # #283: no nested "tests" key -> verdict still carries a derived mirror.
+    receipt = _passing_receipt()
+    (tmp_path / "quality-matrix.json").write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = evaluate_quality_matrix(str(tmp_path))
+    assert "tests" in verdict
+    assert isinstance(verdict["tests"], dict)
+
+
 def test_tdd_lane_required_when_policy_opts_in_and_missing(tmp_path):
     receipt = _passing_receipt(policy={"tdd_required": True})
     (tmp_path / "quality-matrix.json").write_text(json.dumps(receipt), encoding="utf-8")
