@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [3.35.1] — 2026-07-16
+
+- **#294 repository governance:** refreshed the measured repository-size report and
+  canonical claims/quality surfaces on the current `main` tip.
+- **Distributed loop reconciliation:** synchronized the local distributed-loop changes,
+  including the issue-cron driver and intake/progress coverage added after 3.35.0.
+- **Cross-machine GitHub coordination:** lifecycle synchronization is now enabled by
+  default whenever a run has a GitHub source issue, using one idempotent canonical
+  issue comment for planning, claims, progress, evidence, PR, merge, and release
+  state. `SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0` is the explicit offline/legacy opt-out.
+- Release is a patch-only republish of the verified `main` tree; no API contract changes.
+
 ## [3.35.0] — 2026-07-15
 
 Large multi-agent push closing the P0/P1/P2 backlog opened by #183/#283-#296. Highlights:

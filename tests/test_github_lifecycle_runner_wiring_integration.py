@@ -1,8 +1,9 @@
 """Tests for the #285 GitHub lifecycle sync wired into the runner's event stream
 (`simplicio_loop/runner.py::_record_event` -> `_sync_github_lifecycle`).
 
-Disabled by default (opt-in via `SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC`) and fail-open:
-no `source_issue` on the run state, no env var, or any transport error must never break
+Enabled by default for runs carrying a `source_issue` and fail-open: an explicit
+falsy `SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0` is the temporary opt-out. No
+`source_issue` on the run state, or any transport error must never break
 `_record_event`/`_emit_event`, which the whole loop depends on for every phase.
 """
 import json
@@ -27,8 +28,8 @@ def _state(with_source_issue=False):
     return state
 
 
-def test_sync_is_a_noop_without_the_env_var(tmp_path, monkeypatch):
-    monkeypatch.delenv("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC", raising=False)
+def test_sync_is_a_noop_with_explicit_legacy_opt_out(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC", "0")
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     state = _state(with_source_issue=True)
@@ -57,7 +58,7 @@ def test_sync_is_a_noop_without_a_source_issue(tmp_path, monkeypatch):
 
 
 def test_sync_projects_a_mapped_event_onto_the_lifecycle_state(tmp_path, monkeypatch):
-    monkeypatch.setenv("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC", "1")
+    monkeypatch.delenv("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC", raising=False)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     state = _state(with_source_issue=True)
