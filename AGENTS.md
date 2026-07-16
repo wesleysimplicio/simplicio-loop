@@ -92,6 +92,10 @@ path + verdict; a missing toolchain BLOCKS, never a fake pass.
 ## Non-negotiables
 
 - Run commands for real — never simulate output.
+- **GitHub issue signature first:** before taking an issue, publish the canonical `CLAIMED`
+  lifecycle comment with the worker/run/attempt identity and goal. Do this before mutation or a
+  worktree; never take a live claimed issue. A PR reviewer signs its assessment on the PR instead
+  and does not steal the implementation lease.
 - Never mark an item done without green gates + evidence ("works, not just compiles").
 - Secret-scan every diff; route irreversible ops through the human gate. Where hooks exist this is
   ENFORCED fail-closed by `hooks/action_gate.py` (PreToolUse/pre-push) — not left to the model.

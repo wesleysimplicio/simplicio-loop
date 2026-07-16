@@ -154,6 +154,21 @@ actionable result returns to Step 6b instead of being deferred. Run the same pat
 `--final` before the run can claim completion. It is a priority signal, not a queue lock: local
 work may continue while independent PR repair workers run.
 
+**Cross-agent acceptance review.** A patrol may review PRs opened by any provider (Claude,
+Codex, Cursor, Gemini, Kiro, Antigravity, Hermes/Simplicio Agent, OpenClaw, or a human). Fetch
+the review packet first, inspect the diff against the explicit AC checklist and its evidence, then
+publish/update exactly one marked PR comment:
+`python3 scripts/pr_patrol.py review --repo <owner/name> --pr <N> --verdict accepted|changes_requested|unverified --note "<concrete evidence>" --publish`.
+`accepted` is rejected unless every explicit criterion is checked and carries evidence; this is a
+coordination receipt, **not** an automatic GitHub approval. Missing ACs/evidence must be commented
+as `unverified`, never silently accepted. Conflict/rebase/failed-check findings return to Step 6b.
+
+**GitHub issue signature before work.** Before any provider starts an issue, it must claim/sign
+the source issue with the canonical `CLAIMED` lifecycle comment (worker/run/attempt identity and
+goal) using `github_lifecycle.py publish`. Do this before editing or opening a worktree; never
+take an issue already claimed by another live worker. PR reviewers keep the issue lifecycle state
+intact and sign their independent AC assessment on the PR comment instead.
+
 **agentsview (optional).** If configured (`scripts/agentsview_adapter.py` authed), poll
 agentsview for stalled sessions each cycle and convert them into work-items of type 'resume
 abandoned session'.

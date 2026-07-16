@@ -243,6 +243,13 @@ Opening a Draft PR is `dev_done`, NOT `merge_ready`. Pursue these loops, POLLED 
    receipt; standalone flows must run `python3 scripts/pr_patrol.py --repo <owner/name>
    --post-merge` and route every actionable sibling back through this section before another
    completion claim.
+7. **Review any provider's PR against its ACs.** Before a reviewer writes a verdict, load the
+   PR packet/diff and compare it with the explicit AC checklist and evidence. Publish one
+   idempotent PR comment through `scripts/pr_patrol.py review ... --publish`: `accepted` only with
+   fully evidenced ACs, otherwise `changes_requested` or `unverified` with a concrete note. Never
+   auto-approve a PR. The implementation worker must have signed/claimed the source GitHub issue
+   before mutation; a reviewer comment is a separate coordination receipt and does not steal that
+   lease.
 
 The Step 3b watcher therefore polls THREE things: new work-items, open PRs (comments/checks), and
 branches behind the default branch.
