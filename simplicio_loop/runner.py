@@ -1173,10 +1173,12 @@ def _sync_github_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str
     """Project one phase event onto the #285 GitHub lifecycle canonical comment.
 
     Best-effort and fail-open, exactly like the existing `pr_evidence.py
-    progress-comment` command it complements: disabled unless
-    ``SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC`` is truthy AND the run state carries a
-    ``source_issue`` dict (``{"owner": ..., "repo": ..., "issue": ...}``); any
-    failure (no `gh`, no network, transport error, import error) is logged to
+    progress-comment` command it complements: enabled by default whenever the run
+    state carries a ``source_issue`` dict (``{"owner": ..., "repo": ..., "issue": ...}``) --
+    issue #411 flipped the prior opt-in to a default-on behavior. Set
+    ``SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0`` (or ``false``/``no``) to opt out for
+    offline/legacy runs. Any failure (no `gh`, no network, transport error, import
+    error) is logged to
     ``lifecycle-sync-errors.jsonl`` under the run directory and swallowed -- this
     sync must never abort or fail the run. It only ever handles the intermediate
     lifecycle projection (CLAIMED/PLANNED/IN_PROGRESS/...); the authoritative,
@@ -1185,7 +1187,10 @@ def _sync_github_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str
     completion time by the caller that owns that decision, never automatically from
     this generic per-event hook.
     """
-    if str(os.environ.get("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC") or "").strip().lower() not in ("1", "true", "yes"):
+    # Default-on (issue #411): sync fires when a source_issue is present unless the
+    # operator explicitly opts out via SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0/false/no.
+    _sync_opt = str(os.environ.get("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC") or "").strip().lower()
+    if _sync_opt in ("0", "false", "no"):
         return
     source_issue = state.get("source_issue") or {}
     owner, repo, issue = source_issue.get("owner"), source_issue.get("repo"), source_issue.get("issue")

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### [3.35.1]
+- **#411 default GitHub issue coordination**: flipped the GitHub lifecycle sync
+  (`_sync_github_lifecycle`) from opt-IN to **default-on** — it now fires automatically
+  whenever a run state carries a `source_issue` dict, keeping one idempotent canonical
+  GitHub-only issue comment as the cross-machine coordination record. Retained an explicit
+  `SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0` (or `false`/`no`) offline/legacy opt-out.
+  Synchronized `docs/GITHUB_ISSUES_ADAPTER.md` to document the new default. Fail-open
+  behavior and the fail-closed `close` path are unchanged.
+
 ## [3.35.0] — 2026-07-15
 
 Large multi-agent push closing the P0/P1/P2 backlog opened by #183/#283-#296. Highlights:
