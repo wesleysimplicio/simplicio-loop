@@ -15,6 +15,8 @@ reachability    Run `GitHubDeliveryAdapter.check_reachability` for a commit agai
 receipt         Build a `simplicio.delivery-stage-receipt/v1` from a JSON input file
                 describing a saga's recorded steps, and print/write it. Exits 1 when the
                 receipt is not delivered.
+stage-receipt   Build the #429 receipt AND project it into the canonical
+                `simplicio.stage-receipt/v1` the coordinator (#424) actually validates.
 
 Silent-on-success, errors to stderr -- same discipline as `scripts/implementation_agent.py`.
 """
@@ -91,6 +93,56 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+class _StepsView:
+    """Minimal duck-typed stand-in for a `DeliverySaga` -- `build_delivery_stage_receipt`
+    only ever reads `.steps`, so the CLI doesn't need a full live adapter/ledger to
+    build a receipt from an already-recorded saga's JSON."""
+    def __init__(self, steps):
+        self.steps = [da.SagaStep(event=s["event"], ok=bool(s["ok"]), detail=s.get("detail") or {}) for s in steps]
+
+
+def _build_delivery_receipt(payload):
+    payload = dict(payload)
+    payload["preconditions"] = da.DeliveryPreconditions(
+        ok=bool(payload["preconditions"]["ok"]), errors=list(payload["preconditions"].get("errors") or []),
+    )
+    payload["saga"] = _StepsView(payload["saga"]["steps"])
+    return da.build_delivery_stage_receipt(**payload)
+
+
+def _cmd_receipt(args: argparse.Namespace) -> int:
+    payload = _load(args.input)
+    receipt = _build_delivery_receipt(payload)
+    text = json.dumps(receipt, ensure_ascii=False, indent=2)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    else:
+        print(text)
+    if not da.receipt_is_delivered(receipt):
+        print(f"RECEIPT NOT DELIVERED: verdict={receipt.get('verdict')}", file=sys.stderr)
+        return 1
+    print("RECEIPT DELIVERED", file=sys.stderr)
+    return 0
+
+
+def _cmd_stage_receipt(args: argparse.Namespace) -> int:
+    payload = _load(args.input)
+    receipt = _build_delivery_receipt(payload)
+    stage_receipt = da.to_stage_receipt(
+        receipt, receipt_id=args.receipt_id, agent_instance_id=args.agent_instance_id,
+        attempt_ordinal=args.attempt_ordinal, context_hash=args.context_hash,
+        manifest_hash=args.manifest_hash,
+    )
+    text = json.dumps(stage_receipt, ensure_ascii=False, indent=2)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    else:
+        print(text)
+    return 0 if da.receipt_is_delivered(receipt) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="delivery_agent", description="delivery_agent (#429) CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -116,6 +168,25 @@ def main(argv: list[str] | None = None) -> int:
     p_st = sub.add_parser("status", help="compute status/blocker/next-action from recorded saga steps")
     p_st.add_argument("--input", required=True, help='JSON file: {"steps": [{"event", "ok", "detail"}, ...]}')
     p_st.set_defaults(func=_cmd_status)
+
+    receipt_input_help = ('JSON file: {"run_id","task_id","attempt_id","fence","plan_revision",'
+                           '"identity","preconditions":{"ok","errors"},"saga":{"steps":[...]},'
+                           '"source_id","target_branch","pr_url"}')
+    p_rec = sub.add_parser("receipt", help="build the simplicio.delivery-stage-receipt/v1 from a recorded saga")
+    p_rec.add_argument("--input", required=True, help=receipt_input_help)
+    p_rec.add_argument("--out", default="")
+    p_rec.set_defaults(func=_cmd_receipt)
+
+    p_sr = sub.add_parser("stage-receipt", help="build the #429 receipt AND project it into the canonical "
+                           "simplicio.stage-receipt/v1 the coordinator (#424) actually validates")
+    p_sr.add_argument("--input", required=True, help=receipt_input_help)
+    p_sr.add_argument("--receipt-id", required=True)
+    p_sr.add_argument("--agent-instance-id", required=True)
+    p_sr.add_argument("--attempt-ordinal", type=int, default=1)
+    p_sr.add_argument("--context-hash", required=True, help="64-hex sha256 from the coordinator's AgentInstance")
+    p_sr.add_argument("--manifest-hash", required=True, help="64-hex sha256 from the coordinator's AgentInstance")
+    p_sr.add_argument("--out", default="")
+    p_sr.set_defaults(func=_cmd_stage_receipt)
 
     args = parser.parse_args(argv)
     return args.func(args)

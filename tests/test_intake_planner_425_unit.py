@@ -9,7 +9,9 @@ the single-clarifying-question path.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 
 import pytest
 
@@ -378,3 +380,29 @@ def test_manifesto_registers_intake_planner_role_and_intake_stage():
     stages = {s["stage_id"]: s for s in graph["stages"]}
     assert INTAKE_PLANNER_ROLE_ID in roles
     assert stages["intake"]["role_id"] == INTAKE_PLANNER_ROLE_ID
+
+
+def test_cli_stage_receipt_subcommand_is_a_real_live_path(tmp_path, capsys):
+    # Regression for issue #458 adversarial review: to_stage_receipt() was only
+    # ever called from this test file, never from any production entrypoint.
+    # scripts/intake_planner.py's `stage-receipt` subcommand is that
+    # entrypoint -- exercise it via its real main(), not just the library call.
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(_base_kwargs()), encoding="utf-8")
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "scripts.intake_planner_cli", os.path.join(repo_root, "scripts", "intake_planner.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    exit_code = mod.main([
+        "stage-receipt", "--input", str(input_path), "--receipt-id", "rec-cli",
+        "--agent-instance-id", "inst-cli", "--task-id", "T-1", "--attempt-id", "att-cli",
+        "--fence", "fence-1", "--context-hash", "a" * 64, "--manifest-hash", "b" * 64,
+    ])
+    out = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert out["schema"] == "simplicio.stage-receipt/v1"
+    assert out["role_id"] == INTAKE_PLANNER_ROLE_ID

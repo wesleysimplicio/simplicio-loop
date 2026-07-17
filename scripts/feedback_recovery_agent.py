@@ -13,6 +13,8 @@ receipt    Build a `simplicio.feedback-recovery-receipt/v1` from a JSON input
            verdict is `routed`.
 invalidate Compute the transitive receipt-invalidation closure for a list of
            changed dimensions.
+stage-receipt Build the #430 receipt AND project it into the canonical
+           `simplicio.stage-receipt/v1` the coordinator (#424) actually validates.
 
 Silent-on-success, errors to stderr -- same discipline as
 `scripts/implementation_agent.py`.
@@ -86,6 +88,28 @@ def _cmd_receipt(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_stage_receipt(args: argparse.Namespace) -> int:
+    payload = _load(args.input)
+    try:
+        receipt = fra.build_feedback_recovery_receipt(**payload)
+    except fra.FeedbackRecoveryAgentError as exc:
+        print(f"RECEIPT BLOCKED ({exc.reason_code}): {exc}", file=sys.stderr)
+        return 1
+    stage_receipt = fra.to_stage_receipt(
+        receipt, receipt_id=args.receipt_id, agent_instance_id=args.agent_instance_id,
+        task_id=args.task_id, attempt_id=args.attempt_id, fence=args.fence,
+        attempt_ordinal=args.attempt_ordinal, context_hash=args.context_hash,
+        manifest_hash=args.manifest_hash,
+    )
+    text = json.dumps(stage_receipt, ensure_ascii=False, indent=2)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    else:
+        print(text)
+    return 0 if fra.receipt_is_routed(receipt) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="feedback_recovery_agent", description="feedback_recovery_agent (#430) CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -107,6 +131,20 @@ def main(argv: list[str] | None = None) -> int:
     p_rec.add_argument("--input", required=True, help="JSON file with build_feedback_recovery_receipt() kwargs")
     p_rec.add_argument("--out", default="", help="optional path to write the receipt JSON")
     p_rec.set_defaults(func=_cmd_receipt)
+
+    p_sr = sub.add_parser("stage-receipt", help="build the #430 receipt AND project it into the canonical "
+                           "simplicio.stage-receipt/v1 the coordinator (#424) actually validates")
+    p_sr.add_argument("--input", required=True, help="JSON file with build_feedback_recovery_receipt() kwargs")
+    p_sr.add_argument("--receipt-id", required=True)
+    p_sr.add_argument("--agent-instance-id", required=True)
+    p_sr.add_argument("--task-id", required=True)
+    p_sr.add_argument("--attempt-id", required=True)
+    p_sr.add_argument("--fence", required=True)
+    p_sr.add_argument("--attempt-ordinal", type=int, default=1)
+    p_sr.add_argument("--context-hash", required=True, help="64-hex sha256 from the coordinator's AgentInstance")
+    p_sr.add_argument("--manifest-hash", required=True, help="64-hex sha256 from the coordinator's AgentInstance")
+    p_sr.add_argument("--out", default="")
+    p_sr.set_defaults(func=_cmd_stage_receipt)
 
     args = parser.parse_args(argv)
     return args.func(args)

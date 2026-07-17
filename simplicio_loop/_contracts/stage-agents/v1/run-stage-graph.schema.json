@@ -7,6 +7,8 @@
     "schema",
     "graph_id",
     "version",
+    "manifest_hash",
+    "schema_pins",
     "stages",
     "roles"
   ],
@@ -14,6 +16,11 @@
     "schema": { "const": "simplicio.run-stage-graph/v1" },
     "graph_id": { "type": "string", "minLength": 1 },
     "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "manifest_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "schema_pins": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+    },
     "stages": {
       "type": "array",
       "items": { "$ref": "stage-definition.schema.json" },

@@ -9,6 +9,10 @@ merely in isolation (the bug class CLAUDE.md flags).
 """
 from __future__ import annotations
 
+import importlib.util
+import json
+import os
+
 import pytest
 
 from simplicio_loop.feedback_recovery_agent import (
@@ -380,3 +384,31 @@ def test_receipt_never_declares_completion():
         prior_attempts=0, retry_budget=3,
     )
     assert r["complete"] is False
+
+
+def test_cli_stage_receipt_subcommand_is_a_real_live_path(tmp_path, capsys):
+    # Regression for issue #458 adversarial review: to_stage_receipt() was only
+    # ever called from this test file, never from any production entrypoint.
+    # scripts/feedback_recovery_agent.py's `stage-receipt` subcommand is that
+    # entrypoint -- exercise it via its real main(), not just the library call.
+    payload = dict(run_id="run1", task_id="T-7", attempt=1, reason_code="test_failed",
+                   prior_attempts=0, retry_budget=3)
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "scripts.feedback_recovery_agent_cli", os.path.join(repo_root, "scripts", "feedback_recovery_agent.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    exit_code = mod.main([
+        "stage-receipt", "--input", str(input_path), "--receipt-id", "rec-cli",
+        "--agent-instance-id", "inst-cli", "--task-id", "T-7", "--attempt-id", "att-cli",
+        "--fence", "fence-1", "--context-hash", "a" * 64, "--manifest-hash", "b" * 64,
+    ])
+    out = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert out["schema"] == "simplicio.stage-receipt/v1"
+    assert out["role_id"] == "feedback_recovery_agent"
