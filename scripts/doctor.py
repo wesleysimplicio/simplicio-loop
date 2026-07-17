@@ -441,9 +441,37 @@ def check_vscode_global():
             "msg": "global VS Code/Copilot surfaces aligned with source"}
 
 
+def chk_release_version():
+    """Is a newer GitHub release available? Network-dependent, so OPTIONAL/fail-open — a
+    detected-but-declined update is never silently applied, this only surfaces the fact."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "release_check", REPO / "scripts" / "release_check.py")
+        release_check = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(release_check)
+        local_version = release_check.read_local_version(str(REPO))
+        remote_tag = release_check._gh_latest_release_tag(release_check.DEFAULT_GH_REPO)
+    except Exception:
+        return {"status": WARN, "tier": "OPTIONAL", "name": "release_version",
+                "msg": "could not check for a newer release (network/gh unavailable) — skipped"}
+    if remote_tag is None:
+        return {"status": WARN, "tier": "OPTIONAL", "name": "release_version",
+                "msg": "could not check for a newer release (gh unavailable/unauthenticated)"}
+    comparison = release_check.compare_versions(local_version, remote_tag.lstrip("v"))
+    if comparison == "behind":
+        return {"status": WARN, "tier": "OPTIONAL", "name": "release_version",
+                "msg": ("a newer release is available: local %s < latest %s — "
+                       "run `bash scripts/update.sh` or `pip install -U simplicio-loop`, "
+                       "then re-verify with `python3 scripts/version_sync.py check`"
+                       % (local_version, remote_tag))}
+    return {"status": OK, "tier": "OPTIONAL", "name": "release_version",
+            "msg": "up to date (local %s, latest release %s)" % (local_version, remote_tag)}
+
+
 CHECKS = [chk_python, chk_operators, chk_mapper_capabilities, chk_skills,
           chk_hooks, chk_git_precommit_hook, chk_git_prepush_hook, chk_proxy, chk_wire,
-          chk_tray_dep, chk_remote_worker, check_vscode_global]
+          chk_tray_dep, chk_remote_worker, check_vscode_global, chk_release_version]
 
 
 def main(argv=None):

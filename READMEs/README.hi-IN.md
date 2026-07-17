@@ -6,19 +6,19 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-11-स्किल्स-और-एक्सेलेरेटर्स"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
+  <a href="#-12-स्किल्स-और-एक्सेलेरेटर्स"><img src="https://img.shields.io/badge/skills-12-7C3AED" alt="12 skills"></a>
   <a href="#-स्रोत-एडाप्टर्स"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
-  <a href="#-11-रनटाइम-एक-प्रोटोकॉल"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-पूरा-प्रवाह--माँग-से-वितरण-तक"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
+  <a href="#-15-रनटाइम-एक-प्रोटोकॉल"><img src="https://img.shields.io/badge/runtimes-15-2563EB" alt="15 runtimes"></a>
+  <a href="#-पूरा-प्रवाह--माँग-से-वितरण-तक"><img src="https://img.shields.io/badge/extension%20points-49-00E08A" alt="49 extension points"></a>
   <a href="#-टोकन-अर्थव्यवस्था"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-11-स्किल्स-और-एक्सेलेरेटर्स">11 स्किल्स</a> ·
+  <a href="#-12-स्किल्स-और-एक्सेलेरेटर्स">12 स्किल्स</a> ·
   <a href="#-स्रोत-एडाप्टर्स">स्रोत एडाप्टर्स</a> ·
-  <a href="#-11-रनटाइम-एक-प्रोटोकॉल">11 रनटाइम</a> ·
+  <a href="#-15-रनटाइम-एक-प्रोटोकॉल">15 रनटाइम</a> ·
   <a href="#-लूप">लूप</a> ·
   <a href="#-टोकन-अर्थव्यवस्था">टोकन अर्थव्यवस्था</a> ·
   <a href="#-टोकन-अर्थव्यवस्था">कैप्चर इंजन</a> ·
@@ -106,6 +106,43 @@ flowchart LR
 **नीति:** GitHub से जुड़े run में GitHub comments अनिवार्य हैं और `COMPLETE` remote confirmation की प्रतीक्षा करता है। Azure DevOps, Jira, Asana और Trello को comments तभी मिलते हैं जब connection, authentication, authorization और target resolution प्रमाणित हों; `NOT_CONNECTED` एक स्पष्ट, non-blocking skip है। Contract और tests: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436)।
 <!-- stage-agents-roadmap:end -->
 
+## 🆕 v3.38.0 में नया क्या है — मल्टी-एजेंट समन्वय रिलीज़
+
+यह रिलीज़ उस एक कठिन समस्या को हल करती है जो तभी सामने आती है जब **कई agent सत्र एक साथ एक ही
+repo पर काम करते हैं**: किसी सत्र को कैसे पता चले कि कौन-सा issue पहले से claim हो चुका है, कौन-सा
+PR मर्ज होकर भी अधूरा रह गया, और खाली समय में सत्र किसी sibling का काम दोहराने के बजाय क्या करे?
+नीचे हर बिंदु इसी repo की सजीव, बहु-सत्र state पर बना, परखा और भेजा गया — किसी काल्पनिक परिदृश्य
+पर नहीं।
+
+- **`scripts/coordinator.py` — निर्णय केंद्र।** GitHub की आज की स्थिति (claim टिप्पणियाँ + मर्ज-किए
+  PRs) देखकर हर issue के लिए एक नियतात्मक क्रिया लौटाता है: `OWN`, `CONTINUE_OWN`,
+  `DEFER_ACTIVE_CLAIM` (कोई sibling हाल ही में claim कर चुका), `RECLAIM_STALE` (वह claim ठंडा पड़
+  गया), या `VERIFY_PARTIAL` (इस issue के लिए PR मर्ज हो चुका पर issue अब भी खुला है — मान लेने से
+  पहले जाँचो कि वास्तव में क्या हुआ)। दो सत्र एक साथ एक ही issue claim करें तो तुरंत `duplicate_risk`
+  उठाता है — पहले ही दिन सजीव पकड़ा गया: दो सत्र अलग-अलग फ़ाइलनामों में एक ही findings collector
+  बना रहे थे।
+- **`scripts/pr_dod_review.py` — खाली समय का समीक्षक।** जब सारे open issues पहले से claim हों, तब
+  सबसे अच्छा कदम इंतज़ार करना नहीं बल्कि खुले PRs को repo के अपने मानक — 7-आयामी Definition of Done
+  (implementation, unit/integration/system/regression tests, performance benchmark, ≥85% coverage)
+  और मूल issue की जमी acceptance-criteria सूची — पर जाँचना है। एक असली, पहले से मर्ज हुए "MVP slice"
+  PR पर इसने parent epic के **17 में से 17** acceptance criteria अभी भी अधूरे सही पकड़े।
+- **`scripts/finding_collector.py` — टिकाऊ, डुप्लिकेट-मुक्त defect memory** (issue #466, चरण 1)।
+  हर अलग बग के लिए एक `simplicio.finding/v1` रिकॉर्ड, fingerprinted ताकि किसी भी agent/run में वही
+  underlying बग एक ही occurrence-count वाले रिकॉर्ड में समाए, अलग-अलग डुप्लिकेट शोर के रूप में नहीं।
+- **दो असली regressions** इसी रिलीज़ चक्र में, `main` पर ही, सजीव पकड़े और ठीक हुए — एक PR ने चुपचाप
+  एक function definition हटा दी (जिससे `loop_progress.py` का अपना selftest टूट गया), और एक
+  squash-merge race ने वही टूटा कोड दोबारा `main` पर ला दिया। दोनों असल में स्क्रिप्ट चलाकर पकड़े गए,
+  हरे PR description पर भरोसा करके नहीं — यही वजह है कि अब `coordinator.py` और `pr_dod_review.py`
+  मौजूद हैं।
+
+**आपके लिए इसका व्यावहारिक मतलब:** यदि आप एक ही repo पर एक से अधिक सत्र या मशीन में
+`simplicio-loop` चलाते हैं, तो यह अब दो असली विफलता-पैटर्न से सक्रिय रूप से बचाता है — दो agents
+चुपचाप एक ही काम दोहराना, और एक "done" PR जो मर्ज तो हुआ पर असली issue आधा-अधूरा छोड़ गया। पहले
+कोई भी दिखाई नहीं देता था; अब दोनों हर triage पास पर यांत्रिक रूप से दिखते हैं। पूरी सूची
+[`CHANGELOG.md`](../CHANGELOG.md) में।
+
+---
+
 ## ⚡ TL;DR
 
 **simplicio-loop** एक रनटाइम-निरपेक्ष **सुपर-प्लगइन** है — एक स्वायत्त लूपिंग
@@ -131,8 +168,9 @@ flowchart LR
 → keep looping every ~2 min until the queue is dry (evidence-gated, never a false "done")
 ```
 
-तीन बातें इसे अलग बनाती हैं: यह **केंद्रित स्किल्स का एक सुपर-प्लगइन** है, यह **11 रनटाइम पर
-वही प्रोटोकॉल** चलाता है, और यह सब कुछ **आक्रामक, ईमानदार टोकन अर्थव्यवस्था** के साथ करता है।
+तीन बातें इसे अलग बनाती हैं: यह **केंद्रित स्किल्स का एक सुपर-प्लगइन** है, यह **15 रनटाइम पर
+वही प्रोटोकॉल** (3 गारंटीशुदा + 12 best-effort) चलाता है, और यह सब कुछ **आक्रामक, ईमानदार टोकन
+अर्थव्यवस्था** के साथ करता है।
 
 ---
 
@@ -161,7 +199,7 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🧠 11 स्किल्स और एक्सेलेरेटर्स
+## 🧠 12 स्किल्स और एक्सेलेरेटर्स
 
 ऑर्केस्ट्रेटर केंद्र + पाँच उपग्रह + पाँच एक्सेलेरेटर्स/इंटीग्रेशन। प्रत्येक उपग्रह **वैकल्पिक** है —
 लोड होने पर ऑर्केस्ट्रेटर उसे सौंप देता है (समृद्ध + सस्ता); अनुपस्थित होने पर इनलाइन प्रोटोकॉल
@@ -175,11 +213,12 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | अलग-अलग रूब्रिक्स पर समानांतर प्रतिकूल समीक्षा → डुप्लिकेट-मुक्त निर्णय | गुणवत्ता गेट |
 | 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | आउटपुट + स्मृति संपीड़न, fail-closed `transform_guard` | 40-60% कम |
 | 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | रन-पश्चात पूर्वावलोकन → स्मृति में टिकाऊ, डुप्लिकेट-मुक्त सबक | हर रन और बुद्धिमान |
-| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | ज्ञान-ग्राफ orient: सिमेंटिक सर्च, निर्देशित भ्रमण, निर्भरता ग्राफ | **L0 शून्य टोकन** |
-| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | सत्र विश्लेषण, लागत ट्रैकिंग, ठप-सत्र खोज | **L1** केवल SQL |
-| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | लूप बारियों के बीच KV कैश — स्थानीय मॉडल पर 40-70% TTFT कमी | GPU समय ↓ |
-| 10 | 🗜️ **Simplicio कैप्चर इंजन** | `engine/simplicio_engine.py` (native, stdlib-only) | पारदर्शी कैप्चर प्रॉक्सी: असली प्रदाता को अग्रेषित करता है, मापता है + नियतात्मक रूप से संपीड़ित करता है, `proxy_savings.json` लिखता है | **नियतात्मक** |
-| 11 | 🎬 **video_evidence** | Playwright (डिफ़ॉल्ट) · [hyperframes](https://github.com/heygen-com/hyperframes) (अनुरोध पर) | किसी UI परिवर्तन के चलते-फिरते प्रमाण के रूप में **असली सत्र** रिकॉर्ड करता है (Playwright); जब वीडियो ही वितरण है तब hyperframes के साथ एक **नियतात्मक कैप्शन-युक्त MP4** explainer रेंडर करता है | साक्ष्य उत्पादक |
+| 7 | 🧪 **simplicio-autoresearch** | Karpathy autoresearch + ECC `autoresearch-agent` | Evolutionary mutate/eval/keep-revert लूप: yool-guardrailed caps, git-isolated branch, anti-Goodhart gate-first eval, `savings-event` रसीद | ऑटो-ऑप्टिमाइज़ |
+| 8 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | ज्ञान-ग्राफ orient: सिमेंटिक सर्च, निर्देशित भ्रमण, निर्भरता ग्राफ | **L0 शून्य टोकन** |
+| 9 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | सत्र विश्लेषण, लागत ट्रैकिंग, ठप-सत्र खोज | **L1** केवल SQL |
+| 10 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | लूप बारियों के बीच KV कैश — स्थानीय मॉडल पर 40-70% TTFT कमी | GPU समय ↓ |
+| 11 | 🗜️ **Simplicio कैप्चर इंजन** | `engine/simplicio_engine.py` (native, stdlib-only) | पारदर्शी कैप्चर प्रॉक्सी: असली प्रदाता को अग्रेषित करता है, मापता है + नियतात्मक रूप से संपीड़ित करता है, `proxy_savings.json` लिखता है | **नियतात्मक** |
+| 12 | 🎬 **video_evidence** | Playwright (डिफ़ॉल्ट) · [hyperframes](https://github.com/heygen-com/hyperframes) (अनुरोध पर) | किसी UI परिवर्तन के चलते-फिरते प्रमाण के रूप में **असली सत्र** रिकॉर्ड करता है (Playwright); जब वीडियो ही वितरण है तब hyperframes के साथ एक **नियतात्मक कैप्शन-युक्त MP4** explainer रेंडर करता है | साक्ष्य उत्पादक |
 
 प्रत्येक स्किल [`.claude/skills/`](../.claude/skills) के अंतर्गत रहती है; प्रत्येक एक्सेलेरेटर के लिए
 `.claude/skills/simplicio-loop/references/` के अंतर्गत एक संदर्भ दस्तावेज़ है (वीडियो उत्पादक:
@@ -205,7 +244,7 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🌐 11 रनटाइम, एक प्रोटोकॉल
+## 🌐 15 रनटाइम, एक प्रोटोकॉल — 3 गारंटीशुदा + 12 best-effort
 
 एक सार्वभौमिक स्किल कोर + हुक्स का एक सेट हर रनटाइम को चलाता है। एक एडाप्टर पतला होता है: यह किसी
 रनटाइम को बताता है कि *स्किल्स कहाँ लोड करें*, *लूप को कैसे सक्रिय करें*, और *मूल गति से कैसे
@@ -220,12 +259,18 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 | **Antigravity** | rules / `AGENTS.md` | self-paced | MCP |
 | **Kiro** | `.kiro/steering/` | specs | MCP |
 | **OpenCode** | `AGENTS.md` | self-paced | MCP |
-| **Gemini** | `GEMINI.md` | self-paced | MCP / adapter |
+| **Gemini** (CLI/Code Assist) | `GEMINI.md` | self-paced | MCP / adapter |
+| **Kimi** | inlined conventions | self-paced | best-effort, कोई प्रमाणित client नहीं |
+| **Qwen** (Code/CLI) | `AGENTS.md`-समकक्ष | self-paced | best-effort |
+| **DeepSeek** | inlined conventions | self-paced | best-effort, कोई first-party client नहीं |
 | **Aider** | `CONVENTIONS.md` | self-paced | — (LLM fallback) |
-| **Simplicio Agent** | native recall | native loop | **native** |
+| **Simplicio Agent** *(पहले Hermes)* | native recall | native loop | **native** |
 | **OpenClaw** | plugin SDK | native scheduler | **native** |
+| **Orca** | inner agent + skills registry के माध्यम से | inner hook / scheduled automations | registry/inner-agent config |
 
-वादा: **सभी 11 पर वही प्रोटोकॉल, वही गेट्स, वही सुरक्षा — केवल गति भिन्न होती है।**
+Tier 1 (Claude Code, Codex, Cursor) हर commit पर मशीनी रूप से सत्यापित है; बाकी 12 रनटाइम
+best-effort हैं (योगदान स्वागत है, कोई गेट नहीं)। वादा: **सभी 15 पर वही प्रोटोकॉल, वही गेट्स, वही
+सुरक्षा — केवल गति भिन्न होती है।**
 `orient_clamp.py` (टोकन अर्थव्यवस्था) हर रनटाइम पर शून्य वायरिंग के साथ काम करता है। देखें
 [`adapters/MATRIX.md`](../adapters/MATRIX.md)।
 
@@ -499,6 +544,12 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   ```
 
 `pip install "simplicio-loop[dev]"` बेहतर आउटपुट के लिए pytest जोड़ता है; यह कभी आवश्यक नहीं है।
+
+---
+
+## ⭐ स्टार इतिहास
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wesleysimplicio/simplicio-loop&type=Date)](https://star-history.com/#wesleysimplicio/simplicio-loop&Date)
 
 ---
 
