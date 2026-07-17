@@ -237,6 +237,8 @@ def preflight(repo: str, as_json: bool = False) -> int:
     Returns exit 0 when all required operators are present, 1 otherwise. Always emits a
     machine-readable JSON document (also when --json is omitted, for script consumption).
     """
+    from .finding_router import route_finding as _route_finding
+
     def _probe(name: str, cmd) -> dict:
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
@@ -273,6 +275,19 @@ def preflight(repo: str, as_json: bool = False) -> int:
             ver = f" ({op['version']})" if op["version"] else ""
             print(f"  [{mark}] {op['name']}{ver}")
         print("  all_present:" if all_present else "  NOT ALL PRESENT")
+    if not all_present:
+        for op in operators:
+            if not op["present"]:
+                _route_finding(
+                    stage="preflight",
+                    finding_id=f"missing-operator-{op['name']}",
+                    severity="high",
+                    source=f"preflight:{op['name']}",
+                    confirmed=True,
+                    item_id=None,
+                    repo=str(repo_path),
+                    detail=f"Bound operator {op['name']} not present: {op.get('error','')}",
+                )
     return 0 if all_present else 1
 
 
@@ -560,6 +575,65 @@ def ledger_replay(path: str, compatibility: bool, recover_trailing: bool,
         return 2
 
 
+def findings_command(args) -> int:
+    """WI-466 findings subcommand: list / report / reconcile / doctor."""
+    from . import finding_report as fr
+    from . import finding_router as rt
+
+    cmd = getattr(args, "findings_command", None)
+    if cmd == "list":
+        records = fr.read_findings()
+        if args.json:
+            print(json.dumps(records, ensure_ascii=False, indent=2))
+        else:
+            for r in records:
+                print(f"{r['ts']} [{r['severity']}] {r['stage']}:{r['finding_id']} confirmed={r['confirmed']}")
+        return 0
+    if cmd == "report":
+        records = fr.read_findings()
+        by_stage = {}
+        by_sev = {}
+        for r in records:
+            by_stage[r["stage"]] = by_stage.get(r["stage"], 0) + 1
+            by_sev[r["severity"]] = by_sev.get(r["severity"], 0) + 1
+        payload = {"schema": "simplicio.finding-report-aggregate/v1", "total": len(records),
+                   "by_stage": by_stage, "by_severity": by_sev}
+        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
+              f"total={payload['total']} by_stage={by_stage} by_severity={by_sev}")
+        return 0
+    if cmd == "reconcile":
+        untracked = rt.untracked_problems()
+        blocked = rt.completion_blocked()
+        payload = {"schema": "simplicio.finding-reconcile/v1", "untracked_count": len(untracked),
+                   "untracked": untracked, "completion_blocked": blocked}
+        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
+              f"untracked_confirmed_findings={len(untracked)} (completion gate will block if >0)")
+        # Gate: a loop item MUST NOT be marked done while an in-scope finding is untracked.
+        return 1 if blocked else 0
+    if cmd == "doctor":
+        from . import finding_report as _fr
+        findings_store = _fr._FINDINGS_DIR / "findings.jsonl"
+        routes_store = rt.LOCAL_STORE
+        findings_present = findings_store.exists()
+        routes_present = routes_store.exists()
+        healthy = findings_present and routes_present
+        payload = {
+            "schema": "simplicio.finding-doctor/v1",
+            "findings_store_path": str(findings_store),
+            "findings_store_present": findings_present,
+            "routes_store_path": str(routes_store),
+            "routes_store_present": routes_present,
+            "store_present": healthy,
+            "router_importable": True,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
+              f"findings_store_present={findings_present} routes_store_present={routes_present} "
+              f"router_ok={payload['router_importable']}")
+        return 0
+    parser.error("unknown findings subcommand")
+    return 2
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="simplicio-loop",
@@ -727,6 +801,16 @@ def main(argv=None) -> int:
     p_drain.add_argument("--polls-required", type=int, default=2,
                          help="identical empty polls required (default: %(default)s)")
     p_ledger = sub.add_parser("ledger", help="validate/replay the operational event ledger")
+    p_findings = sub.add_parser("findings", help="WI-466: inspect and reconcile continuous findings")
+    findings_sub = p_findings.add_subparsers(dest="findings_command", required=True)
+    p_f_list = findings_sub.add_parser("list", help="list all routed findings (JSONL)")
+    p_f_list.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    p_f_report = findings_sub.add_parser("report", help="show aggregated finding counts by stage/severity")
+    p_f_report.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    p_f_reconcile = findings_sub.add_parser("reconcile", help="show dedup state and untracked findings")
+    p_f_reconcile.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    p_f_doctor = findings_sub.add_parser("doctor", help="health-check the findings store and router state")
+    p_f_doctor.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     ledger_sub = p_ledger.add_subparsers(dest="ledger_command", required=True)
     for ledger_command in ("replay", "validate"):
         p_ledger_action = ledger_sub.add_parser(
@@ -776,6 +860,8 @@ def main(argv=None) -> int:
         return status(args.repo, args.run_id, args.json, args.as_text)
     if command == "preflight":
         return preflight(args.repo, args.json)
+    if command == "findings":
+        return findings_command(args)
     if command == "verify":
         return verify(args.repo, args.run_id)
     if command == "progress":
