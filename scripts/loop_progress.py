@@ -287,20 +287,40 @@ def _run_state(last):
     return "blocked"
 
 
+def _get_output_encoding():
+    """Best available output encoding for stdout/stderr (portable, Windows-safe)."""
+    for stream in (sys.stdout, sys.stderr):
+        enc = getattr(stream, "encoding", None)
+        if enc:
+            return enc
+    try:
+        import locale
+        return locale.getpreferredencoding(False)
+    except Exception:
+        return "utf-8"
+
+
 def _warning_banner(snapshot):
     """DRIFT/STALLED are the two most important turn-level events (#300 AC2/AC3) — they must lead
-    the render, not get lost in the transcript. Derived only from the last event's own fields."""
+    the render, not get lost in the transcript. Derived only from the last event's own fields.
+    Returns ASCII-safe output when the terminal encoding cannot represent the Unicode warning sign."""
     if snapshot.get("last_status") != "blocked":
         return ""
     detail = snapshot.get("last_detail") or ""
     if "DRIFT" in detail:
-        return "⚠ DRIFT "
-    if "STALLED" in detail:
-        return "⚠ STALLED "
-    return ""
+        label = "DRIFT"
+    elif "STALLED" in detail:
+        label = "STALLED"
+    else:
+        return ""
+    symbol = "\u26a0"  # ⚠ WARNING SIGN
+    try:
+        symbol.encode(_get_output_encoding())
+    except (UnicodeEncodeError, LookupError):
+        symbol = "!!"
+    return f"{symbol} {label} "
 
 
-def _atomic_write(path, text):
     d = os.path.dirname(path) or "."
     try:
         os.makedirs(d, exist_ok=True)
