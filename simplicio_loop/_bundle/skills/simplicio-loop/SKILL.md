@@ -38,8 +38,36 @@ bare LLM) follows them mechanically — no paraphrase, no drift:
    `.orchestrator/loop/done` flag is touched ONLY when the promise is verified.
 6. **Fallback obeys the same contract.** When the host has no hooks, the self-paced scheduler mode
    is first-class and MUST honor invariants 1–5 identically.
+7. **Definition-of-Done gate.** No issue/task item may be marked `done` (`task_backlog.py done`)
+   or closed unless its frozen acceptance criteria cover all seven DoD dimensions — see
+   "Definition of Done" below. A partial pass (e.g. unit tests green but no coverage number, or
+   an implementation with no regression/perf evidence) is NOT done; keep iterating.
 
 The rest of this file is the mechanism that enforces this contract.
+
+## Definition of Done (DoD) — mandatory quality gate
+
+Every task/issue anchored via `task_anchor.py set` MUST include, as explicit acceptance criteria
+(besides any goal-specific ones), evidence for all seven of:
+
+1. ✅ **Implementação** — the change itself, present and working.
+2. ✅ **Testes unitários** — unit-level coverage of the new/changed logic.
+3. ✅ **Testes de integração** — the change verified against its real collaborators (no mocks for
+   the seam under test).
+4. ✅ **Testes de sistema** — an end-to-end pass through the actual command/CLI/API surface a user
+   or caller would hit.
+5. ✅ **Testes de regressão** — the existing suite still green; no prior behavior silently broken.
+6. ✅ **Benchmark de performance** — a measured number (latency/throughput/memory) for any change
+   that touches a hot path, so a regression is caught by a number, not a feeling.
+7. ✅ **Cobertura mínima** — line/branch coverage ≥ 85% (target 90% where the toolchain reports
+   branch coverage) for the touched files, checked with the project's own coverage tool.
+
+Freeze these as ACs at intake (`task_backlog.py init` / `task_anchor.py set`) so
+`task_anchor.py gate` — the same worker already gating "done" on unverified ACs — refuses to let
+the loop declare completion or open the PR (`pr_evidence.py build --require-evidence`) until every
+one of the seven is verified with evidence, not asserted. When a goal is decomposed at Phase 0,
+each backlog item's `plan.json` entry MUST carry all seven as ACs (skip only the ones that
+genuinely do not apply — e.g. no perf benchmark for a pure docs change — and say why in the item).
 
 ## When to use
 
@@ -65,37 +93,84 @@ gates, the operator dispatch table): **`references/bound-operators.md`**.
 | **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
 | **simplicio-dev-cli** | `simplicio-dev-cli` | `execute` / `deterministic_edit` / `validate` / `diagnostics` | **Operate** — applies a DECIDED change through its 6-layer contract (mapper context → precedent → prompt → diff → test → verify, ≤3 retries). The CLI edits and verifies; the AI does not hand-write the diff. |
 
-**Preflight (MANDATORY, BLOCKING).** Before iteration 1, auto-update the operator package to its
-latest release, then confirm both runtime binaries are on PATH:
+**Preflight (MANDATORY, BLOCKING).** Before iteration 1, announce the step, auto-update the
+operator package to its latest release, then confirm both runtime binaries are on PATH:
 ```bash
+python3 scripts/loop_progress.py emit --step preflight --status begin --detail "operadores: verificação/atualização"
 python3 -m pip install -qU simplicio-cli 2>/dev/null \
   || python3 -m pip install -qU --user --break-system-packages simplicio-cli 2>/dev/null || true
 simplicio-mapper --version   # survey operator (expected transitively from simplicio-cli)
 simplicio-dev-cli --help     # action operator (pkg simplicio-cli; exposes `simplicio-dev-cli`)
+python3 scripts/loop_progress.py emit --step preflight --status end --outcome pass \
+    --detail "simplicio-mapper X.Y.Z; simplicio-dev-cli OK"
 ```
 Best-effort and offline-safe — a network/pip failure leaves the working version in place. The
 action binary is `simplicio-dev-cli` (from `pip install simplicio-cli`) — NOT the bare `simplicio`
 (that's the separate `simplicio-runtime`). If either runtime binary is missing, do NOT fall back to
-LLM survey/editing — STOP and emit `simplicio-loop: BLOCKED — missing operator <name>; run: pip
-install simplicio-cli`.
+LLM survey/editing — emit `python3 scripts/loop_progress.py emit --step preflight --status blocked
+--outcome blocked --detail "missing operator <name>"`, then STOP and print `simplicio-loop:
+BLOCKED — missing operator <name>; run: pip install simplicio-cli`.
 
-**Survey step (each loop start).** `simplicio-mapper scan . --json` (instant macro skeleton +
-background deep index) → gate with `inspect . --json` (artifacts exist on disk) → feed the goal
+**Survey step (each loop start).** `python3 scripts/loop_progress.py emit --step survey --status begin`
+→ `simplicio-mapper scan . --json` (instant macro skeleton + background deep index) → gate with
+`inspect . --json` (artifacts exist on disk) → on a passing gate `emit --step survey --status end
+--outcome pass --detail "context-pack pronto (pack_hash <hash8>)"` (on a failing gate, `--status
+blocked --outcome blocked`) → feed the goal
 from `handoff . --for-llm toon` (a pre-compressed context-pack: files/symbols/deps/`pack_hash`,
 substitutes for re-reading the tree). For triage questions the map alone doesn't answer,
 `simplicio-mapper ask . <impact|tests-for|callers|...> <arg> --json`. Verify-side docs gates:
 `sync . --check --json` / `drift . --check --json` (BLOCK only when the AC itself is docs).
 
+**Decide step (etapa 4/9 — the model's own step, no worker).** Immediately before delegating to the
+operator: `python3 scripts/loop_progress.py emit --step decide --status end --source llm --detail
+"<one-line summary of the decided change, target AC>"` — the only event whose `detail` comes from
+the LLM; the render never tags it `MEASURED|` (it's a decision, not a measurement).
+
 **Operate step (every turn that mutates code).** Delegate the DECIDED, AC-scoped change to the
 operator — never hand-edit inside the loop:
 ```bash
+python3 scripts/loop_progress.py emit --step operate --status begin --detail "operador: <target file>"
 simplicio-dev-cli task "<the decided, AC-scoped change>" --target <file> [--json]
+python3 scripts/loop_progress.py emit --step operate --status end --outcome pass|fail \
+    --detail "verify do operador: <result>, tentativas usadas: n/3"
 ```
 The operator applies the diff, runs the tests, and self-corrects up to 3× — its passing
 verification IS the in-turn evidence the promise gate needs (below).
 
-One turn: `preflight → survey (mapper) → triage (re-read survey) → DECIDE (AI) → operate
-(simplicio-dev-cli task: apply+test+retry ≤3×) → watcher-gate (independent re-execution) → <promise> only if all gates passed`.
+**Watcher step (etapa 6/9).** `scripts/watcher_verify.py verify` emits its own `end` event AFTER
+`watcher_state.json` is written — never before (progress reports the gate, it never substitutes
+for it).
+
+**Journal step (etapa 7/9).** `scripts/loop_journal.py record` emits `end` with `outcome = gate`;
+`scripts/loop_journal.py stall` on `STALLED` emits `blocked` — the NEXT turn's render opens with
+`⚠ STALLED` (or `⚠ DRIFT`, from `task_anchor.py check`) ahead of everything else.
+
+One turn: `preflight → survey (mapper) → triage (re-read survey, journal resume) → DECIDE (AI) →
+operate (simplicio-dev-cli task: apply+test+retry ≤3×) → watcher-gate (independent re-execution) →
+journal record → <promise> only if all gates passed`. `scripts/loop_journal.py`'s `cmd_resume`/
+`cmd_record`/`cmd_stall` call `loop_progress.emit_event()` in-process (no subprocess per event) for
+the `triage`/`journal` steps; `task_anchor.py check` does the same on `DRIFT`.
+
+## Planning gate: task-intake contract + mutation authority (issue #284)
+
+Between "claim the task" and "mutate the repo" the loop enforces a **fail-closed planning gate**
+so deep planning is a mechanical barrier, not prompt guidance. `simplicio_loop/runner.py::arm_run()`
+compiles the task contract, mapper context, and plan, then self-builds a
+`planning-receipt.json` (`simplicio_loop/planning_gate.py::build_planning_receipt()`) binding
+`run_id`/`attempt`/`task_contract_hash`/`plan_hash`/lease/fencing (and, on a GitHub source, the
+source-snapshot hash) into a single-use `mutation_authority` token. `execute_operator()` and
+`execute_operator_batch()` refuse to mutate without a receipt whose token matches the CURRENT
+identity tuple — a stale plan hash, rotated lease/fence, or edited GitHub issue invalidates it
+(`reason_code` in `planning_not_ready`/`mutation_authority_invalid`/`source_drift`).
+
+Both halves of this gate are **mandatory by default**:
+`SIMPLICIO_REQUIRE_MUTATION_AUTHORITY` (checking) and `SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT`
+(the real dispatch path building the receipt the check needs) are unset-means-ON; only an
+explicit falsy value (`0`/`false`/`no`/`off`/`legacy`) opts a caller out, and an unrecognized
+value is treated as ON (fail-closed, never silently disabled by a typo). See
+`docs/adr/0004-planning-gate-rollout.md` for the rollout/migration strategy and
+**`references/planning-gate.md`** for the full schema, reason codes, and replan-on-drift
+mechanics.
 
 ## Video evidence producer (hyperframes) — demo videos as proof
 
@@ -272,6 +347,28 @@ the human_gate with the fingerprint + dead-ends, or (headless) stop blocked. Thi
 invariant 3 (Deterministic continuation): the next iteration re-feeds the goal **and** the attempt
 memory.
 
+## Progress feedback (issue #298, EPIC #296)
+
+`scripts/loop_progress.py` is the ONE place "onde estamos / quanto falta" is computed —
+deterministically, from `task_backlog.py` items + `task_anchor.py` ACs + its own event trail, never
+fabricated. It writes `.orchestrator/loop/progress.jsonl` (events), `progress.json` (snapshot,
+never authoritative — always recomputed) and `PROGRESS.md` (human render). Every stage calls
+`emit`; the transcript re-feed header calls `render --turn-header`. Full contract:
+**`references/progress-feedback.md`**.
+
+```bash
+python3 scripts/loop_progress.py emit --step operate --status begin --item T3
+python3 scripts/loop_progress.py render --turn-header   # MEASURED|... 42% geral · iter 7/24
+python3 scripts/loop_progress.py status --json          # machine-readable snapshot
+```
+
+Delivery/entrega (issue #301): `web_verify.py`/`video_evidence.py`/`pr_evidence.py build` all emit
+`evidence` begin/end/blocked; `pr_evidence.py build` auto-includes a `## Progresso do run` section
+whenever a backlog/anchor exists (never a fabricated %); `pr_evidence.py progress-comment --issue N`
+publishes ONE idempotent, rate-limited, fail-open progress comment on the issue. `hooks/loop_stop.py`
+emits the final `refeed_exit` event on every stop path, so `progress.json`'s `run_state`
+(`running|done|capped|handoff|stopped`) never stays stuck mid-run.
+
 ## The promise is evidence-gated (the simplicio hardening) + watcher-gate (pre-promise)
 
 The classic Ralph loop trusts the model to be honest. We do not. A `<promise>` is accepted
@@ -341,8 +438,9 @@ watcher mechanism (Step 3b "Arming the watcher"). Default to self-pacing wheneve
 uncertain rather than assuming a hook will re-feed the goal:
 
 - Host-native durable scheduler / OS cron / a session `/loop` re-invoking this skill.
-- Each tick: read scratchpad → do one iteration → check the promise+evidence → if true,
-  delete state and stop; else increment and reschedule.
+- Each tick: `render --turn-header` first (echoed) → read scratchpad → do one iteration → check
+  the promise+evidence → `render --full` last (regenerates `PROGRESS.md`) → if true, delete state
+  and stop; else increment and reschedule.
 - Same exit conditions: promise verified, cap reached, spindle handoff latched, or explicit STOP.
 
 ## Cancel
@@ -399,6 +497,14 @@ If any of these cannot be shown, the run was NOT a valid completion — treat it
 
 Every output line MUST be prefixed with `MEASURED|` or `UNVERIFIED|`. A bare claim
 without a tag is a contract violation.
+
+**Turn-header contract (issue #302).** The FIRST line of every turn's response MUST be
+`python3 scripts/loop_progress.py render --turn-header`, echoed verbatim — a turn without it is
+incomplete (same severity as a turn without verification). The LAST section MUST include a line
+`próximo passo: <next step>`. On hook-bound runtimes (Claude, Cursor) `loop_stop.py` ALSO prefixes
+the re-feed header with the same snapshot, fail-open — the user sees the % even if a turn forgets
+to narrate it. Self-paced runtimes (no hooks) run the same `render --turn-header` at tick-start and
+`render --full` at tick-end (§ Self-paced drive). Full contract: `references/progress-feedback.md`.
 
 Confirm the loop is armed (goal, cap, promise, hook-bound vs self-paced), then start
 iteration 1 immediately.

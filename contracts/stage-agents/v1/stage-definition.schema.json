@@ -28,53 +28,134 @@
     "concurrency"
   ],
   "properties": {
-    "schema": { "const": "simplicio.stage-definition/v1" },
-    "stage_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$", "minLength": 1 },
-    "role_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$", "minLength": 1 },
-    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
-    "description": { "type": "string", "minLength": 1 },
+    "schema": {
+      "const": "simplicio.stage-definition/v1"
+    },
+    "stage_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$",
+      "minLength": 1
+    },
+    "role_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
     "depends_on": {
       "type": "array",
-      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      },
       "uniqueItems": true
     },
-    "activation_condition": { "type": "string", "minLength": 1 },
+    "activation_condition": {
+      "type": "string",
+      "minLength": 1
+    },
     "required_capabilities": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "uniqueItems": true
     },
     "optional_capabilities": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "uniqueItems": true
     },
-    "isolation_level": { "enum": ["process", "session", "worker", "command", "human"] },
-    "input_schema": { "type": "string", "minLength": 1 },
-    "output_schema": { "type": "string", "minLength": 1 },
+    "isolation_level": {
+      "enum": [
+        "process",
+        "session",
+        "worker",
+        "command",
+        "human"
+      ]
+    },
+    "input_schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "output_schema": {
+      "type": "string",
+      "minLength": 1
+    },
     "accepted_receipts": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "uniqueItems": true
     },
-    "timeout_seconds": { "type": "integer", "minimum": 1 },
-    "retry_budget": { "type": "integer", "minimum": 0 },
-    "failure_policy": { "enum": ["block", "retry", "skip", "handoff"] },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "retry_budget": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "failure_policy": {
+      "enum": [
+        "block",
+        "retry",
+        "skip",
+        "handoff"
+      ]
+    },
     "allowed_mutations": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
-    "pre_gate": { "type": "string", "minLength": 1 },
-    "post_gate": { "type": "string", "minLength": 1 },
+    "pre_gate": {
+      "type": "string",
+      "minLength": 1
+    },
+    "post_gate": {
+      "type": "string",
+      "minLength": 1
+    },
     "next_stages": {
       "type": "array",
-      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      },
       "uniqueItems": true
     },
-    "compensation": { "type": "string", "minLength": 1 },
+    "compensation": {
+      "type": "string",
+      "minLength": 1
+    },
     "concurrency": {
-      "enum": ["serial", "independent", "wave"],
+      "enum": [
+        "serial",
+        "independent",
+        "wave"
+      ],
       "description": "serial = must run alone; independent = may run concurrently with others; wave = grouped batch."
+    },
+    "optional": {
+      "type": "boolean",
+      "description": "When true, completion_auditor may accept a skip receipt with an explicit skip_condition instead of a normal pass/fail receipt."
     }
   },
   "additionalProperties": false

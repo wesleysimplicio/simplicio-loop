@@ -68,10 +68,13 @@ def _receipt(stage_id: str, role_id: str, inst_id: str, *, verdict="pass", accep
 STAGE_ROLES = {
     "intake": "intake_planner",
     "planning": "intake_planner",
+    "safety": "safety_gate",
     "executing": "implementation_agent",
     "validating": "review_panel",
     "watching": "review_panel",
+    "recovery": "feedback_recovery_agent",
     "delivering": "delivery_agent",
+    "reporting": "github_reporter",
 }
 
 
@@ -178,6 +181,10 @@ def _graph_with_optional_stage():
     for stage in graph["stages"]:
         if stage["stage_id"] == "watching":
             stage["optional"] = True
+    # a mutated graph must recompute its own manifest_hash, or validate_graph()
+    # (which hashes the exact content) rejects it before the optional-stage
+    # logic under test is ever reached.
+    graph["manifest_hash"] = sa.canonical_manifest_hash(graph)
     return graph
 
 

@@ -345,6 +345,35 @@ def test_to_stage_receipt_projects_target_stage():
     assert stage_receipt["verdict"] == "pass"
 
 
+def test_to_stage_receipt_passes_the_real_canonical_validator():
+    # Regression for issue #458: to_stage_receipt() was missing ~15 fields
+    # the canonical stage-receipt/v1 schema requires, so every real
+    # coordinator-driven feedback_recovery_agent receipt was silently
+    # rejected by stage_agents.validate_receipt() despite this module's own
+    # shallow tests passing.
+    from simplicio_loop import stage_agents as sa
+
+    r = build_feedback_recovery_receipt(
+        run_id="run1", task_id="T-7", attempt=1, reason_code="test_failed",
+        prior_attempts=0, retry_budget=3,
+    )
+    context_hash, manifest_hash = "a" * 64, "b" * 64
+    stage_receipt = to_stage_receipt(
+        r, receipt_id="rec-full", agent_instance_id="inst-full", task_id="T-7",
+        attempt_id="att-full", fence="fence-1",
+        attempt_ordinal=1, context_hash=context_hash, manifest_hash=manifest_hash,
+    )
+    instance = {
+        "run_id": "run1", "task_id": "T-7", "attempt_id": "att-full", "attempt_ordinal": 1,
+        "fence": "fence-1", "plan_revision": 0, "agent_instance_id": "inst-full",
+        "role_id": stage_receipt["role_id"], "stage_id": stage_receipt["stage_id"],
+        "context_hash": context_hash, "manifest_hash": manifest_hash,
+        "negotiated_capabilities": ["receipts"], "terminal_status": "completed",
+    }
+    ok, errors = sa.validate_receipt(stage_receipt, instance)
+    assert ok, errors
+
+
 def test_receipt_never_declares_completion():
     r = build_feedback_recovery_receipt(
         run_id="run1", task_id="T-8", attempt=1, reason_code="test_failed",

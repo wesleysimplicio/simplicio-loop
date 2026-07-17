@@ -385,7 +385,9 @@ def _drive_stage_via_adapter(adapter: sc.AgentDriver, *, stage_id: str,
     role = sc.role_by_id(graph, stage["role_id"])
     stage_context = {"role_id": role["role_id"], "stage_id": stage["stage_id"],
                       "run_id": "conformance-run", "task_id": "conformance-task",
-                      "attempt_id": f"attempt-{stage_id}", "fence": "fence-0", "plan_revision": 0}
+                      "attempt_id": f"attempt-{stage_id}", "fence": "fence-0", "plan_revision": 0,
+                      "attempt_ordinal": 1, "context_hash": "c" * 64,
+                      "manifest_hash": str(graph.get("manifest_hash") or "d" * 64)}
     instance = adapter.spawn(role=role, stage=stage, stage_context=stage_context)
     deadline = time.time() + timeout_seconds
     while instance.status == "created" and time.time() < deadline:

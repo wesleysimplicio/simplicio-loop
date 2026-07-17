@@ -229,35 +229,28 @@ def run_sandbox_task(runtime: str, mode: str) -> tuple[bool, str, bool]:
         plan_revision = 1
         agent_instance_id = f"inst-{runtime}-{mode}"
 
-        instance = {
-            "agent_instance_id": agent_instance_id,
-            "role_id": "intake_planner",
-            "stage_id": "intake",
-            "run_id": run_id,
-            "task_id": task_id,
-            "attempt_id": attempt_id,
-            "fence": fence,
-            "plan_revision": plan_revision,
-            "context_hash": "0" * 64,
-            "manifest_hash": "0" * 64,
-            "terminal_status": "completed",
-        }
-        receipt = {
-            "receipt_id": f"rec-{runtime}-{mode}",
-            "agent_instance_id": agent_instance_id,
-            "role_id": "intake_planner",
-            "stage_id": "intake",
-            "run_id": run_id,
-            "task_id": task_id,
-            "attempt_id": attempt_id,
-            "fence": fence,
-            "plan_revision": plan_revision,
-            "verdict": "pass",
-            "evidence": {"mode": mode, "runtime": runtime},
-        }
+        context_hash = "0" * 64
+        manifest_hash = str(graph.get("manifest_hash") or "0" * 64)
+        intake_stage = next((s for s in graph.get("stages", []) if s.get("stage_id") == "intake"), {})
+        negotiated_capabilities = list(intake_stage.get("required_capabilities") or ["receipts"])
+        instance = sa.make_agent_instance(
+            agent_instance_id=agent_instance_id, role_id="intake_planner", stage_id="intake",
+            run_id=run_id, task_id=task_id, attempt_id=attempt_id, attempt_ordinal=1,
+            fence=fence, plan_revision=plan_revision, context_hash=context_hash,
+            manifest_hash=manifest_hash, runtime=runtime, driver=mode,
+            negotiated_capabilities=negotiated_capabilities, terminal_status="completed",
+        )
+        receipt = sa.make_stage_receipt(
+            receipt_id=f"rec-{runtime}-{mode}", agent_instance_id=agent_instance_id,
+            role_id="intake_planner", stage_id="intake", run_id=run_id, task_id=task_id,
+            attempt_id=attempt_id, attempt_ordinal=1, fence=fence, plan_revision=plan_revision,
+            context_hash=context_hash, manifest_hash=manifest_hash, verdict="pass",
+            evidence_refs=[f"mode={mode}", f"runtime={runtime}"],
+            next_stage_recommendation="planning",
+        )
         ok_inst, inst_errors = sa.validate_instance(instance, {
             "run_id": run_id, "task_id": task_id, "attempt_id": attempt_id,
-            "fence": fence, "plan_revision": plan_revision,
+            "attempt_ordinal": 1, "fence": fence, "plan_revision": plan_revision,
         })
         if not ok_inst:
             return False, f"instance rejected: {inst_errors}", False

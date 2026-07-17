@@ -537,6 +537,33 @@ def test_to_stage_receipt_projection():
     assert stage_receipt["verdict"] == "pass"
 
 
+def test_to_stage_receipt_passes_the_real_canonical_validator():
+    # Regression for issue #458: earlier versions of to_stage_receipt() were
+    # missing ~15 fields the canonical stage-receipt/v1 schema requires
+    # (attempt_ordinal, observed_at, ttl_seconds, integrity_hash, ...), so
+    # every real coordinator-driven implementation_agent receipt was silently
+    # rejected by stage_agents.validate_receipt() despite this module's own
+    # shallow tests passing.
+    from simplicio_loop import stage_agents as sa
+
+    receipt = build_implementation_stage_receipt(**_receipt_kwargs())
+    context_hash, manifest_hash = "a" * 64, "b" * 64
+    stage_receipt = to_stage_receipt(
+        receipt, receipt_id="rec-full", agent_instance_id="inst-full",
+        task_id="T-426", attempt_id="att-full", fence="fence-1",
+        attempt_ordinal=1, context_hash=context_hash, manifest_hash=manifest_hash,
+    )
+    instance = {
+        "run_id": stage_receipt["run_id"], "task_id": "T-426", "attempt_id": "att-full",
+        "attempt_ordinal": 1, "fence": "fence-1", "plan_revision": stage_receipt["plan_revision"],
+        "agent_instance_id": "inst-full", "role_id": IMPLEMENTATION_AGENT_ROLE_ID,
+        "stage_id": "executing", "context_hash": context_hash, "manifest_hash": manifest_hash,
+        "negotiated_capabilities": ["receipts"], "terminal_status": "completed",
+    }
+    ok, errors = sa.validate_receipt(stage_receipt, instance)
+    assert ok, errors
+
+
 def test_to_stage_receipt_blocked_maps_to_blocked():
     kwargs = _receipt_kwargs(ac_coverage={"AC1": "satisfied", "AC2": "pending"})
     receipt = build_implementation_stage_receipt(**kwargs)

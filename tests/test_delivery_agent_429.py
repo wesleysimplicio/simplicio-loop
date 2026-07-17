@@ -557,6 +557,37 @@ def test_receipt_to_stage_receipt_projection():
     assert stage_receipt["verdict"] == "pass"
 
 
+def test_to_stage_receipt_passes_the_real_canonical_validator():
+    # Regression for issue #458: to_stage_receipt() was missing ~15 fields
+    # the canonical stage-receipt/v1 schema requires, so every real
+    # coordinator-driven delivery_agent receipt was silently rejected by
+    # stage_agents.validate_receipt() despite this module's own shallow
+    # tests passing.
+    from simplicio_loop import stage_agents as sa
+
+    adapter = FakeAdapter()
+    saga, pr_id = _run_full_saga(adapter)
+    receipt = da.build_delivery_stage_receipt(
+        run_id=RUN_ID, task_id=TASK_ID, attempt_id="a1", fence=FENCE, plan_revision=PLAN_REV,
+        identity=_identity(), preconditions=_full_preconditions(), saga=saga,
+        source_id="42", target_branch="main",
+    )
+    context_hash, manifest_hash = "a" * 64, "b" * 64
+    stage_receipt = da.to_stage_receipt(
+        receipt, receipt_id="rec-full", agent_instance_id="inst-full",
+        attempt_ordinal=1, context_hash=context_hash, manifest_hash=manifest_hash,
+    )
+    instance = {
+        "run_id": RUN_ID, "task_id": TASK_ID, "attempt_id": "a1", "attempt_ordinal": 1,
+        "fence": FENCE, "plan_revision": PLAN_REV, "agent_instance_id": "inst-full",
+        "role_id": "delivery_agent", "stage_id": "delivering",
+        "context_hash": context_hash, "manifest_hash": manifest_hash,
+        "negotiated_capabilities": ["receipts"], "terminal_status": "completed",
+    }
+    ok, errors = sa.validate_receipt(stage_receipt, instance)
+    assert ok, errors
+
+
 # =========================================================================== #
 # Git/local integration — real git repo, no network.
 # =========================================================================== #

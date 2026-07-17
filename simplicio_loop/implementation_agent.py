@@ -642,12 +642,26 @@ def to_stage_receipt(
     task_id: str,
     attempt_id: str,
     fence: str,
+    attempt_ordinal: int = 1,
+    context_hash: str = "0" * 64,
+    manifest_hash: str = "0" * 64,
 ) -> Dict[str, Any]:
     """Project the #426 receipt into a `simplicio.stage-receipt/v1`-shaped dict
     (see `simplicio_loop/stage_agents.py::validate_receipt`) for the
-    `executing` stage owned by the `implementation_agent` role."""
+    `executing` stage owned by the `implementation_agent` role.
+
+    ``context_hash``/``manifest_hash`` default to a placeholder all-zero hash
+    when the caller doesn't have the coordinator's real values on hand (e.g.
+    unit tests exercising this projection in isolation) -- a real coordinator-
+    driven caller MUST pass the actual values from its `AgentInstance`, or
+    `stage_agents.validate_receipt()` will (correctly) reject the mismatch
+    against the owning instance.
+    """
     verdict_map = {VERDICT_PASS: "pass", VERDICT_BLOCKED: "blocked", VERDICT_FAILED: "fail"}
-    return {
+    verdict = verdict_map.get(implementation_receipt.get("verdict"), "blocked")
+    accepted = verdict == "pass"
+    ts = _now()
+    receipt: Dict[str, Any] = {
         "schema": "simplicio.stage-receipt/v1",
         "receipt_id": str(receipt_id),
         "agent_instance_id": str(agent_instance_id),
@@ -656,11 +670,35 @@ def to_stage_receipt(
         "run_id": str(implementation_receipt.get("run_id") or ""),
         "task_id": str(task_id),
         "attempt_id": str(attempt_id),
+        "attempt_ordinal": int(attempt_ordinal),
         "fence": str(fence),
         "plan_revision": int(implementation_receipt.get("plan_revision") or 0),
-        "verdict": verdict_map.get(implementation_receipt.get("verdict"), "blocked"),
-        "artifact_hash": str(implementation_receipt.get("receipt_hash") or ""),
+        "created_at": ts,
+        "observed_at": ts,
+        "ttl_seconds": 3600,
+        "context_hash": str(context_hash),
+        "manifest_hash": str(manifest_hash),
+        "verdict": verdict,
+        "evidence_refs": [str(a) for a in implementation_receipt.get("artifacts") or ()] or ["n/a"],
+        "accepted": accepted,
+        "reason_code": str(implementation_receipt.get("failure_reason_code") or "ok"),
+        "input_hash": content_hash(implementation_receipt.get("assignment_hash") or ""),
+        "output_hash": str(implementation_receipt.get("receipt_hash") or content_hash(None)),
+        "previous_receipt_hashes": [],
+        "covered_acceptance_criteria": [str(a) for a in implementation_receipt.get("acs_satisfied") or ()] or ["n/a"],
+        "commands": [str(c) for c in implementation_receipt.get("test_runs") and
+                     [t.get("command", "n/a") for t in implementation_receipt.get("test_runs", [])] or ["n/a"]],
+        "exit_codes": {},
+        "artifact_refs": [str(a) for a in implementation_receipt.get("artifacts") or ()],
+        "next_stage_recommendation": str(implementation_receipt.get("next_stage_hint") or "unknown"),
     }
+    if not accepted:
+        receipt["rejection_reason"] = str(implementation_receipt.get("failure_reason_code") or "not_accepted")
+    payload = dict(receipt)
+    receipt["integrity_hash"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+    return receipt
 
 
 __all__ = [

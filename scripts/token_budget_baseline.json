@@ -3,28 +3,28 @@
   "artifacts": {
     ".claude/skills/simplicio-loop/SKILL.md": {
       "label": "SKILL.md (simplicio-loop)",
-      "tokens": 8570,
-      "words": 4812
+      "tokens": 8943,
+      "words": 4975
     },
     "AGENTS.md": {
       "label": "AGENTS.md",
-      "tokens": 1652,
-      "words": 940
+      "tokens": 1882,
+      "words": 1053
     },
     "CLAUDE.md": {
       "label": "CLAUDE.md",
-      "tokens": 2297,
-      "words": 1178
+      "tokens": 2430,
+      "words": 1239
     },
     "scripts/check.py": {
       "label": "check.py",
-      "tokens": 2581,
-      "words": 1036
+      "tokens": 3232,
+      "words": 1330
     },
     "scripts/claims_audit.py": {
       "label": "claims_audit.py",
-      "tokens": 7967,
-      "words": 3299
+      "tokens": 8891,
+      "words": 3629
     },
     "scripts/loop_journal.py": {
       "label": "loop_journal.py",
@@ -48,6 +48,6 @@
     }
   },
   "estimator": "heuristic:chars-div-4",
-  "generated_at": "2026-07-15T00:42:33Z",
+  "generated_at": "2026-07-16T23:53:02Z",
   "threshold_growth": 0.25
 }

@@ -266,7 +266,33 @@ def test_to_stage_receipt_projects_passed_verdict_as_pass():
     assert stage_receipt["role_id"] == INTAKE_PLANNER_ROLE_ID
     assert stage_receipt["stage_id"] == "intake"
     assert stage_receipt["verdict"] == "pass"
-    assert stage_receipt["artifact_hash"] == receipt["receipt_hash"]
+    assert stage_receipt["output_hash"] == receipt["receipt_hash"]
+
+
+def test_to_stage_receipt_passes_the_real_canonical_validator():
+    # Regression for issue #458: to_stage_receipt() was missing ~15 fields
+    # the canonical stage-receipt/v1 schema requires, so every real
+    # coordinator-driven intake_planner receipt was silently rejected by
+    # stage_agents.validate_receipt() despite this module's own shallow
+    # tests passing.
+    from simplicio_loop import stage_agents as sa
+
+    receipt = build_intake_planner_receipt(**_base_kwargs())
+    context_hash, manifest_hash = "a" * 64, "b" * 64
+    stage_receipt = to_stage_receipt(
+        receipt, receipt_id="rec-full", agent_instance_id="inst-full",
+        task_id="task-1", attempt_id="att-full", fence="fence-1",
+        attempt_ordinal=1, context_hash=context_hash, manifest_hash=manifest_hash,
+    )
+    instance = {
+        "run_id": stage_receipt["run_id"], "task_id": "task-1", "attempt_id": "att-full",
+        "attempt_ordinal": 1, "fence": "fence-1", "plan_revision": stage_receipt["plan_revision"],
+        "agent_instance_id": "inst-full", "role_id": INTAKE_PLANNER_ROLE_ID, "stage_id": "intake",
+        "context_hash": context_hash, "manifest_hash": manifest_hash,
+        "negotiated_capabilities": ["receipts"], "terminal_status": "completed",
+    }
+    ok, errors = sa.validate_receipt(stage_receipt, instance)
+    assert ok, errors
 
 
 def test_to_stage_receipt_projects_blocked_verdict():

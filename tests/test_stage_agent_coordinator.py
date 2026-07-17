@@ -174,10 +174,10 @@ def test_plan_waves_groups_independent_stages_together():
     waves = sc.plan_waves(graph)
     assert waves[0] == ["intake"]
     assert waves[1] == ["planning"]
-    assert waves[2] == ["executing"]
-    # every stage after "executing" is a serial chain in the canonical graph
+    # every stage after "planning" is a serial chain in the canonical graph
+    # (grew a "safety" stage between planning and executing, added by #428)
     flat = [sid for wave in waves for sid in wave]
-    assert flat.index("planning") < flat.index("executing") < flat.index("validating")
+    assert flat.index("planning") < flat.index("safety") < flat.index("executing") < flat.index("validating")
 
 
 def test_available_slots_never_goes_negative():
@@ -241,6 +241,7 @@ def test_command_adapter_end_to_end_runs_real_process(tmp_path):
         "role_id": "implementation_agent", "stage_id": "executing", "run_id": "run-1",
         "task_id": "task-1", "attempt_id": "attempt-1", "fence": "fence-1",
         "plan_revision": 0, "isolation_level": "process", "agent_instance_id": "placeholder",
+        "attempt_ordinal": 1, "context_hash": "c" * 64, "manifest_hash": "d" * 64,
     }
     instance = adapter.spawn(role=ROLE, stage=stage, stage_context=stage_context)
     assert instance.status == "created"
