@@ -179,6 +179,7 @@ class PythonProcessAdapter:
                 *spec.argv,
                 cwd=spec.cwd,
                 env=self._environment(spec),
+                stdin=asyncio.subprocess.DEVNULL,
                 shell=False,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -229,10 +230,11 @@ class PythonProcessAdapter:
                 error_code="cancelled",
                 lease_id=lease_id,
             )
-        except FileNotFoundError:
+        except OSError as exc:
+            code = "executable_not_found" if isinstance(exc, FileNotFoundError) else "spawn_error"
             return ProcessResult(
                 None,
                 duration_seconds=time.monotonic() - started,
-                error_code="executable_not_found",
+                error_code=code,
                 lease_id=lease_id,
             )
