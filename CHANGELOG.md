@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+## [3.37.0] — 2026-07-17
+
+- **EPIC #422 — Portable Stage Agents:** materialized every stage of the
+  `simplicio-loop` orchestrator as a concrete, independently verifiable agent
+  role, portable across all 15 supported runtimes:
+  - **Contract (#423):** versioned `stage-definition`/`agent-role`/
+    `agent-instance`/`stage-receipt` schemas and the `stage_agents.py` validator
+    core (graph/instance/receipt validation, fake-independence enforcement).
+  - **Coordinator (#424):** a runtime-agnostic driver (`stage_agent_coordinator.py`)
+    with native/command/queue adapters that materializes, monitors, cancels,
+    and collects receipts from stage agents — spawn → observed-ready → send →
+    observed-terminal → collect, never trusting a bare "accepted" as done.
+  - **Intake/Planner (#425), Implementation (#426), Review Panel (#427),
+    Safety Gate (#428), Delivery (#429), Feedback/Recovery (#430), Completion
+    Auditor (#431):** the seven remaining concrete roles, each with its own
+    invariant machinery, fail-closed gates, and typed receipt.
+  - **Conformance suite (#432):** proves contract/receipt parity across all 15
+    runtimes by actually driving a sandbox task through each adapter's public
+    path — no synthetic pass for a capability that wasn't really verified.
+  - **GitHub reporting (#433/#442) + multi-tracker interface (#436):** one
+    idempotent, per-item lifecycle comment on GitHub (required) with a
+    provider-agnostic interface for Azure DevOps/Jira/Asana/Trello
+    (connected-only, never an invented remote attempt).
+  - **Identity (#434):** human-readable `<Name> <Role> - #<HOST4> - <LLM>`
+    display names, deterministic host abbreviation with an explicit fallback
+    reason code — uniqueness stays on `agent_instance_id`, never the display name.
+- **`simplicio-runtime` is now a required bound operator**, not an optional
+  acceleration: `hooks/loop_stop.py` blocks the running driver on a missing/
+  unreachable `simplicio` binary exactly like a missing `simplicio-mapper`/
+  `simplicio-dev-cli`.
+- **MCP configuration documented across 13 hosts** (Claude Code, Codex,
+  Cursor, VS Code, Antigravity, Kiro, OpenCode, Gemini, Orca, and
+  best-effort/community-reported guidance for Aider, Kimi, Qwen, DeepSeek) —
+  see `docs/MCP_SETUP.md`.
+- **Post-merge reconciliation:** four adversarial-review passes across the
+  epic's 30+ PRs found and fixed real fail-open bugs (a tautological
+  `attempt_id` check, vacuously-`True` checklist fields, receipt-schema
+  validators defined but never wired into the real accept path, AC coverage
+  reported complete when the task anchor was simply missing) and closed the
+  gap where four `to_stage_receipt()` projectors existed only as unit-tested
+  code with no live CLI entrypoint — every stage-agent role's receipt path is
+  now schema-valid end-to-end and independently exercised via
+  `scripts/*.py stage-receipt`.
+- New gate: `claims_audit.py` check 14 (contract-parity) keeps
+  `contracts/stage-agents/v1/` and its packaged mirror byte-identical.
+
 ## [3.36.1] — 2026-07-16
 
 - **Repository-owned GitHub Projects:** lifecycle sync now autodiscovers the
