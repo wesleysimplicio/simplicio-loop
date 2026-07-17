@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [3.38.0] — 2026-07-17
+
+- **Multi-agent coordination core (`scripts/coordinator.py`):** given live GitHub state (claim
+  comments + merged PRs), decides one deterministic action per issue — `OWN`, `CONTINUE_OWN`,
+  `DEFER_ACTIVE_CLAIM`, `RECLAIM_STALE`, or `VERIFY_PARTIAL` — plus a `duplicate_risk` flag when
+  two sessions claim the same issue near-simultaneously. Caught, live, a real collision: two
+  sessions independently building a findings collector for the same issue under different
+  filenames.
+- **PR DoD/AC reviewer (`scripts/pr_dod_review.py`):** when every open issue is already claimed,
+  reviews open PRs against the 7-dimension Definition of Done and the underlying issue's frozen
+  acceptance-criteria checklist instead of idling; `check --post` posts a mechanical, line-by-line
+  verdict as a PR comment. Verified against a real merged "MVP slice" PR: correctly flagged 17/17
+  acceptance criteria on the parent epic as still unresolved.
+- **`references/multi-agent-coordination.md` + `references/background-verification.md`:** new
+  documented conventions wired into `SKILL.md`'s triage step.
+- **`scripts/finding_collector.py` (issue #466, phase 1):** durable, fingerprinted, deduplicated
+  defect memory — the same underlying bug collapses into one record with an occurrence count.
+- **Continuous Evolution / Adaptive Architecture / Elastic Replication MVP slices** (#467/#468/
+  #469): `scripts/evolution.py`, `scripts/workflow_topology.py`, `scripts/agent_replication.py`.
+- **Continuous Findings completion-gate wiring** (WI-466): the completion gate now genuinely
+  consults the finding store; a store/repo consistency bug found and fixed in the same pass.
+- **Mandatory post-merge cleanup** (`scripts/worktree_cleanup.py`, #484): a merged branch's local
+  worktree and branch ref are removed automatically instead of accumulating across sessions.
+- **CLI contract additions** (WI-471): a `preflight` subcommand and a `--json` flag on `status`.
+- **Two live regressions on `main` found and fixed this cycle** — a PR that silently deleted a
+  function definition (breaking `loop_progress.py`'s own selftest), and a subsequent squash-merge
+  race that reintroduced the exact same broken code onto `main` a second time. Both found by
+  actually running the affected script, not by trusting a green PR description.
+- Test suite grew to 231 files (2,544 collected tests); `claims_audit.py` stayed at 14/14 through
+  every merge this cycle.
+
 ## [3.37.0] — 2026-07-17
 
 - **EPIC #422 — Portable Stage Agents:** materialized every stage of the

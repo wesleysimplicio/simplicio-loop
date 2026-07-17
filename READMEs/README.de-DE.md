@@ -6,19 +6,19 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-die-11-skills--beschleuniger"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
+  <a href="#-die-7-skills--5-beschleuniger"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-quelladapter"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
-  <a href="#-11-laufzeiten-ein-protokoll"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-die-44-erweiterungspunkte"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
+  <a href="#-15-laufzeiten-ein-protokoll"><img src="https://img.shields.io/badge/runtimes-15-2563EB" alt="15 runtimes"></a>
+  <a href="#-die-49-erweiterungspunkte"><img src="https://img.shields.io/badge/extension%20points-49-00E08A" alt="49 extension points"></a>
   <a href="#-token-ökonomie"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-die-11-skills--beschleuniger">11 Skills</a> ·
+  <a href="#-die-7-skills--5-beschleuniger">7 Skills</a> ·
   <a href="#-quelladapter">Quelladapter</a> ·
-  <a href="#-11-laufzeiten-ein-protokoll">11 Laufzeiten</a> ·
+  <a href="#-15-laufzeiten-ein-protokoll">15 Laufzeiten</a> ·
   <a href="#-die-schleife">Die Schleife</a> ·
   <a href="#-token-ökonomie">Token-Ökonomie</a> ·
   <a href="#-token-ökonomie">Capture-Engine</a> ·
@@ -106,6 +106,73 @@ flowchart LR
 **Richtlinie:** GitHub ist für GitHub-gebundene Runs verpflichtend; `COMPLETE` wartet auf Remote-Bestätigung. Azure DevOps, Jira, Asana und Trello erhalten nur nach nachgewiesener Verbindung, Authentifizierung, Autorisierung und Zielauflösung Kommentare; `NOT_CONNECTED` ist ein expliziter, nicht blockierender Skip. Vertrag und Tests: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436).
 <!-- stage-agents-roadmap:end -->
 
+## 🆕 Neuerungen in v3.38.0 — Multi-Agent-Koordination
+
+Dieses Release löst ein Problem, das erst sichtbar wird, sobald **mehrere Agenten-Sessions
+gleichzeitig am selben Repo arbeiten**: Woher weiß eine Session, was schon beansprucht ist, was
+zwar gemergt aber unvollständig geblieben ist, und was sie mit ihrer eigenen Leerlaufzeit tun soll,
+statt die Arbeit einer Schwester-Session zu duplizieren? Jeder Punkt unten wurde am **echten,
+mehrsitzungs-parallelen Zustand dieses Repos** gebaut, getestet und ausgeliefert — kein
+Synthetik-Szenario.
+
+- **`scripts/coordinator.py` — der Entscheidungskern.** Anhand des aktuellen GitHub-Zustands
+  (offene Claim-Kommentare + gemergte PRs) liefert er pro Issue genau eine deterministische
+  Aktion: `OWN` (noch nichts beansprucht), `CONTINUE_OWN` (du bist bereits der letzte
+  Anspruchsteller), `DEFER_ACTIVE_CLAIM` (eine Schwester-Session hat es kürzlich beansprucht —
+  nicht duplizieren), `RECLAIM_STALE` (der Claim ist erkaltet, sicher zu übernehmen) oder
+  `VERIFY_PARTIAL` (ein PR ist für dieses Issue bereits gemergt, es ist aber noch offen — prüfen,
+  was wirklich erledigt ist). Er meldet zudem ein `duplicate_risk`-Flag, sobald zwei Sessions
+  dasselbe Issue kurz hintereinander beanspruchen. Live am ersten Tag erwischt: zwei Sessions
+  bauten unabhängig voneinander einen Findings-Collector für dasselbe Issue unter zwei
+  verschiedenen Dateinamen.
+- **`scripts/pr_dod_review.py` — der Reviewer für Leerlaufzeit.** Sind alle offenen Issues bereits
+  beansprucht, ist der wertvollste nächste Schritt nicht Warten, sondern die offenen PRs gegen die
+  eigene Messlatte des Repos zu prüfen: die 7-dimensionale Definition of Done (Implementierung,
+  Unit-/Integrations-/System-/Regressionstests, Performance-Benchmark, ≥85 % Coverage) plus die
+  eingefrorene Akzeptanzkriterien-Liste des zugrunde liegenden Issues. `check --post` postet ein
+  mechanisches, punktgenaues Urteil als PR-Kommentar statt einer Bauchgefühl-Freigabe. Beweis
+  gegen einen echten, bereits gemergten „MVP-Slice"-PR: **17 von 17** Akzeptanzkriterien des
+  übergeordneten Epics wurden korrekt als noch offen markiert.
+- **`scripts/finding_collector.py` — dauerhaftes, dedupliziertes Defekt-Gedächtnis** (Issue #466,
+  Phase 1). Ein `simplicio.finding/v1`-Datensatz pro eindeutigem Defekt, per Fingerprint erkannt,
+  sodass derselbe zugrunde liegende Bug — von jedem Agenten, jedem Lauf, egal wann gesehen — in
+  einen Datensatz mit Vorkommenszähler kollabiert, statt Duplikate zu erzeugen. Noch ohne
+  GitHub-Aufrufe — das ist die nächste Phase. `scripts/evolution.py` (Taxonomie + Priorität +
+  Dedup) und `scripts/workflow_topology.py` (DAG-Diff + Validator) liefen als erste MVP-Slices der
+  begleitenden Epics Continuous Evolution (#467) und Adaptive Architecture (#468) mit;
+  `scripts/agent_replication.py` tat dasselbe für Elastic Replication (#469).
+- **`references/multi-agent-coordination.md` + `references/background-verification.md`** — zwei
+  neue Konventionen, direkt in den Triage-Schritt der `SKILL.md` verdrahtet: vor dem Anfassen eines
+  Issues die Coordinator-Ownership prüfen, statt im Leerlauf PRs reviewen, wenn alles beansprucht
+  ist, und langsame Verifikationsbefehle (Tests/`claims_audit.py`) im Hintergrund starten, damit
+  eine Runde weiter vorankommt, statt auf einen Fortschrittsbalken zu starren.
+- **Verpflichtendes Post-Merge-Cleanup** (`scripts/worktree_cleanup.py`, #484) — Worktree und
+  Branch-Ref eines gemergten Branches werden jetzt automatisch entfernt, statt sich über Sessions
+  hinweg anzuhäufen.
+- **CLI-Vertrags-Erweiterungen** (WI-471) — ein `preflight`-Subkommando und ein `--json`-Flag auf
+  `status`, damit ein externer Supervisor die Startbereitschaft maschinell prüfen kann.
+- **Zwei echte Regressionen live gefunden und gefixt, direkt auf `main`, in diesem Release-Zyklus**
+  — ein PR löschte still eine Funktionsdefinition (brach den eigenen Selftest von
+  `loop_progress.py`), wurde gemergt, und eine Squash-Merge-Race reproduzierte denselben kaputten
+  Code ein zweites Mal auf `main`. Beide wurden gefunden, weil das betroffene Skript tatsächlich
+  ausgeführt wurde — nicht weil einer grünen PR-Beschreibung vertraut wurde. Genau deshalb gibt es
+  jetzt `coordinator.py` und `pr_dod_review.py`.
+- **Aus v3.37.0 übernommen** (Portable Stage Agents, #422–#436) — ein konkreter, unabhängig
+  verifizierbarer Agent hinter jeder Stufe, eine Konformitätssuite, die Vertrags-/Beleg-Parität
+  über alle 15 Laufzeiten beweist, und `simplicio-runtime`, das jetzt wie `simplicio-mapper`/
+  `simplicio-dev-cli` ein verpflichtender gebundener Operator ist.
+- **Test-Suite auf 231 Dateien gewachsen** (von 192); `scripts/claims_audit.py` blieb über den
+  ganzen Zyklus bei 14/14.
+
+**Was das für dich konkret bedeutet:** Läufst du `simplicio-loop` über mehr als eine Session oder
+Maschine gegen dasselbe Repo, schützt es dich jetzt aktiv vor den zwei Fehlermodi, die in der Praxis
+tatsächlich passieren — zwei Agenten, die still dieselbe Arbeit wiederholen, und ein „fertiger" PR,
+der gemergt wurde, das eigentliche Issue aber nur teilweise löst. Beides war vorher unsichtbar; jetzt
+ist es das mechanisch, bei jedem Triage-Durchlauf.
+
+Vollständige Liste: [`CHANGELOG.md`](../CHANGELOG.md), signierte Artefakte (Wheel, sdist, SBOM,
+Provenance) im [v3.38.0-Release](https://github.com/wesleysimplicio/simplicio-loop/releases/tag/v3.38.0).
+
 ## ⚡ TL;DR
 
 **simplicio-loop** ist ein laufzeitunabhängiges **Super-Plugin** — ein autonomer, schleifenfähiger
@@ -134,23 +201,26 @@ Sicherheits-Gates und einem expliziten STOP/Cancel-Pfad.
 ```
 
 Drei Dinge machen es anders: es ist ein **Super-Plugin aus fokussierten Skills**, es führt **dasselbe
-Protokoll auf 11 Laufzeiten** aus, und es tut all das mit **aggressiver, ehrlicher Token-Ökonomie**.
+Protokoll auf 15 Laufzeiten** aus, und es tut all das mit **aggressiver, ehrlicher Token-Ökonomie**.
 
 ---
 
 ## 📘 Offizielles Fähigkeitenverzeichnis
 
 Das vollständige, offizielle Verzeichnis dessen, was `simplicio-loop` mitbringt — jede Fähigkeit unten ist
-**real, ausführbar und getestet** (`python3 scripts/check.py`: Claims-Audit 4/4 + 28 Tests). Jede verlinkt
-auf ihren ausführlichen Abschnitt und ihren Worker.
+**real, ausführbar und getestet** (`python3 scripts/check.py`: Claims-Audit 14/14 + 2.544 gesammelte Tests
+über 231 Dateien). Jede verlinkt auf ihren ausführlichen Abschnitt und ihren Worker.
 
 | Fähigkeit | Was sie tut | Nachweis / Worker | Details |
 |---|---|---|---|
 | 🎬 **Video-Belege** (`video_evidence`) | Zeichnet die **echte Browser-Session** als bewegten Beleg auf, dass eine UI-Änderung funktioniert (Playwright, Standard); rendert für eine explizite Erklärvideo-Anfrage (`/simplicio-loop make a video of screen X`) eine **deterministische, beschriftete MP4** mit [hyperframes](https://github.com/heygen-com/hyperframes) | `scripts/video_evidence.py` · BLOCKIERT (niemals Fake-Pass) ohne die Toolchain | [§ Video-Belege](#-video-belege--playwright-standardmäßig-hyperframes-auf-anfrage) |
-| 🧠 **Versuchsgedächtnis + Stall-Detektor** | Ein dauerhaftes Run-Journal (`.orchestrator/loop/journal.jsonl`) + ein Stall-Detektor, sodass die Schleife **die Strategie ändert, statt zu oszillieren**; inkrementelle Triage (`since`) liest jede Runde nur das Delta | `scripts/loop_journal.py` · `selftest` 9/9 | [§ Anti-Oszillation](#-versuchsgedächtnis--stall-detektor-anti-oszillation) |
+| 🧠 **Versuchsgedächtnis + Stall-Detektor** | Ein dauerhaftes Run-Journal (`.orchestrator/loop/journal.jsonl`) + ein Stall-Detektor, sodass die Schleife **die Strategie ändert, statt zu oszillieren**; inkrementelle Triage (`since`) liest jede Runde nur das Delta | `scripts/loop_journal.py` · `selftest` 13/13 | [§ Anti-Oszillation](#-versuchsgedächtnis--stall-detektor-anti-oszillation) |
 | 🔒 **Fail-closed-Sicherheits-Gate** (`action_gate`) | Ein `PreToolUse`-/git-pre-push-Hook, der Force-Push, History-Rewrite, Massenlöschung, destruktives DDL, Infra-Teardown und secret-behaftete Commits/Pushes **mechanisch blockiert** — Schritt 5 ausführbar gemacht, nicht als Prosa | `hooks/action_gate.py` · `selftest` 15/15 | [§ Sicherheit](#-sicherheit-nicht-verhandelbar) |
 | 🔬 **Lokale Verifikation** | Eine Test-Suite (Worker-Selftests + ein **E2E des Schleifentreibers**, der den nachweis-gegateten Ausgang beweist) + ein **Claims-Audit** (referenzierte Skripte existieren · Zählungen konsistent · `_bundle ≡ source`) — alles lokal, **kein bezahltes CI** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Tests & lokale Prüfungen](#-tests--lokale-prüfungen-kein-bezahltes-ci) |
 | ✅ **Ehrliche Einsparungen** | Die Einsparungszeile ist nun **nachweis-gegatet, nicht obligatorisch** — eine Zahl wird nur mit einem gemessenen Beleg gezeigt (Clamp/Signaturen/Cache/`deterministic_edit`/Ledger); niemals erfunden | Token-Ökonomie-Vertrag | [§ Token-Ökonomie](#-token-ökonomie) |
+| 🤝 **Multi-Agent-Coordinator** (`coordinator.py`) | Entscheidet `OWN`/`CONTINUE_OWN`/`DEFER_ACTIVE_CLAIM`/`RECLAIM_STALE`/`VERIFY_PARTIAL` pro Issue anhand live gelesener Claim-Kommentare + gemergter PRs, damit zwei Sessions nie dieselbe Arbeit duplizieren | `scripts/coordinator.py` · `selftest` 10/10 | [§ Der vollständige Ablauf](#️-der-vollständige-ablauf--von-der-anforderung-zur-auslieferung) |
+| 🕵️ **PR-DoD/AC-Reviewer** (`pr_dod_review`) | Sind alle Issues beansprucht, prüft er offene PRs gegen die 7-dimensionale Definition of Done + die eigene Akzeptanzkriterien-Liste des Issues — ein mechanisches Urteil, keine Bauchgefühl-Freigabe | `scripts/pr_dod_review.py` · `selftest` 13/13 | [§ Der vollständige Ablauf](#️-der-vollständige-ablauf--von-der-anforderung-zur-auslieferung) |
+| 🐞 **Finding-Collector** (`finding_collector`) | Per Fingerprint dedupliziertes Defekt-Gedächtnis — derselbe zugrunde liegende Bug kollabiert in einen Datensatz mit Vorkommenszähler, egal wie viele Agenten/Läufe ihn beobachten | `scripts/finding_collector.py` · `selftest` 9/9 | [§ Offizielles Fähigkeitenverzeichnis](#-offizielles-fähigkeitenverzeichnis) |
 
 Zwei Schleifen-**Modi** machen die Beendigung explizit: **converge** (eine einzelne harte Aufgabe — endet
 mit dem nachweis-gegateten `<promise>` oder einer Stall-Eskalation) vs. **drain** (eine Warteschlange — endet,
@@ -163,9 +233,9 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🧠 Die 11 Skills & Beschleuniger
+## 🧠 Die 7 Skills + 5 Beschleuniger
 
-Der Orchestrator-Kern + fünf Satelliten + fünf Beschleuniger/Integrationen. Jeder Satellit ist
+Der Orchestrator-Kern + sechs Satelliten + fünf Beschleuniger/Integrationen. Jeder Satellit ist
 **optional** — wenn geladen, delegiert der Orchestrator an ihn (reichhaltiger + günstiger); wenn nicht
 vorhanden, deckt das Inline-Protokoll 100 % ab. Beschleuniger werden **automatisch erkannt** — vorhanden
 = genutzt, fehlend = LLM-Fallback.
@@ -178,11 +248,12 @@ vorhanden, deckt das Inline-Protokoll 100 % ab. Beschleuniger werden **automatis
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Parallele adversariale Review auf eigenen Rubriken → dedupliziertes Urteil | Qualitäts-Gate |
 | 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Ausgabe- + Memory-Kompression, fail-closed `transform_guard` | 40–60 % weniger |
 | 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | Post-Run-Retrospektive → dauerhafte, deduplizierte Lektionen im Memory | Klüger pro Lauf |
-| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Knowledge-Graph-Orientierung: semantische Suche, geführte Touren, Abhängigkeitsgraph | **L0 null Tokens** |
-| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Session-Analytik, Kostenverfolgung, Erkennung blockierter Sessions | **L1** nur SQL |
-| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV-Cache zwischen Schleifenrunden — 40–70 % TTFT-Reduktion bei lokalen Modellen | GPU-Zeit ↓ |
-| 10 | 🗜️ **Simplicio-Capture-Engine** | `engine/simplicio_engine.py` (nativ, nur stdlib) | Transparenter Capture-Proxy: leitet an den echten Provider weiter, misst + komprimiert deterministisch, schreibt `proxy_savings.json` | **deterministisch** |
-| 11 | 🎬 **video_evidence** | Playwright (Standard) · [hyperframes](https://github.com/heygen-com/hyperframes) (auf Anfrage) | Zeichnet die **echte Session** als bewegten Beleg einer UI-Änderung auf (Playwright); rendert mit hyperframes ein **deterministisches, beschriftetes MP4**-Erklärvideo, wenn das Video selbst das Liefergut IST | Beleg-Produzent |
+| 7 | 🧪 **simplicio-autoresearch** | Karpathy [autoresearch](https://github.com/balukosuri/Andrej-Karpathy-s-Autoresearch-As-a-Universal-Skill) + ECC `autoresearch-agent` | Evolutionäre Mutate/Eval/Keep-Revert-Schleife: yool-gedeckelte Caps, git-isolierter Branch, Anti-Goodhart-Gate-first-Eval, `savings-event`-Beleg | Auto-Optimierung |
+| 8 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Knowledge-Graph-Orientierung: semantische Suche, geführte Touren, Abhängigkeitsgraph | **L0 null Tokens** |
+| 9 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Session-Analytik, Kostenverfolgung, Erkennung blockierter Sessions | **L1** nur SQL |
+| 10 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | KV-Cache zwischen Schleifenrunden — 40–70 % TTFT-Reduktion bei lokalen Modellen | GPU-Zeit ↓ |
+| 11 | 🗜️ **Simplicio-Capture-Engine** | `engine/simplicio_engine.py` (nativ, nur stdlib) | Transparenter Capture-Proxy: leitet an den echten Provider weiter, misst + komprimiert deterministisch, schreibt `proxy_savings.json` | **deterministisch** |
+| 12 | 🎬 **video_evidence** | Playwright (Standard) · [hyperframes](https://github.com/heygen-com/hyperframes) (auf Anfrage) | Zeichnet die **echte Session** als bewegten Beleg einer UI-Änderung auf (Playwright); rendert mit hyperframes ein **deterministisches, beschriftetes MP4**-Erklärvideo, wenn das Video selbst das Liefergut IST | Beleg-Produzent |
 
 Jeder Skill liegt unter [`.claude/skills/`](../.claude/skills); jeder Beschleuniger hat ein Referenzdokument
 unter `.claude/skills/simplicio-loop/references/` (der Video-Produzent:
@@ -198,9 +269,12 @@ Der Orchestrator entdeckt Arbeit aus jeder Quelle über einsteckbare Adapter. Je
 
 | Quelle | Adapter | Zweck |
 |---|---|---|
-| GitHub Issues/PRs | `gh` CLI (nativ) | Primäre Arbeitselement-Quelle |
-| Jira / Asana / ClickUp / Linear / Notion | Host-Connector | Board-/Projektverwaltung |
-| Trello / Azure DevOps | `az boards`-Adapter | Azure-Arbeitsverfolgung |
+| GitHub Issues/PRs | `gh` CLI (nativ) | Primäre Arbeitselement-Quelle; kanonische Lifecycle-Kommentare bereits produktiv |
+| Azure DevOps | `az boards` / Host-Connector | Azure-Boards-Discovery; Stufen-Kommentare erst nach echtem, geprüftem Connector |
+| Jira | Host-Connector | Jira-Discovery; Stufen-Kommentare nur bei bestehender Verbindung |
+| Asana | Host-Connector | Asana-Discovery; Stufen-Kommentare nur bei bestehender Verbindung |
+| Trello | Host-Connector | Trello-Discovery; Stufen-Kommentare nur bei bestehender Verbindung |
+| ClickUp / Linear / Notion | Host-Connector | Board-/Projektverwaltung; kein Stufen-Kommentar-Claim ohne zertifizierten Adapter |
 | **agentsview-Sessions** | `scripts/agentsview_adapter.py` | Wiederherstellung blockierter Sessions + Kostentransparenz |
 | Lokale Dateien / CI-Warteschlange | Dateisystem / CI-API | Interne Arbeitsverfolgung |
 
@@ -208,30 +282,44 @@ Siehe das Referenzdokument jedes Adapters unter `.claude/skills/simplicio-loop/r
 
 ---
 
-## 🌐 11 Laufzeiten, ein Protokoll
+## 🌐 15 Laufzeiten, ein Protokoll — 3 garantiert + 12 Best-Effort
 
 Ein universeller Skill-Kern + ein Satz Hooks treibt jede Laufzeit an. Ein Adapter ist dünn: er sagt
 einer Laufzeit, *wo die Skills geladen werden*, *wie die Schleife scharfgeschaltet wird* und *wie die
 native Geschwindigkeit gebunden wird*. **Die Skill benennt keine Laufzeit; die Laufzeit erkennt die
-Skill.**
+Skill.** Die native `simplicio-runtime`-MCP-Bindung ist auf jeder Laufzeit **VERPFLICHTEND** (die
+Schleife BLOCKIERT, wenn sie fehlt/unerreichbar ist) — siehe [`docs/MCP_SETUP.md`](../docs/MCP_SETUP.md)
+für die Konfigurationstabelle pro Host.
 
-| Laufzeit | Skill-Laden | Schleifenantrieb | Native Bindung |
+### Stufe 1 — Garantiert (bei jedem Commit gegatet)
+
+| Laufzeit | Skill-Laden | Schleifenantrieb | Native Bindung (MCP) |
 |---|---|---|---|
-| **Claude Code** | `.claude/skills/` + plugin | `Stop`-Hook | MCP |
-| **Codex** | `AGENTS.md` | selbstgetaktet | MCP / Adapter |
-| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | MCP |
-| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | MCP / rules |
-| **Antigravity** | rules / `AGENTS.md` | selbstgetaktet | MCP |
-| **Kiro** | `.kiro/steering/` | specs | MCP |
-| **OpenCode** | `AGENTS.md` | selbstgetaktet | MCP |
-| **Gemini** | `GEMINI.md` | selbstgetaktet | MCP / Adapter |
-| **Aider** | `CONVENTIONS.md` | selbstgetaktet | — (LLM-Fallback) |
-| **Simplicio Agent** | native recall | native Schleife | **nativ** |
-| **OpenClaw** | plugin SDK | nativer Scheduler | **nativ** |
+| **Claude Code** | `.claude/skills/` + plugin | `Stop`-Hook | VERPFLICHTEND — `~/.claude.json` |
+| **Codex** | `AGENTS.md` | selbstgetaktet | VERPFLICHTEND — `~/.codex/config.toml` |
+| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | VERPFLICHTEND — `.cursor/mcp.json` |
 
-Das Versprechen: **dasselbe Protokoll, dieselben Gates, dieselbe Sicherheit auf allen 11 — nur die
-Geschwindigkeit unterscheidet sich.** `orient_clamp.py` (Token-Ökonomie) funktioniert auf jeder
-Laufzeit ohne jegliche Verdrahtung. Siehe [`adapters/MATRIX.md`](../adapters/MATRIX.md).
+### Stufe 2 — Best-Effort (Beiträge willkommen, kein Gate)
+
+| Laufzeit | Skill-Laden | Schleifenantrieb | Native Bindung (MCP) |
+|---|---|---|---|
+| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | VERPFLICHTEND — `.vscode/mcp.json` |
+| **Antigravity** | rules / `AGENTS.md` | selbstgetaktet | VERPFLICHTEND — Best-Effort-Pfad |
+| **Kiro** | `.kiro/steering/` | specs | VERPFLICHTEND — `.kiro/settings/mcp.json` |
+| **OpenCode** | `AGENTS.md` | selbstgetaktet | VERPFLICHTEND — `opencode.json` |
+| **Gemini** (CLI/Code Assist) | `GEMINI.md` | selbstgetaktet | VERPFLICHTEND — `.gemini/settings.json` (CLI) |
+| **Kimi** | eingebettete Konventionen | selbstgetaktet | VERPFLICHTEND — Best-Effort, kein geprüfter Client |
+| **Qwen** (Code/CLI) | `AGENTS.md`-Äquivalent | selbstgetaktet | VERPFLICHTEND — `.qwen/settings.json` (Best-Effort) |
+| **DeepSeek** | eingebettete Konventionen | selbstgetaktet | VERPFLICHTEND — kein First-Party-Client, Best-Effort |
+| **Aider** | `CONVENTIONS.md` | selbstgetaktet | VERPFLICHTEND — kein MCP-Client (LLM-Fallback für Ausführung) |
+| **Simplicio Agent** *(vormals Hermes)* | native recall | native Schleife | VERPFLICHTEND — **nativ** |
+| **OpenClaw** | plugin SDK | nativer Scheduler | VERPFLICHTEND — **nativ** |
+| **Orca** | via innerem Agenten + Skill-Registry | innerer Hook / geplante Automationen | VERPFLICHTEND — Registry-/Inner-Agent-Konfiguration |
+
+Das Versprechen: **dasselbe Protokoll, dieselben Gates, dieselbe Sicherheit auf allen 15 — Stufe 1
+mechanisch geprüft, Stufe 2 Best-Effort.** `orient_clamp.py` (Token-Ökonomie) funktioniert auf jeder
+Laufzeit ohne jegliche Verdrahtung. Siehe [`adapters/MATRIX.md`](../adapters/MATRIX.md) für die
+Promotion-/Demotion-Regeln.
 
 ---
 
@@ -244,26 +332,39 @@ Zuweisungen) bis zur Auslieferung gemergter, belegter Arbeit, dann das Schleifen
 flowchart LR
   IN["Intent: issue · task · queue"] --> CONTRACT["1 · Freeze task contract"]
   CONTRACT --> MAP["2 · Map source + normalize"]
-  MAP --> PLAN["3 · Dependency DAG + acceptance criteria"]
-  PLAN --> ROUTE{"4 · Ready task?"}
+  MAP --> COORD{"3 · Coordinator decide (multi-session)"}
+  COORD -->|"OWN / CONTINUE_OWN / RECLAIM_STALE"| PLAN["4 · Dependency DAG + acceptance criteria"]
+  COORD -->|"DEFER_ACTIVE_CLAIM (all issues)"| REVIEW["PR DoD/AC review — never idle"]
+  COORD -->|"VERIFY_PARTIAL"| RECHECK["Verify what's actually merged before continuing"]
+  RECHECK --> PLAN
+  REVIEW --> IN
+  PLAN --> ROUTE{"5 · Ready task?"}
   ROUTE -->|"solo / small"| SOLO["Targeted lane"]
   ROUTE -->|"parallel / medium+"| FAN["Bounded fan-out"]
   FAN --> A["Isolated worktree A"]
   FAN --> B["Isolated worktree B"]
   FAN --> C["Isolated worktree C"]
-  SOLO --> VERIFY["5 · Test + impact/flow evidence"]
+  SOLO --> VERIFY["6 · Test + impact/flow evidence"]
   A --> VERIFY
   B --> VERIFY
   C --> VERIFY
   VERIFY --> RECEIPT["Watcher challenge + evidence receipt"]
-  RECEIPT --> ORACLE{"6 · Completion oracle"}
+  RECEIPT --> ORACLE{"7 · Completion oracle"}
   ORACLE -->|"pending / blocked"| RECOVER["Journal · checkpoint · rollback · backlog-only maintenance"]
   RECOVER --> PLAN
-  ORACLE -->|"verified / measured"| DELIVER["7 · Source sync · PR · merge"]
-  DELIVER --> MEMORY["8 · Ledger · wiki · durable attempt memory"]
-  MEMORY --> WATCH["9 · Re-feed · watcher · STOP path"]
+  ORACLE -->|"verified / measured"| DELIVER["8 · Source sync · PR · merge"]
+  DELIVER --> CLEANUP["Post-merge worktree/branch cleanup"]
+  CLEANUP --> MEMORY["9 · Ledger · wiki · durable attempt memory"]
+  MEMORY --> WATCH["10 · Re-feed · watcher · STOP path"]
   WATCH -->|"new work"| IN
 ```
+
+**Multi-Agent-Koordination (neu in v3.38.0).** Schritt 3 ist die mechanische Antwort auf „hat eine
+Schwester-Session das schon übernommen?" — `scripts/coordinator.py` entscheidet anhand des
+tatsächlichen GitHub-Zustands, niemals aus Vermutung. Kommen alle Kandidaten-Issues als
+`DEFER_ACTIVE_CLAIM` zurück, geht die Schleife nicht in den Leerlauf — sie reviewt stattdessen offene
+PRs gegen DoD + Akzeptanzkriterien (`scripts/pr_dod_review.py`). Details:
+[`references/multi-agent-coordination.md`](../.claude/skills/simplicio-loop/references/multi-agent-coordination.md).
 
 ---
 
@@ -513,6 +614,12 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   ```
 
 `pip install "simplicio-loop[dev]"` fügt pytest für schönere Ausgabe hinzu; es ist niemals erforderlich.
+
+---
+
+## ⭐ Star-Verlauf
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wesleysimplicio/simplicio-loop&type=Date)](https://star-history.com/#wesleysimplicio/simplicio-loop&Date)
 
 ---
 

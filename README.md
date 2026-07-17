@@ -87,11 +87,11 @@ That architecture lets one goal become a governed delivery system: from a single
 <!-- visual-story:end -->
 
 <!-- stage-agents-roadmap:start -->
-## 🤖 Roadmap — a concrete agent behind every stage
+## 🤖 Shipped: a concrete agent behind every stage
 
-> **Implementation status:** this is the tracked target architecture in [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436), not a claim that every stage agent and tracker adapter already ships. The canonical GitHub lifecycle comment exists today; the full mandatory stage-reporting gate is tracked in [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433).
+> **Implementation status:** [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436) — the whole EPIC — is **closed and shipped** as of v3.37.0, including the full mandatory stage-reporting gate ([#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433)) and the multi-tracker interface ([#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436)). v3.38.0 adds the multi-agent coordination layer on top (`scripts/coordinator.py`, `scripts/pr_dod_review.py`) — see [§ What's new](#-whats-new-in-v3380--the-multi-agent-coordination-release).
 
-The portable driver will assign one accountable agent to intake/planning, implementation, safety,
+The portable driver assigns one accountable agent to intake/planning, implementation, safety,
 delivery, feedback/recovery, and final completion audit. Review fans out to four independent agents
 — security/correctness, code quality, runtime reproduction, and blast radius — before it can
 reconverge. Every transition emits an event and receipt; the completion auditor accepts evidence,
@@ -148,24 +148,79 @@ rules, sandbox E2E matrix, and acceptance criteria are specified in
 treated as connected merely because a CLI exists, and no remote acknowledgment is ever invented.
 <!-- stage-agents-roadmap:end -->
 
-## 🆕 What's new in v3.35.0
+## 🆕 What's new in v3.38.0 — the multi-agent coordination release
 
-- **Real multi-device execution** — atomic claim/discovery over a live remote queue, worker heartbeat + cancellation, receipt verification on *both* the client and the server, and an installable worker/supervisor/queue-server console-script surface, plus a `doctor.py` `LOCAL_ONLY` / `REMOTE_READY` / `REMOTE_MEASURED` tri-state so "remote" is never claimed without a passing cross-process proof.
-- **Real multi-LLM routing** — a deterministic model registry/router with fallback and circuit-breaker, task-contract-driven routing fields, and a genuine, verified `codex exec` run producing an auditable `runtime-execution-receipt` (Claude-side execution is implemented too, gated only by org policy in this environment — never faked).
-- **Evidence-gated delivery, wired for real** — fail-closed receipt verification (content/hash/schema/freshness), heartbeat-guarded dispatch, a merge executor that reconciles *after* merging (not just after opening the PR), chaos-tested crash recovery, and a cross-receipt commit-binding gate that closes a real "two green receipts, two different commits" gap.
-- **Security hardening** — an enumerated environment allow-list, short-lived HMAC credentials with `jti` revocation and per-operation scoping, DNS/TLS-pinned transport proven against live redirect/rebinding/proxy-injection attempts, structured audit logging, and CODEOWNERS coverage of every security-critical module.
-- **Delivery truth** — no more presumed proof: paginated live GraphQL queries, byte-level release-artifact verification (real SHA-256 + `gh attestation verify`), branch-reachability/issue-state/freshness checks, and a real concurrency + crash + fault-injection test matrix (including crashes *during* the external call itself).
-- **Quality gate, for real** — an independent watcher that re-derives every quality-matrix lane (including coverage drift) instead of trusting a self-reported receipt, all 192 test files sorted into a real unit/integration/system/regression convention, and measured coverage raised from 16.6% / 9.4% to 28.45% / 24.02% (global / critical) on the widened scope.
-- **A local, CI-less determinism story** — since GitHub Actions isn't available on this repo, a fail-closed local pre-push gate now stands in as the mandatory, impossible-to-bypass check, and the release pipeline (version bump → build → checksum → SBOM → local provenance → install-smoke) runs end-to-end against the real checkout with `scripts/release_rehearsal.py`.
-- **A transactional installer** — backup-before-mutate, real rollback, N-1→N upgrade tests, explicit consent gating before installing a service/proxy, and a machine-readable mutation manifest.
-- **Repository governance** — LFS-scoped media, a budget gate blocking accidental build-artifact commits, a canonical version/skill/claims manifest, and a dry-run-only history-migration plan (the actual rewrite stays a separate, explicit maintainer action, by design).
+This release is about one hard problem that only shows up once **several agent sessions work the
+same repo at once**: how does a session know what's already claimed, what's already merged-but-
+incomplete, and what to do with its own idle time instead of duplicating a sibling's work? Every
+item below was built, tested, and shipped against the **live, multi-session state of this very
+repo** — not a synthetic scenario.
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the full list and the [v3.35.0 release](https://github.com/wesleysimplicio/simplicio-loop/releases/tag/v3.35.0) for signed artifacts (wheel, sdist, SBOM, provenance).
+- **`scripts/coordinator.py` — the decision core.** Given today's GitHub state (open-issue claim
+  comments + merged PRs), it returns one deterministic action per issue: `OWN` (nothing claimed
+  yet), `CONTINUE_OWN` (you're already the latest claimant), `DEFER_ACTIVE_CLAIM` (a sibling
+  session claimed it recently — don't duplicate), `RECLAIM_STALE` (that claim went cold, safe to
+  pick up), or `VERIFY_PARTIAL` (a PR already merged for this issue, but it's still open — check
+  what's actually done before assuming either "nothing happened" or "it's finished"). It also
+  raises a `duplicate_risk` flag the instant two sessions claim the same issue close together.
+  Caught, live, on day one: two sessions independently building a findings collector for the same
+  issue under two different filenames.
+- **`scripts/pr_dod_review.py` — the reviewer for idle time.** When every open issue is already
+  claimed, a session's highest-leverage move isn't to wait — it's to check the open PRs against
+  this repo's own bar: the 7-dimension Definition of Done (implementation, unit/integration/
+  system/regression tests, a performance benchmark, ≥85% coverage) and the underlying issue's
+  frozen acceptance-criteria checklist. `check --post` posts a mechanical, line-by-line verdict as
+  a PR comment instead of a vibe-based approval. Proven against a real, already-merged "MVP slice"
+  PR: it correctly flagged **17 of 17** acceptance criteria on the parent epic as still unresolved.
+- **`scripts/finding_collector.py` — durable, deduplicated defect memory (issue #466, phase 1).**
+  A `simplicio.finding/v1` record per distinct defect, fingerprinted so the *same* underlying bug —
+  seen by any agent, any run, any timestamp — collapses into one record with an occurrence count
+  instead of spawning duplicate noise. No GitHub calls yet; that's the next phase.
+  `scripts/evolution.py` (taxonomy + priority + dedup) and `scripts/workflow_topology.py` (DAG
+  diff + validator) shipped as the first MVP slices of the companion Continuous Evolution (#467)
+  and Adaptive Architecture (#468) epics; `scripts/agent_replication.py` did the same for Elastic
+  Replication (#469) — admission control and winner-selection for speculative duplicate execution.
+- **`references/multi-agent-coordination.md` + `references/background-verification.md`** — two new
+  documented conventions wired straight into `SKILL.md`'s triage step: check coordinator ownership
+  before touching an issue, review PRs instead of idling once everything's claimed, and launch
+  slow verification commands (tests/`claims_audit.py`) in the background so a turn keeps making
+  progress instead of watching a progress bar.
+- **Mandatory post-merge cleanup (`scripts/worktree_cleanup.py`, #484)** — a merged branch's local
+  worktree and branch ref are now removed automatically instead of accumulating across sessions.
+- **CLI contract additions (WI-471)** — a `preflight` subcommand and a `--json` flag on `status`,
+  so an external supervisor can machine-check readiness before arming a run.
+- **Continuous Findings wiring (WI-466)** — the completion gate now genuinely consults the finding
+  store, and a store/repo consistency bug was found and fixed in the same pass.
+- **Two real regressions caught and fixed on `main` itself, live, this release cycle** — a PR that
+  silently deleted a function definition (breaking `loop_progress.py`'s own selftest) merged once,
+  and a squash-merge race then reintroduced the exact same broken code onto `main` a second time.
+  Both were found by actually running the affected script, not by trusting a green PR description —
+  the whole reason `coordinator.py` and `pr_dod_review.py` exist now.
+- **Carried forward from v3.37.0's Portable Stage Agents epic (#422–#436)** — a concrete,
+  independently verifiable agent behind every stage (intake/planner, implementation, four-way
+  review panel, safety gate, delivery, feedback/recovery, completion auditor), a conformance suite
+  proving contract/receipt parity across all 15 runtimes, human-readable agent identities, and
+  `simplicio-runtime` promoted to a required bound operator exactly like `simplicio-mapper`/
+  `simplicio-dev-cli`.
+- **Test suite grew to 231 files** (from 192), all still sorted into the unit/integration/system/
+  regression convention `docs/SCRIPTS_INVENTORY.md` tracks; `scripts/claims_audit.py` stayed at
+  14/14 through every merge this cycle.
+
+**What this means for you, concretely:** if you run `simplicio-loop` across more than one session
+or machine against the same repo, it now actively protects you from the two failure modes that
+actually happen in practice — two agents quietly redoing the same work, and a "done" PR that
+merged but left the real issue only partially solved. Neither used to be visible; both now are,
+mechanically, every triage pass.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the full list and the
+[v3.38.0 release](https://github.com/wesleysimplicio/simplicio-loop/releases/tag/v3.38.0) for
+signed artifacts (wheel, sdist, SBOM, provenance).
 
 ## ⚡ TL;DR
 
 **simplicio-loop** is a runtime-agnostic **super-plugin** — one autonomous looping
-orchestrator (invoked as **`/simplicio-loop`**) plus **five satellite skills** — that turns any
+orchestrator (invoked as **`/simplicio-loop`**) plus **six satellite skills and five
+accelerators** — that turns any
 strong LLM (Claude, Codex, Copilot, Gemini, Cursor, local models) into a self-driving worker. You
 point it at a body of work — *"finish all the open issues"*, *"clear the CI queue"*, *"drain the Jira board"* — and it
 runs the whole lifecycle on its own:
@@ -231,8 +286,8 @@ If you are an agent/runtime entering this repo cold, read `llms.txt` first for t
 ## 📘 Official capability record
 
 The complete, official roster of what `simplicio-loop` ships — every capability below is **real,
-runnable, and tested** (`python3 scripts/check.py`: claims-audit 9/9 + 245 passed). Each links to its
-deep section and its worker.
+runnable, and tested** (`python3 scripts/check.py`: claims-audit 14/14 + 2,544 tests collected
+across 231 files). Each links to its deep section and its worker.
 
 | Capability | What it does | Proof / worker | Details |
 |---|---|---|---|
@@ -244,6 +299,10 @@ deep section and its worker.
 | 🔒 **Fail-closed safety gate** (`action_gate`) | A `PreToolUse`/git-pre-push hook that **mechanically blocks** force-push, history rewrite, mass-delete, destructive DDL, infra teardown, and secret-laden commits/pushes — Step 5 made executable, not prose | `hooks/action_gate.py` · `selftest` 15/15 | [§ Safety](#-safety-non-negotiable) |
 | 🔬 **Local verification** | A test suite (worker selftests + an **e2e of the loop driver** proving evidence-gated exit) + a **claims-audit** (referenced scripts exist · counts consistent · `_bundle ≡ source`) — all local, **no paid CI** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Tests & local checks](#-tests--local-checks-no-paid-ci) |
 | ✅ **Honest savings** | The savings line is now **evidence-gated, not mandatory** — a number is shown only with a measured receipt (clamp/signatures/cache/`deterministic_edit`/ledger); never fabricated | token-economy contract | [§ Token economy](#-token-economy) |
+| 🤝 **Multi-agent coordinator** (`coordinator.py`) | Decides `OWN` / `CONTINUE_OWN` / `DEFER_ACTIVE_CLAIM` / `RECLAIM_STALE` / `VERIFY_PARTIAL` per issue from live claim comments + merged PRs, so two sessions never duplicate the same work | `scripts/coordinator.py` · `selftest` 10/10 | [§ The full flow](#️-the-full-flow--from-demand-to-delivery) |
+| 🕵️ **PR DoD/AC reviewer** (`pr_dod_review`) | When every issue is claimed, reviews open PRs against the 7-dimension Definition of Done + the issue's own acceptance-criteria checklist — a mechanical verdict, not a vibe-based approval | `scripts/pr_dod_review.py` · `selftest` 13/13 | [§ The full flow](#️-the-full-flow--from-demand-to-delivery) |
+| 🐞 **Finding collector** (`finding_collector`) | Fingerprinted, deduplicated defect memory — the same underlying bug collapses into one record with an occurrence count, no matter how many agents/runs observe it | `scripts/finding_collector.py` · `selftest` 9/9 | [§ Official capability record](#-official-capability-record) |
+| 🔔 **Release check** (`release_check`) | Compares the local canonical version against the latest GitHub release and tells the driving LLM to update instead of quietly working on a stale checkout — fail-open when offline | `scripts/release_check.py` · `selftest` 8/8 | [§ Install & use](#-install--use) |
 
 Two loop **modes** make termination explicit: **converge** (a single hard task — ends on the
 evidence-gated `<promise>` or a stall escalation) vs **drain** (a queue — ends when the source
@@ -353,26 +412,38 @@ to delivering merged, evidenced work, then looping 24/7 for more.
 flowchart LR
   IN["Intent: issue · task · queue"] --> CONTRACT["1 · Freeze task contract"]
   CONTRACT --> MAP["2 · Map source + normalize"]
-  MAP --> PLAN["3 · Dependency DAG + acceptance criteria"]
-  PLAN --> ROUTE{"4 · Ready task?"}
+  MAP --> COORD{"3 · Coordinator decide (multi-session)"}
+  COORD -->|"OWN / CONTINUE_OWN / RECLAIM_STALE"| PLAN["4 · Dependency DAG + acceptance criteria"]
+  COORD -->|"DEFER_ACTIVE_CLAIM (all issues)"| REVIEW["PR DoD/AC review — never idle"]
+  COORD -->|"VERIFY_PARTIAL"| RECHECK["Verify what's actually merged before continuing"]
+  RECHECK --> PLAN
+  REVIEW --> IN
+  PLAN --> ROUTE{"5 · Ready task?"}
   ROUTE -->|"solo / small"| SOLO["Targeted lane"]
   ROUTE -->|"parallel / medium+"| FAN["Bounded fan-out"]
   FAN --> A["Isolated worktree A"]
   FAN --> B["Isolated worktree B"]
   FAN --> C["Isolated worktree C"]
-  SOLO --> VERIFY["5 · Test + impact/flow evidence"]
+  SOLO --> VERIFY["6 · Test + impact/flow evidence"]
   A --> VERIFY
   B --> VERIFY
   C --> VERIFY
   VERIFY --> RECEIPT["Watcher challenge + evidence receipt"]
-  RECEIPT --> ORACLE{"6 · Completion oracle"}
+  RECEIPT --> ORACLE{"7 · Completion oracle"}
   ORACLE -->|"pending / blocked"| RECOVER["Journal · checkpoint · rollback · backlog-only maintenance"]
   RECOVER --> PLAN
-  ORACLE -->|"verified / measured"| DELIVER["7 · Source sync · PR · merge"]
-  DELIVER --> MEMORY["8 · Ledger · wiki · durable attempt memory"]
-  MEMORY --> WATCH["9 · Re-feed · watcher · STOP path"]
+  ORACLE -->|"verified / measured"| DELIVER["8 · Source sync · PR · merge"]
+  DELIVER --> CLEANUP["Post-merge worktree/branch cleanup"]
+  CLEANUP --> MEMORY["9 · Ledger · wiki · durable attempt memory"]
+  MEMORY --> WATCH["10 · Re-feed · watcher · STOP path"]
   WATCH -->|"new work"| IN
 ```
+
+**Multi-agent coordination (new in v3.38.0).** Step 3 is the mechanical answer to "is a sibling
+session already on this?" — `scripts/coordinator.py` decides from live GitHub state, never a guess.
+When every candidate issue comes back deferred, the loop doesn't idle: it reviews open PRs against
+the DoD + acceptance criteria (`scripts/pr_dod_review.py`) instead. Full detail:
+[`references/multi-agent-coordination.md`](.claude/skills/simplicio-loop/references/multi-agent-coordination.md).
 
 **Planning gate (issue #284).** Steps 1–3 above are not just guidance — `simplicio_loop/planning_gate.py`
 makes them a fail-closed mechanical barrier between "claimed" and "mutating": every real
@@ -642,8 +713,17 @@ Pass **`--minimal`** only for headless/CI to skip the heavy deps + the machine s
 ### Update
 
 ```bash
-bash scripts/update.sh [<runtime>]    # git pull → reinstall skills/hooks/operators → restart services
+python3 scripts/release_check.py check   # is a newer release published? — never auto-updates
+bash scripts/update.sh [<runtime>]       # git pull → reinstall skills/hooks/operators → restart services
 ```
+
+`release_check.py` compares the local canonical version (`pyproject.toml`) against the latest
+GitHub release tag and prints an explicit `MEASURED|release-check: a newer release is available …`
+line (exit 10) when you're behind — the agent/LLM driving `simplicio-loop` is meant to read that
+line and run the update itself, not silently keep working on a stale checkout. It never applies the
+update — a detected-but-declined update is never auto-installed — and it fails open (`UNVERIFIED|`,
+exit 0) when `gh`/network is unavailable, so an offline dev environment never looks broken. `doctor`
+(below) runs the same check as one OPTIONAL line in its report.
 
 `update.sh` stashes local edits, fast-forwards `main`, reinstalls from the fresh source, restarts the
 launchd/systemd services so they run the new code, and prints the live stack + savings.
@@ -742,6 +822,12 @@ opt-in capabilities you reach for when the task calls for them.
   ```
 
 `pip install "simplicio-loop[dev]"` adds pytest for nicer output; it is never required.
+
+---
+
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wesleysimplicio/simplicio-loop&type=Date)](https://star-history.com/#wesleysimplicio/simplicio-loop&Date)
 
 ---
 

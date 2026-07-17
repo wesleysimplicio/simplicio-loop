@@ -6,19 +6,19 @@
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-las-11-skills--aceleradores"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
+  <a href="#-las-7-skills--5-aceleradores"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-adaptadores-de-fuente"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
-  <a href="#-11-runtimes-un-protocolo"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-los-44-puntos-de-extensión"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
-  <a href="#-economía-de-tokens"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
+  <a href="#-15-runtimes-un-protocolo"><img src="https://img.shields.io/badge/runtimes-15%20(3%20garantidos%2B12%20best--effort)-2563EB" alt="15 runtimes (3 garantidos + 12 best-effort)"></a>
+  <a href="#-los-49-puntos-de-extensión"><img src="https://img.shields.io/badge/extension%20points-49-00E08A" alt="49 extension points"></a>
+  <a href="#-economía-de-tokens"><img src="https://img.shields.io/badge/savings-unverified-888888" alt="Ahorro — no verificado"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-las-11-skills--aceleradores">11 Skills</a> ·
+  <a href="#-las-7-skills--5-aceleradores">7 Skills</a> ·
   <a href="#-adaptadores-de-fuente">Adaptadores de fuente</a> ·
-  <a href="#-11-runtimes-un-protocolo">11 Runtimes</a> ·
+  <a href="#-15-runtimes-un-protocolo">15 Runtimes</a> ·
   <a href="#-el-bucle">El bucle</a> ·
   <a href="#-economía-de-tokens">Economía de tokens</a> ·
   <a href="#-economía-de-tokens">Motor de captura</a> ·
@@ -106,6 +106,76 @@ flowchart LR
 **Política:** GitHub es obligatorio para runs vinculados a GitHub y `COMPLETE` espera confirmación remota. Azure DevOps, Jira, Asana y Trello reciben comentarios solo tras probar conexión, autenticación, autorización y resolución del ítem; `NOT_CONNECTED` es un skip explícito y no bloqueante. Contrato y pruebas: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436).
 <!-- stage-agents-roadmap:end -->
 
+## 🆕 Novedades en la v3.38.0 — la versión de coordinación multi-agente
+
+Esta versión resuelve un problema que solo aparece cuando **varias sesiones de agente trabajan a la
+vez sobre el mismo repo**: ¿cómo sabe una sesión qué issue ya está reclamada, qué PR ya mergeada
+dejó el trabajo a medias, y qué hacer con su propio tiempo ocioso en lugar de duplicar el trabajo de
+otra sesión? Todo lo de abajo se construyó y probó contra el **estado real y multi-sesión de este
+mismo repo** — no un escenario sintético.
+
+- **`scripts/coordinator.py` — el núcleo de decisión.** A partir del estado real de GitHub
+  (comentarios de reclamación en issues abiertas + PRs ya mergeadas), devuelve una acción
+  determinista por issue: `OWN` (nadie la reclamó), `CONTINUE_OWN` (ya eres el último reclamante),
+  `DEFER_ACTIVE_CLAIM` (otra sesión la reclamó hace poco — no duplicar), `RECLAIM_STALE` (esa
+  reclamación se enfrió, es seguro tomarla) o `VERIFY_PARTIAL` (ya hay una PR mergeada para esa
+  issue pero sigue abierta — hay que comprobar qué está realmente hecho). También levanta una
+  bandera `duplicate_risk` en cuanto dos sesiones reclaman la misma issue casi al mismo tiempo. Caso
+  real, día uno: dos sesiones construyendo por separado un recolector de hallazgos para la misma
+  issue con dos nombres de archivo distintos.
+- **`scripts/pr_dod_review.py` — el revisor para el tiempo ocioso.** Cuando todas las issues abiertas
+  ya están reclamadas, el movimiento de mayor valor de una sesión no es esperar: es revisar las PRs
+  abiertas contra el propio listón del repo — la Definition of Done de 7 dimensiones
+  (implementación, tests unitarios/integración/sistema/regresión, benchmark de rendimiento,
+  cobertura ≥85%) y la checklist de criterios de aceptación congelada de la issue subyacente.
+  `check --post` publica un veredicto mecánico, línea por línea, como comentario en la PR — no una
+  aprobación de sensación. Probado contra una PR real ya mergeada ("MVP slice"): marcó correctamente
+  **17 de 17** criterios de aceptación del epic padre como aún no resueltos.
+- **`scripts/finding_collector.py` — memoria de defectos duradera y deduplicada (issue #466, fase 1).**
+  Un registro `simplicio.finding/v1` por defecto distinto, con huella (fingerprint), de modo que el
+  *mismo* bug — visto por cualquier agente, en cualquier run, en cualquier momento — colapsa en un
+  único registro con un contador de ocurrencias en lugar de generar ruido duplicado. Todavía sin
+  llamadas a GitHub; eso es la siguiente fase. `scripts/evolution.py` (taxonomía + prioridad +
+  dedup) y `scripts/workflow_topology.py` (diff de DAG + validador) salieron como primeras
+  entregas MVP de los epics hermanos Continuous Evolution (#467) y Adaptive Architecture (#468);
+  `scripts/agent_replication.py` hizo lo mismo para Elastic Replication (#469) — control de admisión
+  y selección de ganador para ejecución especulativa duplicada.
+- **`references/multi-agent-coordination.md` + `references/background-verification.md`** — dos
+  convenciones nuevas, cableadas directamente en el paso de triaje de `SKILL.md`: comprobar la
+  propiedad del coordinador antes de tocar una issue, revisar PRs en vez de quedarse ocioso cuando
+  todo está reclamado, y lanzar en segundo plano los comandos de verificación lentos (tests /
+  `claims_audit.py`) para que un turno siga avanzando en vez de mirar una barra de progreso.
+- **Limpieza obligatoria post-merge (`scripts/worktree_cleanup.py`, #484)** — el worktree local y la
+  rama de una branch ya mergeada se eliminan ahora automáticamente en lugar de acumularse.
+- **Ampliaciones del contrato CLI (WI-471)** — un subcomando `preflight` y una bandera `--json` en
+  `status`, para que un supervisor externo pueda comprobar mecánicamente la disposición antes de
+  armar un run.
+- **Dos regresiones reales, detectadas y corregidas en `main` mismo, en vivo, este ciclo** — una PR
+  que borró silenciosamente una definición de función (rompiendo el propio selftest de
+  `loop_progress.py`) se mergeó una vez, y una carrera de squash-merge reintrodujo el mismo código
+  roto en `main` una segunda vez. Ambas se detectaron ejecutando de verdad el script afectado, no
+  confiando en una descripción de PR en verde — la razón misma de que existan `coordinator.py` y
+  `pr_dod_review.py`.
+- **Heredado de la v3.37.0 (epic Portable Stage Agents, #422–#436)** — un agente concreto y
+  verificable por etapa (intake/planificador, implementación, panel de review de cuatro vías, gate
+  de seguridad, entrega, feedback/recuperación, auditor de finalización), una suite de conformidad
+  que prueba paridad de contrato/recibo en los 15 runtimes, identidades de agente legibles, y
+  `simplicio-runtime` promovido a operador vinculado obligatorio igual que `simplicio-mapper`/
+  `simplicio-dev-cli`.
+- **La suite de tests creció a 231 archivos** (desde 192), todos clasificados según la convención
+  unit/integration/system/regression de `docs/SCRIPTS_INVENTORY.md`; `scripts/claims_audit.py` se
+  mantuvo en 14/14 en cada merge de este ciclo.
+
+**Qué significa esto en la práctica:** si ejecutas `simplicio-loop` en más de una sesión o máquina
+sobre el mismo repo, ahora te protege activamente de los dos fallos que ocurren de verdad — dos
+agentes rehaciendo en silencio el mismo trabajo, y una PR "hecha" que se mergeó pero dejó la issue
+real solo parcialmente resuelta. Antes ninguno era visible; ahora ambos lo son, mecánicamente, en
+cada pasada de triaje.
+
+Consulta [`CHANGELOG.md`](../CHANGELOG.md) para el listado completo y la
+[versión v3.38.0](https://github.com/wesleysimplicio/simplicio-loop/releases/tag/v3.38.0) para los
+artefactos firmados (wheel, sdist, SBOM, procedencia).
+
 ## ⚡ TL;DR
 
 **simplicio-loop** es un **super-plugin** independiente del runtime — un único orquestador
@@ -134,15 +204,20 @@ tras barreras de seguridad y una ruta explícita de STOP/cancelación.
 ```
 
 Tres cosas lo hacen diferente: es un **super-plugin de skills enfocadas**, ejecuta el **mismo
-protocolo en 11 runtimes** y hace todo esto con una **economía de tokens agresiva y honesta**.
+protocolo en 15 runtimes** y hace todo esto con una **economía de tokens agresiva y honesta**.
+
+La skill se instala **de forma independiente**: no necesitas `simplicio-runtime` ni ningún
+componente nativo obligatorio solo para usar `simplicio-loop`. Los enlaces nativos, operadores,
+servicios de captura y el resto de la pila Simplicio son aceleradores opcionales sobre el paquete
+básico de skills.
 
 ---
 
 ## 📘 Registro oficial de capacidades
 
 El listado completo y oficial de lo que incluye `simplicio-loop` — cada capacidad de abajo es
-**real, ejecutable y testeada** (`python3 scripts/check.py`: claims-audit 4/4 + 28 tests). Cada una
-enlaza con su sección detallada y su worker.
+**real, ejecutable y testeada** (`python3 scripts/check.py`: claims-audit 14/14 + 2.544 tests
+recopilados en 231 archivos). Cada una enlaza con su sección detallada y su worker.
 
 | Capacidad | Qué hace | Prueba / worker | Detalles |
 |---|---|---|---|
@@ -151,11 +226,14 @@ enlaza con su sección detallada y su worker.
 | 🔒 **Gate de seguridad fail-closed** (`action_gate`) | Un hook `PreToolUse`/git-pre-push que **bloquea mecánicamente** force-push, reescritura de historial, borrado masivo, DDL destructivo, teardown de infra y commits/pushes con secretos — el Paso 5 hecho ejecutable, no prosa | `hooks/action_gate.py` · `selftest` 15/15 | [§ Seguridad](#-seguridad-innegociable) |
 | 🔬 **Verificación local** | Una suite de tests (selftests de workers + un **e2e del driver del bucle** que prueba la salida ligada a evidencia) + una **claims-audit** (los scripts referenciados existen · counts consistentes · `_bundle ≡ source`) — todo local, **sin CI de pago** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Tests y comprobaciones locales](#-tests-y-comprobaciones-locales-sin-ci-de-pago) |
 | ✅ **Ahorro honesto** | La línea de ahorro ahora es **ligada a evidencia, no obligatoria** — solo se muestra un número con un recibo medido (clamp/firmas/caché/`deterministic_edit`/ledger); nunca se fabrica | contrato de economía de tokens | [§ Economía de tokens](#-economía-de-tokens) |
+| 🤝 **Coordinador multi-agente** (`coordinator.py`) | Decide `OWN` / `CONTINUE_OWN` / `DEFER_ACTIVE_CLAIM` / `RECLAIM_STALE` / `VERIFY_PARTIAL` por issue a partir de comentarios de reclamación en vivo + PRs mergeadas, para que dos sesiones nunca dupliquen el mismo trabajo | `scripts/coordinator.py` · `selftest` 10/10 | [§ Novedades v3.38.0](#-novedades-en-la-v3380--la-versión-de-coordinación-multi-agente) |
+| 🕵️ **Revisor de DoD/AC en PRs** (`pr_dod_review`) | Cuando toda issue está reclamada, revisa las PRs abiertas contra la Definition of Done de 7 dimensiones + la checklist de criterios de aceptación propia de la issue — un veredicto mecánico, no una aprobación de sensación | `scripts/pr_dod_review.py` · `selftest` 13/13 | [§ Novedades v3.38.0](#-novedades-en-la-v3380--la-versión-de-coordinación-multi-agente) |
+| 🐞 **Recolector de hallazgos** (`finding_collector`) | Memoria de defectos deduplicada y con huella — el mismo bug subyacente colapsa en un único registro con contador de ocurrencias, sin importar cuántos agentes/runs lo observen | `scripts/finding_collector.py` · `selftest` 9/9 | [§ Novedades v3.38.0](#-novedades-en-la-v3380--la-versión-de-coordinación-multi-agente) |
 
 Dos **modos** del bucle hacen explícita la terminación: **converge** (una sola tarea dura — termina
 con el `<promise>` ligado a evidencia o una escalada por estancamiento) vs **drain** (una cola —
 termina cuando la reconsulta de la fuente sigue vacía K rondas). Ambos siguen obedeciendo las
-Both modes are still governed by universal exits: promise+evidence, `max_iterations`, and STOP.
+salidas universales: promise+evidence, `max_iterations` y STOP.
 
 > Puntuación del bucle a lo largo de esta línea de trabajo: **7.5** (diseño sólido, no probado) →
 > **9** (memoria de intentos + anti-oscilación) → **9.5** (prueba local reproducible) → **~10**
@@ -164,26 +242,27 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🧠 Las 11 skills y aceleradores
+## 🧠 Las 7 skills + 5 aceleradores
 
-El núcleo del orquestador + cinco satélites + cinco aceleradores/integraciones. Cada satélite es
+El núcleo del orquestador + seis satélites + cinco aceleradores/integraciones. Cada satélite es
 **opcional** — cuando se carga, el orquestador le delega (más rico + más barato); cuando está
 ausente, el protocolo inline cubre el 100%. Los aceleradores se **autodetectan** — presente = usado,
 ausente = fallback por LLM.
 
 | # | Capacidad | Absorbe | Qué hace | Impacto en tokens |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-loop** | — | Unified public entrypoint: orchestrator core + hardened loop behind one command | Core + loop |
-| 2 | ↩️ **simplicio-tasks** | legacy alias | Compatibility shim for older installs and saved prompts | Legacy alias |
+| 1 | 🔁 **simplicio-loop** | — | Punto de entrada público unificado: núcleo del orquestador + bucle reforzado tras un solo comando | Core + loop |
+| 2 | ↩️ **simplicio-tasks** | alias heredado | Shim de compatibilidad para instalaciones y prompts guardados antiguos | Alias heredado |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | Ejecución terminal-first, catálogo de reducción de salida, tee-cache, lecturas solo-firmas | L0 determinista |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Revisión adversarial paralela sobre rúbricas distintas → veredicto deduplicado | Gate de calidad |
 | 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Compresión de salida + memoria, `transform_guard` fail-closed | 40-60% menos |
 | 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | Retrospectiva post-ejecución → lecciones duraderas y deduplicadas en memoria | Más listo en cada ejecución |
-| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Orientación por grafo de conocimiento: búsqueda semántica, tours guiados, grafo de dependencias | **L0 cero tokens** |
-| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Analítica de sesiones, seguimiento de coste, descubrimiento de sesiones estancadas | **L1** solo SQL |
-| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Caché KV entre turnos del bucle — 40-70% menos de TTFT en modelos locales | Tiempo de GPU ↓ |
-| 10 | 🗜️ **Motor de captura Simplicio** | `engine/simplicio_engine.py` (nativo, solo stdlib) | Proxy de captura transparente: reenvía al proveedor real, mide + comprime de forma determinista, escribe `proxy_savings.json` | **determinista** |
-| 11 | 🎬 **video_evidence** | Playwright (por defecto) · [hyperframes](https://github.com/heygen-com/hyperframes) (bajo demanda) | Graba la **sesión real** como prueba en movimiento de un cambio de UI (Playwright); renderiza un **MP4 explicativo determinista con subtítulos** con hyperframes cuando el vídeo ES el entregable | Productor de evidencia |
+| 7 | 🧪 **simplicio-autoresearch** | Karpathy [autoresearch](https://github.com/balukosuri/Andrej-Karpathy-s-Autoresearch-As-a-Universal-Skill) + `autoresearch-agent` de ECC | Bucle evolutivo mutate/eval/keep-revert: topes yool-guardrailed, rama git aislada, evaluación anti-Goodhart gate-primero, recibo `savings-event` | Auto-optimiza |
+| 8 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Orientación por grafo de conocimiento: búsqueda semántica, tours guiados, grafo de dependencias | **L0 cero tokens** |
+| 9 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Analítica de sesiones, seguimiento de coste, descubrimiento de sesiones estancadas | **L1** solo SQL |
+| 10 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Caché KV entre turnos del bucle — 40-70% menos de TTFT en modelos locales | Tiempo de GPU ↓ |
+| 11 | 🗜️ **Motor de captura Simplicio** | `engine/simplicio_engine.py` (nativo, solo stdlib) | Proxy de captura transparente: reenvía al proveedor real, mide + comprime de forma determinista, escribe `proxy_savings.json` | **determinista** |
+| 12 | 🎬 **video_evidence** | Playwright (por defecto) · [hyperframes](https://github.com/heygen-com/hyperframes) (bajo demanda) | Graba la **sesión real** como prueba en movimiento de un cambio de UI (Playwright); renderiza un **MP4 explicativo determinista con subtítulos** con hyperframes cuando el vídeo ES el entregable | Productor de evidencia |
 
 Cada skill vive bajo [`.claude/skills/`](../.claude/skills); cada acelerador tiene un documento de
 referencia bajo `.claude/skills/simplicio-loop/references/` (el productor de vídeo:
@@ -211,29 +290,42 @@ Consulta el documento de referencia de cada adaptador bajo
 
 ---
 
-## 🌐 11 runtimes, un protocolo
+## 🌐 15 runtimes, un protocolo — 3 garantizados + 12 best-effort
 
 Un único núcleo de skill universal + un único conjunto de hooks conduce cada runtime. Un adaptador es
 fino: le dice a un runtime *dónde cargar las skills*, *cómo armar el bucle* y *cómo enlazar la
-velocidad nativa*. **La skill no nombra ningún runtime; el runtime detecta la skill.**
+velocidad nativa*. **La skill no nombra ningún runtime; el runtime detecta la skill.** El enlace
+nativo MCP de `simplicio-runtime` es **OBLIGATORIO** en todos los runtimes (el bucle se BLOQUEA si
+falta o es inalcanzable) — consulta [`docs/MCP_SETUP.md`](../docs/MCP_SETUP.md).
 
-| Runtime | Carga de la skill | Drive del bucle | Enlace nativo |
+### Nivel 1 — Garantizado (gated en cada commit)
+
+| Runtime | Carga de la skill | Drive del bucle | Enlace nativo (MCP) |
 |---|---|---|---|
-| **Claude Code** | `.claude/skills/` + plugin | Hook `Stop` | MCP |
-| **Codex** | `AGENTS.md` | self-paced | MCP / adaptador |
-| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | MCP |
-| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | MCP / rules |
-| **Antigravity** | rules / `AGENTS.md` | self-paced | MCP |
-| **Kiro** | `.kiro/steering/` | specs | MCP |
-| **OpenCode** | `AGENTS.md` | self-paced | MCP |
-| **Gemini** | `GEMINI.md` | self-paced | MCP / adaptador |
-| **Aider** | `CONVENTIONS.md` | self-paced | — (fallback por LLM) |
-| **Simplicio Agent** | recall nativo | bucle nativo | **nativo** |
-| **OpenClaw** | plugin SDK | scheduler nativo | **nativo** |
+| **Claude Code** | `.claude/skills/` + plugin | Hook `Stop` | OBLIGATORIO — `~/.claude.json` |
+| **Codex** | `AGENTS.md` | self-paced | OBLIGATORIO — `~/.codex/config.toml` |
+| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | OBLIGATORIO — `.cursor/mcp.json` |
 
-La promesa: **mismo protocolo, mismas barreras, misma seguridad en los 11 — solo cambia la
-velocidad.** `orient_clamp.py` (economía de tokens) funciona en todos los runtimes sin ningún
-cableado. Consulta [`adapters/MATRIX.md`](../adapters/MATRIX.md).
+### Nivel 2 — Best-effort (contribuciones bienvenidas, sin gate)
+
+| Runtime | Carga de la skill | Drive del bucle | Enlace nativo (MCP) |
+|---|---|---|---|
+| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | OBLIGATORIO — `.vscode/mcp.json` |
+| **Antigravity** | rules / `AGENTS.md` | self-paced | OBLIGATORIO — ruta best-effort |
+| **Kiro** | `.kiro/steering/` | specs | OBLIGATORIO — `.kiro/settings/mcp.json` |
+| **OpenCode** | `AGENTS.md` | self-paced | OBLIGATORIO — `opencode.json` |
+| **Gemini** (CLI/Code Assist) | `GEMINI.md` | self-paced | OBLIGATORIO — `.gemini/settings.json` (CLI) |
+| **Kimi** | convenciones inline | self-paced | OBLIGATORIO — best-effort, sin cliente verificado |
+| **Qwen** (Code/CLI) | equivalente de `AGENTS.md` | self-paced | OBLIGATORIO — `.qwen/settings.json` (best-effort) |
+| **DeepSeek** | convenciones inline | self-paced | OBLIGATORIO — sin cliente first-party, best-effort |
+| **Aider** | `CONVENTIONS.md` | self-paced | OBLIGATORIO — sin cliente MCP (fallback LLM para exec) |
+| **Simplicio Agent** *(antes Hermes)* | recall nativo | bucle nativo | OBLIGATORIO — **nativo** |
+| **OpenClaw** | plugin SDK | scheduler nativo | OBLIGATORIO — **nativo** |
+| **Orca** | vía agente interno + registro de skills | hook interno / automatizaciones programadas | OBLIGATORIO — config de registro/agente interno |
+
+La promesa: **mismo protocolo, mismas barreras, misma seguridad en los 15 — Nivel 1 verificado
+mecánicamente, Nivel 2 best-effort.** `orient_clamp.py` (economía de tokens) funciona en todos los
+runtimes sin ningún cableado. Consulta [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
 ---
 
@@ -520,6 +612,12 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   ```
 
 `pip install "simplicio-loop[dev]"` añade pytest para una salida más bonita; nunca es obligatorio.
+
+---
+
+## ⭐ Historial de Estrellas
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wesleysimplicio/simplicio-loop&type=Date)](https://star-history.com/#wesleysimplicio/simplicio-loop&Date)
 
 ---
 
