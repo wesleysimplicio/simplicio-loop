@@ -150,6 +150,7 @@ SELFTEST_SCRIPTS = [
     "scripts/finding_collector.py",
     "scripts/coordinator.py",
     "scripts/evolution.py",
+    "scripts/workflow_topology.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a
 # `selftest`-shaped function/subcommand that isn't the worker's own self-check, or a script this

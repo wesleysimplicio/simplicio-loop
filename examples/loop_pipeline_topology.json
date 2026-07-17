@@ -1,0 +1,12 @@
+{
+  "stages": [
+    {"id": "preflight", "depends_on": []},
+    {"id": "survey", "depends_on": ["preflight"]},
+    {"id": "triage", "depends_on": ["survey"]},
+    {"id": "decide", "depends_on": ["triage"]},
+    {"id": "operate", "depends_on": ["decide"]},
+    {"id": "watcher_gate", "depends_on": ["operate"]},
+    {"id": "journal", "depends_on": ["watcher_gate"]},
+    {"id": "promise_gate", "depends_on": ["journal"]}
+  ]
+}
