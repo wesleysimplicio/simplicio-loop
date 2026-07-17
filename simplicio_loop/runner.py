@@ -4027,7 +4027,19 @@ def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:
     else:
         candidates = sorted([p for p in runs_root.iterdir() if p.is_dir()], key=lambda p: p.name)
         if not candidates:
-            raise FileNotFoundError("no runs found")
+            return {
+                "run_dir": None,
+                "manifest": None,
+                "state": {
+                    "phase": "no_runs",
+                    "completion": {"ready": False, "verdict": "NO_RUNS", "tag": "UNVERIFIED"},
+                    "operator": {"ready": False, "execution_state": "idle"},
+                    "evidence": {"ready": False, "status": "NO_RUNS"},
+                    "current_action": "none",
+                    "next_action": "none",
+                    "message": "no runs found; run simplicio-loop to start",
+                },
+            }
         chosen = candidates[-1]
     manifest = _load_json(chosen / "manifest.json")
     state = _load_json(chosen / "state.json")
