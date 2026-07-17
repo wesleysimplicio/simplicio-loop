@@ -4008,7 +4008,19 @@ def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:
     repo_path = Path(repo).resolve()
     runs_root = repo_path / ".simplicio" / "loop-runs"
     if not runs_root.exists():
-        raise FileNotFoundError("no runs directory found")
+        return {
+            "run_dir": None,
+            "manifest": None,
+            "state": {
+                "phase": "no_runs",
+                "completion": {"ready": False, "verdict": "NO_RUNS", "tag": "UNVERIFIED"},
+                "operator": {"ready": False, "execution_state": "idle"},
+                "evidence": {"ready": False, "status": "NO_RUNS"},
+                "current_action": "none",
+                "next_action": "none",
+                "message": "no runs directory found; run simplicio-loop to start",
+            },
+        }
     chosen = None
     if run_id:
         chosen = runs_root / run_id
