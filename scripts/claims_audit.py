@@ -134,6 +134,7 @@ SELFTEST_SCRIPTS = [
     "scripts/claims_manifest.py",
     "scripts/fan_out.py",
     "scripts/worktree_queue.py",
+    "scripts/worktree_cleanup.py",
     "scripts/schema_verify.py",
     "scripts/loop_progress.py",
     "hooks/action_gate.py",

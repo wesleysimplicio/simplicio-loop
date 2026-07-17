@@ -451,6 +451,17 @@ uncertain rather than assuming a hook will re-feed the goal:
 Delete `.orchestrator/loop/` (the `cancel-ralph` analogue). A single STOP signal (flag file
 `.orchestrator/STOP` or a channel command) halts cleanly between iterations.
 
+## Post-merge cleanup (mandatory)
+
+Once a PR the loop opened is **merged into `main`**, run `scripts/worktree_cleanup.py` to delete
+the branch (local + remote) and, if the work happened in a dedicated worktree, remove it too. It
+fails safe: skips if the PR isn't actually MERGED, or if the worktree/branch has uncommitted
+changes (both branch and worktree deletion are skipped together in that case).
+
+```bash
+python3 scripts/worktree_cleanup.py run --repo <owner/name> --pr <N> --branch <branch> --json
+```
+
 ## Agent-to-agent handoff (spindle/latch pattern)
 
 When a loop must hand work across multiple agents (different runtime/cap/scope), the
