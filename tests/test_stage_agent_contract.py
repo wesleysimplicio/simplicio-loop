@@ -248,8 +248,8 @@ def test_receipt_rejects_cross_fence():
     inst = _inst()
     rec = _rec(inst)
     rec["run_id"] = "other-run"
-    ok, errors = sa.validate_receipt(rec, inst)
-    assert not ok
+    ok, errors = sa.validate_receipt(rec, inst, now=datetime(2026, 7, 16, 0, 10, tzinfo=timezone.utc))
+    assert not ok and any("run_id" in e for e in errors)
 
 
 # --- Invariant 6: next stage only after prior gate -------------------------- #
