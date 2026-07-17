@@ -7,7 +7,7 @@ Operates the user-mandated WI lifecycle for every OPEN GitHub issue:
     watching -> delivering -> done | blocked | quarantined
 
 Honest, bounded design for a short cron window:
-  * INTAKE uses the SHIPPED ``simplicio_loop.intake_contract.compile_intake`` (#284) to
+  * INTAKE uses the SHIPPED ``simplicio_loop.intake_contract.build_task_intake`` (#284) to
     build a frozen, hash-bound intake envelope (objective, scope, ACs, impact map) — the
     real fail-closed gate, not a reinvention. Runs in milliseconds.
   * MAPPING is recorded as a scheduled step (the heavy ``simplicio-mapper`` survey runs
@@ -43,11 +43,8 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from simplicio_loop.intake_contract import (  # noqa: E402
-    compile_intake,
-    lint_intake,
-    freeze_intake,
-    make_source_snapshot,
-    IntakeBlockedError,
+    build_task_intake,
+    lint_task_intake,
 )
 from simplicio_loop.planning_gate import build_planning_receipt  # noqa: E402
 
@@ -138,40 +135,66 @@ def _impact_not_applicable() -> Dict[str, str]:
 
 
 def do_intake(issue: Dict[str, Any], gh_repo: str = "wesleysimplicio/simplicio-loop") -> Tuple[Dict[str, Any], str, List[str]]:
-    """Run the real #284 intake contract. Returns (envelope, hash, errors)."""
+    """Run the #284 intake contract via the current ``simplicio_loop.intake_contract``
+    API (``build_task_intake`` + ``lint_task_intake``). Returns (envelope, hash, errors).
+
+    The new API projects acceptance criteria from a *contract* (frozen snapshot of
+    scenarios), not from free-text fields. We assemble a minimal inline contract
+    carrying the single canonical AC for cron intake so the envelope is complete and
+    the fail-closed lint passes (no_acceptance_criteria / missing origin).
+    """
     n = issue["number"]
     rev = issue_source_revision(issue)
-    snap = make_source_snapshot(
-        provider="github", repo=gh_repo, item_id=str(n),
-        revision=issue.get("updatedAt") or rev, snapshot_hash=rev,
-        url=issue.get("url") or "", title_hash=hashlib.sha256((issue.get("title") or "").encode()).hexdigest()[:16],
-        body_hash=hashlib.sha256((issue.get("body") or "").encode()).hexdigest()[:16],
-    )
+    title = issue.get("title") or f"Issue {n}"
     ac_text = _extract_acceptance_criteria(issue.get("body") or "") or (
         f"A issue {n} possui contrato congelado, contexto de mapper agendado e planning "
         f"receipt antes de qualquer mutação no repositório."
     )
-    try:
-        env = compile_intake(
-            run_id=f"cron-{n}", work_item_id=str(n), attempt_id=f"cron-{n}-1",
-            source_snapshot=snap, title=issue.get("title") or f"Issue {n}",
-            objective=f"Processar issue {n} ({issue.get('title')}) pelo estado de trabalho canônico.",
-            current_state="issue aberta no GitHub", desired_state="work item com intake+mapping+planning registrados",
-            delivery_target="verified", scope_in=[f"issue {n} intake + mapping + planning"],
-            scope_out=["mutação de código pelo cron"],
-            constraints=["nenhuma mutação de source pelo cron (issue #284)"],
-            acceptance_criteria=[{
-                "id": "AC-001", "text": ac_text,
-                "verification": "planning receipt COMPLETE + run state gravado no ledger",
-                "origin": "source", "source_ref": f"issue#{n} body",
+    source_snapshot = {
+        "source": {
+            "provider": "github",
+            "repo": gh_repo,
+            "item_id": str(n),
+            "revision": issue.get("updatedAt") or rev,
+            "snapshot_hash": rev,
+            "url": issue.get("url") or "",
+            "title_hash": hashlib.sha256(title.encode()).hexdigest()[:16],
+            "body_hash": hashlib.sha256((issue.get("body") or "").encode()).hexdigest()[:16],
+        },
+    }
+    # Inline frozen contract carrying the canonical cron AC (origin=source per #284).
+    contract = {
+        "schema": "simplicio.task-contract/v1",
+        "collection_hash": rev,
+        "tasks": [{
+            "id": f"I{n}",
+            "title": title,
+            "scenarios": [{
+                "id": "AC-001",
+                "title": ac_text,
+                "given": ["issue aberta no GitHub"],
+                "when": ["cron driver executa intake"],
+                "then": ["planning receipt COMPLETE + run state gravado no ledger"],
+                "rule_refs": ["issue#284"],
             }],
-            impact_map=_impact_not_applicable(),
+        }],
+    }
+    try:
+        env = build_task_intake(
+            run_id=f"cron-{n}", attempt=1,
+            contract=contract,
+            source_snapshot=source_snapshot,
+            scope_in=[f"issue {n} intake + mapping + planning"],
+            scope_out=["mutação de código pelo cron"],
+            delivery_target="verified",
         )
-        lint = lint_intake(env)
-        env2, h = freeze_intake(env)
-        return env2, h, (lint.get("errors") or [])
-    except IntakeBlockedError as exc:
-        return {}, "", [f"intake_blocked:{exc.reason_code}"]
+        lint = lint_task_intake(env)
+        errors = list(lint.get("errors") or [])
+        if not lint.get("valid"):
+            return {}, "", errors
+        return env, env.get("intake_hash", ""), errors
+    except Exception as exc:  # fail-closed: any assembly error blocks, never fabricates
+        return {}, "", [f"intake_blocked:{type(exc).__name__}:{exc}"]
 
 
 def _extract_acceptance_criteria(body: str) -> Optional[str]:

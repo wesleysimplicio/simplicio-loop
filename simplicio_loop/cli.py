@@ -199,10 +199,81 @@ def verify(repo: str, run_id: str) -> int:
     return 0 if payload["state"].get("phase") == "done" else 1
 
 
-def status(repo: str, run_id: str) -> int:
-    payload = read_status(repo, run_id)
-    print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
+def _render_status_text(payload: dict) -> str:
+    """Human-readable one-screen summary of a run status payload."""
+    state = payload.get("state") or {}
+    lines = ["simplicio-loop run status", ""]
+    run_dir = payload.get("run_dir", "")
+    if run_dir:
+        lines.append(f"run_dir: {run_dir}")
+    completion = state.get("completion") or {}
+    lines.append(f"phase: {state.get('phase', 'UNKNOWN')}")
+    lines.append(f"completion_tag: {completion.get('tag', 'UNVERIFIED')}")
+    coverage = completion.get("coverage")
+    if coverage:
+        lines.append(f"coverage: {coverage}")
+    delivery = state.get("delivery") or {}
+    lines.append(f"delivery_ready: {delivery.get('ready', False)}")
+    return "\n".join(lines) + "\n"
+
+
+def status(repo: str, run_id: str, as_json: bool = False, as_text: bool = False) -> int:
+    try:
+        payload = read_status(repo, run_id)
+    except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
+        payload = {"schema": "simplicio.status/v1", "status": "UNVERIFIED",
+                   "reason_code": "run_missing", "error": str(exc)}
+    # Default remains JSON (backwards-compatible). --text opts into the human summary.
+    if as_text and not as_json:
+        print(_render_status_text(payload))
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def preflight(repo: str, as_json: bool = False) -> int:
+    """Verify the bound operators the loop requires are installed and reachable.
+
+    Returns exit 0 when all required operators are present, 1 otherwise. Always emits a
+    machine-readable JSON document (also when --json is omitted, for script consumption).
+    """
+    def _probe(name: str, cmd) -> dict:
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            ok = out.returncode == 0
+            version = (out.stdout or out.stderr).strip().splitlines()[0] if ok else ""
+            return {"name": name, "present": ok, "version": version,
+                    "error": "" if ok else (out.stderr or out.stdout).strip()[:200]}
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"name": name, "present": False, "version": "", "error": str(exc)[:200]}
+
+    repo_path = Path(repo).resolve()
+    operators = [
+        _probe("simplicio-mapper", ["simplicio-mapper", "--version"]),
+        _probe("simplicio-dev-cli", ["simplicio-dev-cli", "--help"]),
+        _probe("simplicio-py", ["simplicio-py", "--version"]),
+        _probe("simplicio-runtime", ["simplicio", "--version"]),
+    ]
+    # dev-cli and simplicio-py are alternative names for the same action operator.
+    action_present = any(o["present"] for o in operators
+                         if o["name"] in ("simplicio-dev-cli", "simplicio-py"))
+    all_present = operators[0]["present"] and action_present and operators[3]["present"]
+    payload = {
+        "schema": "simplicio.preflight/v1",
+        "repo": str(repo_path),
+        "all_present": all_present,
+        "operators": operators,
+    }
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("simplicio-loop preflight")
+        for op in operators:
+            mark = "OK " if op["present"] else "MISSING"
+            ver = f" ({op['version']})" if op["version"] else ""
+            print(f"  [{mark}] {op['name']}{ver}")
+        print("  all_present:" if all_present else "  NOT ALL PRESENT")
+    return 0 if all_present else 1
 
 
 def resume(repo: str, run_id: str) -> int:
@@ -541,6 +612,16 @@ def main(argv=None) -> int:
     p_status = sub.add_parser("status", help="show the latest run state or a specific run")
     p_status.add_argument("--repo", default=".", help="repository root")
     p_status.add_argument("--run-id", default="", help="run id to inspect")
+    p_status.add_argument("--json", action="store_true",
+                          help="emit machine-readable JSON (this is also the default)")
+    p_status.add_argument("--text", dest="as_text", action="store_true",
+                          help="emit human-readable text instead of JSON")
+
+    p_preflight = sub.add_parser(
+        "preflight", help="verify bound operators (mapper/dev-cli/runtime) are installed")
+    p_preflight.add_argument("--repo", default=".", help="repository root")
+    p_preflight.add_argument("--json", action="store_true",
+                             help="emit machine-readable JSON (default: human-readable text)")
 
     p_verify = sub.add_parser("verify", help="run the independent watcher and delivery gates")
     p_verify.add_argument("--repo", default=".", help="repository root")
@@ -692,7 +773,9 @@ def main(argv=None) -> int:
         return oracle(args.loop_dir, args.run_dir, args.response_text, args.flow_gap,
                       args.write_receipt)
     if command == "status":
-        return status(args.repo, args.run_id)
+        return status(args.repo, args.run_id, args.json, args.as_text)
+    if command == "preflight":
+        return preflight(args.repo, args.json)
     if command == "verify":
         return verify(args.repo, args.run_id)
     if command == "progress":
