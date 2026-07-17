@@ -35,6 +35,7 @@ dependencies = [
 # only a convenience for nicer output / IDE integration — never required.
 dev = ["pytest>=7", "pytest-cov>=4"]
 ml = ["model2vec>=0.3", "numpy>=1.21"]
+uvloop = ["uvloop>=0.19; platform_system != 'Windows'"]
 
 [project.urls]
 Homepage = "https://github.com/wesleysimplicio/simplicio-loop"
