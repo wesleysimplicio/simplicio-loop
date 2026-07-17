@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simplicio-loop"
-version = "3.36.1"
+version = "3.37.0"
 description = "The Universal Looping AI Orchestrator — a runtime-agnostic super-plugin (7 skills) that drains any queue of work end-to-end on any LLM/runtime."
 readme = "PYPI.md"
 requires-python = ">=3.8"
