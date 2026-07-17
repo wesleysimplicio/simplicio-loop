@@ -253,7 +253,10 @@ detector below. It is the difference between a loop that converges and one that 
    expands. **Then RECORD the attempt**: `loop_journal.py record --iteration N --action "<change>"
    --hypothesis "<why>" --gate pass|fail --gate-output <test.log>` (failure output is fingerprinted
    so the same failure is recognised next turn). A turn that only edits without verifying is
-   incomplete. Full detail: **`references/triage-verify-detail.md`**.
+   incomplete. Full detail: **`references/triage-verify-detail.md`**. Launch the verification
+   command (tests/selftest/`claims_audit.py`) in the **background** and keep working the next unit
+   of work instead of idling on it — same evidence requirement, only WHEN you block on the result
+   changes. Full detail: **`references/background-verification.md`**.
 4. **Re-feed** happens at turn end via the stop-hook (below). Each re-fed turn is prefixed
    `[simplicio-loop iteration N. To finish: output <promise>TEXT</promise> ONLY when genuinely true.]`.
    Before re-feeding, the stop-hook (or the self-paced tick) runs the **stall check**
