@@ -2,6 +2,8 @@
 the two named anti-patterns: "PR open != merged" and "mergedAt without reachability"."""
 from __future__ import annotations
 
+import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -557,6 +559,37 @@ def test_receipt_to_stage_receipt_projection():
     assert stage_receipt["verdict"] == "pass"
 
 
+def test_to_stage_receipt_passes_the_real_canonical_validator():
+    # Regression for issue #458: to_stage_receipt() was missing ~15 fields
+    # the canonical stage-receipt/v1 schema requires, so every real
+    # coordinator-driven delivery_agent receipt was silently rejected by
+    # stage_agents.validate_receipt() despite this module's own shallow
+    # tests passing.
+    from simplicio_loop import stage_agents as sa
+
+    adapter = FakeAdapter()
+    saga, pr_id = _run_full_saga(adapter)
+    receipt = da.build_delivery_stage_receipt(
+        run_id=RUN_ID, task_id=TASK_ID, attempt_id="a1", fence=FENCE, plan_revision=PLAN_REV,
+        identity=_identity(), preconditions=_full_preconditions(), saga=saga,
+        source_id="42", target_branch="main",
+    )
+    context_hash, manifest_hash = "a" * 64, "b" * 64
+    stage_receipt = da.to_stage_receipt(
+        receipt, receipt_id="rec-full", agent_instance_id="inst-full",
+        attempt_ordinal=1, context_hash=context_hash, manifest_hash=manifest_hash,
+    )
+    instance = {
+        "run_id": RUN_ID, "task_id": TASK_ID, "attempt_id": "a1", "attempt_ordinal": 1,
+        "fence": FENCE, "plan_revision": PLAN_REV, "agent_instance_id": "inst-full",
+        "role_id": "delivery_agent", "stage_id": "delivering",
+        "context_hash": context_hash, "manifest_hash": manifest_hash,
+        "negotiated_capabilities": ["receipts"], "terminal_status": "completed",
+    }
+    ok, errors = sa.validate_receipt(stage_receipt, instance)
+    assert ok, errors
+
+
 # =========================================================================== #
 # Git/local integration — real git repo, no network.
 # =========================================================================== #
@@ -782,3 +815,37 @@ def test_cancel_during_wait_leaves_no_partial_close():
                               fence=FENCE, head_sha=HEAD_SHA)
     assert not step.ok
     assert adapter.query_source_state(source_id="42")["state"] == "OPEN"
+
+
+def test_cli_stage_receipt_subcommand_is_a_real_live_path(tmp_path, capsys):
+    # Regression for issue #458 adversarial review: to_stage_receipt() was only
+    # ever called from this test file, never from any production entrypoint.
+    # scripts/delivery_agent.py's `stage-receipt` subcommand is that
+    # entrypoint -- exercise it via its real main(), not just the library call.
+    payload = {
+        "run_id": RUN_ID, "task_id": TASK_ID, "attempt_id": "a1", "fence": FENCE,
+        "plan_revision": PLAN_REV, "identity": {}, "preconditions": {"ok": True, "errors": []},
+        "saga": {"steps": [
+            {"event": "MergeConfirmed", "ok": True, "detail": {}},
+            {"event": "TargetReachabilityObserved", "ok": True, "detail": {}},
+        ]},
+        "source_id": "42", "target_branch": "main",
+    }
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location(
+        "scripts.delivery_agent_cli", os.path.join(ROOT, "scripts", "delivery_agent.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    exit_code = mod.main([
+        "stage-receipt", "--input", str(input_path), "--receipt-id", "rec-cli",
+        "--agent-instance-id", "inst-cli", "--context-hash", "a" * 64, "--manifest-hash", "b" * 64,
+    ])
+    out = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert out["schema"] == "simplicio.stage-receipt/v1"
+    assert out["role_id"] == "delivery_agent"
+    assert out["verdict"] == "pass"

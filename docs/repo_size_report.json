@@ -16,8 +16,8 @@
       "ext": ".o"
     },
     {
-      "bytes": 211125624,
-      "count": 1794,
+      "bytes": 211127811,
+      "count": 1795,
       "ext": "(no ext)"
     },
     {
@@ -41,14 +41,14 @@
       "ext": ".mp4"
     },
     {
-      "bytes": 23251992,
-      "count": 990,
-      "ext": ".md"
+      "bytes": 26192879,
+      "count": 1291,
+      "ext": ".py"
     },
     {
-      "bytes": 22569432,
-      "count": 1148,
-      "ext": ".py"
+      "bytes": 25099831,
+      "count": 1061,
+      "ext": ".md"
     },
     {
       "bytes": 14734673,
@@ -71,8 +71,8 @@
       "ext": ".aiff"
     },
     {
-      "bytes": 3986354,
-      "count": 1925,
+      "bytes": 4165066,
+      "count": 1976,
       "ext": ".json"
     },
     {
@@ -91,13 +91,18 @@
       "ext": ".db"
     },
     {
+      "bytes": 414880,
+      "count": 2,
+      "ext": ".webp"
+    },
+    {
       "bytes": 361485,
       "count": 12,
       "ext": ".html"
     },
     {
-      "bytes": 247300,
-      "count": 112,
+      "bytes": 258084,
+      "count": 116,
       "ext": ".toml"
     },
     {
@@ -116,14 +121,14 @@
       "ext": ".zip"
     },
     {
+      "bytes": 59496,
+      "count": 14,
+      "ext": ".yml"
+    },
+    {
       "bytes": 57619,
       "count": 6,
       "ext": ".svg"
-    },
-    {
-      "bytes": 55076,
-      "count": 12,
-      "ext": ".yml"
     },
     {
       "bytes": 27457,
@@ -161,14 +166,14 @@
       "ext": ".upstream"
     },
     {
+      "bytes": 201,
+      "count": 2,
+      "ext": ".in"
+    },
+    {
       "bytes": 177,
       "count": 1,
       "ext": ".tag"
-    },
-    {
-      "bytes": 75,
-      "count": 1,
-      "ext": ".in"
     },
     {
       "bytes": 48,
@@ -176,20 +181,20 @@
       "ext": ".timestamp"
     }
   ],
-  "distinct_blobs_ever_committed": 11398,
-  "generated_at": "2026-07-16T14:09:09Z",
+  "distinct_blobs_ever_committed": 11673,
+  "generated_at": "2026-07-17T01:14:07Z",
   "git_count_objects": {
-    "count": "2150",
-    "garbage": "0",
-    "in-pack": "15145",
-    "packs": "20",
-    "prune-packable": "157",
-    "size": "18.00 MiB",
+    "count": "238",
+    "garbage": "1",
+    "in-pack": "17564",
+    "packs": "3",
+    "prune-packable": "0",
+    "size": "703.39 KiB",
     "size-garbage": "0 bytes",
     "size-pack": "1.40 GiB"
   },
   "git_count_objects_parsed_bytes": {
-    "size_loose_bytes": 18874368,
+    "size_loose_bytes": 720271,
     "size_pack_bytes": 1503238553
   },
   "schema": "simplicio.repo-history-scan/v1",
@@ -214,197 +219,8 @@
       ],
       "sha": "213d6e1953bfbf5c8e73b4393aa0283cb3e78ef1",
       "size_bytes": 74765824
-    },
-    {
-      "paths": [
-        "rust/target/release/deps/libort_sys-d70b3f83847c3ecb.rlib"
-      ],
-      "sha": "7273809d377e57c62b4b5fdf6964fcb5784f2e76",
-      "size_bytes": 74765824
-    },
-    {
-      "paths": [
-        "rust/target/release/deps/libort_sys-d9493f223d16e6d2.rlib"
-      ],
-      "sha": "5deca370c7954bf853105d620cd412b8f82f5801",
-      "size_bytes": 74765824
-    },
-    {
-      "paths": [
-        "rust/target/debug/incremental/simplicio_core-0izrm1cfrx535/s-hjrk9dg0bu-0ynpxwx-8ba57jf0crkeuv3t3jqj5wokh/dep-graph.bin"
-      ],
-      "sha": "07637bc8b1977de6b098860dba164ba1045be220",
-      "size_bytes": 56562082
-    },
-    {
-      "paths": [
-        "rust/target/release/deps/simplicio_proxy-0ed6465cd601bff7"
-      ],
-      "sha": "6b346cc552712abe661d931013d547fcf027e31d",
-      "size_bytes": 40816064
-    },
-    {
-      "paths": [
-        "rust/target/debug/deps/libtokenizers-a2aa7bf1c91a4c33.rlib"
-      ],
-      "sha": "ef181eb0c2056c175635606ab58b9fe2096d342e",
-      "size_bytes": 39965952
-    },
-    {
-      "paths": [
-        "rust/target/debug/deps/libravif-b58ca6f70f7a7cd4.rlib"
-      ],
-      "sha": "b33c5dc83c3e1e90802e7b000863726bdc6621e4",
-      "size_bytes": 35600640
-    },
-    {
-      "paths": [
-        "rust/target/release/deps/simplicio_proxy-066abe8429161283"
-      ],
-      "sha": "4238dc647da667fa72543c67edcb270659a0f2e1",
-      "size_bytes": 32842032
-    },
-    {
-      "paths": [
-        "rust/target/debug/deps/libimage-852a2e1f522f5ada.rlib"
-      ],
-      "sha": "587c6e057d172aeef73eddeaa5d6a17debcb8964",
-      "size_bytes": 31935544
-    },
-    {
-      "paths": [
-        "rust/target/release/deps/lib_core.dylib"
-      ],
-      "sha": "8486b2d48882baf829e9eaa182e7726da4cce992",
-      "size_bytes": 30912208
-    },
-    {
-      "paths": [
-        "rust/target/debug/incremental/simplicio_core-0izrm1cfrx535/s-hjrk9dg0bu-0ynpxwx-8ba57jf0crkeuv3t3jqj5wokh/query-cache.bin"
-      ],
-      "sha": "3868c8968297dd785923aa92e5203bf8c99d2c5a",
-      "size_bytes": 30171941
-    },
-    {
-      "paths": [
-        "rust/target/release/deps/parity_run-2b6157bb2434db6f"
-      ],
-      "sha": "7537f823396a7d50378f2d68cbc44c45686836d5",
-      "size_bytes": 27429152
-    },
-    {
-      "paths": [
-        "rust/target/release/examples/diff_fixture"
-      ],
-      "sha": "a20af57f19f08ec18dfb189e0cfe073b880ec377",
-      "size_bytes": 27142848
-    },
-    {
-      "paths": [
-        "video/out/_audio_tmp/master.wav"
-      ],
-      "sha": "90dc156b9362ee8824ddb730232563f5f7cd3b98",
-      "size_bytes": 23657702
-    },
-    {
-      "paths": [
-        "rust/target/debug/deps/libcriterion-71c2e788529a96e7.rlib"
-      ],
-      "sha": "0226b229234d34cdc1e3c7d90ab4e6bece72fdc2",
-      "size_bytes": 21927712
-    },
-    {
-      "paths": [
-        "rust/target/debug/deps/librustls-cc68783568e8d1b4.rlib"
-      ],
-      "sha": "b49f2e27dff264189390c1a1081a7f222e2f4440",
-      "size_bytes": 19713296
-    },
-    {
-      "paths": [
-        "rust/target/debug/deps/librustls-a963c5cea6098540.rlib"
-      ],
-      "sha": "1a29766919bbaff5790fb00db2965a22f939ea96",
-      "size_bytes": 19686296
-    },
-    {
-      "paths": [
-        "rust/target/debug/deps/libfastembed-a2249f91c701edde.rlib"
-      ],
-      "sha": "e62f8b830d3d325228039f481d743a2e2c42c51b",
-      "size_bytes": 19000424
-    },
-    {
-      "paths": [
-        "rust/target/release/deps/libsimplicio_proxy-8d22013bec88c7b3.rlib"
-      ],
-      "sha": "5fb26dada693d426cee437937a5e4e082c7f7e57",
-      "size_bytes": 18887664
-    },
-    {
-      "paths": [
-        "rust/target/release/deps/libsimplicio_proxy-80e330f3a59ce4e5.rlib"
-      ],
-      "sha": "86ba6e98367b07ab94487634eed2f3a80029f612",
-      "size_bytes": 18887648
-    },
-    {
-      "paths": [
-        "rust/target/debug/deps/libmoxcms-8846ed9ab787f514.rlib"
-      ],
-      "sha": "cd0437ef4d2a5fa42c7004ac37845c43921c89bf",
-      "size_bytes": 18743944
-    },
-    {
-      "paths": [
-        "rust/target/debug/incremental/simplicio_core-1lo8mhk1ez97a/s-hjrk2w96gd-0bj6o1p-dlf03t61mg0o7lly9612gauih/dep-graph.bin"
-      ],
-      "sha": "c2ae069e6c090b33caec3bfc5d44caa802044054",
-      "size_bytes": 18586064
-    },
-    {
-      "paths": [
-        "rust/target/debug/deps/libproptest-4b237a1d6914de81.rlib"
-      ],
-      "sha": "b9af1a52e2815f7e57fc98019a138033c5e9672d",
-      "size_bytes": 18082280
-    },
-    {
-      "paths": [
-        "rust/target/debug/deps/libregex_automata-ae9ae96b59bb4f31.rlib"
-      ],
-      "sha": "872a569fffa195a11455017ca99663d044b9d85a",
-      "size_bytes": 17654576
-    },
-    {
-      "paths": [
-        "video/out/simplicio-loop_pt-BR_av.mp4"
-      ],
-      "sha": "aa75a559fc357ef9f855dfdde1a9fd9f7f43c40a",
-      "size_bytes": 15888487
-    },
-    {
-      "paths": [
-        "rust/target/release/deps/libzerocopy-1238a33e1c5dda8f.rlib"
-      ],
-      "sha": "bd6117aa4904ebf7e21f14c52485104eb37985ac",
-      "size_bytes": 15593968
-    },
-    {
-      "paths": [
-        "rust/target/release/deps/libzerocopy-f52c620f2d1fc18b.rlib"
-      ],
-      "sha": "91a3b458fdcc6807bdbc2acbb0fd34ae009c7da8",
-      "size_bytes": 15593968
-    },
-    {
-      "paths": [
-        "rust/target/release/deps/libzerocopy-1238a33e1c5dda8f.rmeta"
-      ],
-      "sha": "133ba4b81d5dd4a8e470a6505e8696906eb6df12",
-      "size_bytes": 15591285
     }
   ],
-  "total_historical_blob_bytes": 4412240302,
+  "total_historical_blob_bytes": 4418322697,
   "total_historical_blob_human": "4.1GB"
 }

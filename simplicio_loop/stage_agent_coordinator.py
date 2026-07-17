@@ -811,7 +811,16 @@ class StageAgentCoordinator:
         # content hash, so a stale/tampered input is detectable downstream.
         # agent_instance_id is added post-spawn so the agent can bind its
         # receipt to the exact instance the coordinator is tracking.
-        send_payload = dict(stage_context, agent_instance_id=instance.instance_id)
+        # context_hash/manifest_hash are included so the agent process (real
+        # or fixture) can echo them back verbatim in its receipt -- the
+        # coordinator computes both but never sent them until this field was
+        # added, so no agent could ever produce a receipt that
+        # stage_agents.validate_receipt() would accept (issue #458).
+        send_payload = dict(
+            stage_context, agent_instance_id=instance.instance_id,
+            context_hash=context_hash, manifest_hash=self.manifest_hash,
+            attempt_ordinal=instance.attempt_ordinal,
+        )
         adapter.send(instance, send_payload)
         self._log("input_sent", {"stage_id": stage_id, "instance_id": instance.instance_id})
 

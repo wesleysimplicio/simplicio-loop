@@ -39,6 +39,13 @@ _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 _GRAPH_KEYS = frozenset(("schema", "graph_id", "version", "manifest_hash", "schema_pins", "roles", "stages"))
 _ROLE_KEYS = frozenset(("schema", "role_id", "version", "title", "description", "required_capabilities", "forbidden_to_self_sign", "independent_of_roles"))
 _STAGE_KEYS = frozenset(("schema", "stage_id", "role_id", "version", "description", "depends_on", "activation_condition", "required_capabilities", "optional_capabilities", "isolation_level", "input_schema", "output_schema", "accepted_receipts", "timeout_seconds", "retry_budget", "failure_policy", "allowed_mutations", "pre_gate", "post_gate", "next_stages", "compensation", "concurrency"))
+# Allowed but NOT required on every stage (unlike _STAGE_KEYS, whose members
+# must be present on every stage). "optional" backs completion_auditor.py's
+# optional-stage-skip invariant (issue #431 "Optional skip exige condition
+# receipt") -- the field was read by that consumer since #431 shipped, but
+# never declared here or in stage-definition.schema.json, so any stage that
+# actually set it would fail validate_graph as an "unknown field" (issue #458).
+_STAGE_OPTIONAL_KEYS = frozenset(("optional",))
 _INPUT_SCHEMA_REF = "simplicio.stage-input/v1"
 _OUTPUT_SCHEMA_REF = "simplicio.stage-output/v1"
 _RECEIPT_SCHEMA_REF = "simplicio.stage-receipt/v1"
@@ -313,9 +320,11 @@ def validate_graph(graph: Mapping[str, Any], *, contract_dir: str | None = None)
         if not isinstance(stage, Mapping):
             errors.append("each stage must be an object")
             continue
-        unknown = sorted(set(stage) - _STAGE_KEYS)
+        unknown = sorted(set(stage) - _STAGE_KEYS - _STAGE_OPTIONAL_KEYS)
         if unknown:
             errors.append("stage contains unknown fields: " + ", ".join(unknown))
+        if "optional" in stage and not isinstance(stage["optional"], bool):
+            errors.append(f"stage {stage.get('stage_id', '<unknown>')}.optional must be a boolean")
         for field in _STAGE_KEYS:
             if field not in stage:
                 errors.append(f"stage {stage.get('stage_id', '<unknown>')} missing {field}")
@@ -448,6 +457,72 @@ def accepted_order(graph: Mapping[str, Any]) -> list[str]:
 # --------------------------------------------------------------------------- #
 # 2. Instance validation
 # --------------------------------------------------------------------------- #
+def make_agent_instance(
+    *, agent_instance_id: str, role_id: str, stage_id: str, run_id: str, task_id: str,
+    attempt_id: str, attempt_ordinal: int, fence: str, plan_revision: int,
+    context_hash: str, manifest_hash: str,
+    role_version: str = "1.0.0", stage_version: str = "1.0.0",
+    work_item_id: str | None = None, runtime: str = "command", provider: str = "n/a",
+    model: str = "n/a", driver: str = "command", parent_agent_id: str = "coordinator",
+    coordinator_agent_id: str = "coordinator", parent_instance_id: str = "coordinator",
+    idempotency_key: str | None = None, isolation_level: str = "command",
+    negotiated_capabilities: Sequence[str] = ("receipts",),
+    terminal_status: str = "completed", reason_code: str = "ok",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a fully schema-compliant ``simplicio.agent-instance/v1``.
+
+    Mirrors :func:`make_stage_receipt`: the single place any stage-agent
+    producer/harness should build an instance from, rather than hand-rolling a
+    dict field-by-field (issue #458 -- ``scripts/conformance_suite.py``'s own
+    synthetic instance, written before ``agent-instance.schema.json`` grew
+    ``role_version``/``stage_version``/``work_item_id``/``runtime``/
+    ``provider``/``model``/``driver``/``parent_agent_id``/
+    ``coordinator_agent_id``/``parent_instance_id``/``idempotency_key``/
+    ``isolation_level``/``ready_at``/``started_at``/``ended_at``, failed
+    ``validate_instance`` for exactly the same reason every hand-rolled
+    stage-receipt did).
+    """
+    ts = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    instance: dict[str, Any] = {
+        "schema": "simplicio.agent-instance/v1",
+        "agent_instance_id": str(agent_instance_id),
+        "role_id": str(role_id),
+        "role_version": str(role_version),
+        "stage_id": str(stage_id),
+        "stage_version": str(stage_version),
+        "run_id": str(run_id),
+        "task_id": str(task_id),
+        "work_item_id": str(work_item_id or task_id),
+        "attempt_id": str(attempt_id),
+        "attempt_ordinal": int(attempt_ordinal),
+        "fence": str(fence),
+        "plan_revision": int(plan_revision),
+        "runtime": str(runtime),
+        "provider": str(provider),
+        "model": str(model),
+        "driver": str(driver),
+        "parent_agent_id": str(parent_agent_id),
+        "coordinator_agent_id": str(coordinator_agent_id),
+        "parent_instance_id": str(parent_instance_id),
+        "idempotency_key": str(idempotency_key or f"{run_id}:{stage_id}:{attempt_id}"),
+        "isolation_level": str(isolation_level),
+        "negotiated_capabilities": [str(c) for c in negotiated_capabilities] or ["receipts"],
+        "context_hash": str(context_hash),
+        "manifest_hash": str(manifest_hash),
+        "created_at": ts,
+        "ready_at": ts,
+        "terminal_status": str(terminal_status),
+        "reason_code": str(reason_code),
+    }
+    if terminal_status != "ready":
+        instance["started_at"] = ts
+    if terminal_status not in ("ready", "running"):
+        instance["ended_at"] = ts
+    return instance
+
+
+
 def validate_instance(inst: Mapping[str, Any], run_identity: Mapping[str, Any]) -> tuple[bool, list[str]]:
     """Validate a complete AgentInstance against the contract and run identity."""
     errors: list[str] = []
@@ -544,6 +619,77 @@ def receipt_integrity_hash(receipt: Mapping[str, Any]) -> str:
     payload = dict(receipt)
     payload.pop("integrity_hash", None)
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+
+
+DEFAULT_RECEIPT_TTL_SECONDS = 3600
+
+
+def _content_hash(payload: Any) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+
+
+def make_stage_receipt(
+    *, receipt_id: str, agent_instance_id: str, role_id: str, stage_id: str,
+    run_id: str, task_id: str, attempt_id: str, attempt_ordinal: int, fence: str,
+    plan_revision: int, context_hash: str, manifest_hash: str,
+    verdict: str, evidence_refs: Sequence[str] = (), reason_code: str = "ok",
+    input_payload: Any = None, output_payload: Any = None,
+    covered_acceptance_criteria: Sequence[str] = ("n/a",),
+    commands: Sequence[str] = ("n/a",), exit_codes: Mapping[str, int] | None = None,
+    artifact_refs: Sequence[str] = (), next_stage_recommendation: str = "unknown",
+    previous_receipt_hashes: Sequence[str] = (), rejection_reason: str | None = None,
+    supersedes_receipt_hash: str | None = None, ttl_seconds: int = DEFAULT_RECEIPT_TTL_SECONDS,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a fully schema-compliant ``simplicio.stage-receipt/v1``.
+
+    The single place any stage-agent producer should build a receipt from,
+    rather than hand-rolling a dict field-by-field: it computes every hash
+    (``input_hash``/``output_hash``/``integrity_hash``), timestamp
+    (``created_at``/``observed_at``), and default the schema requires but a
+    hand-written dict tends to drift out of sync with (issue #458 --
+    ``stage_agent_coordinator.py``'s own receipt path, and every per-role
+    ``to_stage_receipt``-style projector written before the schema grew these
+    fields in #447, failed ``validate_receipt`` for exactly this reason).
+    """
+    ts = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    accepted = verdict == "pass"
+    receipt: dict[str, Any] = {
+        "schema": "simplicio.stage-receipt/v1",
+        "receipt_id": str(receipt_id),
+        "agent_instance_id": str(agent_instance_id),
+        "role_id": str(role_id),
+        "stage_id": str(stage_id),
+        "run_id": str(run_id),
+        "task_id": str(task_id),
+        "attempt_id": str(attempt_id),
+        "attempt_ordinal": int(attempt_ordinal),
+        "fence": str(fence),
+        "plan_revision": int(plan_revision),
+        "created_at": ts,
+        "observed_at": ts,
+        "ttl_seconds": int(ttl_seconds),
+        "context_hash": str(context_hash),
+        "manifest_hash": str(manifest_hash),
+        "verdict": str(verdict),
+        "evidence_refs": [str(e) for e in evidence_refs] or (["n/a"] if accepted else []),
+        "accepted": accepted,
+        "reason_code": str(reason_code),
+        "input_hash": _content_hash(input_payload),
+        "output_hash": _content_hash(output_payload),
+        "previous_receipt_hashes": [str(h) for h in previous_receipt_hashes],
+        "covered_acceptance_criteria": [str(a) for a in covered_acceptance_criteria],
+        "commands": [str(c) for c in commands],
+        "exit_codes": dict(exit_codes) if exit_codes else {},
+        "artifact_refs": [str(a) for a in artifact_refs],
+        "next_stage_recommendation": str(next_stage_recommendation),
+    }
+    if not accepted:
+        receipt["rejection_reason"] = str(rejection_reason or reason_code or "not_accepted")
+    if supersedes_receipt_hash:
+        receipt["supersedes_receipt_hash"] = str(supersedes_receipt_hash)
+    receipt["integrity_hash"] = receipt_integrity_hash(receipt)
+    return receipt
 
 
 def validate_receipt(rec: Mapping[str, Any], instance: Mapping[str, Any],

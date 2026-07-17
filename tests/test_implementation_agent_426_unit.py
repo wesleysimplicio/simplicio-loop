@@ -7,7 +7,9 @@ forbidden receipt schemas, and the composed typed receipt/gate.
 """
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -537,6 +539,33 @@ def test_to_stage_receipt_projection():
     assert stage_receipt["verdict"] == "pass"
 
 
+def test_to_stage_receipt_passes_the_real_canonical_validator():
+    # Regression for issue #458: earlier versions of to_stage_receipt() were
+    # missing ~15 fields the canonical stage-receipt/v1 schema requires
+    # (attempt_ordinal, observed_at, ttl_seconds, integrity_hash, ...), so
+    # every real coordinator-driven implementation_agent receipt was silently
+    # rejected by stage_agents.validate_receipt() despite this module's own
+    # shallow tests passing.
+    from simplicio_loop import stage_agents as sa
+
+    receipt = build_implementation_stage_receipt(**_receipt_kwargs())
+    context_hash, manifest_hash = "a" * 64, "b" * 64
+    stage_receipt = to_stage_receipt(
+        receipt, receipt_id="rec-full", agent_instance_id="inst-full",
+        task_id="T-426", attempt_id="att-full", fence="fence-1",
+        attempt_ordinal=1, context_hash=context_hash, manifest_hash=manifest_hash,
+    )
+    instance = {
+        "run_id": stage_receipt["run_id"], "task_id": "T-426", "attempt_id": "att-full",
+        "attempt_ordinal": 1, "fence": "fence-1", "plan_revision": stage_receipt["plan_revision"],
+        "agent_instance_id": "inst-full", "role_id": IMPLEMENTATION_AGENT_ROLE_ID,
+        "stage_id": "executing", "context_hash": context_hash, "manifest_hash": manifest_hash,
+        "negotiated_capabilities": ["receipts"], "terminal_status": "completed",
+    }
+    ok, errors = sa.validate_receipt(stage_receipt, instance)
+    assert ok, errors
+
+
 def test_to_stage_receipt_blocked_maps_to_blocked():
     kwargs = _receipt_kwargs(ac_coverage={"AC1": "satisfied", "AC2": "pending"})
     receipt = build_implementation_stage_receipt(**kwargs)
@@ -555,3 +584,32 @@ def test_stage_agents_graph_already_registers_role():
     assert IMPLEMENTATION_AGENT_ROLE_ID in role_ids
     stage_ids = {(s["stage_id"], s["role_id"]) for s in graph["stages"]}
     assert ("executing", IMPLEMENTATION_AGENT_ROLE_ID) in stage_ids
+
+
+def test_cli_stage_receipt_subcommand_is_a_real_live_path(tmp_path, capsys):
+    # Regression for issue #458 adversarial review: to_stage_receipt() was only
+    # ever called from this test file, never from any production entrypoint.
+    # scripts/implementation_agent.py's `stage-receipt` subcommand is that
+    # entrypoint -- exercise it via its real main(), not just the library call.
+    import importlib.util
+
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(_receipt_kwargs()), encoding="utf-8")
+
+    repo_root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "scripts.implementation_agent_cli", repo_root / "scripts" / "implementation_agent.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    exit_code = mod.main([
+        "stage-receipt", "--input", str(input_path), "--receipt-id", "rec-cli",
+        "--agent-instance-id", "inst-cli", "--task-id", "T-426", "--attempt-id", "att-cli",
+        "--fence", "fence-1", "--context-hash", "a" * 64, "--manifest-hash", "b" * 64,
+    ])
+    out = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert out["schema"] == "simplicio.stage-receipt/v1"
+    assert out["receipt_id"] == "rec-cli"
+    assert out["verdict"] == "pass"

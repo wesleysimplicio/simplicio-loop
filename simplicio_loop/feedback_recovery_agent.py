@@ -620,14 +620,25 @@ def to_stage_receipt(
     task_id: str,
     attempt_id: str,
     fence: str,
+    attempt_ordinal: int = 1,
+    context_hash: str = "0" * 64,
+    manifest_hash: str = "0" * 64,
 ) -> Dict[str, Any]:
+    """``context_hash``/``manifest_hash`` default to an all-zero placeholder when
+    the caller doesn't have the coordinator's real values on hand -- a real
+    coordinator-driven caller MUST pass the actual `AgentInstance` values, or
+    `stage_agents.validate_receipt()` will (correctly) reject the mismatch.
+    """
     verdict_map = {
         VERDICT_ROUTED: "pass",
         VERDICT_QUARANTINED: "blocked",
         VERDICT_ESCALATED: "blocked",
         VERDICT_RECONCILE_PENDING: "blocked",
     }
-    return {
+    verdict = verdict_map.get(feedback_recovery_receipt.get("verdict"), "blocked")
+    accepted = verdict == "pass"
+    ts = _now()
+    receipt: Dict[str, Any] = {
         "schema": "simplicio.stage-receipt/v1",
         "receipt_id": str(receipt_id),
         "agent_instance_id": str(agent_instance_id),
@@ -636,11 +647,34 @@ def to_stage_receipt(
         "run_id": str(feedback_recovery_receipt.get("run_id") or ""),
         "task_id": str(task_id),
         "attempt_id": str(attempt_id),
+        "attempt_ordinal": int(attempt_ordinal),
         "fence": str(fence),
         "plan_revision": 0,
-        "verdict": verdict_map.get(feedback_recovery_receipt.get("verdict"), "blocked"),
-        "artifact_hash": str(feedback_recovery_receipt.get("receipt_hash") or ""),
+        "created_at": ts,
+        "observed_at": ts,
+        "ttl_seconds": 3600,
+        "context_hash": str(context_hash),
+        "manifest_hash": str(manifest_hash),
+        "verdict": verdict,
+        "evidence_refs": [str(feedback_recovery_receipt.get("fingerprint") or "n/a")],
+        "accepted": accepted,
+        "reason_code": str(feedback_recovery_receipt.get("failure_class") or "ok"),
+        "input_hash": content_hash(feedback_recovery_receipt.get("fingerprint") or ""),
+        "output_hash": str(feedback_recovery_receipt.get("receipt_hash") or content_hash(None)),
+        "previous_receipt_hashes": [],
+        "covered_acceptance_criteria": ["n/a"],
+        "commands": ["n/a"],
+        "exit_codes": {},
+        "artifact_refs": [],
+        "next_stage_recommendation": str(feedback_recovery_receipt.get("target_stage") or "unknown"),
     }
+    if not accepted:
+        receipt["rejection_reason"] = str(feedback_recovery_receipt.get("failure_class") or "not_accepted")
+    payload = dict(receipt)
+    receipt["integrity_hash"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+    return receipt
 
 
 __all__ = [

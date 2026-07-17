@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 INTAKE_PLANNER_RECEIPT_SCHEMA = "simplicio.intake-planner-receipt/v1"
@@ -390,12 +391,23 @@ def to_stage_receipt(
     task_id: str,
     attempt_id: str,
     fence: str,
+    attempt_ordinal: int = 1,
+    context_hash: str = "0" * 64,
+    manifest_hash: str = "0" * 64,
 ) -> Dict[str, Any]:
     """Project the #425 receipt into a `simplicio.stage-receipt/v1`-shaped dict
     (see `simplicio_loop/stage_agents.py::validate_receipt`) for the `intake`
-    stage owned by the `intake_planner` role."""
+    stage owned by the `intake_planner` role.
+
+    ``context_hash``/``manifest_hash`` default to an all-zero placeholder when
+    the caller doesn't have the coordinator's real values on hand -- a real
+    coordinator-driven caller MUST pass the actual `AgentInstance` values, or
+    `stage_agents.validate_receipt()` will (correctly) reject the mismatch.
+    """
     verdict = "pass" if receipt_is_passed(intake_planner_receipt) else "blocked"
-    return {
+    accepted = verdict == "pass"
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    receipt: Dict[str, Any] = {
         "schema": "simplicio.stage-receipt/v1",
         "receipt_id": str(receipt_id),
         "agent_instance_id": str(agent_instance_id),
@@ -404,11 +416,34 @@ def to_stage_receipt(
         "run_id": str(intake_planner_receipt.get("run_id") or ""),
         "task_id": str(task_id),
         "attempt_id": str(attempt_id),
+        "attempt_ordinal": int(attempt_ordinal),
         "fence": str(fence),
         "plan_revision": int(intake_planner_receipt.get("plan_revision") or 0),
+        "created_at": ts,
+        "observed_at": ts,
+        "ttl_seconds": 3600,
+        "context_hash": str(context_hash),
+        "manifest_hash": str(manifest_hash),
         "verdict": verdict,
-        "artifact_hash": str(intake_planner_receipt.get("receipt_hash") or ""),
+        "evidence_refs": ["n/a"],
+        "accepted": accepted,
+        "reason_code": "ok" if accepted else "intake_planner_gate_not_passed",
+        "input_hash": content_hash(intake_planner_receipt.get("source_revision") or ""),
+        "output_hash": str(intake_planner_receipt.get("receipt_hash") or content_hash(None)),
+        "previous_receipt_hashes": [],
+        "covered_acceptance_criteria": ["n/a"],
+        "commands": ["n/a"],
+        "exit_codes": {},
+        "artifact_refs": [],
+        "next_stage_recommendation": "planning" if accepted else "unknown",
     }
+    if not accepted:
+        receipt["rejection_reason"] = "intake_planner_gate_not_passed"
+    payload = dict(receipt)
+    receipt["integrity_hash"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+    return receipt
 
 
 __all__ = [
