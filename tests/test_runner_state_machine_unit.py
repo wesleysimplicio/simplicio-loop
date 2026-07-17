@@ -334,20 +334,52 @@ def test_change_phase_to_cancelled_clears_next_action(tmp_path, monkeypatch):
     assert result["state"]["next_action"] == "none"
 
 
-def test_read_status_raises_when_no_runs_directory_exists(tmp_path):
+def test_read_status_graceful_when_no_runs_directory_exists(tmp_path):
+    """Regression for issue #500: no longer raises; returns a graceful no_runs state."""
     repo = tmp_path / "empty-repo"
     repo.mkdir()
 
-    with pytest.raises(FileNotFoundError, match="no runs directory found"):
-        runner_mod.read_status(str(repo))
+    result = runner_mod.read_status(str(repo))
+    assert result["run_dir"] is None
+    assert result["state"]["phase"] == "no_runs"
+    assert result["state"]["completion"]["verdict"] == "NO_RUNS"
 
 
-def test_read_status_raises_when_runs_directory_is_empty(tmp_path):
+def test_read_status_graceful_when_runs_directory_is_empty(tmp_path):
+    """Regression for issue #500: loop-runs exists but empty -> graceful no_runs."""
     repo = tmp_path / "repo"
     (repo / ".simplicio" / "loop-runs").mkdir(parents=True)
 
-    with pytest.raises(FileNotFoundError, match="no runs found"):
-        runner_mod.read_status(str(repo))
+    result = runner_mod.read_status(str(repo))
+    assert result["state"]["phase"] == "no_runs"
+    assert result["state"]["completion"]["verdict"] == "NO_RUNS"
+
+
+def test_read_status_graceful_no_runs_directory(tmp_path):
+    """Issue #500: read_status must return a graceful no-runs state instead of
+    raising FileNotFoundError when the repository has no .simplicio/loop-runs dir."""
+    repo = tmp_path / "consumer_repo"
+    repo.mkdir()
+
+    result = runner_mod.read_status(str(repo))
+
+    assert result["run_dir"] is None
+    assert result["manifest"] is None
+    assert result["state"]["phase"] == "no_runs"
+    assert result["state"]["completion"]["verdict"] == "NO_RUNS"
+    assert result["state"]["completion"]["ready"] is False
+    assert "no runs directory" in result["state"]["message"]
+
+
+def test_read_status_graceful_no_runs_empty_dir(tmp_path):
+    """Issue #500 (variant): loop-runs exists but is empty -> graceful NO_RUNS."""
+    repo = tmp_path / "consumer_repo"
+    (repo / ".simplicio" / "loop-runs").mkdir(parents=True)
+
+    result = runner_mod.read_status(str(repo))
+
+    assert result["state"]["phase"] == "no_runs"
+    assert result["state"]["completion"]["verdict"] == "NO_RUNS"
 
 
 def test_read_status_without_run_id_picks_the_lexicographically_latest_run(tmp_path, monkeypatch):
