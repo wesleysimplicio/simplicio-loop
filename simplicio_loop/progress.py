@@ -305,6 +305,23 @@ def load_state(run_dir: str | Path) -> Dict[str, Any]:
     return _load_json(root / "state.json")
 
 
+def _write_stream_payload(out: Any, rendered: str, fallback: str, suffix: str) -> None:
+    ascii_fallback = fallback.encode("ascii", errors="replace").decode("ascii")
+    payload = rendered + suffix
+    encoding = getattr(out, "encoding", None)
+    if encoding:
+        try:
+            payload.encode(encoding)
+        except (LookupError, UnicodeEncodeError):
+            payload = ascii_fallback + suffix
+    try:
+        out.write(payload)
+        out.flush()
+    except UnicodeEncodeError:
+        out.write(ascii_fallback + suffix)
+        out.flush()
+
+
 def stream(run_dir: str | Path, *, fmt: str = "text", interval: float = 0.25,
            once: bool = False, out: Any = None, no_animation: bool = False,
            ascii_only: bool = False) -> Dict[str, Any]:
@@ -316,8 +333,10 @@ def stream(run_dir: str | Path, *, fmt: str = "text", interval: float = 0.25,
         event = build_progress(load_state(root), run_dir=root, frame=frame)
         if fmt == "json":
             rendered = json.dumps(event, ensure_ascii=False, sort_keys=True)
+            fallback = json.dumps(event, ensure_ascii=True, sort_keys=True)
         elif fmt == "markdown":
             rendered = render_markdown(event, ascii_only=ascii_only)
+            fallback = render_markdown(event, ascii_only=True)
         elif fmt == "ansi":
             tty = bool(getattr(out, "isatty", lambda: False)())
             animate = not no_animation and not once and tty
@@ -325,9 +344,14 @@ def stream(run_dir: str | Path, *, fmt: str = "text", interval: float = 0.25,
                 event, ascii_only=ascii_only,
                 max_width=max(40, shutil.get_terminal_size((80, 20)).columns),
             )
+            fallback = render_text(
+                event, ascii_only=True,
+                max_width=max(40, shutil.get_terminal_size((80, 20)).columns),
+            )
         else:
             rendered = render_text(event, ascii_only=ascii_only)
-        print(rendered, end="\n\n" if fmt != "ansi" else "", file=out, flush=True)
+            fallback = render_text(event, ascii_only=True)
+        _write_stream_payload(out, rendered, fallback, "\n\n" if fmt != "ansi" else "")
         if once or no_animation or event["status"] in {"COMPLETE", "BLOCKED", "CANCELLED"}:
             return event
         frame += 1
