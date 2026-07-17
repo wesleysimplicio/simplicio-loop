@@ -321,6 +321,7 @@ def _warning_banner(snapshot):
     return f"{symbol} {label} "
 
 
+def _atomic_write(path, text):
     d = os.path.dirname(path) or "."
     try:
         os.makedirs(d, exist_ok=True)
