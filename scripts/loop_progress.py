@@ -126,7 +126,7 @@ def read_anchor_state():
     if not total:
         return None
     done = sum(1 for c in criteria if isinstance(c, dict) and c.get("status") == "done")
-    return {"item": data.get("item"), "done": done, "total": total}
+    return {"item": data.get("item"), "done": done, "total": total, "route_mode": data.get("route_mode")}
 
 
 def read_backlog_state():
@@ -261,7 +261,7 @@ def build_snapshot(cap=None):
         "ac_total": (anchor_state or {}).get("total"),
         "pct_item": pct_item,
         "pct_overall": pct_overall,
-        "mode": mode,
+        "route_mode": (anchor_state or {}).get("route_mode"),
         "last_status": last.get("status"),
         "last_outcome": last.get("outcome"),
         "last_detail": last.get("detail") or "",
@@ -353,7 +353,6 @@ def _pct_str(pct):
 def _tag(pct_overall):
     return "MEASURED" if pct_overall is not None else "UNVERIFIED"
 
-
 def render_turn_header(snapshot):
     phase = snapshot.get("phase") or "F0"
     idx = snapshot.get("step_index") or 0
@@ -373,12 +372,16 @@ def render_turn_header(snapshot):
     cap = snapshot.get("cap")
     iter_part = ("iter %s/%s" % (iteration, cap)) if cap else ("iter %s" % iteration)
     banner = _warning_banner(snapshot)
+    route = snapshot.get("route_mode") or {}
+    route_part = ""
+    if isinstance(route, dict) and route.get("mode") and route.get("justification"):
+        route_part = " \u00b7 mode=%s: %s" % (route["mode"], route["justification"])
     if pct is None:
-        return "%s|%spct=?" % (tag, banner)
-    return ("%s|%s[simplicio-loop] fase %s · etapa %s/%s %s · item %s (%s) · "
-            "ACs %s · %s geral · %s" % (
+        return "%s|%spct=?%s" % (tag, banner, route_part)
+    return ("%s|%s[simplicio-loop] fase %s \u00b7 etapa %s/%s %s \u00b7 item %s (%s) \u00b7 "
+            "ACs %s \u00b7 %s geral \u00b7 %s%s" % (
                 tag, banner, phase, idx, total, step, item, items_part, ac_part,
-                _pct_str(pct), iter_part))
+                _pct_str(pct), iter_part, route_part))
 
 
 def render_full(snapshot):
