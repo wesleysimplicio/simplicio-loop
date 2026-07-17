@@ -28,7 +28,13 @@ Verbs:
     status   Compact counts: total / confirmed / suspected / disproved / accepted-risk.
     fingerprint  Print the stable fingerprint for given --component/--error-class/--signature
              (and optional --owner-repo), without recording anything. Standalone helper.
-    selftest Prove fingerprint stability + dedup/increment deterministically — no network, no git.
+    resolve  IssueTargetResolver (#493, T2): map --component to its owning repo via a static
+             ownership table. No match -> --fallback-repository (default
+             wesleysimplicio/simplicio-loop), tagged with an explicit reason_code, never a silent
+             guess. 2+ candidates pointing to different repos -> a triage flag (repo=null), never
+             an arbitrary pick.
+    selftest Prove fingerprint stability + dedup/increment + resolve deterministically — no
+             network, no git.
 
 Usage:
     python3 scripts/finding_collector.py record --component scripts/loop_progress.py \\
@@ -58,6 +64,20 @@ FINDINGS_PATH = os.path.join(FINDINGS_DIR, "findings.jsonl")
 
 SCHEMA = "simplicio.finding/v1"
 STATES = frozenset(["suspected", "confirmed", "disproved", "accepted-risk", "resolved", "regressed"])
+
+# IssueTargetResolver (#493, T2): deterministic component -> owning-repo mapping. A pattern is a
+# substring match against the component string; ownership is never guessed — no match falls back
+# to FALLBACK_REPOSITORY, and 2+ distinct-repo matches raise a triage flag instead of picking one.
+DEFAULT_OWNERSHIP_MAP = {
+    "scripts/": "wesleysimplicio/simplicio-loop",
+    ".claude/skills/": "wesleysimplicio/simplicio-loop",
+    "simplicio_loop/": "wesleysimplicio/simplicio-loop",
+    "simplicio-mapper": "wesleysimplicio/simplicio-mapper",
+    "simplicio-dev-cli": "wesleysimplicio/simplicio-dev-cli",
+    "simplicio-cli": "wesleysimplicio/simplicio-dev-cli",
+    "simplicio-runtime": "wesleysimplicio/simplicio-runtime",
+}
+FALLBACK_REPOSITORY = "wesleysimplicio/simplicio-loop"
 
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?")
 _HEX_ID_RE = re.compile(r"\b[0-9a-fA-F]{7,40}\b")
@@ -212,6 +232,41 @@ def cmd_fingerprint(opts):
     return 0
 
 
+def resolve_owner(component, ownership_map=None, fallback_repository=FALLBACK_REPOSITORY):
+    """Deterministic component -> owning-repo resolution (#493, T2).
+
+    Returns {"repo": str|None, "reason_code": str, "candidates": [str, ...]}. Never guesses:
+    a component matching 2+ patterns that point to DIFFERENT repos returns repo=None with
+    reason_code 'triage_multiple_candidates' and the full candidate list, for a human/triage
+    issue to disambiguate — picking one arbitrarily would silently misroute a finding.
+    """
+    ownership_map = ownership_map if ownership_map is not None else DEFAULT_OWNERSHIP_MAP
+    component = component or ""
+    matched_repos = []
+    for pattern, repo in ownership_map.items():
+        if pattern in component and repo not in matched_repos:
+            matched_repos.append(repo)
+
+    if len(matched_repos) == 1:
+        return {"repo": matched_repos[0], "reason_code": "exact_match", "candidates": matched_repos}
+    if len(matched_repos) >= 2:
+        return {"repo": None, "reason_code": "triage_multiple_candidates",
+                "candidates": sorted(matched_repos)}
+    return {"repo": fallback_repository, "reason_code": "fallback_no_match", "candidates": []}
+
+
+def cmd_resolve(opts):
+    component = opts.get("component")
+    if not component:
+        print("UNVERIFIED|resolve requires --component")
+        sys.exit(2)
+    result = resolve_owner(component, fallback_repository=opts.get("fallback-repository", FALLBACK_REPOSITORY))
+    result["component"] = component
+    tag = "MEASURED|" if result["reason_code"] != "triage_multiple_candidates" else "UNVERIFIED|"
+    print(tag + json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def cmd_selftest(_opts):
     import tempfile
     global FINDINGS_DIR, FINDINGS_PATH
@@ -261,6 +316,21 @@ def cmd_selftest(_opts):
         "re-checked, was a stale cache", owner_repo="acme/repo", state="disproved")
     check("disproved_state_applied_on_repeat", disproved["state"], "disproved")
 
+    exact = resolve_owner("scripts/coordinator.py")
+    check("resolve_exact_match_repo", exact["repo"], "wesleysimplicio/simplicio-loop")
+    check("resolve_exact_match_reason_code", exact["reason_code"], "exact_match")
+
+    no_match = resolve_owner("totally-unrelated-thing.exe")
+    check("resolve_no_match_falls_back", no_match["repo"], FALLBACK_REPOSITORY)
+    check("resolve_no_match_reason_code", no_match["reason_code"], "fallback_no_match")
+
+    ambiguous_map = {"scripts/": "repo-a/repo-a", "simplicio-mapper": "repo-b/repo-b"}
+    ambiguous = resolve_owner("scripts/simplicio-mapper-helper.py", ownership_map=ambiguous_map)
+    check("resolve_ambiguous_returns_no_repo", ambiguous["repo"], None)
+    check("resolve_ambiguous_reason_code", ambiguous["reason_code"], "triage_multiple_candidates")
+    check("resolve_ambiguous_lists_both_candidates", ambiguous["candidates"],
+          ["repo-a/repo-a", "repo-b/repo-b"])
+
     ok = True
     for name, passed, got, want in checks:
         tag = "PASS" if passed else "FAIL"
@@ -308,16 +378,17 @@ def main():
         sys.exit(2)
     if argv[0] == "--describe-cli":
         print(json.dumps({
-            "verbs": ["record", "list", "status", "fingerprint", "selftest"],
+            "verbs": ["record", "list", "status", "fingerprint", "resolve", "selftest"],
             "flags": ["--component", "--error-class", "--signature", "--summary",
-                      "--owner-repo", "--severity", "--state"],
+                      "--owner-repo", "--severity", "--state", "--fallback-repository"],
         }))
         sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])
     handler = {"record": cmd_record, "list": cmd_list, "status": cmd_status,
-               "fingerprint": cmd_fingerprint, "selftest": cmd_selftest}.get(sub)
+               "fingerprint": cmd_fingerprint, "resolve": cmd_resolve,
+               "selftest": cmd_selftest}.get(sub)
     if handler is None:
-        print("unknown command '%s'. choices: record list status fingerprint selftest" % sub)
+        print("unknown command '%s'. choices: record list status fingerprint resolve selftest" % sub)
         sys.exit(2)
     sys.exit(handler(opts) or 0)
 

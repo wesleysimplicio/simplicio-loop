@@ -126,3 +126,60 @@ def test_cmd_list_filters_by_state(isolated_findings, capsys):
 
 def test_selftest_passes():
     assert finding_collector.cmd_selftest({}) == 0
+
+
+# --- IssueTargetResolver (#493, T2) ---
+
+def test_resolve_owner_exact_match():
+    result = finding_collector.resolve_owner("scripts/coordinator.py")
+    assert result["repo"] == "wesleysimplicio/simplicio-loop"
+    assert result["reason_code"] == "exact_match"
+
+
+def test_resolve_owner_no_match_falls_back_with_explicit_reason():
+    result = finding_collector.resolve_owner("totally-unrelated-thing.exe")
+    assert result["repo"] == finding_collector.FALLBACK_REPOSITORY
+    assert result["reason_code"] == "fallback_no_match"
+    assert result["candidates"] == []
+
+
+def test_resolve_owner_custom_fallback_repository():
+    result = finding_collector.resolve_owner("nothing-matches", fallback_repository="acme/custom-fallback")
+    assert result["repo"] == "acme/custom-fallback"
+
+
+def test_resolve_owner_ambiguous_component_never_guesses():
+    ownership_map = {"scripts/": "repo-a/repo-a", "simplicio-mapper": "repo-b/repo-b"}
+    result = finding_collector.resolve_owner("scripts/simplicio-mapper-helper.py", ownership_map=ownership_map)
+    assert result["repo"] is None
+    assert result["reason_code"] == "triage_multiple_candidates"
+    assert result["candidates"] == ["repo-a/repo-a", "repo-b/repo-b"]
+
+
+def test_resolve_owner_same_repo_matched_twice_is_not_ambiguous():
+    ownership_map = {"scripts/": "acme/repo", "simplicio_loop/": "acme/repo"}
+    result = finding_collector.resolve_owner("scripts/simplicio_loop/x.py", ownership_map=ownership_map)
+    assert result["repo"] == "acme/repo"
+    assert result["reason_code"] == "exact_match"
+
+
+def test_cmd_resolve_requires_component():
+    with pytest.raises(SystemExit) as exc_info:
+        finding_collector.cmd_resolve({})
+    assert exc_info.value.code == 2
+
+
+def test_cmd_resolve_prints_measured_for_exact_match(capsys):
+    finding_collector.cmd_resolve({"component": "scripts/coordinator.py"})
+    out = capsys.readouterr().out.strip()
+    assert out.startswith("MEASURED|")
+    payload = json.loads(out[len("MEASURED|"):])
+    assert payload["repo"] == "wesleysimplicio/simplicio-loop"
+
+
+def test_cmd_resolve_prints_unverified_for_triage(capsys):
+    finding_collector.cmd_resolve({"component": "totally-unrelated-thing.exe",
+                                   "fallback-repository": "acme/fallback"})
+    out = capsys.readouterr().out.strip()
+    payload = json.loads(out[len("MEASURED|"):])
+    assert payload["repo"] == "acme/fallback"
