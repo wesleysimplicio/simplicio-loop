@@ -149,25 +149,36 @@ def scan_secret_text(text):
     return hits
 
 
-def _staged_diff():
-    # Scan the CURRENT working repo (where the command runs), NOT where this script lives —
-    # installed as a hook in another project, the user's repo is the cwd.
-    r = _run(["git", "diff", "--cached", "--unified=0"], cwd=os.getcwd())
+def _effective_command_cwd(cmd):
+    """Resolve an explicit leading cd or git -C target for PreToolUse scans."""
+    base = os.getcwd()
+    candidate = None
+    leading = re.match(
+        r"""^\s*(?:cd|Set-Location)\s+(?:"([^"]+)"|'([^']+)'|([^&;\n]+))\s*(?:&&|;)""",
+        cmd or "",
+    )
+    if leading:
+        candidate = next((value for value in leading.groups() if value), "").strip()
+    else:
+        git_c = re.search(r"""\bgit\s+-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))""", cmd or "")
+        if git_c:
+            candidate = next((value for value in git_c.groups() if value), "").strip()
+    if not candidate:
+        return os.path.abspath(base)
+    candidate = os.path.expandvars(os.path.expanduser(candidate))
+    if not os.path.isabs(candidate):
+        candidate = os.path.join(base, candidate)
+    return os.path.normpath(os.path.abspath(candidate))
+
+
+def _staged_diff(cwd=None):
+    r = _run(["git", "diff", "--cached", "--unified=0"], cwd=cwd or os.getcwd())
     return (r.stdout if r and r.returncode == 0 else None)
 
 
-def _push_diff():
-    """Diff of the commits actually about to leave the machine on `git push` (#291).
-
-    The previously documented pre-push wiring (`action_gate.py check --staged`) scans the
-    STAGED diff — at push time that's almost always empty, since everything being pushed is
-    already committed. This scans the real push range instead: HEAD vs. the upstream tracking
-    branch when one is configured, falling back to the last commit (or the empty tree, for a
-    brand-new single-commit repo) when there is no upstream yet. Returns None only when no
-    range can be resolved at all — the caller treats that as fail-closed, same as an unreadable
-    staged diff.
-    """
-    cwd = os.getcwd()
+def _push_diff(cwd=None):
+    """Return the commits actually leaving the selected repository on git push."""
+    cwd = cwd or os.getcwd()
     r = _run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=cwd)
     upstream = r.stdout.strip() if r and r.returncode == 0 and r.stdout.strip() else None
     if upstream:
@@ -177,7 +188,6 @@ def _push_diff():
     d = _run(["git", "diff", "HEAD~1..HEAD", "--unified=0"], cwd=cwd)
     if d and d.returncode == 0:
         return d.stdout
-    # No HEAD~1 (single-commit repo) — diff against git's well-known empty-tree hash.
     d = _run(["git", "diff", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "HEAD", "--unified=0"],
              cwd=cwd)
     return (d.stdout if d and d.returncode == 0 else None)
@@ -185,6 +195,12 @@ def _push_diff():
 
 def _is_commit_or_push(cmd):
     return bool(re.search(r"\bgit\s+(commit|push)\b", cmd or ""))
+
+
+def _is_push(cmd):
+    return bool(re.search(r"\bgit\s+.*\bpush\b", cmd or ""))
+
+
 
 
 def _verdict(allow, reason=""):
@@ -243,24 +259,32 @@ def _runtime_gate_escalation(cmd):
 
 
 def gate_command(cmd, staged=False):
-    """The core decision. Returns a verdict dict; BLOCK is fail-closed."""
-    # 1) irreversible op → block
+    """The core decision. Secret scans use the command's effective repository."""
     reason = classify_command(cmd)
     if reason:
         return _verdict(False, "irreversible op: " + reason)
-    # 2) a commit/push → secret-scan the staged diff (fail-closed if it can't be read)
     if staged or _is_commit_or_push(cmd):
-        diff = _staged_diff()
+        cwd = _effective_command_cwd(cmd)
+        push = _is_push(cmd)
+        diff = _push_diff(cwd) if push else _staged_diff(cwd)
         if diff is None:
-            # security check could not run on a push/commit → do not pass it
-            if _is_commit_or_push(cmd) or staged:
-                return _verdict(False, "cannot read staged diff to secret-scan — blocking the "
-                                       "commit/push (fail-closed). Stage changes or run in a git repo.")
-            return _verdict(True)
+            target = "push" if push else "staged"
+            return _verdict(
+                False,
+                "cannot read %s diff to secret-scan (cwd=%s) - fail-closed" % (target, cwd),            )
         hits = scan_secret_text(diff)
         if hits:
             labels = ", ".join(sorted({h[0] for h in hits}))
-            return _verdict(False, "secret in staged diff (%s) — remove it before commit/push" % labels)
+            target = "push" if push else "staged"
+            return _verdict(
+                False,
+                "secret in %s diff (%s; cwd=%s) - remove it before mutation" % (target, labels, cwd),            )
+    runtime_reason = _runtime_gate_escalation(cmd)
+    if runtime_reason:
+        return _verdict(False, "simplicio runtime gate: " + runtime_reason)
+    return _verdict(True)
+
+
     # 3) additional signal from the simplicio runtime's own risk classifier, when installed
     #    (best-effort, additive-only — see _runtime_gate_escalation).
     runtime_reason = _runtime_gate_escalation(cmd)
