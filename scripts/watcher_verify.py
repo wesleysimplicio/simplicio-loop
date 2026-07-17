@@ -100,7 +100,17 @@ def _stable_json(value):
 
 def _find_run_dir():
     run_dir = os.environ.get("SIMPLICIO_RUN_DIR", "").strip()
-    return Path(run_dir) if run_dir else None
+    if run_dir:
+        return Path(run_dir)
+    # Fallback: scan .orchestrator/run-*/ for a dir holding an independent receipt.
+    candidate = None
+    runs_root = Path(REPO) / ".orchestrator"
+    if runs_root.is_dir():
+        for entry in sorted(runs_root.glob("run-*")):
+            if entry.is_dir() and (entry / "independent-watcher-receipt.json").is_file():
+                candidate = entry
+                break
+    return candidate
 
 
 def _load_run_artifacts(run_dir):
