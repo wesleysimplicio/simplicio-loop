@@ -242,7 +242,12 @@ detector below. It is the difference between a loop that converges and one that 
    scripts/task_backlog.py status`). Journal = memory for ATTEMPTS; anchor = SCOPE; backlog =
    THE DECOMPOSITION; impact audit = BLAST RADIUS; flow audit = INTEGRATION. Act only on what's
    still genuinely open (idempotency). Full rationale + extra flags:
-   **`references/triage-verify-detail.md`**.
+   **`references/triage-verify-detail.md`**. On a multi-session/multi-worktree repo, also run
+   `scripts/coordinator.py survey`+`decide` per candidate issue — `OWN`/`CONTINUE_OWN`/
+   `RECLAIM_STALE` license work, `DEFER_ACTIVE_CLAIM` means don't duplicate a sibling session's
+   claim. If EVERY issue comes back deferred, switch to reviewing open PRs against the DoD +
+   issue ACs (`scripts/pr_dod_review.py check --post`) instead of idling. Full detail:
+   **`references/multi-agent-coordination.md`**.
 3. **Work the goal** each turn against that triaged state. The model DECIDES the AC-scoped change;
    the **`simplicio-dev-cli` operator APPLIES and verifies it** — never hand-edit inside the loop.
    End EVERY iteration with a concrete verification. **After the operator passes, run the watcher
@@ -254,7 +259,10 @@ detector below. It is the difference between a loop that converges and one that 
    expands. **Then RECORD the attempt**: `loop_journal.py record --iteration N --action "<change>"
    --hypothesis "<why>" --gate pass|fail --gate-output <test.log>` (failure output is fingerprinted
    so the same failure is recognised next turn). A turn that only edits without verifying is
-   incomplete. Full detail: **`references/triage-verify-detail.md`**.
+   incomplete. Full detail: **`references/triage-verify-detail.md`**. Launch the verification
+   command (tests/selftest/`claims_audit.py`) in the **background** and keep working the next unit
+   of work instead of idling on it — same evidence requirement, only WHEN you block on the result
+   changes. Full detail: **`references/background-verification.md`**.
 4. **Re-feed** happens at turn end via the stop-hook (below). Each re-fed turn is prefixed
    `[simplicio-loop iteration N. To finish: output <promise>TEXT</promise> ONLY when genuinely true.]`.
    Before re-feeding, the stop-hook (or the self-paced tick) runs the **stall check**
@@ -448,6 +456,17 @@ uncertain rather than assuming a hook will re-feed the goal:
 
 Delete `.orchestrator/loop/` (the `cancel-ralph` analogue). A single STOP signal (flag file
 `.orchestrator/STOP` or a channel command) halts cleanly between iterations.
+
+## Post-merge cleanup (mandatory)
+
+Once a PR the loop opened is **merged into `main`**, run `scripts/worktree_cleanup.py` to delete
+the branch (local + remote) and, if the work happened in a dedicated worktree, remove it too. It
+fails safe: skips if the PR isn't actually MERGED, or if the worktree/branch has uncommitted
+changes (both branch and worktree deletion are skipped together in that case).
+
+```bash
+python3 scripts/worktree_cleanup.py run --repo <owner/name> --pr <N> --branch <branch> --json
+```
 
 ## Agent-to-agent handoff (spindle/latch pattern)
 
