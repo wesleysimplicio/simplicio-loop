@@ -2,16 +2,6 @@
   "schema": "simplicio.run-stage-graph/v1",
   "graph_id": "simplicio-loop-portable-stage-agents",
   "version": "1.0.0",
-  "manifest_hash": "82daa4fc534e829682b2875e824814c99bd63f85431b45a73f7e6b26399f163e",
-  "schema_pins": {
-    "simplicio.agent-instance/v1": "eb8e84c2d936266dae88b2ded1f193dbce3ef7c45af4ddb0595d8e2f81f2fb3a",
-    "simplicio.agent-role/v1": "f39c47fe4979b83976d4fdc6cd27ba8b6a1ff16f589aee2a6aaf5f337fbd006f",
-    "simplicio.run-stage-graph/v1": "dc492415b25a272966291e74e677c4abf1435cdff14fbc6fedbbeb4519182db6",
-    "simplicio.stage-definition/v1": "a8522844c386e72aa53c9dc712778c6b869ff51cf89dbcacd5b01849d1a15643",
-    "simplicio.stage-input/v1": "440cf7b3ae6451dcc1095c08bdc700eddb6e24bf486b0a1f4c37f494d95b8dd2",
-    "simplicio.stage-output/v1": "6a645114af7f414a9a44d8436d039d23a4414dec25a8581ca80d1775b0fa8c4f",
-    "simplicio.stage-receipt/v1": "565729394c1a8a9acd17b21722dea514408855d69f99cbee3c9615b0e3c6a1cb"
-  },
   "roles": [
     {
       "schema": "simplicio.agent-role/v1",
@@ -19,25 +9,9 @@
       "version": "1.0.0",
       "title": "Intake & Planner Agent",
       "description": "Normalizes a work-item, orients the repo, and produces a deep plan bound to acceptance criteria.",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence"
-      ],
-      "forbidden_to_self_sign": [
-        "review",
-        "security",
-        "delivery",
-        "completion"
-      ],
-      "independent_of_roles": [
-        "implementation_agent",
-        "safety_gate",
-        "review_panel",
-        "delivery_agent",
-        "completion_auditor"
-      ]
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
+      "forbidden_to_self_sign": ["review", "security", "delivery", "completion"],
+      "independent_of_roles": ["implementation_agent", "safety_gate", "review_panel", "delivery_agent", "completion_auditor"]
     },
     {
       "schema": "simplicio.agent-role/v1",
@@ -45,25 +19,9 @@
       "version": "1.0.0",
       "title": "Implementation Agent",
       "description": "Applies an AC-scoped change via the bound operator in an isolated worktree with a mutation receipt.",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence",
-        "completion"
-      ],
-      "forbidden_to_self_sign": [
-        "review",
-        "security",
-        "delivery",
-        "completion_audit"
-      ],
-      "independent_of_roles": [
-        "safety_gate",
-        "review_panel",
-        "delivery_agent",
-        "completion_auditor"
-      ]
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence", "completion"],
+      "forbidden_to_self_sign": ["review", "security", "delivery", "completion_audit"],
+      "independent_of_roles": ["safety_gate", "review_panel", "delivery_agent", "completion_auditor"]
     },
     {
       "schema": "simplicio.agent-role/v1",
@@ -71,23 +29,9 @@
       "version": "1.0.0",
       "title": "Safety & Authorization Gate",
       "description": "Intercepts boundaries to check risk, secrets and authorization before any mutation or delivery.",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence"
-      ],
-      "forbidden_to_self_sign": [
-        "implementation",
-        "review",
-        "delivery",
-        "completion"
-      ],
-      "independent_of_roles": [
-        "implementation_agent",
-        "review_panel",
-        "delivery_agent"
-      ]
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
+      "forbidden_to_self_sign": ["implementation", "review", "delivery", "completion"],
+      "independent_of_roles": ["implementation_agent", "review_panel", "delivery_agent"]
     },
     {
       "schema": "simplicio.agent-role/v1",
@@ -95,24 +39,49 @@
       "version": "1.0.0",
       "title": "Independent Review Panel",
       "description": "Four distinct reviewers: security/correctness, quality/maintainability, runtime/repro, blast-radius/flow.",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence"
-      ],
-      "forbidden_to_self_sign": [
-        "implementation",
-        "security_signoff",
-        "delivery",
-        "completion"
-      ],
-      "independent_of_roles": [
-        "implementation_agent",
-        "safety_gate",
-        "delivery_agent",
-        "completion_auditor"
-      ]
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
+      "forbidden_to_self_sign": ["implementation", "security_signoff", "delivery", "completion"],
+      "independent_of_roles": ["implementation_agent", "safety_gate", "delivery_agent", "completion_auditor"]
+    },
+    {
+      "schema": "simplicio.agent-role/v1",
+      "role_id": "security_correctness_reviewer",
+      "version": "1.0.0",
+      "title": "Security & Correctness Reviewer",
+      "description": "Independent reviewer for ACs, logic, race, authz, injection, secrets, unsafe I/O, broken callers, placeholders and debug leaks.",
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
+      "forbidden_to_self_sign": ["implementation", "security_signoff", "delivery", "completion"],
+      "independent_of_roles": ["blast_radius_reviewer", "completion_auditor", "delivery_agent", "implementation_agent", "maintainability_reviewer", "runtime_reproduction_verifier", "safety_gate"]
+    },
+    {
+      "schema": "simplicio.agent-role/v1",
+      "role_id": "maintainability_reviewer",
+      "version": "1.0.0",
+      "title": "Maintainability Reviewer",
+      "description": "Independent reviewer for structural simplicity, boundaries, duplication, architecture boundaries, naming, dead code and empty tests.",
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
+      "forbidden_to_self_sign": ["implementation", "security_signoff", "delivery", "completion"],
+      "independent_of_roles": ["blast_radius_reviewer", "completion_auditor", "delivery_agent", "implementation_agent", "runtime_reproduction_verifier", "safety_gate", "security_correctness_reviewer"]
+    },
+    {
+      "schema": "simplicio.agent-role/v1",
+      "role_id": "runtime_reproduction_verifier",
+      "version": "1.0.0",
+      "title": "Runtime/Reproduction Verifier",
+      "description": "Independent verifier that executes the real path, target tests, web/flow/schema evidence, and checks for zero runtime errors.",
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
+      "forbidden_to_self_sign": ["implementation", "security_signoff", "delivery", "completion"],
+      "independent_of_roles": ["blast_radius_reviewer", "completion_auditor", "delivery_agent", "implementation_agent", "maintainability_reviewer", "safety_gate", "security_correctness_reviewer"]
+    },
+    {
+      "schema": "simplicio.agent-role/v1",
+      "role_id": "blast_radius_reviewer",
+      "version": "1.0.0",
+      "title": "Blast-Radius Reviewer",
+      "description": "Independent reviewer that recomputes impact/flow: planned surface vs actual diff vs reverse dependents vs sibling patterns.",
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
+      "forbidden_to_self_sign": ["implementation", "security_signoff", "delivery", "completion"],
+      "independent_of_roles": ["completion_auditor", "delivery_agent", "implementation_agent", "maintainability_reviewer", "runtime_reproduction_verifier", "safety_gate", "security_correctness_reviewer"]
     },
     {
       "schema": "simplicio.agent-role/v1",
@@ -120,24 +89,9 @@
       "version": "1.0.0",
       "title": "Delivery Agent",
       "description": "Integrates the change, opens the PR, merges, re-queries the source and closes the item with observed evidence.",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence",
-        "completion"
-      ],
-      "forbidden_to_self_sign": [
-        "review",
-        "security",
-        "completion_audit"
-      ],
-      "independent_of_roles": [
-        "implementation_agent",
-        "safety_gate",
-        "review_panel",
-        "completion_auditor"
-      ]
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence", "completion"],
+      "forbidden_to_self_sign": ["review", "security", "completion_audit"],
+      "independent_of_roles": ["implementation_agent", "safety_gate", "review_panel", "completion_auditor"]
     },
     {
       "schema": "simplicio.agent-role/v1",
@@ -145,25 +99,9 @@
       "version": "1.0.0",
       "title": "Feedback & Recovery Agent",
       "description": "Consumes CI/review/conflict/regression signals; may invalidate receipts and re-enter any prior stage.",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence",
-        "completion"
-      ],
-      "forbidden_to_self_sign": [
-        "review",
-        "security",
-        "completion_audit"
-      ],
-      "independent_of_roles": [
-        "implementation_agent",
-        "safety_gate",
-        "review_panel",
-        "delivery_agent",
-        "completion_auditor"
-      ]
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence", "completion"],
+      "forbidden_to_self_sign": ["review", "security", "completion_audit"],
+      "independent_of_roles": ["implementation_agent", "safety_gate", "review_panel", "delivery_agent", "completion_auditor"]
     },
     {
       "schema": "simplicio.agent-role/v1",
@@ -171,26 +109,9 @@
       "version": "1.0.0",
       "title": "Completion Auditor",
       "description": "Independent final auditor; fail-closed completion oracle requiring all prior receipts accepted.",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence",
-        "completion"
-      ],
-      "forbidden_to_self_sign": [
-        "implementation",
-        "review",
-        "security",
-        "delivery"
-      ],
-      "independent_of_roles": [
-        "implementation_agent",
-        "safety_gate",
-        "review_panel",
-        "delivery_agent",
-        "feedback_recovery_agent"
-      ]
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence", "completion"],
+      "forbidden_to_self_sign": ["implementation", "review", "security", "delivery"],
+      "independent_of_roles": ["implementation_agent", "safety_gate", "review_panel", "delivery_agent", "feedback_recovery_agent"]
     },
     {
       "schema": "simplicio.agent-role/v1",
@@ -198,27 +119,9 @@
       "version": "1.0.0",
       "title": "GitHub Reporting Agent",
       "description": "Transversal: idempotent comments per item/agent/transition plus an aggregate run comment.",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence"
-      ],
-      "forbidden_to_self_sign": [
-        "implementation",
-        "review",
-        "security",
-        "delivery",
-        "completion"
-      ],
-      "independent_of_roles": [
-        "implementation_agent",
-        "safety_gate",
-        "review_panel",
-        "delivery_agent",
-        "completion_auditor",
-        "feedback_recovery_agent"
-      ]
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
+      "forbidden_to_self_sign": ["implementation", "review", "security", "delivery", "completion"],
+      "independent_of_roles": ["implementation_agent", "safety_gate", "review_panel", "delivery_agent", "completion_auditor", "feedback_recovery_agent"]
     }
   ],
   "stages": [
@@ -230,30 +133,19 @@
       "description": "Normalize the issue and orient the repo.",
       "depends_on": [],
       "activation_condition": "issue open and not yet normalized",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence"
-      ],
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
       "optional_capabilities": [],
       "isolation_level": "session",
-      "input_schema": "simplicio.stage-input/v1",
-      "output_schema": "simplicio.stage-output/v1",
-      "accepted_receipts": [
-        "simplicio.stage-receipt/v1"
-      ],
+      "input_schema": "simplicio.agent-context/v1",
+      "output_schema": "simplicio.stage-receipt/v1",
+      "accepted_receipts": ["simplicio.stage-receipt/v1"],
       "timeout_seconds": 300,
       "retry_budget": 1,
       "failure_policy": "block",
-      "allowed_mutations": [
-        "intake/*"
-      ],
+      "allowed_mutations": ["intake/*"],
       "pre_gate": "none",
       "post_gate": "normalized == true",
-      "next_stages": [
-        "planning"
-      ],
+      "next_stages": ["planning"],
       "compensation": "drop intake state",
       "concurrency": "independent"
     },
@@ -263,70 +155,22 @@
       "role_id": "intake_planner",
       "version": "1.0.0",
       "description": "Deep plan bound to ACs + planning receipt before mutation.",
-      "depends_on": [
-        "intake"
-      ],
+      "depends_on": ["intake"],
       "activation_condition": "intake receipt accepted",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence"
-      ],
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
       "optional_capabilities": [],
       "isolation_level": "session",
-      "input_schema": "simplicio.stage-input/v1",
-      "output_schema": "simplicio.stage-output/v1",
-      "accepted_receipts": [
-        "simplicio.stage-receipt/v1"
-      ],
+      "input_schema": "simplicio.agent-context/v1",
+      "output_schema": "simplicio.stage-receipt/v1",
+      "accepted_receipts": ["simplicio.planning-receipt/v1", "simplicio.stage-receipt/v1"],
       "timeout_seconds": 300,
       "retry_budget": 1,
       "failure_policy": "block",
-      "allowed_mutations": [
-        "plan/*"
-      ],
+      "allowed_mutations": ["plan/*"],
       "pre_gate": "intake receipt accepted",
       "post_gate": "planning_receipt.ready_for_mutation == true",
-      "next_stages": [
-        "safety"
-      ],
+      "next_stages": ["executing"],
       "compensation": "drop plan state",
-      "concurrency": "serial"
-    },
-    {
-      "schema": "simplicio.stage-definition/v1",
-      "stage_id": "safety",
-      "role_id": "safety_gate",
-      "version": "1.0.0",
-      "description": "Authorize mutation boundaries, secrets and capabilities before implementation.",
-      "depends_on": [
-        "planning"
-      ],
-      "activation_condition": "planning receipt accepted",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence"
-      ],
-      "optional_capabilities": [],
-      "isolation_level": "process",
-      "input_schema": "simplicio.stage-input/v1",
-      "output_schema": "simplicio.stage-output/v1",
-      "accepted_receipts": [
-        "simplicio.stage-receipt/v1"
-      ],
-      "timeout_seconds": 600,
-      "retry_budget": 1,
-      "failure_policy": "block",
-      "allowed_mutations": [],
-      "pre_gate": "authorization gate valid",
-      "post_gate": "safety receipt accepted",
-      "next_stages": [
-        "executing"
-      ],
-      "compensation": "return to planning",
       "concurrency": "serial"
     },
     {
@@ -335,36 +179,21 @@
       "role_id": "implementation_agent",
       "version": "1.0.0",
       "description": "Apply AC-scoped change via bound operator in isolated worktree.",
-      "depends_on": [
-        "safety"
-      ],
+      "depends_on": ["planning"],
       "activation_condition": "planning receipt accepted",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence",
-        "completion"
-      ],
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence", "completion"],
       "optional_capabilities": [],
       "isolation_level": "process",
-      "input_schema": "simplicio.stage-input/v1",
-      "output_schema": "simplicio.stage-output/v1",
-      "accepted_receipts": [
-        "simplicio.stage-receipt/v1"
-      ],
+      "input_schema": "simplicio.agent-context/v1",
+      "output_schema": "simplicio.stage-receipt/v1",
+      "accepted_receipts": ["simplicio.stage-receipt/v1"],
       "timeout_seconds": 1800,
       "retry_budget": 3,
       "failure_policy": "retry",
-      "allowed_mutations": [
-        "src/*",
-        "tests/*"
-      ],
+      "allowed_mutations": ["src/*", "tests/*"],
       "pre_gate": "mutation_authority valid",
       "post_gate": "operator verify pass",
-      "next_stages": [
-        "validating"
-      ],
+      "next_stages": ["validating"],
       "compensation": "revert worktree",
       "concurrency": "independent"
     },
@@ -374,32 +203,21 @@
       "role_id": "review_panel",
       "version": "1.0.0",
       "description": "Independent code review on distinct rubrics (Codex as one reviewer).",
-      "depends_on": [
-        "executing"
-      ],
+      "depends_on": ["executing"],
       "activation_condition": "executing receipt pass",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence"
-      ],
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
       "optional_capabilities": [],
       "isolation_level": "process",
-      "input_schema": "simplicio.stage-input/v1",
-      "output_schema": "simplicio.stage-output/v1",
-      "accepted_receipts": [
-        "simplicio.stage-receipt/v1"
-      ],
+      "input_schema": "simplicio.agent-context/v1",
+      "output_schema": "simplicio.stage-receipt/v1",
+      "accepted_receipts": ["simplicio.stage-receipt/v1"],
       "timeout_seconds": 900,
       "retry_budget": 2,
       "failure_policy": "retry",
       "allowed_mutations": [],
       "pre_gate": "implementation receipt accepted",
       "post_gate": "all rubrics pass or findings resolved",
-      "next_stages": [
-        "watching"
-      ],
+      "next_stages": ["watching"],
       "compensation": "return to executing",
       "concurrency": "independent"
     },
@@ -409,69 +227,21 @@
       "role_id": "review_panel",
       "version": "1.0.0",
       "description": "Separate fresh reviewer independently verifies ACs + evidence.",
-      "depends_on": [
-        "validating"
-      ],
+      "depends_on": ["validating"],
       "activation_condition": "validating receipts accepted",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence"
-      ],
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence"],
       "optional_capabilities": [],
       "isolation_level": "process",
-      "input_schema": "simplicio.stage-input/v1",
-      "output_schema": "simplicio.stage-output/v1",
-      "accepted_receipts": [
-        "simplicio.stage-receipt/v1"
-      ],
+      "input_schema": "simplicio.agent-context/v1",
+      "output_schema": "simplicio.stage-receipt/v1",
+      "accepted_receipts": ["simplicio.stage-receipt/v1"],
       "timeout_seconds": 600,
       "retry_budget": 1,
       "failure_policy": "retry",
       "allowed_mutations": [],
       "pre_gate": "validating receipts accepted",
       "post_gate": "watcher_state.match == true",
-      "next_stages": [
-        "recovery"
-      ],
-      "compensation": "return to validating",
-      "concurrency": "independent"
-    },
-    {
-      "schema": "simplicio.stage-definition/v1",
-      "stage_id": "recovery",
-      "role_id": "feedback_recovery_agent",
-      "version": "1.0.0",
-      "description": "Consume feedback, conflicts and regression signals before delivery.",
-      "depends_on": [
-        "watching"
-      ],
-      "activation_condition": "watching receipt accepted",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence"
-      ],
-      "optional_capabilities": [],
-      "isolation_level": "process",
-      "input_schema": "simplicio.stage-input/v1",
-      "output_schema": "simplicio.stage-output/v1",
-      "accepted_receipts": [
-        "simplicio.stage-receipt/v1"
-      ],
-      "timeout_seconds": 900,
-      "retry_budget": 2,
-      "failure_policy": "retry",
-      "allowed_mutations": [
-        "recovery/*"
-      ],
-      "pre_gate": "watcher receipt accepted",
-      "post_gate": "recovery receipt accepted",
-      "next_stages": [
-        "delivering"
-      ],
+      "next_stages": ["delivering"],
       "compensation": "return to validating",
       "concurrency": "independent"
     },
@@ -481,72 +251,21 @@
       "role_id": "delivery_agent",
       "version": "1.0.0",
       "description": "Integrate, PR, merge, re-query, close with observed delivery receipt.",
-      "depends_on": [
-        "recovery"
-      ],
+      "depends_on": ["watching"],
       "activation_condition": "watcher match true",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence",
-        "completion"
-      ],
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence", "completion"],
       "optional_capabilities": [],
       "isolation_level": "process",
-      "input_schema": "simplicio.stage-input/v1",
-      "output_schema": "simplicio.stage-output/v1",
-      "accepted_receipts": [
-        "simplicio.stage-receipt/v1"
-      ],
+      "input_schema": "simplicio.agent-context/v1",
+      "output_schema": "simplicio.stage-receipt/v1",
+      "accepted_receipts": ["simplicio.stage-receipt/v1"],
       "timeout_seconds": 1200,
       "retry_budget": 2,
       "failure_policy": "retry",
-      "allowed_mutations": [
-        "delivery/*"
-      ],
+      "allowed_mutations": ["delivery/*"],
       "pre_gate": "watching receipt pass",
       "post_gate": "merged == true and re-query closed",
-      "next_stages": [
-        "reporting"
-      ],
-      "compensation": "reopen item",
-      "concurrency": "serial"
-    },
-    {
-      "schema": "simplicio.stage-definition/v1",
-      "stage_id": "reporting",
-      "role_id": "github_reporter",
-      "version": "1.0.0",
-      "description": "Persist idempotent GitHub progress comments and aggregate run evidence.",
-      "depends_on": [
-        "delivering"
-      ],
-      "activation_condition": "delivery receipt accepted",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence"
-      ],
-      "optional_capabilities": [],
-      "isolation_level": "process",
-      "input_schema": "simplicio.stage-input/v1",
-      "output_schema": "simplicio.stage-output/v1",
-      "accepted_receipts": [
-        "simplicio.stage-receipt/v1"
-      ],
-      "timeout_seconds": 600,
-      "retry_budget": 1,
-      "failure_policy": "block",
-      "allowed_mutations": [
-        "reporting/*"
-      ],
-      "pre_gate": "delivery receipt accepted",
-      "post_gate": "reporting receipt accepted",
-      "next_stages": [
-        "done"
-      ],
+      "next_stages": ["done"],
       "compensation": "reopen item",
       "concurrency": "serial"
     },
@@ -556,24 +275,14 @@
       "role_id": "completion_auditor",
       "version": "1.0.0",
       "description": "Final independent audit; fail-closed COMPLETE only after all receipts + delivery re-query.",
-      "depends_on": [
-        "reporting"
-      ],
+      "depends_on": ["delivering"],
       "activation_condition": "delivery receipt accepted",
-      "required_capabilities": [
-        "claim",
-        "fencing",
-        "receipts",
-        "evidence",
-        "completion"
-      ],
+      "required_capabilities": ["claim", "fencing", "receipts", "evidence", "completion"],
       "optional_capabilities": [],
       "isolation_level": "process",
-      "input_schema": "simplicio.stage-input/v1",
-      "output_schema": "simplicio.stage-output/v1",
-      "accepted_receipts": [
-        "simplicio.stage-receipt/v1"
-      ],
+      "input_schema": "simplicio.agent-context/v1",
+      "output_schema": "simplicio.stage-receipt/v1",
+      "accepted_receipts": ["simplicio.stage-receipt/v1"],
       "timeout_seconds": 300,
       "retry_budget": 0,
       "failure_policy": "block",

@@ -59,7 +59,7 @@
     },
     "timeout_seconds": { "type": "integer", "minimum": 1 },
     "retry_budget": { "type": "integer", "minimum": 0 },
-    "failure_policy": { "enum": ["block", "retry", "skip", "handoff"] },
+    "failure_policy": { "enum": ["block", "retry", "skip", "quarantine", "handoff"] },
     "allowed_mutations": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
