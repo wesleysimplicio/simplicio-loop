@@ -229,6 +229,7 @@ detector below. It is the difference between a loop that converges and one that 
    `max_iterations` safety net for manual runs; use `0` only when a durable scheduler and STOP
    signal own cancellation.
 2. **Triage the live state FIRST (mandatory).** Before any action each turn, re-read the ground
+   - If every open issue returns DEFER_ACTIVE_CLAIM (all claimed), do NOT idle — review open PRs against the 7-dimension DoD and the underlying issue frozen ACs using scripts/pr_dod_review.py, and comment what remains for the claiming agent (convention: references/multi-agent-coordination.md).
    truth — the **`simplicio-mapper` survey**, `git status`/`git diff`, the scratchpad, AND the
    source of record (issues/PRs, branches, `.orchestrator/loop/done`). **Read the attempt memory
    FIRST**: `python3 scripts/loop_journal.py resume` (dead-ends to AVOID; `since` for incremental
