@@ -129,3 +129,62 @@ def test_cancelled_run_is_terminal_and_honest():
     event = build_progress(_state(phase="cancelled", progress_percent=100))
     assert event["status"] == "CANCELLED"
     assert event["percent"] == 0
+
+
+class _EncodedStream:
+    def __init__(self, encoding):
+        self.encoding = encoding
+        self.value = []
+        self.reconfigured = False
+
+    def write(self, text):
+        text.encode(self.encoding)
+        self.value.append(text)
+        return len(text)
+
+    def flush(self):
+        return None
+
+    def isatty(self):
+        return False
+
+    def reconfigure(self, **kwargs):
+        self.reconfigured = True
+        raise AssertionError("progress must not reconfigure caller-owned streams")
+
+    def getvalue(self):
+        return "".join(self.value)
+
+
+def test_text_stream_falls_back_for_cp1252_without_reconfiguring(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "state.json").write_text(json.dumps(_state()), encoding="utf-8")
+    out = _EncodedStream("cp1252")
+    event = stream(run, once=True, out=out)
+    assert event["phase"] == "executing"
+    assert out.reconfigured is False
+    assert "validate" in out.getvalue()
+    assert "█" not in out.getvalue()
+
+
+def test_json_stream_uses_valid_ascii_fallback_for_cp1252(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "state.json").write_text(json.dumps(_state()), encoding="utf-8")
+    out = _EncodedStream("cp1252")
+    stream(run, fmt="json", once=True, out=out)
+    payload = json.loads(out.getvalue())
+    assert payload["run_id"] == "run-demo"
+    assert payload["next_action"] == "validate"
+
+
+def test_utf8_stream_preserves_unicode_when_supported(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    state = _state(current_action="ação ✅")
+    (run / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    out = _EncodedStream("utf-8")
+    stream(run, once=True, out=out)
+    assert "ação" in out.getvalue()
+    assert "✅" in out.getvalue()
