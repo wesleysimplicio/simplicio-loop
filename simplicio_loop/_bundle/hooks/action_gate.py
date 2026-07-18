@@ -193,6 +193,78 @@ def _push_diff(cwd=None):
     return (d.stdout if d and d.returncode == 0 else None)
 
 
+def _delivery_contract(cwd):
+    """Load the optional frozen delivery contract for the effective repository."""
+    local_anchor = os.path.join(cwd, ".orchestrator", "loop", "anchor.json")
+    anchor_path = local_anchor if os.path.exists(local_anchor) else (
+        os.environ.get("SIMPLICIO_ANCHOR_FILE") or local_anchor
+    )
+    try:
+        with open(anchor_path, encoding="utf-8") as handle:
+            anchor = json.load(handle)
+        contract = anchor.get("delivery")
+        if not contract:
+            return None, None
+        if REPO not in sys.path:
+            sys.path.insert(0, REPO)
+        from simplicio_loop.delivery_contract import normalize_contract
+        return normalize_contract(contract), None
+    except FileNotFoundError:
+        return None, None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        return None, "invalid frozen delivery contract: %s" % exc
+
+
+def _diff_new_paths(cwd, push):
+    """Return added paths from the same range that will be secret-scanned."""
+    if push:
+        upstream = _run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=cwd)
+        ref = upstream.stdout.strip() if upstream and upstream.returncode == 0 else ""
+        ranges = (["%s...HEAD" % ref] if ref else ["HEAD~1..HEAD", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "HEAD"])
+        for item in ranges:
+            args = ["git", "diff", item, "--name-status"] if "..." in item or ".." in item else ["git", "diff", item, "HEAD", "--name-status"]
+            result = _run(args, cwd=cwd)
+            if result and result.returncode == 0:
+                return [line.split("\t", 1)[-1] for line in result.stdout.splitlines()
+                        if line and line[0] in {"A", "C"} and "\t" in line]
+        return []
+    result = _run(["git", "diff", "--cached", "--name-status"], cwd=cwd)
+    if not result or result.returncode != 0:
+        return []
+    return [line.split("\t", 1)[-1] for line in result.stdout.splitlines()
+            if line and line[0] in {"A", "C"} and "\t" in line]
+
+
+def _delivery_guard(cwd, diff, push):
+    contract, error = _delivery_contract(cwd)
+    if error:
+        return error
+    if contract is None:
+        return None
+    new_paths = _diff_new_paths(cwd, push)
+    if not contract["allow_new_files_in_repo"] and new_paths:
+        return "delivery contract forbids new files (cwd=%s): %s" % (cwd, ", ".join(sorted(new_paths)))
+    if not contract["allow_comments_in_code"]:
+        code_paths = {
+            line[6:].strip()
+            for line in diff.splitlines()
+            if line.startswith("+++ b/")
+        }
+        code_suffixes = (".cs", ".js", ".jsx", ".ts", ".tsx", ".py")
+        if not any(path.lower().endswith(code_suffixes) for path in code_paths):
+            return None
+        comments = []
+        for line in diff.splitlines():
+            if not line.startswith("+") or line.startswith("+++"):
+                continue
+            added = line[1:].lstrip()
+            if added.startswith(("#", "//", "/*", "*", '"""')):
+                comments.append(added[:80])
+        if comments:
+            return "delivery contract forbids new code comments (cwd=%s; lines=%d)" % (cwd, len(comments))
+    return None
+
+
 def _is_commit_or_push(cmd):
     return bool(re.search(r"\bgit\s+(commit|push)\b", cmd or ""))
 
@@ -279,6 +351,9 @@ def gate_command(cmd, staged=False):
             return _verdict(
                 False,
                 "secret in %s diff (%s; cwd=%s) - remove it before mutation" % (target, labels, cwd),            )
+        delivery_reason = _delivery_guard(cwd, diff, push)
+        if delivery_reason:
+            return _verdict(False, delivery_reason)
     runtime_reason = _runtime_gate_escalation(cmd)
     if runtime_reason:
         return _verdict(False, "simplicio runtime gate: " + runtime_reason)

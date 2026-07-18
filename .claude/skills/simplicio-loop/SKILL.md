@@ -20,6 +20,14 @@ For queue/body-of-work runs, pair this file with the shared deep references unde
 `../simplicio-tasks/references/` for extension points, orchestration, token economy, delivery,
 and safety details.
 
+## GitHub coordination default
+
+When the project remote is hosted on GitHub, GitHub is the default coordination and source-of-truth
+surface for the loop: read and update Issues, publish progress in issue/PR comments, validate checks,
+merge only through the repository's approved PR path, and re-query live state before closing. Do not
+silently substitute another tracker or local scratchpad for GitHub; use another system only when the
+user explicitly requests it or the repository's documented workflow requires it.
+
 ## Normative contract (non-negotiable)
 
 These invariants are MUST-level. Any runtime that loads this skill (Simplicio Agent, Claude, Cursor, or a
@@ -69,6 +77,17 @@ one of the seven is verified with evidence, not asserted. When a goal is decompo
 each backlog item's `plan.json` entry MUST carry all seven as ACs (skip only the ones that
 genuinely do not apply — e.g. no perf benchmark for a pure docs change — and say why in the item).
 
+## Adaptive infrastructure evidence and delivery contract
+
+The DoD scales to measured repository infrastructure without lowering the safety floor. Run
+`scripts/test_infra_probe.py` at intake: native tests and coverage are `verified` when detected;
+missing tooling is `waived:no-infra` only with a recorded reason; missing unit evidence remains
+`pending` until a complete external harness supplies source, named PASS/FAIL log, and code hash.
+Client delivery restrictions are frozen as `simplicio.delivery-contract/v1`; unknown fields fail,
+`open_pr=false` uses `pr_evidence.py build --local-report`, and new-file/comment guards are
+enforced from the contract. `scripts/operator_preflight.py` separately pins operator versions and
+gates upgrades by TTL.
+
 ## When to use
 
 - "/simplicio-loop finish all the open issues", "clear the CI queue", "drain the Jira board".
@@ -95,6 +114,10 @@ gates, the operator dispatch table): **`references/bound-operators.md`**.
 
 **Preflight (MANDATORY, BLOCKING).** Before iteration 1, announce the step, auto-update the
 operator package to its latest release, then confirm both runtime binaries are on PATH:
+First run `python3 scripts/operator_preflight.py --run-id <run-id>`; the receipt is cached for
+seven days in `~/.simplicio/operator-check.json`. The networked `pip install -qU` below is allowed
+only when that receipt says `refresh_required` (or a binary is missing). Record the observed versions
+with `--record` and pin them for the run; a later mismatch warns and never upgrades silently.
 ```bash
 python3 scripts/loop_progress.py emit --step preflight --status begin --detail "operadores: verificação/atualização"
 python3 -m pip install -qU simplicio-cli 2>/dev/null \
@@ -209,7 +232,7 @@ iteration: 1
 max_iterations: <N or 0>          # 0 = scheduler-controlled; prefer a finite cap for manual runs
 completion_promise: "<EXACT TEXT>" | null
 evidence_required: true           # promise is rejected unless backed by a passing gate
-mode: converge | drain            # which termination logic applies (see Two loop modes)
+mode: converge | drain | fast-path # which termination logic applies (see Three loop modes)
 started_at: "<ISO-8601>"
 ---
 
@@ -274,18 +297,20 @@ detector below. It is the difference between a loop that converges and one that 
    `status: MEASURED`). The watcher re-executes the work independently before the promise is
    honored — corrective gate per Asolaria N-Nest pattern.
 
-## Two loop modes (different jobs, different termination)
+## Three loop modes (different jobs, different termination)
 
 A loop drains a queue and a loop converges a hard task — opposite dynamics, so the scratchpad
 `mode` selects which termination logic the driver uses. Pick it when arming; default `converge`
-for a single goal, `drain` for a work-queue.
+for a single goal, `drain` for a work-queue, and `fast-path` only when mapper evidence proves a
+small, low-fan-in, non-sensitive surface. Fast-path keeps the safety floor and promotes
+monotonically to converge when the measured diff exceeds its limits.
 
-| | `converge` (single hard task) | `drain` (a queue of items) |
-|---|---|---|
-| Wants | depth — keep changing strategy until ONE thing passes | breadth — clear many independent items, idempotently |
-| Each turn | triage `since` last turn (incremental) → one AC-scoped change → verify → watcher-gate → journal | claim next open item → implement → deliver → re-query source (the local Phase 0 backlog is a first-class source: re-query = `task_backlog.py next`; an `empty` print counts as a dry round, `dry≥2` unchanged) |
-| **Termination** | the evidence-gated `<promise>` fires, OR the **stall detector** says STALLED and escalates (below) | the source re-query returns empty for **K consecutive rounds** (`dry≥2`) AND the working set is idle |
-| Anti-pattern it avoids | oscillation (retrying the same dead-end) | missing late-arriving work (stops too early) |
+| | `converge` (single hard task) | `drain` (a queue of items) | `fast-path` (measured small scope) |
+|---|---|---|---|
+| Wants | depth — keep changing strategy until ONE thing passes | breadth — clear many independent items, idempotently | lowest ceremony while the mapper evidence remains within limits |
+| Each turn | triage `since` last turn (incremental) → one AC-scoped change → verify → watcher-gate → journal | claim next open item → implement → deliver → re-query source (the local Phase 0 backlog is a first-class source: re-query = `task_backlog.py next`; an `empty` print counts as a dry round, `dry≥2` unchanged) | preserve safety floor → edit → verify → measure real diff; promote on overflow |
+| **Termination** | the evidence-gated `<promise>` fires, OR the **stall detector** says STALLED and escalates (below) | the source re-query returns empty for **K consecutive rounds** (`dry≥2`) AND the working set is idle | evidence-gated promise only after the same watcher/claims gates as converge |
+| Anti-pattern it avoids | oscillation (retrying the same dead-end) | missing late-arriving work (stops too early) | ceremony bypass, unmeasured scope growth, and false fast-path claims |
 
 Both still obey the universal exits (promise+evidence, `max_iterations`, STOP). The split
 only changes WHEN "naturally done" is declared: `converge` is done when the one task is proven or

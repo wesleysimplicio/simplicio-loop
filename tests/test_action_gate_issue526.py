@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -28,6 +29,21 @@ def make_repo(tmp_path: Path, text: str = "ok") -> Path:
     git(repo, "add", "file.txt")
     git(repo, "commit", "-q", "-m", "init")
     return repo
+
+
+def freeze_delivery(repo: Path, **overrides) -> None:
+    state = repo / ".orchestrator" / "loop"
+    state.mkdir(parents=True)
+    contract = {
+        "schema": "simplicio.delivery-contract/v1",
+        "open_pr": False,
+        "push_branch": True,
+        "allow_new_files_in_repo": True,
+        "allow_comments_in_code": True,
+        "commit_message_convention": "#<id> - fix: <desc>",
+    }
+    contract.update(overrides)
+    (state / "anchor.json").write_text(json.dumps({"delivery": contract}), encoding="utf-8")
 
 
 def test_push_from_worktree_scans_push_range(tmp_path: Path) -> None:
@@ -75,3 +91,37 @@ def test_commit_still_scans_staged_diff(tmp_path: Path) -> None:
     verdict = hook.gate_command('cd "%s" && git commit -m secret' % repo)
     assert verdict["action"] == "block"
     assert "staged diff" in verdict["reason"]
+
+
+def test_delivery_contract_blocks_new_staged_file(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    freeze_delivery(repo, allow_new_files_in_repo=False)
+    (repo / "new.py").write_text("value = 1\n", encoding="utf-8")
+    git(repo, "add", "new.py")
+    hook = load_hook()
+    verdict = hook.gate_command('cd "%s" && git commit -m new' % repo)
+    assert verdict["action"] == "block"
+    assert "forbids new files" in verdict["reason"]
+    assert str(repo) in verdict["reason"]
+
+
+def test_delivery_contract_blocks_new_code_comment(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    freeze_delivery(repo, allow_comments_in_code=False)
+    (repo / "file.py").write_text("# forbidden comment\nvalue = 1\n", encoding="utf-8")
+    git(repo, "add", "file.py")
+    hook = load_hook()
+    verdict = hook.gate_command('cd "%s" && git commit -m comment' % repo)
+    assert verdict["action"] == "block"
+    assert "forbids new code comments" in verdict["reason"]
+
+
+def test_delivery_contract_invalid_state_is_fail_closed(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    freeze_delivery(repo, unknown=True)
+    (repo / "file.txt").write_text("safe-2", encoding="utf-8")
+    git(repo, "add", "file.txt")
+    hook = load_hook()
+    verdict = hook.gate_command('cd "%s" && git commit -m invalid' % repo)
+    assert verdict["action"] == "block"
+    assert "invalid frozen delivery contract" in verdict["reason"]

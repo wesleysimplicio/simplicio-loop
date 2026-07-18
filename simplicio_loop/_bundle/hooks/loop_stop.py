@@ -233,6 +233,97 @@ def anchor_pending():
             if isinstance(c, dict) and c.get("status") != "done"]
 
 
+def _delivery_stop_guard(cwd, iteration):
+    """Enforce the frozen delivery contract against the real end-of-turn diff.
+
+    The baseline is persisted after each clean turn. The first observation uses HEAD as the
+    conservative baseline, so an untracked or newly staged file cannot silently pass. This is
+    deliberately fail-closed only when a valid contract exists; absent or unreadable loop state
+    keeps the historic stop-hook fail-open behavior.
+    """
+    try:
+        anchor_path = os.path.join(cwd, ANCHOR)
+        with open(anchor_path, encoding="utf-8") as handle:
+            anchor = json.load(handle)
+        contract = anchor.get("delivery")
+        if not contract:
+            return None
+        if cwd not in sys.path:
+            sys.path.insert(0, cwd)
+        from simplicio_loop.delivery_contract import normalize_contract
+        contract = normalize_contract(contract)
+
+        baseline_path = os.path.join(cwd, ".orchestrator", "loop", "delivery_baseline.json")
+        baseline = {}
+        if os.path.exists(baseline_path):
+            with open(baseline_path, encoding="utf-8") as handle:
+                baseline = json.load(handle)
+
+        def git(*args):
+            result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+            return result.stdout if result.returncode == 0 else ""
+
+        current_head = git("rev-parse", "HEAD").strip()
+        status = git("status", "--porcelain=v1", "--untracked-files=all")
+        current_paths = set()
+        for line in status.splitlines():
+            if len(line) >= 4:
+                path = line[3:].strip()
+                if " -> " in path:
+                    path = path.rsplit(" -> ", 1)[1]
+                path = path.strip('"')
+                if path.replace("\\", "/").startswith(".orchestrator/"):
+                    continue
+                current_paths.add(path)
+        baseline_paths = set(baseline.get("paths") or [])
+        new_paths = sorted(current_paths - baseline_paths)
+        violations = []
+        if not contract["allow_new_files_in_repo"] and new_paths:
+            violations.append("new files: %s" % ", ".join(new_paths))
+
+        if not contract["allow_comments_in_code"]:
+            base_head = baseline.get("head") or "HEAD"
+            committed_diff = git("diff", "%s..%s" % (base_head, current_head), "--unified=0") if current_head else ""
+            working_diff = git("diff", "HEAD", "--unified=0")
+            diff = committed_diff + "\n" + working_diff
+            code_paths = {
+                line[6:].strip() for line in diff.splitlines() if line.startswith("+++ b/")
+            }
+            suffixes = (".cs", ".js", ".jsx", ".ts", ".tsx", ".py")
+            if any(path.lower().endswith(suffixes) for path in code_paths):
+                comments = []
+                for line in diff.splitlines():
+                    if not line.startswith("+") or line.startswith("+++"):
+                        continue
+                    added = line[1:].lstrip()
+                    if added.startswith(("#", "//", "/*", "*", '"""')):
+                        comments.append(added[:80])
+                if comments:
+                    violations.append("new code comments: %d" % len(comments))
+
+        if violations:
+            reason = "delivery contract violation at stop (iteration %s): %s" % (
+                iteration, "; ".join(violations)
+            )
+            journal_path = os.path.join(cwd, JOURNAL)
+            os.makedirs(os.path.dirname(journal_path), exist_ok=True)
+            with open(journal_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "iteration": int(iteration), "action": "delivery contract guard",
+                    "gate": "block", "reason": reason, "source": "loop_stop",
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }, ensure_ascii=False, sort_keys=True) + "\n")
+            return reason
+
+        os.makedirs(os.path.dirname(baseline_path), exist_ok=True)
+        with open(baseline_path + ".tmp", "w", encoding="utf-8") as handle:
+            json.dump({"head": current_head, "paths": sorted(current_paths), "iteration": int(iteration)}, handle)
+        os.replace(baseline_path + ".tmp", baseline_path)
+        return None
+    except Exception:
+        return None
+
+
 def tail_journal(n=8):
     """Last N attempt records from the journal, oldest first. [] on any read error."""
     try:
@@ -1017,6 +1108,11 @@ def main():
 
         # Pre-promise: front→back flow-audit gate (#80) — mechanical, not prose-only.
         flow_gap = flow_audit_gap()
+
+        # Delivery contract is checked at the real turn boundary, not only at commit time.
+        delivery_gap = _delivery_stop_guard(os.getcwd(), iteration)
+        if delivery_gap:
+            flow_gap = flow_gap or delivery_gap
 
         # Completion detection is centralized in the shared oracle (#138). The stop hook can still
         # surface watcher/flow state in the re-feed header below, but it no longer decides COMPLETE
