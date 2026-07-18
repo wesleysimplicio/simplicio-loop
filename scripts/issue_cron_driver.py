@@ -52,8 +52,25 @@ LEDGER_DIR = HERE / ".orchestrator" / "intake"
 LEDGER_PATH = LEDGER_DIR / "ledger.jsonl"
 
 # Issues that CANNOT be executed on this single host (no remote workers / no API key /
-# no multi-LLM router). They require infra that is not present here — classified Blocked.
-INFRA_BLOCKED_PREFIXES: Tuple[str, ...] = ("[P0][EPIC]", "[EPIC][P0]")
+# no multi-LLM router / no Hub daemon / no Rust-Tokio backend / no process supervisor).
+# They require infra that is not present here — classified Blocked.
+# Title prefixes that signal an infra-dependent epic/domain (cannot run on this host).
+INFRA_DEPENDENT_DOMAINS: Tuple[str, ...] = (
+    "[P0][EPIC]", "[EPIC][P0]",          # explicit prior pattern
+    "[HUB]", "[SUPERVISOR]", "[ASYNC]",  # hub daemon / process supervisor / async core
+    "[ARCHITECTURE]", "[EPIC]",          # cross-cutting architecture / epic
+    "[PERFORMANCE]", "[RELEASE TRAIN]", "[P0][RELEASE TRAIN]",  # perf/core + release train
+)
+# Labels that mark an infra-dependent work item.
+INFRA_DEPENDENT_LABELS: Tuple[str, ...] = (
+    "hub", "supervisor", "async", "architecture", "epic",
+    "performance", "release-train", "infra", "blocked-infra",
+)
+# Body keywords that indicate the issue requires infra absent on this host.
+INFRA_DEPENDENT_BODY_KEYWORDS: Tuple[str, ...] = (
+    "requer infra", "infra ausente", "não presente neste host",
+    "precisa de hub", "precisa de supervisor", "rust/tokio",
+)
 
 # Terminal statuses — already have a stable work item; no re-arm unless prior failure.
 # 'Todo' is included: the cron only does intake/mapping/planning (never mutates source),
@@ -275,9 +292,24 @@ def _extract_acceptance_criteria(body: str) -> Optional[str]:
     return None
 
 
+def _is_infra_dependent(issue: Dict[str, Any]) -> bool:
+    """True when the issue requires infra (Hub/Supervisor/Async/core) absent on this host."""
+    title = (issue.get("title") or "").upper()
+    if any(title.startswith(p) for p in INFRA_DEPENDENT_DOMAINS):
+        return True
+    labels = [str(lbl).lower() for lbl in (issue.get("labels") or [])]
+    if any(lbl in INFRA_DEPENDENT_LABELS for lbl in labels):
+        return True
+    body = (issue.get("body") or "").lower()
+    if any(kw in body for kw in INFRA_DEPENDENT_BODY_KEYWORDS):
+        return True
+    return False
+
+
 def classify_status(issue: Dict[str, Any], intake_ok: bool, blockers: List[str]) -> str:
-    title = issue.get("title") or ""
-    if any(title.startswith(p) for p in INFRA_BLOCKED_PREFIXES):
+    # Infra-dependent epics/domains cannot execute on this single host — Blocked,
+    # never a fabricated Todo that would stall the drain forever.
+    if _is_infra_dependent(issue):
         return "Blocked"
     if not intake_ok:
         return "Blocked"
@@ -408,9 +440,19 @@ def main() -> int:
         contract_exists = (LEDGER_DIR / f"issue-{n}" / "intake-contract.json").exists()
         prev_status = prev.get("status") if prev else None
         status_ok = prev_status in RESUME_SKIP_STATUSES
-        if not prior_failed and contract_exists and status_ok:
+        # Re-evaluate a previously-armed Todo when the (broadened) infra-dependency
+        # classifier now matches it: a Todo that should be Blocked must not stall the
+        # drain forever. Only re-open when moving Todo -> Blocked (never downgrade a
+        # stable Blocked/Done/Quarantined, and never re-intake a non-infra Todo).
+        infra_now = _is_infra_dependent(issue)
+        reclassify_to_blocked = (
+            infra_now and prev_status == "Todo"
+        )
+        if not prior_failed and contract_exists and status_ok and not reclassify_to_blocked:
             print(f"MEASURED| issue {n}: already armed (contract present, prev={prev_status}) — resume, skip", flush=True)
             continue
+        if reclassify_to_blocked:
+            print(f"MEASURED| issue {n}: prev=Todo but infra-dependent — reclassify Blocked", flush=True)
         if time.time() - start > args.total_budget:
             print(f"MEASURED| budget exhausted ({args.total_budget}s) — defer remaining", flush=True)
             break
