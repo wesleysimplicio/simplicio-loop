@@ -13,12 +13,23 @@ from typing import Any, Dict, Optional, Set
 
 from .process_supervisor import ProcessSpec, ProcessSpecError
 from .process_supervisor_rust import backend_name, run_with_fallback
+from .hub_governor import RESOURCE_NAMES, ResourceGovernor, ResourceLimits, ResourceRequest
+from .hub_queue_retry import HubRetryQueue
+from .hub_scheduler import FairScheduler
+from .hub_service import ClaimedJob, HubService
 
 
 IPC_SCHEMA = "simplicio.hub-ipc/v1"
 IPC_VERSION = 1
 METHODS = frozenset(
-    ("register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report", "execute", "ping")
+    (
+        "register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report",
+        "execute", "ping",
+        # #503/#504/#505/#506 IPC wiring: expose the composed HubService (durable queue +
+        # fair scheduler + resource governor) over the same envelope/dispatch contract as
+        # the pre-existing in-memory job verbs above, rather than a second protocol.
+        "hub_submit", "hub_claim", "hub_complete", "hub_fail", "hub_status",
+    )
 )
 
 
@@ -130,21 +141,43 @@ class HubEnvelope:
 class HubDaemon:
     """In-process lifecycle coordinator behind a singleton lock."""
 
-    def __init__(self, lock_path: str) -> None:
+    def __init__(
+        self,
+        lock_path: str,
+        *,
+        queue_path: Optional[str] = None,
+        resource_limits: Optional[ResourceLimits] = None,
+    ) -> None:
         self.lock = HubLock(lock_path)
         self.started = False
         self.clients: Set[str] = set()
         self.jobs: Dict[str, Dict[str, Any]] = {}
+        # Every ResourceLimits field defaults to 0, and ResourceGovernor treats a 0 limit
+        # as "unbounded" (falsy) - so a HubDaemon constructed the same way as before this
+        # change gets a HubService with no resource budget enforced by default, matching
+        # prior behavior exactly unless the caller opts in with real limits.
+        self._queue_path = queue_path or (lock_path + ".hub-queue.db")
+        self._resource_limits = resource_limits or ResourceLimits()
+        self.service: Optional[HubService] = None
+        self._claims: Dict[str, ClaimedJob] = {}
 
     def start(self) -> None:
         if self.started:
             return
         self.lock.acquire()
+        queue = HubRetryQueue(self._queue_path)
+        scheduler = FairScheduler()
+        governor = ResourceGovernor(self._resource_limits)
+        self.service = HubService(queue, scheduler, governor)
         self.started = True
 
     def stop(self) -> None:
         self.jobs.clear()
         self.clients.clear()
+        self._claims.clear()
+        if self.service is not None:
+            self.service.queue.close()
+            self.service = None
         self.started = False
         self.lock.release()
 
@@ -153,6 +186,69 @@ class HubDaemon:
             raise HubError("Hub is not started")
         if envelope.method == "ping":
             return {"ok": True, "started": self.started, "clients": len(self.clients), "jobs": len(self.jobs)}
+        if envelope.method == "hub_submit":
+            payload = envelope.payload.get("payload")
+            if not isinstance(payload, dict):
+                raise HubProtocolError("payload must be an object")
+            idempotency_key = str(envelope.payload.get("idempotency_key") or "")
+            client_id = str(envelope.payload.get("client_id") or "")
+            if not idempotency_key or not client_id:
+                raise HubProtocolError("idempotency_key and client_id are required")
+            task_id = self.service.submit(
+                payload,
+                idempotency_key=idempotency_key,
+                client_id=client_id,
+                workspace_id=str(envelope.payload.get("workspace_id") or "default"),
+                weight=int(envelope.payload.get("weight", 1)),
+                cost=int(envelope.payload.get("cost", 1)),
+                max_attempts=int(envelope.payload.get("max_attempts", 3)),
+            )
+            return {"ok": True, "task_id": task_id}
+        if envelope.method == "hub_claim":
+            worker_id = str(envelope.payload.get("worker_id") or "")
+            if not worker_id:
+                raise HubProtocolError("worker_id is required")
+            raw_request = envelope.payload.get("request") or {}
+            if not isinstance(raw_request, dict) or set(raw_request) - set(RESOURCE_NAMES):
+                raise HubProtocolError("request must contain only known resource fields")
+            request = ResourceRequest(**{name: int(raw_request.get(name, 0)) for name in RESOURCE_NAMES})
+            claimed = self.service.claim(
+                worker_id, request,
+                ttl=float(envelope.payload.get("ttl", 30.0)),
+                max_candidates=int(envelope.payload.get("max_candidates", 8)),
+            )
+            if claimed is None:
+                return {"ok": True, "claimed": None}
+            # RetryLease/ResourceLease are kept server-side, keyed by task_id, rather than
+            # round-tripped over the wire - the client only needs task_id to complete/fail.
+            self._claims[claimed.task_id] = claimed
+            return {
+                "ok": True,
+                "claimed": {
+                    "task_id": claimed.task_id, "client_id": claimed.client_id,
+                    "workspace_id": claimed.workspace_id, "payload": claimed.payload,
+                },
+            }
+        if envelope.method == "hub_complete":
+            task_id = str(envelope.payload.get("task_id") or "")
+            claimed = self._claims.pop(task_id, None)
+            if claimed is None:
+                raise HubProtocolError("no active claim for task_id")
+            self.service.complete(claimed)
+            return {"ok": True, "task_id": task_id}
+        if envelope.method == "hub_fail":
+            task_id = str(envelope.payload.get("task_id") or "")
+            claimed = self._claims.pop(task_id, None)
+            if claimed is None:
+                raise HubProtocolError("no active claim for task_id")
+            outcome = self.service.fail(
+                claimed,
+                error_code=str(envelope.payload.get("error_code") or "unknown"),
+                backoff=float(envelope.payload.get("backoff", 0.0)),
+            )
+            return {"ok": True, "task_id": task_id, "outcome": outcome}
+        if envelope.method == "hub_status":
+            return {"ok": True, "status": self.service.status()}
         if envelope.method == "register":
             client_id = str(envelope.payload.get("client_id") or "")
             if not client_id:
