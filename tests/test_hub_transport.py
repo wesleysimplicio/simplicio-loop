@@ -12,6 +12,8 @@ import pytest
 from simplicio_loop.hub_daemon import (
     HubDaemon,
     HubError,
+    HubEnvelope,
+    HubProtocolError,
     HubSocketClient,
     HubSocketServer,
     default_endpoint,
@@ -92,6 +94,54 @@ def test_daemon_stop_is_idempotent() -> None:
         daemon.stop()
         daemon.stop()
         assert not Path(lock_path).exists()
+
+
+def test_execute_process_over_hub_uses_safe_supervisor_contract() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        try:
+            response = daemon.handle(HubEnvelope(
+                "exec-1",
+                "execute",
+                {"process_spec": {
+                    "schema": "simplicio.process-spec/v1",
+                    "argv": [sys.executable, "-c", "print('hub-ok')"],
+                    "timeout_seconds": 5,
+                }},
+            ))
+            assert response["ok"] is True
+            assert response["backend"] in {"rust", "python-fallback"}
+            assert response["result"]["stdout"].strip() == "hub-ok"
+            assert response["result"]["schema"] == "simplicio.process-result/v1"
+        finally:
+            daemon.stop()
+
+
+def test_execute_rejects_invalid_spec_and_enforces_deadline() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        try:
+            with pytest.raises(HubProtocolError, match="shell execution"):
+                daemon.handle(HubEnvelope(
+                    "exec-bad", "execute", {"process_spec": {
+                        "argv": [sys.executable, "-c", "print('no')"],
+                        "shell": True,
+                    }},
+                ))
+            response = daemon.handle(HubEnvelope(
+                "exec-timeout",
+                "execute",
+                {"process_spec": {
+                    "argv": [sys.executable, "-c", "import time; time.sleep(1)"],
+                    "timeout_seconds": 0.05,
+                }},
+            ))
+            assert response["result"]["timed_out"] is True
+            assert response["result"]["error_code"] == "deadline_exceeded"
+        finally:
+            daemon.stop()
 
 
 def test_doctor_reports_unreachable_then_reachable() -> None:

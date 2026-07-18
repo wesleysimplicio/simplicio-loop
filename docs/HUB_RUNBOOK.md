@@ -23,6 +23,17 @@ simplicio-hub doctor --lock <path> --endpoint <endpoint>
 reachability. `HubSocketServer.shutdown()` is idempotent and removes the Unix socket and singleton
 lock. If the Hub is unavailable, callers must keep using their standalone adapter.
 
+## Supervisor execution
+
+The versioned IPC method `execute` accepts a `process_spec` using
+`simplicio.process-spec/v1` and returns a bounded `simplicio.process-result/v1`. The payload is
+argv-only: `shell=true`, unknown fields, invalid cwd roots, and environment keys outside the
+allowlist are rejected. The Hub invokes the compiled Rust/Tokio adapter when it is available and
+reports `backend: "rust"`; otherwise it deliberately uses the safe Python adapter and reports
+`backend: "python-fallback"`. The fallback preserves standalone compatibility but does not claim
+Rust-level cross-platform resource controls. cgroups, Windows Job Objects, quotas, and full Hub
+queue integration remain separate supervisor work.
+
 ## Rollback
 
 Stop the daemon, remove only the stale lock after confirming its PID is dead, and unset the Hub

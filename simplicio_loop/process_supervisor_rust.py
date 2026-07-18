@@ -1,6 +1,9 @@
 """Optional Rust/Tokio process-supervisor backend, with a clean fallback."""
 
 import json
+import asyncio
+import inspect
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -9,9 +12,11 @@ from typing import Optional
 from .process_supervisor import ProcessResult, ProcessSpec
 
 _CRATE_ROOT = Path(__file__).resolve().parent.parent / "rust" / "simplicio-supervisor"
-_BIN_CANDIDATES = (
-    _CRATE_ROOT / "target" / "release" / "simplicio-supervisor",
-    _CRATE_ROOT / "target" / "debug" / "simplicio-supervisor",
+_BIN_NAMES = ("simplicio-supervisor.exe", "simplicio-supervisor") if os.name == "nt" else ("simplicio-supervisor",)
+_BIN_CANDIDATES = tuple(
+    _CRATE_ROOT / "target" / profile / name
+    for profile in ("release", "debug")
+    for name in _BIN_NAMES
 )
 
 
@@ -25,6 +30,22 @@ def rust_binary_path() -> Optional[Path]:
 
 def rust_backend_available() -> bool:
     return rust_binary_path() is not None
+
+
+def run_with_fallback(spec: ProcessSpec, *, timeout_seconds: float = 60.0) -> ProcessResult:
+    """Run through Rust when built, otherwise use the safe async Python adapter."""
+    adapter = get_process_adapter()
+    if isinstance(adapter, RustProcessAdapter):
+        result = adapter.run(spec, timeout_seconds=timeout_seconds)
+    else:
+        result = adapter.run(spec)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
+
+
+def backend_name() -> str:
+    return "rust" if rust_backend_available() else "python-fallback"
 
 
 class RustProcessAdapter:
