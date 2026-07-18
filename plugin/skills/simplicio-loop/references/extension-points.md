@@ -1,4 +1,4 @@
-# Extension points — the 49 named binding points
+# Extension points — the 50 named binding points
 
 These are the named points where work happens. For each, if the host runtime exposes a native
 capability, BIND it (deterministic, local-first, near-zero token). If not, the LLM performs the
@@ -55,6 +55,7 @@ fallback with standard tools. The skill depends on the ABSTRACTION, never on a s
 | `video_evidence` | Produce a demo video of a screen/feature as evidence — two engines | **DEFAULT = Playwright** native session recording (`video_evidence verify --url …` records the real browser drive to `.webm`→`.mp4`) for the normal moving-proof flow; **hyperframes** (`npx hyperframes render` — heygen-com/hyperframes) only for an EXPLICIT custom explainer request ("make a video of screen X"), assembling the `web_verify` screenshots into a deterministic captioned MP4. Evidence = video path, not bytes (see video-evidence.md); BLOCK if the toolchain is absent |
 | `web_research` | Fetch current external knowledge (docs/CVE/version/SDK error), gated behind local-memory-miss, with provenance | LLM uses built-in web search/fetch only after local miss; records source URL as provenance |
 | `transform_guard` | Verify a compaction preserved every code/URL/path/version token (fail-closed to original) | LLM extracts both token sets and compares by hand |
+| `judge` | Independent ACCEPT/REVISE/REJECT adjudication over a Prototype-First Gate candidate round (epic #568): a hard self-judging block (judge identity must differ from every candidate's creator identity, or the WHOLE round refuses to emit a decision), AC-coverage + evidence-presence + zero-critic-findings scoring, and measured (not assumed) diversity across candidates. Runnable form: `simplicio_loop/prototype_judge.py` -- pluggable `Judge` protocol + deterministic `RuleBasedJudge` default; `judge_and_decide()`/`judge_transition()` wire the verdict straight into `prototype_gate.py`'s existing promotion state machine (`apply_decision`), reusing its bounded-REVISE and stall-detection machinery unchanged. An LLM-backed judge plugs into the same protocol (see that module's docstring). | LLM reads the plan + candidate round by hand, checks AC coverage/evidence/findings itself, and writes the ACCEPT/REVISE/REJECT reasoning into the decision record before handing it to `apply_decision` |
 
 Rule: any change already DECIDED goes through `deterministic_edit` — never hand-write a file body
 or regenerate it with a model when a mechanical apply exists. Reach for a paid model only for
