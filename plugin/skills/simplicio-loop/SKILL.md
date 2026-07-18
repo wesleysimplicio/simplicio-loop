@@ -20,6 +20,14 @@ For queue/body-of-work runs, pair this file with the shared deep references unde
 `../simplicio-tasks/references/` for extension points, orchestration, token economy, delivery,
 and safety details.
 
+## GitHub coordination default
+
+When the project remote is hosted on GitHub, GitHub is the default coordination and source-of-truth
+surface for the loop: read and update Issues, publish progress in issue/PR comments, validate checks,
+merge only through the repository's approved PR path, and re-query live state before closing. Do not
+silently substitute another tracker or local scratchpad for GitHub; use another system only when the
+user explicitly requests it or the repository's documented workflow requires it.
+
 ## Normative contract (non-negotiable)
 
 These invariants are MUST-level. Any runtime that loads this skill (Simplicio Agent, Claude, Cursor, or a
