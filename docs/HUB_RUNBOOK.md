@@ -34,6 +34,18 @@ reports `backend: "rust"`; otherwise it deliberately uses the safe Python adapte
 Rust-level cross-platform resource controls. cgroups, Windows Job Objects, quotas, and full Hub
 queue integration remain separate supervisor work.
 
+## Scheduler backpressure (degradation signal)
+
+`submit` now routes through `FairScheduler.enqueue()` before the job is persisted. When a
+client/workspace/global queue quota is exceeded, the daemon raises `HubBackpressureError`
+(`hub_daemon.py`) instead of accepting the job; the socket transport turns that into
+`{"ok": false, "error": "..."}` on the wire (see `HubSocketServer._dispatch`), so a caller getting
+`ok: false` on `submit` should check for a quota message before treating it as a generic protocol
+failure. `scheduler_status` returns the live `FairScheduler.status()` snapshot (queue depth per
+client, inflight counts) so an operator can poll it to see the quota being approached before jobs
+start being rejected. A restarted daemon repopulates the scheduler from `list_queued_scheduling_metadata()`, so a
+crash-restart does not silently drop fairness bookkeeping for still-queued jobs.
+
 ## Rollback
 
 Stop the daemon, remove only the stale lock after confirming its PID is dead, and unset the Hub
