@@ -1,0 +1,164 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/wesleysimplicio/simplicio-loop/contracts/loop-extension/v1/schema.json",
+  "title": "simplicio.loop-extension/v1",
+  "description": "Versioned manifest schema for a domain extension of simplicio-loop (issue #557), e.g. loop-oss or loop-marketing. Implementation: simplicio_loop/extension_manifest.py::validate_manifest. Strict on unknown fields at every level -- an extension may only declare the surface listed here, never a second coordinator/scheduler/queue.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "extension_id", "name", "version", "domain", "requires_core"],
+  "properties": {
+    "schema": { "const": "simplicio.loop-extension/v1" },
+    "extension_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "domain": { "type": "string", "minLength": 1, "examples": ["oss", "marketing"] },
+    "requires_core": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "max_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requires": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "provides": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "source_adapters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["adapter_id", "kind"],
+        "properties": {
+          "adapter_id": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "context_schemas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema_id", "version"],
+        "properties": {
+          "schema_id": { "type": "string", "minLength": 1 },
+          "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+          "migrations": { "type": "array" }
+        }
+      }
+    },
+    "stage_overlays": {
+      "type": "array",
+      "description": "Declarative, deterministic composition ops applied onto the core stage graph. Only insert_before/insert_after/wrap/refine are legal -- there is no 'remove' op, so a mandatory core stage can never be dropped by an extension.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["op", "hook"],
+        "properties": {
+          "op": { "enum": ["insert_before", "insert_after", "wrap", "refine"] },
+          "hook": { "type": "string", "minLength": 1, "description": "target core (or previously-inserted) stage_id" },
+          "order": { "type": "integer", "description": "explicit deterministic ordering among ops sharing a hook; falls back to declaration index" },
+          "stage": {
+            "type": "object",
+            "description": "required for insert_before/insert_after only",
+            "additionalProperties": false,
+            "properties": {
+              "stage_id": { "type": "string", "minLength": 1 },
+              "depends_on": { "type": "array", "items": { "type": "string" } },
+              "gates": { "type": "object" },
+              "mandatory": { "const": false }
+            }
+          },
+          "gates": {
+            "type": "object",
+            "description": "wrap/refine only: gate_id -> new severity. Never accepted below the hook stage's current severity for that gate_id.",
+            "additionalProperties": { "enum": ["off", "warn", "block", "fail_closed"] }
+          }
+        }
+      }
+    },
+    "role_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role_id"],
+        "properties": {
+          "role_id": { "type": "string", "minLength": 1 },
+          "specializes": { "type": "string", "minLength": 1 },
+          "required_capabilities": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gate_id", "severity"],
+        "properties": {
+          "gate_id": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["off", "warn", "block", "fail_closed"] }
+        }
+      }
+    },
+    "effect_handlers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["effect_id", "idempotent", "requires_fence_token", "requires_receipt"],
+        "properties": {
+          "effect_id": { "type": "string", "minLength": 1 },
+          "idempotent": { "const": true },
+          "requires_fence_token": { "const": true },
+          "requires_receipt": { "const": true },
+          "compensation": { "type": "string" }
+        }
+      }
+    },
+    "resource_classes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["class_id"],
+        "properties": {
+          "class_id": { "type": "string", "minLength": 1 },
+          "concurrency_cap": { "type": "integer", "minimum": 0 },
+          "budget": { "type": "object" }
+        }
+      }
+    },
+    "receipt_schemas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema_id", "version"],
+        "properties": {
+          "schema_id": { "type": "string", "minLength": 1 },
+          "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+        }
+      }
+    },
+    "feature_flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["flag_id"],
+        "properties": {
+          "flag_id": { "type": "string", "minLength": 1 },
+          "default": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}
