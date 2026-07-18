@@ -12,6 +12,8 @@ from typing import Any, Awaitable, Dict, Optional
 
 EVENT_LOOP_SCHEMA = "simplicio.event-loop-selection/v1"
 
+_UNSET = object()
+
 
 @dataclass(frozen=True)
 class LoopSelection:
@@ -33,15 +35,23 @@ class LoopSelection:
 def select_event_loop(
     *,
     platform: Optional[str] = None,
-    uvloop_module: Any = None,
+    uvloop_module: Any = _UNSET,
     enabled: Optional[bool] = None,
 ) -> LoopSelection:
+    """Pick the event-loop policy.
+
+    ``uvloop_module`` defaults to the sentinel ``_UNSET`` so a real
+    ``import uvloop`` is attempted. Callers (tests) that want to force the
+    "uvloop not installed" path deterministically, independent of whether
+    uvloop actually happens to be installed on the machine running the
+    test, pass ``uvloop_module=None`` explicitly.
+    """
     platform_name = platform or sys.platform
     if platform_name.startswith("win"):
         return LoopSelection("asyncio", False, "windows_default", platform_name)
     if enabled is False:
         return LoopSelection("asyncio", False, "feature_disabled", platform_name)
-    if uvloop_module is None:
+    if uvloop_module is _UNSET:
         try:
             uvloop_module = importlib.import_module("uvloop")
         except ImportError:
