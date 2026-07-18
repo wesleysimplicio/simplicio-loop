@@ -261,6 +261,7 @@ def build_snapshot(cap=None):
         "ac_total": (anchor_state or {}).get("total"),
         "pct_item": pct_item,
         "pct_overall": pct_overall,
+        "mode": mode,
         "route_mode": (anchor_state or {}).get("route_mode"),
         "last_status": last.get("status"),
         "last_outcome": last.get("outcome"),
