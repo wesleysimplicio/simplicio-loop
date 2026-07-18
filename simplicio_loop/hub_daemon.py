@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+from .process_enforcement import ProcessRegistry
 from .process_supervisor import ProcessSpec, ProcessSpecError
 from .process_supervisor_rust import backend_name, run_with_fallback
 
@@ -130,11 +131,12 @@ class HubEnvelope:
 class HubDaemon:
     """In-process lifecycle coordinator behind a singleton lock."""
 
-    def __init__(self, lock_path: str) -> None:
+    def __init__(self, lock_path: str, *, process_registry: Optional[ProcessRegistry] = None) -> None:
         self.lock = HubLock(lock_path)
         self.started = False
         self.clients: Set[str] = set()
         self.jobs: Dict[str, Dict[str, Any]] = {}
+        self.process_registry = process_registry or ProcessRegistry()
 
     def start(self) -> None:
         if self.started:
@@ -188,10 +190,24 @@ class HubDaemon:
                 )
             except (TypeError, ValueError, ProcessSpecError) as exc:
                 raise HubProtocolError(f"invalid ProcessSpec: {exc}") from exc
+            registered: Dict[str, int] = {}
+
+            def on_spawned(process: Any) -> None:
+                registered["pid"] = process.pid
+                self.process_registry.register(
+                    process.pid,
+                    lease_id=spec.idempotency_key or f"hub-execute-{envelope.request_id}",
+                    spec_hash=spec.spec_hash,
+                    argv=spec.argv,
+                )
+
             try:
-                result = run_with_fallback(spec)
+                result = run_with_fallback(spec, on_spawned=on_spawned)
             except (OSError, RuntimeError, asyncio.CancelledError) as exc:
                 raise HubError(f"supervisor execution failed: {exc}") from exc
+            finally:
+                if "pid" in registered:
+                    self.process_registry.unregister(registered["pid"])
             return {"ok": True, "backend": backend_name(), "result": result.to_dict()}
         job_id = str(envelope.payload.get("job_id") or "")
         if not job_id:
