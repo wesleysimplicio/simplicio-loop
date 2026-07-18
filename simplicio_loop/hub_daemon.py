@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+from .hub_queue_retry import HubRetryQueue
 from .process_supervisor import ProcessSpec, ProcessSpecError
 from .process_supervisor_rust import backend_name, run_with_fallback
 
@@ -130,11 +131,13 @@ class HubEnvelope:
 class HubDaemon:
     """In-process lifecycle coordinator behind a singleton lock."""
 
-    def __init__(self, lock_path: str) -> None:
+    def __init__(self, lock_path: str, queue_path: Optional[str] = None) -> None:
         self.lock = HubLock(lock_path)
         self.started = False
         self.clients: Set[str] = set()
-        self.jobs: Dict[str, Dict[str, Any]] = {}
+        self.queue_path = queue_path or (str(self.lock.path) + ".jobs.db")
+        self.queue = HubRetryQueue(self.queue_path)
+        self._queue_lock = threading.Lock()
 
     def start(self) -> None:
         if self.started:
@@ -143,16 +146,18 @@ class HubDaemon:
         self.started = True
 
     def stop(self) -> None:
-        self.jobs.clear()
         self.clients.clear()
         self.started = False
         self.lock.release()
+        self.queue.close()
 
     def handle(self, envelope: HubEnvelope) -> Dict[str, Any]:
         if not self.started:
             raise HubError("Hub is not started")
         if envelope.method == "ping":
-            return {"ok": True, "started": self.started, "clients": len(self.clients), "jobs": len(self.jobs)}
+            with self._queue_lock:
+                job_count = self.queue.count()
+            return {"ok": True, "started": self.started, "clients": len(self.clients), "jobs": job_count}
         if envelope.method == "register":
             client_id = str(envelope.payload.get("client_id") or "")
             if not client_id:
@@ -196,41 +201,46 @@ class HubDaemon:
         job_id = str(envelope.payload.get("job_id") or "")
         if not job_id:
             raise HubProtocolError("job_id is required")
-        if envelope.method == "submit":
-            if job_id in self.jobs:
-                raise HubProtocolError("job already exists")
-            self.jobs[job_id] = {
-                "job_id": job_id,
-                "client_id": envelope.payload.get("client_id"),
-                "state": "queued",
-                "progress": 0,
-                "result": None,
-            }
-            return {"ok": True, "job": dict(self.jobs[job_id])}
-        job = self.jobs.get(job_id)
-        if job is None:
-            raise HubProtocolError("unknown job")
-        if envelope.method == "claim":
-            if job["state"] != "queued":
-                raise HubProtocolError("job is not claimable")
-            job["state"] = "claimed"
-        elif envelope.method == "heartbeat":
-            if job["state"] not in ("claimed", "running"):
-                raise HubProtocolError("job has no active lease")
-        elif envelope.method == "progress":
-            progress = int(envelope.payload.get("progress", -1))
-            if not 0 <= progress <= 100:
-                raise HubProtocolError("progress must be between 0 and 100")
-            job["progress"] = progress
-            job["state"] = "running"
-        elif envelope.method == "cancel":
-            job["state"] = "cancelled"
-        elif envelope.method == "result":
-            job["result"] = envelope.payload.get("result")
-            job["state"] = "completed"
-        elif envelope.method == "report":
-            return {"ok": True, "job": dict(job), "clients": sorted(self.clients)}
-        return {"ok": True, "job": dict(job)}
+        with self._queue_lock:
+            if envelope.method == "submit":
+                if self.queue.find_task_id(job_id) is not None:
+                    raise HubProtocolError("job already exists")
+                job = {
+                    "job_id": job_id,
+                    "client_id": envelope.payload.get("client_id"),
+                    "state": "queued",
+                    "progress": 0,
+                    "result": None,
+                }
+                self.queue.submit(job, idempotency_key=job_id)
+                return {"ok": True, "job": dict(job)}
+            task_id = self.queue.find_task_id(job_id)
+            if task_id is None:
+                raise HubProtocolError("unknown job")
+            row = self.queue.get_row(task_id)
+            job = dict(row["payload"])
+            if envelope.method == "claim":
+                if job["state"] != "queued":
+                    raise HubProtocolError("job is not claimable")
+                job["state"] = "claimed"
+            elif envelope.method == "heartbeat":
+                if job["state"] not in ("claimed", "running"):
+                    raise HubProtocolError("job has no active lease")
+            elif envelope.method == "progress":
+                progress = int(envelope.payload.get("progress", -1))
+                if not 0 <= progress <= 100:
+                    raise HubProtocolError("progress must be between 0 and 100")
+                job["progress"] = progress
+                job["state"] = "running"
+            elif envelope.method == "cancel":
+                job["state"] = "cancelled"
+            elif envelope.method == "result":
+                job["result"] = envelope.payload.get("result")
+                job["state"] = "completed"
+            elif envelope.method == "report":
+                return {"ok": True, "job": dict(job), "clients": sorted(self.clients)}
+            self.queue.update_payload(task_id, job)
+            return {"ok": True, "job": dict(job)}
 
 
 class HubClient:
