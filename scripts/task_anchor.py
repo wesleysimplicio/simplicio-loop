@@ -54,6 +54,7 @@ Usage:
     python3 scripts/task_anchor.py check --goal "Add SSO login" --exit-code
     python3 scripts/task_anchor.py check --goal "Add SSO login" --format toon
     python3 scripts/task_anchor.py gate --exit-code
+    python3 scripts/task_anchor.py set --item 12 --goal "..." --delivery delivery.json --ac "..."
     python3 scripts/task_anchor.py checklist
 """
 import hashlib
@@ -318,8 +319,25 @@ def cmd_set(opts):
         sys.exit(12)
     criteria = (merge_preserving(existing.get("criteria"), texts)
                 if existing.get("goal_fp") == fp else freeze_criteria(texts))
+    delivery = existing.get("delivery")
+    delivery_path = opts.get("delivery")
+    if isinstance(delivery_path, str):
+        try:
+            with open(delivery_path, encoding="utf-8") as handle:
+                candidate = json.load(handle)
+            if not isinstance(candidate, dict):
+                raise ValueError("delivery contract must be a JSON object")
+            if REPO not in sys.path:
+                sys.path.insert(0, REPO)
+            from simplicio_loop.delivery_contract import normalize_contract
+            delivery = normalize_contract(candidate)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            print("anchor: BLOCKED — invalid delivery contract: %s" % exc)
+            sys.exit(2)
     anchor = {"item": opts.get("item") or existing.get("item", ""), "goal": goal, "goal_fp": fp,
               "frozen_at": existing.get("frozen_at") or _now(), "criteria": criteria}
+    if delivery is not None:
+        anchor["delivery"] = delivery
     _save(anchor)
     done, total, _ = coverage(criteria)
     log("anchored item=%s · %d criteria (%d already verified) · fp=%s" % (
@@ -548,7 +566,7 @@ def main():
         import json
         print(json.dumps({
             "verbs": ["set", "mark", "status", "checklist", "check", "gate", "selftest"],
-            "flags": ["--item", "--goal", "--ac", "--ac-file", "--force", "--id", "--status",
+            "flags": ["--item", "--goal", "--ac", "--ac-file", "--delivery", "--force", "--id", "--status",
                       "--evidence", "--format", "--exit-code", "--lint", "--require-evidence",
                       "--out", "--json", "--help"],
         }))
