@@ -151,3 +151,129 @@ def test_corrupt_state_file_falls_back_to_disabled(state_file):
 
 def test_selftest_passes():
     assert mod.cmd_selftest(Opts()) == 0
+
+
+def test_governor_circuit_open_true_when_state_open():
+    assert mod.governor_circuit_open({"circuit": {"state": "open"}}) is True
+
+
+def test_governor_circuit_open_false_when_closed_or_missing():
+    assert mod.governor_circuit_open({"circuit": {"state": "closed"}}) is False
+    assert mod.governor_circuit_open({}) is False
+    assert mod.governor_circuit_open(None) is False
+
+
+def test_load_governor_status_missing_file_returns_none(tmp_path):
+    assert mod.load_governor_status(str(tmp_path / "nope.json")) is None
+
+
+def test_load_governor_status_corrupt_file_returns_none(tmp_path):
+    path = tmp_path / "gov.json"
+    path.write_text("not json{{{")
+    assert mod.load_governor_status(str(path)) is None
+
+
+def test_status_surfaces_real_governor_circuit_open(state_file, tmp_path, capsys):
+    from simplicio_loop.hub_governor import PressureReading, ResourceGovernor, ResourceLimits
+
+    governor = ResourceGovernor(ResourceLimits(cpu=4), circuit_threshold=1, cooldown_seconds=60)
+    receipt = governor.evaluate_pressure(
+        PressureReading(cpu_percent=99.0, source="test"), cpu_percent_limit=10.0
+    )
+    assert receipt["circuit"]["state"] == "open"
+
+    gov_path = tmp_path / "governor.json"
+    gov_path.write_text(json.dumps(governor.status()))
+
+    opts = Opts()
+    opts.json = True
+    opts.governor_state_file = str(gov_path)
+    rc = mod.cmd_status(opts)
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["governor"]["available"] is True
+    assert out["governor"]["circuit_open"] is True
+
+
+def test_status_governor_unavailable_when_no_file(state_file, capsys):
+    opts = Opts()
+    opts.json = True
+    opts.governor_state_file = None
+    rc = mod.cmd_status(opts)
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["governor"]["available"] is False
+    assert out["governor"]["circuit_open"] is False
+
+
+def test_scan_os_returns_none_when_psutil_absent(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("no psutil")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert mod.scan_os_processes() is None
+
+
+def test_detect_scan_os_graceful_skip_without_psutil(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("no psutil")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    opts = Opts()
+    opts.scan_os = True
+    opts.input = None
+    opts.json = False
+    rc = mod.cmd_detect(opts)
+    assert rc == 3
+
+
+def test_detect_scan_os_real_psutil_when_available():
+    pytest.importorskip("psutil")
+    opts = Opts()
+    opts.scan_os = True
+    opts.input = None
+    opts.json = True
+    rc = mod.cmd_detect(opts)
+    assert rc == 0
+
+
+def test_rollout_emits_structured_event(state_file, tmp_path, monkeypatch):
+    events_path = str(tmp_path / "events.jsonl")
+    monkeypatch.setenv("SIMPLICIO_SUPERVISOR_EVENTS_FILE", events_path)
+    opts = Opts()
+    opts.mode = "canary"
+    opts.percent = 15
+    opts.allow = ["ws-x"]
+    rc = mod.cmd_rollout(opts)
+    assert rc == 0
+    with open(events_path, "r", encoding="utf-8") as handle:
+        lines = [json.loads(line) for line in handle if line.strip()]
+    assert len(lines) == 1
+    assert lines[0]["schema"] == "simplicio.supervisor-enforcement-event/v1"
+    assert lines[0]["mode"] == "canary"
+    assert lines[0]["canary_percent"] == 15
+    assert lines[0]["canary_allowlist"] == ["ws-x"]
+
+
+def test_rollout_rejected_mode_does_not_emit_event(state_file, tmp_path, monkeypatch):
+    events_path = str(tmp_path / "events.jsonl")
+    monkeypatch.setenv("SIMPLICIO_SUPERVISOR_EVENTS_FILE", events_path)
+    opts = Opts()
+    opts.mode = "bogus"
+    opts.percent = 0
+    opts.allow = []
+    rc = mod.cmd_rollout(opts)
+    assert rc == 2
+    assert not os.path.exists(events_path)

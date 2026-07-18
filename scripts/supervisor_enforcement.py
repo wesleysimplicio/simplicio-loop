@@ -18,24 +18,38 @@ State: .orchestrator/supervisor_enforcement.json (override with $SIMPLICIO_SUPER
 
 Verbs:
   status   Print (and --json emit) whether enforcement is enabled and the current rollout mode.
+           Also folds in the Hub's ResourceGovernor circuit breaker (#506) when a governor status
+           snapshot is available (--governor-state-file FILE, or $SIMPLICIO_GOVERNOR_STATE_FILE):
+           a real integration surfacing "breaker open" (sustained resource pressure) as a fact
+           about enforcement's environment, never a second/duplicate breaker of its own.
   detect   Read a JSON list of process command-lines from stdin (or --input FILE) and flag which
            ones look like Simplicio-ecosystem processes (argv[0] matches a known operator binary
            pattern) that carry no supervision marker (env var SIMPLICIO_SUPERVISED=1 or a
            --supervised-by/-tagged argv token, or an explicit marker_file that exists). Diagnostic
-           only: this verb NEVER kills, signals, or otherwise touches a real process.
+           only: this verb NEVER kills, signals, or otherwise touches a real process. With
+           --scan-os it additionally enumerates the REAL OS process table via `psutil.process_iter`
+           (opt-in, off by default) instead of reading stdin; a documented graceful skip (exit 3)
+           when psutil is not installed — never a silent empty result mistaken for "all clear".
   enable   Flip enforcement on. Requires --i-understand (or SIMPLICIO_SUPERVISOR_I_UNDERSTAND=1) —
            refuses to silently default to on.
   disable  Flip enforcement off. Always allowed, no guard needed (turning safety back on is safe).
   rollout  Set the rollout mode: shadow (observe + report only, never deny admission — the only
            mode meaningful while enabled=false too), canary (enforce for --percent of workspaces or
-           workspaces in --allow NAME, repeatable), or full. Rejects any other mode string.
+           workspaces in --allow NAME, repeatable), or full. Rejects any other mode string. Every
+           accepted transition appends one structured event to
+           .orchestrator/supervisor_enforcement_events.jsonl (schema
+           simplicio.supervisor-enforcement-event/v1, via this repo's `_locked_append` convention —
+           the same cross-process-safe JSONL append `loop_progress.py`/`loop_journal.py` use) so
+           canary/shadow/full transitions are observable after the fact.
   selftest Prove default-off, guarded enable, detect flagging, and rollout validation
            deterministically — no real process interaction, an isolated temp state file.
 
 Usage:
     python3 scripts/supervisor_enforcement.py status
+    python3 scripts/supervisor_enforcement.py status --governor-state-file governor.json
     echo '["mapper --survey", "python3 unrelated.py"]' | \\
         python3 scripts/supervisor_enforcement.py detect
+    python3 scripts/supervisor_enforcement.py detect --scan-os
     python3 scripts/supervisor_enforcement.py enable --i-understand
     python3 scripts/supervisor_enforcement.py rollout --mode canary --percent 10
     python3 scripts/supervisor_enforcement.py disable
@@ -46,8 +60,14 @@ import os
 import sys
 import time
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+from _locked_append import locked_append_line  # noqa: E402
+
 SCHEMA = "simplicio.supervisor-enforcement/v1"
 DEFAULT_STATE_FILE = ".orchestrator/supervisor_enforcement.json"
+DEFAULT_EVENTS_FILE = ".orchestrator/supervisor_enforcement_events.jsonl"
 ROLLOUT_MODES = ("shadow", "canary", "full")
 SIMPLICIO_BINARY_PATTERNS = (
     "simplicio-mapper",
@@ -61,6 +81,47 @@ SIMPLICIO_BINARY_PATTERNS = (
 
 def _state_file():
     return os.environ.get("SIMPLICIO_SUPERVISOR_STATE_FILE", DEFAULT_STATE_FILE)
+
+
+def _events_file():
+    return os.environ.get("SIMPLICIO_SUPERVISOR_EVENTS_FILE", DEFAULT_EVENTS_FILE)
+
+
+def emit_rollout_event(mode, percent, allow, path=None):
+    rec = {
+        "schema": "simplicio.supervisor-enforcement-event/v1",
+        "ts": time.time(),
+        "event": "rollout_change",
+        "mode": mode,
+        "canary_percent": int(percent or 0),
+        "canary_allowlist": list(allow or []),
+    }
+    events_path = path or _events_file()
+    parent = os.path.dirname(events_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    locked_append_line(events_path, json.dumps(rec, sort_keys=True))
+    return rec
+
+
+def governor_circuit_open(governor_status):
+    if not isinstance(governor_status, dict):
+        return False
+    circuit = governor_status.get("circuit")
+    if not isinstance(circuit, dict):
+        return False
+    return circuit.get("state") == "open"
+
+
+def load_governor_status(path):
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
 
 
 def default_state():
@@ -157,6 +218,16 @@ def detect_unsupervised(processes):
 
 def cmd_status(opts):
     state = load_state(_state_file())
+    governor_path = getattr(opts, "governor_state_file", None) or os.environ.get(
+        "SIMPLICIO_GOVERNOR_STATE_FILE"
+    )
+    governor_status = load_governor_status(governor_path)
+    breaker_open = governor_circuit_open(governor_status)
+    state["governor"] = {
+        "available": governor_status is not None,
+        "circuit_open": breaker_open,
+        "circuit": (governor_status or {}).get("circuit"),
+    }
     if opts.json:
         print(json.dumps(state, indent=2, sort_keys=True))
     else:
@@ -165,23 +236,63 @@ def cmd_status(opts):
         if state["rollout"]["mode"] == "canary":
             print("canary_percent: %d" % state["rollout"]["canary_percent"])
             print("canary_allowlist: %s" % ",".join(state["rollout"]["canary_allowlist"]) or "-")
+        if state["governor"]["available"]:
+            print("governor_circuit: %s" % ("OPEN (pressure sustained)" if breaker_open else "closed"))
+        else:
+            print("governor_circuit: unavailable (no --governor-state-file)")
     return 0
 
 
+def scan_os_processes():
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return None
+    processes = []
+    for proc in psutil.process_iter(["pid", "cmdline", "environ"]):
+        try:
+            info = proc.info
+            cmdline = info.get("cmdline") or []
+            if not cmdline:
+                continue
+            env = info.get("environ") or {}
+        except Exception:
+            continue
+        processes.append({"argv": [str(x) for x in cmdline], "env": {str(k): str(v) for k, v in env.items()}})
+    return processes
+
+
 def cmd_detect(opts):
-    if opts.input:
+    if getattr(opts, "scan_os", False):
+        processes = scan_os_processes()
+        if processes is None:
+            print(
+                "detect: --scan-os requires psutil, which is not installed — "
+                "skipping real OS scan (graceful, not a fake pass)",
+                file=sys.stderr,
+            )
+            return 3
+    elif opts.input:
         with open(opts.input, "r", encoding="utf-8") as handle:
             raw = handle.read()
+        try:
+            processes = json.loads(raw) if raw.strip() else []
+        except ValueError as exc:
+            print("detect: invalid JSON input: %s" % exc, file=sys.stderr)
+            return 2
+        if not isinstance(processes, list):
+            print("detect: input must be a JSON list", file=sys.stderr)
+            return 2
     else:
         raw = sys.stdin.read()
-    try:
-        processes = json.loads(raw) if raw.strip() else []
-    except ValueError as exc:
-        print("detect: invalid JSON input: %s" % exc, file=sys.stderr)
-        return 2
-    if not isinstance(processes, list):
-        print("detect: input must be a JSON list", file=sys.stderr)
-        return 2
+        try:
+            processes = json.loads(raw) if raw.strip() else []
+        except ValueError as exc:
+            print("detect: invalid JSON input: %s" % exc, file=sys.stderr)
+            return 2
+        if not isinstance(processes, list):
+            print("detect: input must be a JSON list", file=sys.stderr)
+            return 2
     flagged = detect_unsupervised(processes)
     state = load_state(_state_file())
     result = {
@@ -245,6 +356,7 @@ def cmd_rollout(opts):
         "canary_allowlist": list(opts.allow or []),
     }
     save_state(path, state)
+    emit_rollout_event(opts.mode, opts.percent, opts.allow)
     print("rollout: mode=%s percent=%d allow=%s" % (opts.mode, opts.percent, ",".join(opts.allow or [])))
     return 0
 
@@ -334,10 +446,20 @@ def main():
 
     status_p = sub.add_parser("status")
     status_p.add_argument("--json", action="store_true")
+    status_p.add_argument(
+        "--governor-state-file",
+        default=None,
+        help="path to a ResourceGovernor.status() JSON snapshot (#506 circuit breaker)",
+    )
 
     detect_p = sub.add_parser("detect")
     detect_p.add_argument("--input", default=None, help="read process list JSON from FILE instead of stdin")
     detect_p.add_argument("--json", action="store_true")
+    detect_p.add_argument(
+        "--scan-os",
+        action="store_true",
+        help="enumerate the real OS process table via psutil instead of reading stdin (opt-in)",
+    )
 
     enable_p = sub.add_parser("enable")
     enable_p.add_argument("--i-understand", action="store_true")
