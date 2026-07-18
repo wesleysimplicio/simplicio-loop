@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from simplicio_loop.hub_daemon import HubBackpressureError, HubClient, HubDaemon
-from simplicio_loop.hub_scheduler import FairScheduler
+from simplicio_loop.hub_scheduler import FairScheduler, ScheduledJob
 
 
 def test_claim_next_respects_drr_order_across_real_submitted_jobs() -> None:
@@ -79,6 +79,72 @@ def test_submit_over_client_quota_raises_backpressure_with_structured_signal() -
             client.request("r2", "submit", job_id="a-2")
         assert excinfo.value.signal["scope"] == "client"
         assert excinfo.value.signal["client_id"] == "a"
+        daemon.stop()
+
+
+def test_submit_with_invalid_weight_raises_scheduler_error_not_backpressure() -> None:
+    """A SchedulerError distinct from QuotaExceededError (e.g. a non-positive weight)
+    must surface as HubProtocolError, not be mistaken for backpressure."""
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        client = HubClient(daemon, "a")
+        client.request("r0", "register")
+        with pytest.raises(Exception) as excinfo:
+            client.request("r1", "submit", job_id="a-1", weight=0)
+        assert not isinstance(excinfo.value, HubBackpressureError)
+        daemon.stop()
+
+
+def test_result_after_already_completed_swallows_scheduler_error() -> None:
+    """Calling result twice for the same job must not raise even though the second
+    scheduler.complete() call hits an already-retired task_id (SchedulerError)."""
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        client = HubClient(daemon, "a")
+        client.request("r0", "register")
+        client.request("r1", "submit", job_id="a-1")
+        client.request("r2", "result", job_id="a-1", result={"ok": True})
+        response = client.request("r3", "result", job_id="a-1", result={"ok": True})
+        assert response["ok"]
+        daemon.stop()
+
+
+def test_claim_next_retires_stale_scheduler_entry_for_missing_job() -> None:
+    """If the scheduler holds an entry for a task_id the durable queue never recorded
+    (e.g. injected out-of-band), claim_next must retire it and keep looking rather
+    than serve it."""
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        client = HubClient(daemon, "a")
+        client.request("r0", "register")
+        daemon.scheduler.enqueue(ScheduledJob("ghost-job", "a"))
+        client.request("r1", "submit", job_id="a-1")
+        response = client.request("r2", "claim_next")
+        assert response["job"]["job_id"] == "a-1"
+        daemon.stop()
+
+
+def test_claim_next_retires_non_queued_scheduler_entry() -> None:
+    """If a job's payload state was advanced away from 'queued' out from under the
+    scheduler (e.g. cancelled without going through scheduler.cancel), claim_next must
+    skip that stale entry instead of re-claiming an already-finished job."""
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        client = HubClient(daemon, "a")
+        client.request("r0", "register")
+        client.request("r1", "submit", job_id="a-1")
+        client.request("r2", "submit", job_id="a-2")
+        task_id = daemon.queue.find_task_id("a-1")
+        row = daemon.queue.get_row(task_id)
+        payload = dict(row["payload"])
+        payload["state"] = "completed"
+        daemon.queue.update_payload(task_id, payload)
+        response = client.request("r3", "claim_next")
+        assert response["job"]["job_id"] == "a-2"
         daemon.stop()
 
 
