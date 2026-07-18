@@ -1,4 +1,5 @@
 import os
+import json
 import stat
 import subprocess
 import sys
@@ -51,6 +52,11 @@ def test_unix_socket_end_to_end_and_permission_bits() -> None:
             bad = client.request("r5", "claim", client_id="cli", job_id="missing")
             assert bad["ok"] is False
             assert "error" in bad
+            incompatible = client.request_raw(json.dumps({
+                "schema": "simplicio.hub-ipc/v1", "version": 99,
+                "request_id": "bad-version", "method": "ping", "payload": {},
+            }))
+            assert incompatible["ok"] is False
         finally:
             server.shutdown()
             daemon.stop()
@@ -198,6 +204,11 @@ def test_windows_named_pipe_transport_and_concurrency() -> None:
         try:
             client = HubSocketClient(endpoint, transport="named-pipe")
             assert client.request("ping", "ping")["started"] is True
+            incompatible = client.request_raw(json.dumps({
+                "schema": "simplicio.hub-ipc/v1", "version": 99,
+                "request_id": "bad-version", "method": "ping", "payload": {},
+            }))
+            assert incompatible["ok"] is False
 
             def register(index: int) -> str:
                 return HubSocketClient(endpoint, transport="named-pipe").request(
