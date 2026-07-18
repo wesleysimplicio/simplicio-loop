@@ -1,3 +1,4 @@
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -308,3 +309,65 @@ def test_non_sqlite_garbage_file_fails_closed() -> None:
             HubRetryQueue(path)
 
         assert Path(excinfo.value.preserved_path).exists()
+
+
+def test_pre_existing_old_schema_file_migrates_scheduling_columns_without_data_loss() -> None:
+    """#503-506 restart persistence: a queue file created BEFORE the scheduling
+    metadata columns existed must migrate cleanly (real ALTER TABLE, not a fresh
+    CREATE TABLE) - the old row survives with sane defaults, not silently dropped."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "old.db")
+        db = sqlite3.connect(path, isolation_level=None)
+        db.execute(
+            """CREATE TABLE hub_jobs (
+                task_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL,
+                max_attempts INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'queued', next_attempt_at REAL NOT NULL,
+                lease_id TEXT, fence INTEGER NOT NULL DEFAULT 0, lease_expires_at REAL,
+                error_code TEXT, updated_at REAL NOT NULL)"""
+        )
+        db.execute(
+            """CREATE TABLE hub_dead_letters (
+                task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, attempts INTEGER NOT NULL,
+                error_code TEXT NOT NULL, moved_at REAL NOT NULL)"""
+        )
+        db.execute(
+            "INSERT INTO hub_jobs(task_id,idempotency_key,payload,max_attempts,next_attempt_at,updated_at)"
+            " VALUES (?,?,?,?,?,?)",
+            ("old-task", "old-key", "{}", 3, 0, 0),
+        )
+        db.close()
+
+        queue = HubRetryQueue(path)
+        assert queue.state("old-task") == "queued"
+        metadata = queue.list_queued_scheduling_metadata()
+        assert metadata == [
+            {"task_id": "old-task", "client_id": "", "workspace_id": "default", "weight": 1, "cost": 1}
+        ]
+        # New submits on the migrated file work normally too.
+        new_task_id = queue.submit(
+            {"kind": "new"}, idempotency_key="new-key", client_id="alice", workspace_id="ws1",
+            weight=2, cost=3,
+        )
+        entries = {row["task_id"]: row for row in queue.list_queued_scheduling_metadata()}
+        assert entries[new_task_id] == {
+            "task_id": new_task_id, "client_id": "alice", "workspace_id": "ws1", "weight": 2, "cost": 3,
+        }
+        queue.close()
+
+
+def test_list_queued_scheduling_metadata_excludes_active_completed_and_dead_letter() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        queued_id = queue.submit({}, idempotency_key="k1", client_id="alice")
+        leased_id = queue.submit({}, idempotency_key="k2", client_id="bob")
+        lease = queue.claim("worker-1", ttl=30)
+        assert lease.task_id == queued_id or lease.task_id == leased_id
+        completed_id = queue.submit({}, idempotency_key="k3", client_id="carol")
+        completed_lease = queue.claim("worker-2", ttl=30)
+        queue.complete(completed_lease)
+
+        remaining_task_ids = {row["task_id"] for row in queue.list_queued_scheduling_metadata()}
+        assert lease.task_id not in remaining_task_ids  # actively leased, not re-schedulable
+        assert completed_lease.task_id not in remaining_task_ids
+        queue.close()

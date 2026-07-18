@@ -74,7 +74,8 @@ class HubService:
         max_attempts: int = 3,
     ) -> str:
         task_id = self.queue.submit(
-            payload, idempotency_key=idempotency_key, max_attempts=max_attempts
+            payload, idempotency_key=idempotency_key, max_attempts=max_attempts,
+            client_id=client_id, workspace_id=workspace_id, weight=weight, cost=cost,
         )
         try:
             self.scheduler.enqueue(
@@ -156,3 +157,24 @@ class HubService:
             "scheduler": self.scheduler.status(),
             "governor": self.governor.status(),
         }
+
+    def rehydrate_scheduler(self) -> int:
+        """#503-506 restart persistence: re-enqueue every still-durably-queued job's
+        real scheduling metadata (client_id/workspace_id/weight/cost, persisted by
+        submit()) into a freshly-constructed FairScheduler after a daemon restart.
+        The durable queue itself never lost these jobs; only the in-memory fairness
+        bookkeeping did, until this runs. Returns how many jobs were rehydrated."""
+        rehydrated = 0
+        for entry in self.queue.list_queued_scheduling_metadata():
+            try:
+                self.scheduler.enqueue(ScheduledJob(
+                    task_id=entry["task_id"], client_id=entry["client_id"] or "unknown",
+                    weight=entry["weight"], cost=entry["cost"],
+                    workspace_id=entry["workspace_id"],
+                ))
+                rehydrated += 1
+            except SchedulerError:
+                # Already present (idempotent re-run) or a quota now refuses it - skip
+                # rather than crash a restart over one job's scheduling metadata.
+                continue
+        return rehydrated

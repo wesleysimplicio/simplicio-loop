@@ -91,6 +91,33 @@ class HubRetryQueue:
             );
             """
         )
+        self._migrate_scheduling_columns()
+
+    def _migrate_scheduling_columns(self) -> None:
+        """#503-506 restart persistence: add the scheduling metadata (client_id,
+        workspace_id, weight, cost) needed to rehydrate a FairScheduler after a daemon
+        restart. ADD COLUMN, not a fresh CREATE TABLE, so a queue file created before
+        this change keeps its existing durable rows - a real migration, not a reset."""
+        existing = {row["name"] for row in self._db.execute("PRAGMA table_info(hub_jobs)").fetchall()}
+        additions = (
+            ("client_id", "TEXT NOT NULL DEFAULT ''"),
+            ("workspace_id", "TEXT NOT NULL DEFAULT 'default'"),
+            ("weight", "INTEGER NOT NULL DEFAULT 1"),
+            ("cost", "INTEGER NOT NULL DEFAULT 1"),
+        )
+        for name, ddl in additions:
+            if name in existing:
+                continue
+            try:
+                self._db.execute("ALTER TABLE hub_jobs ADD COLUMN %s %s" % (name, ddl))
+            except sqlite3.OperationalError as exc:
+                # A real race, found by the existing multi-connection concurrency test:
+                # two HubRetryQueue instances opening the same file at nearly the same
+                # moment can both see the column missing and both try to add it. The
+                # second one loses - benign (the schema already has what it needs),
+                # not a real failure.
+                if "duplicate column name" not in str(exc):
+                    raise
 
     def _check_integrity_before_open(self) -> None:
         if not Path(self.path).exists():
@@ -141,6 +168,10 @@ class HubRetryQueue:
         *,
         idempotency_key: str,
         max_attempts: int = 3,
+        client_id: str = "",
+        workspace_id: str = "default",
+        weight: int = 1,
+        cost: int = 1,
     ) -> str:
         if not idempotency_key or max_attempts < 1:
             raise QueueRetryError("idempotency_key and positive max_attempts required")
@@ -157,11 +188,13 @@ class HubRetryQueue:
                 self._db.execute(
                     """
                     INSERT INTO hub_jobs(task_id,idempotency_key,payload,max_attempts,
-                                         next_attempt_at,updated_at)
-                    VALUES(?,?,?,?,?,?)
+                                         next_attempt_at,updated_at,client_id,workspace_id,
+                                         weight,cost)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)
                     """,
                     (task_id, idempotency_key, json.dumps(payload, sort_keys=True),
-                     int(max_attempts), now, now),
+                     int(max_attempts), now, now, str(client_id), str(workspace_id),
+                     int(weight), int(cost)),
                 )
             except sqlite3.IntegrityError:
                 # A concurrent submit() with the same idempotency_key won the race between
@@ -268,6 +301,34 @@ class HubRetryQueue:
             if row is None:
                 raise QueueRetryError("unknown task")
             return json.loads(row["payload"])
+
+    def list_queued_scheduling_metadata(self) -> List[Dict[str, Any]]:
+        """#503-506 restart persistence: enough per-task info (task_id, client_id,
+        workspace_id, weight, cost) to rehydrate a FairScheduler's in-memory queues
+        after a daemon restart. Only genuinely still-queued or expired-leased
+        (effectively-queued) tasks - never leased/completed/dead_letter, which the
+        scheduler should not re-admit."""
+        now = time.time()
+        with self._lock:
+            rows = self._db.execute(
+                """
+                SELECT task_id, client_id, workspace_id, weight, cost FROM hub_jobs
+                WHERE (state='queued' AND next_attempt_at<=?)
+                   OR (state='leased' AND lease_expires_at<=?)
+                ORDER BY updated_at, task_id
+                """,
+                (now, now),
+            ).fetchall()
+            return [
+                {
+                    "task_id": str(row["task_id"]),
+                    "client_id": str(row["client_id"]),
+                    "workspace_id": str(row["workspace_id"]),
+                    "weight": int(row["weight"]),
+                    "cost": int(row["cost"]),
+                }
+                for row in rows
+            ]
 
     def _owned(self, lease: RetryLease) -> sqlite3.Row:
         row = self._db.execute(

@@ -183,6 +183,11 @@ class HubDaemon:
         scheduler = FairScheduler()
         governor = ResourceGovernor(self._resource_limits)
         self.service = HubService(queue, scheduler, governor)
+        # #503-506 restart persistence: the durable queue never lost still-queued
+        # jobs across this restart - re-admit their real scheduling metadata into
+        # the freshly built (empty) FairScheduler now, rather than leaving them
+        # durably present but invisible to fairness ordering until re-submitted.
+        self.service.rehydrate_scheduler()
         self.map_registry = MapServiceRegistry()
         self.map_store = SingleFlightMapStore(self.map_registry)
         self.map_watchers = MapWatcherManager(self.map_registry, self.map_store)

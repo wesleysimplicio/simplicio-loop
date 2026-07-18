@@ -12,7 +12,7 @@ from simplicio_loop.hub_daemon import (
     default_endpoint,
     default_transport,
 )
-from simplicio_loop.hub_governor import ResourceLimits
+from simplicio_loop.hub_governor import ResourceLimits, ResourceRequest
 
 
 def test_hub_submit_claim_complete_round_trip_in_process() -> None:
@@ -181,13 +181,12 @@ def test_hub_submit_over_a_real_unix_socket_transport() -> None:
             daemon.stop()
 
 
-def test_durable_queue_survives_daemon_restart_scheduler_state_does_not() -> None:
-    """Honest boundary: the underlying HubRetryQueue file persists across a daemon
-    restart (same queue_path reopened), so a still-queued row is never lost at the
-    storage layer - but FairScheduler/ResourceGovernor are pure in-memory, so a restart
-    loses fairness/admission bookkeeping for anything not yet claimed. This documents
-    that real limitation with a real restart, rather than only asserting the durable
-    half and staying silent about the in-memory half."""
+def test_durable_queue_and_scheduler_fairness_both_survive_daemon_restart() -> None:
+    """Previously an honest documented gap (fairness metadata was NOT persisted across
+    a restart, only the raw durable job) - now fixed: submit() persists client_id/
+    workspace_id/weight/cost alongside the durable row, and HubDaemon.start() calls
+    HubService.rehydrate_scheduler() to re-admit them into the fresh FairScheduler.
+    Real restart, real HubDaemon, not a mock."""
     with tempfile.TemporaryDirectory() as directory:
         lock_path = str(Path(directory) / "hub.lock")
         daemon = HubDaemon(lock_path)
@@ -195,17 +194,23 @@ def test_durable_queue_survives_daemon_restart_scheduler_state_does_not() -> Non
         client = HubClient(daemon, "alice")
         task_id = client.request(
             "r1", "hub_submit", payload={"kind": "durable"}, idempotency_key="durable-1",
+            weight=2, cost=3,
         )["task_id"]
-        queue_path = daemon._queue_path
         daemon.stop()
 
         restarted = HubDaemon(lock_path)
         restarted.start()
-        # The durable row is still there and still claimable directly through the queue -
-        # nothing was lost at the storage layer.
+        # The durable row survived, as before.
         assert restarted.service.queue.state(task_id) == "queued"
-        # But it is NOT in the fresh scheduler's queue (a known, explicit gap - fairness
-        # metadata was never persisted, only the raw durable job).
-        assert restarted.service.scheduler.status()["global_total"] == 0
+        # And now the scheduler's fairness bookkeeping does too - rehydrated from the
+        # durable queue's own persisted scheduling metadata, not re-derived or guessed.
+        status = restarted.service.scheduler.status()
+        assert status["global_total"] == 1
+        assert status["client_total"] == {"alice": 1}
+
+        # It's genuinely schedulable after restart, not just present in status().
+        claimed = restarted.service.claim("worker-1", ResourceRequest())
+        assert claimed is not None
+        assert claimed.task_id == task_id
+        restarted.service.complete(claimed)
         restarted.stop()
-        assert Path(queue_path).exists()
