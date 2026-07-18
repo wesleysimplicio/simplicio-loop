@@ -577,6 +577,9 @@ def cmd_build(opts):
         _emit_progress("blocked", outcome="blocked", detail="no checklist and no prints")
         sys.exit(_BLOCKED)
     out = opts.get("out")
+    if opts.get("local-report") and not isinstance(out, str):
+        out = os.path.join(REPO, ".orchestrator", "delivery-local-report.md")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
     if isinstance(out, str):
         with open(out, "w", encoding="utf-8") as f:
             f.write(body)
@@ -796,6 +799,7 @@ def main():
                 "--how",
                 "--issue",
                 "--item",
+                "--local-report",
                 "--min-interval",
                 "--now-epoch",
                 "--out",
