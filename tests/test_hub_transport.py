@@ -80,7 +80,7 @@ def test_unix_socket_version_mismatch_leaves_daemon_state_untouched() -> None:
             client.request("r2", "submit", client_id="cli", job_id="job-1")
 
             before_clients = set(daemon.clients)
-            before_jobs = {k: dict(v) for k, v in daemon.jobs.items()}
+            before_job1 = daemon.queue.get_row(daemon.queue.find_task_id("job-1"))["payload"]
 
             incompatible = client.request_raw(json.dumps({
                 "schema": "simplicio.hub-ipc/v1", "version": 99,
@@ -98,9 +98,9 @@ def test_unix_socket_version_mismatch_leaves_daemon_state_untouched() -> None:
             assert wrong_schema["ok"] is False
 
             assert daemon.clients == before_clients
-            assert daemon.jobs == before_jobs
-            assert "job-2" not in daemon.jobs
-            assert "job-3" not in daemon.jobs
+            assert daemon.queue.get_row(daemon.queue.find_task_id("job-1"))["payload"] == before_job1
+            assert daemon.queue.find_task_id("job-2") is None
+            assert daemon.queue.find_task_id("job-3") is None
 
             still_alive = client.request("r3", "ping")
             assert still_alive["ok"] is True
@@ -159,8 +159,11 @@ def test_unix_socket_20_concurrent_clients_no_crash_correct_singleton() -> None:
             assert all(r["ping_ok"] for r in results)
             assert {r["client_id"] for r in results} == {"client-%d" % i for i in range(20)}
             assert len(daemon.clients) == 20
-            assert len(daemon.jobs) == 20
-            assert all(job["state"] == "completed" for job in daemon.jobs.values())
+            assert daemon.queue.count() == 20
+            assert all(
+                daemon.queue.get_row(daemon.queue.find_task_id("job-%d" % i))["payload"]["state"] == "completed"
+                for i in range(20)
+            )
 
             second_daemon = HubDaemon(lock_path)
             with pytest.raises(HubError):
