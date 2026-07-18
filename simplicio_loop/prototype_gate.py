@@ -7,9 +7,16 @@ boundary so adapters cannot silently bypass the gate.
 P0 foundation slice (issue #568, this repo's own piece): four versioned schemas
 (`plan`, `candidate`, `decision`, `receipt`), an explainable prototype-necessity
 classifier, and a promotion state machine (`P0 -> P1 -> P2 -> FULL`) with bounded
-`REVISE` + stall detection + drift invalidation. Candidate fan-out execution, judge
-LLM integration, and multi-repo conformance suites are explicitly OUT of this slice
--- they belong to the adapter repos and later phases of the epic.
+`REVISE` + stall detection + drift invalidation. Candidate fan-out execution and
+multi-repo conformance suites are explicitly OUT of this slice -- they belong to
+the adapter repos and later phases of the epic.
+
+Independent judgment IS now wired in: `simplicio_loop/prototype_judge.py` supplies
+a pluggable `Judge` protocol, a deterministic `RuleBasedJudge` default, and
+`judge_and_decide()`/`judge_transition()`, which drives a real ACCEPT/REVISE/REJECT
+transition through `apply_decision` below instead of requiring a hand-fabricated
+`decision` mapping. See that module's docstring for the self-judging block, the
+scoring contract, and how an LLM-backed judge plugs into the same protocol.
 """
 from __future__ import annotations
 
