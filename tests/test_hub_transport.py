@@ -18,6 +18,7 @@ from simplicio_loop.hub_daemon import (
     HubSocketServer,
     default_endpoint,
     doctor,
+    main as hub_main,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -399,3 +400,45 @@ def test_benchmark_hub_transport_produces_real_latency_receipt() -> None:
     assert payload["p50_ms"] > 0
     assert payload["p95_ms"] >= payload["p50_ms"]
     assert payload["throughput_per_second"] > 0
+
+
+def test_socket_server_rejects_unknown_transport() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        with pytest.raises(ValueError, match="transport must be unix or named-pipe"):
+            HubSocketServer(daemon, str(Path(directory) / "hub.sock"), transport="carrier-pigeon")
+
+
+def test_socket_server_named_pipe_transport_unavailable_off_windows() -> None:
+    if os.name == "nt":
+        pytest.skip("this asserts the POSIX-only guard against named-pipe transport")
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        server = HubSocketServer(daemon, str(Path(directory) / "hub.pipe"), transport="named-pipe")
+        with pytest.raises(RuntimeError, match="named-pipe transport requires Windows"):
+            server.start()
+
+
+def test_doctor_reports_lock_pid_dead_when_lock_payload_is_corrupt() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        Path(lock_path).write_text("not-json-at-all", encoding="utf-8")
+        report = doctor(lock_path, socket_path)
+        assert report["lock_exists"] is True
+        assert report["lock_pid_alive"] is False
+        assert "pid" not in report
+
+
+def test_cli_doctor_subcommand_reports_no_daemon(capsys: pytest.CaptureFixture) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        transport = "named-pipe" if os.name == "nt" else "unix"
+        exit_code = hub_main([
+            "doctor", "--lock", lock_path, "--endpoint", socket_path, "--transport", transport,
+        ])
+        assert exit_code == 0
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["lock_exists"] is False
+        assert payload["socket_reachable"] is False
