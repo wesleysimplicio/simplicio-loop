@@ -122,7 +122,20 @@ class SingleFlightMapStore:
                 except BaseException:
                     raise
         cache_key = await future
-        return MapHandle(self.registry.get_view(cache_key), self)
+        try:
+            return MapHandle(self.registry.get_view(cache_key), self)
+        except Exception:
+            # A real race (found by a heavy-concurrency stress test, not theoretical):
+            # between the owner completing the build and THIS waiter acquiring its own
+            # reference, a concurrent invalidate()+gc() can reclaim the view (it starts
+            # at references=0 until each waiter calls get_view). Retry the whole
+            # single-flight dance rather than propagating a confusing exception for a
+            # build that, from this caller's perspective, never actually failed.
+            with self._lock:
+                self._completed.pop(key, None)
+            return await self.get_or_build(
+                identity_key, mode=mode, tree_hash=tree_hash, files=files, builder=builder,
+            )
 
     def invalidate(self, identity_key: str, *, reason: str = "source_changed"):
         invalidated = self.registry.invalidate(identity_key, reason=reason)
