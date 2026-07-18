@@ -17,6 +17,9 @@ from .hub_governor import RESOURCE_NAMES, ResourceGovernor, ResourceLimits, Reso
 from .hub_queue_retry import HubRetryQueue
 from .hub_scheduler import FairScheduler
 from .hub_service import ClaimedJob, HubService
+from .map_service import MapServiceRegistry, RepositoryIdentity
+from .map_service_single_flight import SingleFlightMapStore
+from .map_service_watchers import MapWatcherManager
 
 
 IPC_SCHEMA = "simplicio.hub-ipc/v1"
@@ -29,6 +32,11 @@ METHODS = frozenset(
         # fair scheduler + resource governor) over the same envelope/dispatch contract as
         # the pre-existing in-memory job verbs above, rather than a second protocol.
         "hub_submit", "hub_claim", "hub_complete", "hub_fail", "hub_status",
+        # #512/#513 IPC wiring: expose the map service (registry + single-flight store +
+        # watcher manager) the same way. Deliberately in-memory only, no persistence
+        # layer (unlike hub_submit's durable queue) - a daemon restart starts clean; see
+        # test_hub_daemon_map_ipc.py for the honest restart-boundary test.
+        "map_register", "map_watch", "map_emit", "map_flush", "map_status", "map_gc",
     )
 )
 
@@ -160,6 +168,12 @@ class HubDaemon:
         self._resource_limits = resource_limits or ResourceLimits()
         self.service: Optional[HubService] = None
         self._claims: Dict[str, ClaimedJob] = {}
+        # #512/#513: registry/store/watchers are pure in-memory (unlike the durable
+        # queue above) - rebuilt fresh every start(), never persisted across stop().
+        self.map_registry: Optional[MapServiceRegistry] = None
+        self.map_store: Optional[SingleFlightMapStore] = None
+        self.map_watchers: Optional[MapWatcherManager] = None
+        self._map_watch_tokens: Dict[str, str] = {}
 
     def start(self) -> None:
         if self.started:
@@ -169,6 +183,9 @@ class HubDaemon:
         scheduler = FairScheduler()
         governor = ResourceGovernor(self._resource_limits)
         self.service = HubService(queue, scheduler, governor)
+        self.map_registry = MapServiceRegistry()
+        self.map_store = SingleFlightMapStore(self.map_registry)
+        self.map_watchers = MapWatcherManager(self.map_registry, self.map_store)
         self.started = True
 
     def stop(self) -> None:
@@ -178,6 +195,12 @@ class HubDaemon:
         if self.service is not None:
             self.service.queue.close()
             self.service = None
+        if self.map_watchers is not None:
+            self.map_watchers.close()
+        self.map_registry = None
+        self.map_store = None
+        self.map_watchers = None
+        self._map_watch_tokens.clear()
         self.started = False
         self.lock.release()
 
@@ -249,6 +272,54 @@ class HubDaemon:
             return {"ok": True, "task_id": task_id, "outcome": outcome}
         if envelope.method == "hub_status":
             return {"ok": True, "status": self.service.status()}
+        if envelope.method == "map_register":
+            fields = {
+                name: envelope.payload.get(name)
+                for name in (
+                    "repository", "canonical_root", "default_branch", "worktree_root",
+                    "base_sha", "dirty", "dirty_fingerprint", "mapper_config",
+                )
+                if envelope.payload.get(name) is not None
+            }
+            try:
+                identity = RepositoryIdentity(**fields)
+            except TypeError as exc:
+                raise HubProtocolError("invalid map_register payload: %s" % exc) from exc
+            try:
+                identity_key = self.map_registry.register(identity)
+            except Exception as exc:  # MapServiceError subclasses
+                raise HubProtocolError("map_register failed: %s" % exc) from exc
+            return {"ok": True, "identity_key": identity_key}
+        if envelope.method == "map_watch":
+            identity_key = str(envelope.payload.get("identity_key") or "")
+            if not identity_key:
+                raise HubProtocolError("identity_key is required")
+            try:
+                token = self.map_watchers.watch(
+                    identity_key, lambda _event: None,
+                    debounce_seconds=float(envelope.payload.get("debounce_seconds", 0.05)),
+                )
+            except Exception as exc:
+                raise HubProtocolError("map_watch failed: %s" % exc) from exc
+            self._map_watch_tokens[identity_key] = token
+            return {"ok": True, "token": token}
+        if envelope.method == "map_emit":
+            identity_key = str(envelope.payload.get("identity_key") or "")
+            paths = envelope.payload.get("paths") or []
+            if not identity_key or not isinstance(paths, list):
+                raise HubProtocolError("identity_key and a paths list are required")
+            try:
+                self.map_watchers.emit(identity_key, paths)
+            except Exception as exc:
+                raise HubProtocolError("map_emit failed: %s" % exc) from exc
+            return {"ok": True}
+        if envelope.method == "map_flush":
+            fired = self.map_watchers.flush(force=bool(envelope.payload.get("force", False)))
+            return {"ok": True, "fired": fired}
+        if envelope.method == "map_status":
+            return {"ok": True, "status": self.map_watchers.status()}
+        if envelope.method == "map_gc":
+            return {"ok": True, "removed": self.map_watchers.gc()}
         if envelope.method == "register":
             client_id = str(envelope.payload.get("client_id") or "")
             if not client_id:
