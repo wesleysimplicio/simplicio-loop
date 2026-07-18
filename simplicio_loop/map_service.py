@@ -175,15 +175,30 @@ class MapServiceRegistry:
 
     def register(self, identity: RepositoryIdentity) -> str:
         with self._lock:
-            for existing in self._identities.values():
+            stale_keys = []
+            for existing_key, existing in self._identities.items():
                 same_root = (
                     existing.canonical_root == identity.canonical_root
                     and existing.worktree_root == identity.worktree_root
                 )
-                if same_root and existing.key != identity.key:
+                if not same_root or existing.key == identity.key:
+                    continue
+                if existing.repository != identity.repository:
+                    # A genuinely different logical project claiming the same physical
+                    # root/worktree - a real misconfiguration, fail closed as before.
                     raise AmbiguousRepositoryError(
                         "repository identity collision for the same root/worktree"
                     )
+                # Same logical repository/worktree, a different key: a real state
+                # transition (branch switch, new commit, dirty<->clean) - #513's
+                # "branch/rebase/dirty transitions" case. Supersede the stale identity
+                # rather than treating a legitimate transition as an ambiguous
+                # collision; existing MapViews built under the stale key are untouched
+                # (still retrievable/gc-able by their own cache_key) - only which
+                # identity resolve_repo()/subsequent lookups treat as CURRENT changes.
+                stale_keys.append(existing_key)
+            for stale_key in stale_keys:
+                del self._identities[stale_key]
             self._identities[identity.key] = identity
             return identity.key
 
