@@ -144,7 +144,26 @@ def _git_meta(worktree=None):
             return (done.stdout or "").strip() if done.returncode == 0 else ""
         except Exception:
             return ""
-    diff = _run("diff", "--no-ext-diff", "HEAD")
+    # Include NEW (untracked) files in the diff fingerprint. The default
+    # `git diff HEAD` ignores untracked paths, so a run that only *creates*
+    # files would always hash to the empty-string sha and never match a
+    # receipt that recorded the real change. Intent-to-add makes them
+    # appear in `git diff HEAD` without altering the working tree's content
+    # or index; we restore the original state immediately after.
+    diff = ""
+    intent_added = False
+    try:
+        st = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"],
+                            cwd=worktree or REPO, capture_output=True, text=True, timeout=15)
+        if st.returncode == 0 and any(line.startswith("??") for line in st.stdout.splitlines()):
+            subprocess.run(["git", "add", "-N", "."], cwd=worktree or REPO,
+                           capture_output=True, text=True, timeout=15)
+            intent_added = True
+        diff = _run("diff", "--no-ext-diff", "HEAD")
+    finally:
+        if intent_added:
+            subprocess.run(["git", "reset", "-q", "."], cwd=worktree or REPO,
+                           capture_output=True, text=True, timeout=15)
     return {
         "commit_sha": _run("rev-parse", "HEAD"),
         "diff_hash": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
