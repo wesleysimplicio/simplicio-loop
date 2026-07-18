@@ -16,9 +16,18 @@ No behavior of its own — pure data, imported by `sync_plugin.py` and `claims_a
 LEAN_HOOKS = ["loop_stop.py", "action_gate.py", "orient_rewrite.py",
               "orient_clamp.py", "hooks.claude.json", "pre-commit.py"]
 
-# Runtime helper scripts now transitively required by the shipped loop hook — mirrored into both
-# plugin/scripts/ and simplicio_loop/_bundle/scripts/.
-LEAN_SCRIPTS = ["hierarchical_planner.py", "cross_agent_wiki.py"]
+# Every scripts/<name>.py the simplicio-loop SKILL.md normative protocol actually shells out to,
+# plus their same-directory transitive imports (_locked_append/toon_codec/agent_identity) — the
+# full set, not a 2-script sample, or the shipped plugin ImportErrors at runtime (runtime#3304).
+# Mirrored into both plugin/scripts/ and simplicio_loop/_bundle/scripts/.
+LEAN_SCRIPTS = [
+    "coordinator.py", "cross_agent_wiki.py", "delivery_contract.py", "diff_escalation.py",
+    "flow_audit.py", "handoff.py", "hierarchical_planner.py", "impact_audit.py",
+    "loop_journal.py", "loop_progress.py", "operator_check.py", "operator_preflight.py",
+    "pr_dod_review.py", "route_mode.py", "task_anchor.py", "task_backlog.py",
+    "test_infra_probe.py", "video_evidence.py", "watcher_verify.py", "web_verify.py",
+    "worktree_cleanup.py", "_locked_append.py", "toon_codec.py", "agent_identity.py",
+]
 
 # Minimal parity coverage for the shipped loop/runtime helpers — mirrored into both
 # plugin/tests/ and simplicio_loop/_bundle/tests/.
