@@ -277,3 +277,149 @@ def test_rollout_rejected_mode_does_not_emit_event(state_file, tmp_path, monkeyp
     rc = mod.cmd_rollout(opts)
     assert rc == 2
     assert not os.path.exists(events_path)
+
+
+def test_rollout_rejects_percent_out_of_bounds(state_file):
+    opts = Opts()
+    opts.mode = "canary"
+    opts.percent = 101
+    opts.allow = []
+    rc = mod.cmd_rollout(opts)
+    assert rc == 2
+    opts.percent = -1
+    rc = mod.cmd_rollout(opts)
+    assert rc == 2
+
+
+def test_is_supervised_by_argv_flag_on_dict_entry():
+    entry = {"argv": ["mapper", "--survey", "--supervised-by=hub"], "env": {}}
+    assert mod.is_supervised(entry) is True
+    assert mod.detect_unsupervised([entry]) == []
+
+
+def test_is_supervised_returns_false_for_non_str_non_dict_entry():
+    assert mod.is_supervised(12345) is False
+    assert mod.is_supervised(None) is False
+
+
+def test_argv0_falls_back_to_argv0_key_when_argv_missing():
+    entry = {"argv0": "simplicio-dev-cli"}
+    assert mod._argv0(entry) == "simplicio-dev-cli"
+
+
+def test_argv0_empty_for_unrecognized_entry_type():
+    assert mod._argv0(12345) == ""
+    assert mod._argv0(None) == ""
+
+
+def test_detect_skips_entries_with_no_argv0():
+    processes = [{"argv": []}, "simplicio-mapper --survey"]
+    flagged = mod.detect_unsupervised(processes)
+    assert len(flagged) == 1
+    assert flagged[0]["argv0"] == "simplicio-mapper"
+
+
+def test_cmd_detect_reads_input_file(tmp_path, state_file, capsys):
+    input_path = tmp_path / "procs.json"
+    input_path.write_text(json.dumps(["simplicio-mapper --survey", "python3 unrelated.py"]))
+    opts = Opts()
+    opts.input = str(input_path)
+    opts.scan_os = False
+    opts.json = True
+    rc = mod.cmd_detect(opts)
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["scanned"] == 2
+    assert len(out["unsupervised"]) == 1
+
+
+def test_cmd_detect_input_file_invalid_json(tmp_path, state_file):
+    input_path = tmp_path / "procs.json"
+    input_path.write_text("not json{{{")
+    opts = Opts()
+    opts.input = str(input_path)
+    opts.scan_os = False
+    opts.json = True
+    rc = mod.cmd_detect(opts)
+    assert rc == 2
+
+
+def test_cmd_detect_input_file_not_a_list(tmp_path, state_file):
+    input_path = tmp_path / "procs.json"
+    input_path.write_text(json.dumps({"not": "a list"}))
+    opts = Opts()
+    opts.input = str(input_path)
+    opts.scan_os = False
+    opts.json = True
+    rc = mod.cmd_detect(opts)
+    assert rc == 2
+
+
+def test_cmd_detect_reads_stdin_when_no_input_or_scan_os(monkeypatch, state_file, capsys):
+    import io
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(["simplicio-mapper --survey"])))
+    opts = Opts()
+    opts.input = None
+    opts.scan_os = False
+    opts.json = False
+    rc = mod.cmd_detect(opts)
+    captured = capsys.readouterr().out
+    assert rc == 0
+    assert "unsupervised simplicio processes: 1" in captured
+    assert "simplicio-mapper" in captured
+
+
+def test_cmd_detect_stdin_invalid_json(monkeypatch, state_file):
+    import io
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("not json{{{"))
+    opts = Opts()
+    opts.input = None
+    opts.scan_os = False
+    opts.json = False
+    rc = mod.cmd_detect(opts)
+    assert rc == 2
+
+
+def test_cmd_detect_stdin_not_a_list(monkeypatch, state_file):
+    import io
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"not": "a list"})))
+    opts = Opts()
+    opts.input = None
+    opts.scan_os = False
+    opts.json = False
+    rc = mod.cmd_detect(opts)
+    assert rc == 2
+
+
+def test_cmd_status_text_output_canary_and_governor_open(state_file, tmp_path, capsys):
+    rollout_opts = Opts()
+    rollout_opts.mode = "canary"
+    rollout_opts.percent = 40
+    rollout_opts.allow = ["ws-a"]
+    mod.cmd_rollout(rollout_opts)
+
+    gov_path = tmp_path / "governor.json"
+    gov_path.write_text(json.dumps({"circuit": {"state": "open"}}))
+
+    opts = Opts()
+    opts.json = False
+    opts.governor_state_file = str(gov_path)
+    rc = mod.cmd_status(opts)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "rollout: canary" in out
+    assert "canary_percent: 40" in out
+    assert "governor_circuit: OPEN" in out
+
+
+def test_cmd_status_text_output_governor_unavailable(state_file, capsys):
+    opts = Opts()
+    opts.json = False
+    opts.governor_state_file = None
+    rc = mod.cmd_status(opts)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "governor_circuit: unavailable" in out
