@@ -17,6 +17,7 @@ SELFTESTS = [
     ("scripts/savings_harness.py", "selftest"),
     ("scripts/task_anchor.py", "selftest"),
     ("scripts/task_backlog.py", "selftest"),
+    ("scripts/test_infra_probe.py", "selftest"),
     ("scripts/pr_evidence.py", "selftest"),
     ("scripts/flow_audit.py", "selftest"),
     ("scripts/impact_audit.py", "selftest"),
@@ -57,6 +58,12 @@ def test_savings_harness_selftest():
 def test_task_anchor_selftest():
     r = _run("scripts/task_anchor.py", "selftest")
     assert r.returncode == 0, "task_anchor selftest failed:\n%s%s" % (r.stdout, r.stderr)
+    assert "PASS" in r.stdout, r.stdout
+
+
+def test_test_infra_probe_selftest():
+    r = _run("scripts/test_infra_probe.py", "selftest")
+    assert r.returncode == 0, "test_infra_probe selftest failed:\n%s%s" % (r.stdout, r.stderr)
     assert "PASS" in r.stdout, r.stdout
 
 

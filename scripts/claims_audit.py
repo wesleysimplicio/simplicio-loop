@@ -110,6 +110,7 @@ SELFTEST_SCRIPTS = [
     "scripts/repo_conventions.py",
     "scripts/task_anchor.py",
     "scripts/task_backlog.py",
+    "scripts/test_infra_probe.py",
     "scripts/pr_evidence.py",
     "scripts/flow_audit.py",
     "scripts/impact_audit.py",
