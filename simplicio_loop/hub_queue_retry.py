@@ -5,6 +5,7 @@ adds bounded retry state and an administrative DLQ without replacing that API.
 """
 
 import json
+import shutil
 import sqlite3
 import time
 import uuid
@@ -24,6 +25,20 @@ class QueueLeaseError(QueueRetryError):
     """Raised for stale or missing task leases."""
 
 
+class QueueCorruptionError(QueueRetryError):
+    """Raised when the on-disk queue file fails SQLite's integrity check.
+
+    Fail-closed rather than silently opening (and potentially further damaging) a corrupted
+    file: the bad file is preserved alongside the original path (never overwritten or deleted)
+    so it can be inspected/recovered, and the caller must decide how to proceed — e.g. restore
+    from a separate backup, or start a fresh queue at a new path.
+    """
+
+    def __init__(self, message: str, *, preserved_path: str) -> None:
+        super().__init__(message)
+        self.preserved_path = preserved_path
+
+
 @dataclass(frozen=True)
 class RetryLease:
     task_id: str
@@ -38,6 +53,7 @@ class HubRetryQueue:
     def __init__(self, path: str) -> None:
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._check_integrity_before_open()
         self._db = sqlite3.connect(self.path, isolation_level=None)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
@@ -67,6 +83,45 @@ class HubRetryQueue:
             );
             """
         )
+
+    def _check_integrity_before_open(self) -> None:
+        if not Path(self.path).exists():
+            return  # fresh queue — nothing to check yet
+        probe = sqlite3.connect(self.path, isolation_level=None)
+        try:
+            try:
+                rows = probe.execute("PRAGMA integrity_check").fetchall()
+            except sqlite3.DatabaseError as exc:
+                # Not even a valid SQLite file (e.g. truncated/binary garbage) — integrity_check
+                # itself cannot run.
+                preserved = self._preserve_corrupt_file()
+                raise QueueCorruptionError(
+                    "hub queue file is not a valid SQLite database (%s); preserved at %s"
+                    % (exc, preserved),
+                    preserved_path=preserved,
+                ) from exc
+        finally:
+            probe.close()
+        results = [str(r[0]) for r in rows]
+        if results != ["ok"]:
+            preserved = self._preserve_corrupt_file()
+            raise QueueCorruptionError(
+                "hub queue file failed PRAGMA integrity_check (%s); preserved at %s"
+                % ("; ".join(results), preserved),
+                preserved_path=preserved,
+            )
+
+    def _preserve_corrupt_file(self) -> str:
+        """Copy (never move/delete) the corrupted file + WAL/SHM sidecars aside for forensics.
+        The original path is left untouched — the caller decides whether to remove it."""
+        preserved = "%s.corrupt-%d" % (self.path, int(time.time() * 1000))
+        Path(preserved).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.path, preserved)
+        for suffix in ("-wal", "-shm"):
+            sidecar = self.path + suffix
+            if Path(sidecar).exists():
+                shutil.copy2(sidecar, preserved + suffix)
+        return preserved
 
     def close(self) -> None:
         self._db.close()

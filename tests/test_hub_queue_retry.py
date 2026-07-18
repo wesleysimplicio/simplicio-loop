@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from simplicio_loop.hub_queue_retry import HubRetryQueue, QueueLeaseError, QueueRetryError
+from simplicio_loop.hub_queue_retry import (
+    HubRetryQueue,
+    QueueCorruptionError,
+    QueueLeaseError,
+    QueueRetryError,
+)
 
 
 def test_idempotent_submit_survives_restart_and_dead_letters_after_budget() -> None:
@@ -257,3 +262,49 @@ def test_corrupt_wal_tail_fails_closed_and_keeps_last_valid_snapshot() -> None:
         task_id = restarted.submit({"kind": "post-recovery"}, idempotency_key="third")
         assert restarted.state(task_id) == "queued"
         restarted.close()
+
+
+def test_mangled_db_file_fails_closed_and_preserves_the_corrupt_copy() -> None:
+    """Real corruption (#504 AC: "WAL corrompido ... fail-closed com snapshot preservado") is
+    distinct from the WAL-tail-truncation case above, which SQLite already recovers from
+    natively — this is a genuinely malformed database file that must NOT be silently opened
+    or overwritten. Uses real bytes, real PRAGMA integrity_check, no mocking."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "queue.db")
+        queue = HubRetryQueue(path)
+        queue.submit({"kind": "before-corruption"}, idempotency_key="pre")
+        queue.close()
+
+        # Corrupt the schema b-tree page's cell-count field (2 bytes at offset 103-104, right
+        # after the 100-byte file header) — a real, verifiable structural corruption. A plain
+        # byte overwrite in unused/free space, or truncating trailing free pages, does NOT
+        # reliably trip SQLite's integrity_check (empirically confirmed: SQLite tolerates both
+        # here since the corrupted regions were unused). This targets an always-read page.
+        with open(path, "r+b") as handle:
+            handle.seek(103)
+            handle.write(b"\xff\xff")
+
+        with pytest.raises(QueueCorruptionError) as excinfo:
+            HubRetryQueue(path)
+
+        preserved = Path(excinfo.value.preserved_path)
+        assert preserved.exists(), "corrupted file must be preserved for forensics"
+        assert preserved.read_bytes() == Path(path).read_bytes(), (
+            "preserved copy must match the corrupted file byte-for-byte"
+        )
+        # Fail-closed means the original corrupted file is left exactly as-is too — never
+        # deleted or reset to a fresh empty schema behind the caller's back.
+        assert Path(path).exists()
+
+
+def test_non_sqlite_garbage_file_fails_closed() -> None:
+    """A completely non-SQLite file (not just internally corrupted) must also fail closed
+    rather than let SQLite silently treat it as a fresh empty database."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "queue.db")
+        Path(path).write_bytes(b"this is not a sqlite database at all, just plain text\n" * 20)
+
+        with pytest.raises(QueueCorruptionError) as excinfo:
+            HubRetryQueue(path)
+
+        assert Path(excinfo.value.preserved_path).exists()
