@@ -36,8 +36,8 @@
       "ext": ".wav"
     },
     {
-      "bytes": 29564390,
-      "count": 1590,
+      "bytes": 30093787,
+      "count": 1628,
       "ext": ".py"
     },
     {
@@ -46,8 +46,8 @@
       "ext": ".mp4"
     },
     {
-      "bytes": 26619220,
-      "count": 1125,
+      "bytes": 26687209,
+      "count": 1136,
       "ext": ".md"
     },
     {
@@ -71,8 +71,8 @@
       "ext": ".aiff"
     },
     {
-      "bytes": 4242900,
-      "count": 2008,
+      "bytes": 4255354,
+      "count": 2012,
       "ext": ".json"
     },
     {
@@ -101,8 +101,8 @@
       "ext": ".html"
     },
     {
-      "bytes": 276531,
-      "count": 125,
+      "bytes": 279627,
+      "count": 126,
       "ext": ".toml"
     },
     {
@@ -141,14 +141,14 @@
       "ext": ".jsonl"
     },
     {
+      "bytes": 7701,
+      "count": 7,
+      "ext": ".txt"
+    },
+    {
       "bytes": 7500,
       "count": 1,
       "ext": ".c"
-    },
-    {
-      "bytes": 5384,
-      "count": 6,
-      "ext": ".txt"
     },
     {
       "bytes": 3597,
@@ -181,20 +181,20 @@
       "ext": ".timestamp"
     }
   ],
-  "distinct_blobs_ever_committed": 12094,
-  "generated_at": "2026-07-18T09:43:03Z",
+  "distinct_blobs_ever_committed": 12149,
+  "generated_at": "2026-07-18T15:47:11Z",
   "git_count_objects": {
-    "count": "2985",
+    "count": "3081",
     "garbage": "0",
-    "in-pack": "16593",
-    "packs": "25",
-    "prune-packable": "222",
-    "size": "23.29 MiB",
+    "in-pack": "16765",
+    "packs": "26",
+    "prune-packable": "225",
+    "size": "23.86 MiB",
     "size-garbage": "0 bytes",
     "size-pack": "1.41 GiB"
   },
   "git_count_objects_parsed_bytes": {
-    "size_loose_bytes": 24421335,
+    "size_loose_bytes": 25019023,
     "size_pack_bytes": 1513975971
   },
   "schema": "simplicio.repo-history-scan/v1",
@@ -221,6 +221,6 @@
       "size_bytes": 74765824
     }
   ],
-  "total_historical_blob_bytes": 4423407258,
+  "total_historical_blob_bytes": 4424022511,
   "total_historical_blob_human": "4.1GB"
 }

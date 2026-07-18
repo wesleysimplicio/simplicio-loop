@@ -198,6 +198,21 @@ def cmd_verify(repo=None):
         json.dumps(material, sort_keys=True).encode("utf-8")
     ).hexdigest()
 
+    # Keep the generic stop-hook challenge binding in sync with the drain-specific
+    # receipt. Without this, a valid drain receipt is rejected as stale because
+    # watcher_challenge.json still belongs to the previous execution item.
+    challenge = {
+        "schema": "simplicio.watcher-challenge/v1",
+        "challenge": challenge_str,
+        "goal_fp": (master or {}).get("goal_fp", ""),
+        "iteration": 0,
+        "written_at": _now(),
+    }
+    challenge_tmp = CHALLENGE + ".tmp"
+    with open(challenge_tmp, "w", encoding="utf-8") as f:
+        json.dump(challenge, f, indent=2, ensure_ascii=False)
+    os.replace(challenge_tmp, CHALLENGE)
+
     receipt = {
         "schema": "simplicio.watcher-receipt/v1",
         "mode": "drain-intake",
