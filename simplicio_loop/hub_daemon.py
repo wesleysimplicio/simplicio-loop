@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional, Set
 
 from .hub_queue_retry import HubRetryQueue
 from .hub_scheduler import FairScheduler, QuotaExceededError, ScheduledJob, SchedulerError
+from .process_enforcement import ProcessRegistry
 from .process_supervisor import ProcessSpec, ProcessSpecError
 from .process_supervisor_rust import backend_name, run_with_fallback
 
@@ -148,6 +149,8 @@ class HubDaemon:
         lock_path: str,
         queue_path: Optional[str] = None,
         scheduler: Optional[FairScheduler] = None,
+        *,
+        process_registry: Optional[ProcessRegistry] = None,
     ) -> None:
         self.lock = HubLock(lock_path)
         self.started = False
@@ -156,6 +159,7 @@ class HubDaemon:
         self.queue = HubRetryQueue(self.queue_path)
         self.scheduler = scheduler if scheduler is not None else FairScheduler()
         self._queue_lock = threading.Lock()
+        self.process_registry = process_registry or ProcessRegistry()
 
     def start(self) -> None:
         if self.started:
@@ -218,10 +222,24 @@ class HubDaemon:
                 )
             except (TypeError, ValueError, ProcessSpecError) as exc:
                 raise HubProtocolError(f"invalid ProcessSpec: {exc}") from exc
+            registered: Dict[str, int] = {}
+
+            def on_spawned(process: Any) -> None:
+                registered["pid"] = process.pid
+                self.process_registry.register(
+                    process.pid,
+                    lease_id=spec.idempotency_key or f"hub-execute-{envelope.request_id}",
+                    spec_hash=spec.spec_hash,
+                    argv=spec.argv,
+                )
+
             try:
-                result = run_with_fallback(spec)
+                result = run_with_fallback(spec, on_spawned=on_spawned)
             except (OSError, RuntimeError, asyncio.CancelledError) as exc:
                 raise HubError(f"supervisor execution failed: {exc}") from exc
+            finally:
+                if "pid" in registered:
+                    self.process_registry.unregister(registered["pid"])
             return {"ok": True, "backend": backend_name(), "result": result.to_dict()}
         job_id = str(envelope.payload.get("job_id") or "")
         if not job_id:
