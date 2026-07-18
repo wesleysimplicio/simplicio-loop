@@ -105,13 +105,18 @@ class HubRetryQueue:
         now = time.time()
         self._db.execute("BEGIN IMMEDIATE")
         try:
+            # A task is claimable when it is freshly queued, OR when a prior
+            # worker's lease visibility timeout has elapsed without heartbeat,
+            # completion or failure (worker crash / hang). Without the second
+            # branch a dead worker's lease would never be reclaimed.
             row = self._db.execute(
                 """
                 SELECT * FROM hub_jobs
-                WHERE state='queued' AND next_attempt_at<=?
+                WHERE (state='queued' AND next_attempt_at<=?)
+                   OR (state='leased' AND lease_expires_at<=?)
                 ORDER BY updated_at, task_id LIMIT 1
                 """,
-                (now,),
+                (now, now),
             ).fetchone()
             if row is None:
                 self._db.execute("COMMIT")
@@ -119,14 +124,20 @@ class HubRetryQueue:
             lease_id = worker_id + "-" + uuid.uuid4().hex
             fence = int(row["fence"]) + 1
             expires = now + ttl
-            self._db.execute(
+            cursor = self._db.execute(
                 """
                 UPDATE hub_jobs SET state='leased', attempts=attempts+1,
                   lease_id=?, fence=?, lease_expires_at=?, updated_at=?
-                WHERE task_id=? AND state='queued'
+                WHERE task_id=? AND fence=?
                 """,
-                (lease_id, fence, expires, now, row["task_id"]),
+                (lease_id, fence, expires, now, row["task_id"], row["fence"]),
             )
+            if cursor.rowcount == 0:
+                # Lost a race with another claimant between the SELECT and
+                # the UPDATE; fail closed instead of returning a lease that
+                # does not actually own the task.
+                self._db.execute("COMMIT")
+                return None
             self._db.execute("COMMIT")
             return RetryLease(str(row["task_id"]), lease_id, fence, expires)
         except Exception:

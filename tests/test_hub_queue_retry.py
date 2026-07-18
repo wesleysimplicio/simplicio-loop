@@ -1,4 +1,5 @@
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,40 @@ def test_only_current_lease_can_heartbeat_or_complete() -> None:
         with pytest.raises(QueueLeaseError):
             queue.heartbeat(stale)
         queue.complete(lease)
+        assert queue.state(task_id) == "completed"
+        queue.close()
+
+
+def test_expired_lease_is_reclaimed_by_another_worker() -> None:
+    """A worker that crashes after claim (no heartbeat/fail/complete) must not
+    strand the task: once the visibility timeout elapses, another worker can
+    claim it, and the dead worker's lease is fenced off (#504 AC: "apenas um
+    worker possui lease valida por tarefa" / lease renewal + expiration).
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        task_id = queue.submit({"kind": "test"}, idempotency_key="expiring")
+        dead = queue.claim("worker-dead", ttl=0.05)
+        assert dead is not None
+        assert queue.claim("worker-live-too-soon") is None
+
+        time.sleep(0.15)
+
+        revived = queue.claim("worker-live", ttl=10)
+        assert revived is not None
+        assert revived.task_id == task_id
+        assert revived.fence == dead.fence + 1
+        assert queue.state(task_id) == "leased"
+
+        # The crashed worker's old lease is fenced off, not the current owner.
+        with pytest.raises(QueueLeaseError):
+            queue.heartbeat(dead)
+        with pytest.raises(QueueLeaseError):
+            queue.complete(dead)
+
+        # The new owner's lease is genuinely valid.
+        queue.heartbeat(revived, ttl=10)
+        queue.complete(revived)
         assert queue.state(task_id) == "completed"
         queue.close()
 
