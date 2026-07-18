@@ -13,6 +13,7 @@ from simplicio_loop.hub_daemon import (
     HubError,
     HubSocketClient,
     HubSocketServer,
+    default_endpoint,
     doctor,
 )
 
@@ -20,6 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_unix_socket_end_to_end_and_permission_bits() -> None:
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
     with tempfile.TemporaryDirectory() as directory:
         lock_path = str(Path(directory) / "hub.lock")
         socket_path = str(Path(directory) / "hub.sock")
@@ -54,6 +57,8 @@ def test_unix_socket_end_to_end_and_permission_bits() -> None:
 
 
 def test_socket_shutdown_is_idempotent_and_removes_file() -> None:
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX")
     with tempfile.TemporaryDirectory() as directory:
         lock_path = str(Path(directory) / "hub.lock")
         socket_path = str(Path(directory) / "hub.sock")
@@ -84,6 +89,8 @@ def test_daemon_stop_is_idempotent() -> None:
 
 
 def test_doctor_reports_unreachable_then_reachable() -> None:
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX")
     with tempfile.TemporaryDirectory() as directory:
         lock_path = str(Path(directory) / "hub.lock")
         socket_path = str(Path(directory) / "hub.sock")
@@ -111,6 +118,8 @@ def test_doctor_reports_unreachable_then_reachable() -> None:
 
 
 def test_client_raises_cleanly_when_daemon_absent() -> None:
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX")
     with tempfile.TemporaryDirectory() as directory:
         socket_path = str(Path(directory) / "hub.sock")
         client = HubSocketClient(socket_path, timeout=1.0)
@@ -143,6 +152,8 @@ def _wait_for_line(proc: subprocess.Popen, expected: str, timeout: float = 10.0)
 
 
 def test_subprocess_daemon_singleton_and_client_from_separate_process() -> None:
+    if os.name == "nt":
+        pytest.skip("Unix socket subprocess coverage runs on POSIX")
     with tempfile.TemporaryDirectory() as directory:
         lock_path = str(Path(directory) / "hub.lock")
         socket_path = str(Path(directory) / "hub.sock")
@@ -170,3 +181,33 @@ def test_subprocess_daemon_singleton_and_client_from_separate_process() -> None:
 
         assert not Path(lock_path).exists()
         assert not Path(socket_path).exists()
+
+
+def test_windows_named_pipe_transport_and_concurrency() -> None:
+    if os.name != "nt":
+        pytest.skip("named-pipe transport is Windows-only")
+    from concurrent.futures import ThreadPoolExecutor
+
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        endpoint = default_endpoint(directory)
+        daemon = HubDaemon(lock_path)
+        daemon.start()
+        server = HubSocketServer(daemon, endpoint, transport="named-pipe")
+        server.start()
+        try:
+            client = HubSocketClient(endpoint, transport="named-pipe")
+            assert client.request("ping", "ping")["started"] is True
+
+            def register(index: int) -> str:
+                return HubSocketClient(endpoint, transport="named-pipe").request(
+                    "r-%d" % index, "register", client_id="client-%d" % index
+                )["client_id"]
+
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                clients = list(pool.map(register, range(20)))
+            assert len(set(clients)) == 20
+            assert doctor(lock_path, endpoint, "named-pipe")["socket_reachable"] is True
+        finally:
+            server.shutdown()
+            daemon.stop()
