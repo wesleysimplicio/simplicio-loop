@@ -10,6 +10,8 @@ when every probe is unavailable.
 from __future__ import annotations
 
 import platform
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass, field
 from threading import RLock
@@ -148,12 +150,16 @@ class PressureReading:
 
     cpu_percent: float = 0.0
     memory_bytes: int = 0
+    disk_percent: float = 0.0
+    gpu_percent: float = 0.0
     source: str = "unavailable"
 
     def as_dict(self) -> Dict[str, Any]:
         return {
             "cpu_percent": self.cpu_percent,
             "memory_bytes": self.memory_bytes,
+            "disk_percent": self.disk_percent,
+            "gpu_percent": self.gpu_percent,
             "source": self.source,
         }
 
@@ -161,20 +167,71 @@ class PressureReading:
 class ResourceProbe:
     """Cross-platform pressure reader with a documented degrade ladder.
 
-    Order: Linux cgroups v2 -> psutil (any OS, if installed) -> stdlib
-    ``resource`` approximation -> unavailable (all-zero reading). Every step
-    is best-effort: a missing file, a missing package, or a platform mismatch
-    is swallowed and the next step is tried. ``read`` itself never raises, so
-    callers on a host without cgroups or psutil still get a safe reading
-    instead of a crash.
+    Order for cpu/memory: Linux cgroups v2 -> psutil (any OS, if installed) ->
+    stdlib ``resource`` approximation -> unavailable (all-zero reading). Every
+    step is best-effort: a missing file, a missing package, or a platform
+    mismatch is swallowed and the next step is tried. ``read`` itself never
+    raises, so callers on a host without cgroups or psutil still get a safe
+    reading instead of a crash.
+
+    Disk and GPU are measured independently of that ladder (``disk_percent``
+    via stdlib ``shutil.disk_usage`` - essentially always available - and
+    ``gpu_percent`` via a best-effort ``nvidia-smi`` call), so a host with no
+    cgroups/psutil still gets a real disk reading rather than a silent zero,
+    and a host with no GPU correctly reads 0.0 (no pressure) rather than
+    "unavailable".
     """
 
-    def read(self) -> PressureReading:
+    def read(self, *, disk_path: str = "/") -> PressureReading:
+        base = None
         for reader in (self._read_cgroup, self._read_psutil, self._read_stdlib):
             reading = reader()
             if reading is not None:
-                return reading
-        return PressureReading(source="unavailable")
+                base = reading
+                break
+        if base is None:
+            base = PressureReading(source="unavailable")
+        return PressureReading(
+            cpu_percent=base.cpu_percent,
+            memory_bytes=base.memory_bytes,
+            disk_percent=self._read_disk_percent(disk_path),
+            gpu_percent=self._read_gpu_percent(),
+            source=base.source,
+        )
+
+    @staticmethod
+    def _read_disk_percent(path: str) -> float:
+        try:
+            usage = shutil.disk_usage(path)
+        except OSError:
+            return 0.0
+        if usage.total <= 0:
+            return 0.0
+        return (usage.used / usage.total) * 100.0
+
+    @staticmethod
+    def _read_gpu_percent() -> float:
+        """Worst-case (max) utilization across NVIDIA GPUs via ``nvidia-smi``.
+        Absent tooling/no GPU is reported as 0.0 (no pressure), matching how a
+        Hub host with no GPU workload genuinely has no GPU pressure - not
+        flagged as a probe failure the way cpu/memory unavailability is."""
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return 0.0
+        if result.returncode != 0:
+            return 0.0
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not lines:
+            return 0.0
+        try:
+            values = [float(line) for line in lines]
+        except ValueError:
+            return 0.0
+        return max(values)
 
     @staticmethod
     def _read_cgroup() -> Optional[PressureReading]:
@@ -370,6 +427,8 @@ class ResourceGovernor:
         *,
         memory_limit_bytes: int = 0,
         cpu_percent_limit: float = 0.0,
+        disk_percent_limit: float = 0.0,
+        gpu_percent_limit: float = 0.0,
     ) -> Dict[str, Any]:
         """Feed a real or synthetic measurement into the circuit breaker.
 
@@ -380,9 +439,18 @@ class ResourceGovernor:
         """
         with self._lock:
             over_memory = bool(memory_limit_bytes) and reading.memory_bytes > memory_limit_bytes
+            over_disk = bool(disk_percent_limit) and reading.disk_percent > disk_percent_limit
+            over_gpu = bool(gpu_percent_limit) and reading.gpu_percent > gpu_percent_limit
             over_cpu = bool(cpu_percent_limit) and reading.cpu_percent > cpu_percent_limit
-            if over_memory or over_cpu:
-                reason = "thrashing" if over_memory else "cpu_pressure"
+            if over_memory or over_disk or over_gpu or over_cpu:
+                if over_memory:
+                    reason = "thrashing"
+                elif over_disk:
+                    reason = "disk_full"
+                elif over_gpu:
+                    reason = "gpu_pressure"
+                else:
+                    reason = "cpu_pressure"
                 tripped = self._circuit.record_failure(reason)
                 return {
                     "schema": GOVERNOR_SCHEMA, "event": "pressure_reading",
