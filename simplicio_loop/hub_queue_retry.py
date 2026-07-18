@@ -88,15 +88,28 @@ class HubRetryQueue:
         if existing is not None:
             return str(existing["task_id"])
         task_id = str(uuid.uuid4())
-        self._db.execute(
-            """
-            INSERT INTO hub_jobs(task_id,idempotency_key,payload,max_attempts,
-                                 next_attempt_at,updated_at)
-            VALUES(?,?,?,?,?,?)
-            """,
-            (task_id, idempotency_key, json.dumps(payload, sort_keys=True),
-             int(max_attempts), now, now),
-        )
+        try:
+            self._db.execute(
+                """
+                INSERT INTO hub_jobs(task_id,idempotency_key,payload,max_attempts,
+                                     next_attempt_at,updated_at)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (task_id, idempotency_key, json.dumps(payload, sort_keys=True),
+                 int(max_attempts), now, now),
+            )
+        except sqlite3.IntegrityError:
+            # A concurrent submit() with the same idempotency_key won the race between our
+            # SELECT and INSERT (SQLite's UNIQUE constraint is what actually serializes this,
+            # not the SELECT above). Re-query rather than raise so submit() stays idempotent
+            # under real concurrency, not just when calls happen to be serialized.
+            winner = self._db.execute(
+                "SELECT task_id FROM hub_jobs WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if winner is None:
+                raise
+            return str(winner["task_id"])
         return task_id
 
     def claim(self, worker_id: str, *, ttl: float = 30.0) -> Optional[RetryLease]:
