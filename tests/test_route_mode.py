@@ -11,7 +11,7 @@ def write_survey(root,files,symbols=(),edges=()):
 def reference(root):
     write_survey(root,["src/service.py","src/caller.py","frontend/app.ts"],[{"name":"GetRestEletrica","qualified_name":"src/service.py::GetRestEletrica","defined_in":"src/service.py"}],[{"source_file":"src/caller.py","target_file":"src/service.py"}])
 def cli(root,*args):
-    return subprocess.run([sys.executable,"scripts/route_mode.py","--root",str(root),*args],cwd=REPO,text=True,capture_output=True,close_fds=False)
+    return subprocess.run([sys.executable,"scripts/route_mode.py","--root",str(root),*args],cwd=REPO,text=True,capture_output=True)
 def test_reference_fast_path_and_anchor(tmp_path):
     reference(tmp_path); anchor=tmp_path/"anchor.json"; anchor.write_text(json.dumps({"criteria":[]}),encoding="utf-8"); goal="Fix GetRestEletrica in src/service.py"
     result=route_mode.decide(tmp_path,goal,map_dir=tmp_path/".simplicio")
@@ -47,7 +47,7 @@ def test_turn_header_includes_measured_route(tmp_path):
     env = os.environ.copy()
     env.update({"SIMPLICIO_ANCHOR_FILE": str(anchor), "SIMPLICIO_PROGRESS_DIR": str(progress)})
     result = subprocess.run([sys.executable, "scripts/loop_progress.py", "render", "--turn-header"],
-                            cwd=REPO, text=True, capture_output=True, env=env, close_fds=False)
+                            cwd=REPO, text=True, capture_output=True, env=env)
     assert result.returncode == 0
     assert "mode=fast-path: goal->1 file" in result.stdout
 
