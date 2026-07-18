@@ -134,6 +134,64 @@ def _impact_not_applicable() -> Dict[str, str]:
     return {c: "not_applicable: intake gate only; mutation blocked until planning receipt COMPLETE" for c in cats}
 
 
+# Minimum parameter count (in billions) a local model must have to be considered
+# capable of autonomous feature implementation. Models below this threshold
+# (e.g. Qwen2.5-Coder-1.5B) reliably fail the coding-loop with edit/build/test=fail
+# and produce no artifacts, yet the compiled runtime still reports `completed` with
+# placeholder fixtures -- a false-positive completion. We fail-closed here instead.
+MODEL_CAPABLE_MIN_PARAMS_B = 7.0
+
+
+def check_model_backend_capable() -> Tuple[bool, str]:
+    """Return (capable, reason) for the currently configured model backend.
+
+    Honest gate: if no model backend is engaged, or the only available backend is a
+    sub-capability local model, refuse autonomous execution and let the caller classify
+    the issue as Blocked(model_capacity_insufficient) rather than burning coding-loop
+    cycles on a known-to-fail attempt.
+
+    Detection reads ``simplicio doctor`` text (the compiled runtime's health surface):
+    it reports ``local model: <name>`` when a local backend is configured, and the
+    runtime.toml ``local_model_disabled`` flag gates engagement. Remote backends are
+    only capable when an API key / base_url is configured (checked via env).
+    """
+    try:
+        proc = subprocess.run(
+            ["simplicio", "doctor"], capture_output=True, text=True, timeout=60, check=False
+        )
+        out = proc.stdout + proc.stderr
+    except Exception as exc:
+        return False, f"model_backend_check_error:{type(exc).__name__}:{exc}"
+
+    # No backend engaged at all.
+    if "model backend" in out and ("not engaged" in out or "not all engaged" in out):
+        return False, "no_model_backend_engaged"
+
+    # Local model present? extract name + param count.
+    import re
+    m = re.search(r"local model:\s*(\S+?)(?:\s|$)", out)
+    if m:
+        name = m.group(1).lower()
+        # pull trailing '-<N>b' or '<N>b' (e.g. 1.5b, 7b, 32b)
+        pm = re.search(r"(\d+(?:\.\d+)?)b", name)
+        params_b = float(pm.group(1)) if pm else 0.0
+        # qwen3-coder:free / qwen2.5-coder etc without 'b' -> unknown size, treat incapable
+        if params_b == 0.0:
+            return False, f"local_model_unknown_size:{name}"
+        if params_b < MODEL_CAPABLE_MIN_PARAMS_B:
+            return False, (
+                f"local_model_subcapacity:{name} ({params_b}b < "
+                f"{MODEL_CAPABLE_MIN_PARAMS_B}b minimum)"
+            )
+        return True, f"local_model_capable:{name} ({params_b}b)"
+
+    # Remote backend? capable only with explicit credentials.
+    import os
+    if os.environ.get("SIMPLICIO_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
+        return True, "remote_model_backend_with_credentials"
+    return False, "no_capable_backend: local subcapacity or no remote credentials"
+
+
 def do_intake(issue: Dict[str, Any], gh_repo: str = "wesleysimplicio/simplicio-loop") -> Tuple[Dict[str, Any], str, List[str]]:
     """Run the #284 intake contract via the current ``simplicio_loop.intake_contract``
     API (``build_task_intake`` + ``lint_task_intake``). Returns (envelope, hash, errors).
@@ -296,7 +354,21 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--per-issue-timeout", type=int, default=20)
     ap.add_argument("--total-budget", type=int, default=250)
+    ap.add_argument("--verify-backend", dest="verify_backend", action="store_true",
+                    help="check whether the configured model backend is capable of "
+                         "autonomous implementation; print JSON verdict and exit")
     args = ap.parse_args()
+
+    if args.verify_backend:
+        capable, reason = check_model_backend_capable()
+        out = {
+            "schema": "simplicio.cron-backend-check/v1",
+            "capable": capable,
+            "reason": reason,
+            "min_params_b": MODEL_CAPABLE_MIN_PARAMS_B,
+        }
+        print(json.dumps(out, ensure_ascii=False))
+        return 0 if capable else 2
 
     # Resolve the GitHub repo: explicit --gh-repo wins; else derive from CWD remote.
     gh_repo = args.gh_repo
