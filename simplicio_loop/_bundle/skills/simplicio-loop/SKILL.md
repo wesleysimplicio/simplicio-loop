@@ -103,6 +103,10 @@ gates, the operator dispatch table): **`references/bound-operators.md`**.
 
 **Preflight (MANDATORY, BLOCKING).** Before iteration 1, announce the step, auto-update the
 operator package to its latest release, then confirm both runtime binaries are on PATH:
+First run `python3 scripts/operator_preflight.py --run-id <run-id>`; the receipt is cached for
+seven days in `~/.simplicio/operator-check.json`. The networked `pip install -qU` below is allowed
+only when that receipt says `refresh_required` (or a binary is missing). Record the observed versions
+with `--record` and pin them for the run; a later mismatch warns and never upgrades silently.
 ```bash
 python3 scripts/loop_progress.py emit --step preflight --status begin --detail "operadores: verificação/atualização"
 python3 -m pip install -qU simplicio-cli 2>/dev/null \
