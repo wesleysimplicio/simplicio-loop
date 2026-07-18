@@ -9,6 +9,7 @@ and callers must hand off rather than mutate a task.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -212,8 +213,41 @@ class HTTPRemoteQueue:
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise QueueUnavailable("queue unavailable: %s" % exc) from exc
 
+    async def _request_async(self, method: str, path: str, payload: Optional[Mapping[str, Any]] = None,
+                             *, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Run the blocking ``urlopen``/secure-transport call in a worker thread.
+
+        This is the async escape hatch for the hot polling loop (``pull``/``claim``/
+        ``heartbeat``/``complete``) so a remote worker's asyncio event loop is never
+        stalled for the duration of a real network round trip. ``timeout`` bounds the
+        *async* wait independently of ``self.timeout`` (the socket-level timeout inside
+        ``_request``): if the deadline elapses first, the awaiting caller gets control
+        back immediately with :class:`QueueUnavailable` -- the underlying OS thread is
+        asked to cancel and, since ``urlopen`` does not cooperatively check for
+        cancellation, keeps running until its own socket timeout independently, exactly
+        like a detached child process a caller stopped waiting on.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = self.timeout if timeout is None else timeout
+        future = loop.run_in_executor(None, self._request, method, path, payload)
+        try:
+            return await asyncio.wait_for(future, timeout=deadline)
+        except asyncio.TimeoutError as exc:
+            future.cancel()
+            raise QueueUnavailable(
+                "queue request exceeded async deadline of %ss" % deadline
+            ) from exc
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
+
     def enqueue(self, task_id: str, payload: Optional[Dict[str, Any]] = None) -> None:
         self._request("POST", "/enqueue", {"task_id": task_id, "payload": payload or {}})
+
+    async def enqueue_async(self, task_id: str, payload: Optional[Dict[str, Any]] = None,
+                            *, timeout: Optional[float] = None) -> None:
+        await self._request_async("POST", "/enqueue", {"task_id": task_id, "payload": payload or {}},
+                                  timeout=timeout)
 
     def claim(self, task_id: str, agent_id: str, *, idempotency_key: str,
               ttl: float = 60.0, identity: Optional[Mapping[str, Any]] = None,
@@ -223,8 +257,23 @@ class HTTPRemoteQueue:
             "capabilities": list(capabilities) if capabilities is not None else None})
         return _lease_from_json(result["lease"])
 
+    async def claim_async(self, task_id: str, agent_id: str, *, idempotency_key: str,
+                          ttl: float = 60.0, identity: Optional[Mapping[str, Any]] = None,
+                          capabilities: Optional[Sequence[str]] = None,
+                          timeout: Optional[float] = None) -> Lease:
+        result = await self._request_async("POST", "/claim", {"task_id": task_id, "agent_id": agent_id,
+            "idempotency_key": idempotency_key, "ttl": ttl, "identity": identity,
+            "capabilities": list(capabilities) if capabilities is not None else None}, timeout=timeout)
+        return _lease_from_json(result["lease"])
+
     def heartbeat(self, lease: Lease, *, ttl: float = 60.0) -> Lease:
         result = self._request("POST", "/heartbeat", {"lease": _lease_json(lease), "ttl": ttl})
+        return _lease_from_json(result["lease"])
+
+    async def heartbeat_async(self, lease: Lease, *, ttl: float = 60.0,
+                              timeout: Optional[float] = None) -> Lease:
+        result = await self._request_async("POST", "/heartbeat", {"lease": _lease_json(lease), "ttl": ttl},
+                                           timeout=timeout)
         return _lease_from_json(result["lease"])
 
     def complete(self, lease: Lease, *, receipt_ref: str,
@@ -233,6 +282,14 @@ class HTTPRemoteQueue:
         if receipt is not None:
             payload["receipt"] = dict(receipt)
         return self._request("POST", "/complete", payload)
+
+    async def complete_async(self, lease: Lease, *, receipt_ref: str,
+                             receipt: Optional[Mapping[str, Any]] = None,
+                             timeout: Optional[float] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"lease": _lease_json(lease), "receipt_ref": receipt_ref}
+        if receipt is not None:
+            payload["receipt"] = dict(receipt)
+        return await self._request_async("POST", "/complete", payload, timeout=timeout)
 
     def pull(self, agent_id: str, *, capabilities: Optional[Sequence[str]] = None,
              limit: int = 20) -> List[Dict[str, Any]]:
@@ -244,6 +301,13 @@ class HTTPRemoteQueue:
         """
         result = self._request("POST", "/pull", {"agent_id": agent_id,
             "capabilities": list(capabilities or ()), "limit": int(limit)})
+        return list(result["tasks"])
+
+    async def pull_async(self, agent_id: str, *, capabilities: Optional[Sequence[str]] = None,
+                         limit: int = 20, timeout: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Async counterpart of :meth:`pull` -- see :meth:`_request_async`."""
+        result = await self._request_async("POST", "/pull", {"agent_id": agent_id,
+            "capabilities": list(capabilities or ()), "limit": int(limit)}, timeout=timeout)
         return list(result["tasks"])
 
     def assert_active(self, lease: Lease) -> None:

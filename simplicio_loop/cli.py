@@ -49,6 +49,8 @@ from .ops_ledger import (
 )
 from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
+from .delivery import DELIVERY_ORDER
+from .map_service_status import default_status_path, load_status_file
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -238,6 +240,45 @@ def status(repo: str, run_id: str, as_json: bool = False, as_text: bool = False)
         print(_render_status_text(payload))
     else:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def map_status(repo: str, status_file: str, as_json: bool = False) -> int:
+    """Report cache hit/build/wait/invalidate counters from a real map-service session's
+    status file. Never fabricates a reading: a missing file is reported as blocked."""
+    path = Path(status_file) if status_file else default_status_path(repo)
+    try:
+        payload = load_status_file(path)
+    except (OSError, ValueError) as exc:
+        payload = None
+        error = str(exc)
+    else:
+        error = ""
+    if payload is None:
+        result = {
+            "schema": "simplicio.map-service-status/v1",
+            "status": "UNAVAILABLE",
+            "reason_code": "status_file_missing" if not error else "status_file_invalid",
+            "path": str(path),
+            "error": error,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 1
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        counters = payload.get("counters", {})
+        watchers = payload.get("watchers", {})
+        lines = [
+            "map-service status (" + str(path) + ")",
+            "  cache_hits:    " + str(counters.get("cache_hits", 0)),
+            "  builds:        " + str(counters.get("builds", 0)),
+            "  waits:         " + str(counters.get("waits", 0)),
+            "  invalidations: " + str(counters.get("invalidations", 0)),
+            "  watchers:      " + str(watchers.get("watchers", 0)),
+            "  pending:       " + str(watchers.get("pending", 0)),
+        ]
+        print("\n".join(lines))
     return 0
 
 
@@ -689,11 +730,11 @@ def main(argv=None) -> int:
     p_run.add_argument("--task", required=True, help="markdown task file")
     p_run.add_argument("--repo", default=".", help="repository root")
     p_run.add_argument(
-        "--delivery",
-        default="verified",
+        "--delivery", default="verified",
+        metavar="{" + ",".join(DELIVERY_ORDER[1:]) + "}",
         help=(
-            "requested delivery target: one of "
-            + ", ".join(delivery.DELIVERY_ORDER[1:])
+            "requested delivery target, one of: " + ", ".join(DELIVERY_ORDER[1:])
+            + " (use 'implemented' for a local-only run)"
         ),
     )
     p_run.add_argument("--max-iterations", type=int, default=12, help="safety cap")
@@ -712,6 +753,16 @@ def main(argv=None) -> int:
                           help="emit machine-readable JSON (this is also the default)")
     p_status.add_argument("--text", dest="as_text", action="store_true",
                           help="emit human-readable text instead of JSON")
+
+    p_map = sub.add_parser("map", help="map-service cross-module status")
+    map_sub = p_map.add_subparsers(dest="map_command", required=True)
+    p_map_status = map_sub.add_parser(
+        "status", help="report cache hit/build/wait/invalidate counters from a running session")
+    p_map_status.add_argument("--repo", default=".", help="repository root")
+    p_map_status.add_argument("--status-file", default="",
+                              help="explicit status file (default: <repo>/.orchestrator/map/status.json)")
+    p_map_status.add_argument("--json", action="store_true",
+                              help="emit machine-readable JSON (this is also the default)")
 
     p_preflight = sub.add_parser(
         "preflight", help="verify bound operators (mapper/dev-cli/runtime) are installed")
@@ -891,6 +942,10 @@ def main(argv=None) -> int:
                       args.write_receipt)
     if command == "status":
         return status(args.repo, args.run_id, args.json, args.as_text)
+    if command == "map":
+        if args.map_command == "status":
+            return map_status(args.repo, args.status_file, args.json)
+        parser.error("unknown map subcommand: " + str(args.map_command))
     if command == "preflight":
         return preflight(args.repo, args.json)
     if command == "findings":

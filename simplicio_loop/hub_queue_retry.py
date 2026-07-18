@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .hub_scheduler import FairScheduler, ScheduledJob, SchedulerError
+
 
 QUEUE_SCHEMA = "simplicio.hub-queue/v1"
 
@@ -38,7 +40,7 @@ class HubRetryQueue:
     def __init__(self, path: str) -> None:
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(self.path, isolation_level=None)
+        self._db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
@@ -245,3 +247,120 @@ class HubRetryQueue:
         if row is None:
             raise QueueRetryError("unknown task")
         return str(row["state"])
+
+    def find_task_id(self, idempotency_key: str) -> Optional[str]:
+        row = self._db.execute(
+            "SELECT task_id FROM hub_jobs WHERE idempotency_key=?", (idempotency_key,)
+        ).fetchone()
+        return str(row["task_id"]) if row is not None else None
+
+    def get_row(self, task_id: str) -> Optional[Dict[str, Any]]:
+        row = self._db.execute(
+            "SELECT * FROM hub_jobs WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        data["payload"] = json.loads(data["payload"])
+        return data
+
+    def update_payload(self, task_id: str, payload: Dict[str, Any]) -> None:
+        self._db.execute(
+            "UPDATE hub_jobs SET payload=?,updated_at=? WHERE task_id=?",
+            (json.dumps(payload, sort_keys=True), time.time(), task_id),
+        )
+
+    def count(self) -> int:
+        row = self._db.execute("SELECT COUNT(*) AS n FROM hub_jobs").fetchone()
+        return int(row["n"])
+
+    def payload_of(self, task_id: str) -> Dict[str, Any]:
+        row = self._db.execute(
+            "SELECT payload FROM hub_jobs WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if row is None:
+            raise QueueRetryError("unknown task")
+        return dict(json.loads(row["payload"]))
+
+    def _claim_specific(self, task_id: str, worker_id: str, *, ttl: float = 30.0) -> Optional[RetryLease]:
+        if not worker_id or ttl <= 0:
+            raise QueueRetryError("worker_id and positive ttl required")
+        now = time.time()
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._db.execute(
+                "SELECT * FROM hub_jobs WHERE task_id=? AND state='queued' AND next_attempt_at<=?",
+                (task_id, now),
+            ).fetchone()
+            if row is None:
+                self._db.execute("COMMIT")
+                return None
+            lease_id = worker_id + "-" + uuid.uuid4().hex
+            fence = int(row["fence"]) + 1
+            expires = now + ttl
+            cursor = self._db.execute(
+                """
+                UPDATE hub_jobs SET state='leased', attempts=attempts+1,
+                  lease_id=?, fence=?, lease_expires_at=?, updated_at=?
+                WHERE task_id=? AND state='queued'
+                """,
+                (lease_id, fence, expires, now, task_id),
+            )
+            if cursor.rowcount == 0:
+                self._db.execute("COMMIT")
+                return None
+            self._db.execute("COMMIT")
+            return RetryLease(task_id, lease_id, fence, expires)
+        except Exception:
+            self._db.execute("ROLLBACK")
+            raise
+
+    def sync_fair_scheduler(self, scheduler: FairScheduler) -> None:
+        """Enqueue every ready-but-untracked task into `scheduler` so its DRR/quota
+        ordering decision covers the real durable backlog, not an in-memory mock.
+
+        Callers that also track their own submit-time scheduler.enqueue() (e.g.
+        HubDaemon, for backpressure) will see a benign duplicate-task_id SchedulerError
+        for jobs it already knows about; this loop swallows exactly that and moves on.
+        Only safe when the row-level `state` column tracks real queued/leased/completed
+        lifecycle for that caller's jobs (see HubDaemon's own claim_next, which does
+        NOT call this for that reason).
+        """
+        now = time.time()
+        rows = self._db.execute(
+            "SELECT task_id, payload FROM hub_jobs WHERE state='queued' AND next_attempt_at<=?",
+            (now,),
+        ).fetchall()
+        for row in rows:
+            payload = json.loads(row["payload"])
+            try:
+                scheduler.enqueue(
+                    ScheduledJob(
+                        task_id=str(row["task_id"]),
+                        client_id=str(payload.get("client_id") or "default"),
+                        weight=int(payload.get("weight", 1)),
+                        cost=int(payload.get("cost", 1)),
+                        workspace_id=str(payload.get("workspace_id") or "default"),
+                    )
+                )
+            except SchedulerError:
+                continue
+
+    def claim_fair(
+        self, scheduler: FairScheduler, worker_id: str, *, ttl: float = 30.0, max_attempts: int = 256
+    ) -> Optional[RetryLease]:
+        """Claim the next task chosen by `scheduler`'s fairness order, backed by this
+        durable queue's real lease/fencing state (not just the scheduler's in-memory view)."""
+        self.sync_fair_scheduler(scheduler)
+        for _ in range(max_attempts):
+            scheduled = scheduler.next()
+            if scheduled is None:
+                return None
+            lease = self._claim_specific(scheduled.task_id, worker_id, ttl=ttl)
+            try:
+                scheduler.complete(scheduled.task_id)
+            except SchedulerError:
+                pass
+            if lease is not None:
+                return lease
+        return None
