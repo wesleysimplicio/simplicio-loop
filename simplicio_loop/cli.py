@@ -44,6 +44,7 @@ from .ops_ledger import (
 )
 from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
+from .delivery import DELIVERY_ORDER
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -678,7 +679,14 @@ def main(argv=None) -> int:
     p_run = sub.add_parser("run", help="arm, execute, and independently verify a raw markdown task")
     p_run.add_argument("--task", required=True, help="markdown task file")
     p_run.add_argument("--repo", default=".", help="repository root")
-    p_run.add_argument("--delivery", default="verified", help="requested delivery target")
+    p_run.add_argument(
+        "--delivery", default="verified", choices=DELIVERY_ORDER[1:],
+        metavar="{" + ",".join(DELIVERY_ORDER[1:]) + "}",
+        help=(
+            "requested delivery target, one of: " + ", ".join(DELIVERY_ORDER[1:])
+            + " (use 'implemented' for a local-only run)"
+        ),
+    )
     p_run.add_argument("--max-iterations", type=int, default=12, help="safety cap")
 
     p_oracle = sub.add_parser("oracle", help="evaluate completion and cross-runtime parity")
