@@ -68,6 +68,17 @@ def _set_loop_dir(loop_dir):
     WATCHER_STATE = os.path.join(LOOP_DIR, "watcher_state.json")
 
 
+def _resolve_wi_worktree(wi):
+    """#561: resolve the Orca worktree for a given WI id (e.g. WI-3307 ->
+    .orchestrator/worktrees/wi-3307). Returns None when no such worktree exists
+    (caller must fail closed to UNVERIFIED rather than silently using REPO)."""
+    if not wi:
+        return None
+    candidate = Path(REPO) / ".orchestrator" / "worktrees" / wi.lower()
+    if candidate.is_dir():
+        return str(candidate)
+    return None
+
 _run_dir = os.environ.get("SIMPLICIO_RUN_DIR", "").strip()
 _repo_override = os.environ.get("SIMPLICIO_LOOP_REPO", "").strip()
 if _repo_override:
@@ -98,20 +109,25 @@ def _stable_json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _find_run_dir():
+def _find_run_dir(wi=None):
     run_dir = os.environ.get("SIMPLICIO_RUN_DIR", "").strip()
     if run_dir:
         return Path(run_dir)
+    runs_root = Path(REPO) / ".orchestrator"
+    if wi:
+        # Isolate per-WI run dir: .orchestrator/run-WIXXXX (e.g. run-WI3307)
+        for token in (wi.replace("-", "").upper(), wi.upper()):
+            wi_run = runs_root / ("run-%s" % token)
+            if wi_run.is_dir() and (wi_run / "independent-watcher-receipt.json").is_file():
+                return wi_run
     # Fallback: scan .orchestrator/run-*/ for a dir holding an independent receipt.
     candidate = None
-    runs_root = Path(REPO) / ".orchestrator"
     if runs_root.is_dir():
         for entry in sorted(runs_root.glob("run-*")):
             if entry.is_dir() and (entry / "independent-watcher-receipt.json").is_file():
                 candidate = entry
                 break
     return candidate
-
 
 def _load_run_artifacts(run_dir):
     if not run_dir:
@@ -121,14 +137,35 @@ def _load_run_artifacts(run_dir):
     return evidence, independent
 
 
-def _git_meta():
+def _git_meta(worktree=None):
     def _run(*args):
         try:
-            done = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, timeout=15)
+            done = subprocess.run(["git", *args], cwd=worktree or REPO, capture_output=True, text=True, timeout=15)
             return (done.stdout or "").strip() if done.returncode == 0 else ""
         except Exception:
             return ""
-    diff = _run("diff", "--no-ext-diff", "HEAD")
+    # Include NEW (untracked) files in the diff fingerprint. The default
+    # `git diff HEAD` ignores untracked paths, so a run that only *creates*
+    # files would always hash to the empty-string sha and never match a
+    # receipt that recorded the real change. We stage everything
+    # temporarily (`git add -A`), read `git diff --cached HEAD` (which
+    # DOES include newly-added paths), then restore the original index
+    # with `git reset` (mixed) so the working tree is untouched.
+    diff = ""
+    staged = False
+    try:
+        st = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"],
+                            cwd=worktree or REPO, capture_output=True, text=True, timeout=15)
+        if st.returncode == 0 and any(line[:2] in ("??", " A", "M ", "M ") or line.startswith("??")
+                               for line in st.stdout.splitlines()):
+            subprocess.run(["git", "add", "-A"], cwd=worktree or REPO,
+                           capture_output=True, text=True, timeout=15)
+            staged = True
+        diff = _run("diff", "--no-ext-diff", "--cached", "HEAD")
+    finally:
+        if staged:
+            subprocess.run(["git", "reset", "-q"], cwd=worktree or REPO,
+                           capture_output=True, text=True, timeout=15)
     return {
         "commit_sha": _run("rev-parse", "HEAD"),
         "diff_hash": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
@@ -301,7 +338,10 @@ def _quality_gate_reverify(run_dir):
                 "self_reported": {}, "lane_checks": []}
 
 
-def cmd_verify():
+def cmd_verify(wi=None, worktree=None):
+    wt = None
+    if wi or worktree:
+        wt = worktree or _resolve_wi_worktree(wi)
     challenge = _read_json(CHALLENGE)
     if not challenge:
         print("UNVERIFIED|watcher_verify: no challenge on disk yet — nothing to answer")
@@ -309,9 +349,8 @@ def cmd_verify():
 
     anchor = _read_json(ANCHOR)
     anchor_items = _anchor_criteria(anchor)
-    run_dir = _find_run_dir()
+    run_dir = _find_run_dir(wi=wi)
     evidence, independent = _load_run_artifacts(run_dir)
-
     quality_reverify = _quality_gate_reverify(run_dir)
 
     reasons = []
@@ -373,7 +412,7 @@ def cmd_verify():
             "commit_sha": (independent or {}).get("commit_sha", ""),
             "diff_hash": (independent or {}).get("diff_hash", ""),
         }
-    git_meta = _git_meta()
+    git_meta = _git_meta(worktree=wt)
     expected_commit = run_meta.get("commit_sha", "")
     expected_diff = run_meta.get("diff_hash", "")
     if expected_commit and git_meta["commit_sha"] and expected_commit != git_meta["commit_sha"]:
@@ -497,20 +536,45 @@ def cmd_selftest():
 
 
 def main():
-    if len(sys.argv) < 2:
+    import argparse
+    parser = argparse.ArgumentParser(description="watcher verification producer")
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("issue")
+    pv = sub.add_parser("verify")
+    pv.add_argument("--wi", default=None, help="Work item id (e.g. WI-3307) to isolate worktree/run")
+    pv.add_argument("--issue", default=None, help="GitHub issue number (resolves to WI via mapping)")
+    pv.add_argument("--worktree", default=None, help="Explicit worktree path to isolate")
+    sub.add_parser("selftest")
+    args = parser.parse_args()
+    if not args.cmd:
         print("Usage: python3 scripts/watcher_verify.py issue|verify|selftest")
         sys.exit(2)
-    cmd = sys.argv[1]
-    if cmd == "issue":
+    if args.cmd == "issue":
         sys.exit(cmd_issue())
-    elif cmd == "verify":
-        sys.exit(cmd_verify())
-    elif cmd == "selftest":
+    elif args.cmd == "verify":
+        wi = args.wi
+        if not wi and args.issue:
+            wi = _wi_for_issue(args.issue)
+        sys.exit(cmd_verify(wi=wi, worktree=args.worktree))
+    elif args.cmd == "selftest":
         cmd_selftest()
     else:
-        print("UNVERIFIED|unknown command: %s" % cmd)
+        print("UNVERIFIED|unknown command: %s" % args.cmd)
         sys.exit(2)
 
+
+def _wi_for_issue(issue):
+    """#561: map a GitHub issue number to its canonical WI id via the tasks dir."""
+    try:
+        tasks_root = Path(REPO) / ".orchestrator" / "tasks"
+        if tasks_root.is_dir():
+            for entry in sorted(tasks_root.glob("WI-*.md")):
+                text = entry.read_text(encoding="utf-8", errors="ignore")
+                if ("#%s" % str(issue)) in text:
+                    return entry.stem
+    except Exception:
+        pass
+    return None
 
 if __name__ == "__main__":
     main()

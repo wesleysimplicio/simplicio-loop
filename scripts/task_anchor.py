@@ -598,6 +598,28 @@ def cmd_check(opts):
         sys.exit(11)
 
 
+def _prototype_gate_status(anchor):
+    """#568 P0 slice: the Prototype-First gate's own done-gate integration point. A work item
+    with a TRACKED, unresolved prototype-necessity flow (`simplicio_loop.prototype_gate`,
+    `.orchestrator/loop/prototype/<item>.json`) also blocks "done" here, alongside the
+    acceptance-criteria coverage this gate already enforces. Fail-open: an item with no
+    tracked flow, or a repo where the prototype module is unavailable, is never blocked by
+    this check — it is additive, not a new hard requirement for repos that never opted in."""
+    item = anchor.get("item")
+    if not item:
+        return None
+    if REPO not in sys.path:
+        sys.path.insert(0, REPO)
+    try:
+        from simplicio_loop.prototype_gate import gate_status
+    except Exception:
+        return None
+    try:
+        return gate_status(item, REPO)
+    except Exception:
+        return None
+
+
 def cmd_gate(opts):
     """The done/PR-open gate: three states per dimension — done / waived:no-infra / pending.
     Waived criteria are printed unconditionally, ready or not."""
@@ -605,12 +627,15 @@ def cmd_gate(opts):
     criteria = anchor.get("criteria", [])
     done, total, pending = coverage(criteria)
     waived_items = waived(criteria)
-    ready = bool(total) and not pending
+    proto_status = _prototype_gate_status(anchor)
+    proto_ready = proto_status.get("ready", True) if proto_status else True
+    ready = bool(total) and not pending and proto_ready
     if opts.get("json"):
         print(json.dumps({
             "ready": ready, "done": done, "total": total, "pending": pending,
             "waived": [{"id": c.get("id"), "text": c.get("text"),
                        "reason": c.get("waived_reason") or ""} for c in waived_items],
+            "prototype_gate": proto_status,
         }, indent=2, ensure_ascii=False))
     else:
         if ready:
@@ -621,9 +646,11 @@ def cmd_gate(opts):
             print("blocked")
             if not total:
                 log("no anchor set — freeze the acceptance criteria before declaring done")
-            else:
+            elif pending:
                 log("%d/%d verified — do NOT declare done or open the PR yet" % (done, total))
                 log("pending: %s" % ", ".join(pending))
+            if proto_status and not proto_ready:
+                log("prototype gate: %s" % proto_status.get("reason"))
         for c in waived_items:  # always printed, ready or blocked — never silently absent
             log("waived:no-infra %s %s — %s" % (
                 c.get("id"), c.get("text"), c.get("waived_reason") or "(no reason recorded)"))
