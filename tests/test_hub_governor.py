@@ -224,6 +224,38 @@ def test_concurrent_admission_never_exceeds_global_or_client_budget() -> None:
     final_status = governor.status()
     assert final_status["used"]["cpu"] == 0
     assert final_status["active_leases"] == 0
+def test_admit_rejects_missing_client_or_task_id() -> None:
+    governor = ResourceGovernor(ResourceLimits(cpu=2))
+    with pytest.raises(ValueError):
+        governor.admit("", "task-1", ResourceRequest(cpu=1))
+    with pytest.raises(ValueError):
+        governor.admit("alice", "", ResourceRequest(cpu=1))
+
+
+def test_admit_is_idempotent_for_the_same_lease_id() -> None:
+    governor = ResourceGovernor(ResourceLimits(cpu=2))
+    first = governor.admit("alice", "task-1", ResourceRequest(cpu=1), lease_id="lease-a")
+    second = governor.admit("alice", "task-1", ResourceRequest(cpu=1), lease_id="lease-a")
+    assert first is second
+    assert governor.status()["used"]["cpu"] == 1
+
+
+def test_record_failure_rejects_unsupported_reason() -> None:
+    governor = ResourceGovernor(ResourceLimits(cpu=2))
+    with pytest.raises(ValueError):
+        governor.record_failure("not_a_real_reason")
+
+
+def test_receipts_returns_a_defensive_copy_of_every_throttle() -> None:
+    governor = ResourceGovernor(ResourceLimits(processes=1))
+    governor.admit("alice", "task-1", ResourceRequest(processes=1))
+    with pytest.raises(ResourceThrottled):
+        governor.admit("bob", "task-2", ResourceRequest(processes=1))
+    receipts = governor.receipts()
+    assert len(receipts) == 1
+    assert receipts[0]["reason"] == "global_budget"
+    receipts[0]["reason"] = "mutated"
+    assert governor.receipts()[0]["reason"] == "global_budget"
 
 
 def test_standalone_status_is_observable() -> None:
