@@ -108,10 +108,11 @@ class HubRetryQueue:
             row = self._db.execute(
                 """
                 SELECT * FROM hub_jobs
-                WHERE state='queued' AND next_attempt_at<=?
+                WHERE (state='queued' AND next_attempt_at<=?)
+                   OR (state='leased' AND lease_expires_at<=?)
                 ORDER BY updated_at, task_id LIMIT 1
                 """,
-                (now,),
+                (now, now),
             ).fetchone()
             if row is None:
                 self._db.execute("COMMIT")
@@ -123,9 +124,10 @@ class HubRetryQueue:
                 """
                 UPDATE hub_jobs SET state='leased', attempts=attempts+1,
                   lease_id=?, fence=?, lease_expires_at=?, updated_at=?
-                WHERE task_id=? AND state='queued'
+                WHERE task_id=? AND (state='queued' OR
+                  (state='leased' AND lease_expires_at<=? AND fence=?))
                 """,
-                (lease_id, fence, expires, now, row["task_id"]),
+                (lease_id, fence, expires, now, row["task_id"], now, int(row["fence"])),
             )
             self._db.execute("COMMIT")
             return RetryLease(str(row["task_id"]), lease_id, fence, expires)
