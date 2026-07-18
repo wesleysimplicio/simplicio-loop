@@ -53,6 +53,8 @@ class RepositoryIdentity:
     worktree_root: Optional[str] = None
     base_sha: str = ""
     dirty: bool = False
+    dirty_fingerprint: str = ""
+    mapper_config: Any = ""
 
     def __post_init__(self) -> None:
         repository = str(self.repository).strip()
@@ -69,6 +71,7 @@ class RepositoryIdentity:
         object.__setattr__(self, "canonical_root", canonical_root)
         object.__setattr__(self, "worktree_root", worktree_root)
         object.__setattr__(self, "default_branch", branch)
+        object.__setattr__(self, "dirty_fingerprint", str(self.dirty_fingerprint or ""))
 
     @property
     def key(self) -> str:
@@ -78,6 +81,8 @@ class RepositoryIdentity:
             "default_branch": self.default_branch,
             "worktree_root": self.worktree_root,
             "base_sha": self.base_sha,
+            "dirty_fingerprint": self.dirty_fingerprint,
+            "mapper_config": self.mapper_config,
         })
 
     @property
@@ -100,6 +105,8 @@ class RepositoryIdentity:
             "worktree_root": self.worktree_root,
             "base_sha": self.base_sha,
             "dirty": self.dirty,
+            "dirty_fingerprint": self.dirty_fingerprint,
+            "mapper_config": self.mapper_config,
             "identity_key": self.key,
         }
 
@@ -155,7 +162,8 @@ class MapServiceRegistry:
             ],
             "identity_fields": [
                 "repository", "canonical_root", "default_branch",
-                "worktree_root", "base_sha", "dirty",
+                "worktree_root", "base_sha", "dirty", "dirty_fingerprint",
+                "mapper_config",
             ],
             "guarantees": [
                 "canonical and overlay cache keys are distinct",

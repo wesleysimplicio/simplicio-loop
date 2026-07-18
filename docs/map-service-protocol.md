@@ -14,11 +14,17 @@ A repository identity contains:
 - canonical checkout root;
 - default branch;
 - optional worktree root;
-- base commit SHA and dirty state.
+- base commit SHA and dirty state;
+- dirty fingerprint for the exact local diff;
+- mapper configuration identity (serialized as part of the cache key).
 
 Canonical identities resolve the default checkout. A worktree identity resolves
 only its own worktree root, so a dirty overlay cannot shadow the canonical
 checkout. Equal root collisions fail closed.
+
+The dirty fingerprint and mapper configuration are part of the identity key, so
+two callers with the same commit but different local content or mapper options
+cannot share a stale view.
 
 ## Operations
 
