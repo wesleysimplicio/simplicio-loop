@@ -1,94 +1,24 @@
 {
   "by_extension": [
     {
-      "bytes": 2172618776,
-      "count": 1119,
-      "ext": ".rlib"
-    },
-    {
-      "bytes": 1123878673,
-      "count": 1340,
-      "ext": ".rmeta"
-    },
-    {
-      "bytes": 436236608,
-      "count": 1131,
-      "ext": ".o"
-    },
-    {
-      "bytes": 211127811,
-      "count": 1795,
-      "ext": "(no ext)"
-    },
-    {
-      "bytes": 180672520,
-      "count": 78,
-      "ext": ".dylib"
-    },
-    {
-      "bytes": 110845096,
-      "count": 6,
-      "ext": ".bin"
-    },
-    {
-      "bytes": 48990710,
-      "count": 14,
-      "ext": ".wav"
-    },
-    {
-      "bytes": 28723921,
-      "count": 2,
-      "ext": ".mp4"
-    },
-    {
-      "bytes": 26192879,
-      "count": 1291,
-      "ext": ".py"
-    },
-    {
-      "bytes": 25099831,
-      "count": 1061,
-      "ext": ".md"
-    },
-    {
-      "bytes": 14734673,
-      "count": 1,
-      "ext": ".whl"
-    },
-    {
-      "bytes": 12962362,
-      "count": 9,
+      "bytes": 10581802,
+      "count": 7,
       "ext": ".png"
     },
     {
-      "bytes": 10424738,
-      "count": 1431,
-      "ext": ".d"
+      "bytes": 8089213,
+      "count": 638,
+      "ext": ".py"
     },
     {
-      "bytes": 6261732,
-      "count": 12,
-      "ext": ".aiff"
+      "bytes": 2883386,
+      "count": 189,
+      "ext": ".md"
     },
     {
-      "bytes": 4165066,
-      "count": 1976,
-      "ext": ".json"
-    },
-    {
-      "bytes": 2601856,
-      "count": 179,
-      "ext": ".rs"
-    },
-    {
-      "bytes": 648398,
-      "count": 2,
+      "bytes": 434685,
+      "count": 1,
       "ext": ".jpg"
-    },
-    {
-      "bytes": 421888,
-      "count": 2,
-      "ext": ".db"
     },
     {
       "bytes": 414880,
@@ -96,59 +26,54 @@
       "ext": ".webp"
     },
     {
-      "bytes": 361485,
-      "count": 12,
+      "bytes": 382056,
+      "count": 117,
+      "ext": ".json"
+    },
+    {
+      "bytes": 141053,
+      "count": 4,
       "ext": ".html"
     },
     {
-      "bytes": 258084,
-      "count": 116,
+      "bytes": 57789,
+      "count": 10,
+      "ext": ".rs"
+    },
+    {
+      "bytes": 36899,
+      "count": 8,
+      "ext": ".sh"
+    },
+    {
+      "bytes": 29082,
+      "count": 3,
+      "ext": ".svg"
+    },
+    {
+      "bytes": 18088,
+      "count": 9,
       "ext": ".toml"
     },
     {
-      "bytes": 231125,
+      "bytes": 16283,
       "count": 2,
       "ext": ".lock"
     },
     {
-      "bytes": 201750,
-      "count": 32,
-      "ext": ".sh"
-    },
-    {
-      "bytes": 70856,
-      "count": 1,
-      "ext": ".zip"
-    },
-    {
-      "bytes": 59496,
-      "count": 14,
-      "ext": ".yml"
-    },
-    {
-      "bytes": 57619,
-      "count": 6,
-      "ext": ".svg"
-    },
-    {
-      "bytes": 27457,
-      "count": 12,
+      "bytes": 9165,
+      "count": 4,
       "ext": ".srt"
     },
     {
-      "bytes": 10686,
-      "count": 10,
+      "bytes": 8413,
+      "count": 9,
+      "ext": "(no ext)"
+    },
+    {
+      "bytes": 8345,
+      "count": 9,
       "ext": ".jsonl"
-    },
-    {
-      "bytes": 7500,
-      "count": 1,
-      "ext": ".c"
-    },
-    {
-      "bytes": 5384,
-      "count": 6,
-      "ext": ".txt"
     },
     {
       "bytes": 3597,
@@ -156,71 +81,66 @@
       "ext": ".js"
     },
     {
-      "bytes": 3577,
-      "count": 3,
+      "bytes": 3336,
+      "count": 2,
+      "ext": ".yml"
+    },
+    {
+      "bytes": 2812,
+      "count": 2,
       "ext": ".ps1"
     },
     {
-      "bytes": 1237,
-      "count": 1,
-      "ext": ".upstream"
+      "bytes": 1705,
+      "count": 3,
+      "ext": ".txt"
     },
     {
-      "bytes": 201,
-      "count": 2,
+      "bytes": 126,
+      "count": 1,
       "ext": ".in"
-    },
-    {
-      "bytes": 177,
-      "count": 1,
-      "ext": ".tag"
-    },
-    {
-      "bytes": 48,
-      "count": 1,
-      "ext": ".timestamp"
     }
   ],
-  "distinct_blobs_ever_committed": 11673,
-  "generated_at": "2026-07-17T01:14:07Z",
+  "distinct_blobs_ever_committed": 1022,
+  "generated_at": "2026-07-18T05:43:41Z",
   "git_count_objects": {
-    "count": "238",
+    "count": "618",
     "garbage": "1",
-    "in-pack": "17564",
-    "packs": "3",
-    "prune-packable": "0",
-    "size": "703.39 KiB",
-    "size-garbage": "0 bytes",
-    "size-pack": "1.40 GiB"
+    "in-pack": "1634",
+    "packs": "2",
+    "prune-packable": "11",
+    "size": "65.54 MiB",
+    "size-garbage": "1.23 GiB",
+    "size-pack": "13.54 MiB"
   },
   "git_count_objects_parsed_bytes": {
-    "size_loose_bytes": 720271,
-    "size_pack_bytes": 1503238553
+    "size_loose_bytes": 68723671,
+    "size_pack_bytes": 14197719
   },
   "schema": "simplicio.repo-history-scan/v1",
   "top_blobs": [
     {
       "paths": [
-        "rust/target/debug/deps/simplicio_core-01a80cbc859a4ee7"
+        "assets/simplicio-loop-evidence-memory.png"
       ],
-      "sha": "8a6c8fb44f5900a10e7b378ea27544611c87da91",
-      "size_bytes": 78985376
+      "sha": "09f90faa3f3e00eb64a697b950c4d62c1df3af8d",
+      "size_bytes": 2441366
     },
     {
       "paths": [
-        "rust/target/debug/deps/libort_sys-f9eaead2d2fb28e6.rlib"
+        "assets/simplicio-loop-hero-2026.png"
       ],
-      "sha": "cc0a91795ecdf98fbd1cecf8010f90cbc0c8a342",
-      "size_bytes": 75152584
+      "sha": "b97c2befb5913dbee20351f99cfad099b2695eb5",
+      "size_bytes": 2337034
     },
     {
       "paths": [
-        "rust/target/release/deps/libort_sys-13ff4a644381b453.rlib"
+        "assets/simplicio-loop-parallel-worktrees.png"
       ],
-      "sha": "213d6e1953bfbf5c8e73b4393aa0283cb3e78ef1",
-      "size_bytes": 74765824
+      "sha": "163821295671c30f8e2cdcccde962a0683ff44af",
+      "size_bytes": 2300503
     }
   ],
-  "total_historical_blob_bytes": 4418322697,
-  "total_historical_blob_human": "4.1GB"
+  "total_historical_blob_bytes": 23122715,
+  "total_historical_blob_human": "22.1MB"
 }

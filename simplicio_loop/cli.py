@@ -232,7 +232,7 @@ def status(repo: str, run_id: str, as_json: bool = False, as_text: bool = False)
 
 
 def preflight(repo: str, as_json: bool = False) -> int:
-    """Verify the bound operators the loop requires are installed and reachable.
+    """Verify the core operators required by the loop and report runtime availability.
 
     Returns exit 0 when all required operators are present, 1 otherwise. Always emits a
     machine-readable JSON document (also when --json is omitted, for script consumption).
@@ -259,25 +259,30 @@ def preflight(repo: str, as_json: bool = False) -> int:
     # dev-cli and simplicio-py are alternative names for the same action operator.
     action_present = any(o["present"] for o in operators
                          if o["name"] in ("simplicio-dev-cli", "simplicio-py"))
-    all_present = operators[0]["present"] and action_present and operators[3]["present"]
+    all_present = operators[0]["present"] and action_present
+    runtime_available = operators[3]["present"]
     payload = {
         "schema": "simplicio.preflight/v1",
         "repo": str(repo_path),
         "all_present": all_present,
         "operators": operators,
+        "runtime_available": runtime_available,
+        "degraded_features": [] if runtime_available else ["runtime-integration"],
     }
     if as_json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print("simplicio-loop preflight")
         for op in operators:
-            mark = "OK " if op["present"] else "MISSING"
+            mark = "OK " if op["present"] else ("OPTIONAL" if op["name"] == "simplicio-runtime" else "MISSING")
             ver = f" ({op['version']})" if op["version"] else ""
             print(f"  [{mark}] {op['name']}{ver}")
-        print("  all_present:" if all_present else "  NOT ALL PRESENT")
+        print("  all_present:" if all_present else "  NOT ALL REQUIRED OPERATORS PRESENT")
+        if not runtime_available:
+            print("  runtime integration: unavailable (core loop continues)")
     if not all_present:
         for op in operators:
-            if not op["present"]:
+            if not op["present"] and op["name"] != "simplicio-runtime":
                 _route_finding(
                     stage="preflight",
                     finding_id=f"missing-operator-{op['name']}",

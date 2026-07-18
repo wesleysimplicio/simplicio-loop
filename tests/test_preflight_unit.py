@@ -57,3 +57,23 @@ def test_build_report_is_stable_shape(monkeypatch, tmp_path: Path):
         "simplicio-mapper", "simplicio-dev-cli", "simplicio-runtime"
     ]
     json.dumps(report)
+
+
+def test_build_report_continues_when_optional_runtime_is_missing(monkeypatch, tmp_path: Path):
+    def component(*args, **kwargs):
+        name = args[0]
+        return {"name": name, "version": "1.0.0", "minimum_version": "0.0.0",
+                "returncode": 0, "identity_ok": True, "version_ok": True, "capabilities_ok": True}
+
+    monkeypatch.setattr(preflight, "_probe_component", component)
+    monkeypatch.setattr(preflight, "_probe_runtime", lambda cwd: {
+        "name": "simplicio-runtime", "version": "0.0.0", "minimum_version": "3.5.0",
+        "returncode": 1, "identity_ok": False, "version_ok": False, "capabilities_ok": True,
+        "runtime_contract_ok": False, "error": "command not found",
+    })
+
+    report = preflight.build_report(tmp_path)
+
+    assert report["ready"] is True
+    assert report["runtime_available"] is False
+    assert report["degraded_features"] == ["runtime-integration"]

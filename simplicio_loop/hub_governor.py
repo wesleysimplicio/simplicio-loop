@@ -1,12 +1,15 @@
 """Fail-closed resource admission and protection for the Hub.
 
 The governor is intentionally stdlib-only and standalone-safe. It owns logical
-budgets and leases; platform-specific probes may feed failure signals, while
-the admission contract remains deterministic when a probe is unavailable.
+budgets and leases; ``ResourceProbe`` (cgroups -> psutil -> stdlib fallback ->
+unavailable) may feed pressure readings into the circuit breaker via
+``evaluate_pressure``, while the admission contract remains deterministic
+when every probe is unavailable.
 """
 
 from __future__ import annotations
 
+import platform
 import time
 from dataclasses import dataclass, field
 from threading import RLock
@@ -137,6 +140,79 @@ class CircuitBreaker:
             "tripped_at": self.tripped_at,
             "cooldown_seconds": self.cooldown_seconds,
         }
+
+
+@dataclass(frozen=True)
+class PressureReading:
+    """A best-effort resource sample used to feed the circuit breaker."""
+
+    cpu_percent: float = 0.0
+    memory_bytes: int = 0
+    source: str = "unavailable"
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "cpu_percent": self.cpu_percent,
+            "memory_bytes": self.memory_bytes,
+            "source": self.source,
+        }
+
+
+class ResourceProbe:
+    """Cross-platform pressure reader with a documented degrade ladder.
+
+    Order: Linux cgroups v2 -> psutil (any OS, if installed) -> stdlib
+    ``resource`` approximation -> unavailable (all-zero reading). Every step
+    is best-effort: a missing file, a missing package, or a platform mismatch
+    is swallowed and the next step is tried. ``read`` itself never raises, so
+    callers on a host without cgroups or psutil still get a safe reading
+    instead of a crash.
+    """
+
+    def read(self) -> PressureReading:
+        for reader in (self._read_cgroup, self._read_psutil, self._read_stdlib):
+            reading = reader()
+            if reading is not None:
+                return reading
+        return PressureReading(source="unavailable")
+
+    @staticmethod
+    def _read_cgroup() -> Optional[PressureReading]:
+        if platform.system() != "Linux":
+            return None
+        try:
+            with open("/sys/fs/cgroup/memory.current", "r", encoding="utf-8") as handle:
+                memory_bytes = int(handle.read().strip())
+        except (OSError, ValueError):
+            return None
+        return PressureReading(memory_bytes=memory_bytes, source="cgroup")
+
+    @staticmethod
+    def _read_psutil() -> Optional[PressureReading]:
+        try:
+            import psutil  # type: ignore
+        except ImportError:
+            return None
+        try:
+            process = psutil.Process()
+            memory_bytes = int(process.memory_info().rss)
+            cpu_percent = float(process.cpu_percent(interval=None))
+        except Exception:
+            return None
+        return PressureReading(cpu_percent=cpu_percent, memory_bytes=memory_bytes, source="psutil")
+
+    @staticmethod
+    def _read_stdlib() -> Optional[PressureReading]:
+        try:
+            import resource as resource_module
+
+            usage = resource_module.getrusage(resource_module.RUSAGE_SELF)
+            # Linux reports ru_maxrss in KiB; macOS reports it in bytes.
+            scale = 1 if platform.system() == "Darwin" else 1024
+            memory_bytes = int(usage.ru_maxrss) * scale
+        except Exception:
+            return None
+        return PressureReading(memory_bytes=memory_bytes, source="stdlib_fallback")
 
 
 @dataclass
@@ -280,13 +356,47 @@ class ResourceGovernor:
                     "lease_id": lease.lease_id, "released": True}
 
     def record_failure(self, reason: str) -> Dict[str, Any]:
-        if reason not in {"oom", "thrashing", "disk_full", "gpu_pressure"}:
+        if reason not in {"oom", "thrashing", "disk_full", "gpu_pressure", "cpu_pressure"}:
             raise ValueError("unsupported pressure reason")
         with self._lock:
             tripped = self._circuit.record_failure(reason)
             return {"schema": GOVERNOR_SCHEMA, "event": "pressure",
                     "reason": reason, "circuit": self._circuit.as_dict(),
                     "tripped": tripped}
+
+    def evaluate_pressure(
+        self,
+        reading: PressureReading,
+        *,
+        memory_limit_bytes: int = 0,
+        cpu_percent_limit: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Feed a real or synthetic measurement into the circuit breaker.
+
+        Sustained over-budget readings trip the breaker (denying admission);
+        once the cooldown elapses, the next under-budget reading closes it
+        again (half-open -> closed), so recovery only happens after pressure
+        genuinely subsides rather than on a timer alone.
+        """
+        with self._lock:
+            over_memory = bool(memory_limit_bytes) and reading.memory_bytes > memory_limit_bytes
+            over_cpu = bool(cpu_percent_limit) and reading.cpu_percent > cpu_percent_limit
+            if over_memory or over_cpu:
+                reason = "thrashing" if over_memory else "cpu_pressure"
+                tripped = self._circuit.record_failure(reason)
+                return {
+                    "schema": GOVERNOR_SCHEMA, "event": "pressure_reading",
+                    "reading": reading.as_dict(), "over_budget": True,
+                    "tripped": tripped, "circuit": self._circuit.as_dict(),
+                }
+            self._circuit.allow()
+            if self._circuit.state == "half_open":
+                self._circuit.recover()
+            return {
+                "schema": GOVERNOR_SCHEMA, "event": "pressure_reading",
+                "reading": reading.as_dict(), "over_budget": False,
+                "tripped": False, "circuit": self._circuit.as_dict(),
+            }
 
     def recover(self) -> Dict[str, Any]:
         with self._lock:

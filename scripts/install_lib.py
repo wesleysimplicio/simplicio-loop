@@ -54,8 +54,8 @@ MARK_A, MARK_B = "<!-- simplicio-loop:begin -->", "<!-- simplicio-loop:end -->"
 def entry_block(runtime=None):
     """Build the runtime entry-file block.
 
-    A Simplicio Runtime bind is REQUIRED by `simplicio-loop`: `hooks/loop_stop.py` blocks the
-    running driver when the runtime is absent or unreachable (see `missing_bound_operators()`).
+    A Simplicio Runtime bind is optional: the loop records unavailable runtime integrations and
+    continues with its required mapper and dev-cli operators.
     """
     body = (
         MARK_A + "\n"

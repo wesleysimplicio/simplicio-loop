@@ -128,9 +128,10 @@ class HubRetryQueue:
                 """
                 UPDATE hub_jobs SET state='leased', attempts=attempts+1,
                   lease_id=?, fence=?, lease_expires_at=?, updated_at=?
-                WHERE task_id=? AND fence=?
+                WHERE task_id=? AND (state='queued' OR
+                  (state='leased' AND lease_expires_at<=? AND fence=?))
                 """,
-                (lease_id, fence, expires, now, row["task_id"], row["fence"]),
+                (lease_id, fence, expires, now, row["task_id"], now, int(row["fence"])),
             )
             if cursor.rowcount == 0:
                 # Lost a race with another claimant between the SELECT and

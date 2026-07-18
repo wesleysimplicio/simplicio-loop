@@ -2,8 +2,9 @@
 """Fail-closed stack preflight for the Task-to-Delivery boundary.
 
 The runner can be exercised with local fakes, but a real promotion must prove that
-the three external operators are the expected identities and expose compatible
-capabilities.  This command performs that check without importing an operator
+the two core external operators are the expected identities and expose compatible
+capabilities. The optional native runtime is reported separately, never promoted to
+a core-loop blocker. This command performs those checks without importing an operator
 in-process and emits one stable receipt suitable for CI or a run journal.
 
 Usage::
@@ -178,15 +179,23 @@ def build_report(cwd: Path) -> Dict[str, Any]:
     devcli = _probe_component("simplicio-dev-cli", "simplicio-dev-cli", cwd,
                               ("--version", "--json"), ("task", "--help"), DEVCLI_CAPABILITIES)
     runtime = _probe_runtime(cwd)
+    runtime_available = (
+        bool(runtime.get("identity_ok"))
+        and bool(runtime.get("version_ok"))
+        and bool(runtime.get("runtime_contract_ok"))
+        and int(runtime.get("returncode", 1)) == 0
+    )
+    runtime["required"] = False
     components = [mapper, devcli, runtime]
     ready = all(
         bool(item.get("identity_ok")) and bool(item.get("version_ok")) and bool(item.get("capabilities_ok", True))
-        and (item is not runtime or bool(item.get("runtime_contract_ok")))
         and int(item.get("returncode", 1)) == 0
-        for item in components
+        for item in (mapper, devcli)
     )
     if ready:
         detail = "; ".join("%s %s" % (item["name"], item["version"]) for item in components)
+        if not runtime_available:
+            detail += "; simplicio-runtime unavailable (runtime integrations skipped)"
         _emit_progress("end", outcome="pass", detail=detail)
     else:
         missing = [item["name"] for item in components
@@ -200,6 +209,8 @@ def build_report(cwd: Path) -> Dict[str, Any]:
         "ready": ready,
         "status": "READY" if ready else "BLOCKED",
         "components": components,
+        "runtime_available": runtime_available,
+        "degraded_features": [] if runtime_available else ["runtime-integration"],
     }
 
 

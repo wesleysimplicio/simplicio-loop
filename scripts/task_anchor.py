@@ -81,6 +81,7 @@ Usage:
     python3 scripts/task_anchor.py check --goal "Add SSO login" --exit-code
     python3 scripts/task_anchor.py check --goal "Add SSO login" --format toon
     python3 scripts/task_anchor.py gate --exit-code
+    python3 scripts/task_anchor.py set --item 12 --goal "..." --delivery delivery.json --ac "..."
     python3 scripts/task_anchor.py checklist
     python3 scripts/task_anchor.py verify_harness --harness-dir /scratch/harness --snippet src/Calc.cs
 """
@@ -463,6 +464,7 @@ def cmd_set(opts):
         sys.exit(12)
     criteria = (merge_preserving(existing.get("criteria"), texts)
                 if existing.get("goal_fp") == fp else freeze_criteria(texts))
+    delivery_path = opts.get("delivery")
     anchor = {"item": opts.get("item") or existing.get("item", ""), "goal": goal, "goal_fp": fp,
               "frozen_at": existing.get("frozen_at") or _now(), "criteria": criteria}
     if existing.get("delivery"):

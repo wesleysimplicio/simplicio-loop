@@ -1,15 +1,25 @@
 """Singleton Hub lock and versioned in-process IPC contract."""
 
 import json
+import hashlib
+import asyncio
 import os
+import socket
+import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Set
+from typing import Any, Dict, Optional, Set
+
+from .process_supervisor import ProcessSpec, ProcessSpecError
+from .process_supervisor_rust import backend_name, run_with_fallback
 
 
 IPC_SCHEMA = "simplicio.hub-ipc/v1"
 IPC_VERSION = 1
-METHODS = frozenset(("register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report"))
+METHODS = frozenset(
+    ("register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report", "execute", "ping")
+)
 
 
 class HubError(RuntimeError):
@@ -141,12 +151,48 @@ class HubDaemon:
     def handle(self, envelope: HubEnvelope) -> Dict[str, Any]:
         if not self.started:
             raise HubError("Hub is not started")
+        if envelope.method == "ping":
+            return {"ok": True, "started": self.started, "clients": len(self.clients), "jobs": len(self.jobs)}
         if envelope.method == "register":
             client_id = str(envelope.payload.get("client_id") or "")
             if not client_id:
                 raise HubProtocolError("client_id is required")
             self.clients.add(client_id)
             return {"ok": True, "client_id": client_id, "state": "registered"}
+        if envelope.method == "execute":
+            raw_spec = envelope.payload.get("process_spec")
+            if not isinstance(raw_spec, dict):
+                raise HubProtocolError("process_spec must be an object")
+            allowed = {
+                "argv", "cwd", "cwd_allowlist", "env", "env_allowlist",
+                "timeout_seconds", "max_output_bytes", "priority",
+                "idempotency_key", "shell",
+            }
+            unknown = sorted(set(raw_spec) - allowed - {"schema", "spec_hash"})
+            if unknown:
+                raise HubProtocolError("unknown ProcessSpec fields: " + ", ".join(unknown))
+            if raw_spec.get("schema") not in (None, "simplicio.process-spec/v1"):
+                raise HubProtocolError("unsupported ProcessSpec schema")
+            try:
+                spec = ProcessSpec(
+                    argv=tuple(raw_spec.get("argv", ())),
+                    cwd=raw_spec.get("cwd"),
+                    cwd_allowlist=tuple(raw_spec.get("cwd_allowlist", ())),
+                    env=dict(raw_spec.get("env", {})),
+                    env_allowlist=tuple(raw_spec.get("env_allowlist", ())),
+                    timeout_seconds=raw_spec.get("timeout_seconds", 30.0),
+                    max_output_bytes=int(raw_spec.get("max_output_bytes", 65536)),
+                    priority=int(raw_spec.get("priority", 0)),
+                    idempotency_key=str(raw_spec.get("idempotency_key", "")),
+                    shell=bool(raw_spec.get("shell", False)),
+                )
+            except (TypeError, ValueError, ProcessSpecError) as exc:
+                raise HubProtocolError(f"invalid ProcessSpec: {exc}") from exc
+            try:
+                result = run_with_fallback(spec)
+            except (OSError, RuntimeError, asyncio.CancelledError) as exc:
+                raise HubError(f"supervisor execution failed: {exc}") from exc
+            return {"ok": True, "backend": backend_name(), "result": result.to_dict()}
         job_id = str(envelope.payload.get("job_id") or "")
         if not job_id:
             raise HubProtocolError("job_id is required")
@@ -197,3 +243,228 @@ class HubClient:
     def request(self, request_id: str, method: str, **payload: Any) -> Dict[str, Any]:
         payload.setdefault("client_id", self.client_id)
         return self.daemon.handle(HubEnvelope(request_id, method, payload))
+
+
+def default_transport() -> str:
+    return "named-pipe" if os.name == "nt" else "unix"
+
+
+def default_endpoint(root: Optional[str] = None) -> str:
+    if os.name == "nt":
+        suffix = "default" if not root else hashlib.sha256(os.path.abspath(root).encode("utf-8")).hexdigest()[:12]
+        return r"\\.\pipe\simplicio-loop-hub-%s" % suffix
+    return str((Path(root) if root else Path(tempfile.gettempdir())) / "simplicio-loop-hub.sock")
+
+
+def _pipe_listener(endpoint: str):
+    from multiprocessing.connection import Listener
+    return Listener(endpoint, family="AF_PIPE")
+
+
+def _pipe_client(endpoint: str):
+    from multiprocessing.connection import Client
+    return Client(endpoint, family="AF_PIPE")
+
+
+def _recv_line(conn: socket.socket) -> str:
+    chunks = []
+    while True:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        if b"\n" in chunk:
+            break
+    return b"".join(chunks).decode("utf-8").strip()
+
+
+class HubSocketServer:
+    """Local IPC transport for HubDaemon: Unix socket on POSIX, named pipe on Windows."""
+
+    def __init__(self, daemon: HubDaemon, socket_path: str, transport: Optional[str] = None) -> None:
+        self.daemon = daemon
+        self.socket_path = Path(socket_path)
+        self.endpoint = socket_path
+        self.transport = transport or default_transport()
+        if self.transport not in {"unix", "named-pipe"}:
+            raise ValueError("transport must be unix or named-pipe")
+        self._server: Optional[socket.socket] = None
+        self._listener = None
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+
+    def start(self) -> None:
+        if self._running:
+            return
+        if self.transport == "named-pipe":
+            if os.name != "nt":
+                raise RuntimeError("named-pipe transport requires Windows")
+            self._listener = _pipe_listener(self.endpoint)
+        else:
+            self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.socket_path.exists():
+                self.socket_path.unlink()
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(self.socket_path))
+            os.chmod(str(self.socket_path), 0o600)
+            server.listen(8)
+            self._server = server
+            self._server.settimeout(0.5)
+        self._running = True
+        self._thread = threading.Thread(target=self._serve_forever, daemon=True)
+        self._thread.start()
+
+    def _serve_forever(self) -> None:
+        while self._running:
+            try:
+                conn = self._listener.accept() if self.transport == "named-pipe" else self._server.accept()[0]
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            threading.Thread(target=self._handle_conn, args=(conn,), daemon=True).start()
+
+    def _handle_conn(self, conn: socket.socket) -> None:
+        try:
+            if self.transport == "named-pipe":
+                raw = conn.recv_bytes().decode("utf-8")
+            else:
+                with conn:
+                    conn.settimeout(5)
+                    raw = _recv_line(conn)
+                    self._dispatch_socket(conn, raw)
+                    return
+            response = self._dispatch(raw)
+            conn.send_bytes(json.dumps(response).encode("utf-8"))
+        except (OSError, EOFError):
+            return
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def _dispatch(self, raw: str) -> Dict[str, Any]:
+        try:
+            return self.daemon.handle(HubEnvelope.decode(raw))
+        except HubError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def _dispatch_socket(self, conn, raw: str) -> None:
+        if raw:
+            conn.sendall((json.dumps(self._dispatch(raw)) + "\n").encode("utf-8"))
+
+    def shutdown(self) -> None:
+        if self._running:
+            self._running = False
+            if self._server is not None:
+                try:
+                    self._server.close()
+                except OSError:
+                    pass
+                self._server = None
+            if self._listener is not None:
+                try:
+                    self._listener.close()
+                except OSError:
+                    pass
+                self._listener = None
+            if self._thread is not None:
+                self._thread.join(timeout=2)
+                self._thread = None
+        if self.transport == "unix":
+            try:
+                self.socket_path.unlink()
+            except FileNotFoundError:
+                pass
+
+    stop = shutdown
+
+
+class HubSocketClient:
+    """Standalone client for HubSocketServer; usable with no daemon in-process."""
+
+    def __init__(self, socket_path: str, timeout: float = 5.0, transport: Optional[str] = None) -> None:
+        self.socket_path = socket_path
+        self.timeout = timeout
+        self.endpoint = socket_path
+        self.transport = transport or default_transport()
+
+    def request(self, request_id: str, method: str, **payload: Any) -> Dict[str, Any]:
+        return self.request_raw(HubEnvelope(request_id, method, payload).encode())
+
+    def request_raw(self, raw: str) -> Dict[str, Any]:
+        if self.transport == "named-pipe":
+            conn = _pipe_client(self.endpoint)
+            try:
+                conn.send_bytes(raw.encode("utf-8"))
+                raw = conn.recv_bytes().decode("utf-8")
+            finally:
+                conn.close()
+        else:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(self.timeout)
+                sock.connect(self.socket_path)
+                sock.sendall((raw + "\n").encode("utf-8"))
+                raw = _recv_line(sock)
+        if not raw:
+            raise HubError("no response from Hub daemon")
+        return json.loads(raw)
+
+
+def doctor(lock_path: str, socket_path: str, transport: Optional[str] = None) -> Dict[str, Any]:
+    """Report whether a live daemon owns the lock and answers on the socket."""
+    lock_file = Path(lock_path)
+    result: Dict[str, Any] = {
+        "lock_exists": lock_file.exists(),
+        "lock_pid_alive": False,
+        "socket_exists": (transport or default_transport()) == "named-pipe" or Path(socket_path).exists(),
+        "socket_reachable": False,
+    }
+    if lock_file.exists():
+        try:
+            payload = json.loads(lock_file.read_text(encoding="utf-8"))
+            pid = int(payload.get("pid", 0))
+            result["pid"] = pid
+            result["lock_pid_alive"] = _pid_alive(pid)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+    if result["socket_exists"]:
+        try:
+            client = HubSocketClient(socket_path, timeout=1.0, transport=transport)
+            response = client.request("doctor", "ping")
+            result["socket_reachable"] = bool(response.get("ok"))
+        except (OSError, HubError, json.JSONDecodeError):
+            result["socket_reachable"] = False
+    return result
+
+
+def main(argv=None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(prog="simplicio-hub")
+    sub = parser.add_subparsers(dest="command", required=True)
+    serve = sub.add_parser("serve")
+    serve.add_argument("--lock", default=str(Path(tempfile.gettempdir()) / "simplicio-loop-hub.lock"))
+    serve.add_argument("--endpoint", default=default_endpoint())
+    serve.add_argument("--transport", choices=("unix", "named-pipe"), default=default_transport())
+    check = sub.add_parser("doctor")
+    check.add_argument("--lock", default=str(Path(tempfile.gettempdir()) / "simplicio-loop-hub.lock"))
+    check.add_argument("--endpoint", default=default_endpoint())
+    check.add_argument("--transport", choices=("unix", "named-pipe"), default=default_transport())
+    args = parser.parse_args(argv)
+    if args.command == "doctor":
+        print(json.dumps(doctor(args.lock, args.endpoint, args.transport), sort_keys=True))
+        return 0
+    daemon = HubDaemon(args.lock)
+    server = HubSocketServer(daemon, args.endpoint, args.transport)
+    try:
+        daemon.start()
+        server.start()
+        print(json.dumps({"ready": True, "endpoint": args.endpoint, "transport": args.transport}), flush=True)
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        server.shutdown()
+        daemon.stop()
+    return 0

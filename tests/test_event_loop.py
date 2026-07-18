@@ -61,6 +61,42 @@ def test_run_uses_selection_and_executes_coroutine(monkeypatch) -> None:
     assert run(asyncio.sleep(0, result="ok")) == "ok"
 
 
+def test_real_import_absence_falls_back_to_stdlib_with_no_crash(monkeypatch) -> None:
+    real_import_module = importlib.import_module
+
+    def fake_import_module(name, *args, **kwargs):
+        if name == "uvloop":
+            raise ImportError("No module named 'uvloop'")
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+    selected = select_event_loop(platform="linux", enabled=True)
+    assert selected.name == "asyncio"
+    assert selected.enabled is False
+    assert selected.reason == "uvloop_unavailable"
+
+    monkeypatch.setenv("SIMPLICIO_LOOP_UVLOOP", "auto")
+    configured = configure_event_loop()
+    assert configured.name == "asyncio"
+    assert configured.enabled is False
+    assert asyncio.run(asyncio.sleep(0, result="fallback-ok")) == "fallback-ok"
+
+
+def test_configure_falls_back_when_uvloop_not_installed_real_path(monkeypatch) -> None:
+    real_import_module = importlib.import_module
+
+    def fake_import_module(name, *args, **kwargs):
+        if name == "uvloop":
+            raise ModuleNotFoundError("No module named 'uvloop'")
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+    monkeypatch.setenv("SIMPLICIO_LOOP_UVLOOP", "auto")
+    selection = configure_event_loop()
+    assert selection.name == "asyncio"
+    assert selection.reason == "uvloop_unavailable"
+
+
 def test_selection_receipt_is_structured() -> None:
     selected = select_event_loop(platform=sys.platform, enabled=False)
     receipt = selected.as_dict()

@@ -104,7 +104,7 @@ def validate(data: Any) -> list:
     errors = []
     if not isinstance(data, Mapping):
         return ["delivery contract must be a JSON object, got %r" % type(data).__name__]
-    unknown = sorted(set(data.keys()) - set(REQUIRED_FIELDS))
+    unknown = sorted(set(data.keys()) - set(REQUIRED_FIELDS) - {"schema"})
     if unknown:
         errors.append("unknown field(s) in delivery contract: %s" % ", ".join(unknown))
     for field, typ in REQUIRED_FIELDS.items():

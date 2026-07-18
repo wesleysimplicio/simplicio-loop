@@ -1,0 +1,455 @@
+{
+  "schema": "simplicio.conformance/v1",
+  "issue": 432,
+  "total_runtimes": 15,
+  "available_runtimes": 15,
+  "available_failed": 0,
+  "exit_gate": "pass",
+  "roles_canonical": [
+    "intake_planner",
+    "implementation_agent",
+    "safety_gate",
+    "review_panel",
+    "security_correctness_reviewer",
+    "maintainability_reviewer",
+    "runtime_reproduction_verifier",
+    "blast_radius_reviewer",
+    "delivery_agent",
+    "feedback_recovery_agent",
+    "completion_auditor",
+    "github_reporter"
+  ],
+  "results": [
+    {
+      "runtime": "claude",
+      "available": true,
+      "installed": true,
+      "availability_reason": "binary 'claude' present on PATH",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt); native_subagent: PASS (sandbox native_subagent task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": true,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "Stop hook (full)",
+        "scheduler": "stop-hook",
+        "slots": 4,
+        "isolation": "worktree",
+        "cancellation": "abort",
+        "observation": "hook+N3",
+        "blocked": [
+          "queue worker mode (no queue adapter)"
+        ]
+      },
+      "blocked_scenarios": [
+        "queue worker mode (no queue adapter)"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "codex",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/codex/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt); native_subagent: PASS (sandbox native_subagent task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": true,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "self-paced (partial)",
+        "scheduler": "self-paced",
+        "slots": 4,
+        "isolation": "worktree",
+        "cancellation": "abort",
+        "observation": "N2+N3",
+        "blocked": [
+          "hook-bound scenarios (partial hooks)"
+        ]
+      },
+      "blocked_scenarios": [
+        "hook-bound scenarios (partial hooks)"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "cursor",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/cursor/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt); native_subagent: PASS (sandbox native_subagent task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": true,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "stop + afterAgentResponse (full)",
+        "scheduler": "stop-hook",
+        "slots": 4,
+        "isolation": "worktree",
+        "cancellation": "abort",
+        "observation": "N1+N3",
+        "blocked": [
+          "queue worker mode (no queue adapter)"
+        ]
+      },
+      "blocked_scenarios": [
+        "queue worker mode (no queue adapter)"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "vscode",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/vscode/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": false,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "tasks (partial)",
+        "scheduler": "self-paced",
+        "slots": 4,
+        "isolation": "workspace",
+        "cancellation": "task cancel",
+        "observation": "N2+N3",
+        "blocked": [
+          "native subagent mode (no native API)"
+        ]
+      },
+      "blocked_scenarios": [
+        "native subagent mode (no native API)"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "antigravity",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/antigravity/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": false,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "self-paced (partial)",
+        "scheduler": "self-paced",
+        "slots": 4,
+        "isolation": "unknown",
+        "cancellation": "unknown",
+        "observation": "N2+N3",
+        "blocked": [
+          "native subagent mode (no native API)"
+        ]
+      },
+      "blocked_scenarios": [
+        "native subagent mode (no native API)"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "kiro",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/kiro/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": false,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "self-paced",
+        "scheduler": "self-paced",
+        "slots": 4,
+        "isolation": "unknown",
+        "cancellation": "unknown",
+        "observation": "N2+N3",
+        "blocked": [
+          "native subagent mode (no native API)"
+        ]
+      },
+      "blocked_scenarios": [
+        "native subagent mode (no native API)"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "opencode",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/opencode/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt); native_subagent: PASS (sandbox native_subagent task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": true,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "stop hook",
+        "scheduler": "stop-hook",
+        "slots": 4,
+        "isolation": "worktree",
+        "cancellation": "abort",
+        "observation": "N1+N3",
+        "blocked": [
+          "queue worker mode (no queue adapter)"
+        ]
+      },
+      "blocked_scenarios": [
+        "queue worker mode (no queue adapter)"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "gemini",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/gemini/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": false,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "self-paced",
+        "scheduler": "self-paced",
+        "slots": 4,
+        "isolation": "unknown",
+        "cancellation": "unknown",
+        "observation": "N2+N3",
+        "blocked": [
+          "native subagent mode (no native API)"
+        ]
+      },
+      "blocked_scenarios": [
+        "native subagent mode (no native API)"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "aider",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/aider/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": false,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "none",
+        "scheduler": "self-paced",
+        "slots": 1,
+        "isolation": "none",
+        "cancellation": "ctrl-c",
+        "observation": "N2",
+        "blocked": [
+          "native subagent",
+          "hook-bound",
+          "limited slots/waves"
+        ]
+      },
+      "blocked_scenarios": [
+        "native subagent",
+        "hook-bound",
+        "limited slots/waves"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "simplicio_agent",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/simplicio_agent/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt); native_subagent: PASS (sandbox native_subagent task produced valid StageReceipt); queue_worker: PASS (sandbox queue_worker task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": true,
+        "command_adapter": true,
+        "queue_adapter": true,
+        "hooks": "full (loop_stop/orient_clamp)",
+        "scheduler": "both",
+        "slots": 64,
+        "isolation": "worktree+process",
+        "cancellation": "kill",
+        "observation": "N1+N2+N3",
+        "blocked": []
+      },
+      "blocked_scenarios": [],
+      "error": ""
+    },
+    {
+      "runtime": "openclaw",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/openclaw/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt); native_subagent: PASS (sandbox native_subagent task produced valid StageReceipt); queue_worker: PASS (sandbox queue_worker task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": true,
+        "command_adapter": true,
+        "queue_adapter": true,
+        "hooks": "full",
+        "scheduler": "both",
+        "slots": 32,
+        "isolation": "process",
+        "cancellation": "kill",
+        "observation": "N1+N3",
+        "blocked": []
+      },
+      "blocked_scenarios": [],
+      "error": ""
+    },
+    {
+      "runtime": "orca",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/orca/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": false,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "self-paced",
+        "scheduler": "self-paced",
+        "slots": 4,
+        "isolation": "unknown",
+        "cancellation": "unknown",
+        "observation": "N2+N3",
+        "blocked": [
+          "native subagent mode (no native API)"
+        ]
+      },
+      "blocked_scenarios": [
+        "native subagent mode (no native API)"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "deepseek",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/deepseek/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": false,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "self-paced",
+        "scheduler": "self-paced",
+        "slots": 4,
+        "isolation": "unknown",
+        "cancellation": "unknown",
+        "observation": "N2+N3",
+        "blocked": [
+          "native subagent mode (no native API)"
+        ]
+      },
+      "blocked_scenarios": [
+        "native subagent mode (no native API)"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "qwen",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/qwen/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": false,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "self-paced",
+        "scheduler": "self-paced",
+        "slots": 4,
+        "isolation": "unknown",
+        "cancellation": "unknown",
+        "observation": "N2+N3",
+        "blocked": [
+          "native subagent mode (no native API)"
+        ]
+      },
+      "blocked_scenarios": [
+        "native subagent mode (no native API)"
+      ],
+      "error": ""
+    },
+    {
+      "runtime": "kimi",
+      "available": true,
+      "installed": false,
+      "availability_reason": "adapter documented (/home/user/simplicio-loop/adapters/kimi/README.md); portable command mode",
+      "roles_expected": 12,
+      "roles_supported": 12,
+      "sandbox_passed": true,
+      "sandbox_detail": "portable_command: PASS (sandbox portable_command task produced valid StageReceipt)",
+      "receipt_equivalent": true,
+      "capabilities": {
+        "native_api": false,
+        "command_adapter": true,
+        "queue_adapter": false,
+        "hooks": "self-paced",
+        "scheduler": "self-paced",
+        "slots": 4,
+        "isolation": "unknown",
+        "cancellation": "unknown",
+        "observation": "N2+N3",
+        "blocked": [
+          "native subagent mode (no native API)"
+        ]
+      },
+      "blocked_scenarios": [
+        "native subagent mode (no native API)"
+      ],
+      "error": ""
+    }
+  ]
+}
