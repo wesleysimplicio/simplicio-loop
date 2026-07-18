@@ -353,11 +353,13 @@ class HubSocketClient:
         self.transport = transport or default_transport()
 
     def request(self, request_id: str, method: str, **payload: Any) -> Dict[str, Any]:
-        envelope = HubEnvelope(request_id, method, payload)
+        return self.request_raw(HubEnvelope(request_id, method, payload).encode())
+
+    def request_raw(self, raw: str) -> Dict[str, Any]:
         if self.transport == "named-pipe":
             conn = _pipe_client(self.endpoint)
             try:
-                conn.send_bytes(envelope.encode().encode("utf-8"))
+                conn.send_bytes(raw.encode("utf-8"))
                 raw = conn.recv_bytes().decode("utf-8")
             finally:
                 conn.close()
