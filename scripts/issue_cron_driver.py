@@ -184,6 +184,15 @@ def check_model_backend_capable() -> Tuple[bool, str]:
     if "model backend" in out and ("not engaged" in out or "not all engaged" in out):
         return False, "no_model_backend_engaged"
 
+    # Remote backend first: if explicit credentials are present the agent can execute
+    # autonomously via a remote model (e.g. openrouter/tencent-hy3) REGARDLESS of the
+    # local model reported by `simplicio doctor`. The local model may not even be the
+    # executor. Checking this BEFORE the local-size gate avoids a false
+    # `capable:false` when a perfectly capable remote backend is configured.
+    import os
+    if os.environ.get("SIMPLICIO_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
+        return True, "remote_model_backend_with_credentials"
+
     # Local model present? extract name + param count.
     import re
     m = re.search(r"local model:\s*(\S+?)(?:\s|$)", out)
@@ -202,10 +211,7 @@ def check_model_backend_capable() -> Tuple[bool, str]:
             )
         return True, f"local_model_capable:{name} ({params_b}b)"
 
-    # Remote backend? capable only with explicit credentials.
-    import os
-    if os.environ.get("SIMPLICIO_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
-        return True, "remote_model_backend_with_credentials"
+    # Neither a remote credential nor a capable local model is present.
     return False, "no_capable_backend: local subcapacity or no remote credentials"
 
 
