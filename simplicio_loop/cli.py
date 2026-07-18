@@ -12,6 +12,10 @@ import time
 import webbrowser
 import json
 from pathlib import Path
+try:
+    from scripts import release_manifest as _release_manifest
+except Exception:  # pragma: no cover - import shim for bundled scripts
+    _release_manifest = None
 
 from . import __version__
 from . import delivery
@@ -858,6 +862,17 @@ def main(argv=None) -> int:
             help="file containing executor handshake JSON (strict mode requires it)",
         )
 
+    p_release_train = sub.add_parser(
+        "release-train", help="release train continuous verification (#558)"
+    )
+    rt_sub = p_release_train.add_subparsers(
+        dest="release_train_command", required=True
+    )
+    p_rt_check = rt_sub.add_parser(
+        "check", help="validate component/ecosystem release schemas + local drift"
+    )
+    p_rt_check.add_argument("--repo", default=".", help="repository root")
+
     args = parser.parse_args(argv)
     command = args.command or "install"
     if command == "dashboard":
@@ -919,6 +934,10 @@ def main(argv=None) -> int:
             args.handshake_file,
             args.ledger_command,
         )
+    if command == "release-train":
+        if _release_manifest is None:
+            parser.error("release_manifest script not importable")
+        return _release_manifest.release_train_check(args.repo)
     return install(Path(args.target).resolve(), args.globally)
 
 
