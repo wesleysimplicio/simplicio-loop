@@ -49,6 +49,9 @@ simplicio-loop = "simplicio_loop.cli:main"
 simplicio-remote-queue-server = "simplicio_loop.remote_queue_server_cli:main"
 simplicio-remote-worker = "simplicio_loop.remote_worker_cli:main"
 simplicio-remote-worker-supervisor = "simplicio_loop.remote_worker_supervisor_cli:main"
+# issue #516: observability/enforcement CLI for the #498 process-supervisor contract
+# (status/top/queue/cancel/drain/reports over the #514 ProcessSpec/Lease/Result adapter).
+simplicio-process-supervisor = "simplicio_loop.process_enforcement_cli:main"
 
 [tool.setuptools]
 packages = ["simplicio_loop"]
