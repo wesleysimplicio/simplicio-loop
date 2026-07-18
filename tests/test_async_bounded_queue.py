@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -110,5 +111,100 @@ def test_no_background_worker_or_unbounded_task() -> None:
         after = len(asyncio.all_tasks())
         assert after == before
         assert queue.status()["max_items"] == 2
+
+    asyncio.run(scenario())
+
+
+def test_idle_consumer_burns_near_zero_cpu() -> None:
+    async def scenario() -> None:
+        queue = AsyncBoundedQueue(1)
+        consumer = asyncio.create_task(queue.get())
+        await asyncio.sleep(0)
+        wall_started = time.perf_counter()
+        cpu_started = time.process_time()
+        await asyncio.sleep(0.2)
+        cpu_elapsed = time.process_time() - cpu_started
+        wall_elapsed = time.perf_counter() - wall_started
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+        assert wall_elapsed > 0.15
+        assert cpu_elapsed < 0.05
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_producers_never_exceed_bound() -> None:
+    async def scenario() -> None:
+        queue = AsyncBoundedQueue(3, overload="wait")
+        max_len = 0
+        stop = False
+
+        async def sampler() -> None:
+            nonlocal max_len
+            while not stop:
+                max_len = max(max_len, queue.status()["items"])
+                await asyncio.sleep(0)
+
+        async def producer(count: int) -> None:
+            for i in range(count):
+                await queue.put(i)
+
+        async def consumer(count: int) -> None:
+            for _ in range(count):
+                await asyncio.sleep(0)
+                await queue.get()
+                queue.task_done()
+
+        sampler_task = asyncio.create_task(sampler())
+        per_producer = 10
+        producer_count = 4
+        producers = [
+            asyncio.create_task(producer(per_producer)) for _ in range(producer_count)
+        ]
+        await consumer(per_producer * producer_count)
+        await asyncio.gather(*producers)
+        stop = True
+        await sampler_task
+
+        assert max_len <= 3
+        assert queue.status()["accepted"] == per_producer * producer_count
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_producers_reject_exact_bound() -> None:
+    async def scenario() -> None:
+        queue = AsyncBoundedQueue(2, overload="reject")
+        results = await asyncio.gather(
+            *(queue.put(i) for i in range(5)), return_exceptions=True
+        )
+        accepted = [r for r in results if not isinstance(r, Exception)]
+        rejected = [r for r in results if isinstance(r, BackpressureError)]
+        assert len(accepted) == 2
+        assert len(rejected) == 3
+        assert queue.status()["items"] == 2
+        assert queue.status()["rejected"] == 3
+
+    asyncio.run(scenario())
+
+
+def test_coalescing_does_not_starve_distinct_key() -> None:
+    async def scenario() -> None:
+        queue = AsyncBoundedQueue(5, coalesce=True)
+        await queue.put("a1", key="hot")
+        await queue.put("b1", key="cold")
+        await queue.put("a2", key="hot")
+        await queue.put("a3", key="hot")
+
+        order = []
+        for _ in range(2):
+            value, _, key = await queue.get()
+            queue.task_done()
+            order.append((key, value))
+
+        assert order[0] == ("hot", "a3")
+        assert order[1] == ("cold", "b1")
+        assert queue.status()["coalesced"] == 2
 
     asyncio.run(scenario())
