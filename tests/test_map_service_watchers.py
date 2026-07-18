@@ -75,3 +75,26 @@ def test_status_verify_standalone_restart_and_invalid_calls() -> None:
         assert restarted.verify()["healthy"]
     finally:
         directory.cleanup()
+
+
+def test_central_watcher_preserves_in_use_snapshot_until_handle_release() -> None:
+    directory, registry, key = _registry()
+    try:
+        from simplicio_loop.map_service_single_flight import SingleFlightMapStore
+
+        store = SingleFlightMapStore(registry)
+        manager = MapWatcherManager(registry, store)
+
+        async def build():
+            return registry.build_canonical(key, tree_hash="tree")
+
+        import asyncio
+        handle = asyncio.run(store.get_or_build(key, mode="canonical", tree_hash="tree", builder=build))
+        assert manager.watch(key, lambda event: None) == manager.watch(key, lambda event: None)
+        manager.emit(key, ["dirty.py"])
+        manager.flush(force=True)
+        assert store.gc() == []
+        handle.release()
+        assert store.gc() == [handle.cache_key]
+    finally:
+        directory.cleanup()
