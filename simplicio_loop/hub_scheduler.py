@@ -40,6 +40,21 @@ class QuotaExceededError(SchedulerError):
         }
 
 
+# #505 step 1: the 7 job classes the issue asks for, ordered highest to lowest
+# share. "background" is the default so every pre-existing ScheduledJob(...) call
+# site (and its tests) keeps the exact prior gain=quantum*weight formula (boost=1.0).
+PRIORITY_BOOST: Dict[str, float] = {
+    "interactive": 8.0,
+    "mapping": 4.0,
+    "llm": 3.0,
+    "test": 2.0,
+    "build": 2.0,
+    "background": 1.0,
+    "maintenance": 0.5,
+}
+DEFAULT_PRIORITY = "background"
+
+
 @dataclass(frozen=True)
 class ScheduledJob:
     task_id: str
@@ -47,6 +62,7 @@ class ScheduledJob:
     weight: int = 1
     cost: int = 1
     workspace_id: str = "default"
+    priority: str = DEFAULT_PRIORITY
 
 
 class FairScheduler:
@@ -91,6 +107,7 @@ class FairScheduler:
         self._global_total = 0
         self._tick = 0
         self._last_served_tick: Dict[str, int] = {}
+        self._served_total: Dict[str, int] = {}
 
     def _check_quotas(self, job: ScheduledJob) -> None:
         if self.max_global_queue is not None and self._global_total >= self.max_global_queue:
@@ -115,6 +132,10 @@ class FairScheduler:
             raise SchedulerError("job identity, weight and cost must be positive")
         if not job.workspace_id:
             raise SchedulerError("workspace_id must be non-empty")
+        if job.priority not in PRIORITY_BOOST:
+            raise SchedulerError(
+                f"unknown priority {job.priority!r}, must be one of {sorted(PRIORITY_BOOST)}"
+            )
         with self._lock:
             if job.task_id in self._jobs:
                 raise SchedulerError("duplicate task_id")
@@ -150,7 +171,9 @@ class FairScheduler:
                 queue = self._queues[client]
                 if not queue:
                     continue
-                gain = self.quantum * self._weights.get(client, 1)
+                job = queue[0]
+                boost = PRIORITY_BOOST.get(job.priority, 1.0)
+                gain = self.quantum * self._weights.get(client, 1) * boost
                 waited = self._tick - self._last_served_tick.get(client, self._tick)
                 if waited > self.aging_ticks:
                     gain *= self.aging_boost
@@ -158,13 +181,13 @@ class FairScheduler:
                 self._deficit[client] += gain
                 if self._inflight[client] >= self.max_inflight_per_client:
                     continue
-                job = queue[0]
                 if self._deficit[client] < job.cost:
                     continue
                 queue.popleft()
                 self._deficit[client] -= job.cost
                 self._inflight[client] += 1
                 self._last_served_tick[client] = self._tick
+                self._served_total[client] = self._served_total.get(client, 0) + 1
                 return job
             return None
 
@@ -188,6 +211,24 @@ class FairScheduler:
             self._jobs.pop(task_id, None)
             return True
 
+    def _jains_fairness_index(self) -> float:
+        """Weight-normalized Jain fairness index over service actually dispatched
+        (`next()` calls) per client — reduces to the textbook raw-count formula
+        for equal-weight clients, matching #505's 'métricas de fairness' AC:
+        1.0 = perfectly fair, near 0 = starvation. No served jobs yet -> 1.0
+        (fairness is vacuously true, not undefined)."""
+        if not self._served_total:
+            return 1.0
+        shares = [
+            count / max(1, self._weights.get(client, 1))
+            for client, count in self._served_total.items()
+        ]
+        total = sum(shares)
+        if total == 0:
+            return 1.0
+        total_sq = sum(share * share for share in shares)
+        return (total * total) / (len(shares) * total_sq)
+
     def status(self) -> Dict[str, Any]:
         with self._lock:
             return {
@@ -202,4 +243,6 @@ class FairScheduler:
                 "workspace_total": dict(self._workspace_total),
                 "global_total": self._global_total,
                 "tick": self._tick,
+                "served_total": dict(self._served_total),
+                "jains_fairness_index": self._jains_fairness_index(),
             }
