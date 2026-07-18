@@ -164,6 +164,84 @@ def test_invalid_requests_and_empty_queue_are_rejected() -> None:
         queue.close()
 
 
+def test_claim_and_heartbeat_reject_non_positive_ttl() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        queue.submit({}, idempotency_key="k")
+        with pytest.raises(QueueRetryError):
+            queue.claim("worker", ttl=0)
+        with pytest.raises(QueueRetryError):
+            queue.claim("worker", ttl=-1)
+        lease = queue.claim("worker", ttl=10)
+        assert lease is not None
+        with pytest.raises(QueueRetryError):
+            queue.heartbeat(lease, ttl=0)
+        queue.close()
+
+
+def test_fail_requires_error_code() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        queue.submit({}, idempotency_key="k")
+        lease = queue.claim("worker", ttl=10)
+        assert lease is not None
+        with pytest.raises(QueueRetryError):
+            queue.fail(lease, error_code="")
+        queue.close()
+
+
+def test_requeue_and_state_reject_invalid_task() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        task_id = queue.submit({}, idempotency_key="k")
+        with pytest.raises(QueueRetryError):
+            queue.requeue(task_id)
+        with pytest.raises(QueueRetryError):
+            queue.requeue("does-not-exist")
+        with pytest.raises(QueueRetryError):
+            queue.state("does-not-exist")
+        queue.close()
+
+
+def test_concurrent_claims_on_same_task_never_double_lease() -> None:
+    """Several worker connections race a real concurrent claim() against the SAME single
+    queued row (#504 AC: "apenas um worker possui lease valida por tarefa"). claim()'s
+    BEGIN IMMEDIATE serializes SQLite writers, so this proves that serialization actually
+    yields exactly one winner rather than two workers both believing they hold the lease."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "queue.db")
+        seed = HubRetryQueue(path)
+        task_id = seed.submit({"kind": "race"}, idempotency_key="claim-race")
+        seed.close()
+
+        n = 8
+        results: list = [None] * n
+        errors: list = []
+
+        def claim_once(i: int) -> None:
+            try:
+                queue = HubRetryQueue(path)
+                results[i] = queue.claim("worker-%d" % i, ttl=10)
+                queue.close()
+            except Exception as exc:  # noqa: BLE001 - intentionally broad, asserted on below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=claim_once, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, "claim() must never raise under real concurrency, got: %r" % (errors,)
+        winners = [r for r in results if r is not None]
+        assert len(winners) == 1, "exactly one worker must win the lease, got: %r" % (results,)
+        assert winners[0].task_id == task_id
+
+        plain = HubRetryQueue(path)
+        assert plain.state(task_id) == "leased"
+        plain.close()
+
+
 def test_expired_lease_is_reclaimable_by_another_worker() -> None:
     with tempfile.TemporaryDirectory() as directory:
         queue = HubRetryQueue(str(Path(directory) / "queue.db"))
