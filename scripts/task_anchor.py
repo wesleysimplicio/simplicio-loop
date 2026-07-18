@@ -40,7 +40,13 @@ Verbs:
              reset). A CHANGED goal is refused unless --force (a silent goal swap IS drift).
              Inline verification can be declared as `--ac "text :: verify: <command or artifact>"`.
              Default lint rejects vague ACs like "works"; `--lint` also rejects short ACs (<3 words)
-             unless a `verify:` method is declared.
+             unless a `verify:` method is declared. `--delivery FILE` (#526 Etapa 4) freezes a
+             client delivery contract (open_pr/push_branch/allow_new_files_in_repo/
+             allow_comments_in_code/commit_message_convention — schema:
+             references/delivery-contract.md, enforced by scripts/delivery_contract.py) onto the
+             SAME anchor; may be combined with --goal/--ac or passed alone to re-freeze onto an
+             already-anchored item. Same re-freeze semantics as the goal: a CHANGED contract
+             needs --force.
   mark       Record progress on one criterion: --id ACk --status done|partial [--evidence "..."].
              `--status waived:no-infra --reason "..."` excuses a structurally-impossible dimension
              (--reason mandatory).
@@ -381,11 +387,64 @@ def _collect_ac(opts):
     return parse_criteria(lines)
 
 
-def cmd_set(opts):
-    goal = opts.get("goal") or ""
-    if not goal.strip():
-        print("anchor: refusing to freeze — --goal is required")
+def _apply_delivery(anchor, path, force=False):
+    """Validate+freeze a `--delivery FILE` onto `anchor` (mutates it), or exit BLOCKED (#526
+    Etapa 4). Kept as a thin wrapper so the schema/enforcement logic itself lives in
+    `scripts/delivery_contract.py`, not duplicated here."""
+    try:
+        import delivery_contract as dc
+    except Exception as exc:  # pragma: no cover - only if the sibling script goes missing
+        print("anchor: BLOCKED — could not load scripts/delivery_contract.py: %s" % exc)
         sys.exit(2)
+    try:
+        data = dc.load_contract_file(path)
+    except ValueError as exc:
+        print("anchor: %s" % exc)
+        sys.exit(2)
+    errors = dc.validate(data)
+    if errors:
+        for e in errors:
+            print("anchor: delivery contract: %s" % e)
+        sys.exit(2)
+    frozen, err = dc.freeze(anchor.get("delivery"), data, force=force)
+    if err:
+        print("anchor: BLOCKED — %s" % err)
+        sys.exit(12)
+    anchor["delivery"] = frozen
+    if not frozen.get("allow_new_files_in_repo", True):
+        try:
+            dc.capture_baseline(".", None)
+        except Exception:
+            pass  # best-effort — the new-file guard fails CLOSED anyway if no baseline exists
+    log("delivery contract frozen: open_pr=%s push_branch=%s allow_new_files_in_repo=%s "
+        "allow_comments_in_code=%s commit_message_convention=%r" % (
+            frozen["open_pr"], frozen["push_branch"], frozen["allow_new_files_in_repo"],
+            frozen["allow_comments_in_code"], frozen["commit_message_convention"]))
+
+
+def cmd_set(opts):
+    delivery_path = opts.get("delivery")
+    goal = opts.get("goal") or ""
+    existing = _load()
+
+    if not goal.strip():
+        # `set --delivery FILE` alone (no --goal): attach/re-freeze the delivery contract onto
+        # whatever anchor already exists. Requires an anchor to attach to -- delivery is
+        # "congelado junto do anchor", never a standalone artifact (#526 Etapa 4).
+        if not delivery_path:
+            print("anchor: refusing to freeze — --goal is required")
+            sys.exit(2)
+        if not existing.get("goal_fp"):
+            print("anchor: refusing to freeze a delivery contract — no task anchor set yet. "
+                  "Freeze the goal + acceptance criteria first (`set --goal ... --ac ...`), or "
+                  "pass --goal/--ac together with --delivery.")
+            sys.exit(2)
+        anchor = dict(existing)
+        _apply_delivery(anchor, delivery_path, force=bool(opts.get("force")))
+        _save(anchor)
+        print("anchored")
+        return
+
     texts = _collect_ac(opts)
     if not texts:
         print("anchor: refusing to freeze — no acceptance criteria given "
@@ -397,7 +456,6 @@ def cmd_set(opts):
             print("anchor: %s" % msg)
         sys.exit(2)
     fp = goal_fingerprint(goal)
-    existing = _load()
     if existing and existing.get("goal_fp") and existing["goal_fp"] != fp and not opts.get("force"):
         print("anchor: BLOCKED — a different goal is already anchored (goal changed). "
               "This is exactly the drift signal. Re-anchor with --force only if the task "
@@ -407,6 +465,10 @@ def cmd_set(opts):
                 if existing.get("goal_fp") == fp else freeze_criteria(texts))
     anchor = {"item": opts.get("item") or existing.get("item", ""), "goal": goal, "goal_fp": fp,
               "frozen_at": existing.get("frozen_at") or _now(), "criteria": criteria}
+    if existing.get("delivery"):
+        anchor["delivery"] = existing["delivery"]  # preserved across an ordinary goal re-set
+    if delivery_path:
+        _apply_delivery(anchor, delivery_path, force=bool(opts.get("force")))
     _save(anchor)
     done, total, _ = coverage(criteria)
     log("anchored item=%s · %d criteria (%d already verified) · fp=%s" % (
@@ -481,10 +543,18 @@ def cmd_status(opts):
             "frozen_at": anchor.get("frozen_at"),
             "criteria": anchor["criteria"],
             "done": done, "total": total, "pending": pending,
+            "delivery": anchor.get("delivery") or None,
         }, ensure_ascii=False))
         return
     print("anchor: item=%s · goal_fp=%s · frozen=%s" % (
         anchor.get("item") or "-", anchor.get("goal_fp"), anchor.get("frozen_at")))
+    delivery = anchor.get("delivery")
+    if isinstance(delivery, dict):
+        log("delivery: open_pr=%s push_branch=%s allow_new_files_in_repo=%s "
+            "allow_comments_in_code=%s commit_message_convention=%r" % (
+                delivery.get("open_pr"), delivery.get("push_branch"),
+                delivery.get("allow_new_files_in_repo"), delivery.get("allow_comments_in_code"),
+                delivery.get("commit_message_convention")))
     for c in anchor["criteria"]:
         detail = c.get("text")
         if c.get("verify"):
@@ -758,7 +828,7 @@ def main():
                       "--evidence", "--reason", "--format", "--exit-code", "--lint",
                       "--require-evidence", "--out", "--json", "--harness-dir",
                       "--harness-source", "--harness-log", "--harness-hash", "--snippet",
-                      "--help"],
+                      "--delivery", "--help"],
         }))
         sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])

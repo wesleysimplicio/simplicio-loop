@@ -398,6 +398,57 @@ def _flow_audit_module():
         return None
 
 
+def _delivery_contract_module():
+    """Best-effort import of scripts/delivery_contract.py — same pattern as
+    `_flow_audit_module()`. None when the sibling script is absent (an install that predates
+    #526 Etapa 4), so the new-file guard below is a pure no-op rather than a hard failure."""
+    try:
+        repo_root = os.getcwd()
+        scripts_dir = os.path.join(repo_root, "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import delivery_contract as _dc  # noqa: local import, optional dependency
+        return _dc
+    except Exception:
+        return None
+
+
+def delivery_new_file_violation():
+    """Return the delivery-contract new-file-guard violation reason for THIS turn, or None
+    (#526 Etapa 4). Consumes the frozen `allow_new_files_in_repo` clause against the
+    per-contract baseline (`delivery_contract.new_file_guard`). Fail-open: any error (module
+    missing, git unavailable, corrupt anchor) -> None — a plumbing failure here must never trap
+    the loop; only a genuinely detected unauthorized new file blocks the turn.
+    """
+    try:
+        dc = _delivery_contract_module()
+        if dc is None:
+            return None
+        return dc.new_file_guard(read_anchor(), root=os.getcwd())
+    except Exception:
+        return None
+
+
+def _record_delivery_violation_journal(iteration, reason):
+    """Journal the delivery-contract block (#526 Etapa 4 AC: "violação = turno bloqueado + "
+    "registro no journal"). Fail-open, best-effort — same pattern as `auto_record_journal`."""
+    try:
+        repo_root = os.getcwd()
+        script = os.path.join(repo_root, "scripts", "loop_journal.py")
+        if not os.path.exists(script):
+            return
+        subprocess.run(
+            [sys.executable, script, "record",
+             "--iteration", str(iteration),
+             "--action", "delivery contract: new-file guard",
+             "--gate", "blocked",
+             "--note", reason],
+            capture_output=True, timeout=10, cwd=repo_root,
+        )
+    except Exception:
+        pass
+
+
 def _changed_files():
     """Best-effort set of files touched in the working tree (uncommitted + untracked + last
     commit). A heuristic, not a precise "since loop start" diff — fail-open: {} on any error.
@@ -988,6 +1039,20 @@ def main():
             })
             write_handoff(reason, meta, body)
             cleanup_and_stop(reason, "blocked")
+
+        # (2c) Delivery contract — new-file guard (#526 Etapa 4). `allow_new_files_in_repo:
+        # false` blocks the turn the instant an unauthorized new file appears in the repo — a
+        # client-mandated, non-negotiable restriction, same hard-block severity as a missing
+        # bound operator. Journaled so the violation is auditable, never silent.
+        delivery_violation = delivery_new_file_violation()
+        if delivery_violation:
+            _record_delivery_violation_journal(iteration, delivery_violation)
+            _call_simplicio_hbp_append_topic("loop-run-blocked", {
+                "fingerprint": _journal_stall()[0], "attempt": iteration,
+                "reason": delivery_violation,
+            })
+            write_handoff(delivery_violation, meta, body)
+            cleanup_and_stop(delivery_violation, "blocked")
 
         stdin = read_stdin_json()
         resp = last_assistant_text(stdin)
