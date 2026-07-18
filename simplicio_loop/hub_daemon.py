@@ -317,7 +317,7 @@ class HubSocketServer:
             server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             server.bind(str(self.socket_path))
             os.chmod(str(self.socket_path), 0o600)
-            server.listen(8)
+            server.listen(64)
             self._server = server
             self._server.settimeout(0.5)
         self._running = True
