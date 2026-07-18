@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -11,6 +12,10 @@ from simplicio_loop.hub_daemon import (
     HubEnvelope,
     HubLock,
     HubProtocolError,
+    HubSocketClient,
+    HubSocketServer,
+    default_endpoint,
+    doctor,
 )
 
 
@@ -75,3 +80,48 @@ def test_cancel_and_restart_clear_session_state() -> None:
         assert restarted.clients == set()
         assert restarted.jobs == {}
         restarted.stop()
+
+
+def test_real_local_transport_doctor_protocol_and_shutdown() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        lock = root / "hub.lock"
+        transport = "named-pipe" if os.name == "nt" else "unix"
+        endpoint = default_endpoint(str(root))
+        server = HubSocketServer(HubDaemon(str(lock)), endpoint, transport=transport)
+        assert doctor(str(lock), endpoint, transport)["reachable"] is False
+        server.start()
+        assert doctor(str(lock), endpoint, transport)["ok"] is True
+        client = HubSocketClient(endpoint, transport)
+        assert client.request("p1", "ping")["state"] == "ready"
+        assert client.request("r1", "register", client_id="external")["state"] == "registered"
+        with pytest.raises(HubProtocolError):
+            client.raw_request(json.dumps({"schema": "simplicio.hub-ipc/v1", "version": 99,
+                                            "request_id": "bad", "method": "ping", "payload": {}}))
+        server.stop()
+        server.stop()
+        assert doctor(str(lock), endpoint, transport)["reachable"] is False
+
+
+def test_real_transport_handles_twenty_concurrent_clients() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        transport = "named-pipe" if os.name == "nt" else "unix"
+        endpoint = default_endpoint(str(root))
+        server = HubSocketServer(HubDaemon(str(root / "hub.lock")), endpoint, transport)
+        server.start()
+        try:
+            def register(index: int) -> str:
+                result = HubSocketClient(endpoint, transport).request(
+                    "register-%d" % index, "register", client_id="client-%d" % index
+                )
+                return result["client_id"]
+
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                clients = list(pool.map(register, range(20)))
+            assert len(set(clients)) == 20
+            assert HubSocketClient(endpoint, transport).request("report", "ping")["clients"] == 20
+        finally:
+            server.stop()
