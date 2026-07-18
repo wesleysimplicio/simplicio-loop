@@ -38,7 +38,7 @@ class HubRetryQueue:
     def __init__(self, path: str) -> None:
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(self.path, isolation_level=None)
+        self._db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
@@ -245,3 +245,29 @@ class HubRetryQueue:
         if row is None:
             raise QueueRetryError("unknown task")
         return str(row["state"])
+
+    def find_task_id(self, idempotency_key: str) -> Optional[str]:
+        row = self._db.execute(
+            "SELECT task_id FROM hub_jobs WHERE idempotency_key=?", (idempotency_key,)
+        ).fetchone()
+        return str(row["task_id"]) if row is not None else None
+
+    def get_row(self, task_id: str) -> Optional[Dict[str, Any]]:
+        row = self._db.execute(
+            "SELECT * FROM hub_jobs WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        data["payload"] = json.loads(data["payload"])
+        return data
+
+    def update_payload(self, task_id: str, payload: Dict[str, Any]) -> None:
+        self._db.execute(
+            "UPDATE hub_jobs SET payload=?,updated_at=? WHERE task_id=?",
+            (json.dumps(payload, sort_keys=True), time.time(), task_id),
+        )
+
+    def count(self) -> int:
+        row = self._db.execute("SELECT COUNT(*) AS n FROM hub_jobs").fetchone()
+        return int(row["n"])

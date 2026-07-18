@@ -56,11 +56,11 @@ def test_daemon_lifecycle_has_no_partial_state_on_invalid_request() -> None:
         assert client.request("r7", "report", job_id="job-1")["job"]["result"] == {"ok": True}
         with pytest.raises(HubProtocolError):
             client.request("r8", "progress", job_id="job-1", progress=101)
-        assert daemon.jobs["job-1"]["state"] == "completed"
+        assert client.request("r9", "report", job_id="job-1")["job"]["state"] == "completed"
         daemon.stop()
 
 
-def test_cancel_and_restart_clear_session_state() -> None:
+def test_restart_clears_session_state_but_not_job_state() -> None:
     with tempfile.TemporaryDirectory() as directory:
         path = str(Path(directory) / "hub.lock")
         daemon = HubDaemon(path)
@@ -73,5 +73,57 @@ def test_cancel_and_restart_clear_session_state() -> None:
         restarted = HubDaemon(path)
         restarted.start()
         assert restarted.clients == set()
-        assert restarted.jobs == {}
+        report = HubClient(restarted, "client").request("r4", "report", job_id="job")
+        assert report["job"]["state"] == "cancelled"
+        restarted.stop()
+
+
+def test_hub_daemon_does_not_lose_job_state_across_restart() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "hub.lock")
+        daemon = HubDaemon(path)
+        daemon.start()
+        client = HubClient(daemon, "client")
+        client.request("r1", "register")
+        client.request("r2", "submit", job_id="job-durable")
+        claimed = client.request("r3", "claim", job_id="job-durable")
+        assert claimed["job"]["state"] == "claimed"
+        client.request("r4", "progress", job_id="job-durable", progress=42)
+        daemon.stop()
+
+        restarted = HubDaemon(path)
+        restarted.start()
+        report = HubClient(restarted, "client-2").request("r5", "report", job_id="job-durable")
+        assert report["job"]["state"] == "running"
+        assert report["job"]["progress"] == 42
+        assert HubClient(restarted, "client-2").request(
+            "r6", "result", job_id="job-durable", result={"ok": True}
+        )["job"]["state"] == "completed"
+        restarted.stop()
+
+        reopened = HubDaemon(path)
+        reopened.start()
+        final = HubClient(reopened, "client-3").request("r7", "report", job_id="job-durable")
+        assert final["job"]["result"] == {"ok": True}
+        reopened.stop()
+
+
+def test_register_and_ping_are_unaffected_by_durable_job_store() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "hub.lock")
+        daemon = HubDaemon(path)
+        daemon.start()
+        client = HubClient(daemon, "client")
+        assert client.request("r1", "register")["state"] == "registered"
+        assert daemon.clients == {"client"}
+        ping = client.request("r2", "ping")
+        assert ping == {"ok": True, "started": True, "clients": 1, "jobs": 0}
+        client.request("r3", "submit", job_id="job")
+        ping_after_submit = client.request("r4", "ping")
+        assert ping_after_submit["jobs"] == 1
+        daemon.stop()
+        restarted = HubDaemon(path)
+        restarted.start()
+        assert restarted.clients == set()
+        assert restarted.queue.count() == 1
         restarted.stop()
