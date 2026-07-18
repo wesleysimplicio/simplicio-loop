@@ -3,8 +3,8 @@
   "artifacts": {
     ".claude/skills/simplicio-loop/SKILL.md": {
       "label": "SKILL.md (simplicio-loop)",
-      "tokens": 8943,
-      "words": 4975
+      "tokens": 11387,
+      "words": 6299
     },
     "AGENTS.md": {
       "label": "AGENTS.md",
