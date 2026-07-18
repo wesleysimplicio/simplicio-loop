@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from .process_supervisor import ProcessResult, ProcessSpec
 
@@ -32,13 +32,25 @@ def rust_backend_available() -> bool:
     return rust_binary_path() is not None
 
 
-def run_with_fallback(spec: ProcessSpec, *, timeout_seconds: float = 60.0) -> ProcessResult:
-    """Run through Rust when built, otherwise use the safe async Python adapter."""
+def run_with_fallback(
+    spec: ProcessSpec,
+    *,
+    timeout_seconds: float = 60.0,
+    on_spawned: Optional[Callable[[Any], None]] = None,
+) -> ProcessResult:
+    """Run through Rust when built, otherwise use the safe async Python adapter.
+
+    ``on_spawned`` (issue #498/#516) is invoked synchronously with the real OS pid as soon as
+    the child (Python) or the supervisor binary itself (Rust) is spawned, before completion is
+    awaited -- the same additive hook contract as ``PythonProcessAdapter.run``'s ``on_spawned``,
+    plumbed through here so callers of this single boundary (e.g. ``HubDaemon.handle``) can
+    register the live pid with the enforcement registry regardless of which backend ran it.
+    """
     adapter = get_process_adapter()
     if isinstance(adapter, RustProcessAdapter):
-        result = adapter.run(spec, timeout_seconds=timeout_seconds)
+        result = adapter.run(spec, timeout_seconds=timeout_seconds, on_spawned=on_spawned)
     else:
-        result = adapter.run(spec)
+        result = adapter.run(spec, on_spawned=on_spawned)
     if inspect.isawaitable(result):
         return asyncio.run(result)
     return result
@@ -58,7 +70,13 @@ class RustProcessAdapter:
     def available(self) -> bool:
         return self.binary is not None and self.binary.is_file()
 
-    def run(self, spec: ProcessSpec, *, timeout_seconds: float = 60.0) -> ProcessResult:
+    def run(
+        self,
+        spec: ProcessSpec,
+        *,
+        timeout_seconds: float = 60.0,
+        on_spawned: Optional[Callable[[Any], None]] = None,
+    ) -> ProcessResult:
         if self.binary is None:
             raise RuntimeError(
                 "simplicio-supervisor binary not found; build rust/simplicio-supervisor "
@@ -72,14 +90,27 @@ class RustProcessAdapter:
             "deadline_seconds": spec.timeout_seconds,
             "max_output_bytes": spec.max_output_bytes,
         }
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [str(self.binary)],
-            input=json.dumps(payload),
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_seconds,
         )
-        result = json.loads(completed.stdout)
+        if on_spawned is not None:
+            try:
+                on_spawned(process)
+            except Exception:
+                pass
+        try:
+            stdout, stderr = process.communicate(
+                input=json.dumps(payload), timeout=timeout_seconds
+            )
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise
+        result = json.loads(stdout)
         return ProcessResult(
             result.get("exit_code"),
             result.get("stdout", ""),

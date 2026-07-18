@@ -1,0 +1,11 @@
+{
+  "elapsed_seconds": 0.056777,
+  "p50_ms": 9.039,
+  "p95_ms": 11.311,
+  "platform": "posix",
+  "requests": 100,
+  "rss_bytes": null,
+  "schema": "simplicio.hub-transport-benchmark/v1",
+  "throughput_per_second": 1761.284,
+  "transport": "unix"
+}

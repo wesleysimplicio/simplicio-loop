@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from simplicio_loop.map_service import MapServiceRegistry, RepositoryIdentity
+from simplicio_loop.map_service import (
+    MapServiceRegistry,
+    RepositoryIdentity,
+    UnknownRepositoryError as RegistryUnknownRepositoryError,
+)
 from simplicio_loop.map_service_single_flight import SingleFlightMapStore
 from simplicio_loop.map_service_watchers import (
     MapWatcherManager,
@@ -110,6 +114,89 @@ def test_status_verify_standalone_restart_and_invalid_calls() -> None:
         restarted = MapWatcherManager(registry)
         assert restarted.status()["standalone"]
         assert restarted.verify()["healthy"]
+    finally:
+        directory.cleanup()
+
+
+def test_two_clients_share_one_watcher_and_gc_keeps_in_use_snapshot() -> None:
+    directory, registry, key = _registry()
+    try:
+        store = SingleFlightMapStore(registry)
+        manager = MapWatcherManager(registry, store)
+
+        client_a_events: list = []
+        client_b_events: list = []
+        token_a = manager.watch(key, client_a_events.append, debounce_seconds=1)
+        token_b = manager.watch(key, client_b_events.append, debounce_seconds=1)
+        assert token_a == token_b
+        assert manager.status()["watchers"] == 1
+
+        async def build():
+            return registry.build_canonical(key, tree_hash="tree")
+
+        import asyncio
+
+        handle = asyncio.run(
+            store.get_or_build(key, mode="canonical", tree_hash="tree", builder=build)
+        )
+        manager.emit(key, ["shared.py"], trace_id="client-a")
+        assert manager.flush(force=True)[0]["identity_key"] == key
+        assert client_a_events and client_a_events[0]["trace_id"] == "client-a"
+        assert client_b_events == []
+
+        assert manager.gc() == []
+        handle.release()
+        assert manager.gc() == [handle.cache_key]
+    finally:
+        directory.cleanup()
+
+
+def test_rebind_moves_watcher_to_new_identity_after_branch_switch() -> None:
+    directory, registry, key = _registry()
+    try:
+        store = SingleFlightMapStore(registry)
+        manager = MapWatcherManager(registry, store)
+
+        async def build_old():
+            return registry.build_canonical(key, tree_hash="branch-a-tree")
+
+        import asyncio
+
+        old_handle = asyncio.run(
+            store.get_or_build(key, mode="canonical", tree_hash="branch-a-tree", builder=build_old)
+        )
+        events: list = []
+        token = manager.watch(key, events.append)
+        manager.emit(key, ["pending.py"])
+
+        new_identity = RepositoryIdentity(
+            repository="owner/project", canonical_root=directory.name, base_sha="branch-b-sha"
+        )
+        new_key = manager.rebind(key, new_identity)
+
+        assert new_key != key
+        with pytest.raises(RegistryUnknownRepositoryError):
+            registry.identity(key)
+        assert manager.status()["identities"] == [new_key]
+
+        assert manager.gc() == []
+        old_handle.release()
+        assert manager.gc() == [old_handle.cache_key]
+
+        async def build_new():
+            return registry.build_canonical(new_key, tree_hash="branch-b-tree")
+
+        new_handle = asyncio.run(
+            store.get_or_build(new_key, mode="canonical", tree_hash="branch-b-tree", builder=build_new)
+        )
+        assert new_handle.view.identity_key == new_key
+        assert new_handle.view.valid
+
+        manager.emit(new_key, ["after-switch.py"])
+        flushed = manager.flush(force=True)
+        assert flushed[0]["identity_key"] == new_key
+        assert set(flushed[0]["paths"]) == {"pending.py", "after-switch.py"}
+        assert events[-1]["identity_key"] == new_key
     finally:
         directory.cleanup()
 

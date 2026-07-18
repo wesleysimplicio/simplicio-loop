@@ -214,7 +214,7 @@ pub async fn run(spec: &ProcessSpec) -> ProcessResult {
             }
         }
         None => {
-            let _ = child.start_kill();
+            kill_tree(&mut child);
             let _ = child.wait().await;
             ProcessResult {
                 schema: PROCESS_RESULT_SCHEMA,
@@ -233,11 +233,28 @@ pub async fn run(spec: &ProcessSpec) -> ProcessResult {
 #[cfg(unix)]
 fn libc_setsid() {
     unsafe {
-        extern "C" {
-            fn setsid() -> i32;
-        }
-        setsid();
+        libc::setsid();
     }
+}
+
+/// On deadline expiry the child was started with `setsid()`, so its pid is also its own
+/// process-group id: `killpg` tears down the whole tree (a shell that forked descendants), not
+/// just the direct child, which is all `child.start_kill()` would reach. Non-Unix targets fall
+/// back to killing just the top-level process.
+#[cfg(unix)]
+fn kill_tree(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+        }
+    } else {
+        let _ = child.start_kill();
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_tree(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
 }
 
 #[cfg(test)]
@@ -277,6 +294,58 @@ mod tests {
         assert!(result.timed_out);
         assert_eq!(result.error.as_deref(), Some("deadline_exceeded"));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn deadline_kills_the_whole_process_tree_not_just_the_direct_child() {
+        let marker = std::env::temp_dir().join(format!(
+            "simplicio-supervisor-grandchild-{}-{}",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        let marker_str = marker.to_str().unwrap().to_string();
+        let _ = std::fs::remove_file(&marker);
+
+        let mut s = spec(vec![
+            "sh",
+            "-c",
+            &format!(
+                "(sleep 5; echo alive > {marker}) & echo $! > {marker}.pid; wait",
+                marker = marker_str
+            ),
+        ]);
+        s.deadline_seconds = Some(0.3);
+
+        let result = run(&s).await;
+        assert!(result.timed_out);
+
+        let grandchild_pid: i32 = std::fs::read_to_string(format!("{marker_str}.pid"))
+            .expect("shell wrote grandchild pid before deadline")
+            .trim()
+            .parse()
+            .expect("pid file contains an integer");
+
+        // Give the kernel time to finish reaping (a just-killed process is briefly a zombie, so
+        // `kill(pid, 0)` can still report it as present for a short window even after `killpg`
+        // succeeded). What actually proves the tree was torn down is that the grandchild never
+        // reaches its 5s sleep-then-write — the marker file must not appear even well past that.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+
+        let is_dead_or_zombie = std::fs::read_to_string(format!("/proc/{grandchild_pid}/stat"))
+            .map(|stat| stat.contains(") Z "))
+            .unwrap_or(true);
+        assert!(
+            is_dead_or_zombie,
+            "grandchild pid {grandchild_pid} is still running 700ms after the deadline; process group was not fully torn down"
+        );
+        assert!(
+            !marker.exists(),
+            "grandchild ran to completion after the deadline instead of being killed"
+        );
+
+        let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_file(format!("{marker_str}.pid"));
     }
 
     #[tokio::test]
