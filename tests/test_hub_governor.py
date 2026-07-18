@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from simplicio_loop.hub_governor import (
+    PressureReading,
     ResourceGovernor,
     ResourceLimits,
+    ResourceProbe,
     ResourceRequest,
     ResourceThrottled,
 )
@@ -65,6 +69,57 @@ def test_resource_contract_rejects_negative_values() -> None:
         ResourceLimits(cpu=-1)
     with pytest.raises(ValueError):
         ResourceRequest(tokens=-1)
+
+
+def test_admission_denies_before_any_lease_is_created() -> None:
+    governor = ResourceGovernor(ResourceLimits(processes=1))
+    governor.admit("alice", "task-1", ResourceRequest(processes=1))
+    with pytest.raises(ResourceThrottled):
+        governor.admit("bob", "task-2", ResourceRequest(processes=1))
+    status = governor.status()
+    assert status["active_leases"] == 1
+    assert "bob" not in status["client_used"]
+
+
+def test_probe_falls_back_through_the_ladder_without_crashing(monkeypatch) -> None:
+    monkeypatch.setattr(ResourceProbe, "_read_cgroup", staticmethod(lambda: None))
+    monkeypatch.setattr(ResourceProbe, "_read_psutil", staticmethod(lambda: None))
+    reading = ResourceProbe().read()
+    assert reading.source in {"stdlib_fallback", "unavailable"}
+    assert reading.memory_bytes >= 0
+
+
+def test_probe_reports_unavailable_when_every_source_fails(monkeypatch) -> None:
+    monkeypatch.setattr(ResourceProbe, "_read_cgroup", staticmethod(lambda: None))
+    monkeypatch.setattr(ResourceProbe, "_read_psutil", staticmethod(lambda: None))
+    monkeypatch.setattr(ResourceProbe, "_read_stdlib", staticmethod(lambda: None))
+    reading = ResourceProbe().read()
+    assert reading == PressureReading(source="unavailable")
+
+
+def test_sustained_pressure_opens_circuit_then_recovers_when_it_subsides() -> None:
+    governor = ResourceGovernor(ResourceLimits(cpu=4), circuit_threshold=2, cooldown_seconds=0.01)
+    high = PressureReading(memory_bytes=2_000, source="psutil")
+    low = PressureReading(memory_bytes=10, source="psutil")
+
+    first = governor.evaluate_pressure(high, memory_limit_bytes=1_000)
+    assert first["over_budget"] is True
+    assert first["tripped"] is False
+    second = governor.evaluate_pressure(high, memory_limit_bytes=1_000)
+    assert second["tripped"] is True
+    assert second["circuit"]["state"] == "open"
+
+    with pytest.raises(ResourceThrottled) as error:
+        governor.admit("alice", "task-1", ResourceRequest(cpu=1))
+    assert error.value.receipt["reason"] == "circuit_open"
+
+    time.sleep(0.02)
+    recovered = governor.evaluate_pressure(low, memory_limit_bytes=1_000)
+    assert recovered["over_budget"] is False
+    assert recovered["circuit"]["state"] == "closed"
+
+    lease = governor.admit("alice", "task-1", ResourceRequest(cpu=1))
+    assert lease.task_id == "task-1"
 
 
 def test_standalone_status_is_observable() -> None:

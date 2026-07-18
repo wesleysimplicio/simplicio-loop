@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +30,7 @@ class ProcessSpec:
 
     argv: Tuple[str, ...]
     cwd: Optional[str] = None
+    cwd_allowlist: Tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
     env_allowlist: Tuple[str, ...] = ()
     timeout_seconds: Optional[float] = 30.0
@@ -43,8 +45,23 @@ class ProcessSpec:
             raise ProcessSpecError("argv must contain a non-empty executable")
         if self.shell:
             raise ProcessSpecError("shell execution is forbidden")
-        if self.cwd is not None and not Path(self.cwd).is_absolute():
-            raise ProcessSpecError("cwd must be absolute")
+        cwd_allowlist = tuple(
+            str(Path(str(root)).resolve()) for root in self.cwd_allowlist
+        )
+        if self.cwd is not None:
+            if not Path(self.cwd).is_absolute():
+                raise ProcessSpecError("cwd must be absolute")
+            if cwd_allowlist:
+                resolved_cwd = Path(self.cwd).resolve()
+                allowed = any(
+                    resolved_cwd == Path(root) or Path(root) in resolved_cwd.parents
+                    for root in cwd_allowlist
+                )
+                if not allowed:
+                    raise ProcessSpecError(
+                        "cwd escapes the allowed roots (cwd_allowlist)"
+                    )
+        object.__setattr__(self, "cwd_allowlist", cwd_allowlist)
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ProcessSpecError("timeout_seconds must be positive")
         if self.max_output_bytes < 1:
@@ -64,6 +81,7 @@ class ProcessSpec:
         return _hash({
             "argv": self.argv,
             "cwd": self.cwd,
+            "cwd_allowlist": self.cwd_allowlist,
             "env": dict(self.env),
             "env_allowlist": self.env_allowlist,
             "timeout_seconds": self.timeout_seconds,
@@ -77,6 +95,7 @@ class ProcessSpec:
             "schema": PROCESS_SPEC_SCHEMA,
             "argv": list(self.argv),
             "cwd": self.cwd,
+            "cwd_allowlist": list(self.cwd_allowlist),
             "env": dict(self.env),
             "env_allowlist": list(self.env_allowlist),
             "timeout_seconds": self.timeout_seconds,
@@ -168,6 +187,25 @@ class PythonProcessAdapter:
         truncated = len(raw) > limit
         return raw[:limit].decode("utf-8", errors="replace"), truncated
 
+    @staticmethod
+    def _kill_tree(process: "asyncio.subprocess.Process") -> None:
+        """Kill the process and, on POSIX, its whole process group.
+
+        The child is started with start_new_session=True so it heads its own
+        process group; killing that group reaps grandchildren the direct pid
+        would otherwise leave orphaned (and running) past the deadline.
+        """
+        if os.name != "nt" and process.pid is not None:
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                return
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+
     async def run(
         self, spec: ProcessSpec, *, lease: Optional[ProcessLease] = None
     ) -> ProcessResult:
@@ -183,6 +221,7 @@ class PythonProcessAdapter:
                 shell=False,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=os.name != "nt",
             )
             communicate = process.communicate()
             if spec.timeout_seconds is None:
@@ -203,7 +242,7 @@ class PythonProcessAdapter:
             )
         except asyncio.TimeoutError:
             if process is not None:
-                process.kill()
+                self._kill_tree(process)
                 stdout, stderr = await process.communicate()
                 out, out_truncated = self._bounded(stdout or b"", spec.max_output_bytes)
                 err, err_truncated = self._bounded(stderr or b"", spec.max_output_bytes)
@@ -221,7 +260,7 @@ class PythonProcessAdapter:
             )
         except asyncio.CancelledError:
             if process is not None:
-                process.kill()
+                self._kill_tree(process)
                 await process.communicate()
             return ProcessResult(
                 process.returncode if process is not None else None,
