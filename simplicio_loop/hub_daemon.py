@@ -2,14 +2,18 @@
 
 import json
 import os
+import socket
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Set
+from typing import Any, Dict, Optional, Set
 
 
 IPC_SCHEMA = "simplicio.hub-ipc/v1"
 IPC_VERSION = 1
-METHODS = frozenset(("register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report"))
+METHODS = frozenset(
+    ("register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report", "ping")
+)
 
 
 class HubError(RuntimeError):
@@ -141,6 +145,8 @@ class HubDaemon:
     def handle(self, envelope: HubEnvelope) -> Dict[str, Any]:
         if not self.started:
             raise HubError("Hub is not started")
+        if envelope.method == "ping":
+            return {"ok": True, "started": self.started, "clients": len(self.clients), "jobs": len(self.jobs)}
         if envelope.method == "register":
             client_id = str(envelope.payload.get("client_id") or "")
             if not client_id:
@@ -197,3 +203,136 @@ class HubClient:
     def request(self, request_id: str, method: str, **payload: Any) -> Dict[str, Any]:
         payload.setdefault("client_id", self.client_id)
         return self.daemon.handle(HubEnvelope(request_id, method, payload))
+
+
+def _recv_line(conn: socket.socket) -> str:
+    chunks = []
+    while True:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        if b"\n" in chunk:
+            break
+    return b"".join(chunks).decode("utf-8").strip()
+
+
+class HubSocketServer:
+    """Unix domain socket transport for HubDaemon, restricted to the owning user.
+
+    POSIX-only. A Windows deployment needs a named-pipe transport instead;
+    this class is not usable there and no fallback is implemented yet.
+    """
+
+    def __init__(self, daemon: HubDaemon, socket_path: str) -> None:
+        self.daemon = daemon
+        self.socket_path = Path(socket_path)
+        self._server: Optional[socket.socket] = None
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.socket_path.exists():
+            self.socket_path.unlink()
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(self.socket_path))
+        os.chmod(str(self.socket_path), 0o600)
+        server.listen(8)
+        self._server = server
+        self._running = True
+        self._thread = threading.Thread(target=self._serve_forever, daemon=True)
+        self._thread.start()
+
+    def _serve_forever(self) -> None:
+        assert self._server is not None
+        self._server.settimeout(0.5)
+        while self._running:
+            try:
+                conn, _ = self._server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            threading.Thread(target=self._handle_conn, args=(conn,), daemon=True).start()
+
+    def _handle_conn(self, conn: socket.socket) -> None:
+        with conn:
+            conn.settimeout(5)
+            try:
+                raw = _recv_line(conn)
+                if not raw:
+                    return
+                try:
+                    envelope = HubEnvelope.decode(raw)
+                    response = self.daemon.handle(envelope)
+                except HubError as exc:
+                    response = {"ok": False, "error": str(exc)}
+                conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+            except OSError:
+                return
+
+    def shutdown(self) -> None:
+        if self._running:
+            self._running = False
+            if self._server is not None:
+                try:
+                    self._server.close()
+                except OSError:
+                    pass
+                self._server = None
+            if self._thread is not None:
+                self._thread.join(timeout=2)
+                self._thread = None
+        try:
+            self.socket_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+class HubSocketClient:
+    """Standalone client for HubSocketServer; usable with no daemon in-process."""
+
+    def __init__(self, socket_path: str, timeout: float = 5.0) -> None:
+        self.socket_path = socket_path
+        self.timeout = timeout
+
+    def request(self, request_id: str, method: str, **payload: Any) -> Dict[str, Any]:
+        envelope = HubEnvelope(request_id, method, payload)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(self.timeout)
+            sock.connect(self.socket_path)
+            sock.sendall((envelope.encode() + "\n").encode("utf-8"))
+            raw = _recv_line(sock)
+        if not raw:
+            raise HubError("no response from Hub daemon")
+        return json.loads(raw)
+
+
+def doctor(lock_path: str, socket_path: str) -> Dict[str, Any]:
+    """Report whether a live daemon owns the lock and answers on the socket."""
+    lock_file = Path(lock_path)
+    result: Dict[str, Any] = {
+        "lock_exists": lock_file.exists(),
+        "lock_pid_alive": False,
+        "socket_exists": Path(socket_path).exists(),
+        "socket_reachable": False,
+    }
+    if lock_file.exists():
+        try:
+            payload = json.loads(lock_file.read_text(encoding="utf-8"))
+            pid = int(payload.get("pid", 0))
+            result["pid"] = pid
+            result["lock_pid_alive"] = _pid_alive(pid)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+    if result["socket_exists"]:
+        try:
+            client = HubSocketClient(socket_path, timeout=1.0)
+            response = client.request("doctor", "ping")
+            result["socket_reachable"] = bool(response.get("ok"))
+        except (OSError, HubError, json.JSONDecodeError):
+            result["socket_reachable"] = False
+    return result
