@@ -30,6 +30,7 @@ class ProcessSpec:
 
     argv: Tuple[str, ...]
     cwd: Optional[str] = None
+    cwd_allowlist: Tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
     env_allowlist: Tuple[str, ...] = ()
     timeout_seconds: Optional[float] = 30.0
@@ -44,8 +45,23 @@ class ProcessSpec:
             raise ProcessSpecError("argv must contain a non-empty executable")
         if self.shell:
             raise ProcessSpecError("shell execution is forbidden")
-        if self.cwd is not None and not Path(self.cwd).is_absolute():
-            raise ProcessSpecError("cwd must be absolute")
+        cwd_allowlist = tuple(
+            str(Path(str(root)).resolve()) for root in self.cwd_allowlist
+        )
+        if self.cwd is not None:
+            if not Path(self.cwd).is_absolute():
+                raise ProcessSpecError("cwd must be absolute")
+            if cwd_allowlist:
+                resolved_cwd = Path(self.cwd).resolve()
+                allowed = any(
+                    resolved_cwd == Path(root) or Path(root) in resolved_cwd.parents
+                    for root in cwd_allowlist
+                )
+                if not allowed:
+                    raise ProcessSpecError(
+                        "cwd escapes the allowed roots (cwd_allowlist)"
+                    )
+        object.__setattr__(self, "cwd_allowlist", cwd_allowlist)
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ProcessSpecError("timeout_seconds must be positive")
         if self.max_output_bytes < 1:
@@ -65,6 +81,7 @@ class ProcessSpec:
         return _hash({
             "argv": self.argv,
             "cwd": self.cwd,
+            "cwd_allowlist": self.cwd_allowlist,
             "env": dict(self.env),
             "env_allowlist": self.env_allowlist,
             "timeout_seconds": self.timeout_seconds,
@@ -78,6 +95,7 @@ class ProcessSpec:
             "schema": PROCESS_SPEC_SCHEMA,
             "argv": list(self.argv),
             "cwd": self.cwd,
+            "cwd_allowlist": list(self.cwd_allowlist),
             "env": dict(self.env),
             "env_allowlist": list(self.env_allowlist),
             "timeout_seconds": self.timeout_seconds,
