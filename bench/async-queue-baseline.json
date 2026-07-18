@@ -1,0 +1,29 @@
+{
+  "capacity": 4,
+  "cpu_percent": 104.96721662878174,
+  "cpu_seconds": 0.015625,
+  "elapsed_seconds": 0.014885600001434796,
+  "idle_cpu_percent": 0.0,
+  "idle_elapsed_seconds": 0.023655900000449037,
+  "items": 100,
+  "p95_ms": 3.7017000031482894,
+  "peak_rss_mb": 0.022360801696777344,
+  "queue": {
+    "accepted": 100,
+    "bytes": 0,
+    "closed": false,
+    "coalesced": 0,
+    "items": 0,
+    "max_bytes": 0,
+    "max_items": 4,
+    "overload": "wait",
+    "rejected": 0,
+    "schema": "simplicio.async-bounded-queue/v1",
+    "unfinished": 0,
+    "wait_count": 24
+  },
+  "repeats": 5,
+  "rss_source": "tracemalloc",
+  "schema": "simplicio.async-queue-benchmark/v1",
+  "throughput_per_second": 33589.50932121016
+}
