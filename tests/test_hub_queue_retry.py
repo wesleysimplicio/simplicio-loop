@@ -164,6 +164,45 @@ def test_invalid_requests_and_empty_queue_are_rejected() -> None:
         queue.close()
 
 
+def test_claim_and_heartbeat_reject_non_positive_ttl_or_missing_worker_id() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        queue.submit({}, idempotency_key="k")
+        with pytest.raises(QueueRetryError):
+            queue.claim("", ttl=10)
+        with pytest.raises(QueueRetryError):
+            queue.claim("worker", ttl=0)
+        lease = queue.claim("worker", ttl=10)
+        assert lease is not None
+        with pytest.raises(QueueRetryError):
+            queue.heartbeat(lease, ttl=0)
+        queue.close()
+
+
+def test_fail_requires_error_code() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        queue.submit({}, idempotency_key="k")
+        lease = queue.claim("worker", ttl=10)
+        assert lease is not None
+        with pytest.raises(QueueRetryError):
+            queue.fail(lease, error_code="")
+        queue.close()
+
+
+def test_requeue_and_state_reject_invalid_or_non_dead_letter_task() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        task_id = queue.submit({}, idempotency_key="k")
+        with pytest.raises(QueueRetryError):
+            queue.requeue(task_id)
+        with pytest.raises(QueueRetryError):
+            queue.requeue("does-not-exist")
+        with pytest.raises(QueueRetryError):
+            queue.state("does-not-exist")
+        queue.close()
+
+
 def test_expired_lease_is_reclaimable_by_another_worker() -> None:
     with tempfile.TemporaryDirectory() as directory:
         queue = HubRetryQueue(str(Path(directory) / "queue.db"))
