@@ -164,10 +164,12 @@ def test_invalid_requests_and_empty_queue_are_rejected() -> None:
         queue.close()
 
 
-def test_claim_and_heartbeat_reject_non_positive_ttl() -> None:
+def test_claim_and_heartbeat_reject_non_positive_ttl_or_missing_worker_id() -> None:
     with tempfile.TemporaryDirectory() as directory:
         queue = HubRetryQueue(str(Path(directory) / "queue.db"))
         queue.submit({}, idempotency_key="k")
+        with pytest.raises(QueueRetryError):
+            queue.claim("", ttl=10)
         with pytest.raises(QueueRetryError):
             queue.claim("worker", ttl=0)
         with pytest.raises(QueueRetryError):
@@ -190,7 +192,7 @@ def test_fail_requires_error_code() -> None:
         queue.close()
 
 
-def test_requeue_and_state_reject_invalid_task() -> None:
+def test_requeue_and_state_reject_invalid_or_non_dead_letter_task() -> None:
     with tempfile.TemporaryDirectory() as directory:
         queue = HubRetryQueue(str(Path(directory) / "queue.db"))
         task_id = queue.submit({}, idempotency_key="k")
