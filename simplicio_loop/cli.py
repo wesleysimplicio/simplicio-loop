@@ -49,8 +49,6 @@ from .ops_ledger import (
 )
 from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
-from .delivery import DELIVERY_ORDER
-from .map_service_status import default_status_path, load_status_file
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -193,6 +191,37 @@ def plan(task_path: str, out_path: str) -> int:
     return 0
 
 
+def prototype_plan(args) -> int:
+    """Emit a hash-bound ``prototype-plan/v1`` for Mapper/Dev CLI adapters."""
+    from .prototype_gate import build_plan
+
+    source_sha = args.source_sha
+    if not source_sha:
+        try:
+            source_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=args.repo, capture_output=True,
+                text=True, check=True, stdin=subprocess.DEVNULL,
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            source_sha = "unknown-source"
+    payload = build_plan(
+        work_item_id=args.work_item_id,
+        goal=args.goal,
+        prototype_type=args.prototype_type,
+        source_sha=source_sha,
+        level=args.level,
+        estimated_budget=args.estimated_budget,
+        validators=args.validator,
+        context_pack_hash=args.context_pack_hash,
+        negative_space=args.negative_space,
+    )
+    output = Path(args.out)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True) if args.json else f"prototype plan: {output} hash={payload['plan_hash']}")
+    return 0
+
+
 def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int) -> int:
     try:
         delivery_target = delivery.normalize_delivery_target(delivery_arg)
@@ -240,45 +269,6 @@ def status(repo: str, run_id: str, as_json: bool = False, as_text: bool = False)
         print(_render_status_text(payload))
     else:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-    return 0
-
-
-def map_status(repo: str, status_file: str, as_json: bool = False) -> int:
-    """Report cache hit/build/wait/invalidate counters from a real map-service session's
-    status file. Never fabricates a reading: a missing file is reported as blocked."""
-    path = Path(status_file) if status_file else default_status_path(repo)
-    try:
-        payload = load_status_file(path)
-    except (OSError, ValueError) as exc:
-        payload = None
-        error = str(exc)
-    else:
-        error = ""
-    if payload is None:
-        result = {
-            "schema": "simplicio.map-service-status/v1",
-            "status": "UNAVAILABLE",
-            "reason_code": "status_file_missing" if not error else "status_file_invalid",
-            "path": str(path),
-            "error": error,
-        }
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 1
-    if as_json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        counters = payload.get("counters", {})
-        watchers = payload.get("watchers", {})
-        lines = [
-            "map-service status (" + str(path) + ")",
-            "  cache_hits:    " + str(counters.get("cache_hits", 0)),
-            "  builds:        " + str(counters.get("builds", 0)),
-            "  waits:         " + str(counters.get("waits", 0)),
-            "  invalidations: " + str(counters.get("invalidations", 0)),
-            "  watchers:      " + str(watchers.get("watchers", 0)),
-            "  pending:       " + str(watchers.get("pending", 0)),
-        ]
-        print("\n".join(lines))
     return 0
 
 
@@ -726,15 +716,29 @@ def main(argv=None) -> int:
     p_plan.add_argument("--out", default=os.path.join(".orchestrator", "task-contract.json"),
                         help="where to write the compiled contract")
 
+    p_prototype = sub.add_parser("prototype-plan", help="emit a hash-bound Prototype-First plan")
+    p_prototype.add_argument("--repo", default=".")
+    p_prototype.add_argument("--work-item-id", required=True)
+    p_prototype.add_argument("--goal", required=True)
+    p_prototype.add_argument("--type", dest="prototype_type", required=True)
+    p_prototype.add_argument("--source-sha", default="")
+    p_prototype.add_argument("--level", choices=("P0", "P1", "P2", "FULL"), default="P1")
+    p_prototype.add_argument("--estimated-budget", type=float, default=0)
+    p_prototype.add_argument("--validator", action="append", default=[])
+    p_prototype.add_argument("--context-pack-hash", default="")
+    p_prototype.add_argument("--negative-space", action="append", default=[])
+    p_prototype.add_argument("--out", default=os.path.join(".orchestrator", "prototype-plan.json"))
+    p_prototype.add_argument("--json", action="store_true")
+
     p_run = sub.add_parser("run", help="arm, execute, and independently verify a raw markdown task")
     p_run.add_argument("--task", required=True, help="markdown task file")
     p_run.add_argument("--repo", default=".", help="repository root")
     p_run.add_argument(
-        "--delivery", default="verified",
-        metavar="{" + ",".join(DELIVERY_ORDER[1:]) + "}",
+        "--delivery",
+        default="verified",
         help=(
-            "requested delivery target, one of: " + ", ".join(DELIVERY_ORDER[1:])
-            + " (use 'implemented' for a local-only run)"
+            "requested delivery target: one of "
+            + ", ".join(delivery.DELIVERY_ORDER[1:])
         ),
     )
     p_run.add_argument("--max-iterations", type=int, default=12, help="safety cap")
@@ -753,16 +757,6 @@ def main(argv=None) -> int:
                           help="emit machine-readable JSON (this is also the default)")
     p_status.add_argument("--text", dest="as_text", action="store_true",
                           help="emit human-readable text instead of JSON")
-
-    p_map = sub.add_parser("map", help="map-service cross-module status")
-    map_sub = p_map.add_subparsers(dest="map_command", required=True)
-    p_map_status = map_sub.add_parser(
-        "status", help="report cache hit/build/wait/invalidate counters from a running session")
-    p_map_status.add_argument("--repo", default=".", help="repository root")
-    p_map_status.add_argument("--status-file", default="",
-                              help="explicit status file (default: <repo>/.orchestrator/map/status.json)")
-    p_map_status.add_argument("--json", action="store_true",
-                              help="emit machine-readable JSON (this is also the default)")
 
     p_preflight = sub.add_parser(
         "preflight", help="verify bound operators (mapper/dev-cli/runtime) are installed")
@@ -935,6 +929,8 @@ def main(argv=None) -> int:
         return task_contract_main(forwarded)
     if command == "plan":
         return plan(args.task, args.out)
+    if command == "prototype-plan":
+        return prototype_plan(args)
     if command == "run":
         return run(args.repo, args.task, args.delivery, args.max_iterations)
     if command == "oracle":
@@ -942,10 +938,6 @@ def main(argv=None) -> int:
                       args.write_receipt)
     if command == "status":
         return status(args.repo, args.run_id, args.json, args.as_text)
-    if command == "map":
-        if args.map_command == "status":
-            return map_status(args.repo, args.status_file, args.json)
-        parser.error("unknown map subcommand: " + str(args.map_command))
     if command == "preflight":
         return preflight(args.repo, args.json)
     if command == "findings":
