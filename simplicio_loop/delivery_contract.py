@@ -44,12 +44,12 @@ def normalize_contract(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return result
 
 
-def enforce_diff_contract(*, changed_paths: Iterable[str], added_lines: Iterable[str], contract: dict[str, Any]) -> dict[str, Any]:
+def enforce_diff_contract(*, changed_paths: Iterable[str], added_lines: Iterable[str], contract: dict[str, Any], new_paths: Iterable[str] = ()) -> dict[str, Any]:
     normalized = normalize_contract(contract)
     paths = sorted(set(changed_paths))
     errors: list[str] = []
     if not normalized["allow_new_files_in_repo"]:
-        new_files = [path for path in paths if path.startswith("+")]
+        new_files = sorted(set(new_paths))
         if new_files:
             errors.append("new files are forbidden: " + ", ".join(new_files))
     if not normalized["allow_comments_in_code"]:

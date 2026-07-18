@@ -18,7 +18,7 @@ def test_defaults_are_explicit_and_normalized():
 
 
 def test_new_file_guard_is_fail_closed():
-    result = enforce_diff_contract(changed_paths=["+FooTests.cs"], added_lines=[], contract=contract(allow_new_files_in_repo=False))
+    result = enforce_diff_contract(changed_paths=["FooTests.cs"], new_paths=["FooTests.cs"], added_lines=[], contract=contract(allow_new_files_in_repo=False))
     assert result["ok"] is False
     assert "new files" in result["errors"][0]
 
