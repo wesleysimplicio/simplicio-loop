@@ -1,6 +1,8 @@
 import asyncio
+import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -74,6 +76,48 @@ def test_adapter_classifies_timeout_and_missing_executable() -> None:
 
         missing = await adapter.run(ProcessSpec(("simplicio-no-such-executable",)))
         assert missing.error_code == "executable_not_found"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process-group kill is POSIX-only")
+def test_timeout_kills_the_whole_child_tree() -> None:
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "grandchild.pid"
+            script = (
+                "import subprocess, sys, time\n"
+                "child = subprocess.Popen([sys.executable, '-c', "
+                "'import time; time.sleep(30)'])\n"
+                f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+                "time.sleep(30)\n"
+            )
+            adapter = PythonProcessAdapter()
+            result = await adapter.run(
+                ProcessSpec((sys.executable, "-c", script), timeout_seconds=1.0)
+            )
+            assert result.timed_out
+            assert result.error_code == "deadline_exceeded"
+
+            deadline = time.monotonic() + 2.0
+            grandchild_pid = None
+            while time.monotonic() < deadline:
+                if pid_file.exists():
+                    grandchild_pid = int(pid_file.read_text())
+                    break
+                await asyncio.sleep(0.02)
+            assert grandchild_pid is not None, "grandchild never reported its pid"
+
+            deadline = time.monotonic() + 2.0
+            alive = True
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(grandchild_pid, 0)
+                except ProcessLookupError:
+                    alive = False
+                    break
+                await asyncio.sleep(0.02)
+            assert not alive, "grandchild process survived the deadline kill"
 
     asyncio.run(scenario())
 

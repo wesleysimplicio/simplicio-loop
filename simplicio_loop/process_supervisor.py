@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -168,6 +169,25 @@ class PythonProcessAdapter:
         truncated = len(raw) > limit
         return raw[:limit].decode("utf-8", errors="replace"), truncated
 
+    @staticmethod
+    def _kill_tree(process: "asyncio.subprocess.Process") -> None:
+        """Kill the process and, on POSIX, its whole process group.
+
+        The child is started with start_new_session=True so it heads its own
+        process group; killing that group reaps grandchildren the direct pid
+        would otherwise leave orphaned (and running) past the deadline.
+        """
+        if os.name != "nt" and process.pid is not None:
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                return
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+
     async def run(
         self, spec: ProcessSpec, *, lease: Optional[ProcessLease] = None
     ) -> ProcessResult:
@@ -183,6 +203,7 @@ class PythonProcessAdapter:
                 shell=False,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=os.name != "nt",
             )
             communicate = process.communicate()
             if spec.timeout_seconds is None:
@@ -203,7 +224,7 @@ class PythonProcessAdapter:
             )
         except asyncio.TimeoutError:
             if process is not None:
-                process.kill()
+                self._kill_tree(process)
                 stdout, stderr = await process.communicate()
                 out, out_truncated = self._bounded(stdout or b"", spec.max_output_bytes)
                 err, err_truncated = self._bounded(stderr or b"", spec.max_output_bytes)
@@ -221,7 +242,7 @@ class PythonProcessAdapter:
             )
         except asyncio.CancelledError:
             if process is not None:
-                process.kill()
+                self._kill_tree(process)
                 await process.communicate()
             return ProcessResult(
                 process.returncode if process is not None else None,
