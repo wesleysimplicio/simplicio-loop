@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from . import __version__
+from . import delivery
 from .drain import (
     SCHEMA as DRAIN_SCHEMA,
     DrainReceiptError,
@@ -186,8 +187,13 @@ def plan(task_path: str, out_path: str) -> int:
     return 0
 
 
-def run(repo: str, task_path: str, delivery: str, max_iterations: int) -> int:
-    payload = conduct_run(repo, task_path, delivery, max_iterations)
+def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int) -> int:
+    try:
+        delivery_target = delivery.normalize_delivery_target(delivery_arg)
+    except delivery.DeliveryTargetError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    payload = conduct_run(repo, task_path, delivery_target, max_iterations)
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -678,7 +684,14 @@ def main(argv=None) -> int:
     p_run = sub.add_parser("run", help="arm, execute, and independently verify a raw markdown task")
     p_run.add_argument("--task", required=True, help="markdown task file")
     p_run.add_argument("--repo", default=".", help="repository root")
-    p_run.add_argument("--delivery", default="verified", help="requested delivery target")
+    p_run.add_argument(
+        "--delivery",
+        default="verified",
+        help=(
+            "requested delivery target: one of "
+            + ", ".join(delivery.DELIVERY_ORDER[1:])
+        ),
+    )
     p_run.add_argument("--max-iterations", type=int, default=12, help="safety cap")
 
     p_oracle = sub.add_parser("oracle", help="evaluate completion and cross-runtime parity")

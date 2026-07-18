@@ -23,6 +23,23 @@ DELIVERY_ORDER = [
 ]
 
 
+class DeliveryTargetError(ValueError):
+    """Raised when --delivery receives a value outside DELIVERY_ORDER[1:].
+
+    Friendly, fail-closed: carries the bad value and the allowed list so the
+    CLI can print a short corrective message without a traceback.
+    """
+
+    def __init__(self, value: str):
+        self.value = value
+        self.allowed = list(DELIVERY_ORDER[1:])
+        message = (
+            f"unsupported delivery target: {value!r}. "
+            f"accepted values: {', '.join(self.allowed)}"
+        )
+        super().__init__(message)
+
+
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -41,7 +58,7 @@ def source_fingerprint(payload: Dict[str, Any]) -> str:
 def normalize_delivery_target(value: str) -> str:
     target = (value or "").strip().lower()
     if target not in DELIVERY_ORDER[1:]:
-        raise ValueError(f"unsupported delivery target: {value!r}")
+        raise DeliveryTargetError(value)
     return target
 
 
