@@ -144,7 +144,28 @@ def _git_meta(worktree=None):
             return (done.stdout or "").strip() if done.returncode == 0 else ""
         except Exception:
             return ""
-    diff = _run("diff", "--no-ext-diff", "HEAD")
+    # Include NEW (untracked) files in the diff fingerprint. The default
+    # `git diff HEAD` ignores untracked paths, so a run that only *creates*
+    # files would always hash to the empty-string sha and never match a
+    # receipt that recorded the real change. We stage everything
+    # temporarily (`git add -A`), read `git diff --cached HEAD` (which
+    # DOES include newly-added paths), then restore the original index
+    # with `git reset` (mixed) so the working tree is untouched.
+    diff = ""
+    staged = False
+    try:
+        st = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"],
+                            cwd=worktree or REPO, capture_output=True, text=True, timeout=15)
+        if st.returncode == 0 and any(line[:2] in ("??", " A", "M ", "M ") or line.startswith("??")
+                               for line in st.stdout.splitlines()):
+            subprocess.run(["git", "add", "-A"], cwd=worktree or REPO,
+                           capture_output=True, text=True, timeout=15)
+            staged = True
+        diff = _run("diff", "--no-ext-diff", "--cached", "HEAD")
+    finally:
+        if staged:
+            subprocess.run(["git", "reset", "-q"], cwd=worktree or REPO,
+                           capture_output=True, text=True, timeout=15)
     return {
         "commit_sha": _run("rev-parse", "HEAD"),
         "diff_hash": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
