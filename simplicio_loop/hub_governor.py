@@ -10,6 +10,7 @@ when every probe is unavailable.
 from __future__ import annotations
 
 import platform
+import subprocess
 import time
 from dataclasses import dataclass, field
 from threading import RLock
@@ -158,6 +159,27 @@ class PressureReading:
         }
 
 
+@dataclass(frozen=True)
+class GPUReading:
+    """A best-effort GPU/VRAM sample, distinct from ``PressureReading``.
+
+    GPU measurement has no cross-platform stdlib fallback (unlike CPU/RSS),
+    so the ladder is short: ``nvidia-smi`` if present on PATH, else
+    ``unavailable`` with all-zero values. Never raises.
+    """
+
+    memory_used_bytes: int = 0
+    memory_total_bytes: int = 0
+    source: str = "unavailable"
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "memory_used_bytes": self.memory_used_bytes,
+            "memory_total_bytes": self.memory_total_bytes,
+            "source": self.source,
+        }
+
+
 class ResourceProbe:
     """Cross-platform pressure reader with a documented degrade ladder.
 
@@ -213,6 +235,34 @@ class ResourceProbe:
         except Exception:
             return None
         return PressureReading(memory_bytes=memory_bytes, source="stdlib_fallback")
+
+    def read_gpu(self) -> GPUReading:
+        try:
+            completed = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.used,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return GPUReading(source="unavailable")
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return GPUReading(source="unavailable")
+        first_line = completed.stdout.strip().splitlines()[0]
+        try:
+            used_mib_str, total_mib_str = (part.strip() for part in first_line.split(","))
+            used_bytes = int(float(used_mib_str)) * 1024 * 1024
+            total_bytes = int(float(total_mib_str)) * 1024 * 1024
+        except (ValueError, IndexError):
+            return GPUReading(source="unavailable")
+        return GPUReading(
+            memory_used_bytes=used_bytes, memory_total_bytes=total_bytes, source="nvidia-smi"
+        )
 
 
 @dataclass
@@ -394,6 +444,37 @@ class ResourceGovernor:
                 self._circuit.recover()
             return {
                 "schema": GOVERNOR_SCHEMA, "event": "pressure_reading",
+                "reading": reading.as_dict(), "over_budget": False,
+                "tripped": False, "circuit": self._circuit.as_dict(),
+            }
+
+    def evaluate_gpu_pressure(
+        self, reading: GPUReading, *, memory_used_limit_bytes: int = 0
+    ) -> Dict[str, Any]:
+        """Feed a GPU/VRAM measurement into the circuit breaker.
+
+        Mirrors ``evaluate_pressure`` but for the ``gpu_pressure`` reason.
+        An ``unavailable`` reading (no GPU probe on this host) never trips
+        the breaker, matching the standalone-safe default of the governor.
+        """
+        with self._lock:
+            over_budget = (
+                bool(memory_used_limit_bytes)
+                and reading.source != "unavailable"
+                and reading.memory_used_bytes > memory_used_limit_bytes
+            )
+            if over_budget:
+                tripped = self._circuit.record_failure("gpu_pressure")
+                return {
+                    "schema": GOVERNOR_SCHEMA, "event": "gpu_pressure_reading",
+                    "reading": reading.as_dict(), "over_budget": True,
+                    "tripped": tripped, "circuit": self._circuit.as_dict(),
+                }
+            self._circuit.allow()
+            if self._circuit.state == "half_open":
+                self._circuit.recover()
+            return {
+                "schema": GOVERNOR_SCHEMA, "event": "gpu_pressure_reading",
                 "reading": reading.as_dict(), "over_budget": False,
                 "tripped": False, "circuit": self._circuit.as_dict(),
             }

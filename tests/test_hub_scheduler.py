@@ -41,3 +41,27 @@ def test_invalid_and_duplicate_jobs_fail_closed() -> None:
         scheduler.enqueue(ScheduledJob("one", "client"))
     with pytest.raises(SchedulerError):
         scheduler.complete("missing")
+
+
+def test_constructor_rejects_non_positive_limits() -> None:
+    with pytest.raises(SchedulerError):
+        FairScheduler(max_inflight_per_client=0)
+    with pytest.raises(SchedulerError):
+        FairScheduler(quantum=0)
+    with pytest.raises(SchedulerError):
+        FairScheduler(aging_ticks=0)
+    with pytest.raises(SchedulerError):
+        FairScheduler(aging_boost=0)
+    with pytest.raises(SchedulerError):
+        FairScheduler(max_queue_per_client=0)
+
+
+def test_enqueue_rejects_empty_workspace_id() -> None:
+    scheduler = FairScheduler()
+    with pytest.raises(SchedulerError):
+        scheduler.enqueue(ScheduledJob("job-1", "client", workspace_id=""))
+
+
+def test_cancel_unknown_task_returns_false_without_raising() -> None:
+    scheduler = FairScheduler()
+    assert scheduler.cancel("never-enqueued") is False

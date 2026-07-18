@@ -28,6 +28,17 @@ python -m simplicio_loop.cli resume --repo . <run-id>
 
 The command writes `.orchestrator/runs/<run-id>/maintenance-receipt.json` with the correction, reason, resume instructions, timestamp, and evidence status. It sets `completion.ready=false`, marks the operator `backlog_only`, and advances `next_action=resume_from_maintenance_receipt`. No mutation operator is invoked and a completion promise remains rejected until the normal evidence and watcher gates pass.
 
+### Requesting a local-only run
+
+`--delivery` accepts one of `implemented, verified, pr-open, merge-ready, merged, released,
+deployed` (see `simplicio_loop.cli run --help`); pass `--delivery implemented` when you only want
+the change applied and verified locally, without requiring a PR/merge/release to be considered
+satisfied:
+
+```bash
+python -m simplicio_loop.cli run --repo . --task task.md --delivery implemented
+```
+
 `resume` is the handoff back into the broader goal. It clears the maintenance-deferred flag back to active mode, invalidates stale operator/evidence receipts, and sets `next_action=mapper_scan_required` so the follow-up attempt re-enters the normal decision/apply/verify path with a writable control plane.
 
 ## Deferral rationale

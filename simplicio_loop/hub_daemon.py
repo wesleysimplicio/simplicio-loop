@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+from .hub_queue_retry import HubRetryQueue
+from .hub_scheduler import FairScheduler, QuotaExceededError, ScheduledJob, SchedulerError
+from .process_enforcement import ProcessRegistry
 from .process_supervisor import ProcessSpec, ProcessSpecError
 from .process_supervisor_rust import backend_name, run_with_fallback
 
@@ -18,7 +21,10 @@ from .process_supervisor_rust import backend_name, run_with_fallback
 IPC_SCHEMA = "simplicio.hub-ipc/v1"
 IPC_VERSION = 1
 METHODS = frozenset(
-    ("register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report", "execute", "ping")
+    (
+        "register", "submit", "claim", "claim_next", "heartbeat", "progress",
+        "cancel", "result", "report", "execute", "ping", "scheduler_status",
+    )
 )
 
 
@@ -32,6 +38,14 @@ class HubAlreadyRunning(HubError):
 
 class HubProtocolError(HubError):
     """Raised for invalid or unknown IPC envelopes."""
+
+
+class HubBackpressureError(HubProtocolError):
+    """Raised when a submit is rejected by a scheduler quota (client/workspace/global)."""
+
+    def __init__(self, quota_error: QuotaExceededError) -> None:
+        self.signal = quota_error.to_backpressure_signal()
+        super().__init__(str(quota_error))
 
 
 def _pid_alive(pid: int) -> bool:
@@ -130,11 +144,22 @@ class HubEnvelope:
 class HubDaemon:
     """In-process lifecycle coordinator behind a singleton lock."""
 
-    def __init__(self, lock_path: str) -> None:
+    def __init__(
+        self,
+        lock_path: str,
+        queue_path: Optional[str] = None,
+        scheduler: Optional[FairScheduler] = None,
+        *,
+        process_registry: Optional[ProcessRegistry] = None,
+    ) -> None:
         self.lock = HubLock(lock_path)
         self.started = False
         self.clients: Set[str] = set()
-        self.jobs: Dict[str, Dict[str, Any]] = {}
+        self.queue_path = queue_path or (str(self.lock.path) + ".jobs.db")
+        self.queue = HubRetryQueue(self.queue_path)
+        self.scheduler = scheduler if scheduler is not None else FairScheduler()
+        self._queue_lock = threading.Lock()
+        self.process_registry = process_registry or ProcessRegistry()
 
     def start(self) -> None:
         if self.started:
@@ -143,22 +168,31 @@ class HubDaemon:
         self.started = True
 
     def stop(self) -> None:
-        self.jobs.clear()
         self.clients.clear()
         self.started = False
         self.lock.release()
+        self.queue.close()
 
     def handle(self, envelope: HubEnvelope) -> Dict[str, Any]:
         if not self.started:
             raise HubError("Hub is not started")
         if envelope.method == "ping":
-            return {"ok": True, "started": self.started, "clients": len(self.clients), "jobs": len(self.jobs)}
+            with self._queue_lock:
+                job_count = self.queue.count()
+            return {"ok": True, "started": self.started, "clients": len(self.clients), "jobs": job_count}
         if envelope.method == "register":
             client_id = str(envelope.payload.get("client_id") or "")
             if not client_id:
                 raise HubProtocolError("client_id is required")
             self.clients.add(client_id)
             return {"ok": True, "client_id": client_id, "state": "registered"}
+        if envelope.method == "scheduler_status":
+            return {"ok": True, "scheduler": self.scheduler.status()}
+        if envelope.method == "claim_next":
+            worker_id = str(envelope.payload.get("client_id") or "worker")
+            with self._queue_lock:
+                job = self._claim_next_locked(worker_id)
+            return {"ok": True, "job": job}
         if envelope.method == "execute":
             raw_spec = envelope.payload.get("process_spec")
             if not isinstance(raw_spec, dict):
@@ -188,49 +222,117 @@ class HubDaemon:
                 )
             except (TypeError, ValueError, ProcessSpecError) as exc:
                 raise HubProtocolError(f"invalid ProcessSpec: {exc}") from exc
+            registered: Dict[str, int] = {}
+
+            def on_spawned(process: Any) -> None:
+                registered["pid"] = process.pid
+                self.process_registry.register(
+                    process.pid,
+                    lease_id=spec.idempotency_key or f"hub-execute-{envelope.request_id}",
+                    spec_hash=spec.spec_hash,
+                    argv=spec.argv,
+                )
+
             try:
-                result = run_with_fallback(spec)
+                result = run_with_fallback(spec, on_spawned=on_spawned)
             except (OSError, RuntimeError, asyncio.CancelledError) as exc:
                 raise HubError(f"supervisor execution failed: {exc}") from exc
+            finally:
+                if "pid" in registered:
+                    self.process_registry.unregister(registered["pid"])
             return {"ok": True, "backend": backend_name(), "result": result.to_dict()}
         job_id = str(envelope.payload.get("job_id") or "")
         if not job_id:
             raise HubProtocolError("job_id is required")
-        if envelope.method == "submit":
-            if job_id in self.jobs:
-                raise HubProtocolError("job already exists")
-            self.jobs[job_id] = {
-                "job_id": job_id,
-                "client_id": envelope.payload.get("client_id"),
-                "state": "queued",
-                "progress": 0,
-                "result": None,
-            }
-            return {"ok": True, "job": dict(self.jobs[job_id])}
-        job = self.jobs.get(job_id)
-        if job is None:
-            raise HubProtocolError("unknown job")
-        if envelope.method == "claim":
-            if job["state"] != "queued":
-                raise HubProtocolError("job is not claimable")
+        with self._queue_lock:
+            if envelope.method == "submit":
+                if self.queue.find_task_id(job_id) is not None:
+                    raise HubProtocolError("job already exists")
+                client_id = str(envelope.payload.get("client_id") or "")
+                try:
+                    self.scheduler.enqueue(
+                        ScheduledJob(
+                            task_id=job_id,
+                            client_id=client_id,
+                            weight=int(envelope.payload.get("weight", 1)),
+                            cost=int(envelope.payload.get("cost", 1)),
+                            workspace_id=str(envelope.payload.get("workspace_id") or "default"),
+                        )
+                    )
+                except QuotaExceededError as exc:
+                    raise HubBackpressureError(exc) from exc
+                except SchedulerError as exc:
+                    raise HubProtocolError(str(exc)) from exc
+                job = {
+                    "job_id": job_id,
+                    "client_id": envelope.payload.get("client_id"),
+                    "state": "queued",
+                    "progress": 0,
+                    "result": None,
+                }
+                self.queue.submit(job, idempotency_key=job_id)
+                return {"ok": True, "job": dict(job)}
+            task_id = self.queue.find_task_id(job_id)
+            if task_id is None:
+                raise HubProtocolError("unknown job")
+            row = self.queue.get_row(task_id)
+            job = dict(row["payload"])
+            if envelope.method == "claim":
+                if job["state"] != "queued":
+                    raise HubProtocolError("job is not claimable")
+                job["state"] = "claimed"
+            elif envelope.method == "heartbeat":
+                if job["state"] not in ("claimed", "running"):
+                    raise HubProtocolError("job has no active lease")
+            elif envelope.method == "progress":
+                progress = int(envelope.payload.get("progress", -1))
+                if not 0 <= progress <= 100:
+                    raise HubProtocolError("progress must be between 0 and 100")
+                job["progress"] = progress
+                job["state"] = "running"
+            elif envelope.method == "cancel":
+                job["state"] = "cancelled"
+                self.scheduler.cancel(job_id)
+            elif envelope.method == "result":
+                job["result"] = envelope.payload.get("result")
+                job["state"] = "completed"
+                try:
+                    self.scheduler.complete(job_id)
+                except SchedulerError:
+                    pass
+            elif envelope.method == "report":
+                return {"ok": True, "job": dict(job), "clients": sorted(self.clients)}
+            self.queue.update_payload(task_id, job)
+            return {"ok": True, "job": dict(job)}
+
+    def _claim_next_locked(self, worker_id: str) -> Optional[Dict[str, Any]]:
+        """Pop the next task the FairScheduler's DRR/quota order selects, skipping any
+        stale scheduler entries that no longer map to a live queued job (defensive only:
+        cancel()/complete() already retire scheduler entries within this same session)."""
+        max_attempts = 4096
+        for _ in range(max_attempts):
+            scheduled = self.scheduler.next()
+            if scheduled is None:
+                return None
+            task_id = self.queue.find_task_id(scheduled.task_id)
+            if task_id is None:
+                self._retire_scheduler_entry(scheduled.task_id)
+                continue
+            row = self.queue.get_row(task_id)
+            job = dict(row["payload"])
+            if job.get("state") != "queued":
+                self._retire_scheduler_entry(scheduled.task_id)
+                continue
             job["state"] = "claimed"
-        elif envelope.method == "heartbeat":
-            if job["state"] not in ("claimed", "running"):
-                raise HubProtocolError("job has no active lease")
-        elif envelope.method == "progress":
-            progress = int(envelope.payload.get("progress", -1))
-            if not 0 <= progress <= 100:
-                raise HubProtocolError("progress must be between 0 and 100")
-            job["progress"] = progress
-            job["state"] = "running"
-        elif envelope.method == "cancel":
-            job["state"] = "cancelled"
-        elif envelope.method == "result":
-            job["result"] = envelope.payload.get("result")
-            job["state"] = "completed"
-        elif envelope.method == "report":
-            return {"ok": True, "job": dict(job), "clients": sorted(self.clients)}
-        return {"ok": True, "job": dict(job)}
+            self.queue.update_payload(task_id, job)
+            return job
+        return None
+
+    def _retire_scheduler_entry(self, task_id: str) -> None:
+        try:
+            self.scheduler.complete(task_id)
+        except SchedulerError:
+            pass
 
 
 class HubClient:
@@ -307,7 +409,7 @@ class HubSocketServer:
             server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             server.bind(str(self.socket_path))
             os.chmod(str(self.socket_path), 0o600)
-            server.listen(8)
+            server.listen(64)
             self._server = server
             self._server.settimeout(0.5)
         self._running = True

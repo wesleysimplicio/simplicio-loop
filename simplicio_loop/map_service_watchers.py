@@ -150,6 +150,28 @@ class MapWatcherManager:
     def gc(self) -> List[str]:
         return self.store.gc() if self.store is not None else self.registry.gc()
 
+    def rebind(self, old_identity_key: str, new_identity: Any) -> str:
+        """Move a watcher onto a new identity after a branch/rebase transition.
+
+        The old identity's snapshots are invalidated (never hard-removed here)
+        so an in-use handle keeps working until its owner releases it; `gc()`
+        reclaims the old snapshot once unreferenced, same as any invalidation.
+        """
+        with self._lock:
+            token = self._by_identity.get(old_identity_key)
+            watcher = self._watchers.get(token) if token else None
+            new_key = self.registry.register(new_identity, transition=True)
+            if watcher is None:
+                return new_key
+            pending = self._pending.pop(old_identity_key, None)
+            self._by_identity.pop(old_identity_key, None)
+            watcher.identity_key = new_key
+            self._by_identity[new_key] = watcher.token
+            if pending is not None:
+                pending["identity_key"] = new_key
+                self._pending[new_key] = pending
+            return new_key
+
     def close(self) -> None:
         with self._lock:
             self._watchers.clear()

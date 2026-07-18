@@ -60,6 +60,33 @@ def test_same_root_identity_collision_fails_closed() -> None:
             registry.register(_identity(root, repo="other/project"))
 
 
+def test_transition_supersedes_same_root_identity_and_invalidates_old_views() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        registry = MapServiceRegistry()
+        old_key = registry.register(_identity(root))
+        old_view = registry.build_canonical(old_key, tree_hash="sha1-tree")
+        held = registry.get_view(old_view.cache_key)
+
+        new_identity = RepositoryIdentity(
+            repository="owner/project", canonical_root=str(root), base_sha="def456"
+        )
+        new_key = registry.register(new_identity, transition=True)
+
+        assert new_key != old_key
+        with pytest.raises(UnknownRepositoryError):
+            registry.identity(old_key)
+        assert registry.resolve_repo(str(root)).key == new_key
+
+        assert registry.gc() == []
+        registry.release(held.cache_key)
+        assert registry.gc() == [old_view.cache_key]
+
+        new_view = registry.build_canonical(new_key, tree_hash="sha2-tree")
+        assert new_view.identity_key == new_key
+        assert new_view.valid
+
+
 def test_identity_requires_repository_and_base_sha() -> None:
     with tempfile.TemporaryDirectory() as directory:
         with pytest.raises(MapServiceError):

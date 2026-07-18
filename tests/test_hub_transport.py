@@ -18,6 +18,7 @@ from simplicio_loop.hub_daemon import (
     HubSocketServer,
     default_endpoint,
     doctor,
+    main as hub_main,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -59,6 +60,117 @@ def test_unix_socket_end_to_end_and_permission_bits() -> None:
                 "request_id": "bad-version", "method": "ping", "payload": {},
             }))
             assert incompatible["ok"] is False
+        finally:
+            server.shutdown()
+            daemon.stop()
+
+
+def test_unix_socket_version_mismatch_leaves_daemon_state_untouched() -> None:
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        daemon = HubDaemon(lock_path)
+        daemon.start()
+        server = HubSocketServer(daemon, socket_path)
+        server.start()
+        try:
+            client = HubSocketClient(socket_path)
+            client.request("r1", "register", client_id="cli")
+            client.request("r2", "submit", client_id="cli", job_id="job-1")
+
+            before_clients = set(daemon.clients)
+            before_job1 = daemon.queue.get_row(daemon.queue.find_task_id("job-1"))["payload"]
+
+            incompatible = client.request_raw(json.dumps({
+                "schema": "simplicio.hub-ipc/v1", "version": 99,
+                "request_id": "bad-version", "method": "submit",
+                "payload": {"client_id": "cli", "job_id": "job-2"},
+            }))
+            assert incompatible["ok"] is False
+            assert "error" in incompatible
+
+            wrong_schema = client.request_raw(json.dumps({
+                "schema": "simplicio.hub-ipc/v2", "version": 1,
+                "request_id": "bad-schema", "method": "submit",
+                "payload": {"client_id": "cli", "job_id": "job-3"},
+            }))
+            assert wrong_schema["ok"] is False
+
+            assert daemon.clients == before_clients
+            assert daemon.queue.get_row(daemon.queue.find_task_id("job-1"))["payload"] == before_job1
+            assert daemon.queue.find_task_id("job-2") is None
+            assert daemon.queue.find_task_id("job-3") is None
+
+            still_alive = client.request("r3", "ping")
+            assert still_alive["ok"] is True
+            assert still_alive["started"] is True
+        finally:
+            server.shutdown()
+            daemon.stop()
+
+
+def test_unix_socket_20_concurrent_clients_no_crash_correct_singleton() -> None:
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
+    from concurrent.futures import ThreadPoolExecutor
+
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        daemon = HubDaemon(lock_path)
+        daemon.start()
+        server = HubSocketServer(daemon, socket_path)
+        server.start()
+        try:
+            def worker(index: int) -> dict:
+                client_id = "client-%d" % index
+                job_id = "job-%d" % index
+                client = HubSocketClient(socket_path, timeout=10.0)
+                reg = client.request("reg-%d" % index, "register", client_id=client_id)
+                sub = client.request("sub-%d" % index, "submit", client_id=client_id, job_id=job_id)
+                claim = client.request("claim-%d" % index, "claim", client_id=client_id, job_id=job_id)
+                progress = client.request(
+                    "prog-%d" % index, "progress", client_id=client_id, job_id=job_id, progress=50
+                )
+                result = client.request(
+                    "res-%d" % index, "result", client_id=client_id, job_id=job_id, result={"ok": True}
+                )
+                reconnect = HubSocketClient(socket_path, timeout=10.0)
+                pinged = reconnect.request("ping-%d" % index, "ping")
+                return {
+                    "client_id": client_id,
+                    "job_id": job_id,
+                    "register_ok": reg["ok"],
+                    "claim_state": claim["job"]["state"],
+                    "progress_state": progress["job"]["state"],
+                    "result_state": result["job"]["state"],
+                    "ping_ok": pinged["ok"],
+                }
+
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                results = list(pool.map(worker, range(20)))
+
+            assert len(results) == 20
+            assert all(r["register_ok"] for r in results)
+            assert all(r["claim_state"] == "claimed" for r in results)
+            assert all(r["progress_state"] == "running" for r in results)
+            assert all(r["result_state"] == "completed" for r in results)
+            assert all(r["ping_ok"] for r in results)
+            assert {r["client_id"] for r in results} == {"client-%d" % i for i in range(20)}
+            assert len(daemon.clients) == 20
+            assert daemon.queue.count() == 20
+            assert all(
+                daemon.queue.get_row(daemon.queue.find_task_id("job-%d" % i))["payload"]["state"] == "completed"
+                for i in range(20)
+            )
+
+            second_daemon = HubDaemon(lock_path)
+            with pytest.raises(HubError):
+                second_daemon.start()
+            assert daemon.started is True
+            assert len(daemon.clients) == 20
         finally:
             server.shutdown()
             daemon.stop()
@@ -272,3 +384,61 @@ def test_windows_named_pipe_transport_and_concurrency() -> None:
         finally:
             server.shutdown()
             daemon.stop()
+
+
+def test_benchmark_hub_transport_produces_real_latency_receipt() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "benchmark_hub_transport.py")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout.strip())
+    assert payload["schema"] == "simplicio.hub-transport-benchmark/v1"
+    assert payload["requests"] == 100
+    assert payload["p50_ms"] > 0
+    assert payload["p95_ms"] >= payload["p50_ms"]
+    assert payload["throughput_per_second"] > 0
+
+
+def test_socket_server_rejects_unknown_transport() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        with pytest.raises(ValueError, match="transport must be unix or named-pipe"):
+            HubSocketServer(daemon, str(Path(directory) / "hub.sock"), transport="carrier-pigeon")
+
+
+def test_socket_server_named_pipe_transport_unavailable_off_windows() -> None:
+    if os.name == "nt":
+        pytest.skip("this asserts the POSIX-only guard against named-pipe transport")
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        server = HubSocketServer(daemon, str(Path(directory) / "hub.pipe"), transport="named-pipe")
+        with pytest.raises(RuntimeError, match="named-pipe transport requires Windows"):
+            server.start()
+
+
+def test_doctor_reports_lock_pid_dead_when_lock_payload_is_corrupt() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        Path(lock_path).write_text("not-json-at-all", encoding="utf-8")
+        report = doctor(lock_path, socket_path)
+        assert report["lock_exists"] is True
+        assert report["lock_pid_alive"] is False
+        assert "pid" not in report
+
+
+def test_cli_doctor_subcommand_reports_no_daemon(capsys: pytest.CaptureFixture) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        transport = "named-pipe" if os.name == "nt" else "unix"
+        exit_code = hub_main([
+            "doctor", "--lock", lock_path, "--endpoint", socket_path, "--transport", transport,
+        ])
+        assert exit_code == 0
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["lock_exists"] is False
+        assert payload["socket_reachable"] is False
