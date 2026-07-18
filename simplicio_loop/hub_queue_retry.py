@@ -186,32 +186,74 @@ class HubRetryQueue:
                 """,
                 (now, now),
             ).fetchone()
-            if row is None:
-                self._db.execute("COMMIT")
-                return None
-            lease_id = worker_id + "-" + uuid.uuid4().hex
-            fence = int(row["fence"]) + 1
-            expires = now + ttl
-            cursor = self._db.execute(
-                """
-                UPDATE hub_jobs SET state='leased', attempts=attempts+1,
-                  lease_id=?, fence=?, lease_expires_at=?, updated_at=?
-                WHERE task_id=? AND (state='queued' OR
-                  (state='leased' AND lease_expires_at<=? AND fence=?))
-                """,
-                (lease_id, fence, expires, now, row["task_id"], now, int(row["fence"])),
-            )
-            if cursor.rowcount == 0:
-                # Lost a race with another claimant between the SELECT and
-                # the UPDATE; fail closed instead of returning a lease that
-                # does not actually own the task.
-                self._db.execute("COMMIT")
-                return None
-            self._db.execute("COMMIT")
-            return RetryLease(str(row["task_id"]), lease_id, fence, expires)
+            return self._claim_row(row, worker_id, ttl=ttl, now=now)
         except Exception:
             self._db.execute("ROLLBACK")
             raise
+
+    def claim_specific(self, task_id: str, worker_id: str, *, ttl: float = 30.0) -> Optional[RetryLease]:
+        """Claim exactly one named task rather than whatever `claim()` would pick next.
+
+        Lets a caller that already decided WHICH task should run next (e.g. a fairness
+        scheduler composed on top, per #505/#506 integration) hand that decision to the
+        durable queue instead of re-picking by FIFO order. Same claimability rule and
+        fencing as `claim()` — just filtered to one task_id.
+        """
+        if not task_id or not worker_id or ttl <= 0:
+            raise QueueRetryError("task_id, worker_id and positive ttl required")
+        now = time.time()
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._db.execute(
+                """
+                SELECT * FROM hub_jobs
+                WHERE task_id=? AND (
+                  (state='queued' AND next_attempt_at<=?)
+                  OR (state='leased' AND lease_expires_at<=?)
+                )
+                """,
+                (task_id, now, now),
+            ).fetchone()
+            return self._claim_row(row, worker_id, ttl=ttl, now=now)
+        except Exception:
+            self._db.execute("ROLLBACK")
+            raise
+
+    def _claim_row(self, row, worker_id: str, *, ttl: float, now: float) -> Optional[RetryLease]:
+        """Shared claim body for `claim()`/`claim_specific()`: given a candidate row already
+        selected under BEGIN IMMEDIATE, atomically fence-update it or fail closed. Caller's
+        SELECT + this method together are one transaction; this always COMMITs or lets the
+        caller's except-clause ROLLBACK."""
+        if row is None:
+            self._db.execute("COMMIT")
+            return None
+        lease_id = worker_id + "-" + uuid.uuid4().hex
+        fence = int(row["fence"]) + 1
+        expires = now + ttl
+        cursor = self._db.execute(
+            """
+            UPDATE hub_jobs SET state='leased', attempts=attempts+1,
+              lease_id=?, fence=?, lease_expires_at=?, updated_at=?
+            WHERE task_id=? AND (state='queued' OR
+              (state='leased' AND lease_expires_at<=? AND fence=?))
+            """,
+            (lease_id, fence, expires, now, row["task_id"], now, int(row["fence"])),
+        )
+        if cursor.rowcount == 0:
+            # Lost a race with another claimant between the SELECT and the UPDATE;
+            # fail closed instead of returning a lease that does not actually own the task.
+            self._db.execute("COMMIT")
+            return None
+        self._db.execute("COMMIT")
+        return RetryLease(str(row["task_id"]), lease_id, fence, expires)
+
+    def get_payload(self, task_id: str) -> Dict[str, Any]:
+        row = self._db.execute(
+            "SELECT payload FROM hub_jobs WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if row is None:
+            raise QueueRetryError("unknown task")
+        return json.loads(row["payload"])
 
     def _owned(self, lease: RetryLease) -> sqlite3.Row:
         row = self._db.execute(
