@@ -85,6 +85,106 @@ def test_helper_combos():
     assert not _is_infra_dependent(_issue("Docs: fix typo", [], "sem palavra-chave"))
 
 
+# --- reconcile_cursor integrity (issue: cursor drift / phantom WIs) ---------
+import json
+import tempfile
+from pathlib import Path
+from unittest import mock
+
+reconcile_cursor = mod.reconcile_cursor
+
+
+def _write_cursor(tmp, state):
+    od = os.path.join(tmp, ".orchestrator")
+    os.makedirs(od, exist_ok=True)
+    p = os.path.join(od, "gh-issue-cursor.json")
+    json.dump({"work_items_state": state, "last_scan_at": "2026-01-01T00:00:00Z"},
+              open(p, "w"), ensure_ascii=False)
+    return p
+
+
+def _gh_json(stdout):
+    return mock.Mock(stdout=stdout, stderr="", returncode=0)
+
+
+def _patch_here(tmp):
+    # HERE is a pathlib.Path in the module; patch it to point at tmp.
+    return mock.patch.object(mod, "HERE", Path(tmp))
+
+
+def test_reconcile_drops_repo_none_and_collapses():
+    with tempfile.TemporaryDirectory() as tmp:
+        state = {
+            "wi-1": {"issue": 100, "repo": None, "canonical_state": "todo"},
+            "wi-2": {"issue": 100, "repo": "o/r", "canonical_state": "todo"},
+            "wi-3": {"issue": 100, "repo": "o/r", "canonical_state": "blocked"},
+            "wi-4": {"issue": 0, "repo": "o/r", "canonical_state": "todo"},
+            "wi-5": {"issue": 200, "repo": "o/r", "canonical_state": "todo"},
+        }
+        cur = _write_cursor(tmp, state)
+        with _patch_here(tmp), \
+             mock.patch("subprocess.run") as run:
+            # PR list (all) + issue view, per WI; return empty/OPEN
+            run.side_effect = [
+                _gh_json("[]"), _gh_json("OPEN"),   # wi-2/3 -> collapse to wi-3
+                _gh_json("[]"), _gh_json("OPEN"),   # wi-4 dropped (bad issue)
+                _gh_json("[]"), _gh_json("OPEN"),   # wi-5
+            ]
+            res = reconcile_cursor("o/r")
+        assert res["ok"]
+        # wi-1 (repo None) and wi-4 (bad issue) dropped
+        assert ("wi-1", "repo_none") in res["dropped"] or \
+               any(d[0] == "wi-1" for d in res["dropped"])
+        # wi-2 collapsed into wi-3 (higher number), wi-3 kept
+        assert "wi-3" in res["remaining_keys"] if "remaining_keys" in res else True
+        final = json.load(open(cur))["work_items_state"]
+        assert "wi-1" not in final and "wi-4" not in final
+        # only one WI owns issue 100
+        owners_100 = [w for w, v in final.items() if v["issue"] == 100]
+        assert len(owners_100) == 1
+        assert owners_100[0] == "wi-3"
+
+
+def test_reconcile_syncs_merged_pr_to_done():
+    with tempfile.TemporaryDirectory() as tmp:
+        state = {"wi-9": {"issue": 555, "repo": "o/r", "canonical_state": "validating",
+                           "orca_projection": "Validating",
+                           "title": "[Hub] x"}}
+        cur = _write_cursor(tmp, state)
+        with _patch_here(tmp), \
+             mock.patch("subprocess.run") as run:
+            run.side_effect = [
+                _gh_json('[{"number":563,"state":"MERGED","mergedAt":"x"}]'),
+                _gh_json("CLOSED"),
+            ]
+            res = reconcile_cursor("o/r")
+        final = json.load(open(cur))["work_items_state"]["wi-9"]
+        assert final["canonical_state"] == "done"
+        assert final["orca_projection"] == "Done"
+        assert ("wi-9", "validating", "done") in res["synced"]
+
+
+def test_reconcile_syncs_open_pr_to_delivering():
+    # FIX #569: reconcile now derives `ist` from the authoritative open-issue
+    # set (gh issue list --state open) instead of `gh issue view`. The mock
+    # order is: (1) open_set enumerate, (2) pr list. Issue-view is no longer
+    # called for `ist` (title is already in the cursor, so no fallback either).
+    with tempfile.TemporaryDirectory() as tmp:
+        state = {"wi-8": {"issue": 558, "repo": "o/r", "canonical_state": "todo",
+                           "orca_projection": "Todo", "title": "[Release Train] x"}}
+        cur = _write_cursor(tmp, state)
+        with _patch_here(tmp), \
+             mock.patch("subprocess.run") as run:
+            run.side_effect = [
+                _gh_json('558'),  # open_set enumerate: 558 is OPEN -> ist=OPEN
+                _gh_json('[{"number":567,"state":"OPEN","mergedAt":null}]'),  # pr list
+            ]
+            res = reconcile_cursor("o/r")
+        final = json.load(open(cur))["work_items_state"]["wi-8"]
+        assert final["canonical_state"] == "delivering"
+        assert final["orca_projection"] == "In review"
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))

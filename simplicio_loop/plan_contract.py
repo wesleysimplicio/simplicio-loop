@@ -118,8 +118,21 @@ def validate_plan(
         errors.append("task_step_count_mismatch")
     for index, task in enumerate(tasks, start=1):
         step = steps[index - 1] if index <= len(steps) and isinstance(steps[index - 1], Mapping) else {}
-        expected_scenarios = {str(s.get("id")) for s in task.get("scenarios") or [] if s.get("id")}
-        expected_rules = {str(r.get("id")) for r in task.get("rules") or [] if r.get("id")}
+        # Tolerate both object form {"id": ...} and bare-string form so a
+        # hand-written contract (or the selftest) never crashes the validator
+        # with AttributeError -- it yields a clean schema error instead.
+        def _ids(seq):
+            out = set()
+            for item in seq or []:
+                if isinstance(item, Mapping):
+                    if item.get("id"):
+                        out.add(str(item["id"]))
+                elif isinstance(item, str) and item.strip():
+                    out.add(item.strip())
+            return out
+
+        expected_scenarios = _ids(task.get("scenarios"))
+        expected_rules = _ids(task.get("rules"))
         actual_scenarios = {
             str(s.get("scenario_id") or s.get("id"))
             for s in step.get("steps") or []

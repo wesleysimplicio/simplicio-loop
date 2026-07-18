@@ -377,6 +377,178 @@ def append_ledger(row: Dict[str, Any]) -> None:
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def reconcile_cursor(gh_repo: str = "wesleysimplicio/simplicio-loop") -> Dict[str, Any]:
+    """Fail-closed integrity pass over `.orchestrator/gh-issue-cursor.json`.
+
+    The cron drain projects work items into ``work_items_state``. Across many
+    ticks (epic decomposition, manual journal edits, merged-PR drift) that
+    projection drifts: phantom child WIs appear with ``repo: None`` and no
+    valid issue, and a single GitHub issue ends up owning multiple WIs
+    (violating the 1-WI-per-issue invariant). This function reconciles the
+    cursor against GitHub ground truth so the Orca projection never shows
+    stale/fabricated state.
+
+    Rules applied (idempotent, read-only w.r.t. source):
+      1. DROP any WI with ``repo`` missing/None or a non-positive ``issue``.
+      2. COLLAPSE multiple WIs for the same ``(repo, issue)`` to the
+         canonical owner = the highest-numbered WI id (most recent).
+      3. SYNC ``canonical_state`` / ``orca_projection`` from GitHub truth:
+         merged PR for the issue  -> done / Done
+         open   PR for the issue  -> delivering / In review
+         open   issue + infra-dependent -> blocked / Blocked
+         open   issue otherwise    -> todo / Todo
+    Returns a summary dict; writes the reconciled cursor back to disk.
+    """
+    cursor_path = HERE / ".orchestrator" / "gh-issue-cursor.json"
+    if not cursor_path.exists():
+        return {"ok": False, "reason": "no_cursor"}
+    cur = json.loads(cursor_path.read_text(encoding="utf-8"))
+    wis = cur.get("work_items_state", {})
+    if not isinstance(wis, dict):
+        return {"ok": False, "reason": "bad_state"}
+
+    # Single source of truth for "is this issue open": the SAME `gh issue list
+    # --state open` the driver uses everywhere (fetch_open_issues). GitHub's
+    # `issue view` can contradict `issue list` for issues with a merged PR that
+    # mentions (but does not auto-close) the number (e.g. #558 + merged PR #567:
+    # list=OPEN, view=CLOSED). Using the list set avoids that false-CLOSED and
+    # the resulting false-positive Done projection.
+    try:
+        open_set_raw = subprocess.run(
+            ["gh", "issue", "list", "--repo", gh_repo, "--state", "open",
+             "--limit", "200", "--json", "number", "--jq", ".[].number"],
+            capture_output=True, text=True, timeout=30, check=False,
+        ).stdout.strip()
+        open_set = set(int(x) for x in open_set_raw.split() if x.strip().isdigit())
+    except Exception:
+        open_set = set()
+
+    # --- Rule 1: drop repo:None / wrong-scope / invalid issue ---------------
+    dropped = []
+    valid = {}
+    for wi, v in wis.items():
+        if not isinstance(v, dict):
+            dropped.append((wi, "not_dict"))
+            continue
+        if not v.get("repo"):
+            dropped.append((wi, "repo_none"))
+            continue
+        if v.get("repo") != gh_repo:
+            # Cross-repo WI leaked into this repo's cursor (e.g. a
+            # simplicio-agent WI inside simplicio-loop's gh-issue-cursor).
+            dropped.append((wi, f"repo_mismatch:{v.get('repo')}"))
+            continue
+        iss = v.get("issue")
+        if not isinstance(iss, int) or iss <= 0:
+            dropped.append((wi, "bad_issue"))
+            continue
+        valid[wi] = v
+
+    # --- Rule 2: 1-WI-per-issue (keep highest WI number) -------------------
+    by_issue: Dict[Tuple[str, int], List[str]] = {}
+    for wi, v in valid.items():
+        key = (v["repo"], v["issue"])
+        by_issue.setdefault(key, []).append(wi)
+    collapsed = {}
+    collapsed_dups = []
+    for key, wlist in by_issue.items():
+        if len(wlist) == 1:
+            collapsed[wlist[0]] = valid[wlist[0]]
+        else:
+            owner = max(wlist, key=lambda w: int("".join(filter(str.isdigit, w)) or 0))
+            collapsed[owner] = valid[owner]
+            for d in wlist:
+                if d != owner:
+                    collapsed_dups.append(d)
+
+    # --- Rule 3: sync from GitHub truth ------------------------------------
+    synced = []
+    for wi, v in collapsed.items():
+        iss = v["issue"]
+        repo = v["repo"]
+        # find merged/open PRs touching this issue
+        try:
+            prs = subprocess.run(
+                ["gh", "pr", "list", "--state", "all", "--search",
+                 f"repo:{repo} {iss} in:title",
+                 "--json", "number,state,mergedAt",
+                 "--limit", "5"],
+                capture_output=True, text=True, timeout=30, check=False,
+            ).stdout
+            pr_data = json.loads(prs) if prs.strip() else []
+        except Exception:
+            pr_data = []
+        merged = any(p.get("state") == "MERGED" for p in pr_data)
+        open_pr = any(p.get("state") == "OPEN" for p in pr_data)
+        # Issue open/closed from the authoritative open-issue set (not
+        # `gh issue view`, which contradicts `issue list` for #558-style cases).
+        ist = "OPEN" if iss in open_set else "CLOSED"
+        issue_title = (v.get("title") or "").upper()
+        # Fallback title if not stored in cursor: derive from GH only when needed.
+        if not issue_title:
+            try:
+                vt = subprocess.run(
+                    ["gh", "issue", "view", str(iss), "--repo", repo,
+                     "--json", "title", "--jq", ".title"],
+                    capture_output=True, text=True, timeout=30, check=False,
+                ).stdout.strip()
+                issue_title = vt.upper()
+            except Exception:
+                issue_title = ""
+        # FIX (issue #569): a merged PR mentioning the issue NUMBER in its
+        # title does NOT mean the issue itself is resolved. A PR is only
+        # evidence of completion when the ISSUE is also CLOSED. Otherwise a
+        # still-open issue wrongly projects as Done (false-positive completion).
+        # Order: issue-closed is the ground truth; PR state is secondary.
+        if ist == "CLOSED":
+            new_state, new_proj = "done", "Done"
+        elif open_pr and ist == "OPEN":
+            new_state, new_proj = "delivering", "In review"
+        elif _is_infra_dependent({"title": issue_title, "labels": v.get("labels", []), "body": v.get("body", "")}):
+            new_state, new_proj = "blocked", "Blocked"
+        elif ist == "OPEN":
+            new_state, new_proj = "todo", "Todo"
+        else:
+            new_state, new_proj = "blocked", "Blocked"
+        if v.get("canonical_state") != new_state or v.get("orca_projection") != new_proj:
+            synced.append((wi, v.get("canonical_state"), new_state))
+            v["canonical_state"] = new_state
+            v["orca_projection"] = new_proj
+
+    cur["work_items_state"] = collapsed
+    cur["last_scan_at"] = _now()
+    # Recompute the in-scope open-issue count from the SAME authoritative
+    # open_set used in Rule 3 (not a second `gh issue list --jq length`,
+    # which can disagree with the enumerate call and over-count PRs).
+    cur["open_issues_in_scope_repo"] = len(open_set) or len(collapsed)
+    cursor_path.write_text(json.dumps(cur, indent=2, ensure_ascii=False),
+                          encoding="utf-8")
+    return {
+        "ok": True,
+        "dropped": dropped,
+        "collapsed_dups": collapsed_dups,
+        "synced": synced,
+        "remaining": len(collapsed),
+        "open_in_scope": cur["open_issues_in_scope_repo"],
+    }
+
+
+def _derive_gh_repo(repo: str = ".") -> Optional[str]:
+    """Best-effort GitHub 'owner/name' from the CWD git remote origin."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo, "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=20, check=False,
+        ).stdout.strip()
+        if not out:
+            return None
+        out = out.rsplit("/", 1)[-1].removesuffix(".git")
+        owner = out.split("/")[-2] if "/" in out else "wesleysimplicio"
+        return f"{owner}/{out.split('/')[-1]}"
+    except Exception:
+        return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo", default=".")
@@ -386,6 +558,9 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--per-issue-timeout", type=int, default=20)
     ap.add_argument("--total-budget", type=int, default=250)
+    ap.add_argument("--reconcile", action="store_true",
+                    help="reconcile .orchestrator/gh-issue-cursor.json integrity "
+                         "(drop repo:None, 1-WI-per-issue, sync GitHub truth) and exit")
     ap.add_argument("--verify-backend", dest="verify_backend", action="store_true",
                     help="check whether the configured model backend is capable of "
                          "autonomous implementation; print JSON verdict and exit")
@@ -402,21 +577,17 @@ def main() -> int:
         print(json.dumps(out, ensure_ascii=False))
         return 0 if capable else 2
 
+    if args.reconcile:
+        # Integrity pass: drop repo:None, collapse 1-WI-per-issue, sync GitHub
+        # truth. Idempotent — safe to run every tick before normal intake.
+        repo_arg = args.gh_repo or _derive_gh_repo(args.repo) or "wesleysimplicio/simplicio-loop"
+        res = reconcile_cursor(repo_arg)
+        print(f"MEASURED| reconcile_cursor: {json.dumps(res, ensure_ascii=False)}",
+              flush=True)
+        return 0 if res.get("ok") else 1
+
     # Resolve the GitHub repo: explicit --gh-repo wins; else derive from CWD remote.
-    gh_repo = args.gh_repo
-    if not gh_repo:
-        try:
-            out = subprocess.run(
-                ["git", "-C", args.repo, "remote", "get-url", "origin"],
-                capture_output=True, text=True, timeout=20, check=False,
-            ).stdout.strip()
-            if out:
-                out = out.rsplit("/", 1)[-1]
-                out = out.removesuffix(".git")
-                owner = out.split("/")[-2] if "/" in out else "wesleysimplicio"
-                gh_repo = f"{owner}/{out.split('/')[-1]}"
-        except Exception:
-            gh_repo = None
+    gh_repo = args.gh_repo or _derive_gh_repo(args.repo)
     print(f"MEASURED| cron driver start repo={args.repo} gh_repo={gh_repo} dry_run={args.dry_run}", flush=True)
     start = time.time()
     try:
