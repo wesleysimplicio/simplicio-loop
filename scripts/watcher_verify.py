@@ -113,21 +113,48 @@ def _find_run_dir(wi=None):
     run_dir = os.environ.get("SIMPLICIO_RUN_DIR", "").strip()
     if run_dir:
         return Path(run_dir)
-    runs_root = Path(REPO) / ".orchestrator"
+    orch = Path(REPO) / ".orchestrator"
+    runs_root = orch / "runs"  # new convention: .orchestrator/runs/wi-XXXX
+    legacy_root = orch          # legacy convention: .orchestrator/run-WIXXXX
+
+    def _has_independent(p):
+        return p.is_dir() and (p / "independent-watcher-receipt.json").is_file()
+
+    # Normalize the WI number (accept "wi-569", "WI-569", "569").
+    wi_num = ""
     if wi:
-        # Isolate per-WI run dir: .orchestrator/run-WIXXXX (e.g. run-WI3307)
-        for token in (wi.replace("-", "").upper(), wi.upper()):
-            wi_run = runs_root / ("run-%s" % token)
-            if wi_run.is_dir() and (wi_run / "independent-watcher-receipt.json").is_file():
-                return wi_run
-    # Fallback: scan .orchestrator/run-*/ for a dir holding an independent receipt.
-    candidate = None
+        digits = "".join(ch for ch in str(wi) if ch.isdigit())
+        wi_num = digits
+
+    if wi and wi_num:
+        # 1) New convention: runs/wi-<n> (directory uses lowercase wi-<n>).
+        new_dir = runs_root / ("wi-%s" % wi_num)
+        if _has_independent(new_dir):
+            return new_dir
+        # 2) Legacy convention: run-WI<n> (uppercase, no dash).
+        legacy_dir = legacy_root / ("run-WI%s" % wi_num)
+        if _has_independent(legacy_dir):
+            return legacy_dir
+
+    # Fallback: scan both new (runs/*) and legacy (run-*) trees for ANY
+    # dir holding an independent receipt. Prefer one whose name embeds the
+    # requested WI number when --wi was given; otherwise take the first found.
+    candidates = []
     if runs_root.is_dir():
-        for entry in sorted(runs_root.glob("run-*")):
-            if entry.is_dir() and (entry / "independent-watcher-receipt.json").is_file():
-                candidate = entry
-                break
-    return candidate
+        for entry in sorted(runs_root.glob("wi-*")):
+            if _has_independent(entry):
+                candidates.append(entry)
+    if legacy_root.is_dir():
+        for entry in sorted(legacy_root.glob("run-*")):
+            if _has_independent(entry):
+                candidates.append(entry)
+    if not candidates:
+        return None
+    if wi and wi_num:
+        for c in candidates:
+            if wi_num in c.name:
+                return c
+    return candidates[0]
 
 def _load_run_artifacts(run_dir):
     if not run_dir:

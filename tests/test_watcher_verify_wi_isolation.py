@@ -143,8 +143,9 @@ def test_find_run_dir_fallback_global():
     old = os.environ.pop("SIMPLICIO_RUN_DIR", None)
     try:
         found = wv._find_run_dir(wi=None)
-        # Either None (no run-* with receipt) or a run-* dir
-        assert found is None or "run-" in str(found)
+        # Either None (no run dir with receipt) or a recognized run dir:
+        # new convention "runs/wi-<n>" or legacy convention "run-<WI>".
+        assert found is None or ("runs/wi-" in str(found) or "run-" in str(found))
     finally:
         if old:
             os.environ["SIMPLICIO_RUN_DIR"] = old
