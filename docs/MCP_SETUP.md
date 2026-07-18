@@ -1,10 +1,10 @@
 # MCP setup — `simplicio-runtime` across every host
 
 `simplicio-runtime` (binary `simplicio`, MCP subcommand `simplicio serve --mcp --stdio`,
-installed via `pip install -U simplicio-installer && simplicio install --global`) is **REQUIRED**
-on every adapter in this repo (CLAUDE.md § Hooks, `adapters/MATRIX.md` § Native bind): the loop
-BLOCKS at preflight if the `simplicio` binary/MCP server is missing or unreachable, exactly like a
-missing `simplicio-mapper`/`simplicio-dev-cli` operator.
+installed via `pip install -U simplicio-installer && simplicio install --global`) is an optional
+native integration on every adapter in this repo. When it is missing or unreachable, the loop
+continues with `simplicio-mapper`/`simplicio-dev-cli` and reports that runtime-specific
+integrations were skipped.
 
 This page is the single skimmable entry point for wiring the bind on any of the 15 hosts this
 repo documents. Each row's config differs by host — read the linked adapter section for the exact
@@ -34,10 +34,9 @@ simplicio doctor --json | grep -A2 mcp-host-registration
 | DeepSeek | no first-party MCP client; route via a wrapper's own config (e.g. OpenCode) | **best-effort / community-reported, not gated** | [deepseek/README.md#mcp-config](../adapters/deepseek/README.md#mcp-config) |
 | Kiro | `.kiro/settings/mcp.json` (`mcpServers`) | **best-effort** (installer-written, not per-commit gated) | [kiro/README.md#mcp-config](../adapters/kiro/README.md#mcp-config) |
 
-Not in the table above because they have no host-level MCP client at all (the bind still gates on
-the `simplicio` binary itself, just not through an MCP config file): **Aider** (LLM/git/gh tool
-fallback), **Simplicio Agent** (native extension points, no MCP shim needed), **OpenClaw** (native
-plugin SDK). See their adapter READMEs for how the required-bind check applies there.
+Not in the table above because they have no host-level MCP client at all: **Aider** (LLM/git/gh
+tool fallback), **Simplicio Agent** (native extension points, no MCP shim needed), **OpenClaw**
+(native plugin SDK). See their adapter READMEs for optional runtime integration details.
 
 ## What "verified" vs "best-effort" means here
 

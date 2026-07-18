@@ -52,7 +52,7 @@ SPINDLE_STATE = os.path.join(LOOP_DIR, "spindle_state.json")
 PHASE_FILE = os.path.join(LOOP_DIR, "phase.json")
 FLOW_AUDIT_RECEIPT = os.path.join(".orchestrator", "flow-audit.json")
 SIMPLICIO_LOOP_SKILL_MARKER = os.path.join(".claude", "skills", "simplicio-loop", "SKILL.md")
-BOUND_OPERATORS = ("simplicio-mapper", "simplicio-dev-cli", "simplicio")
+BOUND_OPERATORS = ("simplicio-mapper", "simplicio-dev-cli")
 WEB_EXTS = {".tsx", ".jsx", ".vue", ".svelte", ".html"}
 
 EVIDENCE_RE = re.compile(
@@ -460,9 +460,9 @@ def missing_bound_operators():
     marketplace install, a PATH mismatch, or an operator uninstalled after setup silently
     degraded to LLM hand-survey/hand-edit — exactly what the operators exist to prevent.
 
-    `simplicio` (the `simplicio-runtime` CLI/MCP binary) joined this list once CLAUDE.md was
-    updated to require the native bind on every adapter — a missing/unreachable `simplicio`
-    now BLOCKS the running driver the same way, not just the docs.
+    `simplicio` (the separate `simplicio-runtime` CLI/MCP binary) is intentionally not in this
+    set. It augments HBP/checkpoint integrations when present, but those calls are already
+    best-effort and the core mapper → dev-cli loop must keep running when it is unavailable.
 
     Scoped to repos that actually ship the `simplicio-loop` skill (its SKILL.md is the marker) —
     a bare `simplicio-tasks` loop with no `simplicio-loop` companion has no operator requirement.
