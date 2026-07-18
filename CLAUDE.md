@@ -132,13 +132,10 @@ mass-delete, destructive DDL, infra teardown) and secret-laden commits/pushes be
 
 Claude's native tools satisfy the extension points: sub-agents → `execute`, file tools →
 `deterministic_edit`, the scheduler → `watcher`. The `simplicio-runtime` native bind (the
-`simplicio` CLI / MCP server, package `simplicio-runtime`) is **REQUIRED** on Claude Code and every
-other adapter — it MUST be installed and reachable (`simplicio --version` / the `simplicio-runtime`
-MCP tools resolved) before the loop proceeds. If it is missing or unreachable, the loop BLOCKS
-exactly like a missing `simplicio-mapper`/`simplicio-dev-cli` operator: emit
-`python3 scripts/loop_progress.py emit --step preflight --status blocked --outcome blocked --detail
-"missing simplicio-runtime"`, then stop and print `simplicio-loop: BLOCKED — missing
-simplicio-runtime; install it before continuing`.
+`simplicio` CLI / MCP server, package `simplicio-runtime`) is optional on Claude Code and every
+other adapter. When installed and reachable it supplies native integrations; when unavailable the
+loop records that those integrations were skipped and continues with its required
+`simplicio-mapper` and `simplicio-dev-cli` operators.
 
 ## Other runtimes
 

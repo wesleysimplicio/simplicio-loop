@@ -129,10 +129,12 @@ python3 scripts/loop_progress.py emit --step preflight --status end --outcome pa
 ```
 Best-effort and offline-safe — a network/pip failure leaves the working version in place. The
 action binary is `simplicio-dev-cli` (from `pip install simplicio-cli`) — NOT the bare `simplicio`
-(that's the separate `simplicio-runtime`). If either runtime binary is missing, do NOT fall back to
-LLM survey/editing — emit `python3 scripts/loop_progress.py emit --step preflight --status blocked
---outcome blocked --detail "missing operator <name>"`, then STOP and print `simplicio-loop:
-BLOCKED — missing operator <name>; run: pip install simplicio-cli`.
+(that's the separate `simplicio-runtime`). If either required operator binary is missing, do NOT
+fall back to LLM survey/editing — emit `python3 scripts/loop_progress.py emit --step preflight
+--status blocked --outcome blocked --detail "missing operator <name>"`, then STOP and print
+`simplicio-loop: BLOCKED — missing operator <name>; run: pip install simplicio-cli`. The optional
+`simplicio` runtime is reported as unavailable and its native integrations are skipped; it never
+blocks the mapper/dev-cli loop.
 
 **Survey step (each loop start).** `python3 scripts/loop_progress.py emit --step survey --status begin`
 → `simplicio-mapper scan . --json` (instant macro skeleton + background deep index) → gate with
