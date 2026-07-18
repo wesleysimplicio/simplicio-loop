@@ -73,6 +73,37 @@ def test_main_task_strips_leading_double_dash(monkeypatch):
     assert captured["argv"] == ["compile", "foo.md"]
 
 
+def test_main_prototype_forwards_remaining_args(monkeypatch):
+    captured = {}
+
+    def fake_prototype_main(argv):
+        captured["argv"] = argv
+        return 3
+
+    monkeypatch.setattr(cli._prototype_cli, "main", fake_prototype_main)
+    rc = cli.main(["prototype", "classify", "--task-description", "x"])
+    assert rc == 3
+    assert captured["argv"] == ["classify", "--task-description", "x"]
+
+
+def test_main_prototype_strips_leading_double_dash(monkeypatch):
+    captured = {}
+
+    def fake_prototype_main(argv):
+        captured["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(cli._prototype_cli, "main", fake_prototype_main)
+    cli.main(["prototype", "--", "doctor"])
+    assert captured["argv"] == ["doctor"]
+
+
+def test_main_prototype_errors_when_module_unavailable(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_prototype_cli", None)
+    with pytest.raises(SystemExit):
+        cli.main(["prototype", "doctor"])
+
+
 def test_main_plan_dispatches_with_task_and_out(monkeypatch):
     captured = {}
     monkeypatch.setattr(cli, "plan", lambda task_path, out_path: captured.update(

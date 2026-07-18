@@ -16,6 +16,10 @@ try:
     from scripts import release_manifest as _release_manifest
 except Exception:  # pragma: no cover - import shim for bundled scripts
     _release_manifest = None
+try:
+    from . import prototype_cli as _prototype_cli
+except Exception:  # pragma: no cover - keeps `simplicio-loop` importable if this is missing
+    _prototype_cli = None
 
 from . import __version__
 from . import delivery
@@ -721,6 +725,12 @@ def main(argv=None) -> int:
     p_task.add_argument("task_args", nargs=argparse.REMAINDER,
                         help="pass-through args for `simplicio-loop task`")
 
+    p_prototype = sub.add_parser(
+        "prototype", help="Prototype-First gate: plan/classify/validate-schema/doctor (#568 P0)"
+    )
+    p_prototype.add_argument("prototype_args", nargs=argparse.REMAINDER,
+                             help="pass-through args for `simplicio-loop prototype`")
+
     p_plan = sub.add_parser("plan", help="compile a raw task into a contract and preview it")
     p_plan.add_argument("--task", required=True, help="markdown task file")
     p_plan.add_argument("--out", default=os.path.join(".orchestrator", "task-contract.json"),
@@ -933,6 +943,13 @@ def main(argv=None) -> int:
         if forwarded and forwarded[0] == "--":
             forwarded = forwarded[1:]
         return task_contract_main(forwarded)
+    if command == "prototype":
+        if _prototype_cli is None:
+            parser.error("prototype_cli module not importable")
+        forwarded = list(args.prototype_args or [])
+        if forwarded and forwarded[0] == "--":
+            forwarded = forwarded[1:]
+        return _prototype_cli.main(forwarded)
     if command == "plan":
         return plan(args.task, args.out)
     if command == "run":
