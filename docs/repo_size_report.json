@@ -6,13 +6,13 @@
       "ext": ".png"
     },
     {
-      "bytes": 8089213,
-      "count": 638,
+      "bytes": 8783793,
+      "count": 692,
       "ext": ".py"
     },
     {
-      "bytes": 2883386,
-      "count": 189,
+      "bytes": 2933770,
+      "count": 191,
       "ext": ".md"
     },
     {
@@ -26,8 +26,8 @@
       "ext": ".webp"
     },
     {
-      "bytes": 382056,
-      "count": 117,
+      "bytes": 401381,
+      "count": 122,
       "ext": ".json"
     },
     {
@@ -51,8 +51,8 @@
       "ext": ".svg"
     },
     {
-      "bytes": 18088,
-      "count": 9,
+      "bytes": 21159,
+      "count": 10,
       "ext": ".toml"
     },
     {
@@ -66,14 +66,14 @@
       "ext": ".srt"
     },
     {
-      "bytes": 8413,
-      "count": 9,
-      "ext": "(no ext)"
-    },
-    {
       "bytes": 8345,
       "count": 9,
       "ext": ".jsonl"
+    },
+    {
+      "bytes": 7105,
+      "count": 8,
+      "ext": "(no ext)"
     },
     {
       "bytes": 3597,
@@ -101,21 +101,21 @@
       "ext": ".in"
     }
   ],
-  "distinct_blobs_ever_committed": 1022,
-  "generated_at": "2026-07-18T05:43:41Z",
+  "distinct_blobs_ever_committed": 1083,
+  "generated_at": "2026-07-18T13:12:53Z",
   "git_count_objects": {
     "count": "618",
-    "garbage": "1",
-    "in-pack": "1634",
+    "garbage": "0",
+    "in-pack": "1542",
     "packs": "2",
-    "prune-packable": "11",
-    "size": "65.54 MiB",
-    "size-garbage": "1.23 GiB",
-    "size-pack": "13.54 MiB"
+    "prune-packable": "23",
+    "size": "3.25 MiB",
+    "size-garbage": "0 bytes",
+    "size-pack": "13.33 MiB"
   },
   "git_count_objects_parsed_bytes": {
-    "size_loose_bytes": 68723671,
-    "size_pack_bytes": 14197719
+    "size_loose_bytes": 3407872,
+    "size_pack_bytes": 13977518
   },
   "schema": "simplicio.repo-history-scan/v1",
   "top_blobs": [
@@ -139,8 +139,197 @@
       ],
       "sha": "163821295671c30f8e2cdcccde962a0683ff44af",
       "size_bytes": 2300503
+    },
+    {
+      "paths": [
+        "assets/simplicio-loop-overview.png"
+      ],
+      "sha": "c7c7e5de7d9d66c8be50e5fbe7a84b7bed0a3b61",
+      "size_bytes": 1957754
+    },
+    {
+      "paths": [
+        "assets/simplicio-loop-infographic.png"
+      ],
+      "sha": "68953922d04a111e59b624bcb43c26bec1557687",
+      "size_bytes": 1039525
+    },
+    {
+      "paths": [
+        "assets/simplicio-loop-logo.png"
+      ],
+      "sha": "aaf211fab55ebfafbf2c7c70704335c50af37a8c",
+      "size_bytes": 504264
+    },
+    {
+      "paths": [
+        "assets/simplicio-loop-hero.jpg"
+      ],
+      "sha": "ece5d1c89f13b04ae835d788515cb1d127daeb89",
+      "size_bytes": 434685
+    },
+    {
+      "paths": [
+        "assets/simplicio-loop-hero-stage-agents-2026.webp"
+      ],
+      "sha": "18995ea1ed1f35b2244512e7c7d5fae7e2255822",
+      "size_bytes": 246552
+    },
+    {
+      "paths": [
+        "simplicio_loop/runner.py"
+      ],
+      "sha": "bb4eceaa70c977d099813f0f9a977641bcb485bb",
+      "size_bytes": 207090
+    },
+    {
+      "paths": [
+        "simplicio_loop/runner.py"
+      ],
+      "sha": "547bb0f62ad949df291f101fe845a7039bb4fd37",
+      "size_bytes": 206050
+    },
+    {
+      "paths": [
+        "assets/simplicio-loop-stage-agents-reporting-2026.webp"
+      ],
+      "sha": "2368eada50c8f8f17a5d7bff971da8ecccc90a53",
+      "size_bytes": 168328
+    },
+    {
+      "paths": [
+        "CHANGELOG.md"
+      ],
+      "sha": "3a5cea5da85a50d9f4e24b12bc167f9f0069f381",
+      "size_bytes": 115714
+    },
+    {
+      "paths": [
+        "CHANGELOG.md"
+      ],
+      "sha": "d3ce587d3c7de108750482d558f91789c88169ee",
+      "size_bytes": 113239
+    },
+    {
+      "paths": [
+        "CHANGELOG.md"
+      ],
+      "sha": "9d619acad13682d421b2802ae72275e4a1062ec5",
+      "size_bytes": 110176
+    },
+    {
+      "paths": [
+        "simplicio-loop.project.json"
+      ],
+      "sha": "e3371aa5a067597dfdb6c7d5a40b9522c9fdd087",
+      "size_bytes": 76853
+    },
+    {
+      "paths": [
+        "READMEs/README.ru-RU.md"
+      ],
+      "sha": "c7fb2ef3a80f75bc9c8d98f95b6cfd1f0bbbfbbe",
+      "size_bytes": 65849
+    },
+    {
+      "paths": [
+        "tests/test_runner_cli_integration.py"
+      ],
+      "sha": "2a1e817448b8d3894bb337bccbda996a8829dcf9",
+      "size_bytes": 62257
+    },
+    {
+      "paths": [
+        "READMEs/README.hi-IN.md"
+      ],
+      "sha": "791e99c4db6fc935455ac3f2661e61287845d596",
+      "size_bytes": 60874
+    },
+    {
+      "paths": [
+        "plugin/scripts/task_backlog.py"
+      ],
+      "sha": "665eecbcf3ac6f92d2bfd7d07e4b5a921e8006ab",
+      "size_bytes": 58783
+    },
+    {
+      "paths": [
+        "tests/test_runner_state_machine_unit.py"
+      ],
+      "sha": "0a307a89d09116af4cd233522267d1c94a7b3d22",
+      "size_bytes": 58688
+    },
+    {
+      "paths": [
+        "README.md"
+      ],
+      "sha": "02318ad63f36a3a4aef6a32ab22aaa28892cb155",
+      "size_bytes": 58549
+    },
+    {
+      "paths": [
+        "tests/test_runner_state_machine_unit.py"
+      ],
+      "sha": "d59f0dc16a04c5af603fb3c1b535ec86d6952180",
+      "size_bytes": 57333
+    },
+    {
+      "paths": [
+        "simplicio_loop/github_lifecycle.py"
+      ],
+      "sha": "472dc4fb9e07830a0a1f8e94092e2c6a6678394e",
+      "size_bytes": 56829
+    },
+    {
+      "paths": [
+        "hooks/loop_stop.py"
+      ],
+      "sha": "ff11a29b57422704bcb10ecfc4d67058f13cf704",
+      "size_bytes": 55969
+    },
+    {
+      "paths": [
+        "hooks/simplicio_dashboard.py"
+      ],
+      "sha": "ab68c01486f2780fbbb2e8de05e3028216a9f510",
+      "size_bytes": 55008
+    },
+    {
+      "paths": [
+        "scripts/install_lib.py"
+      ],
+      "sha": "d68921dd989e2bad68d44b4d844c2e50a5e1a3d1",
+      "size_bytes": 54712
+    },
+    {
+      "paths": [
+        "scripts/install_lib.py"
+      ],
+      "sha": "8bc3288154d65f511b42711d3688470a1ff377af",
+      "size_bytes": 54680
+    },
+    {
+      "paths": [
+        "simplicio_loop/stage_agents.py"
+      ],
+      "sha": "2894c8b2212b6f4488b8d20087b41d72efd1f752",
+      "size_bytes": 54605
+    },
+    {
+      "paths": [
+        "READMEs/README.hi-IN.md"
+      ],
+      "sha": "0e33661652245d8993255120e51c7401cfea06f2",
+      "size_bytes": 54302
+    },
+    {
+      "paths": [
+        "hooks/loop_stop.py"
+      ],
+      "sha": "64fdab6105ffd60fe7e6bb0afc2697737a77278e",
+      "size_bytes": 53023
     }
   ],
-  "total_historical_blob_bytes": 23122715,
-  "total_historical_blob_human": "22.1MB"
+  "total_historical_blob_bytes": 23888767,
+  "total_historical_blob_human": "22.8MB"
 }
