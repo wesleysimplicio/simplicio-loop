@@ -68,6 +68,24 @@ def test_identity_requires_repository_and_base_sha() -> None:
             RepositoryIdentity("owner/project", directory)
 
 
+def test_identity_key_includes_dirty_fingerprint_and_mapper_config() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        clean = RepositoryIdentity("owner/project", str(root), base_sha="sha")
+        dirty = RepositoryIdentity(
+            "owner/project", str(root), base_sha="sha", dirty=True,
+            dirty_fingerprint="git-status-sha",
+        )
+        configured = RepositoryIdentity(
+            "owner/project", str(root), base_sha="sha",
+            mapper_config={"schema": "v1", "depth": 3},
+        )
+        assert clean.key != dirty.key
+        assert clean.key != configured.key
+        assert dirty.to_dict()["dirty_fingerprint"] == "git-status-sha"
+        assert configured.to_dict()["mapper_config"]["depth"] == 3
+
+
 def test_canonical_and_overlay_views_have_distinct_cache_keys() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
