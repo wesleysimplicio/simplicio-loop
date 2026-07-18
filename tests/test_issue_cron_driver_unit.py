@@ -165,6 +165,10 @@ def test_reconcile_syncs_merged_pr_to_done():
 
 
 def test_reconcile_syncs_open_pr_to_delivering():
+    # FIX #569: reconcile now derives `ist` from the authoritative open-issue
+    # set (gh issue list --state open) instead of `gh issue view`. The mock
+    # order is: (1) open_set enumerate, (2) pr list. Issue-view is no longer
+    # called for `ist` (title is already in the cursor, so no fallback either).
     with tempfile.TemporaryDirectory() as tmp:
         state = {"wi-8": {"issue": 558, "repo": "o/r", "canonical_state": "todo",
                            "orca_projection": "Todo", "title": "[Release Train] x"}}
@@ -172,8 +176,8 @@ def test_reconcile_syncs_open_pr_to_delivering():
         with _patch_here(tmp), \
              mock.patch("subprocess.run") as run:
             run.side_effect = [
-                _gh_json('[{"number":567,"state":"OPEN","mergedAt":null}]'),
-                _gh_json("OPEN"),
+                _gh_json('558'),  # open_set enumerate: 558 is OPEN -> ist=OPEN
+                _gh_json('[{"number":567,"state":"OPEN","mergedAt":null}]'),  # pr list
             ]
             res = reconcile_cursor("o/r")
         final = json.load(open(cur))["work_items_state"]["wi-8"]

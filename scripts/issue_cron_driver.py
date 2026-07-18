@@ -407,6 +407,22 @@ def reconcile_cursor(gh_repo: str = "wesleysimplicio/simplicio-loop") -> Dict[st
     if not isinstance(wis, dict):
         return {"ok": False, "reason": "bad_state"}
 
+    # Single source of truth for "is this issue open": the SAME `gh issue list
+    # --state open` the driver uses everywhere (fetch_open_issues). GitHub's
+    # `issue view` can contradict `issue list` for issues with a merged PR that
+    # mentions (but does not auto-close) the number (e.g. #558 + merged PR #567:
+    # list=OPEN, view=CLOSED). Using the list set avoids that false-CLOSED and
+    # the resulting false-positive Done projection.
+    try:
+        open_set_raw = subprocess.run(
+            ["gh", "issue", "list", "--repo", gh_repo, "--state", "open",
+             "--limit", "200", "--json", "number", "--jq", ".[].number"],
+            capture_output=True, text=True, timeout=30, check=False,
+        ).stdout.strip()
+        open_set = set(int(x) for x in open_set_raw.split() if x.strip().isdigit())
+    except Exception:
+        open_set = set()
+
     # --- Rule 1: drop repo:None / wrong-scope / invalid issue ---------------
     dropped = []
     valid = {}
@@ -464,48 +480,47 @@ def reconcile_cursor(gh_repo: str = "wesleysimplicio/simplicio-loop") -> Dict[st
             pr_data = []
         merged = any(p.get("state") == "MERGED" for p in pr_data)
         open_pr = any(p.get("state") == "OPEN" for p in pr_data)
-        try:
-            ist_raw = subprocess.run(
-                ["gh", "issue", "view", str(iss), "--repo", repo,
-                 "--json", "state,title",
-                 "--jq", "{state:.state,title:.title}"],
-                capture_output=True, text=True, timeout=30, check=False,
-            ).stdout.strip()
-            ist_json = json.loads(ist_raw) if ist_raw else {}
-            ist = ist_json.get("state", "OPEN")
-            issue_title = ist_json.get("title", "") or ""
-        except Exception:
-            ist = "OPEN"
-            issue_title = ""
-        if merged:
+        # Issue open/closed from the authoritative open-issue set (not
+        # `gh issue view`, which contradicts `issue list` for #558-style cases).
+        ist = "OPEN" if iss in open_set else "CLOSED"
+        issue_title = (v.get("title") or "").upper()
+        # Fallback title if not stored in cursor: derive from GH only when needed.
+        if not issue_title:
+            try:
+                vt = subprocess.run(
+                    ["gh", "issue", "view", str(iss), "--repo", repo,
+                     "--json", "title", "--jq", ".title"],
+                    capture_output=True, text=True, timeout=30, check=False,
+                ).stdout.strip()
+                issue_title = vt.upper()
+            except Exception:
+                issue_title = ""
+        # FIX (issue #569): a merged PR mentioning the issue NUMBER in its
+        # title does NOT mean the issue itself is resolved. A PR is only
+        # evidence of completion when the ISSUE is also CLOSED. Otherwise a
+        # still-open issue wrongly projects as Done (false-positive completion).
+        # Order: issue-closed is the ground truth; PR state is secondary.
+        if ist == "CLOSED":
             new_state, new_proj = "done", "Done"
-        elif open_pr:
+        elif open_pr and ist == "OPEN":
             new_state, new_proj = "delivering", "In review"
-        elif ist == "CLOSED":
-            new_state, new_proj = "done", "Done"
         elif _is_infra_dependent({"title": issue_title, "labels": v.get("labels", []), "body": v.get("body", "")}):
             new_state, new_proj = "blocked", "Blocked"
-        else:
+        elif ist == "OPEN":
             new_state, new_proj = "todo", "Todo"
-        if v.get("canonical_state") != new_state:
+        else:
+            new_state, new_proj = "blocked", "Blocked"
+        if v.get("canonical_state") != new_state or v.get("orca_projection") != new_proj:
             synced.append((wi, v.get("canonical_state"), new_state))
             v["canonical_state"] = new_state
             v["orca_projection"] = new_proj
 
     cur["work_items_state"] = collapsed
     cur["last_scan_at"] = _now()
-    # Recompute the in-scope open-issue count from GitHub ground truth so the
-    # Orca projection never shows a stale total that contradicts `gh issue list`.
-    try:
-        open_now = subprocess.run(
-            ["gh", "issue", "list", "--repo", gh_repo, "--state", "open",
-             "--limit", "200", "--json", "number",
-             "--jq", "length"],
-            capture_output=True, text=True, timeout=30, check=False,
-        ).stdout.strip()
-        cur["open_issues_in_scope_repo"] = int(open_now) if open_now.isdigit() else len(collapsed)
-    except Exception:
-        cur["open_issues_in_scope_repo"] = len(collapsed)
+    # Recompute the in-scope open-issue count from the SAME authoritative
+    # open_set used in Rule 3 (not a second `gh issue list --jq length`,
+    # which can disagree with the enumerate call and over-count PRs).
+    cur["open_issues_in_scope_repo"] = len(open_set) or len(collapsed)
     cursor_path.write_text(json.dumps(cur, indent=2, ensure_ascii=False),
                           encoding="utf-8")
     return {
