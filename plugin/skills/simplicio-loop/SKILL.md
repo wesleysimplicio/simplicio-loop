@@ -91,7 +91,7 @@ external harness → `waived:no-infra` — never the old vague "skip … and say
    ecosystem (.NET/Node/Python/Go/Rust/Java+): test project/runner on disk (`**/*Tests*.csproj`,
    `pytest.ini`, `jest.config.*`, `_test.go`…)? Coverage tooling? CI that runs tests? Result lands
    on the anchor as `test_infra: {unit, coverage, ci: present|absent}` — a filesystem fact, not an
-   assumption. *(Worker `test_infra_probe.py`; see #526 Etapa 3, not yet merged as of this writing.)*
+   assumption. *(Worker `test_infra_probe.py`; see #526 Etapa 3.)*
 2. **External harness = equivalent evidence.** When `unit: absent` AND the delivery contract
    (below) forbids new repo files, "testes" accepts a scratchpad-only harness (never committed) as
    evidence — gated on 3 artifacts together: harness source, a PASS/FAIL log with named cases, and
@@ -106,9 +106,9 @@ external harness → `waived:no-infra` — never the old vague "skip … and say
 
 ## Delivery contract — client delivery constraints, enforced mechanically (issue #526 Etapa 4)
 
-*(Specification-level: `task_anchor.py set --delivery`, the schema validator, the stop-hook
-new-file guard, and the comment linter are being built in a parallel worktree, not yet
-merged as of this writing — see #526 Etapa 4 for the real worker code.)*
+`task_anchor.py set --delivery`, the schema validator (`scripts/delivery_contract.py`), the
+stop-hook new-file guard, and the deterministic comment linter are implemented — see
+`references/delivery-contract.md` and #526 Etapa 4 for the worker code.
 
 Client constraints in plain language ("don't open a PR", "no test files", "no comments") don't
 self-enforce — the default contract's operator could (and did) violate all three. Same
