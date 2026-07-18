@@ -23,7 +23,15 @@ is reproducible from the on-disk anchor (same discipline as `loop_journal.py`).
 
 State: `.orchestrator/loop/anchor.json` (override with $SIMPLICIO_ANCHOR_FILE):
     {"item", "goal", "goal_fp", "frozen_at",
-     "criteria": [{"id","text","verify","status":"pending|partial|done","evidence","verified_at"}]}
+     "criteria": [{"id","text","verify",
+                   "status":"pending|partial|done|waived:no-infra",
+                   "evidence","verified_at","waived_reason"}]}
+
+#526 Etapa 3: a criterion can also be `waived:no-infra` — structurally impossible in THIS repo
+(e.g. coverage without coverage tooling), per `test_infra_probe.py`'s MEASURED `test_infra` fact.
+Requires a `waived_reason`; counts as neither `pending` nor `done`; ALWAYS shown in `gate`'s output
+and the checklist. Full contract incl. the 3-artifact "external harness" evidence form:
+`references/test-infra-probe.md`.
 
 Verbs:
   set        Freeze the goal + criteria. Criteria from --ac "text" (repeatable), --ac-file FILE
@@ -32,8 +40,16 @@ Verbs:
              reset). A CHANGED goal is refused unless --force (a silent goal swap IS drift).
              Inline verification can be declared as `--ac "text :: verify: <command or artifact>"`.
              Default lint rejects vague ACs like "works"; `--lint` also rejects short ACs (<3 words)
-             unless a `verify:` method is declared.
+             unless a `verify:` method is declared. `--delivery FILE` (#526 Etapa 4) freezes a
+             client delivery contract (open_pr/push_branch/allow_new_files_in_repo/
+             allow_comments_in_code/commit_message_convention — schema:
+             references/delivery-contract.md, enforced by scripts/delivery_contract.py) onto the
+             SAME anchor; may be combined with --goal/--ac or passed alone to re-freeze onto an
+             already-anchored item. Same re-freeze semantics as the goal: a CHANGED contract
+             needs --force.
   mark       Record progress on one criterion: --id ACk --status done|partial [--evidence "..."].
+             `--status waived:no-infra --reason "..."` excuses a structurally-impossible dimension
+             (--reason mandatory).
   status     Print the criteria table + coverage summary (e.g. "3/5 verified").
   checklist  Emit the markdown item-by-item checklist (for the PR body / evidence comment).
   check      Drift verdict for THIS turn: pass --goal "<goal worked now>"; ANCHORED (all verified) |
@@ -43,19 +59,31 @@ Verbs:
              of JSON, for the per-turn re-feed into the LLM's prompt (this is the "check every turn"
              call — quality-safety-delivery.md Step 4a). The on-disk anchor.json itself is unaffected
              — only this prompt-facing render can switch encoding.
-  gate       The done/PR-open gate: READY only when every criterion is verified; else BLOCKED with
-             the pending list. --exit-code → 12 when BLOCKED. Closing/opening a PR must pass this.
-  selftest   Prove freeze/preserve/drift/coverage/gate/checklist deterministically — no files.
+  gate       The done/PR-open gate: READY only when every criterion is `done` or `waived:no-infra`
+             (zero genuinely `pending`); else BLOCKED with the pending list. Every `waived:no-infra`
+             criterion is ALWAYS printed (ready or not) with its reason — a waiver is never
+             invisible. --exit-code → 12 when BLOCKED. --json for a machine-readable verdict.
+  verify_harness
+             Validate the "external harness" evidence form: 3 artifacts — --harness-source PATH,
+             --harness-log PATH (named PASS/FAIL cases), --harness-hash PATH (sha256 of the
+             replicated snippet) — or --harness-dir DIR (convention filenames). Missing/empty ANY
+             of the 3 invalidates the evidence. --snippet PATH additionally requires the hash to
+             match that real file's sha256. Prints `harness-ok`/`harness-invalid`; --exit-code →
+             12 on invalid. Full contract: references/test-infra-probe.md.
+  selftest   Prove freeze/preserve/drift/coverage/gate/checklist/waived/harness deterministically —
+             no files (harness validation uses its pure in-memory helper).
 
 Usage:
     python3 scripts/task_anchor.py set --item 12 --goal "Add SSO login" \\
         --ac "Login page renders an SSO button" --ac "Clicking it redirects to the IdP"
     python3 scripts/task_anchor.py mark --id AC1 --status done --evidence "web_verify .orchestrator/tee/web/login.png"
+    python3 scripts/task_anchor.py mark --id AC2 --status waived:no-infra --reason "no coverage tooling detected (test_infra_probe)"
     python3 scripts/task_anchor.py check --goal "Add SSO login" --exit-code
     python3 scripts/task_anchor.py check --goal "Add SSO login" --format toon
     python3 scripts/task_anchor.py gate --exit-code
     python3 scripts/task_anchor.py set --item 12 --goal "..." --delivery delivery.json --ac "..."
     python3 scripts/task_anchor.py checklist
+    python3 scripts/task_anchor.py verify_harness --harness-dir /scratch/harness --snippet src/Calc.cs
 """
 import hashlib
 import json
@@ -78,7 +106,11 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 from toon_codec import encode_toon  # noqa: E402 — prompt-facing render only, never the on-disk format
 
-STATUSES = ("pending", "partial", "done")
+STATUSES = ("pending", "partial", "done", "waived:no-infra")
+# external-harness evidence: a run-log line names a case + verdict; a hash artifact is a sha256.
+HARNESS_CASE_RE = re.compile(r"^\s*(?P<name>[A-Za-z0-9_./:\\-]+)\s*[:\-]?\s*(?P<result>PASS|FAIL)\b",
+                             re.M)
+HARNESS_HASH_RE = re.compile(r"\b[0-9a-fA-F]{64}\b")
 _MD_CHECK = re.compile(r"^\s*[-*]\s*\[(?P<box>[ xX])\]\s*(?P<text>.+?)\s*$")
 _MD_BULLET = re.compile(r"^\s*[-*]\s+(?P<text>.+?)\s*$")
 _WS = re.compile(r"\s+")
@@ -204,11 +236,19 @@ def merge_preserving(old, new_texts):
 
 
 def coverage(criteria):
-    """(done, total, pending_ids). 'done' counts only fully-verified criteria."""
+    """(done, total, pending_ids). 'done' counts only fully-verified criteria; `waived:no-infra`
+    is excused — neither done nor pending (see the `waived()` accessor below)."""
     total = len(criteria)
     done = sum(1 for c in criteria if c.get("status") == "done")
-    pending = [c.get("id") for c in criteria if c.get("status") != "done"]
+    pending = [c.get("id") for c in criteria
+              if c.get("status") not in ("done", "waived:no-infra")]
     return done, total, pending
+
+
+def waived(criteria):
+    """Criteria marked `waived:no-infra` — used by `gate`/`render_checklist` so a waiver is
+    ALWAYS surfaced, never silently dropped."""
+    return [c for c in (criteria or []) if c.get("status") == "waived:no-infra"]
 
 
 def drift_verdict(anchor, goal_now):
@@ -234,28 +274,81 @@ def drift_verdict(anchor, goal_now):
 
 
 def render_checklist(criteria, heading="Acceptance criteria (item-by-item)"):
-    """Markdown item-by-item checklist with per-AC status + evidence."""
-    mark = {"done": "x", "partial": "~", "pending": " "}
+    """Markdown item-by-item checklist. A `waived:no-infra` criterion gets its own marker and
+    ALWAYS shows the reason (or "no reason recorded" — never blank)."""
+    mark = {"done": "x", "partial": "~", "waived:no-infra": "w", "pending": " "}
     lines = ["### %s" % heading] if heading else []
     if not criteria:
         lines.append("- _(no acceptance criteria were anchored for this item)_")
         return "\n".join(lines)
     for c in criteria:
-        box = mark.get(c.get("status"), " ")
+        status = c.get("status")
+        box = mark.get(status, " ")
         line = "- [%s] **%s** %s" % (box, c.get("id"), c.get("text"))
         verify = (c.get("verify") or "").strip()
         if verify:
             line += " — _verify:_ %s" % verify
-        ev = (c.get("evidence") or "").strip()
-        if ev:
-            line += " — _evidence:_ %s" % ev
-        elif c.get("status") != "done":
-            line += " — _pending_"
+        if status == "waived:no-infra":
+            line += " — _waived:no-infra:_ %s" % (
+                (c.get("waived_reason") or "").strip() or "(no reason recorded)")
+        else:
+            ev = (c.get("evidence") or "").strip()
+            if ev:
+                line += " — _evidence:_ %s" % ev
+            elif status != "done":
+                line += " — _pending_"
         lines.append(line)
     done, total, _ = coverage(criteria)
+    waived_items = waived(criteria)
     lines.append("")
-    lines.append("**Coverage:** %d/%d criteria verified." % (done, total))
+    suffix = " · %d waived:no-infra" % len(waived_items) if waived_items else ""
+    lines.append("**Coverage:** %d/%d criteria verified%s." % (done, total, suffix))
     return "\n".join(lines)
+
+
+def parse_harness_log(log_text):
+    """Pure: extract (name, PASS|FAIL) named cases from a harness run-log's text."""
+    return HARNESS_CASE_RE.findall(log_text or "")
+
+
+def extract_harness_hash(hash_text):
+    """Pure: pull the first 64-hex sha256 digest out of a hash artifact's text (lowercased),
+    or '' if none is present."""
+    m = HARNESS_HASH_RE.search(hash_text or "")
+    return m.group(0).lower() if m else ""
+
+
+def verify_harness_content(source_text, log_text, hash_text, snippet_bytes=None):
+    """Pure (in-memory) validation of the "external harness" evidence form: 3 required artifacts —
+    (1) the harness's own source, (2) an execution log with >=1 NAMED PASS/FAIL case, (3) a sha256
+    hash of the replicated code snippet. Missing/empty ANY of the 3 invalidates the whole evidence
+    (never 2-out-of-3). If `snippet_bytes` is given (the real file mirrored), the hash MUST match
+    its actual sha256 — proof the harness isn't testing air. Returns (ok, reason, detail)."""
+    if not (source_text or "").strip():
+        return False, "harness source artifact is missing/empty", {}
+    if not (log_text or "").strip():
+        return False, "harness log artifact is missing/empty", {}
+    if not (hash_text or "").strip():
+        return False, "harness hash artifact is missing/empty", {}
+    cases = parse_harness_log(log_text)
+    if not cases:
+        return False, "harness log has no named PASS/FAIL cases", {}
+    failed = [name for name, result in cases if result.upper() == "FAIL"]
+    claimed_hash = extract_harness_hash(hash_text)
+    if not claimed_hash:
+        return False, "harness hash artifact does not contain a sha256 hex digest", {}
+    detail = {"cases": len(cases), "failed": failed, "hash": claimed_hash}
+    if snippet_bytes is not None:
+        real_hash = hashlib.sha256(snippet_bytes).hexdigest()
+        detail["snippet_hash"] = real_hash
+        if real_hash != claimed_hash:
+            return False, ("harness hash does not match sha256 of the replicated snippet "
+                          "(%s != %s) — the harness does not provably mirror the real diff" %
+                          (real_hash, claimed_hash)), detail
+    if failed:
+        return False, ("harness log records %d FAILED case(s): %s" %
+                       (len(failed), ", ".join(failed))), detail
+    return True, "%d named case(s), all PASS, hash %s" % (len(cases), claimed_hash), detail
 
 
 # ----- I/O + commands ----------------------------------------------------------------------------
@@ -295,11 +388,64 @@ def _collect_ac(opts):
     return parse_criteria(lines)
 
 
-def cmd_set(opts):
-    goal = opts.get("goal") or ""
-    if not goal.strip():
-        print("anchor: refusing to freeze — --goal is required")
+def _apply_delivery(anchor, path, force=False):
+    """Validate+freeze a `--delivery FILE` onto `anchor` (mutates it), or exit BLOCKED (#526
+    Etapa 4). Kept as a thin wrapper so the schema/enforcement logic itself lives in
+    `scripts/delivery_contract.py`, not duplicated here."""
+    try:
+        import delivery_contract as dc
+    except Exception as exc:  # pragma: no cover - only if the sibling script goes missing
+        print("anchor: BLOCKED — could not load scripts/delivery_contract.py: %s" % exc)
         sys.exit(2)
+    try:
+        data = dc.load_contract_file(path)
+    except ValueError as exc:
+        print("anchor: %s" % exc)
+        sys.exit(2)
+    errors = dc.validate(data)
+    if errors:
+        for e in errors:
+            print("anchor: delivery contract: %s" % e)
+        sys.exit(2)
+    frozen, err = dc.freeze(anchor.get("delivery"), data, force=force)
+    if err:
+        print("anchor: BLOCKED — %s" % err)
+        sys.exit(12)
+    anchor["delivery"] = frozen
+    if not frozen.get("allow_new_files_in_repo", True):
+        try:
+            dc.capture_baseline(".", None)
+        except Exception:
+            pass  # best-effort — the new-file guard fails CLOSED anyway if no baseline exists
+    log("delivery contract frozen: open_pr=%s push_branch=%s allow_new_files_in_repo=%s "
+        "allow_comments_in_code=%s commit_message_convention=%r" % (
+            frozen["open_pr"], frozen["push_branch"], frozen["allow_new_files_in_repo"],
+            frozen["allow_comments_in_code"], frozen["commit_message_convention"]))
+
+
+def cmd_set(opts):
+    delivery_path = opts.get("delivery")
+    goal = opts.get("goal") or ""
+    existing = _load()
+
+    if not goal.strip():
+        # `set --delivery FILE` alone (no --goal): attach/re-freeze the delivery contract onto
+        # whatever anchor already exists. Requires an anchor to attach to -- delivery is
+        # "congelado junto do anchor", never a standalone artifact (#526 Etapa 4).
+        if not delivery_path:
+            print("anchor: refusing to freeze — --goal is required")
+            sys.exit(2)
+        if not existing.get("goal_fp"):
+            print("anchor: refusing to freeze a delivery contract — no task anchor set yet. "
+                  "Freeze the goal + acceptance criteria first (`set --goal ... --ac ...`), or "
+                  "pass --goal/--ac together with --delivery.")
+            sys.exit(2)
+        anchor = dict(existing)
+        _apply_delivery(anchor, delivery_path, force=bool(opts.get("force")))
+        _save(anchor)
+        print("anchored")
+        return
+
     texts = _collect_ac(opts)
     if not texts:
         print("anchor: refusing to freeze — no acceptance criteria given "
@@ -311,7 +457,6 @@ def cmd_set(opts):
             print("anchor: %s" % msg)
         sys.exit(2)
     fp = goal_fingerprint(goal)
-    existing = _load()
     if existing and existing.get("goal_fp") and existing["goal_fp"] != fp and not opts.get("force"):
         print("anchor: BLOCKED — a different goal is already anchored (goal changed). "
               "This is exactly the drift signal. Re-anchor with --force only if the task "
@@ -319,25 +464,13 @@ def cmd_set(opts):
         sys.exit(12)
     criteria = (merge_preserving(existing.get("criteria"), texts)
                 if existing.get("goal_fp") == fp else freeze_criteria(texts))
-    delivery = existing.get("delivery")
     delivery_path = opts.get("delivery")
-    if isinstance(delivery_path, str):
-        try:
-            with open(delivery_path, encoding="utf-8") as handle:
-                candidate = json.load(handle)
-            if not isinstance(candidate, dict):
-                raise ValueError("delivery contract must be a JSON object")
-            if REPO not in sys.path:
-                sys.path.insert(0, REPO)
-            from simplicio_loop.delivery_contract import normalize_contract
-            delivery = normalize_contract(candidate)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            print("anchor: BLOCKED — invalid delivery contract: %s" % exc)
-            sys.exit(2)
     anchor = {"item": opts.get("item") or existing.get("item", ""), "goal": goal, "goal_fp": fp,
               "frozen_at": existing.get("frozen_at") or _now(), "criteria": criteria}
-    if delivery is not None:
-        anchor["delivery"] = delivery
+    if existing.get("delivery"):
+        anchor["delivery"] = existing["delivery"]  # preserved across an ordinary goal re-set
+    if delivery_path:
+        _apply_delivery(anchor, delivery_path, force=bool(opts.get("force")))
     _save(anchor)
     done, total, _ = coverage(criteria)
     log("anchored item=%s · %d criteria (%d already verified) · fp=%s" % (
@@ -370,9 +503,16 @@ def cmd_mark(opts):
         print("anchor: BLOCKED — marking %s done requires --evidence "
               "(file:line / command output / screenshot path). No receipt, no done." % cid)
         sys.exit(12)
+    reason = (opts.get("reason") or "").strip()
+    if status == "waived:no-infra" and not reason:
+        print("anchor: BLOCKED — marking %s waived:no-infra requires --reason (why this "
+              "dimension is structurally impossible here). No reason, no waiver." % cid)
+        sys.exit(12)
     hit["status"] = status
     hit["evidence"] = (opts.get("evidence") or hit.get("evidence") or "").strip()
     hit["verified_at"] = _now() if status == "done" else ""
+    if reason:
+        hit["waived_reason"] = reason
     _save(anchor)
     done, total, _ = coverage(anchor["criteria"])
     log("%s -> %s (%d/%d verified)" % (cid, status, done, total))
@@ -380,6 +520,9 @@ def cmd_mark(opts):
     if status == "done":
         _emit_progress("journal", "end", item=anchor.get("item") or None, outcome="pass",
                        detail="AC %s verificado (%d/%d)" % (cid, done, total))
+    elif status == "waived:no-infra":
+        _emit_progress("journal", "end", item=anchor.get("item") or None, outcome="waived",
+                       detail="AC %s waived:no-infra — %s" % (cid, reason))
 
 
 def cmd_status(opts):
@@ -402,15 +545,25 @@ def cmd_status(opts):
             "frozen_at": anchor.get("frozen_at"),
             "criteria": anchor["criteria"],
             "done": done, "total": total, "pending": pending,
+            "delivery": anchor.get("delivery") or None,
         }, ensure_ascii=False))
         return
     print("anchor: item=%s · goal_fp=%s · frozen=%s" % (
         anchor.get("item") or "-", anchor.get("goal_fp"), anchor.get("frozen_at")))
+    delivery = anchor.get("delivery")
+    if isinstance(delivery, dict):
+        log("delivery: open_pr=%s push_branch=%s allow_new_files_in_repo=%s "
+            "allow_comments_in_code=%s commit_message_convention=%r" % (
+                delivery.get("open_pr"), delivery.get("push_branch"),
+                delivery.get("allow_new_files_in_repo"), delivery.get("allow_comments_in_code"),
+                delivery.get("commit_message_convention")))
     for c in anchor["criteria"]:
         detail = c.get("text")
         if c.get("verify"):
             detail += " [verify: %s]" % c.get("verify")
-        if c.get("evidence"):
+        if c.get("status") == "waived:no-infra":
+            detail += "  [waived: %s]" % (c.get("waived_reason") or "(no reason recorded)")
+        elif c.get("evidence"):
             detail += "  <%s>" % c["evidence"]
         log("[%-7s] %-4s %s" % (c.get("status"), c.get("id"), detail))
     log("coverage: %d/%d verified%s" % (
@@ -446,21 +599,91 @@ def cmd_check(opts):
 
 
 def cmd_gate(opts):
+    """The done/PR-open gate: three states per dimension — done / waived:no-infra / pending.
+    Waived criteria are printed unconditionally, ready or not."""
     anchor = _load()
     criteria = anchor.get("criteria", [])
     done, total, pending = coverage(criteria)
+    waived_items = waived(criteria)
     ready = bool(total) and not pending
-    if ready:
-        print("ready")
-        log("all %d acceptance criteria verified — safe to declare done / open the PR" % total)
+    if opts.get("json"):
+        print(json.dumps({
+            "ready": ready, "done": done, "total": total, "pending": pending,
+            "waived": [{"id": c.get("id"), "text": c.get("text"),
+                       "reason": c.get("waived_reason") or ""} for c in waived_items],
+        }, indent=2, ensure_ascii=False))
     else:
-        print("blocked")
-        if not total:
-            log("no anchor set — freeze the acceptance criteria before declaring done")
+        if ready:
+            print("ready")
+            log("all %d acceptance criteria verified or waived — safe to declare done / open the PR"
+                % total)
         else:
-            log("%d/%d verified — do NOT declare done or open the PR yet" % (done, total))
-            log("pending: %s" % ", ".join(pending))
+            print("blocked")
+            if not total:
+                log("no anchor set — freeze the acceptance criteria before declaring done")
+            else:
+                log("%d/%d verified — do NOT declare done or open the PR yet" % (done, total))
+                log("pending: %s" % ", ".join(pending))
+        for c in waived_items:  # always printed, ready or blocked — never silently absent
+            log("waived:no-infra %s %s — %s" % (
+                c.get("id"), c.get("text"), c.get("waived_reason") or "(no reason recorded)"))
     if opts.get("exit-code") and not ready:
+        sys.exit(12)
+
+
+def _harness_paths(opts):
+    """Resolve the 3 artifact paths either from --harness-dir (convention filenames) or from the
+    explicit --harness-source/--harness-log/--harness-hash flags (explicit wins)."""
+    base = opts.get("harness-dir")
+    if isinstance(base, str) and base.strip():
+        source = opts.get("harness-source") or os.path.join(base, "harness_source.py")
+        logf = opts.get("harness-log") or os.path.join(base, "run.log")
+        hashf = opts.get("harness-hash") or os.path.join(base, "snippet.sha256")
+        return source, logf, hashf
+    return opts.get("harness-source"), opts.get("harness-log"), opts.get("harness-hash")
+
+
+def verify_harness_artifacts(source_path, log_path, hash_path, snippet_path=None):
+    """I/O wrapper around `verify_harness_content`: read the 3 real artifact files (living in the
+    caller's own scratchpad, never inside the target repo) and validate them. Missing/unreadable
+    for ANY of the 3 invalidates the whole evidence. Returns (ok, reason, detail)."""
+    def _read_or_none(path):
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                return f.read()
+        except OSError:
+            return None
+    source_text = _read_or_none(source_path)
+    log_text = _read_or_none(log_path)
+    hash_text = _read_or_none(hash_path)
+    missing = [label for label, text in
+              (("source", source_text), ("log", log_text), ("hash", hash_text)) if text is None]
+    if missing:
+        return False, "missing harness artifact(s): %s" % ", ".join(missing), {}
+    snippet_bytes = None
+    if snippet_path:
+        if not os.path.isfile(snippet_path):
+            return False, "--snippet path does not exist: %s" % snippet_path, {}
+        with open(snippet_path, "rb") as f:
+            snippet_bytes = f.read()
+    return verify_harness_content(source_text, log_text, hash_text, snippet_bytes)
+
+
+def cmd_verify_harness(opts):
+    source_path, log_path, hash_path = _harness_paths(opts)
+    ok, reason, detail = verify_harness_artifacts(
+        source_path, log_path, hash_path, opts.get("snippet"))
+    if ok:
+        print("harness-ok")
+        log(reason)
+        print("EVIDENCE: external-harness source=%s log=%s hash=%s (%s)" % (
+            source_path, log_path, hash_path, detail.get("hash", "")))
+    else:
+        print("harness-invalid")
+        log(reason)
+    if opts.get("exit-code") and not ok:
         sys.exit(12)
 
 
@@ -526,6 +749,42 @@ def cmd_selftest(_opts):
     chk("lint.strict_allows_short_with_verify", lint_criteria(["a1 :: verify: shot.png"],
                                                               strict=True), [])
 
+    # #526: waived:no-infra is neither done nor pending; gate reaches READY; reason always visible.
+    # (Full matrix in tests/test_task_anchor_infra_gate_unit.py — this is the fast in-memory proof.)
+    dims = freeze_criteria(["Unit tests pass", "Coverage >=85%", "Benchmark within budget"])
+    dims[0]["status"] = "done"
+    dims[1]["status"] = dims[2]["status"] = "waived:no-infra"
+    dims[1]["waived_reason"] = "no coverage tooling detected"
+    dims[2]["waived_reason"] = "no perf harness detected"
+    _, wtotal, wpending = coverage(dims)
+    chk("waived.gate_ready_math", bool(wtotal) and not wpending, True)
+    chk("waived.accessor_count", len(waived(dims)), 2)
+    wcl = render_checklist(dims)
+    chk("waived.marker_and_reason_in_checklist",
+        "waived:no-infra" in wcl and "no coverage tooling detected" in wcl, True)
+    chk("waived.is_a_known_status", "waived:no-infra" in STATUSES, True)
+
+    # external-harness evidence form: all-in-memory, no files (pure helper).
+    good_log = "case_add_positive PASS\ncase_add_negative PASS\n"
+    real_snippet = b"def add(a, b):\n    return a + b\n"
+    good_hash = hashlib.sha256(real_snippet).hexdigest()
+    ok_h, _, detail_h = verify_harness_content("def add(a,b): return a+b", good_log, good_hash)
+    chk("harness.valid_all_pass", ok_h and detail_h.get("cases") == 2, True)
+    chk("harness.missing_artifact_invalidates",
+        verify_harness_content("", good_log, good_hash)[0], False)
+    ok_fail, reason_fail, _ = verify_harness_content(
+        "src", "case_one PASS\ncase_two FAIL\n", good_hash)
+    chk("harness.any_fail_invalidates", not ok_fail and "case_two" in reason_fail, True)
+    ok_mismatch, reason_mismatch, _ = verify_harness_content(
+        "src", good_log, good_hash, snippet_bytes=b"different")
+    chk("harness.hash_mismatch_invalidates",
+        not ok_mismatch and "does not match" in reason_mismatch, True)
+    chk("harness.hash_match_ok",
+        verify_harness_content("src", good_log, good_hash, snippet_bytes=real_snippet)[0], True)
+    chk("harness.log_parser", parse_harness_log(good_log),
+        [("case_add_positive", "PASS"), ("case_add_negative", "PASS")])
+    chk("harness.hash_extractor", extract_harness_hash("sha256: %s\n" % good_hash), good_hash)
+
     ok = all(checks)
     print("selftest: %s (%d/%d)" % ("PASS" if ok else "FAIL", sum(checks), len(checks)))
     sys.exit(0 if ok else 1)
@@ -565,17 +824,21 @@ def main():
     if argv[0] == "--describe-cli":
         import json
         print(json.dumps({
-            "verbs": ["set", "mark", "status", "checklist", "check", "gate", "selftest"],
-            "flags": ["--item", "--goal", "--ac", "--ac-file", "--delivery", "--force", "--id", "--status",
-                      "--evidence", "--format", "--exit-code", "--lint", "--require-evidence",
-                      "--out", "--json", "--help"],
+            "verbs": ["set", "mark", "status", "checklist", "check", "gate", "verify_harness",
+                      "selftest"],
+            "flags": ["--item", "--goal", "--ac", "--ac-file", "--force", "--id", "--status",
+                      "--evidence", "--reason", "--format", "--exit-code", "--lint",
+                      "--require-evidence", "--out", "--json", "--harness-dir",
+                      "--harness-source", "--harness-log", "--harness-hash", "--snippet",
+                      "--delivery", "--help"],
         }))
         sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])
     {"set": cmd_set, "mark": cmd_mark, "status": cmd_status, "checklist": cmd_checklist,
-     "check": cmd_check, "gate": cmd_gate, "selftest": cmd_selftest}.get(
+     "check": cmd_check, "gate": cmd_gate, "verify_harness": cmd_verify_harness,
+     "selftest": cmd_selftest}.get(
         sub, lambda _o: (print("unknown command '%s'. choices: set mark status checklist check "
-                               "gate selftest" % sub), sys.exit(2)))(opts)
+                               "gate verify_harness selftest" % sub), sys.exit(2)))(opts)
 
 
 if __name__ == "__main__":

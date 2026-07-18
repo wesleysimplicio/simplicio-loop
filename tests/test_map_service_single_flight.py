@@ -104,6 +104,63 @@ def test_failed_owner_releases_key_and_allows_retry() -> None:
     asyncio.run(scenario())
 
 
+def test_second_call_reuses_completed_build_without_invoking_builder() -> None:
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = MapServiceRegistry()
+            key = registry.register(
+                RepositoryIdentity("owner/project", directory, base_sha="sha")
+            )
+            store = SingleFlightMapStore(registry)
+            calls = 0
+
+            async def builder():
+                nonlocal calls
+                calls += 1
+                return registry.build_canonical(key, tree_hash="tree")
+
+            first = await store.get_or_build(
+                key, mode="canonical", tree_hash="tree", builder=builder
+            )
+            assert calls == 1
+            assert store.owners_started == 1
+
+            async def should_not_run():
+                raise AssertionError("builder must not run on a cache hit")
+
+            second = await store.get_or_build(
+                key, mode="canonical", tree_hash="tree", builder=should_not_run
+            )
+            assert calls == 1
+            assert store.owners_started == 1
+            assert second.cache_key == first.cache_key
+            first.release()
+            second.release()
+
+    asyncio.run(scenario())
+
+
+def test_builder_returning_non_view_is_rejected() -> None:
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = MapServiceRegistry()
+            key = registry.register(
+                RepositoryIdentity("owner/project", directory, base_sha="sha")
+            )
+            store = SingleFlightMapStore(registry)
+
+            async def not_a_view():
+                return {"not": "a MapView"}
+
+            with pytest.raises(SingleFlightError):
+                await store.get_or_build(
+                    key, mode="canonical", tree_hash="tree", builder=not_a_view
+                )
+            assert store.active_builds == 0
+
+    asyncio.run(scenario())
+
+
 def test_key_modes_are_isolated_and_bad_builders_fail_closed() -> None:
     async def scenario() -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -405,7 +405,7 @@ class HubSocketClient:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 sock.settimeout(self.timeout)
                 sock.connect(self.socket_path)
-                sock.sendall((envelope.encode() + "\n").encode("utf-8"))
+                sock.sendall((raw + "\n").encode("utf-8"))
                 raw = _recv_line(sock)
         if not raw:
             raise HubError("no response from Hub daemon")

@@ -110,6 +110,7 @@ SELFTEST_SCRIPTS = [
     "scripts/repo_conventions.py",
     "scripts/task_anchor.py",
     "scripts/task_backlog.py",
+    "scripts/test_infra_probe.py",
     "scripts/pr_evidence.py",
     "scripts/flow_audit.py",
     "scripts/impact_audit.py",
@@ -155,6 +156,7 @@ SELFTEST_SCRIPTS = [
     "scripts/workflow_topology.py",
     "scripts/pr_dod_review.py",
     "scripts/release_check.py",
+    "scripts/operator_check.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a
 # `selftest`-shaped function/subcommand that isn't the worker's own self-check, or a script this

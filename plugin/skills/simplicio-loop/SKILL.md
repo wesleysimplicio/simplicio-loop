@@ -30,6 +30,21 @@ user explicitly requests it or the repository's documented workflow requires it.
 
 ## Normative contract (non-negotiable)
 
+**Design principle (issue #526): always route to the fastest path the project's structure
+allows.** Execution mode is never a contract obligation or a caller preference — it's a MEASURED
+consequence of the project's structure and the goal's scope:
+
+| Layer | Nature | Contents |
+|---|---|---|
+| **Safety floor** | mandatory, identical every mode, never loosens | in-turn evidence before `<promise>`; secret-scan; journal (1/turn); claims-gate MEASURED/UNVERIFIED |
+| **Path** | automatic, decided by structure | run is born in the LIGHTEST mode the structure supports; full pipeline is an escalation destination, not an entry toll |
+| **Escalation** | triggered ONLY by measured evidence | diff overshoot, new file, target is a hub, sensitive surface touched → auto-promotion to the heavy protocol, journaled |
+
+A flag, if any, FORCES the heavy path from arming (opt-out of fast) — never "unlocks" fast-path.
+Fast-path is never requested; escalation is never avoided. See §§ "Three loop modes" (route/
+escalation), "Definition of Done" (adaptive DoD), "Delivery contract" (client constraints) —
+all three instances of this shape; no future change to any may reintroduce all-or-nothing.
+
 These invariants are MUST-level. Any runtime that loads this skill (Simplicio Agent, Claude, Cursor, or a
 bare LLM) follows them mechanically — no paraphrase, no drift:
 
@@ -74,8 +89,67 @@ Freeze these as ACs at intake (`task_backlog.py init` / `task_anchor.py set`) so
 `task_anchor.py gate` — the same worker already gating "done" on unverified ACs — refuses to let
 the loop declare completion or open the PR (`pr_evidence.py build --require-evidence`) until every
 one of the seven is verified with evidence, not asserted. When a goal is decomposed at Phase 0,
-each backlog item's `plan.json` entry MUST carry all seven as ACs (skip only the ones that
-genuinely do not apply — e.g. no perf benchmark for a pure docs change — and say why in the item).
+each backlog item's `plan.json` entry MUST carry all seven as ACs.
+
+**Adaptive DoD — dimensioned by the repo's REAL infra (issue #526 Etapa 3).** No dimension is
+silently skipped or blocked forever for lacking tooling an ideal repo would have. Flow: probe →
+external harness → `waived:no-infra` — never the old vague "skip … and say why":
+
+1. **Probe (intake, MEASURED, never hand-typed).** A deterministic infra probe checks, per
+   ecosystem (.NET/Node/Python/Go/Rust/Java+): test project/runner on disk (`**/*Tests*.csproj`,
+   `pytest.ini`, `jest.config.*`, `_test.go`…)? Coverage tooling? CI that runs tests? Result lands
+   on the anchor as `test_infra: {unit, coverage, ci: present|absent}` — a filesystem fact, not an
+   assumption. *(Worker `test_infra_probe.py`; see #526 Etapa 3.)*
+2. **External harness = equivalent evidence.** When `unit: absent` AND the delivery contract
+   (below) forbids new repo files, "testes" accepts a scratchpad-only harness (never committed) as
+   evidence — gated on 3 artifacts together: harness source, a PASS/FAIL log with named cases, and
+   a hash of the exact code fragment replicated (proves the harness mirrors the REAL diff). Missing
+   any one invalidates the evidence.
+3. **`waived:no-infra` for the structurally impossible** (≥85% coverage with no coverage tool;
+   perf benchmark with no bench harness) — recorded with an explicit reason, never `pending`
+   forever, never dropped in silence.
+4. **Three gate states, not two.** `task_anchor.py gate` recognizes `verified` / `waived:no-infra`
+   / `pending` *(gate implementation itself: #526 Etapa 3)*. READY requires zero `pending`; every
+   `waived:no-infra` MUST appear in the final report — a silent waiver is a contract violation.
+
+## Delivery contract — client delivery constraints, enforced mechanically (issue #526 Etapa 4)
+
+`task_anchor.py set --delivery`, the schema validator (`scripts/delivery_contract.py`), the
+stop-hook new-file guard, and the deterministic comment linter are implemented — see
+`references/delivery-contract.md` and #526 Etapa 4 for the worker code.
+
+Client constraints in plain language ("don't open a PR", "no test files", "no comments") don't
+self-enforce — the default contract's operator could (and did) violate all three. Same
+three-layer shape as § "Normative contract", for DELIVERY: stated constraints become a FROZEN
+contract next to the anchor; mechanical gates consume it, the LLM never self-certifies.
+
+**Freezing.** The LLM proposes `delivery.json` from the request; the user confirms; the worker
+freezes it (`task_anchor.py set --delivery delivery.json`) — later changes need `--force`, same as
+re-anchoring. An unknown field is a hard error at `set`, never a silent no-op:
+
+```json
+{
+  "open_pr": false,
+  "push_branch": true,
+  "allow_new_files_in_repo": false,
+  "allow_comments_in_code": false,
+  "commit_message_convention": "<type>(<scope>): <subject>"
+}
+```
+
+**Gates per clause:**
+
+| Clause | Mechanical gate |
+|---|---|
+| `open_pr: false` | `pr_evidence.py build --local-report` — writes evidence to a local file, never calls the PR API |
+| `allow_new_files_in_repo: false` | stop-hook diffs `git status --porcelain` vs the turn baseline, BLOCKS on an unauthorized new file |
+| `allow_comments_in_code: false` | comment-syntax-aware diff linter runs pre-commit, fails on added comment lines (C#, TS/JS, Python — `//`, `/* */`, `#`, new docstrings) |
+| `commit_message_convention` | checked against every commit the run produces |
+
+Final report lists the contract + per-clause compliance, tagged `MEASURED`, never prose — the exact
+`push_branch:true`+`open_pr:false`+no-test-files+no-comments combo that motivated this issue
+(§ Context above) is now representable and enforced without inventing repo-side tests or a PR the
+client refused.
 
 ## Adaptive infrastructure evidence and delivery contract
 
@@ -112,24 +186,32 @@ gates, the operator dispatch table): **`references/bound-operators.md`**.
 | **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
 | **simplicio-dev-cli** | `simplicio-dev-cli` | `execute` / `deterministic_edit` / `validate` / `diagnostics` | **Operate** — applies a DECIDED change through its 6-layer contract (mapper context → precedent → prompt → diff → test → verify, ≤3 retries). The CLI edits and verifies; the AI does not hand-write the diff. |
 
-**Preflight (MANDATORY, BLOCKING).** Before iteration 1, announce the step, auto-update the
-operator package to its latest release, then confirm both runtime binaries are on PATH:
-First run `python3 scripts/operator_preflight.py --run-id <run-id>`; the receipt is cached for
-seven days in `~/.simplicio/operator-check.json`. The networked `pip install -qU` below is allowed
-only when that receipt says `refresh_required` (or a binary is missing). Record the observed versions
-with `--record` and pin them for the run; a later mismatch warns and never upgrades silently.
+**Preflight (MANDATORY, BLOCKING) — TTL-gated, never mid-run (issue #526 Etapa 6).** Before
+iteration 1, announce the step; `scripts/operator_check.py` decides mechanically whether THIS
+armada warrants a network round-trip:
 ```bash
-python3 scripts/loop_progress.py emit --step preflight --status begin --detail "operadores: verificação/atualização"
-python3 -m pip install -qU simplicio-cli 2>/dev/null \
-  || python3 -m pip install -qU --user --break-system-packages simplicio-cli 2>/dev/null || true
+python3 scripts/loop_progress.py emit --step preflight --status begin --detail "operadores: verificação/atualização (TTL-gated)"
+python3 scripts/operator_check.py maybe-upgrade --json
 simplicio-mapper --version   # survey operator (expected transitively from simplicio-cli)
 simplicio-dev-cli --help     # action operator (pkg simplicio-cli; exposes `simplicio-dev-cli`)
+python3 scripts/operator_check.py pin --scratchpad .orchestrator/loop/scratchpad.md \
+  --versions "{\"simplicio-mapper\": \"<resolved-version>\", \"simplicio-dev-cli\": \"<resolved-version>\"}"
 python3 scripts/loop_progress.py emit --step preflight --status end --outcome pass \
     --detail "simplicio-mapper X.Y.Z; simplicio-dev-cli OK"
 ```
-Best-effort and offline-safe — a network/pip failure leaves the working version in place. The
-action binary is `simplicio-dev-cli` (from `pip install simplicio-cli`) — NOT the bare `simplicio`
-(that's the separate `simplicio-runtime`). If either required operator binary is missing, do NOT
+`maybe-upgrade` only calls `pip install -qU simplicio-cli` when the last check in
+`~/.simplicio/operator-check.json` is older than the TTL (default 7d, `--ttl-days` to override) OR
+a binary is missing from PATH — inside the TTL: **zero network, zero subprocess**, pure cache read.
+Best-effort/offline-safe: a failed/offline attempt still records the check (no retry-every-iteration
+on a flaky network) and keeps the working version.
+
+`pin` writes THIS armada's resolved version into the scratchpad frontmatter
+(`operator_versions: {...}`) once — never re-pinned mid-run. A later iteration checks with
+`operator_check.py check-pin --scratchpad ... --versions "{...current...}"`: mismatch prints
+`WARNING:`, never a silent upgrade — the pin holds regardless.
+
+The action binary is `simplicio-dev-cli` (from `pip install simplicio-cli`) — NOT the bare
+`simplicio` (that's the separate `simplicio-runtime`). If either runtime binary is missing, do NOT
 fall back to LLM survey/editing — emit `python3 scripts/loop_progress.py emit --step preflight
 --status blocked --outcome blocked --detail "missing operator <name>"`, then STOP and print
 `simplicio-loop: BLOCKED — missing operator <name>; run: pip install simplicio-cli`. The optional
@@ -299,7 +381,13 @@ detector below. It is the difference between a loop that converges and one that 
    `status: MEASURED`). The watcher re-executes the work independently before the promise is
    honored — corrective gate per Asolaria N-Nest pattern.
 
-## Three loop modes (different jobs, different termination)
+## Three loop modes (termination dynamics + rigor level)
+
+`converge`/`drain` answer WHEN a run is done (termination — unchanged here). `fast-path` (issue
+#526 Etapas 1–2) answers a different question: how much PROCESS RIGOR does the current turn need.
+Not a termination-axis peer of converge/drain — a reduced-rigor variant terminating under
+converge's own rules. "Three loop modes" = three dynamics the scratchpad `mode` field + the
+anchor's `route_mode` field jointly select, not three unrelated state machines.
 
 A loop drains a queue and a loop converges a hard task — opposite dynamics, so the scratchpad
 `mode` selects which termination logic the driver uses. Pick it when arming; default `converge`
@@ -319,7 +407,35 @@ only changes WHEN "naturally done" is declared: `converge` is done when the one 
 genuinely stuck; `drain` is done when the queue stays empty across rounds. Don't apply `drain`'s
 "empty K times → done" to a single task (it would quit the moment a turn makes no visible change),
 and don't apply `converge`'s stall-escalation to a queue (a stuck item should be quarantined, not
-halt the whole drain). `simplicio-tasks` Step 3 routes fast-path/heavy-path on top of this.
+halt the whole drain).
+
+### `fast-path` — the third mode: reduced rigor, decided by structure, escalated by evidence
+
+At arming, `scripts/route_mode.py` (Etapa 1) reads ONLY the mapper survey (`project-map.json`/
+`symbol-index.json`/`call-graph.json`) + the frozen goal — never an LLM guess. `fast-path` is
+granted ONLY when the goal resolves to exactly one file, fan-in ≤1 (not a hub), no sensitive
+surface (schema/migration/contract/lockfile globs). Vague/multi-file/hub/sensitive/no-survey all
+fail closed to `converge` — no map, no hypothesis. Decision + numeric justification (`goal→1 file,
+fan-in 1, no sensitive surface`) land on the anchor's `route_mode` and every turn-header. Only
+supported flag forces `converge` from arming — none forces `fast-path`.
+
+Every `fast-path` turn re-measures the hypothesis against the REAL diff (`scripts/diff_escalation.py`,
+Etapa 2): `git diff --numstat` + `git status --porcelain` vs baseline, checked against configurable
+limits (default ≤2 files, ≤80 lines, 0 new files, no sensitive surface). Overshoot **promotes** to
+`converge` — same run/anchor/journal/scratchpad, contract just hardens — journaled with a
+fingerprint. The reverse (`converge`→`fast-path` mid-run) never happens; promotion is monotonic.
+
+| Gate | Full pipeline (`converge`/`drain`) | `fast-path` (until escalation) |
+|---|---|---|
+| In-turn evidence, secret-scan, journal, claims-gate | required | **identical** — safety floor never loosens |
+| Full mapper survey | required every loop start | optional; incremental `scan` on demand |
+| `simplicio-dev-cli task` (operator edit) | mandatory | waived — hand-edit OK IF a real verification gate (build/test/harness) runs same turn; edit w/o gate = incomplete turn, same severity as full pipeline |
+| Watcher-gate | full anchor recomputation | re-execution of the turn's declared verification gate (cheaper, not absent) |
+| DoD | full 7-dimension | adaptive per § "Definition of Done" above |
+
+The same goal run in `fast-path` vs `converge` both reject an evidence-free `<promise>` identically
+— only the PATH to that evidence narrows, never the requirement. `simplicio-tasks` Step 3 routes
+fast-path/heavy-path on top of this mechanism.
 
 ## Phase 0 — intake & decomposition (no source / vague goal / genesis)
 

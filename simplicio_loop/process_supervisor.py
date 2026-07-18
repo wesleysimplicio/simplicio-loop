@@ -8,7 +8,7 @@ import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 
 PROCESS_SPEC_SCHEMA = "simplicio.process-spec/v1"
@@ -207,8 +207,21 @@ class PythonProcessAdapter:
             pass
 
     async def run(
-        self, spec: ProcessSpec, *, lease: Optional[ProcessLease] = None
+        self,
+        spec: ProcessSpec,
+        *,
+        lease: Optional[ProcessLease] = None,
+        on_spawned: Optional[Callable[["asyncio.subprocess.Process"], None]] = None,
     ) -> ProcessResult:
+        """Run ``spec`` to completion.
+
+        ``on_spawned`` is an optional additive hook (issue #516) invoked synchronously with the
+        live ``asyncio.subprocess.Process`` immediately after a successful spawn, before this
+        coroutine awaits completion -- the only point at which the real OS pid is known. It
+        exists so an external bookkeeping layer (a process registry) can record "this pid is
+        supervised" without this adapter needing to know anything about that layer. A raising
+        hook must never take down the supervised child, so exceptions from it are swallowed.
+        """
         started = time.monotonic()
         lease_id = lease.lease_id if lease else ""
         process = None
@@ -223,6 +236,11 @@ class PythonProcessAdapter:
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=os.name != "nt",
             )
+            if on_spawned is not None:
+                try:
+                    on_spawned(process)
+                except Exception:
+                    pass
             communicate = process.communicate()
             if spec.timeout_seconds is None:
                 stdout, stderr = await communicate

@@ -1,9 +1,11 @@
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
 
 from simplicio_loop.map_service import MapServiceRegistry, RepositoryIdentity
+from simplicio_loop.map_service_single_flight import SingleFlightMapStore
 from simplicio_loop.map_service_watchers import (
     MapWatcherManager,
     WatcherBackpressureError,
@@ -56,6 +58,41 @@ def test_watcher_and_pending_quotas_fail_closed() -> None:
     finally:
         first.cleanup()
         second.cleanup()
+
+
+def test_flush_without_force_respects_debounce_window() -> None:
+    directory, registry, key = _registry()
+    try:
+        manager = MapWatcherManager(registry)
+        events = []
+        manager.watch(key, events.append, debounce_seconds=10)
+        start = time.monotonic()
+        manager.emit(key, ["a.py"])
+        assert manager.flush(now=start) == []
+        assert manager.status()["pending"] == 1
+        assert events == []
+        flushed = manager.flush(now=start + 20)
+        assert flushed[0]["paths"] == ["a.py"]
+        assert events[0]["paths"] == ["a.py"]
+        assert manager.status()["pending"] == 0
+    finally:
+        directory.cleanup()
+
+
+def test_manager_with_store_delegates_invalidate_and_gc() -> None:
+    directory, registry, key = _registry()
+    try:
+        store = SingleFlightMapStore(registry)
+        manager = MapWatcherManager(registry, store)
+        view = registry.build_canonical(key, tree_hash="tree")
+        events = []
+        manager.watch(key, events.append)
+        manager.emit(key, ["a.py"])
+        manager.flush(force=True)
+        assert not view.valid
+        assert manager.gc() == [view.cache_key]
+    finally:
+        directory.cleanup()
 
 
 def test_status_verify_standalone_restart_and_invalid_calls() -> None:

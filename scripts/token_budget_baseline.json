@@ -3,8 +3,8 @@
   "artifacts": {
     ".claude/skills/simplicio-loop/SKILL.md": {
       "label": "SKILL.md (simplicio-loop)",
-      "tokens": 8943,
-      "words": 4975
+      "tokens": 11387,
+      "words": 6299
     },
     "AGENTS.md": {
       "label": "AGENTS.md",
@@ -33,8 +33,8 @@
     },
     "scripts/task_anchor.py": {
       "label": "task_anchor.py",
-      "tokens": 6141,
-      "words": 2634
+      "tokens": 9097,
+      "words": 3818
     },
     "scripts/video_evidence.py": {
       "label": "video_evidence.py",

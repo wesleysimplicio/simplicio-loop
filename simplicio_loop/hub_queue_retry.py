@@ -88,15 +88,28 @@ class HubRetryQueue:
         if existing is not None:
             return str(existing["task_id"])
         task_id = str(uuid.uuid4())
-        self._db.execute(
-            """
-            INSERT INTO hub_jobs(task_id,idempotency_key,payload,max_attempts,
-                                 next_attempt_at,updated_at)
-            VALUES(?,?,?,?,?,?)
-            """,
-            (task_id, idempotency_key, json.dumps(payload, sort_keys=True),
-             int(max_attempts), now, now),
-        )
+        try:
+            self._db.execute(
+                """
+                INSERT INTO hub_jobs(task_id,idempotency_key,payload,max_attempts,
+                                     next_attempt_at,updated_at)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (task_id, idempotency_key, json.dumps(payload, sort_keys=True),
+                 int(max_attempts), now, now),
+            )
+        except sqlite3.IntegrityError:
+            # A concurrent submit() with the same idempotency_key won the race between our
+            # SELECT and INSERT (SQLite's UNIQUE constraint is what actually serializes this,
+            # not the SELECT above). Re-query rather than raise so submit() stays idempotent
+            # under real concurrency, not just when calls happen to be serialized.
+            winner = self._db.execute(
+                "SELECT task_id FROM hub_jobs WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if winner is None:
+                raise
+            return str(winner["task_id"])
         return task_id
 
     def claim(self, worker_id: str, *, ttl: float = 30.0) -> Optional[RetryLease]:
@@ -105,6 +118,10 @@ class HubRetryQueue:
         now = time.time()
         self._db.execute("BEGIN IMMEDIATE")
         try:
+            # A task is claimable when it is freshly queued, OR when a prior
+            # worker's lease visibility timeout has elapsed without heartbeat,
+            # completion or failure (worker crash / hang). Without the second
+            # branch a dead worker's lease would never be reclaimed.
             row = self._db.execute(
                 """
                 SELECT * FROM hub_jobs
@@ -120,7 +137,7 @@ class HubRetryQueue:
             lease_id = worker_id + "-" + uuid.uuid4().hex
             fence = int(row["fence"]) + 1
             expires = now + ttl
-            self._db.execute(
+            cursor = self._db.execute(
                 """
                 UPDATE hub_jobs SET state='leased', attempts=attempts+1,
                   lease_id=?, fence=?, lease_expires_at=?, updated_at=?
@@ -129,6 +146,12 @@ class HubRetryQueue:
                 """,
                 (lease_id, fence, expires, now, row["task_id"], now, int(row["fence"])),
             )
+            if cursor.rowcount == 0:
+                # Lost a race with another claimant between the SELECT and
+                # the UPDATE; fail closed instead of returning a lease that
+                # does not actually own the task.
+                self._db.execute("COMMIT")
+                return None
             self._db.execute("COMMIT")
             return RetryLease(str(row["task_id"]), lease_id, fence, expires)
         except Exception:

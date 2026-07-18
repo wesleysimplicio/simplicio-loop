@@ -24,7 +24,12 @@ Deterministic, stdlib-only, no network. Pairs with `task_anchor.py` (the checkli
 
 Verbs:
   build      Emit the full PR body markdown (stdout or --out FILE). --require-evidence → exit 3 if
-             there is no checklist and no print to show.
+             there is no checklist and no print to show. --local-report (#526 Etapa 4) writes the
+             body to a local file instead — auto-triggered, no flag needed, whenever the anchored
+             delivery contract (`task_anchor.py set --delivery`) declares `open_pr: false`; the PR
+             API is never called in this mode. Also folds in a "Delivery contract compliance"
+             section (MEASURED, one line per clause) whenever a delivery contract is anchored,
+             --local-report or not.
   comment    Emit the shorter source-item evidence comment (PR link + verification summary +
              checklist + a count of attached prints) — the comment Step 6 posts back on the issue.
              Always prints to stdout; with `--publish --issue N [--repo owner/name]` ALSO delegates
@@ -112,6 +117,16 @@ try:
     from task_backlog import render_backlog_table
 except Exception:  # pragma: no cover
     render_backlog_table = None
+
+# #526 Etapa 4 — the delivery contract worker. Best-effort import: an install that predates the
+# delivery contract (or one missing the sibling script) simply skips the compliance section and
+# the open_pr:false auto-trigger, never blocking the ordinary PR-evidence flow over it.
+try:
+    import delivery_contract as _delivery
+except Exception:  # pragma: no cover
+    _delivery = None
+
+DEFAULT_LOCAL_REPORT = os.path.join(REPO, ".orchestrator", "loop", "delivery_report.md")
 
 
 def log(msg):
@@ -542,6 +557,16 @@ def build_body(opts):
 
     progress_md = render_progress_section()
 
+    # #526 Etapa 4 — every PR/local report lists the frozen delivery contract and the MEASURED
+    # compliance of each clause, when one is anchored. Silent when no contract or the sibling
+    # worker is unavailable (fail-open, never blocks assembling the rest of the body).
+    delivery_md = ""
+    if _delivery is not None and isinstance(anchor.get("delivery"), dict):
+        try:
+            delivery_md = _delivery.render_compliance_report(anchor, REPO)
+        except Exception:
+            delivery_md = ""
+
     blocks = []
     if summary:
         blocks += ["### Summary", summary, ""]
@@ -552,6 +577,8 @@ def build_body(opts):
     if backlog_md:
         blocks += [backlog_md, ""]
     blocks += [checklist_md, "", evidence_md, "", "### How to verify", how, ""]
+    if delivery_md:
+        blocks += [delivery_md, ""]
 
     tpl_path = opts.get("template") if isinstance(opts.get("template"), str) else DEFAULT_TEMPLATE
     if tpl_path and os.path.exists(tpl_path):
@@ -566,6 +593,17 @@ def build_body(opts):
     return body, has_evidence
 
 
+def _local_report_active(opts):
+    """True when this build must run in --local-report mode: explicit `--local-report`, OR the
+    anchored delivery contract declares `open_pr: false` (#526 Etapa 4) — auto-triggered, the
+    caller never has to remember the flag."""
+    if opts.get("local-report"):
+        return True
+    anchor = _load_anchor(opts)
+    delivery = anchor.get("delivery")
+    return isinstance(delivery, dict) and delivery.get("open_pr") is False
+
+
 def cmd_build(opts):
     _emit_progress("begin", detail="pr_evidence.py build")
     body, has_evidence = build_body(opts)
@@ -576,16 +614,27 @@ def cmd_build(opts):
             "opening the PR. Refusing to open an evidence-less PR.")
         _emit_progress("blocked", outcome="blocked", detail="no checklist and no prints")
         sys.exit(_BLOCKED)
+    local_report = _local_report_active(opts)
     out = opts.get("out")
-    if opts.get("local-report") and not isinstance(out, str):
-        out = os.path.join(REPO, ".orchestrator", "delivery-local-report.md")
-        os.makedirs(os.path.dirname(out), exist_ok=True)
+    if local_report:
+        # open_pr: false (or an explicit --local-report) -- write the evidence body to a LOCAL
+        # file only. This mode never calls the PR API (`cmd_build` never did to begin with; this
+        # just makes the "no PR" intent explicit in the artifact itself and picks a stable default
+        # path so the caller doesn't have to remember one).
+        if not isinstance(out, str):
+            out = DEFAULT_LOCAL_REPORT
+        banner = ("> **Local delivery report** — `open_pr: false` in the frozen delivery "
+                  "contract; no PR was opened or will be opened from this artifact.\n\n")
+        body = banner + body
     if isinstance(out, str):
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         with open(out, "w", encoding="utf-8") as f:
             f.write(body)
-        log("wrote PR body -> %s (%d bytes)" % (out, len(body)))
+        log("wrote %s body -> %s (%d bytes)" % ("local-report" if local_report else "PR", out,
+                                                 len(body)))
         print("done %s" % out)
-        _emit_progress("end", outcome="pass", detail="PR body -> %s" % out)
+        _emit_progress("end", outcome="pass", detail="%s -> %s" % (
+            "local-report" if local_report else "PR body", out))
     else:
         sys.stdout.write(body)
         _emit_progress("end", outcome="pass", detail="PR body -> stdout (%d bytes)" % len(body))

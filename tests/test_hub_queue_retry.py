@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -45,6 +46,113 @@ def test_only_current_lease_can_heartbeat_or_complete() -> None:
         queue.complete(lease)
         assert queue.state(task_id) == "completed"
         queue.close()
+
+
+def test_expired_lease_is_reclaimed_by_another_worker() -> None:
+    """A worker that crashes after claim (no heartbeat/fail/complete) must not
+    strand the task: once the visibility timeout elapses, another worker can
+    claim it, and the dead worker's lease is fenced off (#504 AC: "apenas um
+    worker possui lease valida por tarefa" / lease renewal + expiration).
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        task_id = queue.submit({"kind": "test"}, idempotency_key="expiring")
+        dead = queue.claim("worker-dead", ttl=0.05)
+        assert dead is not None
+        assert queue.claim("worker-live-too-soon") is None
+
+        time.sleep(0.15)
+
+        revived = queue.claim("worker-live", ttl=10)
+        assert revived is not None
+        assert revived.task_id == task_id
+        assert revived.fence == dead.fence + 1
+        assert queue.state(task_id) == "leased"
+
+        # The crashed worker's old lease is fenced off, not the current owner.
+        with pytest.raises(QueueLeaseError):
+            queue.heartbeat(dead)
+        with pytest.raises(QueueLeaseError):
+            queue.complete(dead)
+
+        # The new owner's lease is genuinely valid.
+        queue.heartbeat(revived, ttl=10)
+        queue.complete(revived)
+        assert queue.state(task_id) == "completed"
+        queue.close()
+
+
+class _BarrierGatedDB:
+    """Wraps a queue's sqlite3 connection so every thread's idempotency-key SELECT rendezvous
+    at a barrier before returning, forcing a deterministic cross-connection TOCTOU window instead
+    of relying on incidental thread-scheduling timing (which does not reliably reproduce the race
+    on a fast local run)."""
+
+    def __init__(self, db, barrier) -> None:
+        self._db = db
+        self._barrier = barrier
+        self._gated = False  # only the FIRST matching SELECT is the real race window; the
+        # fix's own post-conflict recovery SELECT reuses identical SQL and must not re-gate.
+
+    def execute(self, sql, params=()):
+        result = self._db.execute(sql, params)
+        if not self._gated and sql.lstrip().startswith(
+            "SELECT task_id FROM hub_jobs WHERE idempotency_key"
+        ):
+            self._gated = True
+            self._barrier.wait(timeout=5)
+        return result
+
+    def executescript(self, *args, **kwargs):
+        return self._db.executescript(*args, **kwargs)
+
+    def close(self) -> None:
+        self._db.close()
+
+
+def test_concurrent_submit_with_same_idempotency_key_never_raises_and_is_idempotent() -> None:
+    """Real, deterministically-forced multi-connection race (#504): two threads, each with its
+    own HubRetryQueue/sqlite3 connection against the same file, are synchronized via a barrier so
+    BOTH observe "no existing row" for the same idempotency_key before either INSERTs — the exact
+    TOCTOU window submit() has across separate connections. Before the fix this raised
+    sqlite3.IntegrityError instead of staying idempotent; the fix must catch it and agree on one
+    winner's task_id.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "queue.db")
+        n = 2
+        barrier = threading.Barrier(n)
+        results: list = [None] * n
+        errors: list = []
+
+        def submit_once(i: int) -> None:
+            # Each connection must be created in the thread that uses it (sqlite3 forbids
+            # cross-thread use of a connection by default), so the queue/wrap happens here.
+            try:
+                queue = HubRetryQueue(path)
+                queue._db = _BarrierGatedDB(queue._db, barrier)
+                results[i] = queue.submit({"kind": "race"}, idempotency_key="racing-key")
+                queue._db.close()
+            except Exception as exc:  # noqa: BLE001 - intentionally broad, asserted on below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=submit_once, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, "submit() must never raise under a real forced race, got: %r" % (errors,)
+        assert results[0] is not None and results[0] == results[1], (
+            "both racing submits must agree on the same task_id"
+        )
+
+        plain = HubRetryQueue(path)
+        row = plain._db.execute(
+            "SELECT COUNT(*) AS n FROM hub_jobs WHERE idempotency_key='racing-key'"
+        ).fetchone()
+        assert row["n"] == 1
+        plain.close()
 
 
 def test_invalid_requests_and_empty_queue_are_rejected() -> None:

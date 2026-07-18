@@ -15,7 +15,21 @@ def test_windows_always_uses_default_even_when_uvloop_is_present() -> None:
     assert selected.reason == "windows_default"
 
 
-def test_unix_falls_back_when_optional_extra_is_absent() -> None:
+def test_unix_falls_back_when_optional_extra_is_absent(monkeypatch) -> None:
+    # Hermetic: force the internal importlib lookup to fail regardless of whether
+    # uvloop happens to be installed in the ambient test environment (it is, on
+    # this real Unix canary host — see docs/uvloop-rollout.md). Without this
+    # patch the assertion below silently depends on the environment NOT having
+    # the optional extra installed, which is exactly backwards for a test whose
+    # job is to prove the fallback path.
+    real_import_module = importlib.import_module
+
+    def _raise_for_uvloop(name: str, *args: object, **kwargs: object) -> object:
+        if name == "uvloop":
+            raise ImportError("simulated: uvloop optional extra not installed")
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", _raise_for_uvloop)
     selected = select_event_loop(platform="linux", uvloop_module=None, enabled=True)
     assert selected.name == "asyncio"
     assert selected.enabled is False

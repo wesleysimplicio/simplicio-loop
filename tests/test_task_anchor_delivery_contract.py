@@ -41,4 +41,4 @@ def test_set_rejects_unknown_delivery_field(tmp_path: Path):
     contract.write_text(json.dumps({"schema": "simplicio.delivery-contract/v1", "unexpected": True}), encoding="utf-8")
     result = _run(anchor, "set", "--goal", "delivery", "--delivery", str(contract), "--ac", "contract is frozen")
     assert result.returncode == 2
-    assert "invalid delivery contract" in result.stdout
+    assert "unknown field(s) in delivery contract" in result.stdout
