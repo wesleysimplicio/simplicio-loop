@@ -143,5 +143,5 @@ The same skills run on Codex, VS Code (Copilot), Cursor, Antigravity, Kiro, Open
 and Code Assist), Kimi, Qwen (Code/CLI), DeepSeek, Aider, Simplicio Agent (formerly Hermes),
 OpenClaw, and Orca ([onorca.dev](https://www.onorca.dev/docs), the worktree IDE — see
 `adapters/orca/README.md`) — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
-[`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (49 extension points; the binding
+[`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (50 extension points; the binding
 lives in the host, never in the skill).
