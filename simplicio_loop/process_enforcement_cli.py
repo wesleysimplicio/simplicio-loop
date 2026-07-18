@@ -74,22 +74,40 @@ def cmd_top(args: argparse.Namespace) -> int:
     return _print({"schema": "simplicio.supervisor-top/v1", "ts": now, "processes": rows})
 
 
+def _hub_queue_depth(hub_socket: str) -> Dict[str, Any]:
+    """Query a REAL running HubDaemon over its actual socket transport for real
+    pending/scheduled depth (#503-506's HubService.status()) - never fabricated, and
+    any connection failure is surfaced honestly rather than silently hidden."""
+    from .hub_daemon import HubError, HubSocketClient, default_transport
+
+    try:
+        client = HubSocketClient(hub_socket, transport=default_transport())
+        response = client.request("supervisor-queue-cli", "hub_status")
+    except (HubError, OSError, ConnectionError) as exc:
+        return {"reachable": False, "error": str(exc)}
+    return {"reachable": True, "status": response.get("status", response)}
+
+
 def cmd_queue(args: argparse.Namespace) -> int:
     registry = _registry(args)
     active = registry.active()
-    return _print({
+    report: Dict[str, Any] = {
         "schema": "simplicio.supervisor-queue/v1",
         "ts": time.time(),
         "note": (
-            "reports active (in-flight) supervised leases only; a separate pending-priority "
-            "queue is not wired into this slice yet -- see docs/SUPERVISOR_ENFORCEMENT_RUNBOOK.md"
+            "reports active (in-flight) supervised leases; pass --hub-socket to also merge "
+            "real pending/scheduled depth from a running HubDaemon (#503-506)"
         ),
         "in_flight": len(active),
         "leases": [
             {"pid": pid, "lease_id": record.get("lease_id")}
             for pid, record in active.items()
         ],
-    })
+    }
+    hub_socket = getattr(args, "hub_socket", None)
+    if hub_socket:
+        report["hub"] = _hub_queue_depth(hub_socket)
+    return _print(report)
 
 
 def cmd_cancel(args: argparse.Namespace) -> int:
@@ -167,7 +185,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("top", help="list currently supervised processes with pid/lease/age")
 
-    sub.add_parser("queue", help="list in-flight supervised leases (see honest scope note)")
+    p_queue = sub.add_parser("queue", help="list in-flight supervised leases (see honest scope note)")
+    p_queue.add_argument(
+        "--hub-socket", default=None,
+        help="optional path to a running HubDaemon's Unix socket endpoint - when given, "
+             "merges real pending/scheduled depth from HubService.status() (#503-506) into "
+             "the report; omitted or unreachable falls back to active-leases-only, unchanged",
+    )
 
     p_cancel = sub.add_parser("cancel", help="SIGTERM a supervised process by pid or lease id")
     group = p_cancel.add_mutually_exclusive_group(required=True)
