@@ -64,6 +64,114 @@ def test_unix_socket_end_to_end_and_permission_bits() -> None:
             daemon.stop()
 
 
+def test_unix_socket_version_mismatch_leaves_daemon_state_untouched() -> None:
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        daemon = HubDaemon(lock_path)
+        daemon.start()
+        server = HubSocketServer(daemon, socket_path)
+        server.start()
+        try:
+            client = HubSocketClient(socket_path)
+            client.request("r1", "register", client_id="cli")
+            client.request("r2", "submit", client_id="cli", job_id="job-1")
+
+            before_clients = set(daemon.clients)
+            before_jobs = {k: dict(v) for k, v in daemon.jobs.items()}
+
+            incompatible = client.request_raw(json.dumps({
+                "schema": "simplicio.hub-ipc/v1", "version": 99,
+                "request_id": "bad-version", "method": "submit",
+                "payload": {"client_id": "cli", "job_id": "job-2"},
+            }))
+            assert incompatible["ok"] is False
+            assert "error" in incompatible
+
+            wrong_schema = client.request_raw(json.dumps({
+                "schema": "simplicio.hub-ipc/v2", "version": 1,
+                "request_id": "bad-schema", "method": "submit",
+                "payload": {"client_id": "cli", "job_id": "job-3"},
+            }))
+            assert wrong_schema["ok"] is False
+
+            assert daemon.clients == before_clients
+            assert daemon.jobs == before_jobs
+            assert "job-2" not in daemon.jobs
+            assert "job-3" not in daemon.jobs
+
+            still_alive = client.request("r3", "ping")
+            assert still_alive["ok"] is True
+            assert still_alive["started"] is True
+        finally:
+            server.shutdown()
+            daemon.stop()
+
+
+def test_unix_socket_20_concurrent_clients_no_crash_correct_singleton() -> None:
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
+    from concurrent.futures import ThreadPoolExecutor
+
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        daemon = HubDaemon(lock_path)
+        daemon.start()
+        server = HubSocketServer(daemon, socket_path)
+        server.start()
+        try:
+            def worker(index: int) -> dict:
+                client_id = "client-%d" % index
+                job_id = "job-%d" % index
+                client = HubSocketClient(socket_path, timeout=10.0)
+                reg = client.request("reg-%d" % index, "register", client_id=client_id)
+                sub = client.request("sub-%d" % index, "submit", client_id=client_id, job_id=job_id)
+                claim = client.request("claim-%d" % index, "claim", client_id=client_id, job_id=job_id)
+                progress = client.request(
+                    "prog-%d" % index, "progress", client_id=client_id, job_id=job_id, progress=50
+                )
+                result = client.request(
+                    "res-%d" % index, "result", client_id=client_id, job_id=job_id, result={"ok": True}
+                )
+                reconnect = HubSocketClient(socket_path, timeout=10.0)
+                pinged = reconnect.request("ping-%d" % index, "ping")
+                return {
+                    "client_id": client_id,
+                    "job_id": job_id,
+                    "register_ok": reg["ok"],
+                    "claim_state": claim["job"]["state"],
+                    "progress_state": progress["job"]["state"],
+                    "result_state": result["job"]["state"],
+                    "ping_ok": pinged["ok"],
+                }
+
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                results = list(pool.map(worker, range(20)))
+
+            assert len(results) == 20
+            assert all(r["register_ok"] for r in results)
+            assert all(r["claim_state"] == "claimed" for r in results)
+            assert all(r["progress_state"] == "running" for r in results)
+            assert all(r["result_state"] == "completed" for r in results)
+            assert all(r["ping_ok"] for r in results)
+            assert {r["client_id"] for r in results} == {"client-%d" % i for i in range(20)}
+            assert len(daemon.clients) == 20
+            assert len(daemon.jobs) == 20
+            assert all(job["state"] == "completed" for job in daemon.jobs.values())
+
+            second_daemon = HubDaemon(lock_path)
+            with pytest.raises(HubError):
+                second_daemon.start()
+            assert daemon.started is True
+            assert len(daemon.clients) == 20
+        finally:
+            server.shutdown()
+            daemon.stop()
+
+
 def test_socket_shutdown_is_idempotent_and_removes_file() -> None:
     if os.name == "nt":
         pytest.skip("Unix socket coverage runs on POSIX")
@@ -272,3 +380,19 @@ def test_windows_named_pipe_transport_and_concurrency() -> None:
         finally:
             server.shutdown()
             daemon.stop()
+
+
+def test_benchmark_hub_transport_produces_real_latency_receipt() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "benchmark_hub_transport.py")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout.strip())
+    assert payload["schema"] == "simplicio.hub-transport-benchmark/v1"
+    assert payload["requests"] == 100
+    assert payload["p50_ms"] > 0
+    assert payload["p95_ms"] >= payload["p50_ms"]
+    assert payload["throughput_per_second"] > 0
