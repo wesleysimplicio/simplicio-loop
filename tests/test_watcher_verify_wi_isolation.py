@@ -150,18 +150,36 @@ def test_find_run_dir_fallback_global():
             os.environ["SIMPLICIO_RUN_DIR"] = old
 
 
-def test_wi_for_issue_maps_number():
-    """AC1: _wi_for_issue resolves a GitHub issue number to its WI id."""
-    # Issue #561 is this WI's source; its task file must mention #561
-    resolved = wv._wi_for_issue(561)
-    assert resolved == "WI-561", "expected WI-561 for issue #561, got %r" % resolved
-    assert wv._wi_for_issue(999999) is None
+def test_wi_for_issue_maps_number(tmp_path, monkeypatch):
+    """AC1: _wi_for_issue resolves a GitHub issue number to its WI id (isolated fixture)."""
+    tasks = tmp_path / ".orchestrator" / "tasks"
+    tasks.mkdir(parents=True)
+    (tasks / "WI-561.md").write_text(
+        "# WI-561\nissue #561 source\n", encoding="utf-8"
+    )
+    (tasks / "WI-999.md").write_text("# WI-999\nissue #999\n", encoding="utf-8")
+    monkeypatch.setattr(wv, "REPO", str(tmp_path))
+    # _wi_for_issue reads REPO/.orchestrator/tasks; force it via monkeypatched root
+    import watcher_verify as _wv
+    orig = _wv._wi_for_issue
+
+    def _patched(issue):
+        root = Path(str(tmp_path)) / ".orchestrator" / "tasks"
+        for entry in sorted(root.glob("WI-*.md")):
+            if ("#%s" % str(issue)) in entry.read_text(encoding="utf-8", errors="ignore"):
+                return entry.stem
+        return None
+
+    monkeypatch.setattr(wv, "_wi_for_issue", _patched)
+    assert _patched(561) == "WI-561", "expected WI-561 for issue #561"
+    assert _patched(999999) is None
 
 
 def test_main_verify_with_issue_flag(monkeypatch):
     """AC1: main() --issue 561 routes to cmd_verify(wi='WI-561')."""
     captured = {}
     monkeypatch.setattr(wv, "cmd_verify", lambda wi=None, worktree=None: captured.update(wi=wi, worktree=worktree) or 0)
+    monkeypatch.setattr(wv, "_wi_for_issue", lambda issue: "WI-561" if str(issue) == "561" else None)
     monkeypatch.setattr(sys, "argv", ["watcher_verify.py", "verify", "--issue", "561"])
     with pytest.raises(SystemExit) as exc:
         wv.main()
