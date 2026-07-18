@@ -661,6 +661,25 @@ If any of these cannot be shown, the run was NOT a valid completion — treat it
 Every output line MUST be prefixed with `MEASURED|` or `UNVERIFIED|`. A bare claim
 without a tag is a contract violation.
 
+**No parking a turn on an unresolved promise (firm-communication rule).** A turn must never end
+with a vague "I'll wait for it and report back" / "monitoring in the background, will follow up"
+placeholder that carries no concrete state — that phrasing reads as progress but is not: nothing
+was checked, nothing is tagged, and control may never return to read the result (background
+verification, § `references/background-verification.md`, changes WHEN you block, not WHETHER a
+turn is honest about what it actually knows right now). Two, and only two, valid endings for a
+turn that launched a background check:
+1. **Block on it before ending the turn** if the turn's own claims depend on it — poll/await the
+   result synchronously, read the real output, tag it `MEASURED|`/`UNVERIFIED|`, THEN end the turn.
+2. **If genuinely deferring to a later turn**, say so with the same rigor as any other claim: name
+   the exact command still running, the exact condition that will resolve it (PID exit, file
+   written, notification received), and tag the whole thing `UNVERIFIED|still running: <cmd>,
+   resolves on <condition>` — never phrase a pending result as if it were already handled, and
+   never let "waiting" substitute for the turn-header/`próximo passo` requirements below.
+A sibling session, a coordinator, or a human reading only this turn's output must be able to tell,
+without opening a log file, whether the claimed work is DONE-AND-VERIFIED or STILL-IN-FLIGHT. If
+that isn't unambiguous from the turn's own text, the turn is incomplete — same severity as a turn
+without verification or without the turn-header.
+
 **Turn-header contract (issue #302).** The FIRST line of every turn's response MUST be
 `python3 scripts/loop_progress.py render --turn-header`, echoed verbatim — a turn without it is
 incomplete (same severity as a turn without verification). The LAST section MUST include a line

@@ -29,6 +29,11 @@ required before a promise/AC/merge; only WHEN you wait for it changes.
 
 **What this is NOT:**
 - Not a license to skip reading the output, or to assume a background run "probably passed."
+- Not a license to end a turn on "I'll wait for it and report back" with no concrete state — see
+  `SKILL.md` § Output, "No parking a turn on an unresolved promise": either block and read the
+  real result before ending the turn, or end it with an explicit `UNVERIFIED|still running: <cmd>,
+  resolves on <condition>` tag. A turn's own text must make DONE-AND-VERIFIED vs STILL-IN-FLIGHT
+  unambiguous without anyone having to go open a log file.
 - Not a change to `evidence_required`, the watcher-gate, or any AC-verification rule — every gate in
   `references/triage-verify-detail.md` and the DoD table in `SKILL.md` still applies unchanged.
 - Not parallel *mutation* of the same files — this is about overlapping a slow, read-only
