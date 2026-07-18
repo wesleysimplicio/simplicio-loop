@@ -176,10 +176,16 @@ pub async fn run(spec: &ProcessSpec) -> ProcessResult {
         let mut out_buf = Vec::new();
         let mut err_buf = Vec::new();
         if let Some(pipe) = stdout_pipe.as_mut() {
-            let _ = pipe.take(max_bytes as u64 + 1).read_to_end(&mut out_buf).await;
+            let _ = pipe
+                .take(max_bytes as u64 + 1)
+                .read_to_end(&mut out_buf)
+                .await;
         }
         if let Some(pipe) = stderr_pipe.as_mut() {
-            let _ = pipe.take(max_bytes as u64 + 1).read_to_end(&mut err_buf).await;
+            let _ = pipe
+                .take(max_bytes as u64 + 1)
+                .read_to_end(&mut err_buf)
+                .await;
         }
         let status = child.wait().await;
         (status, out_buf, err_buf)
@@ -254,16 +260,17 @@ mod tests {
 
     #[tokio::test]
     async fn fast_command_completes_normally() {
-        let result = run(&spec(vec!["echo", "hello"])).await;
+        let result = run(&spec(fast_command())).await;
         assert_eq!(result.exit_code, Some(0));
         assert!(result.stdout.contains("hello"));
         assert!(!result.timed_out);
         assert!(result.error.is_none());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn overrunning_command_is_killed_at_deadline() {
-        let mut s = spec(vec!["sleep", "5"]);
+        let mut s = spec(slow_command());
         s.deadline_seconds = Some(0.2);
         let started = Instant::now();
         let result = run(&s).await;
@@ -275,12 +282,16 @@ mod tests {
     #[tokio::test]
     async fn env_allowlist_filters_ambient_and_explicit_vars() {
         std::env::set_var("SIMPLICIO_SUPERVISOR_TEST_AMBIENT", "should-not-appear");
-        let mut s = spec(vec!["env"]);
-        s.env
-            .insert("SIMPLICIO_SUPERVISOR_TEST_ALLOWED".to_string(), "yes".to_string());
+        let mut s = spec(env_command());
+        s.env.insert(
+            "SIMPLICIO_SUPERVISOR_TEST_ALLOWED".to_string(),
+            "yes".to_string(),
+        );
         s.env_allowlist = vec!["SIMPLICIO_SUPERVISOR_TEST_ALLOWED".to_string()];
         let result = run(&s).await;
-        assert!(result.stdout.contains("SIMPLICIO_SUPERVISOR_TEST_ALLOWED=yes"));
+        assert!(result
+            .stdout
+            .contains("SIMPLICIO_SUPERVISOR_TEST_ALLOWED=yes"));
         assert!(!result.stdout.contains("SIMPLICIO_SUPERVISOR_TEST_AMBIENT"));
         std::env::remove_var("SIMPLICIO_SUPERVISOR_TEST_AMBIENT");
     }
@@ -289,22 +300,70 @@ mod tests {
     fn env_key_outside_allowlist_is_rejected() {
         let mut s = spec(vec!["echo", "x"]);
         s.env.insert("NOT_ALLOWED".to_string(), "1".to_string());
-        assert!(matches!(validate(&s), Err(SpecError::EnvOutsideAllowlist(_))));
+        assert!(matches!(
+            validate(&s),
+            Err(SpecError::EnvOutsideAllowlist(_))
+        ));
     }
 
     #[test]
     fn cwd_outside_allowed_root_is_rejected() {
         let mut s = spec(vec!["echo", "x"]);
-        s.cwd = Some("/etc".to_string());
-        s.allowed_cwd_root = Some("/home/user".to_string());
-        assert!(matches!(validate(&s), Err(SpecError::CwdOutsideAllowedRoot)));
+        s.cwd = Some(if cfg!(windows) { "C:\\Windows" } else { "/etc" }.to_string());
+        s.allowed_cwd_root = Some(
+            if cfg!(windows) {
+                "C:\\Users"
+            } else {
+                "/home/user"
+            }
+            .to_string(),
+        );
+        assert!(matches!(
+            validate(&s),
+            Err(SpecError::CwdOutsideAllowedRoot)
+        ));
     }
 
     #[test]
     fn cwd_inside_allowed_root_is_accepted() {
         let mut s = spec(vec!["echo", "x"]);
-        s.cwd = Some("/home/user/project".to_string());
-        s.allowed_cwd_root = Some("/home/user".to_string());
+        s.cwd = Some(
+            if cfg!(windows) {
+                "C:\\Users\\user\\project"
+            } else {
+                "/home/user/project"
+            }
+            .to_string(),
+        );
+        s.allowed_cwd_root = Some(
+            if cfg!(windows) {
+                "C:\\Users"
+            } else {
+                "/home/user"
+            }
+            .to_string(),
+        );
         assert!(validate(&s).is_ok());
+    }
+
+    fn fast_command() -> Vec<&'static str> {
+        if cfg!(windows) {
+            vec!["C:\\Windows\\System32\\cmd.exe", "/C", "echo", "hello"]
+        } else {
+            vec!["echo", "hello"]
+        }
+    }
+
+    #[cfg(unix)]
+    fn slow_command() -> Vec<&'static str> {
+        vec!["sleep", "5"]
+    }
+
+    fn env_command() -> Vec<&'static str> {
+        if cfg!(windows) {
+            vec!["C:\\Windows\\System32\\cmd.exe", "/C", "set"]
+        } else {
+            vec!["env"]
+        }
     }
 }

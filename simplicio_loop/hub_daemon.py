@@ -2,6 +2,7 @@
 
 import json
 import hashlib
+import asyncio
 import os
 import socket
 import tempfile
@@ -10,11 +11,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+from .process_supervisor import ProcessSpec, ProcessSpecError
+from .process_supervisor_rust import backend_name, run_with_fallback
+
 
 IPC_SCHEMA = "simplicio.hub-ipc/v1"
 IPC_VERSION = 1
 METHODS = frozenset(
-    ("register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report", "ping")
+    ("register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report", "execute", "ping")
 )
 
 
@@ -155,6 +159,40 @@ class HubDaemon:
                 raise HubProtocolError("client_id is required")
             self.clients.add(client_id)
             return {"ok": True, "client_id": client_id, "state": "registered"}
+        if envelope.method == "execute":
+            raw_spec = envelope.payload.get("process_spec")
+            if not isinstance(raw_spec, dict):
+                raise HubProtocolError("process_spec must be an object")
+            allowed = {
+                "argv", "cwd", "cwd_allowlist", "env", "env_allowlist",
+                "timeout_seconds", "max_output_bytes", "priority",
+                "idempotency_key", "shell",
+            }
+            unknown = sorted(set(raw_spec) - allowed - {"schema", "spec_hash"})
+            if unknown:
+                raise HubProtocolError("unknown ProcessSpec fields: " + ", ".join(unknown))
+            if raw_spec.get("schema") not in (None, "simplicio.process-spec/v1"):
+                raise HubProtocolError("unsupported ProcessSpec schema")
+            try:
+                spec = ProcessSpec(
+                    argv=tuple(raw_spec.get("argv", ())),
+                    cwd=raw_spec.get("cwd"),
+                    cwd_allowlist=tuple(raw_spec.get("cwd_allowlist", ())),
+                    env=dict(raw_spec.get("env", {})),
+                    env_allowlist=tuple(raw_spec.get("env_allowlist", ())),
+                    timeout_seconds=raw_spec.get("timeout_seconds", 30.0),
+                    max_output_bytes=int(raw_spec.get("max_output_bytes", 65536)),
+                    priority=int(raw_spec.get("priority", 0)),
+                    idempotency_key=str(raw_spec.get("idempotency_key", "")),
+                    shell=bool(raw_spec.get("shell", False)),
+                )
+            except (TypeError, ValueError, ProcessSpecError) as exc:
+                raise HubProtocolError(f"invalid ProcessSpec: {exc}") from exc
+            try:
+                result = run_with_fallback(spec)
+            except (OSError, RuntimeError, asyncio.CancelledError) as exc:
+                raise HubError(f"supervisor execution failed: {exc}") from exc
+            return {"ok": True, "backend": backend_name(), "result": result.to_dict()}
         job_id = str(envelope.payload.get("job_id") or "")
         if not job_id:
             raise HubProtocolError("job_id is required")
