@@ -407,7 +407,7 @@ def reconcile_cursor(gh_repo: str = "wesleysimplicio/simplicio-loop") -> Dict[st
     if not isinstance(wis, dict):
         return {"ok": False, "reason": "bad_state"}
 
-    # --- Rule 1: drop repo:None / invalid issue -----------------------------
+    # --- Rule 1: drop repo:None / wrong-scope / invalid issue ---------------
     dropped = []
     valid = {}
     for wi, v in wis.items():
@@ -416,6 +416,11 @@ def reconcile_cursor(gh_repo: str = "wesleysimplicio/simplicio-loop") -> Dict[st
             continue
         if not v.get("repo"):
             dropped.append((wi, "repo_none"))
+            continue
+        if v.get("repo") != gh_repo:
+            # Cross-repo WI leaked into this repo's cursor (e.g. a
+            # simplicio-agent WI inside simplicio-loop's gh-issue-cursor).
+            dropped.append((wi, f"repo_mismatch:{v.get('repo')}"))
             continue
         iss = v.get("issue")
         if not isinstance(iss, int) or iss <= 0:
@@ -478,7 +483,7 @@ def reconcile_cursor(gh_repo: str = "wesleysimplicio/simplicio-loop") -> Dict[st
             new_state, new_proj = "delivering", "In review"
         elif ist == "CLOSED":
             new_state, new_proj = "done", "Done"
-        elif _is_infra_dependent({"title": issue_title, "labels": [], "body": ""}):
+        elif _is_infra_dependent({"title": issue_title, "labels": v.get("labels", []), "body": v.get("body", "")}):
             new_state, new_proj = "blocked", "Blocked"
         else:
             new_state, new_proj = "todo", "Todo"
@@ -489,6 +494,18 @@ def reconcile_cursor(gh_repo: str = "wesleysimplicio/simplicio-loop") -> Dict[st
 
     cur["work_items_state"] = collapsed
     cur["last_scan_at"] = _now()
+    # Recompute the in-scope open-issue count from GitHub ground truth so the
+    # Orca projection never shows a stale total that contradicts `gh issue list`.
+    try:
+        open_now = subprocess.run(
+            ["gh", "issue", "list", "--repo", gh_repo, "--state", "open",
+             "--limit", "200", "--json", "number",
+             "--jq", "length"],
+            capture_output=True, text=True, timeout=30, check=False,
+        ).stdout.strip()
+        cur["open_issues_in_scope_repo"] = int(open_now) if open_now.isdigit() else len(collapsed)
+    except Exception:
+        cur["open_issues_in_scope_repo"] = len(collapsed)
     cursor_path.write_text(json.dumps(cur, indent=2, ensure_ascii=False),
                           encoding="utf-8")
     return {
@@ -497,6 +514,7 @@ def reconcile_cursor(gh_repo: str = "wesleysimplicio/simplicio-loop") -> Dict[st
         "collapsed_dups": collapsed_dups,
         "synced": synced,
         "remaining": len(collapsed),
+        "open_in_scope": cur["open_issues_in_scope_repo"],
     }
 
 
