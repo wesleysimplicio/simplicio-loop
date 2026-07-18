@@ -38,7 +38,7 @@ def _setup(tmp_path, monkeypatch):
     run.mkdir(parents=True)
     watcher._set_repo(str(repo))
     monkeypatch.setenv("SIMPLICIO_RUN_DIR", str(run))
-    monkeypatch.setattr(watcher, "_git_meta", lambda: {"commit_sha": "actual", "diff_hash": "same", "diff_present": False})
+    monkeypatch.setattr(watcher, "_git_meta", lambda *a, **k: {"commit_sha": "actual", "diff_hash": "same", "diff_present": False})
     _write_anchor_bundle(loop)
     _write_evidence(run)
     return repo, loop, run

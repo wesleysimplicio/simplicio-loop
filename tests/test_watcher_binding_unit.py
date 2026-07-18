@@ -22,7 +22,7 @@ def test_watcher_rejects_run_from_different_commit(tmp_path, monkeypatch):
     run.mkdir(parents=True)
     watcher._set_repo(str(repo))
     monkeypatch.setenv("SIMPLICIO_RUN_DIR", str(run))
-    monkeypatch.setattr(watcher, "_git_meta", lambda: {"commit_sha": "actual", "diff_hash": "same", "diff_present": False})
+    monkeypatch.setattr(watcher, "_git_meta", lambda *a, **k: {"commit_sha": "actual", "diff_hash": "same", "diff_present": False})
     _write_anchor_bundle(loop)
     (run / "evidence-receipt.json").write_text(json.dumps({"schema": "simplicio.evidence-receipt/v1", "run_id": "r1", "status": "VERIFIED", "run": {"commit_sha": "deadbeef", "diff_hash": "same"}, "criteria": [{"id": "AC1", "verification_state": "verified"}], "summary": {"criteria_total": 1, "criteria_verified": 1, "scenario_total": 1, "scenario_verified": 1, "rule_total": 0, "rule_verified": 0}, "checks": []}), encoding="utf-8")
     assert watcher.cmd_verify() == 0
@@ -41,7 +41,7 @@ def test_watcher_accepts_independent_receipt_when_evidence_receipt_is_deferred(t
     run.mkdir(parents=True)
     watcher._set_repo(str(repo))
     monkeypatch.setenv("SIMPLICIO_RUN_DIR", str(run))
-    monkeypatch.setattr(watcher, "_git_meta", lambda: {"commit_sha": "actual", "diff_hash": "same", "diff_present": False})
+    monkeypatch.setattr(watcher, "_git_meta", lambda *a, **k: {"commit_sha": "actual", "diff_hash": "same", "diff_present": False})
     _write_anchor_bundle(loop)
     (run / "independent-watcher-receipt.json").write_text(json.dumps({
         "schema": "simplicio.independent-watcher-receipt/v1",
@@ -78,7 +78,7 @@ def test_watcher_rejects_independent_receipt_with_mismatched_challenge(tmp_path,
     run.mkdir(parents=True)
     watcher._set_repo(str(repo))
     monkeypatch.setenv("SIMPLICIO_RUN_DIR", str(run))
-    monkeypatch.setattr(watcher, "_git_meta", lambda: {"commit_sha": "actual", "diff_hash": "same", "diff_present": False})
+    monkeypatch.setattr(watcher, "_git_meta", lambda *a, **k: {"commit_sha": "actual", "diff_hash": "same", "diff_present": False})
     _write_anchor_bundle(loop, challenge="expected-c1")
     (run / "independent-watcher-receipt.json").write_text(json.dumps({
         "schema": "simplicio.independent-watcher-receipt/v1",
