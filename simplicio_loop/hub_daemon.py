@@ -233,6 +233,7 @@ class HubDaemon:
                     argv=spec.argv,
                 )
 
+            lease_id = spec.idempotency_key or f"hub-execute-{envelope.request_id}"
             try:
                 result = run_with_fallback(spec, on_spawned=on_spawned)
             except (OSError, RuntimeError, asyncio.CancelledError) as exc:
@@ -240,7 +241,31 @@ class HubDaemon:
             finally:
                 if "pid" in registered:
                     self.process_registry.unregister(registered["pid"])
-            return {"ok": True, "backend": backend_name(), "result": result.to_dict()}
+            return {
+                "ok": True, "backend": backend_name(), "result": result.to_dict(),
+                "lease_id": lease_id,
+            }
+        if envelope.method == "cancel":
+            lease_id = str(envelope.payload.get("lease_id") or "")
+            process_cancel = self.process_registry.terminate(lease_id) if lease_id else None
+            job_id = str(envelope.payload.get("job_id") or "")
+            if not job_id:
+                if process_cancel is None:
+                    raise HubProtocolError("job_id or lease_id is required")
+                return {"ok": True, "process": process_cancel}
+            with self._queue_lock:
+                task_id = self.queue.find_task_id(job_id)
+                if task_id is None:
+                    raise HubProtocolError("unknown job")
+                row = self.queue.get_row(task_id)
+                job = dict(row["payload"])
+                job["state"] = "cancelled"
+                self.scheduler.cancel(job_id)
+                self.queue.update_payload(task_id, job)
+            response = {"ok": True, "job": dict(job)}
+            if process_cancel is not None:
+                response["process"] = process_cancel
+            return response
         job_id = str(envelope.payload.get("job_id") or "")
         if not job_id:
             raise HubProtocolError("job_id is required")
@@ -290,9 +315,6 @@ class HubDaemon:
                     raise HubProtocolError("progress must be between 0 and 100")
                 job["progress"] = progress
                 job["state"] = "running"
-            elif envelope.method == "cancel":
-                job["state"] = "cancelled"
-                self.scheduler.cancel(job_id)
             elif envelope.method == "result":
                 job["result"] = envelope.payload.get("result")
                 job["state"] = "completed"

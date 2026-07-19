@@ -86,11 +86,19 @@ pass. Deferred, with reasons:
   returns `[]` on `os.name == "nt"`) rather than guessed at — the epic's own test plan
   calls for "Windows Job Objects/Linux cgroups/fallback macOS" stress testing, which is
   real, separate work.
-- **Process-tree cancellation.** `cancel`/`drain --force`/`enforce` all signal the
-  single registered pid. The #498 invariant "cancellation ends descendants, not just
-  the main pid" is not yet satisfied here — that needs a process-group or
-  cgroup-based kill, which is exactly the resource-control work items 5–8 of the #498
-  plan own.
+- **Process-tree cancellation — partially closed.** `ProcessRegistry.terminate(lease_id)`
+  (`simplicio_loop/process_enforcement.py`, backing `kill_process_tree()`) now signals the
+  whole process **group** (POSIX `os.killpg`, falling back to the single pid; Windows
+  `taskkill /T /F`), and `HubDaemon.handle(method="cancel")` calls it when the request
+  carries a `lease_id` — closing the specific gap called out after the wave-1 pass: an
+  `execute` blocked in flight on one connection thread previously had no way to be killed
+  by a `cancel` arriving on another thread (the old `cancel` only flipped a *queue job*'s
+  state, never touched a real OS process). See
+  `tests/test_hub_supervisor_epic_e2e.py::test_hub_cancel_kills_an_in_flight_execute_for_real`.
+  The standalone `simplicio_loop/process_enforcement_cli.py` `cancel`/`drain --force`/
+  `enforce` verbs still `os.kill()` the single registered pid only — they do not yet call
+  `ProcessRegistry.terminate()`/`kill_process_tree()`, so that path keeps the descendants
+  gap open. Unifying them is the natural next slice (see below).
 - **Quotas / fairness / admission control.** Untouched by this slice; those are #498
   items 5–10, owned by other sub-issues.
 - **`queue` command depth.** Reports only the registry's *active* (in-flight)
@@ -101,11 +109,11 @@ pass. Deferred, with reasons:
 ## Recommended next slice
 
 Wire `SupervisedProcessAdapter`/`ProcessRegistry` into `hub_scheduler.py` (the existing
-fair client scheduler) so `queue` reports real pending-vs-active depth per class, and
-extend `cancel`/`drain`/`enforce` to signal a process **group** (POSIX
-`os.killpg`) instead of a single pid, closing the "descendants" invariant gap noted
-above. Do that once #515's Rust backend lands, so the same registry/detector contract
-can be validated against both adapters rather than only the Python one.
+fair client scheduler) so `queue` reports real pending-vs-active depth per class. Also
+switch `process_enforcement_cli.py`'s `cancel`/`drain --force`/`enforce` verbs from a bare
+`os.kill(pid, SIGTERM)` to `ProcessRegistry.terminate()`/`kill_process_tree()` (already used
+by the Hub's `cancel` IPC method, see above) so the descendants invariant holds on every
+cancellation path, not just the Hub one.
 
 ## Second implementation: `scripts/supervisor_enforcement.py` — threat model + rollback
 
