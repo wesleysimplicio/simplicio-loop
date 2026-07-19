@@ -10,14 +10,17 @@ tested in isolation, but had zero production callers.
 """
 from __future__ import annotations
 
+import asyncio
 import json
-import os
 import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+
+from simplicio_loop import remote_worker_cli
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLI = [sys.executable, "-m", "simplicio_loop.remote_worker_cli"]
@@ -43,6 +46,41 @@ def _wait_until(predicate, *, timeout: float = 15.0, interval: float = 0.05):
 
 def _read_status(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_write_status_async_offloads_the_blocking_write_to_a_worker_thread(tmp_path, monkeypatch):
+    """Repo-wide blocking-call sweep (issue #508): the ``serve-async`` report
+    writer must never run ``_write_status`` (synchronous mkdir/write_text/
+    os.replace) directly on the event loop -- every other I/O call on this
+    path (``discover``/``try_claim``/``run_task``) is already offloaded via
+    ``asyncio.to_thread``. Proves the offload deterministically by recording
+    which OS thread actually executed ``_write_status`` and asserting it is
+    not the thread running the event loop."""
+    status_file = tmp_path / "status.json"
+    calling_thread_ids: list[int] = []
+    real_write_status = remote_worker_cli._write_status
+
+    def _tracking_write_status(path: str, payload: dict) -> None:
+        calling_thread_ids.append(threading.get_ident())
+        real_write_status(path, payload)
+
+    monkeypatch.setattr(remote_worker_cli, "_write_status", _tracking_write_status)
+
+    event_loop_thread_id = None
+
+    async def _drive() -> None:
+        nonlocal event_loop_thread_id
+        event_loop_thread_id = threading.get_ident()
+        await remote_worker_cli._write_status_async(str(status_file), {"state": "idle"})
+
+    asyncio.run(_drive())
+
+    assert calling_thread_ids, "the tracking wrapper was never invoked"
+    assert calling_thread_ids[0] != event_loop_thread_id, (
+        "_write_status ran on the event-loop thread instead of a worker thread; "
+        "this blocks ingest/dispatch progress for the duration of every status write"
+    )
+    assert json.loads(status_file.read_text(encoding="utf-8")) == {"state": "idle"}
 
 
 def test_serve_async_drains_bounded_queue_concurrently_and_shuts_down_cleanly(tmp_path):
