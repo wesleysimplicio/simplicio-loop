@@ -1,12 +1,23 @@
 # Hub durable retry queue (`HubRetryQueue`) runbook
 
-Covers `simplicio_loop/hub_queue_retry.py` only — the SQLite WAL-backed durable
+Covers `simplicio_loop/hub_queue_retry.py` — the SQLite WAL-backed durable
 queue with idempotent submit, lease/visibility-timeout claiming, bounded retry
 and dead-letter (DLQ). `HUB_RUNBOOK.md` covers the separate Hub IPC transport
 (socket/pipe, lock file, `execute`); this file is scoped to the queue storage
-layer itself, which as of this writing has no caller wired into `hub_daemon.py`
-in this tree — it is a standalone class an operator or a future integration
-constructs directly against a SQLite file path.
+layer itself.
+
+`HubDaemon` (`simplicio_loop/hub_daemon.py`) constructs one `HubRetryQueue` at
+`<lock_path>.jobs.db` and calls it directly for `submit`/`ping` (`self.queue.submit`,
+`self.queue.count`, `self.queue.find_task_id`, `self.queue.get_row`,
+`self.queue.update_payload`). That integration uses this module purely as a
+durable, idempotent key-value store keyed by `job_id` — it does **not** call
+`claim()`/`heartbeat()`/`complete()`/`fail()`, so the daemon's own `claim`/
+`heartbeat`/`progress`/`cancel`/`result` handlers track job state as a field
+inside the stored JSON payload, not through this module's lease/fence/DLQ state
+machine. Bounded retry, lease reclaim, and dead-lettering are exercised and
+covered by `tests/test_hub_queue_retry.py` against `HubRetryQueue` directly,
+but are not yet reachable through `HubDaemon`'s IPC surface — a caller that
+needs those semantics still has to construct `HubRetryQueue` itself.
 
 ## Storage model (what actually exists on disk)
 

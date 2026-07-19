@@ -178,19 +178,38 @@ class HubRetryQueue:
         if ttl <= 0:
             raise QueueRetryError("ttl must be positive")
         self._owned(lease)
-        expires = time.time() + ttl
-        self._db.execute(
-            "UPDATE hub_jobs SET lease_expires_at=?,updated_at=? WHERE task_id=?",
-            (expires, time.time(), lease.task_id),
+        now = time.time()
+        expires = now + ttl
+        # Conditioned on lease_id+fence+not-yet-expired, not just task_id: the _owned() check
+        # above only proves ownership at read time. Without this WHERE clause a heartbeat that
+        # is mid-flight when the lease expires and gets reclaimed by another worker (claim()'s
+        # BEGIN IMMEDIATE serializes writers, but nothing serializes across this SELECT-then-
+        # UPDATE pair on its own connection) would silently overwrite the new owner's
+        # lease_expires_at with the stale worker's extension. rowcount==0 means we lost that
+        # race, so raise the same error _owned() would have raised had it run a moment later.
+        cursor = self._db.execute(
+            """
+            UPDATE hub_jobs SET lease_expires_at=?,updated_at=?
+            WHERE task_id=? AND lease_id=? AND fence=? AND state='leased' AND lease_expires_at>?
+            """,
+            (expires, now, lease.task_id, lease.lease_id, lease.fence, now),
         )
+        if cursor.rowcount == 0:
+            raise QueueLeaseError("lease is stale, expired, or missing")
         return RetryLease(lease.task_id, lease.lease_id, lease.fence, expires)
 
     def complete(self, lease: RetryLease) -> None:
         self._owned(lease)
-        self._db.execute(
-            "UPDATE hub_jobs SET state='completed',updated_at=? WHERE task_id=?",
-            (time.time(), lease.task_id),
+        now = time.time()
+        cursor = self._db.execute(
+            """
+            UPDATE hub_jobs SET state='completed',updated_at=?
+            WHERE task_id=? AND lease_id=? AND fence=? AND state='leased' AND lease_expires_at>?
+            """,
+            (now, lease.task_id, lease.lease_id, lease.fence, now),
         )
+        if cursor.rowcount == 0:
+            raise QueueLeaseError("lease is stale, expired, or missing")
 
     def fail(self, lease: RetryLease, *, error_code: str, backoff: float = 0.0) -> str:
         if not error_code:
@@ -198,6 +217,13 @@ class HubRetryQueue:
         row = self._owned(lease)
         now = time.time()
         if int(row["attempts"]) >= int(row["max_attempts"]):
+            cursor = self._db.execute(
+                "UPDATE hub_jobs SET state='dead_letter',error_code=?,updated_at=? "
+                "WHERE task_id=? AND lease_id=? AND fence=? AND state='leased' AND lease_expires_at>?",
+                (error_code, now, lease.task_id, lease.lease_id, lease.fence, now),
+            )
+            if cursor.rowcount == 0:
+                raise QueueLeaseError("lease is stale, expired, or missing")
             self._db.execute(
                 """
                 INSERT OR REPLACE INTO hub_dead_letters(task_id,payload,attempts,error_code,moved_at)
@@ -205,18 +231,17 @@ class HubRetryQueue:
                 """,
                 (lease.task_id, row["payload"], row["attempts"], error_code, now),
             )
-            self._db.execute(
-                "UPDATE hub_jobs SET state='dead_letter',error_code=?,updated_at=? WHERE task_id=?",
-                (error_code, now, lease.task_id),
-            )
             return "dead_letter"
-        self._db.execute(
+        cursor = self._db.execute(
             """
             UPDATE hub_jobs SET state='queued',next_attempt_at=?,error_code=?,
-              lease_id=NULL,lease_expires_at=NULL,updated_at=? WHERE task_id=?
+              lease_id=NULL,lease_expires_at=NULL,updated_at=?
+            WHERE task_id=? AND lease_id=? AND fence=? AND state='leased' AND lease_expires_at>?
             """,
-            (now + max(0.0, backoff), error_code, now, lease.task_id),
+            (now + max(0.0, backoff), error_code, now, lease.task_id, lease.lease_id, lease.fence, now),
         )
+        if cursor.rowcount == 0:
+            raise QueueLeaseError("lease is stale, expired, or missing")
         return "retry"
 
     def dead_letters(self) -> List[Dict[str, Any]]:
