@@ -55,6 +55,17 @@ def _write_status(status_file: str, payload: dict) -> None:
     os.replace(tmp, path)
 
 
+async def _write_status_async(status_file: str, payload: dict) -> None:
+    """Event-loop-safe wrapper around :func:`_write_status` (issue #508 blocking-
+    call sweep). ``_write_status`` does synchronous ``mkdir``/``write_text``/
+    ``os.replace``; every other I/O call on the ``serve-async`` path
+    (``discover``/``try_claim``/``run_task``) already runs via
+    ``asyncio.to_thread`` so it never blocks the event loop, but the report
+    writer called ``_write_status`` directly until this fix -- stalling
+    ingest/dispatch progress for the duration of every status write."""
+    await asyncio.to_thread(_write_status, status_file, payload)
+
+
 def _add_backend_args(parser: argparse.ArgumentParser) -> None:
     """Shared transport selection: exactly one of ``--db`` (SQLite, same-host/shared-file) or
     ``--http`` (a real network client against a ``remote_queue_server`` instance)."""
@@ -282,7 +293,7 @@ async def _serve_async_main(args: argparse.Namespace) -> int:
             except QueueClosed:
                 return
             try:
-                _write_status(args.status_file, payload)
+                await _write_status_async(args.status_file, payload)
             finally:
                 report_queue.task_done()
 
