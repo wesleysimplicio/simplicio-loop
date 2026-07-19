@@ -166,6 +166,32 @@ the module and its test returns nothing). Concretely, today:
   `$SIMPLICIO_SUPERVISOR_EVENTS_FILE`; there is no flag to suppress the event write
   other than not calling `rollout`.
 
+## Third slice: `metrics` — rollout dashboard
+
+Closes the previously-open "dashboard de métricas de rollout (só o log estruturado bruto
+existe)" gap. `python3 scripts/supervisor_enforcement.py metrics [--json] [--events-file FILE]`
+replays the same JSONL event log `rollout` writes
+(`.orchestrator/supervisor_enforcement_events.jsonl`, or `$SIMPLICIO_SUPERVISOR_EVENTS_FILE`) and
+reports, deterministically from that log — never fabricated:
+
+- `total_transitions` — count of accepted rollout-mode changes ever recorded.
+- `transitions_by_mode` — per-mode (`shadow`/`canary`/`full`) transition counts.
+- `last_transition` — the most recent event record (mode, percent, allowlist, timestamp), or
+  `None` if the log is empty/absent.
+- `current_enabled` / `current_mode` — folded in from the current persisted state
+  (`load_state`), so the dashboard shows "where we are" alongside "how we got here" in one call.
+
+A missing or empty events file reports zero transitions honestly (`load_rollout_events`
+returns `[]`) rather than guessing at history; a line that fails to parse as JSON is skipped,
+not treated as a fatal error, so one corrupt line does not blank the whole dashboard. This is
+still a raw-log replay, not a running daemon or a persisted rollup — there is no caching or
+retention policy beyond whatever grows `supervisor_enforcement_events.jsonl` itself.
+
+```bash
+python3 scripts/supervisor_enforcement.py metrics
+python3 scripts/supervisor_enforcement.py metrics --json
+```
+
 **In scope for this second slice:** an operator being able to trust that `enable`
 never silently defaults to on (`SIMPLICIO_SUPERVISOR_I_UNDERSTAND=1` or `--i-understand`
 required, tested), that a corrupt/missing state file never crashes `status`/`detect`
