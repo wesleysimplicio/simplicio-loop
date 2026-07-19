@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any, List
 
 import pytest
 
@@ -265,6 +266,52 @@ def test_expired_lease_is_reclaimable_by_another_worker() -> None:
 
         queue.complete(second)
         assert queue.state(task_id) == "completed"
+        queue.close()
+
+
+def test_heartbeat_cannot_overwrite_a_lease_reclaimed_mid_flight() -> None:
+    """Dedicated regression for the pending 'corrida heartbeat-vs-expiracao' gap (#504). Forces
+    the exact TOCTOU window heartbeat() had before its UPDATE was conditioned on lease_id+fence:
+    its ownership check (_owned) passes while the lease is still valid, but before the follow-up
+    UPDATE runs, real wall-clock time advances past expiry AND a second worker's claim() reclaims
+    the task on a separate connection. The old blind `WHERE task_id=?` UPDATE would have silently
+    re-extended a lease that no longer belonged to the heartbeating worker; the fix must instead
+    raise QueueLeaseError and leave worker-b's reclaimed lease untouched.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "queue.db")
+        queue = HubRetryQueue(path)
+        task_id = queue.submit({}, idempotency_key="hb-race")
+        lease = queue.claim("worker-a", ttl=0.01)
+        assert lease is not None
+
+        reclaimed: List[Any] = []
+        real_db = queue._db
+
+        class _ReclaimMidFlightDB:
+            def execute(self, sql, params=()):
+                if sql.lstrip().startswith("UPDATE hub_jobs SET lease_expires_at"):
+                    time.sleep(0.05)  # let worker-a's lease actually lapse
+                    other = HubRetryQueue(path)
+                    reclaimed.append(other.claim("worker-b", ttl=10))
+                    other.close()
+                return real_db.execute(sql, params)
+
+            def __getattr__(self, name):
+                return getattr(real_db, name)
+
+        queue._db = _ReclaimMidFlightDB()
+
+        with pytest.raises(QueueLeaseError):
+            queue.heartbeat(lease, ttl=30)
+
+        assert reclaimed and reclaimed[0] is not None, "worker-b must win the reclaim"
+        queue._db = real_db
+        row = queue.get_row(task_id)
+        assert row is not None
+        assert row["lease_id"] == reclaimed[0].lease_id, (
+            "the stale heartbeat must not overwrite the reclaimed lease"
+        )
         queue.close()
 
 
