@@ -6,8 +6,14 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from simplicio_loop import cli
-from simplicio_loop.map_service import MapServiceRegistry, RepositoryIdentity
+from simplicio_loop.map_service import (
+    MapServiceRegistry,
+    RepositoryIdentity,
+    UnknownRepositoryError,
+)
 from simplicio_loop.map_service_status import (
     SCHEMA,
     MapServiceSession,
@@ -76,6 +82,76 @@ def test_session_counts_hits_builds_waits_and_watcher_invalidations() -> None:
             assert status["schema"] == SCHEMA
             assert status["watchers"]["watchers"] == 0
             return session, root
+
+    asyncio.run(scenario())
+
+
+def test_rebind_through_session_supersedes_identity_and_moves_watcher() -> None:
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = MapServiceSession()
+            old_key = session.registry.register(
+                RepositoryIdentity(
+                    "owner/project", str(root), base_sha="branch-a-sha"
+                )
+            )
+
+            async def build_old():
+                return session.registry.build_canonical(old_key, tree_hash="branch-a-tree")
+
+            old_handle = await session.get_or_build(
+                old_key, mode="canonical", tree_hash="branch-a-tree", builder=build_old
+            )
+
+            events: list = []
+            session.watchers.watch(old_key, events.append)
+            session.watchers.emit(old_key, ["pending.py"])
+
+            new_identity = RepositoryIdentity(
+                "owner/project", str(root), base_sha="branch-b-sha"
+            )
+            new_key = session.rebind(old_key, new_identity)
+
+            assert new_key != old_key
+            with pytest.raises(UnknownRepositoryError):
+                session.registry.identity(old_key)
+            assert session.watchers.status()["identities"] == [new_key]
+            assert session.counters()["invalidations"] == 1
+
+            # A build request against the superseded key can no longer succeed —
+            # callers must move to the key `rebind` returned. The prior view is
+            # invalidated (not merely cached), so the store re-invokes the builder
+            # instead of serving a stale hit, and the builder itself now fails
+            # closed because the identity is gone from the registry.
+            async def build_against_stale_identity():
+                return session.registry.build_canonical(old_key, tree_hash="branch-a-tree")
+
+            with pytest.raises(UnknownRepositoryError):
+                await session.get_or_build(
+                    old_key, mode="canonical", tree_hash="branch-a-tree",
+                    builder=build_against_stale_identity,
+                )
+
+            async def build_new():
+                return session.registry.build_canonical(new_key, tree_hash="branch-b-tree")
+
+            new_handle = await session.get_or_build(
+                new_key, mode="canonical", tree_hash="branch-b-tree", builder=build_new
+            )
+            assert new_handle.view.identity_key == new_key
+            assert new_handle.view.valid
+
+            session.watchers.emit(new_key, ["after-switch.py"])
+            flushed = session.watchers.flush(force=True)
+            assert flushed[0]["identity_key"] == new_key
+            assert set(flushed[0]["paths"]) == {"pending.py", "after-switch.py"}
+            assert events[-1]["identity_key"] == new_key
+
+            # The old snapshot survives until its handle is released, then GC reclaims it.
+            assert session.gc() == []
+            old_handle.release()
+            assert session.gc() == [old_handle.cache_key]
 
     asyncio.run(scenario())
 

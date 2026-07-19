@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Awaitable, Callable, Dict, Iterable, Optional
 
-from .map_service import MapServiceRegistry
+from .map_service import MapServiceRegistry, RepositoryIdentity
 from .map_service_single_flight import MapHandle, SingleFlightMapStore
 from .map_service_watchers import MapWatcherManager
 
@@ -67,6 +67,16 @@ class MapServiceSession:
         with self._lock:
             self._invalidations += 1
         return self.store.invalidate(identity_key, reason=reason)
+
+    def rebind(self, old_identity_key: str, new_identity: RepositoryIdentity) -> str:
+        """Move the watcher and supersede the identity after a branch switch,
+        rebase, or dirty-state transition — the counted, session-level path onto
+        `MapWatcherManager.rebind` (which alone only moved the watcher, without
+        the session ever seeing that an invalidation happened)."""
+        new_key = self.watchers.rebind(old_identity_key, new_identity)
+        with self._lock:
+            self._invalidations += 1
+        return new_key
 
     def gc(self):
         return self.store.gc()
