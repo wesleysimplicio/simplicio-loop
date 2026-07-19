@@ -14,10 +14,28 @@ import threading
 
 import pytest
 
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
+# `cryptography` is not a declared project/dev dependency (pyproject.toml has no `cryptography`
+# entry anywhere) -- it is only ever present because a host happens to have it installed
+# system-wide. Without this guard, a plain `pip install -e ".[dev]"` + `pytest tests/` hits a
+# hard import failure at COLLECTION time, which pytest treats as fatal and aborts the entire run
+# ("Interrupted: N errors during collection") -- silently skipping every other test file in the
+# suite, not just this one. A bare `pytest.importorskip("cryptography")` is not enough: on a host
+# where the top-level package imports but its native `x509`/hazmat rust bindings are broken (e.g.
+# a system `cryptography` install missing `_cffi_backend`), the failure surfaces as
+# `pyo3_runtime.PanicException` -- a direct `BaseException` subclass, NOT `Exception` -- which
+# neither `importorskip` nor a plain `except Exception:` catches. Skip on ANY import-time
+# exception (including that one) instead, so a missing OR broken optional dependency degrades to
+# a clean per-module skip rather than taking the whole local gate (`scripts/check.py`) down.
+try:
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+except BaseException as _cryptography_import_error:  # noqa: E722 -- see comment above
+    pytest.skip(
+        "cryptography unavailable/broken in this environment: %r" % (_cryptography_import_error,),
+        allow_module_level=True,
+    )
 
 from simplicio_loop.remote_queue import (
     HTTPRemoteQueue,
