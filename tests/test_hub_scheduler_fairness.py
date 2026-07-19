@@ -1,6 +1,7 @@
 import pytest
 
 from simplicio_loop.hub_scheduler import (
+    PRIORITY_GAIN_MULTIPLIER,
     FairScheduler,
     QuotaExceededError,
     ScheduledJob,
@@ -124,3 +125,67 @@ def test_invalid_quota_limits_fail_closed() -> None:
         FairScheduler(max_queue_per_client=0)
     with pytest.raises(SchedulerError):
         FairScheduler(aging_ticks=0)
+
+
+def test_priority_classes_cover_all_seven_from_the_issue() -> None:
+    assert set(PRIORITY_GAIN_MULTIPLIER) == {
+        "interactive", "mapping", "llm", "test", "build", "background", "maintenance",
+    }
+    # background is the default and must preserve the pre-priority gain=quantum*weight formula.
+    assert PRIORITY_GAIN_MULTIPLIER["background"] == 1.0
+    assert PRIORITY_GAIN_MULTIPLIER["interactive"] > PRIORITY_GAIN_MULTIPLIER["maintenance"]
+
+
+def test_enqueue_rejects_unknown_priority_class() -> None:
+    scheduler = FairScheduler()
+    with pytest.raises(SchedulerError):
+        scheduler.enqueue(ScheduledJob("job-1", "client", priority="urgent"))
+
+
+def test_higher_priority_job_dispatches_ahead_of_lower_priority_same_weight() -> None:
+    scheduler = FairScheduler(max_inflight_per_client=1000, quantum=1)
+    scheduler.enqueue(ScheduledJob("maint-1", "a", priority="maintenance"))
+    scheduler.enqueue(ScheduledJob("inter-1", "b", priority="interactive"))
+    order = []
+    for _ in range(2):
+        job = scheduler.next()
+        assert job is not None
+        order.append(job.client_id)
+        scheduler.complete(job.task_id)
+    assert order[0] == "b"
+
+
+def test_default_priority_is_background_and_gain_formula_is_unchanged() -> None:
+    scheduler = FairScheduler(max_inflight_per_client=1000, quantum=3)
+    scheduler.enqueue(ScheduledJob("job-1", "solo", weight=2, cost=5))
+    job = scheduler.next()
+    assert job is not None
+    assert job.priority == "background"
+    # gain (3*2*1.0=6) was insufficient for cost=5 on the first tick only if deficit
+    # started at 0; here it dispatches once deficit >= cost, matching the prior formula.
+    assert scheduler.status()["deficit"]["solo"] == 1
+
+
+def test_status_reports_native_jains_fairness_index_and_served_total() -> None:
+    scheduler = FairScheduler(max_inflight_per_client=1000, quantum=1)
+    for index in range(50):
+        scheduler.enqueue(ScheduledJob(f"a-{index}", "a"))
+        scheduler.enqueue(ScheduledJob(f"b-{index}", "b"))
+    for _ in range(60):
+        job = scheduler.next()
+        assert job is not None
+        scheduler.complete(job.task_id)
+    status = scheduler.status()
+    assert status["served_total"]["a"] == status["served_total"]["b"] == 30
+    assert status["jains_fairness_index"] > 0.99
+
+
+def test_jains_fairness_index_is_perfect_before_any_dispatch() -> None:
+    scheduler = FairScheduler()
+    scheduler.enqueue(ScheduledJob("job-1", "solo"))
+    assert scheduler.status()["jains_fairness_index"] == 1.0
+
+
+def test_jains_fairness_index_is_perfect_on_an_empty_scheduler() -> None:
+    scheduler = FairScheduler()
+    assert scheduler.status()["jains_fairness_index"] == 1.0
