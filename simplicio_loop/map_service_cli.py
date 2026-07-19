@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .map_service_status import default_status_path, load_status_file
+
 BUILD_RELATIVE = (".orchestrator", "map", "build.json")
 
 
@@ -41,6 +43,42 @@ def _emit(payload: Dict[str, Any], as_json: bool) -> int:
             if key in payload:
                 print("  %s: %s" % (key, payload[key]))
     return 0 if payload.get("status") not in {"BLOCKED", "INVALID"} else 1
+
+
+def session_status(repo: str, status_file: str = "", as_json: bool = False) -> int:
+    """Report counters from a real map-service session without inventing state."""
+    path = Path(status_file) if status_file else default_status_path(repo)
+    try:
+        payload = load_status_file(path)
+    except (OSError, ValueError) as exc:
+        payload = None
+        error = str(exc)
+    else:
+        error = ""
+    if payload is None:
+        print(json.dumps({
+            "schema": "simplicio.map-service-status/v1",
+            "status": "UNAVAILABLE",
+            "reason_code": "status_file_missing" if not error else "status_file_invalid",
+            "path": str(path),
+            "error": error,
+        }, ensure_ascii=False, indent=2))
+        return 1
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        counters = payload.get("counters", {})
+        watchers = payload.get("watchers", {})
+        print("\n".join([
+            "map-service status (" + str(path) + ")",
+            "  cache_hits:    " + str(counters.get("cache_hits", 0)),
+            "  builds:        " + str(counters.get("builds", 0)),
+            "  waits:         " + str(counters.get("waits", 0)),
+            "  invalidations: " + str(counters.get("invalidations", 0)),
+            "  watchers:      " + str(watchers.get("watchers", 0)),
+            "  pending:       " + str(watchers.get("pending", 0)),
+        ]))
+    return 0
 
 
 def run(command: str, *, repo: str = ".", mode: str = "canonical", tree_hash: str = "", files: Optional[list[str]] = None, trace_id: str = "", as_json: bool = False) -> int:
@@ -83,6 +121,39 @@ def run(command: str, *, repo: str = ".", mode: str = "canonical", tree_hash: st
     if command == "doctor":
         return _emit({"schema": "simplicio.map-service-cli/v1", "command": command, "status": "READY", "fallback": not target.exists(), "build_receipt": str(target) if target.exists() else None}, as_json)
     raise ValueError("unknown map command: %s" % command)
+
+
+def configure_commands(subparsers: argparse._SubParsersAction) -> None:
+    status = subparsers.add_parser(
+        "status", help="report cache hit/build/wait/invalidate counters from a running session"
+    )
+    status.add_argument("--repo", default=".", help="repository root")
+    status.add_argument(
+        "--status-file", default="",
+        help="explicit status file (default: <repo>/.orchestrator/map/status.json)",
+    )
+    status.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    for command in ("verify", "gc", "doctor"):
+        child = subparsers.add_parser(command, help="map-service %s" % command)
+        child.add_argument("--repo", default=".", help="repository root")
+        child.add_argument("--json", action="store_true")
+    build = subparsers.add_parser("build", help="build a canonical or worktree map receipt")
+    build.add_argument("--repo", default=".")
+    build.add_argument("--mode", choices=("canonical", "overlay"), default="canonical")
+    build.add_argument("--tree-hash", default="")
+    build.add_argument("--file", dest="files", action="append", default=[])
+    build.add_argument("--trace-id", default="")
+    build.add_argument("--json", action="store_true")
+
+
+def dispatch(args: argparse.Namespace) -> int:
+    if args.map_command == "status":
+        return session_status(args.repo, args.status_file, args.json)
+    return run(
+        args.map_command, repo=args.repo, mode=getattr(args, "mode", "canonical"),
+        tree_hash=getattr(args, "tree_hash", ""), files=getattr(args, "files", []),
+        trace_id=getattr(args, "trace_id", ""), as_json=args.json,
+    )
 
 
 def main(argv=None) -> int:

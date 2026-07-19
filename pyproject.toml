@@ -32,9 +32,8 @@ dependencies = [
 # The native engine itself is stdlib-only; this only enables embedding-based semantic dedup +
 # meaning retrieval. `pip install "simplicio-loop[ml]"`.
 [project.optional-dependencies]
-# Dev/test: the suite ALSO self-runs on bare python3 (`python3 scripts/check.py`), so pytest is
-# only a convenience for nicer output / IDE integration — never required.
-dev = ["pytest>=7", "pytest-cov>=4"]
+# Dev/test dependencies used by the local quality gate and secure-transport fixtures.
+dev = ["pytest>=7", "pytest-cov>=4", "cryptography>=42,<50"]
 ml = ["model2vec>=0.3", "numpy>=1.21"]
 uvloop = ["uvloop>=0.19; platform_system != 'Windows'"]
 
@@ -73,3 +72,9 @@ exclude_lines = [
   "pragma: no cover",
   "if __name__ == .__main__.:",
 ]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
+# The bundle/plugin trees mirror source files and are validated by mirror-parity.
+# Collect the canonical tests once instead of executing mirrored probes repeatedly.
+testpaths = ["tests"]

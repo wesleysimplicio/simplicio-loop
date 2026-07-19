@@ -104,6 +104,7 @@ SKILL_COUNT_RES = [
 ]
 # worker/hook scripts whose `selftest` proves them; others just need to be invokable
 SELFTEST_SCRIPTS = [
+    "scripts/component_release.py",
     "scripts/loop_journal.py",
     "scripts/billing_aggregator.py",
     "scripts/savings_harness.py",
