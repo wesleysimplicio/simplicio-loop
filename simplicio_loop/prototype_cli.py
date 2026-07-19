@@ -1,23 +1,35 @@
 """CLI surface for the Prototype-First gate (#568 P0 slice).
 
-Thin argparse layer over `simplicio_loop.prototype_gate` -- every command below only calls
-functions already exported there; no new schema/state logic lives in this file. Exposed as:
+Thin argparse layer over `simplicio_loop.prototype_gate`/`prototype_fanout`/`prototype_judge` --
+every command below only calls functions already exported there; no new schema/state/execution/
+judging logic lives in this file. Exposed as:
 
-    simplicio-loop prototype plan|classify|validate-schema|doctor --json
+    simplicio-loop prototype plan|generate|list|show|validate|compare|decide|promote|reject|doctor --json
 
-and, for repos/CI that invoke workers directly (this repo's own convention, see
+(`validate` is an alias of `validate-schema`, kept for back-compat with existing callers) and,
+for repos/CI that invoke workers directly (this repo's own convention, see
 `scripts/evidence_receipt.py`):
 
-    python3 scripts/prototype_gate_cli.py plan|classify|validate-schema|doctor --json
+    python3 scripts/prototype_gate_cli.py plan|generate|list|show|validate|compare|decide|promote|reject|doctor --json
+
+This closes epic #568's own checklist item #18 ("Expor CLI/API `prototype plan|generate|list|
+show|validate|compare|decide|promote|reject|doctor --json`") -- `generate` wires
+`prototype_fanout.dispatch_candidates`, `compare`/`decide` wire `prototype_judge.judge_and_decide`,
+`promote` wires `prototype_judge.judge_transition` against the persisted state machine, `reject`
+is the manual terminal-decision override path, and `list`/`show` read the same on-disk state
+`plan`/`doctor` already use.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from typing import Any, List
+from typing import Any, List, Mapping
 
 from simplicio_loop import prototype_gate as pg
+from simplicio_loop import prototype_fanout as pf
+from simplicio_loop import prototype_judge as pj
 
 
 def _print(payload: Any, _as_json: bool = True) -> None:
@@ -120,14 +132,180 @@ def cmd_validate_schema(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
-def cmd_doctor(args: argparse.Namespace) -> int:
-    import os
+def _load_candidates_arg(path: str | None, inline: str | None) -> list[dict]:
+    payload = _load_json_arg(path, inline)
+    if payload is None:
+        payload = json.loads(sys.stdin.read())
+    if isinstance(payload, Mapping):
+        payload = payload.get("candidates", [])
+    if not isinstance(payload, list):
+        raise pg.PrototypeGateError("candidates payload must be a JSON list (or {'candidates': [...]})")
+    return payload
 
+
+def cmd_generate(args: argparse.Namespace) -> int:
+    """Fan out N candidate specs against a frozen plan and bridge each real execution result
+    into a `prototype-candidate/v1` payload -- wires `prototype_fanout` end to end."""
+    plan = _load_json_arg(args.plan_file, args.plan_inline)
+    if plan is None:
+        _print({"error": "--plan-file or --plan-inline is required"}, args.json)
+        return 2
+    try:
+        specs_raw = _load_candidates_arg(args.candidates_file, args.candidates_inline)
+        specs = [pf.CandidateSpec(**spec) for spec in specs_raw]
+        report = pf.dispatch_candidates(plan, specs, max_concurrency=args.max_concurrency)
+        candidates = [
+            pf.build_candidate_from_run(
+                plan=plan, result=result,
+                strategy=next((s.strategy for s in specs if s.candidate_id == result.candidate_id), ""),
+                agent_id=next((s.agent_id for s in specs if s.candidate_id == result.candidate_id), ""),
+            )
+            for result in report.results
+        ]
+    except (pg.PrototypeGateError, TypeError, ValueError) as exc:
+        _print({"error": str(exc)}, args.json)
+        return 2
+    saved_path = None
+    if args.persist:
+        if not args.work_item:
+            _print({"error": "--work-item is required with --persist"}, args.json)
+            return 2
+        saved_path = _candidates_path(args.work_item, args.repo)
+        os.makedirs(os.path.dirname(saved_path), exist_ok=True)
+        with open(saved_path, "w", encoding="utf-8") as handle:
+            json.dump(candidates, handle, ensure_ascii=False, indent=2)
+    _print({"report": report.summary(), "candidates": candidates, "candidates_path": saved_path}, args.json)
+    return 0
+
+
+def _candidates_path(work_item_id: str, repo: str) -> str:
+    safe = pg._ITEM_RE.sub("_", str(work_item_id)).strip("_") or "item"
+    return os.path.join(pg._state_dir(repo), f"{safe}.candidates.json")
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    """List every prototype flow tracked on disk under this repo's state dir."""
+    state_dir = pg._state_dir(args.repo)
+    items: list[dict[str, Any]] = []
+    if os.path.isdir(state_dir):
+        for name in sorted(os.listdir(state_dir)):
+            if not name.endswith(".json") or name.endswith(".candidates.json"):
+                continue
+            state = pg.load_state(name[: -len(".json")], repo=args.repo)
+            if state is None:
+                continue
+            work_item_id = state.get("work_item_id", name[: -len(".json")])
+            items.append({
+                "work_item_id": work_item_id,
+                "status": state.get("status"),
+                "current_level": state.get("current_level"),
+                "revise_count": state.get("revise_count", 0),
+                **pg.gate_status(work_item_id, repo=args.repo),
+            })
+    _print({"state_dir": state_dir, "items": items}, args.json)
+    return 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    """Show the full persisted state + gate readiness for one tracked work item."""
+    state = pg.load_state(args.work_item, repo=args.repo)
+    if state is None:
+        _print({"error": f"no prototype flow tracked for work item {args.work_item!r}"}, args.json)
+        return 1
+    candidates_path = _candidates_path(args.work_item, args.repo)
+    candidates = None
+    if os.path.exists(candidates_path):
+        with open(candidates_path, encoding="utf-8") as handle:
+            candidates = json.load(handle)
+    _print({
+        "state": state, "gate": pg.gate_status(args.work_item, repo=args.repo),
+        "candidates": candidates, "candidates_path": candidates_path if candidates is not None else None,
+    }, args.json)
+    return 0
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Read-only ranked comparison of candidates against a plan -- no decision is produced,
+    no state is mutated (see `decide`/`promote` for the transitions that do)."""
+    plan = _load_json_arg(args.plan_file, args.plan_inline)
+    candidates = _load_candidates_arg(args.candidates_file, args.candidates_inline)
+    try:
+        pg.validate_plan(plan)
+        for candidate in candidates:
+            pg.validate_candidate(candidate, plan=plan)
+        report = pj.RuleBasedJudge().judge(plan, candidates, args.judge_id)
+    except pg.PrototypeGateError as exc:
+        _print({"error": str(exc)}, args.json)
+        return 2
+    _print(report, args.json)
+    return 0
+
+
+def cmd_decide(args: argparse.Namespace) -> int:
+    """Produce a real ACCEPT/REVISE/REJECT decision via the independent judge, without
+    touching any persisted promotion state (see `promote` to also apply the transition)."""
+    plan = _load_json_arg(args.plan_file, args.plan_inline)
+    candidates = _load_candidates_arg(args.candidates_file, args.candidates_inline)
+    try:
+        decision, report = pj.judge_and_decide(plan, candidates, args.judge_id)
+    except pg.PrototypeGateError as exc:
+        _print({"error": str(exc)}, args.json)
+        return 2
+    _print({"decision": decision, "verdicts": report}, args.json)
+    return 0
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    """Judge candidates against the plan and apply the resulting decision to the work item's
+    PERSISTED promotion state (P0 -> P1 -> P2 -> FULL), saving the new state back to disk."""
+    plan = _load_json_arg(args.plan_file, args.plan_inline)
+    candidates = _load_candidates_arg(args.candidates_file, args.candidates_inline)
+    state = pg.load_state(args.work_item, repo=args.repo)
+    if state is None:
+        _print({"error": f"no prototype flow tracked for work item {args.work_item!r}; run `plan` first"}, args.json)
+        return 2
+    try:
+        new_state, decision, report = pj.judge_transition(
+            state, plan, candidates, args.judge_id, current_source_sha=args.current_source_sha,
+        )
+    except pg.PrototypeGateError as exc:
+        _print({"error": str(exc)}, args.json)
+        return 2
+    saved_path = pg.save_state(new_state, repo=args.repo)
+    _print({"state": new_state, "decision": decision, "verdicts": report, "state_path": saved_path}, args.json)
+    return 0
+
+
+def cmd_reject(args: argparse.Namespace) -> int:
+    """Manual terminal-decision override (REJECT/BLOCKED) applied to a work item's persisted
+    state, for callers that already decided outside the judge (e.g. a human override)."""
+    plan = _load_json_arg(args.plan_file, args.plan_inline)
+    state = pg.load_state(args.work_item, repo=args.repo)
+    if state is None:
+        _print({"error": f"no prototype flow tracked for work item {args.work_item!r}; run `plan` first"}, args.json)
+        return 2
+    try:
+        decision = pg.build_decision(
+            plan=plan, candidate_hash=args.candidate_hash, decision=args.outcome, reason=args.reason,
+        )
+        new_state = pg.apply_decision(
+            state, plan=plan, decision=decision, candidate_hash=args.candidate_hash,
+            current_source_sha=args.current_source_sha,
+        )
+    except pg.PrototypeGateError as exc:
+        _print({"error": str(exc)}, args.json)
+        return 2
+    saved_path = pg.save_state(new_state, repo=args.repo)
+    _print({"state": new_state, "decision": decision, "state_path": saved_path}, args.json)
+    return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
     state_dir = pg._state_dir(args.repo)
     tracked = []
     if os.path.isdir(state_dir):
         for name in sorted(os.listdir(state_dir)):
-            if not name.endswith(".json"):
+            if not name.endswith(".json") or name.endswith(".candidates.json"):
                 continue
             try:
                 with open(os.path.join(state_dir, name), encoding="utf-8") as handle:
@@ -179,7 +357,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_classify.add_argument("--exit-code", action="store_true", help="exit 1 when not required")
     p_classify.set_defaults(func=cmd_classify)
 
-    p_val = sub.add_parser("validate-schema", help="validate a plan/candidate/decision/receipt payload")
+    p_val = sub.add_parser("validate-schema", aliases=["validate"],
+                           help="validate a plan/candidate/decision/receipt payload")
     p_val.add_argument("--json", action="store_true", help="accepted for CLI-convention compatibility; output is always JSON")
     p_val.add_argument("--file")
     p_val.add_argument("--inline")
@@ -197,6 +376,71 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor.add_argument("--json", action="store_true", help="accepted for CLI-convention compatibility; output is always JSON")
     p_doctor.add_argument("--repo", default=".")
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_gen = sub.add_parser("generate", help="fan out candidate specs against a plan and build real candidate payloads")
+    p_gen.add_argument("--json", action="store_true", help="accepted for CLI-convention compatibility; output is always JSON")
+    p_gen.add_argument("--plan-file")
+    p_gen.add_argument("--plan-inline")
+    p_gen.add_argument("--candidates-file", help="JSON list of CandidateSpec-shaped objects (or {'candidates': [...]})")
+    p_gen.add_argument("--candidates-inline")
+    p_gen.add_argument("--max-concurrency", type=int, default=pf.DEFAULT_MAX_CONCURRENCY)
+    p_gen.add_argument("--work-item")
+    p_gen.add_argument("--repo", default=".")
+    p_gen.add_argument("--persist", action="store_true", help="write the built candidates to disk (needs --work-item)")
+    p_gen.set_defaults(func=cmd_generate)
+
+    p_list = sub.add_parser("list", help="list every prototype flow tracked on disk")
+    p_list.add_argument("--json", action="store_true", help="accepted for CLI-convention compatibility; output is always JSON")
+    p_list.add_argument("--repo", default=".")
+    p_list.set_defaults(func=cmd_list)
+
+    p_show = sub.add_parser("show", help="show one tracked work item's full state + gate readiness")
+    p_show.add_argument("--json", action="store_true", help="accepted for CLI-convention compatibility; output is always JSON")
+    p_show.add_argument("--work-item", required=True)
+    p_show.add_argument("--repo", default=".")
+    p_show.set_defaults(func=cmd_show)
+
+    p_compare = sub.add_parser("compare", help="read-only ranked comparison of candidates against a plan")
+    p_compare.add_argument("--json", action="store_true", help="accepted for CLI-convention compatibility; output is always JSON")
+    p_compare.add_argument("--plan-file")
+    p_compare.add_argument("--plan-inline")
+    p_compare.add_argument("--candidates-file", help="JSON list of prototype-candidate/v1 payloads (or {'candidates': [...]})")
+    p_compare.add_argument("--candidates-inline")
+    p_compare.add_argument("--judge-id", required=True)
+    p_compare.set_defaults(func=cmd_compare)
+
+    p_decide = sub.add_parser("decide", help="produce an ACCEPT/REVISE/REJECT decision via the independent judge")
+    p_decide.add_argument("--json", action="store_true", help="accepted for CLI-convention compatibility; output is always JSON")
+    p_decide.add_argument("--plan-file")
+    p_decide.add_argument("--plan-inline")
+    p_decide.add_argument("--candidates-file")
+    p_decide.add_argument("--candidates-inline")
+    p_decide.add_argument("--judge-id", required=True)
+    p_decide.set_defaults(func=cmd_decide)
+
+    p_promote = sub.add_parser("promote", help="judge candidates and apply the decision to the persisted promotion state")
+    p_promote.add_argument("--json", action="store_true", help="accepted for CLI-convention compatibility; output is always JSON")
+    p_promote.add_argument("--work-item", required=True)
+    p_promote.add_argument("--plan-file")
+    p_promote.add_argument("--plan-inline")
+    p_promote.add_argument("--candidates-file")
+    p_promote.add_argument("--candidates-inline")
+    p_promote.add_argument("--judge-id", required=True)
+    p_promote.add_argument("--current-source-sha")
+    p_promote.add_argument("--repo", default=".")
+    p_promote.set_defaults(func=cmd_promote)
+
+    p_reject = sub.add_parser("reject", help="manual terminal REJECT/BLOCKED override applied to the persisted state")
+    p_reject.add_argument("--json", action="store_true", help="accepted for CLI-convention compatibility; output is always JSON")
+    p_reject.add_argument("--work-item", required=True)
+    p_reject.add_argument("--plan-file")
+    p_reject.add_argument("--plan-inline")
+    p_reject.add_argument("--candidate-hash", required=True)
+    p_reject.add_argument("--reason", default="")
+    p_reject.add_argument("--outcome", default="REJECT", choices=["REJECT", "BLOCKED"])
+    p_reject.add_argument("--current-source-sha")
+    p_reject.add_argument("--repo", default=".")
+    p_reject.set_defaults(func=cmd_reject)
 
     return parser
 
