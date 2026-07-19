@@ -400,6 +400,9 @@ def test_benchmark_hub_transport_produces_real_latency_receipt() -> None:
     assert payload["p50_ms"] > 0
     assert payload["p95_ms"] >= payload["p50_ms"]
     assert payload["throughput_per_second"] > 0
+    if os.name != "nt":
+        # stdlib `resource` fallback (no psutil dependency) must produce a real RSS on POSIX.
+        assert isinstance(payload["rss_bytes"], int) and payload["rss_bytes"] > 0
 
 
 def test_socket_server_rejects_unknown_transport() -> None:
