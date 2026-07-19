@@ -646,7 +646,19 @@ def _recv_line(conn: socket.socket) -> str:
 
 
 class HubSocketServer:
-    """Local IPC transport for HubDaemon: Unix socket on POSIX, named pipe on Windows."""
+    """Local IPC transport for HubDaemon: Unix socket on POSIX, named pipe on Windows.
+
+    The Unix transport is event-driven (asyncio): a single background thread runs an
+    asyncio event loop hosting an ``asyncio.start_unix_server`` server, so accepting a
+    connection spawns an asyncio Task, never an OS thread. The named-pipe (Windows)
+    transport keeps the pre-existing thread-per-connection model as a documented
+    exception: asyncio has no first-class Proactor-based server API for
+    ``multiprocessing.connection``-style named pipes equivalent to
+    ``loop.create_unix_server``, so building one would mean hand-rolling pipe I/O via
+    ``ProactorEventLoop`` internals rather than a mechanical API swap (see issue #584).
+    """
+
+    _DISPATCH_TIMEOUT_SECONDS = 5.0
 
     def __init__(self, daemon: HubDaemon, socket_path: str, transport: Optional[str] = None) -> None:
         self.daemon = daemon
@@ -655,10 +667,13 @@ class HubSocketServer:
         self.transport = transport or default_transport()
         if self.transport not in {"unix", "named-pipe"}:
             raise ValueError("transport must be unix or named-pipe")
-        self._server: Optional[socket.socket] = None
         self._listener = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        # Unix (asyncio) transport state.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._async_server: Optional[asyncio.base_events.Server] = None
+        self._connections: Set[asyncio.Task] = set()
 
     def start(self) -> None:
         if self._running:
@@ -667,40 +682,78 @@ class HubSocketServer:
             if os.name != "nt":
                 raise RuntimeError("named-pipe transport requires Windows")
             self._listener = _pipe_listener(self.endpoint)
-        else:
-            self.socket_path.parent.mkdir(parents=True, exist_ok=True)
-            if self.socket_path.exists():
-                self.socket_path.unlink()
-            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            server.bind(str(self.socket_path))
-            os.chmod(str(self.socket_path), 0o600)
-            server.listen(8)
-            self._server = server
-            self._server.settimeout(0.5)
+            self._running = True
+            self._thread = threading.Thread(target=self._serve_forever_named_pipe, daemon=True)
+            self._thread.start()
+            return
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.socket_path.exists():
+            self.socket_path.unlink()
         self._running = True
-        self._thread = threading.Thread(target=self._serve_forever, daemon=True)
+        ready = threading.Event()
+        error: Dict[str, BaseException] = {}
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run_loop, args=(ready, error), daemon=True)
         self._thread.start()
+        ready.wait(timeout=10)
+        if "exc" in error:
+            self._running = False
+            raise error["exc"]
+        os.chmod(str(self.socket_path), 0o600)
 
-    def _serve_forever(self) -> None:
+    def _run_loop(self, ready: threading.Event, error: Dict[str, BaseException]) -> None:
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._async_server = self._loop.run_until_complete(
+                asyncio.start_unix_server(self._handle_conn_async, path=str(self.socket_path))
+            )
+        except OSError as exc:
+            error["exc"] = exc
+            ready.set()
+            return
+        ready.set()
+        try:
+            self._loop.run_forever()
+        finally:
+            self._loop.close()
+
+    async def _handle_conn_async(self, reader: "asyncio.StreamReader", writer: "asyncio.StreamWriter") -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self._connections.add(task)
+        try:
+            try:
+                raw_line = await asyncio.wait_for(reader.readline(), timeout=self._DISPATCH_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                return
+            raw = raw_line.decode("utf-8").strip()
+            if not raw:
+                return
+            response = self._dispatch(raw)
+            writer.write((json.dumps(response) + "\n").encode("utf-8"))
+            await writer.drain()
+        except (OSError, ConnectionError):
+            return
+        finally:
+            if task is not None:
+                self._connections.discard(task)
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+
+    def _serve_forever_named_pipe(self) -> None:
         while self._running:
             try:
-                conn = self._listener.accept() if self.transport == "named-pipe" else self._server.accept()[0]
-            except socket.timeout:
-                continue
+                conn = self._listener.accept()
             except OSError:
                 break
-            threading.Thread(target=self._handle_conn, args=(conn,), daemon=True).start()
+            threading.Thread(target=self._handle_conn_named_pipe, args=(conn,), daemon=True).start()
 
-    def _handle_conn(self, conn: socket.socket) -> None:
+    def _handle_conn_named_pipe(self, conn) -> None:
         try:
-            if self.transport == "named-pipe":
-                raw = conn.recv_bytes().decode("utf-8")
-            else:
-                with conn:
-                    conn.settimeout(5)
-                    raw = _recv_line(conn)
-                    self._dispatch_socket(conn, raw)
-                    return
+            raw = conn.recv_bytes().decode("utf-8")
             response = self._dispatch(raw)
             conn.send_bytes(json.dumps(response).encode("utf-8"))
         except (OSError, EOFError):
@@ -717,33 +770,44 @@ class HubSocketServer:
         except HubError as exc:
             return {"ok": False, "error": str(exc)}
 
-    def _dispatch_socket(self, conn, raw: str) -> None:
-        if raw:
-            conn.sendall((json.dumps(self._dispatch(raw)) + "\n").encode("utf-8"))
-
     def shutdown(self) -> None:
         if self._running:
             self._running = False
-            if self._server is not None:
-                try:
-                    self._server.close()
-                except OSError:
-                    pass
-                self._server = None
-            if self._listener is not None:
-                try:
-                    self._listener.close()
-                except OSError:
-                    pass
-                self._listener = None
-            if self._thread is not None:
-                self._thread.join(timeout=2)
-                self._thread = None
+            if self.transport == "named-pipe":
+                if self._listener is not None:
+                    try:
+                        self._listener.close()
+                    except OSError:
+                        pass
+                    self._listener = None
+                if self._thread is not None:
+                    self._thread.join(timeout=2)
+                    self._thread = None
+            else:
+                if self._loop is not None and self._async_server is not None:
+                    asyncio.run_coroutine_threadsafe(self._shutdown_async(), self._loop).result(timeout=5)
+                if self._loop is not None:
+                    self._loop.call_soon_threadsafe(self._loop.stop)
+                if self._thread is not None:
+                    self._thread.join(timeout=5)
+                    self._thread = None
+                self._loop = None
+                self._async_server = None
         if self.transport == "unix":
             try:
                 self.socket_path.unlink()
             except FileNotFoundError:
                 pass
+
+    async def _shutdown_async(self) -> None:
+        assert self._async_server is not None
+        self._async_server.close()
+        await self._async_server.wait_closed()
+        pending = list(self._connections)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     stop = shutdown
 
