@@ -112,6 +112,18 @@ fn bounded(raw: &[u8], limit: usize) -> (String, bool) {
     (String::from_utf8_lossy(slice).into_owned(), truncated)
 }
 
+/// Deserializes a `ProcessSpec` from a raw JSON string. Extracted from `main.rs` so the
+/// stdin-parsing logic runs (and is measured) inside the crate's own test harness instead of
+/// only through an external-process integration test that coverage tooling can't credit.
+pub fn parse_spec(raw: &str) -> Result<ProcessSpec, serde_json::Error> {
+    serde_json::from_str(raw)
+}
+
+/// Serializes a `ProcessResult` back to a JSON line. Mirrors `parse_spec`'s rationale.
+pub fn serialize_result(result: &ProcessResult) -> String {
+    serde_json::to_string(result).expect("ProcessResult always serializes")
+}
+
 pub async fn run(spec: &ProcessSpec) -> ProcessResult {
     let started = Instant::now();
     if let Err(err) = validate(spec) {
@@ -214,7 +226,7 @@ pub async fn run(spec: &ProcessSpec) -> ProcessResult {
             }
         }
         None => {
-            let _ = child.start_kill();
+            kill_tree(&mut child);
             let _ = child.wait().await;
             ProcessResult {
                 schema: PROCESS_RESULT_SCHEMA,
@@ -233,11 +245,28 @@ pub async fn run(spec: &ProcessSpec) -> ProcessResult {
 #[cfg(unix)]
 fn libc_setsid() {
     unsafe {
-        extern "C" {
-            fn setsid() -> i32;
-        }
-        setsid();
+        libc::setsid();
     }
+}
+
+/// On deadline expiry the child was started with `setsid()`, so its pid is also its own
+/// process-group id: `killpg` tears down the whole tree (a shell that forked descendants), not
+/// just the direct child, which is all `child.start_kill()` would reach. Non-Unix targets fall
+/// back to killing just the top-level process.
+#[cfg(unix)]
+fn kill_tree(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+        }
+    } else {
+        let _ = child.start_kill();
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_tree(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
 }
 
 #[cfg(test)]
@@ -277,6 +306,58 @@ mod tests {
         assert!(result.timed_out);
         assert_eq!(result.error.as_deref(), Some("deadline_exceeded"));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn deadline_kills_the_whole_process_tree_not_just_the_direct_child() {
+        let marker = std::env::temp_dir().join(format!(
+            "simplicio-supervisor-grandchild-{}-{}",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        let marker_str = marker.to_str().unwrap().to_string();
+        let _ = std::fs::remove_file(&marker);
+
+        let mut s = spec(vec![
+            "sh",
+            "-c",
+            &format!(
+                "(sleep 5; echo alive > {marker}) & echo $! > {marker}.pid; wait",
+                marker = marker_str
+            ),
+        ]);
+        s.deadline_seconds = Some(0.3);
+
+        let result = run(&s).await;
+        assert!(result.timed_out);
+
+        let grandchild_pid: i32 = std::fs::read_to_string(format!("{marker_str}.pid"))
+            .expect("shell wrote grandchild pid before deadline")
+            .trim()
+            .parse()
+            .expect("pid file contains an integer");
+
+        // Give the kernel time to finish reaping (a just-killed process is briefly a zombie, so
+        // `kill(pid, 0)` can still report it as present for a short window even after `killpg`
+        // succeeded). What actually proves the tree was torn down is that the grandchild never
+        // reaches its 5s sleep-then-write — the marker file must not appear even well past that.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+
+        let is_dead_or_zombie = std::fs::read_to_string(format!("/proc/{grandchild_pid}/stat"))
+            .map(|stat| stat.contains(") Z "))
+            .unwrap_or(true);
+        assert!(
+            is_dead_or_zombie,
+            "grandchild pid {grandchild_pid} is still running 700ms after the deadline; process group was not fully torn down"
+        );
+        assert!(
+            !marker.exists(),
+            "grandchild ran to completion after the deadline instead of being killed"
+        );
+
+        let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_file(format!("{marker_str}.pid"));
     }
 
     #[tokio::test]
@@ -344,6 +425,128 @@ mod tests {
             .to_string(),
         );
         assert!(validate(&s).is_ok());
+    }
+
+    #[tokio::test]
+    async fn allowlisted_ambient_var_passes_through_without_being_in_spec_env() {
+        std::env::set_var("SIMPLICIO_SUPERVISOR_TEST_AMBIENT_ALLOWED", "ambient-value");
+        let mut s = spec(env_command());
+        s.env_allowlist = vec!["SIMPLICIO_SUPERVISOR_TEST_AMBIENT_ALLOWED".to_string()];
+        let result = run(&s).await;
+        assert!(result
+            .stdout
+            .contains("SIMPLICIO_SUPERVISOR_TEST_AMBIENT_ALLOWED=ambient-value"));
+        std::env::remove_var("SIMPLICIO_SUPERVISOR_TEST_AMBIENT_ALLOWED");
+    }
+
+    #[tokio::test]
+    async fn run_honors_an_explicit_cwd() {
+        let dir = std::env::temp_dir();
+        let mut s = spec(if cfg!(windows) {
+            vec!["C:\\Windows\\System32\\cmd.exe", "/C", "cd"]
+        } else {
+            vec!["pwd"]
+        });
+        s.cwd = Some(dir.to_str().unwrap().to_string());
+        let result = run(&s).await;
+        assert_eq!(result.exit_code, Some(0));
+        let canonical_dir = std::fs::canonicalize(&dir).unwrap();
+        let printed = std::path::Path::new(result.stdout.trim());
+        assert_eq!(std::fs::canonicalize(printed).unwrap(), canonical_dir);
+    }
+
+    #[test]
+    fn empty_argv_is_rejected() {
+        let s = spec(vec![]);
+        assert!(matches!(validate(&s), Err(SpecError::EmptyArgv)));
+    }
+
+    #[test]
+    fn argv_with_blank_executable_is_rejected() {
+        let s = spec(vec![""]);
+        assert!(matches!(validate(&s), Err(SpecError::EmptyArgv)));
+    }
+
+    #[test]
+    fn cwd_not_absolute_is_rejected() {
+        let mut s = spec(vec!["echo", "x"]);
+        s.cwd = Some("relative/path".to_string());
+        assert!(matches!(validate(&s), Err(SpecError::CwdNotAbsolute)));
+    }
+
+    #[test]
+    fn spec_error_display_messages_are_human_readable() {
+        assert_eq!(
+            SpecError::EmptyArgv.to_string(),
+            "argv must contain a non-empty executable"
+        );
+        assert_eq!(
+            SpecError::EnvOutsideAllowlist("FOO".to_string()).to_string(),
+            "env key 'FOO' is outside env_allowlist"
+        );
+        assert_eq!(
+            SpecError::CwdOutsideAllowedRoot.to_string(),
+            "cwd is outside allowed_cwd_root"
+        );
+        assert_eq!(
+            SpecError::CwdNotAbsolute.to_string(),
+            "cwd must be absolute"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_reports_a_validation_error_without_spawning() {
+        let result = run(&spec(vec![])).await;
+        assert!(result.exit_code.is_none());
+        assert!(!result.timed_out);
+        assert_eq!(
+            result.error.as_deref(),
+            Some("argv must contain a non-empty executable")
+        );
+    }
+
+    #[tokio::test]
+    async fn nonexistent_executable_reports_a_spawn_error() {
+        let result = run(&spec(vec!["simplicio-supervisor-definitely-not-a-real-binary"])).await;
+        assert!(result.exit_code.is_none());
+        assert!(!result.timed_out);
+        let err = result.error.expect("spawn failure surfaces as an error");
+        assert!(err.starts_with("spawn_error:"), "unexpected error: {err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_larger_than_the_limit_is_truncated() {
+        let mut s = spec(vec!["head", "-c", "4096", "/dev/zero"]);
+        s.max_output_bytes = 16;
+        let result = run(&s).await;
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.truncated);
+        assert!(result.stdout.len() <= s.max_output_bytes);
+    }
+
+    #[test]
+    fn parse_spec_round_trips_a_valid_payload() {
+        let raw = r#"{"argv": ["echo", "hi"], "env_allowlist": ["PATH"]}"#;
+        let parsed = parse_spec(raw).expect("valid JSON parses");
+        assert_eq!(parsed.argv, vec!["echo".to_string(), "hi".to_string()]);
+        assert_eq!(parsed.env_allowlist, vec!["PATH".to_string()]);
+        assert_eq!(parsed.max_output_bytes, default_max_output_bytes());
+    }
+
+    #[test]
+    fn parse_spec_rejects_invalid_json() {
+        assert!(parse_spec("not json").is_err());
+        assert!(parse_spec(r#"{"argv": "not-an-array"}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn serialize_result_produces_valid_json_for_run_output() {
+        let result = run(&spec(fast_command())).await;
+        let body = serialize_result(&result);
+        let round_tripped: serde_json::Value =
+            serde_json::from_str(&body).expect("serialize_result output is valid JSON");
+        assert_eq!(round_tripped["schema"], PROCESS_RESULT_SCHEMA);
     }
 
     fn fast_command() -> Vec<&'static str> {

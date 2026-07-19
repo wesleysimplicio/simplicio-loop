@@ -164,6 +164,22 @@ class PressureReading:
         }
 
 
+@dataclass(frozen=True)
+class GPUReading:
+    """Best-effort GPU/VRAM sample from ``nvidia-smi``."""
+
+    memory_used_bytes: int = 0
+    memory_total_bytes: int = 0
+    source: str = "unavailable"
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "memory_used_bytes": self.memory_used_bytes,
+            "memory_total_bytes": self.memory_total_bytes,
+            "source": self.source,
+        }
+
+
 class ResourceProbe:
     """Cross-platform pressure reader with a documented degrade ladder.
 
@@ -232,6 +248,27 @@ class ResourceProbe:
         except ValueError:
             return 0.0
         return max(values)
+
+    def read_gpu(self) -> GPUReading:
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=2.0, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return GPUReading(source="unavailable")
+        if result.returncode != 0 or not result.stdout.strip():
+            return GPUReading(source="unavailable")
+        try:
+            used, total = (part.strip() for part in result.stdout.strip().splitlines()[0].split(","))
+            return GPUReading(
+                memory_used_bytes=int(float(used)) * 1024 * 1024,
+                memory_total_bytes=int(float(total)) * 1024 * 1024,
+                source="nvidia-smi",
+            )
+        except (ValueError, IndexError):
+            return GPUReading(source="unavailable")
 
     @staticmethod
     def _read_cgroup() -> Optional[PressureReading]:
@@ -462,6 +499,31 @@ class ResourceGovernor:
                 self._circuit.recover()
             return {
                 "schema": GOVERNOR_SCHEMA, "event": "pressure_reading",
+                "reading": reading.as_dict(), "over_budget": False,
+                "tripped": False, "circuit": self._circuit.as_dict(),
+            }
+
+    def evaluate_gpu_pressure(
+        self, reading: GPUReading, *, memory_used_limit_bytes: int = 0
+    ) -> Dict[str, Any]:
+        with self._lock:
+            over_budget = (
+                bool(memory_used_limit_bytes)
+                and reading.source != "unavailable"
+                and reading.memory_used_bytes > memory_used_limit_bytes
+            )
+            if over_budget:
+                tripped = self._circuit.record_failure("gpu_pressure")
+                return {
+                    "schema": GOVERNOR_SCHEMA, "event": "gpu_pressure_reading",
+                    "reading": reading.as_dict(), "over_budget": True,
+                    "tripped": tripped, "circuit": self._circuit.as_dict(),
+                }
+            self._circuit.allow()
+            if self._circuit.state == "half_open":
+                self._circuit.recover()
+            return {
+                "schema": GOVERNOR_SCHEMA, "event": "gpu_pressure_reading",
                 "reading": reading.as_dict(), "over_budget": False,
                 "tripped": False, "circuit": self._circuit.as_dict(),
             }

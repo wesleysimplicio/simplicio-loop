@@ -7,10 +7,9 @@ scripts most likely to be read whole), reports the delta against a committed bas
 when a tracked artifact regresses past its threshold — so a doc/script that quietly balloons in
 size (burning context on every fresh session) gets caught the same way a broken test would.
 
-Estimator: `tiktoken` (cl100k_base) is used when importable, but it is NOT a dependency of this
-repo or package — the default, always-available path is a stdlib-only heuristic
-(`heuristic:chars-div-4`, ~4 characters per token, a standard rough approximation for
-English/markdown/code) so `python3 scripts/token_budget.py` never needs a new heavy dependency.
+Estimator: `tiktoken` (o200k_base) is the packaged default. A stdlib-only heuristic
+(`heuristic:chars-div-4`) remains a fail-open fallback for constrained/broken installs, so the
+budget guard never prevents a loop from reporting its state.
 The estimator actually used is recorded in the baseline/report so a swap is never silently mixed
 with old numbers.
 
@@ -70,8 +69,8 @@ def _try_tiktoken_estimator():
     except Exception:
         return None
     try:
-        enc = tiktoken.get_encoding("cl100k_base")
-        return (lambda text: len(enc.encode(text))), "tiktoken:cl100k_base"
+        enc = tiktoken.get_encoding("o200k_base")
+        return (lambda text: len(enc.encode(text))), "tiktoken:o200k_base"
     except Exception:
         return None
 

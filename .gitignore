@@ -37,3 +37,6 @@ simplicio-loop_deliverables.zip
 .coverage
 .coverage.*
 htmlcov/
+
+# Transient git worktrees created by Workflow/Agent isolation:'worktree' runs.
+.claude/worktrees/

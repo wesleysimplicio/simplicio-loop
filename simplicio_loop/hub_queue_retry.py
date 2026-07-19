@@ -350,19 +350,29 @@ class HubRetryQueue:
         with self._lock:
             self._owned(lease)
             expires = time.time() + ttl
-            self._db.execute(
-                "UPDATE hub_jobs SET lease_expires_at=?,updated_at=? WHERE task_id=?",
-                (expires, time.time(), lease.task_id),
+            now = time.time()
+            cursor = self._db.execute(
+                """UPDATE hub_jobs SET lease_expires_at=?,updated_at=?
+                   WHERE task_id=? AND lease_id=? AND fence=?
+                     AND state='leased' AND lease_expires_at>?""",
+                (expires, now, lease.task_id, lease.lease_id, lease.fence, now),
             )
+            if cursor.rowcount == 0:
+                raise QueueLeaseError("lease is stale, expired, or missing")
             return RetryLease(lease.task_id, lease.lease_id, lease.fence, expires)
 
     def complete(self, lease: RetryLease) -> None:
         with self._lock:
             self._owned(lease)
-            self._db.execute(
-                "UPDATE hub_jobs SET state='completed',updated_at=? WHERE task_id=?",
-                (time.time(), lease.task_id),
+            now = time.time()
+            cursor = self._db.execute(
+                """UPDATE hub_jobs SET state='completed',updated_at=?
+                   WHERE task_id=? AND lease_id=? AND fence=?
+                     AND state='leased' AND lease_expires_at>?""",
+                (now, lease.task_id, lease.lease_id, lease.fence, now),
             )
+            if cursor.rowcount == 0:
+                raise QueueLeaseError("lease is stale, expired, or missing")
 
     def fail(self, lease: RetryLease, *, error_code: str, backoff: float = 0.0) -> str:
         if not error_code:
@@ -378,18 +388,27 @@ class HubRetryQueue:
                     """,
                     (lease.task_id, row["payload"], row["attempts"], error_code, now),
                 )
-                self._db.execute(
-                    "UPDATE hub_jobs SET state='dead_letter',error_code=?,updated_at=? WHERE task_id=?",
-                    (error_code, now, lease.task_id),
+                cursor = self._db.execute(
+                    """UPDATE hub_jobs SET state='dead_letter',error_code=?,updated_at=?
+                       WHERE task_id=? AND lease_id=? AND fence=?
+                         AND state='leased' AND lease_expires_at>?""",
+                    (error_code, now, lease.task_id, lease.lease_id, lease.fence, now),
                 )
+                if cursor.rowcount == 0:
+                    raise QueueLeaseError("lease is stale, expired, or missing")
                 return "dead_letter"
-            self._db.execute(
+            cursor = self._db.execute(
                 """
                 UPDATE hub_jobs SET state='queued',next_attempt_at=?,error_code=?,
-                  lease_id=NULL,lease_expires_at=NULL,updated_at=? WHERE task_id=?
+                  lease_id=NULL,lease_expires_at=NULL,updated_at=?
+                WHERE task_id=? AND lease_id=? AND fence=?
+                  AND state='leased' AND lease_expires_at>?
                 """,
-                (now + max(0.0, backoff), error_code, now, lease.task_id),
+                (now + max(0.0, backoff), error_code, now, lease.task_id,
+                 lease.lease_id, lease.fence, now),
             )
+            if cursor.rowcount == 0:
+                raise QueueLeaseError("lease is stale, expired, or missing")
             return "retry"
 
     def dead_letters(self) -> List[Dict[str, Any]]:
@@ -423,3 +442,67 @@ class HubRetryQueue:
             if row is None:
                 raise QueueRetryError("unknown task")
             return str(row["state"])
+
+    # Compatibility helpers used by the daemon's scheduler-backed IPC path.
+    def find_task_id(self, idempotency_key: str) -> Optional[str]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT task_id FROM hub_jobs WHERE idempotency_key=?", (idempotency_key,)
+            ).fetchone()
+            return str(row["task_id"]) if row is not None else None
+
+    def get_row(self, task_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM hub_jobs WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            data = dict(row)
+            data["payload"] = json.loads(data["payload"])
+            return data
+
+    def update_payload(self, task_id: str, payload: Dict[str, Any]) -> None:
+        with self._lock:
+            self._db.execute(
+                "UPDATE hub_jobs SET payload=?,updated_at=? WHERE task_id=?",
+                (json.dumps(payload, sort_keys=True), time.time(), task_id),
+            )
+
+    def count(self) -> int:
+        with self._lock:
+            row = self._db.execute("SELECT COUNT(*) AS n FROM hub_jobs").fetchone()
+            return int(row["n"])
+
+    def payload_of(self, task_id: str) -> Dict[str, Any]:
+        return self.get_payload(task_id)
+
+    def sync_fair_scheduler(self, scheduler: Any) -> None:
+        """Admit durable queued rows that are not already represented in a scheduler."""
+        from .hub_scheduler import ScheduledJob, SchedulerError
+
+        for entry in self.list_queued_scheduling_metadata():
+            try:
+                scheduler.enqueue(ScheduledJob(
+                    task_id=entry["task_id"], client_id=entry["client_id"] or "default",
+                    weight=entry["weight"], cost=entry["cost"],
+                    workspace_id=entry["workspace_id"],
+                ))
+            except SchedulerError:
+                continue
+
+    def claim_fair(self, scheduler: Any, worker_id: str, *, ttl: float = 30.0,
+                   max_attempts: int = 256) -> Optional[RetryLease]:
+        self.sync_fair_scheduler(scheduler)
+        for _ in range(max_attempts):
+            scheduled = scheduler.next()
+            if scheduled is None:
+                return None
+            lease = self.claim_specific(scheduled.task_id, worker_id, ttl=ttl)
+            try:
+                scheduler.complete(scheduled.task_id)
+            except Exception:
+                pass
+            if lease is not None:
+                return lease
+        return None

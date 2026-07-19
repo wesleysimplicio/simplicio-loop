@@ -6,6 +6,18 @@ from threading import RLock
 from typing import Any, Deque, Dict, List, Optional
 
 
+PRIORITY_GAIN_MULTIPLIER: Dict[str, float] = {
+    "interactive": 8.0,
+    "mapping": 4.0,
+    "llm": 2.0,
+    "test": 1.5,
+    "build": 1.0,
+    "background": 1.0,
+    "maintenance": 0.5,
+}
+DEFAULT_PRIORITY = "background"
+
+
 class SchedulerError(ValueError):
     """Raised for invalid scheduler operations."""
 
@@ -40,19 +52,8 @@ class QuotaExceededError(SchedulerError):
         }
 
 
-# #505 step 1: the 7 job classes the issue asks for, ordered highest to lowest
-# share. "background" is the default so every pre-existing ScheduledJob(...) call
-# site (and its tests) keeps the exact prior gain=quantum*weight formula (boost=1.0).
-PRIORITY_BOOST: Dict[str, float] = {
-    "interactive": 8.0,
-    "mapping": 4.0,
-    "llm": 3.0,
-    "test": 2.0,
-    "build": 2.0,
-    "background": 1.0,
-    "maintenance": 0.5,
-}
-DEFAULT_PRIORITY = "background"
+# Backward-compatible alias for callers that used the pre-merge name.
+PRIORITY_BOOST = PRIORITY_GAIN_MULTIPLIER
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,7 @@ class FairScheduler:
         self.aging_boost = aging_boost
         self._queues: Dict[str, Deque[ScheduledJob]] = {}
         self._weights: Dict[str, int] = {}
-        self._deficit: Dict[str, int] = {}
+        self._deficit: Dict[str, float] = {}
         self._inflight: Dict[str, int] = {}
         self._order: List[str] = []
         self._cursor = 0
@@ -132,9 +133,10 @@ class FairScheduler:
             raise SchedulerError("job identity, weight and cost must be positive")
         if not job.workspace_id:
             raise SchedulerError("workspace_id must be non-empty")
-        if job.priority not in PRIORITY_BOOST:
+        if job.priority not in PRIORITY_GAIN_MULTIPLIER:
             raise SchedulerError(
-                f"unknown priority {job.priority!r}, must be one of {sorted(PRIORITY_BOOST)}"
+                f"unknown priority class {job.priority!r}; must be one of "
+                + ", ".join(sorted(PRIORITY_GAIN_MULTIPLIER))
             )
         with self._lock:
             if job.task_id in self._jobs:
@@ -172,8 +174,7 @@ class FairScheduler:
                 if not queue:
                     continue
                 job = queue[0]
-                boost = PRIORITY_BOOST.get(job.priority, 1.0)
-                gain = self.quantum * self._weights.get(client, 1) * boost
+                gain = self.quantum * self._weights.get(client, 1) * PRIORITY_GAIN_MULTIPLIER[job.priority]
                 waited = self._tick - self._last_served_tick.get(client, self._tick)
                 if waited > self.aging_ticks:
                     gain *= self.aging_boost
@@ -212,22 +213,14 @@ class FairScheduler:
             return True
 
     def _jains_fairness_index(self) -> float:
-        """Weight-normalized Jain fairness index over service actually dispatched
-        (`next()` calls) per client — reduces to the textbook raw-count formula
-        for equal-weight clients, matching #505's 'métricas de fairness' AC:
-        1.0 = perfectly fair, near 0 = starvation. No served jobs yet -> 1.0
-        (fairness is vacuously true, not undefined)."""
-        if not self._served_total:
+        served = [self._served_total.get(client, 0) for client in self._order]
+        if not served:
             return 1.0
-        shares = [
-            count / max(1, self._weights.get(client, 1))
-            for client, count in self._served_total.items()
-        ]
-        total = sum(shares)
-        if total == 0:
+        total = sum(served)
+        total_sq = sum(value * value for value in served)
+        if total_sq == 0:
             return 1.0
-        total_sq = sum(share * share for share in shares)
-        return (total * total) / (len(shares) * total_sq)
+        return (total * total) / (len(served) * total_sq)
 
     def status(self) -> Dict[str, Any]:
         with self._lock:

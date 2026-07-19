@@ -12,6 +12,14 @@ import time
 import webbrowser
 import json
 from pathlib import Path
+try:
+    from scripts import release_manifest as _release_manifest
+except Exception:  # pragma: no cover - import shim for bundled scripts
+    _release_manifest = None
+try:
+    from . import prototype_cli as _prototype_cli
+except Exception:  # pragma: no cover - keeps `simplicio-loop` importable if this is missing
+    _prototype_cli = None
 
 from . import __version__
 from . import delivery
@@ -45,6 +53,8 @@ from .ops_ledger import (
 )
 from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
+from .delivery import DELIVERY_ORDER
+from .map_service_status import default_status_path, load_status_file
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -234,6 +244,45 @@ def status(repo: str, run_id: str, as_json: bool = False, as_text: bool = False)
         print(_render_status_text(payload))
     else:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def map_status(repo: str, status_file: str, as_json: bool = False) -> int:
+    """Report cache hit/build/wait/invalidate counters from a real map-service session's
+    status file. Never fabricates a reading: a missing file is reported as blocked."""
+    path = Path(status_file) if status_file else default_status_path(repo)
+    try:
+        payload = load_status_file(path)
+    except (OSError, ValueError) as exc:
+        payload = None
+        error = str(exc)
+    else:
+        error = ""
+    if payload is None:
+        result = {
+            "schema": "simplicio.map-service-status/v1",
+            "status": "UNAVAILABLE",
+            "reason_code": "status_file_missing" if not error else "status_file_invalid",
+            "path": str(path),
+            "error": error,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 1
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        counters = payload.get("counters", {})
+        watchers = payload.get("watchers", {})
+        lines = [
+            "map-service status (" + str(path) + ")",
+            "  cache_hits:    " + str(counters.get("cache_hits", 0)),
+            "  builds:        " + str(counters.get("builds", 0)),
+            "  waits:         " + str(counters.get("waits", 0)),
+            "  invalidations: " + str(counters.get("invalidations", 0)),
+            "  watchers:      " + str(watchers.get("watchers", 0)),
+            "  pending:       " + str(watchers.get("pending", 0)),
+        ]
+        print("\n".join(lines))
     return 0
 
 
@@ -676,6 +725,12 @@ def main(argv=None) -> int:
     p_task.add_argument("task_args", nargs=argparse.REMAINDER,
                         help="pass-through args for `simplicio-loop task`")
 
+    p_prototype = sub.add_parser(
+        "prototype", help="Prototype-First gate: plan/classify/validate-schema/doctor (#568 P0)"
+    )
+    p_prototype.add_argument("prototype_args", nargs=argparse.REMAINDER,
+                             help="pass-through args for `simplicio-loop prototype`")
+
     p_plan = sub.add_parser("plan", help="compile a raw task into a contract and preview it")
     p_plan.add_argument("--task", required=True, help="markdown task file")
     p_plan.add_argument("--out", default=os.path.join(".orchestrator", "task-contract.json"),
@@ -685,11 +740,11 @@ def main(argv=None) -> int:
     p_run.add_argument("--task", required=True, help="markdown task file")
     p_run.add_argument("--repo", default=".", help="repository root")
     p_run.add_argument(
-        "--delivery",
-        default="verified",
+        "--delivery", default="verified",
+        metavar="{" + ",".join(DELIVERY_ORDER[1:]) + "}",
         help=(
-            "requested delivery target: one of "
-            + ", ".join(delivery.DELIVERY_ORDER[1:])
+            "requested delivery target, one of: " + ", ".join(DELIVERY_ORDER[1:])
+            + " (use 'implemented' for a local-only run)"
         ),
     )
     p_run.add_argument("--max-iterations", type=int, default=12, help="safety cap")
@@ -708,6 +763,16 @@ def main(argv=None) -> int:
                           help="emit machine-readable JSON (this is also the default)")
     p_status.add_argument("--text", dest="as_text", action="store_true",
                           help="emit human-readable text instead of JSON")
+
+    p_map = sub.add_parser("map", help="map-service cross-module status")
+    map_sub = p_map.add_subparsers(dest="map_command", required=True)
+    p_map_status = map_sub.add_parser(
+        "status", help="report cache hit/build/wait/invalidate counters from a running session")
+    p_map_status.add_argument("--repo", default=".", help="repository root")
+    p_map_status.add_argument("--status-file", default="",
+                              help="explicit status file (default: <repo>/.orchestrator/map/status.json)")
+    p_map_status.add_argument("--json", action="store_true",
+                              help="emit machine-readable JSON (this is also the default)")
 
     p_preflight = sub.add_parser(
         "preflight", help="verify bound operators (mapper/dev-cli/runtime) are installed")
@@ -858,6 +923,17 @@ def main(argv=None) -> int:
             help="file containing executor handshake JSON (strict mode requires it)",
         )
 
+    p_release_train = sub.add_parser(
+        "release-train", help="release train continuous verification (#558)"
+    )
+    rt_sub = p_release_train.add_subparsers(
+        dest="release_train_command", required=True
+    )
+    p_rt_check = rt_sub.add_parser(
+        "check", help="validate component/ecosystem release schemas + local drift"
+    )
+    p_rt_check.add_argument("--repo", default=".", help="repository root")
+
     args = parser.parse_args(argv)
     command = args.command or "install"
     if command == "dashboard":
@@ -867,6 +943,13 @@ def main(argv=None) -> int:
         if forwarded and forwarded[0] == "--":
             forwarded = forwarded[1:]
         return task_contract_main(forwarded)
+    if command == "prototype":
+        if _prototype_cli is None:
+            parser.error("prototype_cli module not importable")
+        forwarded = list(args.prototype_args or [])
+        if forwarded and forwarded[0] == "--":
+            forwarded = forwarded[1:]
+        return _prototype_cli.main(forwarded)
     if command == "plan":
         return plan(args.task, args.out)
     if command == "run":
@@ -876,6 +959,10 @@ def main(argv=None) -> int:
                       args.write_receipt)
     if command == "status":
         return status(args.repo, args.run_id, args.json, args.as_text)
+    if command == "map":
+        if args.map_command == "status":
+            return map_status(args.repo, args.status_file, args.json)
+        parser.error("unknown map subcommand: " + str(args.map_command))
     if command == "preflight":
         return preflight(args.repo, args.json)
     if command == "findings":
@@ -919,6 +1006,10 @@ def main(argv=None) -> int:
             args.handshake_file,
             args.ledger_command,
         )
+    if command == "release-train":
+        if _release_manifest is None:
+            parser.error("release_manifest script not importable")
+        return _release_manifest.release_train_check(args.repo)
     return install(Path(args.target).resolve(), args.globally)
 
 
