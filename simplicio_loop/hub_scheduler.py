@@ -5,10 +5,7 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Any, Deque, Dict, List, Optional
 
-# Step 1 of issue #505: the seven priority classes and their deficit-gain
-# multiplier. "background" is the default and keeps the exact prior
-# `gain = quantum * weight` formula (multiplier 1.0) for every pre-existing
-# call site that predates priority classes.
+
 PRIORITY_GAIN_MULTIPLIER: Dict[str, float] = {
     "interactive": 8.0,
     "mapping": 4.0,
@@ -18,6 +15,7 @@ PRIORITY_GAIN_MULTIPLIER: Dict[str, float] = {
     "background": 1.0,
     "maintenance": 0.5,
 }
+DEFAULT_PRIORITY = "background"
 
 
 class SchedulerError(ValueError):
@@ -54,6 +52,10 @@ class QuotaExceededError(SchedulerError):
         }
 
 
+# Backward-compatible alias for callers that used the pre-merge name.
+PRIORITY_BOOST = PRIORITY_GAIN_MULTIPLIER
+
+
 @dataclass(frozen=True)
 class ScheduledJob:
     task_id: str
@@ -61,7 +63,7 @@ class ScheduledJob:
     weight: int = 1
     cost: int = 1
     workspace_id: str = "default"
-    priority: str = "background"
+    priority: str = DEFAULT_PRIORITY
 
 
 class FairScheduler:

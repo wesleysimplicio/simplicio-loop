@@ -55,6 +55,100 @@ def test_concurrent_builders_share_one_owner_and_snapshot() -> None:
     asyncio.run(scenario())
 
 
+def test_multi_thread_multi_event_loop_access_is_a_documented_constraint() -> None:
+    """A single SingleFlightMapStore/MapServiceRegistry instance is only safe to use
+    WITHIN one asyncio event loop - `self._inflight` stores real `asyncio.Future`
+    objects, which are bound to the loop that created them. A second OS thread running
+    its OWN event loop (asyncio.run in a fresh thread) against the SAME instance hits a
+    real asyncio cross-loop error, not a hang or silent corruption. This is the actual,
+    verified concurrency contract (many concurrent TASKS in one loop - see the stress
+    test below - not multiple threads each with their own loop), documented here as a
+    real regression test rather than tribal knowledge."""
+    import threading
+
+    registry = MapServiceRegistry()
+    identity_key = registry.register(RepositoryIdentity("owner/project", "/tmp", base_sha="sha"))
+    store = SingleFlightMapStore(registry)
+    errors = []
+
+    def worker() -> None:
+        async def builder():
+            await asyncio.sleep(0.01)
+            return registry.build_canonical(identity_key, tree_hash="tree")
+
+        async def go():
+            return await store.get_or_build(identity_key, mode="canonical", tree_hash="tree", builder=builder)
+
+        try:
+            asyncio.run(go())
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    threads = [threading.Thread(target=worker) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert errors, (
+        "expected a real asyncio cross-loop RuntimeError from concurrent multi-thread "
+        "access - if this starts passing silently instead, the concurrency contract "
+        "changed and this test (and its documentation) needs updating, not deleting"
+    )
+
+
+def test_heavy_concurrent_load_across_many_keys_within_one_event_loop() -> None:
+    """The ACTUAL supported stress scenario (see the constraint test above): many
+    concurrent tasks - not threads - sharing one event loop, across MULTIPLE distinct
+    identities/tree_hashes, with invalidate()/gc() firing concurrently mid-flight. 200
+    tasks across 10 real distinct keys, real per-key single-flight dedup verified."""
+    async def scenario() -> None:
+        registry = MapServiceRegistry()
+        identities = [
+            registry.register(RepositoryIdentity("owner/project-%d" % i, "/tmp/p-%d" % i, base_sha="s%d" % i))
+            for i in range(10)
+        ]
+        store = SingleFlightMapStore(registry)
+        build_counts = {key: 0 for key in identities}
+        lock = asyncio.Lock()
+
+        async def builder_for(key: str):
+            async def builder():
+                async with lock:
+                    build_counts[key] += 1
+                await asyncio.sleep(0.001)
+                return registry.build_canonical(key, tree_hash="tree")
+            return builder
+
+        async def client(i: int):
+            key = identities[i % len(identities)]
+            handle = await store.get_or_build(
+                key, mode="canonical", tree_hash="tree", builder=await builder_for(key),
+            )
+            # Interleave real invalidate/gc traffic on a DIFFERENT key than the one
+            # this client just built, mid-flight relative to the other 199 tasks.
+            other_key = identities[(i + 1) % len(identities)]
+            if i % 37 == 0:
+                store.invalidate(other_key, reason="stress-interleave")
+                store.gc()
+            return handle
+
+        tasks = [asyncio.create_task(client(i)) for i in range(200)]
+        handles = await asyncio.gather(*tasks)
+
+        assert len(handles) == 200
+        # Every key was built AT MOST once per still-valid generation - never once per
+        # the 20 clients that shared it, proving dedup held under real heavy load.
+        assert all(count <= 3 for count in build_counts.values()), (
+            "a key's build count should reflect at most a few invalidate-triggered "
+            "regenerations, never one per client (%r)" % build_counts
+        )
+        for handle in handles:
+            handle.release()
+
+    asyncio.run(scenario())
+
+
 def test_failed_owner_releases_key_and_allows_retry() -> None:
     async def scenario() -> None:
         with tempfile.TemporaryDirectory() as directory:

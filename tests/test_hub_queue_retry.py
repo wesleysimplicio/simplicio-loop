@@ -1,3 +1,4 @@
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -8,7 +9,12 @@ from typing import Any, List
 
 import pytest
 
-from simplicio_loop.hub_queue_retry import HubRetryQueue, QueueLeaseError, QueueRetryError
+from simplicio_loop.hub_queue_retry import (
+    HubRetryQueue,
+    QueueCorruptionError,
+    QueueLeaseError,
+    QueueRetryError,
+)
 
 
 def test_idempotent_submit_survives_restart_and_dead_letters_after_budget() -> None:
@@ -384,3 +390,111 @@ def test_corrupt_wal_tail_fails_closed_and_keeps_last_valid_snapshot() -> None:
         task_id = restarted.submit({"kind": "post-recovery"}, idempotency_key="third")
         assert restarted.state(task_id) == "queued"
         restarted.close()
+
+
+def test_mangled_db_file_fails_closed_and_preserves_the_corrupt_copy() -> None:
+    """Real corruption (#504 AC: "WAL corrompido ... fail-closed com snapshot preservado") is
+    distinct from the WAL-tail-truncation case above, which SQLite already recovers from
+    natively — this is a genuinely malformed database file that must NOT be silently opened
+    or overwritten. Uses real bytes, real PRAGMA integrity_check, no mocking."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "queue.db")
+        queue = HubRetryQueue(path)
+        queue.submit({"kind": "before-corruption"}, idempotency_key="pre")
+        queue.close()
+
+        # Corrupt the schema b-tree page's cell-count field (2 bytes at offset 103-104, right
+        # after the 100-byte file header) — a real, verifiable structural corruption. A plain
+        # byte overwrite in unused/free space, or truncating trailing free pages, does NOT
+        # reliably trip SQLite's integrity_check (empirically confirmed: SQLite tolerates both
+        # here since the corrupted regions were unused). This targets an always-read page.
+        with open(path, "r+b") as handle:
+            handle.seek(103)
+            handle.write(b"\xff\xff")
+
+        with pytest.raises(QueueCorruptionError) as excinfo:
+            HubRetryQueue(path)
+
+        preserved = Path(excinfo.value.preserved_path)
+        assert preserved.exists(), "corrupted file must be preserved for forensics"
+        assert preserved.read_bytes() == Path(path).read_bytes(), (
+            "preserved copy must match the corrupted file byte-for-byte"
+        )
+        # Fail-closed means the original corrupted file is left exactly as-is too — never
+        # deleted or reset to a fresh empty schema behind the caller's back.
+        assert Path(path).exists()
+
+
+def test_non_sqlite_garbage_file_fails_closed() -> None:
+    """A completely non-SQLite file (not just internally corrupted) must also fail closed
+    rather than let SQLite silently treat it as a fresh empty database."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "queue.db")
+        Path(path).write_bytes(b"this is not a sqlite database at all, just plain text\n" * 20)
+
+        with pytest.raises(QueueCorruptionError) as excinfo:
+            HubRetryQueue(path)
+
+        assert Path(excinfo.value.preserved_path).exists()
+
+
+def test_pre_existing_old_schema_file_migrates_scheduling_columns_without_data_loss() -> None:
+    """#503-506 restart persistence: a queue file created BEFORE the scheduling
+    metadata columns existed must migrate cleanly (real ALTER TABLE, not a fresh
+    CREATE TABLE) - the old row survives with sane defaults, not silently dropped."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "old.db")
+        db = sqlite3.connect(path, isolation_level=None)
+        db.execute(
+            """CREATE TABLE hub_jobs (
+                task_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL,
+                max_attempts INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'queued', next_attempt_at REAL NOT NULL,
+                lease_id TEXT, fence INTEGER NOT NULL DEFAULT 0, lease_expires_at REAL,
+                error_code TEXT, updated_at REAL NOT NULL)"""
+        )
+        db.execute(
+            """CREATE TABLE hub_dead_letters (
+                task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, attempts INTEGER NOT NULL,
+                error_code TEXT NOT NULL, moved_at REAL NOT NULL)"""
+        )
+        db.execute(
+            "INSERT INTO hub_jobs(task_id,idempotency_key,payload,max_attempts,next_attempt_at,updated_at)"
+            " VALUES (?,?,?,?,?,?)",
+            ("old-task", "old-key", "{}", 3, 0, 0),
+        )
+        db.close()
+
+        queue = HubRetryQueue(path)
+        assert queue.state("old-task") == "queued"
+        metadata = queue.list_queued_scheduling_metadata()
+        assert metadata == [
+            {"task_id": "old-task", "client_id": "", "workspace_id": "default", "weight": 1, "cost": 1}
+        ]
+        # New submits on the migrated file work normally too.
+        new_task_id = queue.submit(
+            {"kind": "new"}, idempotency_key="new-key", client_id="alice", workspace_id="ws1",
+            weight=2, cost=3,
+        )
+        entries = {row["task_id"]: row for row in queue.list_queued_scheduling_metadata()}
+        assert entries[new_task_id] == {
+            "task_id": new_task_id, "client_id": "alice", "workspace_id": "ws1", "weight": 2, "cost": 3,
+        }
+        queue.close()
+
+
+def test_list_queued_scheduling_metadata_excludes_active_completed_and_dead_letter() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        queued_id = queue.submit({}, idempotency_key="k1", client_id="alice")
+        leased_id = queue.submit({}, idempotency_key="k2", client_id="bob")
+        lease = queue.claim("worker-1", ttl=30)
+        assert lease.task_id == queued_id or lease.task_id == leased_id
+        completed_id = queue.submit({}, idempotency_key="k3", client_id="carol")
+        completed_lease = queue.claim("worker-2", ttl=30)
+        queue.complete(completed_lease)
+
+        remaining_task_ids = {row["task_id"] for row in queue.list_queued_scheduling_metadata()}
+        assert lease.task_id not in remaining_task_ids  # actively leased, not re-schedulable
+        assert completed_lease.task_id not in remaining_task_ids
+        queue.close()

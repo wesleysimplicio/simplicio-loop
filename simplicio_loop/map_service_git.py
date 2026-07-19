@@ -12,11 +12,17 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from simplicio_loop.map_service import RepositoryIdentity
 
 
 class GitDiscoveryError(RuntimeError):
     """Raised when a path is not a usable Git worktree."""
+
+
+class GitIdentityError(GitDiscoveryError):
+    """Raised when a path cannot be converted to a Map Service identity."""
 
 
 def _git(root: Path, args: Sequence[str]) -> str:
@@ -30,6 +36,90 @@ def _git(root: Path, args: Sequence[str]) -> str:
     if result.returncode:
         raise GitDiscoveryError(result.stderr.strip() or "git command failed")
     return result.stdout.strip()
+
+
+def _git_identity(path: str, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", path, *args], capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise GitIdentityError(
+            "git %s failed in %s: %s" % (" ".join(args), path, result.stderr.strip())
+        )
+    return result.stdout.strip()
+
+
+def _default_branch(path: str) -> str:
+    try:
+        ref = _git_identity(path, "symbolic-ref", "refs/remotes/origin/HEAD")
+        return ref.rsplit("/", 1)[-1]
+    except GitIdentityError:
+        try:
+            return _git_identity(path, "symbolic-ref", "--short", "HEAD")
+        except GitIdentityError:
+            return "main"
+
+
+def _dirty_fingerprint(path: str, status_output: str) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(_git_identity(path, "diff", "HEAD").encode("utf-8"))
+    for line in status_output.splitlines():
+        if line.startswith("??"):
+            try:
+                hasher.update((Path(path) / line[3:].strip()).read_bytes())
+            except OSError:
+                pass
+    return hasher.hexdigest()
+
+
+def _repository_label(canonical_root: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", canonical_root, "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except OSError:
+        pass
+    return canonical_root
+
+
+def resolve_repository_identity(path: str, *, mapper_config: str = "") -> RepositoryIdentity:
+    """Resolve the content/branch identity used by the original Map Service adapter."""
+    resolved = str(Path(path).expanduser().resolve(strict=True))
+    try:
+        this_root = _git_identity(resolved, "rev-parse", "--show-toplevel")
+    except GitIdentityError as exc:
+        raise GitIdentityError("%s is not inside a Git working tree" % path) from exc
+    listing = _git_identity(resolved, "worktree", "list", "--porcelain")
+    roots = [line[9:].strip() for line in listing.splitlines() if line.startswith("worktree ")]
+    if not roots:
+        raise GitIdentityError("git worktree list returned no entries for %s" % path)
+    canonical_root = roots[0]
+    worktree_root = None if Path(this_root).resolve() == Path(canonical_root).resolve() else this_root
+    base_sha = _git_identity(resolved, "rev-parse", "HEAD")
+    status = _git_identity(resolved, "status", "--porcelain")
+    return RepositoryIdentity(
+        repository=_repository_label(canonical_root), canonical_root=canonical_root,
+        default_branch=_default_branch(resolved), worktree_root=worktree_root,
+        base_sha=base_sha, dirty=bool(status),
+        dirty_fingerprint=_dirty_fingerprint(resolved, status) if status else "",
+        mapper_config=mapper_config,
+    )
+
+
+def real_tree_snapshot(path: str) -> Tuple[str, List[str]]:
+    """Return a content-derived tree hash and the real tracked file paths."""
+    resolved = str(Path(path).expanduser().resolve(strict=True))
+    files = [line for line in _git_identity(resolved, "ls-files").splitlines() if line]
+    if not files:
+        return hashlib.sha256(b"empty-tree").hexdigest(), []
+    ls_tree = _git_identity(resolved, "ls-files", "-s")
+    blob_shas = sorted(line.split()[1] for line in ls_tree.splitlines() if line.strip())
+    return hashlib.sha256("".join(blob_shas).encode("utf-8")).hexdigest(), [
+        str(Path(resolved) / file) for file in files
+    ]
 
 
 def _normalize_remote(remote: str) -> str:
@@ -139,6 +229,7 @@ class RepositoryWorktreeRegistry:
 
 
 __all__ = [
-    "GitDiscoveryError", "GitWorktree", "RepositoryRecord", "RepositoryWorktreeRegistry",
-    "discover", "list_worktrees",
+    "GitDiscoveryError", "GitIdentityError", "GitWorktree", "RepositoryRecord",
+    "RepositoryWorktreeRegistry", "discover", "list_worktrees",
+    "resolve_repository_identity", "real_tree_snapshot",
 ]
