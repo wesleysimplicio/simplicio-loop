@@ -112,6 +112,18 @@ fn bounded(raw: &[u8], limit: usize) -> (String, bool) {
     (String::from_utf8_lossy(slice).into_owned(), truncated)
 }
 
+/// Deserializes a `ProcessSpec` from a raw JSON string. Extracted from `main.rs` so the
+/// stdin-parsing logic runs (and is measured) inside the crate's own test harness instead of
+/// only through an external-process integration test that coverage tooling can't credit.
+pub fn parse_spec(raw: &str) -> Result<ProcessSpec, serde_json::Error> {
+    serde_json::from_str(raw)
+}
+
+/// Serializes a `ProcessResult` back to a JSON line. Mirrors `parse_spec`'s rationale.
+pub fn serialize_result(result: &ProcessResult) -> String {
+    serde_json::to_string(result).expect("ProcessResult always serializes")
+}
+
 pub async fn run(spec: &ProcessSpec) -> ProcessResult {
     let started = Instant::now();
     if let Err(err) = validate(spec) {
@@ -413,6 +425,128 @@ mod tests {
             .to_string(),
         );
         assert!(validate(&s).is_ok());
+    }
+
+    #[tokio::test]
+    async fn allowlisted_ambient_var_passes_through_without_being_in_spec_env() {
+        std::env::set_var("SIMPLICIO_SUPERVISOR_TEST_AMBIENT_ALLOWED", "ambient-value");
+        let mut s = spec(env_command());
+        s.env_allowlist = vec!["SIMPLICIO_SUPERVISOR_TEST_AMBIENT_ALLOWED".to_string()];
+        let result = run(&s).await;
+        assert!(result
+            .stdout
+            .contains("SIMPLICIO_SUPERVISOR_TEST_AMBIENT_ALLOWED=ambient-value"));
+        std::env::remove_var("SIMPLICIO_SUPERVISOR_TEST_AMBIENT_ALLOWED");
+    }
+
+    #[tokio::test]
+    async fn run_honors_an_explicit_cwd() {
+        let dir = std::env::temp_dir();
+        let mut s = spec(if cfg!(windows) {
+            vec!["C:\\Windows\\System32\\cmd.exe", "/C", "cd"]
+        } else {
+            vec!["pwd"]
+        });
+        s.cwd = Some(dir.to_str().unwrap().to_string());
+        let result = run(&s).await;
+        assert_eq!(result.exit_code, Some(0));
+        let canonical_dir = std::fs::canonicalize(&dir).unwrap();
+        let printed = std::path::Path::new(result.stdout.trim());
+        assert_eq!(std::fs::canonicalize(printed).unwrap(), canonical_dir);
+    }
+
+    #[test]
+    fn empty_argv_is_rejected() {
+        let s = spec(vec![]);
+        assert!(matches!(validate(&s), Err(SpecError::EmptyArgv)));
+    }
+
+    #[test]
+    fn argv_with_blank_executable_is_rejected() {
+        let s = spec(vec![""]);
+        assert!(matches!(validate(&s), Err(SpecError::EmptyArgv)));
+    }
+
+    #[test]
+    fn cwd_not_absolute_is_rejected() {
+        let mut s = spec(vec!["echo", "x"]);
+        s.cwd = Some("relative/path".to_string());
+        assert!(matches!(validate(&s), Err(SpecError::CwdNotAbsolute)));
+    }
+
+    #[test]
+    fn spec_error_display_messages_are_human_readable() {
+        assert_eq!(
+            SpecError::EmptyArgv.to_string(),
+            "argv must contain a non-empty executable"
+        );
+        assert_eq!(
+            SpecError::EnvOutsideAllowlist("FOO".to_string()).to_string(),
+            "env key 'FOO' is outside env_allowlist"
+        );
+        assert_eq!(
+            SpecError::CwdOutsideAllowedRoot.to_string(),
+            "cwd is outside allowed_cwd_root"
+        );
+        assert_eq!(
+            SpecError::CwdNotAbsolute.to_string(),
+            "cwd must be absolute"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_reports_a_validation_error_without_spawning() {
+        let result = run(&spec(vec![])).await;
+        assert!(result.exit_code.is_none());
+        assert!(!result.timed_out);
+        assert_eq!(
+            result.error.as_deref(),
+            Some("argv must contain a non-empty executable")
+        );
+    }
+
+    #[tokio::test]
+    async fn nonexistent_executable_reports_a_spawn_error() {
+        let result = run(&spec(vec!["simplicio-supervisor-definitely-not-a-real-binary"])).await;
+        assert!(result.exit_code.is_none());
+        assert!(!result.timed_out);
+        let err = result.error.expect("spawn failure surfaces as an error");
+        assert!(err.starts_with("spawn_error:"), "unexpected error: {err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_larger_than_the_limit_is_truncated() {
+        let mut s = spec(vec!["head", "-c", "4096", "/dev/zero"]);
+        s.max_output_bytes = 16;
+        let result = run(&s).await;
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.truncated);
+        assert!(result.stdout.len() <= s.max_output_bytes);
+    }
+
+    #[test]
+    fn parse_spec_round_trips_a_valid_payload() {
+        let raw = r#"{"argv": ["echo", "hi"], "env_allowlist": ["PATH"]}"#;
+        let parsed = parse_spec(raw).expect("valid JSON parses");
+        assert_eq!(parsed.argv, vec!["echo".to_string(), "hi".to_string()]);
+        assert_eq!(parsed.env_allowlist, vec!["PATH".to_string()]);
+        assert_eq!(parsed.max_output_bytes, default_max_output_bytes());
+    }
+
+    #[test]
+    fn parse_spec_rejects_invalid_json() {
+        assert!(parse_spec("not json").is_err());
+        assert!(parse_spec(r#"{"argv": "not-an-array"}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn serialize_result_produces_valid_json_for_run_output() {
+        let result = run(&spec(fast_command())).await;
+        let body = serialize_result(&result);
+        let round_tripped: serde_json::Value =
+            serde_json::from_str(&body).expect("serialize_result output is valid JSON");
+        assert_eq!(round_tripped["schema"], PROCESS_RESULT_SCHEMA);
     }
 
     fn fast_command() -> Vec<&'static str> {

@@ -58,11 +58,11 @@ re-evaluated on every call.
    bug — but it means registry bookkeeping failures are silent; they will not show up as a Hub
    error, only as a stale/missing entry in `ProcessRegistry`.
 
-5. **Two independent Rust crates exist in this repo** (`rust/` top-level `Cargo.toml` + `src/`,
-   and `rust/simplicio-supervisor/`) — flagged in the issue's own comment thread
-   (2026-07-18) as orphaned duplication, not an alternative implementation anything depends on.
-   Only `rust/simplicio-supervisor/` is imported by `process_supervisor_rust.py`. Not fixed here;
-   noted so an operator debugging a build issue doesn't waste time on the unused crate.
+5. **Resolved:** a second, orphaned Rust crate (`rust/` top-level `Cargo.toml` + `src/`) used to
+   sit alongside `rust/simplicio-supervisor/` — flagged in the issue's comment thread (2026-07-18)
+   as unreferenced duplication (`grep` confirmed nothing in the Python codebase imports
+   `rust/src/*` or `rust/Cargo.toml`). It has been deleted; `rust/simplicio-supervisor/` is now the
+   only Rust crate in this repo, so there is no risk of the two drifting out of sync.
 
 ## Detecting degradation
 
@@ -109,10 +109,28 @@ stub executable standing in for the real binary, so this is exercised even when 
 isn't built), and — when the crate *is* built — a real end-to-end run through the compiled binary
 via `HubDaemon`.
 
-Rust side: `cargo test` in `rust/simplicio-supervisor/` — 7/7 passing. `cargo tarpaulin` (installed
-and run for this doc) measured **62.99% line coverage (80/127 lines)**: `src/lib.rs` at 80/112
-(71%), `src/main.rs` (the stdin/stdout CLI wiring) at 0/15 because it's exercised only through the
-Python-side integration test (`test_hub_execute_runs_the_real_rust_binary_when_built`), which
-`cargo tarpaulin` does not credit since it runs the binary as an external process rather than in
-Rust's own test harness. This is below the issue's 85% target on the Rust side specifically; the
-gap is concentrated in `main.rs` and is a real, honestly-measured number, not rounded up.
+Rust side: `cargo test` in `rust/simplicio-supervisor/` — 21/21 passing (19 unit tests in
+`src/lib.rs` + 2 binary end-to-end tests in `tests/cli.rs` that spawn the compiled
+`simplicio-supervisor` binary and feed it stdin, the same way `process_supervisor_rust.py` does).
+
+`cargo tarpaulin`'s default ptrace engine measured **82.95% (107/129 lines)** — up from the
+previous 62.99%, but `src/main.rs` still reported 0/15 credited lines even with `tests/cli.rs`
+added, because ptrace traces only the test binary itself; `tests/cli.rs` spawns
+`simplicio-supervisor` as a genuinely separate process (a new `exec`, not a fork the tracer
+follows), so its instructions are invisible to that engine regardless of how it's invoked.
+
+`cargo tarpaulin --engine llvm` (source-based coverage, propagates via `LLVM_PROFILE_FILE` across
+subprocess boundaries) measured **94.74% line coverage (126/133 lines)**: `src/lib.rs` at 113/118
+and `src/main.rs` at 13/15 — this **is** above the issue's 85% target. Both numbers are honestly
+measured, not rounded; report whichever engine's number you use, since they diverge only because
+of a coverage-tool limitation (ptrace's process-boundary blindness), not a difference in what's
+actually tested. Remaining uncovered lines under the `llvm` engine: the body of `libc_setsid()`
+and the `pre_exec` closure that calls it (`src/lib.rs:161-162,246,248`) — this closure runs
+*inside the forked child, before `exec`*, so parent-process coverage instrumentation cannot
+observe it even though the behavior is exercised by every Unix test that spawns a child; the
+`child.id() == None` branch of `kill_tree` (`src/lib.rs:263`, an edge case that would need a child
+that dies between `spawn()` and `kill_tree()` being called); and `main.rs`'s stdin-read-failure
+branch (`src/main.rs:9-10`, hard to trigger portably without simulating a stdin I/O error).
+
+Reproduce with: `cargo test && cargo tarpaulin --engine llvm --out Stdout` from
+`rust/simplicio-supervisor/`.
