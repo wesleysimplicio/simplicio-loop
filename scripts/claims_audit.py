@@ -159,6 +159,7 @@ SELFTEST_SCRIPTS = [
     "scripts/operator_check.py",
     "scripts/supervisor_enforcement.py",
     "scripts/component_release.py",
+    "scripts/deep_correctness_gate.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a
 # `selftest`-shaped function/subcommand that isn't the worker's own self-check, or a script this
