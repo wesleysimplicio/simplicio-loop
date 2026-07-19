@@ -32,13 +32,15 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import signal
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
+from .async_bounded_queue import AsyncBoundedQueue, QueueClosed
 from .remote_queue import (
     HTTPRemoteQueue, QueueConflict, QueueUnavailable, RemoteQueue, SQLiteRemoteQueue,
 )
@@ -51,6 +53,17 @@ def _write_status(status_file: str, payload: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
+
+
+async def _write_status_async(status_file: str, payload: dict) -> None:
+    """Event-loop-safe wrapper around :func:`_write_status` (issue #508 blocking-
+    call sweep). ``_write_status`` does synchronous ``mkdir``/``write_text``/
+    ``os.replace``; every other I/O call on the ``serve-async`` path
+    (``discover``/``try_claim``/``run_task``) already runs via
+    ``asyncio.to_thread`` so it never blocks the event loop, but the report
+    writer called ``_write_status`` directly until this fix -- stalling
+    ingest/dispatch progress for the duration of every status write."""
+    await asyncio.to_thread(_write_status, status_file, payload)
 
 
 def _add_backend_args(parser: argparse.ArgumentParser) -> None:
@@ -176,6 +189,132 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _serve_async_main(args: argparse.Namespace) -> int:
+    """Bounded-queue variant of :func:`_cmd_serve` (issue #495/#508).
+
+    Wires ``AsyncBoundedQueue`` into the three stages the parent epic names
+    explicitly -- ingestion, dispatch, reports -- as three concurrent asyncio
+    tasks connected by two bounded queues, instead of one synchronous
+    discover/claim/work/complete loop:
+
+    * **ingest**: repeatedly calls the (blocking) ``daemon.discover`` off the event
+      loop thread and ``put``s each candidate into ``ingest_queue``. Because that
+      queue is bounded with ``overload="wait"``, a burst of discovered work cannot
+      grow unbounded in memory -- ``put`` itself suspends the ingest task until a
+      dispatch worker frees capacity, propagating backpressure from dispatch back
+      to discovery without any extra plumbing.
+    * **dispatch**: ``args.concurrency`` worker tasks pull from ``ingest_queue``
+      and run the existing ``try_claim``/``run_task`` sequence (still thread-based
+      internally for the heartbeat, invoked via ``asyncio.to_thread`` so it does
+      not block the event loop) -- so N tasks can be in flight concurrently
+      instead of the strictly-sequential ``for candidate in tasks`` loop the sync
+      ``serve`` command uses.
+    * **report**: every state transition is ``put`` onto a second bounded,
+      coalescing queue (keyed by ``task_id``) instead of writing the status file
+      inline on the dispatch path; a single writer task drains it. Coalescing
+      means a burst of rapid state changes for the same task collapses to its
+      latest value rather than piling up unread writes.
+
+    Shutdown is cooperative and ordered: SIGTERM/SIGINT flips ``stop``, the ingest
+    task finishes its current ``put`` and closes ``ingest_queue``, each dispatch
+    worker exits once it observes :class:`QueueClosed` from a drained queue, and
+    only then does the report queue close so the writer flushes every pending
+    status update before returning.
+    """
+    queue = _build_queue(args)
+    daemon = RemoteWorkerDaemon(queue, agent_id=args.agent_id, capabilities=tuple(args.capabilities or ()),
+                               heartbeat_interval=args.heartbeat_interval, lease_ttl=args.ttl)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _handle_stop(*_a: Any) -> None:
+        loop.call_soon_threadsafe(stop.set)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _handle_stop)
+        except (NotImplementedError, ValueError, RuntimeError):  # pragma: no cover - platform dependent
+            signal.signal(sig, _handle_stop)
+
+    ingest_queue: AsyncBoundedQueue = AsyncBoundedQueue(max_items=max(1, args.concurrency), overload="wait")
+    report_queue: AsyncBoundedQueue = AsyncBoundedQueue(
+        max_items=max(4, args.concurrency * 2), overload="wait", coalesce=True,
+    )
+
+    async def ingest() -> None:
+        try:
+            while not stop.is_set():
+                try:
+                    tasks = await asyncio.to_thread(daemon.discover, limit=max(1, args.concurrency))
+                except QueueUnavailable:
+                    await asyncio.sleep(args.poll_interval)
+                    continue
+                if not tasks:
+                    await asyncio.sleep(args.poll_interval)
+                    continue
+                for candidate in tasks:
+                    if stop.is_set():
+                        break
+                    await ingest_queue.put(candidate, key=candidate["task_id"])
+        finally:
+            await ingest_queue.close()
+
+    async def report(payload: Dict[str, Any]) -> None:
+        await report_queue.put(payload, key=str(payload.get("task_id") or "status"))
+
+    async def dispatch(worker_id: int) -> None:
+        while True:
+            try:
+                candidate, _size, _key = await ingest_queue.get()
+            except QueueClosed:
+                return
+            try:
+                task_id = candidate["task_id"]
+                idempotency_key = f"{args.agent_id}:{task_id}:{time.time()}:{worker_id}"
+                lease = await asyncio.to_thread(daemon.try_claim, task_id, idempotency_key=idempotency_key)
+                if lease is None:
+                    continue
+                await report({"pid": os.getpid(), "state": "running", "task_id": task_id, "ts": time.time()})
+
+                def work(check_cancelled: Any, _task_id: str = task_id) -> Dict[str, Any]:
+                    sleep_in_slices(args.work_seconds, slice_seconds=min(0.1, args.heartbeat_interval / 2),
+                                    check_cancelled=check_cancelled)
+                    return {"ok": True, "task_id": _task_id}
+
+                outcome = await asyncio.to_thread(daemon.run_task, lease, work, receipt_ref=f"receipts/{task_id}.json")
+                await report({"pid": os.getpid(), "state": outcome.status, "task_id": task_id, "ts": time.time()})
+            finally:
+                ingest_queue.task_done()
+
+    async def write_reports() -> None:
+        while True:
+            try:
+                payload, _size, _key = await report_queue.get()
+            except QueueClosed:
+                return
+            try:
+                await _write_status_async(args.status_file, payload)
+            finally:
+                report_queue.task_done()
+
+    await report({"pid": os.getpid(), "state": "idle", "task_id": "", "ts": time.time()})
+    dispatch_workers = [asyncio.create_task(dispatch(i)) for i in range(max(1, args.concurrency))]
+    ingest_task = asyncio.create_task(ingest())
+    writer_task = asyncio.create_task(write_reports())
+
+    await ingest_task
+    await asyncio.gather(*dispatch_workers)
+    await report({"pid": os.getpid(), "state": "stopped", "task_id": "", "ts": time.time()})
+    await report_queue.close()
+    await writer_task
+    return 0
+
+
+def _cmd_serve_async(args: argparse.Namespace) -> int:
+    """Entry point for the ``serve-async`` subcommand -- see :func:`_serve_async_main`."""
+    return asyncio.run(_serve_async_main(args))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -218,6 +357,22 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--poll-interval", type=float, default=0.3)
     p_serve.add_argument("--status-file", required=True)
     p_serve.set_defaults(func=_cmd_serve)
+
+    p_serve_async = sub.add_parser(
+        "serve-async",
+        help="bounded-queue worker loop (asyncio ingest/dispatch/report stages, issue #495/#508)",
+    )
+    _add_backend_args(p_serve_async)
+    p_serve_async.add_argument("--agent-id", required=True)
+    p_serve_async.add_argument("--capabilities", nargs="*", default=())
+    p_serve_async.add_argument("--ttl", type=float, default=5.0)
+    p_serve_async.add_argument("--heartbeat-interval", type=float, default=1.0)
+    p_serve_async.add_argument("--work-seconds", type=float, default=2.0)
+    p_serve_async.add_argument("--poll-interval", type=float, default=0.3)
+    p_serve_async.add_argument("--concurrency", type=int, default=2,
+                               help="dispatch workers, i.e. ingest_queue/report_queue capacity basis")
+    p_serve_async.add_argument("--status-file", required=True)
+    p_serve_async.set_defaults(func=_cmd_serve_async)
 
     args = parser.parse_args(argv)
     return args.func(args)

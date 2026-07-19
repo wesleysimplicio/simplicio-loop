@@ -726,7 +726,8 @@ def main(argv=None) -> int:
                         help="pass-through args for `simplicio-loop task`")
 
     p_prototype = sub.add_parser(
-        "prototype", help="Prototype-First gate: plan/classify/validate-schema/doctor (#568 P0)"
+        "prototype",
+        help="Prototype-First gate: plan/generate/list/show/classify/validate/compare/decide/promote/reject/doctor (#568)",
     )
     p_prototype.add_argument("prototype_args", nargs=argparse.REMAINDER,
                              help="pass-through args for `simplicio-loop prototype`")
