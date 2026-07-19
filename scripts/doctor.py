@@ -469,9 +469,27 @@ def chk_release_version():
             "msg": "up to date (local %s, latest release %s)" % (local_version, remote_tag)}
 
 
+def chk_map_service():
+    """Report whether a live map receipt exists; missing Hub state uses standalone fallback."""
+    path = REPO / ".orchestrator" / "map" / "build.json"
+    if not path.exists():
+        return {"status": WARN, "tier": "OPTIONAL", "name": "map_service",
+                "msg": "no Hub map receipt; standalone map fallback is available"}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"status": FAIL, "tier": "OPTIONAL", "name": "map_service",
+                "msg": "map receipt is invalid: %s" % exc}
+    if payload.get("schema") != "simplicio.map-service-cli/v1" or not payload.get("trace_id"):
+        return {"status": FAIL, "tier": "OPTIONAL", "name": "map_service",
+                "msg": "map receipt is missing schema or trace_id"}
+    return {"status": OK, "tier": "OPTIONAL", "name": "map_service",
+            "msg": "map receipt valid (fallback=%s)" % payload.get("fallback", False)}
+
+
 CHECKS = [chk_python, chk_operators, chk_mapper_capabilities, chk_skills,
           chk_hooks, chk_git_precommit_hook, chk_git_prepush_hook, chk_proxy, chk_wire,
-          chk_tray_dep, chk_remote_worker, check_vscode_global, chk_release_version]
+          chk_tray_dep, chk_remote_worker, check_vscode_global, chk_map_service, chk_release_version]
 
 
 def main(argv=None):
