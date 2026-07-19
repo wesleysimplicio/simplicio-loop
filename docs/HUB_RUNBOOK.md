@@ -42,6 +42,40 @@ tick-based aging. `submit` enqueues into it; `claim_next` pops in fairness order
 `cancel`/`result` release the client's inflight/quota slot; `scheduler_status` returns the live
 state.
 
+### Priority classes (step 1 of #505)
+
+Every `ScheduledJob` carries a `priority` field, one of the seven classes named in the issue —
+`interactive`, `mapping`, `llm`, `test`, `build`, `background`, `maintenance` — each mapped to a
+deficit-gain multiplier in `PRIORITY_GAIN_MULTIPLIER` (`hub_scheduler.py`): `interactive=8x` down
+to `maintenance=0.5x`. `background` (the default, `1x`) preserves the exact
+`gain = quantum * weight` formula every pre-priority call site already relied on, so omitting
+`priority` on `submit` is a no-op. `enqueue()` fails closed (`SchedulerError`) on an unrecognized
+priority string instead of silently defaulting it. Over IPC, pass `priority` in the `submit`
+payload; the daemon forwards it to `FairScheduler.enqueue()` verbatim.
+
+Within the same DRR pass, a higher-priority job's larger gain multiplier lets it clear its cost
+threshold sooner than a same-weight lower-priority job queued in the same client/tick window — it
+does not bypass hierarchical quotas or per-client inflight caps, which are enforced independently
+of priority.
+
+### Jain's fairness index (metrics reproduce the decision, #505 AC)
+
+`status()` now reports `served_total` (cumulative dispatch count per client) and
+`jains_fairness_index` natively — `(sum(served)^2) / (n * sum(served^2))` over all known clients,
+`1.0` when no client has been served yet (including an empty scheduler). Previously this was only
+computed ad hoc inside test code; any caller — including a future daemon status endpoint — can now
+read the live fairness number instead of recomputing it externally from raw per-client counters.
+
+### Benchmark
+
+`scripts/benchmark_hub_scheduler.py` drains a heavy (default 500 jobs) + light (default 100 jobs)
+backlog through a real `FairScheduler` and reports throughput, dispatch p50/p95 latency, the native
+`jains_fairness_index`, `starvation_preventions`, and peak RSS (`resource.getrusage`, POSIX only —
+`rss_source: "unavailable"` elsewhere, never a fabricated number). Baseline committed at
+`bench/hub-scheduler-baseline.json`; regenerate with
+`python3 scripts/benchmark_hub_scheduler.py --output bench/hub-scheduler-baseline.json` after a
+deliberate scheduler change.
+
 ### Failure modes in the current code
 
 - **Backpressure storms**: a client at its `max_queue_per_client`/`max_queue_per_workspace`/
@@ -75,7 +109,11 @@ state.
   `queued`, `inflight` (per client), `deficit` (per client), `starvation_preventions` (cumulative
   aging-boost activations — a steadily climbing counter for one client means it is regularly
   waiting past `aging_ticks` and should be investigated), `client_total`/`workspace_total`/
-  `global_total` (live quota usage), `tick`.
+  `global_total` (live quota usage), `tick`, `served_total` (per-client cumulative dispatch count)
+  and `jains_fairness_index` (Jain's index over raw `served_total`, `1.0` = perfectly fair;
+  trending toward `1/n` signals starvation of some clients — it is not weight-normalized, so
+  clients that legitimately submitted different job counts will show a lower index without that
+  being unfairness).
 - A caller seeing repeated `HubBackpressureError` with the same `scope`/`client_id`/`workspace_id`
   in `to_backpressure_signal()` is at that scope's quota, not being throttled arbitrarily — check
   `current` vs `limit` in the signal.

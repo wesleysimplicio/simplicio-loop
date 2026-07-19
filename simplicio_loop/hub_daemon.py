@@ -257,6 +257,7 @@ class HubDaemon:
                             weight=int(envelope.payload.get("weight", 1)),
                             cost=int(envelope.payload.get("cost", 1)),
                             workspace_id=str(envelope.payload.get("workspace_id") or "default"),
+                            priority=str(envelope.payload.get("priority") or "background"),
                         )
                     )
                 except QuotaExceededError as exc:
