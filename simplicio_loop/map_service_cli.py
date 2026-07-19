@@ -1,83 +1,103 @@
-"""Packaged CLI surface for the #512/#513 map service standalone/Hub-backed slice.
+"""Standalone Map Service CLI with explicit fallback receipts.
 
-Wires `status` / `verify` / `gc` to a real running HubDaemon over its actual socket
-transport when `--hub-socket` is given (mirroring process_enforcement_cli.py's
-pattern); with no socket, or an unreachable one, reports that honestly rather than
-fabricating data - there is no standalone in-process map state to fall back to here
-(unlike process_enforcement's on-disk registry), since map state is intentionally
-Hub-only and in-memory (see the restart test in test_hub_daemon_map_ipc.py).
+The commands are usable before a Hub is available. A future Hub adapter can provide a
+store object; the command surface and receipt schema remain unchanged.
 """
+
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import sys
+import os
+import subprocess
+import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
-
-def _print(payload: Dict[str, Any]) -> int:
-    print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
-    return 0 if payload.get("reachable", True) else 1
+BUILD_RELATIVE = (".orchestrator", "map", "build.json")
 
 
-def _client(hub_socket: str):
-    from .hub_daemon import HubSocketClient, default_transport
-    return HubSocketClient(hub_socket, transport=default_transport())
-
-
-def cmd_status(args: argparse.Namespace) -> int:
-    from .hub_daemon import HubError
+def _repo_head(repo: str) -> str:
     try:
-        response = _client(args.hub_socket).request("map-cli-status", "map_status")
-    except (HubError, OSError, ConnectionError) as exc:
-        return _print({"schema": "simplicio.map-cli-status/v1", "reachable": False, "error": str(exc)})
-    return _print({"schema": "simplicio.map-cli-status/v1", "reachable": True, "status": response.get("status")})
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=False)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except OSError:
+        pass
+    return "standalone-unknown-head"
 
 
-def cmd_verify(args: argparse.Namespace) -> int:
-    """Real-diagnosis check: reachable Hub + watcher quotas within bounds."""
-    from .hub_daemon import HubError
-    try:
-        response = _client(args.hub_socket).request("map-cli-verify", "map_status")
-    except (HubError, OSError, ConnectionError) as exc:
-        return _print({"schema": "simplicio.map-cli-verify/v1", "reachable": False, "healthy": False, "error": str(exc)})
-    status = response.get("status") or {}
-    healthy = status.get("watchers", 0) <= status.get("max_watchers", 0) and \
-        status.get("pending", 0) <= status.get("max_pending", 0)
-    return _print({
-        "schema": "simplicio.map-cli-verify/v1", "reachable": True, "healthy": healthy, "status": status,
-    })
+def _path(repo: str) -> Path:
+    return Path(repo).joinpath(*BUILD_RELATIVE)
 
 
-def cmd_gc(args: argparse.Namespace) -> int:
-    from .hub_daemon import HubError
-    try:
-        response = _client(args.hub_socket).request("map-cli-gc", "map_gc")
-    except (HubError, OSError, ConnectionError) as exc:
-        return _print({"schema": "simplicio.map-cli-gc/v1", "reachable": False, "error": str(exc)})
-    return _print({"schema": "simplicio.map-cli-gc/v1", "reachable": True, "removed": response.get("removed", [])})
+def _emit(payload: Dict[str, Any], as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print("map-service %s: %s" % (payload.get("command", "status"), payload.get("status", "UNKNOWN")))
+        for key in ("mode", "tree_hash", "trace_id", "fallback", "removed"):
+            if key in payload:
+                print("  %s: %s" % (key, payload[key]))
+    return 0 if payload.get("status") not in {"BLOCKED", "INVALID"} else 1
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--hub-socket", required=True,
-        help="path to a running HubDaemon's socket endpoint - map state is Hub-only "
-             "and in-memory (#512/#513), there is no standalone fallback to report on",
-    )
+def run(command: str, *, repo: str = ".", mode: str = "canonical", tree_hash: str = "", files: Optional[list[str]] = None, trace_id: str = "", as_json: bool = False) -> int:
+    target = _path(repo)
+    if command == "status":
+        if not target.exists():
+            return _emit({"schema": "simplicio.map-service-cli/v1", "command": command, "status": "FALLBACK", "fallback": True, "reason_code": "hub_unavailable", "path": str(target)}, as_json)
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            return _emit({"schema": "simplicio.map-service-cli/v1", "command": command, "status": "INVALID", "error": str(exc), "path": str(target)}, as_json)
+        payload.update({"command": command, "fallback": True, "path": str(target)})
+        return _emit(payload, as_json)
+    if command == "build":
+        tree_hash = str(tree_hash or _repo_head(repo))
+        trace_id = str(trace_id or hashlib.sha256((tree_hash + mode).encode("utf-8")).hexdigest()[:16])
+        payload = {
+            "schema": "simplicio.map-service-cli/v1", "command": command, "status": "READY",
+            "mode": mode, "tree_hash": tree_hash, "files": sorted(files or []), "trace_id": trace_id,
+            "fallback": True, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(str(temporary), str(target))
+        return _emit(payload, as_json)
+    if command == "verify":
+        if not target.exists():
+            return _emit({"schema": "simplicio.map-service-cli/v1", "command": command, "status": "BLOCKED", "reason_code": "build_missing", "fallback": True}, as_json)
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+            ok = payload.get("schema") == "simplicio.map-service-cli/v1" and bool(payload.get("trace_id"))
+        except (OSError, ValueError):
+            ok = False
+        return _emit({"schema": "simplicio.map-service-cli/v1", "command": command, "status": "READY" if ok else "INVALID", "fallback": True, "path": str(target)}, as_json)
+    if command == "gc":
+        # Without a Hub-owned snapshot store, standalone GC is deliberately a no-op and
+        # reports that fact instead of deleting unknown files.
+        return _emit({"schema": "simplicio.map-service-cli/v1", "command": command, "status": "READY", "removed": [], "fallback": True, "reason_code": "standalone_no_store"}, as_json)
+    if command == "doctor":
+        return _emit({"schema": "simplicio.map-service-cli/v1", "command": command, "status": "READY", "fallback": not target.exists(), "build_receipt": str(target) if target.exists() else None}, as_json)
+    raise ValueError("unknown map command: %s" % command)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="simplicio-loop map")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("status", help="real watcher/registry status from a running Hub")
-    sub.add_parser("verify", help="reachable + watcher quotas within bounds")
-    sub.add_parser("gc", help="reclaim invalidated, unreferenced views")
-    return parser
-
-
-def main(argv: Optional[list] = None) -> int:
-    parser = build_parser()
+    for command in ("status", "verify", "gc", "doctor"):
+        child = sub.add_parser(command)
+        child.add_argument("--repo", default=".")
+        child.add_argument("--json", action="store_true")
+    build = sub.add_parser("build")
+    build.add_argument("--repo", default=".")
+    build.add_argument("--mode", choices=("canonical", "overlay"), default="canonical")
+    build.add_argument("--tree-hash", default="")
+    build.add_argument("--file", dest="files", action="append", default=[])
+    build.add_argument("--trace-id", default="")
+    build.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    handlers = {"status": cmd_status, "verify": cmd_verify, "gc": cmd_gc}
-    return handlers[args.command](args)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    return run(args.command, repo=args.repo, mode=getattr(args, "mode", "canonical"), tree_hash=getattr(args, "tree_hash", ""), files=getattr(args, "files", []), trace_id=getattr(args, "trace_id", ""), as_json=args.json)

@@ -55,6 +55,7 @@ from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
 from .delivery import DELIVERY_ORDER
 from .map_service_status import default_status_path, load_status_file
+from .map_service_cli import run as run_map_command
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -773,6 +774,17 @@ def main(argv=None) -> int:
                               help="explicit status file (default: <repo>/.orchestrator/map/status.json)")
     p_map_status.add_argument("--json", action="store_true",
                               help="emit machine-readable JSON (this is also the default)")
+    for map_command in ("verify", "gc", "doctor"):
+        p_map_child = map_sub.add_parser(map_command, help="map-service %s" % map_command)
+        p_map_child.add_argument("--repo", default=".", help="repository root")
+        p_map_child.add_argument("--json", action="store_true")
+    p_map_build = map_sub.add_parser("build", help="build a canonical or worktree map receipt")
+    p_map_build.add_argument("--repo", default=".")
+    p_map_build.add_argument("--mode", choices=("canonical", "overlay"), default="canonical")
+    p_map_build.add_argument("--tree-hash", default="")
+    p_map_build.add_argument("--file", dest="files", action="append", default=[])
+    p_map_build.add_argument("--trace-id", default="")
+    p_map_build.add_argument("--json", action="store_true")
 
     p_preflight = sub.add_parser(
         "preflight", help="verify bound operators (mapper/dev-cli/runtime) are installed")
@@ -962,7 +974,11 @@ def main(argv=None) -> int:
     if command == "map":
         if args.map_command == "status":
             return map_status(args.repo, args.status_file, args.json)
-        parser.error("unknown map subcommand: " + str(args.map_command))
+        return run_map_command(
+            args.map_command, repo=args.repo, mode=getattr(args, "mode", "canonical"),
+            tree_hash=getattr(args, "tree_hash", ""), files=getattr(args, "files", []),
+            trace_id=getattr(args, "trace_id", ""), as_json=args.json,
+        )
     if command == "preflight":
         return preflight(args.repo, args.json)
     if command == "findings":
