@@ -1,9 +1,11 @@
 import os
 import json
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -431,6 +433,128 @@ def test_doctor_reports_lock_pid_dead_when_lock_payload_is_corrupt() -> None:
         assert report["lock_exists"] is True
         assert report["lock_pid_alive"] is False
         assert "pid" not in report
+
+
+def test_unix_socket_server_creates_no_thread_per_connection() -> None:
+    """Issue #584: the Unix transport is asyncio-driven -- accepting and serving
+    connections must not spawn a new OS thread per connection (only the single
+    background thread hosting the event loop itself)."""
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
+    from concurrent.futures import ThreadPoolExecutor
+
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        daemon = HubDaemon(lock_path)
+        daemon.start()
+        server = HubSocketServer(daemon, socket_path)
+        threads_before_start = threading.active_count()
+        server.start()
+        threads_after_start = threading.active_count()
+        try:
+            assert threads_after_start == threads_before_start + 1
+
+            def one(index: int) -> bool:
+                return HubSocketClient(socket_path, timeout=10.0).request(
+                    "conc-%d" % index, "ping"
+                )["ok"]
+
+            with ThreadPoolExecutor(max_workers=32) as pool:
+                results = list(pool.map(one, range(64)))
+            assert all(results)
+            # No thread spawned per accepted connection: still exactly one extra
+            # thread (the asyncio event loop) beyond whatever existed before start().
+            assert threading.active_count() == threads_after_start
+        finally:
+            server.shutdown()
+            daemon.stop()
+        assert threading.active_count() == threads_before_start
+
+
+def test_unix_socket_stress_200_concurrent_clients_no_latency_regression() -> None:
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
+    from concurrent.futures import ThreadPoolExecutor
+
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        daemon = HubDaemon(lock_path)
+        daemon.start()
+        server = HubSocketServer(daemon, socket_path)
+        server.start()
+        try:
+            def worker(index: int) -> float:
+                started = time.perf_counter()
+                response = HubSocketClient(socket_path, timeout=10.0).request(
+                    "stress-%d" % index, "ping"
+                )
+                assert response["ok"] is True
+                return time.perf_counter() - started
+
+            started = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=32) as pool:
+                samples = list(pool.map(worker, range(200)))
+            elapsed = time.perf_counter() - started
+            samples.sort()
+            p95 = samples[int(len(samples) * 0.95) - 1]
+            assert elapsed < 10.0
+            assert p95 < 1.0
+        finally:
+            server.shutdown()
+            daemon.stop()
+
+
+def test_unix_socket_graceful_shutdown_drains_in_flight_connection() -> None:
+    """A connected-but-not-yet-sending client at shutdown time must not hang the
+    shutdown call or leak a dangling task: the async connection task is cancelled
+    and awaited by ``_shutdown_async`` before ``shutdown()`` returns."""
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        daemon = HubDaemon(lock_path)
+        daemon.start()
+        server = HubSocketServer(daemon, socket_path)
+        server.start()
+        try:
+            lingering = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            lingering.connect(socket_path)
+            # Never sends a line: this connection is parked inside the server's
+            # readline() await when shutdown() is invoked below.
+            started = time.perf_counter()
+            server.shutdown()
+            elapsed = time.perf_counter() - started
+            assert elapsed < 5.0
+            lingering.close()
+        finally:
+            daemon.stop()
+
+
+def test_unix_socket_dispatch_timeout_closes_silent_connection() -> None:
+    if os.name == "nt":
+        pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = str(Path(directory) / "hub.lock")
+        socket_path = str(Path(directory) / "hub.sock")
+        daemon = HubDaemon(lock_path)
+        daemon.start()
+        server = HubSocketServer(daemon, socket_path)
+        server._DISPATCH_TIMEOUT_SECONDS = 0.2
+        server.start()
+        try:
+            silent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            silent.settimeout(2)
+            silent.connect(socket_path)
+            # Server closes the connection after the dispatch timeout without a
+            # line ever arriving; recv() returns b"" (EOF) instead of hanging.
+            assert silent.recv(4096) == b""
+            silent.close()
+        finally:
+            server.shutdown()
+            daemon.stop()
 
 
 def test_cli_doctor_subcommand_reports_no_daemon(capsys: pytest.CaptureFixture) -> None:
