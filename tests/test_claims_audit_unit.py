@@ -334,6 +334,53 @@ def test_skill_pair_parity_ignores_unilateral_files_and_skill_md():
             restore()
 
 
+_ORPHAN_SELFTEST_SCRIPT = '''
+def cmd_selftest(_opts):
+    return 0
+
+
+def main(argv):
+    sub = argv[0]
+    dispatch = {"selftest": cmd_selftest}
+    return dispatch[sub](None)
+'''
+
+
+def test_check_commands_run_flags_unregistered_selftest_script():
+    # Regression: `scripts/component_release.py` defined and dispatched a real `selftest`
+    # subcommand but was never added to SELFTEST_SCRIPTS/SELFTEST_EXEMPT, so the local gate
+    # (`scripts/check.py` -> claims-audit check 3) never actually ran it -- dead assurance, the
+    # exact failure mode this meta-check exists to catch. This proves the detector itself works
+    # against a synthetic orphan, independent of the real repo's current registration state.
+    with tempfile.TemporaryDirectory() as tmp:
+        _write(os.path.join(tmp, "scripts", "orphan_worker.py"), _ORPHAN_SELFTEST_SCRIPT)
+        restore = _patched(tmp)
+        saved_scripts, saved_exempt = claims_audit.SELFTEST_SCRIPTS, claims_audit.SELFTEST_EXEMPT
+        claims_audit.SELFTEST_SCRIPTS = []
+        claims_audit.SELFTEST_EXEMPT = set()
+        try:
+            ok, detail = claims_audit.check_commands_run()
+            assert not ok, "a selftest-defining script absent from SELFTEST_SCRIPTS must be flagged"
+            assert "scripts/orphan_worker.py" in detail
+        finally:
+            claims_audit.SELFTEST_SCRIPTS = saved_scripts
+            claims_audit.SELFTEST_EXEMPT = saved_exempt
+            restore()
+
+
+def test_component_release_selftest_is_registered():
+    # Narrow regression pin for the exact bug found: `scripts/component_release.py` genuinely
+    # defines and dispatches a `selftest` subcommand (13 checks, proven by running it directly)
+    # but was missing from SELFTEST_SCRIPTS, so `scripts/check.py` silently never exercised it.
+    assert "scripts/component_release.py" in claims_audit.SELFTEST_SCRIPTS
+    script_path = os.path.join(claims_audit.REPO, "scripts", "component_release.py")
+    assert os.path.exists(script_path)
+    r = subprocess.run([sys.executable, script_path, "selftest"],
+                       capture_output=True, text=True, cwd=claims_audit.REPO)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "FAIL" not in r.stdout.upper().replace("FAILURES", "")
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module

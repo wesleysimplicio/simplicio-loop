@@ -43,6 +43,74 @@ def test_destructive_sql_blocked():
     assert _check("psql -c 'DROP DATABASE prod'").returncode == 2
 
 
+# --- Regression: bypasses found via manual adversarial testing of the gate. Each of these is a
+# REALISTIC command shape (a git global option, a refspec force-push, a common rm flag-order
+# habit), not an exotic attack string -- the original tool/subcommand-adjacency regexes and the
+# fixed-order `-rf?` pattern let every one of these through even with the dangerous flag present.
+def test_force_push_via_plus_refspec_blocked():
+    assert _check("git push origin +feature:main").returncode == 2
+
+
+def test_force_push_survives_git_c_option_blocked():
+    assert _check("git -c protocol.version=2 push --force origin main").returncode == 2
+
+
+def test_force_push_survives_no_pager_option_blocked():
+    assert _check("git --no-pager push --force origin main").returncode == 2
+
+
+def test_force_push_survives_git_capital_c_option_blocked():
+    # This exact shape is the one `_effective_command_cwd` already resolves for cwd purposes
+    # (see tests/test_action_gate_issue526.py::test_git_c_resolves_effective_repo_for_push) --
+    # it must also still be recognized as a force-push when `--force` is present.
+    assert _check('git -C "/tmp/repo" push --force origin main').returncode == 2
+
+
+def test_filter_branch_survives_git_c_option_blocked():
+    assert _check("git -c foo=bar filter-branch --tree-filter x HEAD").returncode == 2
+
+
+def test_terraform_destroy_survives_chdir_option_blocked():
+    assert _check("terraform -chdir=infra destroy -auto-approve").returncode == 2
+
+
+def test_kubectl_delete_survives_context_option_blocked():
+    assert _check("kubectl --context=prod delete namespace prod").returncode == 2
+
+
+def test_rm_rf_reversed_flag_order_blocked():
+    assert _check("rm -fr /").returncode == 2
+
+
+def test_rm_rf_capital_r_blocked():
+    assert _check("rm -Rf /").returncode == 2
+
+
+def test_rm_rf_separated_flags_blocked():
+    assert _check("rm -r -f /").returncode == 2
+
+
+def test_rm_rf_long_form_flags_blocked():
+    assert _check("rm --recursive --force /").returncode == 2
+
+
+def test_rm_rf_project_dir_still_allowed():
+    # False-positive guard: a recursive-force delete of an ordinary project path (not a
+    # root/home/cwd/glob target) must remain allowed, exactly as `rm -rf node_modules` was
+    # before this fix.
+    assert _check("rm -rf ./node_modules").returncode == 0
+
+
+def test_commit_message_mentioning_push_not_blocked():
+    # False-positive guard for the relaxed tool/subcommand-adjacency matching: "push" appearing
+    # inside a commit message must not be mistaken for a `git push` subcommand.
+    assert _check("git commit -m 'please push this fix'").returncode == 0
+
+
+def test_kubectl_get_with_context_option_not_blocked():
+    assert _check("kubectl --context=prod get pods").returncode == 0
+
+
 def test_benign_commands_allowed():
     # non-push/commit benign commands never trigger the staged-diff scan → deterministic
     assert _check("git status").returncode == 0

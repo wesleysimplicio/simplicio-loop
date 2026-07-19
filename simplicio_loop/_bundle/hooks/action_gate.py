@@ -78,24 +78,82 @@ def _project_relevant():
     return False
 
 
+# A tool commonly accepts global options BEFORE its subcommand -- `git -c x=y push`,
+# `git -C /repo push` (this file's OWN `_effective_command_cwd` already anticipates that exact
+# shape for cwd resolution, see tests/test_action_gate_issue526.py::test_git_c_resolves_effective_repo_for_push),
+# `git --no-pager push`, `terraform -chdir=dir destroy`, `kubectl --context=c delete ...`. A
+# pattern requiring the subcommand to sit immediately next to the tool name (only whitespace in
+# between, e.g. the original `\bgit\s+push\b`) is silently bypassed by any such option even when
+# `--force` is present elsewhere in the same command -- found via manual adversarial testing of
+# this gate. This fragment allows zero or more dash-prefixed option tokens (each optionally
+# carrying an inline `=value` or a separate value argument) between the tool name and the
+# subcommand, without loosening the match enough to false-positive on an unrelated subcommand
+# (e.g. `git commit -m "please push this"` still does not match: "commit" is not a dash-prefixed
+# option token, so the chain never reaches a literal "push").
+_TOOL_OPTS = r"(?:-{1,2}[A-Za-z][\w-]*(?:=\S+|\s+\S+)?\s+)*"
+
 # Irreversible / history-rewriting / destructive ops → BLOCK and route to a human (Step 5).
 # High-precision patterns: each is genuinely hard to undo; benign commands never match.
 IRREVERSIBLE = [
-    (re.compile(r"\bgit\s+push\b.*(--force\b|--force-with-lease\b|(?<!-)\B-f\b)"),
+    (re.compile(r"\bgit\s+" + _TOOL_OPTS + r"push\b.*("
+                r"--force\b|--force-with-lease\b|(?<!-)\B-f\b|"
+                # `+<ref>` / `+<src>:<dst>` refspec syntax is force-push shorthand and is NOT
+                # spelled `--force` or `-f` anywhere in the command -- a distinct, well-known
+                # bypass of naive force-push detection.
+                r"(?:^|\s)\+[\w./-]+(?::[\w./-]*)?(?=\s|$))"),
      "force-push (history overwrite) — route to a human; prefer an additive rebase"),
-    (re.compile(r"\bgit\s+push\b.*(--mirror|--delete\b|\s:\S)"),
+    (re.compile(r"\bgit\s+" + _TOOL_OPTS + r"push\b.*(--mirror\b|--delete\b|\s:\S)"),
      "remote branch/ref deletion or mirror-push — irreversible on the remote"),
-    (re.compile(r"\bgit\s+(filter-branch|filter-repo)\b"),
+    (re.compile(r"\bgit\s+" + _TOOL_OPTS + r"(filter-branch|filter-repo)\b"),
      "history rewrite across the repo — irreversible for everyone"),
-    (re.compile(r"\brm\s+-rf?\s+(/|~|\.|\*|\$HOME)(\s|$)"),
-     "recursive delete of a root/home/cwd/glob — mass-file deletion"),
     (re.compile(r"\b(DROP\s+(DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TABLE)\b", re.I),
      "destructive schema/data DDL"),
-    (re.compile(r"\bterraform\s+destroy\b|\bkubectl\s+delete\s+(namespace|ns|pv|deployment)\b", re.I),
+    (re.compile(r"\bterraform\s+" + _TOOL_OPTS + r"destroy\b|"
+                r"\bkubectl\s+" + _TOOL_OPTS + r"delete\s+(namespace|ns|pv|deployment)\b", re.I),
      "infrastructure teardown / prod resource deletion"),
     (re.compile(r":\(\)\s*\{\s*:\|:&\s*\};:"),
      "fork bomb"),
 ]
+
+# `rm -rf <dangerous target>` is matched separately, not via a single fixed-order regex: real
+# invocations routinely spell the same two flags (recursive + force) as `-rf`, `-fr`, `-Rf`,
+# separated `-r -f`, or the long forms `--recursive`/`--force` -- a regex anchored on the literal
+# substring `-rf?` (the original pattern) only ever matches ONE of those spellings and is
+# trivially bypassed (unintentionally, not just adversarially -- flipping `-rf` to `-fr` is an
+# everyday typing habit) by any of the others. `dangerous_rm_reason`/`_rm_flag_has` below check
+# each flag token independently of order/position instead.
+RM_DANGEROUS_TARGET = re.compile(r"^(?:/|~|\.|\*|\$HOME)$")
+
+
+def _rm_flag_has(token, long_name, short_letters):
+    """True if a single `rm` argument token `token` expresses the flag meaning `long_name`
+    (e.g. 'recursive', 'force'): either the exact long form (`--recursive`) or, for a short
+    single-dash token (`-rf`, `-fr`, `-vrf`, ...), any of `short_letters` appearing in it."""
+    if not token.startswith("-"):
+        return False
+    if token.startswith("--"):
+        return token[2:].split("=", 1)[0] == long_name
+    return any(ch in token[1:] for ch in short_letters)
+
+
+def dangerous_rm_reason(cmd):
+    """Return a block reason if `cmd` contains an `rm` invocation with BOTH recursive AND force
+    semantics (in any flag order / short-or-long form) targeting a root/home/cwd/glob path, else
+    None. See `RM_DANGEROUS_TARGET`/`_rm_flag_has` for the flag-spelling tolerance this closes."""
+    tokens = (cmd or "").split()
+    for i, tok in enumerate(tokens):
+        if tok != "rm":
+            continue
+        j = i + 1
+        recursive = force = False
+        while j < len(tokens) and tokens[j].startswith("-") and tokens[j] != "--":
+            recursive = recursive or _rm_flag_has(tokens[j], "recursive", "rR")
+            force = force or _rm_flag_has(tokens[j], "force", "f")
+            j += 1
+        if j < len(tokens) and recursive and force and RM_DANGEROUS_TARGET.match(tokens[j]):
+            return "recursive delete of a root/home/cwd/glob — mass-file deletion"
+    return None
+
 
 # Secret signatures (high-precision; the generic key/secret rule needs a long value to fire).
 SECRETS = [
@@ -126,6 +184,9 @@ def classify_command(cmd):
     """Return (None) if benign, or (reason) if it's an irreversible op to BLOCK."""
     if not cmd:
         return None
+    rm_reason = dangerous_rm_reason(cmd)
+    if rm_reason:
+        return rm_reason
     for rx, reason in IRREVERSIBLE:
         if rx.search(cmd):
             return reason
@@ -540,11 +601,31 @@ def cmd_selftest(_opts):
     chk("rmrf-root.block", act("rm -rf /"), "block")
     chk("drop-db.block", act("psql -c 'DROP DATABASE prod'"), "block")
     chk("tf-destroy.block", act("terraform destroy -auto-approve"), "block")
+    # bypasses found via manual adversarial testing (real command shapes, not exotic):
+    # a global option inserted between the tool name and its subcommand defeated the
+    # tool/subcommand-adjacency regexes even with the dangerous flag present elsewhere.
+    chk("force-push-refspec.block", act("git push origin +feature:main"), "block")
+    chk("force-push-gitopt.block", act("git -c protocol.version=2 push --force origin main"), "block")
+    chk("force-push-nopager.block", act("git --no-pager push --force origin main"), "block")
+    chk("force-push-gitC.block", act('git -C "/tmp/repo" push --force origin main'), "block")
+    chk("filter-branch-gitopt.block", act("git -c foo=bar filter-branch --tree-filter x HEAD"),
+        "block")
+    chk("tf-destroy-chdir.block", act("terraform -chdir=infra destroy -auto-approve"), "block")
+    chk("kubectl-delete-context.block", act("kubectl --context=prod delete namespace prod"),
+        "block")
+    # rm -rf flag-order/long-form variants: everyday typing habits, not just adversarial input.
+    chk("rmrf-reversed.block", act("rm -fr /"), "block")
+    chk("rmrf-capital.block", act("rm -Rf /"), "block")
+    chk("rmrf-separated.block", act("rm -r -f /"), "block")
+    chk("rmrf-longform.block", act("rm --recursive --force /"), "block")
     # benign commands are NOT classified as irreversible
     chk("status.allow", act("git status"), "allow")
     chk("normal-push.allow", act("git push -u origin feature"), "allow")
     chk("rm-file.allow", act("rm -f build/tmp.o"), "allow")
+    chk("rm-project-dir.allow", act("rm -rf ./node_modules"), "allow")
     chk("ls.allow", act("ls -la && grep -rn foo src/"), "allow")
+    chk("commit-mentions-push.allow", act("git commit -m 'please push this fix'"), "allow")
+    chk("kubectl-get-context.allow", act("kubectl --context=prod get pods"), "allow")
     # secret-scan (text mode, placeholder-aware). Fixtures built so this source file stays clean.
     fake_aws = "AKIA" + "QRSTUVWX01234567"          # matches AKIA[0-9A-Z]{16}, no placeholder word
     chk("secret.detected", len(scan_secret_text('+k = "%s"' % fake_aws)) >= 1, True)
