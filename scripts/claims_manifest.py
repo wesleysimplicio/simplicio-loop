@@ -127,16 +127,32 @@ CLAIMS = [
         ),
     },
     {
-        "id": "runtimes-badge-11pct",
+        "id": "runtimes-badge-15pct",
         "doc": "README.md",
-        "text_glob": "11%",
+        "text_glob": "15%",
         "status": "unverified",
         "receipt": None,
         "note": (
             "False-positive match: the shields.io badge URL "
-            "'runtimes-11%20(3%20garantidos...)' has '11' followed by the URL-encoded space "
-            "'%20', not a percentage — the '11' is the runtime count. Kept in manifest so the "
-            "extractor's known false positive is documented rather than silently ignored."
+            "'runtimes-15%20(3%20garantidos...)' has '15' followed by the URL-encoded space "
+            "'%20', not a percentage — the '15' is the runtime count (bumped from 12 when the "
+            "simplicio-runtime MCP multi-host docs added kimi/qwen/deepseek adapters). Kept in "
+            "manifest so the extractor's known false positive is documented rather than "
+            "silently ignored."
+        ),
+    },
+    {
+        "id": "coverage-283-baseline-fase-b",
+        "doc": "README.md",
+        "text_glob": "16.6% / 9.4% to 28.45% / 24.02%",
+        "status": "verified",
+        "receipt": "quality/coverage-baseline.json",
+        "note": (
+            "Claim: '#283 measured coverage raised from 16.6% / 9.4% to 28.45% / 24.02% "
+            "(global / critical) on the widened scope.' Real numbers from "
+            "scripts/coverage_gate.py, receipt at quality/coverage-baseline.json "
+            "(global_pct/critical_pct + previous_baseline.global_pct/critical_pct), bound to "
+            "commit d37b28d2b1f67b776dcc06a5acd7348369abe150 (PR #407)."
         ),
     },
     {
@@ -148,6 +164,18 @@ CLAIMS = [
         "note": (
             "Claim: infographic alt text 'up to 90% fewer tokens'. No receipt snapshot exists. "
             "Marked unverified."
+        ),
+    },
+    {
+        "id": "dod-min-coverage-85pct",
+        "doc": "README.md",
+        "text_glob": "85%",
+        "status": "unverified",
+        "receipt": None,
+        "note": (
+            "Claim: v3.38.0 what's-new bullet restates CLAUDE.md's Definition-of-Done policy "
+            "'ge85% coverage' for touched files on any anchored task — a project POLICY threshold, "
+            "not a measured global coverage outcome for this release. No receipt; marked unverified."
         ),
     },
 ]

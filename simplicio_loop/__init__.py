@@ -1,6 +1,6 @@
 """simplicio-loop — The Universal Looping AI Orchestrator.
 
-A runtime-agnostic super-plugin (6 skills + loop/token hooks) that drains any
+A runtime-agnostic super-plugin (7 skills + loop/token hooks) that drains any
 queue of work end-to-end on any LLM/runtime. This package ships the skills and
 hooks and installs them into a runtime's skills location.
 """
@@ -13,6 +13,6 @@ try:
     try:
         __version__ = _v("simplicio-loop")
     except PackageNotFoundError:
-        __version__ = "3.34.0"
+        __version__ = "3.38.0"
 except Exception:  # pragma: no cover
-        __version__ = "3.34.0"
+        __version__ = "3.38.0"

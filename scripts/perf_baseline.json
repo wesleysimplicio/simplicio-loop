@@ -1,0 +1,13 @@
+{
+  "$schema_note": "simplicio-loop perf baseline (#277). Regenerate with `python3 scripts/perf_gate.py --update-baseline` after a deliberate, reviewed performance change -- never to silence a regression you haven't looked at.",
+  "convergence": {
+    "converged": true,
+    "iterations_used": 599
+  },
+  "cycles": 200,
+  "generated_at": "2026-07-14T15:18:28Z",
+  "latency_ms_median": 0.8071,
+  "latency_ms_p95": 1.5254,
+  "peak_rss_mb": 0.95,
+  "throughput_cycles_per_sec": 998.73
+}

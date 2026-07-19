@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/install-transaction/v1/schema.json",
+  "title": "simplicio.install-transaction/v1",
+  "description": "A deterministic, reviewable plan for one installer run, produced by a pure planner before any mutation. See scripts/install_plan.py.",
+  "type": "object",
+  "required": [
+    "schema",
+    "transaction_id",
+    "mode",
+    "scope",
+    "runtime",
+    "target",
+    "requested_version",
+    "resolved_version",
+    "files",
+    "symlinks",
+    "path_additions",
+    "services",
+    "env_vars",
+    "commands",
+    "permissions_required",
+    "backup_path",
+    "status",
+    "generated_at"
+  ],
+  "properties": {
+    "schema": { "const": "simplicio.install-transaction/v1" },
+    "transaction_id": { "type": "string", "minLength": 1 },
+    "mode": { "enum": ["minimal", "runtime", "full-stack", "ci", "dry-run", "rollback"] },
+    "scope": { "enum": ["project", "user", "system"] },
+    "runtime": { "type": "string", "minLength": 1 },
+    "target": { "type": "string", "minLength": 1 },
+    "requested_version": { "type": "string" },
+    "resolved_version": { "type": "string" },
+    "version_pinning": { "enum": ["pinned", "floating"] },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "action", "reversible"],
+        "properties": {
+          "path": { "type": "string" },
+          "action": { "enum": ["create", "update", "skip"] },
+          "reversible": { "type": "boolean" },
+          "hash_before": { "type": ["string", "null"] },
+          "hash_after": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "symlinks": { "type": "array", "items": { "type": "object" } },
+    "path_additions": { "type": "array", "items": { "type": "string" } },
+    "services": { "type": "array", "items": { "type": "object" } },
+    "env_vars": { "type": "array", "items": { "type": "string" } },
+    "commands": { "type": "array", "items": { "type": "string" } },
+    "permissions_required": {
+      "type": "array",
+      "items": { "enum": ["global_package", "break_system_packages", "path_write", "symlink", "service", "proxy", "browser", "secrets"] }
+    },
+    "backup_path": { "type": ["string", "null"] },
+    "status": { "enum": ["PLANNED", "APPLIED", "ROLLED_BACK", "BLOCKED"] },
+    "generated_at": { "type": "string" },
+    "receipt_hash": { "type": "string" }
+  }
+}

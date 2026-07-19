@@ -10,7 +10,7 @@ integration — most steps run deterministically at near-zero token cost.
 bash scripts/install.sh simplicio_agent
 ```
 
-The installer places the 6 skills where Simplicio Agent's skill-recall finds them and confirms
+The installer places the 7 skills where Simplicio Agent's skill-recall finds them and confirms
 the native bindings are active.
 
 ## Loop drive — native loop
@@ -19,12 +19,11 @@ Simplicio Agent drives the loop natively (its scheduler IS the watcher). `simpli
 to the native durable scheduler; the evidence-gated completion-promise, cap, and STOP guards are
 enforced by the runtime, not a shell hook.
 
-## Native bind — extension points (the whole point, REQUIRED)
+## Native bind — extension points (optional acceleration)
 
-`simplicio-runtime` native bind is REQUIRED on Simplicio Agent, not optional — there is no
-unbound fallback worth running here; if the bind isn't live, STOP and fix it rather than letting
-the orchestrator quietly fall back to a plain-LLM loop on a host built for native binding. Verify
-with `simplicio doctor --json` before relying on it.
+`simplicio-runtime` native binding is optional on Simplicio Agent. When it is unavailable, run
+the standard-tool fallback and keep the protocol's normal evidence and safety gates. Use
+`simplicio doctor --json` to diagnose an installed bind.
 
 Simplicio Agent binds, among others: `orient`, `recall`, `deterministic_edit`, `claim`,
 `worktree`, `diagnostics`, `validate`, `pr`, `watcher`, `savings_ledger`, `model_route`. When
@@ -56,3 +55,10 @@ moved from `~/.hermes/config.yaml` to `~/.simplicio-agent/config.yaml` and logs 
 `~/.hermes/logs/` to `~/.simplicio-agent/logs/`. The [`hermes` adapter](../hermes/README.md) is
 kept as a legacy shim for one release cycle; scripts in this repo detect either binary and warn
 when they fall back to the legacy one.
+
+## Progresso do run
+
+Native loop (N1-equivalent): wire the native tick to call `python3 scripts/loop_progress.py emit
+--step <step> --status begin|end` at its own extension points and `render --turn-header` before
+re-feeding — same contract, native transport instead of a hook file. Universal fallback (N3): open
+`.orchestrator/loop/PROGRESS.md` (auto-regenerated every turn) regardless of native wiring.

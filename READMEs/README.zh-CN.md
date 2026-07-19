@@ -1,24 +1,24 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="每阶段具体智能体与已连接报告的 simplicio-loop" width="920" />
 </p>
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-11-个-skill-与加速器"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
+  <a href="#-7-个-skill--5-个加速器"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-来源适配器"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
-  <a href="#-11-个运行时一套协议"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-11-个运行时一套协议"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
-  <a href="#-token-经济"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
+  <a href="#-15-个运行时一套协议"><img src="https://img.shields.io/badge/runtimes-15-2563EB" alt="15 runtimes"></a>
+  <a href="#-15-个运行时一套协议"><img src="https://img.shields.io/badge/extension%20points-49-00E08A" alt="49 extension points"></a>
+  <a href="#-token-经济"><img src="https://img.shields.io/badge/savings-unverified-888888" alt="Savings — unverified"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">摘要</a> ·
-  <a href="#-11-个-skill-与加速器">11 个 Skill</a> ·
+  <a href="#-7-个-skill--5-个加速器">7 个 Skill</a> ·
   <a href="#-来源适配器">来源适配器</a> ·
-  <a href="#-11-个运行时一套协议">11 个运行时</a> ·
+  <a href="#-15-个运行时一套协议">15 个运行时</a> ·
   <a href="#-循环">循环</a> ·
   <a href="#-token-经济">Token 经济</a> ·
   <a href="#-token-经济">捕获引擎</a> ·
@@ -81,6 +81,81 @@
 </p>
 <!-- visual-story:end -->
 
+<!-- stage-agents-roadmap:start -->
+## 🤖 路线图 — 每个阶段背后都有一个具体智能体
+
+> **状态：**这是 [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436) 中跟踪的规划架构。GitHub 标准 lifecycle 评论今天已经存在；完整的阶段智能体与强制 reporting gate 仍在 [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433) 中实现。
+
+Intake/规划、实现、安全、delivery、recovery 和最终审计各有一个负责的智能体。Review 会分成四个独立智能体——安全/正确性、质量、runtime/E2E 复现和 blast radius——之后才能汇聚。
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="simplicio-loop 阶段智能体和 work tracker 评论" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Intake + 规划智能体"] --> I["实现智能体"] --> S["安全智能体"]
+  S --> R["4 个独立 review 智能体"] --> D["Delivery 智能体"] --> A["完成审计智能体"]
+  D --> F["Feedback + recovery 智能体"] --> I
+  P -.-> E["事件 + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["GitHub 评论 · 必须"]
+  E -. "仅在已连接时" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**策略：**绑定 GitHub 的 run 必须写入 GitHub 评论，`COMPLETE` 等待远程确认。Azure DevOps、Jira、Asana 和 Trello 只有在连接、认证、授权和目标解析被证明后才接收评论；`NOT_CONNECTED` 是明确且不阻塞的 skip。契约与测试：[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436)。
+<!-- stage-agents-roadmap:end -->
+
+## 🆕 v3.38.0 新特性 —— 多智能体协作发布
+
+这个版本解决一个只有在**多个 agent session 同时操作同一个仓库**时才会出现的难题：一个
+session 怎么知道哪些工作已经被认领、哪些 PR 已合并却没真正解决问题、以及自己的空闲时间
+该做什么而不是重复别人的活。以下每一项都是在**这个仓库自身真实的多 session 运行状态**下
+构建、测试并上线的，不是模拟场景。
+
+- **`scripts/coordinator.py`（决策核心）** —— 根据 GitHub 当前状态（issue 认领评论 + 已合并
+  PR），为每个 issue 返回一个确定性动作：`OWN`（尚无人认领）、`CONTINUE_OWN`（你就是最新的
+  认领者）、`DEFER_ACTIVE_CLAIM`（有 sibling session 刚认领，避免重复劳动）、
+  `RECLAIM_STALE`（那次认领已过期，可以安全接手）、或 `VERIFY_PARTIAL`（该 issue 已有 PR
+  合并但仍是 open 状态 —— 先核实实际完成了什么）。两个 session 短时间内认领同一个 issue 时
+  会触发 `duplicate_risk` 标记；上线第一天就实测捕获过一次：两个 session 各自为同一个 issue
+  用不同文件名写了一份 findings collector。
+- **`scripts/pr_dod_review.py`（空闲时间的评审员）** —— 所有 issue 都被认领时，与其空等，
+  session 更该按仓库自己的标准去核对已开的 PR：7 维 Definition of Done（实现、单元/集成/
+  系统/回归测试、性能基准、≥85% 覆盖率）加上对应 issue 冻结的验收标准清单。`check --post`
+  会把一份逐项机械裁决贴到 PR 评论，而不是凭感觉批准。在一个真实的、已合并的 "MVP slice"
+  PR 上验证：正确标记出父 epic 的 **17/17** 项验收标准仍未解决。
+- **`scripts/finding_collector.py`（耐久、去重的缺陷记忆，issue #466 阶段一）** —— 每个不同
+  缺陷一条 `simplicio.finding/v1` 记录，通过指纹识别；不管哪个 agent、哪次运行、什么时间
+  发现，同一个底层 bug 都会归并成一条记录并累加出现次数，而不是产生重复噪音。
+  `scripts/evolution.py`（分类 + 优先级 + 去重）和 `scripts/workflow_topology.py`（DAG 差异
+  + 校验器）作为配套的 Continuous Evolution（#467）、Adaptive Architecture（#468）epic 的
+  首个 MVP 切片一并上线；`scripts/agent_replication.py` 为 Elastic Replication（#469）做了
+  同样的事——为推测性重复执行提供准入控制和获胜者选择。
+- **`references/multi-agent-coordination.md` + `references/background-verification.md`** ——
+  两份新约定，直接接入 `SKILL.md` 的分诊步骤：碰 issue 前先查协调者的归属判断；一旦全部被
+  认领就去评审 PR 而不是空转；把慢速验证命令（测试、`claims_audit.py`）放到后台跑，让当前
+  轮次不至于干等进度条。
+- **强制的合并后清理**（`scripts/worktree_cleanup.py`，#484）—— 已合并分支的本地 worktree
+  和分支引用现在会自动清除，不再跨 session 堆积。
+- **CLI 契约新增**（WI-471）—— `status` 增加 `preflight` 子命令和 `--json` 标志，外部
+  supervisor 可以在开跑前做机器可读的就绪检查。
+- **本周期在 `main` 上实测捕获并修复了两次真实回归** —— 一次 PR 悄悄删掉了一个函数定义
+  （破坏了 `loop_progress.py` 自身的 selftest）并合并了一次，随后一次 squash-merge 冲突又
+  把同样的坏代码第二次带回了 `main`。两次都是靠**真正运行受影响的脚本**发现的，而不是相信
+  一份写得漂亮的 PR 描述 —— 这正是 `coordinator.py` 和 `pr_dod_review.py` 存在的理由。
+- **延续自 v3.37.0 Portable Stage Agents epic（#422–#436）**——每个阶段背后都有具体、可
+  独立验证的智能体，跨全部 15 个运行时的一致性套件，以及 `simplicio-runtime` 被提升为与
+  `simplicio-mapper`/`simplicio-dev-cli` 同级的必需绑定算子。
+- **测试套件增至 231 个文件**（此前 192 个），`scripts/claims_audit.py` 全周期保持 14/14。
+
+**对你意味着什么：** 如果你在同一个仓库的多个 session 或多台机器上跑 `simplicio-loop`，
+它现在会主动防住两种实际会发生的失败模式 —— 两个 agent 悄悄重做同一份工作，以及一个
+"完成" 的 PR 合并了却只解决了 issue 的一部分。这两种情况以前都看不见，现在每次分诊都会被
+机械地发现。
+
+完整清单见 [`CHANGELOG.md`](../CHANGELOG.md)。
+
 ## ⚡ TL;DR
 
 **simplicio-loop** 是一个与运行时无关的**超级插件** —— 一个自主循环式编排器
@@ -106,7 +181,7 @@
 → keep looping every ~2 min until the queue is dry (evidence-gated, never a false "done")
 ```
 
-让它与众不同的有三点：它是一个**由专注型 skill 组成的超级插件**，它在 **11 个运行时上运行
+让它与众不同的有三点：它是一个**由专注型 skill 组成的超级插件**，它在 **15 个运行时上运行
 同一套协议**，而且它在做这一切时贯彻着**激进而诚实的 token 经济**。
 
 ---
@@ -114,16 +189,19 @@
 ## 📘 官方能力清单
 
 `simplicio-loop` 所交付内容的完整、官方名册 —— 下面的每一项能力都是**真实、可运行、
-经过测试的**（`python3 scripts/check.py`：claims-audit 4/4 + 28 项测试）。每一项都链接到它的
-深入小节与它的 worker。
+经过测试的**（`python3 scripts/check.py`：claims-audit 14/14 + 231 个文件里 2,544 项测试）。
+每一项都链接到它的深入小节与它的 worker。
 
 | 能力 | 它做什么 | 证明 / worker | 详情 |
 |---|---|---|---|
 | 🎬 **视频证据**（`video_evidence`） | 录制**真实浏览器会话**，作为 UI 改动确实可用的动态证明（Playwright，默认）；当显式索取讲解视频时（`/simplicio-loop make a video of screen X`），用 [hyperframes](https://github.com/heygen-com/hyperframes) 渲染一段 CI 可复现的**确定性带字幕 MP4** | `scripts/video_evidence.py` · 缺少工具链时 BLOCKED（绝不假装通过） | [§ 视频证据](#-视频证据--默认-playwright应请求时-hyperframes) |
-| 🧠 **尝试记忆 + 停滞检测器** | 一份耐久的运行日志（`.orchestrator/loop/journal.jsonl`）+ 一个停滞检测器，让循环**改变策略而非来回振荡**；增量分诊（`since`）每轮只读取增量部分 | `scripts/loop_journal.py` · `selftest` 9/9 | [§ 防振荡](#-尝试记忆--停滞检测器防振荡) |
+| 🧠 **尝试记忆 + 停滞检测器** | 一份耐久的运行日志（`.orchestrator/loop/journal.jsonl`）+ 一个停滞检测器，让循环**改变策略而非来回振荡**；增量分诊（`since`）每轮只读取增量部分 | `scripts/loop_journal.py` · `selftest` 13/13 | [§ 防振荡](#-尝试记忆--停滞检测器防振荡) |
 | 🔒 **失败即关闭的安全门**（`action_gate`） | 一个 `PreToolUse`/git-pre-push 钩子，**以机械方式阻断** force-push、历史重写、批量删除、破坏性 DDL、基础设施拆除以及携带密钥的提交/推送 —— 把第 5 步从散文变成可执行 | `hooks/action_gate.py` · `selftest` 15/15 | [§ 安全](#-安全不可妥协) |
 | 🔬 **本地验证** | 一套测试套件（worker selftest + 一个证明经证据门控退出的**循环驱动器 e2e**）+ 一份 **claims-audit**（被引用的脚本存在 · 计数一致 · `_bundle ≡ source`）—— 全部本地、**无需付费 CI** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ 测试与本地检查](#-测试与本地检查无需付费-ci) |
 | ✅ **诚实的节省** | 节省那一行现在是**经证据门控的，而非强制的** —— 只有在拿到一份实测凭据（clamp/signatures/cache/`deterministic_edit`/ledger）时才会显示数字；绝不编造 | token 经济契约 | [§ Token 经济](#-token-经济) |
+| 🤝 **多智能体协调器**（`coordinator.py`） | 根据实时认领评论 + 已合并 PR，为每个 issue 决定 `OWN`/`CONTINUE_OWN`/`DEFER_ACTIVE_CLAIM`/`RECLAIM_STALE`/`VERIFY_PARTIAL`，让两个 session 绝不重复劳动 | `scripts/coordinator.py` · `selftest` 10/10 | [§ 完整流程](#️-完整流程--从需求到交付) |
+| 🕵️ **PR DoD/AC 评审员**（`pr_dod_review`） | 所有 issue 都被认领时，按 7 维 Definition of Done + issue 自身的验收标准清单去评审已开 PR —— 一份机械裁决，而非凭感觉批准 | `scripts/pr_dod_review.py` · `selftest` 13/13 | [§ 完整流程](#️-完整流程--从需求到交付) |
+| 🐞 **缺陷收集器**（`finding_collector`） | 指纹化、去重的缺陷记忆 —— 无论多少 agent/多少次运行观察到同一个底层 bug，都会归并成一条带出现次数的记录 | `scripts/finding_collector.py` · `selftest` 9/9 | [§ 官方能力清单](#-官方能力清单) |
 
 两种循环**模式**让终止变得明确：**converge**（单个硬任务 —— 在经证据门控的 `<promise>`
 或一次停滞升级时结束）vs **drain**（一个队列 —— 当来源重新查询连续 K 轮保持为空时结束）。
@@ -135,25 +213,26 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🧠 11 个 skill 与加速器
+## 🧠 7 个 skill + 5 个加速器
 
-编排器核心 + 五个卫星 + 五个加速器/集成。每个卫星都是**可选的** —— 加载后，编排器会委派给它
+编排器核心 + 六个卫星 + 五个加速器/集成。每个卫星都是**可选的** —— 加载后，编排器会委派给它
 （更丰富、更便宜）；缺席时，内联协议覆盖 100% 的工作。加速器是**自动探测**的 ——
 存在即使用，缺席则回退到 LLM 兜底。
 
 | # | 能力 | 吸收自 | 它做什么 | Token 影响 |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-loop** | — | Unified public entrypoint: orchestrator core + hardened loop behind one command | Core + loop |
-| 2 | ↩️ **simplicio-tasks** | legacy alias | Compatibility shim for older installs and saved prompts | Legacy alias |
+| 1 | 🔁 **simplicio-loop** | — | 统一公开入口：编排器核心 + 加固循环，合于一条命令之下 | Core + loop |
+| 2 | ↩️ **simplicio-tasks** | legacy alias | 为旧版安装和已保存的 prompt 保留的兼容别名 | Legacy alias |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | 终端优先执行、输出缩减目录、tee-cache、仅签名读取 | L0 确定性 |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | 按不同评分标准并行对抗式评审 → 去重裁决 | 质量门控 |
 | 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | 输出 + 记忆压缩、fail-closed 的 `transform_guard` | 减少 40-60% |
 | 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | 运行后复盘 → 写入记忆的耐久、去重经验 | 每次运行更聪明 |
-| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | 知识图谱定向：语义搜索、引导式游览、依赖图 | **L0 零 token** |
-| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | 会话分析、成本追踪、停滞会话发现 | **L1** 仅 SQL |
-| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | 循环各轮之间的 KV 缓存 —— 本地模型 TTFT 降低 40-70% | GPU 时间 ↓ |
-| 10 | 🗜️ **Simplicio 捕获引擎** | `engine/simplicio_engine.py`（原生，仅依赖标准库） | 透明捕获代理：转发到真实供应商，度量 + 确定性压缩，写入 `proxy_savings.json` | **确定性** |
-| 11 | 🎬 **video_evidence** | Playwright（默认）· [hyperframes](https://github.com/heygen-com/hyperframes)（应请求） | 录制**真实会话**，作为 UI 改动的动态证明（Playwright）；当视频本身就是交付物时，用 hyperframes 渲染一段**确定性带字幕 MP4** 讲解视频 | 证据生产者 |
+| 7 | 🧪 **simplicio-autoresearch** | Karpathy `autoresearch` + ECC `autoresearch-agent` | 演化式 mutate/eval/keep-revert 循环：yool 护栏上限、git 隔离分支、anti-Goodhart 优先门控的评估、`savings-event` 凭证 | 自动优化 |
+| 8 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | 知识图谱定向：语义搜索、引导式游览、依赖图 | **L0 零 token** |
+| 9 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | 会话分析、成本追踪、停滞会话发现 | **L1** 仅 SQL |
+| 10 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | 循环各轮之间的 KV 缓存 —— 本地模型 TTFT 降低 40-70% | GPU 时间 ↓ |
+| 11 | 🗜️ **Simplicio 捕获引擎** | `engine/simplicio_engine.py`（原生，仅依赖标准库） | 透明捕获代理：转发到真实供应商，度量 + 确定性压缩，写入 `proxy_savings.json` | **确定性** |
+| 12 | 🎬 **video_evidence** | Playwright（默认）· [hyperframes](https://github.com/heygen-com/hyperframes)（应请求） | 录制**真实会话**，作为 UI 改动的动态证明（Playwright）；当视频本身就是交付物时，用 hyperframes 渲染一段**确定性带字幕 MP4** 讲解视频 | 证据生产者 |
 
 每个 skill 都位于 [`.claude/skills/`](../.claude/skills) 下；每个加速器在
 `.claude/skills/simplicio-loop/references/` 下都有一份参考文档（视频生产者：
@@ -179,27 +258,37 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🌐 11 个运行时，一套协议
+## 🌐 15 个运行时，一套协议 —— 3 个受保证 + 12 个尽力而为
 
 一个通用的 skill 内核 + 一套钩子驱动每一个运行时。适配器很薄：它告诉运行时*去哪里加载
 skill*、*如何武装循环*、*如何绑定原生速度*。**skill 不指名任何运行时；是运行时来探测 skill。**
+原生 `simplicio-runtime` MCP 绑定在**每个运行时上都是必需的**（缺失/不可达时循环 BLOCKED），
+详见 [`docs/MCP_SETUP.md`](../docs/MCP_SETUP.md)。
+
+**第一层 —— 受保证（每次提交都有门控）：** Claude Code、Codex、Cursor。
+
+**第二层 —— 尽力而为（欢迎贡献，无门控）：**
 
 | 运行时 | Skill 加载 | 循环驱动 | 原生绑定 |
 |---|---|---|---|
-| **Claude Code** | `.claude/skills/` + plugin | `Stop` 钩子 | MCP |
-| **Codex** | `AGENTS.md` | 自定步 | MCP / adapter |
-| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | MCP |
-| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | MCP / rules |
-| **Antigravity** | rules / `AGENTS.md` | 自定步 | MCP |
-| **Kiro** | `.kiro/steering/` | specs | MCP |
-| **OpenCode** | `AGENTS.md` | 自定步 | MCP |
-| **Gemini** | `GEMINI.md` | 自定步 | MCP / adapter |
-| **Aider** | `CONVENTIONS.md` | 自定步 | ——（LLM 兜底） |
-| **Simplicio Agent** | native recall | native loop | **native** |
-| **OpenClaw** | plugin SDK | native scheduler | **native** |
+| **Claude Code** | `.claude/skills/` + plugin | `Stop` 钩子 | 必需 |
+| **Codex** | `AGENTS.md` | 自定步 | 必需 |
+| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | 必需 |
+| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | 必需 |
+| **Antigravity** | rules / `AGENTS.md` | 自定步 | 必需（尽力而为路径） |
+| **Kiro** | `.kiro/steering/` | specs | 必需 |
+| **OpenCode** | `AGENTS.md` | 自定步 | 必需 |
+| **Gemini**（CLI/Code Assist） | `GEMINI.md` | 自定步 | 必需 |
+| **Kimi** | 内联约定 | 自定步 | 必需（尽力而为，无已验证客户端） |
+| **Qwen**（Code/CLI） | `AGENTS.md` 等效物 | 自定步 | 必需（尽力而为） |
+| **DeepSeek** | 内联约定 | 自定步 | 必需（无一方客户端，尽力而为） |
+| **Aider** | `CONVENTIONS.md` | 自定步 | 必需（无 MCP 客户端，执行回退到 LLM） |
+| **Simplicio Agent**（原 Hermes） | native recall | native loop | **原生** |
+| **OpenClaw** | plugin SDK | native scheduler | **原生** |
+| **Orca** | 内部 agent + skills registry | inner hook / 定时自动化 | registry/inner-agent 配置 |
 
-承诺是：**同一套协议、同一组门控、同样的安全性，在全部 11 个上 —— 唯一的区别是速度。**
-`orient_clamp.py`（token 经济）在每个运行时上零接线即可工作。参见
+承诺是：**同一套协议、同一组门控、同样的安全性，在全部 15 个上 —— 第一层机械验证，第二层
+尽力而为。** `orient_clamp.py`（token 经济）在每个运行时上零接线即可工作。参见
 [`adapters/MATRIX.md`](../adapters/MATRIX.md)。
 
 ---
@@ -233,6 +322,12 @@ flowchart LR
   MEMORY --> WATCH["9 · Re-feed · watcher · STOP path"]
   WATCH -->|"new work"| IN
 ```
+
+**多智能体协作（v3.38.0 新增）。** 在“3 · Dependency DAG”之前，`scripts/coordinator.py`
+先根据实时 GitHub 状态回答“有没有 sibling session 已经在做这个”，绝不靠猜。当所有候选
+issue 都回来是 deferred 状态时，循环不会空转 —— 它转而用 `scripts/pr_dod_review.py` 按 DoD
+和验收标准去评审已开的 PR。详见
+[`references/multi-agent-coordination.md`](../.claude/skills/simplicio-loop/references/multi-agent-coordination.md)。
 
 ---
 
@@ -474,6 +569,27 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 
 ---
 
+## ⭐ Star 历史
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wesleysimplicio/simplicio-loop&type=Date)](https://star-history.com/#wesleysimplicio/simplicio-loop&Date)
+
+---
+
 ## 📄 许可证
 
 MIT
+
+<!-- simplicio-loop:github-comment-coordination:v1 -->
+## 🌐 通过 GitHub 评论在不同运行时之间协调
+
+`simplicio-loop` 可以同时运行在 Claude Code、Codex、Cursor、Gemini 和 Hermes 中。绑定到 GitHub issue 的运行会在规范评论中幂等地发布认领、计划、进度、证据、PR 和关闭状态。不同机器上的 agent 可以通过同一个 GitHub 讨论串协调，而不需要共享本地文件系统。
+
+```powershell
+pwsh scripts/install.ps1 claude -Global
+pwsh scripts/install.ps1 codex -Global
+pwsh scripts/install.ps1 cursor -Global
+pwsh scripts/install.ps1 gemini -Global
+pwsh scripts/install.ps1 hermes -Global   # simplicio_agent 的旧别名
+```
+
+本地队列、lease、worktree、heartbeat 和证据仍在每台机器上运行；GitHub 评论是共享协调投影。此流程仅支持 GitHub，Jira、Azure DevOps 及其他 tracker 不会收到评论。GitHub 不可用时 loop 仍可本地运行并记录同步失败，不会伪造远程确认。请为每个 runtime 提供 GitHub 权限并使用同一个 `source_issue`。

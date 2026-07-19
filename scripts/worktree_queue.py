@@ -20,15 +20,14 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence
 
 
 SCHEMA = "simplicio.worktree-merge-queue/v1"
@@ -256,6 +255,7 @@ class WorktreeQueue:
     def _git(self, args: Sequence[str], cwd: Optional[str] = None, check: bool = True) -> str:
         proc = subprocess.run(
             ["git"] + list(args), cwd=cwd or self.repo_root,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         if check and proc.returncode:
@@ -537,7 +537,11 @@ class WorktreeQueue:
                 "schema": "simplicio.composed-verification/v1", "task_id": task_id,
                 "run_id": self.run_id, "suite": suite, "passed": bool(passed),
                 "branch": queue.get("branch"), "base_sha": queue.get("base_sha"),
-                "head_sha": queue.get("head_sha"), "details": dict(details or {}),
+                "head_sha": queue.get("head_sha"),
+                "worktree_path": entry.get("path") or "",
+                "lane": entry.get("lane") or "",
+                "tree_sha": entry.get("tree_sha") or "",
+                "details": dict(details or {}),
                 "previous_receipt_sha": previous, "recorded_at": _now(),
             }
             receipt["receipt_sha"] = _sha256(receipt)

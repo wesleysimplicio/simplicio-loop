@@ -11,17 +11,25 @@ committed/pushed, is **BLOCKED** — and if a push/commit's diff cannot be scann
 blocked too (a security check that can't run is not a pass). Benign commands pass untouched, so the
 gate never bricks normal work; only the dangerous/unverifiable paths are denied.
 
-Runs three ways:
+Runs four ways:
   • Claude PreToolUse (Bash matcher) — reads `{tool_name, tool_input:{command}}` on stdin; a block
     exits 2 (Claude blocks the tool call and feeds `reason` back to the model).
-  • git pre-push / pre-commit hook — `action_gate.py check --staged` secret-scans the staged diff.
+  • git pre-push hook — `action_gate.py pre-push` secret-scans the REAL push range (HEAD vs.
+    upstream, not the staged diff — see `_push_diff`) AND requires a green
+    `scripts/check.py --core-gate` (#291: the local, mandatory-and-impossible-to-bypass
+    equivalent of CI now that GitHub Actions was removed in #311). `--full` runs the complete
+    gate instead of the fast core one.
+  • git pre-commit hook — `action_gate.py check --staged` secret-scans the staged diff.
   • CLI / tests — `check --command "<cmd>"`, `scan-diff --diff FILE`, `selftest`.
 
-Exit codes: 0 = allow · 2 = BLOCK (deny). Never exits 0 on a detected secret or irreversible op.
+Exit codes: 0 = allow · 2 = BLOCK (deny). Never exits 0 on a detected secret, irreversible op, or
+(pre-push only) a failing local gate.
 
 Usage:
     action_gate.py check --command "git push --force origin main"     # -> block (exit 2)
     action_gate.py check --staged                                     # secret-scan staged diff
+    action_gate.py pre-push                                           # wire as .git/hooks/pre-push
+    action_gate.py pre-push --full                                    # full gate, not --core-gate
     action_gate.py scan-diff --diff changes.patch
     action_gate.py selftest
     echo '{"tool_input":{"command":"git push -f"}}' | action_gate.py    # PreToolUse mode
@@ -70,24 +78,82 @@ def _project_relevant():
     return False
 
 
+# A tool commonly accepts global options BEFORE its subcommand -- `git -c x=y push`,
+# `git -C /repo push` (this file's OWN `_effective_command_cwd` already anticipates that exact
+# shape for cwd resolution, see tests/test_action_gate_issue526.py::test_git_c_resolves_effective_repo_for_push),
+# `git --no-pager push`, `terraform -chdir=dir destroy`, `kubectl --context=c delete ...`. A
+# pattern requiring the subcommand to sit immediately next to the tool name (only whitespace in
+# between, e.g. the original `\bgit\s+push\b`) is silently bypassed by any such option even when
+# `--force` is present elsewhere in the same command -- found via manual adversarial testing of
+# this gate. This fragment allows zero or more dash-prefixed option tokens (each optionally
+# carrying an inline `=value` or a separate value argument) between the tool name and the
+# subcommand, without loosening the match enough to false-positive on an unrelated subcommand
+# (e.g. `git commit -m "please push this"` still does not match: "commit" is not a dash-prefixed
+# option token, so the chain never reaches a literal "push").
+_TOOL_OPTS = r"(?:-{1,2}[A-Za-z][\w-]*(?:=\S+|\s+\S+)?\s+)*"
+
 # Irreversible / history-rewriting / destructive ops → BLOCK and route to a human (Step 5).
 # High-precision patterns: each is genuinely hard to undo; benign commands never match.
 IRREVERSIBLE = [
-    (re.compile(r"\bgit\s+push\b.*(--force\b|--force-with-lease\b|(?<!-)\B-f\b)"),
+    (re.compile(r"\bgit\s+" + _TOOL_OPTS + r"push\b.*("
+                r"--force\b|--force-with-lease\b|(?<!-)\B-f\b|"
+                # `+<ref>` / `+<src>:<dst>` refspec syntax is force-push shorthand and is NOT
+                # spelled `--force` or `-f` anywhere in the command -- a distinct, well-known
+                # bypass of naive force-push detection.
+                r"(?:^|\s)\+[\w./-]+(?::[\w./-]*)?(?=\s|$))"),
      "force-push (history overwrite) — route to a human; prefer an additive rebase"),
-    (re.compile(r"\bgit\s+push\b.*(--mirror|--delete\b|\s:\S)"),
+    (re.compile(r"\bgit\s+" + _TOOL_OPTS + r"push\b.*(--mirror\b|--delete\b|\s:\S)"),
      "remote branch/ref deletion or mirror-push — irreversible on the remote"),
-    (re.compile(r"\bgit\s+(filter-branch|filter-repo)\b"),
+    (re.compile(r"\bgit\s+" + _TOOL_OPTS + r"(filter-branch|filter-repo)\b"),
      "history rewrite across the repo — irreversible for everyone"),
-    (re.compile(r"\brm\s+-rf?\s+(/|~|\.|\*|\$HOME)(\s|$)"),
-     "recursive delete of a root/home/cwd/glob — mass-file deletion"),
     (re.compile(r"\b(DROP\s+(DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TABLE)\b", re.I),
      "destructive schema/data DDL"),
-    (re.compile(r"\bterraform\s+destroy\b|\bkubectl\s+delete\s+(namespace|ns|pv|deployment)\b", re.I),
+    (re.compile(r"\bterraform\s+" + _TOOL_OPTS + r"destroy\b|"
+                r"\bkubectl\s+" + _TOOL_OPTS + r"delete\s+(namespace|ns|pv|deployment)\b", re.I),
      "infrastructure teardown / prod resource deletion"),
     (re.compile(r":\(\)\s*\{\s*:\|:&\s*\};:"),
      "fork bomb"),
 ]
+
+# `rm -rf <dangerous target>` is matched separately, not via a single fixed-order regex: real
+# invocations routinely spell the same two flags (recursive + force) as `-rf`, `-fr`, `-Rf`,
+# separated `-r -f`, or the long forms `--recursive`/`--force` -- a regex anchored on the literal
+# substring `-rf?` (the original pattern) only ever matches ONE of those spellings and is
+# trivially bypassed (unintentionally, not just adversarially -- flipping `-rf` to `-fr` is an
+# everyday typing habit) by any of the others. `dangerous_rm_reason`/`_rm_flag_has` below check
+# each flag token independently of order/position instead.
+RM_DANGEROUS_TARGET = re.compile(r"^(?:/|~|\.|\*|\$HOME)$")
+
+
+def _rm_flag_has(token, long_name, short_letters):
+    """True if a single `rm` argument token `token` expresses the flag meaning `long_name`
+    (e.g. 'recursive', 'force'): either the exact long form (`--recursive`) or, for a short
+    single-dash token (`-rf`, `-fr`, `-vrf`, ...), any of `short_letters` appearing in it."""
+    if not token.startswith("-"):
+        return False
+    if token.startswith("--"):
+        return token[2:].split("=", 1)[0] == long_name
+    return any(ch in token[1:] for ch in short_letters)
+
+
+def dangerous_rm_reason(cmd):
+    """Return a block reason if `cmd` contains an `rm` invocation with BOTH recursive AND force
+    semantics (in any flag order / short-or-long form) targeting a root/home/cwd/glob path, else
+    None. See `RM_DANGEROUS_TARGET`/`_rm_flag_has` for the flag-spelling tolerance this closes."""
+    tokens = (cmd or "").split()
+    for i, tok in enumerate(tokens):
+        if tok != "rm":
+            continue
+        j = i + 1
+        recursive = force = False
+        while j < len(tokens) and tokens[j].startswith("-") and tokens[j] != "--":
+            recursive = recursive or _rm_flag_has(tokens[j], "recursive", "rR")
+            force = force or _rm_flag_has(tokens[j], "force", "f")
+            j += 1
+        if j < len(tokens) and recursive and force and RM_DANGEROUS_TARGET.match(tokens[j]):
+            return "recursive delete of a root/home/cwd/glob — mass-file deletion"
+    return None
+
 
 # Secret signatures (high-precision; the generic key/secret rule needs a long value to fire).
 SECRETS = [
@@ -118,6 +184,9 @@ def classify_command(cmd):
     """Return (None) if benign, or (reason) if it's an irreversible op to BLOCK."""
     if not cmd:
         return None
+    rm_reason = dangerous_rm_reason(cmd)
+    if rm_reason:
+        return rm_reason
     for rx, reason in IRREVERSIBLE:
         if rx.search(cmd):
             return reason
@@ -141,15 +210,130 @@ def scan_secret_text(text):
     return hits
 
 
-def _staged_diff():
-    # Scan the CURRENT working repo (where the command runs), NOT where this script lives —
-    # installed as a hook in another project, the user's repo is the cwd.
-    r = _run(["git", "diff", "--cached", "--unified=0"], cwd=os.getcwd())
+def _effective_command_cwd(cmd):
+    """Resolve an explicit leading cd or git -C target for PreToolUse scans."""
+    base = os.getcwd()
+    candidate = None
+    leading = re.match(
+        r"""^\s*(?:cd|Set-Location)\s+(?:"([^"]+)"|'([^']+)'|([^&;\n]+))\s*(?:&&|;)""",
+        cmd or "",
+    )
+    if leading:
+        candidate = next((value for value in leading.groups() if value), "").strip()
+    else:
+        git_c = re.search(r"""\bgit\s+-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))""", cmd or "")
+        if git_c:
+            candidate = next((value for value in git_c.groups() if value), "").strip()
+    if not candidate:
+        return os.path.abspath(base)
+    candidate = os.path.expandvars(os.path.expanduser(candidate))
+    if not os.path.isabs(candidate):
+        candidate = os.path.join(base, candidate)
+    return os.path.normpath(os.path.abspath(candidate))
+
+
+def _staged_diff(cwd=None):
+    r = _run(["git", "diff", "--cached", "--unified=0"], cwd=cwd or os.getcwd())
     return (r.stdout if r and r.returncode == 0 else None)
+
+
+def _push_diff(cwd=None):
+    """Return the commits actually leaving the selected repository on git push."""
+    cwd = cwd or os.getcwd()
+    r = _run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=cwd)
+    upstream = r.stdout.strip() if r and r.returncode == 0 and r.stdout.strip() else None
+    if upstream:
+        d = _run(["git", "diff", "%s...HEAD" % upstream, "--unified=0"], cwd=cwd)
+        if d and d.returncode == 0:
+            return d.stdout
+    d = _run(["git", "diff", "HEAD~1..HEAD", "--unified=0"], cwd=cwd)
+    if d and d.returncode == 0:
+        return d.stdout
+    d = _run(["git", "diff", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "HEAD", "--unified=0"],
+             cwd=cwd)
+    return (d.stdout if d and d.returncode == 0 else None)
+
+
+def _delivery_contract(cwd):
+    """Load the optional frozen delivery contract for the effective repository."""
+    local_anchor = os.path.join(cwd, ".orchestrator", "loop", "anchor.json")
+    anchor_path = local_anchor if os.path.exists(local_anchor) else (
+        os.environ.get("SIMPLICIO_ANCHOR_FILE") or local_anchor
+    )
+    try:
+        with open(anchor_path, encoding="utf-8") as handle:
+            anchor = json.load(handle)
+        contract = anchor.get("delivery")
+        if not contract:
+            return None, None
+        if REPO not in sys.path:
+            sys.path.insert(0, REPO)
+        from simplicio_loop.delivery_contract import normalize_contract
+        return normalize_contract(contract), None
+    except FileNotFoundError:
+        return None, None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        return None, "invalid frozen delivery contract: %s" % exc
+
+
+def _diff_new_paths(cwd, push):
+    """Return added paths from the same range that will be secret-scanned."""
+    if push:
+        upstream = _run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=cwd)
+        ref = upstream.stdout.strip() if upstream and upstream.returncode == 0 else ""
+        ranges = (["%s...HEAD" % ref] if ref else ["HEAD~1..HEAD", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "HEAD"])
+        for item in ranges:
+            args = ["git", "diff", item, "--name-status"] if "..." in item or ".." in item else ["git", "diff", item, "HEAD", "--name-status"]
+            result = _run(args, cwd=cwd)
+            if result and result.returncode == 0:
+                return [line.split("\t", 1)[-1] for line in result.stdout.splitlines()
+                        if line and line[0] in {"A", "C"} and "\t" in line]
+        return []
+    result = _run(["git", "diff", "--cached", "--name-status"], cwd=cwd)
+    if not result or result.returncode != 0:
+        return []
+    return [line.split("\t", 1)[-1] for line in result.stdout.splitlines()
+            if line and line[0] in {"A", "C"} and "\t" in line]
+
+
+def _delivery_guard(cwd, diff, push):
+    contract, error = _delivery_contract(cwd)
+    if error:
+        return error
+    if contract is None:
+        return None
+    new_paths = _diff_new_paths(cwd, push)
+    if not contract["allow_new_files_in_repo"] and new_paths:
+        return "delivery contract forbids new files (cwd=%s): %s" % (cwd, ", ".join(sorted(new_paths)))
+    if not contract["allow_comments_in_code"]:
+        code_paths = {
+            line[6:].strip()
+            for line in diff.splitlines()
+            if line.startswith("+++ b/")
+        }
+        code_suffixes = (".cs", ".js", ".jsx", ".ts", ".tsx", ".py")
+        if not any(path.lower().endswith(code_suffixes) for path in code_paths):
+            return None
+        comments = []
+        for line in diff.splitlines():
+            if not line.startswith("+") or line.startswith("+++"):
+                continue
+            added = line[1:].lstrip()
+            if added.startswith(("#", "//", "/*", "*", '"""')):
+                comments.append(added[:80])
+        if comments:
+            return "delivery contract forbids new code comments (cwd=%s; lines=%d)" % (cwd, len(comments))
+    return None
 
 
 def _is_commit_or_push(cmd):
     return bool(re.search(r"\bgit\s+(commit|push)\b", cmd or ""))
+
+
+def _is_push(cmd):
+    return bool(re.search(r"\bgit\s+.*\bpush\b", cmd or ""))
+
+
 
 
 def _verdict(allow, reason=""):
@@ -208,24 +392,35 @@ def _runtime_gate_escalation(cmd):
 
 
 def gate_command(cmd, staged=False):
-    """The core decision. Returns a verdict dict; BLOCK is fail-closed."""
-    # 1) irreversible op → block
+    """The core decision. Secret scans use the command's effective repository."""
     reason = classify_command(cmd)
     if reason:
         return _verdict(False, "irreversible op: " + reason)
-    # 2) a commit/push → secret-scan the staged diff (fail-closed if it can't be read)
     if staged or _is_commit_or_push(cmd):
-        diff = _staged_diff()
+        cwd = _effective_command_cwd(cmd)
+        push = _is_push(cmd)
+        diff = _push_diff(cwd) if push else _staged_diff(cwd)
         if diff is None:
-            # security check could not run on a push/commit → do not pass it
-            if _is_commit_or_push(cmd) or staged:
-                return _verdict(False, "cannot read staged diff to secret-scan — blocking the "
-                                       "commit/push (fail-closed). Stage changes or run in a git repo.")
-            return _verdict(True)
+            target = "push" if push else "staged"
+            return _verdict(
+                False,
+                "cannot read %s diff to secret-scan (cwd=%s) - fail-closed" % (target, cwd),            )
         hits = scan_secret_text(diff)
         if hits:
             labels = ", ".join(sorted({h[0] for h in hits}))
-            return _verdict(False, "secret in staged diff (%s) — remove it before commit/push" % labels)
+            target = "push" if push else "staged"
+            return _verdict(
+                False,
+                "secret in %s diff (%s; cwd=%s) - remove it before mutation" % (target, labels, cwd),            )
+        delivery_reason = _delivery_guard(cwd, diff, push)
+        if delivery_reason:
+            return _verdict(False, delivery_reason)
+    runtime_reason = _runtime_gate_escalation(cmd)
+    if runtime_reason:
+        return _verdict(False, "simplicio runtime gate: " + runtime_reason)
+    return _verdict(True)
+
+
     # 3) additional signal from the simplicio runtime's own risk classifier, when installed
     #    (best-effort, additive-only — see _runtime_gate_escalation).
     runtime_reason = _runtime_gate_escalation(cmd)
@@ -292,6 +487,56 @@ def cmd_check(opts):
     _emit_and_exit(gate_command(cmd, staged=bool(opts.get("staged"))), cmd=cmd)
 
 
+def cmd_pre_push(opts):
+    """git pre-push: secret-scan the real push range AND require a green local gate (#291).
+
+    This is the "obrigatório e impossível de contornar" (mandatory, impossible to bypass) local
+    equivalent for a repo whose CI substrate (GitHub Actions) was removed in #311: with no
+    Actions-enforced branch protection left, the git pre-push hook is the only mechanical choke
+    point that runs on every push from every clone. Two checks, either one fail-closed:
+
+      1. secret-scan of `_push_diff()` (the actual commits about to be pushed, not the staged
+         diff — see `_push_diff` for why `--staged` was the wrong range for this hook);
+      2. `python3 scripts/check.py --core-gate` (audit + mirror-parity + loop-contract +
+         clean-env + token-budget + repo-budget + the core/mandatory test set, skipping only the
+         satellite-only tests `--core-gate` already excludes — see `scripts/check.py`'s
+         docstring and `docs/SCRIPTS_INVENTORY.md`). A repo without `scripts/check.py` (this
+         hook copied into a project that doesn't ship it) skips step 2 rather than blocking a
+         push it cannot verify against a script that doesn't exist.
+
+    `--full` runs the complete gate (no `--core-gate`) instead, for a deliberate slower/thorough
+    push (e.g. right before a release). Exit 2 on ANY failure — never partial-pass.
+    """
+    diff = _push_diff()
+    if diff is None:
+        print("block")
+        print("  cannot read the push diff to secret-scan (fail-closed). Ensure this is a git "
+              "repo with at least one commit.")
+        _hbp_append_gate_blocked("cannot read push diff — fail-closed", "pre-push")
+        sys.exit(2)
+    hits = scan_secret_text(diff)
+    if hits:
+        labels = ", ".join(sorted({h[0] for h in hits}))
+        print("block")
+        print("  secret in pushed commits (%s) — remove it (or rewrite history) before pushing"
+              % labels)
+        _hbp_append_gate_blocked("secret in push diff (%s)" % labels, "pre-push")
+        sys.exit(2)
+    check_py = os.path.join(REPO, "scripts", "check.py")
+    if os.path.exists(check_py):
+        gate_args = [sys.executable, check_py] + ([] if opts.get("full") else ["--core-gate"])
+        r = subprocess.run(gate_args, cwd=REPO)
+        if r.returncode != 0:
+            gate_name = "scripts/check.py" if opts.get("full") else "scripts/check.py --core-gate"
+            print("block")
+            print("  local gate failed (%s) — fix before pushing. Re-run it directly to see "
+                  "the failures; there is no bypass flag by design (#291)." % gate_name)
+            _hbp_append_gate_blocked("local gate failed (%s)" % gate_name, "pre-push")
+            sys.exit(2)
+    print("allow")
+    sys.exit(0)
+
+
 def cmd_scan_diff(opts):
     src = opts.get("diff")
     text = ""
@@ -356,11 +601,31 @@ def cmd_selftest(_opts):
     chk("rmrf-root.block", act("rm -rf /"), "block")
     chk("drop-db.block", act("psql -c 'DROP DATABASE prod'"), "block")
     chk("tf-destroy.block", act("terraform destroy -auto-approve"), "block")
+    # bypasses found via manual adversarial testing (real command shapes, not exotic):
+    # a global option inserted between the tool name and its subcommand defeated the
+    # tool/subcommand-adjacency regexes even with the dangerous flag present elsewhere.
+    chk("force-push-refspec.block", act("git push origin +feature:main"), "block")
+    chk("force-push-gitopt.block", act("git -c protocol.version=2 push --force origin main"), "block")
+    chk("force-push-nopager.block", act("git --no-pager push --force origin main"), "block")
+    chk("force-push-gitC.block", act('git -C "/tmp/repo" push --force origin main'), "block")
+    chk("filter-branch-gitopt.block", act("git -c foo=bar filter-branch --tree-filter x HEAD"),
+        "block")
+    chk("tf-destroy-chdir.block", act("terraform -chdir=infra destroy -auto-approve"), "block")
+    chk("kubectl-delete-context.block", act("kubectl --context=prod delete namespace prod"),
+        "block")
+    # rm -rf flag-order/long-form variants: everyday typing habits, not just adversarial input.
+    chk("rmrf-reversed.block", act("rm -fr /"), "block")
+    chk("rmrf-capital.block", act("rm -Rf /"), "block")
+    chk("rmrf-separated.block", act("rm -r -f /"), "block")
+    chk("rmrf-longform.block", act("rm --recursive --force /"), "block")
     # benign commands are NOT classified as irreversible
     chk("status.allow", act("git status"), "allow")
     chk("normal-push.allow", act("git push -u origin feature"), "allow")
     chk("rm-file.allow", act("rm -f build/tmp.o"), "allow")
+    chk("rm-project-dir.allow", act("rm -rf ./node_modules"), "allow")
     chk("ls.allow", act("ls -la && grep -rn foo src/"), "allow")
+    chk("commit-mentions-push.allow", act("git commit -m 'please push this fix'"), "allow")
+    chk("kubectl-get-context.allow", act("kubectl --context=prod get pods"), "allow")
     # secret-scan (text mode, placeholder-aware). Fixtures built so this source file stays clean.
     fake_aws = "AKIA" + "QRSTUVWX01234567"          # matches AKIA[0-9A-Z]{16}, no placeholder word
     chk("secret.detected", len(scan_secret_text('+k = "%s"' % fake_aws)) >= 1, True)
@@ -390,15 +655,19 @@ def _parse(args):
     return opts
 
 
+SUBCOMMANDS = ("check", "scan-diff", "selftest", "pre-push")
+
+
 def main():
     argv = sys.argv[1:]
     # No subcommand + piped JSON → Claude PreToolUse mode.
-    if not argv or (argv and argv[0] not in ("check", "scan-diff", "selftest") and not sys.stdin.isatty()):
+    if not argv or (argv and argv[0] not in SUBCOMMANDS and not sys.stdin.isatty()):
         from_pretooluse()
         return
     sub, opts = argv[0], _parse(argv[1:])
-    {"check": cmd_check, "scan-diff": cmd_scan_diff, "selftest": cmd_selftest}.get(
-        sub, lambda _o: (print("unknown command '%s'. choices: check scan-diff selftest" % sub),
+    {"check": cmd_check, "scan-diff": cmd_scan_diff, "selftest": cmd_selftest,
+     "pre-push": cmd_pre_push}.get(
+        sub, lambda _o: (print("unknown command '%s'. choices: %s" % (sub, " ".join(SUBCOMMANDS))),
                          sys.exit(2)))(opts)
 
 

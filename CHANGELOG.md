@@ -2,10 +2,196 @@
 
 ## [Unreleased]
 
+## [3.38.0] — 2026-07-17
+
+- **Multi-agent coordination core (`scripts/coordinator.py`):** given live GitHub state (claim
+  comments + merged PRs), decides one deterministic action per issue — `OWN`, `CONTINUE_OWN`,
+  `DEFER_ACTIVE_CLAIM`, `RECLAIM_STALE`, or `VERIFY_PARTIAL` — plus a `duplicate_risk` flag when
+  two sessions claim the same issue near-simultaneously. Caught, live, a real collision: two
+  sessions independently building a findings collector for the same issue under different
+  filenames.
+- **PR DoD/AC reviewer (`scripts/pr_dod_review.py`):** when every open issue is already claimed,
+  reviews open PRs against the 7-dimension Definition of Done and the underlying issue's frozen
+  acceptance-criteria checklist instead of idling; `check --post` posts a mechanical, line-by-line
+  verdict as a PR comment. Verified against a real merged "MVP slice" PR: correctly flagged 17/17
+  acceptance criteria on the parent epic as still unresolved.
+- **`references/multi-agent-coordination.md` + `references/background-verification.md`:** new
+  documented conventions wired into `SKILL.md`'s triage step.
+- **`scripts/finding_collector.py` (issue #466, phase 1):** durable, fingerprinted, deduplicated
+  defect memory — the same underlying bug collapses into one record with an occurrence count.
+- **Continuous Evolution / Adaptive Architecture / Elastic Replication MVP slices** (#467/#468/
+  #469): `scripts/evolution.py`, `scripts/workflow_topology.py`, `scripts/agent_replication.py`.
+- **Continuous Findings completion-gate wiring** (WI-466): the completion gate now genuinely
+  consults the finding store; a store/repo consistency bug found and fixed in the same pass.
+- **Mandatory post-merge cleanup** (`scripts/worktree_cleanup.py`, #484): a merged branch's local
+  worktree and branch ref are removed automatically instead of accumulating across sessions.
+- **CLI contract additions** (WI-471): a `preflight` subcommand and a `--json` flag on `status`.
+- **Two live regressions on `main` found and fixed this cycle** — a PR that silently deleted a
+  function definition (breaking `loop_progress.py`'s own selftest), and a subsequent squash-merge
+  race that reintroduced the exact same broken code onto `main` a second time. Both found by
+  actually running the affected script, not by trusting a green PR description.
+- Test suite grew to 231 files (2,544 collected tests); `claims_audit.py` stayed at 14/14 through
+  every merge this cycle.
+
+## [3.37.0] — 2026-07-17
+
+- **EPIC #422 — Portable Stage Agents:** materialized every stage of the
+  `simplicio-loop` orchestrator as a concrete, independently verifiable agent
+  role, portable across all 15 supported runtimes:
+  - **Contract (#423):** versioned `stage-definition`/`agent-role`/
+    `agent-instance`/`stage-receipt` schemas and the `stage_agents.py` validator
+    core (graph/instance/receipt validation, fake-independence enforcement).
+  - **Coordinator (#424):** a runtime-agnostic driver (`stage_agent_coordinator.py`)
+    with native/command/queue adapters that materializes, monitors, cancels,
+    and collects receipts from stage agents — spawn → observed-ready → send →
+    observed-terminal → collect, never trusting a bare "accepted" as done.
+  - **Intake/Planner (#425), Implementation (#426), Review Panel (#427),
+    Safety Gate (#428), Delivery (#429), Feedback/Recovery (#430), Completion
+    Auditor (#431):** the seven remaining concrete roles, each with its own
+    invariant machinery, fail-closed gates, and typed receipt.
+  - **Conformance suite (#432):** proves contract/receipt parity across all 15
+    runtimes by actually driving a sandbox task through each adapter's public
+    path — no synthetic pass for a capability that wasn't really verified.
+  - **GitHub reporting (#433/#442) + multi-tracker interface (#436):** one
+    idempotent, per-item lifecycle comment on GitHub (required) with a
+    provider-agnostic interface for Azure DevOps/Jira/Asana/Trello
+    (connected-only, never an invented remote attempt).
+  - **Identity (#434):** human-readable `<Name> <Role> - #<HOST4> - <LLM>`
+    display names, deterministic host abbreviation with an explicit fallback
+    reason code — uniqueness stays on `agent_instance_id`, never the display name.
+- **`simplicio-runtime` is now a required bound operator**, not an optional
+  acceleration: `hooks/loop_stop.py` blocks the running driver on a missing/
+  unreachable `simplicio` binary exactly like a missing `simplicio-mapper`/
+  `simplicio-dev-cli`.
+- **MCP configuration documented across 13 hosts** (Claude Code, Codex,
+  Cursor, VS Code, Antigravity, Kiro, OpenCode, Gemini, Orca, and
+  best-effort/community-reported guidance for Aider, Kimi, Qwen, DeepSeek) —
+  see `docs/MCP_SETUP.md`.
+- **Post-merge reconciliation:** four adversarial-review passes across the
+  epic's 30+ PRs found and fixed real fail-open bugs (a tautological
+  `attempt_id` check, vacuously-`True` checklist fields, receipt-schema
+  validators defined but never wired into the real accept path, AC coverage
+  reported complete when the task anchor was simply missing) and closed the
+  gap where four `to_stage_receipt()` projectors existed only as unit-tested
+  code with no live CLI entrypoint — every stage-agent role's receipt path is
+  now schema-valid end-to-end and independently exercised via
+  `scripts/*.py stage-receipt`.
+- New gate: `claims_audit.py` check 14 (contract-parity) keeps
+  `contracts/stage-agents/v1/` and its packaged mirror byte-identical.
+
+## [3.36.1] — 2026-07-16
+
+- **Repository-owned GitHub Projects:** lifecycle sync now autodiscovers the
+  repository's Project, adds the source issue when it is missing, and moves its
+  `Status` field without requiring a manually configured project number.
+- Explicit project numbers remain supported and take precedence over discovery.
+
+## [3.36.0] — 2026-07-16
+
+- **GitHub workflow lifecycle:** added runtime-neutral, idempotent GitHub Project status
+  synchronization driven by the canonical issue lifecycle comment, with an explicit
+  non-GitHub/local-only path.
+- **PR patrol:** the delivery loop now inspects open PRs every two completed items,
+  at final verification, and immediately after merges so conflicts and review gaps
+  re-enter the workflow before closure.
+- **Cross-agent review and claims:** Claude, Codex, Cursor, Gemini, Kiro,
+  Antigravity, Hermes/Simplicio Agent, OpenClaw, and human contributors share
+  evidence-linked acceptance-criteria review comments; implementation workers post a
+  canonical `CLAIMED` lifecycle comment before mutation.
+
+## [3.35.1] — 2026-07-16
+
+- **#294 repository governance:** refreshed the measured repository-size report and
+  canonical claims/quality surfaces on the current `main` tip.
+- **Distributed loop reconciliation:** synchronized the local distributed-loop changes,
+  including the issue-cron driver and intake/progress coverage added after 3.35.0.
+- **Cross-machine GitHub coordination:** lifecycle synchronization is now enabled by
+  default whenever a run has a GitHub source issue, using one idempotent canonical
+  issue comment for planning, claims, progress, evidence, PR, merge, and release
+  state. `SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0` is the explicit offline/legacy opt-out.
+- Release is a patch-only republish of the verified `main` tree; no API contract changes.
+
+## [3.35.0] — 2026-07-15
+
+Large multi-agent push closing the P0/P1/P2 backlog opened by #183/#283-#296. Highlights:
+
+- **#286 multi-device protocol**: atomic claim/discovery over a real remote queue, worker
+  heartbeat/cancellation, receipt verification on both client and server sides, an installable
+  worker/supervisor/queue-server console-script surface, a `doctor.py` LOCAL_ONLY/REMOTE_READY/
+  REMOTE_MEASURED tri-state, and a real 2-process HTTP-loopback E2E. Closed with the genuine
+  two-physical-machine proof still open (single-machine sandbox).
+- **#287 multi-LLM routing**: deterministic `ModelCapabilityRegistry`/router with fallback and
+  circuit-breaker, task-contract routing fields, `runtime-execution-receipt`, and real
+  `CodexRuntimeDriver` execution (`codex exec`, verified receipt). Closed with Claude-side
+  execution still blocked by an org policy (`ANTHROPIC_API_KEY` unavailable in this environment).
+- **#288 pipeline convergence**: `receipt_verifier.py` fail-closed content/hash/schema/freshness
+  checks, `AttemptCoordinator.run_guarded()` heartbeat+kill-on-lease-loss, `MergeExecutor` with a
+  real reconcile-after-merge step and chaos-tested crash recovery, multi-PR batch fan-in, and
+  `LoopRuntimeAdapter`/`VerifiedAgentDelivery` finally wired into the real dispatch path.
+- **#289 security**: enumerated environment allow-list (`distributed_trust_policy.py`),
+  short-lived HMAC credentials with `jti` revocation and per-operation scoping, DNS/TLS-pinned
+  secure transport with live redirect/rebinding/proxy-injection fault-injection tests, structured
+  audit logging, and CODEOWNERS coverage of the security-critical modules.
+- **#290 delivery truth**: fail-closed `source_state.py`, paginated GraphQL review-thread queries,
+  byte-level release-artifact verification (real sha256 + `gh attestation verify`),
+  `BranchReachabilityVerifier`/`IssueStateVerifier`/TTL-freshness policy, `DeploymentVerifier`, a
+  concurrency/crash/fault-injection matrix (including crashes mid-external-call), and a
+  cross-receipt commit-binding gate closing a real merge-ready/quality-matrix SHA-mismatch gap.
+- **#284 intake contract**: `simplicio.task-intake/v1` envelope, `impact-map.json`,
+  AC-traceability matrix, `replan_on_drift`, mandatory-by-default mutation-authority enforcement,
+  and a live GitHub-backed E2E.
+- **#285 GitHub lifecycle adapter**: typed `SourceAdapter` Protocol, full read/write/lease/outbox
+  surface, duplicate-comment election, `SOURCE_CHANGED` pre-close drift detection, and a
+  `CLOSE_PENDING_RECONCILIATION` completion-oracle gate — 100% branch/line coverage on the core
+  modules.
+- **#283 quality gate**: independent watcher re-verification (including coverage-drift detection),
+  auto-populated `quality-matrix.json` from real gate scripts, the full `run_id`/`work_item`/`tests`
+  envelope, a real per-category (unit/integration/system/regression) test-runner split across all
+  192 test files, and a fixed `coverage_gate.py` crash on `coverage.py` 7.15.x + Python 3.14.
+  Global/critical coverage raised from 16.6%/9.4% to 28.45%/24.02% on the widened scope.
+- **#291 CI-less determinism**: a fail-closed local pre-push gate (`hooks/action_gate.py`)
+  standing in for the GitHub Actions removed in #311, plus a real Windows subprocess-handling fix
+  in `check_e2e_installed.py`.
+- **#292 release/supply chain**: `version_sync.py` single-source-of-truth version bump,
+  checksum/GPG-sign/SBOM/install-smoke tooling, a local-provenance substitute for OIDC attestation,
+  and `release_rehearsal.py` chaining the whole pipeline end-to-end against the real checkout.
+- **#293 installer**: a transactional executor with backup/rollback, N-1→N upgrade + real smoke
+  tests, explicit consent gating for service/proxy installs, distinct executor modes, and a
+  machine-readable mutation manifest.
+- **#294 repository governance**: LFS-scoped `.gitattributes`, forbidden-path/large-media budget
+  gates, a canonical version/skill/claims manifest, and a dry-run-only (never-executing) history
+  migration plan — the actual history rewrite stays an explicit, separate maintainer action.
+- **#295/#296/#183**: the production-grade and real-time-progress umbrella epics, and the
+  original multi-agent-parallelism epic, closed as their tracked child issues resolved.
+
+## [Unreleased]
+- #293: fix `install_lib.py::install_all_deps()` (`--full-stack`/`--with-service` full install)
+  referencing a `.[onnx]` optional-dependency extra that `pyproject.toml` stopped declaring back
+  in `3.11.0` (the ONNX model engine — `kompress`/`router`/`embed`/`image` — was removed that
+  release, taking the extra with it) — the exact "referência a extra que não existe no
+  pyproject.toml" the issue's audit flagged. Now installs the `ml` extra `pyproject.toml` actually
+  declares (the real embedding backend for `simplicio-cli semantic --ml`/`rag --ml`).
+  `docs/INSTALL_MUTATIONS.md`/`docs/install-mutations.json` regenerated to match. Also adds a
+  system test proving a clean install/rollback round-trip survives a target path with embedded
+  spaces and non-ASCII (accented + CJK) characters (`tests/test_system_clean_install.py`) — the
+  "caminhos com espaços e Unicode" system-test requirement.
+- #293: close the last audit-flagged installer gap — `simplicio-autoresearch` is now included in
+  `install_lib.py`/`install_plan.py`/`doctor.py`'s `SKILLS` list (was 6, is 7), so the installer,
+  planner, and `doctor` health-check actually copy/validate the seven skills the project declares
+  instead of six. Docs (`adapters/MATRIX.md`, the OpenClaw/Orca/Simplicio-Agent adapter READMEs,
+  `PRICING.md`, `plugin/README.md`, `simplicio_loop/__init__.py`, `docs/INSTALL_MUTATIONS.md`)
+  updated to match; `scripts/claims_audit.py` skill-count check already read the tree as 7.
 - #262: `simplicio_agent` is now the canonical adapter ID (formerly `hermes`); `hermes` is kept
   as a legacy shim (same install/native-bind contract) for the compat window. Config/log paths
   move from `~/.hermes/` to `~/.simplicio-agent/`; the `HERMES_PROFILE` env var is superseded by
   `SIMPLICIO_AGENT_PROFILE` (legacy var still honored as a fallback).
+
+## [3.34.1] — 2026-07-13
+
+- Raise the `simplicio-cli` (dev-cli) dependency floor to `>=0.16.1`, paired with
+  dev-cli `v0.16.1` and its transitively shipped mapper `v0.23.1`.
+- Publish the current `main` package state as a patch release; PyPI publication is
+  performed locally when hosted GitHub Actions are unavailable.
 
 ## [3.34.0] — 2026-07-12
 

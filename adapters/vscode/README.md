@@ -5,13 +5,74 @@ instructions, supports **MCP servers**, and can run **tasks**. We use all three.
 
 ## Install
 
+Two distinct modes:
+
+### Project-local (this repo only)
+
 ```bash
 bash scripts/install.sh vscode
 ```
 
-The installer writes `.github/copilot-instructions.md` that loads the orchestrator protocol
-(it references `.claude/skills/simplicio-tasks/SKILL.md` and the satellites) and registers the
-MCP server in `.vscode/mcp.json`.
+Writes `.github/copilot-instructions.md` (loads the orchestrator protocol) and registers the
+MCP server in `.vscode/mcp.json` — scoped to the current repo.
+
+### User-global (all repos, wires the real runtime surfaces)
+
+```bash
+python3 scripts/install_lib.py vscode --global
+```
+
+A global install no longer only drops skills under `~/.claude/skills`. It also mirrors the
+skills into the **user-level VS Code/Copilot skill surface** and registers the **user-level
+MCP server** (`mcp.json` under the OS user config dir), so GitHub Copilot + VS Code are usable
+end-to-end on Windows/macOS/Linux without manual copy or MCP path repair. The user-level paths
+resolved per OS:
+
+| OS | User-level skill root | User-level MCP |
+|----|----------------------|----------------|
+| Windows | `%USERPROFILE%\.vscode\simplicio-skills` | `%APPDATA%\Code\User\mcp.json` |
+| macOS | `~/Library/Application Support/Code/User` (mcp) · `~/.vscode/simplicio-skills` | `~/Library/Application Support/Code/User/mcp.json` |
+| Linux | `~/.config/Code/User` (mcp) · `~/.vscode/simplicio-skills` | `~/.config/Code/User/mcp.json` |
+
+Verify the install actually wired the active surfaces:
+
+```bash
+python3 scripts/doctor.py --json   # reports vscode_global drift (OPTIONAL tier)
+python3 scripts/doctor.py --repair  # re-syncs skills + MCP if drift detected
+```
+
+Idempotent: a second `--global` run is a clean refresh, never a nested copy.
+
+### Global Windows install (VS Code + GitHub Copilot)
+
+Project-local files are not enough for a user-global Copilot setup. Run the official installer
+from this repository with `vscode --global`:
+
+```powershell
+pwsh scripts/install.ps1 vscode -Global
+```
+
+The global path keeps the project-compatible copy under `~/.claude/skills/`, and also refreshes
+the active Copilot surfaces:
+
+- `%USERPROFILE%/.copilot/skills/` — the personal Agent Skills directory;
+- `%USERPROFILE%/.copilot/instructions/simplicio-loop.instructions.md` — personal instructions;
+- `%USERPROFILE%/.copilot/mcp-config.json` — Copilot CLI user MCP;
+- `%APPDATA%/Code/User/mcp.json` — VS Code user MCP.
+
+The installer merges only the `simplicio` server and preserves unrelated skills, instructions,
+servers, and settings. It resolves the installed `simplicio` executable (or uses the portable
+`simplicio` command name when the runtime is not installed yet). Verify the active surfaces with:
+
+```powershell
+python scripts/doctor.py --json
+python scripts/doctor.py --repair
+```
+
+The VS Code/Copilot global adapter is one surface of the same runtime-neutral loop contract used
+by Claude, Codex, Cursor, Gemini, Kiro, Antigravity, Hermes/Simplicio Agent, OpenClaw, and other
+providers. GitHub lifecycle comments identify the runtime/device but coordinate all of them through
+the same `source_issue`.
 
 ## Loop drive — self-paced via tasks
 
@@ -35,17 +96,48 @@ headless. In interactive chat, just keep saying "continue" — the protocol is i
 
 ## Native bind — MCP (REQUIRED)
 
-`simplicio-runtime` native bind is REQUIRED on VS Code/Copilot, not optional. `simplicio
-install --global` (run automatically by `scripts/install.sh vscode`) writes `.vscode/mcp.json`:
+`simplicio-runtime` native binding is **REQUIRED** on VS Code/Copilot — a missing/unreachable
+bind BLOCKS the loop preflight (CLAUDE.md § Hooks). `simplicio install --global` writes
+`.vscode/mcp.json`:
 
 ```json
 { "servers": { "simplicio": { "command": "simplicio", "args": ["serve", "--mcp", "--stdio"] } } }
 ```
 
-Then the extension points bind to `simplicio-runtime` natively. Verify with `simplicio doctor
---json` before relying on the orchestrator.
+Then the extension points bind to `simplicio-runtime` natively. Use `simplicio doctor --json` to
+confirm the bind.
+
+## MCP config
+
+- **Config file (project):** `.vscode/mcp.json`, under a **`servers`** key (note: not
+  `mcpServers` — VS Code's MCP schema differs from Claude/Cursor).
+- **Config file (user-global):** see the OS table above (`%APPDATA%\Code\User\mcp.json` etc.).
+- **Snippet:**
+
+```json
+{
+  "servers": {
+    "simplicio": {
+      "type": "stdio",
+      "command": "simplicio",
+      "args": ["serve", "--mcp", "--stdio"],
+      "cwd": "/path/to/your/repo"
+    }
+  }
+}
+```
+
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration`, or VS Code Command
+  Palette → "MCP: List Servers" → confirm `simplicio` is running. Tier: **best-effort** — VS Code
+  is Tier 2 (not run under the gated per-commit sweep, though `scripts/verify_adapters.py vscode`
+  exists and can be run manually).
 
 ## Use
 
 Open Copilot Chat and type: `/simplicio-tasks finish all the open issues` (or paste the goal —
 the instructions file makes Copilot follow the protocol).
+
+## Progresso do run
+
+Self-paced (N2, via tasks): the task tick echoes the turn-header. Simplest (N3, universal): open
+`.orchestrator/loop/PROGRESS.md` in the editor — it auto-updates every turn, no extension needed.

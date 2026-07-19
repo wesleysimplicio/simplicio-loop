@@ -1,0 +1,23 @@
+{
+  "claim": {
+    "p50_ms": 0.8414899998570036,
+    "p95_ms": 1.1213159996259492
+  },
+  "claim_complete_cycle": {
+    "elapsed_seconds": 0.8139620079996348,
+    "throughput_per_second": 614.2792846422684
+  },
+  "claimed": 500,
+  "complete": {
+    "p50_ms": 0.7277844999862282,
+    "p95_ms": 1.040465000187396
+  },
+  "schema": "simplicio.hub-queue-retry-benchmark/v1",
+  "submit": {
+    "elapsed_seconds": 0.4682930190001571,
+    "p50_ms": 0.8787100000517967,
+    "p95_ms": 1.3665609999407025,
+    "throughput_per_second": 1067.7075670859665
+  },
+  "tasks": 500
+}

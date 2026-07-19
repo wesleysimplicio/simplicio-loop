@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Git LFS routing for generated / large media (#294, step 2.1 "Corrigir novos commits")
+#
+# DESIGN (strict, fail-closed):
+#   - Large media is ONLY exempt from the size gate when committed INSIDE the
+#     designated LFS staging area `assets/_lfs/`. There is deliberately NO global
+#     filter=lfs rule for audio/video/archive suffixes: a stray media file at repo
+#     root is treated as a raw, pack-inflating blob and BLOCKED by
+#     scripts/repository_budget.py (rule 2), forcing it into assets/_lfs/ or into
+#     GitHub Releases / artifact storage.
+#   - The ephemeral output prefixes (video/out/, rust/target/, node_modules/, dist/,
+#     build/) are FORBIDDEN entirely by the gate (rule 1) — never committed, raw or
+#     LFS. They are reproduced by build tooling or fetched from Releases.
+#
+# None of these patterns match a CURRENTLY tracked file (verified: git ls-files shows
+# no .mp4/.zip/etc. and no video/out/ blobs), so enabling LFS here rewrites no existing
+# object — it only governs FUTURE commits. The grandfathered hero images in
+# assets/*.png stay ordinary git blobs on purpose (moving them to LFS needs a history
+# rewrite, which #294's Definition of Done gates behind a separate approved step; they
+# are size-grandfathered in scripts/repository_budget_baseline.json instead).
+# ---------------------------------------------------------------------------
+
+# Designated LFS staging area — media committed here is stored in LFS (a small pointer
+# in git), so it does NOT inflate the pack. The budget gate recognizes this prefix as
+# exempt (AC "asset LFS permitido passa"). Put generated demo video/audio/zip here, or
+# publish them via GitHub Releases / release artifacts and keep only small sources in git.
+assets/_lfs/**  filter=lfs diff=lfs merge=lfs -text
+
+# Line-ending normalization for source; keep binary assets binary so git never mangles
+# them and never stores a re-encoded (size-changing) copy in the pack.
+*       text=auto eol=lf
+*.png   binary
+*.webp  binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary

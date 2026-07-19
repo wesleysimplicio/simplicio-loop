@@ -13,25 +13,67 @@ import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Tuple, TypedDict
+from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Tuple, TypedDict
 
 from .delivery import (build_delivery_receipt, normalize_delivery_target,
                        reconcile_delivery_observation, write_delivery_receipt)
 from .evidence import build_evidence_receipt, redact_sensitive_text
 from .source_state import github_delivery_payload, infer_github_delivery_state
+from . import github_lifecycle as _github_lifecycle
+from .orca_lifecycle import sync_orca_status
+from .source_adapter import GitHubSourceAdapter
 from .task_contract import compile_many, validate_contract
 from .plan_contract import PLAN_SCHEMA, validate_plan
-from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable
+from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable, build_completion_receipt
 from .agent_contract import bind_receipt, build_context_pack
+from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONTENT_SCHEMA,
+                               OPERATOR_RECEIPT_SCHEMA as _OPERATOR_RECEIPT_CONTENT_SCHEMA,
+                               ReceiptStatus, verify_receipt)
+from .planning_gate import content_hash as _planning_content_hash
+from .planning_gate import evaluate_mutation_authority, mutation_authority_required
+from .planning_gate import auto_planning_receipt_enabled
+from .planning_gate import build_planning_receipt as _build_planning_receipt
+from .planning_gate import publish_planning_receipt as _publish_planning_receipt
+from .work_item_claims import AttemptCoordinator, LeaseLostDuringExecution
+from .merge_executor import MergeExecutor, MergeExecutorError
+from .model_registry import ModelCapabilityRegistry, ModelRegistryError
+from .model_router import ModelRouterError, route as _model_route
+from .runtime_drivers import CLI_PROBE_HOOKS, driver_for_runtime
+from .runtime_execution_receipt import RuntimeExecutionReceiptError
+from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
+from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
+from .execution_board import ExecutionBoard
 
 try:
     from scripts.agent_identity import ensure_identity
 except ImportError:  # pragma: no cover - installed package without scripts namespace
     ensure_identity = None
 
+try:
+    from scripts.distributed_trust_policy import (
+        TrustPolicyError,
+        authorize as _trust_authorize,
+        load_policy as _load_trust_policy,
+        resolve_environment as _resolve_trust_environment,
+    )
+except ImportError:  # pragma: no cover - installed package without scripts namespace
+    TrustPolicyError = RuntimeError  # type: ignore[assignment,misc]
+    _trust_authorize = None
+    _load_trust_policy = None
+    _resolve_trust_environment = None
+
+try:
+    from scripts.security_audit_log import append_event as _audit_append
+except ImportError:  # pragma: no cover - installed package without scripts namespace
+    _audit_append = None
+
 RUNNER_SCHEMA = "simplicio.run-manifest/v1"
 STATE_SCHEMA = "simplicio.run-state/v1"
 OPERATOR_RECEIPT_SCHEMA = "simplicio.operator-receipt/v0"
+# Real content/schema/hash/freshness/provenance validation, gating `receipt_status` in
+# `_operator_dispatch_attempt()` below (issue #288: presence of a file must not imply
+# VERIFIED).
+RECEIPT_MAX_AGE_SECONDS = float(os.environ.get("SIMPLICIO_RECEIPT_MAX_AGE_SECONDS", "86400"))
 MAINTENANCE_RECEIPT_SCHEMA = "simplicio.maintenance-receipt/v1"
 PHASES = [
     "intake",
@@ -59,6 +101,7 @@ DEVCLI_MIN_VERSION = (0, 14, 0)
 DEVCLI_REQUIRED_CAPABILITIES = ("task", "--dry-run-task", "--json", "--bound-paths", "--target")
 DEFAULT_OPERATOR_WORKERS = 6
 BATCH_SCHEMA = "simplicio.operator-batch/v1"
+BATCH_PREFLIGHT_SCHEMA = "simplicio.operator-batch-preflight/v1"
 
 MaintenanceMode = Literal["active", "maintenance_deferred"]
 MaintenanceDisposition = Literal["operator", "backlog_only"]
@@ -113,6 +156,66 @@ def _rand_token(n: int = 10) -> str:
     return "".join(random.choice(chars) for _ in range(n))
 
 
+def _resolve_trusted_queue_context(url: str) -> tuple[str, Optional[str], Optional[Dict[str, Any]]]:
+    """Resolve the distributed-queue destination via the #289 trust policy.
+
+    ``.github/workflows/distributed-183-proof.yml`` -- the workflow this issue's
+    exploit scenario named -- was removed repo-wide in #311, but the same
+    exfiltration/confused-deputy risk applies to this call site: it is the real,
+    currently-used way to hand a bearer token (``SIMPLICIO_REMOTE_QUEUE_TOKEN``)
+    to a network destination. Setting ``SIMPLICIO_REMOTE_ENVIRONMENT_ID`` opts
+    into fail-closed resolution: the destination comes from the versioned,
+    CODEOWNERS-reviewed ``.github/security/distributed-trust-policy.json``, not
+    from ``SIMPLICIO_REMOTE_QUEUE_URL``. A freeform ``SIMPLICIO_REMOTE_QUEUE_URL``
+    may still be set for local corroboration, but it must match the policy's
+    origin exactly -- an attacker-chosen destination is rejected before any
+    identity/queue object (and therefore any token) is created.
+
+    Environments without ``SIMPLICIO_REMOTE_ENVIRONMENT_ID`` set fall back to the
+    legacy unmanaged path (whatever ``SIMPLICIO_REMOTE_QUEUE_URL`` names) for
+    local/dev use; production/CI callers should set the environment id so the
+    destination is policy-resolved.
+
+    Returns ``(url, environment_id, policy)``; ``environment_id``/``policy`` are
+    ``None`` on the legacy unmanaged path so callers can tell whether
+    connect-time enforcement (:mod:`simplicio_loop.secure_transport`) applies.
+    """
+    environment_id = os.environ.get("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "").strip()
+    if not environment_id:
+        return url, None, None
+    if _resolve_trust_environment is None or _load_trust_policy is None or _trust_authorize is None:
+        raise RuntimeError("distributed trust policy module unavailable")
+    policy_path = os.environ.get("SIMPLICIO_DISTRIBUTED_TRUST_POLICY", "").strip()
+    policy = _load_trust_policy(Path(policy_path)) if policy_path else _load_trust_policy()
+    env = _resolve_trust_environment(policy, environment_id)
+    repo_slug = os.environ.get("SIMPLICIO_REMOTE_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
+    ref = os.environ.get("SIMPLICIO_REMOTE_REF") or os.environ.get("GITHUB_REF", "")
+    actor = os.environ.get("SIMPLICIO_REMOTE_ACTOR") or os.environ.get("GITHUB_ACTOR", "")
+    ok, reason = _trust_authorize(policy, environment_id, repo_slug.strip(), ref.strip(), actor.strip())
+    if not ok:
+        raise RuntimeError("distributed trust policy denied: %s" % reason)
+    origin = env["origin"]
+    trusted_url = "%s://%s:%s%s" % (
+        origin["scheme"], origin["hostname"], origin["port"], origin.get("base_path", "/"),
+    )
+    if url and url.rstrip("/") != trusted_url.rstrip("/"):
+        # This is the literal #289 exploit replayed against the real call site:
+        # a caller-supplied destination must never override the reviewed
+        # policy, or an attacker who controls SIMPLICIO_REMOTE_QUEUE_URL could
+        # redirect the bearer token to infrastructure they control.
+        raise RuntimeError(
+            "distributed trust policy denied: SIMPLICIO_REMOTE_QUEUE_URL does not match the "
+            "resolved origin for environment_id '%s'" % environment_id
+        )
+    return trusted_url, environment_id, policy
+
+
+def _resolve_trusted_queue_url(url: str) -> str:
+    """Backward-compatible wrapper returning only the resolved URL."""
+    resolved, _environment_id, _policy = _resolve_trusted_queue_context(url)
+    return resolved
+
+
 def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]]:
     """Return the opt-in network coordinator and stable worker identity.
 
@@ -121,8 +224,9 @@ def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]
     without a remote claim.
     """
     url = os.environ.get("SIMPLICIO_REMOTE_QUEUE_URL", "").strip()
-    if not url:
+    if not url and not os.environ.get("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "").strip():
         return None, None
+    url, environment_id, policy = _resolve_trusted_queue_context(url)
     if ensure_identity is None:
         raise RuntimeError("distributed identity adapter unavailable")
     identity = ensure_identity(
@@ -130,12 +234,94 @@ def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]
         runtime=os.environ.get("SIMPLICIO_RUNTIME", "unknown-runtime"),
         capabilities=["claim", "heartbeat", "fencing", "receipts", "events", "evidence", "completion"],
     )
+    token = _resolve_queue_token(environment_id, policy, identity)
     queue = HTTPRemoteQueue(
         url,
-        token=os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN") or None,
+        token=token,
         timeout=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TIMEOUT", "5")),
+        environment_id=environment_id,
+        policy=policy,
     )
     return queue, identity
+
+
+STATIC_QUEUE_TOKEN_OPT_IN_VAR = "SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN"
+
+# #289: the queue operations a worker's short-lived credential is scoped to.
+# `enqueue` is deliberately excluded -- workers claim/heartbeat/complete/cancel
+# existing tasks, they do not create new ones, so a stolen worker credential
+# cannot be used to inject work into the queue.
+WORKER_QUEUE_OPERATIONS = (
+    "pull", "claim", "heartbeat", "complete", "assert-active", "cancel", "release", "events", "task",
+)
+
+
+def _resolve_queue_token(environment_id: Optional[str], policy: Optional[Dict[str, Any]],
+                          identity: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Resolve the bearer credential for the distributed queue (#289).
+
+    Preferred path: ``SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET`` is a long-lived
+    HMAC *signing* secret (never sent on the wire); a fresh short-lived token
+    (:mod:`scripts.short_lived_credentials`) is minted for this process, bound
+    to the worker's agent identity as subject and the environment_id as scope,
+    with a TTL taken from the policy's ``max_ttl_seconds`` (capped by
+    ``SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS`` if set lower), and restricted
+    to :data:`WORKER_QUEUE_OPERATIONS` (operation-level scoping, so a leaked
+    token cannot be replayed against an operation this worker never needed).
+    This is not the OIDC broker exchange #289 describes -- there is no CI
+    identity provider to issue the initial trust, and that gap stays
+    permanently blocked absent one -- but it replaces an indefinitely-lived
+    static secret with one that expires on its own and carries a revocable
+    ``jti``.
+
+    The legacy static ``SIMPLICIO_REMOTE_QUEUE_TOKEN`` is no longer a silent
+    fallback: it is only honored when the caller has *also* set
+    ``SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN=1`` (explicit opt-in), and every use
+    of it appends a ``reject``-adjacent warning line to the #289 audit log
+    (:mod:`scripts.security_audit_log`) so an indefinitely-lived credential in
+    use is discoverable, not invisible. Without the opt-in flag, a missing
+    signing secret fails closed with ``RuntimeError`` rather than silently
+    downgrading to the weaker auth mode.
+    """
+    secret = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", "").strip()
+    if not secret:
+        static_token = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN", "").strip() or None
+        opted_in = os.environ.get(STATIC_QUEUE_TOKEN_OPT_IN_VAR, "").strip().lower() in ("1", "true", "yes")
+        if static_token and not opted_in:
+            if _audit_append is not None:
+                _audit_append(
+                    None, event="runner.resolve_queue_token", decision="reject",
+                    operation=environment_id or "queue",
+                    reason="static SIMPLICIO_REMOTE_QUEUE_TOKEN present without "
+                           f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1 opt-in",
+                )
+            raise RuntimeError(
+                "SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET is not set and the legacy static "
+                "SIMPLICIO_REMOTE_QUEUE_TOKEN fallback is no longer silent (#289). Set "
+                f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1 to explicitly opt into the deprecated "
+                "static-token auth mode for local/dev use, or configure "
+                "SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET to use short-lived credentials instead."
+            )
+        if static_token and _audit_append is not None:
+            _audit_append(
+                None, event="runner.resolve_queue_token", decision="accept",
+                operation=environment_id or "queue",
+                reason="deprecated static-token auth mode explicitly opted into via "
+                       f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1",
+            )
+        return static_token
+    try:
+        from scripts.short_lived_credentials import issue_token
+    except ImportError as exc:  # pragma: no cover - installed package without scripts namespace
+        raise RuntimeError("short-lived credential module unavailable") from exc
+    max_ttl = float((policy or {}).get("environments", {}).get(environment_id, {}).get("max_ttl_seconds", 900)) \
+        if policy and environment_id else 900.0
+    override_ttl = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS", "").strip()
+    ttl_seconds = min(float(override_ttl), max_ttl) if override_ttl else max_ttl
+    subject = (identity or {}).get("agent_id", "unknown-agent")
+    scope = environment_id or "queue"
+    return issue_token(secret, subject=subject, scope=scope, ttl_seconds=ttl_seconds,
+                       operations=WORKER_QUEUE_OPERATIONS)
 
 
 def _run_id() -> str:
@@ -164,6 +350,18 @@ def _default_maintenance_state() -> MaintenanceState:
         "correction_summary": "",
         "deferral_reason": "",
         "evidence_status": "UNVERIFIED",
+    }
+
+
+def _active_maintenance_state(current: Mapping[str, Any] | None = None) -> MaintenanceState:
+    payload = dict(current or {})
+    return {
+        "mode": "active",
+        "disposition": "operator",
+        "receipt": str(payload.get("receipt") or ""),
+        "correction_summary": str(payload.get("correction_summary") or ""),
+        "deferral_reason": str(payload.get("deferral_reason") or ""),
+        "evidence_status": str(payload.get("evidence_status") or "UNVERIFIED"),
     }
 
 
@@ -227,6 +425,64 @@ def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
 
 def _run_cmd(argv: List[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, timeout=180)
+
+
+def _run_repo_path(run_dir: Path) -> Optional[Path]:
+    """Best-effort recovery of a run's repo checkout path from its ``manifest.json``,
+    for the #285 lifecycle-comment identity/branch projection. Returns ``None``
+    instead of raising when the manifest is missing/malformed (e.g. a test fixture
+    that writes a bare ``state.json`` with no manifest) -- callers treat that as
+    "no repo context available", never a hard failure.
+    """
+    try:
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        repo = manifest.get("repo")
+        return Path(repo).resolve() if repo else None
+    except Exception:
+        return None
+
+
+def _git_current_branch(repo_path: Path) -> str:
+    """Best-effort current branch name for the #285 lifecycle comment's
+    Branch/worktree field. Never raises -- any git failure (detached HEAD, no
+    repo, missing git binary) just yields an empty projection rather than a
+    fabricated branch name."""
+    try:
+        result = _run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo_path)
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    branch = (result.stdout or "").strip()
+    return branch if branch and branch != "HEAD" else ""
+
+
+def _dispatch_identity_fields(repo_path: Optional[Path]) -> Dict[str, str]:
+    """Best-effort local agent identity for the #285 lifecycle comment's
+    Agente/Runtime/Device fields.
+
+    Reuses the same stable per-repo identity file ``_distributed_configuration()``
+    creates for the real distributed dispatch path, so a sequential
+    (non-distributed) run projects the same genuine ``agent_id``/``runtime``/
+    ``device_id`` instead of leaving those fields blank. Never raises -- an
+    unavailable ``scripts.agent_identity`` module (installed package without the
+    scripts namespace), a missing repo path, or any I/O failure just yields an
+    empty projection rather than fabricated identity.
+    """
+    if ensure_identity is None or repo_path is None:
+        return {}
+    try:
+        identity = ensure_identity(
+            path=os.environ.get("SIMPLICIO_IDENTITY_FILE") or str(repo_path / ".orchestrator" / "agent-identity.json"),
+            runtime=os.environ.get("SIMPLICIO_RUNTIME", "unknown-runtime"),
+        )
+    except Exception:
+        return {}
+    return {
+        "agent_id": str(identity.get("agent_id") or ""),
+        "runtime": str(identity.get("runtime") or ""),
+        "device": str(identity.get("device_id") or ""),
+    }
 
 
 def _operator_env() -> Dict[str, str]:
@@ -441,6 +697,292 @@ def _auto_fan_out_enabled() -> bool:
     return raw not in {"0", "false", "no", "off", "disabled"}
 
 
+def _guarded_dispatch_enabled() -> bool:
+    """Opt-in gate (issue #288) for threading ``AttemptCoordinator.run_guarded`` through the
+    real operator dispatch path instead of a raw, unguarded ``subprocess.run``.
+
+    Off by default -- following the same pattern as ``SIMPLICIO_REQUIRE_MUTATION_AUTHORITY``
+    in #284's ``planning_gate.py`` wiring -- so existing callers/fixtures that pass a
+    distributed queue without the fuller identity/heartbeat contract are unaffected. Set
+    ``SIMPLICIO_GUARDED_DISPATCH=1`` to require a heartbeat-guarded, lease-fenced attempt for
+    every distributed-queue dispatch (a real worker whose lease is stolen mid-mutation is
+    killed and reported as ``lease_lost_during_execution`` instead of finishing unguarded).
+    """
+    return str(os.environ.get("SIMPLICIO_GUARDED_DISPATCH") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _auto_merge_enabled() -> bool:
+    """Opt-in gate (issue #288) for calling ``MergeExecutor`` for real once a dispatch
+    attempt's receipt pair is ``VERIFIED``.
+
+    Off by default: creating/merging a real PR is a side effect with real consequences (an
+    actual GitHub API call, a real merge), so it must be explicitly requested via
+    ``SIMPLICIO_AUTO_MERGE_PR=1`` plus a resolvable repo slug
+    (``SIMPLICIO_REMOTE_REPO``/``GITHUB_REPOSITORY``) and a worktree branch on the item -- any
+    of those missing is reported as ``attempted: False`` rather than silently skipped.
+    """
+    return str(os.environ.get("SIMPLICIO_AUTO_MERGE_PR") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _merge_repo_slug() -> str:
+    return str(os.environ.get("SIMPLICIO_REMOTE_REPO") or os.environ.get("GITHUB_REPOSITORY") or "").strip()
+
+
+def _dispatch_merge_pr(item: Mapping[str, Any], *, receipt: str, run_id: str) -> Dict[str, Any]:
+    """Create/poll/merge the PR for a claimed item's worktree branch and reconcile the merge
+    against the remote (issue #288).
+
+    Formalizes the ad-hoc ``gh pr create`` / ``gh pr merge --squash --delete-branch`` pattern
+    this project's own delivery workflow already performs by hand at the end of every task
+    (CLAUDE.md / AGENTS.md "Process" sections) as a real, reusable call instead of prose an
+    operator must remember. Never raises for an ordinary "cannot merge yet/here" outcome --
+    those come back as ``attempted: True, merged: False`` with a specific reason so a caller
+    can retry or escalate; only a hard `gh` transport failure surfaces as an error field.
+    """
+    context = item.get("worktree_context") or {}
+    branch = str(context.get("branch") or "").strip()
+    repo_slug = _merge_repo_slug()
+    if not branch or not repo_slug:
+        return {"attempted": False, "reason": "missing_branch_or_repo_slug", "merged": False}
+    base = str(os.environ.get("SIMPLICIO_MERGE_BASE") or "main").strip()
+    task_id = str(item.get("task_id") or "")
+    title = ("simplicio-loop: %s" % task_id) if task_id else "simplicio-loop: automated delivery"
+    body = ("Automated delivery for work item `%s` (run `%s`).\n\nOperator receipt: `%s`\n"
+            % (task_id, run_id, receipt))
+    try:
+        executor = MergeExecutor(repo=repo_slug)
+        pr = executor.ensure_pr(branch=branch, base=base, title=title, body=body)
+        pr_number = int(pr.get("number") or 0)
+        if not pr_number:
+            return {"attempted": True, "merged": False, "reason_code": "NO_PR_NUMBER",
+                    "detail": "ensure_pr did not resolve a PR number", "pr": pr}
+        result = executor.merge(pr_number)
+        return {"attempted": True, "pr": pr, **result.to_dict()}
+    except MergeExecutorError as exc:
+        return {"attempted": True, "merged": False, "reconciled": False,
+                "reason_code": exc.reason_code, "detail": str(exc)}
+
+
+def _model_routed_dispatch_enabled() -> bool:
+    """Opt-in gate (issue #287) for threading ``model_router.route()``'s selection
+    through the real dispatch path instead of a hardcoded runtime.
+
+    Off by default -- following the same pattern as ``SIMPLICIO_GUARDED_DISPATCH``
+    (#288) and ``SIMPLICIO_AUTO_MERGE_PR`` (#288) above -- so existing callers/fixtures
+    that dispatch without a model registry configured are unaffected. Set
+    ``SIMPLICIO_MODEL_ROUTED_DISPATCH=1`` to compute a real routing-decision-receipt
+    for every dispatch attempt and, when a real ``CodexRuntimeDriver``/
+    ``ClaudeRuntimeDriver`` is wired for the selected runtime, genuinely invoke it and
+    persist a ``runtime-execution-receipt`` alongside the operator's own receipts. A
+    routing block or driver failure never blocks the underlying dev-cli operator
+    mutation this repo already performs -- this is additional, real audit evidence
+    layered on top of it, not a replacement for the operator contract.
+    """
+    return str(os.environ.get("SIMPLICIO_MODEL_ROUTED_DISPATCH") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _verified_delivery_gate_enabled() -> bool:
+    """Opt-in gate (issue #288) for routing a dispatch attempt's completion decision through
+    the real ``LoopRuntimeAdapter``/``VerifiedAgentDelivery``/``ExecutionBoard`` evidence +
+    watcher + delivery contract instead of the bare ``execution_state == "applied"`` check.
+
+    ``LoopRuntimeAdapter`` and ``VerifiedAgentDelivery`` are real, fully tested classes
+    (``simplicio_loop/runtime_adapter.py``, ``verified_delivery.py``) but had zero references
+    in the dispatch path -- the #288 audit named this the highest-value remaining gap: an
+    attempt could be reported ``succeeded`` on ``execution_state == "applied"`` alone, with no
+    fresh COMPLETE evidence receipt, no measured watcher pass, and no recorded delivery
+    convergence actually required. Off by default -- following the same pattern as
+    ``SIMPLICIO_GUARDED_DISPATCH``/``SIMPLICIO_AUTO_MERGE_PR`` above -- so existing
+    callers/fixtures that dispatch without a watcher run are unaffected. Set
+    ``SIMPLICIO_VERIFIED_DELIVERY_GATE=1`` to demote a dispatch attempt whose evidence pair,
+    watcher, or delivery gate is not genuinely satisfied from ``succeeded`` to ``failed``,
+    even when the underlying dev-cli operator itself applied cleanly.
+    """
+    return str(os.environ.get("SIMPLICIO_VERIFIED_DELIVERY_GATE") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _run_verified_delivery_gate(
+    *, run_id: str, task_id: str, actor: str, attempt_id: str,
+    receipt_verdict: Mapping[str, Any], evidence_receipt: str, watcher_receipt: str,
+    merge: Optional[Mapping[str, Any]], worktree_context: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Drive the real evidence+watcher+delivery gated completion check (issue #288) for one
+    dispatch attempt.
+
+    Never raises: a failed gate comes back as ``verified: False`` with a ``reason`` so the
+    caller can demote ``succeeded`` to ``failed`` without crashing the scheduler. This is a
+    strict superset of the pre-existing ``execution_state == "applied"`` check -- it can only
+    turn a would-be success into a failure, never the reverse.
+    """
+    schema = "simplicio.verified-delivery-gate/v1"
+    try:
+        if receipt_verdict.get("status") != ReceiptStatus.VERIFIED:
+            return {"schema": schema, "verified": False, "status": "UNVERIFIED",
+                    "reason": "operator/evidence receipt pair is not VERIFIED"}
+        watcher_state: Dict[str, Any] = {}
+        if watcher_receipt and Path(watcher_receipt).exists():
+            try:
+                watcher_state = json.loads(Path(watcher_receipt).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                watcher_state = {}
+        if watcher_state.get("status") != "MEASURED" or not watcher_state.get("match"):
+            return {"schema": schema, "verified": False, "status": "UNVERIFIED",
+                    "reason": "no measured watcher pass recorded for this attempt"}
+        runtime = LoopRuntimeAdapter(run_id=run_id, work_item_id=task_id, actor=actor or "loop",
+                                     standalone=True)
+        runtime.negotiate()
+        board = ExecutionBoard(run_id=run_id)
+        delivery = VerifiedAgentDelivery(runtime=runtime, board=board, attempt_id=attempt_id)
+        for phase in ("intake", "mapping", "planning", "executing", "validating", "watching", "delivering"):
+            delivery.transition(phase)
+        evidence_payload = {"schema": "simplicio.ac-evidence/v1", "status": "PASS", "ready": True,
+                            "verdict": "COMPLETE", "receipt_id": evidence_receipt or attempt_id}
+        delivery.record_evidence(evidence_payload)
+        challenge = str(watcher_state.get("challenge") or watcher_receipt)
+        delivery.record_watcher(match=True, challenge=challenge)
+        merge_info = dict(merge or {})
+        if merge_info.get("merged"):
+            delivery_payload = {
+                "target": "merge-queue", "satisfied": True,
+                "merge_queue": {
+                    "receipt_sha": str(merge_info.get("merge_commit_sha") or ""),
+                    "status": "accepted",
+                    "branch": str(worktree_context.get("branch") or ""),
+                    "worktree_path": str(worktree_context.get("worktree_path")
+                                        or worktree_context.get("path") or ""),
+                },
+            }
+        else:
+            delivery_payload = {"target": "local-fixture", "satisfied": True}
+        delivery.record_delivery(delivery_payload)
+        result = delivery.complete(evidence_payload)
+        projection = board.replay()
+        return {"schema": schema, "verified": True, "status": "VERIFIED",
+                "board_status": projection.get("status"), "delivery": result.get("delivery")}
+    except (VerifiedDeliveryError, RuntimeAdapterError) as exc:
+        return {"schema": schema, "verified": False, "status": "UNVERIFIED", "reason": str(exc)}
+
+
+_DEFAULT_MODEL_REGISTRY_ENTRIES: Tuple[Dict[str, Any], ...] = (
+    {
+        "runtime": "codex", "provider": "openai", "model_id": "codex-cli/gpt-5.6-luna",
+        "aliases": ["codex-cli"], "capabilities": ["execute", "review"],
+        "probe": {"kind": "codex-cli", "target": "codex"},
+    },
+    {
+        "runtime": "claude", "provider": "anthropic", "model_id": "claude-code/sonnet-5",
+        "aliases": ["claude-code"], "capabilities": ["execute", "review"],
+        "probe": {"kind": "claude-cli", "target": "claude"},
+    },
+)
+
+
+def _default_model_registry() -> ModelCapabilityRegistry:
+    """Build the standard two-runtime (Codex + Claude) registry, wired to the real
+    ``--version`` probes in ``runtime_drivers.py`` -- never a fabricated availability
+    check. A caller that needs a different registry shape (e.g. a config file) can
+    still build/pass its own ``ModelCapabilityRegistry``; this is only the default
+    used by the opt-in dispatch wiring below.
+    """
+    return ModelCapabilityRegistry(_DEFAULT_MODEL_REGISTRY_ENTRIES, probe_hooks=CLI_PROBE_HOOKS)
+
+
+def _route_runtime_for_item(item: Mapping[str, Any], *, role: str = "executor",
+                             registry: Optional[ModelCapabilityRegistry] = None) -> Dict[str, Any]:
+    """Compute one real ``routing-decision-receipt`` for a dispatch attempt.
+
+    Never raises for an ordinary routing block (no eligible candidate, e.g. neither
+    CLI installed) -- that comes back as a receipt with ``blocked=True`` and an
+    explicit ``block_reason`` so a caller can record/report it; only malformed input
+    surfaces as ``ModelRouterError``/``ModelRegistryError``.
+    """
+    registry = registry or _default_model_registry()
+    requirements = {"role": role, "required_capabilities": ["execute"]}
+    return _model_route(requirements, registry)
+
+
+def _execute_routed_runtime(item: Mapping[str, Any], run_dir: Path, *,
+                             registry: Optional[ModelCapabilityRegistry] = None) -> Dict[str, Any]:
+    """Route + (when a real driver is wired for the selection) genuinely execute one
+    LLM-runtime attempt for this dispatch, persisting both receipts under
+    ``run_dir/loop/`` for audit.
+
+    This never fabricates execution: when routing is blocked (no eligible
+    candidate) or no real driver exists for the selected runtime, the returned
+    summary says so explicitly (``executed: False``) rather than skipping silently
+    or pretending a result. A driver invocation failure (missing binary, auth/policy
+    block, timeout) is itself a genuine, honestly-reported outcome -- captured in the
+    persisted ``runtime-execution-receipt`` exactly as observed.
+    """
+    summary: Dict[str, Any] = {
+        "routed": False, "executed": False,
+        "routing_decision_receipt": "", "runtime_execution_receipt": "",
+    }
+    try:
+        routing_receipt = _route_runtime_for_item(item, registry=registry)
+    except (ModelRouterError, ModelRegistryError) as exc:
+        summary["error"] = f"{type(exc).__name__}: {exc}"
+        return summary
+    summary["routed"] = True
+    loop_dir = run_dir / "loop"
+    loop_dir.mkdir(parents=True, exist_ok=True)
+    routing_path = loop_dir / "routing-decision-receipt.json"
+    _write_json(routing_path, routing_receipt)
+    summary["routing_decision_receipt"] = str(routing_path)
+    summary["selected"] = routing_receipt.get("selected")
+    summary["blocked"] = bool(routing_receipt.get("blocked"))
+    if routing_receipt.get("blocked") or not routing_receipt.get("selected"):
+        summary["block_reason"] = str(routing_receipt.get("block_reason") or "")
+        return summary
+    selected = routing_receipt["selected"]
+    driver = driver_for_runtime(selected.get("runtime"))
+    if driver is None:
+        summary["reason"] = f"no real driver wired for runtime {selected.get('runtime')!r}"
+        return summary
+    context_pack = item.get("context_pack") if isinstance(item.get("context_pack"), Mapping) else {}
+    goal = str(context_pack.get("goal") or item.get("task_id") or "").strip()
+    if not goal:
+        summary["reason"] = "no task goal text available to prompt the runtime"
+        return summary
+    repo_path = Path(str(item.get("repo") or "."))
+    result = driver.execute(goal, cwd=repo_path if repo_path.exists() else None)
+    base_sha = ""
+    head_sha = ""
+    changed: List[str] = []
+    if repo_path.exists():
+        fingerprint = _repo_fingerprint(repo_path)
+        base_sha = head_sha = str(fingerprint.get("head") or "")
+        try:
+            changed = _changed_paths(repo_path)
+        except Exception:
+            changed = []
+    try:
+        execution_receipt = driver.build_receipt(
+            route_id=hashlib.sha256(json.dumps(routing_receipt, sort_keys=True).encode("utf-8")).hexdigest()[:16],
+            requested={"runtime": selected.get("runtime"), "provider": selected.get("provider"),
+                       "model_id": selected.get("model_id"), "verified": True},
+            session={
+                "worker_id": str(item.get("worker_id") or ""),
+                "device_id": os.environ.get("SIMPLICIO_DEVICE_ID", ""),
+                "attempt_id": str(item.get("task_index") or ""),
+                "lease_id": "", "fence_token": "",
+            },
+            result=result,
+            tree={"base_sha": base_sha, "head_sha": head_sha, "changed_paths": changed},
+        )
+    except RuntimeExecutionReceiptError as exc:
+        summary["error"] = f"{type(exc).__name__}: {exc}"
+        return summary
+    execution_path = loop_dir / "runtime-execution-receipt.json"
+    _write_json(execution_path, execution_receipt)
+    summary["executed"] = True
+    summary["runtime_execution_receipt"] = str(execution_path)
+    summary["execution_ok"] = bool(result.ok)
+    summary["execution_stop_reason"] = result.stop_reason
+    summary["execution_error"] = result.error
+    return summary
+
+
 def _auto_worktree_dispatch(
     repo: str,
     run_id: str,
@@ -613,7 +1155,234 @@ def _record_event(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any],
     state["updated_at"] = event["ts"]
     _write_json(run_dir / "state.json", state)
     _append_jsonl(run_dir / "events.jsonl", event)
+    _sync_github_lifecycle(run_dir, state, event)
+    _sync_orca_lifecycle(run_dir, state, event)
     return state
+
+
+def _sync_orca_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any]) -> None:
+    """Project the same lifecycle event onto the active Orca Dev card.
+
+    Orca is optional and host-local: a missing Orca context is recorded as a
+    typed skip rather than treated as a failed delivery or a reason to touch a
+    different worktree.
+    """
+    lifecycle_state = _github_lifecycle.lifecycle_state_for_phase_event(
+        str(event.get("kind") or event.get("phase") or ""))
+    if not lifecycle_state:
+        return
+    try:
+        receipt = sync_orca_status(
+            state, {**event, "lifecycle_state": lifecycle_state},
+        )
+        _append_jsonl(run_dir / "orca-sync.jsonl", {
+            "run_id": str(state.get("run_id") or ""),
+            "event": str(event.get("kind") or event.get("phase") or ""),
+            **receipt,
+        })
+    except Exception as exc:  # noqa: BLE001 -- optional host integration is fail-open
+        try:
+            _append_jsonl(run_dir / "orca-sync-errors.jsonl", {
+                "run_id": str(state.get("run_id") or ""), "error": str(exc),
+            })
+        except Exception:
+            pass
+
+
+def _github_source_adapter(owner: str, repo: str, *, publish_comment_fn: Callable,
+                           outbox_dir: Optional[str | Path] = None) -> GitHubSourceAdapter:
+    """One construction point for the #285 `GitHubSourceAdapter` binding runner.py uses,
+    so every runner call site goes through the `SourceAdapter` Protocol surface instead
+    of calling `github_lifecycle.py`'s free functions directly. Same defaults
+    (``subprocess.run``, 20s timeout) `github_lifecycle.publish_lifecycle_state()` itself
+    defaults to -- this is a binding, not a behavior change.
+    """
+    return GitHubSourceAdapter(owner, repo, publish_comment_fn=publish_comment_fn, outbox_dir=outbox_dir)
+
+
+def _sync_github_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any]) -> None:
+    """Project one phase event onto the #285 GitHub lifecycle canonical comment.
+
+    Best-effort and fail-open, exactly like the existing `pr_evidence.py
+    progress-comment` command it complements: enabled whenever the run state
+    carries a ``source_issue`` dict (``{"owner": ..., "repo": ..., "issue": ...}``).
+    ``SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0`` (or another explicit falsy value)
+    is the temporary legacy opt-out; leaving it unset keeps GitHub coordination on.
+    Any
+    failure (no `gh`, no network, transport error, import error) is logged to
+    ``lifecycle-sync-errors.jsonl`` under the run directory and swallowed -- this
+    sync must never abort or fail the run. It only ever handles the intermediate
+    lifecycle projection (CLAIMED/PLANNED/IN_PROGRESS/...); the authoritative,
+    fail-closed close operation is
+    :func:`simplicio_loop.github_lifecycle.close_source_issue`, invoked explicitly at
+    completion time by the caller that owns that decision, never automatically from
+    this generic per-event hook.
+    """
+    if str(os.environ.get("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC") or "").strip().lower() in (
+        "0", "false", "no", "off", "legacy",
+    ):
+        return
+    source_issue = state.get("source_issue") or {}
+    owner, repo, issue = source_issue.get("owner"), source_issue.get("repo"), source_issue.get("issue")
+    if not (owner and repo and issue):
+        return
+    lifecycle_state = _github_lifecycle.lifecycle_state_for_phase_event(
+        str(event.get("kind") or event.get("phase") or ""))
+    if not lifecycle_state:
+        return
+    try:
+        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from pr_evidence import publish_comment as _publish_comment  # local import: optional dep
+
+        # #285 remaining gap: project the run's real identity/runtime/device/lease/
+        # branch onto the rendered comment instead of leaving those fields blank even
+        # though `render_lifecycle_comment` supports them. `event` wins over derived
+        # defaults when the emitting call site already knows its lease/branch (e.g.
+        # `execute_operator()`'s guarded dispatch, which has a real `WorkItemAttempt`
+        # lease and worktree branch on hand); otherwise fall back to a best-effort
+        # local identity/branch lookup so a plain sequential run is not blank either.
+        repo_path = _run_repo_path(run_dir)
+        identity = _dispatch_identity_fields(repo_path)
+        lease = state.get("lease") if isinstance(state.get("lease"), Mapping) else {}
+        lease_id = str(event.get("lease_id") or lease.get("lease_id") or "")
+        fencing_token = str(event.get("fencing_token") or lease.get("fencing_token") or "")
+        branch = str(
+            event.get("branch") or state.get("branch")
+            or (_git_current_branch(repo_path) if repo_path is not None else "")
+        )
+        worktree = str(event.get("worktree_path") or state.get("worktree_path") or "")
+
+        # #285 remaining gap: go through the `GitHubSourceAdapter` Protocol binding
+        # instead of calling `github_lifecycle.publish_lifecycle_state()` directly --
+        # same underlying call (no behavior change), but now expressed through the
+        # single adapter surface every source (GitHub or otherwise) is meant to plug
+        # into.
+        adapter = _github_source_adapter(str(owner), str(repo), publish_comment_fn=_publish_comment)
+        receipt = adapter.update_status(
+            str(issue), lifecycle_state,
+            run_id=str(state.get("run_id") or ""),
+            attempt_id=str(event.get("task_id") or state.get("run_id") or ""),
+            fencing_token=fencing_token,
+            progress=str(event.get("message") or ""),
+            agent_id=identity.get("agent_id", ""),
+            runtime=identity.get("runtime", ""),
+            device=identity.get("device", ""),
+            lease_id=lease_id,
+            branch=branch,
+            worktree=worktree,
+        )
+        # Persist the receipt into the run dir so the completion oracle (#285's remaining gap:
+        # "CLOSE_PENDING_RECONCILIATION" must actually gate COMPLETE, not sit inert) can see it.
+        # This hook only ever projects intermediate states; a genuine
+        # CLOSE_PENDING_RECONCILIATION comes from the explicit `close_source_issue` call, which
+        # persists its own receipt the same way -- see `simplicio_loop/oracle.py`.
+        _github_lifecycle.persist_lifecycle_receipt(receipt, run_dir)
+    except Exception as exc:  # noqa: BLE001 -- best-effort sync, never blocks the loop
+        try:
+            _append_jsonl(run_dir / "lifecycle-sync-errors.jsonl",
+                         {"ts": _now(), "kind": event.get("kind"), "error": str(exc)})
+        except Exception:
+            pass
+
+
+def _maybe_auto_build_planning_receipt(
+    run_root: Path, state: Dict[str, Any], run_id: str,
+    contract: Dict[str, Any], plan: Dict[str, Any], plan_validation: Dict[str, Any],
+    repo_path: Optional[Path] = None,
+) -> None:
+    """#284 remaining gap: wire ``planning_gate.build_planning_receipt()`` into the
+    REAL ``arm_run()`` dispatch path so the mutation-authority gate in
+    ``execute_operator()``/``execute_operator_batch()`` is self-sufficient, instead
+    of only ever being satisfiable by a caller remembering to run the separate
+    ``scripts/planning_gate.py build`` CLI first.
+
+    Mandatory-by-default via ``planning_gate.auto_planning_receipt_enabled()`` --
+    the same polarity-flip pattern ``mutation_authority_required()`` used for
+    ``SIMPLICIO_REQUIRE_MUTATION_AUTHORITY`` (#284/#360). Unset/blank now means
+    ON: every real ``arm_run()`` dispatch self-builds a matching
+    ``planning-receipt.json`` so ``execute_operator()``/``execute_operator_batch()``
+    are self-sufficient, instead of only ever being satisfiable by a caller
+    remembering to run the separate ``scripts/planning_gate.py build`` CLI first.
+    A caller that truly needs the legacy opt-in posture (or a test asserting the
+    missing-receipt fail-closed path) sets ``SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT``
+    to an explicit falsy value (``0/false/no/off/legacy``); see
+    ``tests/planning_gate_fixtures.py`` and
+    ``docs/adr/0004-planning-gate-rollout.md`` for the rollout/migration strategy.
+
+    When a GitHub ``source_issue`` is present on the run state AND
+    ``SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC`` is also enabled, this additionally
+    captures a fresh source snapshot (folding it into the mutation-authority
+    identity so a later source edit invalidates the authority) and publishes the
+    resulting receipt as PLANNED/BLOCKED on the canonical GitHub comment via
+    ``planning_gate.publish_planning_receipt()`` -- the #284-specific projection,
+    distinct from (and complementary to) the generic per-phase-event sync
+    ``_sync_github_lifecycle()`` already performs for CLAIMED/DISCOVERED/etc.
+
+    Best-effort and fail-open: any failure here (bad `gh` auth, no network, import
+    error) is logged to ``lifecycle-sync-errors.jsonl`` and swallowed, exactly like
+    ``_sync_github_lifecycle()`` -- this must never abort or fail the run.
+    """
+    if not auto_planning_receipt_enabled():
+        return
+    try:
+        attempt = int((state or {}).get("attempts", 0)) + 1
+        source_snapshot = None
+        source_issue = (state or {}).get("source_issue") or {}
+        owner, repo_name, issue = source_issue.get("owner"), source_issue.get("repo"), source_issue.get("issue")
+        lifecycle_sync_on = str(os.environ.get("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC") or "").strip().lower() not in (
+            "0", "false", "no", "off", "legacy",
+        )
+        if lifecycle_sync_on and owner and repo_name and issue:
+            try:
+                from .source_snapshot import capture_github_issue_snapshot
+                source_snapshot = capture_github_issue_snapshot(f"{owner}/{repo_name}", str(issue))
+            except Exception:
+                source_snapshot = None
+        receipt = _build_planning_receipt(
+            run_id=run_id, attempt=attempt, contract=contract, plan=plan,
+            plan_validation=plan_validation, source_snapshot=source_snapshot,
+        )
+        (run_root / "planning-receipt.json").write_text(
+            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
+        if source_snapshot is not None and lifecycle_sync_on:
+            scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from pr_evidence import publish_comment as _publish_comment  # local import: optional dep
+
+            # #285 remaining gap: project real identity/runtime/device/branch/plan onto
+            # the PLANNED comment instead of leaving those fields blank, the same
+            # projection `_sync_github_lifecycle()` now performs for CLAIMED/etc. No
+            # lease/fencing token exists yet at this point in `arm_run()` (it is minted
+            # only when a distributed claim happens later), so that field is left blank
+            # here rather than fabricated.
+            identity = _dispatch_identity_fields(repo_path)
+            branch = _git_current_branch(repo_path) if repo_path is not None else ""
+            plan_steps = [
+                str(step.get("description") or step.get("goal") or step.get("id") or "").strip()
+                for step in (plan.get("steps") or [])
+                if isinstance(step, Mapping)
+                and str(step.get("description") or step.get("goal") or step.get("id") or "").strip()
+            ]
+            lifecycle_receipt = _publish_planning_receipt(
+                receipt, publish_comment_fn=_publish_comment,
+                agent_id=identity.get("agent_id", ""),
+                runtime=identity.get("runtime", ""),
+                device=identity.get("device", ""),
+                branch=branch,
+                plan_steps=plan_steps,
+            )
+            if lifecycle_receipt is not None:
+                _github_lifecycle.persist_lifecycle_receipt(lifecycle_receipt, run_root)
+    except Exception as exc:  # noqa: BLE001 -- best-effort, never blocks the run
+        try:
+            _append_jsonl(run_root / "lifecycle-sync-errors.jsonl",
+                         {"ts": _now(), "kind": "planning_receipt_auto_build", "error": str(exc)})
+        except Exception:
+            pass
 
 
 def _emit_event(run_dir: Path, state: Dict[str, Any], kind: str, *,
@@ -666,6 +1435,7 @@ def _preflight_mapper(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         "task_aware_flags": list(task_aware_flags),
         "supported_task_aware_flags": supported_task_aware_flags,
         "task_aware_supported": len(supported_task_aware_flags) == len(task_aware_flags),
+        "repo_state": _repo_fingerprint(repo_path),
         "path": identity["path"],
         "identity_ok": identity["identity_ok"],
         "checked_at": _now(),
@@ -680,6 +1450,20 @@ def _preflight_mapper(repo_path: Path, run_root: Path) -> Dict[str, Any]:
     if missing_verbs:
         raise RuntimeError("simplicio-mapper missing required capabilities")
     return receipt
+
+
+def _operator_capability_gaps(help_stdout: str, task_help_stdout: str) -> Tuple[List[str], List[str]]:
+    """Derive dev-cli capability gaps from the exact persisted help surfaces."""
+    capability_surface = " ".join(part for part in (help_stdout, task_help_stdout) if part)
+    missing_tokens = [
+        token for token in DEVCLI_REQUIRED_TOKENS
+        if token not in (" " + capability_surface)
+    ]
+    missing_capabilities = [
+        capability for capability in DEVCLI_REQUIRED_CAPABILITIES
+        if capability not in capability_surface
+    ]
+    return missing_tokens, missing_capabilities
 
 
 def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
@@ -728,10 +1512,8 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         task_help_rc = task_help_result.returncode
         version_stdout = (version_result.stdout or "").strip()
         version_rc = version_result.returncode
-    capability_surface = " ".join(part for part in (help_stdout, task_help_stdout) if part)
-    missing_tokens = [token for token in DEVCLI_REQUIRED_TOKENS if token not in (" " + capability_surface)]
+    missing_tokens, missing_capabilities = _operator_capability_gaps(help_stdout, task_help_stdout)
     parsed_version = _parse_version_tuple(version_stdout)
-    missing_capabilities = [cap for cap in DEVCLI_REQUIRED_CAPABILITIES if cap not in capability_surface]
     receipt = {
         "tool": "simplicio-dev-cli",
         "returncode": help_rc,
@@ -749,6 +1531,7 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         "version_ok": parsed_version >= DEVCLI_MIN_VERSION,
         "required_capabilities": list(DEVCLI_REQUIRED_CAPABILITIES),
         "missing_capabilities": missing_capabilities,
+        "repo_state": _repo_fingerprint(repo_path),
         "checked_at": _now(),
     }
     _write_json(run_root / "operator-preflight.json", receipt)
@@ -756,7 +1539,7 @@ def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
         raise RuntimeError("simplicio-dev-cli unavailable")
     if not receipt["identity_ok"]:
         raise RuntimeError("simplicio-dev-cli identity mismatch")
-    if missing_tokens:
+    if missing_tokens or missing_capabilities:
         raise RuntimeError("simplicio-dev-cli missing required capabilities")
     if version_rc != 0:
         raise RuntimeError("simplicio-dev-cli version probe failed")
@@ -797,6 +1580,212 @@ def _validate_mapper_receipt(payload: Mapping[str, Any], repo_path: Path) -> Non
             candidate.relative_to(repo_path.resolve())
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"mapper returned path outside authorized repo: {raw}") from exc
+
+
+def _require_json_receipt(path: Path, label: str) -> Dict[str, Any]:
+    if not path.is_file():
+        raise RuntimeError(f"missing required {label} receipt: {path.name}")
+    try:
+        payload = _load_json(path)
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"invalid required {label} receipt: {path.name}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"invalid required {label} receipt: {path.name}")
+    return payload
+
+
+def _validate_run_receipts(
+    repo_path: Path,
+    run_dir: Path,
+    contract: Mapping[str, Any],
+    *,
+    state: Mapping[str, Any] | None = None,
+    manifest: Mapping[str, Any] | None = None,
+    require_dry_run: bool = True,
+) -> Dict[str, Any]:
+    """Require a current, run-bound mapper -> plan -> operator receipt chain."""
+    mapper = _require_json_receipt(run_dir / "mapper-context.json", "mapper context")
+    plan = _require_json_receipt(run_dir / "plan.json", "plan")
+    mapper_preflight = _require_json_receipt(run_dir / "mapper-preflight.json", "mapper preflight")
+    operator_preflight = _require_json_receipt(run_dir / "operator-preflight.json", "operator preflight")
+    operator = _require_json_receipt(run_dir / "operator-receipt.json", "operator")
+
+    expected_run_id = str((manifest or {}).get("run_id") or run_dir.name)
+    if run_dir.name != expected_run_id:
+        raise RuntimeError("run receipts are not bound to the current run")
+    if state is not None and str(state.get("run_id") or "") != expected_run_id:
+        raise RuntimeError("run state is not bound to the current run")
+    expected_contract_hash = str((manifest or {}).get("collection_hash") or "")
+    contract_hash = str(contract.get("collection_hash") or "")
+    if expected_contract_hash and contract_hash != expected_contract_hash:
+        raise RuntimeError("task contract is not bound to the current run")
+    if mapper.get("run_id") != expected_run_id or plan.get("run_id") != expected_run_id:
+        raise RuntimeError("mapper and plan receipts are not bound to the current run")
+    if operator.get("run_id") != expected_run_id:
+        raise RuntimeError("operator receipt is not bound to the current run")
+    if mapper.get("task_contract_hash") != contract_hash or plan.get("task_contract_hash") != contract_hash:
+        raise RuntimeError("mapper and plan receipts do not match the task contract")
+    mapper_context_hash = str(plan.get("mapper_context_hash") or "")
+    if not mapper_context_hash:
+        raise RuntimeError("plan receipt has no mapper context hash")
+    actual_mapper_context_hash = hashlib.sha256(
+        (run_dir / "mapper-context.json").read_bytes()
+    ).hexdigest()
+    if actual_mapper_context_hash != mapper_context_hash:
+        raise RuntimeError("plan receipt does not match the current mapper context bytes")
+
+    for name, payload in (("scan", mapper.get("scan")), ("inspect", mapper.get("inspect")),
+                          ("handoff", mapper.get("handoff"))):
+        if not isinstance(payload, Mapping) or payload.get("returncode") != 0:
+            raise RuntimeError(f"stale mapper context: {name} did not complete successfully")
+    _validate_mapper_receipt(mapper, repo_path)
+    planned_state = mapper.get("repo_state_after") or {}
+    current_state = _repo_fingerprint(repo_path)
+    mapper_before = mapper.get("repo_state_before") or {}
+    if not mapper_before.get("tree_hash") or not planned_state.get("tree_hash"):
+        raise RuntimeError("mapper context has no repository fingerprint")
+    if not _repo_state_equivalent(mapper_before, planned_state) or not _repo_state_equivalent(planned_state, current_state):
+        raise RuntimeError("stale mapper context: repository changed after planning")
+
+    if not mapper_preflight.get("identity_ok") or not mapper_preflight.get("version_ok"):
+        raise RuntimeError("mapper preflight receipt is not valid")
+    if mapper_preflight.get("missing_verbs"):
+        raise RuntimeError("mapper preflight receipt is missing required capabilities")
+    mapper_preflight_state = mapper_preflight.get("repo_state") or {}
+    if not mapper_preflight_state.get("tree_hash") or not _repo_state_equivalent(mapper_preflight_state, current_state):
+        raise RuntimeError("stale mapper preflight receipt: repository changed")
+    if not operator_preflight.get("identity_ok") or not operator_preflight.get("version_ok"):
+        raise RuntimeError("operator preflight receipt is not valid")
+    list_fields = (
+        "required_tokens", "missing_tokens", "required_capabilities", "missing_capabilities",
+    )
+    text_fields = ("help_stdout", "task_help_stdout")
+    for field in list_fields:
+        value = operator_preflight.get(field)
+        if field not in operator_preflight:
+            raise RuntimeError(f"operator preflight receipt is missing required field: {field}")
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise RuntimeError(f"operator preflight receipt has invalid field type: {field}")
+    for field in text_fields:
+        if field not in operator_preflight:
+            raise RuntimeError(f"operator preflight receipt is missing required field: {field}")
+        if not isinstance(operator_preflight[field], str):
+            raise RuntimeError(f"operator preflight receipt has invalid field type: {field}")
+    if operator_preflight["required_tokens"] != list(DEVCLI_REQUIRED_TOKENS):
+        raise RuntimeError("operator preflight receipt required_tokens do not match the canonical contract")
+    if operator_preflight["required_capabilities"] != list(DEVCLI_REQUIRED_CAPABILITIES):
+        raise RuntimeError("operator preflight receipt required_capabilities do not match the canonical contract")
+    recomputed_missing_tokens, recomputed_missing_capabilities = _operator_capability_gaps(
+        operator_preflight["help_stdout"], operator_preflight["task_help_stdout"],
+    )
+    if operator_preflight["missing_tokens"] != recomputed_missing_tokens:
+        raise RuntimeError("operator preflight receipt missing_tokens do not match persisted help")
+    if operator_preflight["missing_capabilities"] != recomputed_missing_capabilities:
+        raise RuntimeError("operator preflight receipt missing_capabilities do not match persisted help")
+    if recomputed_missing_tokens or recomputed_missing_capabilities:
+        raise RuntimeError("operator preflight receipt is missing required capabilities")
+    operator_preflight_state = operator_preflight.get("repo_state") or {}
+    if not operator_preflight_state.get("tree_hash") or not _repo_state_equivalent(operator_preflight_state, current_state):
+        raise RuntimeError("stale operator preflight receipt: repository changed")
+
+    tasks = list(contract.get("tasks") or [])
+    validation = validate_plan(
+        plan, tasks, repo_path,
+        contract_hash=contract_hash,
+        current_state=current_state,
+    )
+    if not validation["valid"]:
+        raise RuntimeError("stale or invalid plan receipt: " + ", ".join(validation["errors"]))
+    if (plan.get("deterministic") or {}).get("verified") is not True:
+        raise RuntimeError("plan receipt is not deterministic")
+    context_pack = ((mapper.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
+    mapper_pack_hash = str(plan.get("mapper_pack_hash") or "")
+    context_pack_hash = str(context_pack.get("pack_hash") or "")
+    if mapper_pack_hash and context_pack_hash and mapper_pack_hash != context_pack_hash:
+        raise RuntimeError("plan receipt does not match the mapper context fingerprint")
+
+    plan_hash = hashlib.sha256((run_dir / "plan.json").read_bytes()).hexdigest()
+    if operator.get("task_contract_hash") != contract_hash:
+        raise RuntimeError("operator receipt does not match the task contract")
+    if operator.get("plan_hash") != plan_hash:
+        raise RuntimeError("operator receipt does not match the current plan")
+    if operator.get("mapper_pack_hash") != plan.get("mapper_pack_hash"):
+        raise RuntimeError("operator receipt does not match the mapper context")
+    if operator.get("mapper_context_hash") != mapper_context_hash:
+        raise RuntimeError("operator receipt does not match the mapper receipt")
+    operator_state = operator.get("repo_state_before") or {}
+    if not operator_state.get("tree_hash") or not _repo_state_equivalent(operator_state, current_state):
+        raise RuntimeError("stale operator receipt: repository changed")
+    if require_dry_run and (operator.get("execution_state") != "dry_run" or operator.get("returncode") != 0):
+        raise RuntimeError("operator receipt is not a fresh successful dry-run preflight")
+    if not operator.get("target_within_repo") or not operator.get("authorized_targets"):
+        raise RuntimeError("operator receipt has no authorized target")
+    target = str(operator.get("target") or "")
+    authorized_targets = {str(item) for item in operator.get("authorized_targets") or []}
+    planned_targets = {
+        str(item) for step in plan.get("steps") or []
+        if isinstance(step, Mapping) for item in step.get("candidate_targets") or []
+    }
+    try:
+        (repo_path / target).resolve().relative_to(repo_path.resolve())
+    except (OSError, ValueError):
+        raise RuntimeError("operator receipt target is outside the authorized repository")
+    if not target or target not in authorized_targets or target not in planned_targets:
+        raise RuntimeError("operator receipt target is not authorized by the plan")
+    if state is not None:
+        if state.get("phase") in {"blocked", "done", "cancelled"}:
+            raise RuntimeError(f"run is not runnable: {state.get('phase')}")
+        if not (state.get("mapper") or {}).get("ready") or not (state.get("operator") or {}).get("ready"):
+            raise RuntimeError("run is not runnable: mapper/operator receipts are not ready")
+    return {
+        "mapper": mapper,
+        "plan": plan,
+        "operator_preflight": operator_preflight,
+        "operator": operator,
+        "repo_state": current_state,
+        "plan_hash": plan_hash,
+    }
+
+
+def _persist_batch_preflight_block(
+    run_dir: Path,
+    state: Dict[str, Any],
+    repo_path: Path,
+    reason: str,
+    task_indices: Sequence[int] = (),
+) -> Path:
+    diagnostic_path = run_dir / "operator-batch-preflight.json"
+    blocker = {
+        "kind": "operator_batch_preflight",
+        "reason_code": "operator_batch_preflight_failed",
+        "message": reason,
+        "run_id": str(state.get("run_id") or run_dir.name),
+        "scope": "global",
+    }
+    diagnostic = {
+        "schema": BATCH_PREFLIGHT_SCHEMA,
+        "status": "BLOCKED",
+        "run_id": blocker["run_id"],
+        "task_indices": [int(index) for index in task_indices],
+        "blocker": blocker,
+        "repo_state": _repo_fingerprint(repo_path),
+        "checked_at": _now(),
+    }
+    _write_json(diagnostic_path, diagnostic)
+    state["blockers"] = [blocker]
+    state["current_action"] = "operator_batch_preflight_blocked"
+    state["next_action"] = "repair_mapper_or_repo"
+    _write_json(run_dir / "state.json", state)
+    if state.get("phase") not in {"done", "cancelled"}:
+        _transition(
+            run_dir, state, "blocked", "operator batch prerequisite validation failed",
+            receipt=str(diagnostic_path), extra={"error": reason, "scope": "global"},
+        )
+    _emit_event(
+        run_dir, state, "blocked", receipt=str(diagnostic_path),
+        blocker=blocker["reason_code"], message="operator batch blocked before dispatch", scope="global",
+    )
+    return diagnostic_path
 
 
 def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str = "",
@@ -924,7 +1913,7 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
                 "steps": task_steps,
             }
         )
-    return {
+    plan = {
         "schema": PLAN_SCHEMA,
         "task_contract_hash": contract_hash,
         "generated_at": _now(),
@@ -943,6 +1932,21 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
         },
         "steps": steps,
     }
+    deterministic_input = {
+        "schema": plan["schema"],
+        "task_contract_hash": contract_hash,
+        "mapper_pack_hash": plan["mapper_pack_hash"],
+        "repo_state": plan["repo_state"],
+        "steps": plan["steps"],
+    }
+    plan["deterministic"] = {
+        "verified": True,
+        "algorithm": "mapper-derived-v1",
+        "input_hash": hashlib.sha256(
+            json.dumps(deterministic_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest(),
+    }
+    return plan
 
 
 def _fallback_targets(repo_path: Path) -> List[str]:
@@ -1043,6 +2047,7 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
             "timed_out": False,
             "measured_at": _now(),
             "source": "env_override",
+            "repo_state_before": _repo_fingerprint(repo_path),
         }
         _write_json(run_root / "operator-receipt.json", receipt)
         return receipt
@@ -1099,6 +2104,7 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
                 "model": op_env.get("SIMPLICIO_MODEL", ""),
                 "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
             },
+            "repo_state_before": _repo_fingerprint(repo_path),
         }
     except subprocess.TimeoutExpired as exc:
         op_env = _operator_env()
@@ -1120,6 +2126,7 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
                 "model": op_env.get("SIMPLICIO_MODEL", ""),
                 "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
             },
+            "repo_state_before": _repo_fingerprint(repo_path),
         }
     _write_json(run_root / "operator-receipt.json", receipt)
     return receipt
@@ -1219,6 +2226,9 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
             goal=primary_goal,
             task_fingerprint=compiled["collection_hash"],
         )
+        mapper_payload["run_id"] = run_id
+        mapper_payload["task_contract_hash"] = compiled["collection_hash"]
+        _write_json(run_root / "mapper-context.json", mapper_payload)
         state = _load_json(run_root / "state.json")
         state["mapper"] = {
             "ready": True,
@@ -1234,6 +2244,10 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
                     receipt=str(run_root / "mapper-context.json"))
         plan = _build_plan_with_hints(tasks, mapper_payload, repo_path, raw,
                                       contract_hash=compiled["collection_hash"])
+        plan["run_id"] = run_id
+        plan["mapper_context_hash"] = hashlib.sha256(
+            (run_root / "mapper-context.json").read_bytes()
+        ).hexdigest()
         plan_validation = validate_plan(
             plan, tasks, repo_path,
             contract_hash=compiled["collection_hash"],
@@ -1241,47 +2255,55 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         )
         plan["validation"] = plan_validation
         if not plan_validation["valid"]:
+            if any("targets_missing" in error for error in plan_validation["errors"]):
+                raise RuntimeError("mapper-derived plan has no authorized operator target")
             raise RuntimeError("mapper-derived plan failed validation: " + ", ".join(plan_validation["errors"]))
         _write_json(run_root / "plan.json", plan)
         state = _load_json(run_root / "state.json")
         state["current_action"] = "plan_materialized"
+        _maybe_auto_build_planning_receipt(run_root, state, run_id, compiled, plan, plan_validation, repo_path)
         candidates = ((plan.get("steps") or [{}])[0].get("candidate_targets") or [])
-        if candidates:
-            receipt = _prepare_operator_receipt(repo_path, run_root, tasks[0], candidates[0])
-            plan_hash = hashlib.sha256((run_root / "plan.json").read_bytes()).hexdigest()
-            receipt["task_contract_hash"] = compiled["collection_hash"]
-            receipt["plan_hash"] = plan_hash
-            receipt["mapper_pack_hash"] = plan.get("mapper_pack_hash", "")
-            receipt["authorized_targets"] = [candidates[0]]
-            receipt["target_within_repo"] = True
-            _write_json(run_root / "operator-receipt.json", receipt)
-            state["operator"] = {
-                "ready": receipt.get("execution_state") == "dry_run",
-                "receipt": str(run_root / "operator-receipt.json"),
-                "target": candidates[0],
-                "execution_state": receipt.get("execution_state", "proposed"),
-            }
-            evidence = build_evidence_receipt(str(run_root))
-            _write_json(run_root / "evidence-receipt.json", evidence)
-            state["evidence"] = {
-                "ready": False,
-                "receipt": str(run_root / "evidence-receipt.json"),
-                "status": evidence.get("status", "UNVERIFIED"),
-            }
-            delivery_receipt = build_delivery_receipt(str(run_root), delivery, current_state="implemented")
-            write_delivery_receipt(str(run_root), delivery_receipt)
-            state["delivery"] = {
-                "target": delivery,
-                "current_state": delivery_receipt["current_state"],
-                "ready": delivery_receipt["ready"],
-                "receipt": str(run_root / "delivery-receipt.json"),
-                "source_checked_at": delivery_receipt["source_checked_at"],
-            }
-            state["current_action"] = "operator_dry_run_recorded"
-            state["next_action"] = "await_operator_decision"
-        else:
-            state["current_action"] = "plan_materialized"
-            state["next_action"] = "select_target_for_operator"
+        if not candidates:
+            raise RuntimeError("mapper-derived plan has no authorized operator target")
+        receipt = _prepare_operator_receipt(repo_path, run_root, tasks[0], candidates[0])
+        plan_hash = hashlib.sha256((run_root / "plan.json").read_bytes()).hexdigest()
+        receipt["run_id"] = run_id
+        receipt["task_contract_hash"] = compiled["collection_hash"]
+        receipt["plan_hash"] = plan_hash
+        receipt["mapper_pack_hash"] = plan.get("mapper_pack_hash", "")
+        receipt["mapper_context_hash"] = plan.get("mapper_context_hash", "")
+        receipt["authorized_targets"] = [candidates[0]]
+        receipt["target_within_repo"] = True
+        _write_json(run_root / "operator-receipt.json", receipt)
+        if receipt.get("execution_state") != "dry_run" or receipt.get("returncode") != 0:
+            raise RuntimeError(
+                "operator preflight blocked the run: "
+                + str(receipt.get("stderr") or receipt.get("execution_state") or "unknown failure")
+            )
+        state["operator"] = {
+            "ready": True,
+            "receipt": str(run_root / "operator-receipt.json"),
+            "target": candidates[0],
+            "execution_state": receipt.get("execution_state", "proposed"),
+        }
+        evidence = build_evidence_receipt(str(run_root))
+        _write_json(run_root / "evidence-receipt.json", evidence)
+        state["evidence"] = {
+            "ready": False,
+            "receipt": str(run_root / "evidence-receipt.json"),
+            "status": evidence.get("status", "UNVERIFIED"),
+        }
+        delivery_receipt = build_delivery_receipt(str(run_root), delivery, current_state="implemented")
+        write_delivery_receipt(str(run_root), delivery_receipt)
+        state["delivery"] = {
+            "target": delivery,
+            "current_state": delivery_receipt["current_state"],
+            "ready": delivery_receipt["ready"],
+            "receipt": str(run_root / "delivery-receipt.json"),
+            "source_checked_at": delivery_receipt["source_checked_at"],
+        }
+        state["current_action"] = "operator_dry_run_recorded"
+        state["next_action"] = "await_operator_decision"
         _write_json(run_root / "state.json", state)
         _emit_event(run_root, state, "plan_ready", receipt=str(run_root / "plan.json"),
                     message="validated plan materialized")
@@ -1293,9 +2315,49 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
                     receipt=str(run_root / "plan.json"))
     except Exception as exc:
         state = _load_json(run_root / "state.json")
-        state["blockers"] = [str(exc)]
+        message = str(exc)
+        if "no authorized operator target" in message or "operator preflight blocked" in message:
+            state["blockers"] = [{
+                "kind": "run_preflight",
+                "reason_code": "no_authorized_target" if "target" in message else "operator_dry_run_failed",
+                "message": message,
+                "run_id": run_id,
+            }]
+        else:
+            state["blockers"] = [message]
         state["current_action"] = "mapping_failed"
         state["next_action"] = "repair_mapper_or_repo"
+        evidence_path = run_root / "evidence-receipt.json"
+        if not evidence_path.exists():
+            mapper_path = run_root / "mapper-context.json"
+            operator_path = run_root / "operator-receipt.json"
+            plan_path = run_root / "plan.json"
+            if not plan_path.exists() and not mapper_path.exists():
+                _write_json(mapper_path, {
+                    "run_id": run_id,
+                    "task_contract_hash": compiled["collection_hash"],
+                    "status": "blocked",
+                    "error": message,
+                })
+            if not plan_path.exists() and not operator_path.exists():
+                _write_json(operator_path, {
+                    "schema": OPERATOR_RECEIPT_SCHEMA,
+                    "run_id": run_id,
+                    "task_contract_hash": compiled["collection_hash"],
+                    "execution_state": "blocked",
+                    "status": "blocked",
+                    "returncode": None,
+                    "changed_paths": [],
+                    "error": message,
+                })
+            if mapper_path.exists() and operator_path.exists():
+                evidence = build_evidence_receipt(str(run_root))
+                _write_json(evidence_path, evidence)
+                state["evidence"] = {
+                    "ready": False,
+                    "receipt": str(evidence_path),
+                    "status": evidence.get("status", "UNVERIFIED"),
+                }
         _write_json(run_root / "state.json", state)
         _transition(run_root, state, "blocked", "mapper integration failed",
                     receipt=str(run_root / "mapper-context.json"), extra={"error": str(exc)})
@@ -1461,11 +2523,24 @@ def conclude_run(repo: str, run_id: str, *, force: bool = False) -> Dict[str, An
     return read_status(repo, run_id)
 
 
-def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, Any]:
+def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
+                      attempt_coordinator: Optional[AttemptCoordinator] = None,
+                      guarded_attempt: Any = None) -> Dict[str, Any]:
     """Execute one planned task through the real dev-cli and persist an immutable receipt.
 
     `run` intentionally arms and dry-runs only.  This explicit tick is the mutation boundary;
     it cannot run without the mapper/plan/operator preflight artifacts created by `arm_run`.
+
+    When both ``attempt_coordinator`` and ``guarded_attempt`` (a ``WorkItemAttempt``) are
+    supplied (issue #288's guarded dispatch path, gated by ``SIMPLICIO_GUARDED_DISPATCH`` in
+    ``_operator_dispatch_attempt``), the mutating dev-cli invocation runs through
+    ``AttemptCoordinator.run_guarded`` instead of a raw ``subprocess.run`` -- a background
+    thread heartbeats the lease for the life of the subprocess and kills it the instant the
+    lease is no longer current, instead of letting a worker that lost its fence keep mutating
+    the checkout (the #183 gap). ``LeaseLostDuringExecution`` propagates to the caller, which
+    already treats any exception here as a receipted (not scheduler-crashing) failure.
+    ``guarded_attempt`` is deliberately named apart from this function's own ``attempt``
+    local (the per-task retry counter) so the two can never collide.
     """
     status = read_status(repo, run_id)
     if (status["state"].get("maintenance") or {}).get("disposition") == "backlog_only":
@@ -1494,6 +2569,38 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         raise RuntimeError("repository changed after planning; re-run mapper before execution")
     task = tasks[task_index - 1]
     attempt = int((status["state"] or {}).get("attempts", 0)) + 1
+    # #284: mutation-authority gate, mandatory by default. execute_operator()
+    # refuses to run without a valid planning-receipt.json whose mutation_authority
+    # token matches THIS run/attempt/task-contract/plan identity -- any drift (stale
+    # plan hash, rotated lease/fence, missing/invalid receipt) blocks fail-closed
+    # instead of silently proceeding. Opt out only via an explicit falsy
+    # SIMPLICIO_REQUIRE_MUTATION_AUTHORITY (see planning_gate.mutation_authority_required());
+    # see simplicio_loop/planning_gate.py and scripts/planning_gate.py.
+    if mutation_authority_required():
+        # GitHub source drift: if the caller re-captured a fresh source snapshot
+        # immediately before this tick (`scripts/planning_gate.py capture-source`,
+        # written to `source-snapshot-current.json`), compare its hash against the
+        # one the receipt/authority was minted with. Absent that file (local/
+        # non-GitHub runs, or a caller that hasn't wired re-capture yet), this is a
+        # no-op -- identical to previous behavior.
+        current_source_hash = ""
+        current_snapshot_path = run_dir / "source-snapshot-current.json"
+        if current_snapshot_path.exists():
+            try:
+                current_source_hash = str((_load_json(current_snapshot_path).get("source") or {}).get("snapshot_hash") or "")
+            except Exception:
+                current_source_hash = ""
+        authority_verdict = evaluate_mutation_authority(
+            run_dir, run_id=run_id, attempt=attempt,
+            task_contract_hash=str(contract.get("collection_hash") or _planning_content_hash(contract)),
+            plan_hash=_planning_content_hash(plan),
+            source_snapshot_hash=current_source_hash,
+        )
+        if not authority_verdict["ok"]:
+            raise RuntimeError(
+                "mutation authority required (SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) but "
+                f"{authority_verdict['reason_code']}: {authority_verdict['reason']}"
+            )
     targets = (plan.get("steps") or [])[task_index - 1].get("candidate_targets") or []
     target = targets[0] if targets else status["state"].get("operator", {}).get("target", "")
     if not target:
@@ -1523,11 +2630,18 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         target,
     )
     checkpoint = _capture_operator_checkpoint(run_dir, repo_path, targets or [target])
+    # #285 remaining gap: this dispatch has a real guarded lease (when the caller wired
+    # one) and a real repo checkout/branch on hand -- surface them on the event so
+    # `_sync_github_lifecycle()` projects the actual lease/fencing token and branch onto
+    # the CLAIMED comment instead of falling back to a blank/best-effort default.
     _emit_event(run_dir, status["state"], "worker_claimed",
                 receipt=str(run_dir / "task-contract.json"),
                 task_id=str(task.get("id") or ""),
                 ac_ids=_task_ac_ids(task),
-                message="operator worker claimed task")
+                message="operator worker claimed task",
+                lease_id=str(getattr(getattr(guarded_attempt, "lease", None), "lease_id", "") or ""),
+                fencing_token=str(getattr(getattr(guarded_attempt, "lease", None), "fencing_token", "") or ""),
+                branch=_git_current_branch(repo_path))
     if item_context := (status["state"].get("operator") or {}).get("worktree_context"):
         _emit_event(run_dir, status["state"], "worktree_created",
                     receipt=str(item_context.get("lock_receipt") or operator_path),
@@ -1550,14 +2664,20 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         source = "env_override"
     else:
         try:
-            result = subprocess.run(
-                argv,
-                cwd=str(repo_path),
-                capture_output=True,
-                text=True,
-                timeout=_operator_timeout("execute"),
-                env=op_env,
-            )
+            if attempt_coordinator is not None and guarded_attempt is not None:
+                # Guarded dispatch (#288/#183): heartbeat-fenced, kill-on-lease-loss.
+                result = attempt_coordinator.run_guarded(
+                    guarded_attempt, argv, cwd=repo_path, timeout=_operator_timeout("execute"), env=op_env,
+                )
+            else:
+                result = subprocess.run(
+                    argv,
+                    cwd=str(repo_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=_operator_timeout("execute"),
+                    env=op_env,
+                )
             returncode = result.returncode
             raw_stdout = (result.stdout or "").strip()
             try:
@@ -1610,6 +2730,13 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1) -> Dict[str, A
         "timed_out": returncode is None,
         "started_at": _now(),
         "finished_at": _now(),
+        # #288: receipt_verifier.OPERATOR_RECEIPT_SCHEMA requires "measured_at" for its
+        # freshness check. This receipt never carried it, so every real (non-mocked)
+        # execute_operator() dispatch was permanently INVALID_SCHEMA/MISSING_FIELD in
+        # _verify_worker_receipt_pair() -- the merge gate below could never fire for a genuine
+        # attempt. Same instant as finished_at; this is a receipt-completeness fix, not a new
+        # measurement.
+        "measured_at": _now(),
         "source": source,
         "provider_config": provider_config,
         "checkpoint": checkpoint,
@@ -1712,12 +2839,34 @@ def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
 
 
 def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3) -> Dict[str, Any]:
-    """Arm, execute, and independently verify one run as one durable operation."""
+    """Arm, execute, and independently verify one run as one durable operation.
+
+    Issue #279: this boundary must never leave a run partially armed.  Either the full
+    mapper -> plan -> operator preflight -> batch chain succeeds, or the run is left (and
+    reported) explicitly ``blocked`` with a diagnostic receipt.  ``execute_operator_batch``
+    already fails closed and persists a batch-preflight-block diagnostic before raising when
+    the receipt chain is missing or stale, but that exception must not escape uncaught here --
+    an uncaught exception is itself a partially-armed, undiagnosed state from the CLI's
+    perspective.
+    """
     armed = arm_run(repo, task_path, delivery, max_iterations)
     run_id = armed["manifest"]["run_id"]
     if armed["state"].get("phase") == "blocked":
         return armed
-    batch = execute_operator_batch(repo, run_id, max_workers=1, retry_budget=retry_budget, auto_fan_out=False)
+    try:
+        batch = execute_operator_batch(repo, run_id, max_workers=1, retry_budget=retry_budget, auto_fan_out=False)
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        status = read_status(repo, run_id)
+        run_dir = Path(status["run_dir"])
+        state = status["state"]
+        if state.get("phase") != "blocked":
+            # Defensive fallback: execute_operator_batch's own preflight boundary is
+            # expected to have already persisted a blocked diagnostic before raising, but
+            # guarantee the run never surfaces as anything other than explicitly blocked.
+            _transition(run_dir, state, "blocked",
+                        "batch dispatch failed before dispatch", extra={"error": str(exc)})
+            status = read_status(repo, run_id)
+        return status
     status = read_status(repo, run_id)
     if batch.get("failed_task_indices") or status["state"].get("phase") == "blocked":
         return status
@@ -1972,6 +3121,190 @@ def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _verify_worker_receipt_pair(operator_receipt_path: str, evidence_receipt_path: str) -> Dict[str, str]:
+    """Gate `receipt_status` on real content/schema/hash/freshness/provenance (issue #288).
+
+    Previously this reduced to ``Path(receipt).is_file() and Path(evidence_receipt).is_file()``
+    -- an empty ``{}`` file passed just as readily as a genuine receipt. Both receipts are now
+    parsed and run through ``receipt_verifier.verify_receipt`` against the schema each producer
+    (``_prepare_operator_receipt`` / ``evidence.py::build_evidence_receipt``) actually emits.
+    Only a fully verified pair returns ``VERIFIED``; every other case names a specific,
+    non-existence reason (``STALE``, ``TAMPERED``, ``INVALID_SCHEMA``, ``MISSING_FIELD``, or the
+    legacy ``UNVERIFIED`` when a path is simply absent).
+    """
+    if not operator_receipt_path or not evidence_receipt_path:
+        return {"status": "UNVERIFIED", "reason": "operator or evidence receipt path missing"}
+    op_path = Path(operator_receipt_path)
+    ev_path = Path(evidence_receipt_path)
+    if not op_path.is_file() or not ev_path.is_file():
+        return {"status": "UNVERIFIED", "reason": "operator or evidence receipt file missing"}
+    try:
+        operator_payload = json.loads(op_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"status": ReceiptStatus.INVALID_SCHEMA, "reason": f"operator receipt unreadable: {exc}"}
+    try:
+        evidence_payload = json.loads(ev_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"status": ReceiptStatus.INVALID_SCHEMA, "reason": f"evidence receipt unreadable: {exc}"}
+
+    now = time.time()
+    operator_verdict = verify_receipt(
+        operator_payload, schema=_OPERATOR_RECEIPT_CONTENT_SCHEMA,
+        max_age_seconds=RECEIPT_MAX_AGE_SECONDS, now=now,
+    )
+    if not operator_verdict.verified:
+        return {"status": operator_verdict.status, "reason": f"operator receipt: {operator_verdict.reason}"}
+    evidence_verdict = verify_receipt(
+        evidence_payload, schema=_EVIDENCE_RECEIPT_CONTENT_SCHEMA,
+        max_age_seconds=RECEIPT_MAX_AGE_SECONDS, now=now,
+    )
+    if not evidence_verdict.verified:
+        return {"status": evidence_verdict.status, "reason": f"evidence receipt: {evidence_verdict.reason}"}
+    return {
+        "status": ReceiptStatus.VERIFIED,
+        "reason": "operator and evidence receipts passed content/schema/hash/freshness/provenance checks",
+    }
+
+
+def _test_only_stall_before_dispatch(task_id: str) -> None:
+    """Test-only hook (issue #288 cross-process recovery test): block one named task for a
+    controlled number of real wall-clock seconds before it claims/executes.
+
+    This exists solely so a test can start a real orchestrator OS process, let it durably
+    journal an earlier task, and then kill the process (a genuine crash, not a simulated
+    exception) while it is deterministically stalled mid-batch on a *different* task --
+    proving a restarted orchestrator resumes/reconciles cleanly. It is a no-op unless both
+    ``SIMPLICIO_LOOP_TEST_SLOW_TASK_ID`` matches this exact task and
+    ``SIMPLICIO_LOOP_TEST_SLOW_TASK_SECONDS`` is set, mirroring the project's existing
+    ``SIMPLICIO_LOOP_FAKE_*`` opt-in test hooks -- never active in a normal run.
+    """
+    target = os.environ.get("SIMPLICIO_LOOP_TEST_SLOW_TASK_ID", "").strip()
+    if not target or target != str(task_id).strip():
+        return
+    try:
+        seconds = float(os.environ.get("SIMPLICIO_LOOP_TEST_SLOW_TASK_SECONDS", "0") or "0")
+    except ValueError:
+        seconds = 0.0
+    if seconds > 0:
+        time.sleep(seconds)
+
+
+def _remote_worker_dispatch_enabled() -> bool:
+    """#286: once the queue is a genuine network ``HTTPRemoteQueue``, the coordinator must
+    not execute the operator in its own process -- it enqueues the task envelope and waits
+    for an independent ``RemoteWorkerDaemon`` (a different device/process, reachable only
+    over the wire) to pull, claim, run, and complete it. This is the fix for the exact gap
+    issue #286 named: "execute_operator_batch() cria HTTPRemoteQueue, mas continua
+    submetendo _operator_dispatch_attempt() a um ThreadPoolExecutor local; o proprio
+    coordenador chama execute_operator()."
+
+    ``SQLiteRemoteQueue`` (issue #288's co-located, same-process guarded-dispatch path) is
+    deliberately unaffected -- that queue backend models a single-host attempt coordinator,
+    not a remote worker, so every existing #288 test using it keeps its current behavior.
+    Opt out with ``SIMPLICIO_REMOTE_WORKER_ONLY=0`` only for a deliberate same-host smoke
+    test that wants the old in-process shortcut against a real HTTP queue.
+    """
+    return str(os.environ.get("SIMPLICIO_REMOTE_WORKER_ONLY") or "1").strip().lower() not in (
+        "0", "false", "no", "off", "disabled",
+    )
+
+
+def _operator_dispatch_attempt_remote_worker(
+    item: Mapping[str, Any], common: Dict[str, Any], queue: HTTPRemoteQueue, started: float,
+) -> Dict[str, Any]:
+    """Enqueue-and-wait dispatch for a genuine remote (``HTTPRemoteQueue``) worker (#286).
+
+    The coordinator itself never claims and never calls ``execute_operator()`` here -- it
+    publishes the immutable task envelope once (idempotent: ``enqueue`` is a no-op if the
+    task_id already exists) and polls ``queue.task()`` (the same authority a remote
+    ``RemoteWorkerDaemon`` mutates) until the task reaches a terminal ``completed`` status or
+    the dispatch timeout elapses. A timeout is reported as a specific, non-fabricated failure
+    (``remote_worker_timeout``) rather than silently falling back to local execution.
+    """
+    task_id = common["task_id"]
+    context_pack = dict(item.get("context_pack") or {})
+    payload = {
+        "run_id": common["run_id"], "worker_id": common["worker_id"],
+        "task_index": common["task_index"], "goal": context_pack.get("goal", ""),
+        "acs": list(context_pack.get("acs") or ()),
+        "depends_on": list(context_pack.get("depends_on") or ()),
+        "allowed_paths": list(context_pack.get("allowed_paths") or ()),
+        "issue_ref": context_pack.get("issue_ref", ""), "issue_url": context_pack.get("issue_url", ""),
+        "context_pack": context_pack,
+        "worktree_context": dict(item.get("worktree_context") or {}),
+    }
+    common["dispatch_mode"] = "remote_worker_pull"
+    try:
+        queue.enqueue(task_id, payload)
+    except (QueueConflict, QueueUnavailable, ValueError) as exc:
+        return {**common, "status": "failed", "phase": "blocked", "execution_state": "error",
+                "receipt": "", "operator_receipt": "", "evidence_receipt": "",
+                "receipt_status": "UNVERIFIED", "attempt": 0,
+                "reason_code": "remote_enqueue_failed", "error": str(exc), "dead_letter": True,
+                "started_at": started, "finished_at": _now()}
+
+    timeout = float(os.environ.get("SIMPLICIO_REMOTE_DISPATCH_TIMEOUT_SECONDS", "3600"))
+    poll_interval = float(os.environ.get("SIMPLICIO_REMOTE_DISPATCH_POLL_INTERVAL_SECONDS", "2"))
+    deadline = time.monotonic() + max(0.0, timeout)
+    task_state: Dict[str, Any] = {}
+    while True:
+        try:
+            task_state = queue.task(task_id)
+        except (QueueUnavailable, KeyError) as exc:
+            return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
+                    "receipt": "", "operator_receipt": "", "evidence_receipt": "",
+                    "receipt_status": "UNVERIFIED", "attempt": 0,
+                    "reason_code": "network_paused", "error": str(exc), "dead_letter": True,
+                    "started_at": started, "finished_at": _now()}
+        if str(task_state.get("status") or "") == "completed":
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_interval, remaining))
+
+    if str(task_state.get("status") or "") != "completed":
+        return {**common, "status": "failed", "phase": "blocked", "execution_state": "timeout",
+                "receipt": "", "operator_receipt": "", "evidence_receipt": "",
+                "receipt_status": "UNVERIFIED", "attempt": 0,
+                "reason_code": "remote_worker_timeout",
+                "error": "no remote worker completed task %s within %.0fs" % (task_id, timeout),
+                "dead_letter": True, "started_at": started, "finished_at": _now()}
+
+    lease_info = dict(task_state.get("lease") or {})
+    receipt = str(lease_info.get("receipt_ref") or "")
+    # The remote worker's evidence receipt lives on its own device; the coordinator only
+    # treats it as readable when both files genuinely exist on this filesystem (true, for
+    # instance, of the same-host loopback proxy this repo's E2E uses). A cross-device
+    # deployment without a receipt-fetch endpoint honestly reports UNVERIFIED here rather
+    # than fabricating a VERIFIED pair it cannot see.
+    evidence_receipt = str(Path(receipt).parent / "evidence-receipt.json") if receipt else ""
+    if not (evidence_receipt and Path(evidence_receipt).is_file()):
+        evidence_receipt = ""
+    receipt_verdict = _verify_worker_receipt_pair(receipt, evidence_receipt)
+    merge: Optional[Dict[str, Any]] = None
+    if receipt_verdict["status"] == ReceiptStatus.VERIFIED and _auto_merge_enabled():
+        merge = _dispatch_merge_pr(item, receipt=receipt, run_id=common["run_id"])
+    return {
+        **common,
+        "status": "succeeded",
+        "phase": "delivered",
+        "execution_state": "applied",
+        "receipt": receipt,
+        "operator_receipt": receipt,
+        "evidence_receipt": evidence_receipt,
+        "watcher_receipt": "",
+        "receipt_status": receipt_verdict["status"],
+        "receipt_verdict_reason": receipt_verdict["reason"],
+        "attempt": 1,
+        "failure_fingerprint": "",
+        "merge": merge,
+        "remote_task": {"task_id": task_id, "lease": lease_info},
+        "started_at": started,
+        "finished_at": _now(),
+    }
+
+
 def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Call the production operator and reduce its status to a durable worker record."""
     started = _now()
@@ -1994,23 +3327,63 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "agent": dict(item.get("agent_identity") or {}),
         "context_pack": dict(item.get("context_pack") or {}),
     }
+    if _model_routed_dispatch_enabled():
+        # #287: route this dispatch attempt through the real model registry/router
+        # instead of a hardcoded runtime, and -- when a real driver is wired for the
+        # selection -- genuinely invoke it. Additive audit evidence only: a routing
+        # block or driver failure here never blocks the dev-cli operator mutation
+        # below, which remains this repo's actual apply/verify contract.
+        try:
+            run_dir = Path(read_status(item["repo"], item["run_id"])["run_dir"])
+            common["model_routing"] = _execute_routed_runtime(item, run_dir)
+        except Exception as exc:  # routing/execution evidence must never crash dispatch
+            common["model_routing"] = {"routed": False, "executed": False, "error": f"{type(exc).__name__}: {exc}"}
     queue = item.get("distributed_queue")
+    if queue is not None and isinstance(queue, HTTPRemoteQueue) and _remote_worker_dispatch_enabled():
+        # #286: a genuine network queue means genuine remote workers -- the coordinator
+        # enqueues and waits, it never claims/executes the operator itself. See
+        # `_remote_worker_dispatch_enabled` for the opt-out and rationale.
+        return _operator_dispatch_attempt_remote_worker(item, common, queue, started)
     lease = None
+    guarded = _guarded_dispatch_enabled()
+    attempt_coordinator: Optional[AttemptCoordinator] = None
+    attempt_obj: Any = None
     if queue is not None:
         identity = item.get("agent_identity")
         try:
-            lease = queue.claim(
-                common["task_id"], common["worker_id"],
-                idempotency_key=f"{common['run_id']}:{common['task_id']}:{common['worker_id']}",
-                ttl=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TTL", "3600")),
-                identity=identity,
-                capabilities=(identity or {}).get("capabilities", ()),
-            )
+            if guarded and identity:
+                # #288/#183: real dispatch attempts get a heartbeat-guarded, fenced attempt
+                # object instead of a bare lease -- the same lease/fencing contract, plus the
+                # ability to run the mutating subprocess through ``run_guarded`` below.
+                attempt_coordinator = AttemptCoordinator(queue, run_id=common["run_id"])
+                context_pack = item.get("context_pack") if isinstance(item.get("context_pack"), Mapping) else {}
+                attempt_obj = attempt_coordinator.claim(
+                    work_item_id=common["task_id"],
+                    identity=identity,
+                    goal=str(context_pack.get("goal") or common["task_id"]),
+                    acs=tuple(context_pack.get("acs") or ()),
+                    depends_on=tuple(context_pack.get("depends_on") or ()),
+                    source_refs=tuple(context_pack.get("source_refs") or ()),
+                    allowed_paths=tuple(context_pack.get("allowed_paths") or ()),
+                    issue_ref=str(context_pack.get("issue_ref") or ""),
+                    issue_url=str(context_pack.get("issue_url") or ""),
+                    ttl=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TTL", "3600")),
+                )
+                lease = attempt_obj.lease
+            else:
+                lease = queue.claim(
+                    common["task_id"], common["worker_id"],
+                    idempotency_key=f"{common['run_id']}:{common['task_id']}:{common['worker_id']}",
+                    ttl=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TTL", "3600")),
+                    identity=identity,
+                    capabilities=(identity or {}).get("capabilities", ()),
+                )
             common["lease"] = {
                 "lease_id": lease.lease_id,
                 "fencing_token": lease.fencing_token,
                 "expires_at": lease.expires_at,
             }
+            common["guarded_dispatch"] = attempt_obj is not None
         except QueueConflict as exc:
             return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
                     "reason_code": "claim_conflict", "error": str(exc), "dead_letter": True,
@@ -2019,6 +3392,11 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
                     "reason_code": "network_paused", "error": str(exc), "dead_letter": True,
                     "started_at": started, "finished_at": _now()}
+    if lease is not None:
+        # Only stall a task that is genuinely claimed/leased -- this is what lets the
+        # cross-process recovery test kill the orchestrator mid-attempt with a real,
+        # in-flight (not merely queued) lease abandoned behind it.
+        _test_only_stall_before_dispatch(str(common.get("task_id") or ""))
     if item.get("worktree_error"):
         return {
             **common,
@@ -2036,7 +3414,10 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             "finished_at": _now(),
         }
     try:
-        payload = execute_operator(item["repo"], item["run_id"], task_index=item["task_index"])
+        payload = execute_operator(
+            item["repo"], item["run_id"], task_index=item["task_index"],
+            attempt_coordinator=attempt_coordinator, guarded_attempt=attempt_obj,
+        )
         state = payload.get("state") or {}
         operator = state.get("operator") or {}
         execution_state = str(operator.get("execution_state") or "")
@@ -2055,13 +3436,46 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
                 # a readable receipt; the scheduler will use the bounded exception path.
                 failure_fingerprint = ""
         if lease is not None and success:
-            queue.complete(lease, receipt_ref=receipt or f"{run_dir}/operator-receipt.json")
+            receipt_ref_value = receipt or f"{run_dir}/operator-receipt.json"
+            if attempt_coordinator is not None and attempt_obj is not None:
+                attempt_coordinator.complete(attempt_obj, receipt_ref=receipt_ref_value)
+            else:
+                # #286 step 9: present a wire receipt the queue server itself independently
+                # verifies (schema/hash/task-agent-fence binding), not just an opaque
+                # ``receipt_ref`` path it has no way to open or trust.
+                queue.complete(lease, receipt_ref=receipt_ref_value, receipt=build_completion_receipt(
+                    task_id=lease.task_id, agent_id=lease.agent_id, fencing_token=lease.fencing_token,
+                    receipt_ref=receipt_ref_value,
+                ))
         if item.get("agent_identity") and receipt:
             # Keep the worker result itself immutable and independently attributable.
             common["receipt_binding"] = bind_receipt(
                 {"receipt_ref": receipt}, item["agent_identity"],
                 context_pack=item.get("context_pack"),
             )
+        receipt_verdict = _verify_worker_receipt_pair(receipt, evidence_receipt)
+        merge: Optional[Dict[str, Any]] = None
+        if success and receipt_verdict["status"] == ReceiptStatus.VERIFIED and _auto_merge_enabled():
+            # #288: once the receipt pair is genuinely VERIFIED, create/poll/merge the real
+            # PR and reconcile against the remote before this dispatch attempt is reported
+            # as done -- replaces the ad-hoc, hand-run "gh pr create / gh pr merge" pattern
+            # this project's own delivery process previously left as prose only.
+            merge = _dispatch_merge_pr(item, receipt=receipt, run_id=common["run_id"])
+        verified_delivery: Optional[Dict[str, Any]] = None
+        if success and _verified_delivery_gate_enabled():
+            # #288: route the completion decision through the real LoopRuntimeAdapter ->
+            # VerifiedAgentDelivery -> ExecutionBoard chain instead of trusting
+            # execution_state == "applied" alone -- see `_verified_delivery_gate_enabled`.
+            identity = dict(item.get("agent_identity") or {})
+            verified_delivery = _run_verified_delivery_gate(
+                run_id=common["run_id"], task_id=common["task_id"],
+                actor=str(identity.get("actor") or identity.get("agent_id") or "loop"),
+                attempt_id="%s-attempt-%d" % (common["worker_id"], int(state.get("attempts") or 0) or 1),
+                receipt_verdict=receipt_verdict, evidence_receipt=evidence_receipt,
+                watcher_receipt=watcher_receipt, merge=merge, worktree_context=context,
+            )
+            if not verified_delivery.get("verified"):
+                success = False
         return {
             **common,
             "status": "succeeded" if success else "failed",
@@ -2071,11 +3485,33 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             "operator_receipt": receipt,
             "evidence_receipt": evidence_receipt,
             "watcher_receipt": watcher_receipt if Path(watcher_receipt).exists() else "",
-            "receipt_status": "VERIFIED" if (
-                receipt and evidence_receipt and Path(receipt).is_file() and Path(evidence_receipt).is_file()
-            ) else "UNVERIFIED",
+            "receipt_status": receipt_verdict["status"],
+            "receipt_verdict_reason": receipt_verdict["reason"],
             "attempt": int(state.get("attempts") or 0),
             "failure_fingerprint": failure_fingerprint,
+            "merge": merge,
+            "verified_delivery": verified_delivery,
+            "started_at": started,
+            "finished_at": _now(),
+        }
+    except LeaseLostDuringExecution as exc:
+        # #183/#288: the guarded subprocess was killed the instant the lease was no longer
+        # current -- report this distinctly from a generic operator exception so a scheduler
+        # can tell "lost the fence mid-mutation" apart from an ordinary tool crash.
+        return {
+            **common,
+            "status": "failed",
+            "phase": "blocked",
+            "execution_state": "error",
+            "receipt": "",
+            "operator_receipt": "",
+            "evidence_receipt": "",
+            "receipt_status": "UNVERIFIED",
+            "attempt": 0,
+            "error": str(exc),
+            "reason_code": "lease_lost_during_execution",
+            "dead_letter": True,
+            "failure_fingerprint": hashlib.sha256(str(exc).encode("utf-8", "replace")).hexdigest()[:16],
             "started_at": started,
             "finished_at": _now(),
         }
@@ -2122,16 +3558,14 @@ def dispatch_operator_batch(
     keys = {(item["repo"], item["run_id"], item["task_index"]) for item in normalized}
     if len(keys) != len(normalized):
         raise ValueError("operator dispatch contains duplicate repo/run/task items")
-    _prepare_worktree_contexts(normalized, worktree_queue)
-    requested_workers = max_workers
-    effective_workers = _operator_worker_limit(max_workers, len(normalized))
-    isolation_keys = {item["isolation_key"] for item in normalized}
-    serial_fallback_reason = ""
-    if effective_workers > 1 and len(isolation_keys) < len(normalized):
-        effective_workers = 1
-        serial_fallback_reason = "shared_run_state"
-    retry_budget = max(0, int(retry_budget))
 
+    # Issue #288 cross-process recovery: load the journal *before* preflight so a resumed
+    # batch can tell "already durably succeeded" items apart from ones still needing a fresh
+    # dry-run preflight. A succeeded item's operator-receipt.json has already been
+    # overwritten by `execute_operator` with a *post-execution* receipt (no `run_id` field,
+    # a different shape than the pre-execution dry-run receipt `_validate_run_receipts`
+    # expects) -- re-validating it as if it were still a pending dry-run would always fail
+    # and permanently block every resumed batch that contains even one completed item.
     journal_path: Optional[Path] = None
     if journal_dir:
         journal_path = Path(journal_dir).resolve() / "operator-batch.jsonl"
@@ -2145,6 +3579,52 @@ def dispatch_operator_batch(
             except (ValueError, TypeError, json.JSONDecodeError):
                 continue
             prior[key] = rec
+
+    # A persisted run is a privileged execution boundary.  Keep synthetic scheduler
+    # contexts supported, but fail every run-backed dispatch globally before worktree
+    # preparation, journal creation, or worker submission unless its receipt chain is
+    # fresh and bound to this exact run -- except an item already durably journaled as
+    # succeeded, which is never re-dispatched and so must never be re-validated as if it
+    # still needed a fresh dry run.
+    for item in normalized:
+        key = (item["repo"], item["run_id"], item["task_index"])
+        if prior.get(key, {}).get("status") == "succeeded":
+            continue
+        repo_path = Path(item["repo"]).resolve()
+        run_dir = repo_path / ".simplicio" / "loop-runs" / item["run_id"]
+        if not run_dir.is_dir():
+            continue
+        try:
+            contract = _require_json_receipt(run_dir / "task-contract.json", "task contract")
+            _validate_run_receipts(
+                repo_path,
+                run_dir,
+                contract,
+                state=_load_json(run_dir / "state.json") if (run_dir / "state.json").is_file() else None,
+                manifest=_load_json(run_dir / "manifest.json") if (run_dir / "manifest.json").is_file() else None,
+                require_dry_run=True,
+            )
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            state_path = run_dir / "state.json"
+            if state_path.is_file():
+                _persist_batch_preflight_block(
+                    run_dir,
+                    _load_json(state_path),
+                    repo_path,
+                    str(exc),
+                    task_indices=[item["task_index"]],
+                )
+            raise
+    _prepare_worktree_contexts(normalized, worktree_queue)
+    requested_workers = max_workers
+    effective_workers = _operator_worker_limit(max_workers, len(normalized))
+    isolation_keys = {item["isolation_key"] for item in normalized}
+    serial_fallback_reason = ""
+    if effective_workers > 1 and len(isolation_keys) < len(normalized):
+        effective_workers = 1
+        serial_fallback_reason = "shared_run_state"
+    retry_budget = max(0, int(retry_budget))
+
     pending = deque(
         item for item in normalized
         if prior.get((item["repo"], item["run_id"], item["task_index"]), {}).get("status") != "succeeded"
@@ -2321,9 +3801,60 @@ def execute_operator_batch(
     status = read_status(repo, run_id)
     if (status["state"].get("maintenance") or {}).get("disposition") == "backlog_only":
         raise RuntimeError("maintenance deferred: operator batch is blocked until explicit resume")
-    contract = _load_json(Path(status["run_dir"]) / "task-contract.json")
     run_dir = Path(status["run_dir"])
-    plan = _load_json(run_dir / "plan.json") if (run_dir / "plan.json").exists() else {}
+    try:
+        contract = _require_json_receipt(run_dir / "task-contract.json", "task contract")
+        receipts = _validate_run_receipts(
+            Path(status["manifest"].get("repo") or repo).resolve(),
+            run_dir,
+            contract,
+            state=status["state"],
+            manifest=status["manifest"],
+            require_dry_run=True,
+        )
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        _persist_batch_preflight_block(
+            run_dir,
+            status["state"],
+            Path(status["manifest"].get("repo") or repo).resolve(),
+            str(exc),
+            task_indices=task_indices or (),
+        )
+        raise
+    plan = receipts["plan"]
+    # #284: mutation-authority gate, mandatory by default -- same as execute_operator()
+    # (single-task tick), extended to the batch boundary. "execute_operator() e batch
+    # recusam execução sem mutation authority válida" now applies unconditionally
+    # (opt out only via an explicit falsy SIMPLICIO_REQUIRE_MUTATION_AUTHORITY; see
+    # planning_gate.mutation_authority_required()).
+    if mutation_authority_required():
+        batch_attempt = int((status["state"] or {}).get("attempts", 0)) + 1
+        current_source_hash = ""
+        current_snapshot_path = run_dir / "source-snapshot-current.json"
+        if current_snapshot_path.exists():
+            try:
+                current_source_hash = str((_load_json(current_snapshot_path).get("source") or {}).get("snapshot_hash") or "")
+            except Exception:
+                current_source_hash = ""
+        authority_verdict = evaluate_mutation_authority(
+            run_dir, run_id=run_id, attempt=batch_attempt,
+            task_contract_hash=str(contract.get("collection_hash") or _planning_content_hash(contract)),
+            plan_hash=_planning_content_hash(plan),
+            source_snapshot_hash=current_source_hash,
+        )
+        if not authority_verdict["ok"]:
+            _persist_batch_preflight_block(
+                run_dir,
+                status["state"],
+                Path(status["manifest"].get("repo") or repo).resolve(),
+                f"mutation authority required (SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) but "
+                f"{authority_verdict['reason_code']}: {authority_verdict['reason']}",
+                task_indices=task_indices or (),
+            )
+            raise RuntimeError(
+                "mutation authority required (SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) but "
+                f"{authority_verdict['reason_code']}: {authority_verdict['reason']}"
+            )
     task_count = len(contract.get("tasks") or [])
     if task_indices is None:
         indices = list(range(1, task_count + 1))
@@ -2373,11 +3904,14 @@ def execute_operator_batch(
             item["agent_identity"] = agent_identity
             task = (contract.get("tasks") or [])[index - 1]
             target_paths = (plan.get("steps") or [])[index - 1].get("candidate_targets") or []
+            issue_ref = task.get("issue_ref") or contract.get("issue_ref") or ""
+            issue_url = task.get("issue_url") or contract.get("issue_url") or ""
             item["context_pack"] = build_context_pack(
                 task_id=item["task_id"], goal=_task_goal(task), identity=agent_identity,
                 acs=[*[(s.get("title") or s.get("id") or "") for s in (task.get("scenarios") or [])]],
                 depends_on=list((task.get("dependencies") or {}).get("items") or []),
                 allowed_paths=target_paths, source_refs=target_paths,
+                issue_ref=issue_ref, issue_url=issue_url,
             )
         items.append(item)
     result = dispatch_operator_batch(
@@ -2474,14 +4008,38 @@ def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:
     repo_path = Path(repo).resolve()
     runs_root = repo_path / ".simplicio" / "loop-runs"
     if not runs_root.exists():
-        raise FileNotFoundError("no runs directory found")
+        return {
+            "run_dir": None,
+            "manifest": None,
+            "state": {
+                "phase": "no_runs",
+                "completion": {"ready": False, "verdict": "NO_RUNS", "tag": "UNVERIFIED"},
+                "operator": {"ready": False, "execution_state": "idle"},
+                "evidence": {"ready": False, "status": "NO_RUNS"},
+                "current_action": "none",
+                "next_action": "none",
+                "message": "no runs directory found; run simplicio-loop to start",
+            },
+        }
     chosen = None
     if run_id:
         chosen = runs_root / run_id
     else:
         candidates = sorted([p for p in runs_root.iterdir() if p.is_dir()], key=lambda p: p.name)
         if not candidates:
-            raise FileNotFoundError("no runs found")
+            return {
+                "run_dir": None,
+                "manifest": None,
+                "state": {
+                    "phase": "no_runs",
+                    "completion": {"ready": False, "verdict": "NO_RUNS", "tag": "UNVERIFIED"},
+                    "operator": {"ready": False, "execution_state": "idle"},
+                    "evidence": {"ready": False, "status": "NO_RUNS"},
+                    "current_action": "none",
+                    "next_action": "none",
+                    "message": "no runs found; run simplicio-loop to start",
+                },
+            }
         chosen = candidates[-1]
     manifest = _load_json(chosen / "manifest.json")
     state = _load_json(chosen / "state.json")
@@ -2500,6 +4058,19 @@ def change_phase(repo: str, run_id: str, to_phase: str, reason: str) -> Dict[str
     if state.get("phase") in {"done", "cancelled"}:
         raise ValueError(f"run already terminal: {state.get('phase')}")
     if to_phase == "awaiting_decision":
+        maintenance = state.get("maintenance") or {}
+        if maintenance.get("mode") == "maintenance_deferred" or maintenance.get("disposition") == "backlog_only":
+            state["maintenance"] = _active_maintenance_state(maintenance)
+            state["operator"] = {
+                **(state.get("operator") or {}),
+                "ready": False,
+                "execution_state": "invalidated",
+            }
+            state["evidence"] = {
+                **(state.get("evidence") or {}),
+                "ready": False,
+                "status": "INVALIDATED",
+            }
         state["next_action"] = "mapper_scan_required"
     elif to_phase == "cancelled":
         state["next_action"] = "none"

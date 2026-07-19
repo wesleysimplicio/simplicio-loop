@@ -13,7 +13,10 @@ agent can forge.
    attempt identity.
 3. Evidence must be a fresh `COMPLETE` receipt; a `PASS` without `ready: true` is rejected.
 4. The watcher must independently report `match: true` with a non-empty challenge.
-5. Only then may `complete()` emit `done`; Runtime outage remains `BUFFERED` and never claims
+5. Delivery convergence must be recorded explicitly before `complete()`. A local fixture must
+   say `target="local-fixture"` and remains local proof only; a real merge queue must carry
+   acceptance evidence (for example a measured merge-queue receipt SHA + accepted status).
+6. Only then may `complete()` emit `done`; Runtime outage remains `BUFFERED` and never claims
    delivery.
 
 ```python
@@ -24,8 +27,12 @@ for phase in ("intake", "mapping", "planning", "executing", "validating", "watch
     delivery.transition(phase)
 delivery.record_evidence(receipt)
 delivery.record_watcher(match=True, challenge="replay run-1")
+delivery.record_delivery({"target": "local-fixture", "satisfied": True})
 delivery.complete(receipt)
 ```
 
 The local board receipt is measured evidence of the projection only. An external board must be
 explicitly bound; absence is reported as `UNVERIFIED`, never as an external delivery pass.
+Likewise, `completion_percent=100` on the Execution Board only happens when every card is `done`
+and every card has recorded delivery convergence. Local fixture convergence is tracked separately
+from real merge-queue convergence so E2E fixtures do not masquerade as a live merge queue.

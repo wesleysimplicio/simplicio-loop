@@ -1,24 +1,24 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop con agenti concreti per fase e reporting connesso" width="920" />
 </p>
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-le-11-skill--acceleratori"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
+  <a href="#-le-7-skill--5-acceleratori"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-source-adapter"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
-  <a href="#-11-runtime-un-protocollo"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-i-44-extension-point"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
+  <a href="#-15-runtime-un-protocollo"><img src="https://img.shields.io/badge/runtimes-15-2563EB" alt="15 runtimes"></a>
+  <a href="#-i-49-extension-point"><img src="https://img.shields.io/badge/extension%20points-49-00E08A" alt="49 extension points"></a>
   <a href="#-economia-dei-token"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-le-11-skill--acceleratori">11 Skill</a> ·
+  <a href="#-le-7-skill--5-acceleratori">7 Skill</a> ·
   <a href="#-source-adapter">Source Adapter</a> ·
-  <a href="#-11-runtime-un-protocollo">11 Runtime</a> ·
+  <a href="#-15-runtime-un-protocollo">15 Runtime</a> ·
   <a href="#-il-loop">Il loop</a> ·
   <a href="#-economia-dei-token">Economia dei token</a> ·
   <a href="#-economia-dei-token">Capture Engine</a> ·
@@ -81,6 +81,64 @@ Questa architettura trasforma un obiettivo in un sistema di consegna governato: 
 </p>
 <!-- visual-story:end -->
 
+<!-- stage-agents-roadmap:start -->
+## 🤖 Roadmap — un agente concreto dietro ogni fase
+
+> **Stato:** architettura pianificata nelle issue [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436). Il commento lifecycle canonico di GitHub esiste già; il gate completo degli agenti per fase e del reporting obbligatorio è ancora in implementazione in [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433).
+
+Intake/pianificazione, implementazione, sicurezza, consegna, recovery e audit finale avranno ciascuno un agente responsabile. La review si apre in quattro agenti indipendenti — sicurezza/correttezza, qualità, riproduzione runtime/E2E e raggio d’impatto — prima di convergere.
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="agenti per fase di simplicio-loop e commenti nei work tracker" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Agente intake + pianificazione"] --> I["Agente di implementazione"] --> S["Agente di sicurezza"]
+  S --> R["4 agenti di review indipendenti"] --> D["Agente di consegna"] --> A["Auditor di completamento"]
+  D --> F["Agente feedback + recovery"] --> I
+  P -.-> E["Eventi + ricevute"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["Commenti GitHub · OBBLIGATORI"]
+  E -. "solo se connesso" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**Politica:** GitHub è obbligatorio per i run collegati a GitHub e `COMPLETE` attende una conferma remota. Azure DevOps, Jira, Asana e Trello ricevono commenti solo dopo prova di connessione, autenticazione, autorizzazione e risoluzione del target; `NOT_CONNECTED` è uno skip esplicito e non bloccante. Contratto e test: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436).
+<!-- stage-agents-roadmap:end -->
+
+## 🆕 Novità nella v3.38.0 — la release del coordinamento multi-agente
+
+Questa release risolve un problema che emerge solo quando **più sessioni agente lavorano sullo
+stesso repo insieme**: come fa una sessione a sapere cosa è già rivendicato, cosa è già mergeato ma
+incompleto, e cosa fare del proprio tempo morto invece di duplicare il lavoro di un'altra sessione?
+
+- **`scripts/coordinator.py` — il nucleo decisionale.** Dato lo stato reale di GitHub (commenti di
+  rivendicazione + PR mergeate), restituisce un'azione deterministica per issue: `OWN`,
+  `CONTINUE_OWN`, `DEFER_ACTIVE_CLAIM` (non duplicare il lavoro altrui), `RECLAIM_STALE` (la
+  rivendicazione è scaduta) o `VERIFY_PARTIAL` (una PR è già mergeata ma l'issue resta aperta —
+  verifica cosa è davvero fatto). Segnala anche `duplicate_risk` quando due sessioni rivendicano la
+  stessa issue quasi in contemporanea — già catturato dal vivo il primo giorno.
+- **`scripts/pr_dod_review.py` — il revisore per il tempo morto.** Quando ogni issue è già
+  rivendicata, la mossa più utile è controllare le PR aperte contro la Definition of Done a 7
+  dimensioni del repo e la checklist di accettazione congelata dell'issue, postando un verdetto
+  meccanico invece di un'approvazione a sensazione.
+- **`scripts/finding_collector.py` — memoria dei difetti durevole e deduplicata.** Un record
+  `simplicio.finding/v1` per difetto distinto, con fingerprint così che lo stesso bug visto da
+  agenti/run diversi collassi in un unico record con conteggio delle occorrenze invece di generare
+  rumore duplicato.
+- **Due regressioni reali catturate e corrette su `main` in questo ciclo** — una PR che cancellava
+  silenziosamente una definizione di funzione (rompendo il selftest di `loop_progress.py`) e una
+  race di squash-merge che ha reintrodotto lo stesso codice rotto una seconda volta. Entrambe
+  trovate eseguendo davvero lo script interessato, non fidandosi di una PR con descrizione verde —
+  la ragione stessa per cui `coordinator.py` e `pr_dod_review.py` esistono ora.
+
+**Cosa significa in pratica:** se esegui `simplicio-loop` su più sessioni o macchine contro lo
+stesso repo, ora sei protetto meccanicamente dai due modi di fallire più comuni — due agenti che
+rifanno in silenzio lo stesso lavoro, e una PR "fatta" che in realtà lascia l'issue solo
+parzialmente risolta. Vedi [`CHANGELOG.md`](../CHANGELOG.md) per la lista completa.
+
+---
+
 ## ⚡ TL;DR
 
 **simplicio-loop** è un **super-plugin** indipendente dal runtime — un unico orchestratore autonomo a
@@ -107,7 +165,7 @@ il tutto dietro gate di sicurezza e un percorso STOP/cancel esplicito.
 → keep looping every ~2 min until the queue is dry (evidence-gated, never a false "done")
 ```
 
-Tre cose lo rendono diverso: è un **super-plugin di skill mirate**, esegue lo **stesso protocollo su 11
+Tre cose lo rendono diverso: è un **super-plugin di skill mirate**, esegue lo **stesso protocollo su 15
 runtime** e fa tutto questo con un'**economia dei token aggressiva e onesta**.
 
 ---
@@ -138,9 +196,9 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🧠 Le 11 skill e acceleratori
+## 🧠 Le 7 skill e 5 acceleratori
 
-Il nucleo dell'orchestratore + cinque satelliti + cinque acceleratori/integrazioni. Ogni satellite è
+Il nucleo dell'orchestratore + sei satelliti + cinque acceleratori/integrazioni. Ogni satellite è
 **opzionale** — quando è caricato, l'orchestratore delega a esso (più ricco + più economico); quando è
 assente, il protocollo inline copre il 100%. Gli acceleratori sono **rilevati automaticamente** — presente
 = usato, assente = fallback LLM.
@@ -153,11 +211,12 @@ assente, il protocollo inline copre il 100%. Gli acceleratori sono **rilevati au
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Review avversariale parallela su rubriche distinte → verdetto deduplicato | Gate di qualità |
 | 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Compressione di output + memoria, `transform_guard` fail-closed | 40-60% in meno |
 | 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | Retrospettiva post-esecuzione → lezioni durevoli e deduplicate in memoria | Più intelligente a ogni esecuzione |
-| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Orient su knowledge graph: ricerca semantica, tour guidati, grafo delle dipendenze | **L0 zero token** |
-| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Analitica delle sessioni, tracciamento dei costi, scoperta delle sessioni bloccate | **L1** solo SQL |
-| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Cache KV tra i turni del loop — riduzione del TTFT del 40-70% sui modelli locali | Tempo GPU ↓ |
-| 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (nativo, solo-stdlib) | Proxy di cattura trasparente: inoltra al provider reale, misura + comprime in modo deterministico, scrive `proxy_savings.json` | **deterministico** |
-| 11 | 🎬 **video_evidence** | Playwright (default) · [hyperframes](https://github.com/heygen-com/hyperframes) (su richiesta) | Registra la **sessione reale** come prova in movimento di una modifica della UI (Playwright); renderizza un explainer **MP4 deterministico con didascalie** tramite hyperframes quando il video È il deliverable | Produttore di evidenze |
+| 7 | 🧪 **simplicio-autoresearch** | Karpathy `autoresearch` + ECC `autoresearch-agent` | Loop evolutivo mutate/eval/keep-revert: caps yool-guardrailed, branch git-isolato, eval gate-first anti-Goodhart, ricevuta `savings-event` | Auto-ottimizzazione |
+| 8 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Orient su knowledge graph: ricerca semantica, tour guidati, grafo delle dipendenze | **L0 zero token** |
+| 9 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Analitica delle sessioni, tracciamento dei costi, scoperta delle sessioni bloccate | **L1** solo SQL |
+| 10 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Cache KV tra i turni del loop — riduzione del TTFT del 40-70% sui modelli locali | Tempo GPU ↓ |
+| 11 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py` (nativo, solo-stdlib) | Proxy di cattura trasparente: inoltra al provider reale, misura + comprime in modo deterministico, scrive `proxy_savings.json` | **deterministico** |
+| 12 | 🎬 **video_evidence** | Playwright (default) · [hyperframes](https://github.com/heygen-com/hyperframes) (su richiesta) | Registra la **sessione reale** come prova in movimento di una modifica della UI (Playwright); renderizza un explainer **MP4 deterministico con didascalie** tramite hyperframes quando il video È il deliverable | Produttore di evidenze |
 
 Ogni skill vive sotto [`.claude/skills/`](../.claude/skills); ogni acceleratore ha un documento di
 riferimento sotto `.claude/skills/simplicio-loop/references/` (il produttore video:
@@ -183,29 +242,37 @@ Vedi il documento di riferimento di ogni adapter sotto `.claude/skills/simplicio
 
 ---
 
-## 🌐 11 runtime, un protocollo
+## 🌐 15 runtime, un protocollo — 3 garantiti + 12 best-effort
 
 Un unico nucleo di skill universale + un unico set di hook guida ogni runtime. Un adapter è sottile: dice
 a un runtime *dove caricare le skill*, *come armare il loop* e *come legarsi alla velocità nativa*. **La
-skill non nomina alcun runtime; è il runtime a rilevare la skill.**
+skill non nomina alcun runtime; è il runtime a rilevare la skill.** Il binding nativo MCP a
+`simplicio-runtime` è **REQUIRED** su ogni runtime (il loop si blocca se manca o non è raggiungibile).
 
-| Runtime | Caricamento skill | Drive del loop | Binding nativo |
-|---|---|---|---|
-| **Claude Code** | `.claude/skills/` + plugin | hook `Stop` | MCP |
-| **Codex** | `AGENTS.md` | auto-ritmato | MCP / adapter |
-| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | MCP |
-| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | MCP / rules |
-| **Antigravity** | rules / `AGENTS.md` | auto-ritmato | MCP |
-| **Kiro** | `.kiro/steering/` | specs | MCP |
-| **OpenCode** | `AGENTS.md` | auto-ritmato | MCP |
-| **Gemini** | `GEMINI.md` | auto-ritmato | MCP / adapter |
-| **Aider** | `CONVENTIONS.md` | auto-ritmato | — (fallback LLM) |
-| **Simplicio Agent** | native recall | loop nativo | **nativo** |
-| **OpenClaw** | plugin SDK | scheduler nativo | **nativo** |
+**Tier 1 — garantiti (gated a ogni commit):** Claude Code (`.claude/skills/` + plugin, hook `Stop`),
+Codex (`AGENTS.md`, auto-ritmato), Cursor (`.cursor-plugin/`, `stop`+`afterAgentResponse`) — tutti e
+tre con binding MCP REQUIRED.
 
-La promessa: **stesso protocollo, stessi gate, stessa sicurezza su tutti e 11 — cambia solo la
-velocità.** `orient_clamp.py` (economia dei token) funziona su ogni runtime senza alcun cablaggio. Vedi
-[`adapters/MATRIX.md`](../adapters/MATRIX.md).
+**Tier 2 — best-effort (contributi benvenuti, nessun gate):**
+
+| Runtime | Caricamento skill | Drive del loop |
+|---|---|---|
+| **VS Code (Copilot)** | `copilot-instructions.md` | tasks |
+| **Antigravity** | rules / `AGENTS.md` | auto-ritmato |
+| **Kiro** | `.kiro/steering/` | specs |
+| **OpenCode** | `AGENTS.md` | auto-ritmato |
+| **Gemini** (CLI/Code Assist) | `GEMINI.md` | auto-ritmato |
+| **Kimi** | convenzioni inline | auto-ritmato |
+| **Qwen** (Code/CLI) | equivalente `AGENTS.md` | auto-ritmato |
+| **DeepSeek** | convenzioni inline | auto-ritmato |
+| **Aider** | `CONVENTIONS.md` | auto-ritmato (fallback LLM) |
+| **Simplicio Agent** *(ex Hermes)* | native recall | loop nativo |
+| **OpenClaw** | plugin SDK | scheduler nativo |
+| **Orca** | agente interno + registry skill | hook interno / automazioni pianificate |
+
+La promessa: **stesso protocollo, stessi gate, stessa sicurezza su tutti e 15 — il Tier 1 è verificato
+meccanicamente, il Tier 2 è best-effort.** `orient_clamp.py` (economia dei token) funziona su ogni
+runtime senza alcun cablaggio. Vedi [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
 ---
 
@@ -489,6 +556,27 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 
 ---
 
+## ⭐ Cronologia delle stelle
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wesleysimplicio/simplicio-loop&type=Date)](https://star-history.com/#wesleysimplicio/simplicio-loop&Date)
+
+---
+
 ## 📄 Licenza
 
 MIT
+
+<!-- simplicio-loop:github-comment-coordination:v1 -->
+## 🌐 Coordinamento tramite commenti GitHub tra i runtime
+
+`simplicio-loop` può essere eseguito contemporaneamente in Claude Code, Codex, Cursor, Gemini e Hermes. Quando è collegato a una issue GitHub, pubblica aggiornamenti idempotenti nel commento canonico: presa in carico, piano, avanzamento, evidenze, PR e chiusura. Gli agenti su macchine diverse si coordinano nello stesso thread GitHub senza condividere un filesystem locale.
+
+```powershell
+pwsh scripts/install.ps1 claude -Global
+pwsh scripts/install.ps1 codex -Global
+pwsh scripts/install.ps1 cursor -Global
+pwsh scripts/install.ps1 gemini -Global
+pwsh scripts/install.ps1 hermes -Global   # alias legacy di simplicio_agent
+```
+
+Coda locale, lease, worktree, heartbeat ed evidenze restano attivi; i commenti GitHub sono la proiezione di coordinamento condivisa. Il flusso è solo GitHub: Jira, Azure DevOps e gli altri tracker non ricevono questi commenti. Senza GitHub il loop continua localmente e registra l’errore senza inventare conferme remote. Usa lo stesso `source_issue` e accesso GitHub per ogni runtime.

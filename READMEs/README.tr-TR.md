@@ -1,24 +1,24 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="aşama başına somut ajanlar ve bağlı raporlama ile simplicio-loop" width="920" />
 </p>
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-11-skill--hızlandırıcı"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
+  <a href="#-12-skill--hızlandırıcı"><img src="https://img.shields.io/badge/skills-12-7C3AED" alt="12 skills"></a>
   <a href="#-kaynak-adaptörleri"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
-  <a href="#-11-runtime-tek-protokol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-token-ekonomisi"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
+  <a href="#-15-runtime-tek-protokol"><img src="https://img.shields.io/badge/runtimes-15-2563EB" alt="15 runtimes"></a>
+  <a href="#-token-ekonomisi"><img src="https://img.shields.io/badge/extension%20points-49-00E08A" alt="49 extension points"></a>
   <a href="#-token-ekonomisi"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-11-skill--hızlandırıcı">11 Skill</a> ·
+  <a href="#-12-skill--hızlandırıcı">12 Skill</a> ·
   <a href="#-kaynak-adaptörleri">Kaynak Adaptörleri</a> ·
-  <a href="#-11-runtime-tek-protokol">11 Runtime</a> ·
+  <a href="#-15-runtime-tek-protokol">15 Runtime</a> ·
   <a href="#-döngü">Döngü</a> ·
   <a href="#-token-ekonomisi">Token Ekonomisi</a> ·
   <a href="#-token-ekonomisi">Yakalama Motoru</a> ·
@@ -81,6 +81,75 @@ Bu mimari tek bir hedefi yönetilen teslimat sistemine dönüştürür: zor bir 
 </p>
 <!-- visual-story:end -->
 
+<!-- stage-agents-roadmap:start -->
+## 🤖 Yol haritası — her aşamanın arkasında somut bir ajan
+
+> **Durum:** [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436) içinde planlanan mimari. Kanonik GitHub lifecycle yorumu bugün mevcut; aşama ajanları ve zorunlu reporting için tam gate [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433) kapsamında uygulanıyor.
+
+Intake/planlama, uygulama, güvenlik, teslimat, recovery ve son denetimin her birinde sorumlu bir ajan olacak. Review, birleşmeden önce dört bağımsız ajana ayrılır: güvenlik/doğruluk, kalite, runtime/E2E yeniden üretimi ve blast radius.
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="simplicio-loop aşama ajanları ve work tracker yorumları" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Intake + planlama ajanı"] --> I["Uygulama ajanı"] --> S["Güvenlik ajanı"]
+  S --> R["4 bağımsız review ajanı"] --> D["Teslimat ajanı"] --> A["Tamamlanma denetçisi"]
+  D --> F["Feedback + recovery ajanı"] --> I
+  P -.-> E["Olaylar + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["GitHub yorumları · ZORUNLU"]
+  E -. "yalnızca bağlıysa" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**Politika:** GitHub’a bağlı run’larda GitHub zorunludur ve `COMPLETE` uzak onayı bekler. Azure DevOps, Jira, Asana ve Trello yalnızca bağlantı, kimlik doğrulama, yetki ve hedef çözümleme kanıtlandıktan sonra yorum alır; `NOT_CONNECTED` açık ve engellemeyen bir skip’tir. Sözleşme ve testler: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436).
+<!-- stage-agents-roadmap:end -->
+
+## 🆕 v3.38.0'daki yenilikler — çoklu ajan koordinasyon sürümü
+
+Bu sürüm, **aynı repo üzerinde aynı anda birden fazla ajan oturumu** çalıştığında ortaya çıkan tek
+bir zor soruna odaklanıyor: bir oturum neyin zaten talep edildiğini, neyin birleştirilmiş ama eksik
+kaldığını ve boş zamanında ne yapması gerektiğini nasıl bilir? Aşağıdakilerin hepsi bu reponun
+canlı, çoklu-oturumlu durumuna karşı geliştirildi, test edildi ve gönderildi — sentetik bir senaryo
+değil.
+
+- **`scripts/coordinator.py` — karar çekirdeği.** GitHub'ın bugünkü durumuna (açık-issue talep
+  yorumları + birleştirilmiş PR'lar) bakarak her issue için tek bir deterministik eylem döndürür:
+  `OWN` (henüz kimse almamış), `CONTINUE_OWN` (talebi zaten siz tutuyorsunuz), `DEFER_ACTIVE_CLAIM`
+  (bir kardeş oturum yakın zamanda aldı — tekrar etme), `RECLAIM_STALE` (o talep soğudu, güvenle
+  devralınabilir) ya da `VERIFY_PARTIAL` (bu issue için bir PR zaten birleşti ama issue hâlâ açık —
+  varsaymadan önce gerçekte ne bittiğini kontrol et). İki oturum aynı issue'yu yakın zamanda talep
+  ederse `duplicate_risk` bayrağını kaldırır — canlı olarak, ilk günde, aynı issue için iki farklı
+  dosya adıyla bir findings collector inşa eden iki oturumu böyle yakaladı.
+- **`scripts/pr_dod_review.py` — boş zamanın incelemecisi.** Tüm açık issue'lar talep edilmişken en
+  yüksek kaldıraçlı hamle beklemek değil, açık PR'ları reponun kendi ölçütüne göre denetlemektir: 7
+  boyutlu Definition of Done (implementasyon, unit/integration/system/regression testleri, bir
+  performans benchmark'ı, ≥%85 kapsam) ve ilgili issue'nun dondurulmuş kabul-kriterleri listesi.
+  `check --post`, hisse dayalı bir onay yerine mekanik, satır satır bir doğrulamayı PR yorumu olarak
+  gönderir. Zaten birleştirilmiş, gerçek bir "MVP slice" PR'ına karşı test edildi: üst epikteki
+  **17/17** kabul kriterini hâlâ çözülmemiş olarak doğru şekilde işaretledi.
+- **`scripts/finding_collector.py` — kalıcı, deduplike edilmiş defekt hafızası** (issue #466, faz
+  1). Aynı alttaki hata — hangi ajan, hangi koşu, hangi zaman damgası olursa olsun — tekrar tekrar
+  gürültü üretmek yerine bir oluşum sayacıyla tek bir `simplicio.finding/v1` kaydına düşer. Henüz
+  GitHub çağrısı yok; o bir sonraki faz.
+- **`references/multi-agent-coordination.md` + `references/background-verification.md`** —
+  `SKILL.md`'nin triyaj adımına doğrudan bağlı iki yeni sözleşme: bir issue'ya dokunmadan önce
+  coordinator sahipliğini kontrol et, her şey talep edilmişse boşta beklemek yerine PR'ları incele,
+  yavaş doğrulama komutlarını (testler, `claims_audit.py`) arka planda başlat ki tur ilerlemeyi
+  sürdürsün.
+- **Canlı olarak yakalanıp düzeltilen iki gerçek regresyon** — bu sürüm döngüsünde, `main`'in
+  kendisinde: bir fonksiyon tanımını sessizce silen bir PR birleşti (`loop_progress.py`'nin kendi
+  selftest'ini bozarak), ardından bir squash-merge yarışı aynı bozuk kodu ikinci kez `main`'e soktu.
+  İkisi de yeşil bir PR açıklamasına güvenilerek değil, ilgili betik gerçekten çalıştırılarak
+  yakalandı — `coordinator.py` ve `pr_dod_review.py`'nin var olma sebebi tam olarak bu.
+
+**Sizin için pratikte ne anlama geliyor:** `simplicio-loop`'u aynı repo üzerinde birden fazla
+oturum ya da makinede çalıştırıyorsanız, artık pratikte gerçekten olan iki başarısızlık modundan
+aktif olarak korunuyorsunuz — iki ajanın aynı işi sessizce tekrar yapması ve "bitti" görünen ama
+issue'yu yalnızca kısmen çözen bir PR. İkisi de eskiden görünmezdi; ikisi de artık her triyaj
+turunda mekanik olarak görünür. Tam liste için [`CHANGELOG.md`](../CHANGELOG.md).
+
 ## ⚡ TL;DR
 
 **simplicio-loop**, runtime'dan bağımsız bir **süper-eklentidir** — tek bir otonom döngülü
@@ -138,9 +207,9 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🧠 11 skill & hızlandırıcı
+## 🧠 12 skill & hızlandırıcı
 
-Orkestratör çekirdeği + beş uydu + beş hızlandırıcı/entegrasyon. Her uydu **isteğe bağlıdır** —
+Orkestratör çekirdeği + altı uydu + beş hızlandırıcı/entegrasyon. Her uydu **isteğe bağlıdır** —
 yüklendiğinde orkestratör ona devreder (daha zengin + daha ucuz); yokken dahili protokol işin
 %100'ünü kapsar. Hızlandırıcılar **otomatik algılanır** — mevcut = kullanılır, yok = LLM yedeği.
 
@@ -152,11 +221,12 @@ yüklendiğinde orkestratör ona devreder (daha zengin + daha ucuz); yokken dahi
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | Ayrı rubriklerde paralel çekişmeli inceleme → deduplike edilmiş karar | Kalite kapısı |
 | 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | Çıktı + bellek sıkıştırması, fail-closed `transform_guard` | %40-60 daha az |
 | 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | Koşu-sonrası retrospektif → bellekte kalıcı, deduplike dersler | Her koşuda daha akıllı |
-| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Bilgi grafiği yönlendirme: semantik arama, rehberli turlar, bağımlılık grafiği | **L0 sıfır token** |
-| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Oturum analitiği, maliyet takibi, takılı-oturum keşfi | **L1** yalnızca SQL |
-| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Döngü turları arasında KV cache — yerel modellerde %40-70 TTFT azalması | GPU süresi ↓ |
-| 10 | 🗜️ **Simplicio yakalama motoru** | `engine/simplicio_engine.py` (yerel, yalnızca stdlib) | Şeffaf yakalama proxy'si: gerçek sağlayıcıya iletir, ölçer + deterministik olarak sıkıştırır, `proxy_savings.json` yazar | **deterministik** |
-| 11 | 🎬 **video_evidence** | Playwright (varsayılan) · [hyperframes](https://github.com/heygen-com/hyperframes) (istek üzerine) | Bir UI değişikliğinin hareketli kanıtı olarak **gerçek oturumu** kaydeder (Playwright); video teslimatın KENDİSİ olduğunda hyperframes ile **deterministik, başlıklı bir MP4** açıklayıcı render eder | Kanıt üreticisi |
+| 7 | 🧪 **simplicio-autoresearch** | Karpathy `autoresearch` + ECC `autoresearch-agent` | Evrimsel mutate/eval/keep-revert döngüsü: yool-korumalı tavanlar, git-yalıtımlı dal, anti-Goodhart kapı-önce değerlendirme, `savings-event` makbuzu | Otomatik-optimize |
+| 8 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | Bilgi grafiği yönlendirme: semantik arama, rehberli turlar, bağımlılık grafiği | **L0 sıfır token** |
+| 9 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | Oturum analitiği, maliyet takibi, takılı-oturum keşfi | **L1** yalnızca SQL |
+| 10 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | Döngü turları arasında KV cache — yerel modellerde %40-70 TTFT azalması | GPU süresi ↓ |
+| 11 | 🗜️ **Simplicio yakalama motoru** | `engine/simplicio_engine.py` (yerel, yalnızca stdlib) | Şeffaf yakalama proxy'si: gerçek sağlayıcıya iletir, ölçer + deterministik olarak sıkıştırır, `proxy_savings.json` yazar | **deterministik** |
+| 12 | 🎬 **video_evidence** | Playwright (varsayılan) · [hyperframes](https://github.com/heygen-com/hyperframes) (istek üzerine) | Bir UI değişikliğinin hareketli kanıtı olarak **gerçek oturumu** kaydeder (Playwright); video teslimatın KENDİSİ olduğunda hyperframes ile **deterministik, başlıklı bir MP4** açıklayıcı render eder | Kanıt üreticisi |
 
 Her skill [`.claude/skills/`](../.claude/skills) altında yaşar; her hızlandırıcının
 `.claude/skills/simplicio-loop/references/` altında bir referans dokümanı vardır (video üreticisi:
@@ -182,29 +252,42 @@ Her adaptörün referans dokümanına `.claude/skills/simplicio-loop/references/
 
 ---
 
-## 🌐 11 runtime, tek protokol
+## 🌐 15 runtime, tek protokol — 3 garantili + 12 best-effort
 
 Tek bir evrensel skill çekirdeği + tek bir hook seti her runtime'ı sürer. Bir adaptör incedir:
 runtime'a *skill'leri nereye yükleyeceğini*, *döngüyü nasıl kuracağını* ve *yerel hızı nasıl
-bağlayacağını* söyler. **Skill hiçbir runtime'ı adlandırmaz; runtime skill'i algılar.**
+bağlayacağını* söyler. **Skill hiçbir runtime'ı adlandırmaz; runtime skill'i algılar.** Yerel
+`simplicio-runtime` MCP bağlaması artık her runtime'da **ZORUNLU** — eksik/erişilemezse döngü
+BLOCKED olur.
 
-| Runtime | Skill yükleme | Döngü sürücüsü | Yerel bağlama |
+### Katman 1 — Garantili (her commit'te doğrulanır)
+
+| Runtime | Skill yükleme | Döngü sürücüsü | Yerel bağlama (MCP) |
 |---|---|---|---|
-| **Claude Code** | `.claude/skills/` + plugin | `Stop` hook'u | MCP |
-| **Codex** | `AGENTS.md` | kendi temposunda | MCP / adaptör |
-| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | MCP |
-| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | MCP / rules |
-| **Antigravity** | rules / `AGENTS.md` | kendi temposunda | MCP |
-| **Kiro** | `.kiro/steering/` | specs | MCP |
-| **OpenCode** | `AGENTS.md` | kendi temposunda | MCP |
-| **Gemini** | `GEMINI.md` | kendi temposunda | MCP / adaptör |
-| **Aider** | `CONVENTIONS.md` | kendi temposunda | — (LLM yedeği) |
-| **Simplicio Agent** | yerel bellek | yerel döngü | **yerel** |
-| **OpenClaw** | plugin SDK | yerel zamanlayıcı | **yerel** |
+| **Claude Code** | `.claude/skills/` + plugin | `Stop` hook'u | ZORUNLU |
+| **Codex** | `AGENTS.md` | kendi temposunda | ZORUNLU |
+| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | ZORUNLU |
 
-Söz: **aynı protokol, aynı kapılar, 11'inin hepsinde aynı güvenlik — yalnızca hız farklıdır.**
-`orient_clamp.py` (token ekonomisi) sıfır bağlantıyla her runtime'da çalışır. Bkz.
-[`adapters/MATRIX.md`](../adapters/MATRIX.md).
+### Katman 2 — Best-effort (katkı bekleniyor, kapı yok)
+
+| Runtime | Skill yükleme | Döngü sürücüsü | Yerel bağlama (MCP) |
+|---|---|---|---|
+| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | ZORUNLU |
+| **Antigravity** | rules / `AGENTS.md` | kendi temposunda | ZORUNLU |
+| **Kiro** | `.kiro/steering/` | specs | ZORUNLU |
+| **OpenCode** | `AGENTS.md` | kendi temposunda | ZORUNLU |
+| **Gemini** (CLI/Code Assist) | `GEMINI.md` | kendi temposunda | ZORUNLU |
+| **Kimi** | gömülü kurallar | kendi temposunda | ZORUNLU (doğrulanmış istemci yok) |
+| **Qwen** (Code/CLI) | `AGENTS.md`-eşdeğeri | kendi temposunda | ZORUNLU (best-effort) |
+| **DeepSeek** | gömülü kurallar | kendi temposunda | ZORUNLU (birincil-taraf istemci yok) |
+| **Aider** | `CONVENTIONS.md` | kendi temposunda | ZORUNLU (MCP istemcisi yok — LLM yedeği) |
+| **Simplicio Agent** *(eski adıyla Hermes)* | yerel bellek | yerel döngü | ZORUNLU — **yerel** |
+| **OpenClaw** | plugin SDK | yerel zamanlayıcı | ZORUNLU — **yerel** |
+| **Orca** | iç ajan + skill kayıt defteri | iç hook / zamanlanmış otomasyon | ZORUNLU — kayıt/iç-ajan yapılandırması |
+
+Söz: **aynı protokol, aynı kapılar, 15'inin hepsinde aynı güvenlik — Katman 1 mekanik olarak
+doğrulanır, Katman 2 best-effort.** `orient_clamp.py` (token ekonomisi) sıfır bağlantıyla her
+runtime'da çalışır. Bkz. [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
 ---
 
@@ -492,6 +575,27 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 
 ---
 
+## ⭐ Yıldız Geçmişi
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wesleysimplicio/simplicio-loop&type=Date)](https://star-history.com/#wesleysimplicio/simplicio-loop&Date)
+
+---
+
 ## 📄 Lisans
 
 MIT
+
+<!-- simplicio-loop:github-comment-coordination:v1 -->
+## 🌐 Runtime’lar arasında GitHub yorumlarıyla koordinasyon
+
+`simplicio-loop`, Claude Code, Codex, Cursor, Gemini ve Hermes içinde aynı anda çalışabilir. GitHub issue’suna bağlı bir run, kanonik yorumda claim, plan, ilerleme, kanıt, PR ve kapatma durumlarını idempotent biçimde yayınlar. Farklı makinelerdeki agent’lar ortak yerel dosya sistemi olmadan aynı GitHub başlığında koordinasyon kurabilir.
+
+```powershell
+pwsh scripts/install.ps1 claude -Global
+pwsh scripts/install.ps1 codex -Global
+pwsh scripts/install.ps1 cursor -Global
+pwsh scripts/install.ps1 gemini -Global
+pwsh scripts/install.ps1 hermes -Global   # simplicio_agent için eski takma ad
+```
+
+Yerel kuyruk, lease, worktree, heartbeat ve kanıtlar çalışmaya devam eder; GitHub yorumları ortak koordinasyon yansıtmasıdır. Akış yalnızca GitHub içindir; Jira, Azure DevOps ve diğer tracker’lara yorum gönderilmez. GitHub kullanılamazsa loop yerel çalışır ve hatayı kaydeder, uzak onay uydurmaz. Her runtime’a GitHub erişimi verin ve aynı `source_issue` kullanın.

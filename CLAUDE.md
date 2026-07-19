@@ -1,7 +1,7 @@
 # CLAUDE.md — simplicio-loop (Claude Code)
 
 This repo ships **simplicio-loop**, a runtime-agnostic **super-plugin**: an autonomous
-looping orchestrator (the `/simplicio-loop` skill) plus six satellite skills, packaged for 11
+looping orchestrator (the `/simplicio-loop` skill) plus six satellite skills, packaged for 12
 runtimes.
 
 ## The 7 skills
@@ -59,6 +59,17 @@ item-by-item check of the task". It honors a discovered `.github/PULL_REQUEST_TE
 maintainer's sections, appends checklist + prints below). The **task anchor** is the same worker that
 stops task deviation: every turn re-checks the frozen goal (`task_anchor.py check`) and the DoD gate
 (`task_anchor.py gate`) blocks "done" while any AC is unverified.
+
+## Progress feedback (real-time, EPIC #296)
+
+`scripts/loop_progress.py` computes "onde estamos / quanto falta" deterministically from the
+backlog + anchor + its own event trail — never fabricated. Three surfaces, one denominator:
+**N1 hook** (Claude/Cursor re-feed header shows fase/etapa/item/ACs/%), **N2 transcript**
+(every turn's first line is `render --turn-header`, normative on all 15 runtimes), **N3 file**
+(`.orchestrator/loop/PROGRESS.md`/`progress.json`, regenerated every turn — the universal
+fallback any host, adapted or not, can read with zero extra code). Status command:
+`python3 scripts/loop_progress.py status --json`. Full contract, event schema, and the
+turn×event/runtime×level tables: `.claude/skills/simplicio-loop/references/progress-feedback.md`.
 
 ## Tests & local checks (no paid CI)
 
@@ -120,15 +131,17 @@ mass-delete, destructive DDL, infra teardown) and secret-laden commits/pushes be
 (exit 2) — Step 5 made mechanical. `python3 hooks/action_gate.py selftest` proves the ruleset.
 
 Claude's native tools satisfy the extension points: sub-agents → `execute`, file tools →
-`deterministic_edit`, the scheduler → `watcher`. `simplicio-runtime` native bind is REQUIRED on
-Claude Code (and on Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Simplicio Agent — see
-`adapters/MATRIX.md` `FORCED_BIND_RUNTIMES`), not optional: `pip install -U simplicio-installer
-&& simplicio install --global` binds them deterministically; verify with `simplicio doctor
---json` before driving the loop.
+`deterministic_edit`, the scheduler → `watcher`. The `simplicio-runtime` native bind (the
+`simplicio` CLI / MCP server, package `simplicio-runtime`) is optional on Claude Code and every
+other adapter. When installed and reachable it supplies native integrations; when unavailable the
+loop records that those integrations were skipped and continues with its required
+`simplicio-mapper` and `simplicio-dev-cli` operators.
 
 ## Other runtimes
 
-The same skills run on Codex, VS Code (Copilot), Cursor, Antigravity, Kiro, OpenCode, Gemini,
-Aider, Simplicio Agent (formerly Hermes), and OpenClaw — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
-[`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (48 extension points; the binding
+The same skills run on Codex, VS Code (Copilot), Cursor, Antigravity, Kiro, OpenCode, Gemini (CLI
+and Code Assist), Kimi, Qwen (Code/CLI), DeepSeek, Aider, Simplicio Agent (formerly Hermes),
+OpenClaw, and Orca ([onorca.dev](https://www.onorca.dev/docs), the worktree IDE — see
+`adapters/orca/README.md`) — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
+[`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (50 extension points; the binding
 lives in the host, never in the skill).

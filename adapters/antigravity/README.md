@@ -26,18 +26,40 @@ routes heavy build/test/diff commands through it.
 
 ## Native bind — MCP (REQUIRED)
 
-`simplicio-runtime` native bind is REQUIRED on Antigravity, not optional.
+`simplicio-runtime` native binding is **REQUIRED** on Antigravity — a missing/unreachable bind
+BLOCKS the loop preflight (CLAUDE.md § Hooks).
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global
-# or add to the IDE's MCP config:  { "simplicio": { "command": "simplicio", "args": ["serve","--mcp","--stdio"] } }
 ```
 
-Verify with `simplicio doctor --json`; `scripts/install.sh antigravity` checks this for you and
-warns loudly if the bind can't be confirmed (Antigravity's exact MCP config path isn't
-auto-written by the installer yet — finish it by hand from the snippet above if so).
+Use `simplicio doctor --json` to confirm the bind. Antigravity's exact MCP config path isn't
+auto-written by the installer yet, so finish it by hand from the snippet below.
+
+## MCP config
+
+- **Config file:** Antigravity (Google's agentic IDE, a VS Code fork) reads MCP servers from its
+  own settings surface, documented by Google as following the same shape as the Gemini Code
+  Assist / VS Code MCP settings — typically an IDE settings JSON with an `mcpServers` block, or
+  the workspace `.vscode/mcp.json`-style file if the fork keeps that convention. **Not verified
+  against a real Antigravity install in this repo** — confirm the exact path in your IDE's MCP
+  settings UI before relying on the snippet below.
+- **Snippet (best-effort, mirrors the VS Code/Gemini shape):**
+
+```json
+{ "mcpServers": { "simplicio": { "command": "simplicio", "args": ["serve", "--mcp", "--stdio"], "cwd": "/path/to/your/repo" } } }
+```
+
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration` confirms the `simplicio`
+  binary/runtime side; confirm the IDE side from Antigravity's own MCP status panel if it has
+  one. Tier: **best-effort / not mechanically gated** — Antigravity is Tier 2.
 
 ## Use
 
 Point the agent at: `/simplicio-tasks finish all the open issues` (or paste the goal — the
 rules file makes it follow the protocol).
+
+## Progresso do run
+
+Self-paced (N2): the tick echoes `python3 scripts/loop_progress.py render --turn-header`.
+Universal fallback (N3): open `.orchestrator/loop/PROGRESS.md` (auto-regenerated every turn).

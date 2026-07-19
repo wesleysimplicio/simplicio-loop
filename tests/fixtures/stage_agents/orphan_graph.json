@@ -1,0 +1,11 @@
+{
+  "schema": "simplicio.run-stage-graph/v1",
+  "graph_id": "fixture-orphan",
+  "version": "1.0.0",
+  "roles": [
+    {"schema": "simplicio.agent-role/v1", "role_id": "impl", "version": "1.0.0", "title": "Impl", "description": "d", "required_capabilities": ["claim"], "forbidden_to_self_sign": [], "independent_of_roles": []}
+  ],
+  "stages": [
+    {"schema": "simplicio.stage-definition/v1", "stage_id": "a", "role_id": "impl", "version": "1.0.0", "description": "d", "depends_on": ["missing"], "activation_condition": "x", "required_capabilities": ["claim"], "optional_capabilities": [], "isolation_level": "process", "input_schema": "s", "output_schema": "s", "accepted_receipts": ["simplicio.stage-receipt/v1"], "timeout_seconds": 1, "retry_budget": 0, "failure_policy": "block", "allowed_mutations": [], "pre_gate": "none", "post_gate": "x", "next_stages": [], "compensation": "x", "concurrency": "independent"}
+  ]
+}

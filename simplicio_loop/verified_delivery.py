@@ -58,6 +58,7 @@ class VerifiedAgentDelivery:
         self.previous_event_id: Optional[str] = None
         self.evidence: Optional[Mapping[str, Any]] = None
         self.watcher_measured = False
+        self.delivery: Optional[Mapping[str, Any]] = None
 
     def transition(self, to_phase: str, *, reason_code: str = "phase_transition",
                    payload: Optional[Mapping[str, Any]] = None,
@@ -103,14 +104,54 @@ class VerifiedAgentDelivery:
                                  payload={"attempt_id": self.attempt_id, "match": True,
                                           "challenge": challenge.strip()})
 
+    def record_delivery(self, delivery: Mapping[str, Any]) -> Dict[str, Any]:
+        target = str(delivery.get("target") or "").strip()
+        if not target:
+            raise VerifiedDeliveryError("delivery target is required")
+        merge_queue = dict(delivery.get("merge_queue") or {})
+        if "merge_queue_receipt_sha" in delivery and "receipt_sha" not in merge_queue:
+            merge_queue["receipt_sha"] = delivery.get("merge_queue_receipt_sha")
+        if "merge_queue_status" in delivery and "status" not in merge_queue:
+            merge_queue["status"] = delivery.get("merge_queue_status")
+        if "merge_queue_branch" in delivery and "branch" not in merge_queue:
+            merge_queue["branch"] = delivery.get("merge_queue_branch")
+        if "merge_queue_worktree_path" in delivery and "worktree_path" not in merge_queue:
+            merge_queue["worktree_path"] = delivery.get("merge_queue_worktree_path")
+        payload: Dict[str, Any] = {"attempt_id": self.attempt_id, "target": target,
+                                   "satisfied": bool(delivery.get("satisfied"))}
+        if merge_queue:
+            payload["merge_queue"] = merge_queue
+        if "receipt_sha" in merge_queue:
+            payload["merge_queue_receipt_sha"] = merge_queue.get("receipt_sha")
+        if "status" in merge_queue:
+            payload["merge_queue_status"] = merge_queue.get("status")
+        if "branch" in merge_queue:
+            payload["merge_queue_branch"] = merge_queue.get("branch")
+        if "worktree_path" in merge_queue:
+            payload["merge_queue_worktree_path"] = merge_queue.get("worktree_path")
+        self.delivery = dict(payload)
+        return self.board.append("delivery_recorded", item_id=self.runtime.work_item_id, payload=payload)
+
     def complete(self, receipt: Mapping[str, Any]) -> Dict[str, Any]:
         if self.evidence is None or not self.watcher_measured:
             raise VerifiedDeliveryError("completion requires evidence and measured watcher gates")
+        if self.delivery is None or not self.delivery.get("satisfied"):
+            raise VerifiedDeliveryError("completion requires recorded delivery convergence")
+        merge_queue = dict(self.delivery.get("merge_queue") or {})
+        merge_receipt = str(merge_queue.get("receipt_sha") or self.delivery.get("merge_queue_receipt_sha") or "").strip()
+        merge_status = str(merge_queue.get("status") or self.delivery.get("merge_queue_status") or "").strip().lower()
+        merge_branch = str(merge_queue.get("branch") or self.delivery.get("merge_queue_branch") or "").strip()
+        merge_worktree = str(merge_queue.get("worktree_path") or self.delivery.get("merge_queue_worktree_path") or "").strip()
+        if self.delivery.get("target") != "local-fixture" and not (merge_receipt and merge_status == "accepted"):
+            raise VerifiedDeliveryError("external delivery requires merge-queue acceptance evidence")
+        if self.delivery.get("target") != "local-fixture" and not (merge_branch and merge_worktree):
+            raise VerifiedDeliveryError("external delivery requires merge-queue worktree/branch evidence")
         self.runtime.complete(receipt)
         result = self.transition("done", reason_code="verified_delivery", payload={
             "oracle": receipt.get("verdict"), "receipt_id": receipt.get("receipt_id", "")})
         result["status"] = "VERIFIED"
         result["schema"] = SCHEMA
+        result["delivery"] = dict(self.delivery)
         return result
 
 

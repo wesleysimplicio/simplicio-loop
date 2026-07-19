@@ -5,24 +5,24 @@
 </div>
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop مع وكلاء فعليين لكل مرحلة وتقارير متصلة" width="920" />
 </p>
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-المهارات-والمسرّعات-الـ-11"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
+  <a href="#-المهارات-والمسرّعات-الـ-7-5"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-محوّلات-المصادر"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
-  <a href="#-11-بيئة-تشغيل-بروتوكول-واحد"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-نقاط-التوسعة-الـ-44"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
+  <a href="#-15-بيئة-تشغيل-بروتوكول-واحد"><img src="https://img.shields.io/badge/runtimes-15-2563EB" alt="15 runtimes"></a>
+  <a href="#-نقاط-التوسعة-الـ-49"><img src="https://img.shields.io/badge/extension%20points-49-00E08A" alt="49 extension points"></a>
   <a href="#-اقتصاد-الرموز"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-الخلاصة">الخلاصة</a> ·
-  <a href="#-المهارات-والمسرّعات-الـ-11">11 مهارة</a> ·
+  <a href="#-المهارات-والمسرّعات-الـ-7-5">7 مهارات</a> ·
   <a href="#-محوّلات-المصادر">محوّلات المصادر</a> ·
-  <a href="#-11-بيئة-تشغيل-بروتوكول-واحد">11 بيئة تشغيل</a> ·
+  <a href="#-15-بيئة-تشغيل-بروتوكول-واحد">15 بيئة تشغيل</a> ·
   <a href="#-الحلقة">الحلقة</a> ·
   <a href="#-اقتصاد-الرموز">اقتصاد الرموز</a> ·
   <a href="#-اقتصاد-الرموز">محرّك الالتقاط</a> ·
@@ -85,6 +85,70 @@
 </p>
 <!-- visual-story:end -->
 
+<!-- stage-agents-roadmap:start -->
+## 🤖 خارطة الطريق — وكيل فعلي خلف كل مرحلة
+
+> **الحالة:** بنية مخططة ومتابعة في [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436). تعليق lifecycle القانوني في GitHub موجود اليوم؛ أما gate الكامل لوكلاء المراحل وreporting الإلزامي فما زال قيد التنفيذ في [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433).
+
+سيكون لكل من intake/التخطيط والتنفيذ والسلامة والتسليم وrecovery والتدقيق النهائي وكيل مسؤول. تتفرع review إلى أربعة وكلاء مستقلين — الأمن/الصحة، الجودة، إعادة إنتاج runtime/E2E، ونطاق التأثير — قبل أن تتقارب.
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="وكلاء مراحل simplicio-loop وتعليقات work tracker" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["وكيل intake + التخطيط"] --> I["وكيل التنفيذ"] --> S["وكيل السلامة"]
+  S --> R["4 وكلاء review مستقلين"] --> D["وكيل التسليم"] --> A["مدقق الاكتمال"]
+  D --> F["وكيل feedback + recovery"] --> I
+  P -.-> E["أحداث + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["تعليقات GitHub · إلزامية"]
+  E -. "فقط عند الاتصال" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**السياسة:** تعليقات GitHub إلزامية للـ runs المرتبطة بـ GitHub، وينتظر `COMPLETE` تأكيداً بعيداً. لا تتلقى Azure DevOps وJira وAsana وTrello التعليقات إلا بعد إثبات الاتصال والمصادقة والتفويض وحل الهدف؛ `NOT_CONNECTED` هو skip صريح وغير حاجب. العقد والاختبارات: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436).
+<!-- stage-agents-roadmap:end -->
+
+<div dir="rtl">
+
+## 🆕 الجديد في الإصدار v3.38.0 — إصدار تنسيق الوكلاء المتعدّدين
+
+هذا الإصدار يعالج مشكلة تظهر فقط حين تعمل **عدّة جلسات وكيل على المستودع نفسه في آنٍ واحد**: كيف
+تعرف الجلسة ما هو محجوز مسبقاً، وما تمّ دمجه لكنه غير مكتمل، وماذا تفعل بوقتها الخامل بدل تكرار
+عمل جلسة أخرى؟ كل ما يلي بُني واختُبر وشُحن على الحالة **الحيّة متعدّدة الجلسات لهذا المستودع نفسه**.
+
+- **`scripts/coordinator.py` — نواة القرار.** بالاستناد إلى حالة GitHub الحالية (تعليقات حجز على
+  issues مفتوحة + طلبات دمج مُدمَجة)، يُرجِع فعلاً حتمياً واحداً لكل issue: `OWN` (لا حجز بعد)،
+  `CONTINUE_OWN` (أنت آخر من حجزها)، `DEFER_ACTIVE_CLAIM` (جلسة أخرى حجزتها حديثاً — لا تكرّر
+  العمل)، `RECLAIM_STALE` (الحجز بَرَد، يمكن أخذها بأمان)، أو `VERIFY_PARTIAL` (طلب دمج دُمج
+  لهذه الـ issue لكنها ما زالت مفتوحة — تحقّق ممّا أُنجز فعلاً). ويرفع علم `duplicate_risk` لحظة
+  حجز جلستين للـ issue نفسها بفارق زمني قصير — وقد أمسك فعلياً بجلستين تبنيان finding collector
+  للـ issue نفسها بملفّين مختلفين في اليوم الأول.
+- **`scripts/pr_dod_review.py` — المراجع لوقت الخمول.** حين تكون كل الـ issues محجوزة، أفضل تحرّك
+  للجلسة ليس الانتظار بل مراجعة طلبات الدمج المفتوحة مقابل معيار "تعريف الاكتمال" ذي 7 أبعاد
+  (تنفيذ، اختبارات وحدة/تكامل/نظام/انحدار، قياس أداء، تغطية ≥85%) وقائمة معايير القبول المُجمَّدة
+  للـ issue. `check --post` ينشر حكماً آلياً سطراً بسطر كتعليق على طلب الدمج بدل موافقة انطباعية —
+  وقد أثبت ذلك على طلب دمج حقيقي مدموج مسبقاً بوسمه **17 من 17** معياراً كمعلَّق لا يزال غير محلول.
+- **`scripts/finding_collector.py` — ذاكرة عيوب مُتينة ومُزالة التكرار (issue #466، المرحلة 1).**
+  سجلّ `simplicio.finding/v1` واحد لكل عيبٍ مميّز، مُبصَم بحيث ينهار *العطل نفسه* — مهما رآه وكيلٌ
+  أو تشغيلٌ أو توقيتٌ مختلف — إلى سجلّ واحد مع عدّاد تكرار بدل ضجيج مُكرَّر.
+- **مرجعان جديدان** `references/multi-agent-coordination.md` و`references/background-verification.md`
+  مربوطان مباشرة في خطوة الفرز في `SKILL.md`: تحقّق من ملكية المنسّق قبل لمس أي issue، راجع طلبات
+  الدمج بدل الخمول حين يُحجَز كل شيء، وشغّل أوامر التحقّق البطيئة في الخلفية.
+- **تنظيف إلزامي بعد الدمج** (`scripts/worktree_cleanup.py`, #484) — worktree والفرع المحليّان
+  لفرع مُدمَج يُزالان آلياً بدل التراكم عبر الجلسات.
+- **انحداران حقيقيان أُمسِكا وأُصلِحا على `main` نفسه، حيّاً، في دورة هذا الإصدار** — طلب دمج حذف
+  تعريف دالة بصمت (فكسر اختبار `loop_progress.py` الذاتي) دُمج مرّة، ثم أعاد تسابق squash-merge
+  الشيفرة المكسورة نفسها إلى `main` مرّة ثانية. كلاهما اكتُشف بتشغيل السكربت المتأثّر فعلياً، لا
+  بالثقة بوصف طلب دمج أخضر — وهذا بالضبط سبب وجود `coordinator.py` و`pr_dod_review.py` الآن.
+
+**ماذا يعني هذا لك عملياً:** إن كنت تُشغّل `simplicio-loop` عبر أكثر من جلسة أو جهاز على المستودع
+نفسه، فهو الآن يحميك فعلياً من فشلين شائعين: وكيلان يُعيدان العمل نفسه بصمت، وطلب دمج "مكتمل" لكنه
+يترك الـ issue الحقيقية محلولة جزئياً فقط. راجع [`CHANGELOG.md`](../CHANGELOG.md) للقائمة الكاملة.
+
+</div>
+
 <div dir="rtl">
 
 ## ⚡ الخلاصة
@@ -117,7 +181,7 @@
 
 <div dir="rtl">
 
-ثلاثة أمور تجعله مختلفاً: فهو **سوبر-بلجن من مهارات مركّزة**، ويشغّل **البروتوكول نفسه على 11
+ثلاثة أمور تجعله مختلفاً: فهو **سوبر-بلجن من مهارات مركّزة**، ويشغّل **البروتوكول نفسه على 15
 بيئة تشغيل**، ويفعل كل ذلك بـ**اقتصاد رموز جريء وصادق**.
 
 </div>
@@ -150,25 +214,30 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🧠 المهارات والمسرّعات الـ 11
+## 🧠 المهارات والمسرّعات الـ 7 + 5
 
-نواة المنسّق + خمسة توابع + خمسة مسرّعات/تكاملات. كل تابع **اختياري** — فعند تحميله يفوّض إليه
+نواة المنسّق + ستة توابع + خمسة مسرّعات/تكاملات. كل تابع **اختياري** — فعند تحميله يفوّض إليه
 المنسّق (أغنى + أرخص)؛ وعند غيابه يغطّي البروتوكول المضمّن 100%. والمسرّعات **تُكتشف تلقائياً** —
 موجودة = تُستخدَم، غائبة = بديل احتياطي بالنموذج اللغوي.
 
 | # | القدرة | ماذا تستوعب | ماذا تفعل | أثر الرموز |
 |---|---|---|---|---|
-| 1 | 🔁 **simplicio-loop** | — | Unified public entrypoint: orchestrator core + hardened loop behind one command | Core + loop |
-| 2 | ↩️ **simplicio-tasks** | legacy alias | Compatibility shim for older installs and saved prompts | Legacy alias |
+| 1 | 🔁 **simplicio-loop** | — | نقطة الدخول العامة الموحّدة: نواة المنسّق + الحلقة المُحكَمة خلف أمر واحد | النواة + الحلقة |
+| 2 | ↩️ **simplicio-tasks** | اسم بديل قديم | غلاف توافق للتثبيتات القديمة والـ prompts المحفوظة | اسم بديل قديم |
 | 3 | 🧱 **simplicio-orient** | [rtk](https://github.com/rtk-ai/rtk) + [caveman](https://github.com/JuliusBrussee/caveman) | تنفيذ مُوجَّه نحو الطرفية أولاً، كتالوج تقليل المُخرَجات، tee-cache، قراءة signatures | L0 حتميّ |
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | مراجعة تخاصمية متوازية على معايير متمايزة ← حُكم واحد بلا تكرار | بوابة الجودة |
 | 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | ضغط المُخرَجات + الذاكرة، `transform_guard` يفشل آمناً | 40-60% أقل |
 | 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | مراجعة استرجاعية بعد التشغيل ← دروس مُتينة بلا تكرار في الذاكرة | أذكى في كل تشغيل |
-| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | توجيه برسم بياني معرفي: بحث دلالي، جولات موجَّهة، رسم بياني للتبعيات | **L0 بلا رموز** |
-| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | تحليلات الجلسات، تتبّع التكلفة، اكتشاف الجلسات المتوقّفة | **L1** SQL فقط |
-| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | تخزين KV بين دورات الحلقة — تقليل TTFT بنسبة 40-70% على النماذج المحلية | وقت GPU ↓ |
-| 10 | 🗜️ **محرّك التقاط Simplicio** | `engine/simplicio_engine.py` (أصيل، مكتبة معيارية فقط) | وكيل التقاط شفّاف: يمرّر إلى المزوّد الحقيقي، يقيس + يضغط حتميّاً، يكتب `proxy_savings.json` | **حتميّ** |
-| 11 | 🎬 **video_evidence** | Playwright (افتراضياً) · [hyperframes](https://github.com/heygen-com/hyperframes) (عند الطلب) | تُسجّل **الجلسة الحقيقية** برهاناً متحرّكاً على تغيير في الواجهة (Playwright)؛ وتُصيِّر **MP4 حتميّاً مُعنوَناً** للشرح عبر hyperframes حين يكون الفيديو هو المُسلَّم | منتج الأدلة |
+| 7 | 🧪 **simplicio-autoresearch** | نمط Karpathy `autoresearch` + `autoresearch-agent` | حلقة تطوّرية mutate/eval/keep-revert: سقوف yool، فرع معزول بـ git، تقييم مضاد لـ Goodhart، إيصال `savings-event` | تحسين آلي |
+| 8 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | توجيه برسم بياني معرفي: بحث دلالي، جولات موجَّهة، رسم بياني للتبعيات | **L0 بلا رموز** |
+| 9 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | تحليلات الجلسات، تتبّع التكلفة، اكتشاف الجلسات المتوقّفة | **L1** SQL فقط |
+| 10 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | تخزين KV بين دورات الحلقة — تقليل TTFT بنسبة 40-70% على النماذج المحلية | وقت GPU ↓ |
+| 11 | 🗜️ **محرّك التقاط Simplicio** | `engine/simplicio_engine.py` (أصيل، مكتبة معيارية فقط) | وكيل التقاط شفّاف: يمرّر إلى المزوّد الحقيقي، يقيس + يضغط حتميّاً، يكتب `proxy_savings.json` | **حتميّ** |
+| 12 | 🎬 **video_evidence** | Playwright (افتراضياً) · [hyperframes](https://github.com/heygen-com/hyperframes) (عند الطلب) | تُسجّل **الجلسة الحقيقية** برهاناً متحرّكاً على تغيير في الواجهة (Playwright)؛ وتُصيِّر **MP4 حتميّاً مُعنوَناً** للشرح عبر hyperframes حين يكون الفيديو هو المُسلَّم | منتج الأدلة |
+
+كذلك، ضمن سجلّ القدرات: **`coordinator.py`** (منسّق قرار متعدّد الجلسات)، **`pr_dod_review.py`**
+(مراجع DoD/AC لطلبات الدمج)، و**`finding_collector.py`** (ذاكرة عيوب مُزالة التكرار) — ثلاثة
+عمّال جدد يخدمون نقاط التوسعة نفسها الموصوفة في § الجديد في v3.38.0 أعلاه.
 
 كل مهارة تقيم ضمن [`.claude/skills/`](../.claude/skills)؛ ولكل مسرّع مستند مرجعي ضمن
 `.claude/skills/simplicio-loop/references/` (منتج الفيديو:
@@ -194,7 +263,7 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🌐 11 بيئة تشغيل، بروتوكول واحد
+## 🌐 15 بيئة تشغيل، بروتوكول واحد
 
 نواة مهارة عالمية واحدة + مجموعة خطّافات واحدة تقود كل بيئة تشغيل. والمحوّل رفيع: فهو يخبر بيئة
 التشغيل *أين تحمّل المهارات*، و*كيف تسلّح الحلقة*، و*كيف تربط السرعة الأصيلة*. **المهارة لا
@@ -211,12 +280,16 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 | **OpenCode** | `AGENTS.md` | self-paced | MCP |
 | **Gemini** | `GEMINI.md` | self-paced | MCP / adapter |
 | **Aider** | `CONVENTIONS.md` | self-paced | — (LLM fallback) |
-| **Simplicio Agent** | native recall | native loop | **native** |
+| **Simplicio Agent** *(اسمها القديم Hermes)* | native recall | native loop | **native** |
 | **OpenClaw** | plugin SDK | native scheduler | **native** |
+| **Kimi** | تعليمات مضمّنة | self-paced | best-effort |
+| **Qwen** (Code/CLI) | مكافئ `AGENTS.md` | self-paced | best-effort |
+| **DeepSeek** | تعليمات مضمّنة | self-paced | best-effort |
+| **Orca** | عبر الوكيل الداخلي وسجلّ المهارات | hook داخلي / أتمتة مجدولة | تهيئة سجلّ/وكيل داخلي |
 
-الوعد: **البروتوكول نفسه، والبوابات نفسها، والأمان نفسه على كل البيئات الإحدى عشرة — لا يختلف
-إلا السرعة.** ويعمل `orient_clamp.py` (اقتصاد الرموز) على كل بيئة تشغيل دون أي توصيل. راجع
-[`adapters/MATRIX.md`](../adapters/MATRIX.md).
+الوعد: **البروتوكول نفسه، والبوابات نفسها، والأمان نفسه على كل البيئات الخمس عشرة — 3 مضمونة
+آلياً في كل commit (Claude Code وCodex وCursor)، و12 بأفضل جهد.** ويعمل `orient_clamp.py`
+(اقتصاد الرموز) على كل بيئة تشغيل دون أي توصيل. راجع [`adapters/MATRIX.md`](../adapters/MATRIX.md).
 
 ---
 
@@ -520,8 +593,29 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 
 ---
 
+## ⭐ سجل النجوم
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wesleysimplicio/simplicio-loop&type=Date)](https://star-history.com/#wesleysimplicio/simplicio-loop&Date)
+
+---
+
 ## 📄 الترخيص
 
 MIT
 
 </div>
+
+<!-- simplicio-loop:github-comment-coordination:v1 -->
+## 🌐 تنسيق التعليقات عبر GitHub بين بيئات التشغيل
+
+يمكن تشغيل `simplicio-loop` بالتزامن داخل Claude Code وCodex وCursor وGemini وHermes. عند ربط التشغيل بمشكلة في GitHub، ينشر تحديثات دورة الحياة بشكل idempotent في التعليق الأساسي: المطالبة والتخطيط والتقدم والأدلة وطلب الدمج والإغلاق. وهكذا تتعاون الوكلاء على أجهزة مختلفة عبر سلسلة تعليقات GitHub نفسها دون نظام ملفات محلي مشترك.
+
+```powershell
+pwsh scripts/install.ps1 claude -Global
+pwsh scripts/install.ps1 codex -Global
+pwsh scripts/install.ps1 cursor -Global
+pwsh scripts/install.ps1 gemini -Global
+pwsh scripts/install.ps1 hermes -Global   # اسم قديم لـ simplicio_agent
+```
+
+تبقى الطوابير المحلية والتأجير ومساحات العمل ونبضات الحياة والأدلة فعّالة على كل جهاز؛ وتعليقات GitHub هي إسقاط التنسيق المشترك. هذا التدفق خاص بـ GitHub؛ لا تُرسل التعليقات إلى Jira أو Azure DevOps أو متتبعات أخرى. عند تعذر GitHub يستمر التشغيل محلياً ويسجل فشل المزامنة دون اختلاق تأكيد بعيد. استخدم نفس `source_issue` مع صلاحية GitHub لكل بيئة.

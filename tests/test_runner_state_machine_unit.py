@@ -1,0 +1,1335 @@
+"""In-process unit tests for the simplicio_loop.runner state machine (issue #275).
+
+PR #321 raised simplicio_loop/cli.py coverage via in-process dispatch tests but left
+simplicio_loop/runner.py's goal loop / retry / convergence logic largely untouched.
+These tests target the highest-value uncovered branches named by issue #275:
+
+  - state transitions (verify_run, conclude_run, change_phase, reconcile_delivery)
+  - retry/backoff and dead-letter behaviour in dispatch_operator_batch
+  - resume/idempotency (a journaled success is never re-attempted)
+  - stagnation / no-progress paths that must end with an explicit diagnostic
+
+All tests are in-process (no subprocess/CLI layer) so they register with
+coverage.py, and all fakes are deterministic (no real time, no network, no real
+mapper/dev-cli/watcher binaries).
+"""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from simplicio_loop import runner as runner_mod
+from scripts.distributed_trust_policy import TrustPolicyError
+
+TASK = """Sistema: PLANES
+Funcionalidade: Tela de Modelagem — Ordenacao de linhas
+Tipo: Evolucao
+
+COMO analista do ONS,
+QUERO organizar as linhas
+PARA melhorar a analise
+
+1. Criterios de Aceite
+
+Cenario 1: Estrutural aparece primeiro
+  Dado que existe uma linha estrutural
+  Quando a tela for exibida
+  Entao a linha estrutural aparece primeiro [RN01]
+
+2. Regras de Negocio
+
+RN01 - Estrutural sempre primeiro.
+"""
+
+
+def _arm_fixture(tmp_path, monkeypatch):
+    """Arm one deterministic run without any real mapper/dev-cli/network calls."""
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(".simplicio/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", ".gitignore", "src/app.py"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Simplicio Tests", "-c", "user.email=tests@simplicio.local",
+         "commit", "-qm", "fixture"],
+        cwd=repo, check=True,
+    )
+    task = tmp_path / "task.md"
+    task.write_text(TASK, encoding="utf-8")
+
+    fingerprint = {"head": "head-fixed", "tree_hash": "tree-fixed", "dirty_status_hash": "status-fixed"}
+    monkeypatch.setattr(runner_mod, "_repo_fingerprint", lambda path: dict(fingerprint))
+    monkeypatch.setattr(
+        runner_mod, "_changed_paths",
+        lambda path: (["src/app.py"]
+                      if (Path(path) / "src" / "app.py").read_text(encoding="utf-8")
+                      != "def main():\n    return 'ok'\n" else []),
+    )
+
+    def fake_mapper(repo_path, run_root, **kwargs):
+        runner_mod._write_json(run_root / "mapper-preflight.json", {
+            "tool": "simplicio-mapper", "identity_ok": True, "version_ok": True,
+            "missing_verbs": [], "repo_state": dict(fingerprint),
+        })
+        payload = {
+            "scan": {"returncode": 0, "stdout": {}, "stderr": ""},
+            "inspect": {"returncode": 0, "stdout": {
+                "status": {"artifacts_present": True, "fresh": True},
+                "evidence": {"artifacts": {
+                    "project_map": {"exists": True},
+                    "precedent_index": {"exists": True},
+                }},
+            }, "stderr": ""},
+            "handoff": {"returncode": 0, "stdout": {
+                "context_pack": {"pack_hash": "pack-fixed",
+                                "files": [{"path": "src/app.py", "tests": []}]},
+            }, "stderr": ""},
+            "generated_at": "2026-07-14T00:00:00Z",
+            "repo_state_before": dict(fingerprint),
+            "repo_state_after": dict(fingerprint),
+        }
+        runner_mod._write_json(run_root / "mapper-context.json", payload)
+        return payload
+
+    def fake_operator_preflight(repo_path, run_root):
+        help_surface = "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target"
+        receipt = {
+            "tool": "simplicio-dev-cli", "identity_ok": True, "version_ok": True,
+            "help_stdout": help_surface, "task_help_stdout": help_surface,
+            "required_tokens": list(runner_mod.DEVCLI_REQUIRED_TOKENS),
+            "missing_tokens": [],
+            "required_capabilities": list(runner_mod.DEVCLI_REQUIRED_CAPABILITIES),
+            "missing_capabilities": [],
+            "repo_state": dict(fingerprint),
+        }
+        runner_mod._write_json(run_root / "operator-preflight.json", receipt)
+        return receipt
+
+    monkeypatch.setattr(runner_mod, "_run_mapper", fake_mapper)
+    monkeypatch.setattr(runner_mod, "_preflight_operator", fake_operator_preflight)
+    monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", json.dumps({
+        "execution_state": "dry_run", "returncode": 0,
+        "stdout": {"kind": "operator-proposal", "ok": True}, "stderr": "",
+        "argv": ["simplicio-dev-cli", "task", "demo"],
+    }))
+    armed = runner_mod.arm_run(str(repo), str(task), "verified", 12)
+    assert armed["state"]["phase"] == "awaiting_decision", armed["state"]
+    return repo, armed["manifest"]["run_id"], Path(armed["run_dir"])
+
+
+# ---------------------------------------------------------------------------
+# verify_run: independent watcher gate + convergence to "done"
+# ---------------------------------------------------------------------------
+
+def test_verify_run_is_a_noop_on_terminal_phases(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    runner_mod.change_phase(str(repo), run_id, "cancelled", "test terminal")
+
+    result = runner_mod.verify_run(str(repo), run_id)
+
+    assert result["state"]["phase"] == "cancelled"
+
+
+def test_verify_run_blocks_when_watcher_script_is_unavailable(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    # The tmp-path fixture repo intentionally has no scripts/watcher_verify.py.
+
+    result = runner_mod.verify_run(str(repo), run_id)
+
+    assert result["state"]["phase"] == "blocked"
+    assert "watcher_verify.py is unavailable" in result["state"]["blockers"][0]
+    assert result["state"]["current_action"] == "watcher_unavailable"
+
+
+def test_verify_run_blocks_when_watcher_rejects_the_run(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "watcher_verify.py").write_text("# stub\n", encoding="utf-8")
+
+    def fake_run(argv, cwd, capture_output, text, timeout, env):
+        watcher_dir = Path(env["SIMPLICIO_LOOP_DIR"])
+        watcher_dir.mkdir(parents=True, exist_ok=True)
+        (watcher_dir / "watcher_state.json").write_text(json.dumps({
+            "status": "MEASURED", "match": False, "reported": "criteria mismatch",
+        }), encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, stdout="watcher ran", stderr="")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+
+    result = runner_mod.verify_run(str(repo), run_id)
+
+    assert result["state"]["phase"] == "blocked"
+    assert result["state"]["blockers"] == ["criteria mismatch"]
+    assert result["state"]["evidence"]["status"] == "UNVERIFIED"
+
+
+def test_verify_run_blocks_when_watcher_process_exits_nonzero(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "watcher_verify.py").write_text("# stub\n", encoding="utf-8")
+
+    def fake_run(argv, cwd, capture_output, text, timeout, env):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="watcher crashed")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+
+    result = runner_mod.verify_run(str(repo), run_id)
+
+    assert result["state"]["phase"] == "blocked"
+    assert "watcher crashed" in result["state"]["blockers"][0]
+
+
+def test_verify_run_converges_to_done_when_watcher_and_delivery_pass(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "watcher_verify.py").write_text("# stub\n", encoding="utf-8")
+
+    def fake_run(argv, cwd, capture_output, text, timeout, env):
+        watcher_dir = Path(env["SIMPLICIO_LOOP_DIR"])
+        watcher_dir.mkdir(parents=True, exist_ok=True)
+        (watcher_dir / "watcher_state.json").write_text(json.dumps({
+            "status": "MEASURED", "match": True,
+        }), encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        runner_mod, "reconcile_delivery",
+        lambda repo_arg, rid, current_state, **kwargs: {
+            "run_dir": str(run_dir), "manifest": {}, "state": {
+                **runner_mod.read_status(str(repo), run_id)["state"],
+                "delivery": {"ready": True, "target": current_state, "current_state": current_state},
+            },
+        },
+    )
+
+    result = runner_mod.verify_run(str(repo), run_id)
+
+    assert result["state"]["phase"] == "done"
+    assert result["state"]["completion"]["verdict"] == "VERIFIED"
+    assert result["state"]["completion"]["reason_code"] == "watcher_and_delivery_verified"
+    assert result["state"]["completion"]["tag"] == "MEASURED"
+
+
+def test_verify_run_stops_short_of_done_when_delivery_is_not_ready(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "watcher_verify.py").write_text("# stub\n", encoding="utf-8")
+
+    def fake_run(argv, cwd, capture_output, text, timeout, env):
+        watcher_dir = Path(env["SIMPLICIO_LOOP_DIR"])
+        watcher_dir.mkdir(parents=True, exist_ok=True)
+        (watcher_dir / "watcher_state.json").write_text(json.dumps({
+            "status": "MEASURED", "match": True,
+        }), encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+    not_ready_status = {
+        "run_dir": str(run_dir), "manifest": {}, "state": {"delivery": {"ready": False}, "phase": "partial"},
+    }
+    monkeypatch.setattr(
+        runner_mod, "reconcile_delivery",
+        lambda repo_arg, rid, current_state, **kwargs: not_ready_status,
+    )
+
+    result = runner_mod.verify_run(str(repo), run_id)
+
+    assert result is not_ready_status
+    assert result["state"]["phase"] == "partial"
+
+
+# ---------------------------------------------------------------------------
+# conclude_run: fail-closed diff-coverage gate, human override still audited
+# ---------------------------------------------------------------------------
+
+def test_conclude_run_blocks_when_production_diff_lacks_operator_receipt(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        runner_mod, "_operator_run_diff_coverage",
+        lambda repo_path, rd: {"coverage_ok": False, "uncovered_paths": ["src/app.py"]},
+    )
+
+    with pytest.raises(RuntimeError, match="production diff paths without an operator receipt"):
+        runner_mod.conclude_run(str(repo), run_id)
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert "gates" not in state or state.get("gates") == []
+
+
+def test_conclude_run_force_overrides_but_still_records_the_violation(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        runner_mod, "_operator_run_diff_coverage",
+        lambda repo_path, rd: {"coverage_ok": False, "uncovered_paths": ["src/app.py"]},
+    )
+
+    result = runner_mod.conclude_run(str(repo), run_id, force=True)
+
+    gate = result["state"]["operator_run_gate"]
+    assert gate["coverage_ok"] is False
+    assert gate["forced"] is True
+    assert gate["uncovered_paths"] == ["src/app.py"]
+    assert result["state"]["gates"][-1] == gate
+
+
+def test_conclude_run_passes_through_when_coverage_is_ok(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        runner_mod, "_operator_run_diff_coverage",
+        lambda repo_path, rd: {"coverage_ok": True, "uncovered_paths": []},
+    )
+
+    result = runner_mod.conclude_run(str(repo), run_id)
+
+    gate = result["state"]["operator_run_gate"]
+    assert gate["coverage_ok"] is True
+    assert gate["forced"] is False
+    # conclude_run re-transitions to the SAME phase it found; awaiting_decision is a valid phase.
+    assert result["state"]["phase"] == "awaiting_decision"
+
+
+# ---------------------------------------------------------------------------
+# change_phase / read_status: state-machine invariants
+# ---------------------------------------------------------------------------
+
+def test_change_phase_rejects_transition_from_terminal_state(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    runner_mod.change_phase(str(repo), run_id, "done", "test terminal")
+
+    with pytest.raises(ValueError, match="run already terminal"):
+        runner_mod.change_phase(str(repo), run_id, "awaiting_decision", "should not work")
+
+
+def test_change_phase_to_awaiting_decision_clears_maintenance_deferral(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    runner_mod.defer_maintenance_backlog_only(
+        str(repo), run_id, correction_summary="freeze",
+        deferral_reason="maintenance window", resume_instructions=["resume later"],
+    )
+
+    result = runner_mod.change_phase(str(repo), run_id, "awaiting_decision", "resume from maintenance")
+
+    assert result["state"]["maintenance"]["mode"] == "active"
+    assert result["state"]["maintenance"]["disposition"] == "operator"
+    assert result["state"]["operator"]["execution_state"] == "invalidated"
+    assert result["state"]["evidence"]["status"] == "INVALIDATED"
+    assert result["state"]["next_action"] == "mapper_scan_required"
+
+
+def test_change_phase_to_cancelled_clears_next_action(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+
+    result = runner_mod.change_phase(str(repo), run_id, "cancelled", "operator cancelled")
+
+    assert result["state"]["phase"] == "cancelled"
+    assert result["state"]["next_action"] == "none"
+
+
+def test_read_status_graceful_when_no_runs_directory_exists(tmp_path):
+    """Regression for issue #500: no longer raises; returns a graceful no_runs state."""
+    repo = tmp_path / "empty-repo"
+    repo.mkdir()
+
+    result = runner_mod.read_status(str(repo))
+    assert result["run_dir"] is None
+    assert result["state"]["phase"] == "no_runs"
+    assert result["state"]["completion"]["verdict"] == "NO_RUNS"
+
+
+def test_read_status_graceful_when_runs_directory_is_empty(tmp_path):
+    """Regression for issue #500: loop-runs exists but empty -> graceful no_runs."""
+    repo = tmp_path / "repo"
+    (repo / ".simplicio" / "loop-runs").mkdir(parents=True)
+
+    result = runner_mod.read_status(str(repo))
+    assert result["state"]["phase"] == "no_runs"
+    assert result["state"]["completion"]["verdict"] == "NO_RUNS"
+
+
+def test_read_status_graceful_no_runs_directory(tmp_path):
+    """Issue #500: read_status must return a graceful no-runs state instead of
+    raising FileNotFoundError when the repository has no .simplicio/loop-runs dir."""
+    repo = tmp_path / "consumer_repo"
+    repo.mkdir()
+
+    result = runner_mod.read_status(str(repo))
+
+    assert result["run_dir"] is None
+    assert result["manifest"] is None
+    assert result["state"]["phase"] == "no_runs"
+    assert result["state"]["completion"]["verdict"] == "NO_RUNS"
+    assert result["state"]["completion"]["ready"] is False
+    assert "no runs directory" in result["state"]["message"]
+
+
+def test_read_status_graceful_no_runs_empty_dir(tmp_path):
+    """Issue #500 (variant): loop-runs exists but is empty -> graceful NO_RUNS."""
+    repo = tmp_path / "consumer_repo"
+    (repo / ".simplicio" / "loop-runs").mkdir(parents=True)
+
+    result = runner_mod.read_status(str(repo))
+
+    assert result["state"]["phase"] == "no_runs"
+    assert result["state"]["completion"]["verdict"] == "NO_RUNS"
+
+
+def test_read_status_without_run_id_picks_the_lexicographically_latest_run(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    runs_root = run_dir.parent
+    older = runs_root / "run-000-earlier"
+    older.mkdir()
+    (older / "manifest.json").write_text(json.dumps({"run_id": "run-000-earlier"}), encoding="utf-8")
+    (older / "state.json").write_text(json.dumps({"phase": "done"}), encoding="utf-8")
+
+    result = runner_mod.read_status(str(repo))
+
+    assert result["manifest"]["run_id"] == run_id
+
+
+# ---------------------------------------------------------------------------
+# reconcile_delivery: ready / not-ready / reopened (regression) branches
+# ---------------------------------------------------------------------------
+
+def test_reconcile_delivery_marks_ready_and_advances_to_delivering(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        runner_mod, "build_delivery_receipt",
+        lambda run_dir_arg, target, **kwargs: {
+            "target": target, "current_state": kwargs["current_state"], "ready": True,
+            "source_checked_at": "2026-07-14T00:00:00Z", "gates": [],
+        },
+    )
+    monkeypatch.setattr(runner_mod, "reconcile_delivery_observation", lambda prev, cur: {"status": "confirmed"})
+    monkeypatch.setattr(runner_mod, "write_delivery_receipt", lambda run_dir_arg, receipt: None)
+
+    result = runner_mod.reconcile_delivery(str(repo), run_id, "pr-open", source_kind="github")
+
+    assert result["state"]["delivery"]["ready"] is True
+    assert result["state"]["current_action"] == "delivery_reconciled"
+    assert result["state"]["phase"] == "delivering"
+
+
+def test_reconcile_delivery_records_blocker_when_not_ready(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        runner_mod, "build_delivery_receipt",
+        lambda run_dir_arg, target, **kwargs: {
+            "target": target, "current_state": kwargs["current_state"], "ready": False,
+            "source_checked_at": "2026-07-14T00:00:00Z",
+            "gates": [{"status": "fail", "detail": "checks are not green"}],
+        },
+    )
+    monkeypatch.setattr(runner_mod, "reconcile_delivery_observation", lambda prev, cur: {"status": "pending"})
+    monkeypatch.setattr(runner_mod, "write_delivery_receipt", lambda run_dir_arg, receipt: None)
+
+    result = runner_mod.reconcile_delivery(str(repo), run_id, "pr-open", source_kind="github")
+
+    assert result["state"]["delivery"]["ready"] is False
+    assert result["state"]["current_action"] == "delivery_reconciliation_failed"
+    assert result["state"]["blockers"] == ["checks are not green"]
+    assert result["state"]["phase"] == "partial"
+
+
+def test_reconcile_delivery_reopens_run_on_regression(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        runner_mod, "build_delivery_receipt",
+        lambda run_dir_arg, target, **kwargs: {
+            "target": target, "current_state": kwargs["current_state"], "ready": False,
+            "source_checked_at": "2026-07-14T00:00:00Z",
+            "gates": [{"status": "fail", "detail": "checks regressed to red"}],
+        },
+    )
+    monkeypatch.setattr(
+        runner_mod, "reconcile_delivery_observation",
+        lambda prev, cur: {"status": "reopened", "reason_code": "checks_regressed"},
+    )
+    monkeypatch.setattr(runner_mod, "write_delivery_receipt", lambda run_dir_arg, receipt: None)
+
+    result = runner_mod.reconcile_delivery(str(repo), run_id, "pr-open", source_kind="github")
+
+    assert result["state"]["current_action"] == "delivery_reopened"
+    assert result["state"]["next_action"] == "requery_source"
+    assert result["state"]["phase"] == "partial"
+    assert "delivery reopened" in result["state"]["blockers"][0]
+
+
+# ---------------------------------------------------------------------------
+# apply_human_decision: replanning boundary invalidates dependent artifacts
+# ---------------------------------------------------------------------------
+
+def test_apply_human_decision_raises_when_decision_id_is_unknown(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="decision id not found"):
+        runner_mod.apply_human_decision(str(repo), run_id, "Q-DOES-NOT-EXIST", "answer")
+
+
+def test_apply_human_decision_raises_when_contract_has_no_tasks(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    contract_path = runner_mod._contract_path(run_dir)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["tasks"] = []
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="task contract collection is empty"):
+        runner_mod.apply_human_decision(str(repo), run_id, "anything", "answer")
+
+
+def test_apply_human_decision_resolves_bucket_item_and_invalidates_artifacts(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    contract_path = runner_mod._contract_path(run_dir)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["tasks"][0]["questions"] = [{"id": "Q-BUCKET-1"}]
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    assert (run_dir / "plan.json").exists()
+    assert (run_dir / "operator-receipt.json").exists()
+
+    result = runner_mod.apply_human_decision(str(repo), run_id, "Q-BUCKET-1", "answered", impact="scope-change")
+
+    assert result["state"]["phase"] == "awaiting_decision"
+    assert result["state"]["operator"]["execution_state"] == "invalidated"
+    assert result["state"]["evidence"]["status"] == "INVALIDATED"
+    assert result["state"]["delivery"]["ready"] is False
+    assert not (run_dir / "plan.json").exists()
+    assert not (run_dir / "operator-receipt.json").exists()
+    updated_contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    resolved = updated_contract["tasks"][0]["questions"][0]
+    assert resolved["resolved"] is True
+    assert resolved["answer"] == "answered"
+    assert resolved["resolution_impact"] == "scope-change"
+    assert updated_contract["revision"] == contract.get("revision", 1) + 1
+
+
+# ---------------------------------------------------------------------------
+# sync_source_state: only github is a supported source
+# ---------------------------------------------------------------------------
+
+def test_sync_source_state_rejects_unsupported_source(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="unsupported source: 'gitlab'"):
+        runner_mod.sync_source_state(str(repo), run_id, "gitlab")
+
+
+def test_sync_source_state_delegates_to_reconcile_delivery_for_github(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        runner_mod, "github_delivery_payload",
+        lambda external_repo, pr=None, tag="", target_state="": {"pr": {"url": "https://x/1"}},
+    )
+    monkeypatch.setattr(runner_mod, "infer_github_delivery_state", lambda payload: "pr-open")
+    captured = {}
+
+    def fake_reconcile(repo_arg, rid, current_state, source_kind="local", source_payload=None):
+        captured["args"] = (repo_arg, rid, current_state, source_kind, source_payload)
+        return {"state": {"phase": "partial"}}
+
+    monkeypatch.setattr(runner_mod, "reconcile_delivery", fake_reconcile)
+
+    result = runner_mod.sync_source_state(str(repo), run_id, "github", external_repo="org/repo", pr=42)
+
+    assert result == {"state": {"phase": "partial"}}
+    assert captured["args"][2] == "pr-open"
+    assert captured["args"][3] == "github"
+
+
+# ---------------------------------------------------------------------------
+# dispatch_operator_batch: retry/backoff, dead-letter, resume-idempotency
+# ---------------------------------------------------------------------------
+
+def _fake_item(repo, run_id="run-synthetic", task_index=1, worker_id=None):
+    return {
+        "repo": str(repo), "run_id": run_id, "task_index": task_index,
+        "worker_id": worker_id or f"worker-{task_index}",
+    }
+
+
+def test_dispatch_operator_batch_rejects_duplicate_repo_run_task_items(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pytest.raises(ValueError, match="duplicate repo/run/task items"):
+        runner_mod.dispatch_operator_batch([_fake_item(repo), _fake_item(repo)])
+
+
+def test_dispatch_operator_batch_retries_until_success_within_budget(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    calls = {"n": 0}
+
+    def fake_attempt(item):
+        calls["n"] += 1
+        status = "succeeded" if calls["n"] >= 3 else "failed"
+        return {
+            "schema": "simplicio.operator-worker/v1", "worker_id": item["worker_id"],
+            "repo": item["repo"], "run_id": item["run_id"], "task_index": item["task_index"],
+            "status": status, "failure_fingerprint": "" if status == "succeeded" else f"fp-{calls['n']}",
+            "receipt_status": "VERIFIED" if status == "succeeded" else "UNVERIFIED",
+        }
+
+    monkeypatch.setattr(runner_mod, "_operator_dispatch_attempt", fake_attempt)
+
+    result = runner_mod.dispatch_operator_batch([_fake_item(repo)], retry_budget=3)
+
+    assert calls["n"] == 3
+    assert result["completed_task_indices"] == [1]
+    assert result["failed_task_indices"] == []
+    assert result["dead_letter_task_indices"] == []
+    assert result["retry_contract"]["attempts_by_task"]["1"] == 3
+
+
+def test_dispatch_operator_batch_exhausts_retry_budget_and_dead_letters(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    calls = {"n": 0}
+
+    def fake_attempt(item):
+        calls["n"] += 1
+        return {
+            "schema": "simplicio.operator-worker/v1", "worker_id": item["worker_id"],
+            "repo": item["repo"], "run_id": item["run_id"], "task_index": item["task_index"],
+            "status": "failed", "failure_fingerprint": "same-fingerprint-always",
+            "receipt_status": "UNVERIFIED",
+        }
+
+    monkeypatch.setattr(runner_mod, "_operator_dispatch_attempt", fake_attempt)
+
+    result = runner_mod.dispatch_operator_batch([_fake_item(repo)], retry_budget=2)
+
+    # retry_budget=2 means at most 3 attempts (1 initial + 2 retries) before giving up.
+    assert calls["n"] == 3
+    assert result["failed_task_indices"] == [1]
+    assert result["dead_letter_task_indices"] == [1]
+    assert result["completed_task_indices"] == []
+    assert result["blockers"][0]["task_index"] == 1
+    worker = result["workers"][0]
+    assert worker["attempt_count"] == 3
+    assert worker["retry_scope"] == "worker"
+    assert [entry["dispatch_attempt"] for entry in worker["attempt_history"]] == [1, 2, 3]
+    # First retry after a failure is flagged distinctly from a same-fingerprint bounded retry.
+    assert worker["attempt_history"][1]["failure_fingerprint"] == "same-fingerprint-always"
+
+
+def test_dispatch_operator_batch_resume_skips_already_succeeded_tasks(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    journal_dir = tmp_path / "journal"
+    journal_dir.mkdir()
+    journal_path = journal_dir / "operator-batch.jsonl"
+    journal_path.write_text(json.dumps({
+        "repo": str(Path(repo).resolve()), "run_id": "run-synthetic", "task_index": 1,
+        "status": "succeeded", "dispatch_attempt": 1,
+    }) + "\n", encoding="utf-8")
+
+    calls = {"n": 0}
+
+    def fake_attempt(item):
+        calls["n"] += 1
+        return {"status": "succeeded", "repo": item["repo"], "run_id": item["run_id"],
+                "task_index": item["task_index"], "worker_id": item["worker_id"]}
+
+    monkeypatch.setattr(runner_mod, "_operator_dispatch_attempt", fake_attempt)
+
+    result = runner_mod.dispatch_operator_batch(
+        [_fake_item(repo)], retry_budget=1, journal_dir=str(journal_dir),
+    )
+
+    # Resume must never repeat an already-confirmed effect: the worker is never invoked.
+    assert calls["n"] == 0
+    assert result["skipped_completed"] == 1
+    assert result["completed_task_indices"] == [1]
+
+
+def test_dispatch_operator_batch_converges_multiple_independent_tasks(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    seen = []
+
+    def fake_attempt(item):
+        seen.append(item["task_index"])
+        return {"status": "succeeded", "repo": item["repo"], "run_id": item["run_id"],
+                "task_index": item["task_index"], "worker_id": item["worker_id"]}
+
+    monkeypatch.setattr(runner_mod, "_operator_dispatch_attempt", fake_attempt)
+
+    items = [
+        _fake_item(repo, task_index=1, worker_id="w1"),
+        _fake_item(repo, task_index=2, worker_id="w2"),
+        _fake_item(repo, task_index=3, worker_id="w3"),
+    ]
+    for item in items:
+        item["isolation_key"] = f"isolated-{item['task_index']}"
+    result = runner_mod.dispatch_operator_batch(items, max_workers=3, retry_budget=0)
+
+    assert sorted(seen) == [1, 2, 3]
+    assert result["completed_task_indices"] == [1, 2, 3]
+    assert result["max_workers"] == 3
+    assert result["serial_fallback_reason"] == ""
+
+
+def test_dispatch_operator_batch_forces_serial_fallback_for_shared_run_state(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def fake_attempt(item):
+        return {"status": "succeeded", "repo": item["repo"], "run_id": item["run_id"],
+                "task_index": item["task_index"], "worker_id": item["worker_id"]}
+
+    monkeypatch.setattr(runner_mod, "_operator_dispatch_attempt", fake_attempt)
+
+    # Two items sharing one isolation_key (the default: the resolved repo path) cannot run
+    # in parallel without corrupting one shared state.json/working tree.
+    items = [_fake_item(repo, task_index=1, worker_id="w1"), _fake_item(repo, task_index=2, worker_id="w2")]
+    result = runner_mod.dispatch_operator_batch(items, max_workers=4, retry_budget=0)
+
+    assert result["max_workers"] == 1
+    assert result["serial_fallback_reason"] == "shared_run_state"
+
+
+# ---------------------------------------------------------------------------
+# _operator_worker_limit: bounded pool sizing (no empty pool, no over-provisioning)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("requested", "item_count", "expected"),
+    [
+        (None, 0, 0),
+        (None, 20, runner_mod.DEFAULT_OPERATOR_WORKERS),
+        (0, 20, runner_mod.DEFAULT_OPERATOR_WORKERS),
+        (-3, 20, runner_mod.DEFAULT_OPERATOR_WORKERS),
+        (2, 5, 2),
+        (99, 5, 5),
+        (3, 0, 0),
+    ],
+)
+def test_operator_worker_limit_bounds_pool_size(requested, item_count, expected, monkeypatch):
+    # Pin cpu_count so "no explicit request" resolves deterministically to
+    # DEFAULT_OPERATOR_WORKERS regardless of the machine running the suite.
+    monkeypatch.delenv("SIMPLICIO_LOOP_OPERATOR_WORKERS", raising=False)
+    monkeypatch.setattr(runner_mod.os, "cpu_count", lambda: 64)
+    assert runner_mod._operator_worker_limit(requested, item_count) == expected
+
+
+# ---------------------------------------------------------------------------
+# _operator_run_diff_coverage: every production diff path must trace to a receipt
+# ---------------------------------------------------------------------------
+
+# Note: _changed_paths() shells out to real `git diff`/`git status`. Driving it through a
+# real repo is flaky under fast successive writes on some filesystems (the classic "racy
+# git" mtime-cache problem), so these tests pin _changed_paths deterministically and focus
+# on _operator_run_diff_coverage's own receipt-matching logic -- the part issue #275 cares
+# about (a production diff must trace to exactly one covering operator receipt).
+
+def test_operator_run_diff_coverage_ok_when_receipt_covers_every_changed_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_mod, "_changed_paths", lambda repo_path: ["app.py"])
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "operator-receipt.json").write_text(json.dumps({
+        "status": "applied", "changed_paths": ["app.py"],
+    }), encoding="utf-8")
+
+    coverage = runner_mod._operator_run_diff_coverage(tmp_path, run_dir)
+
+    assert coverage["coverage_ok"] is True
+    assert coverage["uncovered_paths"] == []
+    assert coverage["covered_paths"] == ["app.py"]
+    assert coverage["receipt_count"] == 1
+
+
+def test_operator_run_diff_coverage_flags_uncovered_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_mod, "_changed_paths", lambda repo_path: ["app.py"])
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    # No receipt at all: the changed path was produced outside the operator bridge.
+
+    coverage = runner_mod._operator_run_diff_coverage(tmp_path, run_dir)
+
+    assert coverage["coverage_ok"] is False
+    assert coverage["uncovered_paths"] == ["app.py"]
+    assert coverage["receipt_count"] == 0
+
+
+def test_operator_run_diff_coverage_ignores_receipts_that_did_not_apply(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_mod, "_changed_paths", lambda repo_path: ["app.py"])
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "operator-receipt.json").write_text(json.dumps({
+        "status": "blocked", "changed_paths": ["app.py"],
+    }), encoding="utf-8")
+
+    coverage = runner_mod._operator_run_diff_coverage(tmp_path, run_dir)
+
+    assert coverage["coverage_ok"] is False
+    assert coverage["uncovered_paths"] == ["app.py"]
+
+
+# ---------------------------------------------------------------------------
+# _restore_operator_checkpoint: rollback safety edge cases
+# ---------------------------------------------------------------------------
+
+def test_restore_checkpoint_noop_when_nothing_changed(tmp_path):
+    # The on-disk file must actually match the checkpoint snapshot; otherwise the function
+    # correctly detects the drift itself (see the "no_change_declared_but_drifted" case
+    # below) rather than trusting an empty changed_paths list blindly.
+    (tmp_path / "a.py").write_text("x", encoding="utf-8")
+    checkpoint = {"safe_targets": ["a.py"], "files": [{"path": "a.py", "exists": True, "content": "x"}]}
+    result = runner_mod._restore_operator_checkpoint(checkpoint, tmp_path, changed_paths=[])
+    assert result == {"attempted": False, "restored": False, "reason": "no_changed_paths"}
+
+
+def test_restore_checkpoint_detects_drift_even_when_changed_paths_claims_empty(tmp_path):
+    # If the checkpointed file no longer matches on disk, the guard must not trust a caller
+    # that (incorrectly) reports no changed paths -- it independently verifies drift.
+    checkpoint = {"safe_targets": ["a.py"], "files": [{"path": "a.py", "exists": True, "content": "original"}]}
+    (tmp_path / "a.py").write_text("drifted", encoding="utf-8")
+
+    result = runner_mod._restore_operator_checkpoint(checkpoint, tmp_path, changed_paths=[])
+
+    assert result == {"attempted": True, "restored": True, "reason": "restored_checkpoint"}
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == "original"
+
+
+def test_restore_checkpoint_refuses_when_checkpoint_has_no_targets(tmp_path):
+    checkpoint = {"safe_targets": [], "files": []}
+    result = runner_mod._restore_operator_checkpoint(checkpoint, tmp_path, changed_paths=["a.py"])
+    assert result == {"attempted": False, "restored": False, "reason": "checkpoint_targets_missing"}
+
+
+def test_restore_checkpoint_refuses_changes_outside_checkpoint_scope(tmp_path):
+    checkpoint = {"safe_targets": ["a.py"], "files": [{"path": "a.py", "exists": True, "content": "x"}]}
+    result = runner_mod._restore_operator_checkpoint(checkpoint, tmp_path, changed_paths=["b.py"])
+    assert result == {"attempted": False, "restored": False, "reason": "changed_paths_outside_checkpoint_scope"}
+
+
+def test_restore_checkpoint_restores_deleted_file_and_removes_created_file(tmp_path):
+    (tmp_path / "a.py").write_text("new-content", encoding="utf-8")
+    checkpoint = {
+        "safe_targets": ["a.py", "b.py"],
+        "files": [
+            {"path": "a.py", "exists": True, "content": "original-content"},
+            {"path": "b.py", "exists": False, "content": None},
+        ],
+    }
+    (tmp_path / "b.py").write_text("created-by-operator", encoding="utf-8")
+
+    result = runner_mod._restore_operator_checkpoint(checkpoint, tmp_path, changed_paths=["a.py", "b.py"])
+
+    assert result == {"attempted": True, "restored": True, "reason": "restored_checkpoint"}
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == "original-content"
+    assert not (tmp_path / "b.py").exists()
+
+
+# ---------------------------------------------------------------------------
+# worktree/queue scheduling helpers (fan-out isolation)
+# ---------------------------------------------------------------------------
+
+class _FakeAllocation:
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class _FakeWorktreeQueue:
+    def __init__(self, *, register_error=None, allocate_error=None):
+        self.register_error = register_error
+        self.allocate_error = allocate_error
+        self.registered = []
+        self.allocated = []
+        self.recorded = []
+        self.torn_down = []
+
+    def register_tasks(self, specs):
+        self.registered.extend(specs)
+        if self.register_error:
+            raise self.register_error
+
+    def allocate(self, spec, **kwargs):
+        if self.allocate_error:
+            raise self.allocate_error
+        self.allocated.append((spec, kwargs))
+        return _FakeAllocation(
+            task_id=spec.id, run_id="run-x", mode=kwargs.get("isolation", "worktree"),
+            path="", branch="lane/" + spec.id, base_sha="base", head_sha="head",
+            tree_sha="tree", lane="lane-1", reattached=False, lock_receipt="",
+        )
+
+    def record_context(self, task_id, context):
+        self.recorded.append((task_id, context))
+
+    def teardown(self, task_id):
+        self.torn_down.append(task_id)
+
+
+def _item(repo, run_id="run-x", task_index=1, isolation="worktree"):
+    return {"repo": str(repo), "run_id": run_id, "task_index": task_index,
+            "worker_id": f"w{task_index}", "task_id": f"task-{task_index}",
+            "isolation": isolation}
+
+
+def test_prepare_worktree_contexts_noop_without_a_queue(tmp_path):
+    items = [_item(tmp_path)]
+    runner_mod._prepare_worktree_contexts(items, None)
+    assert "worktree_context" not in items[0]
+    assert "worktree_error" not in items[0]
+
+
+def test_prepare_worktree_contexts_rejects_unsupported_isolation_mode(tmp_path):
+    queue = _FakeWorktreeQueue()
+    items = [_item(tmp_path, isolation="branch")]
+    runner_mod._prepare_worktree_contexts(items, queue)
+    assert "unsupported worktree isolation mode" in items[0]["worktree_error"]
+
+
+def test_prepare_worktree_contexts_defers_shared_isolation(tmp_path):
+    queue = _FakeWorktreeQueue()
+    items = [_item(tmp_path, isolation="shared")]
+    runner_mod._prepare_worktree_contexts(items, queue)
+    assert items[0]["worktree_deferred"] is True
+    assert items[0]["isolation_key"] == f"{items[0]['repo']}:run-x"
+    assert queue.allocated == []
+
+
+def test_prepare_worktree_contexts_allocates_worktree_and_records_context(tmp_path):
+    queue = _FakeWorktreeQueue()
+    items = [_item(tmp_path)]
+    runner_mod._prepare_worktree_contexts(items, queue)
+    assert "worktree_error" not in items[0]
+    assert items[0]["worktree_context"]["task_id"] == "task-1"
+    assert len(queue.recorded) == 1
+
+
+def test_prepare_worktree_contexts_marks_error_when_register_tasks_raises(tmp_path):
+    queue = _FakeWorktreeQueue(register_error=RuntimeError("registration boom"))
+    items = [_item(tmp_path, task_index=1), _item(tmp_path, task_index=2)]
+    runner_mod._prepare_worktree_contexts(items, queue)
+    assert "registration boom" in items[0]["worktree_error"]
+    assert "registration boom" in items[1]["worktree_error"]
+
+
+def test_prepare_worktree_contexts_marks_error_when_allocate_raises(tmp_path):
+    queue = _FakeWorktreeQueue(allocate_error=RuntimeError("allocate boom"))
+    items = [_item(tmp_path)]
+    runner_mod._prepare_worktree_contexts(items, queue)
+    assert "allocate boom" in items[0]["worktree_error"]
+
+
+def test_ensure_deferred_worktree_context_allocates_shared_lease_once(tmp_path):
+    queue = _FakeWorktreeQueue()
+    item = _item(tmp_path, isolation="shared")
+    item["worktree_deferred"] = True
+
+    runner_mod._ensure_deferred_worktree_context(item, queue)
+
+    assert item["worktree_context"]["task_id"] == "task-1"
+    assert len(queue.allocated) == 1
+
+    # A second call is a no-op: the context is already present.
+    runner_mod._ensure_deferred_worktree_context(item, queue)
+    assert len(queue.allocated) == 1
+
+
+def test_ensure_deferred_worktree_context_skips_when_not_deferred(tmp_path):
+    queue = _FakeWorktreeQueue()
+    item = _item(tmp_path)
+
+    runner_mod._ensure_deferred_worktree_context(item, queue)
+
+    assert "worktree_context" not in item
+    assert queue.allocated == []
+
+
+def test_ensure_deferred_worktree_context_records_error_on_allocate_failure(tmp_path):
+    queue = _FakeWorktreeQueue(allocate_error=RuntimeError("shared lease unavailable"))
+    item = _item(tmp_path, isolation="shared")
+    item["worktree_deferred"] = True
+
+    runner_mod._ensure_deferred_worktree_context(item, queue)
+
+    assert "shared lease unavailable" in item["worktree_error"]
+
+
+def test_release_shared_context_tears_down_only_shared_mode(tmp_path):
+    queue = _FakeWorktreeQueue()
+    shared_item = {"worktree_context": {"mode": "shared", "task_id": "task-1"}}
+    worktree_item = {"worktree_context": {"mode": "worktree", "task_id": "task-2"}}
+
+    runner_mod._release_shared_context(shared_item, queue)
+    runner_mod._release_shared_context(worktree_item, queue)
+
+    assert queue.torn_down == ["task-1"]
+
+
+def test_release_shared_context_swallows_teardown_exceptions(tmp_path):
+    class _RaisingQueue(_FakeWorktreeQueue):
+        def teardown(self, task_id):
+            raise RuntimeError("teardown boom")
+
+    queue = _RaisingQueue()
+    item = {"worktree_context": {"mode": "shared", "task_id": "task-1"}}
+
+    runner_mod._release_shared_context(item, queue)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# _distributed_configuration: opt-in remote coordinator (no local fallback once armed)
+# ---------------------------------------------------------------------------
+
+def test_distributed_configuration_defaults_to_local_fan_out(monkeypatch):
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_URL", raising=False)
+
+    queue, identity = runner_mod._distributed_configuration("/tmp/repo")
+
+    assert queue is None
+    assert identity is None
+
+
+def test_distributed_configuration_raises_without_identity_adapter(monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_URL", "https://queue.example/api")
+    monkeypatch.setattr(runner_mod, "ensure_identity", None)
+
+    with pytest.raises(RuntimeError, match="distributed identity adapter unavailable"):
+        runner_mod._distributed_configuration("/tmp/repo")
+
+
+def test_distributed_configuration_builds_queue_and_identity_when_url_is_set(monkeypatch, tmp_path):
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_URL", "https://queue.example/api")
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN", "tok-123")
+    monkeypatch.setenv("SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN", "1")
+    monkeypatch.setenv("SIMPLICIO_RUNTIME", "claude-code")
+    captured = {}
+
+    def fake_ensure_identity(path, runtime, capabilities):
+        captured["args"] = (path, runtime, capabilities)
+        return {"agent_id": "agent-1"}
+
+    monkeypatch.setattr(runner_mod, "ensure_identity", fake_ensure_identity)
+
+    queue, identity = runner_mod._distributed_configuration(str(tmp_path))
+
+    assert identity == {"agent_id": "agent-1"}
+    assert queue is not None
+    assert captured["args"][1] == "claude-code"
+    assert "claim" in captured["args"][2]
+
+
+# ---------------------------------------------------------------------------
+# _distributed_configuration + trust policy (#289): the real, currently-used
+# call site that hands a bearer token to a network destination -- the same
+# exfiltration / confused-deputy risk the now-deleted
+# `.github/workflows/distributed-183-proof.yml` was meant to guard, applied to
+# the surface that actually exists today.
+# ---------------------------------------------------------------------------
+
+def _write_trust_policy(tmp_path, **overrides):
+    policy = {
+        "schema": "simplicio.distributed-trust-policy/v1",
+        "environments": {
+            "staging": {
+                "description": "test",
+                "origin": {
+                    "scheme": "https",
+                    "hostname": "queue.trusted.internal",
+                    "port": 443,
+                    "base_path": "/",
+                },
+                "tls_sha256_pins": ["aa" * 32],
+                "oidc_audience": "aud",
+                "github_environment": "distributed-staging",
+                "allowed_repos": ["acme/widgets"],
+                "allowed_refs": ["refs/heads/main"],
+                "allowed_actors": [],
+                "max_ttl_seconds": 900,
+                "egress": {"allow_redirects": False, "allow_proxy_env": False},
+                "contacts": ["sec@example.com"],
+                "reviewed_at": "2026-07-14",
+                "revocation_procedure": "rotate",
+            }
+        },
+    }
+    policy["environments"]["staging"].update(overrides)
+    path = tmp_path / "trust-policy.json"
+    path.write_text(json.dumps(policy), encoding="utf-8")
+    return path
+
+
+def _arm_trust_env(monkeypatch, tmp_path, *, repo="acme/widgets", ref="refs/heads/main", actor="alice"):
+    policy_path = _write_trust_policy(tmp_path)
+    monkeypatch.setenv("SIMPLICIO_DISTRIBUTED_TRUST_POLICY", str(policy_path))
+    monkeypatch.setenv("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "staging")
+    monkeypatch.setenv("SIMPLICIO_REMOTE_REPO", repo)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_REF", ref)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_ACTOR", actor)
+    monkeypatch.setattr(runner_mod, "ensure_identity", lambda path, runtime, capabilities: {"agent_id": "agent-1"})
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_URL", raising=False)
+
+
+def test_distributed_configuration_resolves_url_from_trust_policy(monkeypatch, tmp_path):
+    _arm_trust_env(monkeypatch, tmp_path)
+
+    queue, identity = runner_mod._distributed_configuration(str(tmp_path))
+
+    assert identity == {"agent_id": "agent-1"}
+    assert queue is not None
+    assert queue.base_url == "https://queue.trusted.internal:443"
+
+
+def test_distributed_configuration_fails_closed_for_unknown_environment_id(monkeypatch, tmp_path):
+    _arm_trust_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "production-does-not-exist")
+
+    with pytest.raises(TrustPolicyError, match="unknown environment_id"):
+        runner_mod._distributed_configuration(str(tmp_path))
+
+
+def test_distributed_configuration_fails_closed_for_unauthorized_repo(monkeypatch, tmp_path):
+    _arm_trust_env(monkeypatch, tmp_path, repo="attacker/fork")
+
+    with pytest.raises(RuntimeError, match="distributed trust policy denied"):
+        runner_mod._distributed_configuration(str(tmp_path))
+
+
+def test_distributed_configuration_rejects_attacker_controlled_queue_url(monkeypatch, tmp_path):
+    """The literal #289 exploit: an actor authorized to run points the queue
+    URL at infrastructure they control. Even though `environment_id` and the
+    repo/ref/actor allow-lists are satisfied, a `SIMPLICIO_REMOTE_QUEUE_URL`
+    that diverges from the reviewed policy origin must never be connected to
+    -- the destination is not user-selectable once an environment_id is set.
+    """
+    _arm_trust_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_URL", "https://attacker.example/api")
+
+    with pytest.raises(RuntimeError, match="does not match the resolved origin"):
+        runner_mod._distributed_configuration(str(tmp_path))
+
+
+def test_distributed_configuration_legacy_url_path_untouched_without_environment_id(monkeypatch, tmp_path):
+    """Backward compatibility: local/dev usage with no environment_id set is
+    unaffected by the trust-policy wiring (still the existing, unmanaged path).
+    """
+    monkeypatch.delenv("SIMPLICIO_REMOTE_ENVIRONMENT_ID", raising=False)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_URL", "https://queue.example/api")
+    monkeypatch.setenv("SIMPLICIO_RUNTIME", "claude-code")
+    monkeypatch.setattr(runner_mod, "ensure_identity", lambda path, runtime, capabilities: {"agent_id": "agent-1"})
+
+    queue, identity = runner_mod._distributed_configuration(str(tmp_path))
+
+    assert identity == {"agent_id": "agent-1"}
+    assert queue.base_url == "https://queue.example/api"
+
+
+def test_distributed_configuration_wires_environment_id_and_policy_into_the_queue(monkeypatch, tmp_path):
+    """#289: the resolved environment_id/policy must reach HTTPRemoteQueue so its
+    connect-time secure-transport enforcement (check_endpoint) can activate --
+    not just the resolved URL."""
+    _arm_trust_env(monkeypatch, tmp_path)
+
+    queue, _identity = runner_mod._distributed_configuration(str(tmp_path))
+
+    assert queue._trusted_endpoint is not None
+    assert queue._trusted_endpoint.environment_id == "staging"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_queue_token (#289): short-lived credential issuance replacing a bare
+# static SIMPLICIO_REMOTE_QUEUE_TOKEN when a signing secret is configured.
+# ---------------------------------------------------------------------------
+
+def test_resolve_queue_token_fails_closed_without_secret_or_opt_in(monkeypatch):
+    """#289: the static SIMPLICIO_REMOTE_QUEUE_TOKEN fallback is no longer silent --
+    without SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN=1 it must fail closed, not quietly
+    downgrade to an indefinitely-lived shared secret."""
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN", "static-tok")
+    monkeypatch.delenv("SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN", raising=False)
+
+    with pytest.raises(RuntimeError, match="no longer silent"):
+        runner_mod._resolve_queue_token(None, None, {"agent_id": "agent-1"})
+
+
+def test_resolve_queue_token_falls_back_to_static_token_with_explicit_opt_in(monkeypatch):
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN", "static-tok")
+    monkeypatch.setenv("SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN", "1")
+
+    token = runner_mod._resolve_queue_token(None, None, {"agent_id": "agent-1"})
+
+    assert token == "static-tok"
+
+
+def test_resolve_queue_token_returns_none_when_neither_secret_nor_static_token_set(monkeypatch):
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN", raising=False)
+    monkeypatch.delenv("SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN", raising=False)
+
+    token = runner_mod._resolve_queue_token(None, None, {"agent_id": "agent-1"})
+
+    assert token is None
+
+
+def test_resolve_queue_token_short_lived_mode_is_scoped_to_worker_operations(monkeypatch):
+    from scripts.short_lived_credentials import verify_token
+
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", "sign-secret")
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS", raising=False)
+    policy = {"environments": {"staging": {"max_ttl_seconds": 900}}}
+
+    token = runner_mod._resolve_queue_token("staging", policy, {"agent_id": "agent-9"})
+
+    verify_token("sign-secret", token, expected_scope="staging", expected_operation="claim")
+    with pytest.raises(Exception):
+        verify_token("sign-secret", token, expected_scope="staging", expected_operation="enqueue")
+
+
+def test_resolve_queue_token_issues_a_short_lived_token_when_secret_is_set(monkeypatch):
+    from scripts.short_lived_credentials import verify_token
+
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", "sign-secret")
+    monkeypatch.delenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS", raising=False)
+    policy = {"environments": {"staging": {"max_ttl_seconds": 900}}}
+
+    token = runner_mod._resolve_queue_token("staging", policy, {"agent_id": "agent-9"})
+
+    claims = verify_token("sign-secret", token, expected_subject="agent-9", expected_scope="staging")
+    assert claims["exp"] - claims["iat"] == pytest.approx(900, abs=1)
+
+
+def test_resolve_queue_token_ttl_override_is_capped_by_policy_max_ttl(monkeypatch):
+    from scripts.short_lived_credentials import verify_token
+
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", "sign-secret")
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS", "999999")
+    policy = {"environments": {"staging": {"max_ttl_seconds": 120}}}
+
+    token = runner_mod._resolve_queue_token("staging", policy, {"agent_id": "agent-9"})
+
+    claims = verify_token("sign-secret", token)
+    assert claims["exp"] - claims["iat"] == pytest.approx(120, abs=1)
+
+
+# ---------------------------------------------------------------------------
+# reconcile_delivery: a corrupt prior receipt is tolerated, not fatal
+# ---------------------------------------------------------------------------
+
+def test_reconcile_delivery_tolerates_corrupt_prior_receipt(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    (run_dir / "delivery-receipt.json").write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setattr(
+        runner_mod, "build_delivery_receipt",
+        lambda run_dir_arg, target, **kwargs: {
+            "target": target, "current_state": kwargs["current_state"], "ready": True,
+            "source_checked_at": "2026-07-14T00:00:00Z", "gates": [],
+        },
+    )
+    monkeypatch.setattr(runner_mod, "reconcile_delivery_observation", lambda prev, cur: {"status": "confirmed"})
+    monkeypatch.setattr(runner_mod, "write_delivery_receipt", lambda run_dir_arg, receipt: None)
+
+    result = runner_mod.reconcile_delivery(str(repo), run_id, "pr-open", source_kind="github")
+
+    assert result["state"]["delivery"]["ready"] is True
+
+
+# ---------------------------------------------------------------------------
+# apply_human_decision: resolves a decision-ledger item (not only bucket items)
+# ---------------------------------------------------------------------------
+
+def test_apply_human_decision_resolves_decision_ledger_item(tmp_path, monkeypatch):
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    contract_path = runner_mod._contract_path(run_dir)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["tasks"][0]["decision_ledger"] = [{"id": "Q-LEDGER-1", "resolved": False}]
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+    result = runner_mod.apply_human_decision(str(repo), run_id, "Q-LEDGER-1", "resolved answer")
+
+    assert result["state"]["phase"] == "awaiting_decision"
+    updated = json.loads(contract_path.read_text(encoding="utf-8"))
+    ledger_item = updated["tasks"][0]["decision_ledger"][0]
+    assert ledger_item["resolved"] is True
+    assert ledger_item["answer"] == "resolved answer"
+
+
+# ---------------------------------------------------------------------------
+# _operator_dispatch_attempt: distributed-queue claim conflict / outage paths
+# ---------------------------------------------------------------------------
+
+def test_operator_dispatch_attempt_pauses_on_claim_conflict(tmp_path):
+    from simplicio_loop.remote_queue import QueueConflict
+
+    class _ConflictQueue:
+        def claim(self, *args, **kwargs):
+            raise QueueConflict("already claimed by another worker")
+
+    item = {
+        "repo": str(tmp_path), "run_id": "run-x", "task_index": 1, "worker_id": "w1",
+        "task_id": "task-1", "distributed_queue": _ConflictQueue(),
+    }
+
+    record = runner_mod._operator_dispatch_attempt(item)
+
+    assert record["status"] == "failed"
+    assert record["reason_code"] == "claim_conflict"
+    assert record["dead_letter"] is True
+    assert record["execution_state"] == "paused"
+
+
+def test_operator_dispatch_attempt_pauses_on_queue_unavailable(tmp_path):
+    from simplicio_loop.remote_queue import QueueUnavailable
+
+    class _UnavailableQueue:
+        def claim(self, *args, **kwargs):
+            raise QueueUnavailable("network outage")
+
+    item = {
+        "repo": str(tmp_path), "run_id": "run-x", "task_index": 1, "worker_id": "w1",
+        "task_id": "task-1", "distributed_queue": _UnavailableQueue(),
+    }
+
+    record = runner_mod._operator_dispatch_attempt(item)
+
+    assert record["status"] == "failed"
+    assert record["reason_code"] == "network_paused"
+    assert record["dead_letter"] is True
+
+
+def test_operator_dispatch_attempt_fails_closed_on_worktree_error(tmp_path):
+    item = {
+        "repo": str(tmp_path), "run_id": "run-x", "task_index": 1, "worker_id": "w1",
+        "task_id": "task-1", "worktree_error": "allocation failed: disk full",
+    }
+
+    record = runner_mod._operator_dispatch_attempt(item)
+
+    assert record["status"] == "failed"
+    assert record["reason_code"] == "worktree_context_unpersisted"
+    assert record["execution_state"] == "error"
+    assert record["failure_fingerprint"]
+
+
+def test_operator_dispatch_attempt_wraps_unexpected_exception(tmp_path, monkeypatch):
+    def raising_execute_operator(repo, run_id, task_index=1, **kwargs):
+        raise RuntimeError("execute_operator exploded")
+
+    monkeypatch.setattr(runner_mod, "execute_operator", raising_execute_operator)
+    item = {"repo": str(tmp_path), "run_id": "run-x", "task_index": 1, "worker_id": "w1", "task_id": "task-1"}
+
+    record = runner_mod._operator_dispatch_attempt(item)
+
+    assert record["status"] == "failed"
+    assert record["reason_code"] == "operator_exception"
+    assert "execute_operator exploded" in record["error"]
+    assert record["failure_fingerprint"]
+
+
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _selfrun import run_module
+    run_module(globals(), "test_runner_state_machine_unit")

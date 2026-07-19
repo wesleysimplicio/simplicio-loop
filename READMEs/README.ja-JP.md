@@ -1,24 +1,24 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
 <p align="center">
-  <img src="../assets/simplicio-loop-hero-2026.png" alt="simplicio-loop autonomous parallel evidence-gated orchestration" width="920" />
+  <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="各段階の具体的なエージェントと接続済みレポートを備えた simplicio-loop" width="920" />
 </p>
 
 <p align="center">
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
-  <a href="#-the-11-skills--accelerators"><img src="https://img.shields.io/badge/skills-11-7C3AED" alt="11 skills"></a>
+  <a href="#-the-7-skills--5-accelerators"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
-  <a href="#-11-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-11-2563EB" alt="11 runtimes"></a>
-  <a href="#-the-44-extension-points"><img src="https://img.shields.io/badge/extension%20points-44-00E08A" alt="44 extension points"></a>
-  <a href="#-token-economy"><img src="https://img.shields.io/badge/tokens-up%20to%2096%25%20fewer-green" alt="Up to 96% fewer tokens"></a>
+  <a href="#-15-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-15-2563EB" alt="15 runtimes"></a>
+  <a href="#-the-49-extension-points"><img src="https://img.shields.io/badge/extension%20points-49-00E08A" alt="49 extension points"></a>
+  <a href="#-token-economy"><img src="https://img.shields.io/badge/savings-unverified-888888" alt="Savings — unverified"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="#-tldr">TL;DR</a> ·
-  <a href="#-the-11-skills--accelerators">11のスキル</a> ·
+  <a href="#-the-7-skills--5-accelerators">7のスキル</a> ·
   <a href="#-source-adapters">ソースアダプタ</a> ·
-  <a href="#-11-runtimes-one-protocol">11のランタイム</a> ·
+  <a href="#-15-runtimes-one-protocol">15のランタイム</a> ·
   <a href="#-the-loop">ループ</a> ·
   <a href="#-token-economy">トークンエコノミー</a> ·
   <a href="#-token-economy">キャプチャエンジン</a> ·
@@ -81,6 +81,74 @@
 </p>
 <!-- visual-story:end -->
 
+<!-- stage-agents-roadmap:start -->
+## 🤖 ロードマップ — 各段階の背後に具体的なエージェント
+
+> **状態:** [#422](https://github.com/wesleysimplicio/simplicio-loop/issues/422)–[#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436) で追跡中の計画アーキテクチャです。GitHub の標準 lifecycle コメントは現在利用できますが、段階別エージェントと必須 reporting の完全な gate は [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433) で実装中です。
+
+Intake/計画、実装、安全性、delivery、recovery、最終監査にそれぞれ責任を持つエージェントを割り当てます。Review は security/correctness、quality、runtime/E2E 再現、blast radius の4つの独立エージェントへ分岐し、その後にだけ収束します。
+
+<p align="center"><img src="../assets/simplicio-loop-stage-agents-reporting-2026.webp" alt="simplicio-loop の段階別エージェントと work tracker コメント" width="920" /></p>
+
+```mermaid
+flowchart LR
+  P["Intake + 計画エージェント"] --> I["実装エージェント"] --> S["安全性エージェント"]
+  S --> R["4つの独立 review エージェント"] --> D["Delivery エージェント"] --> A["完了監査エージェント"]
+  D --> F["Feedback + recovery エージェント"] --> I
+  P -.-> E["イベント + receipts"]
+  I -.-> E
+  R -.-> E
+  A -.-> E
+  E --> G["GitHub コメント · 必須"]
+  E -. "接続済みの場合のみ" .-> O["Azure DevOps · Jira · Asana · Trello"]
+```
+
+**ポリシー:** GitHub に紐づく run では GitHub コメントが必須で、`COMPLETE` はリモート確認を待ちます。Azure DevOps、Jira、Asana、Trello は接続・認証・権限・対象解決が確認された場合のみコメントを受け取り、`NOT_CONNECTED` は明示的で非 blocking な skip です。契約とテスト: [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436)。
+<!-- stage-agents-roadmap:end -->
+
+## 🆕 v3.38.0 の新機能 — マルチエージェント協調リリース
+
+このリリースは、**複数のエージェントセッションが同時に同じリポジトリを触る**ときにだけ表面化する
+1つの難問に取り組みます——あるセッションは、何がすでにclaim済みで、何がマージ済みなのに未完了で、
+自分の手が空いたときに何をすべきか（兄弟セッションの作業を重複させない）をどう知るのか。以下は
+すべて、このリポジトリ自身のマルチセッション本番状態で構築・テスト・出荷されました。
+
+- **`scripts/coordinator.py`（決定コア）** — GitHubの現在状態（issueのclaimコメント＋マージ済みPR）
+  から、issueごとに1つの決定論的アクションを返します：`OWN`（未claim）、`CONTINUE_OWN`（自分が最新の
+  claimant）、`DEFER_ACTIVE_CLAIM`（兄弟セッションが最近claim済み——重複させない）、`RECLAIM_STALE`
+  （そのclaimが失効した——拾ってよい）、`VERIFY_PARTIAL`（このissueに対してPRはマージ済みだがissueは
+  まだ開いている——「何も起きていない」でも「完了した」でもなく実態を確認する）。2つのセッションが
+  接近して同じissueをclaimした瞬間に `duplicate_risk` も立てます——初日に実際に捕捉した例：2つの
+  セッションが同じissue向けに独立して2つの異なるファイル名でfinding collectorを作っていました。
+- **`scripts/pr_dod_review.py`（手が空いたときのレビュアー）** — 開いているissueが全部claim済みの
+  とき、最も価値ある一手は待つことではなく、開いているPRをこのリポジトリ自身の基準（7次元の
+  Definition of Done＋issueの凍結された受け入れ条件チェックリスト）に照らして点検することです。
+  `check --post` は雰囲気ベースの承認ではなく、機械的な項目別判定をPRコメントとして投稿します。
+  すでにマージ済みの「MVPスライス」PRに対して実行し、親epicの受け入れ条件17件中17件が未解決である
+  ことを正しく検出しました。
+- **`scripts/finding_collector.py`（耐久性のある重複排除された不具合メモリ、issue #466 phase 1）** —
+  同一の根本原因のバグは、どのエージェント・どの実行・どのタイムスタンプで見つかっても、重複ノイズを
+  生まず発生回数付きの1レコードに収束します（`simplicio.finding/v1`）。
+- **`references/multi-agent-coordination.md` ＋ `references/background-verification.md`** —
+  `SKILL.md` のトリアージ手順に直結する2つの新しい規約：issueに触れる前にcoordinatorの所有権を
+  確認する、全部claim済みなら待たずにPRをレビューする、遅いテスト／`claims_audit.py` はバックグラウンド
+  で走らせてターンの前進を止めない。
+- **本番で実際に2回捕まえて直した回帰** — 関数定義を静かに削除したPRが一度マージされ
+  （`loop_progress.py` 自身のselftestを壊した）、squash-mergeの競合で同じ壊れたコードが`main`へ
+  再度紛れ込みました。どちらも「PRの説明が緑」を信用するのではなく、実際にスクリプトを走らせて
+  発見しました——これこそ `coordinator.py` と `pr_dod_review.py` が存在する理由です。
+- **v3.37.0 の Portable Stage Agents epic（#422–#436）からの継続** — 段階ごとの具体的なエージェント、
+  全15ランタイムでの契約／レシート整合性を証明する適合スイート、`simplicio-runtime` の必須バインド昇格。
+- **テストスイートが231ファイル（192から増加）** へ成長、`scripts/claims_audit.py` はこのサイクルの
+  すべてのマージで14/14を維持。
+
+**開発者にとっての意味：** 同じリポジトリに対して複数セッション／複数マシンで `simplicio-loop` を
+走らせているなら、実際に起きる2つの失敗モード——2つのエージェントが同じ作業を静かにやり直すこと、
+そして「完了」PRがマージされたのに実issueが部分的にしか解決されていないこと——から機械的に守られる
+ようになりました。詳細は [`CHANGELOG.md`](../CHANGELOG.md) を参照してください。
+
+---
+
 ## ⚡ TL;DR
 
 **simplicio-loop** はランタイム非依存の**スーパープラグイン**です——自律的にループする
@@ -116,8 +184,8 @@
 ## 📘 公式ケイパビリティ記録
 
 `simplicio-loop` が提供するものの完全かつ公式な一覧です——以下のすべての機能は**実在し、実行可能で、
-テスト済み**です（`python3 scripts/check.py`：claims-audit 4/4 ＋ 28テスト）。各項目は対応する詳細
-セクションとワーカーへのリンクを持ちます。
+テスト済み**です（`python3 scripts/check.py`：claims-audit 14/14 ＋ 231ファイルの2,544テスト）。
+各項目は対応する詳細セクションとワーカーへのリンクを持ちます。
 
 | 機能 | 何をするか | 証明／ワーカー | 詳細 |
 |---|---|---|---|
@@ -126,6 +194,9 @@
 | 🔒 **フェイルクローズの安全ゲート**（`action_gate`） | force-push、履歴の書き換え、大量削除、破壊的なDDL、インフラの解体、シークレットを含むコミット／プッシュを**機械的にブロック**する `PreToolUse`／git-pre-push フック——Step 5 を散文ではなく実行可能にしたもの | `hooks/action_gate.py` · `selftest` 15/15 | [§ Safety](#-safety-non-negotiable) |
 | 🔬 **ローカル検証** | テストスイート（ワーカーのselftest＋エビデンスゲートでの終了を証明する**ループドライバのe2e**）＋**claims-audit**（参照されるスクリプトが存在 · カウントが一貫 · `_bundle ≡ source`）——すべてローカル、**有料CIなし** | `scripts/check.py` · `scripts/claims_audit.py` · `tests/` | [§ Tests & local checks](#-tests--local-checks-no-paid-ci) |
 | ✅ **誠実な節約** | 節約の行は**エビデンスゲート付きで、必須ではない**ものになった——数値は計測されたレシート（clamp／signatures／cache／`deterministic_edit`／ledger）がある場合にのみ表示される；決して捏造しない | token-economy contract | [§ Token economy](#-token-economy) |
+| 🤝 **マルチエージェントコーディネータ**（`coordinator.py`） | 生のclaimコメント＋マージ済みPRから、issueごとに `OWN`／`CONTINUE_OWN`／`DEFER_ACTIVE_CLAIM`／`RECLAIM_STALE`／`VERIFY_PARTIAL` を決定し、2セッションが同じ作業を重複させない | `scripts/coordinator.py` · `selftest` 10/10 | [§ v3.38.0 の新機能](#-v3380-の新機能--マルチエージェント協調リリース) |
+| 🕵️ **PR DoD/AC レビュアー**（`pr_dod_review`） | 全issueがclaim済みのとき、開いているPRを7次元のDefinition of Done＋issue自身の受け入れ条件チェックリストに照らしてレビューする——雰囲気ではなく機械的な判定 | `scripts/pr_dod_review.py` · `selftest` 13/13 | [§ v3.38.0 の新機能](#-v3380-の新機能--マルチエージェント協調リリース) |
+| 🐞 **Finding collector**（`finding_collector`） | フィンガープリント付きで重複排除された不具合メモリ——同一の根本原因バグは何エージェント／何回の実行で見つかっても発生回数付きの1レコードに収束する | `scripts/finding_collector.py` · `selftest` 9/9 | [§ v3.38.0 の新機能](#-v3380-の新機能--マルチエージェント協調リリース) |
 
 2つのループ**モード**が終了を明示します。**converge**（単一のハードタスク——エビデンスゲートを通った
 `<promise>` またはストールのエスカレーションで終了）と **drain**（キュー——ソース再クエリがKラウンド
@@ -137,9 +208,9 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🧠 The 11 skills & accelerators
+## 🧠 The 7 skills + 5 accelerators
 
-オーケストレーターの中核＋5つのサテライト＋5つのアクセラレーター／インテグレーション。各サテライトは
+オーケストレーターの中核＋6つのサテライト＋5つのアクセラレーター／インテグレーション。各サテライトは
 **オプション**です——読み込まれていれば、オーケストレーターはそこに委譲し（より豊かで、より安価）、
 なければインラインプロトコルが作業の100%をカバーします。アクセラレーターは**自動検出**されます——
 あれば使われ、なければLLMフォールバックになります。
@@ -152,11 +223,12 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 | 4 | 🔥 **simplicio-review** | [thermos](https://github.com/cursor/plugins/tree/main/thermos) | 別々のルーブリックでの並列敵対的レビュー → 重複排除済み判定 | 品質ゲート |
 | 5 | 🗜️ **simplicio-compress** | [caveman](https://github.com/JuliusBrussee/caveman) | 出力＋メモリの圧縮、フェイルクローズの `transform_guard` | 40〜60%削減 |
 | 6 | 🎓 **simplicio-learn** | [teaching](https://github.com/cursor/plugins/tree/main/teaching) | 実行後の振り返り → 耐久性のある重複排除済みの教訓をメモリへ | 実行ごとに賢く |
-| 7 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | ナレッジグラフによるorient：セマンティック検索、ガイドツアー、依存グラフ | **L0 ゼロトークン** |
-| 8 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | セッション分析、コスト追跡、停滞セッションの発見 | **L1** SQLのみ |
-| 9 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | ループターン間のKVキャッシュ — ローカルモデルでTTFTを40〜70%削減 | GPU時間 ↓ |
-| 10 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py`（ネイティブ、stdlibのみ） | 透過的なキャプチャプロキシ：実プロバイダへ転送し、計測＋決定論的に圧縮し、`proxy_savings.json` を書き込む | **決定論的** |
-| 11 | 🎬 **video_evidence** | Playwright（既定） · [hyperframes](https://github.com/heygen-com/hyperframes)（依頼時） | UI変更が動作することの動く証明として**実際のセッションを録画**する（Playwright）；動画こそが成果物のときは hyperframes で**決定論的なキャプション付きMP4**の解説動画をレンダリングする | エビデンスのプロデューサー |
+| 7 | 🧪 **simplicio-autoresearch** | Karpathy autoresearch + ECC `autoresearch-agent` | 進化的なmutate/eval/keep-revertループ：yoolガードレール、gitで隔離されたブランチ、anti-Goodhart評価 | 自動最適化 |
+| 8 | 🧭 **Understand Anything** | [Egonex-AI](https://github.com/Egonex-AI/Understand-Anything) | ナレッジグラフによるorient：セマンティック検索、ガイドツアー、依存グラフ | **L0 ゼロトークン** |
+| 9 | 📊 **agentsview** | [kenn-io](https://github.com/kenn-io/agentsview) | セッション分析、コスト追跡、停滞セッションの発見 | **L1** SQLのみ |
+| 10 | ⚡ **LMCache** | [LMCache](https://github.com/LMCache/LMCache) | ループターン間のKVキャッシュ — ローカルモデルでTTFTを40〜70%削減 | GPU時間 ↓ |
+| 11 | 🗜️ **Simplicio capture engine** | `engine/simplicio_engine.py`（ネイティブ、stdlibのみ） | 透過的なキャプチャプロキシ：実プロバイダへ転送し、計測＋決定論的に圧縮し、`proxy_savings.json` を書き込む | **決定論的** |
+| 12 | 🎬 **video_evidence** | Playwright（既定） · [hyperframes](https://github.com/heygen-com/hyperframes)（依頼時） | UI変更が動作することの動く証明として**実際のセッションを録画**する（Playwright）；動画こそが成果物のときは hyperframes で**決定論的なキャプション付きMP4**の解説動画をレンダリングする | エビデンスのプロデューサー |
 
 各スキルは [`.claude/skills/`](../.claude/skills) 配下にあり、各アクセラレーターは
 `.claude/skills/simplicio-loop/references/` 配下にリファレンスドキュメントを持ちます（動画プロデューサー：
@@ -182,29 +254,43 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 
 ---
 
-## 🌐 11 runtimes, one protocol
+## 🌐 15 runtimes, one protocol — 3が保証・12がベストエフォート
 
 1つの汎用スキルコア＋1セットのフックが、あらゆるランタイムを駆動します。アダプタは薄い層です——
 ランタイムに*どこでスキルを読み込むか*、*どうループを起動するか*、*どうネイティブの高速性に
 バインドするか*を伝えるだけ。**スキルはランタイムを名指ししない。ランタイムがスキルを検出する。**
+ネイティブ `simplicio-runtime` MCPバインドは**すべてのランタイムで必須**です（見つからない／到達
+できない場合はループがBLOCKします）——ホストごとの設定は
+[`docs/MCP_SETUP.md`](../docs/MCP_SETUP.md) を参照してください。
 
-| ランタイム | スキルの読み込み | ループの駆動 | ネイティブバインド |
+### Tier 1 — 保証（コミットごとにゲート）
+
+| ランタイム | スキルの読み込み | ループの駆動 | ネイティブバインド（MCP） |
 |---|---|---|---|
-| **Claude Code** | `.claude/skills/` + plugin | `Stop` フック | MCP |
-| **Codex** | `AGENTS.md` | self-paced | MCP / adapter |
-| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | MCP |
-| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | MCP / rules |
-| **Antigravity** | rules / `AGENTS.md` | self-paced | MCP |
-| **Kiro** | `.kiro/steering/` | specs | MCP |
-| **OpenCode** | `AGENTS.md` | self-paced | MCP |
-| **Gemini** | `GEMINI.md` | self-paced | MCP / adapter |
-| **Aider** | `CONVENTIONS.md` | self-paced | —（LLMフォールバック） |
-| **Simplicio Agent** | native recall | native loop | **native** |
-| **OpenClaw** | plugin SDK | native scheduler | **native** |
+| **Claude Code** | `.claude/skills/` + plugin | `Stop` フック | 必須 |
+| **Codex** | `AGENTS.md` | self-paced | 必須 |
+| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | 必須 |
 
-約束はこうです。**同じプロトコル、同じゲート、同じ安全性を11すべてで——違うのは速度だけ。**
-`orient_clamp.py`（トークンエコノミー）は配線ゼロであらゆるランタイムで動きます。
-[`adapters/MATRIX.md`](../adapters/MATRIX.md) を参照してください。
+### Tier 2 — ベストエフォート（コントリビューション歓迎、ゲートなし）
+
+| ランタイム | スキルの読み込み | ループの駆動 | ネイティブバインド（MCP） |
+|---|---|---|---|
+| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | 必須 |
+| **Antigravity** | rules / `AGENTS.md` | self-paced | 必須 |
+| **Kiro** | `.kiro/steering/` | specs | 必須 |
+| **OpenCode** | `AGENTS.md` | self-paced | 必須 |
+| **Gemini**（CLI/Code Assist） | `GEMINI.md` | self-paced | 必須 |
+| **Kimi** | 埋め込み規約 | self-paced | 必須（ベストエフォート） |
+| **Qwen**（Code/CLI） | `AGENTS.md` 相当 | self-paced | 必須（ベストエフォート） |
+| **DeepSeek** | 埋め込み規約 | self-paced | 必須（ベストエフォート） |
+| **Aider** | `CONVENTIONS.md` | self-paced | 必須（LLMフォールバック） |
+| **Simplicio Agent**（旧Hermes） | native recall | native loop | **native** |
+| **OpenClaw** | plugin SDK | native scheduler | **native** |
+| **Orca** | インナーエージェント＋スキルレジストリ経由 | inner hook / 予約自動化 | レジストリ／インナーエージェント設定 |
+
+約束はこうです。**同じプロトコル、同じゲート、同じ安全性を15すべてで——Tier 1は機械的に検証、
+Tier 2はベストエフォート。** `orient_clamp.py`（トークンエコノミー）は配線ゼロであらゆるランタイムで
+動きます。[`adapters/MATRIX.md`](../adapters/MATRIX.md) を参照してください。
 
 ---
 
@@ -486,6 +572,27 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 
 ---
 
+## ⭐ スター履歴
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wesleysimplicio/simplicio-loop&type=Date)](https://star-history.com/#wesleysimplicio/simplicio-loop&Date)
+
+---
+
 ## 📄 License
 
 MIT
+
+<!-- simplicio-loop:github-comment-coordination:v1 -->
+## 🌐 GitHub コメントによるランタイム間の協調
+
+`simplicio-loop` は Claude Code、Codex、Cursor、Gemini、Hermes で同時に実行できます。GitHub Issue に紐付いた run は、正規コメントへ claim、計画、進捗、証拠、PR、完了の更新を冪等に投稿します。別のマシン上のエージェントも共有ローカルファイルシステムなしで同じ GitHub スレッドを使って協調できます。
+
+```powershell
+pwsh scripts/install.ps1 claude -Global
+pwsh scripts/install.ps1 codex -Global
+pwsh scripts/install.ps1 cursor -Global
+pwsh scripts/install.ps1 gemini -Global
+pwsh scripts/install.ps1 hermes -Global   # simplicio_agent の旧名
+```
+
+ローカルキュー、lease、worktree、heartbeat、証拠は各マシンで有効です。GitHub コメントは共有調整情報の投影であり、Jira、Azure DevOps、その他の tracker には投影しません。GitHub が使えなくても loop はローカルで動作し、同期失敗を記録します。各 runtime に GitHub アクセスを与え、同じ `source_issue` に紐付けてください。

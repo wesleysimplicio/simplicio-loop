@@ -6,7 +6,7 @@ the code. Deterministic, stdlib-only, no network. Exits 0 when every check passe
 so it can gate a commit/push (`scripts/check.py`, or a git pre-push hook). NOT a GitHub Action;
 runs locally, free.
 
-Ten checks:
+Thirteen checks:
   1. referenced-scripts-exist  Every `scripts/<name>.py` mentioned in the docs actually exists.
   2. extension-point-count      Every "<N> extension points / named (binding) points" figure agrees
                                 with EACH OTHER *and* with the actual row count of the extension-points
@@ -32,7 +32,10 @@ Ten checks:
                                 runtime) for this fast local gate.
   8. quantitative-claims        Every quantitative number in README/SKILLs has a corresponding entry
                                 in `scripts/claims_manifest.py` with a receipt or "unverified" label.
-                                Unknown/missing numbers => check red.
+                                Unknown/missing numbers => check red. Any claim marked "verified"
+                                must additionally cite a receipt bound to a REAL commit reachable
+                                in this repo's git history (`commit` + `generated_at`/`created_at`
+                                fields) — a fabricated or foreign-commit receipt is rejected (#294).
   9. prose-commands-valid       Every doc-cited worker invocation (flags + verbs) is validated against
                                 the worker's real CLI via `--describe-cli`. Workers that emit
                                 `--describe-cli` JSON are checked for flag existence; divergences are
@@ -41,6 +44,14 @@ Ten checks:
                                 `.claude/skills/simplicio-tasks/` are byte-identical for every file
                                 that exists in BOTH `references/` trees (the tasks tree is a
                                 deliberate subset; `SKILL.md` differs by design and is excluded).
+  11. turn-header-format        `loop_progress.py render --turn-header` output still matches the
+                                documented contract shape.
+  12. install-mutations-doc     `docs/INSTALL_MUTATIONS.md` matches its generator.
+  13. canonical-manifest        `scripts/canonical_manifest.py check` (#294 AC6/AC7): version
+                                (release_manifest), skill count, and CHANGELOG.md's latest
+                                released version all agree, AND the runtime/adapter count in
+                                README/adapters/MATRIX.md agrees with the actual `adapters/` tree
+                                (legacy compat shims collapsed to their canonical runtime).
 
 Usage:
     python3 scripts/claims_audit.py [--json] [--only 1,2,3,4]
@@ -50,6 +61,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -65,6 +77,12 @@ from mirror_manifest import LEAN_SCRIPTS, LEAN_TESTS  # noqa: E402 — single so
 from claims_manifest import CLAIMS, extract_claims, QUANT_RE  # noqa: E402 — quantitative claims (#96)
 
 DOC_GLOBS = ["README.md", "AGENTS.md", "CLAUDE.md", "INSTALL.md", "PYPI.md"]
+# CHANGELOG.md is deliberately NOT in DOC_GLOBS: it is a historical log whose entries correctly
+# describe counts as they were AT THE TIME of that change (e.g. "6 skills" in an old entry, now
+# 7) — checking it against skill-count/extension-point-count checks 2/6 would false-positive on
+# every entry that predates the current count. Its version-drift exposure (#294 AC7) is instead
+# checked narrowly and correctly in `scripts/canonical_manifest.py` (latest released entry vs
+# `pyproject.toml`, not a skill/extension-point count comparison).
 DOC_DIRS = [os.path.join(".claude", "skills")]
 EXTENSION_POINTS_DOC = os.path.join(
     REPO, ".claude", "skills", "simplicio-tasks", "references", "extension-points.md")
@@ -92,6 +110,7 @@ SELFTEST_SCRIPTS = [
     "scripts/repo_conventions.py",
     "scripts/task_anchor.py",
     "scripts/task_backlog.py",
+    "scripts/test_infra_probe.py",
     "scripts/pr_evidence.py",
     "scripts/flow_audit.py",
     "scripts/impact_audit.py",
@@ -108,13 +127,38 @@ SELFTEST_SCRIPTS = [
     "scripts/check_e2e_installed.py",
     "scripts/clean_env_contract.py",
     "scripts/completion_oracle.py",
+    "scripts/quality_matrix.py",
+    "scripts/planning_gate.py",
+    "scripts/github_lifecycle.py",
     "scripts/mirror_parity.py",
     "scripts/run_state.py",
     "scripts/claims_manifest.py",
     "scripts/fan_out.py",
     "scripts/worktree_queue.py",
+    "scripts/worktree_cleanup.py",
     "scripts/schema_verify.py",
+    "scripts/loop_progress.py",
     "hooks/action_gate.py",
+    "scripts/repository_budget.py",
+    "scripts/repo_history_scan.py",
+    "scripts/history_migration_plan.py",
+    "scripts/canonical_manifest.py",
+    "scripts/package_content_check.py",
+    "scripts/test_categories.py",
+    "scripts/stage_report.py",
+    "scripts/completion_auditor.py",
+    "scripts/review_panel.py",
+    "scripts/stage_coordinator.py",
+    "scripts/finding_collector.py",
+    "scripts/coordinator.py",
+    "scripts/evolution.py",
+    "scripts/agent_replication.py",
+    "scripts/workflow_topology.py",
+    "scripts/pr_dod_review.py",
+    "scripts/release_check.py",
+    "scripts/operator_check.py",
+    "scripts/supervisor_enforcement.py",
+    "scripts/component_release.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a
 # `selftest`-shaped function/subcommand that isn't the worker's own self-check, or a script this
@@ -349,12 +393,69 @@ def check_adapter_contract():
     return ok, ("adapter install-contract verified (claude)" if ok else "; ".join(detail[-8:]))
 
 
+def _git_commit_exists(sha, repo_root):
+    """True if `sha` resolves to a real, reachable commit object inside `repo_root`'s git
+    history. A fabricated hash, a hash from an unrelated repo, or a non-hex string all fail this
+    (#294 step 4/step 5: 'claim quantitativo com receipt de outro commit/versão é rejeitado')."""
+    if not sha or not re.match(r"^[0-9a-fA-F]{7,40}$", str(sha)):
+        return False
+    # Retry on a transient process-spawn error (observed on Windows as `OSError: [WinError 50]`
+    # under rapid subprocess creation) — a host quirk, not a verdict on the commit itself.
+    for attempt in range(3):
+        try:
+            r = subprocess.run(["git", "cat-file", "-e", str(sha) + "^{commit}"],
+                               capture_output=True, text=True, cwd=repo_root)
+            return r.returncode == 0
+        except OSError:
+            if attempt == 2:
+                return False
+            import time as _time
+            _time.sleep(0.05 * (attempt + 1))
+    return False
+
+
+def validate_receipt(receipt_path, repo_root=REPO):
+    """A receipt backing a 'verified' claim must be a real artifact bound to THIS repo's git
+    history, not an arbitrary/copied JSON blob (#294 step 4: 'claims quantitativos com receipt,
+    data, commit e validade').
+
+    Required fields:
+      - `commit`:  a git commit sha that actually resolves inside `repo_root`'s object db.
+      - `generated_at` (or `created_at`): an ISO-ish timestamp string.
+
+    Returns (ok, reason). A receipt whose `commit` doesn't resolve to a real reachable commit
+    (fabricated, foreign-repo, or stale-format hash) is rejected — this is the mechanical answer
+    to "receipt de outro commit/versão é rejeitado".
+    """
+    try:
+        with open(receipt_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        return False, "receipt %s: unreadable/invalid JSON (%s)" % (receipt_path, e)
+    if not isinstance(data, dict):
+        return False, "receipt %s: not a JSON object" % receipt_path
+    commit = data.get("commit")
+    ts = data.get("generated_at") or data.get("created_at")
+    if not commit:
+        return False, "receipt %s: missing 'commit' field" % receipt_path
+    if not ts:
+        return False, "receipt %s: missing 'generated_at'/'created_at' timestamp" % receipt_path
+    if not _git_commit_exists(commit, repo_root):
+        return False, ("receipt %s: commit '%s' does not resolve to a real commit reachable in "
+                        "this repo's history — receipt from another commit/version rejected" %
+                        (receipt_path, commit))
+    return True, "receipt %s bound to real commit %s" % (receipt_path, commit)
+
+
 def check_quantitative_claims():
-    """#96: every quantitative number in README/SKILLs must cite a receipt or be 'unverified'.
+    """#96/#294: every quantitative number in README/SKILLs must cite a receipt or be
+    'unverified', and any claim marked 'verified' must cite a receipt genuinely bound to this
+    repo's history (not a fabricated or foreign-commit artifact).
 
     Checks:
       a) All claims in CLAIMS manifest have valid status.
       b) Unknown quantitative numbers in scanned docs are flagged.
+      c) Any claim marked 'verified' has a receipt that validates (real commit + timestamp).
     """
     failures = []
     # a) Manifest integrity
@@ -365,6 +466,13 @@ def check_quantitative_claims():
             rpath = os.path.join(REPO, c["receipt"])
             if not os.path.exists(rpath):
                 failures.append("claim %s: receipt missing: %s" % (c["id"], c["receipt"]))
+                continue
+            # c) a claim asserting "verified" must have a receipt genuinely bound to this repo's
+            # history — a stale/foreign/fabricated commit can't back a "measured" claim.
+            if c["status"] == "verified":
+                r_ok, r_reason = validate_receipt(rpath, REPO)
+                if not r_ok:
+                    failures.append("claim %s: %s" % (c["id"], r_reason))
     # Manifest must not be empty
     if not CLAIMS:
         failures.append("claims_manifest.CLAIMS is empty — no claims registered")
@@ -511,6 +619,96 @@ def check_skill_pair_parity():
                 if ok else "skill-pair drift: %s" % ", ".join(drift))
 
 
+def check_turn_header_format():
+    """#304 § 2.2 — the turn-header format `render --turn-header` actually prints must match the
+    frozen shape cited in `references/progress-feedback.md`. Prevents doc<->code drift on the
+    contract the user reads every turn: adulterating either side alone makes this check fail."""
+    doc_path = os.path.join(REPO, ".claude", "skills", "simplicio-loop", "references",
+                            "progress-feedback.md")
+    try:
+        with open(doc_path, encoding="utf-8") as f:
+            doc = f.read()
+    except OSError:
+        return False, "progress-feedback.md not found"
+    if "fase F1 · etapa 5/9 operate · item T3" not in doc:
+        return False, "progress-feedback.md no longer cites the frozen turn-header example"
+
+    header_re = re.compile(
+        r"^(MEASURED|UNVERIFIED)\|\[simplicio-loop\] fase F\d+ · etapa \d+/\d+ \S+ · "
+        r"item \S+ \(\d+/\d+ itens\) · ACs \S+ · \d+% geral · iter \d+(/\d+)?$"
+    )
+    with tempfile.TemporaryDirectory(prefix="claims_audit_turnheader_") as tmp:
+        anchor_path = os.path.join(tmp, "anchor.json")
+        backlog_path = os.path.join(tmp, "backlog.jsonl")
+        with open(anchor_path, "w", encoding="utf-8") as f:
+            json.dump({"item": "T3", "criteria": [
+                {"id": "AC1", "status": "done"}, {"id": "AC2", "status": "pending"},
+                {"id": "AC3", "status": "pending"}]}, f)
+        with open(backlog_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"kind": "master", "goal": "g"}) + "\n")
+            for i, st in enumerate(["done", "done", "running", "ready", "ready"], start=1):
+                f.write(json.dumps({"kind": "item", "id": "T%d" % i, "status": st}) + "\n")
+        env = dict(os.environ)
+        env.update({"SIMPLICIO_PROGRESS_DIR": tmp, "SIMPLICIO_ANCHOR_FILE": anchor_path,
+                   "SIMPLICIO_BACKLOG_FILE": backlog_path})
+        script = os.path.join(REPO, "scripts", "loop_progress.py")
+        subprocess.run([sys.executable, script, "emit", "--step", "operate", "--status", "begin",
+                       "--item", "T3"], capture_output=True, text=True, encoding="utf-8",
+                      errors="replace", cwd=tmp, env=env, stdin=subprocess.DEVNULL)
+        r = subprocess.run([sys.executable, script, "render", "--turn-header"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           cwd=tmp, env=env, stdin=subprocess.DEVNULL)
+    line = (r.stdout or "").strip()
+    if not header_re.match(line):
+        return False, "render --turn-header output %r no longer matches the documented shape" % line
+    return True, "turn-header format matches the documented contract"
+
+
+def check_install_mutations_doc_generated():
+    """#293 §7: `docs/INSTALL_MUTATIONS.md` is generated from `scripts/gen_install_mutations_doc.py`,
+    not hand-maintained — this re-renders it and fails if the file on disk differs by a byte, the
+    same drift-check contract as `check_bundle_parity()`/`check_plugin_sync()` above."""
+    generator = os.path.join(REPO, "scripts", "gen_install_mutations_doc.py")
+    if not os.path.exists(generator):
+        return False, "missing scripts/gen_install_mutations_doc.py"
+    r = subprocess.run([sys.executable, generator, "--check"], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", cwd=REPO, stdin=subprocess.DEVNULL)
+    if r.returncode != 0:
+        return False, (r.stdout + r.stderr).strip() or "docs/INSTALL_MUTATIONS.md has drifted"
+    return True, "docs/INSTALL_MUTATIONS.md matches its generator"
+
+
+def check_canonical_manifest():
+    """#294 AC6/AC7: `scripts/canonical_manifest.py check` — the single canonical manifest that
+    ties version (release_manifest), skill count, runtime/adapter count, and CHANGELOG.md version
+    drift together. Existing checks 2/6 already cover extension-point/skill-count drift against
+    README/AGENTS/CLAUDE/INSTALL/PYPI/CHANGELOG; this check adds the runtime-count cross-check and
+    the CHANGELOG-vs-pyproject version cross-check no other check owned."""
+    path = os.path.join(REPO, "scripts", "canonical_manifest.py")
+    if not os.path.exists(path):
+        return False, "missing scripts/canonical_manifest.py"
+    r = subprocess.run([sys.executable, path, "check"], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", cwd=REPO, stdin=subprocess.DEVNULL)
+    ok = r.returncode == 0
+    detail = [ln for ln in (r.stdout or r.stderr or "").splitlines() if ln.strip()]
+    return ok, ("; ".join(detail) if detail else ("canonical manifest ready" if ok else "canonical-manifest check failed"))
+
+
+def check_contract_parity():
+    """#458 item 2: the canonical stage-agents contracts tree (`contracts/stage-agents/v1/`)
+    must be byte-identical to its pip-bundle mirror (`simplicio_loop/_contracts/stage-agents/v1/`).
+    `scripts/sync_plugin.py --check-contracts` is the source of truth for what 'in sync' means."""
+    path = os.path.join(REPO, "scripts", "sync_plugin.py")
+    if not os.path.exists(path):
+        return False, "missing scripts/sync_plugin.py"
+    r = subprocess.run([sys.executable, path, "--check-contracts"],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", cwd=REPO, stdin=subprocess.DEVNULL)
+    ok = r.returncode == 0
+    detail = [ln for ln in (r.stdout or r.stderr or "").splitlines() if ln.strip()]
+    return ok, ("contracts ≡ source (stage-agents/v1)" if ok else "; ".join(detail[-6:]))
+
+
 CHECKS = [
     ("1 referenced-scripts-exist", check_scripts_exist),
     ("2 extension-point-count", check_extension_count),
@@ -522,6 +720,10 @@ CHECKS = [
     ("8 quantitative-claims", check_quantitative_claims),
     ("9 prose-commands-valid", check_prose_commands),
     ("10 skill-pair-parity", check_skill_pair_parity),
+    ("11 turn-header-format", check_turn_header_format),
+    ("12 install-mutations-doc-generated", check_install_mutations_doc_generated),
+    ("13 canonical-manifest", check_canonical_manifest),
+    ("14 contract-parity", check_contract_parity),
 ]
 
 

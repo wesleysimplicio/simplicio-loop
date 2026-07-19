@@ -10,7 +10,7 @@ unattended, reachable from WhatsApp/Slack/Discord/Telegram/etc.
 bash scripts/install.sh openclaw
 ```
 
-The installer places the 6 skills under OpenClaw's skills tree and registers a plugin that maps
+The installer places the 7 skills under OpenClaw's skills tree and registers a plugin that maps
 the OpenClaw SDK extension points (approval-*, channel-*, agent-*) onto the simplicio
 contract — notably `notify`/`human_gate` (async approvals over a chat channel) and `watcher`
 (the gateway's scheduler).
@@ -39,3 +39,9 @@ reports the MACHINE tier.
 
 Message the bot on any connected channel: `/simplicio-tasks finish all the open issues`. Progress
 digests and approval prompts come back on the same channel.
+
+## Progresso do run
+
+Native scheduler (N1-equivalent): call `loop_progress.py emit`/`render --turn-header` at the
+plugin SDK's own tick points, same contract as any other extension point. Universal fallback (N3):
+open `.orchestrator/loop/PROGRESS.md` (auto-regenerated every turn).

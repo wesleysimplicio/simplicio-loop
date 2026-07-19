@@ -2,8 +2,9 @@
 """Fail-closed stack preflight for the Task-to-Delivery boundary.
 
 The runner can be exercised with local fakes, but a real promotion must prove that
-the three external operators are the expected identities and expose compatible
-capabilities.  This command performs that check without importing an operator
+the two core external operators are the expected identities and expose compatible
+capabilities. The optional native runtime is reported separately, never promoted to
+a core-loop blocker. This command performs those checks without importing an operator
 in-process and emits one stable receipt suitable for CI or a run journal.
 
 Usage::
@@ -27,6 +28,20 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+
+def _emit_progress(status: str, outcome: str | None = None, detail: str = "") -> None:
+    """Fail-open progress-feedback hook (#299) — never raises, never blocks preflight itself."""
+    try:
+        import loop_progress
+        loop_progress.emit_event("preflight", status=status, outcome=outcome, detail=detail,
+                                 source="preflight.py")
+    except Exception:
+        pass
 
 SCHEMA = "simplicio.preflight/v1"
 MINIMUMS = {
@@ -158,18 +173,35 @@ def _probe_runtime(cwd: Path) -> Dict[str, Any]:
 
 
 def build_report(cwd: Path) -> Dict[str, Any]:
+    _emit_progress("begin", detail="operadores: verificação/atualização")
     mapper = _probe_component("simplicio-mapper", "simplicio-mapper", cwd,
                               ("--version", "--json"), ("--help",), MAPPER_CAPABILITIES)
     devcli = _probe_component("simplicio-dev-cli", "simplicio-dev-cli", cwd,
                               ("--version", "--json"), ("task", "--help"), DEVCLI_CAPABILITIES)
     runtime = _probe_runtime(cwd)
+    runtime_available = (
+        bool(runtime.get("identity_ok"))
+        and bool(runtime.get("version_ok"))
+        and bool(runtime.get("runtime_contract_ok"))
+        and int(runtime.get("returncode", 1)) == 0
+    )
+    runtime["required"] = False
     components = [mapper, devcli, runtime]
     ready = all(
         bool(item.get("identity_ok")) and bool(item.get("version_ok")) and bool(item.get("capabilities_ok", True))
-        and (item is not runtime or bool(item.get("runtime_contract_ok")))
         and int(item.get("returncode", 1)) == 0
-        for item in components
+        for item in (mapper, devcli)
     )
+    if ready:
+        detail = "; ".join("%s %s" % (item["name"], item["version"]) for item in components)
+        if not runtime_available:
+            detail += "; simplicio-runtime unavailable (runtime integrations skipped)"
+        _emit_progress("end", outcome="pass", detail=detail)
+    else:
+        missing = [item["name"] for item in components
+                  if not (item.get("identity_ok") and item.get("version_ok"))]
+        _emit_progress("blocked", outcome="blocked",
+                       detail="missing operator %s" % (", ".join(missing) or "unknown"))
     return {
         "schema": SCHEMA,
         "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -177,6 +209,8 @@ def build_report(cwd: Path) -> Dict[str, Any]:
         "ready": ready,
         "status": "READY" if ready else "BLOCKED",
         "components": components,
+        "runtime_available": runtime_available,
+        "degraded_features": [] if runtime_available else ["runtime-integration"],
     }
 
 

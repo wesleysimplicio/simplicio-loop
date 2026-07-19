@@ -25,16 +25,44 @@ Exit conditions unchanged (evidence-gated promise, cap, STOP).
 
 ## Native bind — MCP (REQUIRED)
 
-`simplicio-runtime` native bind is REQUIRED on Kiro, not optional. `simplicio install
---global` (run automatically by `scripts/install.sh kiro`) writes `.kiro/settings/mcp.json`:
+`simplicio-runtime` native binding is **REQUIRED** on Kiro — a missing/unreachable bind BLOCKS
+the loop preflight (CLAUDE.md § Hooks). `simplicio install --global` writes
+`.kiro/settings/mcp.json`:
 
 ```json
 { "mcpServers": { "simplicio": { "command": "simplicio", "args": ["serve", "--mcp", "--stdio"] } } }
 ```
 
-Verify with `simplicio doctor --json` before relying on the orchestrator.
+Use `simplicio doctor --json` to confirm the bind.
+
+## MCP config
+
+- **Config file:** `.kiro/settings/mcp.json` (project/workspace scope, AWS Kiro's own path), or
+  the equivalent global path under the OS user config dir for a user-level install.
+- **Snippet:**
+
+```json
+{
+  "mcpServers": {
+    "simplicio": {
+      "command": "simplicio",
+      "args": ["serve", "--mcp", "--stdio"],
+      "cwd": "/path/to/your/repo"
+    }
+  }
+}
+```
+
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration`, or Kiro's MCP panel in
+  the IDE (lists connected servers). Tier: **best-effort** — Kiro is Tier 2 (documented, installer
+  writes the file, but not run under the gated per-commit sweep).
 
 ## Use
 
 Create a spec or chat: `/simplicio-tasks finish all the open issues`. The steering file makes
 Kiro follow the protocol and honor the safety gates.
+
+## Progresso do run
+
+Self-paced (N2, via specs): each tick echoes the turn-header. Universal fallback (N3): open
+`.orchestrator/loop/PROGRESS.md` in the editor (auto-regenerated every turn).

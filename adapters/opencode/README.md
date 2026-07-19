@@ -29,18 +29,47 @@ spindle handoff, or explicit STOP.
 
 ## Native bind — MCP (REQUIRED)
 
-`simplicio-runtime` native bind is REQUIRED on OpenCode, not optional. `scripts/install.sh
-opencode` writes this to `opencode.json` for you (`merge_opencode_mcp` in
-`scripts/install_lib.py`):
+`simplicio-runtime` native binding is **REQUIRED** on OpenCode — a missing/unreachable bind
+BLOCKS the loop preflight (CLAUDE.md § Hooks). Add this to `opencode.json`:
 
 ```json
 { "mcp": { "simplicio": { "type": "local", "command": ["simplicio", "serve", "--mcp", "--stdio"] } } }
 ```
 
-Verify with `simplicio doctor --json` before relying on the orchestrator.
+Use `simplicio doctor --json` to confirm the bind.
+
+## MCP config
+
+- **Config file:** `opencode.json` (or `opencode.jsonc`) at the repo root, under the **`mcp`**
+  key — OpenCode's schema uses `type: "local"` + a `command` array, not `command`/`args` split
+  like most other hosts.
+- **Snippet:**
+
+```json
+{
+  "mcp": {
+    "simplicio": {
+      "type": "local",
+      "command": ["simplicio", "serve", "--mcp", "--stdio"],
+      "environment": {}
+    }
+  }
+}
+```
+
+  (OpenCode inherits the working directory it was launched from; run `opencode` from the target
+  repo, or set `environment`/`cwd` per your OpenCode version's config reference.)
+- **Verify:** `simplicio doctor --json | grep -A2 mcp-host-registration`, or `opencode mcp list`
+  if your version ships that subcommand. Tier: **best-effort** — OpenCode is Tier 2 (provider-
+  agnostic MCP support is documented upstream but not mechanically gated here).
 
 ## Use
 
 ```
 opencode run "/simplicio-tasks finish all the open issues"
 ```
+
+## Progresso do run
+
+Self-paced (N2): the tick echoes the turn-header. Universal fallback (N3, works with any config):
+`watch -n5 cat .orchestrator/loop/PROGRESS.md`.

@@ -12,8 +12,17 @@ import time
 import webbrowser
 import json
 from pathlib import Path
+try:
+    from scripts import release_manifest as _release_manifest
+except Exception:  # pragma: no cover - import shim for bundled scripts
+    _release_manifest = None
+try:
+    from . import prototype_cli as _prototype_cli
+except Exception:  # pragma: no cover - keeps `simplicio-loop` importable if this is missing
+    _prototype_cli = None
 
 from . import __version__
+from . import delivery
 from .drain import (
     SCHEMA as DRAIN_SCHEMA,
     DrainReceiptError,
@@ -44,6 +53,8 @@ from .ops_ledger import (
 )
 from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
+from .delivery import DELIVERY_ORDER
+from .map_service_status import default_status_path, load_status_file
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -186,8 +197,13 @@ def plan(task_path: str, out_path: str) -> int:
     return 0
 
 
-def run(repo: str, task_path: str, delivery: str, max_iterations: int) -> int:
-    payload = conduct_run(repo, task_path, delivery, max_iterations)
+def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int) -> int:
+    try:
+        delivery_target = delivery.normalize_delivery_target(delivery_arg)
+    except delivery.DeliveryTargetError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    payload = conduct_run(repo, task_path, delivery_target, max_iterations)
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -199,10 +215,140 @@ def verify(repo: str, run_id: str) -> int:
     return 0 if payload["state"].get("phase") == "done" else 1
 
 
-def status(repo: str, run_id: str) -> int:
-    payload = read_status(repo, run_id)
-    print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
+def _render_status_text(payload: dict) -> str:
+    """Human-readable one-screen summary of a run status payload."""
+    state = payload.get("state") or {}
+    lines = ["simplicio-loop run status", ""]
+    run_dir = payload.get("run_dir", "")
+    if run_dir:
+        lines.append(f"run_dir: {run_dir}")
+    completion = state.get("completion") or {}
+    lines.append(f"phase: {state.get('phase', 'UNKNOWN')}")
+    lines.append(f"completion_tag: {completion.get('tag', 'UNVERIFIED')}")
+    coverage = completion.get("coverage")
+    if coverage:
+        lines.append(f"coverage: {coverage}")
+    delivery = state.get("delivery") or {}
+    lines.append(f"delivery_ready: {delivery.get('ready', False)}")
+    return "\n".join(lines) + "\n"
+
+
+def status(repo: str, run_id: str, as_json: bool = False, as_text: bool = False) -> int:
+    try:
+        payload = read_status(repo, run_id)
+    except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
+        payload = {"schema": "simplicio.status/v1", "status": "UNVERIFIED",
+                   "reason_code": "run_missing", "error": str(exc)}
+    # Default remains JSON (backwards-compatible). --text opts into the human summary.
+    if as_text and not as_json:
+        print(_render_status_text(payload))
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def map_status(repo: str, status_file: str, as_json: bool = False) -> int:
+    """Report cache hit/build/wait/invalidate counters from a real map-service session's
+    status file. Never fabricates a reading: a missing file is reported as blocked."""
+    path = Path(status_file) if status_file else default_status_path(repo)
+    try:
+        payload = load_status_file(path)
+    except (OSError, ValueError) as exc:
+        payload = None
+        error = str(exc)
+    else:
+        error = ""
+    if payload is None:
+        result = {
+            "schema": "simplicio.map-service-status/v1",
+            "status": "UNAVAILABLE",
+            "reason_code": "status_file_missing" if not error else "status_file_invalid",
+            "path": str(path),
+            "error": error,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 1
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        counters = payload.get("counters", {})
+        watchers = payload.get("watchers", {})
+        lines = [
+            "map-service status (" + str(path) + ")",
+            "  cache_hits:    " + str(counters.get("cache_hits", 0)),
+            "  builds:        " + str(counters.get("builds", 0)),
+            "  waits:         " + str(counters.get("waits", 0)),
+            "  invalidations: " + str(counters.get("invalidations", 0)),
+            "  watchers:      " + str(watchers.get("watchers", 0)),
+            "  pending:       " + str(watchers.get("pending", 0)),
+        ]
+        print("\n".join(lines))
+    return 0
+
+
+def preflight(repo: str, as_json: bool = False) -> int:
+    """Verify the core operators required by the loop and report runtime availability.
+
+    Returns exit 0 when all required operators are present, 1 otherwise. Always emits a
+    machine-readable JSON document (also when --json is omitted, for script consumption).
+    """
+    from .finding_router import route_finding as _route_finding
+
+    def _probe(name: str, cmd) -> dict:
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            ok = out.returncode == 0
+            version = (out.stdout or out.stderr).strip().splitlines()[0] if ok else ""
+            return {"name": name, "present": ok, "version": version,
+                    "error": "" if ok else (out.stderr or out.stdout).strip()[:200]}
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"name": name, "present": False, "version": "", "error": str(exc)[:200]}
+
+    repo_path = Path(repo).resolve()
+    operators = [
+        _probe("simplicio-mapper", ["simplicio-mapper", "--version"]),
+        _probe("simplicio-dev-cli", ["simplicio-dev-cli", "--help"]),
+        _probe("simplicio-py", ["simplicio-py", "--version"]),
+        _probe("simplicio-runtime", ["simplicio", "--version"]),
+    ]
+    # dev-cli and simplicio-py are alternative names for the same action operator.
+    action_present = any(o["present"] for o in operators
+                         if o["name"] in ("simplicio-dev-cli", "simplicio-py"))
+    all_present = operators[0]["present"] and action_present
+    runtime_available = operators[3]["present"]
+    payload = {
+        "schema": "simplicio.preflight/v1",
+        "repo": str(repo_path),
+        "all_present": all_present,
+        "operators": operators,
+        "runtime_available": runtime_available,
+        "degraded_features": [] if runtime_available else ["runtime-integration"],
+    }
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("simplicio-loop preflight")
+        for op in operators:
+            mark = "OK " if op["present"] else ("OPTIONAL" if op["name"] == "simplicio-runtime" else "MISSING")
+            ver = f" ({op['version']})" if op["version"] else ""
+            print(f"  [{mark}] {op['name']}{ver}")
+        print("  all_present:" if all_present else "  NOT ALL REQUIRED OPERATORS PRESENT")
+        if not runtime_available:
+            print("  runtime integration: unavailable (core loop continues)")
+    if not all_present:
+        for op in operators:
+            if not op["present"] and op["name"] != "simplicio-runtime":
+                _route_finding(
+                    stage="preflight",
+                    finding_id=f"missing-operator-{op['name']}",
+                    severity="high",
+                    source=f"preflight:{op['name']}",
+                    confirmed=True,
+                    item_id=None,
+                    repo=str(repo_path),
+                    detail=f"Bound operator {op['name']} not present: {op.get('error','')}",
+                )
+    return 0 if all_present else 1
 
 
 def resume(repo: str, run_id: str) -> int:
@@ -489,6 +635,65 @@ def ledger_replay(path: str, compatibility: bool, recover_trailing: bool,
         return 2
 
 
+def findings_command(args) -> int:
+    """WI-466 findings subcommand: list / report / reconcile / doctor."""
+    from . import finding_report as fr
+    from . import finding_router as rt
+
+    cmd = getattr(args, "findings_command", None)
+    if cmd == "list":
+        records = fr.read_findings()
+        if args.json:
+            print(json.dumps(records, ensure_ascii=False, indent=2))
+        else:
+            for r in records:
+                print(f"{r['ts']} [{r['severity']}] {r['stage']}:{r['finding_id']} confirmed={r['confirmed']}")
+        return 0
+    if cmd == "report":
+        records = fr.read_findings()
+        by_stage = {}
+        by_sev = {}
+        for r in records:
+            by_stage[r["stage"]] = by_stage.get(r["stage"], 0) + 1
+            by_sev[r["severity"]] = by_sev.get(r["severity"], 0) + 1
+        payload = {"schema": "simplicio.finding-report-aggregate/v1", "total": len(records),
+                   "by_stage": by_stage, "by_severity": by_sev}
+        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
+              f"total={payload['total']} by_stage={by_stage} by_severity={by_sev}")
+        return 0
+    if cmd == "reconcile":
+        untracked = rt.untracked_problems()
+        blocked = rt.completion_blocked()
+        payload = {"schema": "simplicio.finding-reconcile/v1", "untracked_count": len(untracked),
+                   "untracked": untracked, "completion_blocked": blocked}
+        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
+              f"untracked_confirmed_findings={len(untracked)} (completion gate will block if >0)")
+        # Gate: a loop item MUST NOT be marked done while an in-scope finding is untracked.
+        return 1 if blocked else 0
+    if cmd == "doctor":
+        from . import finding_report as _fr
+        findings_store = _fr._FINDINGS_DIR / "findings.jsonl"
+        routes_store = rt.LOCAL_STORE
+        findings_present = findings_store.exists()
+        routes_present = routes_store.exists()
+        healthy = findings_present and routes_present
+        payload = {
+            "schema": "simplicio.finding-doctor/v1",
+            "findings_store_path": str(findings_store),
+            "findings_store_present": findings_present,
+            "routes_store_path": str(routes_store),
+            "routes_store_present": routes_present,
+            "store_present": healthy,
+            "router_importable": True,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
+              f"findings_store_present={findings_present} routes_store_present={routes_present} "
+              f"router_ok={payload['router_importable']}")
+        return 0
+    parser.error("unknown findings subcommand")
+    return 2
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="simplicio-loop",
@@ -498,6 +703,10 @@ def main(argv=None) -> int:
         ),
     )
     parser.add_argument("-V", "--version", action="version", version=f"simplicio-loop {__version__}")
+    # Bare `simplicio-loop` (no subcommand at all) falls through to `install` below with these
+    # defaults — mirror p_install's own defaults here so that fallback doesn't crash with
+    # AttributeError when no subparser ever ran to populate args.target/args.globally.
+    parser.set_defaults(target=".", globally=False)
     sub = parser.add_subparsers(dest="command")
 
     p_install = sub.add_parser("install", help="install bundled skills + hooks into a runtime")
@@ -516,6 +725,12 @@ def main(argv=None) -> int:
     p_task.add_argument("task_args", nargs=argparse.REMAINDER,
                         help="pass-through args for `simplicio-loop task`")
 
+    p_prototype = sub.add_parser(
+        "prototype", help="Prototype-First gate: plan/classify/validate-schema/doctor (#568 P0)"
+    )
+    p_prototype.add_argument("prototype_args", nargs=argparse.REMAINDER,
+                             help="pass-through args for `simplicio-loop prototype`")
+
     p_plan = sub.add_parser("plan", help="compile a raw task into a contract and preview it")
     p_plan.add_argument("--task", required=True, help="markdown task file")
     p_plan.add_argument("--out", default=os.path.join(".orchestrator", "task-contract.json"),
@@ -524,7 +739,14 @@ def main(argv=None) -> int:
     p_run = sub.add_parser("run", help="arm, execute, and independently verify a raw markdown task")
     p_run.add_argument("--task", required=True, help="markdown task file")
     p_run.add_argument("--repo", default=".", help="repository root")
-    p_run.add_argument("--delivery", default="verified", help="requested delivery target")
+    p_run.add_argument(
+        "--delivery", default="verified",
+        metavar="{" + ",".join(DELIVERY_ORDER[1:]) + "}",
+        help=(
+            "requested delivery target, one of: " + ", ".join(DELIVERY_ORDER[1:])
+            + " (use 'implemented' for a local-only run)"
+        ),
+    )
     p_run.add_argument("--max-iterations", type=int, default=12, help="safety cap")
 
     p_oracle = sub.add_parser("oracle", help="evaluate completion and cross-runtime parity")
@@ -537,6 +759,26 @@ def main(argv=None) -> int:
     p_status = sub.add_parser("status", help="show the latest run state or a specific run")
     p_status.add_argument("--repo", default=".", help="repository root")
     p_status.add_argument("--run-id", default="", help="run id to inspect")
+    p_status.add_argument("--json", action="store_true",
+                          help="emit machine-readable JSON (this is also the default)")
+    p_status.add_argument("--text", dest="as_text", action="store_true",
+                          help="emit human-readable text instead of JSON")
+
+    p_map = sub.add_parser("map", help="map-service cross-module status")
+    map_sub = p_map.add_subparsers(dest="map_command", required=True)
+    p_map_status = map_sub.add_parser(
+        "status", help="report cache hit/build/wait/invalidate counters from a running session")
+    p_map_status.add_argument("--repo", default=".", help="repository root")
+    p_map_status.add_argument("--status-file", default="",
+                              help="explicit status file (default: <repo>/.orchestrator/map/status.json)")
+    p_map_status.add_argument("--json", action="store_true",
+                              help="emit machine-readable JSON (this is also the default)")
+
+    p_preflight = sub.add_parser(
+        "preflight", help="verify bound operators (mapper/dev-cli/runtime) are installed")
+    p_preflight.add_argument("--repo", default=".", help="repository root")
+    p_preflight.add_argument("--json", action="store_true",
+                             help="emit machine-readable JSON (default: human-readable text)")
 
     p_verify = sub.add_parser("verify", help="run the independent watcher and delivery gates")
     p_verify.add_argument("--repo", default=".", help="repository root")
@@ -642,6 +884,16 @@ def main(argv=None) -> int:
     p_drain.add_argument("--polls-required", type=int, default=2,
                          help="identical empty polls required (default: %(default)s)")
     p_ledger = sub.add_parser("ledger", help="validate/replay the operational event ledger")
+    p_findings = sub.add_parser("findings", help="WI-466: inspect and reconcile continuous findings")
+    findings_sub = p_findings.add_subparsers(dest="findings_command", required=True)
+    p_f_list = findings_sub.add_parser("list", help="list all routed findings (JSONL)")
+    p_f_list.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    p_f_report = findings_sub.add_parser("report", help="show aggregated finding counts by stage/severity")
+    p_f_report.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    p_f_reconcile = findings_sub.add_parser("reconcile", help="show dedup state and untracked findings")
+    p_f_reconcile.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    p_f_doctor = findings_sub.add_parser("doctor", help="health-check the findings store and router state")
+    p_f_doctor.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     ledger_sub = p_ledger.add_subparsers(dest="ledger_command", required=True)
     for ledger_command in ("replay", "validate"):
         p_ledger_action = ledger_sub.add_parser(
@@ -671,6 +923,17 @@ def main(argv=None) -> int:
             help="file containing executor handshake JSON (strict mode requires it)",
         )
 
+    p_release_train = sub.add_parser(
+        "release-train", help="release train continuous verification (#558)"
+    )
+    rt_sub = p_release_train.add_subparsers(
+        dest="release_train_command", required=True
+    )
+    p_rt_check = rt_sub.add_parser(
+        "check", help="validate component/ecosystem release schemas + local drift"
+    )
+    p_rt_check.add_argument("--repo", default=".", help="repository root")
+
     args = parser.parse_args(argv)
     command = args.command or "install"
     if command == "dashboard":
@@ -680,6 +943,13 @@ def main(argv=None) -> int:
         if forwarded and forwarded[0] == "--":
             forwarded = forwarded[1:]
         return task_contract_main(forwarded)
+    if command == "prototype":
+        if _prototype_cli is None:
+            parser.error("prototype_cli module not importable")
+        forwarded = list(args.prototype_args or [])
+        if forwarded and forwarded[0] == "--":
+            forwarded = forwarded[1:]
+        return _prototype_cli.main(forwarded)
     if command == "plan":
         return plan(args.task, args.out)
     if command == "run":
@@ -688,7 +958,15 @@ def main(argv=None) -> int:
         return oracle(args.loop_dir, args.run_dir, args.response_text, args.flow_gap,
                       args.write_receipt)
     if command == "status":
-        return status(args.repo, args.run_id)
+        return status(args.repo, args.run_id, args.json, args.as_text)
+    if command == "map":
+        if args.map_command == "status":
+            return map_status(args.repo, args.status_file, args.json)
+        parser.error("unknown map subcommand: " + str(args.map_command))
+    if command == "preflight":
+        return preflight(args.repo, args.json)
+    if command == "findings":
+        return findings_command(args)
     if command == "verify":
         return verify(args.repo, args.run_id)
     if command == "progress":
@@ -728,6 +1006,10 @@ def main(argv=None) -> int:
             args.handshake_file,
             args.ledger_command,
         )
+    if command == "release-train":
+        if _release_manifest is None:
+            parser.error("release_manifest script not importable")
+        return _release_manifest.release_train_check(args.repo)
     return install(Path(args.target).resolve(), args.globally)
 
 

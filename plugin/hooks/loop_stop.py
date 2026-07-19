@@ -70,7 +70,61 @@ def allow_stop():
     sys.exit(0)
 
 
-def cleanup_and_stop():
+def _loop_progress_module():
+    """Best-effort import of scripts/loop_progress.py — same pattern as _flow_audit_module()."""
+    try:
+        repo_root = os.getcwd()
+        scripts_dir = os.path.join(repo_root, "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import loop_progress as _lp  # noqa: local import, optional dependency
+        return _lp
+    except Exception:
+        return None
+
+
+def _emit_final_progress(reason, outcome):
+    """Fail-open final progress event (#301 § 4) — the F3/`refeed_exit` event that closes out
+    `progress.json`'s `run_state` (running -> done|capped|handoff|stopped) so it never stays
+    "in progress" forever after the run actually ended."""
+    try:
+        lp = _loop_progress_module()
+        if lp is None:
+            return
+        lp.emit_event("refeed_exit", status="end", outcome=outcome, detail=reason,
+                      source="loop_stop.py")
+    except Exception:
+        pass
+
+
+def _progress_header_prefix(nxt, max_iter):
+    """#302 § 2 — a short ` · fase F1 · etapa 5/9 operate · item T3 · ACs 1/3 · 42% geral` prefix
+    for the re-feed header. Fail-open: any error -> "" (header identical to before this feature).
+    Also regenerates PROGRESS.md (1 call/turn, zero token cost — a file, not context, per #302
+    § 2.3)."""
+    try:
+        lp = _loop_progress_module()
+        if lp is None:
+            return ""
+        snap = lp.build_snapshot(cap=(max_iter or None))
+        try:
+            lp.write_snapshot(snap)
+            _, md = lp.render_full(snap)
+            lp._atomic_write(lp._md_path(), md)
+        except Exception:
+            pass
+        line = lp.render_turn_header(snap)
+        rest = line.split("|", 1)[1] if "|" in line else line
+        rest = rest.replace("[simplicio-loop] ", "").strip()
+        rest = re.sub(r"\s*·\s*iter\s+\S+$", "", rest)  # drop trailing "· iter N/cap" (redundant)
+        return " · " + rest if rest else ""
+    except Exception:
+        return ""
+
+
+def cleanup_and_stop(reason=None, outcome=None):
+    if reason:
+        _emit_final_progress(reason, outcome)
     for p in (SCRATCHPAD, DONE_FLAG, LEGACY_DONE_FLAG, LAST_RESP, WATCHER_STATE, WATCHER_CHALLENGE):
         try:
             if os.path.exists(p):
@@ -177,6 +231,97 @@ def anchor_pending():
     crit = data.get("criteria") or []
     return [c.get("id") for c in crit
             if isinstance(c, dict) and c.get("status") != "done"]
+
+
+def _delivery_stop_guard(cwd, iteration):
+    """Enforce the frozen delivery contract against the real end-of-turn diff.
+
+    The baseline is persisted after each clean turn. The first observation uses HEAD as the
+    conservative baseline, so an untracked or newly staged file cannot silently pass. This is
+    deliberately fail-closed only when a valid contract exists; absent or unreadable loop state
+    keeps the historic stop-hook fail-open behavior.
+    """
+    try:
+        anchor_path = os.path.join(cwd, ANCHOR)
+        with open(anchor_path, encoding="utf-8") as handle:
+            anchor = json.load(handle)
+        contract = anchor.get("delivery")
+        if not contract:
+            return None
+        if cwd not in sys.path:
+            sys.path.insert(0, cwd)
+        from simplicio_loop.delivery_contract import normalize_contract
+        contract = normalize_contract(contract)
+
+        baseline_path = os.path.join(cwd, ".orchestrator", "loop", "delivery_baseline.json")
+        baseline = {}
+        if os.path.exists(baseline_path):
+            with open(baseline_path, encoding="utf-8") as handle:
+                baseline = json.load(handle)
+
+        def git(*args):
+            result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+            return result.stdout if result.returncode == 0 else ""
+
+        current_head = git("rev-parse", "HEAD").strip()
+        status = git("status", "--porcelain=v1", "--untracked-files=all")
+        current_paths = set()
+        for line in status.splitlines():
+            if len(line) >= 4:
+                path = line[3:].strip()
+                if " -> " in path:
+                    path = path.rsplit(" -> ", 1)[1]
+                path = path.strip('"')
+                if path.replace("\\", "/").startswith(".orchestrator/"):
+                    continue
+                current_paths.add(path)
+        baseline_paths = set(baseline.get("paths") or [])
+        new_paths = sorted(current_paths - baseline_paths)
+        violations = []
+        if not contract["allow_new_files_in_repo"] and new_paths:
+            violations.append("new files: %s" % ", ".join(new_paths))
+
+        if not contract["allow_comments_in_code"]:
+            base_head = baseline.get("head") or "HEAD"
+            committed_diff = git("diff", "%s..%s" % (base_head, current_head), "--unified=0") if current_head else ""
+            working_diff = git("diff", "HEAD", "--unified=0")
+            diff = committed_diff + "\n" + working_diff
+            code_paths = {
+                line[6:].strip() for line in diff.splitlines() if line.startswith("+++ b/")
+            }
+            suffixes = (".cs", ".js", ".jsx", ".ts", ".tsx", ".py")
+            if any(path.lower().endswith(suffixes) for path in code_paths):
+                comments = []
+                for line in diff.splitlines():
+                    if not line.startswith("+") or line.startswith("+++"):
+                        continue
+                    added = line[1:].lstrip()
+                    if added.startswith(("#", "//", "/*", "*", '"""')):
+                        comments.append(added[:80])
+                if comments:
+                    violations.append("new code comments: %d" % len(comments))
+
+        if violations:
+            reason = "delivery contract violation at stop (iteration %s): %s" % (
+                iteration, "; ".join(violations)
+            )
+            journal_path = os.path.join(cwd, JOURNAL)
+            os.makedirs(os.path.dirname(journal_path), exist_ok=True)
+            with open(journal_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "iteration": int(iteration), "action": "delivery contract guard",
+                    "gate": "block", "reason": reason, "source": "loop_stop",
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }, ensure_ascii=False, sort_keys=True) + "\n")
+            return reason
+
+        os.makedirs(os.path.dirname(baseline_path), exist_ok=True)
+        with open(baseline_path + ".tmp", "w", encoding="utf-8") as handle:
+            json.dump({"head": current_head, "paths": sorted(current_paths), "iteration": int(iteration)}, handle)
+        os.replace(baseline_path + ".tmp", baseline_path)
+        return None
+    except Exception:
+        return None
 
 
 def tail_journal(n=8):
@@ -315,6 +460,10 @@ def missing_bound_operators():
     marketplace install, a PATH mismatch, or an operator uninstalled after setup silently
     degraded to LLM hand-survey/hand-edit — exactly what the operators exist to prevent.
 
+    `simplicio` (the separate `simplicio-runtime` CLI/MCP binary) is intentionally not in this
+    set. It augments HBP/checkpoint integrations when present, but those calls are already
+    best-effort and the core mapper → dev-cli loop must keep running when it is unavailable.
+
     Scoped to repos that actually ship the `simplicio-loop` skill (its SKILL.md is the marker) —
     a bare `simplicio-tasks` loop with no `simplicio-loop` companion has no operator requirement.
     Fail-open: any probe error is treated as "present" (never trap the loop over a probe bug).
@@ -338,6 +487,57 @@ def _flow_audit_module():
         return _fa
     except Exception:
         return None
+
+
+def _delivery_contract_module():
+    """Best-effort import of scripts/delivery_contract.py — same pattern as
+    `_flow_audit_module()`. None when the sibling script is absent (an install that predates
+    #526 Etapa 4), so the new-file guard below is a pure no-op rather than a hard failure."""
+    try:
+        repo_root = os.getcwd()
+        scripts_dir = os.path.join(repo_root, "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import delivery_contract as _dc  # noqa: local import, optional dependency
+        return _dc
+    except Exception:
+        return None
+
+
+def delivery_new_file_violation():
+    """Return the delivery-contract new-file-guard violation reason for THIS turn, or None
+    (#526 Etapa 4). Consumes the frozen `allow_new_files_in_repo` clause against the
+    per-contract baseline (`delivery_contract.new_file_guard`). Fail-open: any error (module
+    missing, git unavailable, corrupt anchor) -> None — a plumbing failure here must never trap
+    the loop; only a genuinely detected unauthorized new file blocks the turn.
+    """
+    try:
+        dc = _delivery_contract_module()
+        if dc is None:
+            return None
+        return dc.new_file_guard(read_anchor(), root=os.getcwd())
+    except Exception:
+        return None
+
+
+def _record_delivery_violation_journal(iteration, reason):
+    """Journal the delivery-contract block (#526 Etapa 4 AC: "violação = turno bloqueado + "
+    "registro no journal"). Fail-open, best-effort — same pattern as `auto_record_journal`."""
+    try:
+        repo_root = os.getcwd()
+        script = os.path.join(repo_root, "scripts", "loop_journal.py")
+        if not os.path.exists(script):
+            return
+        subprocess.run(
+            [sys.executable, script, "record",
+             "--iteration", str(iteration),
+             "--action", "delivery contract: new-file guard",
+             "--gate", "blocked",
+             "--note", reason],
+            capture_output=True, timeout=10, cwd=repo_root,
+        )
+    except Exception:
+        pass
 
 
 def _changed_files():
@@ -725,6 +925,22 @@ def latest_completion_receipt():
         return None
 
 
+def maintenance_deferred_receipt():
+    """Return the active maintenance-deferred completion receipt, if any.
+
+    Backlog-only maintenance is explicitly incomplete: the loop must hand off
+    with the durable receipt instead of honoring a fresh completion promise.
+    Unreadable or unrelated receipts are treated as absent.
+    """
+    try:
+        receipt = latest_completion_receipt() or {}
+        if receipt.get("ready") is False and receipt.get("reason_code") == "maintenance_deferred":
+            return receipt
+    except Exception:
+        pass
+    return None
+
+
 def completion_oracle_payload(response_text="", flow_gap=""):
     try:
         repo_root = os.getcwd()
@@ -880,7 +1096,7 @@ def main():
         if os.path.exists(STOP_SIGNAL):
             if meta is not None:
                 write_handoff("manual STOP signal", meta, body)
-            cleanup_and_stop()
+            cleanup_and_stop("STOP: manual STOP signal", "blocked")
         # Waiting on a background gate (workflow / CI / long task)? Let the turn end WITHOUT
         # consuming an iteration or re-feeding — we are blocked on that gate, not idle. The gate's
         # completion re-invokes the agent; the loop resumes then (lock is gone). Preserves state.
@@ -891,12 +1107,12 @@ def main():
             allow_stop()
         # (2) Corrupt state.
         if meta is None:
-            cleanup_and_stop()
+            cleanup_and_stop("corrupt loop state (unparseable frontmatter)", "blocked")
         try:
             iteration = int(meta.get("iteration", "1"))
             max_iter = int(meta.get("max_iterations", "0"))
         except ValueError:
-            cleanup_and_stop()
+            cleanup_and_stop("corrupt loop state (bad iteration/max_iterations)", "blocked")
         promise = meta.get("completion_promise", "null")
         promise = None if promise in (None, "null", "") else promise
         evidence_required = str(meta.get("evidence_required", "true")).lower() != "false"
@@ -913,7 +1129,21 @@ def main():
                 "fingerprint": _journal_stall()[0], "attempt": iteration, "reason": reason,
             })
             write_handoff(reason, meta, body)
-            cleanup_and_stop()
+            cleanup_and_stop(reason, "blocked")
+
+        # (2c) Delivery contract — new-file guard (#526 Etapa 4). `allow_new_files_in_repo:
+        # false` blocks the turn the instant an unauthorized new file appears in the repo — a
+        # client-mandated, non-negotiable restriction, same hard-block severity as a missing
+        # bound operator. Journaled so the violation is auditable, never silent.
+        delivery_violation = delivery_new_file_violation()
+        if delivery_violation:
+            _record_delivery_violation_journal(iteration, delivery_violation)
+            _call_simplicio_hbp_append_topic("loop-run-blocked", {
+                "fingerprint": _journal_stall()[0], "attempt": iteration,
+                "reason": delivery_violation,
+            })
+            write_handoff(delivery_violation, meta, body)
+            cleanup_and_stop(delivery_violation, "blocked")
 
         stdin = read_stdin_json()
         resp = last_assistant_text(stdin)
@@ -944,15 +1174,30 @@ def main():
         # Pre-promise: front→back flow-audit gate (#80) — mechanical, not prose-only.
         flow_gap = flow_audit_gap()
 
+        # Delivery contract is checked at the real turn boundary, not only at commit time.
+        delivery_gap = _delivery_stop_guard(os.getcwd(), iteration)
+        if delivery_gap:
+            flow_gap = flow_gap or delivery_gap
+
         # Completion detection is centralized in the shared oracle (#138). The stop hook can still
         # surface watcher/flow state in the re-feed header below, but it no longer decides COMPLETE
         # on its own.
+        deferred_receipt = maintenance_deferred_receipt()
+        if deferred_receipt:
+            write_handoff("maintenance deferred (backlog-only mode active)", meta, body)
+            cleanup_and_stop("maintenance deferred (backlog-only mode active)", "blocked")
         if promise and resp:
             oracle = completion_oracle_payload(resp, flow_gap or "")
             if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
                 _call_simplicio_hbp_append(iteration, promise, watcher_tag)
                 refresh_cross_agent_wiki(include_handoff=False)
-                cleanup_and_stop()  # (3) promise fulfilled → stop, no handoff needed
+                cleanup_and_stop("promise verificada", "pass")  # (3) promise fulfilled → stop
+            elif PROMISE_RE.search(resp):
+                # (#302 § 3) a promise WAS typed this turn but the oracle refused it (no in-turn
+                # evidence / no receipt) — the loop continues, but this is high-signal for the
+                # user ("the model thought it was done, the gate disagreed"). Fail-open, never
+                # blocks the turn.
+                _emit_final_progress("promise REJEITADA: sem evidência no turno", "blocked")
             # A promise is never sufficient without a persisted run receipt.  The old
             # lightweight fallback was a fail-open completion bypass (#138); missing run
             # artifacts remain DELIVERY_PENDING and the loop continues or hands off at cap.
@@ -960,7 +1205,7 @@ def main():
         if os.path.exists(DONE_FLAG) or os.path.exists(LEGACY_DONE_FLAG):
             oracle = completion_oracle_payload(flow_gap=flow_gap or "")
             if oracle.get("ready") and os.path.exists(str(oracle.get("receipt_path") or "")):
-                cleanup_and_stop()
+                cleanup_and_stop("promise verificada (done flag)", "pass")
         # (4) Iteration cap — incomplete stop, hand off.
         if max_iter > 0 and iteration >= max_iter:
             _call_simplicio_hbp_append_topic("loop-run-blocked", {
@@ -968,7 +1213,7 @@ def main():
                 "reason": "max_iterations cap reached",
             })
             write_handoff("max_iterations cap reached", meta, body)
-            cleanup_and_stop()
+            cleanup_and_stop("cap atingido: max_iterations cap reached", "blocked")
         # (5) Spindle handoff — latched handoff overrides re-feed.
         if spindle_latched():
             next_agent = "?"
@@ -979,7 +1224,7 @@ def main():
             except Exception:
                 pass
             write_handoff("spindle handoff (latched — waiting for '%s')" % next_agent, meta, body)
-            cleanup_and_stop()
+            cleanup_and_stop("handoff latched (waiting for '%s')" % next_agent, "blocked")
         # (6) Continue: bump iteration in place, re-feed the goal body.
         nxt = iteration + 1
         with open(SCRATCHPAD, encoding="utf-8") as f:
@@ -1010,8 +1255,12 @@ def main():
             else ""
         )
         flow_hint = " Flow-audit gap: %s." % flow_gap if flow_gap else ""
-        header = "[simplicio-loop iteration %d.%s%s%s%s %s]" % (
-            nxt, promise_hint, ac_hint, flow_hint, phase_header_hint(), watcher_tag
+        # #302 — prefix the re-feed header with the progress snapshot (fase/etapa/item/ACs/%),
+        # so the user sees WHERE the loop is even when the model forgets to narrate it. Fail-open:
+        # any error -> empty prefix, header identical to before this feature existed.
+        progress_prefix = _progress_header_prefix(nxt, max_iter)
+        header = "[simplicio-loop iteration %d.%s%s%s%s%s %s]" % (
+            nxt, progress_prefix, promise_hint, ac_hint, flow_hint, phase_header_hint(), watcher_tag
         )
         # Issue the NEXT iteration's watcher challenge before re-feeding (#82) — must be on disk
         # before the next turn's agent acts, so a mid-turn `watcher_verify.py` run can read and

@@ -28,7 +28,9 @@ behavior that already exists.
 
 `simplicio-loop`'s scratchpad frontmatter carries a `mode: converge | drain` field
 (`.claude/skills/simplicio-loop/SKILL.md` § "State file"). The two modes have opposite jobs and
-opposite termination logic (`SKILL.md` § "Two loop modes"):
+opposite termination logic (`SKILL.md` § "Three loop modes" — `fast-path` is a third, reduced-rigor
+dynamic layered on top of `converge`, tracked in the anchor's `route_mode` field, not in this
+`mode` frontmatter field):
 
 | | `converge` (single hard task) | `drain` (a queue of items) |
 |---|---|---|

@@ -1,0 +1,7 @@
+{
+  "schema": "simplicio.task-contract-collection/v1",
+  "item": "77",
+  "criteria": [
+    {"id": "AC1", "text": "Export button downloads a CSV with the visible rows"}
+  ]
+}

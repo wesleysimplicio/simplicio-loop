@@ -1,0 +1,13 @@
+{
+  "schema": "simplicio.quality-matrix/v1",
+  "coverage_threshold": 85.0,
+  "requirements": {
+    "implementation": {"status": "pass", "proof_ref": "app/auth.py:88"},
+    "unit": {"status": "pass", "proof_ref": "tests/test_auth_sso.py"},
+    "integration": {"status": "pass", "proof_ref": "tests/test_auth_sso_integration.py"},
+    "system": {"status": "pass", "proof_ref": "tests/test_sso_e2e.py"},
+    "regression": {"status": "pass", "proof_ref": "tests/test_sso_regression.py"},
+    "benchmark": {"status": "pass", "proof_ref": "tests/test_sso_benchmark.py"}
+  },
+  "coverage": {"measured": 92.0}
+}

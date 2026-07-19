@@ -1,0 +1,57 @@
+name: Simplicio lifecycle status sync
+
+on:
+  issue_comment:
+    types: [created, edited]
+  issues:
+    types: [opened, closed, reopened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: GitHub issue number to reconcile
+        required: true
+        type: number
+      state:
+        description: Optional Simplicio lifecycle state override
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  repository-projects: write
+
+jobs:
+  sync:
+    # Human comments must never move a card.  Only the canonical lifecycle
+    # comment, issue state transitions, or an explicit manual reconciliation do.
+    if: >-
+      github.event_name != 'issue_comment' ||
+      contains(github.event.comment.body, '<!-- simplicio-loop:lifecycle-status:v1 -->')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the synchronizer
+        uses: actions/checkout@v4
+
+      - name: Reconcile issue label and Project v2 status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_NUMBER: ${{ vars.SIMPLICIO_PROJECT_NUMBER }}
+          PROJECT_OWNER: ${{ vars.SIMPLICIO_PROJECT_OWNER || github.repository_owner }}
+          PROJECT_OWNER_TYPE: ${{ vars.SIMPLICIO_PROJECT_OWNER_TYPE || 'repository' }}
+          STATUS_FIELD: ${{ vars.SIMPLICIO_PROJECT_STATUS_FIELD || 'Status' }}
+          EVENT_NAME: ${{ github.event_name }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          STATE_OVERRIDE: ${{ inputs.state }}
+        run: |
+          set -euo pipefail
+          args=(--event "$GITHUB_EVENT_PATH" --event-name "$EVENT_NAME" \
+                --repo "$GITHUB_REPOSITORY" --token "$GH_TOKEN")
+          args+=(--project-owner "$PROJECT_OWNER" \
+                 --project-owner-type "$PROJECT_OWNER_TYPE" \
+                 --status-field "$STATUS_FIELD")
+          if [[ -n "${PROJECT_NUMBER}" ]]; then args+=(--project-number "$PROJECT_NUMBER"); fi
+          if [[ -n "${ISSUE_NUMBER}" ]]; then args+=(--issue-number "$ISSUE_NUMBER"); fi
+          if [[ -n "${STATE_OVERRIDE}" ]]; then args+=(--state "$STATE_OVERRIDE"); fi
+          python scripts/github_status_sync.py "${args[@]}"

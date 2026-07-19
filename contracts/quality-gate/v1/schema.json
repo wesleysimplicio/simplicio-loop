@@ -1,0 +1,121 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/wesleysimplicio/simplicio-loop/contracts/quality-gate/v1/schema.json",
+  "title": "simplicio.quality-matrix/v1 (aka the #283 Quality Gate receipt)",
+  "description": "Fail-closed evidence receipt read by simplicio_loop/quality_matrix.py::evaluate_quality_matrix. Produced as <run_dir>/quality-matrix.json and consumed by the completion oracle (simplicio_loop/oracle.py) before any work item can be reported COMPLETE. A missing or malformed receipt NEVER evaluates to ready=true.",
+  "type": "object",
+  "required": ["schema", "requirements"],
+  "properties": {
+    "schema": {
+      "const": "simplicio.quality-matrix/v1"
+    },
+    "run_id": { "type": "string", "description": "optional: the run this receipt belongs to, for cross-linking with the delivery/evidence receipts and the task anchor" },
+    "work_item": {
+      "type": "object",
+      "description": "optional provenance of the source work item this receipt was produced for",
+      "properties": {
+        "source": { "type": "string", "examples": ["github"] },
+        "id": { "type": "string" },
+        "type": { "enum": ["bug", "task", "feat", "fix", "chore"] },
+        "title": { "type": "string" }
+      }
+    },
+    "coverage_threshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 85.0,
+      "description": "minimum measured coverage percentage required; malformed/out-of-range values fail closed rather than falling back to the default"
+    },
+    "policy": {
+      "type": "object",
+      "description": "#283: opt-in toggles. Omitting this object entirely reproduces the exact #278 behavior (every REQUIRED_REQUIREMENTS lane mandatory, no TDD lane evaluated, no lane excusable as NOT_APPLICABLE).",
+      "properties": {
+        "tdd_required": {
+          "type": "boolean",
+          "default": false,
+          "description": "when true, the 'tdd' requirement (see below) is evaluated and must pass with DISTINCT red_proof_ref/green_proof_ref"
+        },
+        "implementation_required": { "type": "boolean", "default": true },
+        "unit_required": { "type": "boolean", "default": true },
+        "integration_required": { "type": "boolean", "default": true },
+        "system_required": { "type": "boolean", "default": true },
+        "regression_required": { "type": "boolean", "default": true },
+        "benchmark_required": { "type": "boolean", "default": true },
+        "allow_justified_not_applicable": {
+          "type": "boolean",
+          "default": false,
+          "description": "when true, the 'benchmark' lane (the only lane in NOT_APPLICABLE_ELIGIBLE) may be excused by setting its status to not_applicable AND supplying a non-empty justification. No other lane is ever excusable this way, regardless of this flag."
+        }
+      }
+    },
+    "requirements": {
+      "type": "object",
+      "description": "one entry per mandatory lane; 'implementation', 'unit', 'integration', 'system', 'regression', 'benchmark' are always read (unless waived via policy.<lane>_required=false), 'tdd' is read only when policy.tdd_required is true",
+      "properties": {
+        "implementation": { "$ref": "#/definitions/genericRequirement" },
+        "unit": { "$ref": "#/definitions/genericRequirement" },
+        "integration": { "$ref": "#/definitions/genericRequirement" },
+        "system": { "$ref": "#/definitions/genericRequirement" },
+        "regression": { "$ref": "#/definitions/genericRequirement" },
+        "benchmark": { "$ref": "#/definitions/naEligibleRequirement" },
+        "tdd": { "$ref": "#/definitions/tddRequirement" }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["measured"],
+      "properties": {
+        "measured": {
+          "type": ["number", "null"],
+          "description": "the actually-measured coverage percentage (e.g. from scripts/coverage_gate.py); null/non-numeric fails closed as coverage_unmeasured"
+        },
+        "report_ref": {
+          "type": "string",
+          "description": "#283: optional pointer to the raw coverage-gate report (scripts/quality_matrix.py populate writes <run_dir>/coverage-gate-report.json here) backing `measured` -- not required by evaluate_quality_matrix, but read by an independent re-verifier that wants to cross-check the number against its source artifact"
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "description": "#283: equivalent nested view of the four test-category lanes, matching the issue body's literal `simplicio.quality-gate/v1` example (`tests.unit`/`.integration`/`.system`/`.regression`). `evaluate_quality_matrix` reads a lane from EITHER `requirements.<lane>` OR `tests.<lane>` (the flat `requirements` entry wins when both are present); `build_quality_matrix_template`/`scripts/quality_matrix.py populate` always keep this object in sync with `requirements` via `sync_tests_envelope` so both readings agree.",
+      "properties": {
+        "unit": { "$ref": "#/definitions/genericRequirement" },
+        "integration": { "$ref": "#/definitions/genericRequirement" },
+        "system": { "$ref": "#/definitions/genericRequirement" },
+        "regression": { "$ref": "#/definitions/genericRequirement" }
+      }
+    }
+  },
+  "definitions": {
+    "genericRequirement": {
+      "type": "object",
+      "required": ["status", "proof_ref"],
+      "properties": {
+        "status": { "enum": ["unset", "pass", "fail"] },
+        "proof_ref": { "type": "string", "description": "pointer to the evidence, e.g. a test id, receipt path, or CI run URL; empty proof_ref on a 'pass' status is rejected as unproven" },
+        "detail": { "type": "string" }
+      }
+    },
+    "naEligibleRequirement": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["unset", "pass", "fail", "not_applicable"] },
+        "proof_ref": { "type": "string" },
+        "justification": { "type": "string", "description": "required, non-empty, when status=not_applicable and policy.allow_justified_not_applicable is true" },
+        "detail": { "type": "string" }
+      }
+    },
+    "tddRequirement": {
+      "type": "object",
+      "required": ["status", "red_proof_ref", "green_proof_ref"],
+      "properties": {
+        "status": { "enum": ["unset", "pass", "fail"] },
+        "red_proof_ref": { "type": "string", "description": "evidence the test FAILED before the implementation (RED)" },
+        "green_proof_ref": { "type": "string", "description": "evidence the SAME test PASSED after the implementation (GREEN); must differ from red_proof_ref" },
+        "detail": { "type": "string" }
+      }
+    }
+  }
+}

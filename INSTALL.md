@@ -21,7 +21,7 @@ pwsh scripts/install.ps1 <runtime> [-Global] [-Target DIR]
 ```
 
 `<runtime>` ∈ `claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent
-openclaw` (`hermes` still accepted as a legacy alias for `simplicio_agent`). Omit it to
+openclaw orca` (`hermes` still accepted as a legacy alias for `simplicio_agent`). Omit it to
 auto-detect from the current directory. `--target DIR` installs into
 another project; `--global` installs to the runtime's user-wide location.
 
@@ -37,6 +37,8 @@ What the installer does (all reversible — copies + a config edit):
 - prints `simplicio-cli mcp register --client <runtime>` for optional native binding.
 
 See [`adapters/MATRIX.md`](adapters/MATRIX.md) and `adapters/<runtime>/README.md` for details.
+For the exact per-OS mutation inventory (what mutates on disk, PATH, or a service, and which
+effects require an explicit flag), see [`docs/INSTALL_MUTATIONS.md`](docs/INSTALL_MUTATIONS.md).
 
 ## 3. Run it
 
@@ -61,7 +63,7 @@ spindle handoff, or explicit STOP.
 
 ## Requirements
 
-- A strong LLM agent runtime (any of the 11 above).
+- A strong LLM agent runtime (any of the 12 above).
 - `python3` on PATH. `git` and, for GitHub sources, an authenticated `gh`.
 - That's it. Every extension point has an LLM fallback, so no native runtime is required —
   though `simplicio-runtime`, if present, makes the skill faster and cheaper.

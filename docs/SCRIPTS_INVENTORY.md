@@ -14,11 +14,12 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 
 | Script | Invoker | Status |
 |---|---|---|
-| `check.py` | manual (`python3 scripts/check.py`) · git pre-push hook · `.github/workflows/ci.yml` | active |
+| `check.py` | manual (`python3 scripts/check.py`) · git pre-push hook (fail-closed) · **no GitHub Actions** (`.github/workflows/` removed in #311 for billing — see docs/REPOSITORY_GOVERNANCE.md) | active |
 | `claims_audit.py` | `check.py` | active |
 | `claims_manifest.py` | imported by `claims_audit.py` (quantitative-claims registry) | active |
 | `check_loop_contract.py` | `check.py` | active |
 | `token_budget.py` | `check.py` (#121) | active |
+| `repository_budget.py` | `check.py` (#294) — tracked-tree size budget: per-file cap (2 MiB) + total-growth gate + **forbidden-media rule** (video/out/, rust/target/, node_modules/, dist/, build/ blocked; large media only exempt under `assets/_lfs/` LFS per `.gitattributes`); read-only, history untouched | active |
 | `mirror_manifest.py` | imported by `sync_plugin.py` + `claims_audit.py` (single source of truth for the lean hooks/scripts/tests sets) | active |
 | `sync_plugin.py` | manual, after editing `.claude/skills/` or a shipped hook; `tests/test_system_check.py` exercises `--check` | active |
 | `verify_adapters.py` | `claims_audit.py` check 7 (adapter-install-contract) | active |
@@ -42,6 +43,11 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 | `web_verify.py` | `video_evidence.py`; `.github/workflows/web-verify.yml` | active |
 | `pr_evidence.py` | PR-open flow (`pr_evidence.py build --require-evidence`) | active |
 | `toon_codec.py` | imported by `task_anchor.py` / `loop_journal.py` (TOON-rendered `--format toon` output) | active |
+| `coverage_gate.py` | `.github/workflows/quality-gate.yml` (#277) — 85% global / 90% critical-path line coverage gate | active |
+| `perf_gate.py` | `.github/workflows/quality-gate.yml` (#277) — latency/throughput/RSS vs `scripts/perf_baseline.json` + bounded convergence check | active |
+| `flaky_gate.py` | `.github/workflows/quality-gate.yml` (#277) — repeats the convergence/drain-critical test subset (or full suite in `--stress`) N times and flags inconsistent outcomes | active |
+| `regression_test_gate.py` | `.github/workflows/quality-gate.yml` (#277) — fails a PR that changes source without an accompanying `tests/` change | active |
+| `test_categories.py` | `quality_matrix.py populate`/`independent_reverify_quality_matrix` (#283) — per-category (`unit`/`integration`/`system`/`regression`) test-runner split, reads the `tests/*_<category>.py` filename convention | active |
 
 ## Satellite (opt-in / advanced capabilities)
 

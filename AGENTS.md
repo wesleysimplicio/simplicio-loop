@@ -1,7 +1,7 @@
 # AGENTS.md — simplicio-loop
 
 This repository ships a runtime-agnostic **super-plugin**: the Universal Looping AI
-Orchestrator plus five satellite skills, packaged for 11 runtimes. Any agent runtime that
+Orchestrator plus five satellite skills, packaged for 15 runtimes. Any agent runtime that
 reads `AGENTS.md` / skill folders can run it.
 
 ## What to load
@@ -33,9 +33,13 @@ auto-clamp). See [`hooks/README.md`](hooks/README.md).
 
 ## Runtimes
 
-Install for any of the 11 runtimes with `scripts/install.sh <runtime>` (or `install.ps1`). See
-[`adapters/MATRIX.md`](adapters/MATRIX.md): Claude Code · Codex · VS Code (Copilot) · Cursor ·
-Antigravity · Kiro · OpenCode · Gemini · Aider · Simplicio Agent (formerly Hermes) · OpenClaw.
+15 runtimes are documented in [`adapters/MATRIX.md`](adapters/MATRIX.md): Claude Code · Codex ·
+VS Code (Copilot) · Cursor · Antigravity · Kiro · OpenCode · Gemini (CLI/Code Assist) · Kimi ·
+Qwen (Code/CLI) · DeepSeek · Aider · Simplicio Agent (formerly Hermes) · OpenClaw · Orca. Install
+12 of them with `scripts/install.sh <runtime>` (or `install.ps1`); Kimi/Qwen/DeepSeek are not yet
+wired into the installer — see their adapter READMEs for manual/best-effort steps. The native
+`simplicio-runtime` MCP bind is optional on all 15; its integrations are used only when available
+— see [`docs/MCP_SETUP.md`](docs/MCP_SETUP.md).
 
 ## Activation
 
@@ -50,18 +54,16 @@ The user invokes it with a target body of work:
 If no argument is given, default to "all open work-items in the default source" and
 confirm scope in one line only if ambiguous.
 
-## Extension points (bind native — REQUIRED on 8 of the 11 runtimes)
+## Extension points (bind native when available)
 
-The skill defines **48 named extension points** (see the Step 1b table in `SKILL.md`).
+The skill defines **50 named extension points** (see the Step 1b table in `SKILL.md`).
 For each point, if this runtime exposes a faster native capability, **bind it** —
 the step becomes deterministic and near-zero-token. The skill never requires a specific
 runtime; the binding lives here in the host, not in the skill.
 
-On Claude Code, Codex, Cursor, VS Code, Antigravity, Kiro, OpenCode, and Simplicio Agent, binding to
-`simplicio-runtime` (MCP or CLI) is **REQUIRED project policy, not an optional speed-up** — see
-`adapters/MATRIX.md` `FORCED_BIND_RUNTIMES`. On these 8, an unreachable bind is a STOP-and-report
-condition (verify with `simplicio doctor --json`); only Gemini, Aider, and OpenClaw fall back to
-the plain LLM/native-by-design path silently.
+`simplicio-runtime` (MCP or CLI) is optional on every host. When available it enables native
+integrations; when absent, the loop records that those integrations were skipped and continues
+with the required `simplicio-mapper` and `simplicio-dev-cli` operators.
 
 ## Canonical source per topic (#119 — avoid re-stating the same pitch in N docs)
 
@@ -93,6 +95,10 @@ path + verdict; a missing toolchain BLOCKS, never a fake pass.
 ## Non-negotiables
 
 - Run commands for real — never simulate output.
+- **GitHub issue signature first:** before taking an issue, publish the canonical `CLAIMED`
+  lifecycle comment with the worker/run/attempt identity and goal. Do this before mutation or a
+  worktree; never take a live claimed issue. A PR reviewer signs its assessment on the PR instead
+  and does not steal the implementation lease.
 - Never mark an item done without green gates + evidence ("works, not just compiles").
 - Secret-scan every diff; route irreversible ops through the human gate. Where hooks exist this is
   ENFORCED fail-closed by `hooks/action_gate.py` (PreToolUse/pre-push) — not left to the model.
@@ -106,7 +112,6 @@ path + verdict; a missing toolchain BLOCKS, never a fake pass.
   Self-runs on bare python3 — no CI, no pytest required. Keep it green.
 - **Big refactors/doc rewrites:** run `python3 scripts/check.py --token-budget` and treat a FAIL
   as a real regression to justify or trim, not to silence with `--update-baseline` unreviewed.
-- On Claude/Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Simplicio Agent, the `simplicio-runtime` native
-  bind (MCP or CLI) is REQUIRED before driving the loop — `simplicio doctor --json` must report
-  the runtime reachable. An unbound run on one of these 8 is a blocker to fix
-  (`simplicio install --global`), never a silent fallback to the plain-LLM path.
+- `simplicio-runtime` native binding (MCP or CLI) is optional. `simplicio doctor --json` can
+  diagnose an installed runtime; its absence is reported as degraded runtime integration and
+  never blocks the mapper/dev-cli loop.
