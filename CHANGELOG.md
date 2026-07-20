@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.38.1] — 2026-07-20
+
+- Raised the `simplicio-cli` dependency floor to `>=0.16.2`, consuming the
+  mapper-aligned CLI release from the ecosystem release sequence.
+
 ## [Unreleased]
 
 ## [3.38.0] — 2026-07-17
