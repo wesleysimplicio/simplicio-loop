@@ -103,9 +103,9 @@ A real rewrite requires the explicit maintainer sign-off described in that doc.
 
 ## 5. CI / local enforcement
 
-There is **no active GitHub Actions workflow** — `.github/workflows/` was removed repo-wide
-in PR #311 after a billing lockout (see `docs/RELEASE.md`). The governance gates are
-therefore enforced **locally**, not in CI:
+GitHub workflow files exist under `.github/workflows/`, but they are not a required gate or
+evidence source for this work and were not executed here. The governance gates are enforced
+**locally**, not by relying on CI:
 
 ```bash
 # Pre-push hook (fail-closed, runs the mandatory core gate incl. repo-budget):

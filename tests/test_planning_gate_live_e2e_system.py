@@ -41,6 +41,10 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+pytestmark = pytest.mark.external_integration
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 sys.path.insert(0, REPO)
@@ -101,9 +105,11 @@ def _lifecycle_comment(issue):
 
 def test_planning_gate_claimed_then_planned_lands_on_live_issue_and_gates_real_mutation():
     if not _live_gate_open():
-        print("SKIP (opt-in): set SIMPLICIO_LIVE_GH_E2E=1 with an authenticated gh CLI to run "
-              "this live e2e against %s" % LIVE_REPO)
-        return
+        pytest.skip(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[live_github_opt_in]: set "
+            "SIMPLICIO_LIVE_GH_E2E=1 with an authenticated gh CLI to run this "
+            "live e2e against %s" % LIVE_REPO
+        )
 
     issue = _create_scratch_issue()
     owner, repo_name = LIVE_REPO.split("/", 1)
@@ -184,7 +190,6 @@ def test_planning_gate_claimed_then_planned_lands_on_live_issue_and_gates_real_m
 
         # -- 5. a trivial guarded mutation through the REAL execute_operator() gate,
         #    using ONLY this receipt (mandatory mutation-authority genuinely enforced) --
-        from unittest.mock import MagicMock
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:

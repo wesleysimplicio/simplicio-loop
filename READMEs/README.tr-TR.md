@@ -1,5 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
+> **Canonical operational contract:** This translation is informational. For current dependency, runtime, conformance, and validation behavior, [README.md](../README.md) is authoritative: Loop installs standalone; Runtime bindings are optional; 3 runtimes are guaranteed and 12 are best-effort; and `scripts/check.py` requires an importable `pytest` with no bare-Python fallback. GitHub Actions is not required gate evidence.
+
 <p align="center">
   <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="aşama başına somut ajanlar ve bağlı raporlama ile simplicio-loop" width="920" />
 </p>
@@ -257,8 +259,8 @@ Her adaptörün referans dokümanına `.claude/skills/simplicio-loop/references/
 Tek bir evrensel skill çekirdeği + tek bir hook seti her runtime'ı sürer. Bir adaptör incedir:
 runtime'a *skill'leri nereye yükleyeceğini*, *döngüyü nasıl kuracağını* ve *yerel hızı nasıl
 bağlayacağını* söyler. **Skill hiçbir runtime'ı adlandırmaz; runtime skill'i algılar.** Yerel
-`simplicio-runtime` MCP bağlaması artık her runtime'da **ZORUNLU** — eksik/erişilemezse döngü
-BLOCKED olur.
+`simplicio-runtime` MCP bağlaması her runtime'da isteğe bağlıdır; eksik/erişilemezse adaptör açık
+bir bozulmuş mod bildirir ve standalone döngü kullanılabilir kalır.
 
 ### Katman 1 — Garantili (her commit'te doğrulanır)
 
@@ -560,8 +562,8 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 - **Test paketi** (`tests/`) — worker'ların deterministik `selftest`'leri, artı bir **döngü
   sürücüsü e2e'si** (`hooks/loop_stop.py`): döngünün ayrı çıkışlar olarak **kanıtta durduğunu**,
   **çıplak bir `<promise>`'i yok saydığını** ve **tavanda durduğunu** kanıtlar — ve kanıt
-  üreticilerinin, araç zincirleri yokken **BLOCK** ettiğini (asla sahte-geçiş değil). `pytest`
-  altında *veya*, hiç pip olmadan, çıplak python3'te kendi kendine çalışır (`python3 tests/test_*.py`).
+  üreticilerinin, araç zincirleri yokken **BLOCK** ettiğini (asla sahte-geçiş değil). Gate,
+  içe aktarılabilir `pytest` gerektirir; çıplak Python fallback'i yoktur.
 - **Claims audit** (`scripts/claims_audit.py`, fail-closed) — dokümanların referans verdiği her
   `scripts/*.py` var · genişletme noktası sayısı tüm dosyalarda uyuşuyor · her atıf yapılan worker
   komutu gerçekten çalışıyor · sevk edilen `simplicio_loop/_bundle/` skill'leri kaynakla
@@ -571,7 +573,7 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
   ```
 
-`pip install "simplicio-loop[dev]"` daha güzel çıktı için pytest ekler; asla zorunlu değildir.
+`pip install "simplicio-loop[dev]"`, `scripts/check.py` için zorunlu `pytest` bağımlılığını kurar.
 
 ---
 

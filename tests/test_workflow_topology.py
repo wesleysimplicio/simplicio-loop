@@ -87,17 +87,8 @@ def test_validate_detects_orphan_stage_disconnected_from_any_root():
 
 
 def test_validate_orphan_without_cycle():
-    # a stage that depends on a REAL stage, but that stage isn't reachable from any root
-    # (its own depends_on chain never bottoms out at a root) -> orphan, not cycle
-    m = _manifest(
-        ("root", []),
-        ("mid", ["root"]),
-        ("isolated_child", ["isolated_root_missing_link"]),
-        ("isolated_root_missing_link", []),
-    )
     # isolated_root_missing_link IS itself a root (empty depends_on) so it's reachable from
-    # itself, and isolated_child depends on it -- this is actually fully connected via its own
-    # root. Use a case where a stage's only dependency is non-root and non-reachable instead:
+    # itself, so that shape would be connected. Use a disconnected cycle instead:
     m2 = _manifest(
         ("root", []),
         ("mid", ["root"]),
@@ -177,7 +168,7 @@ def test_load_manifest_round_trips_from_disk(tmp_path):
 
 
 def test_own_pipeline_example_manifest_validates_cleanly():
-    path = os.path.join(REPO, ".orchestrator", "topology", "current.json")
+    path = os.path.join(REPO, "examples", "loop_pipeline_topology.json")
     manifest = wt.load_manifest(path)
     result = wt.validate(manifest)
     assert result["valid"] is True, result["issues"]

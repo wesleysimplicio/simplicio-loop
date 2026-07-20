@@ -22,8 +22,6 @@ covered by the last test in this file.
 import json
 import subprocess
 
-import pytest
-
 from simplicio_loop import runner as runner_mod
 from simplicio_loop.agent_contract import build_context_pack
 from simplicio_loop.remote_queue import SQLiteRemoteQueue
@@ -105,7 +103,7 @@ def _arm_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(
         runner_mod, "_changed_paths",
         lambda path: (["src/app.py"]
-                      if (path_ := (repo / "src" / "app.py")).read_text(encoding="utf-8")
+                      if (repo / "src" / "app.py").read_text(encoding="utf-8")
                       != "def main():\n    return 'ok'\n" else []),
     )
 
@@ -212,6 +210,7 @@ def test_guarded_dispatch_and_auto_merge_are_wired_end_to_end(tmp_path, monkeypa
         (0, _pr_view_json(state="OPEN", mergeable="MERGEABLE", mergeStateStatus="CLEAN"), ""),  # poll
         (0, "", ""),  # pr merge
         (0, _pr_view_json(state="MERGED", mergeCommit={"oid": "deadbeef"}, baseRefName="main"), ""),  # reconcile
+        (0, "[]", ""),  # post-merge open-PR reconciliation finds no survivor
     ])
 
     real_merge_executor = runner_mod.MergeExecutor
@@ -256,7 +255,7 @@ def test_guarded_dispatch_and_auto_merge_are_wired_end_to_end(tmp_path, monkeypa
     # The scripted `gh` transport actually ran the full sequence -- proves this is the real
     # MergeExecutor.merge()/reconcile() call path, not a stub returning canned success.
     kinds = [call[1] if len(call) > 1 else "" for call in ghrunner.calls]
-    assert kinds == ["pr", "pr", "pr", "pr", "pr"]
+    assert kinds == ["pr", "pr", "pr", "pr", "pr", "pr"]
     assert any("create" in call for call in ghrunner.calls)
     assert any("merge" in call for call in ghrunner.calls if "view" not in call)
 
@@ -278,8 +277,6 @@ def test_lease_lost_during_guarded_execution_is_reported_distinctly(tmp_path, mo
     }
 
     from simplicio_loop.work_item_claims import AttemptCoordinator, LeaseLostDuringExecution
-
-    real_run_guarded = AttemptCoordinator.run_guarded
 
     def stolen_run_guarded(self, attempt, argv, **kwargs):
         # Simulate another worker winning the fence the instant before the guard's

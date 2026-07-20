@@ -24,10 +24,10 @@ resumes from the journal.
 `orient_clamp.py` works as-is in the terminal. Reference it in the rules file so the agent
 routes heavy build/test/diff commands through it.
 
-## Native bind — MCP (REQUIRED)
+## Native bind — MCP (optional)
 
-`simplicio-runtime` native binding is **REQUIRED** on Antigravity — a missing/unreachable bind
-BLOCKS the loop preflight (CLAUDE.md § Hooks).
+`simplicio-runtime` native binding is optional on Antigravity. A missing/unreachable bind reports
+explicit degraded mode while the standalone loop remains available.
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global

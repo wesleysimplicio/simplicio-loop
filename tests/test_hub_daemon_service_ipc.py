@@ -155,7 +155,7 @@ def test_resource_governor_defers_an_over_budget_job_over_ipc() -> None:
         daemon.stop()
 
 
-def test_hub_submit_over_a_real_unix_socket_transport() -> None:
+def test_hub_submit_over_a_real_unix_socket_transport(require_af_unix) -> None:
     """The in-process tests above prove HubService's wiring; this proves it also works
     through the REAL IPC transport (Unix domain socket), not just direct dict dispatch."""
     if default_transport() != "unix":

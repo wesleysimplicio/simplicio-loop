@@ -239,8 +239,15 @@ def test_detect_scan_os_graceful_skip_without_psutil(monkeypatch):
     assert rc == 3
 
 
+@pytest.mark.external_integration
 def test_detect_scan_os_real_psutil_when_available():
-    pytest.importorskip("psutil")
+    try:
+        __import__("psutil")
+    except ImportError:
+        pytest.skip(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[psutil]: "
+            "install psutil to exercise the live operating-system process scan"
+        )
     opts = Opts()
     opts.scan_os = True
     opts.input = None

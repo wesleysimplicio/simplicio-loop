@@ -31,10 +31,10 @@ Detection and termination are decoupled — neither parses the other's state inl
 `orient_clamp.py` works as-is. For automatic clamping, add a `beforeShellExecution`-style
 rewrite in your Cursor hooks pointing at `orient_rewrite.py` (opt-in; conservative + fail-open).
 
-## Native bind — MCP / rules (REQUIRED)
+## Native bind — MCP / rules (optional)
 
-`simplicio-runtime` native binding is **REQUIRED** on Cursor — a missing/unreachable bind BLOCKS
-the loop preflight (CLAUDE.md § Hooks):
+`simplicio-runtime` native binding is optional on Cursor. A missing/unreachable bind reports
+explicit degraded mode while the standalone loop remains available:
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global   # registers Cursor's MCP config

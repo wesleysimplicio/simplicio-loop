@@ -73,18 +73,12 @@ turn×event/runtime×level tables: `.claude/skills/simplicio-loop/references/pro
 
 ## Tests & local checks (no paid CI)
 
-`python3 scripts/check.py` runs the whole gate locally: the `tests/` suite (worker `selftest`s + an
-e2e of the loop driver proving it stops on EVIDENCE, ignores a bare `<promise>`, stops on the cap;
-+ producers BLOCK, never fake-pass, when a toolchain is absent), `scripts/claims_audit.py`
-(referenced scripts exist · extension-point count consistent · cited commands run · `_bundle ≡
-source`), and the **token/context budget guard** (`scripts/token_budget.py`, #121) — estimates
-tokens for SKILL.md/AGENTS.md/CLAUDE.md/the largest scripts and FAILS on a regression past the
-committed baseline (`scripts/token_budget_baseline.json`), so a doc/script that quietly balloons
-in size on a big refactor is caught the same way a broken test would (`--token-budget` runs it
-alone; `--update-baseline` regenerates the baseline after a deliberate, reviewed size change).
-Self-runs on bare python3 (no pytest needed, no `tiktoken` needed — a stdlib chars/4 heuristic is
-the default estimator); `pip install "simplicio-loop[dev]"` adds pytest. Wire as a git pre-push
-hook to keep work honest with zero CI cost.
+`python3 scripts/check.py` runs the local gate: the pytest suite (worker `selftest`s + an e2e of
+the loop driver), claims audit, mirror parity, loop/clean-environment contracts, token/repository
+budgets, and portable contract validation. `pytest` is mandatory for this command: install the
+development extra with `pip install "simplicio-loop[dev]"`; a missing or timed-out probe fails
+with a typed reason rather than falling back to direct test-module execution. GitHub Actions is
+not required or accepted as gate evidence; wire the local gate as a git pre-push hook when desired.
 
 ## Install (this or another project)
 

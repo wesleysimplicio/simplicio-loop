@@ -419,15 +419,16 @@ class HubDaemon:
                 )
             except (TypeError, ValueError, ProcessSpecError) as exc:
                 raise HubProtocolError(f"invalid ProcessSpec: {exc}") from exc
-            registered: Dict[str, int] = {}
+            registered: Dict[str, Any] = {}
 
             def on_spawned(process: Any) -> None:
                 registered["pid"] = process.pid
-                self.process_registry.register(
+                registered["process_identity"] = self.process_registry.register(
                     process.pid,
                     lease_id=spec.idempotency_key or f"hub-execute-{envelope.request_id}",
                     spec_hash=spec.spec_hash,
                     argv=spec.argv,
+                    dedicated_process_group=os.name != "nt",
                 )
 
             lease_id = spec.idempotency_key or f"hub-execute-{envelope.request_id}"
@@ -437,7 +438,11 @@ class HubDaemon:
                 raise HubError(f"supervisor execution failed: {exc}") from exc
             finally:
                 if "pid" in registered:
-                    self.process_registry.unregister(registered["pid"])
+                    self.process_registry.unregister(
+                        registered["pid"],
+                        lease_id=lease_id,
+                        process_identity=registered.get("process_identity"),
+                    )
             return {
                 "ok": True, "backend": backend_name(), "result": result.to_dict(),
                 "lease_id": lease_id,

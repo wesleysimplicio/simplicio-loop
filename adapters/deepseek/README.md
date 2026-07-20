@@ -26,10 +26,10 @@ conditions (evidence-gated promise, cap, spindle handoff, STOP) as any self-pace
 
 `orient_clamp.py` works as-is: `python3 hooks/orient_clamp.py -- <build/test/diff command>`.
 
-## Native bind — MCP (REQUIRED, best-effort wiring)
+## Native bind — MCP (optional, best-effort wiring)
 
-`simplicio-runtime` native binding is **REQUIRED** per CLAUDE.md § Hooks — the loop BLOCKS if the
-`simplicio` binary/MCP server is missing or unreachable, regardless of host.
+`simplicio-runtime` native binding is optional on DeepSeek. A missing/unreachable bind reports
+explicit degraded mode while the standalone loop remains available.
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global

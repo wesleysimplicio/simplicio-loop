@@ -47,6 +47,17 @@ def test_discover_only_matches_the_exact_suffix(tmp_path):
     assert [os.path.basename(f) for f in uncategorized] == ["test_c_plain.py"]
 
 
+def test_discover_paths_are_relative_to_the_supplied_repository_not_this_checkout(tmp_path):
+    repo = tmp_path / "fixture-repo"
+    tests_dir = repo / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "test_probe_unit.py").write_text("def test_probe(): pass\n", encoding="utf-8")
+
+    assert tc.discover("unit", tests_dir=str(tests_dir), repo=str(repo)) == ["tests/test_probe_unit.py"]
+    # Supplying just a tests directory has the same fixture-local behavior.
+    assert tc.discover("unit", tests_dir=str(tests_dir)) == ["tests/test_probe_unit.py"]
+
+
 def test_discover_and_uncategorized_partition_every_real_test_file_exactly_once():
     all_files = tc._list_test_files(tc.TESTS_DIR)
     per_category = {c: tc.discover(c) for c in tc.CATEGORIES}
@@ -72,19 +83,51 @@ def test_run_category_reports_blocked_with_zero_files_and_never_a_false_pass(tmp
 
 
 def test_run_category_system_lane_passes_for_real(tmp_path):
-    # `system` currently has exactly one real, fast file in this repo -- exercise the real thing.
-    report_path = tmp_path / "system-report.json"
-    proc = subprocess.run(
-        [PY, os.path.join(REPO, "scripts", "test_categories.py"), "run",
-         "--category", "system", "--emit-json", str(report_path)],
-        cwd=REPO, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
+    # Exercise a real pytest subprocess against a bounded fixture repository.
+    # Running this meta-gate against the repository's growing system lane would
+    # recursively turn one unit test into another broad suite invocation.
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_probe_system.py").write_text(
+        "def test_probe():\n    assert 2 + 2 == 4\n", encoding="utf-8"
     )
-    assert proc.returncode == 0
-    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload = tc.run_category("system", repo=str(tmp_path), timeout=10)
     assert payload["category"] == "system"
     assert payload["status"] == "pass"
     assert payload["ok"] is True
-    assert payload["files"] == ["tests/test_quality_matrix_system.py"]
+    assert [os.path.basename(path) for path in payload["files"]] == ["test_probe_system.py"]
+
+
+def test_run_category_blocks_a_zero_exit_when_every_test_is_skipped(tmp_path):
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_skip_unit.py").write_text(
+        "import pytest\n\ndef test_skip():\n    pytest.skip('not runnable')\n", encoding="utf-8"
+    )
+    payload = tc.run_category("unit", repo=str(tmp_path), timeout=10)
+    assert payload["status"] == "blocked"
+    assert payload["ok"] is False
+    assert payload["returncode"] == 0
+    assert payload["pytest_summary"]["executed"] == 0
+
+
+def test_pytest_summary_ignores_test_output_that_claims_a_pass():
+    summary = tc._pytest_summary("user output: 99 passed\n1 skipped in 0.01s\n")
+    assert summary["passed"] == 0
+    assert summary["skipped"] == 1
+    assert summary["executed"] == 0
+
+
+def test_run_category_requires_explicit_deselection_acknowledgement(tmp_path):
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_select_unit.py").write_text("def test_probe(): pass\n", encoding="utf-8")
+    blocked = tc.run_category("unit", repo=str(tmp_path), extra_pytest_args=["-k", "missing"], timeout=10)
+    assert blocked["status"] == "blocked"
+    assert blocked["external_selection"] is True
+    allowed = tc.run_category("unit", repo=str(tmp_path), extra_pytest_args=["-k", "probe"],
+                              allow_deselection=True, timeout=10)
+    assert allowed["status"] == "pass"
 
 
 def test_cli_status_reports_all_five_buckets():

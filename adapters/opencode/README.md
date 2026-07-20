@@ -27,10 +27,11 @@ spindle handoff, or explicit STOP.
 
 `orient_clamp.py` works as-is. Reference it in `AGENTS.md` so heavy commands are clamped.
 
-## Native bind — MCP (REQUIRED)
+## Native bind — MCP (optional)
 
-`simplicio-runtime` native binding is **REQUIRED** on OpenCode — a missing/unreachable bind
-BLOCKS the loop preflight (CLAUDE.md § Hooks). Add this to `opencode.json`:
+`simplicio-runtime` native binding is optional on OpenCode. A missing/unreachable bind reports
+explicit degraded mode while the standalone loop remains available. Add this to `opencode.json`
+when native capabilities are needed:
 
 ```json
 { "mcp": { "simplicio": { "type": "local", "command": ["simplicio", "serve", "--mcp", "--stdio"] } } }

@@ -1,10 +1,25 @@
 """System contract for map-service identity against the real Git and mapper CLIs."""
+from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from simplicio_loop.map_service import MapServiceRegistry, RepositoryIdentity
+
+pytestmark = [
+    pytest.mark.external_integration,
+    pytest.mark.skipif(
+        shutil.which("simplicio-mapper") is None,
+        reason=(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[installed_mapper]: "
+            "the real mapper lane requires simplicio-mapper on PATH"
+        ),
+    ),
+]
 
 
 def _run(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:

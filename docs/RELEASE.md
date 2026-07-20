@@ -64,9 +64,9 @@ blocked. It exists so nobody has to reconstruct that history from the issue thre
 
 ## What remains blocked, and why
 
-`.github/workflows/` was removed repo-wide in PR #311 after a GitHub Actions billing lockout.
-Per this repo's `CLAUDE.md`, CI is being centralized around `simplicio-runtime` instead of GitHub
-Actions, but that replacement CI substrate does not exist yet in this repository. Issue #292's
+Two workflows currently exist under `.github/workflows/` (`simplicio-status-sync.yml` and
+`windows-progress-smoke.yml`), but neither is an OIDC or release gate and neither was executed or
+used as evidence for this work. Issue #292's
 Fases 2, 3, 5, 6, 8, and most of 9 are written against a GitHub-Actions-shaped pipeline
 specifically:
 
@@ -99,8 +99,7 @@ specifically:
 billing-locked) or claim OIDC/Sigstore coverage that doesn't exist, this change implements the
 platform-agnostic subset of Fase 4, Fase 6, and Fase 7 as real, tested, local CLI tools (see
 docs/SUPPLY_CHAIN.md), and leaves Fases 2/3/5/8, and the PyPI/npm legs of 6/9, explicitly open
-pending either (a) GitHub Actions billing being restored, or (b) `simplicio-runtime`'s replacement
-CI substrate landing with OIDC-equivalent capability.
+pending a CI trigger with OIDC-equivalent capability and the required release controls.
 
 This is now a formal, signed-off decision, not a running judgment call re-litigated every round:
 see `docs/adr/0004-release-oidc-trusted-publishing-permanently-blocked.md` for the durable ADR

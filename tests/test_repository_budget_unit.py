@@ -62,7 +62,10 @@ def test_check_mode_is_quiet_on_pass():
 def test_scratch_repo_new_baseline_grandfathers_current_oversized_file(tmp_path):
     scripts_dir = _init_scratch_repo(tmp_path)
     # A pre-existing oversized file, present before the baseline is ever written.
-    big = tmp_path / "legacy-asset.bin"
+    # Use a non-media extension so this test isolates baseline grandfathering.
+    # Raw media/archive paths are rejected by an independent governance rule
+    # even when their size was already known.
+    big = tmp_path / "legacy-asset.txt"
     big.write_bytes(b"x" * (3 * 1024 * 1024))
     _git_add_all(tmp_path)
 
@@ -73,7 +76,7 @@ def test_scratch_repo_new_baseline_grandfathers_current_oversized_file(tmp_path)
 
     with open(os.path.join(scripts_dir, "repository_budget_baseline.json"), encoding="utf-8") as f:
         baseline = json.load(f)
-    assert "legacy-asset.bin" in baseline["known_oversized_files"]
+    assert "legacy-asset.txt" in baseline["known_oversized_files"]
 
     # Now a plain check must PASS -- the file is grandfathered, not newly flagged.
     r2 = subprocess.run([sys.executable, os.path.join(scripts_dir, "repository_budget.py"),

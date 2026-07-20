@@ -11,11 +11,10 @@ Three capabilities decide how rich an adapter is:
 - **Loop drive** — how `simplicio-loop` re-feeds the goal: a real **stop-hook**, or the
   **self-paced** fallback (host scheduler / cron / `/loop`).
 - **Native bind** — whether `simplicio-runtime` (or a native command set) binds extension points
-  for near-zero-token determinism. It is **REQUIRED on every runtime** (CLAUDE.md § Hooks): the
-  `simplicio` binary/MCP server MUST be installed and reachable before the loop proceeds. A
-  missing/unreachable bind BLOCKS the loop at preflight — it no longer degrades to a silent
-  standard-tool fallback. See `docs/MCP_SETUP.md` for the per-host config table and each
-  adapter's "MCP config" section for the exact file path and snippet.
+  for near-zero-token determinism. It is optional on every runtime: a missing/unreachable bind is
+  reported as explicit degraded mode while the standalone loop remains usable. See
+  `docs/MCP_SETUP.md` for the per-host config table and each adapter's "MCP config" section for
+  the exact file path and snippet.
 
 `orient_clamp.py` (token economy) works on **all** runtimes with no wiring — it's just a wrapper.
 
@@ -28,11 +27,11 @@ format every release. This repo therefore adopts a **two-tier system**:
 
 Three runtimes are **verified mechanically on every commit** and enjoy real parity:
 
-| # | Runtime | Skill load | Loop drive | Hooks | Native bind (MCP config) | Feedback | Adapter |
+| # | Runtime | Skill load | Loop drive | Hooks | Optional native bind (MCP config) | Feedback | Adapter |
 |---|---|---|---|---|---|---|---|
-| 1 | **Claude Code** | `.claude/skills/` + `.claude-plugin/` | `Stop` hook | ✅ full | REQUIRED — `~/.claude.json` / `.mcp.json` | N1 (hook) + N3 | [claude](claude/README.md#mcp-config) |
-| 2 | **Codex** | `AGENTS.md` → `SKILL.md` | self-paced | ⚠️ partial | REQUIRED — `~/.codex/config.toml` | N2 (transcript) + N3 | [codex](codex/README.md#mcp-config) |
-| 3 | **Cursor** | `.cursor-plugin/` + `.claude/skills/` | `stop` + `afterAgentResponse` | ✅ full | REQUIRED — `.cursor/mcp.json` | N1 (hook) + N3 | [cursor](cursor/README.md#mcp-config) |
+| 1 | **Claude Code** | `.claude/skills/` + `.claude-plugin/` | `Stop` hook | ✅ full | optional — `~/.claude.json` / `.mcp.json` | N1 (hook) + N3 | [claude](claude/README.md#mcp-config) |
+| 2 | **Codex** | `AGENTS.md` → `SKILL.md` | self-paced | ⚠️ partial | optional — `~/.codex/config.toml` | N2 (transcript) + N3 | [codex](codex/README.md#mcp-config) |
+| 3 | **Cursor** | `.cursor-plugin/` + `.claude/skills/` | `stop` + `afterAgentResponse` | ✅ full | optional — `.cursor/mcp.json` | N1 (hook) + N3 | [cursor](cursor/README.md#mcp-config) |
 
 These three are covered by:
 - `scripts/verify_adapters.py` running against each tier-1 runtime's install contract
@@ -50,24 +49,25 @@ These three are covered by:
 ### Tier 2 — Best-effort (ungated)
 
 Twelve runtimes are documented and supported on a best-effort basis — contributions welcome,
-no gate, no parity promise per release. The native bind is REQUIRED here too (CLAUDE.md § Hooks);
-"best-effort" describes how well the *MCP config path itself* is verified on that host, not
-whether the bind can be skipped:
+no gate, no parity promise per release. The native bind is optional here too; "best-effort"
+describes how well the *MCP config path itself* is verified on that host. A missing bind is
+reported as degraded mode rather than preventing standalone operation. In the tables, a config
+path names how to enable the optional bind; it is not a precondition for the loop:
 
-| # | Runtime | Skill load | Loop drive | Hooks | Native bind (MCP config) | Feedback | Adapter |
+| # | Runtime | Skill load | Loop drive | Hooks | Optional native bind (MCP config) | Feedback | Adapter |
 |---|---|---|---|---|---|---|---|
-| 4 | **VS Code (Copilot)** | `.github/copilot-instructions.md` | self-paced (tasks) | ⚠️ tasks | REQUIRED — `.vscode/mcp.json` (`servers` key) | N2 (transcript) + N3 | [vscode](vscode/README.md#mcp-config) |
-| 5 | **Antigravity** | rules / `AGENTS.md` | self-paced | ⚠️ | REQUIRED — IDE MCP settings (path not verified) | N2 (transcript) + N3 | [antigravity](antigravity/README.md#mcp-config) |
-| 6 | **Kiro** | `.kiro/steering/` | self-paced (specs) | ⚠️ | REQUIRED — `.kiro/settings/mcp.json` | N2 (transcript) + N3 | [kiro](kiro/README.md#mcp-config) |
-| 7 | **OpenCode** | `AGENTS.md` + config | self-paced | ⚠️ | REQUIRED — `opencode.json` (`mcp` key) | N2 (transcript) + N3 | [opencode](opencode/README.md#mcp-config) |
-| 8 | **Gemini** (CLI / Code Assist) | `GEMINI.md` → `SKILL.md` | self-paced | ⚠️ | REQUIRED — `.gemini/settings.json` (CLI, verified); Code Assist not verified | N2 (transcript) + N3 | [gemini](gemini/README.md#mcp-config) |
-| 9 | **Kimi** | inlined conventions file | self-paced | ⚠️ | REQUIRED — no verified first-party config; best-effort | N2 (transcript) + N3 | [kimi](kimi/README.md#mcp-config) |
-| 10 | **Qwen** (Code / CLI) | `AGENTS.md`-equivalent | self-paced | ⚠️ | REQUIRED — `.qwen/settings.json` (best-effort, Gemini-CLI fork shape) | N2 (transcript) + N3 | [qwen](qwen/README.md#mcp-config) |
-| 11 | **DeepSeek** | inlined conventions file | self-paced | ⚠️ | REQUIRED — no first-party config; route via a wrapper's MCP client | N2 (transcript) + N3 | [deepseek](deepseek/README.md#mcp-config) |
-| 12 | **Aider** | `CONVENTIONS.md` (read) | self-paced | ❌ | REQUIRED — no host MCP client exists; the bind still gates on the `simplicio` binary itself | N2 (inlined transcript) + N3 | [aider](aider/README.md) |
-| 13 | **Simplicio Agent** *(formerly Hermes)* | native skill recall | native loop | ✅ native | REQUIRED — native extension points (no MCP shim needed) | N1-equiv (native tick) + N3 | [simplicio_agent](simplicio_agent/README.md) |
-| 14 | **OpenClaw** | plugin SDK / `skills/` | native scheduler | ✅ native | REQUIRED — **native** (plugin SDK) | N1-equiv (native tick) + N3 | [openclaw](openclaw/README.md) |
-| 15 | **Orca** | via inner agent (`.claude/skills/` + `AGENTS.md`) + skills registry | inner hook / self-paced (scheduled automations) | ⚠️ via inner agent | REQUIRED — Orca MCP registry / inner agent's own config | N1/N2 (inner agent) + N3 | [orca](orca/README.md#mcp-config) |
+| 4 | **VS Code (Copilot)** | `.github/copilot-instructions.md` | self-paced (tasks) | ⚠️ tasks | optional — `.vscode/mcp.json` (`servers` key) | N2 (transcript) + N3 | [vscode](vscode/README.md#mcp-config) |
+| 5 | **Antigravity** | rules / `AGENTS.md` | self-paced | ⚠️ | optional — IDE MCP settings (path not verified) | N2 (transcript) + N3 | [antigravity](antigravity/README.md#mcp-config) |
+| 6 | **Kiro** | `.kiro/steering/` | self-paced (specs) | ⚠️ | optional — `.kiro/settings/mcp.json` | N2 (transcript) + N3 | [kiro](kiro/README.md#mcp-config) |
+| 7 | **OpenCode** | `AGENTS.md` + config | self-paced | ⚠️ | optional — `opencode.json` (`mcp` key) | N2 (transcript) + N3 | [opencode](opencode/README.md#mcp-config) |
+| 8 | **Gemini** (CLI / Code Assist) | `GEMINI.md` → `SKILL.md` | self-paced | ⚠️ | optional — `.gemini/settings.json` (CLI, verified); Code Assist not verified | N2 (transcript) + N3 | [gemini](gemini/README.md#mcp-config) |
+| 9 | **Kimi** | inlined conventions file | self-paced | ⚠️ | optional — no verified first-party config; best-effort | N2 (transcript) + N3 | [kimi](kimi/README.md#mcp-config) |
+| 10 | **Qwen** (Code / CLI) | `AGENTS.md`-equivalent | self-paced | ⚠️ | optional — `.qwen/settings.json` (best-effort, Gemini-CLI fork shape) | N2 (transcript) + N3 | [qwen](qwen/README.md#mcp-config) |
+| 11 | **DeepSeek** | inlined conventions file | self-paced | ⚠️ | optional — no first-party config; route via a wrapper's MCP client | N2 (transcript) + N3 | [deepseek](deepseek/README.md#mcp-config) |
+| 12 | **Aider** | `CONVENTIONS.md` (read) | self-paced | ❌ | optional — no host MCP client; standalone LLM execution remains available | N2 (inlined transcript) + N3 | [aider](aider/README.md) |
+| 13 | **Simplicio Agent** *(formerly Hermes)* | native skill recall | native loop | ✅ native | optional — native extension points (no MCP shim needed) | N1-equiv (native tick) + N3 | [simplicio_agent](simplicio_agent/README.md) |
+| 14 | **OpenClaw** | plugin SDK / `skills/` | native scheduler | ✅ native | optional — **native** (plugin SDK) | N1-equiv (native tick) + N3 | [openclaw](openclaw/README.md) |
+| 15 | **Orca** | via inner agent (`.claude/skills/` + `AGENTS.md`) + skills registry | inner hook / self-paced (scheduled automations) | ⚠️ via inner agent | optional — Orca MCP registry / inner agent's own config | N1/N2 (inner agent) + N3 | [orca](orca/README.md#mcp-config) |
 
 Rows 9–11 (Kimi, Qwen, DeepSeek) and Antigravity's IDE-side config are explicitly
 **best-effort / community-reported, not gated** — see `docs/MCP_SETUP.md` for the verified-vs-
@@ -79,8 +79,8 @@ the compat window and will be removed after the deprecation threshold (one relea
 a regression report), per the adapter-rebrand rollback policy (#262).
 
 Legend: ✅ first-class · ⚠️ partial / via a generic mechanism · ❌ none (degrade to fallback).
-Native binds are **REQUIRED** on every runtime (CLAUDE.md § Hooks) — installing and driving the
-loop is gated on `simplicio-runtime` being reachable; the loop BLOCKS on preflight otherwise.
+Native binds are optional on every runtime. Missing native capabilities are reported as degraded
+mode; installing and driving the standalone loop remains available.
 
 ## Acompanhando o progresso (issue #303, EPIC #296)
 
@@ -118,9 +118,9 @@ pwsh scripts/install.ps1 <runtime> [-Global]      # Windows / pwsh
 ```
 
 The installer copies the 7 skills into the runtime's skills location and wires the loop hooks
-where supported. The native MCP/CLI bind (`simplicio-runtime`) is a **separate, REQUIRED** step —
-run `pip install -U simplicio-installer && simplicio install --global` and confirm with
-`simplicio doctor --json` before driving the loop; see `docs/MCP_SETUP.md`.
+where supported. The native MCP/CLI bind (`simplicio-runtime`) is an optional enhancement — run
+`pip install -U simplicio-installer && simplicio install --global` and confirm with
+`simplicio doctor --json` when native capabilities are needed; see `docs/MCP_SETUP.md`.
 
 ## Loop→Runtime contract adapter
 
@@ -134,19 +134,16 @@ available only with an explicit `standalone=True` choice and never claims runtim
 - **No stop-hook** → the loop self-paces via the host scheduler (`simplicio-loop` "No-hook
   fallback"). Same exit conditions (evidence-gated promise, cap, STOP). This degradation is
   always allowed — it's a drive-mechanism choice, not a policy violation.
-- **No native bind** → **the loop BLOCKS.** `simplicio-runtime` is REQUIRED on every runtime
-  (CLAUDE.md § Hooks): if the `simplicio` binary/MCP server is missing or unreachable, the loop
-  emits a blocked preflight event and stops with `simplicio-loop: BLOCKED — missing
-  simplicio-runtime; install it before continuing`, exactly like a missing
-  `simplicio-mapper`/`simplicio-dev-cli` operator. This is no longer a silent, always-allowed
-  fallback — install and verify the bind (`simplicio doctor --json`) before driving the loop on
-  any host.
+- **No native bind** → explicit **degraded mode**. If the `simplicio` binary/MCP server is missing
+  or unreachable, the adapter reports degraded preflight status and continues with standalone
+  capabilities; install and verify the bind (`simplicio doctor --json`) when native features are
+  needed for a task.
 - **No skill loader** (e.g. Aider) → the adapter inlines `SKILL.md` as the runtime's
-  conventions/instructions file. Larger context, identical behavior. The native-bind requirement
-  above still applies independently of the skill-loading mechanism.
+  conventions/instructions file. Larger context, identical behavior. Native capabilities remain
+  optional independently of the skill-loading mechanism.
 
 The promise: **same protocol, same gates, same safety on all 15 — Tier 1 verified mechanically,
-Tier 2 best-effort with contributions welcome, native bind REQUIRED everywhere.**
+Tier 2 best-effort with contributions welcome, optional native binds with explicit degradation.**
 
 ## Verifying an adapter
 

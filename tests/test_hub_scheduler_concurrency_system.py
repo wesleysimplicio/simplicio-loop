@@ -19,7 +19,9 @@ def jains_fairness_index(values):
     return (total * total) / (len(values) * total_sq)
 
 
-def test_concurrent_clients_submitting_over_real_ipc_socket_are_served_fairly() -> None:
+def test_concurrent_clients_submitting_over_real_ipc_socket_are_served_fairly(
+    require_default_hub_transport,
+) -> None:
     """Multiple simulated clients submit and claim through the real Unix-socket IPC
     transport (HubSocketServer/HubSocketClient), not direct in-memory scheduler calls,
     concurrently from separate threads acting as separate processes would. Proves the

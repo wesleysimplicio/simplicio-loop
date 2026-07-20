@@ -23,6 +23,8 @@ Usage:
                                                             # docs/REPO_SIZE_REPORT.md +
                                                             # docs/repo_size_report.json
     python3 scripts/repo_history_scan.py --json            # machine-readable report to stdout
+    python3 scripts/repo_history_scan.py --repo /tmp/clone --output-dir /tmp/reports
+                                                            # scan/write a chosen clone and directory
 
 Exit codes: 0 on a successful scan (this is a reporting tool, not a gate — it never fails a
 build; `scripts/repository_budget.py` is the gate for NEW growth).
@@ -43,8 +45,8 @@ REPORT_JSON = os.path.join(DOCS_DIR, "repo_size_report.json")
 DEFAULT_TOP_N = 30
 
 
-def _run_git(args, **kw):
-    r = subprocess.run(["git"] + args, cwd=REPO, capture_output=True, text=True, **kw)
+def _run_git(args, repo=None, **kw):
+    r = subprocess.run(["git"] + args, cwd=repo or REPO, capture_output=True, text=True, **kw)
     if r.returncode != 0:
         raise RuntimeError("git %s failed: %s" % (" ".join(args), r.stderr.strip()))
     return r.stdout
@@ -59,10 +61,10 @@ def _fmt_bytes(n):
     return "%.1fTB" % n
 
 
-def count_objects():
+def count_objects(repo=None):
     """Parse `git count-objects -vH` into a dict — the REAL packed+loose totals for the whole
     object database (what GitHub's reported clone size is derived from), not an estimate."""
-    out = _run_git(["count-objects", "-v", "-H"])
+    out = _run_git(["count-objects", "-v", "-H"], repo=repo)
     data = {}
     for line in out.splitlines():
         if ":" not in line:
@@ -84,7 +86,7 @@ def _parse_size(s):
     return int(num * mult.get(unit, 1))
 
 
-def iter_all_blob_paths():
+def iter_all_blob_paths(repo=None):
     """Yield (sha, path) for every (blob, path) pair ever reachable from any local ref.
 
     `git rev-list --objects --all` walks every commit/tree reachable from every ref (branches,
@@ -92,7 +94,7 @@ def iter_all_blob_paths():
     real historical footprint is measured — a blob deleted from HEAD long ago but still reachable
     from an old tag/branch still counts against clone size, and this walk still finds it.
     """
-    out = _run_git(["rev-list", "--objects", "--all"])
+    out = _run_git(["rev-list", "--objects", "--all"], repo=repo)
     for line in out.splitlines():
         line = line.rstrip("\n")
         if not line:
@@ -104,7 +106,7 @@ def iter_all_blob_paths():
             yield sha, path
 
 
-def batch_check_sizes(shas):
+def batch_check_sizes(shas, repo=None):
     """Resolve a list of object SHAs to (sha, type, size) via a single `git cat-file
     --batch-check` streaming call — this is the O(1)-subprocess way to size tens of thousands of
     objects; per-object subprocess calls would be far too slow for a repo this size."""
@@ -112,7 +114,7 @@ def batch_check_sizes(shas):
         return {}
     proc = subprocess.Popen(
         ["git", "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
-        cwd=REPO, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        cwd=repo or REPO, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
     )
     stdin_payload = "\n".join(shas) + "\n"
     stdout, _ = proc.communicate(stdin_payload)
@@ -130,14 +132,14 @@ def batch_check_sizes(shas):
     return result
 
 
-def scan(top_n=DEFAULT_TOP_N):
+def scan(top_n=DEFAULT_TOP_N, repo=None):
     # Map each blob sha -> the set of paths it was ever committed under (a blob can be renamed;
     # we report every historical path it carried, so the reader can trace "what file was this").
     blob_paths = defaultdict(set)
-    for sha, path in iter_all_blob_paths():
+    for sha, path in iter_all_blob_paths(repo=repo):
         blob_paths[sha].add(path)
 
-    sized = batch_check_sizes(list(blob_paths.keys()))
+    sized = batch_check_sizes(list(blob_paths.keys()), repo=repo)
     blobs = []
     total_blob_bytes = 0
     ext_totals = defaultdict(lambda: {"count": 0, "bytes": 0})
@@ -160,7 +162,7 @@ def scan(top_n=DEFAULT_TOP_N):
         key=lambda e: e["bytes"], reverse=True,
     )
 
-    counts = count_objects()
+    counts = count_objects(repo=repo)
     size_pack_bytes = _parse_size(counts.get("size-pack", ""))
     size_loose_bytes = _parse_size(counts.get("size", ""))
 
@@ -244,18 +246,39 @@ def render_markdown(report):
     return "\n".join(lines) + "\n"
 
 
-def write_report(report):
-    os.makedirs(DOCS_DIR, exist_ok=True)
-    with open(REPORT_JSON, "w", encoding="utf-8") as f:
+def _report_paths(output_dir=None):
+    directory = output_dir or DOCS_DIR
+    return (os.path.join(directory, "REPO_SIZE_REPORT.md"),
+            os.path.join(directory, "repo_size_report.json"))
+
+
+def write_report(report, output_dir=None):
+    """Write a report outside the repository when ``output_dir`` is supplied."""
+    report_md, report_json = _report_paths(output_dir)
+    os.makedirs(os.path.dirname(report_md), exist_ok=True)
+    with open(report_json, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, sort_keys=True)
         f.write("\n")
-    with open(REPORT_MD, "w", encoding="utf-8") as f:
+    with open(report_md, "w", encoding="utf-8") as f:
         f.write(render_markdown(report))
+    return report_md, report_json
 
 
 def main(argv=None):
     args = list(argv if argv is not None else sys.argv[1:])
     top_n = DEFAULT_TOP_N
+    repo = None
+    output_dir = None
+    for option, target in (("--repo", "repo"), ("--output-dir", "output_dir")):
+        if option in args:
+            idx = args.index(option)
+            if idx + 1 >= len(args):
+                print("%s requires a path" % option, file=sys.stderr)
+                return 2
+            if target == "repo":
+                repo = os.path.abspath(args[idx + 1])
+            else:
+                output_dir = os.path.abspath(args[idx + 1])
     if "--top" in args:
         idx = args.index("--top")
         if idx + 1 < len(args):
@@ -266,12 +289,12 @@ def main(argv=None):
     as_json = "--json" in args
     do_write = "--write-report" in args
 
-    report = scan(top_n=top_n)
+    report = scan(top_n=top_n, repo=repo)
 
     if do_write:
-        write_report(report)
+        report_md, report_json = write_report(report, output_dir=output_dir)
         print("wrote %s + %s" % (
-            os.path.relpath(REPORT_MD, REPO), os.path.relpath(REPORT_JSON, REPO)))
+            report_md, report_json))
 
     if as_json:
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -289,26 +312,43 @@ def main(argv=None):
     return 0
 
 
+def _make_selftest_repo(parent):
+    """Create a tiny, disposable Git history with both ordinary and candidate blobs."""
+    repo = os.path.join(parent, "fixture")
+    os.makedirs(repo)
+    _run_git(["init", "-q"], repo=repo)
+    _run_git(["config", "user.email", "selftest@example.invalid"], repo=repo)
+    _run_git(["config", "user.name", "repo-history selftest"], repo=repo)
+    for path, data in (("README.md", b"fixture\n"),
+                       ("video/out/demo.mp4", b"m" * 4096),
+                       ("rust/target/cache.bin", b"r" * 2048)):
+        full_path = os.path.join(repo, path)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "wb") as f:
+            f.write(data)
+    _run_git(["add", "."], repo=repo)
+    _run_git(["commit", "-q", "-m", "add disposable artifacts"], repo=repo)
+    os.remove(os.path.join(repo, "video", "out", "demo.mp4"))
+    _run_git(["add", "-A"], repo=repo)
+    _run_git(["commit", "-q", "-m", "remove generated video"], repo=repo)
+    return repo
+
+
 def selftest():
-    """Cheap in-process sanity check that the scan plumbing works against THIS repo's real
-    object database (no mocking — the whole point of this tool is real numbers)."""
+    """Run the real scan against a tiny disposable Git repository."""
     checks = []
     try:
-        report = scan(top_n=5)
+        import tempfile
+        with tempfile.TemporaryDirectory() as parent:
+            report = scan(top_n=5, repo=_make_selftest_repo(parent))
         checks.append(("scan() returns a report dict", isinstance(report, dict)))
-        checks.append(("distinct_blobs_ever_committed > 0",
-                        report["distinct_blobs_ever_committed"] > 0))
-        checks.append(("total_historical_blob_bytes > 0",
-                        report["total_historical_blob_bytes"] > 0))
-        checks.append(("top_blobs sorted descending", all(
+        checks.append(("historical deleted blob is found", report["distinct_blobs_ever_committed"] >= 3))
+        checks.append(("top blobs are sorted descending", all(
             report["top_blobs"][i]["size_bytes"] >= report["top_blobs"][i + 1]["size_bytes"]
-            for i in range(len(report["top_blobs"]) - 1)
-        )))
-        checks.append(("git_count_objects has size-pack or size",
-                        "size-pack" in report["git_count_objects"]
-                        or "size" in report["git_count_objects"]))
-        md = render_markdown(report)
-        checks.append(("render_markdown produces non-empty text", len(md) > 100))
+            for i in range(len(report["top_blobs"]) - 1))))
+        checks.append(("generated media is classified", any(
+            b["paths"] == ["video/out/demo.mp4"] for b in report["top_blobs"])))
+        checks.append(("render_markdown produces non-empty text", len(render_markdown(report)) > 100))
     except Exception as exc:  # pragma: no cover - defensive
         checks.append(("scan() raised: %s" % exc, False))
     ok = all(v for _, v in checks)
@@ -324,7 +364,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--describe-cli":
         print(json.dumps({
             "verbs": ["selftest"],
-            "flags": ["--top", "--json", "--write-report", "--describe-cli"],
+            "flags": ["--top", "--json", "--write-report", "--repo", "--output-dir", "--describe-cli"],
         }))
         sys.exit(0)
     sys.exit(main())

@@ -1,11 +1,10 @@
 # Supply chain — what's real, what's blocked (#292)
 
 Issue #292 asks for CI-attested checksums, SBOM, provenance, keyless/OIDC signing, and clean-room
-install smokes against real registries. `.github/workflows/` was removed repo-wide in PR #311
-(GitHub Actions billing lockout); there is currently no CI substrate in this repository capable of
-holding an OIDC token or running a build-once job. This document is the honest scope line: what
-this repo can prove **today**, locally, and what genuinely requires CI/OIDC/a registry publish
-that doesn't exist here.
+install smokes against real registries. This repository contains GitHub workflow files, but they
+are not a required gate or evidence source for this work and were not executed here. This document
+is the honest scope line: what this repo can prove **today**, locally, and what genuinely requires
+CI/OIDC/a registry publish beyond the local evidence available here.
 
 ## Implemented now (real, tested, run-today)
 

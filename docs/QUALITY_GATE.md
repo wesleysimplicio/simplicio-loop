@@ -25,6 +25,21 @@ No code path marks a work item `done`/`COMPLETE` while skipping this: `evaluate_
 `quality-matrix.json` unconditionally (issue #278's baseline, extended by #283). This document
 covers the pieces #283 specifically added or is still missing.
 
+### Hermetic core subprocess contract
+
+`scripts/check.py --core-gate` runs each phase with a bounded subprocess lifecycle.
+On Linux with procfs it additionally enables a subreaper and verifies escaped
+descendants (including `setsid`/double-fork cases). On macOS and Windows the
+same interface remains usable with a fresh process group; Windows terminates a
+timed-out tree through `taskkill /T /F` when available and falls back to
+terminating the phase leader if that command fails; POSIX uses the process
+group. Those portable backends guarantee bounded capture and a terminated
+leader, but do not claim whole-tree cleanup after a Windows `taskkill` failure
+or Linux-only escaped-descendant discovery. A Linux host whose required
+procfs/subreaper capability is unavailable reports the typed
+`CAPABILITY_UNAVAILABLE[process_containment]` result instead of silently
+claiming that the phase was contained.
+
 ## 2. Per-category test-runner split (`scripts/test_categories.py`)
 
 **What exists:** `unit` / `integration` / `system` / `regression` are now separately invokable,
@@ -145,14 +160,14 @@ explicitly scoped OUT rather than stubbed. If `simplicio-loop` is ever used to g
 project written in one of those languages, the adapter work belongs there, informed by that
 project's real toolchain, not invented here against nothing.
 
-## 6. CI job separation — moot (no CI substrate)
+## 6. CI job separation — not evidenced by this work
 
 Issue #283 §13 asks for separate required GitHub Actions jobs (`unit`/`integration`/`system`/
 `regression`/`coverage`/`benchmark`/`quality-gate`) with branch-protection wiring.
-`.github/workflows/` was removed repository-wide in #311 for unrelated billing reasons — there is
-currently no CI running on this repo's PRs at all, so there is nothing to split into jobs. The
-per-category split in §2 above is exactly the piece that *would* back those jobs the moment CI
-returns (`python3 scripts/test_categories.py run --category unit` etc. as a job step per lane).
+Two workflows currently exist (`simplicio-status-sync.yml` and `windows-progress-smoke.yml`), but
+they do not provide this required-job separation, OIDC, or a release gate; they were not executed
+or used as evidence for this work. The per-category split in §2 is the local piece that could back
+future jobs (`python3 scripts/test_categories.py run --category unit` etc. as a job step per lane).
 
 ## 7. Verifying it locally
 

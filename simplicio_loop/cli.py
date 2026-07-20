@@ -249,6 +249,9 @@ def _render_status_text(payload: dict) -> str:
 def status(repo: str, run_id: str, as_json: bool = False, as_text: bool = False) -> int:
     try:
         payload = read_status(repo, run_id)
+        if (payload.get("state") or {}).get("phase") == "no_runs":
+            payload.update({"schema": "simplicio.status/v1", "status": "UNVERIFIED",
+                            "reason_code": "run_missing"})
     except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
         payload = {"schema": "simplicio.status/v1", "status": "UNVERIFIED",
                    "reason_code": "run_missing", "error": str(exc)}
@@ -538,7 +541,7 @@ def main(argv=None) -> int:
     p_run.add_argument("--task", required=True, help="markdown task file")
     p_run.add_argument("--repo", default=".", help="repository root")
     p_run.add_argument(
-        "--delivery", default="verified",
+        "--delivery", default="verified", choices=DELIVERY_ORDER[1:],
         metavar="{" + ",".join(DELIVERY_ORDER[1:]) + "}",
         help=(
             "requested delivery target, one of: " + ", ".join(DELIVERY_ORDER[1:])

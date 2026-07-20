@@ -78,31 +78,79 @@ class BudgetLedger:
         self.budget = budget
         self._lock = threading.RLock()
         with self._connect() as db:
-            db.executescript(
-                """CREATE TABLE IF NOT EXISTS budget_runs (
+            # Serialize schema discovery, migration and envelope creation in a
+            # single SQLite transaction.  DDL is transactional when issued as
+            # individual statements; ``executescript`` would implicitly commit
+            # and reopen the rename/create race between constructors.
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                db.execute("""CREATE TABLE IF NOT EXISTS budget_runs (
                     run_id TEXT PRIMARY KEY, envelope TEXT NOT NULL,
                     spent_tokens INTEGER NOT NULL DEFAULT 0,
                     spent_calls INTEGER NOT NULL DEFAULT 0,
                     spent_cost INTEGER NOT NULL DEFAULT 0,
                     spent_latency INTEGER NOT NULL DEFAULT 0,
-                    created_at REAL NOT NULL);
-                CREATE TABLE IF NOT EXISTS budget_reservations (
+                    created_at REAL NOT NULL)""")
+                db.execute("""CREATE TABLE IF NOT EXISTS budget_reservations (
                     reservation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL,
                     work_item_id TEXT NOT NULL, estimate_tokens INTEGER NOT NULL,
                     estimate_calls INTEGER NOT NULL, estimate_cost INTEGER NOT NULL,
                     estimate_latency INTEGER NOT NULL, state TEXT NOT NULL,
-                    created_at REAL NOT NULL, expires_at REAL);
-                CREATE TABLE IF NOT EXISTS budget_settlements (
-                    reservation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL,
-                    payload TEXT NOT NULL, created_at REAL NOT NULL);
-                """
-            )
-            existing = db.execute("SELECT envelope FROM budget_runs WHERE run_id=?", (budget.run_id,)).fetchone()
-            if existing is None:
-                db.execute("INSERT INTO budget_runs(run_id,envelope,created_at) VALUES(?,?,?)",
-                           (budget.run_id, _json(budget.as_dict()), _now()))
-            elif json.loads(existing[0]) != budget.as_dict():
-                raise BudgetError("run budget is immutable after freeze")
+                    created_at REAL NOT NULL, expires_at REAL)""")
+                db.execute("""CREATE TABLE IF NOT EXISTS budget_settlements (
+                    reservation_id TEXT NOT NULL, run_id TEXT NOT NULL,
+                    payload TEXT NOT NULL, created_at REAL NOT NULL,
+                    PRIMARY KEY (run_id, reservation_id))""")
+                self._migrate_settlement_key(db)
+                # Concurrent workers can construct the same durable ledger at once. The
+                # idempotent insert makes envelope initialization atomic at SQLite's
+                # uniqueness boundary; the read below still rejects drift.
+                db.execute(
+                    "INSERT OR IGNORE INTO budget_runs(run_id,envelope,created_at) VALUES(?,?,?)",
+                    (budget.run_id, _json(budget.as_dict()), _now()),
+                )
+                existing = db.execute(
+                    "SELECT envelope FROM budget_runs WHERE run_id=?", (budget.run_id,),
+                ).fetchone()
+                if json.loads(existing[0]) != budget.as_dict():
+                    raise BudgetError("run budget is immutable after freeze")
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+            db.execute("COMMIT")
+
+    @staticmethod
+    def _migrate_settlement_key(db: sqlite3.Connection) -> None:
+        """Upgrade legacy global receipt ids to run-scoped idempotency keys."""
+        columns = db.execute("PRAGMA table_info(budget_settlements)").fetchall()
+        primary_key = [row["name"] for row in sorted(columns, key=lambda row: row["pk"]) if row["pk"]]
+        if primary_key == ["run_id", "reservation_id"]:
+            # Recover a receipt table stranded by the former non-transactional
+            # migration before dropping the backup.
+            legacy = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='budget_settlements_legacy'",
+            ).fetchone()
+            if legacy:
+                db.execute(
+                    "INSERT OR IGNORE INTO budget_settlements(reservation_id,run_id,payload,created_at) "
+                    "SELECT reservation_id,run_id,payload,created_at FROM budget_settlements_legacy",
+                )
+                db.execute("DROP TABLE budget_settlements_legacy")
+            return
+        # SQLite cannot alter a primary key in place.  A legacy table has one
+        # globally unique receipt per id, so copying it into the composite key
+        # table preserves every receipt while allowing independent later runs.
+        db.execute("ALTER TABLE budget_settlements RENAME TO budget_settlements_legacy")
+        db.execute("""CREATE TABLE budget_settlements (
+                reservation_id TEXT NOT NULL, run_id TEXT NOT NULL,
+                payload TEXT NOT NULL, created_at REAL NOT NULL,
+                PRIMARY KEY (run_id, reservation_id))"""
+        )
+        db.execute(
+            "INSERT INTO budget_settlements(reservation_id,run_id,payload,created_at) "
+            "SELECT reservation_id,run_id,payload,created_at FROM budget_settlements_legacy",
+        )
+        db.execute("DROP TABLE budget_settlements_legacy")
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
@@ -146,7 +194,10 @@ class BudgetLedger:
             raise ValueError("usage must be non-negative")
         with self._lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            prior = db.execute("SELECT payload FROM budget_settlements WHERE reservation_id=?", (reservation_id,)).fetchone()
+            prior = db.execute(
+                "SELECT payload FROM budget_settlements WHERE reservation_id=? AND run_id=?",
+                (reservation_id, self.budget.run_id),
+            ).fetchone()
             if prior is not None:
                 return json.loads(prior[0])
             reservation = db.execute("SELECT * FROM budget_reservations WHERE reservation_id=? AND run_id=?", (reservation_id, self.budget.run_id)).fetchone()
@@ -156,8 +207,27 @@ class BudgetLedger:
             if reservation["state"] != "reserved":
                 db.execute("ROLLBACK")
                 raise BudgetError("reservation is not settleable")
-            run = db.execute("SELECT * FROM budget_runs WHERE run_id=?", (self.budget.run_id,)).fetchone()
-            if (self.budget.token_limit and run["spent_tokens"] + tokens > self.budget.token_limit) or (self.budget.call_limit and run["spent_calls"] + calls > self.budget.call_limit) or (self.budget.cost_limit_micros and run["spent_cost"] + cost_micros > self.budget.cost_limit_micros) or (self.budget.latency_limit_ms and run["spent_latency"] + latency_ms > self.budget.latency_limit_ms):
+            (spent_t, spent_c, spent_cost, spent_lat,
+             reserved_t, reserved_c, reserved_cost, reserved_lat) = self._totals(db)
+            # Settling replaces this reservation's estimate with actual usage; it does not
+            # release capacity held by other active workers.  Account for those reservations
+            # under the same BEGIN IMMEDIATE transaction so a late receipt cannot oversubscribe
+            # the shared envelope while another work item is still admitted.
+            other_reserved_t = reserved_t - int(reservation["estimate_tokens"])
+            other_reserved_c = reserved_c - int(reservation["estimate_calls"])
+            other_reserved_cost = reserved_cost - int(reservation["estimate_cost"])
+            other_reserved_lat = reserved_lat - int(reservation["estimate_latency"])
+            if (
+                spent_t + other_reserved_t + tokens > self.budget.token_limit
+                or (self.budget.call_limit
+                    and spent_c + other_reserved_c + calls > self.budget.call_limit)
+                or (self.budget.cost_limit_micros
+                    and spent_cost + other_reserved_cost + cost_micros
+                    > self.budget.cost_limit_micros)
+                or (self.budget.latency_limit_ms
+                    and spent_lat + other_reserved_lat + latency_ms
+                    > self.budget.latency_limit_ms)
+            ):
                 db.execute("ROLLBACK")
                 raise BudgetExceeded("late usage receipt would overspend shared run budget")
             db.execute("UPDATE budget_reservations SET state='settled' WHERE reservation_id=?", (reservation_id,))
@@ -165,7 +235,10 @@ class BudgetLedger:
             payload = {"schema": SETTLEMENT_SCHEMA, "reservation_id": reservation_id, "run_id": self.budget.run_id,
                        "work_item_id": reservation["work_item_id"], "tokens": tokens, "calls": calls,
                        "cost_micros": cost_micros, "latency_ms": latency_ms, "status": status}
-            db.execute("INSERT INTO budget_settlements VALUES(?,?,?,?)", (reservation_id, self.budget.run_id, _json(payload), _now()))
+            db.execute(
+                "INSERT INTO budget_settlements(reservation_id,run_id,payload,created_at) VALUES(?,?,?,?)",
+                (reservation_id, self.budget.run_id, _json(payload), _now()),
+            )
             db.execute("COMMIT")
             return payload
 

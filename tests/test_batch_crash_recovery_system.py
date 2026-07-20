@@ -246,8 +246,18 @@ def test_orchestrator_crash_mid_batch_is_recovered_by_a_fresh_process(tmp_path, 
         # 2) Wait for item 1 to actually be claimed (an active, in-flight lease) before
         # killing -- otherwise this would only prove recovery of *queued*, not *claimed*,
         # work, which is the easy case, not the epic-288 gap.
+        def slow_task_is_claimed():
+            # ``SQLiteRemoteQueue.task`` deliberately raises ``KeyError`` until the
+            # orchestrator has enqueued the item.  During this polling window that
+            # simply means the claim has not happened yet, rather than a failure of
+            # the recovery contract being exercised.
+            try:
+                return queue.task(slow_task_id).get("status") == "claimed"
+            except KeyError:
+                return False
+
         _wait_until(
-            lambda: (lambda t: t is not None and t.get("status") == "claimed")(queue.task(slow_task_id)),
+            slow_task_is_claimed,
             timeout=120.0, message="process A never claimed item 1 before it could be killed",
         )
 

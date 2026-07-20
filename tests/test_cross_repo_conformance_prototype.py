@@ -34,6 +34,11 @@ from pathlib import Path
 
 import pytest
 
+# This module reads sibling repositories by design.  It remains available as
+# an explicit integration lane, but must never make the hermetic core depend
+# on whatever happens to be checked out next to this repository.
+pytestmark = pytest.mark.external_integration
+
 REPO = Path(__file__).resolve().parent.parent
 SUITE = REPO / "scripts" / "prototype_conformance_suite.py"
 
@@ -258,6 +263,11 @@ def test_no_sibling_is_falsely_reported_fully_conformant(report):
         f for r in report["results"] for f in r["findings"]
         if f["classification"] == "claims-canonical"
     ]
+    if not claims_canonical and not any(r["available"] for r in report["results"]):
+        pytest.skip(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[sibling_checkouts]: "
+            "no Prototype-First sibling checkout is available"
+        )
     assert claims_canonical, "expected at least one sibling to claim a canonical schema string"
     assert all(f["conformant"] is False for f in claims_canonical), (
         "a sibling now reports as fully conformant -- update the pinned drift "

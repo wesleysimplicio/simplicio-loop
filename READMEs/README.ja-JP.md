@@ -1,5 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
+> **Canonical operational contract:** This translation is informational. For current dependency, runtime, conformance, and validation behavior, [README.md](../README.md) is authoritative: Loop installs standalone; Runtime bindings are optional; 3 runtimes are guaranteed and 12 are best-effort; and `scripts/check.py` requires an importable `pytest` with no bare-Python fallback. Historical numeric counts and claims of complete categorization below are release snapshots, not current gate evidence; the checkout and latest local receipt are authoritative, and `scripts/test_categories.py` reports uncategorized files. GitHub Actions is not required gate evidence.
+
 <p align="center">
   <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="各段階の具体的なエージェントと接続済みレポートを備えた simplicio-loop" width="920" />
 </p>
@@ -138,9 +140,10 @@ flowchart LR
   再度紛れ込みました。どちらも「PRの説明が緑」を信用するのではなく、実際にスクリプトを走らせて
   発見しました——これこそ `coordinator.py` と `pr_dod_review.py` が存在する理由です。
 - **v3.37.0 の Portable Stage Agents epic（#422–#436）からの継続** — 段階ごとの具体的なエージェント、
-  全15ランタイムでの契約／レシート整合性を証明する適合スイート、`simplicio-runtime` の必須バインド昇格。
-- **テストスイートが231ファイル（192から増加）** へ成長、`scripts/claims_audit.py` はこのサイクルの
-  すべてのマージで14/14を維持。
+  全15ランタイムでの契約／レシート整合性を証明する適合スイート、利用不可時に明示的な縮退モードを
+  報告するオプションの `simplicio-runtime` バインド。
+- **テスト在庫は固定値ではなく計測値です。** 現在の checkout と最新のローカル gate レシートが
+  ファイル数・結果数の正本であり、`scripts/test_categories.py` は未分類ファイルも報告します。
 
 **開発者にとっての意味：** 同じリポジトリに対して複数セッション／複数マシンで `simplicio-loop` を
 走らせているなら、実際に起きる2つの失敗モード——2つのエージェントが同じ作業を静かにやり直すこと、
@@ -184,8 +187,8 @@ flowchart LR
 ## 📘 公式ケイパビリティ記録
 
 `simplicio-loop` が提供するものの完全かつ公式な一覧です——以下のすべての機能は**実在し、実行可能で、
-テスト済み**です（`python3 scripts/check.py`：claims-audit 14/14 ＋ 231ファイルの2,544テスト）。
-各項目は対応する詳細セクションとワーカーへのリンクを持ちます。
+テスト済み**です（該当するローカル gate で検証）。正確な収集・実行・スキップ数は本文書ではなく
+最新の gate レシートに属します。各項目は対応する詳細セクションとワーカーへのリンクを持ちます。
 
 | 機能 | 何をするか | 証明／ワーカー | 詳細 |
 |---|---|---|---|
@@ -259,8 +262,8 @@ Both modes are still governed by universal exits: promise+evidence, `max_iterati
 1つの汎用スキルコア＋1セットのフックが、あらゆるランタイムを駆動します。アダプタは薄い層です——
 ランタイムに*どこでスキルを読み込むか*、*どうループを起動するか*、*どうネイティブの高速性に
 バインドするか*を伝えるだけ。**スキルはランタイムを名指ししない。ランタイムがスキルを検出する。**
-ネイティブ `simplicio-runtime` MCPバインドは**すべてのランタイムで必須**です（見つからない／到達
-できない場合はループがBLOCKします）——ホストごとの設定は
+ネイティブ `simplicio-runtime` MCPバインドはすべてのランタイムでオプションです。見つからない／到達
+できない場合はアダプタが明示的な縮退モードを報告し、standalone ループは利用可能です——ホストごとの設定は
 [`docs/MCP_SETUP.md`](../docs/MCP_SETUP.md) を参照してください。
 
 ### Tier 1 — 保証（コミットごとにゲート）
@@ -558,8 +561,8 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 - **テストスイート**（`tests/`） — ワーカーの決定論的な `selftest`、加えて**ループドライバ**
   （`hooks/loop_stop.py`）の**e2e**：ループが**エビデンスで停止する**、**裸の `<promise>` を無視
   する**、**上限で停止する**ことをそれぞれ別個の出口として証明し、エビデンスプロデューサーが
-  ツールチェーンの不在時に**BLOCK**する（決してフェイクで通さない）ことも証明します。`pytest` の下、
-  *または*、pipが一切なくても、裸のpython3で自己実行します（`python3 tests/test_*.py`）。
+  ツールチェーンの不在時に**BLOCK**する（決してフェイクで通さない）ことも証明します。Gate には
+  import可能な `pytest` が必須で、bare-Python fallback はありません。
 - **Claims audit**（`scripts/claims_audit.py`、フェイルクローズ） — ドキュメントが参照する
   すべての `scripts/*.py` が存在 · 拡張ポイントのカウントが全ファイルで一致 · 引用された各ワーカー
   コマンドが実際に動く · 出荷される `simplicio_loop/_bundle/` のスキルがソースと**バイト単位で同一**。
@@ -568,7 +571,7 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
   ```
 
-`pip install "simplicio-loop[dev]"` はより見やすい出力のためにpytestを追加します；必須ではありません。
+`pip install "simplicio-loop[dev]"` は `scripts/check.py` に必須の `pytest` 依存関係をインストールします。
 
 ---
 

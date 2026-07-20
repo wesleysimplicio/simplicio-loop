@@ -4,6 +4,8 @@
 
 </div>
 
+> **Canonical operational contract:** This translation is informational. For current dependency, runtime, conformance, and validation behavior, [README.md](../README.md) is authoritative: Loop installs standalone; Runtime bindings are optional; 3 runtimes are guaranteed and 12 are best-effort; and `scripts/check.py` requires an importable `pytest` with no bare-Python fallback. GitHub Actions is not required gate evidence.
+
 <p align="center">
   <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop مع وكلاء فعليين لكل مرحلة وتقارير متصلة" width="920" />
 </p>
@@ -579,8 +581,7 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 - **مجموعة الاختبارات** (`tests/`) — selftests العمّال الحتميّة، إضافةً إلى **اختبار e2e لقائد
   الحلقة** (`hooks/loop_stop.py`): يُثبت أن الحلقة **تتوقّف عند الأدلة**، و**تتجاهل `<promise>`
   مجرّداً**، و**تتوقّف عند السقف** كمخارج متمايزة — وأن منتجي الأدلة **يَحجبان** (لا تمرير زائف)
-  عند غياب أدوات سلسلتهما. تعمل تحت `pytest` *أو*، بلا أي pip، تعمل ذاتياً على python3 العاري
-  (`python3 tests/test_*.py`).
+  عند غياب أدوات سلسلتهما. يتطلب البوابة `pytest` قابلاً للاستيراد؛ ولا يوجد fallback إلى Python عارٍ.
 - **تدقيق الادّعاءات** (`scripts/claims_audit.py`، يفشل مغلقاً) — كل `scripts/*.py` تشير إليه
   الوثائق موجود · عدد نقاط التوسعة متّفق عبر كل الملفات · كل أمر عامل مُستشهَد به يعمل فعلاً ·
   مهارات `simplicio_loop/_bundle/` المشحونة **متطابقة بايتاً ببايت** مع المصدر.
@@ -589,7 +590,7 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
   ```
 
-`pip install "simplicio-loop[dev]"` يضيف pytest لمُخرَجات أنظف؛ لكنه غير مطلوب أبداً.
+يثبّت `pip install "simplicio-loop[dev]"` اعتماد `pytest` الإلزامي لـ `scripts/check.py`.
 
 ---
 

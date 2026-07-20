@@ -15,6 +15,50 @@ from simplicio_loop.process_supervisor import (
 )
 
 
+def _linux_visible_process_state(pid: int):
+    """Return the state for a PID visible in this namespace, or ``None``.
+
+    A container may mount procfs from an ancestor namespace, so `/proc/<pid>`
+    is not necessarily the process addressed by `os.kill(pid, ...)`.  Match
+    the caller's NSpid level before deciding whether the killed child is a
+    zombie or has disappeared.
+    """
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return ""
+
+    def nspids(path: Path):
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("NSpid:"):
+                    return [int(value) for value in line.split()[1:]]
+        except (OSError, ValueError):
+            return None
+        return None
+
+    caller = nspids(proc_root / "self" / "status")
+    if not caller:
+        return ""
+    depth = len(caller) - 1
+    try:
+        entries = proc_root.iterdir()
+    except OSError:
+        return ""
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        values = nspids(entry / "status")
+        if not values or depth >= len(values) or values[depth] != pid:
+            continue
+        try:
+            return (entry / "stat").read_text(
+                encoding="utf-8", errors="replace",
+            ).rsplit(") ", 1)[1].split()[0]
+        except (IndexError, OSError):
+            return ""
+    return None
+
+
 def test_process_spec_is_structured_and_allowlisted() -> None:
     with tempfile.TemporaryDirectory() as directory:
         spec = ProcessSpec(
@@ -114,6 +158,12 @@ def test_timeout_kills_the_whole_child_tree() -> None:
                 try:
                     os.kill(grandchild_pid, 0)
                 except ProcessLookupError:
+                    alive = False
+                    break
+                state = _linux_visible_process_state(grandchild_pid)
+                if state in {None, "Z"}:
+                    # A zombie has already exited and cannot execute work; PID 1
+                    # reaping latency in a container is not a process-tree leak.
                     alive = False
                     break
                 await asyncio.sleep(0.02)

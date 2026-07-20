@@ -41,10 +41,10 @@ command; that registration is optional and never replaces the repo-level install
 scratchpad, one journal, one anchor per task, with no cross-task interference. Orca's worktree
 checkpoints compose with (never replace) the loop's own journal + evidence gates.
 
-## Native bind — MCP (REQUIRED)
+## Native bind — MCP (optional)
 
-`simplicio-runtime` via Orca's MCP registry is **REQUIRED** — a missing/unreachable bind BLOCKS
-the loop preflight (CLAUDE.md § Hooks), same as inside a bare Claude Code/Cursor session.
+`simplicio-runtime` via Orca's MCP registry is optional. A missing/unreachable bind reports
+explicit degraded mode while the standalone loop remains available.
 `simplicio doctor --json` confirms an installed runtime inside the Orca session.
 
 ## MCP config

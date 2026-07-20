@@ -25,6 +25,8 @@ def make_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "-q")
+    git(repo, "config", "user.email", "loop-stop@example.invalid")
+    git(repo, "config", "user.name", "loop-stop fixture")
     (repo / "file.py").write_text("value = 1\n", encoding="utf-8")
     git(repo, "add", "file.py")
     git(repo, "commit", "-q", "-m", "init")

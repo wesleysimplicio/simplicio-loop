@@ -26,7 +26,7 @@ from simplicio_loop.hub_daemon import (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_unix_socket_end_to_end_and_permission_bits() -> None:
+def test_unix_socket_end_to_end_and_permission_bits(require_af_unix) -> None:
     if os.name == "nt":
         pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
     with tempfile.TemporaryDirectory() as directory:
@@ -67,7 +67,7 @@ def test_unix_socket_end_to_end_and_permission_bits() -> None:
             daemon.stop()
 
 
-def test_unix_socket_version_mismatch_leaves_daemon_state_untouched() -> None:
+def test_unix_socket_version_mismatch_leaves_daemon_state_untouched(require_af_unix) -> None:
     if os.name == "nt":
         pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
     with tempfile.TemporaryDirectory() as directory:
@@ -113,7 +113,7 @@ def test_unix_socket_version_mismatch_leaves_daemon_state_untouched() -> None:
             daemon.stop()
 
 
-def test_unix_socket_20_concurrent_clients_no_crash_correct_singleton() -> None:
+def test_unix_socket_20_concurrent_clients_no_crash_correct_singleton(require_af_unix) -> None:
     if os.name == "nt":
         pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
     from concurrent.futures import ThreadPoolExecutor
@@ -131,7 +131,7 @@ def test_unix_socket_20_concurrent_clients_no_crash_correct_singleton() -> None:
                 job_id = "job-%d" % index
                 client = HubSocketClient(socket_path, timeout=10.0)
                 reg = client.request("reg-%d" % index, "register", client_id=client_id)
-                sub = client.request("sub-%d" % index, "submit", client_id=client_id, job_id=job_id)
+                client.request("sub-%d" % index, "submit", client_id=client_id, job_id=job_id)
                 claim = client.request("claim-%d" % index, "claim", client_id=client_id, job_id=job_id)
                 progress = client.request(
                     "prog-%d" % index, "progress", client_id=client_id, job_id=job_id, progress=50
@@ -178,7 +178,7 @@ def test_unix_socket_20_concurrent_clients_no_crash_correct_singleton() -> None:
             daemon.stop()
 
 
-def test_socket_shutdown_is_idempotent_and_removes_file() -> None:
+def test_socket_shutdown_is_idempotent_and_removes_file(require_af_unix) -> None:
     if os.name == "nt":
         pytest.skip("Unix socket coverage runs on POSIX")
     with tempfile.TemporaryDirectory() as directory:
@@ -258,7 +258,7 @@ def test_execute_rejects_invalid_spec_and_enforces_deadline() -> None:
             daemon.stop()
 
 
-def test_doctor_reports_unreachable_then_reachable() -> None:
+def test_doctor_reports_unreachable_then_reachable(require_af_unix) -> None:
     if os.name == "nt":
         pytest.skip("Unix socket coverage runs on POSIX")
     with tempfile.TemporaryDirectory() as directory:
@@ -287,7 +287,7 @@ def test_doctor_reports_unreachable_then_reachable() -> None:
         assert report["socket_reachable"] is False
 
 
-def test_client_raises_cleanly_when_daemon_absent() -> None:
+def test_client_raises_cleanly_when_daemon_absent(require_af_unix) -> None:
     if os.name == "nt":
         pytest.skip("Unix socket coverage runs on POSIX")
     with tempfile.TemporaryDirectory() as directory:
@@ -321,7 +321,7 @@ def _wait_for_line(proc: subprocess.Popen, expected: str, timeout: float = 10.0)
     raise AssertionError(f"process never printed {expected!r} (exit={proc.poll()})")
 
 
-def test_subprocess_daemon_singleton_and_client_from_separate_process() -> None:
+def test_subprocess_daemon_singleton_and_client_from_separate_process(require_af_unix) -> None:
     if os.name == "nt":
         pytest.skip("Unix socket subprocess coverage runs on POSIX")
     with tempfile.TemporaryDirectory() as directory:
@@ -355,7 +355,10 @@ def test_subprocess_daemon_singleton_and_client_from_separate_process() -> None:
 
 def test_windows_named_pipe_transport_and_concurrency() -> None:
     if os.name != "nt":
-        pytest.skip("named-pipe transport is Windows-only")
+        pytest.skip(
+            "CAPABILITY_UNAVAILABLE[named_pipe_windows_only]: "
+            "named-pipe transport requires Windows"
+        )
     from concurrent.futures import ThreadPoolExecutor
 
     with tempfile.TemporaryDirectory() as directory:
@@ -388,7 +391,9 @@ def test_windows_named_pipe_transport_and_concurrency() -> None:
             daemon.stop()
 
 
-def test_benchmark_hub_transport_produces_real_latency_receipt() -> None:
+def test_benchmark_hub_transport_produces_real_latency_receipt(
+    require_default_hub_transport,
+) -> None:
     proc = subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts" / "benchmark_hub_transport.py")],
         capture_output=True,
@@ -435,7 +440,7 @@ def test_doctor_reports_lock_pid_dead_when_lock_payload_is_corrupt() -> None:
         assert "pid" not in report
 
 
-def test_unix_socket_server_creates_no_thread_per_connection() -> None:
+def test_unix_socket_server_creates_no_thread_per_connection(require_af_unix) -> None:
     """Issue #584: the Unix transport is asyncio-driven -- accepting and serving
     connections must not spawn a new OS thread per connection (only the single
     background thread hosting the event loop itself)."""
@@ -472,7 +477,7 @@ def test_unix_socket_server_creates_no_thread_per_connection() -> None:
         assert threading.active_count() == threads_before_start
 
 
-def test_unix_socket_stress_200_concurrent_clients_no_latency_regression() -> None:
+def test_unix_socket_stress_200_concurrent_clients_no_latency_regression(require_af_unix) -> None:
     if os.name == "nt":
         pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
     from concurrent.futures import ThreadPoolExecutor
@@ -506,7 +511,7 @@ def test_unix_socket_stress_200_concurrent_clients_no_latency_regression() -> No
             daemon.stop()
 
 
-def test_unix_socket_graceful_shutdown_drains_in_flight_connection() -> None:
+def test_unix_socket_graceful_shutdown_drains_in_flight_connection(require_af_unix) -> None:
     """A connected-but-not-yet-sending client at shutdown time must not hang the
     shutdown call or leak a dangling task: the async connection task is cancelled
     and awaited by ``_shutdown_async`` before ``shutdown()`` returns."""
@@ -533,7 +538,7 @@ def test_unix_socket_graceful_shutdown_drains_in_flight_connection() -> None:
             daemon.stop()
 
 
-def test_unix_socket_dispatch_timeout_closes_silent_connection() -> None:
+def test_unix_socket_dispatch_timeout_closes_silent_connection(require_af_unix) -> None:
     if os.name == "nt":
         pytest.skip("Unix socket coverage runs on POSIX; Windows named pipe is covered below")
     with tempfile.TemporaryDirectory() as directory:

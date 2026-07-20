@@ -11,7 +11,7 @@ def test_dispatch_operator_batch_refills_without_wave_barrier(monkeypatch, tmp_p
     calls = []
     lock = threading.Lock()
 
-    def fake_execute(repo, run_id, task_index):
+    def fake_execute(repo, run_id, task_index, **_kwargs):
         nonlocal active, peak
         with lock:
             active += 1
@@ -51,7 +51,7 @@ def test_dispatch_operator_batch_refills_without_wave_barrier(monkeypatch, tmp_p
 def test_dispatch_operator_batch_serializes_shared_run_state(monkeypatch, tmp_path):
     calls = []
 
-    def fake_execute(repo, run_id, task_index):
+    def fake_execute(repo, run_id, task_index, **_kwargs):
         calls.append(task_index)
         return {
             "state": {
@@ -80,7 +80,7 @@ def test_dispatch_operator_batch_serializes_shared_run_state(monkeypatch, tmp_pa
 def test_dispatch_operator_batch_resumes_successful_journal_entries(monkeypatch, tmp_path):
     calls = []
 
-    def fake_execute(repo, run_id, task_index):
+    def fake_execute(repo, run_id, task_index, **_kwargs):
         calls.append(task_index)
         return {
             "state": {
@@ -124,7 +124,7 @@ def test_fan_out_receipts_and_retries_are_worker_scoped(monkeypatch, tmp_path):
     calls = []
     attempts = {1: 0, 2: 0}
 
-    def fake_execute(repo, run_id, task_index):
+    def fake_execute(repo, run_id, task_index, **_kwargs):
         attempts[task_index] += 1
         calls.append(task_index)
         if task_index == 1 and attempts[task_index] == 1:

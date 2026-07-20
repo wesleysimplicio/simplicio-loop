@@ -160,6 +160,12 @@ class MultiScriptedGhRunner:
     def __call__(self, argv, **kwargs):
         with self._lock:
             self.calls.append(list(argv))
+        # MergeExecutor performs a read-only post-merge patrol of the remaining open PRs.
+        # This typed fake must implement that current surface too; omitting it makes a
+        # successful queue task fail only after completion and every retry correctly sees
+        # ``task already completed``.
+        if "--state" in argv and argv[argv.index("--state") + 1] == "open" and "--head" not in argv:
+            return subprocess.CompletedProcess(argv, 0, "[]", "")
         if "--head" in argv:
             branch = argv[argv.index("--head") + 1]
             queue = self._by_branch[branch]
