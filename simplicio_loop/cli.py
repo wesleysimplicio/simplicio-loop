@@ -656,6 +656,7 @@ def findings_command(args) -> int:
 
 
 def main(argv=None) -> int:
+    argv_list = list(argv) if argv is not None else list(sys.argv[1:])
     parser = argparse.ArgumentParser(
         prog="simplicio-loop",
         description=(
@@ -838,6 +839,14 @@ def main(argv=None) -> int:
                          help="receipt JSON path (persist and load)")
     p_drain.add_argument("--polls-required", type=int, default=2,
                          help="identical empty polls required (default: %(default)s)")
+    p_drain_plan = sub.add_parser(
+        "hub-drain-plan",
+        help="read-only PT-BR/EN GitHub drain intake; never executes the plan",
+    )
+    p_drain_plan.add_argument(
+        "drain_args", nargs=argparse.REMAINDER,
+        help="natural request plus workspace/checkpoint options",
+    )
     p_ledger = sub.add_parser("ledger", help="validate/replay the operational event ledger")
     p_findings = sub.add_parser("findings", help="WI-466: inspect and reconcile continuous findings")
     findings_sub = p_findings.add_subparsers(dest="findings_command", required=True)
@@ -889,7 +898,13 @@ def main(argv=None) -> int:
     )
     p_rt_check.add_argument("--repo", default=".", help="repository root")
 
-    args = parser.parse_args(argv)
+    if argv_list:
+        from .github_drain_intake_cli import looks_like_natural_request, main as drain_intake_main
+        if looks_like_natural_request(argv_list) and (
+            argv_list[0] not in sub.choices or argv_list[0].lower() == "drain"
+        ):
+            return drain_intake_main(argv_list)
+    args = parser.parse_args(argv_list)
     command = args.command or "install"
     if command == "dashboard":
         return dashboard(args.port, not args.no_browser, args.stop)
@@ -950,6 +965,12 @@ def main(argv=None) -> int:
         return sync_source(args.repo, args.run_id, args.source, args.external_repo, args.pr, args.tag)
     if command == "drain":
         return drain(args.action, args.snapshot_path, args.receipt_path, args.polls_required)
+    if command == "hub-drain-plan":
+        from .github_drain_intake_cli import main as drain_intake_main
+        forwarded = list(args.drain_args or [])
+        if forwarded and forwarded[0] == "--":
+            forwarded = forwarded[1:]
+        return drain_intake_main(forwarded)
     if command == "ledger":
         return ledger_replay(
             args.path,
