@@ -43,6 +43,11 @@ Verbs:
            canary/shadow/full transitions are observable after the fact.
   selftest Prove default-off, guarded enable, detect flagging, and rollout validation
            deterministically — no real process interaction, an isolated temp state file.
+  metrics  Rollout metrics dashboard: replays the JSONL event log (--events-file, default
+           .orchestrator/supervisor_enforcement_events.jsonl) and reports transition counts
+           per mode, the current mode/state, and the most recent transition. Never fabricates
+           a number — an absent/empty event log reports zero transitions honestly instead of
+           guessing at history.
 
 Usage:
     python3 scripts/supervisor_enforcement.py status
@@ -53,6 +58,7 @@ Usage:
     python3 scripts/supervisor_enforcement.py enable --i-understand
     python3 scripts/supervisor_enforcement.py rollout --mode canary --percent 10
     python3 scripts/supervisor_enforcement.py disable
+    python3 scripts/supervisor_enforcement.py metrics --json
 """
 import argparse
 import json
@@ -361,6 +367,67 @@ def cmd_rollout(opts):
     return 0
 
 
+def load_rollout_events(path):
+    """Read the rollout-events JSONL log. Missing/empty file -> []. Never fabricates rows;
+    a line that fails to parse as JSON is skipped rather than crashing the whole read."""
+    if not path or not os.path.isfile(path):
+        return []
+    events = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict):
+                events.append(rec)
+    return events
+
+
+def summarize_rollout_events(events):
+    per_mode = {mode: 0 for mode in ROLLOUT_MODES}
+    for rec in events:
+        mode = rec.get("mode")
+        if mode in per_mode:
+            per_mode[mode] += 1
+    ordered = sorted(events, key=lambda rec: rec.get("ts", 0.0))
+    last = ordered[-1] if ordered else None
+    return {
+        "schema": "simplicio.supervisor-enforcement-metrics/v1",
+        "total_transitions": len(events),
+        "transitions_by_mode": per_mode,
+        "last_transition": last,
+    }
+
+
+def cmd_metrics(opts):
+    events_path = getattr(opts, "events_file", None) or _events_file()
+    events = load_rollout_events(events_path)
+    state = load_state(_state_file())
+    summary = summarize_rollout_events(events)
+    summary["current_enabled"] = state["enabled"]
+    summary["current_mode"] = state["rollout"]["mode"]
+    if opts.json:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        print("current: enabled=%s mode=%s" % (state["enabled"], state["rollout"]["mode"]))
+        print("total rollout transitions: %d" % summary["total_transitions"])
+        for mode in ROLLOUT_MODES:
+            print("  %s: %d" % (mode, summary["transitions_by_mode"][mode]))
+        if summary["last_transition"]:
+            last = summary["last_transition"]
+            print(
+                "last transition: mode=%s percent=%d at ts=%s"
+                % (last.get("mode"), int(last.get("canary_percent", 0) or 0), last.get("ts"))
+            )
+        else:
+            print("last transition: none recorded")
+    return 0
+
+
 def cmd_selftest(_opts):
     import shutil
     import tempfile
@@ -473,6 +540,12 @@ def main():
 
     sub.add_parser("selftest")
 
+    metrics_p = sub.add_parser("metrics")
+    metrics_p.add_argument("--json", action="store_true")
+    metrics_p.add_argument(
+        "--events-file", default=None, help="path to the rollout events JSONL log (default: %s)" % DEFAULT_EVENTS_FILE
+    )
+
     opts = parser.parse_args()
     if not opts.verb:
         parser.print_help()
@@ -485,6 +558,7 @@ def main():
         "disable": cmd_disable,
         "rollout": cmd_rollout,
         "selftest": cmd_selftest,
+        "metrics": cmd_metrics,
     }
     return handlers[opts.verb](opts)
 

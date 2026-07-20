@@ -1,6 +1,6 @@
 use std::io::{self, Read, Write};
 
-use simplicio_supervisor::{run, ProcessSpec};
+use simplicio_supervisor::{parse_spec, run, serialize_result};
 
 #[tokio::main]
 async fn main() {
@@ -10,7 +10,7 @@ async fn main() {
         std::process::exit(2);
     }
 
-    let spec: ProcessSpec = match serde_json::from_str(&raw) {
+    let spec = match parse_spec(&raw) {
         Ok(spec) => spec,
         Err(err) => {
             eprintln!("simplicio-supervisor: invalid ProcessSpec JSON: {err}");
@@ -19,7 +19,7 @@ async fn main() {
     };
 
     let result = run(&spec).await;
-    let body = serde_json::to_string(&result).expect("ProcessResult always serializes");
+    let body = serialize_result(&result);
     let mut stdout = io::stdout();
     let _ = stdout.write_all(body.as_bytes());
     let _ = stdout.write_all(b"\n");

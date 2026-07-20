@@ -16,6 +16,14 @@ def test_claim_fair_reorders_real_durable_backlog_by_client_not_by_insertion_ord
             queue.submit({"client_id": "heavy", "index": index}, idempotency_key=f"heavy-{index}")
         for index in range(4):
             queue.submit({"client_id": "light", "index": index}, idempotency_key=f"light-{index}")
+        queue.close()
+
+        # The payload-only client identity is durable, so restart does not collapse
+        # both backlogs into the scheduler's fallback client.
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        assert {entry["client_id"] for entry in queue.list_queued_scheduling_metadata()} == {
+            "heavy", "light",
+        }
 
         scheduler = FairScheduler(max_inflight_per_client=1000, quantum=1)
         served_order = []

@@ -4,11 +4,13 @@ from pathlib import Path
 
 import pytest
 
+import simplicio_loop.hub_daemon as hub_daemon
 from simplicio_loop.hub_daemon import (
     HubAlreadyRunning,
     HubClient,
     HubDaemon,
     HubEnvelope,
+    HubError,
     HubLock,
     HubProtocolError,
 )
@@ -274,6 +276,77 @@ def test_lock_release_is_safe_when_file_already_removed_externally() -> None:
         lock.acquire()
         Path(path).unlink()
         lock.release()
+
+
+def test_lock_acquire_retries_when_stale_unlink_races_with_another_process(monkeypatch) -> None:
+    """TOCTOU: pid is confirmed dead, but another process deletes the stale lock file
+    between our read and our unlink() -- acquire() must retry instead of crashing."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "hub.lock")
+        Path(path).write_text(json.dumps({"pid": 99999999}), encoding="utf-8")
+        lock = HubLock(path)
+
+        original_unlink = Path.unlink
+        calls = {"count": 0}
+
+        def flaky_unlink(self, *args, **kwargs):
+            if str(self) == path and calls["count"] == 0:
+                calls["count"] += 1
+                raise FileNotFoundError("raced away by another process")
+            return original_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+        lock.acquire()
+        assert calls["count"] == 1
+        assert Path(path).exists()
+        lock.release()
+
+
+def test_handle_execute_wraps_supervisor_failure_as_hub_error(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+
+        def boom(spec, on_spawned=None):
+            raise OSError("supervisor binary vanished mid-run")
+
+        monkeypatch.setattr(hub_daemon, "run_with_fallback", boom)
+        with pytest.raises(HubError, match="supervisor execution failed"):
+            daemon.handle(HubEnvelope("r1", "execute", {"process_spec": {"argv": ["true"]}}))
+        daemon.stop()
+
+
+def test_submit_raises_protocol_error_when_scheduler_rejects_job_shape() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        with pytest.raises(HubProtocolError, match="positive"):
+            daemon.handle(HubEnvelope("r1", "submit", {"job_id": "job", "client_id": "c", "weight": 0}))
+        daemon.stop()
+
+
+def test_claim_next_returns_none_when_max_attempts_exhausted_by_stale_entries() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        for index in range(4097):
+            daemon.scheduler.enqueue(ScheduledJob(task_id="ghost-%d" % index, client_id="c"))
+        result = daemon.handle(HubEnvelope("r1", "claim_next", {"client_id": "worker"}))
+        assert result == {"ok": True, "job": None}
+        daemon.stop()
+
+
+def test_retire_scheduler_entry_swallows_scheduler_error_from_double_complete() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        daemon.scheduler.enqueue(ScheduledJob(task_id="ghost", client_id="c"))
+        # Simulate an already-completed scheduler entry that never got popped from
+        # the DRR deque: complete() removes it from `_jobs` but leaves it queued.
+        daemon.scheduler.complete("ghost")
+        result = daemon.handle(HubEnvelope("r1", "claim_next", {"client_id": "worker"}))
+        assert result == {"ok": True, "job": None}
+        daemon.stop()
 
 
 def test_submit_raises_backpressure_error_when_client_quota_exceeded() -> None:

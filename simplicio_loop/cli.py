@@ -17,6 +17,10 @@ try:
     from scripts import release_manifest as _release_manifest
 except Exception:  # pragma: no cover - import shim for bundled scripts
     _release_manifest = None
+try:
+    from . import prototype_cli as _prototype_cli
+except Exception:  # pragma: no cover - keeps `simplicio-loop` importable if this is missing
+    _prototype_cli = None
 
 from . import __version__
 from . import delivery
@@ -28,7 +32,6 @@ from .drain import (
     persist_drain_receipt,
 )
 from .runner import (
-    arm_run,
     conduct_run,
     apply_human_decision,
     change_phase,
@@ -48,10 +51,11 @@ from .ops_ledger import (
     LedgerError,
     validate_handshake,
 )
+from . import inspection_cli as _inspection_cli
 from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
 from .delivery import DELIVERY_ORDER
-from .map_service_status import default_status_path, load_status_file
+from .map_service_cli import configure_commands as configure_map_commands, dispatch as dispatch_map
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -256,45 +260,6 @@ def status(repo: str, run_id: str, as_json: bool = False, as_text: bool = False)
     return 0
 
 
-def map_status(repo: str, status_file: str, as_json: bool = False) -> int:
-    """Report cache hit/build/wait/invalidate counters from a real map-service session's
-    status file. Never fabricates a reading: a missing file is reported as blocked."""
-    path = Path(status_file) if status_file else default_status_path(repo)
-    try:
-        payload = load_status_file(path)
-    except (OSError, ValueError) as exc:
-        payload = None
-        error = str(exc)
-    else:
-        error = ""
-    if payload is None:
-        result = {
-            "schema": "simplicio.map-service-status/v1",
-            "status": "UNAVAILABLE",
-            "reason_code": "status_file_missing" if not error else "status_file_invalid",
-            "path": str(path),
-            "error": error,
-        }
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 1
-    if as_json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        counters = payload.get("counters", {})
-        watchers = payload.get("watchers", {})
-        lines = [
-            "map-service status (" + str(path) + ")",
-            "  cache_hits:    " + str(counters.get("cache_hits", 0)),
-            "  builds:        " + str(counters.get("builds", 0)),
-            "  waits:         " + str(counters.get("waits", 0)),
-            "  invalidations: " + str(counters.get("invalidations", 0)),
-            "  watchers:      " + str(watchers.get("watchers", 0)),
-            "  pending:       " + str(watchers.get("pending", 0)),
-        ]
-        print("\n".join(lines))
-    return 0
-
-
 def preflight(repo: str, as_json: bool = False) -> int:
     """Verify the core operators required by the loop and report runtime availability.
 
@@ -475,235 +440,59 @@ def sync_source(repo: str, run_id: str, source: str, external_repo: str, pr: int
 
 
 def _drain_cli_failure(reason_code: str, reason: str, **extra) -> dict:
-    """Return a safe, JSON-serializable drain result for CLI input failures.
-
-    The drain CLI is an evidence boundary: malformed or missing input must never
-    look like a successful drain.  Keep the shape compatible with
-    ``evaluate_drain`` while marking the result explicitly unverified.
-    """
-    payload = {
-        "schema": DRAIN_SCHEMA,
-        "verdict": "CONTINUE",
-        "ready": False,
-        "reason_code": reason_code,
-        "reason": reason,
-        "tag": "UNVERIFIED",
-    }
-    payload.update(extra)
-    return payload
+    """Compatibility wrapper for the focused command helpers."""
+    return _inspection_cli.drain_cli_failure(DRAIN_SCHEMA, reason_code, reason, **extra)
 
 
 def _read_drain_snapshot(path: str):
-    try:
-        with Path(path).open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, ValueError) as exc:
-        return None, _drain_cli_failure("snapshot_invalid", "could not read drain snapshot", error=str(exc))
-    if not isinstance(payload, dict):
-        return None, _drain_cli_failure("snapshot_invalid", "drain snapshot must be a JSON object")
-    return payload, None
+    return _inspection_cli.read_drain_snapshot(path, _drain_cli_failure)
 
 
 def _valid_drain_result(payload) -> bool:
-    """Check the minimum result envelope before exposing a loaded receipt."""
-    if not isinstance(payload, dict) or payload.get("schema") != DRAIN_SCHEMA:
-        return False
-    if payload.get("verdict") not in {"DRAINED", "CONTINUE", "BLOCKED"}:
-        return False
-    if not isinstance(payload.get("ready"), bool):
-        return False
-    if payload.get("tag") not in {"MEASURED", "UNVERIFIED"}:
-        return False
-    return not (payload["ready"] and payload["verdict"] != "DRAINED")
+    return _inspection_cli.valid_drain_result(DRAIN_SCHEMA, payload)
 
 
 def drain(action: str, snapshot_path: str, receipt_path: str, polls_required: int) -> int:
-    """Evaluate, persist, or load a drain receipt and emit exactly one JSON value.
-
-    ``CONTINUE`` is a valid fail-closed verdict for a well-formed snapshot; a
-    non-zero exit is reserved for unusable CLI input or a corrupt/missing receipt.
-    """
-    if action in {"evaluate", "persist"}:
-        if not snapshot_path:
-            print(json.dumps(_drain_cli_failure("snapshot_required", "--snapshot is required"),
-                             ensure_ascii=False, sort_keys=True))
-            return 2
-        snapshot, failure = _read_drain_snapshot(snapshot_path)
-        if failure is not None:
-            print(json.dumps(failure, ensure_ascii=False, sort_keys=True))
-            return 2
-        try:
-            result = evaluate_drain(snapshot, polls_required=polls_required)
-        except (TypeError, ValueError, KeyError) as exc:
-            result = _drain_cli_failure("snapshot_invalid", "drain snapshot could not be evaluated",
-                                        error=str(exc))
-            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-            return 2
-        if action == "evaluate":
-            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-            return 0
-        if not receipt_path:
-            print(json.dumps(_drain_cli_failure("receipt_required", "--receipt is required"),
-                             ensure_ascii=False, sort_keys=True))
-            return 2
-        try:
-            result = persist_drain_receipt(receipt_path, result=result)
-        except (DrainReceiptError, OSError, TypeError, ValueError) as exc:
-            result = _drain_cli_failure("receipt_persist_failed", "could not persist drain receipt",
-                                        error=str(exc))
-            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-            return 2
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-        return 0
-
-    if action == "load":
-        if not receipt_path:
-            print(json.dumps(_drain_cli_failure("receipt_required", "--receipt is required"),
-                             ensure_ascii=False, sort_keys=True))
-            return 2
-        try:
-            result = load_drain_receipt(receipt_path)
-        except (DrainReceiptError, OSError, TypeError, ValueError) as exc:
-            result = _drain_cli_failure("receipt_invalid", "could not load drain receipt", error=str(exc))
-            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-            return 2
-        if result is None:
-            print(json.dumps(_drain_cli_failure("receipt_missing", "drain receipt does not exist"),
-                             ensure_ascii=False, sort_keys=True))
-            return 2
-        if not _valid_drain_result(result):
-            print(json.dumps(_drain_cli_failure("receipt_invalid", "drain receipt has an invalid result envelope"),
-                             ensure_ascii=False, sort_keys=True))
-            return 2
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-        return 0
-
-    # ``argparse`` constrains this in normal use, but keeping the fallback
-    # fail-closed makes direct calls to ``main`` safe as well.
-    print(json.dumps(_drain_cli_failure("action_invalid", "unknown drain action"),
-                     ensure_ascii=False, sort_keys=True))
-    return 2
+    """Compatibility wrapper that preserves CLI-level dependency monkeypatches."""
+    return _inspection_cli.drain(
+        action, snapshot_path, receipt_path, polls_required,
+        evaluator=evaluate_drain, persist=persist_drain_receipt, load=load_drain_receipt,
+        receipt_error=DrainReceiptError, failure=_drain_cli_failure,
+        snapshot_reader=_read_drain_snapshot, result_validator=_valid_drain_result,
+    )
 def _load_handshake(handshake_json: str, handshake_file: str):
-    if handshake_json and handshake_file:
-        raise ValueError("--handshake-json and --handshake-file are mutually exclusive")
-    if not handshake_json and not handshake_file:
-        return None
-    raw = (Path(handshake_file).read_text(encoding="utf-8")
-           if handshake_file else handshake_json)
-    try:
-        return validate_handshake(json.loads(raw))
-    except (ValueError, TypeError, json.JSONDecodeError) as exc:
-        if isinstance(exc, LedgerError):
-            raise
-        raise LedgerError("executor handshake JSON must be an object") from exc
+    """Compatibility wrapper that preserves CLI-level validator monkeypatches."""
+    return _inspection_cli._load_handshake(
+        handshake_json, handshake_file, validator=validate_handshake,
+        ledger_error=LedgerError,
+    )
 
 
 def ledger_replay(path: str, compatibility: bool, recover_trailing: bool,
                   handshake_json: str, handshake_file: str, command: str = "replay") -> int:
-    """Replay and validate a ledger through a deterministic, read-only JSON surface."""
-    requested_path = str(path)
-    try:
-        handshake = _load_handshake(handshake_json, handshake_file)
-        # Strict mode requires both hash-bound event context and the executor
-        # handshake.  Legacy mode is an explicit escape hatch for pre-context
-        # ledgers and is surfaced in the result so callers cannot confuse it
-        # with a strict replay.
-        if not compatibility and handshake is None:
-            raise LedgerError(
-                "strict ledger replay requires --handshake-json or --handshake-file"
-            )
-        events = EventLedger(path, compatibility=compatibility).replay(
-            recover_trailing=recover_trailing
-        )
-        result = {
-            "command": "ledger.%s" % command,
-            "compatibility": bool(compatibility),
-            "context_schema": CONTEXT_SCHEMA,
-            "event_count": len(events),
-            "events": events,
-            "handshake": handshake,
-            "handshake_schema": HANDSHAKE_SCHEMA if handshake is not None else None,
-            "ok": True,
-            "path": requested_path,
-            "required_context": list(REQUIRED_CONTEXT_FIELDS),
-            "schema": "simplicio.ledger-replay/v1",
-        }
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-        return 0
-    except (LedgerError, OSError, ValueError, json.JSONDecodeError) as exc:
-        result = {
-            "command": "ledger.%s" % command,
-            "compatibility": bool(compatibility),
-            "error": {"kind": exc.__class__.__name__, "message": str(exc)},
-            "handshake": None,
-            "ok": False,
-            "path": requested_path,
-            "schema": "simplicio.ledger-replay/v1",
-        }
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-        return 2
+    """Compatibility wrapper for the focused read-only ledger surface."""
+    return _inspection_cli.ledger_replay(
+        path, compatibility, recover_trailing, handshake_json, handshake_file,
+        command, handshake_loader=_load_handshake, event_ledger=EventLedger,
+        ledger_error=LedgerError, context_schema=CONTEXT_SCHEMA,
+        handshake_schema=HANDSHAKE_SCHEMA, required_context_fields=REQUIRED_CONTEXT_FIELDS,
+    )
 
 
 def findings_command(args) -> int:
-    """WI-466 findings subcommand: list / report / reconcile / doctor."""
-    from . import finding_report as fr
-    from . import finding_router as rt
-
-    cmd = getattr(args, "findings_command", None)
-    if cmd == "list":
-        records = fr.read_findings()
-        if args.json:
-            print(json.dumps(records, ensure_ascii=False, indent=2))
-        else:
-            for r in records:
-                print(f"{r['ts']} [{r['severity']}] {r['stage']}:{r['finding_id']} confirmed={r['confirmed']}")
-        return 0
-    if cmd == "report":
-        records = fr.read_findings()
-        by_stage = {}
-        by_sev = {}
-        for r in records:
-            by_stage[r["stage"]] = by_stage.get(r["stage"], 0) + 1
-            by_sev[r["severity"]] = by_sev.get(r["severity"], 0) + 1
-        payload = {"schema": "simplicio.finding-report-aggregate/v1", "total": len(records),
-                   "by_stage": by_stage, "by_severity": by_sev}
-        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
-              f"total={payload['total']} by_stage={by_stage} by_severity={by_sev}")
-        return 0
-    if cmd == "reconcile":
-        untracked = rt.untracked_problems()
-        blocked = rt.completion_blocked()
-        payload = {"schema": "simplicio.finding-reconcile/v1", "untracked_count": len(untracked),
-                   "untracked": untracked, "completion_blocked": blocked}
-        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
-              f"untracked_confirmed_findings={len(untracked)} (completion gate will block if >0)")
-        # Gate: a loop item MUST NOT be marked done while an in-scope finding is untracked.
-        return 1 if blocked else 0
-    if cmd == "doctor":
-        from . import finding_report as _fr
-        findings_store = _fr._FINDINGS_DIR / "findings.jsonl"
-        routes_store = rt.LOCAL_STORE
-        findings_present = findings_store.exists()
-        routes_present = routes_store.exists()
-        healthy = findings_present and routes_present
-        payload = {
-            "schema": "simplicio.finding-doctor/v1",
-            "findings_store_path": str(findings_store),
-            "findings_store_present": findings_present,
-            "routes_store_path": str(routes_store),
-            "routes_store_present": routes_present,
-            "store_present": healthy,
-            "router_importable": True,
-        }
-        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
-              f"findings_store_present={findings_present} routes_store_present={routes_present} "
-              f"router_ok={payload['router_importable']}")
-        return 0
-    parser.error("unknown findings subcommand")
-    return 2
+    """Compatibility wrapper for the focused findings command surface."""
+    return _inspection_cli.findings_command(args)
 
 
 def main(argv=None) -> int:
+    argv_list = list(argv) if argv is not None else list(sys.argv[1:])
+    if argv_list[:1] == ["hub-drain-admit"]:
+        from .hub_drain_admission_cli import main as drain_admission_main
+        return drain_admission_main(argv_list[1:])
+    if argv_list[:1] == ["hub-drain-plan"]:
+        from .github_drain_intake_cli import main as drain_intake_main
+        forwarded = argv_list[1:]
+        return drain_intake_main(forwarded[1:] if forwarded[:1] == ["--"] else forwarded)
     parser = argparse.ArgumentParser(
         prog="simplicio-loop",
         description=(
@@ -733,6 +522,12 @@ def main(argv=None) -> int:
     p_task = sub.add_parser("task", help="compile, validate, or preview markdown task contracts")
     p_task.add_argument("task_args", nargs=argparse.REMAINDER,
                         help="pass-through args for `simplicio-loop task`")
+
+    p_prototype = sub.add_parser(
+        "prototype", help="Prototype-First gate: plan/classify/validate-schema/doctor (#568 P0)"
+    )
+    p_prototype.add_argument("prototype_args", nargs=argparse.REMAINDER,
+                             help="pass-through args for `simplicio-loop prototype`")
 
     p_plan = sub.add_parser("plan", help="compile a raw task into a contract and preview it")
     p_plan.add_argument("--task", required=True, help="markdown task file")
@@ -778,13 +573,7 @@ def main(argv=None) -> int:
 
     p_map = sub.add_parser("map", help="map-service cross-module status")
     map_sub = p_map.add_subparsers(dest="map_command", required=True)
-    p_map_status = map_sub.add_parser(
-        "status", help="report cache hit/build/wait/invalidate counters from a running session")
-    p_map_status.add_argument("--repo", default=".", help="repository root")
-    p_map_status.add_argument("--status-file", default="",
-                              help="explicit status file (default: <repo>/.orchestrator/map/status.json)")
-    p_map_status.add_argument("--json", action="store_true",
-                              help="emit machine-readable JSON (this is also the default)")
+    configure_map_commands(map_sub)
 
     p_preflight = sub.add_parser(
         "preflight", help="verify bound operators (mapper/dev-cli/runtime) are installed")
@@ -895,6 +684,14 @@ def main(argv=None) -> int:
                          help="receipt JSON path (persist and load)")
     p_drain.add_argument("--polls-required", type=int, default=2,
                          help="identical empty polls required (default: %(default)s)")
+    sub.add_parser(
+        "hub-drain-plan",
+        help="read-only PT-BR/EN GitHub drain intake; never executes the plan",
+    )
+    sub.add_parser(
+        "hub-drain-admit",
+        help="admit a final #627 checkpoint as held; never dispatches or executes it",
+    )
     p_ledger = sub.add_parser("ledger", help="validate/replay the operational event ledger")
     p_findings = sub.add_parser("findings", help="WI-466: inspect and reconcile continuous findings")
     findings_sub = p_findings.add_subparsers(dest="findings_command", required=True)
@@ -946,7 +743,13 @@ def main(argv=None) -> int:
     )
     p_rt_check.add_argument("--repo", default=".", help="repository root")
 
-    args = parser.parse_args(argv)
+    if argv_list:
+        from .github_drain_intake_cli import looks_like_natural_request, main as drain_intake_main
+        if looks_like_natural_request(argv_list) and (
+            argv_list[0] not in sub.choices or argv_list[0].lower() == "drain"
+        ):
+            return drain_intake_main(argv_list)
+    args = parser.parse_args(argv_list)
     command = args.command or "install"
     if command == "dashboard":
         return dashboard(args.port, not args.no_browser, args.stop)
@@ -955,6 +758,13 @@ def main(argv=None) -> int:
         if forwarded and forwarded[0] == "--":
             forwarded = forwarded[1:]
         return task_contract_main(forwarded)
+    if command == "prototype":
+        if _prototype_cli is None:
+            parser.error("prototype_cli module not importable")
+        forwarded = list(args.prototype_args or [])
+        if forwarded and forwarded[0] == "--":
+            forwarded = forwarded[1:]
+        return _prototype_cli.main(forwarded)
     if command == "plan":
         return plan(args.task, args.out)
     if command == "run":
@@ -966,9 +776,7 @@ def main(argv=None) -> int:
     if command == "status":
         return status(args.repo, args.run_id, args.json, args.as_text)
     if command == "map":
-        if args.map_command == "status":
-            return map_status(args.repo, args.status_file, args.json)
-        parser.error("unknown map subcommand: " + str(args.map_command))
+        return dispatch_map(args)
     if command == "preflight":
         return preflight(args.repo, args.json)
     if command == "findings":

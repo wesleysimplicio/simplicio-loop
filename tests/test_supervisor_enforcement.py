@@ -415,6 +415,74 @@ def test_cmd_status_text_output_canary_and_governor_open(state_file, tmp_path, c
     assert "governor_circuit: OPEN" in out
 
 
+def test_metrics_reports_zero_transitions_when_no_events_file(state_file, tmp_path, capsys):
+    opts = Opts()
+    opts.json = True
+    opts.events_file = str(tmp_path / "nope.jsonl")
+    rc = mod.cmd_metrics(opts)
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["total_transitions"] == 0
+    assert out["transitions_by_mode"] == {"shadow": 0, "canary": 0, "full": 0}
+    assert out["last_transition"] is None
+
+
+def test_metrics_aggregates_real_rollout_events(state_file, tmp_path, monkeypatch):
+    events_path = str(tmp_path / "events.jsonl")
+    monkeypatch.setenv("SIMPLICIO_SUPERVISOR_EVENTS_FILE", events_path)
+
+    for mode, percent in [("shadow", 0), ("canary", 10), ("canary", 25), ("full", 100)]:
+        opts = Opts()
+        opts.mode = mode
+        opts.percent = percent
+        opts.allow = []
+        assert mod.cmd_rollout(opts) == 0
+
+    metrics_opts = Opts()
+    metrics_opts.json = True
+    metrics_opts.events_file = events_path
+    rc = mod.cmd_metrics(metrics_opts)
+    events = mod.load_rollout_events(events_path)
+    summary = mod.summarize_rollout_events(events)
+    assert rc == 0
+    assert summary["total_transitions"] == 4
+    assert summary["transitions_by_mode"] == {"shadow": 1, "canary": 2, "full": 1}
+    assert summary["last_transition"]["mode"] == "full"
+    assert summary["last_transition"]["canary_percent"] == 100
+
+
+def test_load_rollout_events_skips_corrupt_lines(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        '{"schema": "simplicio.supervisor-enforcement-event/v1", "mode": "canary", "ts": 1.0, "canary_percent": 5}\n'
+        "not json{{{\n"
+        "\n"
+    )
+    events = mod.load_rollout_events(str(path))
+    assert len(events) == 1
+    assert events[0]["mode"] == "canary"
+
+
+def test_metrics_text_output(state_file, tmp_path, monkeypatch, capsys):
+    events_path = str(tmp_path / "events.jsonl")
+    monkeypatch.setenv("SIMPLICIO_SUPERVISOR_EVENTS_FILE", events_path)
+    rollout_opts = Opts()
+    rollout_opts.mode = "canary"
+    rollout_opts.percent = 20
+    rollout_opts.allow = []
+    mod.cmd_rollout(rollout_opts)
+
+    opts = Opts()
+    opts.json = False
+    opts.events_file = events_path
+    rc = mod.cmd_metrics(opts)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "total rollout transitions: 1" in out
+    assert "canary: 1" in out
+    assert "last transition: mode=canary percent=20" in out
+
+
 def test_cmd_status_text_output_governor_unavailable(state_file, capsys):
     opts = Opts()
     opts.json = False

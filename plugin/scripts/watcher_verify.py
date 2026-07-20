@@ -83,10 +83,11 @@ _run_dir = os.environ.get("SIMPLICIO_RUN_DIR", "").strip()
 _repo_override = os.environ.get("SIMPLICIO_LOOP_REPO", "").strip()
 if _repo_override:
     _set_repo(_repo_override)
-# NOTE: SIMPLICIO_RUN_DIR selects the run-local artifact directory and must NOT
-# redefine REPO/LOOP_DIR — the run dir is resolved by _find_run_dir(wi=...) below.
-# The legacy parents[2] heuristic broke backlog/items/<wi>/run layouts (double
-# .orchestrator path). REPO stays the script-resolved default unless SIMPLICIO_LOOP_REPO is set.
+elif _run_dir:
+    try:
+        _set_repo(str(Path(_run_dir).resolve().parents[2]))
+    except Exception:
+        pass
 _loop_override = os.environ.get("SIMPLICIO_LOOP_DIR", "").strip()
 if _loop_override:
     _set_loop_dir(_loop_override)
@@ -301,54 +302,6 @@ def _criterion_results(anchor, evidence, executed):
     return results
 
 
-def _wi_files_from_receipt(independent):
-    """#612-followup: extract file paths cited in an independent watcher receipt's
-    evidence_ids / verification_method so the commit-diff check can be scoped to the
-    WI's own files. A receipt generated in an isolated worktree at an older commit must
-    still validate when the main repo HEAD has advanced *only in unrelated files*.
-    Returns a list of repo-relative paths that actually exist in the repo (a bare
-    basename like ``runner.py`` without a path separator is ignored unless it resolves
-    to a real file, so hand-written prose refs don't pollute the diff scope)."""
-    import re
-    files = set()
-    if not isinstance(independent, dict):
-        return []
-    candidates = []
-    for item in independent.get("criteria_results") or []:
-        for ref in (item.get("evidence_ids") or []):
-            ref = str(ref)
-            for m in re.findall(r"([A-Za-z0-9_./-]+\.py)(?::\d+)?", ref):
-                candidates.append(m)
-    method = str(independent.get("method") or "")
-    for m in re.findall(r"([A-Za-z0-9_./-]+\.py)", method):
-        candidates.append(m)
-    for f in candidates:
-        # Only keep paths that exist in the repo, or contain a separator (real
-        # repo-relative path). A bare basename is rejected unless it resolves.
-        if "/" in f or "\\" in f:
-            files.add(f)
-        elif os.path.exists(os.path.join(REPO, f)):
-            files.add(f)
-    return sorted(files)
-
-
-def _wi_diff_empty_between(expected_commit, head_commit, wi_files):
-    """Return True when the WI's own files are unchanged between expected_commit and
-    head_commit (i.e. the older receipt is still valid despite HEAD advancing)."""
-    if not expected_commit or not head_commit or expected_commit == head_commit:
-        return False
-    if not wi_files:
-        return False
-    try:
-        done = subprocess.run(
-            ["git", "diff", "--name-only", expected_commit, head_commit, "--", *wi_files],
-            cwd=REPO, capture_output=True, text=True, timeout=15,
-        )
-        return done.returncode == 0 and not done.stdout.strip()
-    except Exception:
-        return False
-
-
 def _independent_criterion_results(anchor, independent):
     anchor_items = _anchor_criteria(anchor)
     independent_items = {
@@ -489,20 +442,10 @@ def cmd_verify(wi=None, worktree=None):
     git_meta = _git_meta(worktree=wt)
     expected_commit = run_meta.get("commit_sha", "")
     expected_diff = run_meta.get("diff_hash", "")
-    # #612-followup: tolerate HEAD advancement when the WI's own files are unchanged
-    # between the receipt's commit and the current HEAD. This prevents a false-negative
-    # watcher verdict when the repo evolved only in unrelated orchestration files.
-    wi_files = _wi_files_from_receipt(independent) if using_independent else _wi_files_from_receipt(evidence)
-    commit_advance_ok = (
-        bool(wi_files)
-        and _wi_diff_empty_between(expected_commit, git_meta["commit_sha"], wi_files)
-    )
     if expected_commit and git_meta["commit_sha"] and expected_commit != git_meta["commit_sha"]:
-        if not commit_advance_ok:
-            reasons.append("run commit differs from watcher worktree")
+        reasons.append("run commit differs from watcher worktree")
     if expected_diff and expected_diff != git_meta["diff_hash"]:
-        if not commit_advance_ok:
-            reasons.append("run diff differs from watcher worktree")
+        reasons.append("run diff differs from watcher worktree")
     all_criteria_match = bool(criteria_results) and all(item["match"] for item in criteria_results)
     ready = not reasons and truth["ready"] and executed["all_passed"] and all_criteria_match
     reported = truth["reported"]

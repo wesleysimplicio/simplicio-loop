@@ -131,6 +131,80 @@ def test_hub_executed_process_is_visible_to_enforcement_registry_while_running(
         daemon.stop()
 
 
+def test_hub_cancel_kills_an_in_flight_execute_for_real(tmp_path, monkeypatch) -> None:
+    """The Hub's ``cancel`` IPC method used to only flip a *queue job*'s state -- it never
+    touched a real OS process, so an in-flight ``execute`` (synchronous, blocking) had no way to
+    be cancelled from a different thread/connection while it was still running. This proves the
+    fix: a ``cancel`` request carrying the ``lease_id`` an ``execute`` response reports kills the
+    real, still-running process tree, and the blocked ``execute`` call returns promptly instead
+    of running to completion."""
+    import threading
+
+    monkeypatch.setattr(psr, "rust_binary_path", lambda: None)
+    registry_path = tmp_path / "registry.json"
+    registry = ProcessRegistry(registry_path)
+    daemon = HubDaemon(str(tmp_path / "hub.lock"), process_registry=registry)
+    daemon.start()
+    try:
+        long_sleep_spec = {
+            "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
+            "timeout_seconds": 60.0,
+        }
+        holder: dict = {}
+
+        def _worker() -> None:
+            holder["response"] = daemon.handle(
+                HubEnvelope("req-cancel-me", "execute", {"process_spec": long_sleep_spec})
+            )
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        # Predictable lease_id: no idempotency_key was set, so the Hub falls back to
+        # f"hub-execute-{request_id}" (see HubDaemon.handle's "execute" branch).
+
+        deadline = time.monotonic() + 5
+        seen_active = False
+        while time.monotonic() < deadline and not seen_active:
+            if registry.active_pids():
+                seen_active = True
+                break
+            time.sleep(0.05)
+        assert seen_active, "expected the hub-executed pid to appear in the registry while running"
+
+        cancel_response = daemon.handle(
+            HubEnvelope("req-cancel-me-cancel", "cancel", {"lease_id": "hub-execute-req-cancel-me"})
+        )
+        assert cancel_response["ok"] is True
+        assert cancel_response["process"]["found"] is True
+        assert cancel_response["process"]["killed"] is True
+
+        thread.join(timeout=5)
+        assert "response" in holder, "cancel must unblock the in-flight execute promptly"
+        result = holder["response"]["result"]
+        assert result["returncode"] != 0, "a killed process must not report a clean exit"
+
+        assert registry.active_pids() == set(), (
+            "registry must unregister the pid once the cancelled execute call returns"
+        )
+    finally:
+        daemon.stop()
+
+
+def test_hub_cancel_with_unknown_lease_id_is_a_no_op_not_an_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(psr, "rust_binary_path", lambda: None)
+    daemon = HubDaemon(str(tmp_path / "hub.lock"))
+    daemon.start()
+    try:
+        response = daemon.handle(
+            HubEnvelope("req-noop-cancel", "cancel", {"lease_id": "no-such-lease"})
+        )
+        assert response["ok"] is True
+        assert response["process"]["found"] is False
+        assert response["process"]["killed"] is False
+    finally:
+        daemon.stop()
+
+
 def test_registry_does_not_track_processes_spawned_outside_the_hub(tmp_path) -> None:
     import subprocess
 

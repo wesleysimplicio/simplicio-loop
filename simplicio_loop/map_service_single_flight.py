@@ -6,6 +6,7 @@ from threading import RLock
 from typing import Awaitable, Callable, Dict, Iterable, Tuple
 
 from .map_service import MapServiceRegistry, MapView
+from .map_service_leases import BuildLeaseTable
 
 
 class SingleFlightError(RuntimeError):
@@ -47,8 +48,12 @@ Builder = Callable[[], Awaitable[MapView]]
 class SingleFlightMapStore:
     """Ensure at most one async owner builds a content-addressed view per key."""
 
-    def __init__(self, registry: MapServiceRegistry) -> None:
+    def __init__(self, registry: MapServiceRegistry, *, lease_seconds: float = 0.0) -> None:
+        if lease_seconds < 0:
+            raise ValueError("lease_seconds must be non-negative")
         self.registry = registry
+        self.lease_seconds = float(lease_seconds)
+        self.leases = BuildLeaseTable()
         self._inflight: Dict[Tuple[str, str, str, Tuple[str, ...]], asyncio.Future] = {}
         self._completed: Dict[Tuple[str, str, str, Tuple[str, ...]], str] = {}
         self._lock = RLock()
@@ -101,8 +106,15 @@ class SingleFlightMapStore:
                 owner = True
 
         if owner:
+            lease = None
             try:
-                view = await builder()
+                if self.lease_seconds:
+                    lease = self.leases.acquire(str(key), ttl=self.lease_seconds)
+                    if lease is None:
+                        raise SingleFlightError("build owner lease is already held")
+                    view = await asyncio.wait_for(builder(), timeout=self.lease_seconds)
+                else:
+                    view = await builder()
                 if not isinstance(view, MapView):
                     raise SingleFlightError("builder must return MapView")
                 if view.identity_key != str(identity_key) or view.mode != mode:
@@ -121,8 +133,24 @@ class SingleFlightMapStore:
                     await future
                 except BaseException:
                     raise
+            finally:
+                if lease is not None:
+                    self.leases.release(lease)
         cache_key = await future
-        return MapHandle(self.registry.get_view(cache_key), self)
+        try:
+            return MapHandle(self.registry.get_view(cache_key), self)
+        except Exception:
+            # A real race (found by a heavy-concurrency stress test, not theoretical):
+            # between the owner completing the build and THIS waiter acquiring its own
+            # reference, a concurrent invalidate()+gc() can reclaim the view (it starts
+            # at references=0 until each waiter calls get_view). Retry the whole
+            # single-flight dance rather than propagating a confusing exception for a
+            # build that, from this caller's perspective, never actually failed.
+            with self._lock:
+                self._completed.pop(key, None)
+            return await self.get_or_build(
+                identity_key, mode=mode, tree_hash=tree_hash, files=files, builder=builder,
+            )
 
     def invalidate(self, identity_key: str, *, reason: str = "source_changed"):
         invalidated = self.registry.invalidate(identity_key, reason=reason)

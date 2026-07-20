@@ -104,6 +104,7 @@ SKILL_COUNT_RES = [
 ]
 # worker/hook scripts whose `selftest` proves them; others just need to be invokable
 SELFTEST_SCRIPTS = [
+    "scripts/component_release.py",
     "scripts/loop_journal.py",
     "scripts/billing_aggregator.py",
     "scripts/savings_harness.py",
@@ -159,6 +160,7 @@ SELFTEST_SCRIPTS = [
     "scripts/release_check.py",
     "scripts/operator_check.py",
     "scripts/supervisor_enforcement.py",
+    "scripts/deep_correctness_gate.py",
 ]
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a
 # `selftest`-shaped function/subcommand that isn't the worker's own self-check, or a script this

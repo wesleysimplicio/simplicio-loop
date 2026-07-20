@@ -18,6 +18,23 @@ if str(ROOT) not in sys.path:
 from simplicio_loop.hub_daemon import HubDaemon, HubSocketClient, HubSocketServer, default_endpoint, default_transport
 
 
+def _measure_rss_bytes() -> "int | None":
+    """Best-effort RSS in bytes: prefer psutil, fall back to stdlib ``resource`` on
+    POSIX (no extra dependency), else report honestly that no measurement is available."""
+    try:
+        import psutil
+        return psutil.Process().memory_info().rss
+    except ImportError:
+        pass
+    try:
+        import resource
+        max_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except ImportError:
+        return None
+    # ru_maxrss is kibibytes on Linux, bytes on macOS/Darwin.
+    return max_rss if sys.platform == "darwin" else max_rss * 1024
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -47,11 +64,7 @@ def main() -> int:
                 "p95_ms": round(samples[int(len(samples) * 0.95) - 1] * 1000, 3),
                 "elapsed_seconds": round(elapsed, 6),
             }
-            try:
-                import psutil
-                payload["rss_bytes"] = psutil.Process().memory_info().rss
-            except ImportError:
-                payload["rss_bytes"] = None
+            payload["rss_bytes"] = _measure_rss_bytes()
             print(json.dumps(payload, sort_keys=True))
             return 0
         finally:

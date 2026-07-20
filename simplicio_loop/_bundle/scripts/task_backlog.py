@@ -1300,9 +1300,7 @@ _TRANSITIONS = {
     "running": {"verification", "delivery", "ready", "failed", "blocked", "cancelled"},
     "verification": {"delivery", "running", "ready", "failed", "blocked", "cancelled"},
     "delivery": {"verification", "running", "ready", "failed", "blocked", "cancelled"},
-    # blocked recovery: infra-dependent blocks (e.g. Orca down) may be lifted once the
-    # external precondition is resolved; terminal failures escalate to quarantined.
-    "blocked": {"ready", "failed", "quarantined", "cancelled"},
+    "blocked": {"ready", "cancelled"},
     "failed": {"ready", "dead-letter", "cancelled"},
 }
 

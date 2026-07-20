@@ -100,3 +100,45 @@ def test_findings_list_after_emit():
     fr.emit_finding("survey", "d1", "medium", "m.py:9", True)
     rc = cli_mod.findings_command(_Args("list", json_flag=True))
     assert rc == 0
+
+
+def test_findings_unknown_command_has_deterministic_error(capsys):
+    rc = cli_mod.findings_command(_Args("unknown", json_flag=True))
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "error": {
+            "code": "unknown_findings_command",
+            "message": "unknown findings subcommand",
+            "value": "unknown",
+        },
+        "ok": False,
+        "schema": "simplicio.finding-command-error/v1",
+    }
+
+
+def test_ledger_replay_uses_live_cli_ledger_exports(monkeypatch, capsys):
+    captured = {}
+
+    class FakeLedger:
+        def __init__(self, path, compatibility):
+            captured["path"] = path
+            captured["compatibility"] = compatibility
+
+        def replay(self, recover_trailing):
+            captured["recover_trailing"] = recover_trailing
+            return [{"event_id": "from-cli-seam"}]
+
+    monkeypatch.setattr(cli_mod, "EventLedger", FakeLedger)
+    monkeypatch.setattr(cli_mod, "CONTEXT_SCHEMA", "test.context/v1")
+    monkeypatch.setattr(cli_mod, "HANDSHAKE_SCHEMA", "test.handshake/v1")
+    monkeypatch.setattr(cli_mod, "REQUIRED_CONTEXT_FIELDS", ("run_id",))
+
+    assert cli_mod.ledger_replay("events.jsonl", True, True, "", "") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert captured == {
+        "path": "events.jsonl", "compatibility": True, "recover_trailing": True,
+    }
+    assert payload["events"] == [{"event_id": "from-cli-seam"}]
+    assert payload["context_schema"] == "test.context/v1"
+    assert payload["required_context"] == ["run_id"]

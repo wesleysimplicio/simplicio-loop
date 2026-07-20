@@ -96,6 +96,34 @@ def test_submit_with_invalid_weight_raises_scheduler_error_not_backpressure() ->
         daemon.stop()
 
 
+def test_submit_honors_priority_class_over_ipc() -> None:
+    """The daemon's submit payload must reach FairScheduler's priority classes (#505 step
+    1), not just weight/cost/workspace_id — an interactive submit must claim ahead of a
+    same-weight maintenance submit even though maintenance was queued first."""
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        client = HubClient(daemon, "solo")
+        client.request("r0", "register")
+        client.request("r1", "submit", job_id="maint-1", client_id="a", priority="maintenance")
+        client.request("r2", "submit", job_id="inter-1", client_id="b", priority="interactive")
+        response = client.request("r3", "claim_next")
+        assert response["job"]["job_id"] == "inter-1"
+        daemon.stop()
+
+
+def test_submit_rejects_unknown_priority_class() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        client = HubClient(daemon, "a")
+        client.request("r0", "register")
+        with pytest.raises(Exception) as excinfo:
+            client.request("r1", "submit", job_id="a-1", priority="urgent")
+        assert not isinstance(excinfo.value, HubBackpressureError)
+        daemon.stop()
+
+
 def test_result_after_already_completed_swallows_scheduler_error() -> None:
     """Calling result twice for the same job must not raise even though the second
     scheduler.complete() call hits an already-retired task_id (SchedulerError)."""

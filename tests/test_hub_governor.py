@@ -96,8 +96,49 @@ def test_probe_reports_unavailable_when_every_source_fails(monkeypatch) -> None:
     monkeypatch.setattr(ResourceProbe, "_read_cgroup", staticmethod(lambda: None))
     monkeypatch.setattr(ResourceProbe, "_read_psutil", staticmethod(lambda: None))
     monkeypatch.setattr(ResourceProbe, "_read_stdlib", staticmethod(lambda: None))
+    # Disk/gpu are independent of the cpu/memory ladder (disk via stdlib
+    # shutil.disk_usage is essentially always available) - patched out here
+    # too so this test still proves the fully-unavailable, all-zero case.
+    monkeypatch.setattr(ResourceProbe, "_read_disk_percent", staticmethod(lambda path: 0.0))
+    monkeypatch.setattr(ResourceProbe, "_read_gpu_percent", staticmethod(lambda: 0.0))
     reading = ResourceProbe().read()
     assert reading == PressureReading(source="unavailable")
+
+
+def test_probe_measures_disk_percent_independently_of_the_cpu_memory_ladder(monkeypatch) -> None:
+    """Disk pressure must still be observable even when cgroups/psutil/stdlib
+    all fail to read cpu/memory - it's not gated behind that ladder."""
+    monkeypatch.setattr(ResourceProbe, "_read_cgroup", staticmethod(lambda: None))
+    monkeypatch.setattr(ResourceProbe, "_read_psutil", staticmethod(lambda: None))
+    monkeypatch.setattr(ResourceProbe, "_read_stdlib", staticmethod(lambda: None))
+    reading = ResourceProbe().read()
+    assert reading.source == "unavailable"
+    assert 0.0 <= reading.disk_percent <= 100.0
+    assert reading.gpu_percent == 0.0  # no GPU tooling in this environment
+
+
+def test_probe_gpu_percent_defaults_to_zero_without_nvidia_smi(monkeypatch) -> None:
+    import subprocess as subprocess_module
+
+    def _raise(*args, **kwargs):
+        raise FileNotFoundError("nvidia-smi not found")
+
+    monkeypatch.setattr(subprocess_module, "run", _raise)
+    assert ResourceProbe._read_gpu_percent() == 0.0
+
+
+def test_evaluate_pressure_trips_on_disk_and_gpu_over_budget() -> None:
+    governor = ResourceGovernor(ResourceLimits(cpu=4), circuit_threshold=1, cooldown_seconds=60)
+    disk_high = PressureReading(disk_percent=95.0, source="probe")
+    disk_result = governor.evaluate_pressure(disk_high, disk_percent_limit=90.0)
+    assert disk_result["over_budget"] is True
+    assert disk_result["tripped"] is True
+    governor.recover()
+
+    gpu_high = PressureReading(gpu_percent=99.0, source="probe")
+    gpu_result = governor.evaluate_pressure(gpu_high, gpu_percent_limit=90.0)
+    assert gpu_result["over_budget"] is True
+    assert gpu_result["tripped"] is True
 
 
 def test_sustained_pressure_opens_circuit_then_recovers_when_it_subsides() -> None:

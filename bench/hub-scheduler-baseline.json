@@ -1,0 +1,17 @@
+{
+  "dispatch_p50_ms": 0.00107199997501084,
+  "dispatch_p95_ms": 0.0017369999909533362,
+  "elapsed_seconds": 0.0014246869999965384,
+  "heavy_jobs": 500,
+  "jains_fairness_index": 0.6923076923076923,
+  "light_jobs": 100,
+  "peak_rss_mb": 17.171875,
+  "rss_source": "resource.getrusage",
+  "schema": "simplicio.hub-scheduler-benchmark/v1",
+  "served": {
+    "heavy": 500,
+    "light": 100
+  },
+  "starvation_preventions": 0,
+  "throughput_per_second": 421145.13573961006
+}

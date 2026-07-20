@@ -173,7 +173,7 @@ class MapServiceRegistry:
             ],
         }
 
-    def register(self, identity: RepositoryIdentity, *, transition: bool = False) -> str:
+    def register(self, identity: RepositoryIdentity, *, transition: bool = True) -> str:
         with self._lock:
             superseded = None
             for existing in self._identities.values():
@@ -181,13 +181,18 @@ class MapServiceRegistry:
                     existing.canonical_root == identity.canonical_root
                     and existing.worktree_root == identity.worktree_root
                 )
-                if same_root and existing.key != identity.key:
-                    if not transition:
-                        raise AmbiguousRepositoryError(
-                            "repository identity collision for the same root/worktree"
-                        )
-                    superseded = existing
-                    break
+                if not same_root or existing.key == identity.key:
+                    continue
+                if existing.repository != identity.repository:
+                    raise AmbiguousRepositoryError(
+                        "repository identity collision for the same root/worktree"
+                    )
+                if not transition:
+                    raise AmbiguousRepositoryError(
+                        "repository identity transition requires transition=True"
+                    )
+                superseded = existing
+                break
             if superseded is not None:
                 self.invalidate(superseded.key, reason="branch_transition")
                 del self._identities[superseded.key]

@@ -98,6 +98,43 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def kill_process_tree(pid: int, *, sig: int = signal.SIGKILL) -> bool:
+    """Best-effort kill of ``pid`` and its descendants, from a thread/process that never held
+    the live ``Process`` object -- the real in-flight cancellation the #498 epic still lacked
+    (see ``docs/SUPERVISOR_ENFORCEMENT_RUNBOOK.md``): a supervised child registered in
+    :class:`ProcessRegistry` could previously only be killed by the coroutine that spawned it
+    (on its own timeout/cancellation), never by an external ``cancel`` request arriving on a
+    different thread while ``execute`` is still blocked awaiting completion.
+
+    POSIX: children spawned via ``PythonProcessAdapter``/``SupervisedProcessAdapter`` use
+    ``start_new_session=True`` so they head their own process group; ``os.killpg`` on that
+    group reaps the whole tree in one signal. Falls back to killing just ``pid`` when it is not
+    a group leader (e.g. the Rust backend's wrapper process, which does not call ``setsid``).
+    Windows: ``taskkill /T /F`` kills the process tree rooted at ``pid`` directly.
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True, timeout=5, check=False,
+            )
+            return True
+        except (OSError, subprocess.SubprocessError):
+            return False
+    try:
+        os.killpg(os.getpgid(pid), sig)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        os.kill(pid, sig)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return False
+
+
 @dataclass(frozen=True)
 class ProcessRecord:
     """One observed OS process, as seen by ``scan_host_processes``."""
@@ -224,6 +261,21 @@ class ProcessRegistry:
 
     def active_pids(self) -> Set[int]:
         return set(self.active())
+
+    def terminate(self, lease_id: str, *, sig: int = signal.SIGKILL) -> Dict[str, Any]:
+        """Kill the live, supervised process registered under ``lease_id``, for real.
+
+        Looks up the pid the registry already tracks for this lease and kills its whole tree
+        via :func:`kill_process_tree` -- independent of whichever thread/coroutine is currently
+        blocked awaiting that process's completion (e.g. a Hub ``execute`` call in flight on a
+        different connection thread). Returns a status dict rather than raising: an unknown or
+        already-finished lease is a normal "nothing to cancel" outcome, not an error.
+        """
+        for pid, record in self.active().items():
+            if record.get("lease_id") == lease_id:
+                killed = kill_process_tree(pid, sig=sig)
+                return {"found": True, "pid": pid, "lease_id": lease_id, "killed": killed}
+        return {"found": False, "pid": None, "lease_id": lease_id, "killed": False}
 
 
 def detect_unsupervised(

@@ -6,6 +6,18 @@ from threading import RLock
 from typing import Any, Deque, Dict, List, Optional
 
 
+PRIORITY_GAIN_MULTIPLIER: Dict[str, float] = {
+    "interactive": 8.0,
+    "mapping": 4.0,
+    "llm": 2.0,
+    "test": 1.5,
+    "build": 1.0,
+    "background": 1.0,
+    "maintenance": 0.5,
+}
+DEFAULT_PRIORITY = "background"
+
+
 class SchedulerError(ValueError):
     """Raised for invalid scheduler operations."""
 
@@ -40,6 +52,10 @@ class QuotaExceededError(SchedulerError):
         }
 
 
+# Backward-compatible alias for callers that used the pre-merge name.
+PRIORITY_BOOST = PRIORITY_GAIN_MULTIPLIER
+
+
 @dataclass(frozen=True)
 class ScheduledJob:
     task_id: str
@@ -47,6 +63,7 @@ class ScheduledJob:
     weight: int = 1
     cost: int = 1
     workspace_id: str = "default"
+    priority: str = DEFAULT_PRIORITY
 
 
 class FairScheduler:
@@ -79,7 +96,7 @@ class FairScheduler:
         self.aging_boost = aging_boost
         self._queues: Dict[str, Deque[ScheduledJob]] = {}
         self._weights: Dict[str, int] = {}
-        self._deficit: Dict[str, int] = {}
+        self._deficit: Dict[str, float] = {}
         self._inflight: Dict[str, int] = {}
         self._order: List[str] = []
         self._cursor = 0
@@ -91,6 +108,7 @@ class FairScheduler:
         self._global_total = 0
         self._tick = 0
         self._last_served_tick: Dict[str, int] = {}
+        self._served_total: Dict[str, int] = {}
 
     def _check_quotas(self, job: ScheduledJob) -> None:
         if self.max_global_queue is not None and self._global_total >= self.max_global_queue:
@@ -115,6 +133,11 @@ class FairScheduler:
             raise SchedulerError("job identity, weight and cost must be positive")
         if not job.workspace_id:
             raise SchedulerError("workspace_id must be non-empty")
+        if job.priority not in PRIORITY_GAIN_MULTIPLIER:
+            raise SchedulerError(
+                f"unknown priority class {job.priority!r}; must be one of "
+                + ", ".join(sorted(PRIORITY_GAIN_MULTIPLIER))
+            )
         with self._lock:
             if job.task_id in self._jobs:
                 raise SchedulerError("duplicate task_id")
@@ -150,7 +173,8 @@ class FairScheduler:
                 queue = self._queues[client]
                 if not queue:
                     continue
-                gain = self.quantum * self._weights.get(client, 1)
+                job = queue[0]
+                gain = self.quantum * self._weights.get(client, 1) * PRIORITY_GAIN_MULTIPLIER[job.priority]
                 waited = self._tick - self._last_served_tick.get(client, self._tick)
                 if waited > self.aging_ticks:
                     gain *= self.aging_boost
@@ -158,13 +182,13 @@ class FairScheduler:
                 self._deficit[client] += gain
                 if self._inflight[client] >= self.max_inflight_per_client:
                     continue
-                job = queue[0]
                 if self._deficit[client] < job.cost:
                     continue
                 queue.popleft()
                 self._deficit[client] -= job.cost
                 self._inflight[client] += 1
                 self._last_served_tick[client] = self._tick
+                self._served_total[client] = self._served_total.get(client, 0) + 1
                 return job
             return None
 
@@ -188,6 +212,16 @@ class FairScheduler:
             self._jobs.pop(task_id, None)
             return True
 
+    def _jains_fairness_index(self) -> float:
+        served = [self._served_total.get(client, 0) for client in self._order]
+        if not served:
+            return 1.0
+        total = sum(served)
+        total_sq = sum(value * value for value in served)
+        if total_sq == 0:
+            return 1.0
+        return (total * total) / (len(served) * total_sq)
+
     def status(self) -> Dict[str, Any]:
         with self._lock:
             return {
@@ -198,8 +232,19 @@ class FairScheduler:
                 "deficit": dict(self._deficit),
                 "starvation_preventions": self._starvation_preventions,
                 "max_inflight_per_client": self.max_inflight_per_client,
+                "limits": {
+                    "max_inflight_per_client": self.max_inflight_per_client,
+                    "max_queue_per_client": self.max_queue_per_client,
+                    "max_queue_per_workspace": self.max_queue_per_workspace,
+                    "max_global_queue": self.max_global_queue,
+                    "quantum": self.quantum,
+                    "aging_ticks": self.aging_ticks,
+                    "aging_boost": self.aging_boost,
+                },
                 "client_total": dict(self._client_total),
                 "workspace_total": dict(self._workspace_total),
                 "global_total": self._global_total,
                 "tick": self._tick,
+                "served_total": dict(self._served_total),
+                "jains_fairness_index": self._jains_fairness_index(),
             }
