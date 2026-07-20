@@ -2860,7 +2860,7 @@ def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
     return read_status(repo, run_id)
 
 
-def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3) -> Dict[str, Any]:
+def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3, quality_provider: Optional[str] = None, quality_policy: str = "strict-default") -> Dict[str, Any]:
     """Arm, execute, and independently verify one run as one durable operation.
 
     Issue #279: this boundary must never leave a run partially armed.  Either the full
@@ -2892,6 +2892,46 @@ def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_itera
     status = read_status(repo, run_id)
     if batch.get("failed_task_indices") or status["state"].get("phase") == "blocked":
         return status
+    # Issue #613: mandatory quality provider runs AFTER execution and BEFORE
+    # the watcher/delivery/Completion Oracle. Fail-closed: BLOCKED on any
+    # absent/incompatible/crashing/timed-out provider -- never a silent fallback.
+    if quality_provider:
+        from .quality_provider import conduct_quality
+        run_dir = Path(status["run_dir"])
+        head = status.get("manifest", {}).get("head", "") or ""
+        diff_hash = status.get("manifest", {}).get("diff_hash", "") or ""
+        q = conduct_quality(
+            repo, run_id,
+            quality_provider=quality_provider, quality_policy=quality_policy,
+            attempt=status["state"].get("attempt", 1), head=head, diff_hash=diff_hash,
+        )
+        if q.get("status") == "BLOCKED":
+            state = read_status(repo, run_id)["state"]
+            state["blockers"] = [q.get("reason", "quality provider blocked the run")]
+            state["current_action"] = "quality_blocked"
+            state["next_action"] = "inspect_and_recover"
+            state["evidence"] = {
+                "ready": False,
+                "receipt": str(run_dir / "quality-matrix.json"),
+                "status": "UNVERIFIED",
+            }
+            _write_json(run_dir / "state.json", state)
+            _transition(run_dir, state, "blocked",
+                        "quality provider blocked the run (fail-closed)",
+                        receipt=str(run_dir / "quality-matrix.json"))
+            return read_status(repo, run_id)
+        # A FAIL provider returns to recovery/implementation per the issue spec
+        # (not a direct provider fix); surface it and stop short of verify.
+        if q.get("status") == "FAIL":
+            state = read_status(repo, run_id)["state"]
+            state["blockers"] = [q.get("detail", "quality provider reported FAIL")]
+            state["current_action"] = "quality_failed"
+            state["next_action"] = "inspect_and_recover"
+            _write_json(run_dir / "state.json", state)
+            _transition(run_dir, state, "blocked",
+                        "quality provider reported FAIL -> recovery",
+                        receipt=str(run_dir / "quality-matrix.json"))
+            return read_status(repo, run_id)
     return verify_run(repo, run_id)
 
 

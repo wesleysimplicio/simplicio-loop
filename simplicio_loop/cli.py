@@ -12,6 +12,7 @@ import time
 import webbrowser
 import json
 from pathlib import Path
+from typing import Optional
 try:
     from scripts import release_manifest as _release_manifest
 except Exception:  # pragma: no cover - import shim for bundled scripts
@@ -193,13 +194,17 @@ def plan(task_path: str, out_path: str) -> int:
     return 0
 
 
-def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int) -> int:
+def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int,
+        quality_provider: Optional[str] = None, quality_policy: str = "strict-default") -> int:
     try:
         delivery_target = delivery.normalize_delivery_target(delivery_arg)
     except delivery.DeliveryTargetError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    payload = conduct_run(repo, task_path, delivery_target, max_iterations)
+    payload = conduct_run(
+        repo, task_path, delivery_target, max_iterations,
+        quality_provider=quality_provider, quality_policy=quality_policy,
+    )
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -738,6 +743,15 @@ def main(argv=None) -> int:
         ),
     )
     p_run.add_argument("--max-iterations", type=int, default=12, help="safety cap")
+    p_run.add_argument(
+        "--quality-provider", default=None,
+        help="mandatory quality provider name (simplicio_loop.quality_providers.<name>); "
+             "absent/incompatible/crashing/timed-out -> BLOCKED (issue #613)",
+    )
+    p_run.add_argument(
+        "--quality-policy", default="strict-default",
+        help="policy string forwarded to the quality provider",
+    )
 
     p_oracle = sub.add_parser("oracle", help="evaluate completion and cross-runtime parity")
     p_oracle.add_argument("--loop-dir", default=os.path.join(".orchestrator", "loop"))
@@ -936,7 +950,8 @@ def main(argv=None) -> int:
     if command == "plan":
         return plan(args.task, args.out)
     if command == "run":
-        return run(args.repo, args.task, args.delivery, args.max_iterations)
+        return run(args.repo, args.task, args.delivery, args.max_iterations,
+                  args.quality_provider, args.quality_policy)
     if command == "oracle":
         return oracle(args.loop_dir, args.run_dir, args.response_text, args.flow_gap,
                       args.write_receipt)
