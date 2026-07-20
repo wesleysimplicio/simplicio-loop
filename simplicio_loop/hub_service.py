@@ -32,7 +32,7 @@ from simplicio_loop.hub_governor import (
     ResourceRequest,
     ResourceThrottled,
 )
-from simplicio_loop.hub_queue_retry import HubRetryQueue, QueueRetryError, RetryLease
+from simplicio_loop.hub_queue_retry import HubRetryQueue, RetryLease
 from simplicio_loop.hub_scheduler import FairScheduler, ScheduledJob, SchedulerError
 
 
@@ -91,6 +91,68 @@ class HubService:
             # returns the SAME task_id, which is already scheduled from the first
             # call — not a real scheduling error.
         return task_id
+
+    def _capacity_snapshot(self, client_id: str, workspace_id: str) -> Dict[str, Any]:
+        """Sanitized observation only: no reservation and no third-party identities."""
+        scheduler = self.scheduler.status()
+        governor = self.governor.status()
+        circuit = governor.get("circuit") or {}
+        zero_resources = {name: 0 for name in governor["used"]}
+        return {
+            "schema": "simplicio.hub-capacity-observation/v1",
+            "reservation": False,
+            "fresh_snapshot_required_at_activation": True,
+            "scheduler": {
+                "limits": dict(scheduler.get("limits") or {}),
+                "global": {
+                    "queued": int(scheduler.get("queued", 0)),
+                    "global_total": int(scheduler.get("global_total", 0)),
+                    "clients": int(scheduler.get("clients", 0)),
+                },
+                "target_client": {
+                    "total": int((scheduler.get("client_total") or {}).get(client_id, 0)),
+                    "inflight": int((scheduler.get("inflight") or {}).get(client_id, 0)),
+                },
+                "target_workspace": {
+                    "total": int((scheduler.get("workspace_total") or {}).get(workspace_id, 0)),
+                },
+            },
+            "governor": {
+                "limits": dict(governor.get("limits") or {}),
+                "used": dict(governor.get("used") or {}),
+                "target_client_used": dict(
+                    (governor.get("client_used") or {}).get(client_id, zero_resources)
+                ),
+                "draining": bool(governor.get("draining")),
+                "circuit": {
+                    "state": str(circuit.get("state") or "closed"),
+                    "failures": int(circuit.get("failures", 0)),
+                    "threshold": int(circuit.get("threshold", 1)),
+                    "cooldown_seconds": float(circuit.get("cooldown_seconds", 0.0)),
+                },
+            },
+        }
+
+    def admit_held(
+        self,
+        job: Dict[str, Any],
+        *,
+        idempotency_key: str,
+        input_digest: str,
+        client_id: str,
+        workspace_id: str = "default",
+        weight: int = 1,
+        cost: int = 1,
+    ) -> Dict[str, Any]:
+        snapshot = self._capacity_snapshot(client_id, workspace_id)
+        return self.queue.admit_held(
+            job, idempotency_key=idempotency_key, input_digest=input_digest,
+            client_id=client_id, workspace_id=workspace_id, weight=weight, cost=cost,
+            capacity_snapshot=snapshot,
+        )
+
+    def admission(self, *, task_id: str = "", idempotency_key: str = "") -> Dict[str, Any]:
+        return self.queue.admission(task_id=task_id, idempotency_key=idempotency_key)
 
     def claim(
         self,

@@ -92,16 +92,21 @@ _REPO_SLUG = re.compile(
 )
 
 
+def _remove_git_suffix(value: str) -> str:
+    """Python 3.8-compatible equivalent of ``value.removesuffix('.git')``."""
+    return value[:-4] if value.endswith(".git") else value
+
+
 def _repository_candidates(request: str) -> list[str]:
     candidates: list[str] = []
     scrubbed = request
     for match in reversed(list(_REPO_URL.finditer(request))):
-        candidates.append(f"{match.group('owner')}/{match.group('repo')}".removesuffix(".git"))
+        candidates.append(_remove_git_suffix(f"{match.group('owner')}/{match.group('repo')}"))
         start = match.start()
         end = start + len(request[start:].split(maxsplit=1)[0])
         scrubbed = scrubbed[:start] + (" " * (end - start)) + scrubbed[end:]
     candidates.extend(
-        f"{match.group('owner')}/{match.group('repo')}".removesuffix(".git")
+        _remove_git_suffix(f"{match.group('owner')}/{match.group('repo')}")
         for match in _REPO_SLUG.finditer(scrubbed)
     )
     unique: list[str] = []
@@ -411,7 +416,7 @@ class ReadOnlyLocalGitMap:
 
     @staticmethod
     def _repo_from_remote(remote: str) -> str:
-        value = str(remote or "").strip().removesuffix(".git")
+        value = _remove_git_suffix(str(remote or "").strip())
         if value.startswith("git@") and ":" in value:
             value = value.split(":", 1)[1]
         elif "github.com/" in value:

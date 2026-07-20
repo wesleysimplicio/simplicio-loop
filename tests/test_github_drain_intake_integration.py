@@ -32,7 +32,7 @@ class ReadOnlyGitHub:
                 "title": issue["title"],
                 "state": issue["state"],
                 "labels": list(issue.get("labels", [])),
-                "url": "https://github.test/%s/issues/%d" % (self.repo, number),
+                "url": "https://github.com/%s/issues/%d" % (self.repo, number),
             }
             for number, issue in sorted(self.issues.items())
             if issue["state"] == state
@@ -64,7 +64,7 @@ class ReadOnlyGitHub:
             "provider": "github",
             "repo": self.repo,
             "issue": str(number),
-            "url": "https://github.test/%s/issues/%d" % (self.repo, number),
+            "url": "https://github.com/%s/issues/%d" % (self.repo, number),
             "title": issue["title"],
             "body": issue.get("body", ""),
             "labels": list(issue.get("labels", [])),
