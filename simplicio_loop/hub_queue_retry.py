@@ -133,6 +133,42 @@ class HubRetryQueue:
                 # not a real failure.
                 if "duplicate column name" not in str(exc):
                     raise
+        self._backfill_legacy_client_ids()
+
+    @staticmethod
+    def _effective_client_id(payload: Any, explicit_client_id: Any) -> str:
+        """Return the durable client identity for a new queue row.
+
+        An explicit, nonempty string is authoritative.  Older callers only placed
+        that identity in the payload, so use a valid payload object as a fallback.
+        Deliberately do not stringify arbitrary values: scheduler identity must not
+        be invented from malformed input.
+        """
+        if isinstance(explicit_client_id, str) and explicit_client_id:
+            return explicit_client_id
+        if isinstance(payload, dict):
+            payload_client_id = payload.get("client_id")
+            if isinstance(payload_client_id, str) and payload_client_id:
+                return payload_client_id
+        return ""
+
+    def _backfill_legacy_client_ids(self) -> None:
+        """Populate only missing legacy identities without changing queue metadata."""
+        rows = self._db.execute(
+            "SELECT task_id,payload FROM hub_jobs WHERE client_id=''"
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload"]))
+            except (TypeError, ValueError):
+                continue
+            client_id = self._effective_client_id(payload, "")
+            if not client_id:
+                continue
+            self._db.execute(
+                "UPDATE hub_jobs SET client_id=? WHERE task_id=? AND client_id=''",
+                (client_id, row["task_id"]),
+            )
 
     def _check_integrity_before_open(self) -> None:
         if not Path(self.path).exists():
@@ -183,7 +219,7 @@ class HubRetryQueue:
         *,
         idempotency_key: str,
         max_attempts: int = 3,
-        client_id: str = "",
+        client_id: Any = "",
         workspace_id: str = "default",
         weight: int = 1,
         cost: int = 1,
@@ -200,6 +236,7 @@ class HubRetryQueue:
                 if str(existing["state"]) == "admitted_held":
                     raise QueueRetryError("held admission cannot be submitted")
                 return str(existing["task_id"])
+            effective_client_id = self._effective_client_id(payload, client_id)
             task_id = str(uuid.uuid4())
             try:
                 self._db.execute(
@@ -210,7 +247,7 @@ class HubRetryQueue:
                     VALUES(?,?,?,?,?,?,?,?,?,?)
                     """,
                     (task_id, idempotency_key, json.dumps(payload, sort_keys=True),
-                     int(max_attempts), now, now, str(client_id), str(workspace_id),
+                     int(max_attempts), now, now, effective_client_id, str(workspace_id),
                      int(weight), int(cost)),
                 )
             except sqlite3.IntegrityError:

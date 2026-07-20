@@ -15,6 +15,7 @@ from simplicio_loop.hub_queue_retry import (
     QueueLeaseError,
     QueueRetryError,
 )
+from simplicio_loop.hub_scheduler import FairScheduler
 
 
 def test_idempotent_submit_survives_restart_and_dead_letters_after_budget() -> None:
@@ -39,6 +40,75 @@ def test_idempotent_submit_survives_restart_and_dead_letters_after_budget() -> N
         restarted.requeue(task_id)
         assert restarted.state(task_id) == "queued"
         restarted.close()
+
+
+def test_submit_uses_payload_client_id_only_when_explicit_identity_is_missing() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        payload_task_id = queue.submit(
+            {"client_id": "payload-client", "workspace_id": "payload-workspace", "weight": 99, "cost": 88},
+            idempotency_key="payload-only",
+        )
+        explicit_task_id = queue.submit(
+            {"client_id": "payload-client"}, idempotency_key="explicit-wins", client_id="explicit-client",
+        )
+
+        payload_row = queue.get_row(payload_task_id)
+        explicit_row = queue.get_row(explicit_task_id)
+        assert payload_row is not None
+        assert explicit_row is not None
+        assert payload_row["client_id"] == "payload-client"
+        assert payload_row["workspace_id"] == "default"
+        assert payload_row["weight"] == 1
+        assert payload_row["cost"] == 1
+        assert explicit_row["client_id"] == "explicit-client"
+        queue.close()
+
+
+def test_submit_does_not_coerce_invalid_client_ids_or_rewrite_an_idempotent_winner() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        invalid_task_ids = [
+            queue.submit({"client_id": 7}, idempotency_key="payload-number"),
+            queue.submit({"client_id": ""}, idempotency_key="payload-empty", client_id=object()),
+            queue.submit({}, idempotency_key="explicit-number", client_id=9),
+        ]
+        first = queue.submit(
+            {"client_id": "first-writer", "kind": "first"}, idempotency_key="replay",
+        )
+        first_row = queue.get_row(first)
+        assert first_row is not None
+        first_snapshot = {
+            name: first_row[name]
+            for name in ("payload", "client_id", "workspace_id", "weight", "cost", "updated_at")
+        }
+        assert queue.submit(
+            {"client_id": "later-writer", "kind": "later"}, idempotency_key="replay",
+            client_id="later", workspace_id="later-workspace", weight=9, cost=8,
+        ) == first
+
+        assert [queue.get_row(task_id)["client_id"] for task_id in invalid_task_ids] == ["", "", ""]
+        replayed_row = queue.get_row(first)
+        assert replayed_row is not None
+        assert {
+            name: replayed_row[name]
+            for name in ("payload", "client_id", "workspace_id", "weight", "cost", "updated_at")
+        } == first_snapshot
+        queue.close()
+
+
+def test_scheduler_sync_uses_only_the_persisted_client_identity() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        queue = HubRetryQueue(str(Path(directory) / "queue.db"))
+        task_id = queue.submit({"client_id": "payload-client"}, idempotency_key="sync")
+        queue._db.execute("UPDATE hub_jobs SET client_id='' WHERE task_id=?", (task_id,))
+
+        scheduler = FairScheduler()
+        queue.sync_fair_scheduler(scheduler)
+        scheduled = scheduler.next()
+        assert scheduled is not None
+        assert scheduled.client_id == "default"
+        queue.close()
 
 
 def test_only_current_lease_can_heartbeat_or_complete() -> None:
@@ -138,7 +208,11 @@ def test_concurrent_submit_with_same_idempotency_key_never_raises_and_is_idempot
             try:
                 queue = HubRetryQueue(path)
                 queue._db = _BarrierGatedDB(queue._db, barrier)
-                results[i] = queue.submit({"kind": "race"}, idempotency_key="racing-key")
+                results[i] = queue.submit(
+                    {"client_id": "payload-%d" % i}, idempotency_key="racing-key",
+                    client_id="explicit-%d" % i, workspace_id="workspace-%d" % i,
+                    weight=i + 1, cost=i + 1,
+                )
                 queue._db.close()
             except Exception as exc:  # noqa: BLE001 - intentionally broad, asserted on below
                 errors.append(exc)
@@ -156,9 +230,15 @@ def test_concurrent_submit_with_same_idempotency_key_never_raises_and_is_idempot
 
         plain = HubRetryQueue(path)
         row = plain._db.execute(
-            "SELECT COUNT(*) AS n FROM hub_jobs WHERE idempotency_key='racing-key'"
+            "SELECT * FROM hub_jobs WHERE idempotency_key='racing-key'"
         ).fetchone()
-        assert row["n"] == 1
+        assert plain.count() == 1
+        assert row is not None
+        winner = int(str(row["client_id"])[-1])
+        assert str(row["client_id"]) == "explicit-%d" % winner
+        assert str(row["workspace_id"]) == "workspace-%d" % winner
+        assert int(row["weight"]) == winner + 1
+        assert int(row["cost"]) == winner + 1
         plain.close()
 
 
@@ -483,6 +563,110 @@ def test_pre_existing_old_schema_file_migrates_scheduling_columns_without_data_l
         queue.close()
 
 
+def test_scheduling_migration_backfills_only_valid_payload_client_ids_without_touching_rows() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "old.db")
+        db = sqlite3.connect(path, isolation_level=None)
+        db.execute(
+            """CREATE TABLE hub_jobs (
+                task_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL,
+                max_attempts INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'queued', next_attempt_at REAL NOT NULL,
+                lease_id TEXT, fence INTEGER NOT NULL DEFAULT 0, lease_expires_at REAL,
+                error_code TEXT, updated_at REAL NOT NULL)"""
+        )
+        db.execute(
+            """CREATE TABLE hub_dead_letters (
+                task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, attempts INTEGER NOT NULL,
+                error_code TEXT NOT NULL, moved_at REAL NOT NULL)"""
+        )
+        rows = [
+            ("valid", "valid-key", '{"client_id":"alice","workspace_id":"payload-ws","weight":9,"cost":8}'),
+            ("empty", "empty-key", '{"client_id":""}'),
+            ("invalid", "invalid-key", '{"client_id":7}'),
+            ("malformed", "malformed-key", "not-json"),
+            ("array", "array-key", '["not", "an", "object"]'),
+        ]
+        for index, (task_id, key, payload) in enumerate(rows):
+            db.execute(
+                """INSERT INTO hub_jobs(task_id,idempotency_key,payload,max_attempts,attempts,state,
+                                            next_attempt_at,fence,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (task_id, key, payload, 3, index, "queued", 100.0 + index, index, 200.0 + index),
+            )
+        before = {
+            row[0]: row[1:]
+            for row in db.execute(
+                """SELECT task_id,payload,max_attempts,attempts,state,next_attempt_at,lease_id,
+                          fence,lease_expires_at,error_code,updated_at,rowid
+                   FROM hub_jobs ORDER BY task_id"""
+            )
+        }
+        db.close()
+
+        queue = HubRetryQueue(path)
+        after = {
+            row["task_id"]: tuple(
+                row[name] for name in (
+                    "payload", "max_attempts", "attempts", "state", "next_attempt_at", "lease_id",
+                    "fence", "lease_expires_at", "error_code", "updated_at", "rowid",
+                )
+            )
+            for row in queue._db.execute(
+                """SELECT task_id,payload,max_attempts,attempts,state,next_attempt_at,lease_id,
+                          fence,lease_expires_at,error_code,updated_at,rowid
+                   FROM hub_jobs ORDER BY task_id"""
+            )
+        }
+        client_ids = {
+            row["task_id"]: row["client_id"]
+            for row in queue._db.execute("SELECT task_id,client_id FROM hub_jobs")
+        }
+        assert client_ids == {
+            "valid": "alice", "empty": "", "invalid": "", "malformed": "", "array": "",
+        }
+        assert after == before
+        assert queue.get_row("valid")["workspace_id"] == "default"
+        assert queue.get_row("valid")["weight"] == 1
+        assert queue.get_row("valid")["cost"] == 1
+        queue.close()
+
+        reopened = HubRetryQueue(path)
+        assert reopened._db.total_changes == 0
+        assert reopened.get_row("valid")["client_id"] == "alice"
+        reopened.close()
+
+
+def test_scheduling_migration_keeps_an_existing_client_id_authoritative() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "old.db")
+        db = sqlite3.connect(path, isolation_level=None)
+        db.execute(
+            """CREATE TABLE hub_jobs (
+                task_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL,
+                max_attempts INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'queued', next_attempt_at REAL NOT NULL,
+                lease_id TEXT, fence INTEGER NOT NULL DEFAULT 0, lease_expires_at REAL,
+                error_code TEXT, updated_at REAL NOT NULL, client_id TEXT NOT NULL DEFAULT '')"""
+        )
+        db.execute(
+            """CREATE TABLE hub_dead_letters (
+                task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, attempts INTEGER NOT NULL,
+                error_code TEXT NOT NULL, moved_at REAL NOT NULL)"""
+        )
+        db.execute(
+            """INSERT INTO hub_jobs(task_id,idempotency_key,payload,max_attempts,next_attempt_at,
+                                      updated_at,client_id)
+               VALUES(?,?,?,?,?,?,?)""",
+            ("stored", "stored-key", '{"client_id":"payload-client"}', 3, 0, 123.0, "stored-client"),
+        )
+        db.close()
+
+        queue = HubRetryQueue(path)
+        assert queue.get_row("stored")["client_id"] == "stored-client"
+        queue.close()
+
+
 def test_list_queued_scheduling_metadata_excludes_active_completed_and_dead_letter() -> None:
     with tempfile.TemporaryDirectory() as directory:
         queue = HubRetryQueue(str(Path(directory) / "queue.db"))
@@ -490,7 +674,7 @@ def test_list_queued_scheduling_metadata_excludes_active_completed_and_dead_lett
         leased_id = queue.submit({}, idempotency_key="k2", client_id="bob")
         lease = queue.claim("worker-1", ttl=30)
         assert lease.task_id == queued_id or lease.task_id == leased_id
-        completed_id = queue.submit({}, idempotency_key="k3", client_id="carol")
+        queue.submit({}, idempotency_key="k3", client_id="carol")
         completed_lease = queue.claim("worker-2", ttl=30)
         queue.complete(completed_lease)
 
