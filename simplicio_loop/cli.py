@@ -31,7 +31,6 @@ from .drain import (
     persist_drain_receipt,
 )
 from .runner import (
-    arm_run,
     conduct_run,
     apply_human_decision,
     change_phase,
@@ -51,6 +50,7 @@ from .ops_ledger import (
     LedgerError,
     validate_handshake,
 )
+from . import inspection_cli as _inspection_cli
 from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
 from .delivery import DELIVERY_ORDER
@@ -427,232 +427,48 @@ def sync_source(repo: str, run_id: str, source: str, external_repo: str, pr: int
 
 
 def _drain_cli_failure(reason_code: str, reason: str, **extra) -> dict:
-    """Return a safe, JSON-serializable drain result for CLI input failures.
-
-    The drain CLI is an evidence boundary: malformed or missing input must never
-    look like a successful drain.  Keep the shape compatible with
-    ``evaluate_drain`` while marking the result explicitly unverified.
-    """
-    payload = {
-        "schema": DRAIN_SCHEMA,
-        "verdict": "CONTINUE",
-        "ready": False,
-        "reason_code": reason_code,
-        "reason": reason,
-        "tag": "UNVERIFIED",
-    }
-    payload.update(extra)
-    return payload
+    """Compatibility wrapper for the focused command helpers."""
+    return _inspection_cli.drain_cli_failure(DRAIN_SCHEMA, reason_code, reason, **extra)
 
 
 def _read_drain_snapshot(path: str):
-    try:
-        with Path(path).open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, ValueError) as exc:
-        return None, _drain_cli_failure("snapshot_invalid", "could not read drain snapshot", error=str(exc))
-    if not isinstance(payload, dict):
-        return None, _drain_cli_failure("snapshot_invalid", "drain snapshot must be a JSON object")
-    return payload, None
+    return _inspection_cli.read_drain_snapshot(path, _drain_cli_failure)
 
 
 def _valid_drain_result(payload) -> bool:
-    """Check the minimum result envelope before exposing a loaded receipt."""
-    if not isinstance(payload, dict) or payload.get("schema") != DRAIN_SCHEMA:
-        return False
-    if payload.get("verdict") not in {"DRAINED", "CONTINUE", "BLOCKED"}:
-        return False
-    if not isinstance(payload.get("ready"), bool):
-        return False
-    if payload.get("tag") not in {"MEASURED", "UNVERIFIED"}:
-        return False
-    return not (payload["ready"] and payload["verdict"] != "DRAINED")
+    return _inspection_cli.valid_drain_result(DRAIN_SCHEMA, payload)
 
 
 def drain(action: str, snapshot_path: str, receipt_path: str, polls_required: int) -> int:
-    """Evaluate, persist, or load a drain receipt and emit exactly one JSON value.
-
-    ``CONTINUE`` is a valid fail-closed verdict for a well-formed snapshot; a
-    non-zero exit is reserved for unusable CLI input or a corrupt/missing receipt.
-    """
-    if action in {"evaluate", "persist"}:
-        if not snapshot_path:
-            print(json.dumps(_drain_cli_failure("snapshot_required", "--snapshot is required"),
-                             ensure_ascii=False, sort_keys=True))
-            return 2
-        snapshot, failure = _read_drain_snapshot(snapshot_path)
-        if failure is not None:
-            print(json.dumps(failure, ensure_ascii=False, sort_keys=True))
-            return 2
-        try:
-            result = evaluate_drain(snapshot, polls_required=polls_required)
-        except (TypeError, ValueError, KeyError) as exc:
-            result = _drain_cli_failure("snapshot_invalid", "drain snapshot could not be evaluated",
-                                        error=str(exc))
-            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-            return 2
-        if action == "evaluate":
-            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-            return 0
-        if not receipt_path:
-            print(json.dumps(_drain_cli_failure("receipt_required", "--receipt is required"),
-                             ensure_ascii=False, sort_keys=True))
-            return 2
-        try:
-            result = persist_drain_receipt(receipt_path, result=result)
-        except (DrainReceiptError, OSError, TypeError, ValueError) as exc:
-            result = _drain_cli_failure("receipt_persist_failed", "could not persist drain receipt",
-                                        error=str(exc))
-            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-            return 2
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-        return 0
-
-    if action == "load":
-        if not receipt_path:
-            print(json.dumps(_drain_cli_failure("receipt_required", "--receipt is required"),
-                             ensure_ascii=False, sort_keys=True))
-            return 2
-        try:
-            result = load_drain_receipt(receipt_path)
-        except (DrainReceiptError, OSError, TypeError, ValueError) as exc:
-            result = _drain_cli_failure("receipt_invalid", "could not load drain receipt", error=str(exc))
-            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-            return 2
-        if result is None:
-            print(json.dumps(_drain_cli_failure("receipt_missing", "drain receipt does not exist"),
-                             ensure_ascii=False, sort_keys=True))
-            return 2
-        if not _valid_drain_result(result):
-            print(json.dumps(_drain_cli_failure("receipt_invalid", "drain receipt has an invalid result envelope"),
-                             ensure_ascii=False, sort_keys=True))
-            return 2
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-        return 0
-
-    # ``argparse`` constrains this in normal use, but keeping the fallback
-    # fail-closed makes direct calls to ``main`` safe as well.
-    print(json.dumps(_drain_cli_failure("action_invalid", "unknown drain action"),
-                     ensure_ascii=False, sort_keys=True))
-    return 2
+    """Compatibility wrapper that preserves CLI-level dependency monkeypatches."""
+    return _inspection_cli.drain(
+        action, snapshot_path, receipt_path, polls_required,
+        evaluator=evaluate_drain, persist=persist_drain_receipt, load=load_drain_receipt,
+        receipt_error=DrainReceiptError, failure=_drain_cli_failure,
+        snapshot_reader=_read_drain_snapshot, result_validator=_valid_drain_result,
+    )
 def _load_handshake(handshake_json: str, handshake_file: str):
-    if handshake_json and handshake_file:
-        raise ValueError("--handshake-json and --handshake-file are mutually exclusive")
-    if not handshake_json and not handshake_file:
-        return None
-    raw = (Path(handshake_file).read_text(encoding="utf-8")
-           if handshake_file else handshake_json)
-    try:
-        return validate_handshake(json.loads(raw))
-    except (ValueError, TypeError, json.JSONDecodeError) as exc:
-        if isinstance(exc, LedgerError):
-            raise
-        raise LedgerError("executor handshake JSON must be an object") from exc
+    """Compatibility wrapper that preserves CLI-level validator monkeypatches."""
+    return _inspection_cli._load_handshake(
+        handshake_json, handshake_file, validator=validate_handshake,
+        ledger_error=LedgerError,
+    )
 
 
 def ledger_replay(path: str, compatibility: bool, recover_trailing: bool,
                   handshake_json: str, handshake_file: str, command: str = "replay") -> int:
-    """Replay and validate a ledger through a deterministic, read-only JSON surface."""
-    requested_path = str(path)
-    try:
-        handshake = _load_handshake(handshake_json, handshake_file)
-        # Strict mode requires both hash-bound event context and the executor
-        # handshake.  Legacy mode is an explicit escape hatch for pre-context
-        # ledgers and is surfaced in the result so callers cannot confuse it
-        # with a strict replay.
-        if not compatibility and handshake is None:
-            raise LedgerError(
-                "strict ledger replay requires --handshake-json or --handshake-file"
-            )
-        events = EventLedger(path, compatibility=compatibility).replay(
-            recover_trailing=recover_trailing
-        )
-        result = {
-            "command": "ledger.%s" % command,
-            "compatibility": bool(compatibility),
-            "context_schema": CONTEXT_SCHEMA,
-            "event_count": len(events),
-            "events": events,
-            "handshake": handshake,
-            "handshake_schema": HANDSHAKE_SCHEMA if handshake is not None else None,
-            "ok": True,
-            "path": requested_path,
-            "required_context": list(REQUIRED_CONTEXT_FIELDS),
-            "schema": "simplicio.ledger-replay/v1",
-        }
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-        return 0
-    except (LedgerError, OSError, ValueError, json.JSONDecodeError) as exc:
-        result = {
-            "command": "ledger.%s" % command,
-            "compatibility": bool(compatibility),
-            "error": {"kind": exc.__class__.__name__, "message": str(exc)},
-            "handshake": None,
-            "ok": False,
-            "path": requested_path,
-            "schema": "simplicio.ledger-replay/v1",
-        }
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-        return 2
+    """Compatibility wrapper for the focused read-only ledger surface."""
+    return _inspection_cli.ledger_replay(
+        path, compatibility, recover_trailing, handshake_json, handshake_file,
+        command, handshake_loader=_load_handshake, event_ledger=EventLedger,
+        ledger_error=LedgerError, context_schema=CONTEXT_SCHEMA,
+        handshake_schema=HANDSHAKE_SCHEMA, required_context_fields=REQUIRED_CONTEXT_FIELDS,
+    )
 
 
 def findings_command(args) -> int:
-    """WI-466 findings subcommand: list / report / reconcile / doctor."""
-    from . import finding_report as fr
-    from . import finding_router as rt
-
-    cmd = getattr(args, "findings_command", None)
-    if cmd == "list":
-        records = fr.read_findings()
-        if args.json:
-            print(json.dumps(records, ensure_ascii=False, indent=2))
-        else:
-            for r in records:
-                print(f"{r['ts']} [{r['severity']}] {r['stage']}:{r['finding_id']} confirmed={r['confirmed']}")
-        return 0
-    if cmd == "report":
-        records = fr.read_findings()
-        by_stage = {}
-        by_sev = {}
-        for r in records:
-            by_stage[r["stage"]] = by_stage.get(r["stage"], 0) + 1
-            by_sev[r["severity"]] = by_sev.get(r["severity"], 0) + 1
-        payload = {"schema": "simplicio.finding-report-aggregate/v1", "total": len(records),
-                   "by_stage": by_stage, "by_severity": by_sev}
-        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
-              f"total={payload['total']} by_stage={by_stage} by_severity={by_sev}")
-        return 0
-    if cmd == "reconcile":
-        untracked = rt.untracked_problems()
-        blocked = rt.completion_blocked()
-        payload = {"schema": "simplicio.finding-reconcile/v1", "untracked_count": len(untracked),
-                   "untracked": untracked, "completion_blocked": blocked}
-        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
-              f"untracked_confirmed_findings={len(untracked)} (completion gate will block if >0)")
-        # Gate: a loop item MUST NOT be marked done while an in-scope finding is untracked.
-        return 1 if blocked else 0
-    if cmd == "doctor":
-        from . import finding_report as _fr
-        findings_store = _fr._FINDINGS_DIR / "findings.jsonl"
-        routes_store = rt.LOCAL_STORE
-        findings_present = findings_store.exists()
-        routes_present = routes_store.exists()
-        healthy = findings_present and routes_present
-        payload = {
-            "schema": "simplicio.finding-doctor/v1",
-            "findings_store_path": str(findings_store),
-            "findings_store_present": findings_present,
-            "routes_store_path": str(routes_store),
-            "routes_store_present": routes_present,
-            "store_present": healthy,
-            "router_importable": True,
-        }
-        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else
-              f"findings_store_present={findings_present} routes_store_present={routes_present} "
-              f"router_ok={payload['router_importable']}")
-        return 0
-    parser.error("unknown findings subcommand")
-    return 2
+    """Compatibility wrapper for the focused findings command surface."""
+    return _inspection_cli.findings_command(args)
 
 
 def main(argv=None) -> int:
