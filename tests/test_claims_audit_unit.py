@@ -7,7 +7,6 @@ is already exercised end-to-end by `scripts/check.py` in CI).
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -331,6 +330,78 @@ def test_skill_pair_parity_ignores_unilateral_files_and_skill_md():
             ok, detail = claims_audit.check_skill_pair_parity()
             assert ok, detail
         finally:
+            restore()
+
+
+def test_core_mode_does_not_execute_satellite_selftests():
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = os.path.join(tmp, "satellite-ran")
+        core = """import sys\ndef selftest(): pass\nif __name__ == '__main__' and sys.argv[1] == \"selftest\": print('PASS')\n"""
+        satellite = """import pathlib,sys\ndef selftest(): pass\nif __name__ == '__main__' and sys.argv[1] == \"selftest\": pathlib.Path(%r).write_text('ran'); print('PASS')\n""" % marker
+        _write(os.path.join(tmp, "scripts", "core.py"), core)
+        _write(os.path.join(tmp, "scripts", "autoresearch.py"), satellite)
+        restore = _patched(tmp)
+        saved_scripts = claims_audit.SELFTEST_SCRIPTS
+        saved_core = claims_audit.CORE_MODE
+        claims_audit.SELFTEST_SCRIPTS = ["scripts/core.py", "scripts/autoresearch.py"]
+        claims_audit.CORE_MODE = True
+        try:
+            ok, detail = claims_audit.check_commands_run()
+            assert ok, detail
+            assert "satellite selftests excluded=1" in detail
+            assert not os.path.exists(marker)
+            claims_audit.CORE_MODE = False
+            ok, detail = claims_audit.check_commands_run()
+            assert ok, detail
+            assert detail == "all cited commands run"
+            assert os.path.exists(marker)
+        finally:
+            claims_audit.SELFTEST_SCRIPTS = saved_scripts
+            claims_audit.CORE_MODE = saved_core
+            restore()
+
+
+def test_core_mode_does_not_probe_satellite_cli():
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = os.path.join(tmp, "satellite-cli-ran")
+        _write(os.path.join(tmp, "README.md"),
+               "`python3 scripts/autoresearch.py run --goal test`\n")
+        _write(os.path.join(tmp, "scripts", "autoresearch.py"),
+               "import pathlib\npathlib.Path(%r).write_text('ran')\n" % marker)
+        restore = _patched(tmp)
+        saved_core = claims_audit.CORE_MODE
+        claims_audit.CORE_MODE = True
+        try:
+            ok, detail = claims_audit.check_prose_commands()
+            assert ok, detail
+            assert "satellite command probes excluded=1" in detail
+            assert not os.path.exists(marker)
+            claims_audit.CORE_MODE = False
+            ok, detail = claims_audit.check_prose_commands()
+            assert ok, detail
+            assert detail == "all doc-cited commands validated against --describe-cli"
+            assert os.path.exists(marker)
+        finally:
+            claims_audit.CORE_MODE = saved_core
+            restore()
+
+
+def test_core_mode_keeps_satellite_selftest_meta_check_static():
+    with tempfile.TemporaryDirectory() as tmp:
+        _write(os.path.join(tmp, "scripts", "autoresearch.py"),
+               'def selftest(): pass\nif "selftest" in __import__("sys").argv: selftest()\n')
+        restore = _patched(tmp)
+        saved_scripts = claims_audit.SELFTEST_SCRIPTS
+        saved_core = claims_audit.CORE_MODE
+        claims_audit.SELFTEST_SCRIPTS = []
+        claims_audit.CORE_MODE = True
+        try:
+            ok, detail = claims_audit.check_commands_run()
+            assert not ok
+            assert "scripts/autoresearch.py" in detail
+        finally:
+            claims_audit.SELFTEST_SCRIPTS = saved_scripts
+            claims_audit.CORE_MODE = saved_core
             restore()
 
 

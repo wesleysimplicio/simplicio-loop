@@ -26,10 +26,10 @@ No stop-hook → self-pace via cron / CI tick:
 
 `orient_clamp.py` works as-is. Reference it in your Qwen conventions file.
 
-## Native bind — MCP (REQUIRED, best-effort wiring)
+## Native bind — MCP (optional, best-effort wiring)
 
-`simplicio-runtime` native binding is **REQUIRED** per CLAUDE.md § Hooks — a missing/unreachable
-bind BLOCKS the loop preflight on Qwen exactly as on every other adapter.
+`simplicio-runtime` native binding is optional on Qwen. A missing/unreachable bind reports
+explicit degraded mode while the standalone loop remains available.
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global

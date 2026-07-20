@@ -1,5 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
+> **Canonical operational contract:** This translation is informational. For current dependency, runtime, conformance, and validation behavior, [README.md](../README.md) is authoritative: Loop installs standalone; Runtime bindings are optional; 3 runtimes are guaranteed and 12 are best-effort; and `scripts/check.py` requires an importable `pytest` with no bare-Python fallback. Historical numeric counts and claims of complete categorization below are release snapshots, not current gate evidence; the checkout and latest local receipt are authoritative, and `scripts/test_categories.py` reports uncategorized files. GitHub Actions is not required gate evidence.
+
 <p align="center">
   <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop z konkretnymi agentami etapów i podłączonym raportowaniem" width="920" />
 </p>
@@ -146,10 +148,11 @@ właśnie repo** — nie na sztucznym scenariuszu.
   istnieją teraz `coordinator.py` i `pr_dod_review.py`.
 - **Kontynuacja epika Przenośnych Agentów Etapów z v3.37.0 (#422–#436)** — konkretny, niezależnie
   weryfikowalny agent za każdym etapem, pakiet zgodności potwierdzający parytet kontraktu/pokwitowań
-  na wszystkich 15 środowiskach, i `simplicio-runtime` awansowany do wymaganego operatora związanego,
-  dokładnie jak `simplicio-mapper`/`simplicio-dev-cli`.
-- **Zestaw testów urósł do 231 plików** (ze 192); `scripts/claims_audit.py` utrzymał 14/14 przez
-  cały cykl.
+  na wszystkich 15 środowiskach oraz opcjonalne wiązania `simplicio-runtime`, które przy braku
+  zgłaszają jawny tryb zdegradowany.
+- **Inwentarz testów jest mierzony, nie zakodowany na stałe.** Bieżący checkout i najnowszy
+  lokalny receipt gate są źródłem prawdy o liczbie plików i wyników, a `scripts/test_categories.py`
+  raportuje także pliki nieskategoryzowane.
 
 **Co to znaczy dla Ciebie:** jeśli uruchamiasz `simplicio-loop` w więcej niż jednej sesji lub maszynie
 na tym samym repo, jesteś teraz aktywnie chroniony przed dwoma trybami awarii, które faktycznie się
@@ -200,8 +203,9 @@ pakietu skilli.
 ## 📘 Oficjalny rejestr możliwości
 
 Kompletny, oficjalny spis tego, co dostarcza `simplicio-loop` — każda możliwość poniżej jest
-**realna, uruchamialna i przetestowana** (`python3 scripts/check.py`: claims-audit 14/14 + 2544
-testów w 231 plikach). Każda linkuje do swojej szczegółowej sekcji i swojego workera.
+**realna, uruchamialna i przetestowana** przez odpowiedni lokalny gate. Dokładne liczby zebranych,
+uruchomionych i pominiętych testów należą do najnowszego receipt gate, nie do tego dokumentu.
+Każda linkuje do swojej szczegółowej sekcji i swojego workera.
 
 | Możliwość | Co robi | Dowód / worker | Szczegóły |
 |---|---|---|---|
@@ -277,8 +281,8 @@ Zobacz dokument referencyjny każdego adaptera pod `.claude/skills/simplicio-loo
 Jeden uniwersalny rdzeń skilla + jeden zestaw hooków napędzają każde środowisko uruchomieniowe.
 Adapter jest cienki: mówi środowisku *gdzie załadować skille*, *jak uzbroić pętlę* i *jak związać
 natywną szybkość*. **Skill nie wskazuje żadnego środowiska uruchomieniowego; to środowisko wykrywa
-skill.** Natywne wiązanie MCP `simplicio-runtime` jest teraz **WYMAGANE** na każdym środowisku
-(pętla BLOKUJE, gdy jest nieobecne/nieosiągalne) — zobacz [`docs/MCP_SETUP.md`](../docs/MCP_SETUP.md).
+skill.** Natywne wiązanie MCP `simplicio-runtime` jest opcjonalne na każdym środowisku; gdy jest
+nieobecne/nieosiągalne, adapter zgłasza jawny tryb zdegradowany, a pętla standalone pozostaje dostępna — zobacz [`docs/MCP_SETUP.md`](../docs/MCP_SETUP.md).
 
 ### Poziom 1 — Gwarantowane (bramkowane przy każdym commicie)
 
@@ -594,8 +598,8 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 - **Zestaw testów** (`tests/`) — deterministyczne `selftest`y workerów, plus **e2e sterownika
   pętli** (`hooks/loop_stop.py`): dowodzi, że pętla **zatrzymuje się na dowodzie**, **ignoruje goły
   `<promise>`** i **zatrzymuje się na pułapie** jako odrębne wyjścia — oraz że producenci dowodów
-  **BLOKUJĄ** (nigdy fałszywe zaliczenie), gdy ich łańcuch narzędzi jest nieobecny. Działa pod
-  `pytest` *lub*, bez żadnego pip, samodzielnie na gołym python3 (`python3 tests/test_*.py`).
+  **BLOKUJĄ** (nigdy fałszywe zaliczenie), gdy ich łańcuch narzędzi jest nieobecny. Gate wymaga
+  importowalnego `pytest`; nie ma fallbacku na gołym Pythonie.
 - **Audyt twierdzeń** (`scripts/claims_audit.py`, fail-closed) — każdy `scripts/*.py`, do którego
   odwołuje się dokumentacja, istnieje · liczba punktów rozszerzeń zgadza się we wszystkich plikach ·
   każde przywoływane polecenie workera faktycznie działa · dostarczone skille
@@ -605,7 +609,7 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
   ```
 
-`pip install "simplicio-loop[dev]"` dodaje pytest dla ładniejszego wyjścia; nigdy nie jest wymagany.
+`pip install "simplicio-loop[dev]"` instaluje obowiązkową zależność `pytest` dla `scripts/check.py`.
 
 ---
 

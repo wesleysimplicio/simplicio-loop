@@ -11,6 +11,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -69,6 +71,7 @@ def test_video_evidence_detect_skips_code_task():
     assert "skip" in r.stdout, r.stdout
 
 
+@pytest.mark.external_integration
 def test_web_verify_blocks_without_toolchain(tmp_path):
     # In an environment without Playwright/npx this MUST block, not fake-pass. If the toolchain
     # happens to be present the run may pass/fail on a dead URL — either way it must never silently
@@ -85,6 +88,7 @@ def test_web_verify_blocks_without_toolchain(tmp_path):
         assert "done" not in out, "web_verify claimed done against an unreachable URL:\n%s" % r.stdout
 
 
+@pytest.mark.satellite
 def test_repo_conventions_selftest():
     # The history-mining inference + formatters are model-free; the selftest proves them.
     r = _run(["repo_conventions.py", "selftest"], cwd=REPO)
@@ -92,6 +96,7 @@ def test_repo_conventions_selftest():
     assert "PASS" in r.stdout, r.stdout
 
 
+@pytest.mark.satellite
 def test_repo_conventions_formatters_default():
     # With no learned profile, formatters must produce a sane Conventional-Commits default and
     # map an item-type alias ('bug' -> 'fix') deterministically.

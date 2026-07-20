@@ -9,6 +9,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
 
@@ -223,6 +225,7 @@ def test_cli_populate_fills_regression_and_justified_na_benchmark(tmp_path):
     assert receipt["policy"]["allow_justified_not_applicable"] is True
 
 
+@pytest.mark.external_integration
 def test_cli_populate_fills_unit_and_system_categories(tmp_path):
     # #283: the per-category test-runner split (scripts/test_categories.py) auto-fills unit and
     # system the same way regression/benchmark/coverage were already auto-filled -- `system` is

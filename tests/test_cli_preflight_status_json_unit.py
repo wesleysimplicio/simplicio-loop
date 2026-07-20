@@ -12,24 +12,52 @@ import io
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
 
 
-def _run_cli(args):
+def _run_cli(args: list[str], *, env: dict[str, str] | None = None) -> tuple[int, str, str]:
     """Invoke the CLI module as a subprocess; return (rc, stdout, stderr)."""
     proc = subprocess.run(
         [sys.executable, "-m", "simplicio_loop.cli", *args],
-        cwd=str(REPO), capture_output=True, text=True, timeout=60,
+        cwd=str(REPO), capture_output=True, text=True, timeout=60, env=env,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
 
-class PreflightContractTest(TestCase):
+class _CliShimTestCase(TestCase):
+    """Run CLI contracts against deterministic operator executables only."""
+
+    def setUp(self) -> None:
+        self._shim_dir = tempfile.TemporaryDirectory()
+        bin_dir = Path(self._shim_dir.name)
+        versions = {
+            "simplicio-mapper": "simplicio-mapper 0.23.1",
+            "simplicio-dev-cli": "simplicio-dev-cli 0.16.1",
+            "simplicio-py": "simplicio-py 0.16.1",
+            "simplicio": "simplicio-runtime 1.0.0",
+        }
+        for name, version in versions.items():
+            shim = bin_dir / name
+            shim.write_text(f"#!/bin/sh\nprintf '%s\\n' '{version}'\n", encoding="utf-8")
+            shim.chmod(0o755)
+        # Deliberately exclude the host (and any virtualenv) PATH entries.
+        self.cli_env = {"PATH": str(bin_dir)}
+
+    def tearDown(self) -> None:
+        self._shim_dir.cleanup()
+
+    def run_cli(self, args: list[str]) -> tuple[int, str, str]:
+        return _run_cli(args, env=self.cli_env)
+
+
+class PreflightContractTest(_CliShimTestCase):
     def test_preflight_exists_and_emits_json(self):
-        rc, out, err = _run_cli(["preflight", "--repo", ".", "--json"])
+        rc, out, err = self.run_cli(["preflight", "--repo", ".", "--json"])
         self.assertEqual(rc, 0, msg=f"preflight exited {rc}; stderr={err}")
         doc = json.loads(out)
         self.assertEqual(doc["schema"], "simplicio.preflight/v1")
@@ -39,7 +67,7 @@ class PreflightContractTest(TestCase):
         self.assertTrue(len(doc["operators"]) >= 3)
 
     def test_preflight_text_mode_names_operators(self):
-        rc, out, err = _run_cli(["preflight", "--repo", "."])
+        rc, out, err = self.run_cli(["preflight", "--repo", "."])
         self.assertEqual(rc, 0, msg=f"stderr={err}")
         self.assertIn("simplicio-loop preflight", out)
         self.assertIn("simplicio-mapper", out)
@@ -47,14 +75,14 @@ class PreflightContractTest(TestCase):
 
     def test_preflight_rejects_unknown_subcommand_still_absent(self):
         # Sanity: a genuinely unknown command must still error (proves we only ADDED preflight).
-        rc, _out, err = _run_cli(["nonexistent-xyz"])
+        rc, _out, err = self.run_cli(["nonexistent-xyz"])
         self.assertNotEqual(rc, 0)
         self.assertIn("invalid choice", err)
 
 
-class StatusJsonContractTest(TestCase):
+class StatusJsonContractTest(_CliShimTestCase):
     def test_status_json_accepted_without_runs(self):
-        rc, out, err = _run_cli(["status", "--repo", ".", "--json"])
+        rc, out, err = self.run_cli(["status", "--repo", ".", "--json"])
         self.assertEqual(rc, 0, msg=f"status --json crashed; stderr={err}")
         self.assertEqual(err.count("unrecognized arguments"), 0,
                          msg="--json must be accepted, not 'unrecognized arguments'")
@@ -65,12 +93,12 @@ class StatusJsonContractTest(TestCase):
 
     def test_status_json_flag_never_unrecognized(self):
         # The exact regression from issue #471: public install rejected `--json`.
-        rc, _out, err = _run_cli(["status", "--repo", ".", "--json"])
+        rc, _out, err = self.run_cli(["status", "--repo", ".", "--json"])
         self.assertEqual(rc, 0)
         self.assertNotIn("unrecognized arguments: --json", err)
 
     def test_status_text_mode_without_runs_does_not_traceback(self):
-        rc, out, err = _run_cli(["status", "--repo", ".", "--text"])
+        rc, out, err = self.run_cli(["status", "--repo", ".", "--text"])
         self.assertEqual(rc, 0, msg=f"text status crashed; stderr={err}")
         self.assertNotIn("Traceback", err)
         self.assertIn("simplicio-loop run status", out)
@@ -79,10 +107,21 @@ class StatusJsonContractTest(TestCase):
 class DirectCallCoverageTest(TestCase):
     """Import-level calls to raise line/branch coverage of the patched functions."""
 
+    @staticmethod
+    def _present_operator_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        names = {
+            "simplicio-mapper": "simplicio-mapper 0.23.1",
+            "simplicio-dev-cli": "simplicio-dev-cli 0.16.1",
+            "simplicio-py": "simplicio-py 0.16.1",
+            "simplicio": "simplicio-runtime 1.0.0",
+        }
+        return subprocess.CompletedProcess(command, 0, stdout=names[command[0]] + "\n", stderr="")
+
     def test_preflight_direct_call_text(self):
         from simplicio_loop import cli
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with patch.object(cli.subprocess, "run", side_effect=self._present_operator_run), \
+             contextlib.redirect_stdout(buf):
             rc = cli.preflight(str(REPO), as_json=False)
         self.assertEqual(rc, 0)
         self.assertIn("simplicio-loop preflight", buf.getvalue())
@@ -90,11 +129,28 @@ class DirectCallCoverageTest(TestCase):
     def test_preflight_direct_call_json(self):
         from simplicio_loop import cli
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with patch.object(cli.subprocess, "run", side_effect=self._present_operator_run), \
+             contextlib.redirect_stdout(buf):
             rc = cli.preflight(str(REPO), as_json=True)
         self.assertEqual(rc, 0)
         doc = json.loads(buf.getvalue())
         self.assertEqual(doc["schema"], "simplicio.preflight/v1")
+
+    def test_preflight_direct_call_missing_core_operator_blocks(self):
+        from simplicio_loop import cli, finding_router
+
+        def missing_mapper(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            if command[0] == "simplicio-mapper":
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="not installed")
+            return self._present_operator_run(command)
+
+        buf = io.StringIO()
+        with patch.object(cli.subprocess, "run", side_effect=missing_mapper), \
+             patch.object(finding_router, "route_finding"), \
+             contextlib.redirect_stdout(buf):
+            rc = cli.preflight(str(REPO), as_json=True)
+        self.assertEqual(rc, 1)
+        self.assertFalse(json.loads(buf.getvalue())["all_present"])
 
     def test_status_direct_call_no_runs_json(self):
         from simplicio_loop import cli

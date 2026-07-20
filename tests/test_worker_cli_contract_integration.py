@@ -12,12 +12,13 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # scripts whose selftest is the deterministic, model-free, no-external-service contract proof
 WORKERS_WITH_SELFTEST = [
     "loop_journal.py",
-    "billing_aggregator.py",
     "task_anchor.py",
     "task_contract.py",
     "task_backlog.py",
@@ -30,10 +31,14 @@ WORKERS_WITH_SELFTEST = [
     "flow_audit.py",
     "impact_audit.py",
     "toon_codec.py",
+    "claims_manifest.py",
+]
+
+SATELLITE_WORKERS_WITH_SELFTEST = [
+    "billing_aggregator.py",
     "autoresearch.py",
     "fan_out.py",
     "schema_verify.py",
-    "claims_manifest.py",
 ]
 
 
@@ -65,6 +70,37 @@ def test_every_worker_selftest_prints_a_pass_marker():
 def test_every_worker_survives_an_unknown_verb_without_traceback():
     failures = []
     for script in WORKERS_WITH_SELFTEST:
+        r = _run(script, "definitely-not-a-real-verb-xyz")
+        if "Traceback (most recent call last)" in r.stderr:
+            failures.append("%s: uncaught traceback on unknown verb:\n%s" % (script, r.stderr))
+    assert not failures, "\n---\n".join(failures)
+
+
+@pytest.mark.satellite
+def test_every_satellite_worker_selftest_exits_zero():
+    failures = []
+    for script in SATELLITE_WORKERS_WITH_SELFTEST:
+        r = _run(script, "selftest")
+        if r.returncode != 0:
+            failures.append("%s: exit %d\n%s%s" % (script, r.returncode, r.stdout, r.stderr))
+    assert not failures, "satellite selftest contract broken for:\n" + "\n---\n".join(failures)
+
+
+@pytest.mark.satellite
+def test_every_satellite_worker_selftest_prints_a_pass_marker():
+    failures = []
+    for script in SATELLITE_WORKERS_WITH_SELFTEST:
+        r = _run(script, "selftest")
+        combined = (r.stdout + r.stderr).upper()
+        if "PASS" not in combined and "OK" not in combined:
+            failures.append("%s: no PASS/OK marker in output:\n%s" % (script, r.stdout))
+    assert not failures, "\n---\n".join(failures)
+
+
+@pytest.mark.satellite
+def test_every_satellite_worker_survives_an_unknown_verb_without_traceback():
+    failures = []
+    for script in SATELLITE_WORKERS_WITH_SELFTEST:
         r = _run(script, "definitely-not-a-real-verb-xyz")
         if "Traceback (most recent call last)" in r.stderr:
             failures.append("%s: uncaught traceback on unknown verb:\n%s" % (script, r.stderr))

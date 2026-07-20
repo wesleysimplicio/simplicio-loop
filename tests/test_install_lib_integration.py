@@ -140,10 +140,11 @@ def test_install_never_passes_global_and_target_is_isolated(tmp_path):
 
 def test_install_vscode_global_syncs_copilot_and_user_mcp(tmp_path):
     home = tmp_path / "global-home"
-    appdata = tmp_path / "appdata"
+    vscode_user = tmp_path / "vscode-user"
     home.mkdir()
     env = _safe_env(home)
-    env.update({"USERPROFILE": str(home), "APPDATA": str(appdata),
+    env.update({"USERPROFILE": str(home),
+                "SIMPLICIO_VSCODE_USER_DIR": str(vscode_user),
                 "SIMPLICIO_HOME": str(home),
                 "SIMPLICIO_MCP_COMMAND": "simplicio-test"})
     r = subprocess.run([sys.executable, INSTALL_LIB, "vscode", "--global",
@@ -153,7 +154,7 @@ def test_install_vscode_global_syncs_copilot_and_user_mcp(tmp_path):
     assert (home / ".copilot" / "skills" / "simplicio-loop" / "SKILL.md").is_file()
     assert (home / ".copilot" / "instructions" / "simplicio-loop.instructions.md").is_file()
     copilot_mcp = json.loads((home / ".copilot" / "mcp-config.json").read_text())
-    vscode_mcp = json.loads((appdata / "Code" / "User" / "mcp.json").read_text())
+    vscode_mcp = json.loads((vscode_user / "mcp.json").read_text())
     assert copilot_mcp["mcpServers"]["simplicio"]["command"] == "simplicio-test"
     assert vscode_mcp["servers"]["simplicio"]["args"] == ["serve", "--mcp", "--stdio"]
 

@@ -588,7 +588,7 @@ def ensure_operators(skip_install=False, allow_break_system_packages=False, pin_
                     log("operators installed (uv tool) -> %s" % ", ".join(pkgs))
                 else:
                     raise RuntimeError("uv not on PATH")
-            except Exception as e2:
+            except Exception:
                 log("! pip install of operators failed (%s) — install manually: pip install %s"
                     % (detail, " ".join(pkgs)))
     # A --user install can land the console-scripts in a dir not on PATH (e.g. macOS
@@ -636,11 +636,10 @@ def _link_operator_bins():
         _link_console_script(b, kind="operator")
 
 
-# Compatibility export retained for callers that inspect the matrix. simplicio-runtime is now a
-# required bound operator (hooks/loop_stop.py::BOUND_OPERATORS) on every runtime that ships the
-# simplicio-loop skill; an unavailable simplicio-runtime blocks that loop's running driver.
-FORCED_BIND_RUNTIMES = {"claude", "codex", "cursor", "vscode", "kiro", "antigravity", "opencode",
-                        "gemini", "orca", "aider", "hermes", "openclaw", "simplicio_agent"}
+# Compatibility export retained for callers that inspect the matrix. Runtime integration is an
+# optional acceleration for Loop itself: the required operators remain mapper + dev-cli (see
+# ``hooks/loop_stop.py::BOUND_OPERATORS``), and an unavailable Runtime is reported as degraded.
+FORCED_BIND_RUNTIMES = set()
 
 
 def detect():

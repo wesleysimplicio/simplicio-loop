@@ -124,7 +124,7 @@ def test_dispatch_allocates_and_persists_isolated_context_without_git(monkeypatc
     queue = FakeQueue(tmp_path / "workers")
     calls = []
 
-    def fake_execute(repo, run_id, task_index):
+    def fake_execute(repo, run_id, task_index, **_kwargs):
         calls.append((repo, run_id, task_index))
         return _success(repo, run_id, task_index)
 
@@ -154,7 +154,7 @@ def test_dispatch_serializes_explicit_shared_queue_context(monkeypatch, tmp_path
     queue = FakeQueue(tmp_path / "shared")
     calls = []
 
-    def fake_execute(repo, run_id, task_index):
+    def fake_execute(repo, run_id, task_index, **_kwargs):
         calls.append(task_index)
         return _success(repo, run_id, task_index)
 

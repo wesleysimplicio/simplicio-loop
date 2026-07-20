@@ -50,7 +50,7 @@ MATRIX_PATH = os.path.join(ADAPTERS_DIR, "MATRIX.md")
 
 # `hermes` is the deliberately-kept legacy shim for `simplicio_agent` (#262 rename) — both
 # directories exist under adapters/ for the compat window, but they are ONE canonical runtime,
-# not two, for the "12 runtimes" count the README/MATRIX badges advertise.
+# not two, for the supported-runtime count the README/MATRIX badges advertise.
 ADAPTER_ALIASES = {"hermes": "simplicio_agent"}
 
 RUNTIME_COUNT_RES = [

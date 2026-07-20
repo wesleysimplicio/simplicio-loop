@@ -12,6 +12,8 @@ from simplicio_loop.process_supervisor import ProcessSpec, PythonProcessAdapter
 import simplicio_loop.process_supervisor_rust as psr
 from simplicio_loop.process_supervisor_rust import RustProcessAdapter, get_process_adapter, rust_binary_path, run_with_fallback
 
+pytestmark = pytest.mark.external_integration
+
 
 def _write_stub_binary(tmp_path: Path, body: str) -> Path:
     script = tmp_path / "stub-supervisor"
@@ -39,7 +41,10 @@ def test_get_process_adapter_never_crashes_regardless_of_backend() -> None:
 def test_hub_execute_runs_the_real_rust_binary_when_built() -> None:
     binary = rust_binary_path()
     if binary is None:
-        pytest.skip("simplicio-supervisor binary not built (run cargo build --release in rust/simplicio-supervisor)")
+        pytest.skip(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[rust_supervisor_binary]: "
+            "build rust/simplicio-supervisor with cargo --release"
+        )
 
     with tempfile.TemporaryDirectory() as tmp:
         daemon = HubDaemon(lock_path=str(Path(tmp) / "hub.lock"))

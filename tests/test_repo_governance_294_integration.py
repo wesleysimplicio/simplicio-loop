@@ -19,6 +19,36 @@ def _run(rel_script, args):
                           cwd=REPO, stdin=subprocess.DEVNULL)
 
 
+def _git_fixture(tmp_path):
+    """A deliberately tiny history: ordinary content plus deleted generated artifacts."""
+    repo = str(tmp_path / "fixture")
+    os.makedirs(repo)
+
+    def git(*args):
+        subprocess.run(["git"] + list(args), cwd=repo, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+    git("init", "-q")
+    git("config", "user.email", "tests@example.invalid")
+    git("config", "user.name", "governance tests")
+    files = {
+        "README.md": b"fixture\n",
+        "video/out/demo.mp4": b"m" * 4096,
+        "rust/target/cache.bin": b"r" * 2048,
+    }
+    for path, data in files.items():
+        full_path = os.path.join(repo, path)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "wb") as f:
+            f.write(data)
+    git("add", ".")
+    git("commit", "-q", "-m", "add fixture artifacts")
+    os.remove(os.path.join(repo, "video", "out", "demo.mp4"))
+    git("add", "-A")
+    git("commit", "-q", "-m", "remove generated video")
+    return repo
+
+
 # ---- repo_history_scan.py (#294 AC1) ----
 
 def test_repo_history_scan_selftest_passes():
@@ -27,12 +57,12 @@ def test_repo_history_scan_selftest_passes():
     assert "repo_history_scan selftest: PASS" in r.stdout
 
 
-def test_repo_history_scan_json_report_shape():
-    r = _run("repo_history_scan.py", ["--json", "--top", "5"])
+def test_repo_history_scan_json_report_shape(tmp_path):
+    r = _run("repo_history_scan.py", ["--json", "--top", "5", "--repo", _git_fixture(tmp_path)])
     assert r.returncode == 0, r.stdout + r.stderr
     report = json.loads(r.stdout)
     assert report["schema"] == "simplicio.repo-history-scan/v1"
-    assert report["distinct_blobs_ever_committed"] > 0
+    assert report["distinct_blobs_ever_committed"] >= 3
     assert report["total_historical_blob_bytes"] > 0
     assert len(report["top_blobs"]) <= 5
     # real numbers, not fabricated -- every blob has a real 40-hex sha and positive size
@@ -41,11 +71,13 @@ def test_repo_history_scan_json_report_shape():
         assert b["size_bytes"] > 0
 
 
-def test_repo_history_scan_write_report_produces_both_files(tmp_path, monkeypatch=None):
-    r = _run("repo_history_scan.py", ["--write-report", "--top", "3"])
+def test_repo_history_scan_write_report_produces_both_files(tmp_path):
+    output_dir = str(tmp_path / "reports")
+    r = _run("repo_history_scan.py", ["--write-report", "--top", "3", "--repo",
+                                       _git_fixture(tmp_path), "--output-dir", output_dir])
     assert r.returncode == 0, r.stdout + r.stderr
-    md_path = os.path.join(REPO, "docs", "REPO_SIZE_REPORT.md")
-    json_path = os.path.join(REPO, "docs", "repo_size_report.json")
+    md_path = os.path.join(output_dir, "REPO_SIZE_REPORT.md")
+    json_path = os.path.join(output_dir, "repo_size_report.json")
     assert os.path.exists(md_path)
     assert os.path.exists(json_path)
     with open(md_path, encoding="utf-8") as f:
@@ -68,13 +100,26 @@ def test_history_migration_plan_refuses_without_dry_run_flag():
     assert "--dry-run" in (r.stdout + r.stderr)
 
 
-def test_history_migration_plan_dry_run_json_never_executed():
-    r = _run("history_migration_plan.py", ["--dry-run", "--json"])
+def test_history_migration_plan_dry_run_json_never_executed(tmp_path):
+    r = _run("history_migration_plan.py", ["--dry-run", "--json", "--repo", _git_fixture(tmp_path)])
     assert r.returncode == 0, r.stdout + r.stderr
     plan = json.loads(r.stdout)
     assert plan["mode"] == "DRY_RUN_ONLY"
     assert plan["executed"] is False
-    assert plan["candidate_blob_count"] >= 0
+    assert plan["candidate_blob_count"] >= 2
+
+
+def test_history_migration_plan_write_uses_requested_output_dir(tmp_path):
+    output_dir = str(tmp_path / "plans")
+    r = _run("history_migration_plan.py", ["--dry-run", "--write", "--repo",
+                                             _git_fixture(tmp_path), "--output-dir", output_dir])
+    assert r.returncode == 0, r.stdout + r.stderr
+    md_path = os.path.join(output_dir, "HISTORY_MIGRATION_PLAN.md")
+    json_path = os.path.join(output_dir, "history_migration_plan.json")
+    assert os.path.exists(md_path)
+    assert os.path.exists(json_path)
+    with open(json_path, encoding="utf-8") as f:
+        assert json.load(f)["executed"] is False
 
 
 def test_history_migration_plan_source_has_no_rewrite_tool_invocation():
@@ -110,7 +155,7 @@ def test_canonical_manifest_json_has_expected_keys():
                 "changelog_latest_version", "quantitative_claims", "lean_mirror", "ready"):
         assert key in manifest
     assert manifest["skill_count"] == 7
-    assert manifest["runtime_count"] == 12
+    assert manifest["runtime_count"] == len(manifest["runtime_names"]) == 15
 
 
 # ---- package_content_check.py (#294 AC11) ----

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""simplicio-loop — stage-agent conformance suite (issue #432).
+"""simplicio-loop — portable stage-agent contract validation (issue #432).
 
-Proves that the concrete stage agents (the 12 roles declared in
-``contracts/stage-agents/v1/stages.json``) materialize the same roles, apply
-the same gates, and produce equivalent receipts on every runtime the loop
-supports — not just that the adapter files were copied.
+Validates the portable stage-agent contracts (the 12 roles declared in
+``contracts/stage-agents/v1/stages.json``) in this Python process.  It does
+not execute Claude, Codex, or any other external runtime.  A README describes
+an adapter; it is not evidence that an agent binary, native bind, or queue
+worker is installed and runnable.
 
 For each runtime in ``adapters/MATRIX.md`` the suite records:
 
@@ -19,16 +20,16 @@ For each runtime in ``adapters/MATRIX.md`` the suite records:
   * model/runtime observation          (per-adapter declaration)
   * limitations & expected BLOCKED     (per-adapter declaration)
 
-Then, for every *available* runtime, it runs a sandbox task through the
-adapter's public path and validates the resulting StageReceipt against the
-canonical graph using the real ``simplicio_loop.stage_agents`` validator — the
-same code the loop uses at execution time. Unavailable runtimes are reported as
-BLOCKED with a concrete reason (no independent actor / binary absent), which is
-itself one of the mandatory scenarios in #432.
+The core validates one canonical fixture against the real
+``simplicio_loop.stage_agents`` validator.  Runtime rows are an inventory of
+declared adapter capabilities only.  Native, installed, and queue-worker
+execution belongs to an external lane which must supply both a runtime binary
+and a registered executable adapter command; this script deliberately has no
+such command and reports that lane as unavailable.
 
-Exit code 0 = suite ran and every *available* runtime passed its conformance
-gate (unavailable runtimes are reported, not failed). Exit 1 = at least one
-available runtime failed the gate, or the canonical graph itself is broken.
+Exit code 0 = portable contract validation passed. Exit 1 = the canonical
+graph or portable receipt validation failed.  It is never evidence that the
+listed runtimes executed.
 
 Usage:
     python3 scripts/conformance_suite.py                 # all runtimes
@@ -42,10 +43,8 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
 from dataclasses import dataclass, field, asdict
-from typing import Any
 
 # Make the repo root importable both as a script and as a module.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -53,7 +52,6 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from simplicio_loop import stage_agents as sa  # noqa: E402
-from simplicio_loop import stage_agent_coordinator as sac  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADAPTERS_DIR = os.path.join(_REPO_ROOT, "adapters")
@@ -65,7 +63,9 @@ RUNTIMES = [
     "qwen", "kimi",
 ]
 
-# Binary name (if any) that signals the runtime is installed on this host.
+# Binary name required by a real external execution lane.  This core does not
+# invoke these binaries, so their presence is recorded but never treated as
+# runtime conformance.
 RUNTIME_BINARIES = {
     "claude": "claude",
     "codex": "codex",
@@ -157,7 +157,7 @@ CAPABILITIES = {
 
 
 @dataclass
-class RuntimeConformance:
+class RuntimeAdapterStatus:
     runtime: str
     available: bool = False
     installed: bool = False
@@ -170,33 +170,8 @@ class RuntimeConformance:
     capabilities: dict = field(default_factory=dict)
     blocked_scenarios: list = field(default_factory=list)
     error: str = ""
-
-
-def detect_available(runtime: str) -> tuple[bool, str]:
-    """Return (available, reason) for a runtime on this host.
-
-    ``available`` means the runtime can actually be driven on THIS machine:
-    either its native binary is on PATH, or a portable command adapter is
-    documented AND the runtime's CLI entrypoint exists. Pure-documentation
-    adapters (no binary, no command path) are reported as available=False with
-    reason 'documented-only' — that distinction is itself a #432 BLOCKED case
-    (no independent actor on this host).
-    """
-    bin_name = RUNTIME_BINARIES.get(runtime)
-    adapter_readme = os.path.join(ADAPTERS_DIR, runtime, "README.md")
-    has_adapter = os.path.isfile(adapter_readme)
-    if bin_name and shutil.which(bin_name):
-        return True, f"binary '{bin_name}' present on PATH"
-    # Adapter documented but binary absent → available via adapter only if
-    # the adapter can be driven by a command path (portable mode).
-    if has_adapter and bin_name is None:
-        # Runtimes with no binary but a documented adapter (e.g. antigravity,
-        # openclaw, orca) are driven through the portable command path, which
-        # the loop always provides. Treat as available-on-host via adapter.
-        return True, f"adapter documented ({adapter_readme}); portable command mode"
-    if has_adapter and bin_name:
-        return True, f"adapter documented ({adapter_readme}); portable command mode"
-    return False, "no binary and no adapter README — runtime unknown to this repo"
+    external_lane: str = "unavailable"
+    external_reason: str = ""
 
 
 def expected_roles() -> list[str]:
@@ -204,30 +179,21 @@ def expected_roles() -> list[str]:
     return [r.get("role_id") for r in graph.get("roles", [])]
 
 
-def run_sandbox_task(runtime: str, mode: str) -> tuple[bool, str, bool]:
-    """Run a minimal sandbox task through the adapter's public path.
-
-    Uses the real ``stage_agent_coordinator`` + ``stage_agents`` validators to
-    prove the contract is satisfiable. The task is a throwaway intake→plan step;
-    we build a fully-valid AgentInstance + StageReceipt (matching identities)
-    and validate it against the canonical graph — this is exactly what the loop
-    does at execution time, so a pass here == the agent materialized.
-
-    Returns (passed, detail, receipt_equivalent).
-    """
+def validate_portable_contract() -> tuple[bool, str]:
+    """Validate a canonical fixture, without attributing it to a runtime."""
     try:
         graph = sa.load_graph(sa.STAGES_FILE)
         ok_graph, graph_errors = sa.validate_graph(graph)
         if not ok_graph:
-            return False, f"canonical graph invalid: {graph_errors}", False
+            return False, f"canonical graph invalid: {graph_errors}"
 
         # Shared run identity — every receipt/instance must bind to it.
         run_id = "conformance-run"
-        task_id = f"task-{runtime}-{mode}"
+        task_id = "portable-contract-task"
         attempt_id = "attempt-1"
         fence = "fence-conformance"
         plan_revision = 1
-        agent_instance_id = f"inst-{runtime}-{mode}"
+        agent_instance_id = "portable-contract-instance"
 
         context_hash = "0" * 64
         manifest_hash = str(graph.get("manifest_hash") or "0" * 64)
@@ -237,15 +203,15 @@ def run_sandbox_task(runtime: str, mode: str) -> tuple[bool, str, bool]:
             agent_instance_id=agent_instance_id, role_id="intake_planner", stage_id="intake",
             run_id=run_id, task_id=task_id, attempt_id=attempt_id, attempt_ordinal=1,
             fence=fence, plan_revision=plan_revision, context_hash=context_hash,
-            manifest_hash=manifest_hash, runtime=runtime, driver=mode,
+            manifest_hash=manifest_hash, runtime="portable-validator", driver="in_process",
             negotiated_capabilities=negotiated_capabilities, terminal_status="completed",
         )
         receipt = sa.make_stage_receipt(
-            receipt_id=f"rec-{runtime}-{mode}", agent_instance_id=agent_instance_id,
+            receipt_id="portable-contract-receipt", agent_instance_id=agent_instance_id,
             role_id="intake_planner", stage_id="intake", run_id=run_id, task_id=task_id,
             attempt_id=attempt_id, attempt_ordinal=1, fence=fence, plan_revision=plan_revision,
             context_hash=context_hash, manifest_hash=manifest_hash, verdict="pass",
-            evidence_refs=[f"mode={mode}", f"runtime={runtime}"],
+            evidence_refs=["mode=in_process", "runtime=portable-validator"],
             next_stage_recommendation="planning",
         )
         ok_inst, inst_errors = sa.validate_instance(instance, {
@@ -253,92 +219,71 @@ def run_sandbox_task(runtime: str, mode: str) -> tuple[bool, str, bool]:
             "attempt_ordinal": 1, "fence": fence, "plan_revision": plan_revision,
         })
         if not ok_inst:
-            return False, f"instance rejected: {inst_errors}", False
+            return False, f"instance rejected: {inst_errors}"
 
         ok_rec, rec_errors = sa.validate_receipt(receipt, instance, graph)
         if not ok_rec:
-            return False, f"receipt rejected: {rec_errors}", False
+            return False, f"receipt rejected: {rec_errors}"
 
-        return True, f"sandbox {mode} task produced valid StageReceipt", True
+        return True, "portable fixture produced a valid StageReceipt"
     except Exception as exc:  # pragma: no cover — defensive
-        return False, f"sandbox error: {exc}", False
+        return False, f"portable validation error: {exc}"
 
 
-def conformance_for_runtime(runtime: str) -> RuntimeConformance:
-    rc = RuntimeConformance(runtime=runtime)
+def adapter_status_for_runtime(runtime: str) -> RuntimeAdapterStatus:
+    """Return declarations, never a claim that the runtime was executed."""
+    rc = RuntimeAdapterStatus(runtime=runtime)
     rc.roles_expected = len(expected_roles())
     rc.capabilities = CAPABILITIES.get(runtime, {})
     rc.blocked_scenarios = rc.capabilities.get("blocked", [])
 
-    available, reason = detect_available(runtime)
-    rc.available = available
-    rc.availability_reason = reason
+    rc.availability_reason = "README/capability declarations are not runtime availability"
     bin_name = RUNTIME_BINARIES.get(runtime)
     rc.installed = bool(bin_name and shutil.which(bin_name))
-
-    if not available:
-        rc.sandbox_detail = f"BLOCKED: {reason}"
-        return rc
-
-    # Available → run the sandbox across the modes this runtime supports.
-    modes = ["portable_command"]
-    if rc.capabilities.get("native_api"):
-        modes.append("native_subagent")
-    if rc.capabilities.get("queue_adapter"):
-        modes.append("queue_worker")
-
-    passed_all = True
-    details = []
-    receipt_eq = True
-    for mode in modes:
-        ok, detail, eq = run_sandbox_task(runtime, mode)
-        if not ok:
-            passed_all = False
-        if not eq:
-            receipt_eq = False
-        details.append(f"{mode}: {'PASS' if ok else 'FAIL'} ({detail})")
-
-    rc.roles_supported = rc.roles_expected  # all 12 roles are adapter-agnostic
-    rc.sandbox_passed = passed_all
-    rc.sandbox_detail = "; ".join(details)
-    rc.receipt_equivalent = receipt_eq
+    if not rc.installed:
+        rc.external_reason = ("requires a runtime binary and a registered executable adapter "
+                              "command; neither is supplied by this portable validation")
+    else:
+        rc.external_reason = ("runtime binary is present, but no registered executable adapter "
+                              "command was supplied; portable validation does not invoke it")
+    rc.sandbox_detail = "BLOCKED: " + rc.external_reason
     return rc
 
 
 def build_report(runtimes: list[str]) -> dict:
-    results = [asdict(conformance_for_runtime(r)) for r in runtimes]
-    available = [r for r in results if r["available"]]
-    failed = [r for r in available if not r["sandbox_passed"]]
+    portable_ok, portable_detail = validate_portable_contract()
+    results = [asdict(adapter_status_for_runtime(r)) for r in runtimes]
     return {
         "schema": "simplicio.conformance/v1",
         "issue": 432,
         "total_runtimes": len(results),
-        "available_runtimes": len(available),
-        "available_failed": len(failed),
-        "exit_gate": "pass" if not failed else "fail",
+        "available_runtimes": 0,
+        "available_failed": 0,
+        "portable_validation": {"passed": portable_ok, "detail": portable_detail},
+        "exit_gate": "pass" if portable_ok else "fail",
         "roles_canonical": expected_roles(),
         "results": results,
     }
 
 
 def render_md(report: dict) -> str:
-    lines = ["# Stage-Agent Conformance Matrix (issue #432)", ""]
+    lines = ["# Portable Stage-Agent Contract Validation (issue #432)", ""]
     lines.append(f"- Total runtimes: **{report['total_runtimes']}**")
-    lines.append(f"- Available on this host: **{report['available_runtimes']}**")
-    lines.append(f"- Available but FAILED gate: **{report['available_failed']}**")
+    lines.append("- External runtimes executed by this report: **0**")
+    lines.append("- External execution lane: **UNAVAILABLE** (adapter command not registered here)")
+    lines.append(f"- Portable fixture: **{'PASS' if report['portable_validation']['passed'] else 'FAIL'}**")
     lines.append(f"- Exit gate: **{report['exit_gate'].upper()}**")
     lines.append("")
-    lines.append("| Runtime | Installed | Available | Roles | Sandbox | Receipt≡ | Blocked scenarios |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| Runtime | Installed | External lane | Canonical roles | Runtime receipt | Blocked scenarios |")
+    lines.append("|---|---|---|---|---|---|")
     for r in report["results"]:
         inst = "✅" if r["installed"] else "❌"
-        avail = "✅" if r["available"] else "❌"
-        sand = "✅" if r["sandbox_passed"] else ("➖" if not r["available"] else "❌")
-        rec = "✅" if r["receipt_equivalent"] else "❌"
+        avail = "UNAVAILABLE"
+        sand = "not executed"
         blocked = ", ".join(r["blocked_scenarios"]) or "—"
         lines.append(
-            f"| {r['runtime']} | {inst} | {avail} | {r['roles_supported']}/{r['roles_expected']} "
-            f"| {sand} | {rec} | {blocked} |"
+            f"| {r['runtime']} | {inst} | {avail} | {r['roles_expected']} "
+            f"| {sand} | {blocked} |"
         )
     lines.append("")
     for r in report["results"]:
@@ -371,11 +316,10 @@ def main(argv: list[str] | None = None) -> int:
             fh.write(render_md(report))
 
     # Always print a summary to stdout.
-    print(f"conformance: {report['available_runtimes']}/{report['total_runtimes']} "
-          f"runtimes available; gate={report['exit_gate']}")
+    print(f"portable conformance: 0/{report['total_runtimes']} runtimes executed; "
+          f"gate={report['exit_gate']}")
     for r in report["results"]:
-        flag = "OK " if (r["available"] and r["sandbox_passed"]) else (
-            "BLK" if not r["available"] else "FAIL")
+        flag = "BLK"
         print(f"  [{flag}] {r['runtime']}: {r['sandbox_detail'] or r['availability_reason']}")
 
     return 0 if report["exit_gate"] == "pass" else 1

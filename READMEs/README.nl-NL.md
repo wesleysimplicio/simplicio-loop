@@ -1,5 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
+> **Canonical operational contract:** This translation is informational. For current dependency, runtime, conformance, and validation behavior, [README.md](../README.md) is authoritative: Loop installs standalone; Runtime bindings are optional; 3 runtimes are guaranteed and 12 are best-effort; and `scripts/check.py` requires an importable `pytest` with no bare-Python fallback. Historical numeric counts and claims of complete categorization below are release snapshots, not current gate evidence; the checkout and latest local receipt are authoritative, and `scripts/test_categories.py` reports uncategorized files. GitHub Actions is not required gate evidence.
+
 <p align="center">
   <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop met concrete agents per fase en gekoppelde rapportage" width="920" />
 </p>
@@ -191,8 +193,8 @@ token-economie**.
 ## 📘 Officieel capaciteitsregister
 
 Het complete, officiële overzicht van wat `simplicio-loop` levert — elke capaciteit hieronder is
-**echt, uitvoerbaar en getest** (`python3 scripts/check.py`: claims-audit 14/14 + 2.544 tests over
-231 bestanden). Elk
+**echt, uitvoerbaar en getest** door de toepasselijke lokale gate. Exacte aantallen verzamelde,
+uitgevoerde en overgeslagen tests horen bij het nieuwste gate-receipt, niet bij dit document. Elk
 verwijst naar zijn uitgebreide sectie en zijn worker.
 
 | Capaciteit | Wat het doet | Bewijs / worker | Details |
@@ -269,8 +271,9 @@ Zie het referentiedocument van elke adapter onder `.claude/skills/simplicio-loop
 Eén universele skill-kern + één set hooks drijft elke runtime aan. Een adapter is dun: hij vertelt
 een runtime *waar de skills te laden*, *hoe de lus scherp te stellen* en *hoe de native snelheid te
 binden*. **De skill noemt geen enkele runtime; de runtime detecteert de skill.** De native
-`simplicio-runtime` MCP-binding is **VERPLICHT** op elke runtime (de lus BLOKKEERT als hij ontbreekt
-of onbereikbaar is) — zie [`docs/MCP_SETUP.md`](../docs/MCP_SETUP.md).
+`simplicio-runtime` MCP-binding is optioneel op elke runtime; bij een ontbrekende of onbereikbare
+binding meldt de adapter expliciete gedegradeerde modus en blijft de standalone-lus beschikbaar —
+zie [`docs/MCP_SETUP.md`](../docs/MCP_SETUP.md).
 
 ### Tier 1 — Gegarandeerd (bij elke commit getest)
 
@@ -576,8 +579,8 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 - **Testsuite** (`tests/`) — de deterministische `selftest`s van de workers, plus een **e2e van de
   loop-driver** (`hooks/loop_stop.py`): hij bewijst dat de lus **stopt op bewijs**, **een kale
   `<promise>` negeert** en **stopt op het plafond** als afzonderlijke uitgangen — en dat de
-  bewijsproducenten **BLOKKEREN** (nooit fake-pass) wanneer hun toolchain afwezig is. Draait onder
-  `pytest` *of*, zonder enige pip, zelf-draaiend op kale python3 (`python3 tests/test_*.py`).
+  bewijsproducenten **BLOKKEREN** (nooit fake-pass) wanneer hun toolchain afwezig is. De gate vereist
+  een importeerbare `pytest`; er is geen kale-Python-fallback.
 - **Claims-audit** (`scripts/claims_audit.py`, fail-closed) — elke `scripts/*.py` waar de docs naar
   verwijzen bestaat · het aantal uitbreidingspunten klopt over alle bestanden · elk geciteerd
   worker-commando draait daadwerkelijk · de meegeleverde `simplicio_loop/_bundle/`-skills zijn
@@ -587,7 +590,7 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
   ```
 
-`pip install "simplicio-loop[dev]"` voegt pytest toe voor mooiere output; het is nooit vereist.
+`pip install "simplicio-loop[dev]"` installeert de verplichte `pytest`-dependency voor `scripts/check.py`.
 
 ---
 

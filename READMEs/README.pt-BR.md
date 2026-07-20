@@ -1,11 +1,13 @@
 # 🔁 simplicio-loop — O Orquestrador de IA Universal em Loop
 
+> **Canonical operational contract:** This translation is informational. For current dependency, runtime, conformance, and validation behavior, [README.md](../README.md) is authoritative: Loop installs standalone; Runtime bindings are optional; 3 runtimes are guaranteed and 12 are best-effort; and `scripts/check.py` requires an importable `pytest` with no bare-Python fallback. Historical numeric counts and claims of complete categorization below are release snapshots, not current gate evidence; the checkout and latest local receipt are authoritative, and `scripts/test_categories.py` reports uncategorized files. GitHub Actions is not required gate evidence.
+
 <p align="center">
   <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop com agents concretos por etapa e reporting conectado" width="920" />
 </p>
 
 <p align="center">
-  <a href="../docs/REPOSITORY_GOVERNANCE.md"><img src="https://img.shields.io/badge/CI-locally%20enforced%20(gate%20PR%20pending)-888888" alt="CI status: enforced locally via scripts/check.py; GitHub Actions pending per docs/RELEASE.md #311"></a>
+  <a href="../docs/REPOSITORY_GOVERNANCE.md"><img src="https://img.shields.io/badge/CI-gate%20local%20é%20autoritativo-888888" alt="Validação: scripts/check.py local é autoritativo; GitHub Actions não é evidência obrigatória"></a>
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
   <a href="#-as-7-skills--5-aceleradores"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-adaptadores-de-fonte"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
@@ -156,9 +158,9 @@ multi-sessão deste próprio repositório**, não um cenário sintético.
   código quebrado no `main` uma segunda vez. Ambas descobertas rodando de fato o script afetado, não
   confiando numa descrição de PR verde — a razão de existir de `coordinator.py` e
   `pr_dod_review.py`.
-- **Suíte de testes cresceu para 231 arquivos** (de 192), tudo classificado na convenção
-  unit/integration/system/regression que `docs/SCRIPTS_INVENTORY.md` rastreia;
-  `scripts/claims_audit.py` se manteve em 14/14 a cada merge do ciclo.
+- **O inventário de testes é medido, não fixado.** O checkout e o recibo do gate local mais recente
+  são a autoridade para contagens de arquivos e resultados; `scripts/test_categories.py` também
+  relata arquivos não categorizados.
 
 **O que isso significa na prática:** se você roda `simplicio-loop` em mais de uma sessão ou máquina
 contra o mesmo repositório, agora ele te protege ativamente dos dois modos de falha que realmente
@@ -210,8 +212,9 @@ serviços de captura e o restante da stack Simplicio são aceleradores opcionais
 ## 📘 Registro oficial de capacidades
 
 O roster completo e oficial do que o `simplicio-loop` entrega — toda capacidade abaixo é **real,
-executável e testada** (`python3 scripts/check.py`: claims-audit 14/14 + 2.544 testes coletados em
-231 arquivos). Cada uma linka para sua seção detalhada e seu worker.
+executável e testada** pelo gate local aplicável. As contagens exatas de coleta, execução e saltos
+pertencem ao recibo do gate mais recente, não a este documento. Cada uma linka para sua seção
+detalhada e seu worker.
 
 | Capacidade | O que faz | Prova / worker | Detalhes |
 |---|---|---|---|
@@ -287,32 +290,33 @@ Veja o doc de referência de cada adaptador em `.claude/skills/simplicio-loop/re
 Um core de skill universal + um conjunto de hooks dirige cada runtime. Um adaptador é fino: ele diz a um
 runtime *onde carregar as skills*, *como armar o loop* e *como vincular a velocidade nativa*. **A
 skill não nomeia nenhum runtime; o runtime detecta a skill.** O bind nativo `simplicio-runtime`
-(MCP) é **OBRIGATÓRIO** em todo runtime — o loop BLOQUEIA se estiver ausente/inacessível.
+(MCP) é opcional em todo runtime; se ausente/inacessível, o adapter reporta modo degradado
+explícito e o loop standalone continua disponível.
 
 ### Nível 1 — Garantido (gated a cada commit)
 
 | Runtime | Carga da skill | Motor do loop | Bind nativo (MCP) |
 |---|---|---|---|
-| **Claude Code** | `.claude/skills/` + plugin | `Stop` hook | OBRIGATÓRIO — `~/.claude.json` |
-| **Codex** | `AGENTS.md` | self-paced | OBRIGATÓRIO — `~/.codex/config.toml` |
-| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | OBRIGATÓRIO — `.cursor/mcp.json` |
+| **Claude Code** | `.claude/skills/` + plugin | `Stop` hook | opcional — `~/.claude.json` |
+| **Codex** | `AGENTS.md` | self-paced | opcional — `~/.codex/config.toml` |
+| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | opcional — `.cursor/mcp.json` |
 
 ### Nível 2 — Best-effort (contribuições bem-vindas, sem gate)
 
 | Runtime | Carga da skill | Motor do loop | Bind nativo (MCP) |
 |---|---|---|---|
-| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | OBRIGATÓRIO — `.vscode/mcp.json` |
-| **Antigravity** | rules / `AGENTS.md` | self-paced | OBRIGATÓRIO — caminho best-effort |
-| **Kiro** | `.kiro/steering/` | specs | OBRIGATÓRIO — `.kiro/settings/mcp.json` |
-| **OpenCode** | `AGENTS.md` | self-paced | OBRIGATÓRIO — `opencode.json` |
-| **Gemini** (CLI/Code Assist) | `GEMINI.md` | self-paced | OBRIGATÓRIO — `.gemini/settings.json` (CLI) |
-| **Kimi** | convenções inline | self-paced | OBRIGATÓRIO — best-effort, sem cliente verificado |
-| **Qwen** (Code/CLI) | equivalente a `AGENTS.md` | self-paced | OBRIGATÓRIO — `.qwen/settings.json` (best-effort) |
-| **DeepSeek** | convenções inline | self-paced | OBRIGATÓRIO — sem cliente first-party, best-effort |
-| **Aider** | `CONVENTIONS.md` | self-paced | OBRIGATÓRIO — sem cliente MCP (fallback do LLM) |
-| **Simplicio Agent** *(antigo Hermes)* | native recall | native loop | OBRIGATÓRIO — **nativo** |
-| **OpenClaw** | plugin SDK | native scheduler | OBRIGATÓRIO — **nativo** |
-| **Orca** | via inner agent + registro de skills | inner hook / automações agendadas | OBRIGATÓRIO — config de registro/inner-agent |
+| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | opcional — `.vscode/mcp.json` |
+| **Antigravity** | rules / `AGENTS.md` | self-paced | opcional — caminho best-effort |
+| **Kiro** | `.kiro/steering/` | specs | opcional — `.kiro/settings/mcp.json` |
+| **OpenCode** | `AGENTS.md` | self-paced | opcional — `opencode.json` |
+| **Gemini** (CLI/Code Assist) | `GEMINI.md` | self-paced | opcional — `.gemini/settings.json` (CLI) |
+| **Kimi** | convenções inline | self-paced | opcional — best-effort, sem cliente verificado |
+| **Qwen** (Code/CLI) | equivalente a `AGENTS.md` | self-paced | opcional — `.qwen/settings.json` (best-effort) |
+| **DeepSeek** | convenções inline | self-paced | opcional — sem cliente first-party, best-effort |
+| **Aider** | `CONVENTIONS.md` | self-paced | opcional — sem cliente MCP (fallback do LLM) |
+| **Simplicio Agent** *(antigo Hermes)* | native recall | native loop | opcional — **nativo** |
+| **OpenClaw** | plugin SDK | native scheduler | opcional — **nativo** |
+| **Orca** | via inner agent + registro de skills | inner hook / automações agendadas | opcional — config de registro/inner-agent |
 
 A promessa: **mesmo protocolo, mesmos gates, mesma segurança nos 15 — Nível 1 verificado
 mecanicamente, Nível 2 best-effort.** `orient_clamp.py` (economia de tokens) funciona em todos os
@@ -548,6 +552,10 @@ simplicio-loop install --global   # usuário inteiro
 Isso instala apenas skills + hooks. Binds nativos, operadores e o restante da stack Simplicio são
 **aceleradores opcionais**, não pré-requisitos.
 
+O preflight mantém esse limite explícito: `python3 scripts/preflight.py --json` valida
+`simplicio-mapper` + `simplicio-dev-cli` de forma fail-closed e relata o
+`simplicio-runtime` opcional separadamente; Runtime ausente não bloqueia o Loop standalone.
+
 **Caminho full-stack: instalador do repositório.** Use quando você também quiser a stack local mais
 ampla (operadores, capture proxy, dashboards, serviços e wiring do runtime):
 
@@ -613,8 +621,8 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 - **Suíte de testes** (`tests/`) — os `selftest`s determinísticos dos workers, mais um **e2e do
   driver do loop** (`hooks/loop_stop.py`): ele prova que o loop **para na evidência**, **ignora uma
   `<promise>` pura** e **para no limite** como saídas distintas — e que os produtores de evidência
-  **BLOCK** (nunca fake-pass) quando seu toolchain está ausente. Roda sob `pytest` *ou*, sem nenhum
-  pip, se auto-roda em python3 puro (`python3 tests/test_*.py`).
+  **BLOCK** (nunca fake-pass) quando seu toolchain está ausente. O gate exige um `pytest`
+  importável; não existe fallback em Python puro.
 - **Claims audit** (`scripts/claims_audit.py`, fail-closed) — todo `scripts/*.py` que os docs
   referenciam existe · a contagem de pontos de extensão concorda entre todos os arquivos · cada
   comando de worker citado de fato roda · as skills entregues em `simplicio_loop/_bundle/` são
@@ -624,7 +632,7 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
   ```
 
-`pip install "simplicio-loop[dev]"` adiciona o pytest para uma saída mais agradável; nunca é necessário.
+`pip install "simplicio-loop[dev]"` instala a dependência obrigatória `pytest` para `scripts/check.py`.
 
 ---
 

@@ -45,6 +45,13 @@ except ImportError:  # pragma: no cover
 SCHEMA = "simplicio.queue/v1"
 
 
+class _QueueHTTPServer(ThreadingHTTPServer):
+    """Loopback queue server sized for the documented concurrent claim lane."""
+
+    daemon_threads = True
+    request_queue_size = 128
+
+
 class QueueConflict(RuntimeError):
     """The caller lost a lease or presented an old fencing token."""
 
@@ -362,50 +369,87 @@ class SQLiteRemoteQueue:
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=self.busy_timeout, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            # Setting journal_mode is a write to the database header.  Two fresh
+            # workers may both reach this point before either has created the
+            # queue, and SQLite does not consistently apply the connection's busy
+            # handler to that PRAGMA.  Avoid the write once WAL is active and bound
+            # retries for the first-start race by the public busy_timeout.
+            deadline = time.monotonic() + max(0.0, self.busy_timeout)
+            while True:
+                try:
+                    row = conn.execute("PRAGMA journal_mode").fetchone()
+                    if row is None or str(row[0]).lower() != "wal":
+                        conn.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    detail = str(exc).lower()
+                    remaining = deadline - time.monotonic()
+                    if ("locked" not in detail and "busy" not in detail) or remaining <= 0:
+                        raise
+                    time.sleep(min(0.01, remaining))
+            conn.execute("PRAGMA foreign_keys=ON")
+            return conn
+        except BaseException:
+            conn.close()
+            raise
 
     def _init(self) -> None:
         with self._connect() as c:
-            c.executescript("""
-            CREATE TABLE IF NOT EXISTS queue_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS tasks (
-                task_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'ready',
-                payload TEXT NOT NULL DEFAULT '{}', updated_at REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS leases (
-                task_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, lease_id TEXT NOT NULL,
-                fencing_token INTEGER NOT NULL, idempotency_key TEXT NOT NULL,
-                expires_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'active',
-                receipt_ref TEXT, updated_at REAL NOT NULL,
-                identity TEXT, capabilities TEXT,
-                FOREIGN KEY(task_id) REFERENCES tasks(task_id)
-            );
-            CREATE TABLE IF NOT EXISTS idempotency (
-                idempotency_key TEXT PRIMARY KEY, task_id TEXT NOT NULL,
-                lease_id TEXT NOT NULL, created_at REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS events (
-                seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
-                kind TEXT NOT NULL, agent_id TEXT NOT NULL, fencing_token INTEGER,
-                payload TEXT NOT NULL, created_at REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS events_task_seq ON events(task_id, seq);
-            """)
-            columns = {row[1] for row in c.execute("PRAGMA table_info(leases)").fetchall()}
-            if "identity" not in columns:
-                c.execute("ALTER TABLE leases ADD COLUMN identity TEXT")
-            if "capabilities" not in columns:
-                c.execute("ALTER TABLE leases ADD COLUMN capabilities TEXT")
-            if "cancel_requested" not in columns:
-                c.execute("ALTER TABLE leases ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
-            if "receipt_sha" not in columns:
-                c.execute("ALTER TABLE leases ADD COLUMN receipt_sha TEXT")
-            if "receipt_verdict" not in columns:
-                c.execute("ALTER TABLE leases ADD COLUMN receipt_verdict TEXT")
-            c.execute("INSERT OR IGNORE INTO queue_meta(key, value) VALUES('schema', ?)", (SCHEMA,))
+            # Schema discovery plus ALTER must be one serialized transaction.  If
+            # two first-start workers inspect table_info concurrently, both can
+            # otherwise decide that the same column is missing and one loses with
+            # ``duplicate column name``.  BEGIN IMMEDIATE waits no longer than the
+            # configured SQLite busy timeout and makes that check-and-migrate step
+            # atomic across processes.
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                c.execute(
+                    "CREATE TABLE IF NOT EXISTS queue_meta "
+                    "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                )
+                c.execute(
+                    "CREATE TABLE IF NOT EXISTS tasks ("
+                    "task_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'ready', "
+                    "payload TEXT NOT NULL DEFAULT '{}', updated_at REAL NOT NULL)"
+                )
+                c.execute(
+                    "CREATE TABLE IF NOT EXISTS leases ("
+                    "task_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, lease_id TEXT NOT NULL, "
+                    "fencing_token INTEGER NOT NULL, idempotency_key TEXT NOT NULL, "
+                    "expires_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'active', "
+                    "receipt_ref TEXT, updated_at REAL NOT NULL, identity TEXT, capabilities TEXT, "
+                    "FOREIGN KEY(task_id) REFERENCES tasks(task_id))"
+                )
+                c.execute(
+                    "CREATE TABLE IF NOT EXISTS idempotency ("
+                    "idempotency_key TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+                    "lease_id TEXT NOT NULL, created_at REAL NOT NULL)"
+                )
+                c.execute(
+                    "CREATE TABLE IF NOT EXISTS events ("
+                    "seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, "
+                    "kind TEXT NOT NULL, agent_id TEXT NOT NULL, fencing_token INTEGER, "
+                    "payload TEXT NOT NULL, created_at REAL NOT NULL)"
+                )
+                c.execute("CREATE INDEX IF NOT EXISTS events_task_seq ON events(task_id, seq)")
+                columns = {row[1] for row in c.execute("PRAGMA table_info(leases)").fetchall()}
+                if "identity" not in columns:
+                    c.execute("ALTER TABLE leases ADD COLUMN identity TEXT")
+                if "capabilities" not in columns:
+                    c.execute("ALTER TABLE leases ADD COLUMN capabilities TEXT")
+                if "cancel_requested" not in columns:
+                    c.execute("ALTER TABLE leases ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
+                if "receipt_sha" not in columns:
+                    c.execute("ALTER TABLE leases ADD COLUMN receipt_sha TEXT")
+                if "receipt_verdict" not in columns:
+                    c.execute("ALTER TABLE leases ADD COLUMN receipt_verdict TEXT")
+                c.execute("INSERT OR IGNORE INTO queue_meta(key, value) VALUES('schema', ?)", (SCHEMA,))
+                c.commit()
+            except Exception:
+                c.rollback()
+                raise
 
     @contextlib.contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -835,7 +879,7 @@ def create_http_queue_server(queue: SQLiteRemoteQueue, host: str = "127.0.0.1", 
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 self._send(400, {"error": str(exc)})
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = _QueueHTTPServer((host, port), Handler)
     if ssl_context is not None:
         server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
     return server

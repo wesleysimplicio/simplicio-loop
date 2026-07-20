@@ -24,8 +24,8 @@ suspected compromise.
 | Structured audit log of every authorize/check_endpoint/verify_token decision | Done (this change) — `.orchestrator/security/audit-log.jsonl` |
 | SPKI pin rotation with `current` + `next` | Done (this change) — `tls_sha256_pins` accepts `{"sha256","status"}` entries |
 | Additional live negative/fault-injection tests (redirect, DNS rebinding, proxy injection) | Done (this change) — `tests/test_secure_transport_fault_injection.py` |
-| **OIDC broker exchange (GitHub Actions issuer → broker → short-lived cloud/queue credential)** | **Permanently blocked.** `.github/workflows/distributed-183-proof.yml` (the OIDC-issuing surface #289 was written against) was removed repo-wide in #311, and no CI identity provider exists in this repo to take its place. There is no substrate left to issue the initial `id-token: write` JWT this control depends on. This is not deferred pending more engineering time — it is architecturally unavailable until/unless a CI-hosted trigger with OIDC support is reintroduced, at which point this line item should be revisited from scratch, not resumed from partial work. |
-| GitHub Environment protection / job separation for the proof workflow | Not applicable — the workflow this protected no longer exists (#311) |
+| **OIDC broker exchange (GitHub Actions issuer → broker → short-lived cloud/queue credential)** | **Permanently blocked.** The specific `.github/workflows/distributed-183-proof.yml` OIDC surface #289 was written against was removed in #311. The two current workflows (`simplicio-status-sync.yml` and `windows-progress-smoke.yml`) do not request `id-token: write`, provide no release/OIDC gate, and were not executed or used as evidence here. There is therefore no current source for the initial JWT this control depends on. This is not deferred pending more engineering time — it is architecturally unavailable until/unless a CI-hosted trigger with OIDC support is introduced, at which point this line item should be revisited from scratch, not resumed from partial work. |
+| GitHub Environment protection / job separation for the proof workflow | Not applicable to the removed `distributed-183-proof.yml` (#311); the two current workflows do not implement this proof/release gate. |
 
 ## 2. Rotating a signing secret (`SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET`)
 
@@ -139,9 +139,10 @@ Issue #289's architecture calls for a GitHub Actions OIDC token exchange: the wo
 gets a short-lived `id-token: write` JWT from GitHub's own OIDC issuer, a broker validates
 issuer/audience/repository/workflow ref/environment claims, and only then mints the queue
 credential. That entire chain starts from a GitHub Actions job requesting the token — and
-`.github/workflows/distributed-183-proof.yml`, the one workflow in this repo that would have
-requested it, was deleted in #311. There is currently no other CI-hosted trigger in this repo
-that runs with `id-token: write` against the distributed queue.
+`.github/workflows/distributed-183-proof.yml`, the workflow in this repo that would have
+requested it, was deleted in #311. The current `simplicio-status-sync.yml` and
+`windows-progress-smoke.yml` workflows do not run with `id-token: write` against the distributed
+queue and were not used as evidence here.
 
 Implementing "OIDC support" without that starting point would mean either (a) building a fake
 local OIDC issuer purely for this repo's tests, which proves nothing about the real GitHub

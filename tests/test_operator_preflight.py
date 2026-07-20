@@ -69,7 +69,15 @@ def test_installed_versions_classifies_missing_and_available(monkeypatch):
     }
 
 
-def test_main_emits_receipt_and_records(tmp_path: Path, capsys):
+def test_main_emits_receipt_and_records(tmp_path: Path, capsys, monkeypatch):
+    versions = {"simplicio-mapper": "0.23.1", "simplicio-dev-cli": "0.16.1"}
+    original_preflight = operator_preflight.preflight
+
+    def deterministic_preflight(**kwargs):
+        return original_preflight(**kwargs, version_provider=lambda: versions)
+
+    # main() normally binds the real PATH provider; inject a typed deterministic provider.
+    monkeypatch.setattr(operator_preflight, "preflight", deterministic_preflight)
     code = operator_preflight.main([
         "--state", str(tmp_path / "check.json"),
         "--run-state", str(tmp_path / "pin.json"),

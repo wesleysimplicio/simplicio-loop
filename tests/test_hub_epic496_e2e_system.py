@@ -50,7 +50,7 @@ def _submit_all(socket_path: str, client_id: str, job_ids: List[str], errors: Li
         errors.append("transport error for %s: %s" % (client_id, exc))
 
 
-def test_hub_pipeline_multi_client_fair_dispatch_and_governor_denial() -> None:
+def test_hub_pipeline_multi_client_fair_dispatch_and_governor_denial(require_af_unix) -> None:
     with tempfile.TemporaryDirectory() as directory:
         lock_path = str(Path(directory) / "hub.lock")
         socket_path = str(Path(directory) / "hub.sock")

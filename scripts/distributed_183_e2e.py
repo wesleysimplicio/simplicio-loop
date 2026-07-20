@@ -419,7 +419,12 @@ def run(out: str | Path) -> dict[str, Any]:
                     "merge_queue_status": result["completed"]["delivery"]["merge_queue_status"],
                 }
             )
-        context_pack_keys_ok = all(sorted(result["context_pack"].keys()) == sorted(CONTEXT_FIELDS) for result in worker_results)
+        # Optional stage/issue fields need not be materialized.  The isolation
+        # contract is that every field which *is* present belongs to the allow-list.
+        context_pack_keys_ok = all(
+            set(result["context_pack"]).issubset(CONTEXT_FIELDS)
+            for result in worker_results
+        )
         distinct_worktrees = len({result["allocation_receipt"]["path"] for result in worker_results}) == 2
         distinct_branches = len({result["allocation_receipt"]["branch"] for result in worker_results}) == 2
         merge_receipts_explicit = all(result["merge_receipt"]["receipt_sha"] and Path(result["merge_receipt"]["path"]).exists() for result in worker_results)

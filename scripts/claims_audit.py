@@ -54,7 +54,7 @@ Thirteen checks:
                                 (legacy compat shims collapsed to their canonical runtime).
 
 Usage:
-    python3 scripts/claims_audit.py [--json] [--only 1,2,3,4]
+    python3 scripts/claims_audit.py [--core] [--json] [--only 1,2,3,4]
 """
 import json
 import os
@@ -70,11 +70,12 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+CORE_MODE = False
 
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 from mirror_manifest import LEAN_SCRIPTS, LEAN_TESTS  # noqa: E402 — single source of truth (#74)
-from claims_manifest import CLAIMS, extract_claims, QUANT_RE  # noqa: E402 — quantitative claims (#96)
+from claims_manifest import CLAIMS, extract_claims  # noqa: E402 — quantitative claims (#96)
 
 DOC_GLOBS = ["README.md", "AGENTS.md", "CLAUDE.md", "INSTALL.md", "PYPI.md"]
 # CHANGELOG.md is deliberately NOT in DOC_GLOBS: it is a historical log whose entries correctly
@@ -162,6 +163,20 @@ SELFTEST_SCRIPTS = [
     "scripts/supervisor_enforcement.py",
     "scripts/deep_correctness_gate.py",
 ]
+SATELLITE_SCRIPT_PATHS = frozenset({
+    "scripts/agentsview_adapter.py",
+    "scripts/autoresearch.py",
+    "scripts/az_boards_adapter.py",
+    "scripts/billing_aggregator.py",
+    "scripts/check_e2e_demo_contract.py",
+    "scripts/check_e2e_installed.py",
+    "scripts/e2e_demo.py",
+    "scripts/fan_out.py",
+    "scripts/independent_watcher.py",
+    "scripts/repo_conventions.py",
+    "scripts/savings_harness.py",
+    "scripts/schema_verify.py",
+})
 # scripts intentionally excluded from the "every selftest is registered" meta-check (check 3): a
 # `selftest`-shaped function/subcommand that isn't the worker's own self-check, or a script this
 # repo has decided NOT to gate (document why here, don't just silently exclude).
@@ -258,7 +273,9 @@ def check_skill_count():
 
 def check_commands_run():
     failures = []
-    for rel in SELFTEST_SCRIPTS:
+    selected = [rel for rel in SELFTEST_SCRIPTS
+                if not CORE_MODE or rel not in SATELLITE_SCRIPT_PATHS]
+    for rel in selected:
         path = os.path.join(REPO, rel)
         if not os.path.exists(path):
             failures.append("%s: not found" % rel)
@@ -304,7 +321,12 @@ def check_commands_run():
         if c.returncode != 0:
             failures.append("%s: py_compile failed" % rel)
     ok = not failures
-    return ok, ("all cited commands run" if ok else "; ".join(failures))
+    if not ok:
+        return False, "; ".join(failures)
+    if CORE_MODE:
+        excluded = len(SELFTEST_SCRIPTS) - len(selected)
+        return True, "all core cited commands run; satellite selftests excluded=%d" % excluded
+    return True, "all cited commands run"
 
 
 def check_bundle_parity():
@@ -500,6 +522,7 @@ def check_prose_commands():
     Workers that do NOT support --describe-cli are silently skipped.
     """
     failures = []
+    excluded = set()
     # Documents to scan
     prose_docs = [os.path.join(REPO, "README.md"), os.path.join(REPO, "AGENTS.md")]
     skills_dir = os.path.join(REPO, ".claude", "skills")
@@ -530,13 +553,15 @@ def check_prose_commands():
             text = f.read()
         for m in INVOCATION_RE.finditer(text):
             script_rel = m.group(1)  # e.g. "scripts/task_anchor.py"
-            script_name = m.group(2)  # e.g. "task_anchor"
             verb = m.group(3)
             flags_str = m.group(4) or ""
             script_path = os.path.join(REPO, script_rel)
 
             if not os.path.exists(script_path):
                 continue  # caught by check 1
+            if CORE_MODE and script_rel in SATELLITE_SCRIPT_PATHS:
+                excluded.add(script_rel)
+                continue
 
             # Try --describe-cli
             r = subprocess.run(
@@ -574,8 +599,14 @@ def check_prose_commands():
                         )
 
     ok = not failures
-    return ok, ("all doc-cited commands validated against --describe-cli"
-                if ok else "; ".join(failures))
+    if not ok:
+        return False, "; ".join(failures)
+    detail = "all doc-cited core commands validated against --describe-cli"
+    if CORE_MODE:
+        detail += "; satellite command probes excluded=%d" % len(excluded)
+    else:
+        detail = "all doc-cited commands validated against --describe-cli"
+    return True, detail
 
 
 def check_skill_pair_parity():
@@ -730,7 +761,9 @@ CHECKS = [
 
 
 def main():
+    global CORE_MODE
     args = sys.argv[1:]
+    CORE_MODE = "--core" in args
     as_json = "--json" in args
     only = None
     if "--only" in args:

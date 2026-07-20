@@ -15,10 +15,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import multiprocessing
+import os
+import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
+from typing import Any
 
+from simplicio_loop import process_enforcement as process_enforcement_module
 from simplicio_loop.process_enforcement import (
     CircuitBreaker,
     ProcessRegistry,
@@ -36,19 +42,22 @@ from simplicio_loop.process_supervisor import ProcessSpec
 MARKER = "simplicio-mapper"  # matches SIMPLICIO_SIGNATURES, harmless extra argv token
 
 
+def _concurrent_registry_register(path: str, gate: Any, lease_id: str) -> None:
+    """Child-process target for the registry's real interprocess-lock test."""
+    gate.wait()
+    ProcessRegistry(Path(path)).register(
+        os.getpid(), lease_id=lease_id, spec_hash="concurrent", argv=["worker"],
+    )
+
+
 def _wait_visible(pid: int, *, timeout: float = 3.0) -> None:
-    """Block until /proc/<pid>/cmdline is readable and populated, so a scan right after spawn
-    does not race the kernel's own process-table/exec bookkeeping."""
+    """Block until the production scanner sees ``pid`` after the child's exec transition."""
     deadline = time.monotonic() + timeout
-    cmdline_path = "/proc/%d/cmdline" % pid
     while time.monotonic() < deadline:
-        try:
-            with open(cmdline_path, "rb") as handle:
-                if handle.read():
-                    return
-        except OSError:
-            pass
+        if any(record.pid == pid for record in process_enforcement_module.scan_host_processes()):
+            return
         time.sleep(0.02)
+    raise AssertionError("process %d never became visible to the production scanner" % pid)
 
 
 def _spawn_marker_canary(sleep_seconds: float = 2.5) -> subprocess.Popen:
@@ -79,6 +88,85 @@ def test_signature_matching() -> None:
     assert is_simplicio_cmdline(["simplicio-mapper", "scan"])
     assert not is_simplicio_cmdline(["python3", "-c", "print(1)"])
     assert not is_simplicio_cmdline(["bash", "-c", "ls"])
+
+
+def test_detector_does_not_suppress_a_reused_pid_with_a_different_identity(monkeypatch, tmp_path) -> None:
+    registry = ProcessRegistry(tmp_path / "registry.json")
+    monkeypatch.setattr(
+        registry, "active", lambda: {4242: {"process_identity": "linux-proc:4242:starttime:1"}},
+    )
+    monkeypatch.setattr(
+        process_enforcement_module, "scan_host_processes",
+        lambda: [process_enforcement_module.ProcessRecord(
+            4242, ["python", "-m", "simplicio_loop.cli"],
+            "linux-proc:4242:starttime:2",
+        )],
+    )
+    assert [record.pid for record in detect_unsupervised(registry)] == [4242]
+
+
+def test_detector_suppresses_only_the_same_registered_identity(monkeypatch, tmp_path) -> None:
+    registry = ProcessRegistry(tmp_path / "registry.json")
+    monkeypatch.setattr(
+        registry, "active", lambda: {4242: {"process_identity": "linux-proc:4242:starttime:1"}},
+    )
+    monkeypatch.setattr(
+        process_enforcement_module, "scan_host_processes",
+        lambda: [process_enforcement_module.ProcessRecord(
+            4242, ["python", "-m", "simplicio_loop.cli"],
+            "linux-proc:4242:starttime:1",
+        )],
+    )
+    assert detect_unsupervised(registry) == []
+
+
+def test_proc_scan_uses_pid_at_callers_namespace_depth_for_child_target(tmp_path) -> None:
+    caller = tmp_path / str(os.getpid())
+    caller.mkdir()
+    (caller / "status").write_text("NSpid:\t1\t42\n", encoding="utf-8")
+    proc_entry = tmp_path / "42000"
+    proc_entry.mkdir()
+    (proc_entry / "cmdline").write_bytes(b"python\x00simplicio-mapper\x00")
+    (proc_entry / "status").write_text(
+        "Name:\tpython\nNSpid:\t1\t37\t9\n", encoding="utf-8",
+    )
+
+    assert process_enforcement_module._scan_proc(tmp_path) == [
+        process_enforcement_module.ProcessRecord(37, ["python", "simplicio-mapper"]),
+    ]
+
+
+def test_proc_scan_omits_target_without_callers_namespace_level(tmp_path) -> None:
+    caller = tmp_path / str(os.getpid())
+    caller.mkdir()
+    (caller / "status").write_text("NSpid:\t1\t42\n", encoding="utf-8")
+    proc_entry = tmp_path / "42000"
+    proc_entry.mkdir()
+    (proc_entry / "cmdline").write_bytes(b"python\x00simplicio-mapper\x00")
+    (proc_entry / "status").write_text("NSpid:\t1\n", encoding="utf-8")
+
+    assert process_enforcement_module._scan_proc(tmp_path) == []
+
+
+def test_proc_scan_omits_when_nspid_metadata_is_absent(tmp_path) -> None:
+    caller = tmp_path / str(os.getpid())
+    caller.mkdir()
+    (caller / "status").write_text("NSpid:\t1\n", encoding="utf-8")
+    proc_entry = tmp_path / "42000"
+    proc_entry.mkdir()
+    (proc_entry / "cmdline").write_bytes(b"python\x00simplicio-mapper\x00")
+    (proc_entry / "status").write_text("Name:\tpython\n", encoding="utf-8")
+
+    assert process_enforcement_module._scan_proc(tmp_path) == []
+
+
+def test_proc_scan_omits_when_callers_nspid_is_missing(tmp_path) -> None:
+    proc_entry = tmp_path / "42000"
+    proc_entry.mkdir()
+    (proc_entry / "cmdline").write_bytes(b"python\x00simplicio-mapper\x00")
+    (proc_entry / "status").write_text("NSpid:\t1\n", encoding="utf-8")
+
+    assert process_enforcement_module._scan_proc(tmp_path) == []
 
 
 def test_detector_flags_unsupervised_but_not_supervised(tmp_path) -> None:
@@ -193,6 +281,218 @@ def test_registry_prunes_dead_pids(tmp_path) -> None:
     assert proc.pid not in registry.active()
 
 
+def test_registry_register_keeps_all_concurrent_process_updates(tmp_path) -> None:
+    """A coordinated burst must not lose JSON read-modify-write updates."""
+    if os.name == "nt":
+        # The production implementation has a Windows lock path, but this
+        # high-contention test is the Linux contract requested by #623.
+        return
+    path = tmp_path / "registry.json"
+    context = multiprocessing.get_context("fork")
+    gate = context.Event()
+    workers = [
+        context.Process(
+            target=_concurrent_registry_register,
+            args=(str(path), gate, "lease-%d" % index),
+        )
+        for index in range(40)
+    ]
+    for worker in workers:
+        worker.start()
+    gate.set()
+    for worker in workers:
+        worker.join(timeout=15)
+        assert worker.exitcode == 0
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert len(raw["processes"]) == len(workers)
+    assert {record["lease_id"] for record in raw["processes"].values()} == {
+        "lease-%d" % index for index in range(len(workers))
+    }
+
+
+def test_registry_late_unregister_cannot_remove_reused_pid_registration(tmp_path, monkeypatch) -> None:
+    registry = ProcessRegistry(tmp_path / "registry.json")
+    identities = {12345: "start-a"}
+    monkeypatch.setattr(process_enforcement_module, "_process_identity", lambda pid: identities.get(pid))
+
+    old_identity = registry.register(12345, lease_id="old", spec_hash="h", argv=["old"])
+    identities[12345] = "start-b"
+    new_identity = registry.register(12345, lease_id="new", spec_hash="h", argv=["new"])
+
+    assert registry.unregister(
+        12345, lease_id="old", process_identity=old_identity,
+    ) is False
+    assert registry.unregister(12345) is False
+    raw = json.loads((tmp_path / "registry.json").read_text(encoding="utf-8"))
+    assert raw["processes"]["12345"]["lease_id"] == "new"
+    assert raw["processes"]["12345"]["process_identity"] == new_identity
+
+
+def test_registry_prunes_pid_reused_with_different_start_identity(tmp_path, monkeypatch) -> None:
+    registry = ProcessRegistry(tmp_path / "registry.json")
+    identities = {12345: "start-a"}
+    monkeypatch.setattr(process_enforcement_module, "_pid_alive", lambda pid: pid == 12345)
+    monkeypatch.setattr(process_enforcement_module, "_process_identity", lambda pid: identities.get(pid))
+    registry.register(12345, lease_id="lease-1", spec_hash="hash-1", argv=["x"])
+    identities[12345] = "start-b"  # same PID, unrelated later process
+
+    assert registry.active() == {}
+
+
+def test_registry_terminate_refuses_reused_pid(tmp_path, monkeypatch) -> None:
+    registry = ProcessRegistry(tmp_path / "registry.json")
+    identities = {23456: "start-a"}
+    monkeypatch.setattr(process_enforcement_module, "_pid_alive", lambda pid: pid == 23456)
+    monkeypatch.setattr(process_enforcement_module, "_process_identity", lambda pid: identities.get(pid))
+    registry.register(23456, lease_id="lease-1", spec_hash="hash-1", argv=["x"])
+    identities[23456] = "start-b"
+    called = []
+    monkeypatch.setattr(process_enforcement_module, "kill_process_tree", lambda pid, sig: called.append(pid))
+
+    assert registry.terminate("lease-1") == {
+        "found": False, "pid": None, "lease_id": "lease-1", "killed": False,
+    }
+    assert called == []
+
+
+def test_registry_terminate_forwards_explicit_dedicated_group_evidence(tmp_path, monkeypatch) -> None:
+    registry = ProcessRegistry(tmp_path / "registry.json")
+    monkeypatch.setattr(process_enforcement_module, "_pid_alive", lambda pid: pid == 23457)
+    monkeypatch.setattr(process_enforcement_module, "_process_identity", lambda _pid: "start-a")
+    registry.register(
+        23457, lease_id="lease-group", spec_hash="hash-1", argv=["x"],
+        dedicated_process_group=True,
+    )
+    calls = []
+
+    def kill(pid, *, sig, expected_identity, dedicated_process_group):
+        calls.append((pid, sig, expected_identity, dedicated_process_group))
+        return True
+
+    monkeypatch.setattr(process_enforcement_module, "kill_process_tree", kill)
+    result = registry.terminate("lease-group", sig=signal.SIGTERM)
+    assert result["killed"] is True
+    assert calls == [(23457, signal.SIGTERM, "start-a", True)]
+
+
+def test_unsupervised_target_never_kills_group_even_when_pid_is_group_leader(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(process_enforcement_module, "_linux_pidfd_open", lambda pid: 99)
+    monkeypatch.setattr(process_enforcement_module.os, "close", lambda fd: calls.append(("close", fd)))
+    monkeypatch.setattr(process_enforcement_module.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(process_enforcement_module.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+    monkeypatch.setattr(
+        process_enforcement_module, "_linux_pidfd_send_signal",
+        lambda pidfd, sig: calls.append(("pidfd", pidfd, sig)) or True,
+    )
+
+    assert process_enforcement_module.kill_process_tree(123, sig=signal.SIGTERM) is True
+    assert calls == [("pidfd", 99, signal.SIGTERM), ("close", 99)]
+
+
+def test_supervised_dedicated_group_evidence_allows_group_signal(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(process_enforcement_module, "_linux_pidfd_open", lambda pid: 99)
+    monkeypatch.setattr(process_enforcement_module.os, "close", lambda fd: calls.append(("close", fd)))
+    monkeypatch.setattr(process_enforcement_module.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        process_enforcement_module.os, "killpg",
+        lambda pgid, sig: calls.append(("killpg", pgid, sig)),
+    )
+    monkeypatch.setattr(
+        process_enforcement_module, "_linux_pidfd_send_signal",
+        lambda *args: calls.append(("pidfd",) + args) or True,
+    )
+    assert process_enforcement_module.kill_process_tree(
+        123, sig=signal.SIGTERM, dedicated_process_group=True,
+    ) is True
+    assert calls == [("killpg", 123, signal.SIGTERM), ("close", 99)]
+
+
+def test_kill_process_tree_revalidates_identity_after_pidfd_pinning(monkeypatch) -> None:
+    """A PID recycled between registry validation and pidfd acquisition is never signalled."""
+    calls = []
+    monkeypatch.setattr(process_enforcement_module, "_linux_pidfd_open", lambda pid: 99)
+    monkeypatch.setattr(process_enforcement_module, "_process_identity", lambda pid: "new-start")
+    monkeypatch.setattr(process_enforcement_module.os, "close", lambda fd: calls.append(("close", fd)))
+    monkeypatch.setattr(process_enforcement_module.os, "killpg", lambda *args: calls.append(args))
+    monkeypatch.setattr(
+        process_enforcement_module, "_linux_pidfd_send_signal",
+        lambda *args: calls.append(args) or True,
+    )
+
+    assert process_enforcement_module.kill_process_tree(
+        123, sig=signal.SIGTERM, expected_identity="old-start",
+    ) is False
+    assert calls == [("close", 99)]
+
+
+def test_enforce_fails_closed_when_process_cannot_be_pinned(monkeypatch) -> None:
+    monkeypatch.setattr(
+        process_enforcement_module,
+        "kill_process_tree",
+        lambda pid, sig, expected_identity: False,
+    )
+
+    actions = enforce(
+        [
+            process_enforcement_module.ProcessRecord(
+                123, ["simplicio-mapper"], "linux-proc:123:starttime:1",
+            ),
+        ],
+        enabled=True,
+    )
+
+    assert actions[0]["action"] == "signal_failed"
+
+
+def test_enforce_refuses_identityless_record_without_calling_killer(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        process_enforcement_module,
+        "kill_process_tree",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or True,
+    )
+
+    actions = enforce(
+        [process_enforcement_module.ProcessRecord(123, ["simplicio-mapper"])], enabled=True,
+    )
+
+    assert actions[0]["action"] == "signal_failed"
+    assert calls == []
+
+
+def test_proc_scan_omits_pid_reused_while_collecting_cmdline(tmp_path, monkeypatch) -> None:
+    caller = tmp_path / str(os.getpid())
+    caller.mkdir()
+    (caller / "status").write_text("NSpid:\\t1\\n", encoding="utf-8")
+    proc_entry = tmp_path / "123"
+    proc_entry.mkdir()
+    (proc_entry / "cmdline").write_bytes(b"simplicio-mapper\\x00")
+    (proc_entry / "status").write_text("NSpid:\\t123\\n", encoding="utf-8")
+    identities = iter(["linux-proc:123:starttime:old", "linux-proc:123:starttime:new"])
+    monkeypatch.setattr(
+        process_enforcement_module,
+        "_proc_entry_identity",
+        lambda entry: next(identities) if entry.name == "123" else None,
+    )
+
+    assert process_enforcement_module._scan_proc(tmp_path) == []
+
+
+def test_windows_taskkill_failure_is_not_reported_as_success(monkeypatch) -> None:
+    monkeypatch.setattr(process_enforcement_module.os, "name", "nt")
+    monkeypatch.setattr(process_enforcement_module, "_windows_open_process", lambda pid, access: 77)
+    monkeypatch.setattr(process_enforcement_module, "_windows_close_handle", lambda handle: None)
+    monkeypatch.setattr(
+        process_enforcement_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1),
+    )
+    assert process_enforcement_module.kill_process_tree(123) is False
+
+
 def test_events_log_round_trips(tmp_path) -> None:
     path = tmp_path / "events.jsonl"
     append_event("detection_scan", {"flagged_count": 0}, path=path)
@@ -262,16 +562,23 @@ def test_cli_status_top_queue_cancel_drain_reports(tmp_path) -> None:
     assert "cancel" in kinds
 
 
-def test_cli_queue_merges_real_hub_status_when_hub_socket_given(tmp_path) -> None:
-    """Real HubDaemon, real Unix socket, real subprocess CLI call - proves --hub-socket
+def test_cli_queue_merges_real_hub_status_when_hub_socket_given(
+    tmp_path, require_default_hub_transport,
+) -> None:
+    """Real HubDaemon, real default IPC, real subprocess CLI call - proves --hub-socket
     actually reaches a live Hub, not just that the flag is accepted."""
-    from simplicio_loop.hub_daemon import HubDaemon, HubSocketServer, default_endpoint
+    from simplicio_loop.hub_daemon import (
+        HubDaemon,
+        HubSocketServer,
+        default_endpoint,
+        default_transport,
+    )
 
     registry_path = tmp_path / "registry.json"
     daemon = HubDaemon(str(tmp_path / "hub.lock"))
     daemon.start()
     endpoint = default_endpoint(str(tmp_path))
-    server = HubSocketServer(daemon, endpoint, "unix")
+    server = HubSocketServer(daemon, endpoint, default_transport())
     server.start()
     try:
         daemon.service.submit(

@@ -1,5 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
+> **Canonical operational contract:** This translation is informational. For current dependency, runtime, conformance, and validation behavior, [README.md](../README.md) is authoritative: Loop installs standalone; Runtime bindings are optional; 3 runtimes are guaranteed and 12 are best-effort; and `scripts/check.py` requires an importable `pytest` with no bare-Python fallback. GitHub Actions is not required gate evidence.
+
 <p align="center">
   <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop avec agents concrets par étape et reporting connecté" width="920" />
 </p>
@@ -570,8 +572,8 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 - **Suite de tests** (`tests/`) — les `selftest`s déterministes des workers, plus un **e2e du driver de
   boucle** (`hooks/loop_stop.py`) : il prouve que la boucle **s'arrête sur la preuve**, **ignore une
   `<promise>` nue**, et **s'arrête sur le plafond** comme des sorties distinctes — et que les
-  producteurs de preuve **BLOQUENT** (jamais de faux pass) quand leur toolchain est absente. S'exécute
-  sous `pytest` *ou*, sans aucun pip, en autonomie sur python3 nu (`python3 tests/test_*.py`).
+  producteurs de preuve **BLOQUENT** (jamais de faux pass) quand leur toolchain est absente. Le gate
+  exige un `pytest` importable ; il n'existe aucun fallback Python nu.
 - **Claims audit** (`scripts/claims_audit.py`, fail-closed) — chaque `scripts/*.py` référencé par la doc
   existe · le compte de points d'extension concorde dans tous les fichiers · chaque commande de worker
   citée s'exécute réellement · les skills livrées dans `simplicio_loop/_bundle/` sont **identiques au
@@ -581,7 +583,7 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
   ```
 
-`pip install "simplicio-loop[dev]"` ajoute pytest pour une sortie plus agréable ; ce n'est jamais requis.
+`pip install "simplicio-loop[dev]"` installe la dépendance obligatoire `pytest` pour `scripts/check.py`.
 
 ---
 

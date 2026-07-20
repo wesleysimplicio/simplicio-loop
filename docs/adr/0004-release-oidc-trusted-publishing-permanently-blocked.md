@@ -6,7 +6,7 @@
   (`scripts/version_sync.py`, Fase 1), PR #349 (`scripts/release_verify.py` /
   `scripts/sbom_generate.py` / `scripts/install_smoke.py`, Fase 4/7 local subset), PR #365
   (`scripts/release_rehearsal.py` / `scripts/provenance_generate.py`, Fase 4/6 local subset),
-  issue #311 (removal of `.github/workflows/` after a GitHub Actions billing lockout),
+  issue #311 (removal of the specific `distributed-183-proof.yml` workflow),
   `docs/adr/0003-attestation-and-sbom-policy.md` (accepts the local-provenance substitute as the
   frozen SBOM/attestation policy for the *release-verification gate*), `docs/RELEASE.md`,
   `docs/SUPPLY_CHAIN.md`.
@@ -31,10 +31,10 @@ Every one of these is, by construction, a property of a **CI workflow run**:
   would not be honored by PyPI/npm's real OIDC verifiers, and even if it somehow were, it would
   be exactly the kind of fabricated supply-chain proof this issue exists to eliminate.
 - Per-job permission separation, environment protection, and pinned third-party actions are
-  properties of a `.github/workflows/*.yml` **file that executes on a runner**. There is
-  currently no such file and no runner: `.github/workflows/` was removed repo-wide in PR #311
-  after a GitHub Actions billing lockout, and no replacement CI substrate (self-hosted runner,
-  `simplicio-runtime` CI equivalent, or otherwise) has been stood up in this repository since.
+  properties of a `.github/workflows/*.yml` **file that executes on a runner**. Two workflows
+  exist (`simplicio-status-sync.yml` and `windows-progress-smoke.yml`), but neither provides
+  `id-token: write`, Trusted Publishing, or a release gate, and neither was used as evidence for
+  this work. No CI substrate with those required capabilities is configured.
 
 Three prior rounds of work on this issue (PRs #328, #349, #365) each independently re-examined
 this constraint before writing any code and reached the same conclusion — recorded in the
@@ -57,9 +57,8 @@ round should re-attempt without first confirming the precondition below has chan
    (`docs/adr/0003-attestation-and-sbom-policy.md`).
 2. The **precondition for revisiting this decision** is explicit and mechanically checkable: a
    CI identity provider capable of minting an OIDC token with `id-token: write` semantics exists
-   again in this repository — either GitHub Actions billing is restored and
-   `.github/workflows/` is reinstated, or `simplicio-runtime`'s replacement CI substrate (per
-   this repo's `CLAUDE.md`) lands with OIDC-equivalent capability. Until then, no amount of
+   again in this repository — either a workflow with those release/OIDC controls is introduced,
+   or an equivalent CI substrate lands with OIDC-equivalent capability. Until then, no amount of
    local tooling closes Fase 5; re-attempting it without that precondition is out of scope by
    construction and reviewers should reject any PR claiming otherwise.
 3. **The accepted interim approach for everything Fase 5 blocks that has a real local

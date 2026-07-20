@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
-
 import pytest
 
 from simplicio_loop import delivery
@@ -62,7 +60,9 @@ def test_cli_invalid_delivery_exits_nonzero_without_traceback():
     )
     assert proc.returncode != 0
     assert "Traceback" not in proc.stderr
-    assert "unsupported delivery target" in proc.stderr
+    assert "invalid choice: 'local'" in proc.stderr
+    for value in delivery.DELIVERY_ORDER[1:]:
+        assert value in proc.stderr
 
 
 def test_cli_valid_delivery_does_not_early_exit_on_normalization():

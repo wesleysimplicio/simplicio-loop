@@ -65,7 +65,10 @@ def _install_stub_gh(bin_dir):
             f.write(_GH_STUB_SH % sys.executable)
         st = os.stat(wrapper)
         os.chmod(wrapper, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return wrapper
+    # PATH entries are directories, never executable paths. Returning the
+    # wrapper here made callers construct ``.../stubbin/gh:$PATH`` and caused
+    # the real CLI to report that gh was unavailable.
+    return bin_dir
 
 
 def _env_with_stub_gh(bin_dir):

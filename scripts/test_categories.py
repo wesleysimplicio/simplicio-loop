@@ -59,37 +59,78 @@ def _list_test_files(tests_dir: str) -> list:
     return sorted(n for n in names if n.startswith("test_") and n.endswith(".py"))
 
 
-def discover(category: str, tests_dir: "str | None" = None) -> list:
+def _discovery_root(tests_dir: str, repo: "str | None") -> str:
+    """Choose the repository to which discovered paths are relative.
+
+    A caller which supplies a fixture repository must never receive paths
+    relative to this script's checkout.  When only ``tests_dir`` is supplied,
+    its parent is the least surprising repository root.
+    """
+    if repo is not None:
+        return os.path.abspath(repo)
+    return os.path.dirname(os.path.abspath(tests_dir))
+
+
+def discover(category: str, tests_dir: "str | None" = None,
+             repo: "str | None" = None) -> list:
     """Return the `tests/*_<category>.py` files for one of the four known categories."""
     if category not in CATEGORIES:
         raise ValueError(f"unknown category {category!r}; expected one of {CATEGORIES}")
-    tests_dir = tests_dir or TESTS_DIR
+    tests_dir = os.path.abspath(tests_dir or TESTS_DIR)
     suffix = _SUFFIXES[category]
-    rel_root = os.path.relpath(tests_dir, REPO).replace("\\", "/")
+    rel_root = os.path.relpath(tests_dir, _discovery_root(tests_dir, repo)).replace("\\", "/")
     return [
         f"{rel_root}/{name}" for name in _list_test_files(tests_dir)
         if name.endswith(suffix)
     ]
 
 
-def discover_uncategorized(tests_dir: "str | None" = None) -> list:
+def discover_uncategorized(tests_dir: "str | None" = None,
+                           repo: "str | None" = None) -> list:
     """Every `tests/test_*.py` file that does NOT match any of the four category suffixes.
 
     Reported explicitly rather than silently absorbed into a bucket -- this is the honest
     accounting of the repo's real migration state (Fase B/C of the issue's coverage-migration
     plan applies here too: most of the suite predates the category convention).
     """
-    tests_dir = tests_dir or TESTS_DIR
+    tests_dir = os.path.abspath(tests_dir or TESTS_DIR)
     all_suffixes = tuple(_SUFFIXES.values())
-    rel_root = os.path.relpath(tests_dir, REPO).replace("\\", "/")
+    rel_root = os.path.relpath(tests_dir, _discovery_root(tests_dir, repo)).replace("\\", "/")
     return [
         f"{rel_root}/{name}" for name in _list_test_files(tests_dir)
         if not name.endswith(all_suffixes)
     ]
 
 
+def _pytest_summary(stdout: str) -> dict:
+    """Extract pytest's terminal counts without treating skipped as execution."""
+    import re
+
+    counts = dict((name, 0) for name in
+                  ("passed", "failed", "errors", "skipped", "deselected", "xfailed", "xpassed"))
+    # Only the final non-empty line is pytest's authoritative summary.  Searching
+    # the entire captured stream would let a test print ``1 passed`` and turn an
+    # otherwise all-skipped lane into a false green.
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    terminal = lines[-1] if lines else ""
+    for number, name in re.findall(
+            r"(?:^|[,\s])(\d+)\s+(passed|failed|errors?|skipped|deselected|xfailed|xpassed)\b",
+            terminal):
+        key = "errors" if name == "error" else name
+        counts[key] += int(number)
+    counts["executed"] = sum(counts[name] for name in ("passed", "failed", "errors", "xfailed", "xpassed"))
+    return counts
+
+
+def _has_external_selection(args: list) -> bool:
+    selectors = ("-k", "-m", "--keyword", "--markers", "--deselect")
+    return any(arg in selectors or any(arg.startswith(flag + "=") for flag in selectors)
+               for arg in args)
+
+
 def run_category(category: str, extra_pytest_args: "list | None" = None,
-                  repo: "str | None" = None, timeout: int = 300) -> dict:
+                  repo: "str | None" = None, timeout: int = 300,
+                  allow_deselection: bool = False) -> dict:
     """Run exactly the `tests/*_<category>.py` files under pytest and return a plain verdict dict.
 
     Reusable core: both `main()` (CLI) and `scripts/quality_matrix.py populate`/the independent
@@ -97,8 +138,9 @@ def run_category(category: str, extra_pytest_args: "list | None" = None,
     re-deriving pass/fail from prose stdout, mirroring `regression_test_gate.py`'s
     `evaluate_regression_gate` pattern.
     """
-    repo = repo or REPO
-    files = discover(category, tests_dir=os.path.join(repo, "tests"))
+    repo = os.path.abspath(repo or REPO)
+    extra_pytest_args = list(extra_pytest_args or [])
+    files = discover(category, tests_dir=os.path.join(repo, "tests"), repo=repo)
     if not files:
         return {
             "schema": "simplicio.test-category-gate/v1",
@@ -112,7 +154,7 @@ def run_category(category: str, extra_pytest_args: "list | None" = None,
             "generated_at": _now(),
         }
     started = time.time()
-    cmd = [sys.executable, "-m", "pytest", "-q"] + files + list(extra_pytest_args or [])
+    cmd = [sys.executable, "-m", "pytest", "-q"] + files + extra_pytest_args
     try:
         proc = subprocess.run(
             cmd, cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=timeout,
@@ -123,23 +165,38 @@ def run_category(category: str, extra_pytest_args: "list | None" = None,
         returncode = None
         tail = f"timed out after {timeout}s"
     duration = time.time() - started
-    ok = returncode == 0
+    summary = _pytest_summary(proc.stdout if returncode is not None else "")
+    external_selection = _has_external_selection(extra_pytest_args)
+    no_tests_executed = returncode == 0 and summary["executed"] == 0
+    unapproved_deselection = (external_selection or summary["deselected"] > 0) and not allow_deselection
+    if no_tests_executed:
+        status, ok = "blocked", False
+        tail = "pytest returned 0 but executed zero tests (all skipped or deselected)"
+    elif unapproved_deselection:
+        status, ok = "blocked", False
+        tail = "external pytest deselection requires --allow-deselection"
+    else:
+        ok = returncode == 0
+        status = "pass" if ok else "fail"
     return {
         "schema": "simplicio.test-category-gate/v1",
         "category": category,
-        "status": "pass" if ok else "fail",
+        "status": status,
         "ok": ok,
         "files": files,
         "returncode": returncode,
         "duration_s": round(duration, 3),
         "detail": tail.splitlines()[-1] if tail else "",
         "stdout_tail": tail,
+        "pytest_summary": summary,
+        "external_selection": external_selection,
         "generated_at": _now(),
     }
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    verdict = run_category(args.category, extra_pytest_args=args.pytest_args or None)
+    verdict = run_category(args.category, extra_pytest_args=args.pytest_args or None,
+                           allow_deselection=args.allow_deselection)
     if args.emit_json:
         out = Path(args.emit_json)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -214,6 +271,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="run one category's tests/*_<category>.py files")
     p_run.add_argument("--category", choices=CATEGORIES, required=True)
     p_run.add_argument("--emit-json", default=None, help="write the raw verdict dict to this path")
+    p_run.add_argument("--allow-deselection", action="store_true",
+                       help="acknowledge pytest -k/-m/--deselect filters (zero executed still blocks)")
     p_run.add_argument("pytest_args", nargs=argparse.REMAINDER,
                         help="extra args forwarded to pytest verbatim (after --)")
     p_run.set_defaults(func=cmd_run)

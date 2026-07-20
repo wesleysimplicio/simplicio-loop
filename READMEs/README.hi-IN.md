@@ -1,5 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
+> **Canonical operational contract:** This translation is informational. For current dependency, runtime, conformance, and validation behavior, [README.md](../README.md) is authoritative: Loop installs standalone; Runtime bindings are optional; 3 runtimes are guaranteed and 12 are best-effort; and `scripts/check.py` requires an importable `pytest` with no bare-Python fallback. GitHub Actions is not required gate evidence.
+
 <p align="center">
   <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="हर चरण के ठोस agents और connected reporting वाला simplicio-loop" width="920" />
 </p>
@@ -533,8 +535,8 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 - **टेस्ट सूट** (`tests/`) — वर्कर्स के नियतात्मक `selftest`s, साथ ही लूप ड्राइवर का एक **e2e**
   (`hooks/loop_stop.py`): यह सिद्ध करता है कि लूप **साक्ष्य पर रुकता है**, एक बेयर
   `<promise>` को **अनदेखा करता है**, और **सीमा पर रुकता है** — अलग-अलग निकासों के रूप में — और कि साक्ष्य उत्पादक
-  अपने toolchain के अनुपस्थित होने पर **BLOCK** करते हैं (कभी fake-pass नहीं)। `pytest` के अंतर्गत *या*, बिना किसी pip
-  के, बेयर python3 पर स्व-चलता है (`python3 tests/test_*.py`)।
+  अपने toolchain के अनुपस्थित होने पर **BLOCK** करते हैं (कभी fake-pass नहीं)। Gate को import होने योग्य
+  `pytest` चाहिए; bare-Python fallback नहीं है।
 - **Claims audit** (`scripts/claims_audit.py`, fail-closed) — दस्तावेज़ संदर्भित हर `scripts/*.py`
   मौजूद है · एक्सटेंशन-पॉइंट गणना सभी फ़ाइलों में सहमत है · प्रत्येक उद्धृत वर्कर कमांड
   वास्तव में चलता है · भेजी गई `simplicio_loop/_bundle/` स्किल्स स्रोत के साथ **बाइट-समान** हैं।
@@ -543,7 +545,7 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
   ```
 
-`pip install "simplicio-loop[dev]"` बेहतर आउटपुट के लिए pytest जोड़ता है; यह कभी आवश्यक नहीं है।
+`pip install "simplicio-loop[dev]"` `scripts/check.py` के लिए अनिवार्य `pytest` निर्भरता स्थापित करता है।
 
 ---
 
