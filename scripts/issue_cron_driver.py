@@ -300,9 +300,14 @@ def _extract_acceptance_criteria(body: str) -> Optional[str]:
 
 
 def _is_infra_dependent(issue: Dict[str, Any]) -> bool:
-    """True when the issue requires infra (Hub/Supervisor/Async/core) absent on this host."""
+    """True when the issue requires infra (Hub/Supervisor/Async/core) absent on this host.
+
+    Matches the infra signal anywhere in the (case-insensitive) title, not just as a
+    strict prefix, so ``[P0][Hub Agent ...]`` is correctly detected (the ``[P0]`` tag
+    precedes the ``[Hub]`` segment and a bare ``startswith("[HUB]")`` would miss it).
+    """
     title = (issue.get("title") or "").upper()
-    if any(title.startswith(p) for p in INFRA_DEPENDENT_DOMAINS):
+    if any(seg in title for seg in INFRA_DEPENDENT_DOMAINS):
         return True
     labels = [str(lbl).lower() for lbl in (issue.get("labels") or [])]
     if any(lbl in INFRA_DEPENDENT_LABELS for lbl in labels):

@@ -151,6 +151,7 @@ SELFTEST_SCRIPTS = [
     "scripts/stage_coordinator.py",
     "scripts/finding_collector.py",
     "scripts/coordinator.py",
+    "scripts/component_release.py",
     "scripts/evolution.py",
     "scripts/agent_replication.py",
     "scripts/workflow_topology.py",

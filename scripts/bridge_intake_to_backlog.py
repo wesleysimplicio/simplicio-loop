@@ -32,6 +32,34 @@ sys.path.insert(0, HERE)
 
 import task_backlog as tb  # reuse _load / _save for schema compatibility
 
+# Reuse the SAME infra-dependence heuristic the cron driver uses, so the bridge
+# does not mark every issue Blocked. Import defensively (driver may be absent).
+try:
+    from issue_cron_driver import _is_infra_dependent as _driver_infra_dependent
+except Exception:  # pragma: no cover - defensive
+    _driver_infra_dependent = None
+
+# Minimal local fallback: mirrors issue_cron_driver._is_infra_dependent's title
+# prefixes so the bridge stays correct even if the driver module is unavailable.
+_INFRA_DEPENDENT_DOMAINS = (
+    "[P0][EPIC]", "[EPIC][P0]", "[HUB]", "[SUPERVISOR]", "[ASYNC]",
+    "[ARCHITECTURE]", "[EPIC]", "[PERFORMANCE]", "[RELEASE TRAIN]", "[P0][RELEASE TRAIN]",
+)
+
+
+def _is_infra_dependent_issue(title, labels=(), body=""):
+    if _driver_infra_dependent is not None:
+        try:
+            return bool(_driver_infra_dependent(
+                {"title": title, "labels": list(labels), "body": body}))
+        except Exception:
+            pass
+    t = (title or "").upper()
+    return any(p.upper() in t for p in _INFRA_DEPENDENT_DOMAINS) or \
+        any(lbl.lower() in ("hub", "supervisor", "async", "architecture", "epic",
+                    "performance", "release-train", "infra", "blocked-infra")
+            for lbl in (labels or ()))
+
 LEDGER = os.path.join(REPO, ".orchestrator", "intake", "ledger.jsonl")
 BACKLOG = tb.BACKLOG
 GH_REPO = "wesleysimplicio/simplicio-loop"
@@ -74,6 +102,8 @@ def load_ledger_rows():
 def build_item(row):
     issue = row["issue"]
     title = row.get("title", "").strip()
+    labels = row.get("labels", []) or []
+    body = row.get("body", "") or ""
     wi_id = "wi%d" % issue
     goal = "[issue #%d] %s" % (issue, title)
     acs = [
@@ -84,16 +114,31 @@ def build_item(row):
         "planning-receipt COMPLETE com mutation_authority valido registrado",
         "Transicao canonica valida para estado Planning documentada no ledger de intake",
     ]
+    # Classify honestly: only mark Blocked when the issue truly requires infra
+    # (Hub/Supervisor/Async/Rust) absent on this single host. Otherwise it is a
+    # planning-ready item the drain loop MAY execute locally (Python-only work).
+    infra_dep = _is_infra_dependent_issue(title, labels, body)
+    if infra_dep:
+        _status = "blocked"
+        _blocked_reason = ("execution deferred fail-closed: requires Orca worktree "
+                           "mutation (backend incapable in cron)")
+        _reason_code = "infra-dependent"
+        _ready = row.get("ready_for_mutation", False)
+    else:
+        _status = "planning"
+        _blocked_reason = ""
+        _reason_code = ""
+        _ready = True
     return {
         "kind": "item",
         "id": wi_id,
         "goal": goal,
         "goal_fp": (row.get("intake_hash") or ("issue%d" % issue))[:12],
         "acs": acs,
-        "status": "blocked",
+        "status": _status,
         "skip_reason": "",
-        "blocked_reason": "execution deferred fail-closed: requires Orca worktree mutation (backend incapable in cron)",
-        "reason_code": "infra-dependent",
+        "blocked_reason": _blocked_reason,
+        "reason_code": _reason_code,
         "evidence": [
             "intake/issue-%d/intake-contract.json: source.item_id=%d" % (issue, issue),
             "intake/issue-%d/planning-receipt.json: verdict=%s"
@@ -121,10 +166,10 @@ def build_item(row):
         "estimate": None,
         "scheduling_hints": {},
         "run_dir": os.path.join(REPO, ".orchestrator", "backlog", "items", wi_id, "run"),
-        "blocked_at": row.get("ts", ""),
+        "blocked_at": row.get("ts", "") if infra_dep else "",
         "intake_hash": row.get("intake_hash", ""),
         "planning_receipt_verdict": row.get("planning_receipt_verdict", "UNKNOWN"),
-        "ready_for_mutation": row.get("ready_for_mutation", False),
+        "ready_for_mutation": _ready,
     }
 
 
