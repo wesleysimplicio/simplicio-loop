@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -676,12 +677,39 @@ def main() -> int:
         new_rows.append(row)
         print(f"MEASURED| issue {n}: status={status} projected={proj} "
               f"receipt={receipt.get('verdict')} ready={receipt.get('ready_for_mutation')}", flush=True)
-
     summary: Dict[str, int] = {}
     for row in new_rows:
         summary[row["status"]] = summary.get(row["status"], 0) + 1
-    print(f"MEASURED| ledger updated: {len(new_rows)} new row(s) this tick; statuses={summary}", flush=True)
+    print(f"MEASURED| ledger updated: {len(new_rows)} new row(s) this tick; statuses={summary}",
+          flush=True)
     print(f"MEASURED| ledger path={LEDGER_PATH}", flush=True)
+
+    # --- Bridge to canonical backlog (intake/drain state split) ---
+    # The intake ledger (.orchestrator/intake/ledger.jsonl) and the execution
+    # backlog (.orchestrator/backlog/backlog.jsonl) are separate state stores.
+    # Without a bridge the drain loop's ``task_backlog.py next/status`` never sees
+    # the freshly-intaken issues and terminates prematurely ("source empty").
+    # Bridge is opt-in (default OFF) so it never surprises a caller that only
+    # wants the intake ledger; the cron wrapper enables it via env var.
+    if os.environ.get("SIMPLICIO_BRIDGE_BACKLOG", "").lower() in ("1", "true", "yes", "on"):
+        try:
+            import importlib.util
+            bridge_path = HERE / "scripts" / "bridge_intake_to_backlog.py"
+            if not bridge_path.exists():
+                print("MEASURED| bridge script ausente — pulando ponte backlog", flush=True)
+            else:
+                spec = importlib.util.spec_from_file_location(
+                    "bridge_intake_to_backlog", str(bridge_path))
+                if spec is None or spec.loader is None:
+                    print("MEASURED| bridge spec/loader None — pulando ponte", flush=True)
+                else:
+                    bridge = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(bridge)
+                    rc = bridge.main()
+                    print(f"MEASURED| bridge exited rc={rc}", flush=True)
+        except Exception as exc:  # never break the intake tick
+            print(f"MEASURED| bridge falhou (non-fatal): {exc!r}", flush=True)
+
     return 0
 
 
