@@ -39,11 +39,11 @@ try:
 except Exception:  # pragma: no cover - defensive
     _driver_infra_dependent = None
 
-# Minimal local fallback: mirrors issue_cron_driver._is_infra_dependent's title
-# prefixes so the bridge stays correct even if the driver module is unavailable.
+# Minimal local fallback: mirrors issue_cron_driver._is_infra_dependent's domain
+# keywords + [..]-segment matching so the bridge stays correct even if the driver
+# module is unavailable.
 _INFRA_DEPENDENT_DOMAINS = (
-    "[P0][EPIC]", "[EPIC][P0]", "[HUB]", "[SUPERVISOR]", "[ASYNC]",
-    "[ARCHITECTURE]", "[EPIC]", "[PERFORMANCE]", "[RELEASE TRAIN]", "[P0][RELEASE TRAIN]",
+    "EPIC", "HUB", "SUPERVISOR", "ASYNC", "ARCHITECTURE", "PERFORMANCE", "RELEASE TRAIN",
 )
 
 
@@ -54,8 +54,11 @@ def _is_infra_dependent_issue(title, labels=(), body=""):
                 {"title": title, "labels": list(labels), "body": body}))
         except Exception:
             pass
+    import re
     t = (title or "").upper()
-    return any(p.upper() in t for p in _INFRA_DEPENDENT_DOMAINS) or \
+    segments = re.findall(r"\[([^\]]*)\]", t)
+    seg_text = " ".join(segments).upper()
+    return any(kw.upper() in seg_text for kw in _INFRA_DEPENDENT_DOMAINS) or \
         any(lbl.lower() in ("hub", "supervisor", "async", "architecture", "epic",
                     "performance", "release-train", "infra", "blocked-infra")
             for lbl in (labels or ()))

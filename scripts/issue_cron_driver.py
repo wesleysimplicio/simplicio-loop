@@ -55,12 +55,18 @@ LEDGER_PATH = LEDGER_DIR / "ledger.jsonl"
 # Issues that CANNOT be executed on this single host (no remote workers / no API key /
 # no multi-LLM router / no Hub daemon / no Rust-Tokio backend / no process supervisor).
 # They require infra that is not present here — classified Blocked.
-# Title prefixes that signal an infra-dependent epic/domain (cannot run on this host).
+# Domain keywords that signal an infra-dependent epic/domain (cannot run on this
+# host). Matched case-insensitively INSIDE any [..] tag segment of the title, so
+# both "[P0][Hub]" and "[P0][Hub Agent 1/4]" are detected (the bare prefix
+# "[HUB]" would miss the latter because "]" is not immediately after "HUB").
 INFRA_DEPENDENT_DOMAINS: Tuple[str, ...] = (
-    "[P0][EPIC]", "[EPIC][P0]",          # explicit prior pattern
-    "[HUB]", "[SUPERVISOR]", "[ASYNC]",  # hub daemon / process supervisor / async core
-    "[ARCHITECTURE]", "[EPIC]",          # cross-cutting architecture / epic
-    "[PERFORMANCE]", "[RELEASE TRAIN]", "[P0][RELEASE TRAIN]",  # perf/core + release train
+    "EPIC",          # explicit epic marker
+    "HUB",           # hub daemon / HubQueueAgentClient
+    "SUPERVISOR",    # process supervisor
+    "ASYNC",         # async core
+    "ARCHITECTURE",  # cross-cutting architecture
+    "PERFORMANCE",   # perf/core work
+    "RELEASE TRAIN", # release train
 )
 # Labels that mark an infra-dependent work item.
 INFRA_DEPENDENT_LABELS: Tuple[str, ...] = (
@@ -302,12 +308,17 @@ def _extract_acceptance_criteria(body: str) -> Optional[str]:
 def _is_infra_dependent(issue: Dict[str, Any]) -> bool:
     """True when the issue requires infra (Hub/Supervisor/Async/core) absent on this host.
 
-    Matches the infra signal anywhere in the (case-insensitive) title, not just as a
-    strict prefix, so ``[P0][Hub Agent ...]`` is correctly detected (the ``[P0]`` tag
-    precedes the ``[Hub]`` segment and a bare ``startswith("[HUB]")`` would miss it).
+    Matches each domain keyword case-insensitively INSIDE any ``[..]`` tag segment
+    of the (case-insensitive) title, so ``[P0][Hub Agent ...]`` is detected (the
+    ``[P0]`` tag precedes the ``[Hub]`` segment and a bare substring ``"[HUB]"``
+    would miss it because ``]`` is not immediately after ``HUB``).
     """
+    import re
     title = (issue.get("title") or "").upper()
-    if any(seg in title for seg in INFRA_DEPENDENT_DOMAINS):
+    # Extract every [..] segment and search keywords within them.
+    segments = re.findall(r"\[([^\]]*)\]", title)
+    seg_text = " ".join(segments).upper()
+    if any(kw.upper() in seg_text for kw in INFRA_DEPENDENT_DOMAINS):
         return True
     labels = [str(lbl).lower() for lbl in (issue.get("labels") or [])]
     if any(lbl in INFRA_DEPENDENT_LABELS for lbl in labels):
