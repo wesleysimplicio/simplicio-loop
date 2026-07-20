@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
-from .hub_queue_retry import HubRetryQueue
+from .hub_queue_retry import HubRetryQueue, QueueRetryError
 from .hub_scheduler import (
     FairScheduler, QuotaExceededError, ScheduledJob, SchedulerError,
 )
@@ -35,6 +35,7 @@ METHODS = frozenset(
         # fair scheduler + resource governor) over the same envelope/dispatch contract as
         # the pre-existing in-memory job verbs above, rather than a second protocol.
         "hub_submit", "hub_claim", "hub_complete", "hub_fail", "hub_status",
+        "hub_admit", "hub_admission",
         # #512/#513 IPC wiring: expose the map service (registry + single-flight store +
         # watcher manager) the same way. Deliberately in-memory only, no persistence
         # layer (unlike hub_submit's durable queue) - a daemon restart starts clean; see
@@ -304,6 +305,34 @@ class HubDaemon:
             return {"ok": True, "task_id": task_id, "outcome": outcome}
         if envelope.method == "hub_status":
             return {"ok": True, "status": self.service.status()}
+        if envelope.method == "hub_admit":
+            job = envelope.payload.get("job")
+            if not isinstance(job, dict):
+                raise HubProtocolError("job projection must be an object")
+            try:
+                with self._queue_lock:
+                    receipt = self.service.admit_held(
+                        job,
+                        idempotency_key=envelope.payload.get("idempotency_key"),
+                        input_digest=envelope.payload.get("input_digest"),
+                        client_id=envelope.payload.get("client_id"),
+                        workspace_id=envelope.payload.get("workspace_id", "default"),
+                        weight=envelope.payload.get("weight", 1),
+                        cost=envelope.payload.get("cost", 1),
+                    )
+            except (QueueRetryError, TypeError, ValueError) as exc:
+                raise HubProtocolError("hub_admit blocked: %s" % exc) from exc
+            return {"ok": True, "admission": receipt}
+        if envelope.method == "hub_admission":
+            task_id = str(envelope.payload.get("task_id") or "")
+            idempotency_key = str(envelope.payload.get("idempotency_key") or "")
+            try:
+                receipt = self.service.admission(
+                    task_id=task_id, idempotency_key=idempotency_key,
+                )
+            except QueueRetryError as exc:
+                raise HubProtocolError("hub_admission blocked: %s" % exc) from exc
+            return {"ok": True, "admission": receipt}
         if envelope.method == "map_register":
             fields = {
                 name: envelope.payload.get(name)
@@ -458,13 +487,17 @@ class HubDaemon:
                     raise HubBackpressureError(exc) from exc
                 except SchedulerError as exc:
                     raise HubProtocolError(str(exc)) from exc
-                self.queue.submit(
-                    job, idempotency_key=job_id,
-                    client_id=client_id,
-                    workspace_id=str(envelope.payload.get("workspace_id") or "default"),
-                    weight=int(envelope.payload.get("weight", 1)),
-                    cost=int(envelope.payload.get("cost", 1)),
-                )
+                try:
+                    self.queue.submit(
+                        job, idempotency_key=job_id,
+                        client_id=client_id,
+                        workspace_id=str(envelope.payload.get("workspace_id") or "default"),
+                        weight=int(envelope.payload.get("weight", 1)),
+                        cost=int(envelope.payload.get("cost", 1)),
+                    )
+                except Exception:
+                    self.scheduler.cancel(job_id)
+                    raise
                 return {"ok": True, "job": dict(job)}
             task_id = self.queue.find_task_id(job_id)
             if task_id is None:

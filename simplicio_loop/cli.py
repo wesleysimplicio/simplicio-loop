@@ -473,6 +473,13 @@ def findings_command(args) -> int:
 
 def main(argv=None) -> int:
     argv_list = list(argv) if argv is not None else list(sys.argv[1:])
+    if argv_list[:1] == ["hub-drain-admit"]:
+        from .hub_drain_admission_cli import main as drain_admission_main
+        return drain_admission_main(argv_list[1:])
+    if argv_list[:1] == ["hub-drain-plan"]:
+        from .github_drain_intake_cli import main as drain_intake_main
+        forwarded = argv_list[1:]
+        return drain_intake_main(forwarded[1:] if forwarded[:1] == ["--"] else forwarded)
     parser = argparse.ArgumentParser(
         prog="simplicio-loop",
         description=(
@@ -655,13 +662,13 @@ def main(argv=None) -> int:
                          help="receipt JSON path (persist and load)")
     p_drain.add_argument("--polls-required", type=int, default=2,
                          help="identical empty polls required (default: %(default)s)")
-    p_drain_plan = sub.add_parser(
+    sub.add_parser(
         "hub-drain-plan",
         help="read-only PT-BR/EN GitHub drain intake; never executes the plan",
     )
-    p_drain_plan.add_argument(
-        "drain_args", nargs=argparse.REMAINDER,
-        help="natural request plus workspace/checkpoint options",
+    sub.add_parser(
+        "hub-drain-admit",
+        help="admit a final #627 checkpoint as held; never dispatches or executes it",
     )
     p_ledger = sub.add_parser("ledger", help="validate/replay the operational event ledger")
     p_findings = sub.add_parser("findings", help="WI-466: inspect and reconcile continuous findings")
@@ -781,12 +788,6 @@ def main(argv=None) -> int:
         return sync_source(args.repo, args.run_id, args.source, args.external_repo, args.pr, args.tag)
     if command == "drain":
         return drain(args.action, args.snapshot_path, args.receipt_path, args.polls_required)
-    if command == "hub-drain-plan":
-        from .github_drain_intake_cli import main as drain_intake_main
-        forwarded = list(args.drain_args or [])
-        if forwarded and forwarded[0] == "--":
-            forwarded = forwarded[1:]
-        return drain_intake_main(forwarded)
     if command == "ledger":
         return ledger_replay(
             args.path,
