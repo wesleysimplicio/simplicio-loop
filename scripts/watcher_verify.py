@@ -306,21 +306,30 @@ def _wi_files_from_receipt(independent):
     evidence_ids / verification_method so the commit-diff check can be scoped to the
     WI's own files. A receipt generated in an isolated worktree at an older commit must
     still validate when the main repo HEAD has advanced *only in unrelated files*.
-    Returns a list of repo-relative paths (may be empty when nothing extractable)."""
+    Returns a list of repo-relative paths that actually exist in the repo (a bare
+    basename like ``runner.py`` without a path separator is ignored unless it resolves
+    to a real file, so hand-written prose refs don't pollute the diff scope)."""
     import re
     files = set()
     if not isinstance(independent, dict):
         return []
+    candidates = []
     for item in independent.get("criteria_results") or []:
         for ref in (item.get("evidence_ids") or []):
             ref = str(ref)
-            # match "path:line" or "path" or "text path more-text"
             for m in re.findall(r"([A-Za-z0-9_./-]+\.py)(?::\d+)?", ref):
-                files.add(m)
+                candidates.append(m)
     method = str(independent.get("method") or "")
     for m in re.findall(r"([A-Za-z0-9_./-]+\.py)", method):
-        files.add(m)
-    return sorted(f for f in files if f)
+        candidates.append(m)
+    for f in candidates:
+        # Only keep paths that exist in the repo, or contain a separator (real
+        # repo-relative path). A bare basename is rejected unless it resolves.
+        if "/" in f or "\\" in f:
+            files.add(f)
+        elif os.path.exists(os.path.join(REPO, f)):
+            files.add(f)
+    return sorted(files)
 
 
 def _wi_diff_empty_between(expected_commit, head_commit, wi_files):
