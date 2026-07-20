@@ -430,6 +430,14 @@ def reconcile_cursor(gh_repo: str = "wesleysimplicio/simplicio-loop") -> Dict[st
     except Exception:
         open_set = set()
 
+    # Ingest freshly-intaken backlog items (wi613..wi630) missing from the
+    # cursor projection so the Orca view never shows stale/missing state.
+    # Done BEFORE Rule 1/2 so the ingested WIs flow through valid->collapsed
+    # with their ingested_from_backlog flag preserved.
+    ingest = ingest_backlog_into_cursor(cur["work_items_state"], gh_repo)
+    if ingest["ingested"]:
+        print(f"MEASURED| reconcile_cursor: ingested +{ingest['ingested']} WIs from backlog", flush=True)
+
     # --- Rule 1: drop repo:None / wrong-scope / invalid issue ---------------
     dropped = []
     valid = {}
@@ -507,7 +515,14 @@ def reconcile_cursor(gh_repo: str = "wesleysimplicio/simplicio-loop") -> Dict[st
         # evidence of completion when the ISSUE is also CLOSED. Otherwise a
         # still-open issue wrongly projects as Done (false-positive completion).
         # Order: issue-closed is the ground truth; PR state is secondary.
-        if ist == "CLOSED":
+        # Preserve the canonical-state for items ingested from the backlog:
+        # their state was already derived from the backlog's ground truth
+        # (blocked = infra-dependent / execution deferred). Re-classifying
+        # from GitHub title (which is absent for ingested WIs) would flip-flop
+        # them to `todo` every other tick. Keep the ingested projection stable.
+        if v.get("ingested_from_backlog"):
+            new_state, new_proj = v["canonical_state"], v["orca_projection"]
+        elif ist == "CLOSED":
             new_state, new_proj = "done", "Done"
         elif open_pr and ist == "OPEN":
             new_state, new_proj = "delivering", "In review"
@@ -538,6 +553,105 @@ def reconcile_cursor(gh_repo: str = "wesleysimplicio/simplicio-loop") -> Dict[st
         "remaining": len(collapsed),
         "open_in_scope": cur["open_issues_in_scope_repo"],
     }
+
+
+def ingest_backlog_into_cursor(target_dict: Dict[str, Any], gh_repo: str) -> Dict[str, Any]:
+    """Ingest canonical-backlog work items absent from the cursor into its projection.
+
+    The cron drain projects every open GitHub issue into a single canonical work
+    item (``Todo`` for intake/mapping done, ``Blocked`` for infra-dependent).
+    ``reconcile_cursor`` only *syncs* items already present in the cursor, so
+    freshly-intaken issues (wi613..wi630) never appear in the Orca projection
+    and look stale/missing. This function closes that gap: any backlog item
+    whose issue is OPEN on GitHub and not yet in ``work_items_state`` is added
+    with the canonical-state / orca-projection derived from the backlog status.
+
+    Idempotent and read-only w.r.t. source: it never mutates the backlog, only
+    extends the cursor projection from the backlog's ground truth.
+    """
+    import re as _re
+    backlog_path = (
+        os.environ.get("SIMPLICIO_BACKLOG_FILE")
+        or os.path.join(HERE, ".orchestrator", "backlog", "backlog.jsonl")
+    )
+    if not os.path.exists(backlog_path):
+        return {"ingested": 0, "skipped": 0}
+    wis = target_dict
+    try:
+        open_set_raw = subprocess.run(
+            ["gh", "issue", "list", "--repo", gh_repo, "--state", "open",
+             "--limit", "200", "--json", "number", "--jq", ".[].number"],
+            capture_output=True, text=True, timeout=30, check=False,
+        ).stdout.strip()
+        open_set = set(int(x) for x in open_set_raw.split() if x.strip().isdigit())
+    except Exception:
+        open_set = set()
+    ingested = 0
+    skipped = 0
+    with open(backlog_path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if rec.get("kind") != "item":
+                continue
+            wi_id = rec.get("id")
+            if not wi_id:
+                skipped += 1
+                continue
+            # If the WI already exists in the cursor but was NOT ingested from
+            # the backlog (i.e. it came from a prior reconcile that mis-projected
+            # it, e.g. wi630 flipped to `done` via a false-positive PR match),
+            # override its state with the backlog's ground truth and mark it
+            # ingested so the later rules preserve it (no flip-flop).
+            if wi_id in wis and wis[wi_id].get("ingested_from_backlog"):
+                continue
+            m = _re.search(r"\d+", wi_id)
+            if not m:
+                skipped += 1
+                continue
+            iss = int(m.group(0))
+            if iss not in open_set:
+                skipped += 1
+                continue
+            bstatus = (rec.get("status") or "blocked").lower()
+            if bstatus == "done":
+                cstate, proj = "done", "Done"
+            elif bstatus == "blocked":
+                cstate, proj = "blocked", "Blocked"
+            elif bstatus == "planning":
+                cstate, proj = "planning", "Planning"
+            elif bstatus in ("executing", "in_progress"):
+                cstate, proj = "executing", "In progress"
+            elif bstatus == "validating":
+                cstate, proj = "validating", "Validating"
+            elif bstatus in ("delivering", "in_review"):
+                cstate, proj = "delivering", "In review"
+            elif bstatus == "quarantined":
+                cstate, proj = "quarantined", "Quarantined"
+            else:
+                cstate, proj = "todo", "Todo"
+            if wi_id in wis:
+                # Pre-existing cursor WI without the flag: update in place.
+                wis[wi_id]["canonical_state"] = cstate
+                wis[wi_id]["orca_projection"] = proj
+                wis[wi_id]["ingested_from_backlog"] = True
+                ingested += 1
+            else:
+                wis[wi_id] = {
+                    "issue": iss,
+                    "repo": gh_repo,
+                    "canonical_state": cstate,
+                    "orca_projection": proj,
+                    "ingested_from_backlog": True,
+                }
+                ingested += 1
+    return {"ingested": ingested, "skipped": skipped}
+
 
 
 def _derive_gh_repo(repo: str = ".") -> Optional[str]:

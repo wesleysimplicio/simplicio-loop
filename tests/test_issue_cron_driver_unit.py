@@ -185,6 +185,100 @@ def test_reconcile_syncs_open_pr_to_delivering():
         assert final["orca_projection"] == "In review"
 
 
+def test_ingest_backlog_into_cursor_adds_missing_wi():
+    # New backlog item (wi613, blocked) not yet in the cursor projection must
+    # be ingested as blocked / Blocked with the ingested_from_backlog flag.
+    with tempfile.TemporaryDirectory() as tmp:
+        od = os.path.join(tmp, ".orchestrator")
+        bl = os.path.join(od, "backlog")
+        os.makedirs(bl, exist_ok=True)
+        backlog = os.path.join(bl, "backlog.jsonl")
+        with open(backlog, "w") as fh:
+            fh.write(json.dumps({
+                "kind": "item", "id": "wi613", "status": "blocked",
+                "reason_code": "infra-dependent",
+            }) + "\n")
+        cur = {"work_items_state": {}}
+        with mock.patch.object(mod, "HERE", Path(tmp)), \
+             mock.patch("subprocess.run") as run:
+            run.side_effect = [_gh_json("613")]  # open_set enumerate: 613 OPEN
+            res = mod.ingest_backlog_into_cursor(cur["work_items_state"], "o/r")
+        assert res["ingested"] == 1
+        wi = cur["work_items_state"]["wi613"]
+        assert wi["canonical_state"] == "blocked"
+        assert wi["orca_projection"] == "Blocked"
+        assert wi["ingested_from_backlog"] is True
+
+
+def test_ingest_backlog_into_cursor_updates_stale_wi():
+    # A pre-existing cursor WI without the flag must be updated in place from
+    # the backlog ground truth (no flip-flop on the next reconcile).
+    with tempfile.TemporaryDirectory() as tmp:
+        od = os.path.join(tmp, ".orchestrator")
+        bl = os.path.join(od, "backlog")
+        os.makedirs(bl, exist_ok=True)
+        backlog = os.path.join(bl, "backlog.jsonl")
+        with open(backlog, "w") as fh:
+            fh.write(json.dumps({
+                "kind": "item", "id": "wi630", "status": "blocked",
+                "reason_code": "infra-dependent",
+            }) + "\n")
+        cur = {"work_items_state": {
+            "wi630": {"issue": 630, "repo": "o/r", "canonical_state": "done",
+                      "orca_projection": "Done"}}}
+        with mock.patch.object(mod, "HERE", Path(tmp)), \
+             mock.patch("subprocess.run") as run:
+            run.side_effect = [_gh_json("630")]  # open_set: 630 OPEN (not closed)
+            res = mod.ingest_backlog_into_cursor(cur["work_items_state"], "o/r")
+        assert res["ingested"] == 1
+        wi = cur["work_items_state"]["wi630"]
+        assert wi["canonical_state"] == "blocked"
+        assert wi["orca_projection"] == "Blocked"
+        assert wi["ingested_from_backlog"] is True
+
+
+def test_ingest_backlog_into_cursor_skips_closed_issue():
+    # A backlog item whose issue is CLOSED on GitHub must NOT be ingested.
+    with tempfile.TemporaryDirectory() as tmp:
+        od = os.path.join(tmp, ".orchestrator")
+        bl = os.path.join(od, "backlog")
+        os.makedirs(bl, exist_ok=True)
+        backlog = os.path.join(bl, "backlog.jsonl")
+        with open(backlog, "w") as fh:
+            fh.write(json.dumps({
+                "kind": "item", "id": "wi999", "status": "blocked",
+                "reason_code": "infra-dependent",
+            }) + "\n")
+        cur = {"work_items_state": {}}
+        with mock.patch.object(mod, "HERE", Path(tmp)), \
+             mock.patch("subprocess.run") as run:
+            run.side_effect = [_gh_json("")]  # open_set empty: 999 not open
+            res = mod.ingest_backlog_into_cursor(cur["work_items_state"], "o/r")
+        assert res["ingested"] == 0
+        assert "wi999" not in cur["work_items_state"]
+
+
+if __name__ == "__main__":
+    import pytest
+    sys.exit(pytest.main([__file__, "-v"]))
+    # order is: (1) open_set enumerate, (2) pr list. Issue-view is no longer
+    # called for `ist` (title is already in the cursor, so no fallback either).
+    with tempfile.TemporaryDirectory() as tmp:
+        state = {"wi-8": {"issue": 558, "repo": "o/r", "canonical_state": "todo",
+                           "orca_projection": "Todo", "title": "[Release Train] x"}}
+        cur = _write_cursor(tmp, state)
+        with _patch_here(tmp), \
+             mock.patch("subprocess.run") as run:
+            run.side_effect = [
+                _gh_json('558'),  # open_set enumerate: 558 is OPEN -> ist=OPEN
+                _gh_json('[{"number":567,"state":"OPEN","mergedAt":null}]'),  # pr list
+            ]
+            res = reconcile_cursor("o/r")
+        final = json.load(open(cur))["work_items_state"]["wi-8"]
+        assert final["canonical_state"] == "delivering"
+        assert final["orca_projection"] == "In review"
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
