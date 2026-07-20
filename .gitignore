@@ -40,3 +40,4 @@ htmlcov/
 
 # Transient git worktrees created by Workflow/Agent isolation:'worktree' runs.
 .claude/worktrees/
+d/
