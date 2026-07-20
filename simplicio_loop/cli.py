@@ -196,6 +196,14 @@ def plan(task_path: str, out_path: str) -> int:
 
 def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int,
         quality_provider: Optional[str] = None, quality_policy: str = "strict-default") -> int:
+    # Issue #613: a quality provider is mandatory between execution and
+    # verify/oracle. Fail-closed at the CLI boundary when none is supplied so the
+    # run is never silently executed without the quality gate.
+    if not quality_provider:
+        print("error: --quality-provider is required (#613): conduct_run needs a "
+              "non-None quality_provider between execution and verify/oracle",
+              file=sys.stderr)
+        return 2
     try:
         delivery_target = delivery.normalize_delivery_target(delivery_arg)
     except delivery.DeliveryTargetError as exc:

@@ -260,10 +260,15 @@ def test_no_provider_conduct_quality_skips():
     assert res["status"] == "SKIPPED"
 
 
-def test_plain_conduct_run_without_provider(monkeypatch):
+def test_conduct_run_without_provider_is_blocked(monkeypatch):
+    """Issue #613: quality_provider is MANDATORY.
+
+    A conduct_run invoked without a quality_provider must fail-closed
+    (BLOCKED) and must NEVER reach verify_run. This is the core #613 gate.
+    """
     import simplicio_loop.runner as runner_mod
 
-    called = {"verify": False}
+    called = {"verify": False, "transition": None}
 
     def fake_batch(repo, run_id, **kw):
         return {"failed_task_indices": []}
@@ -272,15 +277,27 @@ def test_plain_conduct_run_without_provider(monkeypatch):
         called["verify"] = True
         return {"state": {"phase": "done"}}
 
+    transitions = []
+
+    def fake_transition(run_dir, state, to_phase, reason, **kw):
+        transitions.append((to_phase, reason))
+        called["transition"] = to_phase
+
     monkeypatch.setattr(runner_mod, "execute_operator_batch", fake_batch)
     monkeypatch.setattr(runner_mod, "verify_run", fake_verify)
     monkeypatch.setattr(runner_mod, "read_status",
-                        lambda r, rid: {"run_dir": "d", "state": {"phase": "executing", "attempt": 1},
+                        lambda r, rid: {"run_dir": "d",
+                                        "state": {"phase": "executing", "attempt": 1},
                                         "manifest": {}})
     monkeypatch.setattr(runner_mod, "arm_run", lambda *a, **k: {"manifest": {"run_id": "r"},
                                                                "state": {"phase": "executing"}})
-    runner_mod.conduct_run(".", "task.md", "verified", 1)
-    assert called["verify"] is True
+    monkeypatch.setattr(runner_mod, "_transition", fake_transition)
+
+    runner_mod.conduct_run(".", "task.md", "verified", 1)  # no quality_provider
+    # Fail-closed: verify_run must never run, and the run must be BLOCKED.
+    assert called["verify"] is False
+    assert called["transition"] == "blocked"
+    assert any("quality provider mandatory" in (r or "") for _, r in transitions)
 
 
 # --------------------------------------------------------------------------

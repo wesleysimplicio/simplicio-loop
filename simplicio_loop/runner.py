@@ -2892,6 +2892,30 @@ def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_itera
     status = read_status(repo, run_id)
     if batch.get("failed_task_indices") or status["state"].get("phase") == "blocked":
         return status
+    # Issue #613: a quality provider is MANDATORY between execution and the
+    # watcher/delivery/Completion Oracle. Fail-closed: BLOCKED when no provider
+    # is supplied (never a silent skip). This makes the quality gate non-optional.
+    if not quality_provider:
+        run_dir = Path(status["run_dir"])
+        state = status["state"]
+        state["blockers"] = [
+            "quality provider mandatory per #613: conduct_run requires a non-None "
+            "quality_provider between execution and verify/oracle"
+        ]
+        state["current_action"] = "quality_provider_missing"
+        state["next_action"] = "inspect_and_recover"
+        state["evidence"] = {
+            "ready": False,
+            "receipt": str(run_dir / "quality-matrix.json"),
+            "status": "UNVERIFIED",
+        }
+        _write_json(run_dir / "state.json", state)
+        _transition(
+            run_dir, state, "blocked",
+            "quality provider mandatory per #613: none supplied",
+            receipt=str(run_dir / "quality-matrix.json"),
+        )
+        return read_status(repo, run_id)
     # Issue #613: mandatory quality provider runs AFTER execution and BEFORE
     # the watcher/delivery/Completion Oracle. Fail-closed: BLOCKED on any
     # absent/incompatible/crashing/timed-out provider -- never a silent fallback.
