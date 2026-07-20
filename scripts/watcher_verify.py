@@ -83,11 +83,10 @@ _run_dir = os.environ.get("SIMPLICIO_RUN_DIR", "").strip()
 _repo_override = os.environ.get("SIMPLICIO_LOOP_REPO", "").strip()
 if _repo_override:
     _set_repo(_repo_override)
-elif _run_dir:
-    try:
-        _set_repo(str(Path(_run_dir).resolve().parents[2]))
-    except Exception:
-        pass
+# NOTE: SIMPLICIO_RUN_DIR selects the run-local artifact directory and must NOT
+# redefine REPO/LOOP_DIR — the run dir is resolved by _find_run_dir(wi=...) below.
+# The legacy parents[2] heuristic broke backlog/items/<wi>/run layouts (double
+# .orchestrator path). REPO stays the script-resolved default unless SIMPLICIO_LOOP_REPO is set.
 _loop_override = os.environ.get("SIMPLICIO_LOOP_DIR", "").strip()
 if _loop_override:
     _set_loop_dir(_loop_override)
