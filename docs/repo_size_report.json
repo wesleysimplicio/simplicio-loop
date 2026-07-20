@@ -36,8 +36,8 @@
       "ext": ".wav"
     },
     {
-      "bytes": 30154921,
-      "count": 1633,
+      "bytes": 30612596,
+      "count": 1643,
       "ext": ".py"
     },
     {
@@ -46,8 +46,8 @@
       "ext": ".mp4"
     },
     {
-      "bytes": 26689762,
-      "count": 1137,
+      "bytes": 26692315,
+      "count": 1138,
       "ext": ".md"
     },
     {
@@ -71,8 +71,8 @@
       "ext": ".aiff"
     },
     {
-      "bytes": 4259258,
-      "count": 2013,
+      "bytes": 4263162,
+      "count": 2014,
       "ext": ".json"
     },
     {
@@ -181,20 +181,20 @@
       "ext": ".timestamp"
     }
   ],
-  "distinct_blobs_ever_committed": 12156,
-  "generated_at": "2026-07-18T16:48:52Z",
+  "distinct_blobs_ever_committed": 12168,
+  "generated_at": "2026-07-20T04:42:58Z",
   "git_count_objects": {
-    "count": "3102",
+    "count": "3151",
     "garbage": "0",
     "in-pack": "16765",
     "packs": "26",
     "prune-packable": "225",
-    "size": "23.98 MiB",
+    "size": "24.32 MiB",
     "size-garbage": "0 bytes",
     "size-pack": "1.41 GiB"
   },
   "git_count_objects_parsed_bytes": {
-    "size_loose_bytes": 25144852,
+    "size_loose_bytes": 25501368,
     "size_pack_bytes": 1513975971
   },
   "schema": "simplicio.repo-history-scan/v1",
@@ -221,6 +221,6 @@
       "size_bytes": 74765824
     }
   ],
-  "total_historical_blob_bytes": 4424090102,
+  "total_historical_blob_bytes": 4424554234,
   "total_historical_blob_human": "4.1GB"
 }
