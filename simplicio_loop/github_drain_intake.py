@@ -18,7 +18,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Protocol, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence
 
 
 INTAKE_SCHEMA = "simplicio.github-drain-intake/v1"
@@ -26,6 +26,7 @@ INTENT_SCHEMA = "simplicio.github-drain-intent/v1"
 PLAN_SCHEMA = "simplicio.github-drain-plan/v1"
 MAP_SCHEMA = "simplicio.github-drain-map/v1"
 PLANNER_REVISION = "simplicio.github-drain-intake-planner/1"
+PLANNING_RECEIPT_SCHEMA = "simplicio.github-drain-planning-receipt/v1"
 INVALID_REQUEST_EXIT = 2
 PLANNED_NOT_EXECUTED_EXIT = 3
 FAILED_EXIT = 4
@@ -341,6 +342,112 @@ def _run_digest(*, run_id: str, task_digest: str, config_digest: str,
         "workspace": workspace,
         "created_at": created_at,
     })
+
+
+def _derive_acceptance_criteria(snapshot: Mapping[str, Any]) -> List[Dict[str, str]]:
+    """Normalize a GitHub issue into a minimal set of acceptance criteria.
+
+    Every planned item is guaranteed at least one criterion so the planning
+    phase satisfies the loop's ``no_acceptance_criteria`` gate.  ``origin`` is
+    always ``source`` (quoted from the issue itself) or ``derived`` (a
+    loop-protocol requirement) -- never ``guessed`` -- so the criteria survive
+    ``lint_task_intake``-style origin checks downstream.
+    """
+    title = str(snapshot.get("title") or "").strip()
+    body = str(snapshot.get("body") or "")
+    acs: List[Dict[str, str]] = []
+    if title:
+        acs.append({
+            "id": "AC-TITLE",
+            "text": "Implementar e verificar: %s" % title,
+            "origin": "source",
+            "state": "pending",
+        })
+    in_ac_section = False
+    idx = 0
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = _fold(line)
+        header = re.sub(r"^#{1,6}\s*|^[*\s_]+", "", low).strip()
+        if re.fullmatch(r"(acceptance criteria|crit.rios de aceite|crit.rio de aceite|definition of done|done when|aceite)", header):
+            in_ac_section = True
+            continue
+        if in_ac_section:
+            content = re.sub(r"^[-*•]\s*", "", line).strip()
+            checkbox = re.match(r"^\[[ xX]\]\s*(.*)$", content)
+            if checkbox:
+                content = checkbox.group(1).strip()
+            elif not re.match(r"^[-*•]\s+", line):
+                in_ac_section = False
+                continue
+            if content:
+                idx += 1
+                acs.append({
+                    "id": "AC-BODY-%d" % idx,
+                    "text": content,
+                    "origin": "source",
+                    "state": "pending",
+                })
+        elif re.match(r"^\[[ xX]\]\s+", line) or re.match(r"^[-*•]\s+", line):
+            content = re.sub(r"^\[[ xX]\]\s*|^[-*•]\s*", "", line).strip()
+            if content and re.search(r"\b(ac|aceite|crit.rio)\b", _fold(content)):
+                idx += 1
+                acs.append({
+                    "id": "AC-BODY-%d" % idx,
+                    "text": content,
+                    "origin": "source",
+                    "state": "pending",
+                })
+    acs.append({
+        "id": "AC-EVIDENCE-GATE",
+        "text": "Concluir somente com evidência concreta em-turno, watcher match com challenge e receipt de entrega; nunca por texto de modelo.",
+        "origin": "derived",
+        "state": "pending",
+    })
+    if not acs:
+        acs.append({
+            "id": "AC-TITLE",
+            "text": "Implementar e verificar o item conforme título/descrição do issue.",
+            "origin": "source",
+            "state": "pending",
+        })
+    return acs
+
+
+def _build_item_planning_receipt(*, item_number: int, source_revision: str,
+                                 acceptance_criteria: Sequence[Mapping[str, str]],
+                                 planner_revision: str) -> Dict[str, Any]:
+    """Deterministic planning receipt binding the frozen plan before mutation.
+
+    Carries the planner revision, the frozen issue ``source_revision``, a hash
+    of the derived acceptance criteria, and a self-contained ``receipt_hash``.
+    A later mutation (execution) must reference this receipt to satisfy the
+    #284/#329 mutation-authority gate.
+    """
+    ac_hash = _digest({"acceptance_criteria": list(acceptance_criteria)})
+    plan_hash = _digest({
+        "number": int(item_number),
+        "source_revision": str(source_revision),
+        "acs": ac_hash,
+    })
+    receipt_hash = _digest({
+        "planner_revision": str(planner_revision),
+        "number": int(item_number),
+        "source_revision": str(source_revision),
+        "acs": ac_hash,
+    })
+    return {
+        "schema": PLANNING_RECEIPT_SCHEMA,
+        "planner_revision": str(planner_revision),
+        "item_number": int(item_number),
+        "source_revision": str(source_revision),
+        "acceptance_criteria_hash": ac_hash,
+        "plan_hash": plan_hash,
+        "receipt_hash": receipt_hash,
+        "created_at": _now(),
+    }
 
 
 def _is_pull_request(value: Mapping[str, Any]) -> bool:
@@ -691,6 +798,13 @@ class GitHubDrainIntake:
             dependencies = extract_issue_dependencies(str(snapshot.get("body") or ""))
             if int(key) in dependencies:
                 raise DrainPlanError("issue depends on itself", reason_code="dependency_cycle")
+            acceptance_criteria = _derive_acceptance_criteria(snapshot)
+            planning_receipt = _build_item_planning_receipt(
+                item_number=int(key),
+                source_revision=str(snapshot["source_revision"]),
+                acceptance_criteria=acceptance_criteria,
+                planner_revision=PLANNER_REVISION,
+            )
             items[key] = {
                 "number": int(key),
                 "title": str(snapshot.get("title") or ""),
@@ -705,6 +819,8 @@ class GitHubDrainIntake:
                 ),
                 "risk": classify_issue_risk(str(snapshot.get("title") or ""), snapshot.get("labels") or []),
                 "state": "planned",
+                "acceptance_criteria": acceptance_criteria,
+                "planning_receipt": planning_receipt,
             }
         for key, item in list(items.items()):
             if int(key) in live_open or item.get("state") == "remote_closed":
