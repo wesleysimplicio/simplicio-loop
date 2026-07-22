@@ -49,19 +49,15 @@ class ExtensionRegistry:
     """
 
     def __init__(self) -> None:
-        # extension_id -> validated manifest dict
+        # Keep the validated declaration and its loaded runtime object together.
         self._by_id: dict[str, dict[str, Any]] = {}
+        self._runtime_by_id: dict[str, Any] = {}
 
     # -- explicit registration -------------------------------------------- #
 
-    def register(self, manifest: Mapping[str, Any], *, strict: bool = True) -> dict[str, Any]:
-        """Register an already-loaded manifest.
-
-        Returns the validated manifest on success. Raises
-        ``ExtensionRegistryError`` (or ``ExtensionManifestError``) when the
-        manifest is invalid and ``strict`` is True; when ``strict`` is False
-        the rejection reason is returned as a dict instead of raising.
-        """
+    def register(self, manifest: Mapping[str, Any], *, runtime: Any = None,
+                 strict: bool = True) -> dict[str, Any]:
+        """Register a declaration and, when available, its operational runtime."""
         errors = validate_manifest(manifest)
         if errors:
             if not strict:
@@ -71,7 +67,12 @@ class ExtensionRegistry:
                 + "; ".join(errors)
             )
         manifest = dict(manifest)
-        self._by_id[str(manifest["extension_id"])] = manifest
+        extension_id = str(manifest["extension_id"])
+        self._by_id[extension_id] = manifest
+        if runtime is not None:
+            self._runtime_by_id[extension_id] = runtime
+        else:
+            self._runtime_by_id.pop(extension_id, None)
         return manifest
 
     # -- entry-point discovery -------------------------------------------- #
@@ -94,13 +95,15 @@ class ExtensionRegistry:
             eps = importlib.metadata.entry_points().get(group, [])  # type: ignore[attr-defined]
         for ep in eps:
             try:
-                obj = ep.load()
-                manifest = obj() if callable(obj) else obj
+                loaded = ep.load()
+                obj = loaded() if callable(loaded) else loaded
+                manifest = obj if isinstance(obj, Mapping) else getattr(obj, "manifest", None)
                 if not isinstance(manifest, Mapping):
                     raise ExtensionManifestError(
-                        f"entry point {ep.name} did not resolve to a manifest mapping"
+                        f"entry point {ep.name} did not resolve to a manifest or provider runtime"
                     )
-                result = self.register(manifest, strict=strict)
+                runtime = None if isinstance(obj, Mapping) else obj
+                result = self.register(manifest, runtime=runtime, strict=strict)
                 if isinstance(result, dict) and result.get("ok") is False:
                     discovery_errors.append({"entry_point": ep.name, "errors": result["errors"]})
                     continue
@@ -121,6 +124,10 @@ class ExtensionRegistry:
         """Return the validated manifest for ``extension_id`` or ``None``."""
         return self._by_id.get(extension_id)
 
+    def runtime(self, extension_id: str) -> Any:
+        """Return the exact loaded provider object, never a second import."""
+        return self._runtime_by_id.get(extension_id)
+
     def all(self) -> list[dict[str, Any]]:
         """Return every registered (validated) manifest."""
         return list(self._by_id.values())
@@ -129,8 +136,9 @@ class ExtensionRegistry:
         return len(self._by_id)
 
     def clear(self) -> None:
-        """Drop all registered manifests (used by tests / re-discovery)."""
+        """Drop all declarations and runtime bindings."""
         self._by_id.clear()
+        self._runtime_by_id.clear()
 
 
 def load_graph_compatible(
