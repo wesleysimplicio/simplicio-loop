@@ -36,17 +36,16 @@ queue integration remain separate supervisor work.
 
 ### Stage-agent provider
 
-`HubQueueAgentClient` is the public bridge from `QueueAgentAdapter` to the Hub. It renders the
-configured agent command to an argv-only `ProcessSpec`, fixes `cwd` to an absolute allow-listed
-root, filters the environment, and propagates run/stage/agent/process identity, deadline,
-idempotency key, priority (`test` for validation/review stages, otherwise `build`), and resource
-weight/cost. The provider never starts a subprocess; Unix socket `execute` dispatch is moved off
-the Hub server event loop so heartbeat and cancellation remain responsive while the supervisor
-owns the process.
+`HubQueueAgentClient` is the public bridge from `QueueAgentAdapter` to the Hub. It accepts an argv-only, absolute-cwd `ProcessSpec` from the stage context and propagates
+run/stage/agent/process identity, deadline, idempotency key, priority (`test` for validation/review
+stages, otherwise `build`), and the Hub governor resource request. The provider never starts a subprocess, thread, or supervisor. It uses the dedicated
+`hub_agent_claim/send/status/collect/cancel` lifecycle; the Hub-owned durable executor is the only
+process authority. Claims include an argv-only `ProcessSpec` plus the resource request, while every
+later mutation carries the complete fenced Hub handle.
 
-Every IPC effect has a durable JSONL `before`/`after` journal record. A new client instance
-replays a completed `execute` by deterministic idempotency key instead of executing it again, and
-each request uses a fresh `HubSocketClient` so a restarted Hub can be reached. Use
+Every mutating IPC effect has a fsynced hash-chain intent/effect journal record. Recovery observes
+the existing durable handle and never redispatches it; a process from a previous Hub epoch is
+reported as `recovery_unknown` rather than guessed successful or automatically repeated. Use
 `StageAgentCoordinator(..., strict_hub=True)` with
 `QueueAgentAdapter(queue_client=HubQueueAgentClient(...))` to fail closed when the Hub is absent;
 strict mode never falls back to `CommandAgentAdapter`.
@@ -54,10 +53,11 @@ strict mode never falls back to `CommandAgentAdapter`.
 The executable conformance/system lane is `tests/test_hub_queue_agent_client.py`. It covers fake
 and real Hub transport, heartbeat/result/cancel, timeout/OOM/truncation classifications, stale
 fences, restart replay, and an AST architecture gate forbidding subprocess calls in the provider.
-Regenerate the durable-claim hot-path baseline with
-`python3 scripts/benchmark_hub_queue_agent_client.py --iterations 200 --output
-bench/hub-queue-agent-client-baseline.json`; the JSON retains every raw latency sample rather than
-only aggregates.
+Run the real transport/process benchmark with
+`python3 scripts/benchmark_hub_queue_agent_client.py --iterations 20 --output
+bench/hub-queue-agent-client-baseline.json`. It starts the real Unix Hub socket, executes real Python
+processes, and retains raw prepare/claim, send-to-terminal, collect, and total latency samples. Peak
+RSS is `null` with an explicit reason on platforms where it cannot be measured; it is never invented.
 
 ## Fair scheduler (DRR/quotas, #505)
 
