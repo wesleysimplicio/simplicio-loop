@@ -7,6 +7,7 @@ import os
 import socket
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
@@ -36,6 +37,9 @@ METHODS = frozenset(
         # the pre-existing in-memory job verbs above, rather than a second protocol.
         "hub_submit", "hub_claim", "hub_complete", "hub_fail", "hub_status",
         "hub_admit", "hub_admission",
+        "hub_agent_capabilities", "hub_agent_claim", "hub_agent_status",
+        "hub_agent_heartbeat", "hub_agent_progress", "hub_agent_send",
+        "hub_agent_collect", "hub_agent_cancel",
         # #512/#513 IPC wiring: expose the map service (registry + single-flight store +
         # watcher manager) the same way. Deliberately in-memory only, no persistence
         # layer (unlike hub_submit's durable queue) - a daemon restart starts clean; see
@@ -169,6 +173,7 @@ class HubDaemon:
         *,
         resource_limits: Optional[ResourceLimits] = None,
         process_registry: Optional[ProcessRegistry] = None,
+        agent_executor: Optional[Any] = None,
     ) -> None:
         self.lock = HubLock(lock_path)
         self.started = False
@@ -186,6 +191,10 @@ class HubDaemon:
         self._queue_lock = threading.RLock()
         self.service: Optional[HubService] = None
         self._claims: Dict[str, ClaimedJob] = {}
+        # The #638 executor is injected at this boundary.  The daemon owns the
+        # lifecycle; the coordinator-side client only speaks these IPC verbs.
+        self.agent_executor = agent_executor
+        self._agent_jobs: Dict[str, Dict[str, Any]] = {}
         # #512/#513: registry/store/watchers are pure in-memory (unlike the durable
         # queue above) - rebuilt fresh every start(), never persisted across stop().
         self.map_registry: Optional[MapServiceRegistry] = None
@@ -212,6 +221,11 @@ class HubDaemon:
         self.started = True
 
     def stop(self) -> None:
+        # An active agent is not redispatched after a Hub epoch ends.  Preserve
+        # its handle and make the uncertainty explicit for reconnect/collect.
+        for job in self._agent_jobs.values():
+            if job.get("state") == "running":
+                job["state"] = "recovery_unknown"
         self.jobs.clear()
         self.clients.clear()
         self._claims.clear()
@@ -227,6 +241,125 @@ class HubDaemon:
         self._map_watch_tokens.clear()
         self.started = False
         self.lock.release()
+
+    @staticmethod
+    def _agent_handle_id(handle: Any) -> str:
+        if not isinstance(handle, dict):
+            raise HubProtocolError("agent handle must be an object")
+        value = handle.get("handle_id") or handle.get("lease_id") or handle.get("job_id")
+        if not value:
+            raise HubProtocolError("agent handle id is required")
+        return str(value)
+
+    def _agent_job(self, envelope: HubEnvelope) -> Dict[str, Any]:
+        handle = envelope.payload.get("handle")
+        job_id = self._agent_handle_id(handle)
+        job = self._agent_jobs.get(job_id)
+        if job is None:
+            raise HubProtocolError("unknown hub agent handle")
+        supplied_fence = str((handle or {}).get("fence") or "")
+        if supplied_fence and supplied_fence != str(job["handle"].get("fence")):
+            error = HubProtocolError("stale fence for hub agent handle")
+            error.reason_code = "stale_fence"
+            raise error
+        supplied_generation = (handle or {}).get("generation")
+        try:
+            generation_mismatch = supplied_generation is not None and int(supplied_generation) != int(job["handle"].get("generation", 0))
+        except (TypeError, ValueError):
+            generation_mismatch = True
+        if generation_mismatch:
+            error = HubProtocolError("stale generation for hub agent handle")
+            error.reason_code = "stale_fence"
+            raise error
+        return job
+
+    def _handle_agent_ipc(self, envelope: HubEnvelope) -> Dict[str, Any]:
+        """Serve the versioned agent lifecycle without exposing legacy execute."""
+        payload = envelope.payload
+        if envelope.method == "hub_agent_capabilities":
+            return {"ok": True, "schema": "simplicio.hub-agent-capabilities/v1", "capabilities": ["hub-agent-process/v1"]}
+        if envelope.method == "hub_agent_claim":
+            client_id = str(payload.get("client_id") or "")
+            worker_id = str(payload.get("worker_id") or "")
+            idempotency_key = str(payload.get("idempotency_key") or "")
+            if not client_id or not worker_id or not idempotency_key:
+                raise HubProtocolError("client_id, worker_id and idempotency_key are required")
+            for existing in self._agent_jobs.values():
+                if existing.get("idempotency_key") == idempotency_key and existing.get("client_id") == client_id:
+                    return {"ok": True, "handle": dict(existing["handle"]), "replayed": True}
+            digest = hashlib.sha256(f"{client_id}:{idempotency_key}".encode("utf-8")).hexdigest()
+            job_id = "hub-agent-" + digest[:24]
+            handle = {
+                "schema": "simplicio.hub-agent-handle/v1",
+                "job_id": job_id,
+                "lease_id": job_id,
+                "handle_id": job_id,
+                "generation": 1,
+                "fence": "fence-" + digest[24:40],
+                "idempotency_key": idempotency_key,
+                "client_id": client_id,
+                "worker_id": worker_id,
+            }
+            self._agent_jobs[job_id] = {
+                "client_id": client_id, "worker_id": worker_id, "idempotency_key": idempotency_key,
+                "handle": handle, "state": "ready", "progress": 0.0,
+                "heartbeat_at": time.time(), "stage_input": None, "result": None,
+                "request": dict(payload),
+            }
+            return {"ok": True, "handle": dict(handle), "replayed": False}
+        if envelope.method == "hub_agent_status":
+            job = self._agent_job(envelope)
+            return {"ok": True, "status": {"state": job["state"], "status": job["state"],
+                                              "progress": job["progress"], "heartbeat_at": job["heartbeat_at"],
+                                              "handle": dict(job["handle"])}}
+        if envelope.method == "hub_agent_heartbeat":
+            job = self._agent_job(envelope)
+            job["heartbeat_at"] = time.time()
+            return {"ok": True, "heartbeat_at": job["heartbeat_at"]}
+        if envelope.method == "hub_agent_progress":
+            job = self._agent_job(envelope)
+            progress = float(payload.get("progress", -1))
+            if not 0 <= progress <= 100:
+                raise HubProtocolError("progress must be between 0 and 100")
+            job["progress"] = progress
+            job["heartbeat_at"] = time.time()
+            return {"ok": True, "progress": progress}
+        if envelope.method == "hub_agent_send":
+            job = self._agent_job(envelope)
+            if job["state"] not in ("ready", "running"):
+                raise HubProtocolError("hub agent is not sendable")
+            stage_input = payload.get("stage_input")
+            if not isinstance(stage_input, dict):
+                raise HubProtocolError("stage_input must be an object")
+            job["stage_input"] = dict(stage_input)
+            job["state"] = "running"
+            job["heartbeat_at"] = time.time()
+            if self.agent_executor is not None:
+                try:
+                    outcome = self.agent_executor({"job": dict(job), "stage_input": dict(stage_input)})
+                    if outcome is not None:
+                        job["result"] = dict(outcome) if isinstance(outcome, dict) else {"output": outcome}
+                        verdict = str((job["result"].get("receipt") or {}).get("verdict") or "")
+                        job["state"] = str(job["result"].get("status") or ("passed" if verdict == "pass" else "failed"))
+                except Exception as exc:
+                    job["state"] = "failed"
+                    job["result"] = {"output": None, "receipt": None,
+                                      "process_result": {"error_code": "agent_executor_error", "error": str(exc)}}
+            return {"ok": True, "state": job["state"], "handle": dict(job["handle"])}
+        if envelope.method == "hub_agent_collect":
+            job = self._agent_job(envelope)
+            if job["state"] not in ("passed", "failed", "blocked", "cancelled", "timed_out", "recovery_unknown"):
+                return {"ok": True, "state": job["state"], "result": None}
+            return {"ok": True, "state": job["state"], "result": dict(job.get("result") or {}),
+                    "handle": dict(job["handle"])}
+        if envelope.method == "hub_agent_cancel":
+            job = self._agent_job(envelope)
+            if job["state"] not in ("passed", "failed", "blocked", "cancelled", "timed_out", "recovery_unknown"):
+                job["state"] = "cancelled"
+                job["result"] = {"output": None, "receipt": None,
+                                  "process_result": {"cancelled": True, "error_code": str(payload.get("reason") or "cancelled")}}
+            return {"ok": True, "state": job["state"], "handle": dict(job["handle"])}
+        raise HubProtocolError("unknown hub agent method")
 
     def handle(self, envelope: HubEnvelope) -> Dict[str, Any]:
         if not self.started:
@@ -333,6 +466,8 @@ class HubDaemon:
             except QueueRetryError as exc:
                 raise HubProtocolError("hub_admission blocked: %s" % exc) from exc
             return {"ok": True, "admission": receipt}
+        if envelope.method.startswith("hub_agent_"):
+            return self._handle_agent_ipc(envelope)
         if envelope.method == "map_register":
             fields = {
                 name: envelope.payload.get(name)
@@ -801,7 +936,10 @@ class HubSocketServer:
         try:
             return self.daemon.handle(HubEnvelope.decode(raw))
         except HubError as exc:
-            return {"ok": False, "error": str(exc)}
+            response = {"ok": False, "error": str(exc)}
+            if getattr(exc, "reason_code", None):
+                response["reason_code"] = exc.reason_code
+            return response
 
     def shutdown(self) -> None:
         if self._running:

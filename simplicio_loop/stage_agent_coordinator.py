@@ -45,11 +45,12 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from . import stage_agents as sa
+from .hub_queue_agent import HubQueueAgentClient
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-DRIVER_STATUSES = ("created", "ready", "running", "passed", "failed", "blocked", "cancelled", "timed_out")
-TERMINAL_DRIVER_STATUSES = frozenset(("passed", "failed", "blocked", "cancelled", "timed_out"))
+DRIVER_STATUSES = ("created", "ready", "running", "passed", "failed", "blocked", "cancelled", "timed_out", "recovery_unknown")
+TERMINAL_DRIVER_STATUSES = frozenset(("passed", "failed", "blocked", "cancelled", "timed_out", "recovery_unknown"))
 
 _TERMINAL_STATUS_MAP = {
     "passed": "completed",
@@ -163,6 +164,10 @@ class AgentInstance:
     coordinator_agent_id: str = COORDINATOR_AGENT_ID
     parent_instance_id: str = COORDINATOR_AGENT_ID
     idempotency_key: str = ""
+    # Transport-native handle retained outside the portable contract.  The Hub
+    # client uses this to preserve generation/fence/process identity on every
+    # subsequent IPC call; legacy queue fakes continue using instance_id.
+    transport_handle: dict[str, Any] | None = None
 
     def to_contract_instance(self) -> dict[str, Any]:
         now = _now_iso()
@@ -502,9 +507,14 @@ class QueueAgentAdapter:
 
     def __init__(self, *, queue_client: Any = None):
         self._client = queue_client
+        self.kind = "hub" if isinstance(queue_client, HubQueueAgentClient) else "queue"
 
     def probe(self) -> bool:
-        return self._client is not None
+        if self._client is None:
+            return False
+        if isinstance(self._client, HubQueueAgentClient):
+            return self._client.probe()
+        return True
 
     def compatible_with(self, role: Mapping[str, Any], stage: Mapping[str, Any]) -> bool:
         return self.probe() and stage.get("isolation_level", "process") in _NON_HUMAN_LEVELS
@@ -513,14 +523,21 @@ class QueueAgentAdapter:
         if not self.probe():
             raise StageCoordinatorError("queue adapter has no client bound", reason_code="spawn_failed")
         claim = self._client.claim(role=role["role_id"], stage=stage["stage_id"], context=stage_context)
+        if not isinstance(claim, Mapping):
+            raise StageCoordinatorError("queue client returned no handle", reason_code="spawn_failed")
+        lease_id = claim.get("lease_id") or claim.get("handle_id") or claim.get("job_id")
+        if not lease_id:
+            raise StageCoordinatorError("queue client handle has no stable id", reason_code="spawn_failed")
         return AgentInstance(
-            instance_id=str(claim["lease_id"]), role_id=role["role_id"], stage_id=stage["stage_id"],
+            instance_id=str(lease_id), role_id=role["role_id"], stage_id=stage["stage_id"],
             adapter_kind=self.kind, status="created", runtime="queue",
             isolation_level=stage.get("isolation_level", "worker"),
+            transport_handle=dict(claim) if getattr(self._client, "accepts_handle", False) else None,
         )
 
     def poll(self, instance: AgentInstance) -> AgentInstance:
-        status = self._client.status(instance.instance_id)
+        handle = instance.transport_handle if instance.transport_handle is not None else instance.instance_id
+        status = self._client.status(handle)
         observed = status.get("status", instance.status)
         if instance.status == "created" and observed == "ready":
             instance.ready_at = _now_iso()
@@ -531,18 +548,21 @@ class QueueAgentAdapter:
     def send(self, instance: AgentInstance, stage_input: Mapping[str, Any]) -> None:
         if instance.status != "ready":
             raise StageCoordinatorError("queue instance not ready", reason_code=REASON_NOT_READY)
-        self._client.send(instance.instance_id, dict(stage_input))
+        handle = instance.transport_handle if instance.transport_handle is not None else instance.instance_id
+        self._client.send(handle, dict(stage_input))
         instance.status = "running"
 
     def collect(self, instance: AgentInstance):
         if instance.status not in TERMINAL_DRIVER_STATUSES:
             return None, None
-        result = self._client.collect(instance.instance_id)
+        handle = instance.transport_handle if instance.transport_handle is not None else instance.instance_id
+        result = self._client.collect(handle)
         instance.output, instance.receipt = result.get("output"), result.get("receipt")
         return instance.output, instance.receipt
 
     def cancel(self, instance: AgentInstance, *, reason: str) -> None:
-        self._client.cancel(instance.instance_id, reason=reason)
+        handle = instance.transport_handle if instance.transport_handle is not None else instance.instance_id
+        self._client.cancel(handle, reason=reason)
         if instance.status not in TERMINAL_DRIVER_STATUSES:
             instance.status = "cancelled"
             instance.error_reason_code = reason
@@ -599,17 +619,23 @@ class HumanGateAdapter:
 # Capability probe + adapter registry (fallback order per issue #424).
 # --------------------------------------------------------------------------
 
-FALLBACK_ORDER = ("native", "command", "queue", "human")
+FALLBACK_ORDER = ("native", "hub", "command", "queue", "human")
 
 
 class AdapterRegistry:
-    def __init__(self, adapters: Sequence[AgentDriver]):
+    def __init__(self, adapters: Sequence[AgentDriver], *, strict_hub: bool = False):
         self._by_kind = {a.kind: a for a in adapters}
+        self.strict_hub = bool(strict_hub)
 
     def select(self, *, role: Mapping[str, Any], stage: Mapping[str, Any]) -> AgentDriver:
         for kind in FALLBACK_ORDER:
             adapter = self._by_kind.get(kind)
             if adapter is None:
+                continue
+            if self.strict_hub and not (
+                isinstance(adapter, QueueAgentAdapter)
+                and isinstance(getattr(adapter, "_client", None), HubQueueAgentClient)
+            ):
                 continue
             if adapter.probe() and adapter.compatible_with(role, stage):
                 return adapter
@@ -706,7 +732,7 @@ class StageAgentCoordinator:
     def __init__(self, *, graph: Mapping[str, Any] | None = None, run_id: str, task_id: str,
                  adapters: Sequence[AgentDriver], journal: StageCoordinatorJournal | None = None,
                  host_total_slots: int = 4, coordinator_slots: int = 1,
-                 poll_interval_seconds: float = 0.05):
+                 poll_interval_seconds: float = 0.05, hub_strict: bool = False):
         self.graph = graph or sa.load_graph()
         ok, errors = sa.validate_graph(self.graph)
         if not ok:
@@ -718,7 +744,8 @@ class StageAgentCoordinator:
         self.manifest_hash = str(self.graph.get("manifest_hash") or _sha256(self.graph))
         self.run_id = run_id
         self.task_id = task_id
-        self.registry = AdapterRegistry(adapters)
+        self.registry = AdapterRegistry(adapters, strict_hub=hub_strict)
+        self.hub_strict = bool(hub_strict)
         self.journal = journal
         self.passed_stages: dict[str, dict[str, Any]] = {}
         self.rejected: list[dict[str, Any]] = []
@@ -772,11 +799,17 @@ class StageAgentCoordinator:
             return result
         self._log("routing_decision", {"stage_id": stage_id, "adapter": adapter.kind})
 
+        idempotency_key = f"{self.run_id}:{stage_id}:{attempt_id}"
+        timeout_seconds = deadline_seconds if deadline_seconds is not None else stage.get("timeout_seconds", 600)
         stage_context = {
             "role_id": role["role_id"], "stage_id": stage["stage_id"], "run_id": self.run_id,
             "task_id": self.task_id, "attempt_id": attempt_id, "fence": fence,
             "plan_revision": plan_revision, "isolation_level": stage.get("isolation_level", "process"),
             "required_capabilities": stage.get("required_capabilities", []),
+            "idempotency_key": idempotency_key,
+            "timeout_seconds": timeout_seconds,
+            "priority": stage.get("priority", "test" if stage.get("stage_id") in {"validating", "testing"} else "build"),
+            "resources": dict(stage.get("resources") or {}),
         }
         context_hash = _sha256(stage_context)
 
@@ -791,10 +824,10 @@ class StageAgentCoordinator:
         instance.attempt_ordinal = 1
         instance.coordinator_agent_id = COORDINATOR_AGENT_ID
         instance.parent_instance_id = COORDINATOR_AGENT_ID
-        instance.idempotency_key = f"{self.run_id}:{stage_id}:{attempt_id}"
+        instance.idempotency_key = idempotency_key
         self._log("instance_created", {"stage_id": stage_id, "instance_id": instance.instance_id, "adapter": adapter.kind})
 
-        deadline = time.time() + (deadline_seconds if deadline_seconds is not None else stage.get("timeout_seconds", 600))
+        deadline = time.time() + timeout_seconds
         while instance.status == "created":
             instance = adapter.poll(instance)
             if instance.status == "created" and time.time() > deadline:
@@ -909,7 +942,7 @@ class StageAgentCoordinator:
 
 
 __all__ = [
-    "COORDINATOR_AGENT_ID", "REASON_CANCELLED", "REASON_INVALID_INSTANCE", "REASON_INVALID_RECEIPT",
+    "COORDINATOR_AGENT_ID", "HubQueueAgentClient", "REASON_CANCELLED", "REASON_INVALID_INSTANCE", "REASON_INVALID_RECEIPT",
     "REASON_NOT_READY", "REASON_NO_COMPATIBLE_ADAPTER", "REASON_STALE_RECEIPT", "REASON_TIMEOUT",
     "REASON_ZERO_CAPACITY", "AdapterRegistry", "AgentDriver", "AgentInstance", "CommandAgentAdapter",
     "FALLBACK_ORDER", "HumanGateAdapter", "NativeAgentAdapter", "QueueAgentAdapter", "StageAgentCoordinator",
