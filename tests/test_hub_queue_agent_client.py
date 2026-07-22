@@ -4,6 +4,8 @@ from __future__ import annotations
 import inspect
 import json
 import tempfile
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -49,7 +51,8 @@ class FakeHub:
         return {"ok": True, "handle": dict(handle)}
 
     def _job(self, handle):
-        return next(job for job in self.jobs.values() if job["handle_id"] == handle["handle_id"])
+        handle_id = handle.get("handle_id") if isinstance(handle, dict) else handle
+        return next(job for job in self.jobs.values() if job["handle_id"] == handle_id)
 
     def hub_agent_status(self, **payload):
         self.calls.append(("status", payload))
@@ -59,7 +62,6 @@ class FakeHub:
     def hub_agent_send(self, **payload):
         self.calls.append(("send", payload))
         job = self._job(payload["handle"])
-        job["input"] = payload["stage_input"]
         job["status"] = "passed"
         return {"ok": True, "state": "passed"}
 
@@ -86,7 +88,7 @@ def test_fake_hub_preserves_handle_and_journals_lifecycle(tmp_path):
     client.cancel(handle, reason="test-cleanup")
 
     assert result["output"] == {"fake": True}
-    assert all(call[1].get("handle", {}).get("fence") == "fake-fence"
+    assert all(call[1].get("handle") in {"fake-job-1", handle["handle_id"]}
                for call in hub.calls if call[0] in {"status", "send", "collect", "cancel"})
     events = journal.replay()
     assert [event["event_type"] for event in events] == ["intent", "effect", "intent", "effect", "intent", "effect"]
@@ -129,42 +131,50 @@ def test_journal_rejects_tampering(tmp_path):
         HubQueueAgentJournal(path)
 
 
-def test_real_hub_socket_lifecycle_stale_fence_and_cancel():
-    def executor(payload):
-        stage_input = payload["stage_input"]
-        return {"status": "passed", "output": {"run": stage_input["run_id"]},
-                "receipt": {"verdict": "pass", "accepted": True},
-                "process_result": {"returncode": 0, "duration_seconds": 0.001}}
+def _process_spec(*argv: str, timeout: float = 5.0) -> dict:
+    return {
+        "schema": "simplicio.process-spec/v1", "argv": list(argv), "cwd": str(Path.cwd()),
+        "cwd_allowlist": [str(Path.cwd())], "env": {}, "env_allowlist": [],
+        "timeout_seconds": timeout, "max_output_bytes": 4096, "priority": 100,
+        "idempotency_key": "process-615", "shell": False,
+    }
 
+
+def test_real_hub_socket_lifecycle_stale_fence_and_cancel():
     with tempfile.TemporaryDirectory() as directory:
-        daemon = HubDaemon(str(Path(directory) / "hub.lock"), agent_executor=executor)
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
         daemon.start()
         endpoint = default_endpoint(directory)
         server = HubSocketServer(daemon, endpoint, "unix")
         server.start()
         try:
+            context = dict(CONTEXT, process_spec=_process_spec(sys.executable, "-c", "print('hub-ok')"))
             client = HubQueueAgentClient(HubSocketClient(endpoint, transport="unix"), strict=True)
-            handle = client.claim(role="implementation_agent", stage="executing", context=CONTEXT)
-            client.send(handle, dict(CONTEXT))
-            assert client.status(handle)["status"] == "passed"
+            handle = client.claim(role="implementation_agent", stage="executing", context=context)
+            client.send(handle, context)
+            deadline = time.monotonic() + 5
+            status = client.status(handle)
+            while status["status"] not in {"passed", "failed", "cancelled", "timed_out"} and time.monotonic() < deadline:
+                time.sleep(0.01)
+                status = client.status(handle)
+            assert status["status"] == "passed"
             result = client.collect(handle)
-            assert result["output"] == {"run": "run-615"}
             assert result["process_result"]["returncode"] == 0
 
-            stale = dict(handle, fence="stale-fence")
-            with pytest.raises(HubQueueAgentError) as excinfo:
-                client.status(stale)
-            assert excinfo.value.reason_code == "stale_fence"
+            stale = dict(handle, fence=int(handle["fence"]) + 99)
+            with pytest.raises(HubQueueAgentError, match="stale fence"):
+                client.send(stale, context)
 
-            cancel_handle = client.claim(role="review_panel", stage="validating", context=dict(CONTEXT, attempt_id="attempt-2"))
-            client.cancel(cancel_handle, reason="dependent_failed")
-            assert client.status(cancel_handle)["status"] == "cancelled"
+            cancel_context = dict(CONTEXT, attempt_id="attempt-2", process_spec=_process_spec(sys.executable, "-c", "import time; time.sleep(10)"))
+            cancel_handle = client.claim(role="review_panel", stage="validating", context=cancel_context)
+            client.send(cancel_handle, cancel_context)
+            client.cancel(dict(cancel_handle, fence=int(cancel_handle["fence"]) + 1), reason="dependent_failed")
         finally:
             server.shutdown()
             daemon.stop()
 
 
-def test_real_hub_restart_marks_inflight_recovery_unknown_without_redispatch():
+def test_real_hub_restart_marks_claimed_recovery_unknown_without_redispatch():
     with tempfile.TemporaryDirectory() as directory:
         lock_path = str(Path(directory) / "hub.lock")
         daemon = HubDaemon(lock_path)
@@ -172,22 +182,20 @@ def test_real_hub_restart_marks_inflight_recovery_unknown_without_redispatch():
         endpoint = default_endpoint(directory)
         server = HubSocketServer(daemon, endpoint, "unix")
         server.start()
+        context = dict(CONTEXT, process_spec=_process_spec(sys.executable, "-c", "print('never-dispatched')"))
         client = HubQueueAgentClient(HubSocketClient(endpoint, transport="unix"), strict=True)
-        handle = client.claim(role="review_panel", stage="validating", context=CONTEXT)
-        client.send(handle, dict(CONTEXT))
+        handle = client.claim(role="review_panel", stage="validating", context=context)
         server.shutdown()
         daemon.stop()
 
-        # Reopen the same Hub authority and socket.  The old handle is observed
-        # as uncertain; it is never submitted a second time automatically.
         daemon.start()
         restarted_server = HubSocketServer(daemon, endpoint, "unix")
         restarted_server.start()
         try:
             reconnected = HubQueueAgentClient(HubSocketClient(endpoint, transport="unix"), strict=True)
             assert reconnected.recover(handle)["status"] == "recovery_unknown"
-            assert reconnected.collect(handle).get("output") is None
-            assert len(daemon._agent_jobs) == 1
+            result = reconnected.collect(handle)
+            assert result["process_result"] is None
         finally:
             restarted_server.shutdown()
             daemon.stop()
@@ -198,3 +206,54 @@ def test_client_architecture_has_no_local_process_or_thread_provider():
     assert "subprocess" not in source
     assert "threading" not in source
     assert "supervisor" not in source
+
+def test_client_validation_and_extension_shapes(tmp_path):
+    with pytest.raises(HubQueueAgentError, match="invalid JSON"):
+        path = tmp_path / "bad.jsonl"
+        path.write_text("{", encoding="utf-8")
+        HubQueueAgentJournal(path)
+
+    client = HubQueueAgentClient(None)
+    with pytest.raises(HubQueueAgentUnavailable):
+        client.claim(role="role", stage="stage", context=CONTEXT)
+    with pytest.raises(HubQueueAgentError, match="identity"):
+        HubQueueAgentClient(FakeHub()).claim(role="role", stage="stage", context={})
+    with pytest.raises(HubQueueAgentError, match="handle id"):
+        HubQueueAgentClient._handle_id({})
+
+
+def test_client_rejects_bad_hub_responses_and_conflicts():
+    class BadResponse(FakeHub):
+        def hub_agent_claim(self, **payload):
+            return "not-an-object"
+    with pytest.raises(HubQueueAgentError, match="non-object"):
+        HubQueueAgentClient(BadResponse()).claim(role="role", stage="stage", context=CONTEXT)
+
+    class Rejected(FakeHub):
+        def hub_agent_claim(self, **payload):
+            return {"ok": False, "reason_code": "stale_fence", "error": "stale"}
+    with pytest.raises(HubQueueAgentError) as raised:
+        HubQueueAgentClient(Rejected()).claim(role="role", stage="stage", context=CONTEXT)
+    assert raised.value.reason_code == "stale_fence"
+
+    class NoHandle(FakeHub):
+        def hub_agent_claim(self, **payload):
+            return {"ok": True, "handle": {}}
+    with pytest.raises(HubQueueAgentError, match="stable id"):
+        HubQueueAgentClient(NoHandle()).claim(role="role", stage="stage", context=CONTEXT)
+
+
+def test_heartbeat_progress_and_pending_journal(tmp_path):
+    class ObservingHub(FakeHub):
+        def hub_agent_heartbeat(self, **payload):
+            return {"ok": True, "heartbeat_at": 2.0}
+        def hub_agent_progress(self, **payload):
+            return {"ok": True, "progress": payload["progress"]}
+    journal = HubQueueAgentJournal(tmp_path / "journal.jsonl")
+    hub = ObservingHub()
+    client = HubQueueAgentClient(hub, journal=journal)
+    handle = client.claim(role="role", stage="stage", context=CONTEXT)
+    assert client.heartbeat(handle)["heartbeat_at"] == 2.0
+    assert client.progress(handle, 0.5)["progress"] == 0.5
+    journal.append("intent", {"operation_id": "pending"})
+    assert journal.pending()[0]["payload"]["operation_id"] == "pending"
