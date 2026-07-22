@@ -43,7 +43,7 @@ except Exception:  # pragma: no cover - defensive
 # keywords + [..]-segment matching so the bridge stays correct even if the driver
 # module is unavailable.
 _INFRA_DEPENDENT_DOMAINS = (
-    "EPIC", "HUB", "SUPERVISOR", "ASYNC", "ARCHITECTURE", "PERFORMANCE", "RELEASE TRAIN",
+    "EPIC", "HUB", "SUPERVISOR", "ASYNC", "ARCHITECTURE", "PERFORMANCE", "RELEASE TRAIN", "QUALITY",
 )
 
 

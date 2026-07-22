@@ -67,6 +67,7 @@ INFRA_DEPENDENT_DOMAINS: Tuple[str, ...] = (
     "ARCHITECTURE",  # cross-cutting architecture
     "PERFORMANCE",   # perf/core work
     "RELEASE TRAIN", # release train
+    "QUALITY",       # quality-gate work requires the full verification stack
 )
 # Labels that mark an infra-dependent work item.
 INFRA_DEPENDENT_LABELS: Tuple[str, ...] = (
