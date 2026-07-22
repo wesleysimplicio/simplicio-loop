@@ -34,6 +34,31 @@ reports `backend: "rust"`; otherwise it deliberately uses the safe Python adapte
 Rust-level cross-platform resource controls. cgroups, Windows Job Objects, quotas, and full Hub
 queue integration remain separate supervisor work.
 
+### Stage-agent provider
+
+`HubQueueAgentClient` is the public bridge from `QueueAgentAdapter` to the Hub. It renders the
+configured agent command to an argv-only `ProcessSpec`, fixes `cwd` to an absolute allow-listed
+root, filters the environment, and propagates run/stage/agent/process identity, deadline,
+idempotency key, priority (`test` for validation/review stages, otherwise `build`), and resource
+weight/cost. The provider never starts a subprocess; Unix socket `execute` dispatch is moved off
+the Hub server event loop so heartbeat and cancellation remain responsive while the supervisor
+owns the process.
+
+Every IPC effect has a durable JSONL `before`/`after` journal record. A new client instance
+replays a completed `execute` by deterministic idempotency key instead of executing it again, and
+each request uses a fresh `HubSocketClient` so a restarted Hub can be reached. Use
+`StageAgentCoordinator(..., strict_hub=True)` with
+`QueueAgentAdapter(queue_client=HubQueueAgentClient(...))` to fail closed when the Hub is absent;
+strict mode never falls back to `CommandAgentAdapter`.
+
+The executable conformance/system lane is `tests/test_hub_queue_agent_client.py`. It covers fake
+and real Hub transport, heartbeat/result/cancel, timeout/OOM/truncation classifications, stale
+fences, restart replay, and an AST architecture gate forbidding subprocess calls in the provider.
+Regenerate the durable-claim hot-path baseline with
+`python3 scripts/benchmark_hub_queue_agent_client.py --iterations 200 --output
+bench/hub-queue-agent-client-baseline.json`; the JSON retains every raw latency sample rather than
+only aggregates.
+
 ## Fair scheduler (DRR/quotas, #505)
 
 `HubDaemon` always dispatches through a `FairScheduler` (`simplicio_loop/hub_scheduler.py`):

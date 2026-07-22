@@ -47,6 +47,8 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from . import stage_agents as sa
+from .hub_daemon import HubError, HubSocketClient, default_endpoint, default_transport
+from .process_supervisor import ProcessSpec
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -491,12 +493,267 @@ def _kill_tree(popen: subprocess.Popen) -> None:
 
 
 # --------------------------------------------------------------------------
+# HubQueueAgentClient — the official QueueAgentAdapter/Hub bridge.
+#
+# This provider intentionally never imports or invokes subprocess.  Process creation is an
+# exclusive Hub concern and crosses the versioned IPC boundary as a ProcessSpec.
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class _HubAgentRun:
+    lease_id: str
+    job_id: str
+    context: dict[str, Any]
+    role: str
+    stage: str
+    attempt_dir: Path
+    input_path: Path
+    output_path: Path
+    receipt_path: Path
+    process_spec: ProcessSpec
+    status: str = "ready"
+    heartbeat_at: float | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    thread: threading.Thread | None = None
+
+
+class HubQueueAgentClient:
+    """Queue client that executes stage agents exclusively through the central Hub.
+
+    ``client_factory`` is deliberately reconnectable: every IPC effect obtains a fresh
+    :class:`HubSocketClient`, so a restarted Hub is picked up without recreating the coordinator.
+    The local JSONL journal records intent before, and outcome after, every external effect.
+    A completed execute outcome is replayed by idempotency key and is never submitted twice.
+    """
+
+    kind = "hub"
+
+    def __init__(
+        self,
+        *,
+        command: Sequence[str],
+        endpoint: str | None = None,
+        transport: str | None = None,
+        client_factory: Any = None,
+        journal_path: Path | None = None,
+        base_tmp_dir: Path | None = None,
+        cwd: Path | None = None,
+        env_allowlist: Sequence[str] = _DEFAULT_ENV_ALLOWLIST,
+        extra_env: Mapping[str, str] | None = None,
+        max_output_bytes: int = 65536,
+        resources: Mapping[str, int] | None = None,
+    ):
+        if not command or any(not isinstance(item, str) or not item for item in command):
+            raise StageCoordinatorError("Hub agent command must be a non-empty argv list", reason_code="invalid_command")
+        self.command_template = tuple(command)
+        self.endpoint = endpoint or default_endpoint()
+        self.transport = transport or default_transport()
+        self._client_factory = client_factory or (
+            lambda: HubSocketClient(self.endpoint, transport=self.transport)
+        )
+        self.base_tmp_dir = Path(base_tmp_dir or tempfile.gettempdir()) / "simplicio-hub-stage-agents"
+        self.cwd = Path(cwd or REPO_ROOT).resolve()
+        self.env_allowlist = tuple(env_allowlist)
+        self.extra_env = {str(k): str(v) for k, v in (extra_env or {}).items()}
+        disallowed = set(self.extra_env) - set(self.env_allowlist)
+        if disallowed:
+            raise StageCoordinatorError(
+                "Hub agent env contains keys outside allowlist: " + ", ".join(sorted(disallowed)),
+                reason_code="unsafe_environment",
+            )
+        self.max_output_bytes = int(max_output_bytes)
+        self.resources = {str(k): int(v) for k, v in (resources or {}).items()}
+        self.journal_path = Path(journal_path or self.base_tmp_dir / "hub-agent-journal.jsonl")
+        self.journal_path.parent.mkdir(parents=True, exist_ok=True)
+        self._runs: dict[str, _HubAgentRun] = {}
+        self._completed = self._replay_completed()
+        self._lock = threading.RLock()
+
+    def _append(self, phase: str, effect: str, key: str, payload: Mapping[str, Any]) -> None:
+        record = {"ts": time.time(), "phase": phase, "effect": effect, "idempotency_key": key,
+                  "payload": dict(payload)}
+        with self.journal_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def _replay_completed(self) -> dict[str, dict[str, Any]]:
+        completed: dict[str, dict[str, Any]] = {}
+        if not self.journal_path.exists():
+            return completed
+        for line in self.journal_path.read_text(encoding="utf-8").splitlines():
+            try:
+                event = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            if event.get("phase") == "after" and event.get("effect") == "execute":
+                payload = event.get("payload")
+                if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+                    completed[str(event.get("idempotency_key"))] = dict(payload["result"])
+        return completed
+
+    def _request(self, key: str, effect: str, **payload: Any) -> dict[str, Any]:
+        self._append("before", effect, key, payload)
+        response = self._client_factory().request(f"{effect}-{uuid.uuid4().hex}", effect, **payload)
+        self._append("after", effect, key, response)
+        if response.get("ok") is not True:
+            raise HubError(str(response.get("error") or f"Hub {effect} failed"))
+        return response
+
+    def probe(self) -> bool:
+        try:
+            return bool(self._request("probe", "ping").get("started"))
+        except (HubError, OSError, ValueError):
+            return False
+
+    def _render_argv(self, run: _HubAgentRun) -> tuple[str, ...]:
+        replacements = {
+            "{input}": str(run.input_path), "{output}": str(run.output_path),
+            "{receipt}": str(run.receipt_path), "{attempt_dir}": str(run.attempt_dir),
+            "{role_id}": run.role, "{stage_id}": run.stage,
+        }
+        rendered = []
+        for token in self.command_template:
+            for marker, value in replacements.items():
+                token = token.replace(marker, value)
+            rendered.append(token)
+        return tuple(rendered)
+
+    @staticmethod
+    def _key(role: str, stage: str, context: Mapping[str, Any]) -> str:
+        identity = {name: context.get(name) for name in
+                    ("run_id", "task_id", "attempt_id", "fence", "plan_revision")}
+        return "hub-agent-" + _sha256({"role": role, "stage": stage, **identity})[:32]
+
+    def claim(self, *, role: str, stage: str, context: Mapping[str, Any]) -> dict[str, Any]:
+        key = self._key(role, stage, context)
+        job_id = key
+        attempt_dir = self.base_tmp_dir / key
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        run = _HubAgentRun(
+            lease_id=key, job_id=job_id, context=dict(context), role=role, stage=stage,
+            attempt_dir=attempt_dir, input_path=attempt_dir / "stage_input.json",
+            output_path=attempt_dir / "stage_output.json", receipt_path=attempt_dir / "stage_receipt.json",
+            process_spec=ProcessSpec(("pending",)),
+        )
+        run.input_path.write_text(json.dumps(dict(context)), encoding="utf-8")
+        priority_name = "test" if any(word in stage.lower() for word in ("test", "validat", "review")) else "build"
+        numeric_priority = 100 if priority_name == "test" else 50
+        timeout = float(context.get("deadline_seconds") or context.get("timeout_seconds") or 600)
+        env = {name: os.environ[name] for name in self.env_allowlist if name in os.environ}
+        env.update(self.extra_env)
+        run.process_spec = ProcessSpec(
+            self._render_argv(run), cwd=str(self.cwd), cwd_allowlist=(str(self.cwd),),
+            env=env, env_allowlist=self.env_allowlist, timeout_seconds=timeout,
+            max_output_bytes=self.max_output_bytes, priority=numeric_priority,
+            idempotency_key=key,
+        )
+        with self._lock:
+            self._runs[key] = run
+        if key in self._completed:
+            run.result = dict(self._completed[key])
+            run.status = self._status_from_result(run.result)
+            return {"lease_id": key, "process_id": key, "replayed": True}
+        try:
+            self._request(key, "register", client_id=f"stage-agent-{context.get('run_id', 'run')}")
+            self._request(
+                key, "submit", client_id=str(context.get("run_id") or "stage-agent"), job_id=job_id,
+                priority=priority_name, workspace_id=str(context.get("workspace_id") or "default"),
+                weight=max(1, self.resources.get("weight", 1)), cost=max(1, self.resources.get("cost", 1)),
+                metadata={"run_id": context.get("run_id"), "stage_id": stage, "agent_id": role,
+                          "process_id": key, "deadline": timeout, "resources": self.resources},
+            )
+            self._request(key, "claim", client_id=str(context.get("run_id") or "stage-agent"), job_id=job_id)
+        except HubError as exc:
+            run.status, run.error = "blocked", str(exc)
+            raise StageCoordinatorError(f"Hub claim failed: {exc}", reason_code="hub_unavailable") from exc
+        return {"lease_id": key, "process_id": key, "idempotency_key": key}
+
+    @staticmethod
+    def _status_from_result(result: Mapping[str, Any]) -> str:
+        if result.get("cancelled"):
+            return "cancelled"
+        if result.get("timed_out"):
+            return "timed_out"
+        return "passed" if result.get("returncode") == 0 else "failed"
+
+    def status(self, lease_id: str) -> dict[str, Any]:
+        run = self._runs[lease_id]
+        if run.status in ("ready", "running"):
+            try:
+                self._request(lease_id, "heartbeat", job_id=run.job_id)
+                if run.status == "running":
+                    self._request(lease_id, "progress", job_id=run.job_id, progress=50)
+                run.heartbeat_at = time.time()
+            except (HubError, OSError):
+                # A transient restart does not erase local execution state; the next poll reconnects.
+                pass
+        return {"status": run.status, "heartbeat_at": run.heartbeat_at,
+                "process_id": run.lease_id, "error": run.error}
+
+    def send(self, lease_id: str, stage_input: Mapping[str, Any]) -> None:
+        run = self._runs[lease_id]
+        if str(stage_input.get("fence")) != str(run.context.get("fence")):
+            raise StageCoordinatorError("stale Hub lease fence", reason_code=REASON_STALE_RECEIPT)
+        run.input_path.write_text(json.dumps(dict(stage_input)), encoding="utf-8")
+        if run.result is not None:
+            return
+        run.status = "running"
+
+        def execute() -> None:
+            try:
+                response = self._request(lease_id, "execute", process_spec=run.process_spec.to_dict())
+                result = dict(response["result"])
+                self._append("after", "execute", lease_id, {"result": result})
+                with self._lock:
+                    run.result = result
+                    self._completed[lease_id] = result
+                try:
+                    self._request(lease_id, "result", job_id=run.job_id, result=result)
+                except (HubError, OSError):
+                    pass
+                run.status = self._status_from_result(result)
+            except (HubError, OSError, KeyError, ValueError) as exc:
+                run.error = str(exc)
+                run.status = "blocked"
+
+        run.thread = threading.Thread(target=execute, name=f"hub-agent-{lease_id}", daemon=True)
+        run.thread.start()
+
+    def collect(self, lease_id: str) -> dict[str, Any]:
+        run = self._runs[lease_id]
+        if run.result is None:
+            return {"output": None, "receipt": None}
+        process_result = dict(run.result)
+        output = json.loads(run.output_path.read_text(encoding="utf-8")) if run.output_path.exists() else {}
+        output = dict(output) if isinstance(output, dict) else {"value": output}
+        output["process_result"] = process_result
+        receipt = json.loads(run.receipt_path.read_text(encoding="utf-8")) if run.receipt_path.exists() else None
+        if isinstance(receipt, dict):
+            receipt["exit_codes"] = {"hub_process": process_result.get("returncode")} if isinstance(process_result.get("returncode"), int) else {}
+            receipt["evidence_refs"] = list(receipt.get("evidence_refs") or []) + [
+                "hub-process:returncode=%s;duration_seconds=%s;truncated=%s" % (
+                    process_result.get("returncode"), process_result.get("duration_seconds"),
+                    process_result.get("truncated"))
+            ]
+            receipt["output_hash"] = sa._content_hash(output)
+            receipt["integrity_hash"] = sa.receipt_integrity_hash(receipt)
+        return {"output": output, "receipt": receipt, "process_result": process_result}
+
+    def cancel(self, lease_id: str, *, reason: str) -> None:
+        run = self._runs[lease_id]
+        try:
+            self._request(lease_id, "cancel", lease_id=lease_id, job_id=run.job_id, reason=reason)
+        finally:
+            if run.status not in TERMINAL_DRIVER_STATUSES:
+                run.status, run.error = "cancelled", reason
+
+
 # QueueAgentAdapter — local/remote queue workers.
 #
-# Delegates claim/lease/fence semantics to whatever queue client is bound
-# (e.g. simplicio_loop.remote_queue); the core only defines the shape of the
-# interaction so a fake/local queue can satisfy tests without network.
-# --------------------------------------------------------------------------
+# Delegates claim/lease/fence semantics to whatever queue client is bound.
 
 
 class QueueAgentAdapter:
@@ -506,7 +763,10 @@ class QueueAgentAdapter:
         self._client = queue_client
 
     def probe(self) -> bool:
-        return self._client is not None
+        if self._client is None:
+            return False
+        probe = getattr(self._client, "probe", None)
+        return bool(probe()) if callable(probe) else True
 
     def compatible_with(self, role: Mapping[str, Any], stage: Mapping[str, Any]) -> bool:
         return self.probe() and stage.get("isolation_level", "process") in _NON_HUMAN_LEVELS
@@ -605,10 +865,21 @@ FALLBACK_ORDER = ("native", "command", "queue", "human")
 
 
 class AdapterRegistry:
-    def __init__(self, adapters: Sequence[AgentDriver]):
+    def __init__(self, adapters: Sequence[AgentDriver], *, strict_hub: bool = False):
         self._by_kind = {a.kind: a for a in adapters}
+        self.strict_hub = strict_hub
 
     def select(self, *, role: Mapping[str, Any], stage: Mapping[str, Any]) -> AgentDriver:
+        if self.strict_hub:
+            adapter = self._by_kind.get("queue")
+            if not isinstance(getattr(adapter, "_client", None), HubQueueAgentClient):
+                raise StageCoordinatorError(
+                    "strict Hub mode requires QueueAgentAdapter(HubQueueAgentClient)",
+                    reason_code="hub_required",
+                )
+            if adapter.probe() and adapter.compatible_with(role, stage):
+                return adapter
+            raise StageCoordinatorError("Hub unavailable in strict mode", reason_code="hub_unavailable")
         for kind in FALLBACK_ORDER:
             adapter = self._by_kind.get(kind)
             if adapter is None:
@@ -710,7 +981,7 @@ class StageAgentCoordinator:
     def __init__(self, *, graph: Mapping[str, Any] | None = None, run_id: str, task_id: str,
                  adapters: Sequence[AgentDriver], journal: StageCoordinatorJournal | None = None,
                  host_total_slots: int = 4, coordinator_slots: int = 1,
-                 poll_interval_seconds: float = 0.05):
+                 poll_interval_seconds: float = 0.05, strict_hub: bool = False):
         self.graph = graph or sa.load_graph()
         ok, errors = sa.validate_graph(self.graph)
         if not ok:
@@ -722,7 +993,7 @@ class StageAgentCoordinator:
         self.manifest_hash = str(self.graph.get("manifest_hash") or _sha256(self.graph))
         self.run_id = run_id
         self.task_id = task_id
-        self.registry = AdapterRegistry(adapters)
+        self.registry = AdapterRegistry(adapters, strict_hub=strict_hub)
         self.journal = journal
         self.passed_stages: dict[str, dict[str, Any]] = {}
         self.rejected: list[dict[str, Any]] = []
@@ -1004,7 +1275,7 @@ __all__ = [
     "COORDINATOR_AGENT_ID", "REASON_CANCELLED", "REASON_INVALID_INSTANCE", "REASON_INVALID_RECEIPT",
     "REASON_NOT_READY", "REASON_NO_COMPATIBLE_ADAPTER", "REASON_STALE_RECEIPT", "REASON_TIMEOUT",
     "REASON_ZERO_CAPACITY", "AdapterRegistry", "AgentDriver", "AgentInstance", "CommandAgentAdapter",
-    "FALLBACK_ORDER", "HumanGateAdapter", "NativeAgentAdapter", "QueueAgentAdapter", "StageAgentCoordinator",
+    "FALLBACK_ORDER", "HubQueueAgentClient", "HumanGateAdapter", "NativeAgentAdapter", "QueueAgentAdapter", "StageAgentCoordinator",
     "StageCoordinatorError", "StageCoordinatorJournal", "StageResult", "available_slots", "plan_waves",
     "role_by_id", "stage_by_id",
 ]
