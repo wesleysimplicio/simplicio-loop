@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "simplicio.evidence-binding/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "task_id", "attempt_id", "head_hash", "tree_hash", "diff_hash", "policy_hash", "config_hash", "toolchain_hash", "task_contract_hash", "binding_hash"],
+  "properties": {
+    "schema": {"const": "simplicio.evidence-binding/v1"},
+    "run_id": {"type": "string"}, "task_id": {"type": "string"}, "attempt_id": {"type": "string"},
+    "head_hash": {"type": "string"}, "tree_hash": {"type": "string"},
+    "diff_hash": {"type": "string", "pattern": "^sha256:"},
+    "policy_hash": {"type": "string", "pattern": "^sha256:"},
+    "config_hash": {"type": "string", "pattern": "^sha256:"},
+    "toolchain_hash": {"type": "string", "pattern": "^sha256:"},
+    "task_contract_hash": {"type": "string", "pattern": "^sha256:"},
+    "binding_hash": {"type": "string", "pattern": "^sha256:"}
+  }
+}
