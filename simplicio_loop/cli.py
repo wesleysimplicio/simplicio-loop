@@ -199,7 +199,8 @@ def plan(task_path: str, out_path: str) -> int:
 
 
 def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int,
-        quality_provider: Optional[str] = None, quality_policy: str = "strict-default") -> int:
+        quality_provider: Optional[str] = None, quality_policy: str = "strict-default",
+        result_file: str = "") -> int:
     # Issue #613: a quality provider is mandatory between execution and
     # verify/oracle. Fail-closed at the CLI boundary when none is supplied so the
     # run is never silently executed without the quality gate.
@@ -213,12 +214,32 @@ def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int,
     except delivery.DeliveryTargetError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    payload = conduct_run(
-        repo, task_path, delivery_target, max_iterations,
-        quality_provider=quality_provider, quality_policy=quality_policy,
-    )
+    try:
+        payload = conduct_run(
+            repo, task_path, delivery_target, max_iterations,
+            quality_provider=quality_provider, quality_policy=quality_policy,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        outcome = {
+            "schema": "simplicio.run-outcome/v1", "run_id": "", "phase": "infrastructure_failure",
+            "outcome": "INFRASTRUCTURE_FAILURE", "exit_code": 24,
+            "source": {"kind": "local", "identity": str(task_path), "digest": ""},
+            "oracle": {"verdict": "UNAVAILABLE", "authorized": False},
+            "completion_receipt": {"path": "", "sha256": None, "validation": "infrastructure_failure"},
+        }
+        if result_file:
+            target = Path(result_file)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(outcome, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps({"outcome": outcome, "error": str(exc)}, ensure_ascii=False, indent=2))
+        return 24
+    outcome = payload["outcome"]
+    if result_file:
+        target = Path(result_file)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(outcome, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
-    return 0
+    return int(outcome["exit_code"])
 
 
 def verify(repo: str, run_id: str) -> int:
@@ -549,6 +570,7 @@ def main(argv=None) -> int:
         ),
     )
     p_run.add_argument("--max-iterations", type=int, default=12, help="safety cap")
+    p_run.add_argument("--result-file", default="", help="write only simplicio.run-outcome/v1 JSON here")
     p_run.add_argument(
         "--quality-provider", default=None,
         help="mandatory quality provider name (simplicio_loop.quality_providers.<name>); "
@@ -772,7 +794,7 @@ def main(argv=None) -> int:
         return plan(args.task, args.out)
     if command == "run":
         return run(args.repo, args.task, args.delivery, args.max_iterations,
-                  args.quality_provider, args.quality_policy)
+                  args.quality_provider, args.quality_policy, args.result_file)
     if command == "oracle":
         return oracle(args.loop_dir, args.run_dir, args.response_text, args.flow_gap,
                       args.write_receipt)

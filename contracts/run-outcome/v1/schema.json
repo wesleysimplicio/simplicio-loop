@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "simplicio.run-outcome/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "phase", "outcome", "exit_code", "source", "oracle", "completion_receipt"],
+  "properties": {
+    "schema": {"const": "simplicio.run-outcome/v1"},
+    "run_id": {"type": "string"},
+    "phase": {"type": "string"},
+    "outcome": {"enum": ["COMPLETE", "BLOCKED", "CANCELLED", "PARTIAL", "INVALID_RECEIPT", "INFRASTRUCTURE_FAILURE"]},
+    "exit_code": {"enum": [0, 20, 21, 22, 23, 24]},
+    "source": {"type": "object", "required": ["kind", "identity", "digest"], "properties": {"kind": {"type": "string"}, "identity": {"type": "string"}, "digest": {"type": "string"}}, "additionalProperties": false},
+    "oracle": {"type": "object", "required": ["verdict", "authorized"], "properties": {"verdict": {"type": "string"}, "authorized": {"type": "boolean"}}, "additionalProperties": false},
+    "completion_receipt": {"type": "object", "required": ["path", "sha256", "validation"], "properties": {"path": {"type": "string"}, "sha256": {"type": ["string", "null"]}, "validation": {"type": "string"}}, "additionalProperties": false}
+  }
+}
