@@ -33,7 +33,7 @@ from simplicio_loop.hub_governor import (
     ResourceThrottled,
 )
 from simplicio_loop.hub_queue_retry import HubRetryQueue, RetryLease
-from simplicio_loop.hub_scheduler import FairScheduler, ScheduledJob, SchedulerError
+from simplicio_loop.hub_scheduler import FairScheduler, ScheduledJob, SchedulerError, SchedulerPolicy
 
 
 class HubServiceError(RuntimeError):
@@ -47,6 +47,7 @@ class ClaimedJob:
     workspace_id: str
     weight: int
     cost: int
+    scheduler_policy: str
     payload: Dict[str, Any]
     retry_lease: RetryLease
     resource_lease: ResourceLease
@@ -73,15 +74,18 @@ class HubService:
         cost: int = 1,
         max_attempts: int = 3,
     ) -> str:
+        scheduler_policy = self.scheduler.policy.policy_for(idempotency_key)
         task_id = self.queue.submit(
             payload, idempotency_key=idempotency_key, max_attempts=max_attempts,
             client_id=client_id, workspace_id=workspace_id, weight=weight, cost=cost,
+            scheduler_policy=scheduler_policy,
         )
         try:
             self.scheduler.enqueue(
                 ScheduledJob(
                     task_id=task_id, client_id=client_id, weight=weight, cost=cost,
                     workspace_id=workspace_id,
+                    scheduler_policy=scheduler_policy,
                 )
             )
         except SchedulerError as exc:
@@ -190,6 +194,7 @@ class HubService:
             return ClaimedJob(
                 task_id=job.task_id, client_id=job.client_id, workspace_id=job.workspace_id,
                 weight=job.weight, cost=job.cost, payload=payload,
+                scheduler_policy=job.scheduler_policy,
                 retry_lease=retry_lease, resource_lease=resource_lease,
             )
         return None
@@ -209,6 +214,7 @@ class HubService:
                     task_id=claimed.task_id, client_id=claimed.client_id,
                     weight=claimed.weight, cost=claimed.cost,
                     workspace_id=claimed.workspace_id,
+                    scheduler_policy=claimed.scheduler_policy,
                 )
             )
         return outcome
@@ -219,6 +225,11 @@ class HubService:
             "scheduler": self.scheduler.status(),
             "governor": self.governor.status(),
         }
+
+    def configure_scheduler(self, policy: SchedulerPolicy) -> Dict[str, Any]:
+        """Persist the manifest before exposing it; rollback never rewrites job pins."""
+        self.queue.set_scheduler_manifest(policy.to_manifest())
+        return self.scheduler.configure_policy(policy)
 
     def rehydrate_scheduler(self) -> int:
         """#503-506 restart persistence: re-enqueue every still-durably-queued job's
@@ -233,6 +244,7 @@ class HubService:
                     task_id=entry["task_id"], client_id=entry["client_id"] or "unknown",
                     weight=entry["weight"], cost=entry["cost"],
                     workspace_id=entry["workspace_id"],
+                    scheduler_policy=entry["scheduler_policy"],
                 ))
                 rehydrated += 1
             except SchedulerError:

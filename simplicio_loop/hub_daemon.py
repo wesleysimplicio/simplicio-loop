@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional, Set
 
 from .hub_queue_retry import HubRetryQueue, QueueRetryError
 from .hub_scheduler import (
-    FairScheduler, QuotaExceededError, ScheduledJob, SchedulerError,
+    FairScheduler, QuotaExceededError, ScheduledJob, SchedulerError, SchedulerPolicy,
 )
 from .process_enforcement import ProcessRegistry
 from .process_supervisor import ProcessSpec, ProcessSpecError
@@ -30,7 +30,7 @@ IPC_VERSION = 1
 METHODS = frozenset(
     (
         "register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report",
-        "execute", "ping", "claim_next", "scheduler_status",
+        "execute", "ping", "claim_next", "scheduler_status", "scheduler_configure",
         # #503/#504/#505/#506 IPC wiring: expose the composed HubService (durable queue +
         # fair scheduler + resource governor) over the same envelope/dispatch contract as
         # the pre-existing in-memory job verbs above, rather than a second protocol.
@@ -201,6 +201,13 @@ class HubDaemon:
         self.queue = queue
         governor = ResourceGovernor(self._resource_limits)
         self.service = HubService(queue, self.scheduler, governor)
+        manifest = queue.scheduler_manifest()
+        if manifest is not None:
+            self.scheduler.configure_policy(SchedulerPolicy(
+                mode=str(manifest.get("mode")), version=str(manifest.get("version")),
+                previous_version=str(manifest.get("previous_version")),
+                canary_percent=int(manifest.get("canary_percent", 0)),
+            ))
         # #503-506 restart persistence: the durable queue never lost still-queued
         # jobs across this restart - re-admit their real scheduling metadata into
         # the freshly built (empty) FairScheduler now, rather than leaving them
@@ -238,6 +245,18 @@ class HubDaemon:
             }
         if envelope.method == "scheduler_status":
             return {"ok": True, "scheduler": self.scheduler.status()}
+        if envelope.method == "scheduler_configure":
+            try:
+                policy = SchedulerPolicy(
+                    mode=str(envelope.payload.get("mode") or ""),
+                    version=str(envelope.payload.get("version") or ""),
+                    previous_version=str(envelope.payload.get("previous_version") or ""),
+                    canary_percent=int(envelope.payload.get("canary_percent", 0)),
+                )
+                receipt = self.service.configure_scheduler(policy)
+            except (SchedulerError, QueueRetryError, TypeError, ValueError) as exc:
+                raise HubProtocolError("scheduler configuration rejected: %s" % exc) from exc
+            return {"ok": True, "receipt": receipt}
         if envelope.method == "claim_next":
             worker_id = str(envelope.payload.get("client_id") or "worker")
             with self._queue_lock:

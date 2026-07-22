@@ -7,6 +7,8 @@ import json
 import statistics
 import sys
 import time
+import platform
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -42,14 +44,20 @@ def benchmark(heavy_jobs: int = 500, light_jobs: int = 100) -> Dict[str, Any]:
     if heavy_jobs < 1 or light_jobs < 1:
         raise ValueError("heavy_jobs and light_jobs must be positive")
     scheduler = FairScheduler(max_inflight_per_client=1000, quantum=1)
+    enqueued_at: Dict[str, float] = {}
     for index in range(heavy_jobs):
-        scheduler.enqueue(ScheduledJob(f"heavy-{index}", "heavy"))
+        task_id = f"heavy-{index}"
+        enqueued_at[task_id] = time.perf_counter()
+        scheduler.enqueue(ScheduledJob(task_id, "heavy"))
     for index in range(light_jobs):
-        scheduler.enqueue(ScheduledJob(f"light-{index}", "light"))
+        task_id = f"light-{index}"
+        enqueued_at[task_id] = time.perf_counter()
+        scheduler.enqueue(ScheduledJob(task_id, "light"))
 
     total = heavy_jobs + light_jobs
     dispatch_samples: List[float] = []
     served = {"heavy": 0, "light": 0}
+    queue_wait_samples: List[float] = []
     started = time.perf_counter()
     for _ in range(total):
         tick = time.perf_counter()
@@ -57,6 +65,7 @@ def benchmark(heavy_jobs: int = 500, light_jobs: int = 100) -> Dict[str, Any]:
         dispatch_samples.append((time.perf_counter() - tick) * 1000.0)
         if job is None:
             break
+        queue_wait_samples.append((time.perf_counter() - enqueued_at[job.task_id]) * 1000.0)
         served[job.client_id] += 1
         scheduler.complete(job.task_id)
     elapsed = time.perf_counter() - started
@@ -71,10 +80,17 @@ def benchmark(heavy_jobs: int = 500, light_jobs: int = 100) -> Dict[str, Any]:
         "throughput_per_second": total / elapsed if elapsed else 0.0,
         "dispatch_p50_ms": statistics.median(dispatch_samples) if dispatch_samples else 0.0,
         "dispatch_p95_ms": _percentile(dispatch_samples, 95),
+        "dispatch_p99_ms": _percentile(dispatch_samples, 99),
+        "queue_wait_p95_ms": _percentile(queue_wait_samples, 95),
+        "queue_wait_p99_ms": _percentile(queue_wait_samples, 99),
         "jains_fairness_index": status["jains_fairness_index"],
         "starvation_preventions": status["starvation_preventions"],
         "peak_rss_mb": _rss_mb(),
         "rss_source": "resource.getrusage" if resource is not None else "unavailable",
+        "environment": {"python": sys.version.split()[0], "platform": platform.platform()},
+        "commit": subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=False
+        ).stdout.strip() or None,
     }
 
 
