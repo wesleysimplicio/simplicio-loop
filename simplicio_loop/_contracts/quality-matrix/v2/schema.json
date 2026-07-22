@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wesleysimplicio/simplicio-loop/contracts/quality-matrix/v2/schema.json",
+  "title": "simplicio.quality-matrix/v2",
+  "description": "Closed terminal projection of a full quality report. Semantic constraints are enforced by quality_matrix_v2.validate_v2.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "identity", "lanes"],
+  "properties": {
+    "schema": {"const": "simplicio.quality-matrix/v2"},
+    "identity": {"$ref": "#/$defs/identity"},
+    "lanes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["implementation", "static_quality", "unit_component", "integration_contract", "system_e2e", "regression_smoke_artifact", "negative_paths", "property_fuzz_mutation", "invariants", "concurrency_fault_repeatability", "security_supply_chain", "performance_load_stress_soak", "coverage", "compatibility_install_upgrade_migration", "observability_evidence_audit"],
+      "properties": {
+        "implementation": {"$ref": "#/$defs/lane"}, "static_quality": {"$ref": "#/$defs/lane"},
+        "unit_component": {"$ref": "#/$defs/lane"}, "integration_contract": {"$ref": "#/$defs/lane"},
+        "system_e2e": {"$ref": "#/$defs/lane"}, "regression_smoke_artifact": {"$ref": "#/$defs/lane"},
+        "negative_paths": {"$ref": "#/$defs/lane"}, "property_fuzz_mutation": {"$ref": "#/$defs/lane"},
+        "invariants": {"$ref": "#/$defs/lane"}, "concurrency_fault_repeatability": {"$ref": "#/$defs/lane"},
+        "security_supply_chain": {"$ref": "#/$defs/lane"}, "performance_load_stress_soak": {"$ref": "#/$defs/lane"},
+        "coverage": {"$ref": "#/$defs/lane"}, "compatibility_install_upgrade_migration": {"$ref": "#/$defs/lane"},
+        "observability_evidence_audit": {"$ref": "#/$defs/lane"}
+      }
+    }
+  },
+  "$defs": {
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["run_id", "task_id", "attempt_id", "head_sha", "tree_hash", "diff_hash", "policy_hash", "config_hash", "produced_at"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1}, "task_id": {"type": "string", "minLength": 1},
+        "attempt_id": {"type": "string", "minLength": 1}, "head_sha": {"type": "string", "minLength": 1},
+        "tree_hash": {"type": "string", "minLength": 1}, "diff_hash": {"type": "string", "minLength": 1},
+        "policy_hash": {"type": "string", "minLength": 1}, "config_hash": {"type": "string", "minLength": 1},
+        "produced_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["uri", "sha256", "run_id", "attempt_id", "head_sha", "author", "auditor"],
+      "properties": {
+        "uri": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "run_id": {"type": "string", "minLength": 1}, "attempt_id": {"type": "string", "minLength": 1},
+        "head_sha": {"type": "string", "minLength": 1}, "author": {"type": "string", "minLength": 1},
+        "auditor": {"type": "string", "minLength": 1}
+      }
+    },
+    "metric": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "value", "unit", "sample_count", "source", "reason_code"],
+      "properties": {"name": {"type": "string", "minLength": 1}, "value": {"type": ["number", "null"]},
+        "unit": {"type": "string", "minLength": 1}, "sample_count": {"type": "integer", "minimum": 0},
+        "source": {"type": "string", "minLength": 1}, "reason_code": {"type": ["string", "null"]}}
+    },
+    "waiver": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scope", "justification", "approver", "expires_at", "policy_hash"],
+      "properties": {"scope": {"type": "string", "minLength": 1}, "justification": {"type": "string", "minLength": 1},
+        "approver": {"type": "string", "minLength": 1}, "expires_at": {"type": "string", "format": "date-time"},
+        "policy_hash": {"type": "string", "minLength": 1}}
+    },
+    "lane": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "reason_code", "evidence", "metrics"],
+      "properties": {"status": {"enum": ["PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE"]},
+        "reason_code": {"type": "string", "minLength": 1}, "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "metrics": {"type": "array", "items": {"$ref": "#/$defs/metric"}}, "waiver": {"$ref": "#/$defs/waiver"}}
+    }
+  }
+}
