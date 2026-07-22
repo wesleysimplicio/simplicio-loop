@@ -5,12 +5,14 @@ import hashlib
 import asyncio
 import os
 import socket
+import sqlite3
 import tempfile
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
+import uuid
 
 from .hub_queue_retry import HubRetryQueue, QueueRetryError
 from .hub_scheduler import (
@@ -29,9 +31,10 @@ from .map_service_watchers import MapWatcherManager
 
 IPC_SCHEMA = "simplicio.hub-ipc/v1"
 IPC_VERSION = 1
+INTERACTIVE_SCHEMA = "simplicio.hub-interactive/v1"
 METHODS = frozenset(
     (
-        "register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report",
+        "register", "handshake", "attach", "replay", "submit", "claim", "heartbeat", "progress", "cancel", "resume", "result", "report",
         "execute", "ping", "claim_next", "scheduler_status", "scheduler_configure",
         # #503/#504/#505/#506 IPC wiring: expose the composed HubService (durable queue +
         # fair scheduler + resource governor) over the same envelope/dispatch contract as
@@ -68,6 +71,71 @@ class HubBackpressureError(HubProtocolError):
     def __init__(self, quota_error: QuotaExceededError) -> None:
         self.signal = quota_error.to_backpressure_signal()
         super().__init__(str(quota_error))
+
+
+class InteractiveStore:
+    """Durable session journal and idempotency ledger for external Hub clients."""
+
+    def __init__(self, path: str) -> None:
+        self._db = sqlite3.connect(path, check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
+        with self._db:
+            self._db.executescript("""
+                CREATE TABLE IF NOT EXISTS hub_sessions (
+                    session_id TEXT PRIMARY KEY, client_id TEXT NOT NULL, created REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS hub_events (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL, method TEXT NOT NULL, digest TEXT NOT NULL,
+                    response TEXT NOT NULL, created REAL NOT NULL,
+                    UNIQUE(session_id, request_id)
+                );
+            """)
+
+    def close(self) -> None:
+        self._db.close()
+
+    def attach(self, session_id: str, client_id: str) -> None:
+        with self._lock, self._db:
+            row = self._db.execute("SELECT client_id FROM hub_sessions WHERE session_id=?", (session_id,)).fetchone()
+            if row is not None and row["client_id"] != client_id:
+                raise HubProtocolError("session is owned by another client")
+            self._db.execute("INSERT OR IGNORE INTO hub_sessions VALUES (?,?,?)", (session_id, client_id, time.time()))
+
+    def replay(self, session_id: str, cursor: int) -> Dict[str, Any]:
+        if cursor < 0:
+            raise HubProtocolError("cursor must be non-negative")
+        rows = self._db.execute(
+            "SELECT seq,request_id,method,response FROM hub_events WHERE session_id=? AND seq>? ORDER BY seq",
+            (session_id, cursor),
+        ).fetchall()
+        events = [{"cursor": r["seq"], "request_id": r["request_id"], "method": r["method"],
+                   "response": json.loads(r["response"])} for r in rows]
+        return {"events": events, "next_cursor": events[-1]["cursor"] if events else cursor}
+
+    def apply(self, session_id: str, request_id: str, method: str, payload: Dict[str, Any], operation) -> Dict[str, Any]:
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        with self._lock:
+            row = self._db.execute(
+                "SELECT method,digest,response,seq FROM hub_events WHERE session_id=? AND request_id=?",
+                (session_id, request_id),
+            ).fetchone()
+            if row is not None:
+                if row["method"] != method or row["digest"] != digest:
+                    raise HubProtocolError("conflicting idempotency request_id reuse")
+                response = json.loads(row["response"])
+                response.update({"replayed": True, "cursor": row["seq"]})
+                return response
+            response = operation()
+            encoded = json.dumps(response, sort_keys=True)
+            with self._db:
+                cur = self._db.execute(
+                    "INSERT INTO hub_events(session_id,request_id,method,digest,response,created) VALUES (?,?,?,?,?,?)",
+                    (session_id, request_id, method, digest, encoded, time.time()),
+                )
+            response.update({"replayed": False, "cursor": cur.lastrowid})
+            return response
 
 
 def _pid_alive(pid: int) -> bool:
@@ -203,6 +271,8 @@ class HubDaemon:
         self.map_store: Optional[SingleFlightMapStore] = None
         self.map_watchers: Optional[MapWatcherManager] = None
         self._map_watch_tokens: Dict[str, str] = {}
+        self.interactive: Optional[InteractiveStore] = None
+        self.epoch = ""
 
     def start(self) -> None:
         if self.started:
@@ -210,6 +280,8 @@ class HubDaemon:
         self.lock.acquire()
         queue = HubRetryQueue(self._queue_path)
         self.queue = queue
+        self.interactive = InteractiveStore(self._queue_path + ".interactive.db")
+        self.epoch = uuid.uuid4().hex
         governor = ResourceGovernor(self._resource_limits)
         manifest = queue.scheduler_manifest()
         if manifest is not None:
@@ -253,6 +325,9 @@ class HubDaemon:
         if self.queue is not None:
             self.queue.close()
             self.queue = None
+        if self.interactive is not None:
+            self.interactive.close()
+            self.interactive = None
         self.service = None
         if self.map_watchers is not None:
             self.map_watchers.close()
@@ -463,6 +538,64 @@ class HubDaemon:
     def handle(self, envelope: HubEnvelope) -> Dict[str, Any]:
         if not self.started:
             raise HubError("Hub is not started")
+        if envelope.method == "handshake":
+            requested = envelope.payload.get("schemas", [INTERACTIVE_SCHEMA])
+            if not isinstance(requested, list) or INTERACTIVE_SCHEMA not in requested:
+                raise HubProtocolError("unsupported interactive schema/version")
+            client_id = str(envelope.payload.get("client_id") or "")
+            if not client_id:
+                raise HubProtocolError("client_id is required")
+            return {"ok": True, "schema": INTERACTIVE_SCHEMA, "version": 1,
+                    "epoch": self.epoch, "capabilities": ["attach", "replay", "idempotent-lifecycle",
+                    "fair-queue", "shared-runtime-map"]}
+        if envelope.method in {"attach", "replay"}:
+            assert self.interactive is not None
+            client_id = str(envelope.payload.get("client_id") or "")
+            session_id = str(envelope.payload.get("session_id") or "")
+            if not client_id or not session_id:
+                raise HubProtocolError("client_id and session_id are required")
+            supplied_epoch = str(envelope.payload.get("epoch") or "")
+            if supplied_epoch and supplied_epoch != self.epoch:
+                # Reconnect after restart is allowed only when the client explicitly
+                # acknowledges the new handshake instead of silently reusing handles.
+                raise HubProtocolError("stale daemon epoch; handshake again")
+            self.interactive.attach(session_id, client_id)
+            delta = self.interactive.replay(session_id, int(envelope.payload.get("cursor", 0)))
+            return {"ok": True, "schema": INTERACTIVE_SCHEMA, "epoch": self.epoch,
+                    "session_id": session_id,
+                    "runtime_handle": {"schema": "simplicio.runtime-handle/v1", "id": session_id,
+                                       "epoch": self.epoch},
+                    "map_handle": {"schema": "simplicio.map-handle/v1", "id": session_id,
+                                   "epoch": self.epoch}, **delta}
+        if envelope.method in {"submit", "cancel", "resume"} and envelope.payload.get("session_id"):
+            assert self.interactive is not None
+            session_id = str(envelope.payload["session_id"])
+            client_id = str(envelope.payload.get("client_id") or "")
+            self.interactive.attach(session_id, client_id)
+            payload = dict(envelope.payload)
+            payload.pop("session_id", None)
+            if envelope.method == "resume":
+                delegated_method = "resume"
+            else:
+                delegated_method = envelope.method
+            def operation() -> Dict[str, Any]:
+                if delegated_method == "resume":
+                    job_id = str(payload.get("job_id") or "")
+                    task_id = self.queue.find_task_id(job_id)
+                    if task_id is None:
+                        raise HubProtocolError("unknown job")
+                    job = dict(self.queue.get_row(task_id)["payload"])
+                    if job.get("state") not in {"cancelled", "failed", "blocked"}:
+                        raise HubProtocolError("job is not resumable")
+                    job["state"] = "queued"
+                    job["progress"] = 0
+                    self.queue.update_payload(task_id, job)
+                    self.scheduler.enqueue(ScheduledJob(task_id=job_id,
+                        client_id=str(job.get("client_id") or client_id)))
+                    return {"ok": True, "job": job}
+                return self.handle(HubEnvelope(envelope.request_id + ":apply", delegated_method, payload))
+            return self.interactive.apply(session_id, envelope.request_id, envelope.method,
+                                          envelope.payload, operation)
         if envelope.method == "ping":
             return {
                 "ok": True, "started": self.started, "clients": len(self.clients),
@@ -717,6 +850,9 @@ class HubDaemon:
             if envelope.method == "submit":
                 if self.queue.find_task_id(job_id) is not None:
                     raise HubProtocolError("job already exists")
+                metadata = envelope.payload.get("metadata", {})
+                if not isinstance(metadata, dict):
+                    raise HubProtocolError("metadata must be an object")
                 client_id = str(envelope.payload.get("client_id") or "")
                 job = {
                     "job_id": job_id, "client_id": client_id, "state": "queued",
