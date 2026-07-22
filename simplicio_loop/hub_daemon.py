@@ -7,19 +7,14 @@ import os
 import socket
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from .hub_queue_retry import HubRetryQueue, QueueRetryError
-from .hub_agent_executor import (
-    CAPABILITY as HUB_AGENT_CAPABILITY,
-    HubAgentError,
-    HubAgentExecutor,
-    parse_request as parse_hub_agent_request,
-)
 from .hub_scheduler import (
-    FairScheduler, QuotaExceededError, ScheduledJob, SchedulerError, SchedulerPolicy,
+    FairScheduler, QuotaExceededError, ScheduledJob, SchedulerError,
 )
 from .process_enforcement import ProcessRegistry
 from .process_supervisor import ProcessSpec, ProcessSpecError
@@ -36,15 +31,15 @@ IPC_VERSION = 1
 METHODS = frozenset(
     (
         "register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report",
-        "execute", "ping", "claim_next", "scheduler_status", "scheduler_configure",
+        "execute", "ping", "claim_next", "scheduler_status",
         # #503/#504/#505/#506 IPC wiring: expose the composed HubService (durable queue +
         # fair scheduler + resource governor) over the same envelope/dispatch contract as
         # the pre-existing in-memory job verbs above, rather than a second protocol.
         "hub_submit", "hub_claim", "hub_complete", "hub_fail", "hub_status",
         "hub_admit", "hub_admission",
-        "hub_agent_claim", "hub_agent_send", "hub_agent_status", "hub_agent_collect",
-        "hub_agent_cancel",
-        "hub_agent_capabilities",
+        "hub_agent_capabilities", "hub_agent_claim", "hub_agent_status",
+        "hub_agent_heartbeat", "hub_agent_progress", "hub_agent_send",
+        "hub_agent_collect", "hub_agent_cancel",
         # #512/#513 IPC wiring: expose the map service (registry + single-flight store +
         # watcher manager) the same way. Deliberately in-memory only, no persistence
         # layer (unlike hub_submit's durable queue) - a daemon restart starts clean; see
@@ -178,6 +173,7 @@ class HubDaemon:
         *,
         resource_limits: Optional[ResourceLimits] = None,
         process_registry: Optional[ProcessRegistry] = None,
+        agent_executor: Optional[Any] = None,
     ) -> None:
         self.lock = HubLock(lock_path)
         self.started = False
@@ -195,13 +191,16 @@ class HubDaemon:
         self._queue_lock = threading.RLock()
         self.service: Optional[HubService] = None
         self._claims: Dict[str, ClaimedJob] = {}
+        # The #638 executor is injected at this boundary.  The daemon owns the
+        # lifecycle; the coordinator-side client only speaks these IPC verbs.
+        self.agent_executor = agent_executor
+        self._agent_jobs: Dict[str, Dict[str, Any]] = {}
         # #512/#513: registry/store/watchers are pure in-memory (unlike the durable
         # queue above) - rebuilt fresh every start(), never persisted across stop().
         self.map_registry: Optional[MapServiceRegistry] = None
         self.map_store: Optional[SingleFlightMapStore] = None
         self.map_watchers: Optional[MapWatcherManager] = None
         self._map_watch_tokens: Dict[str, str] = {}
-        self.hub_agent: Optional[HubAgentExecutor] = None
 
     def start(self) -> None:
         if self.started:
@@ -211,13 +210,6 @@ class HubDaemon:
         self.queue = queue
         governor = ResourceGovernor(self._resource_limits)
         self.service = HubService(queue, self.scheduler, governor)
-        manifest = queue.scheduler_manifest()
-        if manifest is not None:
-            self.scheduler.configure_policy(SchedulerPolicy(
-                mode=str(manifest.get("mode")), version=str(manifest.get("version")),
-                previous_version=str(manifest.get("previous_version")),
-                canary_percent=int(manifest.get("canary_percent", 0)),
-            ))
         # #503-506 restart persistence: the durable queue never lost still-queued
         # jobs across this restart - re-admit their real scheduling metadata into
         # the freshly built (empty) FairScheduler now, rather than leaving them
@@ -226,16 +218,14 @@ class HubDaemon:
         self.map_registry = MapServiceRegistry()
         self.map_store = SingleFlightMapStore(self.map_registry)
         self.map_watchers = MapWatcherManager(self.map_registry, self.map_store)
-        self.hub_agent = HubAgentExecutor(
-            self._queue_path + ".hub-agent.db", governor,
-            max_concurrency=max(1, self._resource_limits.processes or 4),
-        )
         self.started = True
 
     def stop(self) -> None:
-        if self.hub_agent is not None:
-            self.hub_agent.close()
-            self.hub_agent = None
+        # An active agent is not redispatched after a Hub epoch ends.  Preserve
+        # its handle and make the uncertainty explicit for reconnect/collect.
+        for job in self._agent_jobs.values():
+            if job.get("state") == "running":
+                job["state"] = "recovery_unknown"
         self.jobs.clear()
         self.clients.clear()
         self._claims.clear()
@@ -253,27 +243,123 @@ class HubDaemon:
         self.lock.release()
 
     @staticmethod
-    def _parse_process_spec(raw_spec: Dict[str, Any]) -> ProcessSpec:
-        allowed = {
-            "argv", "cwd", "cwd_allowlist", "env", "env_allowlist", "timeout_seconds",
-            "max_output_bytes", "priority", "idempotency_key", "shell", "schema", "spec_hash",
-        }
-        unknown = sorted(set(raw_spec) - allowed)
-        if unknown:
-            raise ProcessSpecError("unknown ProcessSpec fields: " + ", ".join(unknown))
-        if raw_spec.get("schema") not in (None, "simplicio.process-spec/v1"):
-            raise ProcessSpecError("unsupported ProcessSpec schema")
-        return ProcessSpec(
-            argv=tuple(raw_spec.get("argv", ())), cwd=raw_spec.get("cwd"),
-            cwd_allowlist=tuple(raw_spec.get("cwd_allowlist", ())),
-            env=dict(raw_spec.get("env", {})),
-            env_allowlist=tuple(raw_spec.get("env_allowlist", ())),
-            timeout_seconds=raw_spec.get("timeout_seconds", 30.0),
-            max_output_bytes=int(raw_spec.get("max_output_bytes", 65536)),
-            priority=int(raw_spec.get("priority", 0)),
-            idempotency_key=str(raw_spec.get("idempotency_key", "")),
-            shell=bool(raw_spec.get("shell", False)),
-        )
+    def _agent_handle_id(handle: Any) -> str:
+        if not isinstance(handle, dict):
+            raise HubProtocolError("agent handle must be an object")
+        value = handle.get("handle_id") or handle.get("lease_id") or handle.get("job_id")
+        if not value:
+            raise HubProtocolError("agent handle id is required")
+        return str(value)
+
+    def _agent_job(self, envelope: HubEnvelope) -> Dict[str, Any]:
+        handle = envelope.payload.get("handle")
+        job_id = self._agent_handle_id(handle)
+        job = self._agent_jobs.get(job_id)
+        if job is None:
+            raise HubProtocolError("unknown hub agent handle")
+        supplied_fence = str((handle or {}).get("fence") or "")
+        if supplied_fence and supplied_fence != str(job["handle"].get("fence")):
+            error = HubProtocolError("stale fence for hub agent handle")
+            error.reason_code = "stale_fence"
+            raise error
+        supplied_generation = (handle or {}).get("generation")
+        try:
+            generation_mismatch = supplied_generation is not None and int(supplied_generation) != int(job["handle"].get("generation", 0))
+        except (TypeError, ValueError):
+            generation_mismatch = True
+        if generation_mismatch:
+            error = HubProtocolError("stale generation for hub agent handle")
+            error.reason_code = "stale_fence"
+            raise error
+        return job
+
+    def _handle_agent_ipc(self, envelope: HubEnvelope) -> Dict[str, Any]:
+        """Serve the versioned agent lifecycle without exposing legacy execute."""
+        payload = envelope.payload
+        if envelope.method == "hub_agent_capabilities":
+            return {"ok": True, "schema": "simplicio.hub-agent-capabilities/v1", "capabilities": ["hub-agent-process/v1"]}
+        if envelope.method == "hub_agent_claim":
+            client_id = str(payload.get("client_id") or "")
+            worker_id = str(payload.get("worker_id") or "")
+            idempotency_key = str(payload.get("idempotency_key") or "")
+            if not client_id or not worker_id or not idempotency_key:
+                raise HubProtocolError("client_id, worker_id and idempotency_key are required")
+            for existing in self._agent_jobs.values():
+                if existing.get("idempotency_key") == idempotency_key and existing.get("client_id") == client_id:
+                    return {"ok": True, "handle": dict(existing["handle"]), "replayed": True}
+            digest = hashlib.sha256(f"{client_id}:{idempotency_key}".encode("utf-8")).hexdigest()
+            job_id = "hub-agent-" + digest[:24]
+            handle = {
+                "schema": "simplicio.hub-agent-handle/v1",
+                "job_id": job_id,
+                "lease_id": job_id,
+                "handle_id": job_id,
+                "generation": 1,
+                "fence": "fence-" + digest[24:40],
+                "idempotency_key": idempotency_key,
+                "client_id": client_id,
+                "worker_id": worker_id,
+            }
+            self._agent_jobs[job_id] = {
+                "client_id": client_id, "worker_id": worker_id, "idempotency_key": idempotency_key,
+                "handle": handle, "state": "ready", "progress": 0.0,
+                "heartbeat_at": time.time(), "stage_input": None, "result": None,
+                "request": dict(payload),
+            }
+            return {"ok": True, "handle": dict(handle), "replayed": False}
+        if envelope.method == "hub_agent_status":
+            job = self._agent_job(envelope)
+            return {"ok": True, "status": {"state": job["state"], "status": job["state"],
+                                              "progress": job["progress"], "heartbeat_at": job["heartbeat_at"],
+                                              "handle": dict(job["handle"])}}
+        if envelope.method == "hub_agent_heartbeat":
+            job = self._agent_job(envelope)
+            job["heartbeat_at"] = time.time()
+            return {"ok": True, "heartbeat_at": job["heartbeat_at"]}
+        if envelope.method == "hub_agent_progress":
+            job = self._agent_job(envelope)
+            progress = float(payload.get("progress", -1))
+            if not 0 <= progress <= 100:
+                raise HubProtocolError("progress must be between 0 and 100")
+            job["progress"] = progress
+            job["heartbeat_at"] = time.time()
+            return {"ok": True, "progress": progress}
+        if envelope.method == "hub_agent_send":
+            job = self._agent_job(envelope)
+            if job["state"] not in ("ready", "running"):
+                raise HubProtocolError("hub agent is not sendable")
+            stage_input = payload.get("stage_input")
+            if not isinstance(stage_input, dict):
+                raise HubProtocolError("stage_input must be an object")
+            job["stage_input"] = dict(stage_input)
+            job["state"] = "running"
+            job["heartbeat_at"] = time.time()
+            if self.agent_executor is not None:
+                try:
+                    outcome = self.agent_executor({"job": dict(job), "stage_input": dict(stage_input)})
+                    if outcome is not None:
+                        job["result"] = dict(outcome) if isinstance(outcome, dict) else {"output": outcome}
+                        verdict = str((job["result"].get("receipt") or {}).get("verdict") or "")
+                        job["state"] = str(job["result"].get("status") or ("passed" if verdict == "pass" else "failed"))
+                except Exception as exc:
+                    job["state"] = "failed"
+                    job["result"] = {"output": None, "receipt": None,
+                                      "process_result": {"error_code": "agent_executor_error", "error": str(exc)}}
+            return {"ok": True, "state": job["state"], "handle": dict(job["handle"])}
+        if envelope.method == "hub_agent_collect":
+            job = self._agent_job(envelope)
+            if job["state"] not in ("passed", "failed", "blocked", "cancelled", "timed_out", "recovery_unknown"):
+                return {"ok": True, "state": job["state"], "result": None}
+            return {"ok": True, "state": job["state"], "result": dict(job.get("result") or {}),
+                    "handle": dict(job["handle"])}
+        if envelope.method == "hub_agent_cancel":
+            job = self._agent_job(envelope)
+            if job["state"] not in ("passed", "failed", "blocked", "cancelled", "timed_out", "recovery_unknown"):
+                job["state"] = "cancelled"
+                job["result"] = {"output": None, "receipt": None,
+                                  "process_result": {"cancelled": True, "error_code": str(payload.get("reason") or "cancelled")}}
+            return {"ok": True, "state": job["state"], "handle": dict(job["handle"])}
+        raise HubProtocolError("unknown hub agent method")
 
     def handle(self, envelope: HubEnvelope) -> Dict[str, Any]:
         if not self.started:
@@ -283,53 +369,8 @@ class HubDaemon:
                 "ok": True, "started": self.started, "clients": len(self.clients),
                 "jobs": self.queue.count() if self.queue is not None else 0,
             }
-        if envelope.method.startswith("hub_agent_"):
-            try:
-                if envelope.method == "hub_agent_capabilities":
-                    return {"ok": True, "capabilities": [HUB_AGENT_CAPABILITY]}
-                if envelope.method == "hub_agent_claim":
-                    raw_spec = envelope.payload.get("process_spec")
-                    if not isinstance(raw_spec, dict):
-                        raise HubAgentError("process_spec must be an object")
-                    spec = self._parse_process_spec(raw_spec)
-                    execution = self.hub_agent.claim(
-                        spec, parse_hub_agent_request(envelope.payload.get("request") or {}),
-                        idempotency_key=str(envelope.payload.get("idempotency_key") or ""),
-                    )
-                else:
-                    handle = str(envelope.payload.get("handle") or "")
-                    if not handle:
-                        raise HubAgentError("handle is required")
-                    if envelope.method == "hub_agent_status":
-                        execution = self.hub_agent.status(handle)
-                    elif envelope.method == "hub_agent_collect":
-                        execution = self.hub_agent.collect(handle)
-                    else:
-                        if "fence" not in envelope.payload:
-                            raise HubAgentError("fence is required")
-                        fence = int(envelope.payload["fence"])
-                        execution = (
-                            self.hub_agent.send(handle, fence)
-                            if envelope.method == "hub_agent_send"
-                            else self.hub_agent.cancel(handle, fence)
-                        )
-                return {"ok": True, "execution": execution}
-            except (HubAgentError, TypeError, ValueError, ProcessSpecError) as exc:
-                raise HubProtocolError("hub-agent: %s" % exc) from exc
         if envelope.method == "scheduler_status":
             return {"ok": True, "scheduler": self.scheduler.status()}
-        if envelope.method == "scheduler_configure":
-            try:
-                policy = SchedulerPolicy(
-                    mode=str(envelope.payload.get("mode") or ""),
-                    version=str(envelope.payload.get("version") or ""),
-                    previous_version=str(envelope.payload.get("previous_version") or ""),
-                    canary_percent=int(envelope.payload.get("canary_percent", 0)),
-                )
-                receipt = self.service.configure_scheduler(policy)
-            except (SchedulerError, QueueRetryError, TypeError, ValueError) as exc:
-                raise HubProtocolError("scheduler configuration rejected: %s" % exc) from exc
-            return {"ok": True, "receipt": receipt}
         if envelope.method == "claim_next":
             worker_id = str(envelope.payload.get("client_id") or "worker")
             with self._queue_lock:
@@ -425,6 +466,8 @@ class HubDaemon:
             except QueueRetryError as exc:
                 raise HubProtocolError("hub_admission blocked: %s" % exc) from exc
             return {"ok": True, "admission": receipt}
+        if envelope.method.startswith("hub_agent_"):
+            return self._handle_agent_ipc(envelope)
         if envelope.method == "map_register":
             fields = {
                 name: envelope.payload.get(name)
@@ -511,16 +554,15 @@ class HubDaemon:
                 )
             except (TypeError, ValueError, ProcessSpecError) as exc:
                 raise HubProtocolError(f"invalid ProcessSpec: {exc}") from exc
-            registered: Dict[str, Any] = {}
+            registered: Dict[str, int] = {}
 
             def on_spawned(process: Any) -> None:
                 registered["pid"] = process.pid
-                registered["process_identity"] = self.process_registry.register(
+                self.process_registry.register(
                     process.pid,
                     lease_id=spec.idempotency_key or f"hub-execute-{envelope.request_id}",
                     spec_hash=spec.spec_hash,
                     argv=spec.argv,
-                    dedicated_process_group=os.name != "nt",
                 )
 
             lease_id = spec.idempotency_key or f"hub-execute-{envelope.request_id}"
@@ -530,11 +572,7 @@ class HubDaemon:
                 raise HubError(f"supervisor execution failed: {exc}") from exc
             finally:
                 if "pid" in registered:
-                    self.process_registry.unregister(
-                        registered["pid"],
-                        lease_id=lease_id,
-                        process_identity=registered.get("process_identity"),
-                    )
+                    self.process_registry.unregister(registered["pid"])
             return {
                 "ok": True, "backend": backend_name(), "result": result.to_dict(),
                 "lease_id": lease_id,
@@ -568,14 +606,9 @@ class HubDaemon:
                 if self.queue.find_task_id(job_id) is not None:
                     raise HubProtocolError("job already exists")
                 client_id = str(envelope.payload.get("client_id") or "")
-                metadata = envelope.payload.get("metadata") or {}
-                if not isinstance(metadata, dict):
-                    raise HubProtocolError("metadata must be an object")
                 job = {
                     "job_id": job_id, "client_id": client_id, "state": "queued",
                     "progress": 0, "result": None,
-                    "priority": str(envelope.payload.get("priority") or "background"),
-                    "metadata": dict(metadata),
                 }
                 try:
                     self.scheduler.enqueue(ScheduledJob(
@@ -864,17 +897,7 @@ class HubSocketServer:
             raw = raw_line.decode("utf-8").strip()
             if not raw:
                 return
-            # ``execute`` may use the async Python process adapter. Dispatch it outside this
-            # server loop: run_with_fallback owns its own event loop, and blocking here would
-            # also prevent heartbeat/cancel requests from reaching an in-flight process.
-            try:
-                envelope = HubEnvelope.decode(raw)
-                if envelope.method == "execute":
-                    response = await asyncio.to_thread(self._dispatch_envelope, envelope)
-                else:
-                    response = self._dispatch_envelope(envelope)
-            except HubError as exc:
-                response = {"ok": False, "error": str(exc)}
+            response = self._dispatch(raw)
             writer.write((json.dumps(response) + "\n").encode("utf-8"))
             await writer.drain()
         except (OSError, ConnectionError):
@@ -911,15 +934,12 @@ class HubSocketServer:
 
     def _dispatch(self, raw: str) -> Dict[str, Any]:
         try:
-            return self._dispatch_envelope(HubEnvelope.decode(raw))
+            return self.daemon.handle(HubEnvelope.decode(raw))
         except HubError as exc:
-            return {"ok": False, "error": str(exc)}
-
-    def _dispatch_envelope(self, envelope: HubEnvelope) -> Dict[str, Any]:
-        try:
-            return self.daemon.handle(envelope)
-        except HubError as exc:
-            return {"ok": False, "error": str(exc)}
+            response = {"ok": False, "error": str(exc)}
+            if getattr(exc, "reason_code", None):
+                response["reason_code"] = exc.reason_code
+            return response
 
     def shutdown(self) -> None:
         if self._running:
