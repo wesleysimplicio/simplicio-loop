@@ -14,12 +14,13 @@ from typing import Any, Dict, Optional, Set
 
 from .hub_queue_retry import HubRetryQueue, QueueRetryError
 from .hub_scheduler import (
-    FairScheduler, QuotaExceededError, ScheduledJob, SchedulerError,
+    FairScheduler, QuotaExceededError, ScheduledJob, SchedulerError, SchedulerPolicy,
 )
 from .process_enforcement import ProcessRegistry
 from .process_supervisor import ProcessSpec, ProcessSpecError
 from .process_supervisor_rust import backend_name, run_with_fallback
 from .hub_governor import RESOURCE_NAMES, ResourceGovernor, ResourceLimits, ResourceRequest
+from .hub_agent_executor import HubAgentExecutor, HubAgentError, parse_request
 from .hub_service import ClaimedJob, HubService
 from .map_service import MapServiceRegistry, RepositoryIdentity
 from .map_service_single_flight import SingleFlightMapStore
@@ -31,7 +32,7 @@ IPC_VERSION = 1
 METHODS = frozenset(
     (
         "register", "submit", "claim", "heartbeat", "progress", "cancel", "result", "report",
-        "execute", "ping", "claim_next", "scheduler_status",
+        "execute", "ping", "claim_next", "scheduler_status", "scheduler_configure",
         # #503/#504/#505/#506 IPC wiring: expose the composed HubService (durable queue +
         # fair scheduler + resource governor) over the same envelope/dispatch contract as
         # the pre-existing in-memory job verbs above, rather than a second protocol.
@@ -194,6 +195,7 @@ class HubDaemon:
         # The #638 executor is injected at this boundary.  The daemon owns the
         # lifecycle; the coordinator-side client only speaks these IPC verbs.
         self.agent_executor = agent_executor
+        self.hub_agent: Optional[HubAgentExecutor] = None
         self._agent_jobs: Dict[str, Dict[str, Any]] = {}
         # #512/#513: registry/store/watchers are pure in-memory (unlike the durable
         # queue above) - rebuilt fresh every start(), never persisted across stop().
@@ -209,7 +211,23 @@ class HubDaemon:
         queue = HubRetryQueue(self._queue_path)
         self.queue = queue
         governor = ResourceGovernor(self._resource_limits)
+        manifest = queue.scheduler_manifest()
+        if manifest is not None:
+            try:
+                self.scheduler.configure_policy(SchedulerPolicy(
+                    mode=str(manifest.get("mode") or ""),
+                    version=str(manifest.get("version") or ""),
+                    previous_version=str(manifest.get("previous_version") or ""),
+                    canary_percent=int(manifest.get("canary_percent", 0)),
+                ))
+            except (SchedulerError, TypeError, ValueError) as exc:
+                queue.close()
+                self.queue = None
+                raise HubError("persisted scheduler policy is invalid: %s" % exc) from exc
         self.service = HubService(queue, self.scheduler, governor)
+        # The Hub owns one durable executor.  Coordinator clients only use IPC;
+        # direct callers receive the same authority for local conformance tests.
+        self.hub_agent = HubAgentExecutor(self._queue_path + ".agent.db", governor)
         # #503-506 restart persistence: the durable queue never lost still-queued
         # jobs across this restart - re-admit their real scheduling metadata into
         # the freshly built (empty) FairScheduler now, rather than leaving them
@@ -229,6 +247,9 @@ class HubDaemon:
         self.jobs.clear()
         self.clients.clear()
         self._claims.clear()
+        if self.hub_agent is not None:
+            self.hub_agent.close()
+            self.hub_agent = None
         if self.queue is not None:
             self.queue.close()
             self.queue = None
@@ -244,6 +265,8 @@ class HubDaemon:
 
     @staticmethod
     def _agent_handle_id(handle: Any) -> str:
+        if isinstance(handle, str) and handle:
+            return handle
         if not isinstance(handle, dict):
             raise HubProtocolError("agent handle must be an object")
         value = handle.get("handle_id") or handle.get("lease_id") or handle.get("job_id")
@@ -255,9 +278,27 @@ class HubDaemon:
         handle = envelope.payload.get("handle")
         job_id = self._agent_handle_id(handle)
         job = self._agent_jobs.get(job_id)
+        if job is None and self.hub_agent is not None:
+            try:
+                execution = self.hub_agent.status(job_id)
+            except HubAgentError:
+                execution = None
+            if execution is not None:
+                job = {
+                    "client_id": "", "worker_id": "", "idempotency_key": "",
+                    "handle": {"handle_id": job_id, "lease_id": job_id, "job_id": job_id,
+                                "generation": 1, "fence": execution["fence"]},
+                    "state": execution["state"], "progress": 0.0,
+                    "heartbeat_at": execution.get("heartbeat_at"),
+                    "stage_input": None, "result": execution.get("result"),
+                    "execution": True, "executor_handle": job_id,
+                }
+                self._agent_jobs[job_id] = job
         if job is None:
             raise HubProtocolError("unknown hub agent handle")
-        supplied_fence = str((handle or {}).get("fence") or "")
+        supplied_fence = str((handle or {}).get("fence") or "") if isinstance(handle, dict) else ""
+        if not supplied_fence:
+            supplied_fence = str(envelope.payload.get("fence") or "")
         if supplied_fence and supplied_fence != str(job["handle"].get("fence")):
             error = HubProtocolError("stale fence for hub agent handle")
             error.reason_code = "stale_fence"
@@ -300,15 +341,51 @@ class HubDaemon:
                 "client_id": client_id,
                 "worker_id": worker_id,
             }
+            process_spec = payload.get("process_spec")
+            if process_spec is not None:
+                if self.hub_agent is None or not isinstance(process_spec, dict):
+                    raise HubProtocolError("Hub agent executor is unavailable")
+                try:
+                    spec = ProcessSpec(
+                        argv=tuple(process_spec.get("argv", ())),
+                        cwd=process_spec.get("cwd"),
+                        cwd_allowlist=tuple(process_spec.get("cwd_allowlist", ())),
+                        env=dict(process_spec.get("env", {})),
+                        env_allowlist=tuple(process_spec.get("env_allowlist", ())),
+                        timeout_seconds=process_spec.get("timeout_seconds", 30.0),
+                        max_output_bytes=int(process_spec.get("max_output_bytes", 65536)),
+                        priority=int(process_spec.get("priority", 0)),
+                        idempotency_key=idempotency_key,
+                        shell=bool(process_spec.get("shell", False)),
+                    )
+                    execution = self.hub_agent.claim(
+                        spec, parse_request(dict(payload.get("request") or {})),
+                        idempotency_key=idempotency_key,
+                    )
+                except (HubAgentError, TypeError, ValueError) as exc:
+                    raise HubProtocolError("hub agent claim blocked: %s" % exc) from exc
+                handle = {
+                    "schema": "simplicio.hub-agent-handle/v1",
+                    "job_id": execution["handle"], "lease_id": execution["handle"],
+                    "handle_id": execution["handle"], "generation": 1,
+                    "fence": execution["fence"], "idempotency_key": idempotency_key,
+                    "client_id": client_id, "worker_id": worker_id,
+                }
             self._agent_jobs[job_id] = {
                 "client_id": client_id, "worker_id": worker_id, "idempotency_key": idempotency_key,
                 "handle": handle, "state": "ready", "progress": 0.0,
                 "heartbeat_at": time.time(), "stage_input": None, "result": None,
                 "request": dict(payload),
+                "executor_handle": execution["handle"] if process_spec is not None else None,
             }
             return {"ok": True, "handle": dict(handle), "replayed": False}
         if envelope.method == "hub_agent_status":
             job = self._agent_job(envelope)
+            if job.get("execution") and self.hub_agent is not None:
+                execution = self.hub_agent.status(job["handle"]["handle_id"])
+                job["state"] = execution["state"]
+                job["result"] = execution.get("result")
+                return {"ok": True, "execution": execution}
             return {"ok": True, "status": {"state": job["state"], "status": job["state"],
                                               "progress": job["progress"], "heartbeat_at": job["heartbeat_at"],
                                               "handle": dict(job["handle"])}}
@@ -334,6 +411,14 @@ class HubDaemon:
             job["stage_input"] = dict(stage_input)
             job["state"] = "running"
             job["heartbeat_at"] = time.time()
+            if job.get("executor_handle") and self.hub_agent is not None:
+                try:
+                    execution = self.hub_agent.send(job["executor_handle"], int(job["handle"]["fence"]))
+                except (HubAgentError, TypeError, ValueError) as exc:
+                    raise HubProtocolError("hub agent send blocked: %s" % exc) from exc
+                job["state"] = execution["state"]
+                job["result"] = execution.get("result")
+                return {"ok": True, "execution": execution, "handle": dict(job["handle"])}
             if self.agent_executor is not None:
                 try:
                     outcome = self.agent_executor({"job": dict(job), "stage_input": dict(stage_input)})
@@ -348,12 +433,26 @@ class HubDaemon:
             return {"ok": True, "state": job["state"], "handle": dict(job["handle"])}
         if envelope.method == "hub_agent_collect":
             job = self._agent_job(envelope)
+            if job.get("execution") and self.hub_agent is not None:
+                try:
+                    execution = self.hub_agent.collect(job["handle"]["handle_id"])
+                except HubAgentError as exc:
+                    if "not terminal" in str(exc):
+                        return {"ok": True, "execution": self.hub_agent.status(job["handle"]["handle_id"])}
+                    raise HubProtocolError(str(exc)) from exc
+                return {"ok": True, "execution": execution}
             if job["state"] not in ("passed", "failed", "blocked", "cancelled", "timed_out", "recovery_unknown"):
                 return {"ok": True, "state": job["state"], "result": None}
             return {"ok": True, "state": job["state"], "result": dict(job.get("result") or {}),
                     "handle": dict(job["handle"])}
         if envelope.method == "hub_agent_cancel":
             job = self._agent_job(envelope)
+            if job.get("executor_handle") and self.hub_agent is not None:
+                try:
+                    execution = self.hub_agent.cancel(job["executor_handle"], int(job["handle"]["fence"]))
+                except (HubAgentError, TypeError, ValueError) as exc:
+                    raise HubProtocolError("hub agent cancel blocked: %s" % exc) from exc
+                return {"ok": True, "execution": execution, "handle": dict(job["handle"])}
             if job["state"] not in ("passed", "failed", "blocked", "cancelled", "timed_out", "recovery_unknown"):
                 job["state"] = "cancelled"
                 job["result"] = {"output": None, "receipt": None,
@@ -371,6 +470,19 @@ class HubDaemon:
             }
         if envelope.method == "scheduler_status":
             return {"ok": True, "scheduler": self.scheduler.status()}
+        if envelope.method == "scheduler_configure":
+            try:
+                policy = SchedulerPolicy(
+                    mode=str(envelope.payload.get("mode") or ""),
+                    version=str(envelope.payload.get("version") or ""),
+                    previous_version=str(envelope.payload.get("previous_version") or ""),
+                    canary_percent=int(envelope.payload.get("canary_percent", 0)),
+                )
+                receipt = self.scheduler.configure_policy(policy)
+                self.queue.set_scheduler_manifest(policy.to_manifest())
+            except (SchedulerError, QueueRetryError, TypeError, ValueError) as exc:
+                raise HubProtocolError("scheduler configuration rejected: %s" % exc) from exc
+            return {"ok": True, "receipt": receipt}
         if envelope.method == "claim_next":
             worker_id = str(envelope.payload.get("client_id") or "worker")
             with self._queue_lock:

@@ -199,8 +199,12 @@ def plan(task_path: str, out_path: str) -> int:
 
 
 def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int,
-        quality_provider: Optional[str] = None, quality_policy: str = "strict-default",
-        result_file: str = "", required_handshake_fingerprint: str = "") -> int:
+            quality_provider: Optional[str] = None, quality_policy: str = "strict-default",
+            result_file: str = "", required_handshake_fingerprint: str = "") -> int:
+    # Preserve the pre-result-file positional surface used by integrations that
+    # passed the fingerprint as the seventh argument.
+    if not required_handshake_fingerprint and str(result_file).startswith("sha256:"):
+        required_handshake_fingerprint, result_file = str(result_file), ""
     # Issue #613: a quality provider is mandatory between execution and
     # verify/oracle. Fail-closed at the CLI boundary when none is supplied so the
     # run is never silently executed without the quality gate.
@@ -824,9 +828,14 @@ def main(argv=None) -> int:
     if command == "plan":
         return plan(args.task, args.out)
     if command == "run":
+        if (args.quality_provider is None and args.quality_policy == "strict-default"
+                and not args.result_file and not args.require_handshake_fingerprint):
+            # Preserve the original four-argument dispatch contract for
+            # embedders that replace ``run`` with the legacy callable.
+            return run(args.repo, args.task, args.delivery, args.max_iterations)
         return run(args.repo, args.task, args.delivery, args.max_iterations,
-                  args.quality_provider, args.quality_policy, args.result_file,
-                  args.require_handshake_fingerprint)
+                   args.quality_provider, args.quality_policy, args.result_file,
+                   args.require_handshake_fingerprint)
     if command == "extensions":
         return extensions_doctor(args.provider, args.policy, args.schema)
     if command == "oracle":
