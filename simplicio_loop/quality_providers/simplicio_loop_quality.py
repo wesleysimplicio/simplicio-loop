@@ -31,6 +31,13 @@ def capability_negotiate() -> dict:
             "structured_findings": True,
             "cancel_token": True,
             "per_run_matrix": True,
+            "test_environment": {
+                "capability": "test_environment_v1",
+                "request_schema": "simplicio.test-environment-request/v1",
+                "receipt_schema": "simplicio.test-environment-receipt/v1",
+                "authority": "loop",
+                "provider_may_provision": False,
+            },
         },
     }
 
