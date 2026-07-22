@@ -37,8 +37,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -658,11 +660,13 @@ class StageCoordinatorJournal:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
 
     def append(self, event_type: str, payload: Mapping[str, Any]) -> None:
         record = {"ts": time.time(), "event_type": event_type, "payload": dict(payload)}
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, sort_keys=True, default=str) + "\n")
 
     def replay(self) -> list[dict[str, Any]]:
         if not self.path.exists():
@@ -725,6 +729,10 @@ class StageAgentCoordinator:
         self.slots = available_slots(host_total_slots=host_total_slots, coordinator_slots=coordinator_slots)
         self.poll_interval_seconds = poll_interval_seconds
         self.results: dict[str, StageResult] = {}
+        self._state_lock = threading.RLock()
+        self._cancelled = threading.Event()
+        self._active: dict[str, tuple[AgentDriver, AgentInstance]] = {}
+        self.wave_metrics: list[dict[str, Any]] = []
         if self.journal:
             for stage_id in self.journal.passed_stage_ids():
                 self.results[stage_id] = StageResult(stage_id=stage_id, status="passed")
@@ -781,6 +789,8 @@ class StageAgentCoordinator:
         context_hash = _sha256(stage_context)
 
         instance = adapter.spawn(role=role, stage=stage, stage_context=stage_context)
+        with self._state_lock:
+            self._active[stage_id] = (adapter, instance)
         instance.run_id, instance.task_id, instance.attempt_id = self.run_id, self.task_id, attempt_id
         instance.fence, instance.plan_revision = fence, plan_revision
         instance.context_hash, instance.manifest_hash = context_hash, self.manifest_hash
@@ -796,6 +806,8 @@ class StageAgentCoordinator:
 
         deadline = time.time() + (deadline_seconds if deadline_seconds is not None else stage.get("timeout_seconds", 600))
         while instance.status == "created":
+            if self._cancelled.is_set():
+                adapter.cancel(instance, reason=REASON_CANCELLED)
             instance = adapter.poll(instance)
             if instance.status == "created" and time.time() > deadline:
                 adapter.cancel(instance, reason=REASON_TIMEOUT)
@@ -825,6 +837,8 @@ class StageAgentCoordinator:
         self._log("input_sent", {"stage_id": stage_id, "instance_id": instance.instance_id})
 
         while instance.status not in TERMINAL_DRIVER_STATUSES:
+            if self._cancelled.is_set():
+                adapter.cancel(instance, reason=REASON_CANCELLED)
             instance = adapter.poll(instance)
             self._log("heartbeat", {"stage_id": stage_id, "instance_id": instance.instance_id,
                                      "status": instance.status, "heartbeat_at": instance.last_heartbeat_at})
@@ -882,18 +896,95 @@ class StageAgentCoordinator:
         self._log("stage_passed", {"stage_id": stage_id, "instance_id": instance.instance_id})
         result = StageResult(stage_id=stage_id, status="passed", instance=instance)
         self.results[stage_id] = result
+        with self._state_lock:
+            self._active.pop(stage_id, None)
         return result
 
+    def cancel_stage(self, stage_id: str, *, reason: str = REASON_CANCELLED) -> bool:
+        """Cancel an active stage without affecting independent peers."""
+        with self._state_lock:
+            active = self._active.get(stage_id)
+        if active is None:
+            return False
+        adapter, instance = active
+        adapter.cancel(instance, reason=reason)
+        self._log("cancel_requested", {"stage_id": stage_id, "reason_code": reason})
+        return True
+
+    def cancel_all(self, *, reason: str = REASON_CANCELLED) -> list[str]:
+        """Stop admission of later waves and cancel every currently active stage."""
+        self._cancelled.set()
+        with self._state_lock:
+            stage_ids = sorted(self._active)
+        for stage_id in stage_ids:
+            self.cancel_stage(stage_id, reason=reason)
+        return stage_ids
+
     def run_all(self, **stage_kwargs: Any) -> dict[str, StageResult]:
-        """Drive every stage to completion, wave by wave, honoring capacity."""
+        """Drive dependency waves concurrently, bounded by the Hub slot grant.
+
+        The executor only overlaps coordinator waits; adapters remain the sole process
+        launchers and the Hub-provided ``slots`` value is the hard admission bound.
+        A one-slot grant deliberately follows the serial path.
+        """
         for wave in plan_waves(self.graph):
+            if self._cancelled.is_set():
+                break
             ready = [sid for sid in wave if self.is_unlocked(sid) and sid not in self.results]
-            batch = ready[: max(self.slots, 0)] if self.slots else ready
-            for stage_id in batch:
-                self.run_stage(stage_id, **stage_kwargs)
-            for stage_id in ready[len(batch):] if self.slots else []:
-                self._log("blocked", {"stage_id": stage_id, "reason_code": REASON_ZERO_CAPACITY})
-                self.results[stage_id] = StageResult(stage_id=stage_id, status="blocked", reason_code=REASON_ZERO_CAPACITY)
+            if not ready:
+                continue
+            if self.slots <= 0:
+                for stage_id in ready:
+                    self._log("blocked", {"stage_id": stage_id, "reason_code": REASON_ZERO_CAPACITY})
+                    self.results[stage_id] = StageResult(stage_id=stage_id, status="blocked", reason_code=REASON_ZERO_CAPACITY)
+                continue
+            started = time.monotonic()
+            completed: dict[str, StageResult] = {}
+            timings: dict[str, dict[str, float]] = {}
+
+            def execute(stage_id: str, submitted_at: float) -> StageResult:
+                stage_started = time.monotonic()
+                result = self.run_stage(stage_id, **stage_kwargs)
+                timings[stage_id] = {
+                    "queue_wait_seconds": stage_started - submitted_at,
+                    "started": stage_started,
+                    "ended": time.monotonic(),
+                }
+                return result
+
+            if self.slots == 1 or len(ready) == 1:
+                for stage_id in ready:
+                    completed[stage_id] = execute(stage_id, time.monotonic())
+            else:
+                with ThreadPoolExecutor(max_workers=self.slots, thread_name_prefix="hub-stage") as executor:
+                    futures: dict[Future[StageResult], str] = {
+                        executor.submit(execute, stage_id, time.monotonic()): stage_id
+                        for stage_id in ready
+                    }
+                    for future in as_completed(futures):
+                        stage_id = futures[future]
+                        completed[stage_id] = future.result()
+            elapsed = time.monotonic() - started
+            ordered = sorted(completed)
+            with self._state_lock:
+                for stage_id in ordered:
+                    self.results[stage_id] = completed[stage_id]
+            overlap = 0.0
+            spans = sorted((value["started"], value["ended"]) for value in timings.values())
+            for index, (left_start, left_end) in enumerate(spans):
+                for right_start, right_end in spans[index + 1:]:
+                    overlap += max(0.0, min(left_end, right_end) - max(left_start, right_start))
+            metric = {
+                "stages": ordered, "slots": self.slots, "elapsed_seconds": elapsed,
+                "queue_wait_seconds": {sid: timings[sid]["queue_wait_seconds"] for sid in ordered},
+                "overlap_seconds": overlap,
+                "throughput_stages_per_second": len(ordered) / elapsed if elapsed else None,
+                "cpu_seconds": None, "rss_peak_bytes": None,
+                "resource_metrics_unavailable_reason":
+                    "portable adapters do not expose per-stage CPU/RSS telemetry",
+            }
+            self.wave_metrics.append(metric)
+            self._log("wave_completed", metric)
         return self.results
 
     def status_report(self) -> dict[str, Any]:
@@ -905,6 +996,7 @@ class StageAgentCoordinator:
             "rejected": self.rejected,
             "terminal_reached": self.terminal_reached(),
             "results": {sid: r.status for sid, r in self.results.items()},
+            "wave_metrics": list(self.wave_metrics),
         }
 
 
