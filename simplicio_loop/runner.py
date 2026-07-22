@@ -2860,7 +2860,7 @@ def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
     return read_status(repo, run_id)
 
 
-def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3, quality_provider: Optional[str] = None, quality_policy: str = "strict-default") -> Dict[str, Any]:
+def _conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3, quality_provider: Optional[str] = None, quality_policy: str = "strict-default") -> Dict[str, Any]:
     """Arm, execute, and independently verify one run as one durable operation.
 
     Issue #279: this boundary must never leave a run partially armed.  Either the full
@@ -2957,6 +2957,15 @@ def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_itera
                         receipt=str(run_dir / "quality-matrix.json"))
             return read_status(repo, run_id)
     return verify_run(repo, run_id)
+
+
+def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3, quality_provider: Optional[str] = None, quality_policy: str = "strict-default") -> Dict[str, Any]:
+    """Conduct a run and attach its public Completion-Oracle-derived outcome."""
+    status = _conduct_run(repo, task_path, delivery, max_iterations, retry_budget=retry_budget,
+                          quality_provider=quality_provider, quality_policy=quality_policy)
+    from .run_outcome import persist_run_outcome
+    status["outcome"] = persist_run_outcome(status)
+    return status
 
 
 def _operator_worker_limit(requested: Optional[int], item_count: int) -> int:

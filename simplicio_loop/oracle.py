@@ -240,6 +240,15 @@ def persist_completion_receipt(payload: Dict[str, Any], loop_dir: str, run_dir: 
         "loop_dir": str(loop),
         "run_dir": str(run) if run else "",
         "run_id": run.name if run else "",
+        "source_binding": {
+            "kind": str((manifest or {}).get("source_kind") or "local"),
+            "identity": str((manifest or {}).get("issue_ref") or (manifest or {}).get("source")
+                            or (manifest or {}).get("task_path") or ""),
+            "digest": str((manifest or {}).get("source_snapshot_hash")
+                          or (manifest or {}).get("task_contract_hash")
+                          or (manifest or {}).get("collection_hash")
+                          or (manifest or {}).get("diff_hash") or ""),
+        },
         "delivery_target": manifest.get("delivery_target", ""),
         "delivery_state": delivery.get("current_state", ""),
         "challenge": challenge.get("challenge", ""),

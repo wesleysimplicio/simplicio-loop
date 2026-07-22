@@ -751,9 +751,10 @@ def test_run_blocks_when_mapper_preflight_version_too_old(tmp_path):
             })
         },
     )
-    assert started.returncode == 0, started.stdout + started.stderr
+    assert started.returncode == 20, started.stdout + started.stderr
     payload = json.loads(started.stdout)
     assert payload["state"]["phase"] == "blocked"
+    assert payload["outcome"]["outcome"] == "BLOCKED"
     assert "minimum version" in payload["state"]["blockers"][0]
 
 

@@ -31,6 +31,16 @@ import re
 from typing import Any, Mapping, Sequence
 
 SCHEMA_ID = "simplicio.loop-extension/v1"
+CORE_CAPABILITIES = ("run-outcome/v1",)
+
+
+def extension_handshake() -> dict[str, Any]:
+    """Capabilities extensions may consume; none confers completion authority."""
+    return {
+        "schema": "simplicio.loop-extension-handshake/v1",
+        "capabilities": list(CORE_CAPABILITIES),
+        "completion_authority": "core-completion-oracle-only",
+    }
 
 _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 _ID_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
