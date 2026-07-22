@@ -232,6 +232,25 @@ def test_execute_process_over_hub_uses_safe_supervisor_contract() -> None:
             daemon.stop()
 
 
+def test_dispatch_and_submit_reject_invalid_protocol_payloads() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        server = HubSocketServer(daemon, str(Path(directory) / "hub.sock"))
+        try:
+            invalid = server._dispatch(json.dumps({
+                "schema": "simplicio.hub-ipc/v1", "version": 99,
+                "request_id": "bad", "method": "ping", "payload": {},
+            }))
+            assert invalid["ok"] is False
+            with pytest.raises(HubProtocolError, match="metadata must be an object"):
+                daemon.handle(HubEnvelope(
+                    "bad-metadata", "submit", {"job_id": "job", "metadata": ["not", "object"]},
+                ))
+        finally:
+            daemon.stop()
+
+
 def test_execute_rejects_invalid_spec_and_enforces_deadline() -> None:
     with tempfile.TemporaryDirectory() as directory:
         daemon = HubDaemon(str(Path(directory) / "hub.lock"))

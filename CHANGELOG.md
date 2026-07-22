@@ -7,6 +7,11 @@
 
 ## [Unreleased]
 
+- Added `HubQueueAgentClient` for strict, subprocess-free stage-agent execution through the
+  central Hub, including safe `ProcessSpec` projection, durable effect journaling, reconnect and
+  idempotent restart recovery, lossless process-result evidence, cancellation/heartbeat, a public
+  conformance lane, and a reproducible raw-sample benchmark (#615).
+
 ## [3.38.0] — 2026-07-17
 
 - **Multi-agent coordination core (`scripts/coordinator.py`):** given live GitHub state (claim

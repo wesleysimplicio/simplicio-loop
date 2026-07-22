@@ -476,9 +476,14 @@ class HubDaemon:
                 if self.queue.find_task_id(job_id) is not None:
                     raise HubProtocolError("job already exists")
                 client_id = str(envelope.payload.get("client_id") or "")
+                metadata = envelope.payload.get("metadata") or {}
+                if not isinstance(metadata, dict):
+                    raise HubProtocolError("metadata must be an object")
                 job = {
                     "job_id": job_id, "client_id": client_id, "state": "queued",
                     "progress": 0, "result": None,
+                    "priority": str(envelope.payload.get("priority") or "background"),
+                    "metadata": dict(metadata),
                 }
                 try:
                     self.scheduler.enqueue(ScheduledJob(
@@ -767,7 +772,17 @@ class HubSocketServer:
             raw = raw_line.decode("utf-8").strip()
             if not raw:
                 return
-            response = self._dispatch(raw)
+            # ``execute`` may use the async Python process adapter. Dispatch it outside this
+            # server loop: run_with_fallback owns its own event loop, and blocking here would
+            # also prevent heartbeat/cancel requests from reaching an in-flight process.
+            try:
+                envelope = HubEnvelope.decode(raw)
+                if envelope.method == "execute":
+                    response = await asyncio.to_thread(self._dispatch_envelope, envelope)
+                else:
+                    response = self._dispatch_envelope(envelope)
+            except HubError as exc:
+                response = {"ok": False, "error": str(exc)}
             writer.write((json.dumps(response) + "\n").encode("utf-8"))
             await writer.drain()
         except (OSError, ConnectionError):
@@ -804,7 +819,13 @@ class HubSocketServer:
 
     def _dispatch(self, raw: str) -> Dict[str, Any]:
         try:
-            return self.daemon.handle(HubEnvelope.decode(raw))
+            return self._dispatch_envelope(HubEnvelope.decode(raw))
+        except HubError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def _dispatch_envelope(self, envelope: HubEnvelope) -> Dict[str, Any]:
+        try:
+            return self.daemon.handle(envelope)
         except HubError as exc:
             return {"ok": False, "error": str(exc)}
 
