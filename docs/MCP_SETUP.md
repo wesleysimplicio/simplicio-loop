@@ -67,7 +67,8 @@ their adapter section above.
 
 ## Related docs
 
-- `CLAUDE.md` § Hooks — the required-bind block/fail-closed message contract.
+- `CLAUDE.md` § Hooks — optional-bind degraded-mode messaging; a missing Runtime bind
+  never blocks the standalone Loop core.
 - `adapters/MATRIX.md` — the full runtime tier system and the "Native bind" column per host.
 - `docs/runtime-adapter.md` — the transport-neutral `simplicio.runtime/v1` contract every native
   binding negotiates, independent of the specific MCP config file.

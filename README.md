@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="docs/REPOSITORY_GOVERNANCE.md"><img src="https://img.shields.io/badge/CI-locally%20enforced%20(gate%20PR%20pending)-888888" alt="CI status: enforced locally via scripts/check.py; GitHub Actions pending per docs/RELEASE.md #311"></a>
+  <a href="docs/REPOSITORY_GOVERNANCE.md"><img src="https://img.shields.io/badge/CI-local%20gate%20is%20authoritative-888888" alt="Validation status: the local scripts/check.py gate is authoritative; GitHub Actions is not required evidence"></a>
   <a href="https://github.com/wesleysimplicio/simplicio-loop/stargazers"><img src="https://img.shields.io/github/stars/wesleysimplicio/simplicio-loop?style=social" alt="Stars"></a>
   <a href="#-the-7-skills--5-accelerators"><img src="https://img.shields.io/badge/skills-7-7C3AED" alt="7 skills"></a>
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
@@ -198,13 +198,15 @@ repo** — not a synthetic scenario.
   the whole reason `coordinator.py` and `pr_dod_review.py` exist now.
 - **Carried forward from v3.37.0's Portable Stage Agents epic (#422–#436)** — a concrete,
   independently verifiable agent behind every stage (intake/planner, implementation, four-way
-  review panel, safety gate, delivery, feedback/recovery, completion auditor), a conformance suite
-  proving contract/receipt parity across all 15 runtimes, human-readable agent identities, and
-  `simplicio-runtime` promoted to a required bound operator exactly like `simplicio-mapper`/
-  `simplicio-dev-cli`.
-- **Test suite grew to 231 files** (from 192), all still sorted into the unit/integration/system/
-  regression convention `docs/SCRIPTS_INVENTORY.md` tracks; `scripts/claims_audit.py` stayed at
-  14/14 through every merge this cycle.
+  review panel, safety gate, delivery, feedback/recovery, completion auditor), a portable contract
+  validator for the shared graph/receipt schema, human-readable agent identities, and optional
+  native binds for `simplicio-runtime`, `simplicio-mapper`, and `simplicio-dev-cli`. Runtime rows
+  are capability inventory; a runtime is counted as executed only by the separate installed lane
+  when its binary and executable adapter are actually available.
+- **Test-suite inventory is measured, not hard-coded.** The checkout and the latest local gate
+  receipt are the source of truth for file and result counts. `scripts/test_categories.py` reports
+  the unit/integration/system/regression convention where it applies, including any uncategorized
+  files; `scripts/claims_audit.py` stayed at 14/14 through every merge this cycle.
 
 **What this means for you, concretely:** if you run `simplicio-loop` across more than one session
 or machine against the same repo, it now actively protects you from the two failure modes that
@@ -250,7 +252,7 @@ runtime-native component just to use `simplicio-loop`. Native binds, operators, 
 and the wider Simplicio runtime stack are optional accelerators on top of the core skill bundle.
 
 <p align="center">
-  <img src="assets/simplicio-loop-infographic.png" alt="simplicio-loop detailed infographic: standalone install, required native binds, 7 skills, 5 accelerators, 15 runtimes, 5 source adapters, and proof gates" width="920" />
+  <img src="assets/simplicio-loop-infographic.png" alt="simplicio-loop detailed infographic: standalone install, optional native binds, 7 skills, 5 accelerators, 15 runtimes, 5 source adapters, and proof gates" width="920" />
 </p>
 
 Within the Simplicio product line, this repo is also the **current reference task flow** for
@@ -286,8 +288,9 @@ If you are an agent/runtime entering this repo cold, read `llms.txt` first for t
 ## 📘 Official capability record
 
 The complete, official roster of what `simplicio-loop` ships — every capability below is **real,
-runnable, and tested** (`python3 scripts/check.py`: claims-audit 14/14 + 2,544 tests collected
-across 231 files). Each links to its deep section and its worker.
+runnable, and tested** by the applicable local gate. Exact collected/executed/skipped/deselected
+counts belong to that gate receipt, not this document. Each capability links to its deep section
+and its worker.
 
 | Capability | What it does | Proof / worker | Details |
 |---|---|---|---|
@@ -369,35 +372,36 @@ See each adapter's reference doc under `.claude/skills/simplicio-loop/references
 One universal skill core + one set of hooks drives every runtime. An adapter is thin: it tells a
 runtime *where to load the skills*, *how to arm the loop*, and *how to bind native speed*. **The
 skill names no runtime; the runtime detects the skill.** The native `simplicio-runtime` MCP bind
-is **REQUIRED** on every runtime (loop BLOCKS if it's missing/unreachable) — see
-[`docs/MCP_SETUP.md`](docs/MCP_SETUP.md) for the per-host config table.
+is optional: when it is missing or unreachable, the adapter reports explicit degraded mode rather
+than blocking the standalone loop — see [`docs/MCP_SETUP.md`](docs/MCP_SETUP.md) for per-host
+configuration.
 
 ### Tier 1 — Guaranteed (gated on every commit)
 
 | Runtime | Skill load | Loop drive | Native bind (MCP) |
 |---|---|---|---|
-| **Claude Code** | `.claude/skills/` + plugin | `Stop` hook | REQUIRED — `~/.claude.json` |
-| **Codex** | `AGENTS.md` | self-paced | REQUIRED — `~/.codex/config.toml` |
-| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | REQUIRED — `.cursor/mcp.json` |
+| **Claude Code** | `.claude/skills/` + plugin | `Stop` hook | optional — `~/.claude.json` |
+| **Codex** | `AGENTS.md` | self-paced | optional — `~/.codex/config.toml` |
+| **Cursor** | `.cursor-plugin/` | `stop`+`afterAgentResponse` | optional — `.cursor/mcp.json` |
 
 ### Tier 2 — Best-effort (contributions welcome, no gate)
 
 | Runtime | Skill load | Loop drive | Native bind (MCP) |
 |---|---|---|---|
-| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | REQUIRED — `.vscode/mcp.json` |
-| **Antigravity** | rules / `AGENTS.md` | self-paced | REQUIRED — best-effort path |
-| **Kiro** | `.kiro/steering/` | specs | REQUIRED — `.kiro/settings/mcp.json` |
-| **OpenCode** | `AGENTS.md` | self-paced | REQUIRED — `opencode.json` |
-| **Gemini** (CLI/Code Assist) | `GEMINI.md` | self-paced | REQUIRED — `.gemini/settings.json` (CLI) |
-| **Kimi** | inlined conventions | self-paced | REQUIRED — best-effort, no verified client |
-| **Qwen** (Code/CLI) | `AGENTS.md`-equivalent | self-paced | REQUIRED — `.qwen/settings.json` (best-effort) |
-| **DeepSeek** | inlined conventions | self-paced | REQUIRED — no first-party client, best-effort |
-| **Aider** | `CONVENTIONS.md` | self-paced | REQUIRED — no MCP client (LLM fallback for exec) |
-| **Simplicio Agent** *(formerly Hermes)* | native recall | native loop | REQUIRED — **native** |
-| **OpenClaw** | plugin SDK | native scheduler | REQUIRED — **native** |
-| **Orca** | via inner agent + skills registry | inner hook / scheduled automations | REQUIRED — registry/inner-agent config |
+| **VS Code (Copilot)** | `copilot-instructions.md` | tasks | optional — `.vscode/mcp.json` |
+| **Antigravity** | rules / `AGENTS.md` | self-paced | optional — best-effort path |
+| **Kiro** | `.kiro/steering/` | specs | optional — `.kiro/settings/mcp.json` |
+| **OpenCode** | `AGENTS.md` | self-paced | optional — `opencode.json` |
+| **Gemini** (CLI/Code Assist) | `GEMINI.md` | self-paced | optional — `.gemini/settings.json` (CLI) |
+| **Kimi** | inlined conventions | self-paced | optional — best-effort, no verified client |
+| **Qwen** (Code/CLI) | `AGENTS.md`-equivalent | self-paced | optional — `.qwen/settings.json` (best-effort) |
+| **DeepSeek** | inlined conventions | self-paced | optional — no first-party client, best-effort |
+| **Aider** | `CONVENTIONS.md` | self-paced | optional — no MCP client (LLM fallback for exec) |
+| **Simplicio Agent** *(formerly Hermes)* | native recall | native loop | optional — **native** |
+| **OpenClaw** | plugin SDK | native scheduler | optional — **native** |
+| **Orca** | via inner agent + skills registry | inner hook / scheduled automations | optional — registry/inner-agent config |
 
-The promise: **same protocol, same gates, same safety on all 12 — Tier 1 verified mechanically,
+The promise: **same protocol, same gates, same safety on all 15 — Tier 1 verified mechanically,
 Tier 2 best-effort.** `orient_clamp.py` (token economy) works on every runtime with zero wiring. See
 [`adapters/MATRIX.md`](adapters/MATRIX.md) for the promotion/demotion rules.
 
@@ -733,12 +737,13 @@ launchd/systemd services so they run the new code, and prints the live stack + s
 ```bash
 python3 scripts/doctor.py            # report the whole stack (REQUIRED vs OPTIONAL)
 python3 scripts/doctor.py --repair   # install/wire what's fixable; make everything operational
-python3 scripts/preflight.py --json   # fail-closed mapper + dev-cli + Runtime identity/version/capability gate
+python3 scripts/preflight.py --json   # fail-closed mapper + dev-cli; optional Runtime is reported separately
 # also: bash scripts/simplicio-economy.sh doctor [--repair]
 ```
 
-`doctor` separates **REQUIRED** (python3, the loop operator package plus its runtime bins, the 7 skills, the loop hooks, the
-capture proxy — `--repair` installs/wires them) from **OPTIONAL** accelerators (the tray dep).
+`doctor` separates **REQUIRED** (python3, the loop operator package and its mapper/dev-cli bins,
+the 7 skills, the loop hooks, the capture proxy — `--repair` installs/wires them) from
+**OPTIONAL** accelerators (the native Simplicio Runtime bind and the tray dependency).
 **Missing an optional piece is never a failure and
 never blocks** — the Python engine + the deterministic path cover everything; the exit code is 0 as
 long as every REQUIRED item is healthy.
@@ -788,21 +793,32 @@ human gate + secret-scan on, and ensure a reachable STOP/cancel path is configur
 Claims are verified, not just asserted — and the gate runs **locally**, with zero CI cost:
 
 ```bash
-python3 scripts/check.py            # the whole gate (audit + tests + loop-contract + token-budget)
-python3 scripts/check.py --core-gate # fast/mandatory core only — skips satellite-only tests (#118)
+python3 scripts/check.py             # complete local gate (core + satellite tests)
+python3 scripts/check.py --core-gate # mandatory offline/bounded core; external lanes excluded
 ```
 
-`scripts/` has grown into ~39 files; [`docs/SCRIPTS_INVENTORY.md`](docs/SCRIPTS_INVENTORY.md)
-classifies every one of them **core** (required for the loop drive or this gate) vs **satellite**
-(an opt-in/advanced capability — source adapters, `simplicio-autoresearch`, the economy/dashboard
-stack, `repo_conventions`, `schema_verify`). Lead with the core; treat the rest as advanced,
-opt-in capabilities you reach for when the task calls for them.
+Both commands require an importable `pytest`; its absence is `pytest_unavailable`, never a
+direct-execution fallback. The core gate runs claims audit, mirror parity, core pytest tests,
+loop contract, clean-environment contract, token/repository budgets, and portable stage-contract
+validation. It uses a sanitized subprocess environment, disables third-party pytest autoload,
+and applies the loopback/AF_UNIX socket restriction to pytest and Python descendants that inherit
+the gate environment; it does not sandbox arbitrary external CLIs. It has a 600-second global deadline plus shorter
+per-phase deadlines, and fails if no mandatory test actually ran. Installed runtimes, live APIs,
+sibling repositories, release builds, and other real external integrations stay in explicitly
+marked lanes and are reported as unavailable/excluded — never silently promoted to PASS.
 
-- **Test suite** (`tests/`) — the workers' deterministic `selftest`s, plus an **e2e of the loop
+[`docs/SCRIPTS_INVENTORY.md`](docs/SCRIPTS_INVENTORY.md) documents the gate-relevant **core**
+(required for the loop drive or this gate) and **satellite** (opt-in/advanced) boundaries; it is
+not a census of every utility under `scripts/`. The current checkout and its local gate receipt
+are authoritative for inventory and execution counts. Lead with the core; treat the rest as
+advanced, opt-in capabilities you reach for when the task calls for them.
+
+- **Test suite** (`tests/`, requires `pytest`) — the workers' deterministic `selftest`s, plus an **e2e of the loop
   driver** (`hooks/loop_stop.py`): it proves the loop **stops on evidence**, **ignores a bare
   `<promise>`**, and **stops on the cap** as distinct exits — and that the evidence producers
-  **BLOCK** (never fake-pass) when their toolchain is absent. Runs under `pytest` *or*, with no pip
-  at all, self-runs on bare python3 (`python3 tests/test_*.py`).
+  **BLOCK** (never fake-pass) when their toolchain is absent. Individual legacy test modules may
+  retain a developer self-runner, but `scripts/check.py` never treats that partial mechanism as a
+  substitute for pytest collection.
 - **Claims audit** (`scripts/claims_audit.py`, fail-closed) — every `scripts/*.py` the docs
   reference exists · the extension-point count agrees across all files · each cited worker command
   actually runs · the shipped `simplicio_loop/_bundle/` skills are **byte-identical** to source.
@@ -821,7 +837,8 @@ opt-in capabilities you reach for when the task calls for them.
   printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
   ```
 
-`pip install "simplicio-loop[dev]"` adds pytest for nicer output; it is never required.
+Install the development extra (`pip install "simplicio-loop[dev]"`) before running
+`scripts/check.py`: pytest is a required gate dependency.
 
 ---
 
@@ -850,9 +867,10 @@ pwsh scripts/install.ps1 hermes -Global   # legacy alias for simplicio_agent
 
 Local queues, leases, worktrees, heartbeats, and evidence remain active on every machine; GitHub comments are the shipped shared coordination projection. Today, an unavailable or unauthenticated GitHub records a sync failure without inventing a remote acknowledgment. The stage-agent roadmap tightens this for GitHub-bound runs: [#433](https://github.com/wesleysimplicio/simplicio-loop/issues/433) makes the comment confirmation mandatory before `COMPLETE`. [#436](https://github.com/wesleysimplicio/simplicio-loop/issues/436) adds the same projection to Azure DevOps, Jira, Asana, and Trello only when each connector is proven connected; disconnected optional trackers are explicitly skipped.
 
-The repository workflow `.github/workflows/simplicio-status-sync.yml` turns the canonical lifecycle
-state into a managed `simplicio:status:<state>` label and, when configured, moves the issue in a
-GitHub Projects v2 Status field. It is runtime-neutral: the same workflow accepts Claude, Codex,
+GitHub Actions is not required or accepted as validation evidence for this repository; the local
+gate is authoritative. Lifecycle state is projected by the local runtime integration when
+configured; it can manage the `simplicio:status:<state>` label and a
+GitHub Projects v2 Status field. The projection is runtime-neutral: it accepts Claude, Codex,
 Cursor, Gemini, Kiro, Antigravity, Hermes/Simplicio Agent, OpenClaw, and future providers. Set
 these repository variables to enable Project v2 movement:
 

@@ -1,12 +1,26 @@
+import importlib.util
 import os
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.install_smoke import run_smoke
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+pytestmark = [
+    pytest.mark.external_integration,
+    pytest.mark.skipif(
+        importlib.util.find_spec("build") is None,
+        reason=(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[build_backend]: "
+            "the real wheel smoke lane requires the optional build module"
+        ),
+    ),
+]
 
 
 # Both tests below are real, slow (build a wheel + create a throwaway venv) end-to-end checks —

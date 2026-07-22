@@ -274,6 +274,11 @@ def evaluate_quality_matrix(run_dir: str) -> Dict[str, Any]:
         result["reason_code"] = gate["reason_code"]
         result["reason"] = gate["detail"]
         return result
+    if receipt.get("schema") == "simplicio.quality-matrix/v2":
+        # One semantic implementation is shared by the oracle and independent
+        # watcher; v2 receipts never fall through the permissive legacy reader.
+        from .quality_matrix_v2 import evaluate_v2
+        return evaluate_v2(receipt)
     gates.append(_gate("quality_matrix", True, "quality_matrix_present", f"{RECEIPT_FILENAME} loaded"))
 
     # #283: always propagate the issue-envelope fields + nested tests mirror onto the

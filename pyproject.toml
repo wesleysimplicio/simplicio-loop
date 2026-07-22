@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simplicio-loop"
-version = "3.38.0"
+version = "3.38.1"
 description = "The Universal Looping AI Orchestrator — a runtime-agnostic super-plugin (7 skills) that drains any queue of work end-to-end on any LLM/runtime."
 readme = "PYPI.md"
 requires-python = ">=3.8"
@@ -24,7 +24,7 @@ classifiers = [
 # The simplicio-loop drive requires the operator package (`simplicio-cli`), which exposes
 # `simplicio-dev-cli` and also brings the survey binary `simplicio-mapper` transitively.
 dependencies = [
-  "simplicio-cli>=0.16.1",
+  "simplicio-cli>=0.16.2",
   "tiktoken>=0.12.0,<1",
 ]
 
@@ -33,7 +33,7 @@ dependencies = [
 # meaning retrieval. `pip install "simplicio-loop[ml]"`.
 [project.optional-dependencies]
 # Dev/test dependencies used by the local quality gate and secure-transport fixtures.
-dev = ["pytest>=7", "pytest-cov>=4", "cryptography>=42,<50"]
+dev = ["pytest>=7", "pytest-cov>=4", "cryptography>=42,<50", "jsonschema>=4,<5"]
 ml = ["model2vec>=0.3", "numpy>=1.21"]
 uvloop = ["uvloop>=0.19; platform_system != 'Windows'"]
 
@@ -75,6 +75,10 @@ exclude_lines = [
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
+markers = [
+  "external_integration: installed or network-backed lane excluded from the hermetic core gate",
+  "satellite: opt-in satellite functionality excluded from the mandatory core gate",
+]
 # The bundle/plugin trees mirror source files and are validated by mirror-parity.
 # Collect the canonical tests once instead of executing mirrored probes repeatedly.
 testpaths = ["tests"]

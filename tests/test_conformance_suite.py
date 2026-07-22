@@ -17,21 +17,19 @@ SUITE = REPO / "scripts" / "conformance_suite.py"
 def _run(args):
     return subprocess.run(
         [sys.executable, str(SUITE), *args],
-        cwd=str(REPO), capture_output=True, text=True,
+        cwd=str(REPO), capture_output=True, text=True, timeout=30,
     )
 
 
-def test_suite_runs_all_runtimes_and_passes_gate():
-    """The full suite must exit 0 (every available runtime passes its gate)."""
+def test_suite_runs_portable_validation_without_claiming_runtime_execution():
+    """The core is a portable contract gate, not a 15-runtime execution claim."""
     proc = _run([])
     assert proc.returncode == 0, proc.stderr
-    assert "gate=pass" in proc.stdout, proc.stdout
+    assert "portable conformance: 0/15 runtimes executed; gate=pass" in proc.stdout, proc.stdout
 
 
-def test_json_report_has_canonical_roles_and_results():
-    out = REPO / "conformance-report.json"
-    if out.exists():
-        out.unlink()
+def test_json_report_has_canonical_roles_and_results(tmp_path):
+    out = tmp_path / "conformance-report.json"
     proc = _run(["--json", str(out)])
     assert proc.returncode == 0, proc.stderr
     data = json.loads(out.read_text(encoding="utf-8"))
@@ -41,12 +39,15 @@ def test_json_report_has_canonical_roles_and_results():
     assert len(data["roles_canonical"]) == 12
     # Every runtime produces a result entry.
     assert len(data["results"]) == 15
-    # Simplicio Agent must be installed + pass all three modes.
+    portable = data["portable_validation"]
+    assert portable["passed"] is True
+    # A README and declared capabilities are not evidence of a runnable runtime.
     sa = next(r for r in data["results"] if r["runtime"] == "simplicio_agent")
-    assert sa["installed"] is True
-    assert sa["sandbox_passed"] is True
-    assert sa["receipt_equivalent"] is True
-    out.unlink()
+    assert sa["available"] is False
+    assert sa["external_lane"] == "unavailable"
+    assert sa["sandbox_passed"] is False
+    assert sa["receipt_equivalent"] is False
+    assert "runtime binary" in sa["external_reason"]
 
 
 def test_unknown_runtime_is_rejected():

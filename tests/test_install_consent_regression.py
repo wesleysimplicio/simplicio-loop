@@ -23,11 +23,12 @@ calls are `check=False` best-effort against install_services.py, which itself on
 the redirected HOME/APPDATA — never the real host.
 """
 import importlib.util
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -80,6 +81,7 @@ def test_setup_monitor_is_off_by_default_no_flags_at_all(tmp_path):
     assert not (home / "AppData").exists()
 
 
+@pytest.mark.external_integration
 def test_setup_monitor_runs_only_with_explicit_with_service_flag(tmp_path):
     target = tmp_path / "project"
     target.mkdir()
@@ -164,6 +166,7 @@ def test_full_stack_apply_is_blocked_without_consent_and_mutates_nothing(tmp_pat
     assert not (target / ".simplicio").exists()
 
 
+@pytest.mark.external_integration
 def test_full_stack_apply_with_consent_copies_engine_and_app(tmp_path, monkeypatch):
     # #293 gap 1: with_service=True now ALSO runs a real "service" step (install_executor.py
     # shells out to install_services.py) — redirect HOME/APPDATA/XDG_CONFIG_HOME into tmp_path

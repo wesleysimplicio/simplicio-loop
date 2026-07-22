@@ -30,7 +30,6 @@ import pytest
 from simplicio_loop import process_supervisor_rust as psr
 from simplicio_loop.hub_daemon import HubDaemon, HubEnvelope
 from simplicio_loop.process_enforcement import ProcessRegistry
-from simplicio_loop.process_supervisor import ProcessSpec
 
 
 SLEEP_SPEC = {
@@ -63,11 +62,14 @@ def test_execute_through_hub_ipc_python_fallback(tmp_path, monkeypatch) -> None:
         daemon.stop()
 
 
-@pytest.mark.skipif(
-    not psr.rust_backend_available(),
-    reason="rust/simplicio-supervisor binary not built in this checkout",
-)
+@pytest.mark.external_integration
 def test_execute_through_hub_ipc_rust_backend() -> None:
+    """Exercise the compiled Rust backend in the explicit installed-artifact lane."""
+    if not psr.rust_backend_available():
+        pytest.skip(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[rust_supervisor_binary]: "
+            "build rust/simplicio-supervisor with cargo --release"
+        )
     with tempfile.TemporaryDirectory() as directory:
         daemon = _daemon(Path(directory))
         try:

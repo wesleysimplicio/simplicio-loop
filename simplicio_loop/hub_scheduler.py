@@ -1,7 +1,8 @@
 """Fair DRR scheduler with hierarchical quotas and aging for Hub jobs."""
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import hashlib
 from threading import RLock
 from typing import Any, Deque, Dict, List, Optional
 
@@ -16,6 +17,9 @@ PRIORITY_GAIN_MULTIPLIER: Dict[str, float] = {
     "maintenance": 0.5,
 }
 DEFAULT_PRIORITY = "background"
+SCHEDULER_MODES = frozenset(("off", "shadow", "canary", "on"))
+LEGACY_POLICY_VERSION = "fifo-v1"
+FAIR_POLICY_VERSION = "fair-drr-v2"
 
 
 class SchedulerError(ValueError):
@@ -64,6 +68,40 @@ class ScheduledJob:
     cost: int = 1
     workspace_id: str = "default"
     priority: str = DEFAULT_PRIORITY
+    scheduler_policy: str = FAIR_POLICY_VERSION
+
+
+@dataclass(frozen=True)
+class SchedulerPolicy:
+    """Immutable rollout manifest for a single-authority scheduler transition."""
+
+    mode: str = "on"
+    version: str = FAIR_POLICY_VERSION
+    previous_version: str = LEGACY_POLICY_VERSION
+    canary_percent: int = 0
+
+    def __post_init__(self) -> None:
+        if self.mode not in SCHEDULER_MODES:
+            raise SchedulerError("scheduler policy mode must be off|shadow|canary|on")
+        if not self.version or not self.previous_version or not 0 <= self.canary_percent <= 100:
+            raise SchedulerError("scheduler policy versions and canary_percent are invalid")
+        if self.mode == "canary" and self.canary_percent in (0, 100):
+            raise SchedulerError("canary mode requires canary_percent between 1 and 99")
+
+    def policy_for(self, task_id: str) -> str:
+        if self.mode in ("off", "shadow"):
+            return self.previous_version
+        if self.mode == "on":
+            return self.version
+        bucket = int(hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8], 16) % 100
+        return self.version if bucket < self.canary_percent else self.previous_version
+
+    def to_manifest(self) -> Dict[str, Any]:
+        return {
+            "schema": "simplicio.hub-scheduler-policy/v1", "mode": self.mode,
+            "version": self.version, "previous_version": self.previous_version,
+            "canary_percent": self.canary_percent,
+        }
 
 
 class FairScheduler:
@@ -79,6 +117,7 @@ class FairScheduler:
         max_global_queue: Optional[int] = None,
         aging_ticks: int = 20,
         aging_boost: int = 4,
+        policy: Optional[SchedulerPolicy] = None,
     ) -> None:
         if max_inflight_per_client < 1 or quantum < 1:
             raise SchedulerError("scheduler limits must be positive")
@@ -94,6 +133,8 @@ class FairScheduler:
         self.max_global_queue = max_global_queue
         self.aging_ticks = aging_ticks
         self.aging_boost = aging_boost
+        self.policy = policy or SchedulerPolicy()
+        self._decision_receipts: Deque[Dict[str, Any]] = deque(maxlen=100)
         self._queues: Dict[str, Deque[ScheduledJob]] = {}
         self._weights: Dict[str, int] = {}
         self._deficit: Dict[str, float] = {}
@@ -139,6 +180,8 @@ class FairScheduler:
                 + ", ".join(sorted(PRIORITY_GAIN_MULTIPLIER))
             )
         with self._lock:
+            if job.scheduler_policy == FAIR_POLICY_VERSION:
+                job = replace(job, scheduler_policy=self.policy.policy_for(job.task_id))
             if job.task_id in self._jobs:
                 raise SchedulerError("duplicate task_id")
             self._check_quotas(job)
@@ -164,6 +207,17 @@ class FairScheduler:
         with self._lock:
             if not self._order:
                 return None
+            if self.policy.mode in ("off", "shadow"):
+                candidate = self._fair_candidate() if self.policy.mode == "shadow" else None
+                authority = self._next_fifo()
+                if self.policy.mode == "shadow":
+                    self._decision_receipts.append({
+                        "schema": "simplicio.hub-scheduler-shadow-receipt/v1",
+                        "authority": authority.task_id if authority else None,
+                        "candidate": candidate.task_id if candidate else None,
+                        "dispatched": 1 if authority else 0,
+                    })
+                return authority
             self._tick += 1
             attempts = 0
             while attempts < len(self._order) * 4:
@@ -191,6 +245,49 @@ class FairScheduler:
                 self._served_total[client] = self._served_total.get(client, 0) + 1
                 return job
             return None
+
+    def _next_fifo(self) -> Optional[ScheduledJob]:
+        """Legacy authority used by off/shadow; consumes exactly one job."""
+        self._tick += 1
+        for offset in range(len(self._order)):
+            index = (self._cursor + offset) % len(self._order)
+            client = self._order[index]
+            if not self._queues[client] or self._inflight[client] >= self.max_inflight_per_client:
+                continue
+            job = self._queues[client].popleft()
+            self._cursor = (index + 1) % len(self._order)
+            self._inflight[client] += 1
+            self._last_served_tick[client] = self._tick
+            self._served_total[client] = self._served_total.get(client, 0) + 1
+            return job
+        return None
+
+    def _fair_candidate(self) -> Optional[ScheduledJob]:
+        """Non-mutating shadow projection; it can never become a dispatch authority."""
+        eligible = []
+        for order, client in enumerate(self._order):
+            if not self._queues[client] or self._inflight[client] >= self.max_inflight_per_client:
+                continue
+            job = self._queues[client][0]
+            gain = self.quantum * self._weights.get(client, 1) * PRIORITY_GAIN_MULTIPLIER[job.priority]
+            eligible.append((self._deficit.get(client, 0) + gain - job.cost, -order, job))
+        return max(eligible, key=lambda item: (item[0], item[1]))[2] if eligible else None
+
+    def preview_next(self) -> Optional[ScheduledJob]:
+        """Return the next decision without dispatching or changing scheduler state."""
+        with self._lock:
+            queues = {key: deque(value) for key, value in self._queues.items()}
+            deficit, inflight = dict(self._deficit), dict(self._inflight)
+            cursor, tick = self._cursor, self._tick
+            last, served = dict(self._last_served_tick), dict(self._served_total)
+            preventions = self._starvation_preventions
+            try:
+                return self.next()
+            finally:
+                self._queues, self._deficit, self._inflight = queues, deficit, inflight
+                self._cursor, self._tick = cursor, tick
+                self._last_served_tick, self._served_total = last, served
+                self._starvation_preventions = preventions
 
     def complete(self, task_id: str) -> None:
         with self._lock:
@@ -247,4 +344,19 @@ class FairScheduler:
                 "tick": self._tick,
                 "served_total": dict(self._served_total),
                 "jains_fairness_index": self._jains_fairness_index(),
+                "policy": self.policy.to_manifest(),
+                "decision_receipts": list(self._decision_receipts),
             }
+
+    def configure_policy(self, policy: SchedulerPolicy) -> Dict[str, Any]:
+        """Atomically roll forward/back; already queued jobs retain their version pin."""
+        with self._lock:
+            previous = self.policy
+            self.policy = policy
+            receipt = {
+                "schema": "simplicio.hub-scheduler-rollout-receipt/v1",
+                "from": previous.to_manifest(), "to": policy.to_manifest(),
+                "queued_jobs_rewritten": 0, "dispatch_authorities": 1,
+            }
+            self._decision_receipts.append(receipt)
+            return receipt

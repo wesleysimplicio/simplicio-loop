@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -10,17 +9,21 @@ import pytest
 from simplicio_loop.map_service import MapServiceRegistry
 from simplicio_loop.map_service_git import resolve_repository_identity
 from simplicio_loop.map_service_mapper import (
-    MapperIndexError,
     mapper_binary_path,
     mapper_tree_snapshot,
     run_mapper_index,
 )
 from simplicio_loop.map_service_single_flight import SingleFlightMapStore
 
-pytestmark = pytest.mark.skipif(
-    not __import__("shutil").which("simplicio-mapper"),
-    reason="simplicio-mapper binary not installed in this environment",
-)
+# This is the installed-operator contract, not a hermetic core test.  The
+# module retains its local skip so the optional lane is clear when selected.
+pytestmark = [
+    pytest.mark.external_integration,
+    pytest.mark.skipif(
+        not __import__("shutil").which("simplicio-mapper"),
+        reason="EXTERNAL_INTEGRATION_UNAVAILABLE[installed_simplicio_mapper]: simplicio-mapper binary not installed",
+    ),
+]
 
 
 def _run(*args: str, cwd: str) -> None:

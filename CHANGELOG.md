@@ -1,6 +1,24 @@
 # Changelog
 
+- **Issue #616 — concurrent stage waves:** `StageAgentCoordinator` now overlaps
+  independent stages up to the Hub slot grant, retains an explicit one-slot serial
+  fallback, records deterministic wave summaries and timing telemetry, supports
+  stage/global cancellation, and resumes without re-running accepted stages.
+- **Issue #617 — canonical evidence binding:** bind derived quality, watcher, delivery,
+  and completion evidence to the exact run/attempt and repository state; add atomic,
+  auditable invalidation tombstones and fail-closed legacy migration.
+
+## [3.38.1] — 2026-07-20
+
+- Raised the `simplicio-cli` dependency floor to `>=0.16.2`, consuming the
+  mapper-aligned CLI release from the ecosystem release sequence.
+
 ## [Unreleased]
+
+- Added `HubQueueAgentClient` for strict, subprocess-free stage-agent execution through the
+  central Hub, including safe `ProcessSpec` projection, durable effect journaling, reconnect and
+  idempotent restart recovery, lossless process-result evidence, cancellation/heartbeat, a public
+  conformance lane, and a reproducible raw-sample benchmark (#615).
 
 ## [3.38.0] — 2026-07-17
 

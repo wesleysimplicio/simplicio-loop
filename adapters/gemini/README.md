@@ -24,10 +24,10 @@ No stop-hook → self-pace via cron / CI tick:
 
 `orient_clamp.py` works as-is. Add it to `GEMINI.md` command conventions.
 
-## Native bind — MCP / native adapter (REQUIRED)
+## Native bind — MCP / native adapter (optional)
 
-`simplicio-runtime` native binding is **REQUIRED** on Gemini — a missing/unreachable bind BLOCKS
-the loop preflight (CLAUDE.md § Hooks).
+`simplicio-runtime` native binding is optional on Gemini. A missing/unreachable bind reports
+explicit degraded mode while the standalone loop remains available.
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global

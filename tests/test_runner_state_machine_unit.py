@@ -210,12 +210,65 @@ def test_verify_run_converges_to_done_when_watcher_and_delivery_pass(tmp_path, m
         },
     )
 
+    # wi612 (#612): quality matrix + oracle gates devem ser satisfeitos.
+    # Testamos a INTEGRACAO do runner (os proprios gates tem testes dedicados em
+    # test_quality_matrix_*.py / test_oracle_gates_unit.py), entao injetamos
+    # os gates verdes via monkeypatch.
+    import simplicio_loop.oracle as _oracle_mod
+    monkeypatch.setattr(
+        _oracle_mod, "_quality_matrix_gate",
+        lambda rd: (True, {"name": "quality_matrix", "ok": True}, {"ready": True}),
+    )
+    monkeypatch.setattr(
+        _oracle_mod, "evaluate_matrix",
+        lambda loop_dir, rd, response_text="", flow_gap="": {
+            "schema": "simplicio.oracle-matrix/v1",
+            "parity": True,
+            "adapters": [{"ready": True, "verdict": "VERIFIED",
+                         "reason_code": "oracle_complete", "tag": "MEASURED"}],
+            "signature": [True, "VERIFIED", "oracle_complete", "MEASURED"],
+        },
+    )
+
     result = runner_mod.verify_run(str(repo), run_id)
 
     assert result["state"]["phase"] == "done"
     assert result["state"]["completion"]["verdict"] == "VERIFIED"
     assert result["state"]["completion"]["reason_code"] == "watcher_and_delivery_verified"
     assert result["state"]["completion"]["tag"] == "MEASURED"
+
+
+def test_verify_run_blocks_when_quality_matrix_missing(tmp_path, monkeypatch):
+    """wi612 (#612): done e bloqueado quando falta quality-matrix receipt."""
+    repo, run_id, run_dir = _arm_fixture(tmp_path, monkeypatch)
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "watcher_verify.py").write_text("# stub\n", encoding="utf-8")
+
+    def fake_run(argv, cwd, capture_output, text, timeout, env):
+        watcher_dir = Path(env["SIMPLICIO_LOOP_DIR"])
+        watcher_dir.mkdir(parents=True, exist_ok=True)
+        (watcher_dir / "watcher_state.json").write_text(json.dumps({
+            "status": "MEASURED", "match": True,
+        }), encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        runner_mod, "reconcile_delivery",
+        lambda repo_arg, rid, current_state, **kwargs: {
+            "run_dir": str(run_dir), "manifest": {}, "state": {
+                **runner_mod.read_status(str(repo), run_id)["state"],
+                "delivery": {"ready": True, "target": current_state, "current_state": current_state},
+            },
+        },
+    )
+
+    # NENHUM quality-matrix.json escrito -> gate deve bloquear
+    result = runner_mod.verify_run(str(repo), run_id)
+
+    assert result["state"]["phase"] == "blocked"
+    assert "quality-matrix.json is missing or unreadable" in (result["state"].get("blockers") or [""])[0]
 
 
 def test_verify_run_stops_short_of_done_when_delivery_is_not_ready(tmp_path, monkeypatch):

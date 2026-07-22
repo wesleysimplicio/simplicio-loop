@@ -1,67 +1,38 @@
 #!/usr/bin/env python3
-"""simplicio-loop — local check runner (the "CI" you run yourself, no paid minutes).
-
-Runs the whole verification gate locally — deterministic, stdlib-only, cross-platform:
-
-  1. claims-audit   `scripts/claims_audit.py` (referenced scripts exist · extension-point count
-                    consistent · cited commands run, including flow/impact audit selftests
-                    · _bundle ≡ source)
-  2. mirror-parity  `scripts/mirror_parity.py check` — fail-closed mirror parity for the shipped
-                    `_bundle/`, `plugin/`, and shared skill references, reported as a distinct
-                    gate instead of being only an internal claims-audit detail.
-  3. test suite     pytest if installed (`pytest -q tests/`); otherwise each `tests/test_*.py`
-                    self-runs on bare python3 (the suite needs no pip).
-  4. loop-contract  `scripts/check_loop_contract.py` — validates the exported
-                    `simplicio.loop-execution/v1` converge/drain fixtures
-                    (`contracts/loop-execution/v1/`) against the real `hooks/loop_stop.py` /
-                    `scripts/loop_journal.py` producers (#115).
-  5. clean-env      `scripts/clean_env_contract.py` — validates the package metadata / entrypoint /
-                    bundled assets contract needed for a clean environment to load the CLI without
-                    publishing or network access.
-  6. token-budget   `scripts/token_budget.py` (#121) — estimates tokens for SKILL.md/AGENTS.md/
-                    CLAUDE.md/the largest scripts and FAILS on a regression past the committed
-                    baseline (`scripts/token_budget_baseline.json`), so a doc/script that quietly
-                    balloons in size gets caught the same way a broken test would.
-  7. repo-budget    `scripts/repository_budget.py` (#294) — measures the CURRENT tracked working
-                    tree (never history) and FAILS on a brand-new file over the per-file cap or on
-                    total-tree growth past the committed baseline
-                    (`scripts/repository_budget_baseline.json`); pre-existing large assets are
-                    grandfathered so this never retroactively fails on history it didn't create.
-
-Exit 0 only when everything passes — so it gates a commit/push. The installer wires
-`hooks/action_gate.py pre-push` as `.git/hooks/pre-push` (#291), which runs `--core-gate` (this
-script's fast/mandatory subset) plus a secret-scan of the actual push range, fail-closed — see
-`hooks/README.md` § "The safety gate". To wire this script directly instead (no secret-scan,
-full gate every push):
-
-    printf '#!/bin/sh\\npython3 scripts/check.py\\n' > .git/hooks/pre-push
-    chmod +x .git/hooks/pre-push
-
-Usage:
-    python3 scripts/check.py              # audit + tests + loop-contract + token-budget + repo-budget
-    python3 scripts/check.py --audit-only
-    python3 scripts/check.py --tests-only
-    python3 scripts/check.py --mirror-parity-only
-    python3 scripts/check.py --loop-contract-only
-    python3 scripts/check.py --clean-env-only
-    python3 scripts/check.py --token-budget   # token-budget guard only
-    python3 scripts/check.py --repo-budget    # repository size budget guard only
-    python3 scripts/check.py --package-content  # wheel/sdist/npm pack content check (#294 AC11)
-                                               # -- opt-in only: ~20-30s, builds real artifacts,
-                                               # a release-time check, not part of the default
-                                               # gate or --core-gate.
-    python3 scripts/check.py --core-gate      # mandatory/fast gate only (#118): audit + loop-
-                                               # contract + token-budget + CORE tests, skipping
-                                               # satellite-only tests (adapters, autoresearch,
-                                               # repo_conventions, schema_verify, fan_out, the
-                                               # token-monitor dashboard). See
-                                               # docs/SCRIPTS_INVENTORY.md for the core/satellite
-                                               # classification this filters on.
-"""
+"""Offline, bounded local verifier; GitHub Actions is not evidence."""
 import os
-import subprocess
 import sys
 import glob
+import time
+
+try:
+    from .check_runtime import (
+        CommandResult as CommandResult,
+        CommandReason,
+        GateResult,
+        PHASE_TIMEOUT_SECONDS,
+        aggregate_reason_groups as aggregate_reason_groups,
+        classify_pytest_reasons,
+        gate_result as _gate_result,
+        print_reason_summary,
+        pytest_collected_count as _external_test_count,
+        pytest_summary_count,
+        run_bounded as _runtime_run_bounded,
+    )
+except ImportError:  # direct `python scripts/check.py` execution
+    from check_runtime import (
+        CommandResult as CommandResult,
+        CommandReason,
+        GateResult,
+        PHASE_TIMEOUT_SECONDS,
+        aggregate_reason_groups as aggregate_reason_groups,
+        classify_pytest_reasons,
+        gate_result as _gate_result,
+        print_reason_summary,
+        pytest_collected_count as _external_test_count,
+        pytest_summary_count,
+        run_bounded as _runtime_run_bounded,
+    )
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -71,37 +42,75 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 SYSTEM_TEST_NESTED_GUARD = "SIMPLICIO_SYSTEM_TEST_NESTED"
+# The phase limits remain the primary containment boundary.  The aggregate
+# deadline must exceed the core-test allowance so audit/parity work does not
+# consume part of the suite's legitimate runtime on a cold machine.
+CORE_GATE_TIMEOUT_SECONDS = 900.0
+_core_deadline = None
 
-# #118 — test files that exercise a SATELLITE (opt-in/advanced) script or capability, not the
-# mandatory loop drive. `--core-gate` skips these so the fast/mandatory path never waits on an
-# adapter or an economy-stack test. Full classification + rationale: docs/SCRIPTS_INVENTORY.md.
+
+def _run_bounded(*args, **kwargs):
+    """Apply one absolute deadline to the mandatory core gate."""
+    if _core_deadline is not None:
+        env = dict(kwargs.get("env") or os.environ)
+        env["SIMPLICIO_CORE_NO_NETWORK"] = "1"
+        kwargs["env"] = env
+        remaining = _core_deadline - time.monotonic()
+        if remaining <= 0:
+            phase = kwargs.get("phase", "phase")
+            return CommandResult(124, timed_out=True, stderr="core gate deadline exhausted: %s" % phase)
+        configured = kwargs.get("timeout_seconds")
+        phase_timeout = PHASE_TIMEOUT_SECONDS[kwargs.get("phase")]
+        requested = phase_timeout if configured is None else configured
+        kwargs["timeout_seconds"] = min(remaining, requested)
+    return _runtime_run_bounded(*args, **kwargs)
+
+# #118 — opt-in satellite files excluded from the mandatory core; see the scripts inventory.
 SATELLITE_TEST_STEMS = frozenset([
-    "test_agentsview_adapter",
-    "test_autoresearch",
-    "test_az_boards_adapter",
-    "test_dashboard_hook",
-    "test_fan_out_flow",
+    "test_agentsview_adapter_integration",
+    "test_autoresearch_system",
+    "test_az_boards_adapter_integration",
+    "test_dashboard_hook_integration",
+    "test_e2e_demo_audit_system",
+    "test_fan_out_flow_system",
+    "test_fan_out_scheduler_integration",
     "test_fan_out_unit",
-    "test_learn_pipeline_removed",
-    "test_repo_conventions_architecture",
+    "test_learn_pipeline_removed_regression",
+    "test_independent_watcher_integration",
+    "test_repo_conventions_architecture_unit",
     "test_schema_verify_integration",
     "test_schema_verify_unit",
+    "test_check_e2e_demo_contract_system",
 ])
 
-
 def _hr(title):
-    print("\n=== %s ===" % title)
+    print("\n=== %s ===" % title, flush=True)
 
 
 def run_audit():
     _hr("claims-audit")
-    r = subprocess.run([sys.executable, os.path.join(HERE, "claims_audit.py")], cwd=REPO)
-    return r.returncode == 0
+    path = os.path.join(HERE, "claims_audit.py")
+    if not os.path.isfile(path):
+        print("scripts/claims_audit.py not found")
+        return GateResult(False, "claims_audit_missing")
+    argv = [sys.executable, path]
+    if _core_deadline is not None:
+        argv.append("--core")
+    command = _run_bounded(argv, phase="claims_audit")
+    return _gate_result("claims_audit", command)
 
 
 def _have_pytest():
-    return subprocess.run([sys.executable, "-c", "import pytest"],
-                          capture_output=True).returncode == 0
+    command = _run_bounded(
+        [sys.executable, "-c", "import pytest"],
+        phase="pytest_probe",
+        capture_output=True,
+    )
+    if command.timed_out:
+        return None
+    if command.reason == CommandReason.CONTAINMENT_UNAVAILABLE:
+        return "containment_unavailable"
+    return command.returncode == 0
 
 
 def _core_test_files(tests_dir):
@@ -110,15 +119,55 @@ def _core_test_files(tests_dir):
         if os.path.splitext(os.path.basename(tf))[0] not in SATELLITE_TEST_STEMS)
 
 
+def _pytest_args(test_files, only_core=False):
+    args = [sys.executable, "-m", "pytest", "-q", "-ra"]
+    # Installed/live lanes are explicit and never local-gate proof.
+    marker_expression = "not external_integration"
+    if only_core:
+        marker_expression += " and not satellite"
+    args.extend(["-m", marker_expression])
+    return args + list(test_files)
+
+
+def _collect_marker_exclusions(test_files, env, marker_expression, unparseable_reason):
+    """Collect one marker expression and return its exact selected-node count."""
+    command = _run_bounded(
+        [sys.executable, "-m", "pytest", "-q", "--collect-only", "-m",
+         marker_expression] + list(test_files),
+        phase="pytest_collect",
+        env=env,
+        capture_output=True,
+    )
+    output = command.stdout + "\n" + command.stderr
+    if command.returncode == 5 and "no tests collected" in output.lower():
+        return 0, "", output
+    result = _gate_result("pytest_collect", command)
+    if not result.ok:
+        return None, result.reason_code, output
+    count = _external_test_count(output)
+    if count is None:
+        return None, unparseable_reason, output
+    return count, "", output
+
+
+def _external_exclusion_reason(count):
+    return "EXTERNAL_INTEGRATION_EXCLUDED[marker_selection]=%d" % count
+
+
+def _passed_test_count(output):
+    return pytest_summary_count(output, "passed")
+
+
+def _deselected_test_count(output):
+    return pytest_summary_count(output, "deselected")
+
+
 def run_tests(only_core=False):
     tests_dir = os.path.join(REPO, "tests")
     if not os.path.isdir(tests_dir):
-        print("no tests/ dir — skipping")
-        return True
-    # `tests/test_system_check_system.py` exercises this wrapper by spawning `scripts/check.py`
-    # again. When this wrapper itself is already the active top-level gate, propagate the
-    # nested guard so those tests do not recursively ask for another full `--tests-only`
-    # or no-flags gate inside the same run. The cheaper system variants still run.
+        print("tests/ not found")
+        return GateResult(False, "tests_missing")
+    # Prevent system-check tests from recursively launching another full gate.
     env = dict(os.environ)
     env[SYSTEM_TEST_NESTED_GUARD] = "1"
     if only_core:
@@ -127,141 +176,214 @@ def run_tests(only_core=False):
     else:
         test_files = sorted(glob.glob(os.path.join(tests_dir, "test_*.py")))
         label = "tests/"
-    if _have_pytest():
+    if not test_files:
+        print("no selected test files")
+        return GateResult(False, "core_tests_missing" if only_core else "tests_missing")
+    have_pytest = _have_pytest()
+    if have_pytest is None:
+        return GateResult(False, "pytest_probe_timeout")
+    if have_pytest == "containment_unavailable":
+        return GateResult(False, "pytest_probe_containment_unavailable")
+    if have_pytest:
+        excluded, collect_error, collect_output = _collect_marker_exclusions(
+            test_files, env, "external_integration", "pytest_external_collect_unparseable",
+        )
+        if collect_error:
+            if collect_output:
+                print(collect_output, end="" if collect_output.endswith("\n") else "\n")
+            return GateResult(False, collect_error)
+        satellite_excluded = 0
+        expected_deselected = excluded
+        if only_core:
+            satellite_excluded, collect_error, collect_output = _collect_marker_exclusions(
+                test_files, env, "satellite", "pytest_satellite_collect_unparseable",
+            )
+            if collect_error:
+                if collect_output:
+                    print(collect_output, end="" if collect_output.endswith("\n") else "\n")
+                return GateResult(False, collect_error)
+            expected_deselected, collect_error, collect_output = _collect_marker_exclusions(
+                test_files, env, "external_integration or satellite",
+                "pytest_core_marker_collect_unparseable",
+            )
+            if collect_error:
+                if collect_output:
+                    print(collect_output, end="" if collect_output.endswith("\n") else "\n")
+                return GateResult(False, collect_error)
         _hr("pytest %s" % label)
-        r = subprocess.run([sys.executable, "-m", "pytest", "-q"] + test_files,
-                           cwd=REPO, env=env)
-        return r.returncode == 0
-    # zero-dependency fallback: each test file self-runs on bare python3
-    _hr("%s (stdlib self-run — pytest not installed)" % label)
-    ok = True
-    for tf in test_files:
-        r = subprocess.run([sys.executable, tf], cwd=REPO, env=env)
-        ok = ok and r.returncode == 0
-    return ok
+        phase = "core_tests" if only_core else "tests"
+        command = _run_bounded(
+            _pytest_args(test_files, only_core=only_core),
+            phase=phase,
+            env=env,
+            capture_output=True,
+        )
+        if command.stdout:
+            print(command.stdout, end="" if command.stdout.endswith("\n") else "\n")
+        if command.stderr:
+            print(command.stderr, end="" if command.stderr.endswith("\n") else "\n", file=sys.stderr)
+        exclusion_reason = _external_exclusion_reason(excluded)
+        print(exclusion_reason)
+        if only_core:
+            print("SATELLITE_EXCLUDED[core_marker_selection]=%d" % satellite_excluded)
+        base = _gate_result(phase, command)
+        reasons = classify_pytest_reasons(
+            command.stdout + "\n" + command.stderr + "\n" + exclusion_reason
+        )
+        if base.ok:
+            if _deselected_test_count(command.stdout + "\n" + command.stderr) != expected_deselected:
+                return GateResult(False, "pytest_marker_selection_mismatch", reasons)
+            if _passed_test_count(command.stdout + "\n" + command.stderr) == 0:
+                return GateResult(False, "pytest_all_tests_skipped", reasons)
+        return GateResult(base.ok, base.reason_code, reasons)
+    print("pytest is unavailable or cannot import")
+    return GateResult(False, "pytest_unavailable")
 
 
 def run_mirror_parity():
     _hr("mirror-parity")
     path = os.path.join(HERE, "mirror_parity.py")
-    if not os.path.exists(path):
-        print("scripts/mirror_parity.py not found — skipping")
-        return True
-    r = subprocess.run([sys.executable, path, "check"], cwd=REPO)
-    return r.returncode == 0
+    if not os.path.isfile(path):
+        print("scripts/mirror_parity.py not found")
+        return GateResult(False, "mirror_parity_missing")
+    return _gate_result(
+        "mirror_parity",
+        _run_bounded([sys.executable, path, "check"], phase="mirror_parity"),
+    )
 
 
 def run_loop_contract():
     _hr("loop-contract (simplicio.loop-execution/v1)")
     path = os.path.join(HERE, "check_loop_contract.py")
-    if not os.path.exists(path):
-        print("scripts/check_loop_contract.py not found — skipping")
-        return True
-    r = subprocess.run([sys.executable, path], cwd=REPO)
-    return r.returncode == 0
+    if not os.path.isfile(path):
+        print("scripts/check_loop_contract.py not found")
+        return GateResult(False, "loop_contract_missing")
+    return _gate_result(
+        "loop_contract",
+        _run_bounded([sys.executable, path], phase="loop_contract"),
+    )
 
 
 def run_clean_env_contract():
     _hr("clean-env-contract")
     path = os.path.join(HERE, "clean_env_contract.py")
-    if not os.path.exists(path):
-        print("scripts/clean_env_contract.py not found — skipping")
-        return True
-    r = subprocess.run([sys.executable, path, "check"], cwd=REPO)
-    return r.returncode == 0
+    if not os.path.isfile(path):
+        print("scripts/clean_env_contract.py not found")
+        return GateResult(False, "clean_env_missing")
+    return _gate_result(
+        "clean_env",
+        _run_bounded([sys.executable, path, "check"], phase="clean_env"),
+    )
 
 
 def run_token_budget():
     _hr("token-budget (#121)")
     path = os.path.join(HERE, "token_budget.py")
-    if not os.path.exists(path):
-        print("scripts/token_budget.py not found — skipping")
-        return True
-    r = subprocess.run([sys.executable, path], cwd=REPO)
-    return r.returncode == 0
+    if not os.path.isfile(path):
+        print("scripts/token_budget.py not found")
+        return GateResult(False, "token_budget_missing")
+    return _gate_result(
+        "token_budget",
+        _run_bounded([sys.executable, path], phase="token_budget"),
+    )
 
 
 def run_repository_budget():
     _hr("repo-budget (#294)")
     path = os.path.join(HERE, "repository_budget.py")
-    if not os.path.exists(path):
-        print("scripts/repository_budget.py not found — skipping")
-        return True
-    r = subprocess.run([sys.executable, path], cwd=REPO)
-    return r.returncode == 0
+    if not os.path.isfile(path):
+        print("scripts/repository_budget.py not found")
+        return GateResult(False, "repo_budget_missing")
+    return _gate_result(
+        "repo_budget",
+        _run_bounded([sys.executable, path], phase="repo_budget"),
+    )
 
 
 def run_conformance():
-    # #432 — stage-agent conformance: prove the 12 canonical roles materialize
-    # and produce equivalent receipts on every supported runtime. Fast (pure
-    # in-process validation against the canonical stage graph), so it is safe
-    # to include in the core gate.
-    _hr("conformance (#432) — stage-agent roles across 15 runtimes")
+    # Portable schema/receipt proof only; installed runtimes are external.
+    _hr("portable stage-contract validation (#432)")
     path = os.path.join(HERE, "conformance_suite.py")
-    if not os.path.exists(path):
-        print("scripts/conformance_suite.py not found — skipping")
-        return True
-    r = subprocess.run([sys.executable, path], cwd=REPO)
-    return r.returncode == 0
+    if not os.path.isfile(path):
+        print("scripts/conformance_suite.py not found")
+        return GateResult(False, "conformance_missing")
+    return _gate_result(
+        "conformance",
+        _run_bounded([sys.executable, path], phase="conformance"),
+    )
 
 
 def run_package_content():
-    # #294 AC11 — deliberately NOT part of the default/core gate: it actually builds a real
-    # sdist + wheel + runs `npm pack --dry-run`, ~20-30s and requires the `build` module + `npm`
-    # on PATH. This is a release-time check (issue step 6: "provar que wheel/npm/plugin não
-    # carregam mídia ou mirrors desnecessários"), run explicitly via
-    # `python3 scripts/check.py --package-content`, not on every push.
+    # Explicit release lane; it builds real package artifacts.
     _hr("package-content (#294 AC11)")
     path = os.path.join(HERE, "package_content_check.py")
-    if not os.path.exists(path):
-        print("scripts/package_content_check.py not found — skipping")
-        return True
-    r = subprocess.run([sys.executable, path], cwd=REPO)
-    return r.returncode == 0
+    if not os.path.isfile(path):
+        print("scripts/package_content_check.py not found")
+        return GateResult(False, "package_content_missing")
+    return _gate_result(
+        "package_content",
+        _run_bounded([sys.executable, path], phase="package_content"),
+    )
 
 
 def main():
+    global _core_deadline
     args = sys.argv[1:]
+    supported_flags = {
+        "--core-gate", "--audit-only", "--tests-only", "--mirror-parity-only",
+        "--loop-contract-only", "--clean-env-only", "--token-budget", "--repo-budget",
+        "--conformance", "--package-content",
+    }
+    unknown_flags = sorted(set(args) - supported_flags)
+    if unknown_flags:
+        print("check: FAIL (unknown flag(s): %s)" % ", ".join(unknown_flags), file=sys.stderr)
+        sys.exit(2)
     core_gate = "--core-gate" in args
+    _core_deadline = time.monotonic() + CORE_GATE_TIMEOUT_SECONDS if core_gate else None
     only_flags = {"--audit-only", "--tests-only", "--mirror-parity-only", "--loop-contract-only",
-                  "--clean-env-only", "--token-budget", "--repo-budget", "--package-content"}
+                  "--clean-env-only", "--token-budget", "--repo-budget", "--conformance",
+                  "--package-content"}
     any_only = any(a in args for a in only_flags) or core_gate
-    audit_ok = mirror_ok = tests_ok = contract_ok = clean_env_ok = budget_ok = repo_budget_ok = True
-    package_content_ok = True
-    conformance_ok = True
+    results = {name: GateResult(True, "not_run") for name in (
+        "audit", "mirror_parity", "tests", "loop_contract", "clean_env",
+        "token_budget", "repo_budget", "conformance", "package_content",
+    )}
     if not any_only or "--audit-only" in args or core_gate:
-        audit_ok = run_audit()
+        results["audit"] = run_audit()
     if not any_only or "--mirror-parity-only" in args or core_gate:
-        mirror_ok = run_mirror_parity()
+        results["mirror_parity"] = run_mirror_parity()
     if not any_only or "--tests-only" in args or core_gate:
-        tests_ok = run_tests(only_core=core_gate)
+        results["tests"] = run_tests(only_core=core_gate)
     if not any_only or "--loop-contract-only" in args or core_gate:
-        contract_ok = run_loop_contract()
+        results["loop_contract"] = run_loop_contract()
     if not any_only or "--clean-env-only" in args or core_gate:
-        clean_env_ok = run_clean_env_contract()
+        results["clean_env"] = run_clean_env_contract()
     if not any_only or "--token-budget" in args or core_gate:
-        budget_ok = run_token_budget()
+        results["token_budget"] = run_token_budget()
     if not any_only or "--repo-budget" in args or core_gate:
-        repo_budget_ok = run_repository_budget()
+        results["repo_budget"] = run_repository_budget()
     if not any_only or "--conformance" in args or core_gate:
-        conformance_ok = run_conformance()
+        results["conformance"] = run_conformance()
     if "--package-content" in args:
         # Deliberately NOT included in "not any_only" (the default full run) or core_gate — see
         # run_package_content()'s docstring: opt-in only, ~20-30s, a release-time check.
-        package_content_ok = run_package_content()
-    ok = (audit_ok and mirror_ok and tests_ok and contract_ok and clean_env_ok and budget_ok
-          and repo_budget_ok and package_content_ok and conformance_ok)
+        results["package_content"] = run_package_content()
+    ok = all(result.ok for result in results.values())
+    status = {
+        name: ("not_run" if result.reason_code == "not_run" else ("ok" if result.ok else "FAIL"))
+        for name, result in results.items()
+    }
     if core_gate:
         print("\ncore-gate: %s  (audit=%s · mirror-parity=%s · core-tests=%s · loop-contract=%s · clean-env=%s · token-budget=%s · repo-budget=%s · conformance=%s)" % (
-            "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if mirror_ok else "FAIL",
-            "ok" if tests_ok else "FAIL", "ok" if contract_ok else "FAIL",
-            "ok" if clean_env_ok else "FAIL", "ok" if budget_ok else "FAIL",
-            "ok" if repo_budget_ok else "FAIL", "ok" if conformance_ok else "FAIL"))
-    print("\ncheck: %s  (audit=%s · mirror-parity=%s · tests=%s · loop-contract=%s · clean-env=%s · token-budget=%s · repo-budget=%s · conformance=%s)" % (
-        "PASS" if ok else "FAIL", "ok" if audit_ok else "FAIL", "ok" if mirror_ok else "FAIL",
-        "ok" if tests_ok else "FAIL", "ok" if contract_ok else "FAIL",
-        "ok" if clean_env_ok else "FAIL", "ok" if budget_ok else "FAIL",
-        "ok" if repo_budget_ok else "FAIL", "ok" if conformance_ok else "FAIL"))
+            "PASS" if ok else "FAIL", status["audit"], status["mirror_parity"],
+            status["tests"], status["loop_contract"], status["clean_env"],
+            status["token_budget"], status["repo_budget"], status["conformance"]))
+    print("\ncheck: %s  (audit=%s · mirror-parity=%s · tests=%s · loop-contract=%s · clean-env=%s · token-budget=%s · repo-budget=%s · conformance=%s · package-content=%s)" % (
+        "PASS" if ok else "FAIL", status["audit"], status["mirror_parity"], status["tests"],
+        status["loop_contract"], status["clean_env"], status["token_budget"],
+        status["repo_budget"], status["conformance"], status["package_content"]))
+    print_reason_summary(results)
+    _core_deadline = None
     sys.exit(0 if ok else 1)
 
 

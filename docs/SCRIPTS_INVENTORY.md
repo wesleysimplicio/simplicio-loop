@@ -1,11 +1,16 @@
 # Scripts inventory — core vs satellite (#118)
 
-`scripts/` has grown to ~39 files. This is the versioned classification of every one of them:
-**core** (required for the `/simplicio-loop` drive or the local `check.py` gate) vs **satellite**
-(an opt-in/advanced capability — a source adapter, an extension point not wired into the base
-loop, or a separate economy/demo stack). `scripts/check.py --core-gate` runs ONLY the core gate
-(claims-audit + loop-contract + token-budget + the core subset of `tests/`); the default
-`scripts/check.py` (no flags) still runs everything, core and satellite, unchanged.
+This is a maintainer-curated inventory of the gate-relevant boundaries, not a count or a
+classification of every utility under `scripts/`: **core** is required for the
+`/simplicio-loop` drive or the local `check.py` gate, while **satellite** is opt-in/advanced (a
+source adapter, an extension point not wired into the base loop, or a separate economy/demo
+stack). The checkout and its latest local gate receipt are authoritative for inventory and result
+counts; `scripts/test_categories.py` reports any tests that remain uncategorized.
+`scripts/check.py --core-gate` runs the mandatory local gate: claims audit, mirror parity, core pytest selection,
+loop contract, clean-environment contract, token/repository budgets, and portable stage-contract
+validation. The default `scripts/check.py` uses the same phases with the full core+satellite pytest
+selection. GitHub Actions is not required or accepted as evidence for either mode; the local
+result is authoritative.
 
 Status legend: **active** (invoked today, tested), **experimental** (tested but not yet wired to
 any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
@@ -14,10 +19,14 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 
 | Script | Invoker | Status |
 |---|---|---|
-| `check.py` | manual (`python3 scripts/check.py`) · git pre-push hook (fail-closed) · **no GitHub Actions** (`.github/workflows/` removed in #311 for billing — see docs/REPOSITORY_GOVERNANCE.md) | active |
+| `check.py` | manual (`python3 scripts/check.py`) · git pre-push hook (fail-closed) · local result is authoritative; GitHub Actions is not required evidence | active |
+| `check_runtime.py` | imported by `check.py` — sanitized environment, bounded subprocess tree, timeout/reason contracts | active |
 | `claims_audit.py` | `check.py` | active |
 | `claims_manifest.py` | imported by `claims_audit.py` (quantitative-claims registry) | active |
 | `check_loop_contract.py` | `check.py` | active |
+| `mirror_parity.py` | `check.py` — source/bundle/plugin parity is a distinct fail-closed phase | active |
+| `clean_env_contract.py` | `check.py` — installed package metadata/entrypoint/bundle contract | active |
+| `conformance_suite.py` | `check.py` — portable graph/receipt validation only; never claims an external runtime executed | active |
 | `token_budget.py` | `check.py` (#121) | active |
 | `repository_budget.py` | `check.py` (#294) — tracked-tree size budget: per-file cap (2 MiB) + total-growth gate + **forbidden-media rule** (video/out/, rust/target/, node_modules/, dist/, build/ blocked; large media only exempt under `assets/_lfs/` LFS per `.gitattributes`); read-only, history untouched | active |
 | `mirror_manifest.py` | imported by `sync_plugin.py` + `claims_audit.py` (single source of truth for the lean hooks/scripts/tests sets) | active |
@@ -40,19 +49,21 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 | `impact_audit.py` | SKILL.md § The loop contract step 2 (blast-radius gate) | active |
 | `flow_audit.py` | SKILL.md § The loop contract step 2/3 (integration gate) | active |
 | `video_evidence.py` | SKILL.md § Video evidence producer; `pr_evidence.py` | active |
-| `web_verify.py` | `video_evidence.py`; `.github/workflows/web-verify.yml` | active |
+| `web_verify.py` | `video_evidence.py`; manual/local invocation | active |
 | `pr_evidence.py` | PR-open flow (`pr_evidence.py build --require-evidence`) | active |
 | `toon_codec.py` | imported by `task_anchor.py` / `loop_journal.py` (TOON-rendered `--format toon` output) | active |
-| `coverage_gate.py` | `.github/workflows/quality-gate.yml` (#277) — 85% global / 90% critical-path line coverage gate | active |
-| `perf_gate.py` | `.github/workflows/quality-gate.yml` (#277) — latency/throughput/RSS vs `scripts/perf_baseline.json` + bounded convergence check | active |
-| `flaky_gate.py` | `.github/workflows/quality-gate.yml` (#277) — repeats the convergence/drain-critical test subset (or full suite in `--stress`) N times and flags inconsistent outcomes | active |
-| `regression_test_gate.py` | `.github/workflows/quality-gate.yml` (#277) — fails a PR that changes source without an accompanying `tests/` change | active |
+| `coverage_gate.py` | manual/local quality measurement — 85% global / 90% critical-path line coverage gate | active |
+| `perf_gate.py` | manual/local performance measurement — latency/throughput/RSS vs `scripts/perf_baseline.json` + bounded convergence check | active |
+| `flaky_gate.py` | manual/local repetition of the convergence/drain-critical test subset (or full suite in `--stress`) | active |
+| `regression_test_gate.py` | manual/local source-to-test-change check | active |
 | `test_categories.py` | `quality_matrix.py populate`/`independent_reverify_quality_matrix` (#283) — per-category (`unit`/`integration`/`system`/`regression`) test-runner split, reads the `tests/*_<category>.py` filename convention | active |
+| `package_content_check.py` | explicit `check.py --package-content` release lane; not part of default/core because it builds real artifacts | active |
 
 ## Satellite (opt-in / advanced capabilities)
 
 | Script | Invoker | Status |
 |---|---|---|
+| `issue_meta_audit.py` | manual read-only GitHub specification audit for issue #647; supports deterministic offline fixtures and writes `docs/audits/` evidence | active |
 | `autoresearch.py` | the `simplicio-autoresearch` satellite skill | active |
 | `agentsview_adapter.py` | AgentsView source adapter (README § Source adapters) | active |
 | `az_boards_adapter.py` | Azure Boards source adapter (`.claude/skills/simplicio-loop/references/azure-devops-adapter.md`) | active |
@@ -70,14 +81,24 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 
 ## How this maps to `scripts/check.py`
 
-- `scripts/check.py` (no flags) — unchanged: audit + full `tests/` (core + satellite) +
-  loop-contract + token-budget.
-- `scripts/check.py --core-gate` — audit + loop-contract + token-budget + ONLY the `tests/` files
-  that exercise a core script (see `SATELLITE_TEST_STEMS` in `scripts/check.py`, which mirrors this
-  table). This is the fast, mandatory gate: no adapter credentials, no economy stack, no
-  autoresearch loop needed to get a green core gate.
-- `scripts/check.py --audit-only` / `--tests-only` / `--loop-contract-only` / `--token-budget` —
-  unchanged, run exactly one full-suite phase.
+- `scripts/check.py` (no flags) — claims audit + mirror parity + full pytest suite excluding the
+  marked `external_integration` lane + loop contract + clean-env + token budget + repository
+  budget + portable contract validation. A marker-only pytest `--collect-only` probe reports the
+  typed count as `EXTERNAL_INTEGRATION_EXCLUDED[marker_selection]=N` before execution.
+- `scripts/check.py --core-gate` — the same mandatory phases with `SATELLITE_TEST_STEMS` removed
+  (including the manual/snapshot `e2e_demo`, `check_e2e_demo_contract`, and
+  `independent_watcher` suites) and `external_integration` deselected explicitly. Subprocess environment is allowlisted, pytest
+  plugin autoload is disabled, and pytest plus Python descendants inheriting the gate environment
+  allow only loopback/AF_UNIX sockets (arbitrary external CLIs are not network-sandboxed). The core
+  has a 600-second global deadline, and every subprocess retains its shorter phase deadline.
+- A zero pytest exit with no passed mandatory test is `pytest_all_tests_skipped`; missing pytest,
+  test directories, or phase scripts fail with typed `*_unavailable`/`*_missing` reasons.
+- External installed-runtime/live/sibling/release lanes are not core proof. The portable
+  conformance phase validates only the shared graph/receipt fixture and reports zero external
+  runtimes executed unless a separate real adapter lane supplies that evidence.
+- `scripts/check.py --audit-only` / `--tests-only` / `--mirror-parity-only` /
+  `--loop-contract-only` / `--clean-env-only` / `--token-budget` / `--repo-budget` /
+  `--conformance` run the named local phase; `--package-content` is an explicit release lane.
 
 Regenerating this table: there is no automated generator (it is maintainer-curated, cross-checked
 against `scripts/claims_audit.py`'s `SELFTEST_SCRIPTS`/`SELFTEST_EXEMPT` and the doc references

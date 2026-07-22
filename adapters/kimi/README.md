@@ -26,11 +26,11 @@ self-paced runtime.
 
 `orient_clamp.py` works as-is: `python3 hooks/orient_clamp.py -- <build/test/diff command>`.
 
-## Native bind — MCP (REQUIRED, best-effort wiring)
+## Native bind — MCP (optional, best-effort wiring)
 
-`simplicio-runtime` native binding is **REQUIRED** per CLAUDE.md § Hooks — the loop BLOCKS if the
-`simplicio` binary/MCP server is missing or unreachable, on Kimi exactly as on every other
-adapter. What differs on Kimi is *how well documented and verified the wiring is*, not whether the
+`simplicio-runtime` native binding is optional on Kimi. A missing/unreachable bind reports
+explicit degraded mode while the standalone loop remains available. What differs on Kimi is how
+well documented and verified the wiring is, not whether the
 bind is optional.
 
 ```bash

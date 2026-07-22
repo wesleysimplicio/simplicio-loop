@@ -19,6 +19,11 @@ from unittest import mock
 
 import pytest
 
+pytest.importorskip(
+    "cryptography",
+    reason="CAPABILITY_UNAVAILABLE[cryptography]: TLS fixture dependency is not installed",
+)
+
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa

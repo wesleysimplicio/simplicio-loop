@@ -1,3 +1,4 @@
+import sqlite3
 import threading
 
 import pytest
@@ -30,28 +31,106 @@ def test_atomic_shared_reservation_and_idempotent_settlement(tmp_path):
     assert snap["reserved_tokens"] == 0
 
 
+def test_settlement_replay_is_scoped_to_its_run(tmp_path):
+    path = tmp_path / "budget.sqlite"
+    first = BudgetLedger(path, RunBudget("run-one", token_limit=100))
+    first.reserve("shared-id", "work-one", tokens=10)
+    first.settle("shared-id", tokens=10)
+
+    second = BudgetLedger(path, RunBudget("run-two", token_limit=100))
+    with pytest.raises(UnknownReservation, match="shared-id"):
+        second.settle("shared-id", tokens=10)
+
+
+def test_legacy_global_settlement_key_is_migrated_to_a_run_scoped_key(tmp_path):
+    path = tmp_path / "legacy.sqlite"
+    with sqlite3.connect(str(path)) as db:
+        db.execute(
+            "CREATE TABLE budget_settlements (reservation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, "
+            "payload TEXT NOT NULL, created_at REAL NOT NULL)",
+        )
+        db.execute(
+            "INSERT INTO budget_settlements VALUES(?,?,?,?)",
+            ("old", "old-run", "{}", 0.0),
+        )
+    BudgetLedger(path, RunBudget("new-run", token_limit=10))
+    with sqlite3.connect(str(path)) as db:
+        key_columns = [row[1] for row in sorted(db.execute("PRAGMA table_info(budget_settlements)"), key=lambda row: row[5]) if row[5]]
+        assert key_columns == ["run_id", "reservation_id"]
+        assert db.execute("SELECT reservation_id,run_id FROM budget_settlements").fetchone() == ("old", "old-run")
+
+
 def test_concurrent_admission_cannot_oversubscribe(tmp_path):
     budget = RunBudget("run-race", token_limit=100)
     path = tmp_path / "race.sqlite"
     results = []
+    errors = []
     barrier = threading.Barrier(6)
 
     def admit(index):
-        ledger = BudgetLedger(path, budget)
-        barrier.wait()
         try:
+            barrier.wait(timeout=5)
+            ledger = BudgetLedger(path, budget)
             ledger.reserve("r-%d" % index, "w-%d" % index, tokens=20)
             results.append(True)
         except BudgetExceeded:
             results.append(False)
+        except Exception as exc:  # failure evidence; never strand peers at an unbounded barrier
+            errors.append((type(exc).__name__, str(exc)))
 
-    threads = [threading.Thread(target=admit, args=(i,)) for i in range(6)]
+    threads = [
+        threading.Thread(target=admit, args=(i,), name="budget-init-%d" % i, daemon=True)
+        for i in range(6)
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join()
+        thread.join(timeout=10)
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
     assert sum(results) == 5
     assert BudgetLedger(path, budget).snapshot()["reserved_tokens"] == 100
+
+
+def test_concurrent_constructors_migrate_legacy_settlements_once(tmp_path):
+    path = tmp_path / "legacy-race.sqlite"
+    receipt = '{"reservation_id":"old","run_id":"old-run"}'
+    with sqlite3.connect(str(path)) as db:
+        db.execute(
+            "CREATE TABLE budget_settlements (reservation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, "
+            "payload TEXT NOT NULL, created_at REAL NOT NULL)",
+        )
+        db.execute("INSERT INTO budget_settlements VALUES(?,?,?,?)", ("old", "old-run", receipt, 0.0))
+
+    barrier = threading.Barrier(8)
+    errors = []
+
+    def construct(index):
+        try:
+            barrier.wait(timeout=5)
+            BudgetLedger(path, RunBudget("run-%d" % index, token_limit=10))
+        except Exception as exc:
+            errors.append((type(exc).__name__, str(exc)))
+
+    threads = [threading.Thread(target=construct, args=(index,), daemon=True) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    with sqlite3.connect(str(path)) as db:
+        key_columns = [
+            row[1]
+            for row in sorted(db.execute("PRAGMA table_info(budget_settlements)"), key=lambda row: row[5])
+            if row[5]
+        ]
+        assert key_columns == ["run_id", "reservation_id"]
+        assert db.execute(
+            "SELECT payload FROM budget_settlements WHERE run_id=? AND reservation_id=?",
+            ("old-run", "old"),
+        ).fetchone() == (receipt,)
 
 
 def test_context_pack_hash_is_reused_only_for_same_inputs():
@@ -167,6 +246,44 @@ def test_settle_rejects_late_usage_that_would_overspend(tmp_path):
     ledger.reserve("r1", "w1", tokens=5)
     with pytest.raises(BudgetExceeded, match="overspend"):
         ledger.settle("r1", tokens=50)
+
+
+def test_settle_keeps_other_active_reservations_inside_shared_limit(tmp_path):
+    ledger = BudgetLedger(tmp_path / "budget.sqlite", RunBudget("run-1", token_limit=100))
+    ledger.reserve("r1", "w1", tokens=50)
+    ledger.reserve("r2", "w2", tokens=50)
+
+    with pytest.raises(BudgetExceeded, match="overspend"):
+        ledger.settle("r1", tokens=100)
+
+    snapshot = ledger.snapshot()
+    assert snapshot["spent_tokens"] == 0
+    assert snapshot["reserved_tokens"] == 100
+    receipt = ledger.settle("r1", tokens=50)
+    assert receipt["tokens"] == 50
+    assert ledger.snapshot()["reserved_tokens"] == 50
+
+
+@pytest.mark.parametrize(
+    ("budget_kwargs", "reserve_kwargs", "settle_kwargs"),
+    [
+        ({"call_limit": 2}, {"calls": 1}, {"calls": 2}),
+        ({"cost_limit_micros": 20}, {"cost_micros": 10}, {"cost_micros": 20}),
+        ({"latency_limit_ms": 100}, {"latency_ms": 50}, {"latency_ms": 100}),
+    ],
+)
+def test_settle_accounts_for_other_reservations_in_auxiliary_limits(
+    tmp_path, budget_kwargs, reserve_kwargs, settle_kwargs,
+):
+    budget = RunBudget("run-aux", token_limit=1000, **budget_kwargs)
+    ledger = BudgetLedger(tmp_path / "budget.sqlite", budget)
+    ledger.reserve("r1", "w1", tokens=1, **reserve_kwargs)
+    ledger.reserve("r2", "w2", tokens=1, **reserve_kwargs)
+
+    usage = {"tokens": 1, "calls": 1, "cost_micros": 0, "latency_ms": 0}
+    usage.update(settle_kwargs)
+    with pytest.raises(BudgetExceeded, match="overspend"):
+        ledger.settle("r1", **usage)
 
 
 # -- cancellation ------------------------------------------------------------

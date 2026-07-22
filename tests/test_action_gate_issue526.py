@@ -25,6 +25,8 @@ def make_repo(tmp_path: Path, text: str = "ok") -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "-q")
+    git(repo, "config", "user.email", "action-gate@example.invalid")
+    git(repo, "config", "user.name", "action-gate fixture")
     (repo / "file.txt").write_text(text, encoding="utf-8")
     git(repo, "add", "file.txt")
     git(repo, "commit", "-q", "-m", "init")

@@ -109,7 +109,8 @@ path + verdict; a missing toolchain BLOCKS, never a fake pass.
   savings line. Credited only on a passing quality gate.
 - Verify claims locally before pushing: `python3 scripts/check.py` (test suite + claims-audit +
   `_bundle ≡ source` parity + the token/context budget guard, `scripts/token_budget.py`, #121).
-  Self-runs on bare python3 — no CI, no pytest required. Keep it green.
+  It requires importable `pytest` from `pip install "simplicio-loop[dev]"`; missing pytest is a
+  failing gate result, never a bare-Python fallback. Keep it green.
 - **Big refactors/doc rewrites:** run `python3 scripts/check.py --token-budget` and treat a FAIL
   as a real regression to justify or trim, not to silence with `--update-baseline` unreviewed.
 - `simplicio-runtime` native binding (MCP or CLI) is optional. `simplicio doctor --json` can

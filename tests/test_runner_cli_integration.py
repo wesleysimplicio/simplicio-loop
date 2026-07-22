@@ -735,7 +735,8 @@ def test_run_blocks_when_mapper_preflight_version_too_old(tmp_path):
     task = tmp_path / "task.md"
     task.write_text(TASK, encoding="utf-8")
     started = _run(
-        CLI + ["run", "--repo", str(repo), "--task", str(task), "--delivery", "verified", "--max-iterations", "9"],
+        CLI + ["run", "--repo", str(repo), "--task", str(task), "--delivery", "verified",
+               "--max-iterations", "9", "--quality-provider", "simplicio_loop_quality"],
         REPO,
         env={
             "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": json.dumps({
@@ -750,9 +751,10 @@ def test_run_blocks_when_mapper_preflight_version_too_old(tmp_path):
             })
         },
     )
-    assert started.returncode == 0, started.stdout + started.stderr
+    assert started.returncode == 20, started.stdout + started.stderr
     payload = json.loads(started.stdout)
     assert payload["state"]["phase"] == "blocked"
+    assert payload["outcome"]["outcome"] == "BLOCKED"
     assert "minimum version" in payload["state"]["blockers"][0]
 
 

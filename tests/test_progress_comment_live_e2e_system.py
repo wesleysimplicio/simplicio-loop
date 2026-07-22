@@ -28,6 +28,10 @@ import shutil
 import subprocess
 import sys
 
+import pytest
+
+pytestmark = pytest.mark.external_integration
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PR_EVIDENCE = os.path.join(REPO, "scripts", "pr_evidence.py")
 LIVE_REPO = os.environ.get("SIMPLICIO_LIVE_GH_REPO", "wesleysimplicio/simplicio-loop")
@@ -85,9 +89,11 @@ def _reset_rate_limit_state():
 
 def test_progress_comment_posted_twice_updates_same_comment_on_live_issue():
     if not _live_gate_open():
-        print("SKIP (opt-in): set SIMPLICIO_LIVE_GH_E2E=1 with an authenticated gh CLI to run "
-             "this live e2e against %s" % LIVE_REPO)
-        return
+        pytest.skip(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[live_github_opt_in]: set "
+            "SIMPLICIO_LIVE_GH_E2E=1 with an authenticated gh CLI to run this "
+            "live e2e against %s" % LIVE_REPO
+        )
 
     issue = _create_scratch_issue()
     try:

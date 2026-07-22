@@ -25,6 +25,7 @@ Usage:
                                                                      # docs/HISTORY_MIGRATION_PLAN.md
                                                                      # + docs/history_migration_plan.json
     python3 scripts/history_migration_plan.py --dry-run --json      # machine-readable to stdout
+    python3 scripts/history_migration_plan.py --dry-run --repo /tmp/clone --output-dir /tmp/reports
 
 There is intentionally no other verb. Running this script with no arguments, or with anything
 other than `--dry-run`, prints usage and exits non-zero — it never silently "does something".
@@ -68,8 +69,8 @@ def _matches(path):
     return None, None
 
 
-def compute_plan(top_n=50):
-    scan = repo_history_scan.scan(top_n=10 ** 9)  # need the FULL blob list to classify, not top-N
+def compute_plan(top_n=50, repo=None):
+    scan = repo_history_scan.scan(top_n=10 ** 9, repo=repo)  # need the FULL blob list to classify, not top-N
     all_blobs = scan["top_blobs"]  # scan() already returns every blob sorted desc when top_n huge
 
     matched = []
@@ -206,13 +207,22 @@ def render_markdown(plan):
     return "\n".join(lines) + "\n"
 
 
-def write_plan(plan):
-    os.makedirs(DOCS_DIR, exist_ok=True)
-    with open(PLAN_JSON, "w", encoding="utf-8") as f:
+def _plan_paths(output_dir=None):
+    directory = output_dir or DOCS_DIR
+    return (os.path.join(directory, "HISTORY_MIGRATION_PLAN.md"),
+            os.path.join(directory, "history_migration_plan.json"))
+
+
+def write_plan(plan, output_dir=None):
+    """Write a dry-run plan outside the repository when ``output_dir`` is supplied."""
+    plan_md, plan_json = _plan_paths(output_dir)
+    os.makedirs(os.path.dirname(plan_md), exist_ok=True)
+    with open(plan_json, "w", encoding="utf-8") as f:
         json.dump(plan, f, indent=2, sort_keys=True)
         f.write("\n")
-    with open(PLAN_MD, "w", encoding="utf-8") as f:
+    with open(plan_md, "w", encoding="utf-8") as f:
         f.write(render_markdown(plan))
+    return plan_md, plan_json
 
 
 def main(argv=None):
@@ -222,12 +232,25 @@ def main(argv=None):
         print("refusing to run without --dry-run (the only mode this script has)")
         return 2
 
-    plan = compute_plan()
+    repo = None
+    output_dir = None
+    for option, target in (("--repo", "repo"), ("--output-dir", "output_dir")):
+        if option in args:
+            idx = args.index(option)
+            if idx + 1 >= len(args):
+                print("%s requires a path" % option, file=sys.stderr)
+                return 2
+            if target == "repo":
+                repo = os.path.abspath(args[idx + 1])
+            else:
+                output_dir = os.path.abspath(args[idx + 1])
+
+    plan = compute_plan(repo=repo)
 
     if "--write" in args:
-        write_plan(plan)
+        plan_md, plan_json = write_plan(plan, output_dir=output_dir)
         print("wrote %s + %s" % (
-            os.path.relpath(PLAN_MD, REPO), os.path.relpath(PLAN_JSON, REPO)))
+            plan_md, plan_json))
 
     if "--json" in args:
         print(json.dumps(plan, indent=2, sort_keys=True))
@@ -244,16 +267,16 @@ def main(argv=None):
 
 
 def selftest():
-    """Prove the plan computation is real (reuses the real repo_history_scan) AND that this
-    module truly has no execute path — no function here calls filter-repo/filter-branch/bfg or
-    mutates any git ref."""
+    """Run the real classifier against the scan module's tiny disposable Git fixture."""
     checks = []
     try:
-        plan = compute_plan(top_n=5)
+        import tempfile
+        with tempfile.TemporaryDirectory() as parent:
+            plan = compute_plan(top_n=5, repo=repo_history_scan._make_selftest_repo(parent))
         checks.append(("compute_plan() returns a dict", isinstance(plan, dict)))
         checks.append(("mode is DRY_RUN_ONLY", plan["mode"] == "DRY_RUN_ONLY"))
         checks.append(("executed is False", plan["executed"] is False))
-        checks.append(("candidate_blob_count >= 0", plan["candidate_blob_count"] >= 0))
+        checks.append(("generated artifacts are candidates", plan["candidate_blob_count"] >= 2))
         md = render_markdown(plan)
         checks.append(("render_markdown produces non-empty text", len(md) > 200))
         checks.append(("rollback plan text is embedded", "Explicit maintainer approval" in md))
@@ -284,7 +307,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--describe-cli":
         print(json.dumps({
             "verbs": ["selftest"],
-            "flags": ["--dry-run", "--write", "--json", "--describe-cli"],
+            "flags": ["--dry-run", "--write", "--json", "--repo", "--output-dir", "--describe-cli"],
         }))
         sys.exit(0)
     sys.exit(main())

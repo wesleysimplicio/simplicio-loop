@@ -11,6 +11,7 @@ SCRIPT = ROOT / "scripts" / "planes_installed_e2e.py"
 TASK = ROOT / "contracts/task-to-delivery/fixtures/planes/task.md"
 
 
+@pytest.mark.external_integration
 def test_installed_planes_gate_uses_real_path_and_raw_markdown():
     # #291 — this is a real e2e test against the *published* console scripts
     # (simplicio-mapper, simplicio-dev-cli, simplicio-loop, simplicio), not this repo's source
@@ -27,6 +28,7 @@ def test_installed_planes_gate_uses_real_path_and_raw_markdown():
     receipt = json.loads(result.stdout) if result.stdout else {}
     if result.returncode != 0 or receipt.get("status") == "BLOCKED":
         pytest.skip(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[installed_e2e]: "
             "installed-e2e toolchain unavailable or non-functional in this environment "
             f"(status={receipt.get('status')!r}, reason={receipt.get('reason')!r}); "
             "run this test in the dedicated installed-e2e job (#291) against a clean venv "

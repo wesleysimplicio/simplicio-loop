@@ -5,9 +5,10 @@ surface (malformed/untrusted input), `simplicio_loop/prototype_cli.py`. This rep
 not yet ship `prototype_fanout.py` / `prototype_judge.py` (candidate fan-out execution
 and judge-LLM integration are explicitly out of the P0 slice per the module docstring),
 so any of the eight categories below that genuinely depends on those modules is marked
-`pytest.mark.skip` with a `# TODO(deferred): needs <module>` comment instead of being
-faked green. Every non-skipped test asserts a real, breakable invariant -- none of them
-degenerate to `assert True`.
+`pytest.mark.satellite` plus `pytest.mark.skip` with a `# TODO(deferred): needs <module>`
+comment instead of being faked green. They remain visible in the opt-in satellite lane rather
+than being misreported as core-environment capability gaps. Every non-skipped test asserts a
+real, breakable invariant -- none of them degenerate to `assert True`.
 
 Covers, from the epic's mandatory adversarial list:
   1. prompt injection tenta dispensar gate
@@ -96,6 +97,7 @@ def test_prompt_injection_cannot_forge_a_not_required_receipt_when_a_signal_is_s
 
 # === 2. Candidate declaring access to a secret/real-data path (DEFERRED) =====================
 
+@pytest.mark.satellite
 @pytest.mark.skip(
     reason="TODO(deferred): CANDIDATE_SCHEMA v1 has no synthetic_data_policy/real_data_policy "
            "field today -- `safety_classification` and `artifact_location` are free-text and "
@@ -232,6 +234,7 @@ def test_receipt_with_tampered_stage_hash_after_signing_is_rejected():
         validate_receipt(forged)
 
 
+@pytest.mark.satellite
 @pytest.mark.skip(
     reason="TODO(deferred): build_decision has no requirement today that judge_id be non-empty "
            "when judge_independent=True is asserted -- a decision can legitimately claim "
@@ -262,6 +265,7 @@ def test_judge_id_is_a_structurally_distinct_field_from_candidate_creator_identi
     assert set(decision) & {"agent_id"} == set()  # decision never silently inherits candidate's field name
 
 
+@pytest.mark.satellite
 @pytest.mark.skip(
     reason="TODO(deferred): prototype_gate.build_decision() never receives the candidate's "
            "agent_id (only candidate_hash), so this module cannot itself cross-check "
@@ -318,6 +322,7 @@ def test_candidate_out_of_scope_and_limitations_are_declarative_not_enforced_exe
 
 # === 7. Budget / slot exhaustion (DEFERRED) ====================================================
 
+@pytest.mark.satellite
 @pytest.mark.skip(
     reason="TODO(deferred): DEFAULT_BUDGET/estimated_budget are recorded on the plan but "
            "nothing in prototype_gate.py compares a candidate's measured_costs (or a running "

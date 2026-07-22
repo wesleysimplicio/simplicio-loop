@@ -34,6 +34,31 @@ reports `backend: "rust"`; otherwise it deliberately uses the safe Python adapte
 Rust-level cross-platform resource controls. cgroups, Windows Job Objects, quotas, and full Hub
 queue integration remain separate supervisor work.
 
+### Stage-agent provider
+
+`HubQueueAgentClient` is the public bridge from `QueueAgentAdapter` to the Hub. It renders the
+configured agent command to an argv-only `ProcessSpec`, fixes `cwd` to an absolute allow-listed
+root, filters the environment, and propagates run/stage/agent/process identity, deadline,
+idempotency key, priority (`test` for validation/review stages, otherwise `build`), and resource
+weight/cost. The provider never starts a subprocess; Unix socket `execute` dispatch is moved off
+the Hub server event loop so heartbeat and cancellation remain responsive while the supervisor
+owns the process.
+
+Every IPC effect has a durable JSONL `before`/`after` journal record. A new client instance
+replays a completed `execute` by deterministic idempotency key instead of executing it again, and
+each request uses a fresh `HubSocketClient` so a restarted Hub can be reached. Use
+`StageAgentCoordinator(..., strict_hub=True)` with
+`QueueAgentAdapter(queue_client=HubQueueAgentClient(...))` to fail closed when the Hub is absent;
+strict mode never falls back to `CommandAgentAdapter`.
+
+The executable conformance/system lane is `tests/test_hub_queue_agent_client.py`. It covers fake
+and real Hub transport, heartbeat/result/cancel, timeout/OOM/truncation classifications, stale
+fences, restart replay, and an AST architecture gate forbidding subprocess calls in the provider.
+Regenerate the durable-claim hot-path baseline with
+`python3 scripts/benchmark_hub_queue_agent_client.py --iterations 200 --output
+bench/hub-queue-agent-client-baseline.json`; the JSON retains every raw latency sample rather than
+only aggregates.
+
 ## Fair scheduler (DRR/quotas, #505)
 
 `HubDaemon` always dispatches through a `FairScheduler` (`simplicio_loop/hub_scheduler.py`):
@@ -118,22 +143,31 @@ deliberate scheduler change.
   in `to_backpressure_signal()` is at that scope's quota, not being throttled arbitrarily — check
   `current` vs `limit` in the signal.
 
-## Rollback
+## Scheduler rollout and rollback (#635)
 
-There is no runtime env var or CLI flag to disable the fair scheduler in the current code —
-`HubDaemon.__init__` always constructs a `FairScheduler()` with its class defaults
-(`max_inflight_per_client=4`, `quantum=1`, no queue quotas, `aging_ticks=20`, `aging_boost=4`) when
-no `scheduler=` argument is passed. Two real levers exist today, from weakest to strongest:
+The durable scheduler manifest is changed through the versioned `scheduler_configure` IPC method.
+Modes are fail-closed: `off` dispatches jobs pinned to `previous_version`, `shadow` keeps that same
+single authority while recording the candidate policy, `canary` pins a deterministic percentage of
+new jobs, and `on` pins all new jobs to `version`. The response is a rollout receipt whose
+`dispatch_authorities` is always `1`; shadow never submits or claims a second copy.
 
-1. **Neutralize quotas without a code change**: construct the daemon with
-   `HubDaemon(lock_path, scheduler=FairScheduler(max_queue_per_client=10**9,
-   max_queue_per_workspace=10**9, max_global_queue=10**9, max_inflight_per_client=10**9))` to stop
-   `QuotaExceededError`/backpressure from firing while keeping DRR ordering.
-2. **Full rollback**: revert the commits that introduced `FairScheduler` wiring in
-   `simplicio_loop/hub_daemon.py` (the `scheduler`/`claim_next`/`scheduler_status` code paths) and
-   redeploy — the daemon and `HubRetryQueue` both work standalone without it, since `claim`/
-   `submit`/`cancel`/`result` do not otherwise depend on the scheduler object.
+Example rollout: `scheduler_configure` with `{"mode":"shadow","version":"fair-drr-v3",
+"previous_version":"fair-drr-v2","canary_percent":0}`, then canary at 5, then `on`. Roll back by
+sending `off` with the same two versions. The manifest is committed in the queue SQLite WAL before
+it is exposed in memory. Every submitted row retains its `scheduler_policy` pin, so rollback does
+not rewrite, lose, or reinterpret jobs and receipts already persisted. Restart reloads the manifest
+and rehydrates each job with its original pin.
 
-Stop the daemon, remove only the stale lock after confirming its PID is dead, and unset the Hub
-endpoint/feature flag in the caller. No job state is treated as delivered until the caller receives
-the versioned response envelope.
+Limits: rollout changes ordering only for newly submitted jobs; it deliberately does not migrate
+queued policy pins or reset accumulated deficits. SQLite/WAL remains the sole durable authority,
+and the daemon remains the sole dispatch authority. Invalid modes, empty versions, and canary
+percentages outside 1..99 are rejected without replacing the last manifest. If AF_UNIX is absent,
+the multiprocess system lane reports `reason_code=af_unix_unavailable` rather than claiming a pass.
+
+### Reproducible multiprocess and performance evidence
+
+Run `python -m pytest -q tests/test_hub_scheduler_multiprocess_system.py` for real spawned producer
+and consumer processes over the real Hub socket and SQLite WAL. It uses barriers/events rather
+than sleeps. Run `python scripts/benchmark_hub_scheduler.py --heavy-jobs 500 --light-jobs 100
+--output bench/hub-scheduler-baseline.json` for the raw environment/commit, throughput, Jain,
+queue-wait p95/p99, dispatch p95/p99, RSS, and backpressure baseline.

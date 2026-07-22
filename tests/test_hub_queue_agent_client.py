@@ -1,200 +1,211 @@
-"""Fake and real-socket conformance tests for issue #615/#639."""
+"""Conformance and system coverage for the issue #615 Hub stage-agent provider."""
 from __future__ import annotations
 
-import inspect
+import ast
 import json
-import tempfile
+import os
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
-from simplicio_loop.hub_daemon import HubDaemon, HubSocketClient, HubSocketServer, default_endpoint
-from simplicio_loop.hub_queue_agent import (
-    CAPABILITY,
-    HubQueueAgentClient,
-    HubQueueAgentError,
-    HubQueueAgentJournal,
-    HubQueueAgentUnavailable,
-)
-from simplicio_loop.stage_agent_coordinator import AdapterRegistry, QueueAgentAdapter
+from simplicio_loop import stage_agent_coordinator as sc
+from simplicio_loop.hub_daemon import HubDaemon, HubSocketServer
 
 
-CONTEXT = {
-    "run_id": "run-615",
-    "task_id": "task-615",
-    "attempt_id": "attempt-1",
-    "fence": "fence-source",
-    "plan_revision": 3,
-    "agent_instance_id": "instance-615",
-}
+ROOT = Path(__file__).resolve().parent.parent
+ECHO = ROOT / "contracts/stage-agents/v1/adapter-fixtures/echo_agent.py"
 
 
-class FakeHub:
-    def __init__(self):
-        self.jobs = {}
+def _context(**updates):
+    value = {
+        "role_id": "review_panel", "stage_id": "validating", "run_id": "run-615",
+        "task_id": "task-615", "attempt_id": "attempt-1", "fence": "fence-1",
+        "plan_revision": 1, "timeout_seconds": 10,
+    }
+    value.update(updates)
+    return value
+
+
+class RecordingClient:
+    def __init__(self, *, execute_result=None, unavailable=False):
         self.calls = []
+        self.execute_result = execute_result or {
+            "returncode": 0, "stdout": "ok", "stderr": "", "duration_seconds": 0.012,
+            "timed_out": False, "cancelled": False, "truncated": False,
+            "error_code": "", "lease_id": "lease",
+        }
+        self.unavailable = unavailable
 
-    def hub_agent_capabilities(self, **payload):
-        self.calls.append(("capabilities", payload))
-        return {"ok": True, "capabilities": [CAPABILITY]}
-
-    def hub_agent_claim(self, **payload):
-        self.calls.append(("claim", payload))
-        key = payload["idempotency_key"]
-        handle = self.jobs.setdefault(key, {
-            "schema": "simplicio.hub-agent-handle/v1", "job_id": "fake-job-1",
-            "lease_id": "fake-job-1", "handle_id": "fake-job-1", "generation": 7,
-            "fence": "fake-fence", "idempotency_key": key,
-        })
-        return {"ok": True, "handle": dict(handle)}
-
-    def _job(self, handle):
-        return next(job for job in self.jobs.values() if job["handle_id"] == handle["handle_id"])
-
-    def hub_agent_status(self, **payload):
-        self.calls.append(("status", payload))
-        job = self._job(payload["handle"])
-        return {"ok": True, "status": {"status": job.get("status", "ready"), "heartbeat_at": 1.0}}
-
-    def hub_agent_send(self, **payload):
-        self.calls.append(("send", payload))
-        job = self._job(payload["handle"])
-        job["input"] = payload["stage_input"]
-        job["status"] = "passed"
-        return {"ok": True, "state": "passed"}
-
-    def hub_agent_collect(self, **payload):
-        self.calls.append(("collect", payload))
-        return {"ok": True, "result": {"output": {"fake": True}, "receipt": {"verdict": "pass"}}}
-
-    def hub_agent_cancel(self, **payload):
-        self.calls.append(("cancel", payload))
-        return {"ok": True, "state": "cancelled"}
+    def request(self, request_id, method, **payload):
+        self.calls.append((method, payload))
+        if self.unavailable:
+            raise OSError("hub offline")
+        if method == "ping":
+            return {"ok": True, "started": True}
+        if method == "execute":
+            return {"ok": True, "result": dict(self.execute_result), "lease_id": payload["process_spec"]["idempotency_key"]}
+        if method in {"submit", "claim", "heartbeat", "progress", "result", "cancel"}:
+            return {"ok": True, "job": {"state": "running"}}
+        return {"ok": True}
 
 
-def test_fake_hub_preserves_handle_and_journals_lifecycle(tmp_path):
-    journal = HubQueueAgentJournal(tmp_path / "agent.jsonl")
-    hub = FakeHub()
-    client = HubQueueAgentClient(hub, journal=journal)
-    adapter = QueueAgentAdapter(queue_client=client)
-
-    handle = client.claim(role="review_panel", stage="validating", context=CONTEXT)
-    assert handle["generation"] == 7
-    assert client.status(handle)["status"] == "ready"
-    client.send(handle, {"payload": {"hello": "hub"}})
-    result = client.collect(handle)
-    client.cancel(handle, reason="test-cleanup")
-
-    assert result["output"] == {"fake": True}
-    assert all(call[1].get("handle", {}).get("fence") == "fake-fence"
-               for call in hub.calls if call[0] in {"status", "send", "collect", "cancel"})
-    events = journal.replay()
-    assert [event["event_type"] for event in events] == ["intent", "effect", "intent", "effect", "intent", "effect"]
-    assert journal.pending() == []
-
-    # QueueAgentAdapter keeps the complete handle, not only its lease id.
-    instance = adapter.spawn(role={"role_id": "review_panel"}, stage={"stage_id": "validating"}, stage_context=CONTEXT)
-    assert instance.transport_handle is not None
-    assert instance.transport_handle["generation"] == 7
+def _client(tmp_path, recorder, **kwargs):
+    return sc.HubQueueAgentClient(
+        command=[sys.executable, str(ECHO), "{input}", "{output}", "{receipt}"],
+        client_factory=lambda: recorder, journal_path=tmp_path / "journal.jsonl",
+        base_tmp_dir=tmp_path / "runs", cwd=ROOT, **kwargs,
+    )
 
 
-def test_strict_client_fails_closed_without_capability():
-    class NoHubCapability(FakeHub):
-        def hub_agent_capabilities(self, **payload):
-            return {"ok": True, "capabilities": []}
-
-    client = HubQueueAgentClient(NoHubCapability())
-    assert client.probe() is False
-    with pytest.raises(HubQueueAgentUnavailable, match="did not advertise"):
-        client.claim(role="role", stage="stage", context=CONTEXT)
-
-
-def test_hub_registry_strict_does_not_fall_back_to_command():
-    client = HubQueueAgentClient(FakeHub())
-    queue = QueueAgentAdapter(queue_client=client)
-    registry = AdapterRegistry([queue], strict_hub=True)
-    assert registry.select(role={"role_id": "role"}, stage={"stage_id": "stage"}) is queue
-    with pytest.raises(Exception):
-        AdapterRegistry([], strict_hub=True).select(role={"role_id": "role"}, stage={"stage_id": "stage"})
+def test_process_spec_is_safe_lossless_and_metadata_is_propagated(tmp_path):
+    recorder = RecordingClient()
+    client = _client(tmp_path, recorder, resources={"weight": 2, "cost": 3})
+    claim = client.claim(role="review_panel", stage="validating", context=_context())
+    run = client._runs[claim["lease_id"]]
+    spec = run.process_spec.to_dict()
+    assert spec["shell"] is False
+    assert Path(spec["cwd"]).is_absolute()
+    assert spec["cwd_allowlist"] == [str(ROOT)]
+    assert spec["idempotency_key"] == claim["lease_id"]
+    assert spec["priority"] == 100
+    submit = next(payload for method, payload in recorder.calls if method == "submit")
+    assert submit["priority"] == "test"
+    assert (submit["weight"], submit["cost"]) == (2, 3)
+    assert submit["metadata"]["run_id"] == "run-615"
+    assert submit["metadata"]["process_id"] == claim["lease_id"]
 
 
-def test_journal_rejects_tampering(tmp_path):
-    path = tmp_path / "agent.jsonl"
-    journal = HubQueueAgentJournal(path)
-    journal.append("intent", {"operation_id": "one"})
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    raw["payload"]["operation_id"] = "tampered"
-    path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
-    with pytest.raises(HubQueueAgentError, match="hash"):
-        HubQueueAgentJournal(path)
+def test_provider_rejects_empty_command_and_non_allowlisted_environment(tmp_path):
+    with pytest.raises(sc.StageCoordinatorError) as raised:
+        sc.HubQueueAgentClient(command=[], journal_path=tmp_path / "j.jsonl")
+    assert raised.value.reason_code == "invalid_command"
+    with pytest.raises(sc.StageCoordinatorError) as raised:
+        _client(tmp_path, RecordingClient(), extra_env={"SECRET": "not-allowed"})
+    assert raised.value.reason_code == "unsafe_environment"
 
 
-def test_real_hub_socket_lifecycle_stale_fence_and_cancel():
-    def executor(payload):
-        stage_input = payload["stage_input"]
-        return {"status": "passed", "output": {"run": stage_input["run_id"]},
-                "receipt": {"verdict": "pass", "accepted": True},
-                "process_result": {"returncode": 0, "duration_seconds": 0.001}}
-
-    with tempfile.TemporaryDirectory() as directory:
-        daemon = HubDaemon(str(Path(directory) / "hub.lock"), agent_executor=executor)
-        daemon.start()
-        endpoint = default_endpoint(directory)
-        server = HubSocketServer(daemon, endpoint, "unix")
-        server.start()
-        try:
-            client = HubQueueAgentClient(HubSocketClient(endpoint, transport="unix"), strict=True)
-            handle = client.claim(role="implementation_agent", stage="executing", context=CONTEXT)
-            client.send(handle, dict(CONTEXT))
-            assert client.status(handle)["status"] == "passed"
-            result = client.collect(handle)
-            assert result["output"] == {"run": "run-615"}
-            assert result["process_result"]["returncode"] == 0
-
-            stale = dict(handle, fence="stale-fence")
-            with pytest.raises(HubQueueAgentError) as excinfo:
-                client.status(stale)
-            assert excinfo.value.reason_code == "stale_fence"
-
-            cancel_handle = client.claim(role="review_panel", stage="validating", context=dict(CONTEXT, attempt_id="attempt-2"))
-            client.cancel(cancel_handle, reason="dependent_failed")
-            assert client.status(cancel_handle)["status"] == "cancelled"
-        finally:
-            server.shutdown()
-            daemon.stop()
+def test_fake_hub_execute_heartbeat_result_and_cancel(tmp_path):
+    recorder = RecordingClient()
+    client = _client(tmp_path, recorder)
+    claim = client.claim(role="review_panel", stage="validating", context=_context())
+    lease = claim["lease_id"]
+    client.send(lease, _context())
+    deadline = time.monotonic() + 3
+    while client.status(lease)["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert client.status(lease)["status"] == "passed"
+    assert {method for method, _ in recorder.calls} >= {"heartbeat", "progress", "execute", "result"}
+    result = client.collect(lease)
+    assert result["process_result"]["duration_seconds"] == 0.012
+    assert result["process_result"]["truncated"] is False
+    client.cancel(lease, reason="dependent failed")
+    assert any(method == "cancel" for method, _ in recorder.calls)
 
 
-def test_real_hub_restart_marks_inflight_recovery_unknown_without_redispatch():
-    with tempfile.TemporaryDirectory() as directory:
-        lock_path = str(Path(directory) / "hub.lock")
-        daemon = HubDaemon(lock_path)
-        daemon.start()
-        endpoint = default_endpoint(directory)
-        server = HubSocketServer(daemon, endpoint, "unix")
-        server.start()
-        client = HubQueueAgentClient(HubSocketClient(endpoint, transport="unix"), strict=True)
-        handle = client.claim(role="review_panel", stage="validating", context=CONTEXT)
-        client.send(handle, dict(CONTEXT))
+@pytest.mark.parametrize(
+    ("process_result", "status"),
+    [
+        ({"returncode": None, "timed_out": True, "cancelled": False, "truncated": True}, "timed_out"),
+        ({"returncode": -9, "timed_out": False, "cancelled": True, "truncated": False}, "cancelled"),
+        ({"returncode": 137, "timed_out": False, "cancelled": False, "truncated": True, "error_code": "oom"}, "failed"),
+    ],
+)
+def test_timeout_dead_process_limited_output_and_oom_are_not_success(tmp_path, process_result, status):
+    recorder = RecordingClient(execute_result=process_result)
+    client = _client(tmp_path, recorder)
+    lease = client.claim(role="review_panel", stage="validating", context=_context())["lease_id"]
+    client.send(lease, _context())
+    deadline = time.monotonic() + 3
+    while client.status(lease)["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert client.status(lease)["status"] == status
+    assert client.collect(lease)["process_result"].get("returncode") == process_result["returncode"]
+
+
+def test_restart_replays_completed_execute_without_duplicate_effect(tmp_path):
+    first_hub = RecordingClient()
+    first = _client(tmp_path, first_hub)
+    lease = first.claim(role="review_panel", stage="validating", context=_context())["lease_id"]
+    first.send(lease, _context())
+    deadline = time.monotonic() + 3
+    while first.status(lease)["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert sum(method == "execute" for method, _ in first_hub.calls) == 1
+
+    restarted_hub = RecordingClient()
+    resumed = _client(tmp_path, restarted_hub)
+    replayed = resumed.claim(role="review_panel", stage="validating", context=_context())
+    resumed.send(replayed["lease_id"], _context())
+    assert replayed["replayed"] is True
+    assert not any(method == "execute" for method, _ in restarted_hub.calls)
+
+
+def test_stale_fence_is_rejected_before_execute(tmp_path):
+    recorder = RecordingClient()
+    client = _client(tmp_path, recorder)
+    lease = client.claim(role="review_panel", stage="validating", context=_context())["lease_id"]
+    with pytest.raises(sc.StageCoordinatorError, match="stale Hub lease fence"):
+        client.send(lease, _context(fence="fence-stale"))
+    assert not any(method == "execute" for method, _ in recorder.calls)
+
+
+def test_strict_mode_fails_closed_and_never_selects_command(tmp_path):
+    command = sc.CommandAgentAdapter(command=[sys.executable, str(ECHO)])
+    registry = sc.AdapterRegistry([command], strict_hub=True)
+    with pytest.raises(sc.StageCoordinatorError) as raised:
+        registry.select(role={"role_id": "review_panel"}, stage={"stage_id": "validating"})
+    assert raised.value.reason_code == "hub_required"
+
+    offline = _client(tmp_path, RecordingClient(unavailable=True))
+    registry = sc.AdapterRegistry([sc.QueueAgentAdapter(queue_client=offline), command], strict_hub=True)
+    with pytest.raises(sc.StageCoordinatorError) as raised:
+        registry.select(role={"role_id": "review_panel"}, stage={"stage_id": "validating"})
+    assert raised.value.reason_code == "hub_unavailable"
+
+
+def test_provider_architecture_contains_no_subprocess_calls():
+    source = Path(sc.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    provider = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "HubQueueAgentClient")
+    calls = [
+        node for node in ast.walk(provider)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess"
+    ]
+    assert calls == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix Hub socket system lane")
+def test_real_hub_socket_executes_full_coordinator_stage(tmp_path, monkeypatch):
+    from simplicio_loop import process_supervisor_rust
+
+    monkeypatch.setattr(process_supervisor_rust, "rust_binary_path", lambda: None)
+    endpoint = str(tmp_path / "hub.sock")
+    daemon = HubDaemon(str(tmp_path / "hub.lock"))
+    daemon.start()
+    server = HubSocketServer(daemon, endpoint)
+    server.start()
+    try:
+        hub = sc.HubQueueAgentClient(
+            command=[sys.executable, str(ECHO), "{input}", "{output}", "{receipt}"],
+            endpoint=endpoint, transport="unix", journal_path=tmp_path / "journal.jsonl",
+            base_tmp_dir=tmp_path / "runs", cwd=ROOT,
+        )
+        coordinator = sc.StageAgentCoordinator(
+            run_id="run-real-615", task_id="task-real-615",
+            adapters=[sc.QueueAgentAdapter(queue_client=hub)], strict_hub=True,
+            journal=sc.StageCoordinatorJournal(tmp_path / "coordinator.jsonl"),
+            poll_interval_seconds=0.005,
+        )
+        outcome = coordinator.run_stage("intake", fence="fence-real", deadline_seconds=15)
+        assert outcome.status == "passed"
+        assert outcome.instance.adapter_kind == "queue"
+        assert outcome.instance.output["process_result"]["returncode"] == 0
+        events = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text().splitlines()]
+        assert any(event["phase"] == "before" and event["effect"] == "execute" for event in events)
+        assert any(event["phase"] == "after" and event["effect"] == "execute" for event in events)
+    finally:
         server.shutdown()
         daemon.stop()
-
-        # Reopen the same Hub authority and socket.  The old handle is observed
-        # as uncertain; it is never submitted a second time automatically.
-        daemon.start()
-        restarted_server = HubSocketServer(daemon, endpoint, "unix")
-        restarted_server.start()
-        try:
-            reconnected = HubQueueAgentClient(HubSocketClient(endpoint, transport="unix"), strict=True)
-            assert reconnected.recover(handle)["status"] == "recovery_unknown"
-            assert reconnected.collect(handle).get("output") is None
-            assert len(daemon._agent_jobs) == 1
-        finally:
-            restarted_server.shutdown()
-            daemon.stop()
-
-
-def test_client_architecture_has_no_local_process_or_thread_provider():
-    source = inspect.getsource(HubQueueAgentClient)
-    assert "subprocess" not in source
-    assert "threading" not in source
-    assert "supervisor" not in source

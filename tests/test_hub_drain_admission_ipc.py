@@ -324,7 +324,7 @@ def test_legacy_submit_wins_daemon_race_as_one_real_scheduled_row(tmp_path, monk
         daemon.stop()
 
 
-def test_real_unix_socket_admit_lookup_and_restart_replay(tmp_path):
+def test_real_unix_socket_admit_lookup_and_restart_replay(tmp_path, require_af_unix):
     if default_transport() != "unix":
         return
     checkpoint, _source = _checkpoint(tmp_path)
@@ -337,11 +337,7 @@ def test_real_unix_socket_admit_lookup_and_restart_replay(tmp_path):
     daemon = HubDaemon(lock_path, queue_path=queue_path)
     daemon.start()
     server = HubSocketServer(daemon, endpoint, "unix")
-    try:
-        server.start()
-    except PermissionError:
-        daemon.stop()
-        pytest.skip("AF_UNIX is denied by this sandbox")
+    server.start()
     try:
         client = HubSocketClient(endpoint, transport="unix")
         first = client.request("wire-admit", "hub_admit", **request)["admission"]
@@ -354,11 +350,7 @@ def test_real_unix_socket_admit_lookup_and_restart_replay(tmp_path):
     restarted = HubDaemon(lock_path, queue_path=queue_path)
     restarted.start()
     server = HubSocketServer(restarted, endpoint, "unix")
-    try:
-        server.start()
-    except PermissionError:
-        restarted.stop()
-        pytest.skip("AF_UNIX is denied by this sandbox")
+    server.start()
     try:
         client = HubSocketClient(endpoint, transport="unix")
         loaded = client.request(
@@ -372,7 +364,9 @@ def test_real_unix_socket_admit_lookup_and_restart_replay(tmp_path):
         restarted.stop()
 
 
-def test_cli_uses_running_daemon_reports_non_execution_and_never_spawns(tmp_path, capsys, monkeypatch):
+def test_cli_uses_running_daemon_reports_non_execution_and_never_spawns(
+    tmp_path, capsys, monkeypatch, require_af_unix,
+):
     if default_transport() != "unix":
         return
     checkpoint, source = _checkpoint(tmp_path)
@@ -380,11 +374,7 @@ def test_cli_uses_running_daemon_reports_non_execution_and_never_spawns(tmp_path
     daemon = HubDaemon(str(tmp_path / "hub.lock"), queue_path=str(tmp_path / "hub.db"))
     daemon.start()
     server = HubSocketServer(daemon, endpoint, "unix")
-    try:
-        server.start()
-    except PermissionError:
-        daemon.stop()
-        pytest.skip("AF_UNIX is denied by this sandbox")
+    server.start()
     monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("subprocess.run")))
     monkeypatch.setattr(subprocess, "Popen", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("subprocess.Popen")))
     try:

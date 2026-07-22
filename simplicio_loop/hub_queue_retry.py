@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Set
 
 QUEUE_SCHEMA = "simplicio.hub-queue/v1"
 ADMISSION_RECEIPT_SCHEMA = "simplicio.hub-admission-receipt/v1"
+DEFAULT_SCHEDULER_POLICY = "fair-drr-v2"
 
 
 class QueueRetryError(RuntimeError):
@@ -104,6 +105,11 @@ class HubRetryQueue:
                 receipt TEXT NOT NULL,
                 created_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS hub_scheduler_manifest (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                manifest TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
             """
         )
         self._migrate_scheduling_columns()
@@ -119,6 +125,7 @@ class HubRetryQueue:
             ("workspace_id", "TEXT NOT NULL DEFAULT 'default'"),
             ("weight", "INTEGER NOT NULL DEFAULT 1"),
             ("cost", "INTEGER NOT NULL DEFAULT 1"),
+            ("scheduler_policy", "TEXT NOT NULL DEFAULT 'fair-drr-v2'"),
         )
         for name, ddl in additions:
             if name in existing:
@@ -223,6 +230,7 @@ class HubRetryQueue:
         workspace_id: str = "default",
         weight: int = 1,
         cost: int = 1,
+        scheduler_policy: str = DEFAULT_SCHEDULER_POLICY,
     ) -> str:
         if not idempotency_key or max_attempts < 1:
             raise QueueRetryError("idempotency_key and positive max_attempts required")
@@ -236,6 +244,8 @@ class HubRetryQueue:
                 if str(existing["state"]) == "admitted_held":
                     raise QueueRetryError("held admission cannot be submitted")
                 return str(existing["task_id"])
+            if not isinstance(scheduler_policy, str) or not scheduler_policy:
+                raise QueueRetryError("scheduler_policy must be non-empty")
             effective_client_id = self._effective_client_id(payload, client_id)
             task_id = str(uuid.uuid4())
             try:
@@ -243,12 +253,12 @@ class HubRetryQueue:
                     """
                     INSERT INTO hub_jobs(task_id,idempotency_key,payload,max_attempts,
                                          next_attempt_at,updated_at,client_id,workspace_id,
-                                         weight,cost)
-                    VALUES(?,?,?,?,?,?,?,?,?,?)
+                                         weight,cost,scheduler_policy)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (task_id, idempotency_key, json.dumps(payload, sort_keys=True),
                      int(max_attempts), now, now, effective_client_id, str(workspace_id),
-                     int(weight), int(cost)),
+                     int(weight), int(cost), scheduler_policy),
                 )
             except sqlite3.IntegrityError:
                 # A concurrent submit() with the same idempotency_key won the race between
@@ -657,7 +667,7 @@ class HubRetryQueue:
         with self._lock:
             rows = self._db.execute(
                 """
-                SELECT task_id, client_id, workspace_id, weight, cost FROM hub_jobs
+                SELECT task_id, client_id, workspace_id, weight, cost, scheduler_policy FROM hub_jobs
                 WHERE (state='queued' AND next_attempt_at<=?)
                    OR (state='leased' AND lease_expires_at<=?)
                 ORDER BY updated_at, task_id
@@ -671,9 +681,29 @@ class HubRetryQueue:
                     "workspace_id": str(row["workspace_id"]),
                     "weight": int(row["weight"]),
                     "cost": int(row["cost"]),
+                    "scheduler_policy": str(row["scheduler_policy"]),
                 }
                 for row in rows
             ]
+
+    def scheduler_manifest(self) -> Optional[Dict[str, Any]]:
+        """Return the durable rollout manifest, or None before first configuration."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT manifest FROM hub_scheduler_manifest WHERE singleton=1"
+            ).fetchone()
+            return None if row is None else json.loads(str(row["manifest"]))
+
+    def set_scheduler_manifest(self, manifest: Dict[str, Any]) -> None:
+        """Atomically change rollout mode without rewriting persisted job policy pins."""
+        if manifest.get("schema") != "simplicio.hub-scheduler-policy/v1":
+            raise QueueRetryError("invalid scheduler manifest schema")
+        encoded = self._canonical_json(manifest)
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO hub_scheduler_manifest(singleton,manifest,updated_at) VALUES(1,?,?)",
+                (encoded, time.time()),
+            )
 
     def _owned(self, lease: RetryLease) -> sqlite3.Row:
         row = self._db.execute(

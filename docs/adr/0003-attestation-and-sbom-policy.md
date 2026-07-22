@@ -18,9 +18,10 @@ Fase 4) is fail-closed on `signature_reason_code`/`sbom_reason_code` whenever no
 SBOM asset is present or parseable on the release. Left undecided, this gate stays permanently
 `UNVERIFIED` for every release this repo publishes, because the ideal described in #290/#292 —
 OIDC-signed, CI-attested provenance and a build-pipeline-generated SBOM — requires a CI
-substrate this repo does not currently have: `.github/workflows/` was removed repo-wide in PR
-#311 after a GitHub Actions billing lockout (see `docs/SUPPLY_CHAIN.md`), and there is no
-alternative CI runner configured.
+substrate this repo does not currently have: the two current workflows
+(`simplicio-status-sync.yml` and `windows-progress-smoke.yml`) do not provide OIDC or a release
+gate and were not used as evidence for this work (see `docs/SUPPLY_CHAIN.md`), and there is no
+alternative CI runner configured for attested release builds.
 
 Two scripts already exist and are exercised by their own test suites
 (`tests/test_sbom_generate.py`, and the provenance script's own tests) that produce real,
@@ -86,7 +87,7 @@ Concretely:
    downgrade of the `PASS` verdict itself (the bytes are still genuinely checksum- and
    digest-verified); it is an honest label on *how* the signature/provenance claim was rooted.
 4. **This policy is revisited, not permanent.** If/when a CI substrate exists again for this
-   repo (a replacement for the removed `.github/workflows/`, or an equivalent runner), the
+   repo (a workflow with the required OIDC/release controls, or an equivalent runner), the
    OIDC/Sigstore path becomes the only accepted one for new releases and this ADR's
    local-substitute path is marked superseded — existing releases already verified under this
    ADR keep their receipts (append-only; never rewritten) but new releases stop qualifying via

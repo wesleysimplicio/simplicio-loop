@@ -5,7 +5,6 @@ AC5 (unit): _git_meta(worktree=...) and _find_run_dir(wi=...) isolate correctly.
 AC6 (integration): cmd_verify(wi=...) reads the WI worktree commit, not REPO's.
 """
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -20,6 +19,8 @@ sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO))
 
 import watcher_verify as wv  # noqa: E402
+
+pytestmark = pytest.mark.external_integration
 
 
 def _git_commit(path):
@@ -38,7 +39,10 @@ def test_git_meta_isolates_worktree():
     repo_commit = _git_commit(REPO)
     wi_wt = REPO / ".orchestrator" / "worktrees" / "wi-3307"
     if not wi_wt.is_dir():
-        pytest.skip("wi-3307 worktree not present in this environment")
+        pytest.skip(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[wi_3307_worktree]: "
+            "WI-3307 worktree not present"
+        )
     wt_commit = _git_commit(wi_wt)
     assert wt_commit and wt_commit != repo_commit, "fixture assumption: worktree commit differs"
     meta_repo = wv._git_meta()
@@ -81,11 +85,17 @@ def test_verify_isolates_worktree_end_to_end():
     """AC6: cmd_verify(wi='WI-3307') passes the watcher-gate using the WI worktree commit."""
     wi_wt = REPO / ".orchestrator" / "worktrees" / "wi-3307"
     if not wi_wt.is_dir():
-        pytest.skip("wi-3307 worktree not present in this environment")
+        pytest.skip(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[wi_3307_worktree]: "
+            "WI-3307 worktree not present"
+        )
     wt_commit = _git_commit(wi_wt)
     repo_commit = _git_commit(REPO)
     if not wt_commit or wt_commit == repo_commit:
-        pytest.skip("fixture assumption: worktree commit must differ from REPO")
+        pytest.skip(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[wi_3307_distinct_commit]: "
+            "worktree commit must differ from repository"
+        )
 
     with tempfile.TemporaryDirectory() as tmp:
         loop_dir = Path(tmp) / "loop"
@@ -161,9 +171,6 @@ def test_wi_for_issue_maps_number(tmp_path, monkeypatch):
     (tasks / "WI-999.md").write_text("# WI-999\nissue #999\n", encoding="utf-8")
     monkeypatch.setattr(wv, "REPO", str(tmp_path))
     # _wi_for_issue reads REPO/.orchestrator/tasks; force it via monkeypatched root
-    import watcher_verify as _wv
-    orig = _wv._wi_for_issue
-
     def _patched(issue):
         root = Path(str(tmp_path)) / ".orchestrator" / "tasks"
         for entry in sorted(root.glob("WI-*.md")):

@@ -188,6 +188,7 @@ def _gh_available():
 
 
 @pytest.mark.skipif(not _gh_available(), reason="gh CLI not installed")
+@pytest.mark.external_integration
 def test_download_release_assets_real_repo_computes_real_digest():
     """MEASURED: downloads the real wesleysimplicio/simplicio-loop v3.34.1 release asset via
     `gh release download` and recomputes its sha256 over the actual downloaded bytes — proving

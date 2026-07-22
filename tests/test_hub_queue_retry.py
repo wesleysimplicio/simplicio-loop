@@ -549,7 +549,7 @@ def test_pre_existing_old_schema_file_migrates_scheduling_columns_without_data_l
         assert queue.state("old-task") == "queued"
         metadata = queue.list_queued_scheduling_metadata()
         assert metadata == [
-            {"task_id": "old-task", "client_id": "", "workspace_id": "default", "weight": 1, "cost": 1}
+            {"task_id": "old-task", "client_id": "", "workspace_id": "default", "weight": 1, "cost": 1, "scheduler_policy": "fair-drr-v2"}
         ]
         # New submits on the migrated file work normally too.
         new_task_id = queue.submit(
@@ -558,7 +558,7 @@ def test_pre_existing_old_schema_file_migrates_scheduling_columns_without_data_l
         )
         entries = {row["task_id"]: row for row in queue.list_queued_scheduling_metadata()}
         assert entries[new_task_id] == {
-            "task_id": new_task_id, "client_id": "alice", "workspace_id": "ws1", "weight": 2, "cost": 3,
+            "task_id": new_task_id, "client_id": "alice", "workspace_id": "ws1", "weight": 2, "cost": 3, "scheduler_policy": "fair-drr-v2",
         }
         queue.close()
 

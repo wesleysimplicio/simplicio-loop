@@ -33,10 +33,10 @@ heavy commands through it:
 python3 hooks/orient_clamp.py -- <build/test/diff command>
 ```
 
-## Native bind (REQUIRED)
+## Native bind (optional)
 
-`simplicio-runtime` native binding is **REQUIRED** on Codex — a missing/unreachable bind BLOCKS
-the loop preflight (CLAUDE.md § Hooks), even though drive itself stays self-paced:
+`simplicio-runtime` native binding is optional on Codex. A missing/unreachable bind reports
+explicit degraded mode while the self-paced standalone loop remains available:
 
 ```bash
 pip install -U simplicio-installer && simplicio install --global   # registers Codex's MCP client

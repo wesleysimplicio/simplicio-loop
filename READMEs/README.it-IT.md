@@ -1,5 +1,7 @@
 # 🔁 simplicio-loop — The Universal Looping AI Orchestrator
 
+> **Canonical operational contract:** This translation is informational. For current dependency, runtime, conformance, and validation behavior, [README.md](../README.md) is authoritative: Loop installs standalone; Runtime bindings are optional; 3 runtimes are guaranteed and 12 are best-effort; and `scripts/check.py` requires an importable `pytest` with no bare-Python fallback. GitHub Actions is not required gate evidence.
+
 <p align="center">
   <img src="../assets/simplicio-loop-hero-stage-agents-2026.webp" alt="simplicio-loop con agenti concreti per fase e reporting connesso" width="920" />
 </p>
@@ -247,7 +249,8 @@ Vedi il documento di riferimento di ogni adapter sotto `.claude/skills/simplicio
 Un unico nucleo di skill universale + un unico set di hook guida ogni runtime. Un adapter è sottile: dice
 a un runtime *dove caricare le skill*, *come armare il loop* e *come legarsi alla velocità nativa*. **La
 skill non nomina alcun runtime; è il runtime a rilevare la skill.** Il binding nativo MCP a
-`simplicio-runtime` è **REQUIRED** su ogni runtime (il loop si blocca se manca o non è raggiungibile).
+`simplicio-runtime` è opzionale su ogni runtime: se manca o non è raggiungibile, l'adapter segnala
+modalità degradata esplicita e il loop standalone resta disponibile.
 
 **Tier 1 — garantiti (gated a ogni commit):** Claude Code (`.claude/skills/` + plugin, hook `Stop`),
 Codex (`AGENTS.md`, auto-ritmato), Cursor (`.cursor-plugin/`, `stop`+`afterAgentResponse`) — tutti e
@@ -542,8 +545,8 @@ python3 scripts/check.py            # the whole gate (audit + tests)
 - **Suite di test** (`tests/`) — i `selftest` deterministici dei worker, più un **e2e del driver del loop**
   (`hooks/loop_stop.py`): dimostra che il loop **si ferma sulle evidenze**, **ignora una `<promise>`
   nuda** e **si ferma sul limite** come uscite distinte — e che i produttori di evidenze **BLOCCANO** (mai
-  un fake-pass) quando la loro toolchain è assente. Gira sotto `pytest` *oppure*, senza alcun pip, si
-  auto-esegue su bare python3 (`python3 tests/test_*.py`).
+  un fake-pass) quando la loro toolchain è assente. Il gate richiede un `pytest` importabile;
+  non esiste alcun fallback Python senza dipendenze.
 - **Claims audit** (`scripts/claims_audit.py`, fail-closed) — ogni `scripts/*.py` referenziato dai documenti
   esiste · il conteggio degli extension point concorda tra tutti i file · ogni comando worker citato gira
   davvero · le skill spedite in `simplicio_loop/_bundle/` sono **byte-identiche** alla sorgente.
@@ -552,7 +555,7 @@ python3 scripts/check.py            # the whole gate (audit + tests)
   printf '#!/bin/sh\npython3 scripts/check.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
   ```
 
-`pip install "simplicio-loop[dev]"` aggiunge pytest per un output più gradevole; non è mai richiesto.
+`pip install "simplicio-loop[dev]"` installa la dipendenza obbligatoria `pytest` per `scripts/check.py`.
 
 ---
 

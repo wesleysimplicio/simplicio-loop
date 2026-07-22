@@ -8,6 +8,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # worker script → the subcommand that runs its self-check
@@ -42,12 +44,14 @@ def test_loop_journal_selftest():
     assert "PASS" in r.stdout, r.stdout
 
 
+@pytest.mark.satellite
 def test_billing_aggregator_selftest():
     r = _run("scripts/billing_aggregator.py", "selftest")
     assert r.returncode == 0, "billing_aggregator selftest failed:\n%s%s" % (r.stdout, r.stderr)
     assert "PASS" in r.stdout, r.stdout
 
 
+@pytest.mark.satellite
 def test_savings_harness_selftest():
     r = _run("scripts/savings_harness.py", "selftest")
     assert r.returncode == 0, "savings_harness selftest failed:\n%s%s" % (r.stdout, r.stderr)
@@ -76,12 +80,6 @@ def test_task_backlog_selftest():
 def test_pr_evidence_selftest():
     r = _run("scripts/pr_evidence.py", "selftest")
     assert r.returncode == 0, "pr_evidence selftest failed:\n%s%s" % (r.stdout, r.stderr)
-    assert "PASS" in r.stdout, r.stdout
-
-
-def test_task_backlog_selftest():
-    r = _run("scripts/task_backlog.py", "selftest")
-    assert r.returncode == 0, "task_backlog selftest failed:\n%s%s" % (r.stdout, r.stderr)
     assert "PASS" in r.stdout, r.stdout
 
 
@@ -127,18 +125,21 @@ def test_toon_codec_selftest():
     assert "PASS" in r.stdout, r.stdout
 
 
+@pytest.mark.satellite
 def test_autoresearch_selftest():
     r = _run("scripts/autoresearch.py", "selftest")
     assert r.returncode == 0, "autoresearch selftest failed:\n%s%s" % (r.stdout, r.stderr)
     assert "PASS" in r.stdout, r.stdout
 
 
+@pytest.mark.satellite
 def test_e2e_demo_selftest():
     r = _run("scripts/e2e_demo.py", "selftest")
     assert r.returncode == 0, "e2e_demo selftest failed:\n%s%s" % (r.stdout, r.stderr)
     assert "PASS" in r.stdout, r.stdout
 
 
+@pytest.mark.satellite
 def test_check_e2e_demo_contract_selftest():
     r = _run("scripts/check_e2e_demo_contract.py", "selftest")
     assert r.returncode == 0, "check_e2e_demo_contract selftest failed:\n%s%s" % (

@@ -2,6 +2,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.release_rehearsal import run_governance_gate, run_rehearsal
@@ -13,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # wheel, checksums/signs/SBOMs/provenance-statements it, and clean-room install-smokes it — no
 # mocking, per the #292 mandate against fabricated supply-chain proof. Never touches this repo's
 # real version files, never publishes anywhere.
+@pytest.mark.external_integration
 def test_run_rehearsal_chains_every_local_link_end_to_end():
     result = run_rehearsal(REPO_ROOT, keep=False)
 
@@ -83,6 +86,7 @@ def test_run_rehearsal_fails_closed_on_invalid_explicit_version():
     assert result["reason_code"] == "version_bump_failed"
 
 
+@pytest.mark.external_integration
 def test_run_rehearsal_require_signing_blocks_without_a_key():
     result = run_rehearsal(REPO_ROOT, require_signing=True, keep=False)
 

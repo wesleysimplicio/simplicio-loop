@@ -12,6 +12,7 @@ import time
 import webbrowser
 import json
 from pathlib import Path
+from typing import Optional
 try:
     from scripts import release_manifest as _release_manifest
 except Exception:  # pragma: no cover - import shim for bundled scripts
@@ -197,14 +198,66 @@ def plan(task_path: str, out_path: str) -> int:
     return 0
 
 
-def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int) -> int:
+def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int,
+        quality_provider: Optional[str] = None, quality_policy: str = "strict-default",
+        result_file: str = "", required_handshake_fingerprint: str = "") -> int:
+    # Issue #613: a quality provider is mandatory between execution and
+    # verify/oracle. Fail-closed at the CLI boundary when none is supplied so the
+    # run is never silently executed without the quality gate.
+    if not quality_provider:
+        print("error: --quality-provider is required (#613): conduct_run needs a "
+              "non-None quality_provider between execution and verify/oracle",
+              file=sys.stderr)
+        return 2
+    if required_handshake_fingerprint:
+        from .extension_handshake import ExtensionHandshakeError, verify_runtime_fingerprint
+        try:
+            verify_runtime_fingerprint(required_handshake_fingerprint)
+        except ExtensionHandshakeError as exc:
+            print(f"error: {exc.reason_code}: {exc.detail}", file=sys.stderr)
+            return 2
     try:
         delivery_target = delivery.normalize_delivery_target(delivery_arg)
     except delivery.DeliveryTargetError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    payload = conduct_run(repo, task_path, delivery_target, max_iterations)
+    try:
+        payload = conduct_run(
+            repo, task_path, delivery_target, max_iterations,
+            quality_provider=quality_provider, quality_policy=quality_policy,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        outcome = {
+            "schema": "simplicio.run-outcome/v1", "run_id": "", "phase": "infrastructure_failure",
+            "outcome": "INFRASTRUCTURE_FAILURE", "exit_code": 24,
+            "source": {"kind": "local", "identity": str(task_path), "digest": ""},
+            "oracle": {"verdict": "UNAVAILABLE", "authorized": False},
+            "completion_receipt": {"path": "", "sha256": None, "validation": "infrastructure_failure"},
+        }
+        if result_file:
+            target = Path(result_file)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(outcome, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps({"outcome": outcome, "error": str(exc)}, ensure_ascii=False, indent=2))
+        return 24
+    outcome = payload["outcome"]
+    if result_file:
+        target = Path(result_file)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(outcome, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(__import__("json").dumps(payload, ensure_ascii=False, indent=2))
+    return int(outcome["exit_code"])
+
+
+def extensions_doctor(provider: str, policy: str, schema: str) -> int:
+    from .extension_handshake import ExtensionHandshakeError, extension_handshake
+    try:
+        payload = extension_handshake(provider, policy, requested_schema=schema)
+    except ExtensionHandshakeError as exc:
+        payload = {"schema": schema, "status": "BLOCKED", "reason_code": exc.reason_code, "detail": exc.detail}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -236,6 +289,9 @@ def _render_status_text(payload: dict) -> str:
 def status(repo: str, run_id: str, as_json: bool = False, as_text: bool = False) -> int:
     try:
         payload = read_status(repo, run_id)
+        if (payload.get("state") or {}).get("phase") == "no_runs":
+            payload.update({"schema": "simplicio.status/v1", "status": "UNVERIFIED",
+                            "reason_code": "run_missing"})
     except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
         payload = {"schema": "simplicio.status/v1", "status": "UNVERIFIED",
                    "reason_code": "run_missing", "error": str(exc)}
@@ -525,7 +581,7 @@ def main(argv=None) -> int:
     p_run.add_argument("--task", required=True, help="markdown task file")
     p_run.add_argument("--repo", default=".", help="repository root")
     p_run.add_argument(
-        "--delivery", default="verified",
+        "--delivery", default="verified", choices=DELIVERY_ORDER[1:],
         metavar="{" + ",".join(DELIVERY_ORDER[1:]) + "}",
         help=(
             "requested delivery target, one of: " + ", ".join(DELIVERY_ORDER[1:])
@@ -533,6 +589,28 @@ def main(argv=None) -> int:
         ),
     )
     p_run.add_argument("--max-iterations", type=int, default=12, help="safety cap")
+    p_run.add_argument("--result-file", default="", help="write only simplicio.run-outcome/v1 JSON here")
+    p_run.add_argument(
+        "--quality-provider", default=None,
+        help="mandatory quality provider name (simplicio_loop.quality_providers.<name>); "
+             "absent/incompatible/crashing/timed-out -> BLOCKED (issue #613)",
+    )
+    p_run.add_argument(
+        "--quality-policy", default="strict-default",
+        help="policy string forwarded to the quality provider",
+    )
+    p_run.add_argument(
+        "--require-handshake-fingerprint", default="",
+        help="fail closed unless this exact extension runtime fingerprint still executes",
+    )
+
+    p_extensions = sub.add_parser("extensions", help="negotiate installed Loop extension runtimes")
+    extensions_sub = p_extensions.add_subparsers(dest="extensions_command", required=True)
+    p_ext_doctor = extensions_sub.add_parser("doctor", help="dry-run an exact provider/runtime handshake")
+    p_ext_doctor.add_argument("--provider", required=True)
+    p_ext_doctor.add_argument("--policy", default="strict-default")
+    p_ext_doctor.add_argument("--schema", default="simplicio.extension-handshake/v1")
+    p_ext_doctor.add_argument("--json", action="store_true", help="machine-readable output (always JSON)")
 
     p_oracle = sub.add_parser("oracle", help="evaluate completion and cross-runtime parity")
     p_oracle.add_argument("--loop-dir", default=os.path.join(".orchestrator", "loop"))
@@ -746,7 +824,11 @@ def main(argv=None) -> int:
     if command == "plan":
         return plan(args.task, args.out)
     if command == "run":
-        return run(args.repo, args.task, args.delivery, args.max_iterations)
+        return run(args.repo, args.task, args.delivery, args.max_iterations,
+                  args.quality_provider, args.quality_policy, args.result_file,
+                  args.require_handshake_fingerprint)
+    if command == "extensions":
+        return extensions_doctor(args.provider, args.policy, args.schema)
     if command == "oracle":
         return oracle(args.loop_dir, args.run_dir, args.response_text, args.flow_gap,
                       args.write_receipt)

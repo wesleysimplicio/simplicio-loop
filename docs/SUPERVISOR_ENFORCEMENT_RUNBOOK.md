@@ -64,8 +64,9 @@ the supervisor's own bookkeeping.
 escalation via a spoofed cmdline (an unrelated process could name its argv to *look*
 like a Simplicio process and get flagged, or an actual Simplicio process could obscure
 its argv to *evade* detection — the signature match is a heuristic, not a
-cryptographic attestation); resource-limit enforcement (cgroups/Job Objects); killing
-whole process trees (only the direct pid is signaled, not descendants); any
+cryptographic attestation); resource-limit enforcement (cgroups/Job Objects); whole-tree
+cancellation from the standalone enforcement CLI (that path still signals only
+the direct pid; the registry-backed Hub path is described below); any
 authentication/authorization on who may run `cancel`/`drain`/`--enforce` (this is a
 local, single-operator CLI today, same trust boundary as running `kill` yourself).
 
@@ -81,15 +82,19 @@ pass. Deferred, with reasons:
   work once there's a real fleet of supervised workloads to roll out against.
 - **Full cross-platform enforcement.** The detector's Linux path (`/proc`) is
   exercised by the test suite on this host. The macOS/other-POSIX `ps` fallback is
-  implemented but not exercised here (no macOS runner in this environment). Windows
+  observation-only: it cannot produce the stable process identity needed to
+  signal safely, so enabled enforcement deliberately fails closed on macOS/BSD
+  instead of sending a signal to a reusable numeric PID. Windows
   process enumeration is explicitly **not implemented** (`scan_host_processes()`
   returns `[]` on `os.name == "nt"`) rather than guessed at — the epic's own test plan
   calls for "Windows Job Objects/Linux cgroups/fallback macOS" stress testing, which is
   real, separate work.
 - **Process-tree cancellation — partially closed.** `ProcessRegistry.terminate(lease_id)`
-  (`simplicio_loop/process_enforcement.py`, backing `kill_process_tree()`) now signals the
-  whole process **group** (POSIX `os.killpg`, falling back to the single pid; Windows
-  `taskkill /T /F`), and `HubDaemon.handle(method="cancel")` calls it when the request
+  (`simplicio_loop/process_enforcement.py`, backing `kill_process_tree()`) signals a
+  Linux process **group** only when its registry record explicitly proves the supervisor
+  created a dedicated group. Unsupervised Linux enforcement signals only the pinned pidfd;
+  macOS/BSD fails closed; Windows uses `taskkill /T /F`. `HubDaemon.handle(method="cancel")`
+  calls this path when the request
   carries a `lease_id` — closing the specific gap called out after the wave-1 pass: an
   `execute` blocked in flight on one connection thread previously had no way to be killed
   by a `cancel` arriving on another thread (the old `cancel` only flipped a *queue job*'s
@@ -112,8 +117,8 @@ Wire `SupervisedProcessAdapter`/`ProcessRegistry` into `hub_scheduler.py` (the e
 fair client scheduler) so `queue` reports real pending-vs-active depth per class. Also
 switch `process_enforcement_cli.py`'s `cancel`/`drain --force`/`enforce` verbs from a bare
 `os.kill(pid, SIGTERM)` to `ProcessRegistry.terminate()`/`kill_process_tree()` (already used
-by the Hub's `cancel` IPC method, see above) so the descendants invariant holds on every
-cancellation path, not just the Hub one.
+by the Hub's `cancel` IPC method, see above), carrying explicit dedicated-group evidence
+where the supervisor owns it. Unsupported macOS/BSD enforcement must remain fail-closed.
 
 ## Second implementation: `scripts/supervisor_enforcement.py` — threat model + rollback
 

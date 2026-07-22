@@ -6,8 +6,6 @@ suite so the project's coverage tool picks it up.
 """
 import importlib.util
 import os
-import sys
-
 import pytest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,8 +25,8 @@ def mod():
 
 
 PR_FULL = (
-    "## Implementação\nUnit tests via pytest. Integration tests with no mocks. "
-    "System e2e. Regression: existing suite green. Benchmark latency measured. "
+    "## Implementação\nImplemented feature X. Unit tests passed via pytest. Integration tests passed with no mocks. "
+    "System e2e passed. Regression: existing suite green. Benchmark latency improved 12ms -> 4ms. "
     "Coverage 90%."
 )
 ISSUE_OPEN = "## AC\n- [x] done one\n- [ ] pending two\n- [ ] pending three"
@@ -73,6 +71,71 @@ def test_dimension_missing_when_signal_absent(mod):
         assert v["dod"][dim]["addressed"] is False
 
 
+def test_legacy_verdict_rejects_negative_keyword_soup(mod):
+    body = (
+        "Unit tests FAILED; Integration NOT RUN; E2E BROKEN; regression RED; "
+        "benchmark missing; coverage 1%."
+    )
+    verdict = mod.build_verdict(body, "## AC\n- [x] recorded")
+    assert verdict["ready_to_merge"] is False
+    assert verdict["dod_addressed"] == "0/7"
+
+
+def test_legacy_verdict_rejects_missing_implementation_and_did_not_pass(mod):
+    body = (
+        "## Summary\nImplementation missing. Unit tests did not pass. "
+        "Benchmark latency regressed 4ms -> 12ms. "
+        "Coverage 99% before; current coverage 40%."
+    )
+    verdict = mod.build_verdict(body, "## AC\n- [ ] handles empty input")
+    assert verdict["dod"]["implementation"]["addressed"] is False
+    assert verdict["dod"]["unit_tests"]["addressed"] is False
+    assert verdict["dod"]["perf_benchmark"]["addressed"] is False
+    assert verdict["dod"]["min_coverage"]["addressed"] is False
+    assert verdict["ready_to_merge"] is False
+
+
+def test_legacy_verdict_rejects_later_failures_and_current_low_coverage(mod):
+    body = (
+        "## Summary\nImplemented X. "
+        "Unit tests passed. Unit tests failed now. "
+        "Integration tests passed. Integration tests failed now. "
+        "End-to-end tests passed. End-to-end tests failed now. "
+        "Regression tests passed. Regression tests failed now. "
+        "Benchmark latency improved 12ms -> 4ms. "
+        "Benchmark latency regressed 4ms -> 12ms. "
+        "Coverage 99%. Current coverage 40%."
+    )
+    verdict = mod.build_verdict(body, "## AC\n- [x] recorded")
+    assert verdict["ready_to_merge"] is False
+    assert verdict["dod_addressed"] == "1/7"
+
+
+def test_legacy_verdict_rejects_no_implementation_and_future_ac(mod):
+    issue = "## AC\n- [ ] handles empty input"
+    verdict = mod.build_verdict(
+        "## Summary\nNo implementation. handles empty input should pass after the planned fix.",
+        issue,
+    )
+    assert verdict["dod"]["implementation"]["addressed"] is False
+    assert verdict["unresolved_acceptance_criteria"] == ["handles empty input"]
+    assert verdict["ready_to_merge"] is False
+
+
+def test_legacy_verdict_rejects_future_history_textual_failure_and_fake_metric(mod):
+    issue = "## AC\n- [ ] Return verified receipts"
+    body = (
+        "Implementation will be added later. Unit tests passed yesterday. "
+        "Integration tests passed last week. End-to-end tests will run tomorrow. "
+        "Regression tests passed before these changes. Benchmark issue 123 passed. "
+        "Coverage 99%. Current coverage unavailable. Return verified receipts."
+    )
+    verdict = mod.build_verdict(body, issue)
+    assert verdict["dod_addressed"] == "0/7"
+    assert verdict["unresolved_acceptance_criteria"] == ["Return verified receipts"]
+    assert verdict["ready_to_merge"] is False
+
+
 def test_render_comment_has_table_and_unresolved(mod):
     v = mod.build_verdict(PR_FULL, ISSUE_OPEN)
     cm = mod.render_comment(v)
@@ -112,3 +175,5 @@ def test_cli_check_emits_json(mod, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert '"schema": "simplicio.pr-dod-review/v1"' in out or '"schema":"simplicio.pr-dod-review/v1"' in out
+    assert '"verdict": "GAPS_FOUND"' in out or '"verdict":"GAPS_FOUND"' in out
+    assert '"pending two"' in out

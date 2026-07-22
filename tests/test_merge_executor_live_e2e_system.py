@@ -19,8 +19,11 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 import uuid
+
+import pytest
+
+pytestmark = pytest.mark.external_integration
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
@@ -48,9 +51,11 @@ def _git(args, check=True, cwd=REPO_ROOT):
 
 def test_merge_executor_creates_and_merges_a_real_pr_on_scratch_branches():
     if not _live_gate_open():
-        print("SKIP (opt-in): set SIMPLICIO_LIVE_GH_E2E=1 with an authenticated gh CLI to run "
-             "this live e2e against %s" % LIVE_REPO)
-        return
+        pytest.skip(
+            "EXTERNAL_INTEGRATION_UNAVAILABLE[live_github_opt_in]: set "
+            "SIMPLICIO_LIVE_GH_E2E=1 with an authenticated gh CLI to run this "
+            "live e2e against %s" % LIVE_REPO
+        )
 
     token = uuid.uuid4().hex[:10]
     base_branch = "scratch/merge-executor-e2e-base-%s" % token
