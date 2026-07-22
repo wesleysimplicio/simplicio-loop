@@ -125,11 +125,13 @@ class HubQueueAgentClient:
         journal_path: str | Path | None = None,
         journal: HubQueueAgentJournal | None = None,
         strict: bool = True,
+        process_spec: Mapping[str, Any] | None = None,
     ) -> None:
         self._hub = hub
         self.client_id = str(client_id)
         self.worker_id = str(worker_id or client_id)
         self.strict = bool(strict)
+        self.process_spec = dict(process_spec) if process_spec is not None else None
         self.journal = journal or (HubQueueAgentJournal(journal_path) if journal_path else None)
         self._capability_checked = False
         self._capabilities: set[str] = set()
@@ -230,11 +232,18 @@ class HubQueueAgentClient:
             "deadline_at": context.get("deadline_at"),
             "timeout_seconds": context.get("timeout_seconds"),
         }
-        if context.get("process_spec") is not None:
-            payload["process_spec"] = dict(context["process_spec"])
+        raw_spec = context.get("process_spec") or self.process_spec
+        if raw_spec is not None:
+            payload["process_spec"] = dict(raw_spec)
+            payload["request"] = dict(context.get("resource_request") or context.get("resources") or {})
         self._journal_intent("claim", idempotency_key, {"payload": payload})
         response = self._invoke("hub_agent_claim", payload, identity=idempotency_key)
-        handle = response.get("handle") or response.get("lease") or response.get("claimed") or response
+        handle = response.get("execution") or response.get("handle") or response.get("lease") or response.get("claimed") or response
+        if isinstance(handle, Mapping) and isinstance(handle.get("handle"), str):
+            execution = dict(handle)
+            handle = {"handle_id": execution["handle"], "lease_id": execution["handle"],
+                      "job_id": execution["handle"], "fence": execution.get("fence"),
+                      "state": execution.get("state"), "execution": execution}
         if not isinstance(handle, Mapping):
             raise HubQueueAgentError("Hub claim returned no handle", reason_code="invalid_hub_response")
         handle = dict(handle)
@@ -261,9 +270,11 @@ class HubQueueAgentClient:
 
     def status(self, handle: str | Mapping[str, Any]) -> dict[str, Any]:
         self._ensure_capability()
-        value = self._handle_payload(handle)
-        response = self._invoke("hub_agent_status", {"client_id": self.client_id, "handle": value}, identity=self._handle_id(handle))
-        return dict(response.get("status") or response.get("job") or response)
+        response = self._invoke("hub_agent_status", {"client_id": self.client_id, "handle": self._handle_id(handle)}, identity=self._handle_id(handle))
+        result = dict(response.get("execution") or response.get("status") or response.get("job") or response)
+        state = str(result.get("state") or result.get("status") or "")
+        result["status"] = {"claimed": "ready", "completed": "passed"}.get(state, state)
+        return result
 
     def heartbeat(self, handle: str | Mapping[str, Any]) -> dict[str, Any]:
         value = self._handle_payload(handle)
@@ -277,7 +288,7 @@ class HubQueueAgentClient:
         self._ensure_capability()
         value = self._handle_payload(handle)
         operation_id = str(value.get("idempotency_key") or self._handle_id(handle)) + ":send"
-        payload = {"client_id": self.client_id, "handle": value, "stage_input": dict(stage_input), "operation_id": operation_id}
+        payload = {"client_id": self.client_id, "handle": self._handle_id(handle), "fence": value.get("fence"), "operation_id": operation_id}
         self._journal_intent("send", operation_id, {"handle": value})
         response = self._invoke("hub_agent_send", payload, identity=operation_id)
         self._journal_effect("send", operation_id, response)
@@ -285,9 +296,12 @@ class HubQueueAgentClient:
 
     def collect(self, handle: str | Mapping[str, Any]) -> dict[str, Any]:
         self._ensure_capability()
-        value = self._handle_payload(handle)
-        response = self._invoke("hub_agent_collect", {"client_id": self.client_id, "handle": value}, identity=self._handle_id(handle))
-        result = dict(response.get("result") or response)
+        response = self._invoke("hub_agent_collect", {"client_id": self.client_id, "handle": self._handle_id(handle)}, identity=self._handle_id(handle))
+        execution = dict(response.get("execution") or response)
+        result = dict(execution.get("result") or {})
+        result.setdefault("output", execution.get("output"))
+        result.setdefault("receipt", execution.get("receipt"))
+        result.setdefault("process_result", execution.get("result"))
         if "output" not in result and "stage_output" in result:
             result["output"] = result["stage_output"]
         if "receipt" not in result and "stage_receipt" in result:
@@ -298,7 +312,7 @@ class HubQueueAgentClient:
         self._ensure_capability()
         value = self._handle_payload(handle)
         operation_id = str(value.get("idempotency_key") or self._handle_id(handle)) + ":cancel:" + str(reason)
-        payload = {"client_id": self.client_id, "handle": value, "reason": str(reason), "operation_id": operation_id}
+        payload = {"client_id": self.client_id, "handle": self._handle_id(handle), "fence": value.get("fence"), "reason": str(reason), "operation_id": operation_id}
         self._journal_intent("cancel", operation_id, {"handle": value, "reason": str(reason)})
         response = self._invoke("hub_agent_cancel", payload, identity=operation_id)
         self._journal_effect("cancel", operation_id, response)
