@@ -63,6 +63,7 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 
 | Script | Invoker | Status |
 |---|---|---|
+| `issue_meta_audit.py` | manual read-only GitHub specification audit for issue #647; supports deterministic offline fixtures and writes `docs/audits/` evidence | active |
 | `autoresearch.py` | the `simplicio-autoresearch` satellite skill | active |
 | `agentsview_adapter.py` | AgentsView source adapter (README § Source adapters) | active |
 | `az_boards_adapter.py` | Azure Boards source adapter (`.claude/skills/simplicio-loop/references/azure-devops-adapter.md`) | active |
