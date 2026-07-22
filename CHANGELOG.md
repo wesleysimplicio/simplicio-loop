@@ -1,5 +1,10 @@
 # Changelog
 
+- **Issue #616 — concurrent stage waves:** `StageAgentCoordinator` now overlaps
+  independent stages up to the Hub slot grant, retains an explicit one-slot serial
+  fallback, records deterministic wave summaries and timing telemetry, supports
+  stage/global cancellation, and resumes without re-running accepted stages.
+
 ## [3.38.1] — 2026-07-20
 
 - Raised the `simplicio-cli` dependency floor to `>=0.16.2`, consuming the

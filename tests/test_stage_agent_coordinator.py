@@ -10,6 +10,8 @@ planning, executing, validating, watching, delivering, done).
 from __future__ import annotations
 
 import sys
+import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -183,6 +185,118 @@ def test_plan_waves_groups_independent_stages_together():
 def test_available_slots_never_goes_negative():
     assert sc.available_slots(host_total_slots=1, coordinator_slots=4) == 0
     assert sc.available_slots(host_total_slots=4, coordinator_slots=1) == 3
+
+
+def test_run_all_overlaps_wave_and_preserves_deterministic_result_order(monkeypatch, tmp_path):
+    coordinator = _coordinator(tmp_path, adapters=[_echo_command_adapter(tmp_path)])
+    monkeypatch.setattr(sc, "plan_waves", lambda graph: [["validating", "executing"]])
+    monkeypatch.setattr(coordinator, "is_unlocked", lambda stage_id: True)
+    intervals = {}
+
+    def run(stage_id, **kwargs):
+        started = time.monotonic()
+        time.sleep(0.08)
+        intervals[stage_id] = (started, time.monotonic())
+        return sc.StageResult(stage_id, "passed")
+
+    monkeypatch.setattr(coordinator, "run_stage", run)
+    results = coordinator.run_all()
+    assert intervals["executing"][0] < intervals["validating"][1]
+    assert intervals["validating"][0] < intervals["executing"][1]
+    assert list(results) == ["executing", "validating"]
+    assert coordinator.wave_metrics[0]["slots"] == 3
+    assert coordinator.wave_metrics[0]["throughput_stages_per_second"] > 10
+    assert coordinator.wave_metrics[0]["overlap_seconds"] > 0.05
+    assert coordinator.wave_metrics[0]["cpu_seconds"] is None
+    assert coordinator.wave_metrics[0]["rss_peak_bytes"] is None
+
+
+def test_run_all_one_hub_slot_is_explicitly_serial(monkeypatch, tmp_path):
+    coordinator = _coordinator(
+        tmp_path, adapters=[_echo_command_adapter(tmp_path)], host_total_slots=2
+    )
+    monkeypatch.setattr(sc, "plan_waves", lambda graph: [["executing", "validating"]])
+    monkeypatch.setattr(coordinator, "is_unlocked", lambda stage_id: True)
+    active = 0
+    peak = 0
+
+    def run(stage_id, **kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        time.sleep(0.01)
+        active -= 1
+        return sc.StageResult(stage_id, "passed")
+
+    monkeypatch.setattr(coordinator, "run_stage", run)
+    coordinator.run_all()
+    assert peak == 1
+
+
+def test_wave_capacity_bounds_real_child_processes(monkeypatch, tmp_path):
+    coordinator = _coordinator(
+        tmp_path, adapters=[_echo_command_adapter(tmp_path)], host_total_slots=3
+    )
+    stages = ["intake", "planning", "executing", "validating"]
+    monkeypatch.setattr(sc, "plan_waves", lambda graph: [stages])
+    monkeypatch.setattr(coordinator, "is_unlocked", lambda stage_id: True)
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def run(stage_id, **kwargs):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        subprocess.run([sys.executable, "-c", "import time; time.sleep(.06)"], check=True)
+        with lock:
+            active -= 1
+        return sc.StageResult(stage_id, "passed")
+
+    monkeypatch.setattr(coordinator, "run_stage", run)
+    coordinator.run_all()
+    assert peak == coordinator.slots == 2
+
+
+def test_cancel_stage_and_global_cancel_delegate_in_sorted_order(tmp_path):
+    coordinator = _coordinator(tmp_path, adapters=[_echo_command_adapter(tmp_path)])
+    calls = []
+
+    class Adapter:
+        def cancel(self, instance, *, reason):
+            calls.append((instance.stage_id, reason))
+
+    adapter = Adapter()
+    coordinator._active = {
+        "validating": (adapter, sc.AgentInstance("i2", "review_panel", "validating", "fake")),
+        "executing": (adapter, sc.AgentInstance("i1", "implementation_agent", "executing", "fake")),
+    }
+    assert coordinator.cancel_stage("missing") is False
+    assert coordinator.cancel_stage("executing", reason="operator") is True
+    assert coordinator.cancel_all() == ["executing", "validating"]
+    assert calls == [
+        ("executing", "operator"),
+        ("executing", sc.REASON_CANCELLED),
+        ("validating", sc.REASON_CANCELLED),
+    ]
+
+
+def test_run_all_zero_capacity_blocks_ready_stages(monkeypatch, tmp_path):
+    coordinator = _coordinator(
+        tmp_path, adapters=[_echo_command_adapter(tmp_path)], host_total_slots=1
+    )
+    monkeypatch.setattr(sc, "plan_waves", lambda graph: [["executing"]])
+    monkeypatch.setattr(coordinator, "is_unlocked", lambda stage_id: True)
+    results = coordinator.run_all()
+    assert results["executing"].reason_code == sc.REASON_ZERO_CAPACITY
+
+
+def test_run_all_global_cancel_prevents_wave_admission(monkeypatch, tmp_path):
+    coordinator = _coordinator(tmp_path, adapters=[_echo_command_adapter(tmp_path)])
+    monkeypatch.setattr(sc, "plan_waves", lambda graph: [["executing"]])
+    coordinator.cancel_all()
+    assert coordinator.run_all() == {}
 
 
 # --------------------------------------------------------------------------
