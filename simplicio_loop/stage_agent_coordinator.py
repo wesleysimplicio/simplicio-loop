@@ -37,8 +37,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +60,7 @@ _TERMINAL_STATUS_MAP = {
     "blocked": "blocked",
     "cancelled": "cancelled",
     "timed_out": "failed",
+    "recovery_unknown": "failed",
 }
 
 COORDINATOR_AGENT_ID = "coordinator"
@@ -164,9 +167,6 @@ class AgentInstance:
     coordinator_agent_id: str = COORDINATOR_AGENT_ID
     parent_instance_id: str = COORDINATOR_AGENT_ID
     idempotency_key: str = ""
-    # Transport-native handle retained outside the portable contract.  The Hub
-    # client uses this to preserve generation/fence/process identity on every
-    # subsequent IPC call; legacy queue fakes continue using instance_id.
     transport_handle: dict[str, Any] | None = None
 
     def to_contract_instance(self) -> dict[str, Any]:
@@ -494,12 +494,13 @@ def _kill_tree(popen: subprocess.Popen) -> None:
 
 
 # --------------------------------------------------------------------------
+# Hub queue provider is implemented in hub_queue_agent.py.
+# --------------------------------------------------------------------------
+
+
 # QueueAgentAdapter — local/remote queue workers.
 #
-# Delegates claim/lease/fence semantics to whatever queue client is bound
-# (e.g. simplicio_loop.remote_queue); the core only defines the shape of the
-# interaction so a fake/local queue can satisfy tests without network.
-# --------------------------------------------------------------------------
+# Delegates claim/lease/fence semantics to whatever queue client is bound.
 
 
 class QueueAgentAdapter:
@@ -512,9 +513,8 @@ class QueueAgentAdapter:
     def probe(self) -> bool:
         if self._client is None:
             return False
-        if isinstance(self._client, HubQueueAgentClient):
-            return self._client.probe()
-        return True
+        probe = getattr(self._client, "probe", None)
+        return bool(probe()) if callable(probe) else True
 
     def compatible_with(self, role: Mapping[str, Any], stage: Mapping[str, Any]) -> bool:
         return self.probe() and stage.get("isolation_level", "process") in _NON_HUMAN_LEVELS
@@ -536,8 +536,7 @@ class QueueAgentAdapter:
         )
 
     def poll(self, instance: AgentInstance) -> AgentInstance:
-        handle = instance.transport_handle if instance.transport_handle is not None else instance.instance_id
-        status = self._client.status(handle)
+        status = self._client.status(instance.transport_handle or instance.instance_id)
         observed = status.get("status", instance.status)
         if instance.status == "created" and observed == "ready":
             instance.ready_at = _now_iso()
@@ -548,21 +547,18 @@ class QueueAgentAdapter:
     def send(self, instance: AgentInstance, stage_input: Mapping[str, Any]) -> None:
         if instance.status != "ready":
             raise StageCoordinatorError("queue instance not ready", reason_code=REASON_NOT_READY)
-        handle = instance.transport_handle if instance.transport_handle is not None else instance.instance_id
-        self._client.send(handle, dict(stage_input))
+        self._client.send(instance.transport_handle or instance.instance_id, dict(stage_input))
         instance.status = "running"
 
     def collect(self, instance: AgentInstance):
         if instance.status not in TERMINAL_DRIVER_STATUSES:
             return None, None
-        handle = instance.transport_handle if instance.transport_handle is not None else instance.instance_id
-        result = self._client.collect(handle)
+        result = self._client.collect(instance.transport_handle or instance.instance_id)
         instance.output, instance.receipt = result.get("output"), result.get("receipt")
         return instance.output, instance.receipt
 
     def cancel(self, instance: AgentInstance, *, reason: str) -> None:
-        handle = instance.transport_handle if instance.transport_handle is not None else instance.instance_id
-        self._client.cancel(handle, reason=reason)
+        self._client.cancel(instance.transport_handle or instance.instance_id, reason=reason)
         if instance.status not in TERMINAL_DRIVER_STATUSES:
             instance.status = "cancelled"
             instance.error_reason_code = reason
@@ -625,17 +621,22 @@ FALLBACK_ORDER = ("native", "hub", "command", "queue", "human")
 class AdapterRegistry:
     def __init__(self, adapters: Sequence[AgentDriver], *, strict_hub: bool = False):
         self._by_kind = {a.kind: a for a in adapters}
-        self.strict_hub = bool(strict_hub)
+        self.strict_hub = strict_hub
 
     def select(self, *, role: Mapping[str, Any], stage: Mapping[str, Any]) -> AgentDriver:
+        if self.strict_hub:
+            adapter = self._by_kind.get("hub") or self._by_kind.get("queue")
+            if not isinstance(getattr(adapter, "_client", None), HubQueueAgentClient):
+                raise StageCoordinatorError(
+                    "strict Hub mode requires QueueAgentAdapter(HubQueueAgentClient)",
+                    reason_code="hub_required",
+                )
+            if adapter.probe() and adapter.compatible_with(role, stage):
+                return adapter
+            raise StageCoordinatorError("Hub unavailable in strict mode", reason_code="hub_unavailable")
         for kind in FALLBACK_ORDER:
             adapter = self._by_kind.get(kind)
             if adapter is None:
-                continue
-            if self.strict_hub and not (
-                isinstance(adapter, QueueAgentAdapter)
-                and isinstance(getattr(adapter, "_client", None), HubQueueAgentClient)
-            ):
                 continue
             if adapter.probe() and adapter.compatible_with(role, stage):
                 return adapter
@@ -684,11 +685,13 @@ class StageCoordinatorJournal:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
 
     def append(self, event_type: str, payload: Mapping[str, Any]) -> None:
         record = {"ts": time.time(), "event_type": event_type, "payload": dict(payload)}
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, sort_keys=True, default=str) + "\n")
 
     def replay(self) -> list[dict[str, Any]]:
         if not self.path.exists():
@@ -732,7 +735,7 @@ class StageAgentCoordinator:
     def __init__(self, *, graph: Mapping[str, Any] | None = None, run_id: str, task_id: str,
                  adapters: Sequence[AgentDriver], journal: StageCoordinatorJournal | None = None,
                  host_total_slots: int = 4, coordinator_slots: int = 1,
-                 poll_interval_seconds: float = 0.05, hub_strict: bool = False):
+                 poll_interval_seconds: float = 0.05, strict_hub: bool = False):
         self.graph = graph or sa.load_graph()
         ok, errors = sa.validate_graph(self.graph)
         if not ok:
@@ -744,14 +747,17 @@ class StageAgentCoordinator:
         self.manifest_hash = str(self.graph.get("manifest_hash") or _sha256(self.graph))
         self.run_id = run_id
         self.task_id = task_id
-        self.registry = AdapterRegistry(adapters, strict_hub=hub_strict)
-        self.hub_strict = bool(hub_strict)
+        self.registry = AdapterRegistry(adapters, strict_hub=strict_hub)
         self.journal = journal
         self.passed_stages: dict[str, dict[str, Any]] = {}
         self.rejected: list[dict[str, Any]] = []
         self.slots = available_slots(host_total_slots=host_total_slots, coordinator_slots=coordinator_slots)
         self.poll_interval_seconds = poll_interval_seconds
         self.results: dict[str, StageResult] = {}
+        self._state_lock = threading.RLock()
+        self._cancelled = threading.Event()
+        self._active: dict[str, tuple[AgentDriver, AgentInstance]] = {}
+        self.wave_metrics: list[dict[str, Any]] = []
         if self.journal:
             for stage_id in self.journal.passed_stage_ids():
                 self.results[stage_id] = StageResult(stage_id=stage_id, status="passed")
@@ -799,21 +805,21 @@ class StageAgentCoordinator:
             return result
         self._log("routing_decision", {"stage_id": stage_id, "adapter": adapter.kind})
 
-        idempotency_key = f"{self.run_id}:{stage_id}:{attempt_id}"
-        timeout_seconds = deadline_seconds if deadline_seconds is not None else stage.get("timeout_seconds", 600)
         stage_context = {
             "role_id": role["role_id"], "stage_id": stage["stage_id"], "run_id": self.run_id,
             "task_id": self.task_id, "attempt_id": attempt_id, "fence": fence,
             "plan_revision": plan_revision, "isolation_level": stage.get("isolation_level", "process"),
             "required_capabilities": stage.get("required_capabilities", []),
-            "idempotency_key": idempotency_key,
-            "timeout_seconds": timeout_seconds,
+            "idempotency_key": f"{self.run_id}:{stage_id}:{attempt_id}",
+            "timeout_seconds": deadline_seconds if deadline_seconds is not None else stage.get("timeout_seconds", 600),
             "priority": stage.get("priority", "test" if stage.get("stage_id") in {"validating", "testing"} else "build"),
             "resources": dict(stage.get("resources") or {}),
         }
         context_hash = _sha256(stage_context)
 
         instance = adapter.spawn(role=role, stage=stage, stage_context=stage_context)
+        with self._state_lock:
+            self._active[stage_id] = (adapter, instance)
         instance.run_id, instance.task_id, instance.attempt_id = self.run_id, self.task_id, attempt_id
         instance.fence, instance.plan_revision = fence, plan_revision
         instance.context_hash, instance.manifest_hash = context_hash, self.manifest_hash
@@ -824,11 +830,13 @@ class StageAgentCoordinator:
         instance.attempt_ordinal = 1
         instance.coordinator_agent_id = COORDINATOR_AGENT_ID
         instance.parent_instance_id = COORDINATOR_AGENT_ID
-        instance.idempotency_key = idempotency_key
+        instance.idempotency_key = f"{self.run_id}:{stage_id}:{attempt_id}"
         self._log("instance_created", {"stage_id": stage_id, "instance_id": instance.instance_id, "adapter": adapter.kind})
 
-        deadline = time.time() + timeout_seconds
+        deadline = time.time() + (deadline_seconds if deadline_seconds is not None else stage.get("timeout_seconds", 600))
         while instance.status == "created":
+            if self._cancelled.is_set():
+                adapter.cancel(instance, reason=REASON_CANCELLED)
             instance = adapter.poll(instance)
             if instance.status == "created" and time.time() > deadline:
                 adapter.cancel(instance, reason=REASON_TIMEOUT)
@@ -858,6 +866,8 @@ class StageAgentCoordinator:
         self._log("input_sent", {"stage_id": stage_id, "instance_id": instance.instance_id})
 
         while instance.status not in TERMINAL_DRIVER_STATUSES:
+            if self._cancelled.is_set():
+                adapter.cancel(instance, reason=REASON_CANCELLED)
             instance = adapter.poll(instance)
             self._log("heartbeat", {"stage_id": stage_id, "instance_id": instance.instance_id,
                                      "status": instance.status, "heartbeat_at": instance.last_heartbeat_at})
@@ -915,18 +925,95 @@ class StageAgentCoordinator:
         self._log("stage_passed", {"stage_id": stage_id, "instance_id": instance.instance_id})
         result = StageResult(stage_id=stage_id, status="passed", instance=instance)
         self.results[stage_id] = result
+        with self._state_lock:
+            self._active.pop(stage_id, None)
         return result
 
+    def cancel_stage(self, stage_id: str, *, reason: str = REASON_CANCELLED) -> bool:
+        """Cancel an active stage without affecting independent peers."""
+        with self._state_lock:
+            active = self._active.get(stage_id)
+        if active is None:
+            return False
+        adapter, instance = active
+        adapter.cancel(instance, reason=reason)
+        self._log("cancel_requested", {"stage_id": stage_id, "reason_code": reason})
+        return True
+
+    def cancel_all(self, *, reason: str = REASON_CANCELLED) -> list[str]:
+        """Stop admission of later waves and cancel every currently active stage."""
+        self._cancelled.set()
+        with self._state_lock:
+            stage_ids = sorted(self._active)
+        for stage_id in stage_ids:
+            self.cancel_stage(stage_id, reason=reason)
+        return stage_ids
+
     def run_all(self, **stage_kwargs: Any) -> dict[str, StageResult]:
-        """Drive every stage to completion, wave by wave, honoring capacity."""
+        """Drive dependency waves concurrently, bounded by the Hub slot grant.
+
+        The executor only overlaps coordinator waits; adapters remain the sole process
+        launchers and the Hub-provided ``slots`` value is the hard admission bound.
+        A one-slot grant deliberately follows the serial path.
+        """
         for wave in plan_waves(self.graph):
+            if self._cancelled.is_set():
+                break
             ready = [sid for sid in wave if self.is_unlocked(sid) and sid not in self.results]
-            batch = ready[: max(self.slots, 0)] if self.slots else ready
-            for stage_id in batch:
-                self.run_stage(stage_id, **stage_kwargs)
-            for stage_id in ready[len(batch):] if self.slots else []:
-                self._log("blocked", {"stage_id": stage_id, "reason_code": REASON_ZERO_CAPACITY})
-                self.results[stage_id] = StageResult(stage_id=stage_id, status="blocked", reason_code=REASON_ZERO_CAPACITY)
+            if not ready:
+                continue
+            if self.slots <= 0:
+                for stage_id in ready:
+                    self._log("blocked", {"stage_id": stage_id, "reason_code": REASON_ZERO_CAPACITY})
+                    self.results[stage_id] = StageResult(stage_id=stage_id, status="blocked", reason_code=REASON_ZERO_CAPACITY)
+                continue
+            started = time.monotonic()
+            completed: dict[str, StageResult] = {}
+            timings: dict[str, dict[str, float]] = {}
+
+            def execute(stage_id: str, submitted_at: float) -> StageResult:
+                stage_started = time.monotonic()
+                result = self.run_stage(stage_id, **stage_kwargs)
+                timings[stage_id] = {
+                    "queue_wait_seconds": stage_started - submitted_at,
+                    "started": stage_started,
+                    "ended": time.monotonic(),
+                }
+                return result
+
+            if self.slots == 1 or len(ready) == 1:
+                for stage_id in ready:
+                    completed[stage_id] = execute(stage_id, time.monotonic())
+            else:
+                with ThreadPoolExecutor(max_workers=self.slots, thread_name_prefix="hub-stage") as executor:
+                    futures: dict[Future[StageResult], str] = {
+                        executor.submit(execute, stage_id, time.monotonic()): stage_id
+                        for stage_id in ready
+                    }
+                    for future in as_completed(futures):
+                        stage_id = futures[future]
+                        completed[stage_id] = future.result()
+            elapsed = time.monotonic() - started
+            ordered = sorted(completed)
+            with self._state_lock:
+                for stage_id in ordered:
+                    self.results[stage_id] = completed[stage_id]
+            overlap = 0.0
+            spans = sorted((value["started"], value["ended"]) for value in timings.values())
+            for index, (left_start, left_end) in enumerate(spans):
+                for right_start, right_end in spans[index + 1:]:
+                    overlap += max(0.0, min(left_end, right_end) - max(left_start, right_start))
+            metric = {
+                "stages": ordered, "slots": self.slots, "elapsed_seconds": elapsed,
+                "queue_wait_seconds": {sid: timings[sid]["queue_wait_seconds"] for sid in ordered},
+                "overlap_seconds": overlap,
+                "throughput_stages_per_second": len(ordered) / elapsed if elapsed else None,
+                "cpu_seconds": None, "rss_peak_bytes": None,
+                "resource_metrics_unavailable_reason":
+                    "portable adapters do not expose per-stage CPU/RSS telemetry",
+            }
+            self.wave_metrics.append(metric)
+            self._log("wave_completed", metric)
         return self.results
 
     def status_report(self) -> dict[str, Any]:
@@ -938,14 +1025,15 @@ class StageAgentCoordinator:
             "rejected": self.rejected,
             "terminal_reached": self.terminal_reached(),
             "results": {sid: r.status for sid, r in self.results.items()},
+            "wave_metrics": list(self.wave_metrics),
         }
 
 
 __all__ = [
-    "COORDINATOR_AGENT_ID", "HubQueueAgentClient", "REASON_CANCELLED", "REASON_INVALID_INSTANCE", "REASON_INVALID_RECEIPT",
+    "COORDINATOR_AGENT_ID", "REASON_CANCELLED", "REASON_INVALID_INSTANCE", "REASON_INVALID_RECEIPT",
     "REASON_NOT_READY", "REASON_NO_COMPATIBLE_ADAPTER", "REASON_STALE_RECEIPT", "REASON_TIMEOUT",
     "REASON_ZERO_CAPACITY", "AdapterRegistry", "AgentDriver", "AgentInstance", "CommandAgentAdapter",
-    "FALLBACK_ORDER", "HumanGateAdapter", "NativeAgentAdapter", "QueueAgentAdapter", "StageAgentCoordinator",
+    "FALLBACK_ORDER", "HubQueueAgentClient", "HumanGateAdapter", "NativeAgentAdapter", "QueueAgentAdapter", "StageAgentCoordinator",
     "StageCoordinatorError", "StageCoordinatorJournal", "StageResult", "available_slots", "plan_waves",
     "role_by_id", "stage_by_id",
 ]
