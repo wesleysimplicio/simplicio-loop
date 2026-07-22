@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from .hub_queue_retry import HubRetryQueue, QueueRetryError
+from .hub_agent_executor import (
+    CAPABILITY as HUB_AGENT_CAPABILITY,
+    HubAgentError,
+    HubAgentExecutor,
+    parse_request as parse_hub_agent_request,
+)
 from .hub_scheduler import (
     FairScheduler, QuotaExceededError, ScheduledJob, SchedulerError, SchedulerPolicy,
 )
@@ -36,6 +42,9 @@ METHODS = frozenset(
         # the pre-existing in-memory job verbs above, rather than a second protocol.
         "hub_submit", "hub_claim", "hub_complete", "hub_fail", "hub_status",
         "hub_admit", "hub_admission",
+        "hub_agent_claim", "hub_agent_send", "hub_agent_status", "hub_agent_collect",
+        "hub_agent_cancel",
+        "hub_agent_capabilities",
         # #512/#513 IPC wiring: expose the map service (registry + single-flight store +
         # watcher manager) the same way. Deliberately in-memory only, no persistence
         # layer (unlike hub_submit's durable queue) - a daemon restart starts clean; see
@@ -192,6 +201,7 @@ class HubDaemon:
         self.map_store: Optional[SingleFlightMapStore] = None
         self.map_watchers: Optional[MapWatcherManager] = None
         self._map_watch_tokens: Dict[str, str] = {}
+        self.hub_agent: Optional[HubAgentExecutor] = None
 
     def start(self) -> None:
         if self.started:
@@ -216,9 +226,16 @@ class HubDaemon:
         self.map_registry = MapServiceRegistry()
         self.map_store = SingleFlightMapStore(self.map_registry)
         self.map_watchers = MapWatcherManager(self.map_registry, self.map_store)
+        self.hub_agent = HubAgentExecutor(
+            self._queue_path + ".hub-agent.db", governor,
+            max_concurrency=max(1, self._resource_limits.processes or 4),
+        )
         self.started = True
 
     def stop(self) -> None:
+        if self.hub_agent is not None:
+            self.hub_agent.close()
+            self.hub_agent = None
         self.jobs.clear()
         self.clients.clear()
         self._claims.clear()
@@ -235,6 +252,29 @@ class HubDaemon:
         self.started = False
         self.lock.release()
 
+    @staticmethod
+    def _parse_process_spec(raw_spec: Dict[str, Any]) -> ProcessSpec:
+        allowed = {
+            "argv", "cwd", "cwd_allowlist", "env", "env_allowlist", "timeout_seconds",
+            "max_output_bytes", "priority", "idempotency_key", "shell", "schema", "spec_hash",
+        }
+        unknown = sorted(set(raw_spec) - allowed)
+        if unknown:
+            raise ProcessSpecError("unknown ProcessSpec fields: " + ", ".join(unknown))
+        if raw_spec.get("schema") not in (None, "simplicio.process-spec/v1"):
+            raise ProcessSpecError("unsupported ProcessSpec schema")
+        return ProcessSpec(
+            argv=tuple(raw_spec.get("argv", ())), cwd=raw_spec.get("cwd"),
+            cwd_allowlist=tuple(raw_spec.get("cwd_allowlist", ())),
+            env=dict(raw_spec.get("env", {})),
+            env_allowlist=tuple(raw_spec.get("env_allowlist", ())),
+            timeout_seconds=raw_spec.get("timeout_seconds", 30.0),
+            max_output_bytes=int(raw_spec.get("max_output_bytes", 65536)),
+            priority=int(raw_spec.get("priority", 0)),
+            idempotency_key=str(raw_spec.get("idempotency_key", "")),
+            shell=bool(raw_spec.get("shell", False)),
+        )
+
     def handle(self, envelope: HubEnvelope) -> Dict[str, Any]:
         if not self.started:
             raise HubError("Hub is not started")
@@ -243,6 +283,39 @@ class HubDaemon:
                 "ok": True, "started": self.started, "clients": len(self.clients),
                 "jobs": self.queue.count() if self.queue is not None else 0,
             }
+        if envelope.method.startswith("hub_agent_"):
+            try:
+                if envelope.method == "hub_agent_capabilities":
+                    return {"ok": True, "capabilities": [HUB_AGENT_CAPABILITY]}
+                if envelope.method == "hub_agent_claim":
+                    raw_spec = envelope.payload.get("process_spec")
+                    if not isinstance(raw_spec, dict):
+                        raise HubAgentError("process_spec must be an object")
+                    spec = self._parse_process_spec(raw_spec)
+                    execution = self.hub_agent.claim(
+                        spec, parse_hub_agent_request(envelope.payload.get("request") or {}),
+                        idempotency_key=str(envelope.payload.get("idempotency_key") or ""),
+                    )
+                else:
+                    handle = str(envelope.payload.get("handle") or "")
+                    if not handle:
+                        raise HubAgentError("handle is required")
+                    if envelope.method == "hub_agent_status":
+                        execution = self.hub_agent.status(handle)
+                    elif envelope.method == "hub_agent_collect":
+                        execution = self.hub_agent.collect(handle)
+                    else:
+                        if "fence" not in envelope.payload:
+                            raise HubAgentError("fence is required")
+                        fence = int(envelope.payload["fence"])
+                        execution = (
+                            self.hub_agent.send(handle, fence)
+                            if envelope.method == "hub_agent_send"
+                            else self.hub_agent.cancel(handle, fence)
+                        )
+                return {"ok": True, "execution": execution}
+            except (HubAgentError, TypeError, ValueError, ProcessSpecError) as exc:
+                raise HubProtocolError("hub-agent: %s" % exc) from exc
         if envelope.method == "scheduler_status":
             return {"ok": True, "scheduler": self.scheduler.status()}
         if envelope.method == "scheduler_configure":
