@@ -24,6 +24,7 @@ from .process_supervisor_rust import backend_name, run_with_fallback
 from .hub_governor import RESOURCE_NAMES, ResourceGovernor, ResourceLimits, ResourceRequest
 from .hub_agent_executor import HubAgentExecutor, HubAgentError, parse_request
 from .hub_service import ClaimedJob, HubService
+from .hub_worker_store import HubWorkerError, HubWorkerStore
 from .map_service import MapServiceRegistry, RepositoryIdentity
 from .map_service_single_flight import SingleFlightMapStore
 from .map_service_watchers import MapWatcherManager
@@ -46,6 +47,7 @@ METHODS = frozenset(
         "hub_agent_capabilities", "hub_agent_claim", "hub_agent_status",
         "hub_agent_heartbeat", "hub_agent_progress", "hub_agent_send",
         "hub_agent_collect", "hub_agent_cancel",
+        "worker_delegate", "worker_status", "worker_cancel", "worker_deliver",
         # #512/#513 IPC wiring: expose the map service (registry + single-flight store +
         # watcher manager) the same way. Deliberately in-memory only, no persistence
         # layer (unlike hub_submit's durable queue) - a daemon restart starts clean; see
@@ -266,6 +268,7 @@ class HubDaemon:
         # lifecycle; the coordinator-side client only speaks these IPC verbs.
         self.agent_executor = agent_executor
         self.hub_agent: Optional[HubAgentExecutor] = None
+        self.worker_store: Optional[HubWorkerStore] = None
         self._agent_jobs: Dict[str, Dict[str, Any]] = {}
         # #512/#513: registry/store/watchers are pure in-memory (unlike the durable
         # queue above) - rebuilt fresh every start(), never persisted across stop().
@@ -302,6 +305,7 @@ class HubDaemon:
         # The Hub owns one durable executor.  Coordinator clients only use IPC;
         # direct callers receive the same authority for local conformance tests.
         self.hub_agent = HubAgentExecutor(self._queue_path + ".agent.db", governor)
+        self.worker_store = HubWorkerStore(self._queue_path + ".workers.db")
         # #503-506 restart persistence: the durable queue never lost still-queued
         # jobs across this restart - re-admit their real scheduling metadata into
         # the freshly built (empty) FairScheduler now, rather than leaving them
@@ -324,6 +328,9 @@ class HubDaemon:
         if self.hub_agent is not None:
             self.hub_agent.close()
             self.hub_agent = None
+        if self.worker_store is not None:
+            self.worker_store.close()
+            self.worker_store = None
         if self.queue is not None:
             self.queue.close()
             self.queue = None
@@ -713,6 +720,14 @@ class HubDaemon:
             except QueueRetryError as exc:
                 raise HubProtocolError("hub_admission blocked: %s" % exc) from exc
             return {"ok": True, "admission": receipt}
+        if envelope.method.startswith("worker_"):
+            if self.worker_store is None:
+                raise HubError("worker store is not started")
+            try:
+                operation = getattr(self.worker_store, envelope.method.removeprefix("worker_"))
+                return {"ok": True, envelope.method.removeprefix("worker_"): operation(envelope.payload)}
+            except HubWorkerError as exc:
+                raise HubProtocolError(str(exc)) from exc
         if envelope.method.startswith("hub_agent_"):
             return self._handle_agent_ipc(envelope)
         if envelope.method == "map_register":
@@ -1216,10 +1231,14 @@ class HubSocketServer:
         try:
             if not isinstance(request_id, int) or request_id < 1:
                 raise HubProtocolError("Code Hub request id must be a positive integer")
-            if not isinstance(method, str) or method not in {"handshake", "attach", "submit", "progress", "cancel", "resume"}:
+            if not isinstance(method, str) or method not in {"handshake", "attach", "submit", "progress", "cancel", "resume", "worker_delegate", "worker_status", "worker_cancel", "worker_deliver"}:
                 raise HubProtocolError("unsupported Code Hub method")
             if not isinstance(payload, dict):
                 raise HubProtocolError("Code Hub payload must be an object")
+            if method.startswith("worker_"):
+                result = self.daemon.handle(HubEnvelope(str(request_id), method, payload))
+                response["result"] = result[method.removeprefix("worker_")]
+                return response
             if method == "handshake":
                 if payload.get("schema") != CODE_HUB_CLIENT_SCHEMA or payload.get("protocol") != CODE_HUB_PROTOCOL:
                     raise HubProtocolError("unsupported Code Hub handshake schema/protocol")
