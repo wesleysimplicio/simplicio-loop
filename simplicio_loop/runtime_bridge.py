@@ -21,6 +21,7 @@ from typing import Any, Dict, Mapping, Optional
 
 RUNTIME_BRIDGE_SCHEMA = "simplicio.loop-runtime-bridge/v1"
 RUNTIME_MCP_PROTOCOL = "2024-11-05"
+RUNTIME_CALL_SCHEMA = "simplicio.loop-runtime-call/v1"
 
 
 class RuntimeBridgeError(RuntimeError):
@@ -97,8 +98,10 @@ class _RuntimeProcess:
         self.process.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
         self.process.stdin.flush()
 
-    def call_tool(self, name: str, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        result = self._request("tools/call", {"name": name, "arguments": dict(arguments)})
+    def call_tool(self, name: str, arguments: Mapping[str, Any], *, timeout: float = 10.0) -> Dict[str, Any]:
+        result = self._request(
+            "tools/call", {"name": name, "arguments": dict(arguments)}, timeout=timeout,
+        )
         content = result.get("content")
         if not isinstance(content, list) or not content or not isinstance(content[0], dict):
             raise RuntimeBridgeError("Runtime MCP tools/call omitted content")
@@ -134,6 +137,56 @@ class RuntimeBridge:
         self._lock = threading.RLock()
         self._processes: Dict[str, _RuntimeProcess] = {}
 
+    def _process_for_workspace(self, workspace_path: Path) -> _RuntimeProcess:
+        """Return the single lazy MCP process owned for this workspace."""
+        key = str(workspace_path)
+        process = self._processes.get(key)
+        if process is None or process.process.poll() is not None:
+            if process is not None:
+                process.close()
+            process = _RuntimeProcess(self.binary, workspace_path)
+            self._processes[key] = process
+        return process
+
+    @staticmethod
+    def _effect_transaction(*, tool: str, arguments: Mapping[str, Any],
+                            relative_cwd: Path, idempotency_key: str,
+                            timeout_ms: int) -> Dict[str, Any]:
+        try:
+            action = json.dumps(
+                {"tool": tool, "arguments": dict(arguments)},
+                sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise RuntimeBridgeError("runtime_call arguments must be JSON-compatible") from exc
+        return {
+            "schema": "simplicio.effect-transaction/v1",
+            "executor": "simplicio-runtime",
+            "request": {
+                "schema": "simplicio.effect-request/v1",
+                "capability": tool,
+                "identity": {
+                    "session": "loop-hub-runtime",
+                    "turn": "runtime-bridge",
+                    "tool_call": idempotency_key,
+                    "attempt": "1",
+                    "transaction": idempotency_key,
+                },
+                "authority": "loop-hub-runtime-bridge",
+                "policy_receipt": "loop-hub-runtime-policy-v1",
+                "idempotency_key": idempotency_key,
+                "action_digest": "sha256:" + hashlib.sha256(action).hexdigest(),
+                "write_set": ["repo:" + str(relative_cwd)],
+                "preconditions": ["workspace-authorized"],
+                "lease": {"id": "loop-hub-runtime-lease", "fence": 1},
+                "deadline_ms": int(time.time() * 1000) + max(int(timeout_ms), 1),
+                "cancellation": "safe_boundary_only",
+                "validation_plan": "loop-hub-runtime-call-validation-v1",
+                "rollback_plan": "runtime-call-boundary",
+                "redaction_plan": "runtime-default-redaction",
+            },
+        }
+
     def execute(self, workspace: str, argv: list[str], cwd: str = ".",
                 env: Optional[Mapping[str, str]] = None, timeout_ms: int = 120_000,
                 max_output_bytes: int = 4 * 1024 * 1024,
@@ -147,13 +200,7 @@ class RuntimeBridge:
         if relative_cwd.is_absolute() or ".." in relative_cwd.parts:
             raise RuntimeBridgeError("Runtime cwd must stay workspace-relative")
         with self._lock:
-            key = str(workspace_path)
-            process = self._processes.get(key)
-            if process is None or process.process.poll() is not None:
-                if process is not None:
-                    process.close()
-                process = _RuntimeProcess(self.binary, workspace_path)
-                self._processes[key] = process
+            process = self._process_for_workspace(workspace_path)
             return process.call_tool("simplicio_exec", {
                 "repo": str(workspace_path), "cwd": str(relative_cwd), "argv": list(argv),
                 "env": dict(env or {}), "timeout_ms": min(max(int(timeout_ms), 1), 120_000),
@@ -190,6 +237,45 @@ class RuntimeBridge:
                 },
             })
 
+    def runtime_call(self, workspace: str, tool: str, arguments: Mapping[str, Any],
+                     *, cwd: str = ".", timeout_ms: int = 120_000,
+                     idempotency_key: str = "") -> Dict[str, Any]:
+        """Call one allowlisted Runtime MCP tool through the existing process.
+
+        The caller supplies the versioned tool arguments, while the bridge owns
+        the effect transaction.  A caller cannot replace that transaction or
+        cause a second Runtime process to be started for the same workspace.
+        """
+        if not workspace or not tool or not idempotency_key:
+            raise RuntimeBridgeError("workspace, tool and idempotency_key are required")
+        if not tool.startswith("simplicio_") or any(not (char.isalnum() or char in "_.-") for char in tool):
+            raise RuntimeBridgeError("runtime_call tool must be a safe simplicio_ tool name")
+        if not isinstance(arguments, Mapping):
+            raise RuntimeBridgeError("runtime_call arguments must be an object")
+        if "__runtime_effect_transaction" in arguments:
+            raise RuntimeBridgeError("runtime_call transaction is bridge-owned")
+        workspace_path = Path(workspace).expanduser().resolve()
+        if not workspace_path.is_dir():
+            raise RuntimeBridgeError("Runtime workspace does not exist")
+        relative_cwd = Path(cwd)
+        if relative_cwd.is_absolute() or ".." in relative_cwd.parts:
+            raise RuntimeBridgeError("Runtime cwd must stay workspace-relative")
+        try:
+            bounded_timeout_ms = min(max(int(timeout_ms), 1), 120_000)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeBridgeError("runtime_call timeout_ms must be an integer") from exc
+        request_arguments = dict(arguments)
+        request_arguments["__runtime_effect_transaction"] = self._effect_transaction(
+            tool=tool,
+            arguments=arguments,
+            relative_cwd=relative_cwd,
+            idempotency_key=idempotency_key,
+            timeout_ms=bounded_timeout_ms,
+        )
+        with self._lock:
+            process = self._process_for_workspace(workspace_path)
+            return process.call_tool(tool, request_arguments, timeout=bounded_timeout_ms / 1000.0)
+
     def close(self) -> None:
         with self._lock:
             for process in self._processes.values():
@@ -197,4 +283,4 @@ class RuntimeBridge:
             self._processes.clear()
 
 
-__all__ = ["RUNTIME_BRIDGE_SCHEMA", "RuntimeBridge", "RuntimeBridgeError"]
+__all__ = ["RUNTIME_BRIDGE_SCHEMA", "RUNTIME_CALL_SCHEMA", "RuntimeBridge", "RuntimeBridgeError"]

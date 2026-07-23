@@ -28,7 +28,7 @@ from .hub_worker_store import HubWorkerError, HubWorkerStore
 from .map_service import MapServiceRegistry, RepositoryIdentity
 from .map_service_single_flight import SingleFlightMapStore
 from .map_service_watchers import MapWatcherManager
-from .runtime_bridge import RuntimeBridge, RuntimeBridgeError
+from .runtime_bridge import RUNTIME_CALL_SCHEMA, RuntimeBridge, RuntimeBridgeError
 
 
 IPC_SCHEMA = "simplicio.hub-ipc/v1"
@@ -48,7 +48,7 @@ METHODS = frozenset(
         "hub_agent_capabilities", "hub_agent_claim", "hub_agent_status",
         "hub_agent_heartbeat", "hub_agent_progress", "hub_agent_send",
         "hub_agent_collect", "hub_agent_cancel",
-        "worker_delegate", "worker_status", "worker_cancel", "worker_deliver", "runtime_execute",
+        "worker_delegate", "worker_status", "worker_cancel", "worker_deliver", "runtime_execute", "runtime_call",
         # #512/#513 IPC wiring: expose the map service (registry + single-flight store +
         # watcher manager) the same way. Deliberately in-memory only, no persistence
         # layer (unlike hub_submit's durable queue) - a daemon restart starts clean; see
@@ -1238,7 +1238,7 @@ class HubSocketServer:
         try:
             if not isinstance(request_id, int) or request_id < 1:
                 raise HubProtocolError("Code Hub request id must be a positive integer")
-            if not isinstance(method, str) or method not in {"handshake", "attach", "submit", "progress", "cancel", "resume", "runtime_execute", "worker_delegate", "worker_status", "worker_cancel", "worker_deliver"}:
+            if not isinstance(method, str) or method not in {"handshake", "attach", "submit", "progress", "cancel", "resume", "runtime_execute", "runtime_call", "worker_delegate", "worker_status", "worker_cancel", "worker_deliver"}:
                 raise HubProtocolError("unsupported Code Hub method")
             if not isinstance(payload, dict):
                 raise HubProtocolError("Code Hub payload must be an object")
@@ -1266,6 +1266,30 @@ class HubSocketServer:
                 response["result"] = {
                     "schema": "simplicio.loop-runtime-execution/v1",
                     "workspace": workspace,
+                    "result": result,
+                }
+                return response
+            if method == "runtime_call":
+                workspace = str(payload.get("workspace") or "")
+                tool = str(payload.get("tool") or "")
+                arguments = payload.get("arguments")
+                if not isinstance(arguments, dict):
+                    raise HubProtocolError("runtime_call arguments must be an object")
+                try:
+                    result = self.daemon.runtime_bridge.runtime_call(
+                        workspace,
+                        tool,
+                        arguments,
+                        cwd=str(payload.get("cwd") or "."),
+                        timeout_ms=int(payload.get("timeout_ms") or 120_000),
+                        idempotency_key=str(payload.get("idempotency_key") or ""),
+                    )
+                except (RuntimeBridgeError, TypeError, ValueError) as exc:
+                    raise HubProtocolError("Runtime call rejected: %s" % exc) from exc
+                response["result"] = {
+                    "schema": RUNTIME_CALL_SCHEMA,
+                    "workspace": workspace,
+                    "tool": tool,
                     "result": result,
                 }
                 return response
