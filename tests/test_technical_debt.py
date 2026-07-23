@@ -39,6 +39,9 @@ def test_notice_is_deduplicated_and_replayed(tmp_path: Path):
     assert first["debt_id"] == second["debt_id"]
     assert second["occurrences"] == 2
     assert len(read_notices(tmp_path)) == 1
+    (tmp_path / "technical-debt.json").unlink()
+    replayed = read_notices(tmp_path)
+    assert len(replayed) == 1 and replayed[0]["occurrences"] == 2
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert state["degraded"] is True
     assert state["phase"] == "executing"
