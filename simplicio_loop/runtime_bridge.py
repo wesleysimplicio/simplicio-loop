@@ -83,11 +83,14 @@ class _RuntimeProcess:
             return result
 
     def _initialize(self) -> None:
+        # A cold Runtime may load its policy/configuration before it can emit
+        # the MCP initialize response.  Keep effect calls bounded separately,
+        # but do not misclassify a slow first boot as an unavailable Runtime.
         result = self._request("initialize", {
             "protocolVersion": RUNTIME_MCP_PROTOCOL,
             "capabilities": {},
             "clientInfo": {"name": "simplicio-loop-hub", "version": RUNTIME_BRIDGE_SCHEMA},
-        })
+        }, timeout=60.0)
         if result.get("protocolVersion") != RUNTIME_MCP_PROTOCOL:
             raise RuntimeBridgeError("Runtime MCP protocol version mismatch")
         # Notifications have no response.  The Runtime accepts the normal
