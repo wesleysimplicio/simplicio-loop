@@ -1092,6 +1092,8 @@ class HubSocketServer:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._async_server: Optional[asyncio.base_events.Server] = None
         self._connections: Set[asyncio.Task] = set()
+        self._code_workflows: Dict[str, str] = {}
+        self._code_sessions: Dict[str, str] = {}
 
     def start(self) -> None:
         if self._running:
@@ -1226,6 +1228,7 @@ class HubSocketServer:
                 session_id = str(payload.get("session_id") or "")
                 if not client_id or not workspace_id or not session_id:
                     raise HubProtocolError("Code Hub handshake requires client, workspace, and session IDs")
+                self._code_sessions[session_id] = client_id
                 process_id = str(os.getpid())
                 response["result"] = {
                     "schema": CODE_HUB_CLIENT_SCHEMA,
@@ -1257,6 +1260,7 @@ class HubSocketServer:
                 client_id = str(payload.get("client_id") or "")
                 if not session_id or not client_id:
                     raise HubProtocolError("Code Hub attach requires client and session IDs")
+                self._code_sessions[session_id] = client_id
                 self.daemon.handle(HubEnvelope(str(request_id), "attach", {
                     "client_id": client_id, "session_id": session_id,
                     "epoch": self.daemon.epoch, "cursor": 0,
@@ -1266,10 +1270,12 @@ class HubSocketServer:
                                        "session_id": session_id, "accepted": True, "replay_from": []}
                 return response
             session_id = str(payload.get("session_id") or "")
-            if method != "progress" and not session_id:
+            if method == "submit" and not session_id:
                 raise HubProtocolError("Code Hub operation requires a session ID")
-            client_id = str(payload.get("client_id") or "code")
             workflow_id = str(payload.get("workflow_id") or payload.get("idempotency_key") or "")
+            if not session_id and workflow_id:
+                session_id = self._code_workflows.get(workflow_id, "")
+            client_id = str(payload.get("client_id") or self._code_sessions.get(session_id, "code"))
             if method == "submit":
                 workflow_id = str(payload.get("idempotency_key") or "")
                 if not workflow_id:
@@ -1282,6 +1288,7 @@ class HubSocketServer:
                                  "payload": payload.get("payload")},
                 }
                 result = self.daemon.handle(HubEnvelope(workflow_id, "submit", operation))
+                self._code_workflows[workflow_id] = session_id
                 response["result"] = {"schema": CODE_HUB_CLIENT_SCHEMA, "workflow_id": workflow_id,
                                        "state": "queued", "queue_position": 1, "retry_after_ms": None,
                                        "receipt_id": "admission:" + workflow_id}
@@ -1289,7 +1296,9 @@ class HubSocketServer:
             if not workflow_id:
                 raise HubProtocolError("Code Hub operation requires a workflow ID")
             if method in {"cancel", "resume"}:
-                operation = {"client_id": client_id, "session_id": session_id, "job_id": workflow_id,
+                operation = {"client_id": client_id,
+                             "session_id": session_id or self._code_workflows.get(workflow_id, ""),
+                             "job_id": workflow_id,
                              "reason": payload.get("reason", "Code request")}
                 result = self.daemon.handle(HubEnvelope(str(payload.get("idempotency_key") or request_id), method, operation))
                 state = str((result.get("job") or {}).get("state") or ("cancelled" if method == "cancel" else "queued"))
