@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .finding_report import emit_finding, fingerprint, SEVERITY_ENUM
+from .technical_debt import is_hard_blocker
 
 LOCAL_STORE = Path(".orchestrator/findings/issue_routes.json")
 
@@ -27,6 +28,8 @@ class RouteResult:
     created: bool
     updated: bool
     tracked: bool
+    classification: str = "finding"
+    blocking: bool = True
 
 
 @dataclass
@@ -89,6 +92,7 @@ def _build_body(finding: Dict[str, Any], item_id: Optional[str]) -> str:
         f"- **Confirmed:** {finding.get('confirmed')}",
         f"- **Fingerprint:** {finding.get('fingerprint')}",
         f"- **Loop item:** {item_id or 'n/a'}",
+        f"- **Classification:** {finding.get('classification') or 'finding'}",
         "",
         "### Context",
         finding.get('detail') or "(no extra detail provided)",
@@ -124,6 +128,8 @@ def route_finding(
     repo: Optional[str] = None,
     detail: Optional[str] = None,
     state_path: Optional[str] = None,
+    classification: str = "finding",
+    blocking: Optional[bool] = None,
 ) -> RouteResult:
     """Route one finding to exactly one canonical issue (dedup by fingerprint).
 
@@ -133,7 +139,18 @@ def route_finding(
     """
     if severity not in SEVERITY_ENUM:
         raise ValueError(f"severity must be one of {SEVERITY_ENUM}, got {severity!r}")
-    fp = fingerprint(stage, finding_id, source)
+    classification = str(classification or "finding").strip().lower()
+    is_debt = classification == "technical_debt"
+    effective_blocking = (not is_debt) if blocking is None else bool(blocking)
+    if is_debt and effective_blocking:
+        raise ValueError("technical_debt classification must be non-blocking")
+    if effective_blocking and is_hard_blocker(finding_id):
+        # This is intentionally not a debt downgrade; the normal finding route remains.
+        classification = "finding"
+    fp_base = fingerprint(stage, finding_id, source)
+    fp = fp_base if classification == "finding" else fingerprint(
+        stage, classification + ":" + finding_id, source
+    )
     store_path = Path(state_path) if state_path else LOCAL_STORE
     state = _RouterState.load(store_path)
 
@@ -143,10 +160,17 @@ def route_finding(
         if confirmed and not existing.get("confirmed"):
             existing["confirmed"] = True
             state.save(store_path)
-        return RouteResult(finding_id, fp, existing["issue_ref"], False, False, True)
+        return RouteResult(
+            finding_id, fp, existing["issue_ref"], False, False, True,
+            str(existing.get("classification") or "finding"),
+            bool(existing.get("blocking", True)),
+        )
 
     rec = emit_finding(stage, finding_id, severity, source, confirmed, detail)
-    title = f"[finding] {stage}: {finding_id} ({severity})"
+    rec["classification"] = classification
+    rec["blocking"] = effective_blocking
+    title_prefix = "technical-debt" if is_debt else "finding"
+    title = f"[{title_prefix}] {stage}: {finding_id} ({severity})"
     body = _build_body(rec, item_id)
 
     issue_ref = None
@@ -171,9 +195,14 @@ def route_finding(
         "confirmed": bool(confirmed),
         "item_id": item_id,
         "created": created,
+        "classification": classification,
+        "blocking": effective_blocking,
     }
     state.save(store_path)
-    return RouteResult(finding_id, fp, issue_ref, created, False, True)
+    return RouteResult(
+        finding_id, fp, issue_ref, created, False, True,
+        classification, effective_blocking,
+    )
 
 
 def untracked_problems(item_id: Optional[str] = None, state_path: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -188,9 +217,22 @@ def untracked_problems(item_id: Optional[str] = None, state_path: Optional[str] 
     for fp, r in state.routes.items():
         if item_id and r.get("item_id") != item_id:
             continue
+        if r.get("blocking", True) is False or r.get("classification") == "technical_debt":
+            continue
         if not str(r.get("issue_ref", "")).startswith("#"):
             out.append(r)
     return out
+
+
+def technical_debts(item_id: Optional[str] = None, state_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return advisory technical-debt routes; these never block unrelated work."""
+    store_path = Path(state_path) if state_path else LOCAL_STORE
+    state = _RouterState.load(store_path)
+    return [
+        dict(route) for route in state.routes.values()
+        if route.get("classification") == "technical_debt"
+        and (not item_id or route.get("item_id") == item_id)
+    ]
 
 
 def completion_blocked(item_id: Optional[str] = None, state_path: Optional[str] = None) -> bool:
@@ -203,4 +245,4 @@ def completion_blocked(item_id: Optional[str] = None, state_path: Optional[str] 
     return len(untracked_problems(item_id=item_id, state_path=state_path)) > 0
 
 
-__all__ = ["route_finding", "untracked_problems", "completion_blocked", "RouteResult"]
+__all__ = ["route_finding", "untracked_problems", "technical_debts", "completion_blocked", "RouteResult"]
