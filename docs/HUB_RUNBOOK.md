@@ -3,6 +3,16 @@
 The Hub is opt-in. Existing callers remain standalone unless they explicitly connect to a Hub
 endpoint.
 
+## Interactive attach and replay
+
+Installed surfaces negotiate `simplicio.hub-interactive/v1` with `handshake`, then `attach`
+using a durable session ID and acknowledged cursor. Attach returns shared, versioned Runtime and
+Map handles and only events after the cursor. A restart changes the daemon epoch, requiring a new
+handshake, while the session journal remains replayable. Interactive `submit`, `cancel`, and
+`resume` use stable request IDs: exact retries return the original cursor and response, while a
+conflicting reuse fails closed. Fair scheduling and fenced queue leases remain the only dispatch
+and ownership authority.
+
 ## Transport and security
 
 - POSIX uses a Unix domain socket with mode `0600`.
