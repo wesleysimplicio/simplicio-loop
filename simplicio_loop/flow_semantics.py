@@ -121,11 +121,27 @@ def evaluate_drain(rounds: Sequence[Mapping[str, Any]], *, k: int = 2) -> Dict[s
         previous_empty = is_empty
     quarantined = sorted(quarantined, key=lambda item: (item["id"], item["reason"], item["dead_ends"]))
     late = sorted(set(late))
+    technical_debts = [
+        {
+            "schema": "simplicio.technical-debt/v1",
+            "debt_id": "quarantined-" + item["id"],
+            "reason_code": "quarantined_item",
+            "work_item_id": item["id"],
+            "message": item["reason"],
+            "next_action": "inspect dead_ends and retry or replan this item",
+            "blocking": False,
+            "status": "OPEN",
+            "dead_ends": item["dead_ends"],
+        }
+        for item in quarantined
+    ]
+    common = {"quarantined": quarantined, "technical_debts": technical_debts}
     if late:
-        return _result("drain", "CONTINUE", "late_arrival", late_arrivals=late, quarantined=quarantined, empty_rounds=empty_tail)
+        return _result("drain", "CONTINUE", "late_arrival", late_arrivals=late, empty_rounds=empty_tail, **common)
     if empty_tail >= k:
-        return _result("drain", "DRAINED", "drain_verified", empty_rounds=empty_tail, quarantined=quarantined, late_arrivals=[])
-    return _result("drain", "CONTINUE", "source_not_quiet", empty_rounds=empty_tail, required_empty_rounds=k, quarantined=quarantined, late_arrivals=[])
+        return _result("drain", "DRAINED", "drain_verified", empty_rounds=empty_tail, late_arrivals=[], **common)
+    return _result("drain", "CONTINUE", "source_not_quiet", empty_rounds=empty_tail,
+                   required_empty_rounds=k, late_arrivals=[], **common)
 
 
 __all__ = ["SCHEMA", "evaluate_converge", "evaluate_drain"]
