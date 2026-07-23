@@ -10,6 +10,7 @@ import copy
 import hashlib
 import inspect
 import json
+import time
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field, replace
@@ -230,4 +231,78 @@ class InferenceCoordinator:
     def status(self) -> Dict[str, Any]:
         return {"schema": "simplicio.inference-coordinator/v1", "inflight": len(self._inflight), "shared_executions": len(self._shared), "admission": self.admission.status()}
 
-__all__ = ["AdmissionDecision", "AdmissionJob", "AdmissionRejected", "CapacityLimits", "FairAdmissionController", "InferenceCoordinator", "InferenceReceipt", "InferenceRequest"]
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Bounded retry/circuit policy with reproducible jitter."""
+
+    max_attempts: int = 3
+    base_delay_seconds: float = 0.01
+    max_delay_seconds: float = 1.0
+    jitter_ratio: float = 0.25
+    circuit_failure_threshold: int = 3
+    circuit_cooldown_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1 or self.circuit_failure_threshold < 1:
+            raise ValueError("retry limits must be positive")
+        if self.base_delay_seconds < 0 or self.max_delay_seconds < 0 or not 0 <= self.jitter_ratio <= 1:
+            raise ValueError("retry delays and jitter must be non-negative")
+
+    def delay(self, job_key: str, attempt: int) -> float:
+        if attempt < 1:
+            raise ValueError("attempt must be positive")
+        raw = hashlib.sha256(f"{job_key}:{attempt}".encode()).digest()[0] / 255.0
+        jitter = 1.0 + ((raw * 2.0) - 1.0) * self.jitter_ratio
+        return min(self.max_delay_seconds, self.base_delay_seconds * (2 ** (attempt - 1)) * jitter)
+
+
+class InferenceRetryExhausted(RuntimeError):
+    """All bounded attempts failed or the circuit opened."""
+
+    def __init__(self, decisions: List[Dict[str, Any]]) -> None:
+        self.decisions = decisions
+        super().__init__(decisions[-1]["reason"] if decisions else "retry budget exhausted")
+
+
+async def run_with_retry(
+    coordinator: InferenceCoordinator,
+    request: InferenceRequest,
+    executor: Callable[[InferenceRequest], Any],
+    *,
+    policy: Optional[RetryPolicy] = None,
+    job_key: str = "inference",
+    client_id: str = "inference",
+    session_id: str = "inference",
+    priority: str = "inference",
+) -> InferenceReceipt:
+    """Retry transient executor failures without retrying cancellation."""
+    selected = policy or RetryPolicy()
+    decisions: List[Dict[str, Any]] = []
+    failures = 0
+    opened_until = 0.0
+    for attempt in range(1, selected.max_attempts + 1):
+        now = time.monotonic()
+        if now < opened_until:
+            decisions.append({"attempt": attempt, "retry": False, "delay_seconds": 0.0, "reason": "circuit_open"})
+            raise InferenceRetryExhausted(decisions)
+        try:
+            receipt = await coordinator.run(request, executor, client_id=client_id, session_id=session_id, priority=priority)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failures += 1
+            if failures >= selected.circuit_failure_threshold:
+                opened_until = time.monotonic() + selected.circuit_cooldown_seconds
+            retry = attempt < selected.max_attempts and opened_until <= time.monotonic()
+            delay = selected.delay(job_key, attempt) if retry else 0.0
+            reason = "circuit_open" if not retry and failures >= selected.circuit_failure_threshold else "retryable_failure"
+            decisions.append({"attempt": attempt, "retry": retry, "delay_seconds": delay, "reason": reason, "error": type(exc).__name__})
+            if not retry:
+                raise InferenceRetryExhausted(decisions) from exc
+            await asyncio.sleep(delay)
+        else:
+            return receipt
+    raise InferenceRetryExhausted(decisions)
+
+
+__all__ = ["AdmissionDecision", "AdmissionJob", "AdmissionRejected", "CapacityLimits", "FairAdmissionController", "InferenceCoordinator", "InferenceReceipt", "InferenceRequest", "InferenceRetryExhausted", "RetryPolicy", "run_with_retry"]
