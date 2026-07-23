@@ -493,7 +493,10 @@ def test_unix_socket_server_creates_no_thread_per_connection(require_af_unix) ->
         finally:
             server.shutdown()
             daemon.stop()
-        assert threading.active_count() == threads_before_start
+        # The test runner may retire an unrelated helper thread while the Hub
+        # is shutting down; only an extra accepted-connection thread is a
+        # regression for this contract.
+        assert threading.active_count() <= threads_before_start
 
 
 def test_unix_socket_stress_200_concurrent_clients_no_latency_regression(require_af_unix) -> None:

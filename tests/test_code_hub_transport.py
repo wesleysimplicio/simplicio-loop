@@ -60,7 +60,75 @@ def test_code_client_contract_uses_one_hub_identity_and_replays_lifecycle():
                 "idempotency_key": "cancel-key", "reason": "test",
             })
             assert cancelled["state"] == "cancelled"
+            reader.close()
         finally:
             stream.close()
             server.shutdown()
             daemon.stop()
+
+
+def test_external_worker_contract_is_durable_idempotent_and_cancel_fail_closed():
+    with tempfile.TemporaryDirectory() as directory:
+        lock = str(Path(directory) / "hub.lock")
+        endpoint = str(Path(directory) / "hub.sock")
+        daemon = HubDaemon(lock)
+        daemon.start()
+        server = HubSocketServer(daemon, endpoint, transport="unix")
+        server.start()
+        payload = {
+            "schema": "simplicio.code-worker-adapter/v1",
+            "protocol": "simplicio.loop-worker/v1",
+            "identity": {
+                "coordinator_id": "agent-host", "session_id": "s1",
+                "turn_id": "t1", "run_id": "r1", "goal_id": "g1",
+            },
+            "idempotency_key": "worker-key-1",
+            "max_concurrency": 2,
+            "tasks": [
+                {"task_id": "implement", "role": "implementer", "depends_on": [],
+                 "task_contract": "edit only through Runtime"},
+                {"task_id": "review", "role": "reviewer", "depends_on": ["implement"],
+                 "task_contract": "review the external diff"},
+            ],
+        }
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+                stream.connect(endpoint)
+                reader = stream.makefile("rb")
+                first = _request(stream, reader, 1, "worker_delegate", payload)
+                replay = _request(stream, reader, 2, "worker_delegate", payload)
+                assert replay == first
+                status = _request(stream, reader, 3, "worker_status", {
+                    "workflow_id": first["workflow_id"], "after_sequence": 0,
+                })
+                assert status["next_sequence"] == 2
+                assert [event["state"] for event in status["events"]] == ["waiting", "waiting"]
+                cancelled = _request(stream, reader, 4, "worker_cancel", {
+                    "workflow_id": first["workflow_id"], "idempotency_key": "cancel-1",
+                    "reason": "operator stop", "revoke_mutation_authority": True,
+                })
+                assert cancelled["workflow_id"] == first["workflow_id"]
+                after_cancel = _request(stream, reader, 5, "worker_status", {
+                    "workflow_id": first["workflow_id"], "after_sequence": 2,
+                })
+                assert [event["state"] for event in after_cancel["events"]] == ["cancelled", "cancelled"]
+                reader.close()
+        finally:
+            server.shutdown()
+            daemon.stop()
+        restarted = HubDaemon(lock)
+        restarted.start()
+        restarted_server = HubSocketServer(restarted, endpoint, transport="unix")
+        restarted_server.start()
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+                stream.connect(endpoint)
+                reader = stream.makefile("rb")
+                status = _request(stream, reader, 6, "worker_status", {
+                    "workflow_id": first["workflow_id"], "after_sequence": 2,
+                })
+                assert status["events"][0]["state"] == "cancelled"
+                reader.close()
+        finally:
+            restarted_server.shutdown()
+            restarted.stop()
