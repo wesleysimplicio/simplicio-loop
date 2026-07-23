@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from .runtime_execution_receipt import STOP_REASONS, UNAVAILABLE, build_runtime_execution_receipt
+from .runtime_context import RuntimeContextRequest, render_runtime_context
 
 DEFAULT_TIMEOUT_SECONDS = 180
 _SHELL_SHIM_SUFFIXES = (".cmd", ".bat")
@@ -198,6 +199,19 @@ class _BaseCliRuntimeDriver:
             )
         duration = time.monotonic() - started
         return self.parse_result(argv, proc, duration)
+
+    def execute_context(self, request: RuntimeContextRequest, *, cwd: Optional[Path] = None,
+                        timeout: int = DEFAULT_TIMEOUT_SECONDS,
+                        extra_args: Sequence[str] = (),
+                        expected_mapper_envelope_hash: Optional[str] = None,
+                        expected_plan_hash: Optional[str] = None) -> RuntimeDriverResult:
+        """Dispatch Mapper-selected context while retaining legacy string callers."""
+        prompt = render_runtime_context(
+            request,
+            expected_mapper_envelope_hash=expected_mapper_envelope_hash,
+            expected_plan_hash=expected_plan_hash,
+        )
+        return self.execute(prompt, cwd=cwd, timeout=timeout, extra_args=extra_args)
 
     def build_receipt(self, *, route_id: str, requested: Dict[str, Any],
                        session: Dict[str, Any], result: RuntimeDriverResult,
@@ -422,6 +436,7 @@ __all__ = [
     "CodexRuntimeDriver",
     "RuntimeDriverError",
     "RuntimeDriverResult",
+    "RuntimeContextRequest",
     "driver_for_runtime",
     "probe_cli_hook",
 ]
