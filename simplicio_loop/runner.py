@@ -1935,69 +1935,155 @@ def _extract_repo_file_hints(task_text: str, repo_path: Path) -> List[str]:
     return hints
 
 
-def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str, Any], repo_path: Path,
-                           task_text: str, *, contract_hash: str = "") -> Dict[str, Any]:
-    handoff = ((mapper_payload.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
-    explicit_hints = _extract_repo_file_hints(task_text, repo_path)
-    filtered_targets = _candidate_targets(mapper_payload, repo_path)
-    candidate_targets: List[str] = []
-    for path in explicit_hints + filtered_targets:
-        if path not in candidate_targets:
-            candidate_targets.append(path)
-    candidate_targets = candidate_targets[:8]
-    mapped_tests = sorted({
+def _task_mapper_context(mapper_payload: Mapping[str, Any], task_index: int) -> Dict[str, Any]:
+    """Return one task's Mapper envelope, with a single-task compatibility adapter."""
+    contexts = mapper_payload.get("task_contexts") or []
+    if isinstance(contexts, Sequence) and not isinstance(contexts, (str, bytes)):
+        for context in contexts:
+            if isinstance(context, Mapping) and int(context.get("task_index") or 0) == task_index:
+                return dict(context)
+    handoff = mapper_payload.get("handoff") or {}
+    return {
+        "schema": "simplicio.task-mapper-context/v1",
+        "task_index": task_index,
+        "task_fingerprint": str(mapper_payload.get("task_fingerprint") or ""),
+        "handoff": dict(handoff) if isinstance(handoff, Mapping) else {},
+        "context_hash": str(mapper_payload.get("mapper_context_hash") or ""),
+        "compatibility_adapter": "single-task-shared-handoff",
+    }
+
+
+def _task_mapper_text(task: Mapping[str, Any]) -> str:
+    parts = [_task_goal(dict(task))]
+    parts.extend(str(item.get("title") or "") for item in task.get("scenarios") or []
+                 if isinstance(item, Mapping))
+    parts.extend(str(item.get("id") or "") for item in task.get("rules") or []
+                 if isinstance(item, Mapping))
+    return " ".join(part.strip() for part in parts if part and part.strip())
+
+
+def _task_context_plan_data(context: Mapping[str, Any], task: Mapping[str, Any],
+                            repo_path: Path) -> Dict[str, Any]:
+    handoff = context.get("handoff") if isinstance(context.get("handoff"), Mapping) else {}
+    stdout = handoff.get("stdout") if isinstance(handoff.get("stdout"), Mapping) else handoff
+    pack = stdout.get("context_pack") if isinstance(stdout, Mapping) else {}
+    if not isinstance(pack, Mapping):
+        pack = {}
+    files = pack.get("files") or []
+    targets = []
+    for item in files:
+        path = str(item.get("path") or "") if isinstance(item, Mapping) else ""
+        if not path:
+            continue
+        try:
+            resolved = (repo_path / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
+            path = resolved.relative_to(repo_path.resolve()).as_posix()
+        except (OSError, ValueError):
+            continue
+        if path not in targets:
+            targets.append(path)
+    if not targets:
+        targets = _candidate_targets({"handoff": {"stdout": {"context_pack": dict(pack)}}}, repo_path)
+    explicit = _extract_repo_file_hints(_task_mapper_text(task), repo_path)
+    ordered = []
+    for path in explicit + targets:
+        if path not in ordered:
+            ordered.append(path)
+    tests = sorted({
         str(test_path).replace("\\", "/")
-        for item in handoff.get("files") or []
+        for item in files
         if isinstance(item, Mapping)
         for test_path in item.get("tests") or []
         if str(test_path).strip()
     })
+    fidelity = pack.get("fidelity") if isinstance(pack.get("fidelity"), Mapping) else {}
+    selection = pack.get("selection") if isinstance(pack.get("selection"), Mapping) else {}
+    token_fit = pack.get("token_budget_fit") if isinstance(pack.get("token_budget_fit"), Mapping) else {}
+    return {
+        "targets": ordered,
+        "tests": tests,
+        "pack_hash": str(pack.get("pack_hash") or context.get("pack_hash") or ""),
+        "context_hash": str(context.get("context_hash") or ""),
+        "token_budget": int(pack.get("token_budget") or token_fit.get("token_budget") or 8000),
+        "fidelity": dict(fidelity),
+        "selection": dict(selection),
+        "abstention": str(pack.get("abstention_reason") or selection.get("abstention_reason") or ""),
+    }
+
+
+def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str, Any], repo_path: Path,
+                           task_text: str, *, contract_hash: str = "") -> Dict[str, Any]:
+    shared_handoff = ((mapper_payload.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
+    task_contexts = []
     steps = []
+    aggregate_targets: List[str] = []
     for index, task in enumerate(tasks, start=1):
+        context = _task_mapper_context(mapper_payload, index)
+        data = _task_context_plan_data(context, task, repo_path)
+        task_contexts.append({
+            "task_index": index,
+            "task_id": str(task.get("id") or ""),
+            "task_fingerprint": str(context.get("task_fingerprint") or ""),
+            "context_hash": data["context_hash"],
+            "pack_hash": data["pack_hash"],
+            "token_budget": data["token_budget"],
+            "fidelity": data["fidelity"],
+            "selection": data["selection"],
+            "abstention": data["abstention"],
+            "compatibility_adapter": context.get("compatibility_adapter", ""),
+        })
+        for path in data["targets"]:
+            if path not in aggregate_targets:
+                aggregate_targets.append(path)
         task_steps = []
         for scenario in task.get("scenarios") or []:
-            task_steps.append(
-                {
-                    "kind": "scenario",
-                    "id": scenario.get("id"),
-                    "title": scenario.get("title"),
-                    "rule_refs": scenario.get("rule_refs") or [],
-                    "verification_intent": scenario.get("verification_intent"),
-                    "plan": {
-                        "read_paths": list(candidate_targets),
-                        "change_paths": list(candidate_targets),
-                        "test_paths": list(mapped_tests),
-                        "test_commands": ["operator validation and repository test gate"],
-                        "no_code_change": False,
-                    },
-                    "status": "pending",
-                }
-            )
+            task_steps.append({
+                "kind": "scenario",
+                "id": scenario.get("id"),
+                "title": scenario.get("title"),
+                "rule_refs": scenario.get("rule_refs") or [],
+                "verification_intent": scenario.get("verification_intent"),
+                "mapper_context_hash": data["context_hash"],
+                "task_contract_hash": contract_hash,
+                "plan": {
+                    "read_paths": list(data["targets"]),
+                    "change_paths": list(data["targets"]),
+                    "test_paths": list(data["tests"]),
+                    "test_commands": ["operator validation and repository test gate"],
+                    "no_code_change": False,
+                },
+                "status": "pending",
+            })
         rule_ids = [str(rule.get("id")) for rule in task.get("rules") or [] if rule.get("id")]
-        steps.append(
-            {
-                "task_index": index,
-                "title": (task.get("identity") or {}).get("title") or _task_goal(task),
-                "candidate_targets": list(candidate_targets),
-                "to_create": [],
-                "rule_ids": rule_ids,
-                "steps": task_steps,
-            }
-        )
+        steps.append({
+            "task_index": index,
+            "title": (task.get("identity") or {}).get("title") or _task_goal(task),
+            "task_fingerprint": str(context.get("task_fingerprint") or ""),
+            "mapper_context_hash": data["context_hash"],
+            "context_pack_hash": data["pack_hash"],
+            "candidate_targets": list(data["targets"]),
+            "mapped_tests": list(data["tests"]),
+            "selection": {"token_budget": data["token_budget"], **data["selection"]},
+            "fidelity": data["fidelity"],
+            "abstention": data["abstention"],
+            "to_create": [],
+            "rule_ids": rule_ids,
+            "steps": task_steps,
+        })
+    shared_pack_hash = str(shared_handoff.get("pack_hash") or "") if isinstance(shared_handoff, Mapping) else ""
     plan = {
         "schema": PLAN_SCHEMA,
         "task_contract_hash": contract_hash,
         "generated_at": _now(),
         "task_count": len(tasks),
-        "mapper_targets": list(candidate_targets),
-        "mapper_pack_hash": handoff.get("pack_hash", ""),
-        "context_pack_hash": handoff.get("pack_hash", ""),
+        "mapper_targets": aggregate_targets,
+        "mapper_pack_hash": shared_pack_hash,
+        "context_pack_hash": shared_pack_hash,
+        "task_contexts": task_contexts,
         "repo_state": mapper_payload.get("repo_state_after") or {},
         "freshness": {
-            "verified": _repo_state_equivalent(
-                mapper_payload.get("repo_state_before") or {},
-                mapper_payload.get("repo_state_after") or {},
-            ),
+            "verified": _repo_state_equivalent(mapper_payload.get("repo_state_before") or {},
+                                               mapper_payload.get("repo_state_after") or {}),
             "checked_at": mapper_payload.get("generated_at", ""),
             "current_state": _repo_fingerprint(repo_path),
         },
@@ -2007,12 +2093,13 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
         "schema": plan["schema"],
         "task_contract_hash": contract_hash,
         "mapper_pack_hash": plan["mapper_pack_hash"],
+        "task_contexts": task_contexts,
         "repo_state": plan["repo_state"],
         "steps": plan["steps"],
     }
     plan["deterministic"] = {
         "verified": True,
-        "algorithm": "mapper-derived-v1",
+        "algorithm": "mapper-derived-task-context-v1",
         "input_hash": hashlib.sha256(
             json.dumps(deterministic_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         ).hexdigest(),
