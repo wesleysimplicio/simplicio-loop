@@ -18,8 +18,9 @@ What this script DOES do, for real:
     beyond what's already installed);
   * creates a fresh, disposable virtualenv with `venv` (nothing inherited from the repo's
     `sys.path`/`PYTHONPATH`);
-  * installs ONLY that wheel into it with `--no-deps` (this repo's runtime dependency,
-    `simplicio-cli`, is not vendored/available offline in this environment; `--no-deps` is
+  * installs ONLY that wheel into it with `--no-deps` (this repo's runtime dependencies,
+    including `simplicio-cli` and `simplicio-mapper`, are not vendored/available offline;
+    `--no-deps` is
     called out explicitly in the receipt so nobody mistakes this for a full dependency-closure
     smoke);
   * inside that clean venv, confirms `importlib.metadata.version("simplicio-loop")` matches the

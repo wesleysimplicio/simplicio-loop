@@ -102,6 +102,19 @@ def test_maybe_upgrade_within_ttl_does_not_touch_subprocess(tmp_path, monkeypatc
     assert result["should_upgrade"] is False
 
 
+def test_default_upgrade_requests_both_direct_operator_packages(monkeypatch):
+    captured = {}
+
+    def _run(argv, **_kwargs):
+        captured["argv"] = argv
+        return subprocess.CompletedProcess(args=argv, returncode=0)
+
+    monkeypatch.setattr(operator_check.subprocess, "run", _run)
+    operator_check.run_pip_upgrade()
+    assert "simplicio-cli" in captured["argv"]
+    assert "simplicio-mapper" in captured["argv"]
+
+
 def test_maybe_upgrade_past_ttl_does_invoke_upgrade_fn(tmp_path):
     cache = tmp_path / "operator-check.json"
     now = time.time()

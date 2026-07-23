@@ -83,8 +83,9 @@ still needs a real publish target, which does not exist here.
   change does not publish anywhere — doing so would require the very OIDC/build-once pipeline
   that's blocked. Faking a "PyPI smoke" against an index nothing was published to would itself be
   the kind of fabricated proof issue #292 is complaining about, so it isn't done.
-- **`--no-deps` install.** `simplicio-loop`'s one runtime dependency (`simplicio-cli`) is not
-  vendored for offline install in this environment, so the smoke installs the wheel with
+- **`--no-deps` install.** `simplicio-loop`'s runtime dependencies (including the direct
+  `simplicio-cli` and `simplicio-mapper` operator distributions) are not vendored for offline
+  install in this environment, so the smoke installs the wheel with
   `--no-deps`. This proves packaging/import correctness, not the full dependency closure. The
   receipt's `install.no_deps: true` field makes this explicit rather than silently narrowing scope.
 

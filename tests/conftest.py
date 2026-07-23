@@ -9,6 +9,12 @@ from simplicio_loop.platform_capabilities import probe_af_unix, probe_hub_transp
 from simplicio_loop.core_network_guard import install as install_core_network_guard
 
 
+@pytest.fixture(autouse=True)
+def disable_operator_bootstrap_network_by_default(monkeypatch) -> None:
+    """Hermetic tests opt into the real bootstrap explicitly at their test seam."""
+    monkeypatch.setenv("SIMPLICIO_LOOP_AUTO_BOOTSTRAP_OPERATORS", "0")
+
+
 def pytest_configure(config) -> None:
     """Make `check.py --core-gate` unable to reach the real network.
 

@@ -21,10 +21,12 @@ classifiers = [
   "Topic :: Utilities",
   "Operating System :: OS Independent",
 ]
-# The simplicio-loop drive requires the operator package (`simplicio-cli`), which exposes
-# `simplicio-dev-cli` and also brings the survey binary `simplicio-mapper` transitively.
+# The loop ships with both bound operators as direct runtime dependencies.  Do not rely on
+# simplicio-cli's transitive dependency alone: partial/no-deps installations must be diagnosed
+# explicitly and the normal `pip install simplicio-loop` closure must request both distributions.
 dependencies = [
   "simplicio-cli>=0.16.2",
+  "simplicio-mapper>=0.19.0",
   "tiktoken>=0.12.0,<1",
 ]
 

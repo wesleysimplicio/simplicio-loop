@@ -42,6 +42,7 @@ SCHEMA = "simplicio.operator-check/v1"
 DEFAULT_TTL_DAYS = 7.0
 DEFAULT_BINARIES = ("simplicio-mapper", "simplicio-dev-cli")
 DEFAULT_PACKAGE = "simplicio-cli"
+DEFAULT_PACKAGES = ("simplicio-cli", "simplicio-mapper")
 
 # Same override convention as scripts/install_lib.py: an explicit override keeps isolated
 # tests (and portable profiles) honest; normal runs use the platform's real user home.
@@ -149,12 +150,15 @@ def record_check(cache_path: str | Path, versions: Mapping[str, str],
     return payload
 
 
-def run_pip_upgrade(package: str = DEFAULT_PACKAGE) -> subprocess.CompletedProcess[str]:
+def run_pip_upgrade(
+    packages: Sequence[str] | str = DEFAULT_PACKAGES,
+) -> subprocess.CompletedProcess[str]:
     """The one function that actually touches the network. Kept separate from
     ``should_upgrade``/`maybe_upgrade`` so tests can monkeypatch/assert-not-called on this
     single seam instead of mocking the whole subprocess module."""
+    requested = [packages] if isinstance(packages, str) else list(packages)
     return subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-qU", package],
+        [sys.executable, "-m", "pip", "install", "-qU"] + requested,
         capture_output=True, text=True, timeout=180,
     )
 
@@ -288,7 +292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_maybe.add_argument("--cache", default=None)
     p_maybe.add_argument("--ttl-days", type=float, default=DEFAULT_TTL_DAYS)
     p_maybe.add_argument("--binary", action="append", dest="binaries", default=None)
-    p_maybe.add_argument("--package", default=DEFAULT_PACKAGE)
+    p_maybe.add_argument("--package", action="append", dest="packages", default=None)
     p_maybe.add_argument("--json", action="store_true")
 
     p_record = sub.add_parser("record")
@@ -322,7 +326,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         binaries = args.binaries or list(DEFAULT_BINARIES)
         decision = maybe_upgrade(
             cache_path, ttl_days=args.ttl_days, binaries=binaries,
-            upgrade_fn=lambda: run_pip_upgrade(args.package),
+            upgrade_fn=lambda: run_pip_upgrade(args.packages or DEFAULT_PACKAGES),
         )
         if args.json:
             print(json.dumps(decision, ensure_ascii=False, sort_keys=True))
