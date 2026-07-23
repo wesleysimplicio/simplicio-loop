@@ -28,6 +28,7 @@ from .hub_worker_store import HubWorkerError, HubWorkerStore
 from .map_service import MapServiceRegistry, RepositoryIdentity
 from .map_service_single_flight import SingleFlightMapStore
 from .map_service_watchers import MapWatcherManager
+from .runtime_bridge import RuntimeBridge, RuntimeBridgeError
 
 
 IPC_SCHEMA = "simplicio.hub-ipc/v1"
@@ -47,7 +48,7 @@ METHODS = frozenset(
         "hub_agent_capabilities", "hub_agent_claim", "hub_agent_status",
         "hub_agent_heartbeat", "hub_agent_progress", "hub_agent_send",
         "hub_agent_collect", "hub_agent_cancel",
-        "worker_delegate", "worker_status", "worker_cancel", "worker_deliver",
+        "worker_delegate", "worker_status", "worker_cancel", "worker_deliver", "runtime_execute",
         # #512/#513 IPC wiring: expose the map service (registry + single-flight store +
         # watcher manager) the same way. Deliberately in-memory only, no persistence
         # layer (unlike hub_submit's durable queue) - a daemon restart starts clean; see
@@ -247,6 +248,7 @@ class HubDaemon:
         resource_limits: Optional[ResourceLimits] = None,
         process_registry: Optional[ProcessRegistry] = None,
         agent_executor: Optional[Any] = None,
+        runtime_bridge: Optional[RuntimeBridge] = None,
     ) -> None:
         self.lock = HubLock(lock_path)
         self.started = False
@@ -267,6 +269,9 @@ class HubDaemon:
         # The #638 executor is injected at this boundary.  The daemon owns the
         # lifecycle; the coordinator-side client only speaks these IPC verbs.
         self.agent_executor = agent_executor
+        # Runtime is a separately versioned effect authority. The Hub owns
+        # only its lazy process lifecycle and transport; Code never starts it.
+        self.runtime_bridge = runtime_bridge or RuntimeBridge()
         self.hub_agent: Optional[HubAgentExecutor] = None
         self.worker_store: Optional[HubWorkerStore] = None
         self._agent_jobs: Dict[str, Dict[str, Any]] = {}
@@ -328,6 +333,8 @@ class HubDaemon:
         if self.hub_agent is not None:
             self.hub_agent.close()
             self.hub_agent = None
+        if self.runtime_bridge is not None:
+            self.runtime_bridge.close()
         if self.worker_store is not None:
             self.worker_store.close()
             self.worker_store = None
@@ -1231,13 +1238,36 @@ class HubSocketServer:
         try:
             if not isinstance(request_id, int) or request_id < 1:
                 raise HubProtocolError("Code Hub request id must be a positive integer")
-            if not isinstance(method, str) or method not in {"handshake", "attach", "submit", "progress", "cancel", "resume", "worker_delegate", "worker_status", "worker_cancel", "worker_deliver"}:
+            if not isinstance(method, str) or method not in {"handshake", "attach", "submit", "progress", "cancel", "resume", "runtime_execute", "worker_delegate", "worker_status", "worker_cancel", "worker_deliver"}:
                 raise HubProtocolError("unsupported Code Hub method")
             if not isinstance(payload, dict):
                 raise HubProtocolError("Code Hub payload must be an object")
             if method.startswith("worker_"):
                 result = self.daemon.handle(HubEnvelope(str(request_id), method, payload))
                 response["result"] = result[method.removeprefix("worker_")]
+                return response
+            if method == "runtime_execute":
+                workspace = str(payload.get("workspace") or "")
+                argv = payload.get("argv")
+                if not isinstance(argv, list) or any(not isinstance(item, str) for item in argv):
+                    raise HubProtocolError("runtime_execute argv must be a string list")
+                try:
+                    result = self.daemon.runtime_bridge.execute(
+                        workspace,
+                        argv,
+                        cwd=str(payload.get("cwd") or "."),
+                        env=payload.get("env") if isinstance(payload.get("env"), dict) else {},
+                        timeout_ms=int(payload.get("timeout_ms") or 120_000),
+                        max_output_bytes=int(payload.get("max_output_bytes") or 4 * 1024 * 1024),
+                        idempotency_key=str(payload.get("idempotency_key") or ""),
+                    )
+                except (RuntimeBridgeError, TypeError, ValueError) as exc:
+                    raise HubProtocolError("Runtime effect rejected: %s" % exc) from exc
+                response["result"] = {
+                    "schema": "simplicio.loop-runtime-execution/v1",
+                    "workspace": workspace,
+                    "result": result,
+                }
                 return response
             if method == "handshake":
                 if payload.get("schema") != CODE_HUB_CLIENT_SCHEMA or payload.get("protocol") != CODE_HUB_PROTOCOL:
