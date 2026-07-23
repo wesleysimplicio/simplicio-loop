@@ -4020,7 +4020,7 @@ def execute_operator_batch(
     technical_debts: List[Dict[str, Any]] = []
     # Fan-out is an optimization. A safe serial lane is still useful work, so
     # capability loss is recorded as advisory debt instead of a global blocker.
-    if auto_reason and auto_reason != "explicit_contexts":
+    if auto_reason and auto_reason not in {"explicit_contexts", "single_task"} and len(items) > 1:
         technical_debts.append(_record_technical_debt(
             status["run_dir"],
             run_id=run_id,
