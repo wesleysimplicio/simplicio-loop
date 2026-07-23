@@ -32,7 +32,7 @@ SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 EVENT_KINDS = frozenset((
     "contract_frozen", "mapper_fresh", "plan_ready", "worker_claimed",
     "worktree_created", "operator_receipt", "test_gate", "watcher_challenge",
-    "oracle_verdict", "delivery_reconciled", "rollback", "handoff",
+    "oracle_verdict", "delivery_reconciled", "rollback", "handoff", "technical_debt",
 ))
 def _ascii(value: Any) -> str:
     """Replace presentation glyphs; payloads remain Unicode-safe and unchanged."""
@@ -128,6 +128,23 @@ def _normalise_events(value: Any, *, run_id: str = "") -> list[Dict[str, Any]]:
     return events
 
 
+def _normalise_technical_debts(state: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    raw = state.get("technical_debts") or state.get("technical_debt") or []
+    if isinstance(raw, Mapping):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    debts = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        debt = dict(item)
+        debt["blocking"] = False
+        debt["status"] = str(debt.get("status") or "OPEN").upper()
+        debts.append(debt)
+    return debts
+
+
 def _normalise_blockers(state: Mapping[str, Any], events: Iterable[Mapping[str, Any]]) -> list[str]:
     blockers = []
     raw = state.get("blockers") or []
@@ -197,8 +214,10 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
     events = _normalise_events(state.get("events") or state.get("phase_events"),
                                run_id=str(state.get("run_id") or ""))
     blockers = _normalise_blockers(state, events)
+    technical_debts = _normalise_technical_debts(state)
     status = "COMPLETE" if ready else ("BLOCKED" if phase == "blocked" else
-                                        "CANCELLED" if phase == "cancelled" else "RUNNING")
+                                        "CANCELLED" if phase == "cancelled" else
+                                        "DEGRADED" if technical_debts else "RUNNING")
     return {
         "schema": SCHEMA,
         "run_id": str(state.get("run_id") or ""),
@@ -219,6 +238,8 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
         "lanes": _normalise_lanes(state.get("lanes")),
         "events": events,
         "blockers": blockers,
+        "technical_debt_count": len(technical_debts),
+        "technical_debts": technical_debts,
     }
 
 
@@ -269,6 +290,12 @@ def render_text(event: Mapping[str, Any], *, width: int = 24, ascii_only: bool =
     blockers = event.get("blockers") or []
     if blockers:
         lines.append("blockers: " + " · ".join(str(item) for item in blockers))
+    debts = event.get("technical_debts") or []
+    if debts:
+        lines.append("technical debt: " + " · ".join(
+            f"{item.get('reason_code', 'unknown')}[{item.get('severity', 'medium')}]"
+            for item in debts[-3:] if isinstance(item, Mapping)
+        ))
     if ascii_only:
         lines = [_ascii(line) for line in lines]
     return "\n".join(_fit_line(line, max_width) for line in lines)
@@ -293,6 +320,12 @@ def render_markdown(event: Mapping[str, Any], *, width: int = 20, ascii_only: bo
     blockers = event.get("blockers") or []
     if blockers:
         rendered += "\n\nBlockers: " + ", ".join(f"`{item}`" for item in blockers)
+    debts = event.get("technical_debts") or []
+    if debts:
+        rendered += "\n\nTechnical debt: " + ", ".join(
+            f"`{item.get('reason_code', 'unknown')}` ({item.get('severity', 'medium')})"
+            for item in debts[-3:] if isinstance(item, Mapping)
+        )
     return _ascii(rendered) if ascii_only else rendered
 
 
