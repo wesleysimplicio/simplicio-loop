@@ -137,19 +137,29 @@ class RuntimeBridge:
 
     def __init__(self, binary: Optional[str] = None) -> None:
         self.binary = binary or os.environ.get("SIMPLICIO_RUNTIME_BIN") or "simplicio-runtime"
-        self._lock = threading.RLock()
+        # Process registry protection is short-lived. Calls are serialized only
+        # within their workspace, so unrelated workspaces do not head-of-line
+        # block one another at the bridge boundary.
+        self._processes_lock = threading.RLock()
         self._processes: Dict[str, _RuntimeProcess] = {}
+        self._workspace_locks: Dict[str, threading.RLock] = {}
+
+    def _workspace_lock(self, workspace_path: Path) -> threading.RLock:
+        key = str(workspace_path)
+        with self._processes_lock:
+            return self._workspace_locks.setdefault(key, threading.RLock())
 
     def _process_for_workspace(self, workspace_path: Path) -> _RuntimeProcess:
         """Return the single lazy MCP process owned for this workspace."""
         key = str(workspace_path)
-        process = self._processes.get(key)
-        if process is None or process.process.poll() is not None:
-            if process is not None:
-                process.close()
-            process = _RuntimeProcess(self.binary, workspace_path)
-            self._processes[key] = process
-        return process
+        with self._processes_lock:
+            process = self._processes.get(key)
+            if process is None or process.process.poll() is not None:
+                if process is not None:
+                    process.close()
+                process = _RuntimeProcess(self.binary, workspace_path)
+                self._processes[key] = process
+            return process
 
     @staticmethod
     def _effect_transaction(*, tool: str, arguments: Mapping[str, Any],
@@ -202,7 +212,7 @@ class RuntimeBridge:
         relative_cwd = Path(cwd)
         if relative_cwd.is_absolute() or ".." in relative_cwd.parts:
             raise RuntimeBridgeError("Runtime cwd must stay workspace-relative")
-        with self._lock:
+        with self._workspace_lock(workspace_path):
             process = self._process_for_workspace(workspace_path)
             return process.call_tool("simplicio_exec", {
                 "repo": str(workspace_path), "cwd": str(relative_cwd), "argv": list(argv),
@@ -275,15 +285,19 @@ class RuntimeBridge:
             idempotency_key=idempotency_key,
             timeout_ms=bounded_timeout_ms,
         )
-        with self._lock:
+        with self._workspace_lock(workspace_path):
             process = self._process_for_workspace(workspace_path)
             return process.call_tool(tool, request_arguments, timeout=bounded_timeout_ms / 1000.0)
 
     def close(self) -> None:
-        with self._lock:
-            for process in self._processes.values():
-                process.close()
+        with self._processes_lock:
+            sessions = [(key, process, self._workspace_locks.get(key)) for key, process in self._processes.items()]
             self._processes.clear()
+        for key, process, lock in sessions:
+            with (lock or threading.RLock()):
+                process.close()
+        with self._processes_lock:
+            self._workspace_locks.clear()
 
 
 __all__ = ["RUNTIME_BRIDGE_SCHEMA", "RUNTIME_CALL_SCHEMA", "RuntimeBridge", "RuntimeBridgeError"]
