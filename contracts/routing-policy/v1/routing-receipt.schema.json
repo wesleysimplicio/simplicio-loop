@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/routing-policy/v1/routing-receipt.schema.json",
+  "title": "Simplicio model routing receipt",
+  "type": "object",
+  "required": ["schema", "policy_version", "timestamp", "decision", "reason_codes", "estimated_budget", "observed_usage", "escalation_count", "downgrade", "remote_request_allowed", "completed_effect_ids", "handoff", "mutation_authority", "mutation_authorized", "receipt_id"],
+  "properties": {
+    "schema": {"const": "simplicio.model-routing/v1"},
+    "policy_version": {"const": "1"},
+    "timestamp": {"type": "number", "minimum": 0},
+    "decision": {"enum": ["deterministic", "local", "strong_local", "remote", "blocked", "downgrade"]},
+    "reason_codes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "estimated_budget": {"type": "object", "required": ["max_calls", "max_tokens", "max_elapsed_seconds", "max_cost_usd", "max_escalations"]},
+    "observed_usage": {"type": "object", "required": ["calls", "tokens", "elapsed_seconds", "cost_usd"]},
+    "escalation_count": {"type": "integer", "minimum": 0},
+    "downgrade": {"type": "boolean"},
+    "remote_request_allowed": {"type": "boolean"},
+    "completed_effect_ids": {"type": "array", "items": {"type": "string"}},
+    "handoff": {"type": "object", "required": ["references", "evidence_summary", "redacted", "transcript_included"], "properties": {"references": {"type": "array", "maxItems": 8}, "evidence_summary": {"type": "string", "maxLength": 1024}, "redacted": {"const": true}, "transcript_included": {"const": false}}},
+    "mutation_authority": {"const": "runtime"},
+    "mutation_authorized": {"const": false},
+    "receipt_id": {"type": "string", "pattern": "^[0-9a-f]{24}$"}
+  },
+  "additionalProperties": true
+}
