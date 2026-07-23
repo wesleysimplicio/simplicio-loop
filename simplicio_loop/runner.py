@@ -23,6 +23,7 @@ from . import github_lifecycle as _github_lifecycle
 from .orca_lifecycle import sync_orca_status
 from .source_adapter import GitHubSourceAdapter
 from .task_contract import compile_many, validate_contract
+from .technical_debt import record_notice as _record_technical_debt
 from .plan_contract import PLAN_SCHEMA, validate_plan
 from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable, build_completion_receipt
 from .agent_contract import bind_receipt, build_context_pack
@@ -4016,6 +4017,23 @@ def execute_operator_batch(
         journal_dir=str(Path(status["run_dir"])),
         worktree_queue=worktree_queue,
     )
+    technical_debts: List[Dict[str, Any]] = []
+    # Fan-out is an optimization. A safe serial lane is still useful work, so
+    # capability loss is recorded as advisory debt instead of a global blocker.
+    if auto_reason and auto_reason != "explicit_contexts":
+        technical_debts.append(_record_technical_debt(
+            status["run_dir"],
+            run_id=run_id,
+            reason_code=auto_reason if auto_reason in {
+                "fanout_disabled", "not_git_checkout", "missing_plan_targets",
+                "overlapping_task_impacts", "worktree_adapter_unavailable",
+                "worktree_preflight_failed",
+            } else "fanout_serial_fallback",
+            stage="dispatch",
+            source="simplicio_loop.runner._auto_worktree_dispatch",
+            message="automatic fan-out was not available; continuing with the safe serial lane",
+            next_action="install/configure the worktree adapter or split overlapping targets",
+        ))
     result["distributed"] = {
         "enabled": distributed_queue is not None,
         "queue": os.environ.get("SIMPLICIO_REMOTE_QUEUE_URL", "") if distributed_queue is not None else "",
@@ -4026,6 +4044,17 @@ def execute_operator_batch(
         # dispatch_operator_batch derives this from the shared isolation key; retain a clear
         # contract-level marker for callers inspecting the convenience API.
         result["serial_fallback_reason"] = result.get("serial_fallback_reason") or "shared_run_state"
+        if not technical_debts:
+            technical_debts.append(_record_technical_debt(
+                status["run_dir"],
+                run_id=run_id,
+                reason_code="fanout_serial_fallback",
+                stage="dispatch",
+                source="simplicio_loop.runner.dispatch_operator_batch",
+                message="tasks share run state or could not be isolated; serial execution preserved safety",
+                next_action="provide distinct worktree contexts for independent tasks",
+            ))
+    result["technical_debts"] = technical_debts
     result["fan_out"] = {
         "enabled": bool(worktree_queue is not None and len(contexts) > 1),
         "default": auto_fan_out is not False,
