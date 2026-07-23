@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Sequence
 
+from .technical_debt import is_hard_blocker, is_non_blocking_reason
+
 SCHEMA = "simplicio.control-policy/v1"
 WEIGHTS_VERSION = "v1"
 
@@ -54,6 +56,28 @@ def _result(decision: str, reason_code: str, reason: str, **extra: Any) -> Dict[
     }
     out.update(extra)
     return out
+
+
+def _technical_debts(projection: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    raw = projection.get("technical_debts", projection.get("technical_debt")) or []
+    if isinstance(raw, Mapping):
+        raw = [raw]
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return []
+    return [
+        dict(item) for item in raw
+        if isinstance(item, Mapping) and item.get("blocking") is not True
+    ]
+
+
+def _attach_debt(result: Dict[str, Any], debts: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    if debts:
+        result.update({
+            "degraded": True,
+            "technical_debt_count": len(debts),
+            "technical_debts": [dict(item) for item in debts],
+        })
+    return result
 
 
 def compute_v(projection: Mapping[str, Any], weights: PolicyWeights = DEFAULT_WEIGHTS) -> float:
@@ -195,15 +219,23 @@ def decide(
             "maintenance-deferred backlog-only mode blocks operator progress",
         )
 
+    debts = _technical_debts(projection)
     acs_open = int(projection.get("acs_open") or 0)
     verifiers_failed = int(projection.get("verifiers_failed") or 0)
     effects_unverified = int(projection.get("effects_unverified") or 0)
     if acs_open == 0 and verifiers_failed == 0 and effects_unverified == 0:
-        return _result("STOP_SUCCESS", "verified", "all acceptance criteria are done and verified",
-                       v_t=compute_v(projection, weights), delta_v=0.0)
+        return _attach_debt(_result("STOP_SUCCESS", "verified", "all acceptance criteria are done and verified",
+                       v_t=compute_v(projection, weights), delta_v=0.0), debts)
 
     blocker_reason = str(projection.get("blocked_reason") or "").strip()
     if bool(projection.get("blocked")) or blocker_reason:
+        if debts and (not blocker_reason or (
+                is_non_blocking_reason(blocker_reason) and not is_hard_blocker(blocker_reason))):
+            return _attach_debt(_result(
+                "CONTINUE_SERIAL", "technical_debt_notified",
+                "a non-critical degradation was recorded; continue with reduced capability",
+                v_t=compute_v(projection, weights), delta_v=0.0,
+            ), debts)
         return _result("STOP_BLOCKED", blocker_reason or "external_dependency_blocked",
                        "an external dependency blocks progress; no drift is possible",
                        v_t=compute_v(projection, weights), delta_v=0.0)
@@ -215,25 +247,25 @@ def decide(
     if drift["state"] in ("STALL", "OSCILLATION"):
         past_cooldown = drift["repeat_count"] >= cooldown
         if not past_cooldown:
-            return _result("OBSERVE_WAIT", "hysteresis_hold",
+            return _attach_debt(_result("OBSERVE_WAIT", "hysteresis_hold",
                            "drift signal is not yet past the hysteresis cooldown",
-                           v_t=v_t, delta_v=delta_v, drift_state=drift["state"])
+                           v_t=v_t, delta_v=delta_v, drift_state=drift["state"]), debts)
         if drift["state"] == "OSCILLATION":
-            return _result("ESCALATE", "oscillation_detected",
+            return _attach_debt(_result("ESCALATE", "oscillation_detected",
                            "V(t) is cycling instead of converging",
-                           v_t=v_t, delta_v=delta_v, drift_state=drift["state"])
-        return _result("REPLAN", "stall_escalation",
+                           v_t=v_t, delta_v=delta_v, drift_state=drift["state"]), debts)
+        return _attach_debt(_result("REPLAN", "stall_escalation",
                        "V(t) has plateaued past the stall threshold",
-                       v_t=v_t, delta_v=delta_v, drift_state=drift["state"])
+                       v_t=v_t, delta_v=delta_v, drift_state=drift["state"]), debts)
 
     grouping = group_candidates(projection.get("candidates") or (), projection.get("capacity_signal"))
     if grouping["serial"]:
-        return _result("CONTINUE_SERIAL", "no_conflict_free_parallelism",
+        return _attach_debt(_result("CONTINUE_SERIAL", "no_conflict_free_parallelism",
                        "no conflict-free group larger than one candidate",
-                       v_t=v_t, delta_v=delta_v, drift_state=drift["state"], **grouping)
-    return _result("CONTINUE_PARALLEL", "conflict_free_groups",
+                       v_t=v_t, delta_v=delta_v, drift_state=drift["state"], **grouping), debts)
+    return _attach_debt(_result("CONTINUE_PARALLEL", "conflict_free_groups",
                    "conflict-free candidate groups can run concurrently",
-                   v_t=v_t, delta_v=delta_v, drift_state=drift["state"], **grouping)
+                   v_t=v_t, delta_v=delta_v, drift_state=drift["state"], **grouping), debts)
 
 
 __all__ = [
