@@ -90,16 +90,31 @@ def _atomic_json(path: Path, payload: Any) -> None:
 
 def _read_index(root: Path) -> Dict[str, Dict[str, Any]]:
     path = root / "technical-debt.json"
-    if not path.is_file():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return {}
-    if not isinstance(raw, Mapping):
-        return {}
-    return {str(key): dict(value) for key, value in raw.items()
-            if isinstance(value, Mapping)}
+    raw: Any = None
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            raw = None
+    if isinstance(raw, Mapping):
+        return {str(key): dict(value) for key, value in raw.items()
+                if isinstance(value, Mapping)}
+    # The JSONL ledger is the replay authority if the compact index is missing
+    # or corrupt (for example after an interrupted atomic replace).
+    ledger = root / "technical-debt.jsonl"
+    recovered: Dict[str, Dict[str, Any]] = {}
+    if ledger.is_file():
+        try:
+            for line in ledger.read_text(encoding="utf-8").splitlines():
+                try:
+                    item = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(item, Mapping) and item.get("fingerprint"):
+                    recovered[str(item["fingerprint"])] = dict(item)
+        except OSError:
+            pass
+    return recovered
 
 
 def _append_observation(root: Path, notice: Mapping[str, Any]) -> None:
