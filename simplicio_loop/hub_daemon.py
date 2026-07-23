@@ -32,6 +32,8 @@ from .map_service_watchers import MapWatcherManager
 IPC_SCHEMA = "simplicio.hub-ipc/v1"
 IPC_VERSION = 1
 INTERACTIVE_SCHEMA = "simplicio.hub-interactive/v1"
+CODE_HUB_CLIENT_SCHEMA = "simplicio.loop-hub-client/v1"
+CODE_HUB_PROTOCOL = "simplicio.loop-hub/v1"
 METHODS = frozenset(
     (
         "register", "handshake", "attach", "replay", "submit", "claim", "heartbeat", "progress", "cancel", "resume", "result", "report",
@@ -1138,16 +1140,19 @@ class HubSocketServer:
         if task is not None:
             self._connections.add(task)
         try:
-            try:
-                raw_line = await asyncio.wait_for(reader.readline(), timeout=self._DISPATCH_TIMEOUT_SECONDS)
-            except asyncio.TimeoutError:
-                return
-            raw = raw_line.decode("utf-8").strip()
-            if not raw:
-                return
-            response = self._dispatch(raw)
-            writer.write((json.dumps(response) + "\n").encode("utf-8"))
-            await writer.drain()
+            while True:
+                try:
+                    raw_line = await asyncio.wait_for(reader.readline(), timeout=self._DISPATCH_TIMEOUT_SECONDS)
+                except asyncio.TimeoutError:
+                    return
+                if not raw_line:
+                    return
+                raw = raw_line.decode("utf-8").strip()
+                if not raw:
+                    continue
+                response = self._dispatch(raw)
+                writer.write((json.dumps(response) + "\n").encode("utf-8"))
+                await writer.drain()
         except (OSError, ConnectionError):
             return
         finally:
@@ -1182,11 +1187,136 @@ class HubSocketServer:
 
     def _dispatch(self, raw: str) -> Dict[str, Any]:
         try:
+            candidate = json.loads(raw)
+        except json.JSONDecodeError:
+            candidate = None
+        if isinstance(candidate, dict) and candidate.get("schema") == CODE_HUB_CLIENT_SCHEMA:
+            return self._dispatch_code(candidate)
+        try:
             return self.daemon.handle(HubEnvelope.decode(raw))
         except HubError as exc:
             response = {"ok": False, "error": str(exc)}
             if getattr(exc, "reason_code", None):
                 response["reason_code"] = exc.reason_code
+            return response
+
+    def _dispatch_code(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Serve Code's transport-only client contract on the same Hub socket.
+
+        The wire is intentionally kept at the external boundary. All mutable
+        queue/session work is delegated to ``HubDaemon.handle`` so Code never
+        becomes a second scheduler or Runtime/Mapper owner.
+        """
+        request_id = request.get("id")
+        method = request.get("method")
+        payload = request.get("payload")
+        response: Dict[str, Any] = {"schema": CODE_HUB_CLIENT_SCHEMA, "id": request_id, "ok": True}
+        try:
+            if not isinstance(request_id, int) or request_id < 1:
+                raise HubProtocolError("Code Hub request id must be a positive integer")
+            if not isinstance(method, str) or method not in {"handshake", "attach", "submit", "progress", "cancel", "resume"}:
+                raise HubProtocolError("unsupported Code Hub method")
+            if not isinstance(payload, dict):
+                raise HubProtocolError("Code Hub payload must be an object")
+            if method == "handshake":
+                if payload.get("schema") != CODE_HUB_CLIENT_SCHEMA or payload.get("protocol") != CODE_HUB_PROTOCOL:
+                    raise HubProtocolError("unsupported Code Hub handshake schema/protocol")
+                client_id = str(payload.get("client_id") or "")
+                workspace_id = str(payload.get("workspace_id") or "")
+                session_id = str(payload.get("session_id") or "")
+                if not client_id or not workspace_id or not session_id:
+                    raise HubProtocolError("Code Hub handshake requires client, workspace, and session IDs")
+                process_id = str(os.getpid())
+                response["result"] = {
+                    "schema": CODE_HUB_CLIENT_SCHEMA,
+                    "protocol": CODE_HUB_PROTOCOL,
+                    "hub_id": "loop-hub:" + self.daemon.epoch,
+                    "ready": True,
+                    "agent": {"agent_id": "loop-agent:" + process_id,
+                               "protocol": "simplicio.agent/v1", "ready": True},
+                    "services": [
+                        {"name": name, "owner": "loop-hub",
+                         "process_id": f"loop-hub:{process_id}:{name}"}
+                        for name in ("runtime", "mapper", "scheduler", "inference")
+                    ],
+                    "resources": {
+                        "runtime": {"id": "runtime:" + self.daemon.epoch, "capacity": 1, "used": 0},
+                        "mapper": {"id": "mapper:" + self.daemon.epoch, "capacity": 1, "used": 0},
+                        "inference": {"id": "inference:" + self.daemon.epoch, "capacity": 1, "used": 0},
+                        "max_active_inference": 1, "interactive_reserved": 1,
+                    },
+                    "queue": {"interactive_capacity": 1, "background_capacity": 1,
+                              "max_pending_interactive": 8},
+                    "local_scheduler": False,
+                }
+                return response
+            if method == "attach":
+                if payload.get("schema") != CODE_HUB_CLIENT_SCHEMA or payload.get("protocol") != CODE_HUB_PROTOCOL:
+                    raise HubProtocolError("unsupported Code Hub attach schema/protocol")
+                session_id = str(payload.get("session_id") or "")
+                client_id = str(payload.get("client_id") or "")
+                if not session_id or not client_id:
+                    raise HubProtocolError("Code Hub attach requires client and session IDs")
+                self.daemon.handle(HubEnvelope(str(request_id), "attach", {
+                    "client_id": client_id, "session_id": session_id,
+                    "epoch": self.daemon.epoch, "cursor": 0,
+                }))
+                response["result"] = {"schema": CODE_HUB_CLIENT_SCHEMA, "protocol": CODE_HUB_PROTOCOL,
+                                       "hub_id": "loop-hub:" + self.daemon.epoch,
+                                       "session_id": session_id, "accepted": True, "replay_from": []}
+                return response
+            session_id = str(payload.get("session_id") or "")
+            if method != "progress" and not session_id:
+                raise HubProtocolError("Code Hub operation requires a session ID")
+            client_id = str(payload.get("client_id") or "code")
+            workflow_id = str(payload.get("workflow_id") or payload.get("idempotency_key") or "")
+            if method == "submit":
+                workflow_id = str(payload.get("idempotency_key") or "")
+                if not workflow_id:
+                    raise HubProtocolError("Code Hub submit requires an idempotency key")
+                operation = {
+                    "client_id": client_id, "session_id": session_id, "job_id": workflow_id,
+                    "workspace_id": payload.get("workspace_id") or "default", "priority": "interactive",
+                    "weight": 1, "cost": int(payload.get("budget_tokens") or 1),
+                    "metadata": {"goal_id": payload.get("goal_id"), "turn_id": payload.get("turn_id"),
+                                 "payload": payload.get("payload")},
+                }
+                result = self.daemon.handle(HubEnvelope(workflow_id, "submit", operation))
+                response["result"] = {"schema": CODE_HUB_CLIENT_SCHEMA, "workflow_id": workflow_id,
+                                       "state": "queued", "queue_position": 1, "retry_after_ms": None,
+                                       "receipt_id": "admission:" + workflow_id}
+                return response
+            if not workflow_id:
+                raise HubProtocolError("Code Hub operation requires a workflow ID")
+            if method in {"cancel", "resume"}:
+                operation = {"client_id": client_id, "session_id": session_id, "job_id": workflow_id,
+                             "reason": payload.get("reason", "Code request")}
+                result = self.daemon.handle(HubEnvelope(str(payload.get("idempotency_key") or request_id), method, operation))
+                state = str((result.get("job") or {}).get("state") or ("cancelled" if method == "cancel" else "queued"))
+                response["result"] = {"schema": CODE_HUB_CLIENT_SCHEMA, "workflow_id": workflow_id,
+                                       "receipt_id": f"{method}:{workflow_id}", "state": state}
+                return response
+            report = self.daemon.handle(HubEnvelope(str(request_id), "report", {"job_id": workflow_id}))
+            job = report.get("job") or {}
+            state = str(job.get("state") or "queued")
+            terminal = state in {"cancelled", "completed", "failed", "blocked"}
+            event_type = {"cancelled": "cancelled", "completed": "completed", "failed": "failed"}.get(state, "queued")
+            event: Dict[str, Any] = {"type": event_type, "sequence": 0}
+            if event_type == "cancelled":
+                event["receipt_id"] = "cancel:" + workflow_id
+            elif event_type == "completed":
+                event["receipt_id"] = "complete:" + workflow_id
+            elif event_type == "failed":
+                event["message"] = "Hub job failed"; event["receipt_id"] = "failed:" + workflow_id
+            else:
+                event["position"] = 1
+            response["result"] = {"workflow_id": workflow_id, "next_sequence": 1,
+                                   "events": [] if int(payload.get("after_sequence", 0)) >= 1 else [event],
+                                   "terminal": terminal}
+            return response
+        except HubError as exc:
+            response["ok"] = False
+            response["error"] = str(exc)
             return response
 
     def shutdown(self) -> None:
