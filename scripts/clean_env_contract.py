@@ -44,6 +44,9 @@ def evaluate_contract() -> dict:
     add("pyproject.exists", PYPROJECT.exists(), str(PYPROJECT))
     add("dependency.simplicio_cli", any(dep.startswith("simplicio-cli>=") for dep in meta["dependencies"]),
         "dependencies include simplicio-cli>=…")
+    add("dependency.simplicio_mapper",
+        any(dep.startswith("simplicio-mapper>=") for dep in meta["dependencies"]),
+        "dependencies include simplicio-mapper>=…")
     add("entrypoint.cli", meta["script_entrypoint"] == "simplicio_loop.cli:main",
         meta["script_entrypoint"] or "missing")
     add("package_data.bundle", "_bundle/**/*" in meta["package_data"], ", ".join(meta["package_data"]) or "missing")

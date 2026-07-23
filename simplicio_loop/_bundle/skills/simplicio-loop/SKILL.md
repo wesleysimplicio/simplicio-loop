@@ -175,9 +175,9 @@ gates upgrades by TTL.
 ## Bound operators (REQUIRED): survey + operate
 
 This loop does NOT survey the repo with the LLM, and it does NOT hand-edit files with the LLM.
-Two installed CLIs are the operators; the model only DECIDES, the operators DO. The supported
-install surface is the operator package `simplicio-cli`, which exposes `simplicio-dev-cli` and
-also brings `simplicio-mapper` transitively for the survey step.
+Two installed CLIs are the operators; the model only DECIDES, the operators DO. A normal
+`pip install simplicio-loop` installs both direct operator dependencies: `simplicio-cli`
+(exposes `simplicio-dev-cli`) and `simplicio-mapper` (exposes the survey binary).
 Full mechanics (two-tier survey, evidence gate, context-pack, structured queries, docs-drift
 gates, the operator dispatch table): **`references/bound-operators.md`**.
 
@@ -192,14 +192,14 @@ armada warrants a network round-trip:
 ```bash
 python3 scripts/loop_progress.py emit --step preflight --status begin --detail "operadores: verificação/atualização (TTL-gated)"
 python3 scripts/operator_check.py maybe-upgrade --json
-simplicio-mapper --version   # survey operator (expected transitively from simplicio-cli)
+simplicio-mapper --version   # survey operator (direct simplicio-loop dependency)
 simplicio-dev-cli --help     # action operator (pkg simplicio-cli; exposes `simplicio-dev-cli`)
 python3 scripts/operator_check.py pin --scratchpad .orchestrator/loop/scratchpad.md \
   --versions "{\"simplicio-mapper\": \"<resolved-version>\", \"simplicio-dev-cli\": \"<resolved-version>\"}"
 python3 scripts/loop_progress.py emit --step preflight --status end --outcome pass \
     --detail "simplicio-mapper X.Y.Z; simplicio-dev-cli OK"
 ```
-`maybe-upgrade` only calls `pip install -qU simplicio-cli` when the last check in
+`maybe-upgrade` only calls `pip install -qU simplicio-cli simplicio-mapper` when the last check in
 `~/.simplicio/operator-check.json` is older than the TTL (default 7d, `--ttl-days` to override) OR
 a binary is missing from PATH — inside the TTL: **zero network, zero subprocess**, pure cache read.
 Best-effort/offline-safe: a failed/offline attempt still records the check (no retry-every-iteration
@@ -210,13 +210,12 @@ on a flaky network) and keeps the working version.
 `operator_check.py check-pin --scratchpad ... --versions "{...current...}"`: mismatch prints
 `WARNING:`, never a silent upgrade — the pin holds regardless.
 
-The action binary is `simplicio-dev-cli` (from `pip install simplicio-cli`) — NOT the bare
-`simplicio` (that's the separate `simplicio-runtime`). If either runtime binary is missing, do NOT
-fall back to LLM survey/editing — emit `python3 scripts/loop_progress.py emit --step preflight
---status blocked --outcome blocked --detail "missing operator <name>"`, then STOP and print
-`simplicio-loop: BLOCKED — missing operator <name>; run: pip install simplicio-cli`. The optional
-`simplicio` runtime is reported as unavailable and its native integrations are skipped; it never
-blocks the mapper/dev-cli loop.
+The action binary is `simplicio-dev-cli` — NOT the bare `simplicio` (that's the separate
+`simplicio-runtime`). If either runtime binary is missing/incompatible, the runner performs one
+bounded repair with `pip install -U simplicio-cli simplicio-mapper`, validates identity/version/
+capabilities, records `operator-bootstrap.json`, and retries the blocked stage once. A failed
+repair remains `BLOCKED`; it never falls back to LLM survey/editing. The optional `simplicio`
+runtime is reported as unavailable and its native integrations are skipped.
 
 **Survey step (each loop start).** `python3 scripts/loop_progress.py emit --step survey --status begin`
 → `simplicio-mapper scan . --json` (instant macro skeleton + background deep index) → gate with

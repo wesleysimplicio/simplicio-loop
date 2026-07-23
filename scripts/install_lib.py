@@ -6,8 +6,8 @@ ensures the runtime's entry/instructions file references the skill, and prints t
 line. Pure Python ->identical on Windows/macOS/Linux. Safe: create-or-merge, never clobbers
 unrelated config; idempotent marker blocks.
 
-Also installs+verifies the REQUIRED loop operator package (`simplicio-cli`) and the runtime bins
-it exposes (`simplicio-dev-cli`, `simplicio-mapper`) unless --skip-operators is passed.
+Also installs+verifies the REQUIRED loop operator distributions (`simplicio-cli` and
+`simplicio-mapper`) and their runtime bins unless --skip-operators is passed.
 
 Usage:
     python3 scripts/install_lib.py <runtime> [--global] [--target DIR] [--skip-operators] [--lite]
@@ -42,10 +42,12 @@ HOME = (os.environ.get("SIMPLICIO_HOME") or os.environ.get("HOME")
 SKILLS = ["simplicio-tasks", "simplicio-loop", "simplicio-orient",
           "simplicio-review", "simplicio-compress", "simplicio-learn",
           "simplicio-autoresearch"]
-# The simplicio-loop drive REQUIRES the operator package `simplicio-cli`; it exposes
-# `simplicio-dev-cli` and also brings the survey binary `simplicio-mapper` transitively.
+# The loop requests both operator distributions directly.  `simplicio-cli` exposes
+# `simplicio-dev-cli`; `simplicio-mapper` exposes the survey binary.  Keeping both direct
+# prevents a partial/transitive install from leaving the loop without its mapper.
 # (the bare `simplicio` command is reserved for the separate `simplicio-runtime`, not this operator.)
 OPERATOR_PACKAGE = "simplicio-cli"
+OPERATOR_PACKAGES = ("simplicio-cli", "simplicio-mapper")
 OPERATOR_BINS = ("simplicio-dev-cli", "simplicio-mapper")
 LEGACY_MARK_A, LEGACY_MARK_B = "<!-- simplicio-tasks:begin -->", "<!-- simplicio-tasks:end -->"
 MARK_A, MARK_B = "<!-- simplicio-loop:begin -->", "<!-- simplicio-loop:end -->"
@@ -543,9 +545,9 @@ def resolve_pinned_version(pkg, timeout=20):
 def ensure_operators(skip_install=False, allow_break_system_packages=False, pin_versions=False):
     """Install + verify the REQUIRED operator package and the runtime bins it exposes.
 
-    The loop still invokes `simplicio-mapper` and `simplicio-dev-cli` directly, so both binaries
-    must be present on PATH at runtime; but the supported install surface is the single package
-    `simplicio-cli`, which brings `simplicio-mapper` transitively.
+    The loop invokes `simplicio-mapper` and `simplicio-dev-cli` directly, so both binaries
+    must be present on PATH at runtime.  Both distributions are requested directly; the
+    installer does not rely on the mapper remaining a transitive dependency of simplicio-cli.
 
     `allow_break_system_packages`: only when True (CLI `--allow-break-system-packages` or
     `SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES=1`) may a PEP-668 externally-managed refusal escalate
@@ -560,19 +562,24 @@ def ensure_operators(skip_install=False, allow_break_system_packages=False, pin_
     warning and falls back to the normal floating install rather than silently claiming a
     reproducibility guarantee it can't deliver.
     """
-    pkgs = [OPERATOR_PACKAGE]
+    pkgs = list(OPERATOR_PACKAGES)
     upgrade = True
     if pin_versions:
-        pinned = resolve_pinned_version(OPERATOR_PACKAGE)
-        if pinned:
-            pkgs = ["%s==%s" % (OPERATOR_PACKAGE, pinned)]
+        resolved = {
+            package: resolve_pinned_version(package)
+            for package in OPERATOR_PACKAGES
+        }
+        if all(resolved.values()):
+            pkgs = ["%s==%s" % (package, resolved[package])
+                    for package in OPERATOR_PACKAGES]
             upgrade = False
-            log("ci mode: pinning %s==%s for reproducibility (#293 ci mode)"
-                % (OPERATOR_PACKAGE, pinned))
+            log("ci mode: pinning %s for reproducibility (#293 ci mode)"
+                % ", ".join(pkgs))
         else:
-            log("! ci mode: could not resolve a pinned version for %s (offline / index "
+            unresolved = [package for package, version in resolved.items() if not version]
+            log("! ci mode: could not resolve pinned versions for %s (offline / index "
                 "unreachable / not yet installed) — falling back to a floating install; "
-                "reproducibility is NOT guaranteed for this run" % OPERATOR_PACKAGE)
+                "reproducibility is NOT guaranteed for this run" % ", ".join(unresolved))
     allow_bsp = allow_break_system_packages or os.environ.get(
         "SIMPLICIO_ALLOW_BREAK_SYSTEM_PACKAGES") == "1"
     if not skip_install:

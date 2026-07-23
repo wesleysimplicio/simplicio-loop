@@ -33,6 +33,7 @@ EVENT_KINDS = frozenset((
     "contract_frozen", "mapper_fresh", "plan_ready", "worker_claimed",
     "worktree_created", "operator_receipt", "test_gate", "watcher_challenge",
     "oracle_verdict", "delivery_reconciled", "rollback", "handoff", "technical_debt",
+    "operator_bootstrap",
 ))
 def _ascii(value: Any) -> str:
     """Replace presentation glyphs; payloads remain Unicode-safe and unchanged."""

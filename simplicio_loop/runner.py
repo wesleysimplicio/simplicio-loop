@@ -24,6 +24,10 @@ from .orca_lifecycle import sync_orca_status
 from .source_adapter import GitHubSourceAdapter
 from .task_contract import compile_many, validate_contract
 from .technical_debt import record_notice as _record_technical_debt
+from .operator_bootstrap import (
+    OperatorBootstrapError,
+    ensure_operators as _ensure_required_operators,
+)
 from .plan_contract import PLAN_SCHEMA, validate_plan
 from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable, build_completion_receipt
 from .agent_contract import bind_receipt, build_context_pack
@@ -1402,6 +1406,72 @@ def _task_ac_ids(task: Mapping[str, Any]) -> List[str]:
             if isinstance(item, Mapping) and item.get("id")]
 
 
+def _recoverable_operator_error(tool: str, exc: BaseException) -> bool:
+    """Return True only for operator installation/version/capability failures."""
+    if isinstance(exc, FileNotFoundError):
+        missing = str(getattr(exc, "filename", "") or "")
+        return Path(missing).name == tool or tool.lower() in str(exc).lower()
+    message = str(exc or "").lower()
+    if tool.lower() not in message:
+        return False
+    return any(marker in message for marker in (
+        "no such file or directory",
+        "unavailable",
+        "below minimum version",
+        "missing required capabilities",
+        "version probe failed",
+    ))
+
+
+def _run_with_operator_recovery(
+    tool: str,
+    run_root: Path,
+    operation: Callable[[], Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Run one operator step, bootstrap the stack once if eligible, then retry once."""
+    try:
+        return operation()
+    except Exception as first_error:
+        if not _recoverable_operator_error(tool, first_error):
+            raise
+        try:
+            bootstrap = _ensure_required_operators(run_root, force=True)
+        except OperatorBootstrapError as bootstrap_error:
+            raise RuntimeError(
+                f"{first_error}; automatic {tool} recovery failed: {bootstrap_error}"
+            ) from bootstrap_error
+        state_path = run_root / "state.json"
+        if state_path.exists():
+            state = _load_json(state_path)
+            state["operator_bootstrap"] = {
+                "ready": bootstrap.get("status") in {"installed", "already_available"},
+                "receipt": str(run_root / "operator-bootstrap.json"),
+                "recovered_tool": tool,
+            }
+            _write_json(state_path, state)
+            _emit_event(
+                run_root,
+                state,
+                "operator_bootstrap",
+                receipt=str(run_root / "operator-bootstrap.json"),
+                message=f"{tool} repaired; retrying the blocked stage once",
+            )
+        try:
+            result = operation()
+        except Exception as retry_error:
+            raise RuntimeError(
+                f"{tool} remained unavailable after automatic recovery: {retry_error}"
+            ) from retry_error
+        receipt_path = run_root / "operator-bootstrap.json"
+        if receipt_path.exists():
+            bootstrap = _load_json(receipt_path)
+            bootstrap["retry_succeeded"] = True
+            bootstrap["recovered_tool"] = tool
+            bootstrap["recovered_at"] = _now()
+            _write_json(receipt_path, bootstrap)
+        return result
+
+
 def _preflight_mapper(repo_path: Path, run_root: Path) -> Dict[str, Any]:
     override = _preflight_override("SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON")
     if override is not None:
@@ -2220,12 +2290,16 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
                 receipt=str(run_root / "task-contract.json"))
     try:
         primary_goal = _task_goal(tasks[0]) if tasks else raw.strip()
-        mapper_payload = _run_mapper(
-            repo_path,
+        mapper_payload = _run_with_operator_recovery(
+            "simplicio-mapper",
             run_root,
-            task_path=str(Path(task_path).resolve()),
-            goal=primary_goal,
-            task_fingerprint=compiled["collection_hash"],
+            lambda: _run_mapper(
+                repo_path,
+                run_root,
+                task_path=str(Path(task_path).resolve()),
+                goal=primary_goal,
+                task_fingerprint=compiled["collection_hash"],
+            ),
         )
         mapper_payload["run_id"] = run_id
         mapper_payload["task_contract_hash"] = compiled["collection_hash"]
@@ -2266,7 +2340,13 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         candidates = ((plan.get("steps") or [{}])[0].get("candidate_targets") or [])
         if not candidates:
             raise RuntimeError("mapper-derived plan has no authorized operator target")
-        receipt = _prepare_operator_receipt(repo_path, run_root, tasks[0], candidates[0])
+        receipt = _run_with_operator_recovery(
+            "simplicio-dev-cli",
+            run_root,
+            lambda: _prepare_operator_receipt(
+                repo_path, run_root, tasks[0], candidates[0]
+            ),
+        )
         plan_hash = hashlib.sha256((run_root / "plan.json").read_bytes()).hexdigest()
         receipt["run_id"] = run_id
         receipt["task_contract_hash"] = compiled["collection_hash"]

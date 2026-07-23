@@ -4,9 +4,9 @@ Moved out of `SKILL.md` § Bound operators as part of the #119 shrink (SKILL.md 
 operator table, the preflight one-liner, and the BLOCK rule; this file has the full mechanics).
 
 This loop does NOT survey the repo with the LLM, and it does NOT hand-edit files with the LLM.
-Two installed CLIs are the operators; the model only DECIDES, the operators do. The supported
-install surface is the single operator package `simplicio-cli`, which exposes `simplicio-dev-cli`
-and also brings `simplicio-mapper` transitively:
+Two installed CLIs are the operators; the model only DECIDES, the operators do. A normal
+`pip install simplicio-loop` requests both distributions directly: `simplicio-cli` exposes
+`simplicio-dev-cli`, and `simplicio-mapper` exposes the survey binary:
 
 | Operator | CLI (binary) | Binds | Role in the loop |
 |---|---|---|---|
@@ -20,18 +20,19 @@ PATH:
 ```bash
 # Always run the loop on the latest operators. FAIL-OPEN: offline / no-pip / a pin keeps the
 # currently-installed build; this never blocks. Runs ONCE per loop preflight, not per turn.
-python3 -m pip install -qU simplicio-cli 2>/dev/null \
-  || python3 -m pip install -qU --user --break-system-packages simplicio-cli 2>/dev/null || true
-simplicio-mapper --version   # survey operator (expected transitively from simplicio-cli)
+python3 -m pip install -qU simplicio-cli simplicio-mapper 2>/dev/null \
+  || python3 -m pip install -qU --user simplicio-cli simplicio-mapper 2>/dev/null || true
+simplicio-mapper --version   # survey operator (direct simplicio-loop dependency)
 simplicio-dev-cli --help     # action operator (pkg simplicio-cli; exposes `simplicio-dev-cli`)
 ```
 The auto-update is best-effort and offline-safe — a network/pip failure leaves the working version
-in place and the loop proceeds. The action binary is `simplicio-dev-cli` (from `pip install simplicio-cli`) — NOT the bare
+in place and the loop proceeds. The action binary is `simplicio-dev-cli` — NOT the bare
 `simplicio`, which is reserved for the separate `simplicio-runtime` and is not what this loop
 binds. `simplicio-dev-cli` has no `--version` subcommand; `--help` exiting 0 is the readiness
-proof. If either runtime binary is missing, do NOT fall back to LLM survey/editing — STOP and emit
-`simplicio-loop: BLOCKED — missing operator <name>; run: pip install simplicio-cli`. This requirement
-is scoped to the loop drive.
+proof. If either runtime binary is missing or incompatible, the runner performs one bounded
+`pip install -U simplicio-cli simplicio-mapper`, writes `operator-bootstrap.json`, validates
+both binaries, and retries the blocked stage once. If repair fails, do NOT fall back to LLM
+survey/editing; remain `BLOCKED`. This requirement is scoped to the loop drive.
 
 **Survey step (each loop start + on any structural change).** Prefer the two-tier flow (v0.9+):
 `simplicio-mapper scan . --json` returns an instant `macro` skeleton AND kicks the deep index off in

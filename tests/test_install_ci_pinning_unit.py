@@ -72,7 +72,7 @@ def test_ensure_operators_pins_and_drops_upgrade_flag_when_resolved(monkeypatch)
     install_lib.ensure_operators(skip_install=False, pin_versions=True)
     assert calls, "ensure_operators(pin_versions=True) must still call _pip_install"
     pkgs, kwargs = calls[0]
-    assert pkgs == ("simplicio-cli==4.5.6",)
+    assert pkgs == tuple(package + "==4.5.6" for package in install_lib.OPERATOR_PACKAGES)
     assert kwargs.get("upgrade") is False
 
 
@@ -90,7 +90,7 @@ def test_ensure_operators_falls_back_to_floating_when_pin_unresolvable(monkeypat
     install_lib.ensure_operators(skip_install=False, pin_versions=True)
     pkgs, kwargs = calls[0]
     # Never a fabricated pin — falls back to the normal floating spec + upgrade=True.
-    assert pkgs == (install_lib.OPERATOR_PACKAGE,)
+    assert pkgs == install_lib.OPERATOR_PACKAGES
     assert kwargs.get("upgrade", True) is True
 
 
@@ -106,7 +106,7 @@ def test_ensure_operators_default_is_floating_unpinned(monkeypatch):
     monkeypatch.setattr(install_lib.shutil, "which", lambda name: "/usr/bin/" + name)
     install_lib.ensure_operators(skip_install=False)  # pin_versions defaults False
     pkgs, kwargs = calls[0]
-    assert pkgs == (install_lib.OPERATOR_PACKAGE,)
+    assert pkgs == install_lib.OPERATOR_PACKAGES
     assert kwargs.get("upgrade", True) is True
 
 
