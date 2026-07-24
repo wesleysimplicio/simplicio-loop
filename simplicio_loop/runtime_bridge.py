@@ -23,6 +23,7 @@ from .runtime_binary import (
     resolve_and_probe_simplicio_binary,
     runtime_preflight,
 )
+from .canonical_plan import CanonicalPlan, canonical_plan_metadata
 
 
 RUNTIME_BRIDGE_SCHEMA = "simplicio.loop-runtime-bridge/v1"
@@ -430,13 +431,14 @@ class RuntimeBridge:
     @staticmethod
     def _effect_transaction(*, tool: str, arguments: Mapping[str, Any],
                             relative_cwd: Path, idempotency_key: str,
-                            timeout_ms: int) -> Dict[str, Any]:
+                            timeout_ms: int,
+                            canonical_plan: Optional[CanonicalPlan] = None) -> Dict[str, Any]:
         try:
             action = json.dumps({"tool": tool, "arguments": dict(arguments)},
                                 sort_keys=True, separators=(",", ":")).encode("utf-8")
         except (TypeError, ValueError) as exc:
             raise RuntimeBridgeError("runtime_call arguments must be JSON-compatible") from exc
-        return {
+        transaction = {
             "schema": "simplicio.effect-transaction/v1", "executor": "simplicio-runtime",
             "request": {
                 "schema": "simplicio.effect-request/v1", "capability": tool,
@@ -453,6 +455,9 @@ class RuntimeBridge:
                 "rollback_plan": "runtime-call-boundary", "redaction_plan": "runtime-default-redaction",
             },
         }
+        if canonical_plan is not None:
+            transaction["canonical_plan"] = canonical_plan_metadata(canonical_plan)
+        return transaction
 
     def _dispatch(self, workspace_path: Path, tool: str, arguments: Mapping[str, Any], *,
                   timeout_ms: int, cancel_event: Optional[threading.Event]) -> Dict[str, Any]:
@@ -499,7 +504,8 @@ class RuntimeBridge:
     def execute(self, workspace: str, argv: list[str], cwd: str = ".",
                 env: Optional[Mapping[str, str]] = None, timeout_ms: int = 120_000,
                 max_output_bytes: int = 4 * 1024 * 1024,
-                idempotency_key: str = "", cancel_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+                idempotency_key: str = "", cancel_event: Optional[threading.Event] = None,
+                canonical_plan: Optional[CanonicalPlan] = None) -> Dict[str, Any]:
         if not argv or not idempotency_key:
             raise RuntimeBridgeError("workspace, argv and idempotency_key are required")
         workspace_path = self._workspace_path(workspace)
@@ -512,12 +518,14 @@ class RuntimeBridge:
             "__runtime_effect_transaction": self._effect_transaction(
                 tool="simplicio_exec", arguments={"argv": list(argv)}, relative_cwd=relative_cwd,
                 idempotency_key=idempotency_key, timeout_ms=timeout_ms,
+                canonical_plan=canonical_plan,
             ),
         }, timeout_ms=timeout_ms, cancel_event=cancel_event)
 
     def runtime_call(self, workspace: str, tool: str, arguments: Mapping[str, Any], *,
                      cwd: str = ".", timeout_ms: int = 120_000,
-                     idempotency_key: str = "", cancel_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+                     idempotency_key: str = "", cancel_event: Optional[threading.Event] = None,
+                     canonical_plan: Optional[CanonicalPlan] = None) -> Dict[str, Any]:
         if not tool or not idempotency_key:
             raise RuntimeBridgeError("workspace, tool and idempotency_key are required")
         if not tool.startswith("simplicio_") or any(not (char.isalnum() or char in "_.-") for char in tool):
@@ -532,6 +540,7 @@ class RuntimeBridge:
         request_arguments["__runtime_effect_transaction"] = self._effect_transaction(
             tool=tool, arguments=arguments, relative_cwd=relative_cwd,
             idempotency_key=idempotency_key, timeout_ms=timeout_ms,
+            canonical_plan=canonical_plan,
         )
         return self._dispatch(workspace_path, tool, request_arguments,
                               timeout_ms=timeout_ms, cancel_event=cancel_event)
