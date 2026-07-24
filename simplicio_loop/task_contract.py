@@ -562,6 +562,10 @@ def compile_task(text: str, source_path: str = "") -> Dict[str, Any]:
     routing = _parse_routing(sections["routing"])
     contract = {
         "schema": SCHEMA,
+        # Preserve the exact provider-free source for typed downstream handoff.
+        # The structured fields remain useful for Loop planning, but they are not
+        # a substitute for the source that produced them.
+        "original_text": raw,
         "source": {
             "kind": "markdown",
             "path": source_path or "",

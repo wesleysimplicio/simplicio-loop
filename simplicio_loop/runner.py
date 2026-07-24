@@ -107,7 +107,7 @@ DEVCLI_REQUIRED_TOKENS = (" task", "--dry-run-task", "--json")
 # Issue #135: the operator bridge validates identity + capability + MIN_VERSION, not
 # merely `which`. A dev-cli below this tuple is blocked before any mutation.
 DEVCLI_MIN_VERSION = (0, 14, 0)
-DEVCLI_REQUIRED_CAPABILITIES = ("task", "--dry-run-task", "--json", "--bound-paths", "--target")
+DEVCLI_REQUIRED_CAPABILITIES = ("task", "--dry-run-task", "--json", "--bound-paths", "--target", "--task-spec", "--mode")
 DEFAULT_OPERATOR_WORKERS = 6
 BATCH_SCHEMA = "simplicio.operator-batch/v1"
 BATCH_PREFLIGHT_SCHEMA = "simplicio.operator-batch-preflight/v1"
@@ -692,6 +692,102 @@ def _task_goal(task: Dict[str, Any]) -> str:
         if p
     ]
     return " | ".join(parts)
+
+
+def _task_spec_payload(task: Mapping[str, Any]) -> Dict[str, Any]:
+    """Build the lossless Dev CLI TaskSpec handoff from a Loop task contract.
+
+    Loop's contract is intentionally richer than the public TaskSpec.  The full
+    contract is retained in an additive field while the canonical fields are
+    mapped explicitly, so the operator never has to reconstruct the task from
+    flattened goal/criteria/constraint strings.
+    """
+    original_text = str(task.get("original_text") or "")
+    if not original_text.strip():
+        raise RuntimeError("typed TaskSpec handoff requires task-contract original_text")
+    normalized = original_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    source_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    identity = dict(task.get("identity") or {})
+    story = dict(task.get("story") or {})
+
+    acceptance_criteria = []
+    for scenario in task.get("scenarios") or []:
+        item = dict(scenario)
+        item.setdefault("original_text", " ".join(
+            str(part).strip()
+            for part in (
+                item.get("title", ""),
+                *[str(value) for value in item.get("given") or []],
+                *[str(value) for value in item.get("when") or []],
+                *[str(value) for value in item.get("then") or []],
+            )
+            if str(part).strip()
+        ))
+        acceptance_criteria.append(item)
+
+    def stateful_items(value: Any, prefix: str) -> list[Dict[str, Any]]:
+        if not isinstance(value, Mapping):
+            return []
+        state = str(value.get("state") or "unknown")
+        items = []
+        for index, entry in enumerate(value.get("items") or [], start=1):
+            if isinstance(entry, Mapping):
+                item = dict(entry)
+                item.setdefault("id", f"{prefix}{index}")
+                item.setdefault("original_text", str(item.get("text") or item.get("summary") or ""))
+            else:
+                item = {"id": f"{prefix}{index}", "text": str(entry), "original_text": str(entry)}
+            item.setdefault("state", state)
+            items.append(item)
+        return items
+
+    questions = [dict(item) for item in task.get("questions") or [] if isinstance(item, Mapping)]
+    assumptions = [dict(item) for item in task.get("assumptions") or [] if isinstance(item, Mapping)]
+    blockers = [dict(item) for item in task.get("blockers") or [] if isinstance(item, Mapping)]
+    access_path = str(task.get("access_path") or "").strip()
+    source = task.get("source") or {}
+    task_id = str(identity.get("id") or identity.get("title") or f"TASK-{source_hash[:12].upper()}")
+    payload: Dict[str, Any] = {
+        "schema": "simplicio.task-spec/v2",
+        "task_id": task_id,
+        "source": {
+            "kind": "simplicio-loop-task-contract",
+            "locator": str(source.get("path") or "") or None,
+            "encoding": "utf-8",
+        },
+        "source_hash": source_hash,
+        "language": "unknown",
+        "system": str(identity.get("system") or "") or None,
+        "functionality": str(identity.get("feature") or "") or None,
+        "task_type": str(identity.get("type") or "") or None,
+        "narrative": {
+            "persona": str(story.get("persona") or "") or None,
+            "desire": str(story.get("desire") or "") or None,
+            "value": str(story.get("value") or "") or None,
+        },
+        "acceptance_criteria": acceptance_criteria,
+        "business_rules": [dict(item) for item in task.get("rules") or [] if isinstance(item, Mapping)],
+        "non_functional_requirements": stateful_items(task.get("nfrs"), "NFR"),
+        "prototypes": [dict(item) for item in task.get("prototypes") or [] if isinstance(item, Mapping)],
+        "attachments": [],
+        "navigation": ([{"id": "NAV1", "path": access_path, "original_text": access_path}]
+                        if access_path else []),
+        "dependencies": stateful_items(task.get("dependencies"), "DEP"),
+        "impact_signals": dict(task.get("impact_signals") or {}),
+        "additional_information": [
+            {"id": f"INFO{index}", "text": str(item), "original_text": str(item)}
+            for index, item in enumerate(task.get("additional_information") or [], start=1)
+        ],
+        "uncertainties": questions + assumptions + blockers,
+        "human_gates": [dict(item) for item in questions],
+        "verification_commands": [],
+        "source_span": {},
+        "original_text": original_text,
+        # Additive field: preserves every Loop-only field and makes the handoff
+        # auditable without teaching the Dev CLI private Loop schema.
+        "loop_task_contract": json.loads(json.dumps(dict(task), ensure_ascii=False)),
+    }
+    return payload
 
 
 def _auto_fan_out_enabled() -> bool:
@@ -1993,6 +2089,8 @@ def _task_mapper_context(mapper_payload: Mapping[str, Any], task_index: int) -> 
 
 def _task_mapper_text(task: Mapping[str, Any]) -> str:
     parts = [_task_goal(dict(task))]
+    if task.get("original_text"):
+        parts.append(str(task["original_text"]))
     parts.extend(str(item.get("title") or "") for item in task.get("scenarios") or []
                  if isinstance(item, Mapping))
     parts.extend(str(item.get("id") or "") for item in task.get("rules") or []
@@ -2001,7 +2099,7 @@ def _task_mapper_text(task: Mapping[str, Any]) -> str:
 
 
 def _task_context_plan_data(context: Mapping[str, Any], task: Mapping[str, Any],
-                            repo_path: Path) -> Dict[str, Any]:
+                            repo_path: Path, task_text: str = "") -> Dict[str, Any]:
     handoff = context.get("handoff") if isinstance(context.get("handoff"), Mapping) else {}
     stdout = handoff.get("stdout") if isinstance(handoff.get("stdout"), Mapping) else handoff
     pack = stdout.get("context_pack") if isinstance(stdout, Mapping) else {}
@@ -2018,11 +2116,18 @@ def _task_context_plan_data(context: Mapping[str, Any], task: Mapping[str, Any],
             path = resolved.relative_to(repo_path.resolve()).as_posix()
         except (OSError, ValueError):
             continue
+        low = path.lower()
+        if (low.startswith((".orchestrator/", ".claude/", ".github/", ".venv/", "venv/"))
+                or "/site-packages/" in low or "/_bundle/" in low):
+            continue
         if path not in targets:
             targets.append(path)
     if not targets:
         targets = _candidate_targets({"handoff": {"stdout": {"context_pack": dict(pack)}}}, repo_path)
-    explicit = _extract_repo_file_hints(_task_mapper_text(task), repo_path)
+    explicit = _extract_repo_file_hints(task_text, repo_path)
+    for hint in _extract_repo_file_hints(_task_mapper_text(task), repo_path):
+        if hint not in explicit:
+            explicit.append(hint)
     ordered = []
     for path in explicit + targets:
         if path not in ordered:
@@ -2057,7 +2162,7 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
     aggregate_targets: List[str] = []
     for index, task in enumerate(tasks, start=1):
         context = _task_mapper_context(mapper_payload, index)
-        data = _task_context_plan_data(context, task, repo_path)
+        data = _task_context_plan_data(context, task, repo_path, task_text)
         task_contexts.append({
             "task_index": index,
             "task_id": str(task.get("id") or ""),
@@ -2226,6 +2331,8 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
     except (OSError, ValueError) as exc:
         raise ValueError(f"operator target outside authorized repo: {target!r}") from exc
     _preflight_operator(repo_path, run_root)
+    task_spec_path = run_root / "task-spec.json"
+    _write_json(task_spec_path, _task_spec_payload(task))
     fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", "").strip()
     if fake:
         payload = json.loads(fake)
@@ -2249,22 +2356,10 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
         return receipt
 
     argv = _devcli_cmd(
-        repo_path,
-        "task",
-        _task_goal(task),
-        "--root",
-        str(repo_path),
-        "--target",
-        target,
-        "--criteria",
-        _criteria_text(task),
-        "--constraints",
-        _constraints_text(task),
-        "--dry-run-task",
-        "--json",
+        repo_path, "task", "--root", str(repo_path), "--task-spec", str(task_spec_path),
+        "--mode", "integrated", "--target", target, "--dry-run-task", "--json",
+        "--bound-paths", target,
     )
-    for bound in [target]:
-        argv.extend(["--bound-paths", bound])
     try:
         op_env = _devcli_env(repo_path, _operator_env())
         result = subprocess.run(
@@ -2895,18 +2990,19 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
             "route back to planner/impact gate before continuing" % (target, targets)
         )
     _preflight_operator(repo_path, run_dir)
+    task_spec_path = run_dir / "task-spec.json"
+    _write_json(task_spec_path, _task_spec_payload(task))
     argv = _devcli_cmd(
         repo_path,
         "task",
-        _task_goal(task),
         "--root",
         str(repo_path),
+        "--task-spec",
+        str(task_spec_path),
+        "--mode",
+        "integrated",
         "--target",
         target,
-        "--criteria",
-        _criteria_text(task),
-        "--constraints",
-        _constraints_text(task),
         "--json",
         "--bound-paths",
         target,

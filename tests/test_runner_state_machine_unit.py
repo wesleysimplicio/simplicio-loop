@@ -96,7 +96,7 @@ def _arm_fixture(tmp_path, monkeypatch):
         return payload
 
     def fake_operator_preflight(repo_path, run_root):
-        help_surface = "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target"
+        help_surface = "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target --task-spec --mode"
         receipt = {
             "tool": "simplicio-dev-cli", "identity_ok": True, "version_ok": True,
             "help_stdout": help_surface, "task_help_stdout": help_surface,
