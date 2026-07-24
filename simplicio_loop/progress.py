@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
 
+from .execution_route import verify_route_hash
+
 SCHEMA = "simplicio.progress/v1"
 PHASES = ("intake", "mapping", "planning", "executing", "validating", "watching", "delivering", "done")
 PHASE_META = {
@@ -170,6 +172,21 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
     ready = bool(completion.get("ready")) and str(completion.get("verdict") or "").upper() in {"COMPLETE", "DRAINED"}
     evidence = dict(state.get("evidence") or {})
     watcher = dict(state.get("watcher") or {})
+    execution_route = dict(
+        state.get("execution_route")
+        or (state.get("operator") or {}).get("execution_route")
+        or {}
+    )
+    if root:
+        route_path = root / "execution-route.json"
+        if route_path.is_file():
+            try:
+                candidate = _load_json(route_path)
+                if verify_route_hash(candidate):
+                    execution_route = dict(candidate)
+            except (OSError, ValueError, TypeError):
+                execution_route = {}
+    route_receipt_status = "MEASURED" if execution_route else "UNVERIFIED"
     # Receipts are authoritative when state.json has not yet been refreshed by a hook.
     if root:
         for path, target in ((root / "evidence-receipt.json", evidence),
@@ -234,6 +251,8 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
         "gates": {"evidence": evidence_ready, "watcher": watcher_ready, "oracle": ready},
         "completion": {"ready": ready, "verdict": str(completion.get("verdict") or "DELIVERY_PENDING"),
                        "reason_code": str(completion.get("reason_code") or "oracle_incomplete")},
+        "execution_route": execution_route,
+        "route_receipt_status": route_receipt_status,
         # Optional lanes/events are copied as data, never used to infer completion. This keeps
         # the same JSON contract useful for fan-out dashboards and chat adapters.
         "lanes": _normalise_lanes(state.get("lanes")),
