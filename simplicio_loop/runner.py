@@ -50,6 +50,7 @@ from .runtime_execution_receipt import RuntimeExecutionReceiptError
 from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
 from .runtime_bridge import RuntimeBridge
 from .runtime_effect_adapter import EffectRequest, RuntimeEffectAdapter, RuntimeEffectError
+from .canonical_plan import CanonicalPlan, load_canonical_plan
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
 from .execution_board import ExecutionBoard
 from .execution_route import AGENT_KEYWORDS, SCHEMA as EXECUTION_ROUTE_SCHEMA
@@ -583,7 +584,8 @@ def _runtime_effect_adapter(repo_path: Path, profile: str) -> RuntimeEffectAdapt
 def _build_effect_request(repo_path: Path, run_id: str, task_index: int,
                           task: Mapping[str, Any], attempt: int,
                           targets: Sequence[str], route_record: Mapping[str, Any],
-                          guarded_attempt: Any) -> EffectRequest:
+                          guarded_attempt: Any,
+                          canonical_plan: Optional[CanonicalPlan] = None) -> EffectRequest:
     lease = getattr(guarded_attempt, "lease", None)
     lease_id = str(getattr(lease, "lease_id", "") or f"loop-run:{run_id}")
     raw_fence = getattr(lease, "fencing_token", 1)
@@ -606,6 +608,7 @@ def _build_effect_request(repo_path: Path, run_id: str, task_index: int,
         gate_id=str(route_record.get("receipt_sha") or "execution-route"),
         runtime_generation=os.environ.get("SIMPLICIO_RUNTIME_GENERATION") or None,
         transaction_id=transaction_id,
+        canonical_plan=canonical_plan,
     )
 
 
@@ -3288,6 +3291,10 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     effect_adapter = _runtime_effect_adapter(repo_path, profile)
     effect_request = _build_effect_request(
         repo_path, run_id, task_index, task, attempt, targets, route_record, guarded_attempt,
+        canonical_plan=(
+            load_canonical_plan(plan["canonical_plan"], expected_digest=str(plan.get("canonical_plan_digest") or ""))
+            if isinstance(plan.get("canonical_plan"), Mapping) else None
+        ),
     )
     effect_outcome = _execute_operator_effect(
         profile=profile,
