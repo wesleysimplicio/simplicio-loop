@@ -92,7 +92,10 @@ def test_missing_required_artifact_fails_closed(tmp_path):
 def test_symlinked_authorization_cannot_escape_run_root(tmp_path):
     outside = tmp_path.parent / "authority-outside.json"
     outside.write_text(json.dumps(_authorization()), encoding="utf-8")
-    (tmp_path / AUTHORIZATION_FILENAME).symlink_to(outside)
+    try:
+        (tmp_path / AUTHORIZATION_FILENAME).symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink privilege unavailable: {exc}")
     with pytest.raises(AuthorityBoundaryError) as error:
         prepare_authorization_handoff(tmp_path, required=True)
     assert error.value.code == "AUTHORIZATION_PATH_INVALID"
