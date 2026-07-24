@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import string
 import sys
+from threading import RLock
 import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -47,6 +48,8 @@ from .runtime_drivers import CLI_PROBE_HOOKS, driver_for_runtime
 from .runtime_context import ContextAuthorizationError, ContextBudgetError, RuntimeContextRequest
 from .runtime_execution_receipt import RuntimeExecutionReceiptError
 from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
+from .runtime_bridge import RuntimeBridge
+from .runtime_effect_adapter import EffectRequest, RuntimeEffectAdapter, RuntimeEffectError
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
 from .execution_board import ExecutionBoard
 from .execution_route import AGENT_KEYWORDS, SCHEMA as EXECUTION_ROUTE_SCHEMA
@@ -544,6 +547,148 @@ def _devcli_cmd(repo_path: Path, *args: str) -> List[str]:
         if model.startswith("local/") and "--local" not in base:
             base.append("--local")
     return base
+
+_RUNTIME_EFFECT_ADAPTERS: Dict[str, RuntimeEffectAdapter] = {}
+_RUNTIME_EFFECT_BRIDGES: Dict[str, RuntimeBridge] = {}
+_RUNTIME_EFFECT_CACHE_LOCK = RLock()
+
+
+def _execution_profile() -> str:
+    profile = os.environ.get("SIMPLICIO_EXECUTION_PROFILE", "standalone").strip().lower()
+    if profile not in {"standalone", "runtime-backed"}:
+        raise RuntimeEffectError(
+            "SIMPLICIO_EXECUTION_PROFILE must be explicitly standalone or runtime-backed"
+        )
+    return profile
+
+
+def _runtime_effect_adapter(repo_path: Path, profile: str) -> RuntimeEffectAdapter:
+    if profile not in {"standalone", "runtime-backed"}:
+        raise RuntimeEffectError("unsupported execution profile")
+    if profile == "standalone":
+        return RuntimeEffectAdapter(profile=profile)
+    key = str(repo_path.resolve())
+    with _RUNTIME_EFFECT_CACHE_LOCK:
+        adapter = _RUNTIME_EFFECT_ADAPTERS.get(key)
+        if adapter is None:
+            bridge = _RUNTIME_EFFECT_BRIDGES.get(key)
+            if bridge is None:
+                bridge = RuntimeBridge()
+                _RUNTIME_EFFECT_BRIDGES[key] = bridge
+            adapter = RuntimeEffectAdapter(profile="runtime-backed", bridge=bridge)
+            _RUNTIME_EFFECT_ADAPTERS[key] = adapter
+    return adapter
+
+
+def _build_effect_request(repo_path: Path, run_id: str, task_index: int,
+                          task: Mapping[str, Any], attempt: int,
+                          targets: Sequence[str], route_record: Mapping[str, Any],
+                          guarded_attempt: Any) -> EffectRequest:
+    lease = getattr(guarded_attempt, "lease", None)
+    lease_id = str(getattr(lease, "lease_id", "") or f"loop-run:{run_id}")
+    raw_fence = getattr(lease, "fencing_token", 1)
+    try:
+        fencing_token = max(1, int(raw_fence))
+    except (TypeError, ValueError):
+        fencing_token = 1
+    transaction_id = f"{run_id}:{task.get('id') or task_index}:{attempt}"
+    return EffectRequest(
+        workspace=str(repo_path),
+        idempotency_key=transaction_id,
+        write_set=tuple(f"repo:{target}" for target in (targets or ["repo"])),
+        lease_id=lease_id,
+        fencing_token=fencing_token,
+        cwd=".",
+        timeout_ms=_operator_timeout("execute") * 1000,
+        attempt=attempt,
+        deadline=int(time.time() * 1000) + _operator_timeout("execute") * 1000,
+        cancellation_boundary="safe_boundary_only",
+        gate_id=str(route_record.get("receipt_sha") or "execution-route"),
+        runtime_generation=os.environ.get("SIMPLICIO_RUNTIME_GENERATION") or None,
+        transaction_id=transaction_id,
+    )
+
+
+def _parse_effect_stdout(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return {"raw": redact_sensitive_text(value)}
+        return dict(parsed) if isinstance(parsed, dict) else {"raw": redact_sensitive_text(value)}
+    return {}
+
+
+def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
+                             request: EffectRequest, argv: List[str],
+                             env: Mapping[str, str], repo_path: Path,
+                             attempt_coordinator: Optional[AttemptCoordinator],
+                             guarded_attempt: Any) -> Dict[str, Any]:
+    if profile == "runtime-backed":
+        effect_receipt = adapter.execute(request, argv, env=env)
+        result = dict(effect_receipt.get("result") or {})
+        status = str(effect_receipt.get("status") or result.get("status") or "")
+        returncode = result.get("returncode")
+        if isinstance(returncode, bool) or not isinstance(returncode, int):
+            returncode = None
+        if status in {"UNAVAILABLE", "UNCERTAIN"}:
+            returncode = None
+        return {
+            "returncode": returncode,
+            "stdout": _parse_effect_stdout(result.get("stdout")),
+            "stderr": redact_sensitive_text(str(result.get("stderr") or "")),
+            "source": "runtime_effect_adapter",
+            "effect_receipt": effect_receipt,
+            "uncertain": status == "UNCERTAIN" or result.get("status") == "UNCERTAIN",
+        }
+
+    fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON", "").strip()
+    if fake:
+        payload = json.loads(fake)
+        for rel, content in (payload.get("write_files") or {}).items():
+            path = repo_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(str(content), encoding="utf-8")
+        return {
+            "returncode": int(payload.get("returncode", 0)),
+            "stdout": payload.get("stdout", {}),
+            "stderr": redact_sensitive_text(str(payload.get("stderr", ""))),
+            "source": "env_override",
+            "effect_receipt": None,
+            "uncertain": False,
+        }
+
+    try:
+        if attempt_coordinator is not None and guarded_attempt is not None:
+            result = attempt_coordinator.run_guarded(
+                guarded_attempt, argv, cwd=repo_path,
+                timeout=_operator_timeout("execute"), env=env,
+            )
+        else:
+            result = subprocess.run(
+                argv, cwd=str(repo_path), capture_output=True, text=True,
+                timeout=_operator_timeout("execute"), env=env,
+            )
+        return {
+            "returncode": result.returncode,
+            "stdout": _parse_effect_stdout((result.stdout or "").strip()),
+            "stderr": redact_sensitive_text((result.stderr or "").strip()),
+            "source": "live_cli",
+            "effect_receipt": None,
+            "uncertain": False,
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "returncode": None,
+            "stdout": {},
+            "stderr": f"timed out after {exc.timeout}s",
+            "source": "live_cli",
+            "effect_receipt": None,
+            "uncertain": False,
+        }
+
 
 
 def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
@@ -3029,57 +3174,39 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "model": op_env.get("SIMPLICIO_MODEL", ""),
         "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
     }
-    fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON", "").strip()
-    if fake:
-        payload = json.loads(fake)
-        for rel, content in (payload.get("write_files") or {}).items():
-            path = repo_path / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(str(content), encoding="utf-8")
-        returncode = int(payload.get("returncode", 0))
-        stdout = payload.get("stdout", {})
-        stderr = redact_sensitive_text(str(payload.get("stderr", "")))
-        source = "env_override"
-    else:
-        try:
-            if attempt_coordinator is not None and guarded_attempt is not None:
-                # Guarded dispatch (#288/#183): heartbeat-fenced, kill-on-lease-loss.
-                result = attempt_coordinator.run_guarded(
-                    guarded_attempt, argv, cwd=repo_path, timeout=_operator_timeout("execute"), env=op_env,
-                )
-            else:
-                result = subprocess.run(
-                    argv,
-                    cwd=str(repo_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=_operator_timeout("execute"),
-                    env=op_env,
-                )
-            returncode = result.returncode
-            raw_stdout = (result.stdout or "").strip()
-            try:
-                stdout = json.loads(raw_stdout) if raw_stdout else {}
-            except ValueError:
-                stdout = {"raw": redact_sensitive_text(raw_stdout)}
-            stderr = redact_sensitive_text((result.stderr or "").strip())
-            source = "live_cli"
-        except subprocess.TimeoutExpired as exc:
-            returncode = None
-            stdout = {}
-            stderr = f"timed out after {exc.timeout}s"
-            source = "live_cli"
+    profile = _execution_profile()
+    effect_adapter = _runtime_effect_adapter(repo_path, profile)
+    effect_request = _build_effect_request(
+        repo_path, run_id, task_index, task, attempt, targets, route_record, guarded_attempt,
+    )
+    effect_outcome = _execute_operator_effect(
+        profile=profile,
+        adapter=effect_adapter,
+        request=effect_request,
+        argv=argv,
+        env=op_env,
+        repo_path=repo_path,
+        attempt_coordinator=attempt_coordinator,
+        guarded_attempt=guarded_attempt,
+    )
+    returncode = effect_outcome["returncode"]
+    stdout = effect_outcome["stdout"]
+    stderr = effect_outcome["stderr"]
+    source = effect_outcome["source"]
+    effect_receipt = effect_outcome.get("effect_receipt")
+    uncertain = bool(effect_outcome.get("uncertain"))
     after = _repo_fingerprint(repo_path)
     changed = _changed_paths(repo_path)
     rollback = {"attempted": False, "restored": False, "reason": "not_needed"}
-    if returncode != 0:
+    if returncode != 0 and not uncertain:
         rollback = _restore_operator_checkpoint(checkpoint, repo_path, changed)
         if rollback.get("restored"):
             changed = _changed_paths(repo_path)
             after = _repo_fingerprint(repo_path)
-    # Issue #135: `no_change` is only valid with proof the state already satisfied the AC.
-    # A dev-cli failure NEVER unlocks silent manual LLM editing (fail-closed `blocked`).
-    if returncode == 0 and not changed:
+    if uncertain:
+        execution_state = "uncertain"
+        no_change_proof = None
+    elif returncode == 0 and not changed:
         execution_state = "no_change"
         no_change_proof = {
             "satisfying_state": "repository already satisfied the AC; no production diff produced",
@@ -3117,6 +3244,11 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "measured_at": _now(),
         "source": source,
         "provider_config": provider_config,
+        "execution_profile": profile,
+        "executor_profile": (effect_receipt or {}).get("executor_profile", profile),
+        "effect_receipt": effect_receipt,
+        "effect_transaction_id": (effect_receipt or {}).get("transaction_id", ""),
+        "effect_correlation_id": (effect_receipt or {}).get("correlation_id", ""),
         "checkpoint": checkpoint,
         "rollback": rollback,
         "failure_fingerprint": "" if returncode == 0 else _operator_failure_fingerprint(returncode, stderr, stdout),
@@ -3137,7 +3269,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
                     blocker=str(rollback.get("reason") or "operator execution failed"),
                     message="operator changes rolled back")
     state["operator"] = {
-        "ready": returncode == 0,
+        "ready": returncode == 0 and not uncertain,
         "receipt": str(operator_path),
         "target": target,
         "execution_state": receipt["execution_state"],
