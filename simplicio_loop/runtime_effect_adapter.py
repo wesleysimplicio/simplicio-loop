@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .runtime_bridge import RuntimeBridge, RuntimeBridgeError
+from .canonical_plan import CanonicalPlan, canonical_plan_metadata
 
 SCHEMA = "simplicio.runtime-effect-adapter/v1"
 PROFILES = frozenset(("standalone", "runtime-backed"))
@@ -43,6 +44,7 @@ class EffectRequest:
     gate_id: Optional[str] = None
     runtime_generation: Optional[str] = None
     transaction_id: Optional[str] = None
+    canonical_plan: Optional[CanonicalPlan] = None
 
     def __post_init__(self) -> None:
         if not self.workspace or not self.idempotency_key or not self.write_set or not self.lease_id or self.fencing_token < 1:
@@ -64,6 +66,8 @@ class EffectRequest:
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise RuntimeEffectError(f"{name} must be a non-empty string when supplied")
+        if self.canonical_plan is not None and not isinstance(self.canonical_plan, CanonicalPlan):
+            raise RuntimeEffectError("canonical_plan must be a validated CanonicalPlan")
         if Path(self.cwd).is_absolute() or ".." in Path(self.cwd).parts:
             raise RuntimeEffectError("effect cwd must stay workspace-relative")
 
@@ -103,7 +107,7 @@ class RuntimeEffectAdapter:
             "runtime_generation": request.runtime_generation or UNAVAILABLE,
             "transaction_id": transaction_id,
         }
-        return {
+        transaction = {
             "schema": TRANSACTION_SCHEMA,
             "version": "1",
             "executor": "simplicio-runtime" if self.profile == "runtime-backed" else STANDALONE,
@@ -123,6 +127,9 @@ class RuntimeEffectAdapter:
             },
             "request": identity,
         }
+        if request.canonical_plan is not None:
+            transaction["canonical_plan"] = canonical_plan_metadata(request.canonical_plan)
+        return transaction
 
     def _receipt(self, request: EffectRequest, *, kind: str, action: Mapping[str, Any],
                  result: Mapping[str, Any], status: str = "MEASURED",
@@ -130,7 +137,7 @@ class RuntimeEffectAdapter:
         transaction = self._transaction(request, kind=kind, action=action)
         runtime_generation = request.runtime_generation or UNAVAILABLE
         gate_id = request.gate_id or UNAVAILABLE
-        return {
+        receipt = {
             "schema": SCHEMA, "profile": self.profile,
             "executor_profile": self.profile,
             "executor": "simplicio-runtime" if self.profile == "runtime-backed" else "standalone",
@@ -146,6 +153,9 @@ class RuntimeEffectAdapter:
             "delivery": delivery or ("RUNTIME" if self.profile == "runtime-backed" else STANDALONE),
             "transaction": transaction, "result": dict(result),
         }
+        if request.canonical_plan is not None:
+            receipt["canonical_plan"] = canonical_plan_metadata(request.canonical_plan)
+        return receipt
 
     def _standalone(self, request: EffectRequest, *, kind: str, action: Mapping[str, Any]) -> Dict[str, Any]:
         return self._receipt(
@@ -176,6 +186,7 @@ class RuntimeEffectAdapter:
             result = self.bridge.runtime_call(  # type: ignore[union-attr]
                 request.workspace, tool, arguments, cwd=request.cwd,
                 timeout_ms=request.timeout_ms, idempotency_key=request.idempotency_key,
+                canonical_plan=request.canonical_plan,
             )
         except Exception as exc:
             return self._receipt(
@@ -195,7 +206,7 @@ class RuntimeEffectAdapter:
         if self.profile == "standalone":
             return self._standalone(request, kind="execute", action=action)
         try:
-            result = self.bridge.execute(request.workspace, argv, cwd=request.cwd, env=env, timeout_ms=request.timeout_ms, idempotency_key=request.idempotency_key)  # type: ignore[union-attr]
+            result = self.bridge.execute(request.workspace, argv, cwd=request.cwd, env=env, timeout_ms=request.timeout_ms, idempotency_key=request.idempotency_key, canonical_plan=request.canonical_plan)  # type: ignore[union-attr]
         except Exception as exc:
             return self._receipt(request, kind="execute", action=action,
                                  result={"status": UNAVAILABLE, "reason": str(exc), "delivery": "RUNTIME_UNAVAILABLE"},
