@@ -28,7 +28,7 @@ HELP_SURFACES = {
 }
 
 _HELPER = r'''
-import json, time
+import json, tempfile, time
 from dataclasses import replace
 from simplicio.plan_compiler import EffectAuthorization, EffectPlan, build_change_proposal
 from simplicio.plan_compiler.canonical_hash import canonical_hash
@@ -100,15 +100,16 @@ def case(name, fn):
 def main():
     effect, context, auth = bundle()
     results = []
-    missing_transport = Transport()
     def missing():
-        try:
-            RuntimeEffectSink(missing_transport, root=".").submit(effect, context)
-        except RuntimeEffectError as exc:
-            assert exc.code == "EFFECT_AUTHORIZATION_REQUIRED"
-            assert missing_transport.submitted == 0
-            return "denied before transport"
-        raise AssertionError("missing authorization was accepted")
+        with tempfile.TemporaryDirectory() as root:
+            transport = Transport()
+            try:
+                RuntimeEffectSink(transport, root=root).submit(effect, context)
+            except RuntimeEffectError as exc:
+                assert exc.code == "EFFECT_AUTHORIZATION_REQUIRED"
+                assert transport.submitted == 0
+                return "denied before transport"
+            raise AssertionError("missing authorization was accepted")
     results.append(case("missing-authorization-deny", missing))
 
     def llm_issuer():
@@ -142,23 +143,17 @@ def main():
         raise AssertionError("irreversible effect bypassed human gate")
     results.append(case("irreversible-human-gate-required", missing_human_gate))
 
-    transport = Transport()
     def allow():
-        outcome = RuntimeEffectSink(transport, root=".").submit(effect, replace(context, authorization=auth))
-        assert outcome.state == "completed"
-        assert transport.submitted == 1
-        assert outcome.receipt["authorization_digest"] == auth.authorization_digest
-        return "allow receipt bound"
+        with tempfile.TemporaryDirectory() as root:
+            transport = Transport()
+            outcome = RuntimeEffectSink(transport, root=root).submit(effect, replace(context, authorization=auth))
+            assert outcome.state == "completed"
+            assert transport.submitted == 1
+            assert outcome.receipt["authorization_digest"] == auth.authorization_digest
+            return "allow receipt bound"
     results.append(case("allow-bound-receipt", allow))
 
     def replay():
-        outcome = RuntimeEffectSink(transport, root=".").submit(effect, replace(context, authorization=auth))
-        assert outcome.state == "completed" and transport.submitted == 1 and transport.queried == 1
-        return "idempotent reconcile"
-    # The first sink writes an intent in the current directory; use a private
-    # temporary root so this case cannot observe another test's state.
-    def replay_isolated():
-        import tempfile
         with tempfile.TemporaryDirectory() as root:
             local = Transport()
             sink = RuntimeEffectSink(local, root=root)
@@ -166,26 +161,28 @@ def main():
             assert sink.submit(effect, replace(context, authorization=auth)).state == "completed"
             assert local.submitted == 1 and local.queried == 1
         return "idempotent reconcile"
-    results.append(case("replay-idempotent", replay_isolated))
+    results.append(case("replay-idempotent", replay))
 
     def forged():
         forged_auth = replace(auth, human_gate_receipt="forged-gate")
-        try:
-            RuntimeEffectSink(Transport(), root=".").submit(effect, replace(context, authorization=forged_auth))
-        except RuntimeEffectError as exc:
-            assert exc.code == "AUTHORIZATION_DIGEST_INVALID"
-            return "tamper rejected"
-        raise AssertionError("tampered authorization was accepted")
+        with tempfile.TemporaryDirectory() as root:
+            try:
+                RuntimeEffectSink(Transport(), root=root).submit(effect, replace(context, authorization=forged_auth))
+            except RuntimeEffectError as exc:
+                assert exc.code == "AUTHORIZATION_DIGEST_INVALID"
+                return "tamper rejected"
+            raise AssertionError("tampered authorization was accepted")
     results.append(case("tampered-authorization-deny", forged))
 
     def expired():
         expired_auth = EffectAuthorization.issue(build_change_proposal(effect, context), authority="coordinator-1", issuer="simplicio-loop", human_gate_receipt="human-gate-1", now=time.time() - 10, ttl_s=1)
-        try:
-            RuntimeEffectSink(Transport(), root=".").submit(effect, replace(context, authorization=expired_auth))
-        except RuntimeEffectError as exc:
-            assert exc.code == "AUTHORIZATION_EXPIRED"
-            return "expired authorization rejected"
-        raise AssertionError("expired authorization was accepted")
+        with tempfile.TemporaryDirectory() as root:
+            try:
+                RuntimeEffectSink(Transport(), root=root).submit(effect, replace(context, authorization=expired_auth))
+            except RuntimeEffectError as exc:
+                assert exc.code == "AUTHORIZATION_EXPIRED"
+                return "expired authorization rejected"
+            raise AssertionError("expired authorization was accepted")
     results.append(case("expired-authorization-deny", expired))
 
     def path_escape():
@@ -193,27 +190,32 @@ def main():
         unsafe_context = replace(context, plan_node=unsafe_node)
         unsafe_effect = replace(effect, context_handle="ctx-1")
         unsafe_auth = EffectAuthorization.issue(build_change_proposal(unsafe_effect, unsafe_context), authority="coordinator-1", issuer="simplicio-loop", human_gate_receipt="human-gate-1")
-        try:
-            RuntimeEffectSink(Transport(), root=".").submit(unsafe_effect, replace(unsafe_context, authorization=unsafe_auth))
-        except RuntimeEffectError as exc:
-            assert exc.code == "WRITE_SET_ESCAPE"
-            return "path traversal rejected"
-        raise AssertionError("path traversal was accepted")
+        with tempfile.TemporaryDirectory() as root:
+            try:
+                RuntimeEffectSink(Transport(), root=root).submit(unsafe_effect, replace(unsafe_context, authorization=unsafe_auth))
+            except RuntimeEffectError as exc:
+                assert exc.code == "WRITE_SET_ESCAPE"
+                return "path traversal rejected"
+            raise AssertionError("path traversal was accepted")
     results.append(case("path-traversal-deny", path_escape))
 
     def unknown():
-        result = RuntimeEffectSink(Transport(failure="RUNTIME_TRANSPORT_ERROR"), root=".").submit(effect, replace(context, authorization=auth))
-        assert result.state == "effect_unknown"
-        return "ambiguous transport is unknown"
+        with tempfile.TemporaryDirectory() as root:
+            result = RuntimeEffectSink(Transport(failure="RUNTIME_TRANSPORT_ERROR"), root=root).submit(effect, replace(context, authorization=auth))
+            assert result.state == "effect_unknown"
+            return "ambiguous transport is unknown"
     results.append(case("effect-unknown-no-replay", unknown))
 
     def redaction():
-        result = RuntimeEffectSink(Transport(sensitive=True), root=".").submit(effect, replace(context, authorization=auth))
-        assert result.state == "effect_unknown"
-        assert "RECEIPT_REDACTION_INVALID" in result.reason_codes
-        return "sensitive receipt rejected"
+        with tempfile.TemporaryDirectory() as root:
+            result = RuntimeEffectSink(Transport(sensitive=True), root=root).submit(effect, replace(context, authorization=auth))
+            assert result.state == "effect_unknown"
+            assert "RECEIPT_REDACTION_INVALID" in result.reason_codes
+            return "sensitive receipt rejected"
     results.append(case("receipt-secret-redaction", redaction))
     return {"schema": "simplicio.issue-302-authority-e2e/v1", "cases": results, "ok": all(item["status"] == "PASS" for item in results)}
+
+print(json.dumps(main(), ensure_ascii=False))
 '''
 
 def run_helper():
