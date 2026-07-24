@@ -48,6 +48,9 @@ from .runtime_execution_receipt import RuntimeExecutionReceiptError
 from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
 from .execution_board import ExecutionBoard
+from .execution_route import AGENT_KEYWORDS, SCHEMA as EXECUTION_ROUTE_SCHEMA
+from .execution_route import _stable_hash as _execution_route_hash
+from .execution_route import decide_route, verify_route_hash
 
 try:
     from scripts.agent_identity import ensure_identity
@@ -2736,6 +2739,36 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     if planned_state and not _repo_state_equivalent(planned_state, current):
         raise RuntimeError("repository changed after planning; re-run mapper before execution")
     task = tasks[task_index - 1]
+    # #694: every production item gets an authoritative route receipt before
+    # mutation authority or an execution backend is selected.  The route is a
+    # deterministic gate; Runtime remains the physical/policy owner.
+    task_text = _task_goal(task)
+    worker_capabilities = task.get("worker_capabilities") or task.get("capabilities") or ()
+    worker_available = bool(worker_capabilities) or os.environ.get("SIMPLICIO_DETERMINISTIC_WORKER", "1").lower() not in {"0", "false", "no", "off"}
+    route = decide_route(task_text, has_deterministic_worker=worker_available,
+                         is_ambiguous=bool(task.get("ambiguous") or task.get("requires_semantic_review")))
+    route_record = route.to_dict()
+    route_record.update({
+        "run_id": run_id,
+        "task_index": task_index,
+        "task_id": str(task.get("id") or ""),
+        "evidence_handles": sorted({
+            str(value) for value in (
+                (plan.get("steps") or [])[task_index - 1].get("mapper_context_hash", ""),
+                (plan.get("steps") or [])[task_index - 1].get("context_pack_hash", ""),
+            ) if str(value)
+        }),
+        "causal_ids": [run_id, str(task.get("id") or task_index)],
+        "route_authority": "loop-runner",
+    })
+    route_record["receipt_sha"] = _execution_route_hash(
+        {key: value for key, value in route_record.items() if key != "receipt_sha"}
+    )
+    if not verify_route_hash(route_record):
+        raise RuntimeError("execution-route receipt failed deterministic hash verification")
+    _write_json(run_dir / "execution-route.json", route_record)
+    status["state"].setdefault("operator", {})["execution_route"] = route_record
+    _write_json(run_dir / "state.json", status["state"])
     attempt = int((status["state"] or {}).get("attempts", 0)) + 1
     # #284: mutation-authority gate, mandatory by default. execute_operator()
     # refuses to run without a valid planning-receipt.json whose mutation_authority
