@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 61523)
+Total output lines: 5022
+
 from __future__ import annotations
 
 import json
@@ -50,6 +53,8 @@ from .runtime_execution_receipt import RuntimeExecutionReceiptError
 from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
 from .runtime_bridge import RuntimeBridge
 from .runtime_effect_adapter import EffectRequest, RuntimeEffectAdapter, RuntimeEffectError
+from .canonical_plan import CanonicalPlan, load_canonical_plan
+from .authority_boundary import prepare_authorization_handoff
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
 from .execution_board import ExecutionBoard
 from .execution_route import AGENT_KEYWORDS, SCHEMA as EXECUTION_ROUTE_SCHEMA
@@ -583,7 +588,8 @@ def _runtime_effect_adapter(repo_path: Path, profile: str) -> RuntimeEffectAdapt
 def _build_effect_request(repo_path: Path, run_id: str, task_index: int,
                           task: Mapping[str, Any], attempt: int,
                           targets: Sequence[str], route_record: Mapping[str, Any],
-                          guarded_attempt: Any) -> EffectRequest:
+                          guarded_attempt: Any,
+                          canonical_plan: Optional[CanonicalPlan] = None) -> EffectRequest:
     lease = getattr(guarded_attempt, "lease", None)
     lease_id = str(getattr(lease, "lease_id", "") or f"loop-run:{run_id}")
     raw_fence = getattr(lease, "fencing_token", 1)
@@ -606,6 +612,7 @@ def _build_effect_request(repo_path: Path, run_id: str, task_index: int,
         gate_id=str(route_record.get("receipt_sha") or "execution-route"),
         runtime_generation=os.environ.get("SIMPLICIO_RUNTIME_GENERATION") or None,
         transaction_id=transaction_id,
+        canonical_plan=canonical_plan,
     )
 
 
@@ -942,6 +949,7 @@ def _context_handoff_args(
     attempt_id: str = "",
     lease_id: str = "",
     fencing_token: str = "",
+    require_authorization: bool = False,
 ) -> Tuple[List[str], Dict[str, Any]]:
     """Project canonical Mapper context artifacts into the Dev CLI argv.
 
@@ -951,13 +959,22 @@ def _context_handoff_args(
     recorded as a diagnostic; the integrated Dev CLI remains the fail-closed
     owner of the final context gate.
     """
+    authorization_args, authorization_handoff = prepare_authorization_handoff(
+        run_root, required=require_authorization,
+    )
     mapper_path = run_root / "mapper-context.json"
     if not mapper_path.exists():
-        return [], {"status": "missing", "reason_code": "CONTEXT_ARTIFACTS_UNAVAILABLE"}
+        return list(authorization_args), {
+            "status": "missing", "reason_code": "CONTEXT_ARTIFACTS_UNAVAILABLE",
+            "authorization": authorization_handoff,
+        }
     try:
         mapper = _load_json(mapper_path)
     except (OSError, ValueError):
-        return [], {"status": "invalid", "reason_code": "CONTEXT_ARTIFACTS_INVALID"}
+        return list(authorization_args), {
+            "status": "invalid", "reason_code": "CONTEXT_ARTIFACTS_INVALID",
+            "authorization": authorization_handoff,
+        }
     handoff = mapper.get("handoff") if isinstance(mapper.get("handoff"), Mapping) else {}
     stdout = handoff.get("stdout") if isinstance(handoff.get("stdout"), Mapping) else handoff
     if not isinstance(stdout, Mapping):
@@ -1001,13 +1018,14 @@ def _context_handoff_args(
     )
     context_handle = first_value(("context_handle", "canonical_context_handle"))
     if not all((snapshot_path, pack_path, execution_path, context_handle)):
-        return [], {
+        return list(authorization_args), {
             "status": "missing",
             "reason_code": "CONTEXT_ARTIFACTS_INCOMPLETE",
             "snapshot": bool(snapshot_path),
             "pack": bool(pack_path),
             "execution_context": bool(execution_path),
             "context_handle": bool(context_handle),
+            "authorization": authorization_handoff,
         }
     args = [
         "--context-snapshot", str(snapshot_path),
@@ -1021,12 +1039,14 @@ def _context_handoff_args(
             "--lease-id", lease_id,
             "--fencing-token", fencing_token,
         ])
+    args.extend(authorization_args)
     return args, {
         "status": "propagated",
         "context_handle": str(context_handle),
         "snapshot_path": str(snapshot_path),
         "pack_path": str(pack_path),
         "execution_context_path": str(execution_path),
+        "authorization": authorization_handoff,
     }
 
 
@@ -2501,164 +2521,7 @@ def _fallback_targets(repo_path: Path) -> List[str]:
             if not name.endswith((".py", ".ts", ".tsx", ".js")):
                 continue
             full = Path(root) / name
-            try:
-                rel = full.relative_to(repo_path).as_posix()
-            except ValueError:
-                continue
-            low = rel.lower()
-            if "/_bundle/" in low or low.startswith(".github/"):
-                continue
-            out.append(rel)
-    out.sort()
-    return out[:8]
-
-
-def _candidate_targets(mapper_payload: Dict[str, Any], repo_path: Path) -> List[str]:
-    handoff = ((mapper_payload.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
-    files = handoff.get("files") or []
-    ranked = []
-    for item in files:
-        path = item.get("path") if isinstance(item, dict) else None
-        if not path:
-            continue
-        try:
-            resolved = (repo_path / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
-            resolved.relative_to(repo_path.resolve())
-        except (OSError, ValueError):
-            continue
-        low = path.lower()
-        if low.startswith(".orchestrator/") or low.startswith(".claude/"):
-            continue
-        if low.startswith(".venv/") or low.startswith("venv/") or "/site-packages/" in low:
-            continue
-        if low.startswith(".github/"):
-            continue
-        if "/_bundle/" in low.replace("\\", "/"):
-            continue
-        if low.endswith(".py") or low.endswith(".ts") or low.endswith(".tsx") or low.endswith(".js"):
-            ranked.append(path)
-    ranked = ranked[:8]
-    return ranked or _fallback_targets(repo_path)
-
-
-def _build_anchor(tasks: List[Dict[str, Any]], contract_hash: str) -> Dict[str, Any]:
-    criteria = []
-    index = 1
-    for task_index, task in enumerate(tasks, start=1):
-        for scenario in task.get("scenarios") or []:
-            criteria.append({
-                "id": f"AC{index}",
-                "task_index": task_index,
-                "scenario_id": scenario.get("id"),
-                "title": scenario.get("title"),
-                "rule_refs": scenario.get("rule_refs") or [],
-                "status": "pending",
-            })
-            index += 1
-    return {
-        "schema": "simplicio.anchor/v1",
-        "contract_hash": contract_hash,
-        "criteria": criteria,
-        "created_at": _now(),
-    }
-
-
-def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, Any],
-                              target: str) -> Dict[str, Any]:
-    try:
-        target_path = (repo_path / target).resolve() if not Path(target).is_absolute() else Path(target).resolve()
-        target_path.relative_to(repo_path.resolve())
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"operator target outside authorized repo: {target!r}") from exc
-    _preflight_operator(repo_path, run_root)
-    task_spec_path = run_root / "task-spec.json"
-    _write_json(task_spec_path, _task_spec_payload(task))
-    context_args, context_handoff = _context_handoff_args(repo_path, run_root)
-    fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", "").strip()
-    if fake:
-        payload = json.loads(fake)
-        receipt = {
-            "schema": OPERATOR_RECEIPT_SCHEMA,
-            "mode": "dry_run",
-            "tool": "simplicio-dev-cli",
-            "execution_state": payload.get("execution_state", "dry_run"),
-            "target": target,
-            "goal": _task_goal(task),
-            "argv": payload.get("argv", []),
-            "returncode": payload.get("returncode", 0),
-            "stdout": payload.get("stdout", {}),
-            "stderr": payload.get("stderr", ""),
-            "timed_out": False,
-            "measured_at": _now(),
-            "source": "env_override",
-            "context_handoff": context_handoff,
-            "repo_state_before": _repo_fingerprint(repo_path),
-        }
-        _write_json(run_root / "operator-receipt.json", receipt)
-        return receipt
-
-    argv = _devcli_cmd(
-        repo_path, "task", "--root", str(repo_path), "--task-spec", str(task_spec_path),
-        "--mode", "integrated", "--target", target, "--dry-run-task", "--json",
-        "--bound-paths", target,
-    )
-    argv.extend(context_args)
-    try:
-        op_env = _devcli_env(repo_path, _operator_env())
-        result = subprocess.run(
-            argv,
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=_operator_timeout("dry_run"),
-            env=op_env,
-        )
-        stdout = (result.stdout or "").strip()
-        parsed = {}
-        if stdout:
-            try:
-                parsed = json.loads(stdout)
-            except ValueError:
-                parsed = {"raw": stdout}
-        receipt = {
-            "schema": OPERATOR_RECEIPT_SCHEMA,
-            "mode": "dry_run",
-            "tool": "simplicio-dev-cli",
-            "execution_state": "dry_run" if result.returncode == 0 else "blocked",
-            "target": target,
-            "goal": _task_goal(task),
-            "argv": argv,
-            "returncode": result.returncode,
-            "stdout": parsed,
-            "stderr": (result.stderr or "").strip(),
-            "timed_out": False,
-            "measured_at": _now(),
-            "source": "live_cli",
-            "context_handoff": context_handoff,
-            "provider_config": {
-                "model": op_env.get("SIMPLICIO_MODEL", ""),
-                "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
-            },
-            "repo_state_before": _repo_fingerprint(repo_path),
-        }
-    except subprocess.TimeoutExpired as exc:
-        op_env = _operator_env()
-        receipt = {
-            "schema": OPERATOR_RECEIPT_SCHEMA,
-            "mode": "dry_run",
-            "tool": "simplicio-dev-cli",
-            "execution_state": "blocked",
-            "target": target,
-            "goal": _task_goal(task),
-            "argv": argv,
-            "returncode": None,
-            "stdout": {},
-            "stderr": f"timed out after {exc.timeout}s",
-            "timed_out": True,
-            "measured_at": _now(),
-            "source": "live_cli",
-            "context_handoff": context_handoff,
-            "provider_config": {
+  …1523 tokens truncated…config": {
                 "model": op_env.get("SIMPLICIO_MODEL", ""),
                 "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
             },
@@ -3239,12 +3102,14 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     _write_json(task_spec_path, _task_spec_payload(task))
     lease = getattr(getattr(guarded_attempt, "lease", None), "lease_id", "")
     fence = getattr(getattr(guarded_attempt, "lease", None), "fencing_token", "")
+    profile = _execution_profile()
     context_args, context_handoff = _context_handoff_args(
         repo_path,
         run_dir,
         attempt_id=f"{run_id}:attempt:{attempt}",
         lease_id=str(lease or ""),
         fencing_token=str(fence or ""),
+        require_authorization=profile == "runtime-backed",
     )
     argv = _devcli_cmd(
         repo_path,
@@ -3284,10 +3149,13 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "model": op_env.get("SIMPLICIO_MODEL", ""),
         "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
     }
-    profile = _execution_profile()
     effect_adapter = _runtime_effect_adapter(repo_path, profile)
     effect_request = _build_effect_request(
         repo_path, run_id, task_index, task, attempt, targets, route_record, guarded_attempt,
+        canonical_plan=(
+            load_canonical_plan(plan["canonical_plan"], expected_digest=str(plan.get("canonical_plan_digest") or ""))
+            if isinstance(plan.get("canonical_plan"), Mapping) else None
+        ),
     )
     effect_outcome = _execute_operator_effect(
         profile=profile,
