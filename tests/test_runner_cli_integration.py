@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 import pytest
@@ -145,6 +146,47 @@ def test_devcli_cmd_prefers_repo_checkout(tmp_path):
     assert env["PYTHONPATH"].split(os.pathsep)[0] == str(repo)
 
 
+def test_task_spec_payload_preserves_loop_contract_and_source():
+    task = runner_mod.compile_many(TASK, source_path="issue-299.md")["tasks"][0]
+    payload = runner_mod._task_spec_payload(task)
+
+    assert payload["schema"] == "simplicio.task-spec/v2"
+    assert payload["original_text"] == task["original_text"]
+    assert payload["loop_task_contract"] == task
+    assert payload["acceptance_criteria"][0]["id"] == "SCN1"
+    assert len(payload["source_hash"]) == 64
+    assert payload["source"]["locator"] == "issue-299.md"
+
+
+def test_prepare_operator_receipt_uses_typed_task_spec_file(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "worker.py").write_text("pass\n", encoding="utf-8")
+    run_root = tmp_path / "run"
+    task = runner_mod.compile_many(TASK)["tasks"][0]
+    captured = {}
+
+    monkeypatch.setattr(runner_mod, "_preflight_operator", lambda *args: {})
+
+    def fake_run(argv, **kwargs):
+        if "--task-spec" in argv:
+            captured["task_argv"] = list(argv)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True}), stderr="")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+    receipt = runner_mod._prepare_operator_receipt(repo, run_root, task, "src/worker.py")
+    task_spec_path = run_root / "task-spec.json"
+    task_spec = json.loads(task_spec_path.read_text(encoding="utf-8"))
+
+    assert receipt["returncode"] == 0
+    task_argv = captured["task_argv"]
+    assert task_argv[task_argv.index("--task-spec") + 1] == str(task_spec_path)
+    assert "--criteria" not in task_argv
+    assert "--constraints" not in task_argv
+    assert task_spec["original_text"] == task["original_text"]
+
+
 def test_build_plan_uses_filtered_candidate_targets(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -271,7 +313,7 @@ def _start_run_for_maintenance_cli(tmp_path, monkeypatch):
         "help_returncode": 0,
     }))
     monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON", json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target --task-spec --mode",
         "help_returncode": 0,
     }))
     monkeypatch.setenv("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", json.dumps({
@@ -484,7 +526,7 @@ def test_deliver_reconciles_external_delivery_state(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target --task-spec --mode",
         "help_returncode": 0
     })
     started = _arm_result(
@@ -576,7 +618,7 @@ def test_sync_source_requeries_github_fixture_for_merge_ready(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target --task-spec --mode",
         "help_returncode": 0
     })
     started = _arm_result(
@@ -631,7 +673,7 @@ def test_sync_source_requeries_github_fixture_for_release(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target --task-spec --mode",
         "help_returncode": 0
     })
     started = _arm_result(
@@ -684,7 +726,7 @@ def test_sync_source_reopens_delivery_when_merge_ready_regresses(tmp_path):
         "help_returncode": 0
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
+        "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target --task-spec --mode",
         "help_returncode": 0
     })
     started = _arm_result(
@@ -746,7 +788,7 @@ def test_run_blocks_when_mapper_preflight_version_too_old(tmp_path):
                 "help_returncode": 0
             }),
             "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": json.dumps({
-                "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target",
+                "help_stdout": "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target --task-spec --mode",
                 "help_returncode": 0
             })
         },
@@ -763,7 +805,7 @@ def test_run_blocks_when_devcli_preflight_lacks_required_capability(
     tmp_path, monkeypatch, missing_capability,
 ):
     surface = (
-        "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target"
+        "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target --task-spec --mode"
     ).replace(missing_capability, "")
     _, task = _setup_deterministic_preflight_fixture(
         monkeypatch,
@@ -989,7 +1031,7 @@ def _setup_deterministic_preflight_fixture(
         return payload
 
     def fake_operator_preflight(repo_path, run_root):
-        help_surface = "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target"
+        help_surface = "Usage: simplicio-dev-cli task --dry-run-task --json --bound-paths --target --task-spec --mode"
         receipt = {
             "tool": "simplicio-dev-cli", "identity_ok": True, "version_ok": True,
             "help_stdout": help_surface, "task_help_stdout": help_surface,
