@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -185,6 +186,10 @@ def test_prepare_operator_receipt_uses_typed_task_spec_file(tmp_path, monkeypatc
     assert "--criteria" not in task_argv
     assert "--constraints" not in task_argv
     assert task_spec["original_text"] == task["original_text"]
+    assert receipt["task_spec_path"] == str(task_spec_path)
+    assert receipt["task_spec_hash"] == hashlib.sha256(
+        json.dumps(task_spec, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def test_prepare_operator_receipt_propagates_canonical_context_when_mapper_supplies_it(tmp_path, monkeypatch):
