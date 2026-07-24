@@ -51,6 +51,7 @@ from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
 from .runtime_bridge import RuntimeBridge
 from .runtime_effect_adapter import EffectRequest, RuntimeEffectAdapter, RuntimeEffectError
 from .canonical_plan import CanonicalPlan, load_canonical_plan
+from .authority_boundary import prepare_authorization_handoff
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
 from .execution_board import ExecutionBoard
 from .execution_route import AGENT_KEYWORDS, SCHEMA as EXECUTION_ROUTE_SCHEMA
@@ -945,6 +946,7 @@ def _context_handoff_args(
     attempt_id: str = "",
     lease_id: str = "",
     fencing_token: str = "",
+    require_authorization: bool = False,
 ) -> Tuple[List[str], Dict[str, Any]]:
     """Project canonical Mapper context artifacts into the Dev CLI argv.
 
@@ -954,13 +956,22 @@ def _context_handoff_args(
     recorded as a diagnostic; the integrated Dev CLI remains the fail-closed
     owner of the final context gate.
     """
+    authorization_args, authorization_handoff = prepare_authorization_handoff(
+        run_root, required=require_authorization,
+    )
     mapper_path = run_root / "mapper-context.json"
     if not mapper_path.exists():
-        return [], {"status": "missing", "reason_code": "CONTEXT_ARTIFACTS_UNAVAILABLE"}
+        return list(authorization_args), {
+            "status": "missing", "reason_code": "CONTEXT_ARTIFACTS_UNAVAILABLE",
+            "authorization": authorization_handoff,
+        }
     try:
         mapper = _load_json(mapper_path)
     except (OSError, ValueError):
-        return [], {"status": "invalid", "reason_code": "CONTEXT_ARTIFACTS_INVALID"}
+        return list(authorization_args), {
+            "status": "invalid", "reason_code": "CONTEXT_ARTIFACTS_INVALID",
+            "authorization": authorization_handoff,
+        }
     handoff = mapper.get("handoff") if isinstance(mapper.get("handoff"), Mapping) else {}
     stdout = handoff.get("stdout") if isinstance(handoff.get("stdout"), Mapping) else handoff
     if not isinstance(stdout, Mapping):
@@ -1004,13 +1015,14 @@ def _context_handoff_args(
     )
     context_handle = first_value(("context_handle", "canonical_context_handle"))
     if not all((snapshot_path, pack_path, execution_path, context_handle)):
-        return [], {
+        return list(authorization_args), {
             "status": "missing",
             "reason_code": "CONTEXT_ARTIFACTS_INCOMPLETE",
             "snapshot": bool(snapshot_path),
             "pack": bool(pack_path),
             "execution_context": bool(execution_path),
             "context_handle": bool(context_handle),
+            "authorization": authorization_handoff,
         }
     args = [
         "--context-snapshot", str(snapshot_path),
@@ -1024,12 +1036,14 @@ def _context_handoff_args(
             "--lease-id", lease_id,
             "--fencing-token", fencing_token,
         ])
+    args.extend(authorization_args)
     return args, {
         "status": "propagated",
         "context_handle": str(context_handle),
         "snapshot_path": str(snapshot_path),
         "pack_path": str(pack_path),
         "execution_context_path": str(execution_path),
+        "authorization": authorization_handoff,
     }
 
 
@@ -3242,12 +3256,14 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     _write_json(task_spec_path, _task_spec_payload(task))
     lease = getattr(getattr(guarded_attempt, "lease", None), "lease_id", "")
     fence = getattr(getattr(guarded_attempt, "lease", None), "fencing_token", "")
+    profile = _execution_profile()
     context_args, context_handoff = _context_handoff_args(
         repo_path,
         run_dir,
         attempt_id=f"{run_id}:attempt:{attempt}",
         lease_id=str(lease or ""),
         fencing_token=str(fence or ""),
+        require_authorization=profile == "runtime-backed",
     )
     argv = _devcli_cmd(
         repo_path,
@@ -3287,7 +3303,6 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "model": op_env.get("SIMPLICIO_MODEL", ""),
         "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
     }
-    profile = _execution_profile()
     effect_adapter = _runtime_effect_adapter(repo_path, profile)
     effect_request = _build_effect_request(
         repo_path, run_id, task_index, task, attempt, targets, route_record, guarded_attempt,
