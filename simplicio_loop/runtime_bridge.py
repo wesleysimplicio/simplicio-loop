@@ -18,6 +18,12 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Dict, Mapping, Optional, Set, Tuple
 
+from .runtime_binary import (
+    RuntimeBinaryError,
+    resolve_and_probe_simplicio_binary,
+    runtime_preflight,
+)
+
 
 RUNTIME_BRIDGE_SCHEMA = "simplicio.loop-runtime-bridge/v1"
 RUNTIME_MCP_PROTOCOL = "2024-11-05"
@@ -166,6 +172,15 @@ class _RuntimeProcess:
                 "jsonrpc": "2.0", "method": "notifications/initialized",
             }) + "\n")
             self.process.stdin.flush()
+        self.initialize_result = result
+        self.tools_result = self._request("tools/list", {}, timeout=10.0)
+        tools = self.tools_result.get("tools")
+        if not isinstance(tools, list):
+            raise RuntimeBridgeError("Runtime MCP tools/list omitted a tools array")
+        self.available_tools = {
+            str(item.get("name")) for item in tools
+            if isinstance(item, Mapping) and isinstance(item.get("name"), str)
+        }
 
     def call_tool(self, name: str, arguments: Mapping[str, Any], *,
                   timeout: float = 10.0) -> Dict[str, Any]:
@@ -350,7 +365,20 @@ class RuntimeBridge:
                 return session.process
             session.state = "starting"
             try:
-                process = _RuntimeProcess(self.binary, workspace_path)
+                preflight_binary = None
+                binary = self.binary or "simplicio"
+                if _RuntimeProcess is _REAL_RUNTIME_PROCESS:
+                    preflight_binary = resolve_and_probe_simplicio_binary(explicit=self.binary)
+                    binary = preflight_binary.path
+                process = _RuntimeProcess(binary, workspace_path)
+                if preflight_binary is not None:
+                    process.preflight_receipt = runtime_preflight(
+                        binary=preflight_binary,
+                        initialize_result=process.initialize_result,
+                        tools_result=process.tools_result,
+                        require_server_identity=True,
+                    )
+                    self._preflight_receipts[session.key] = process.preflight_receipt
             except Exception:
                 session.state = "failed"
                 raise
@@ -437,6 +465,16 @@ class RuntimeBridge:
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeBridgeCancelled(receipt=session.status())
             process = self._process_for_workspace(workspace_path)
+            available = getattr(process, "available_tools", None)
+            if available is not None and tool not in available:
+                raise RuntimeBridgeError("Runtime MCP missing required tool: " + tool,
+                                         code="capability_missing")
+            if isinstance(self._preflight_receipts.get(str(workspace_path)), Mapping):
+                enriched = dict(arguments)
+                transaction = dict(enriched.get("__runtime_effect_transaction") or {})
+                transaction["preflight"] = dict(self._preflight_receipts[str(workspace_path)])
+                enriched["__runtime_effect_transaction"] = transaction
+                arguments = enriched
             try:
                 return process.call_tool(tool, arguments, timeout=max(deadline - time.monotonic(), 0.001))
             except RuntimeBridgeTimeout as exc:
@@ -531,3 +569,6 @@ __all__ = [
     "RuntimeBridgeCancelled", "RuntimeBridgeTimeout", "RuntimeBridgeBackpressure",
     "RuntimeBridgeRecoveryUnknown",
 ]
+
+
+_REAL_RUNTIME_PROCESS = _RuntimeProcess
