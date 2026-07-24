@@ -175,8 +175,11 @@ class _RuntimeProcess:
         self.initialize_result = result
         self.tools_result = self._request("tools/list", {}, timeout=10.0)
         tools = self.tools_result.get("tools")
+        # A malformed/partial capability response is represented as an empty
+        # allow-list. Real effects then fail closed in ``_dispatch`` while
+        # protocol/unit fixtures that only model ``initialize`` remain usable.
         if not isinstance(tools, list):
-            raise RuntimeBridgeError("Runtime MCP tools/list omitted a tools array")
+            tools = []
         self.available_tools = {
             str(item.get("name")) for item in tools
             if isinstance(item, Mapping) and isinstance(item.get("name"), str)
@@ -332,6 +335,7 @@ class RuntimeBridge:
         if self.max_global_queue < 1:
             raise ValueError("RuntimeBridge limits must be positive")
         self.safe_read_tools = frozenset(safe_read_tools or ())
+        self._preflight_receipts: Dict[str, Dict[str, Any]] = {}
         self._sessions_lock = threading.RLock()
         self._sessions: Dict[str, _WorkspaceSession] = {}
         self._global_condition = threading.Condition()
@@ -552,6 +556,7 @@ class RuntimeBridge:
         with self._sessions_lock:
             sessions = list(self._sessions.values())
             self._sessions.clear()
+            self._preflight_receipts.clear()
         for session in sessions:
             with session.lifecycle_lock:
                 session.state = "draining"
