@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 61523)
-Total output lines: 5022
-
 from __future__ import annotations
 
 import json
@@ -2521,7 +2518,164 @@ def _fallback_targets(repo_path: Path) -> List[str]:
             if not name.endswith((".py", ".ts", ".tsx", ".js")):
                 continue
             full = Path(root) / name
-  …1523 tokens truncated…config": {
+            try:
+                rel = full.relative_to(repo_path).as_posix()
+            except ValueError:
+                continue
+            low = rel.lower()
+            if "/_bundle/" in low or low.startswith(".github/"):
+                continue
+            out.append(rel)
+    out.sort()
+    return out[:8]
+
+
+def _candidate_targets(mapper_payload: Dict[str, Any], repo_path: Path) -> List[str]:
+    handoff = ((mapper_payload.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
+    files = handoff.get("files") or []
+    ranked = []
+    for item in files:
+        path = item.get("path") if isinstance(item, dict) else None
+        if not path:
+            continue
+        try:
+            resolved = (repo_path / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
+            resolved.relative_to(repo_path.resolve())
+        except (OSError, ValueError):
+            continue
+        low = path.lower()
+        if low.startswith(".orchestrator/") or low.startswith(".claude/"):
+            continue
+        if low.startswith(".venv/") or low.startswith("venv/") or "/site-packages/" in low:
+            continue
+        if low.startswith(".github/"):
+            continue
+        if "/_bundle/" in low.replace("\\", "/"):
+            continue
+        if low.endswith(".py") or low.endswith(".ts") or low.endswith(".tsx") or low.endswith(".js"):
+            ranked.append(path)
+    ranked = ranked[:8]
+    return ranked or _fallback_targets(repo_path)
+
+
+def _build_anchor(tasks: List[Dict[str, Any]], contract_hash: str) -> Dict[str, Any]:
+    criteria = []
+    index = 1
+    for task_index, task in enumerate(tasks, start=1):
+        for scenario in task.get("scenarios") or []:
+            criteria.append({
+                "id": f"AC{index}",
+                "task_index": task_index,
+                "scenario_id": scenario.get("id"),
+                "title": scenario.get("title"),
+                "rule_refs": scenario.get("rule_refs") or [],
+                "status": "pending",
+            })
+            index += 1
+    return {
+        "schema": "simplicio.anchor/v1",
+        "contract_hash": contract_hash,
+        "criteria": criteria,
+        "created_at": _now(),
+    }
+
+
+def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, Any],
+                              target: str) -> Dict[str, Any]:
+    try:
+        target_path = (repo_path / target).resolve() if not Path(target).is_absolute() else Path(target).resolve()
+        target_path.relative_to(repo_path.resolve())
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"operator target outside authorized repo: {target!r}") from exc
+    _preflight_operator(repo_path, run_root)
+    task_spec_path = run_root / "task-spec.json"
+    _write_json(task_spec_path, _task_spec_payload(task))
+    context_args, context_handoff = _context_handoff_args(repo_path, run_root)
+    fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", "").strip()
+    if fake:
+        payload = json.loads(fake)
+        receipt = {
+            "schema": OPERATOR_RECEIPT_SCHEMA,
+            "mode": "dry_run",
+            "tool": "simplicio-dev-cli",
+            "execution_state": payload.get("execution_state", "dry_run"),
+            "target": target,
+            "goal": _task_goal(task),
+            "argv": payload.get("argv", []),
+            "returncode": payload.get("returncode", 0),
+            "stdout": payload.get("stdout", {}),
+            "stderr": payload.get("stderr", ""),
+            "timed_out": False,
+            "measured_at": _now(),
+            "source": "env_override",
+            "context_handoff": context_handoff,
+            "repo_state_before": _repo_fingerprint(repo_path),
+        }
+        _write_json(run_root / "operator-receipt.json", receipt)
+        return receipt
+
+    argv = _devcli_cmd(
+        repo_path, "task", "--root", str(repo_path), "--task-spec", str(task_spec_path),
+        "--mode", "integrated", "--target", target, "--dry-run-task", "--json",
+        "--bound-paths", target,
+    )
+    argv.extend(context_args)
+    try:
+        op_env = _devcli_env(repo_path, _operator_env())
+        result = subprocess.run(
+            argv,
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=_operator_timeout("dry_run"),
+            env=op_env,
+        )
+        stdout = (result.stdout or "").strip()
+        parsed = {}
+        if stdout:
+            try:
+                parsed = json.loads(stdout)
+            except ValueError:
+                parsed = {"raw": stdout}
+        receipt = {
+            "schema": OPERATOR_RECEIPT_SCHEMA,
+            "mode": "dry_run",
+            "tool": "simplicio-dev-cli",
+            "execution_state": "dry_run" if result.returncode == 0 else "blocked",
+            "target": target,
+            "goal": _task_goal(task),
+            "argv": argv,
+            "returncode": result.returncode,
+            "stdout": parsed,
+            "stderr": (result.stderr or "").strip(),
+            "timed_out": False,
+            "measured_at": _now(),
+            "source": "live_cli",
+            "context_handoff": context_handoff,
+            "provider_config": {
+                "model": op_env.get("SIMPLICIO_MODEL", ""),
+                "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
+            },
+            "repo_state_before": _repo_fingerprint(repo_path),
+        }
+    except subprocess.TimeoutExpired as exc:
+        op_env = _operator_env()
+        receipt = {
+            "schema": OPERATOR_RECEIPT_SCHEMA,
+            "mode": "dry_run",
+            "tool": "simplicio-dev-cli",
+            "execution_state": "blocked",
+            "target": target,
+            "goal": _task_goal(task),
+            "argv": argv,
+            "returncode": None,
+            "stdout": {},
+            "stderr": f"timed out after {exc.timeout}s",
+            "timed_out": True,
+            "measured_at": _now(),
+            "source": "live_cli",
+            "context_handoff": context_handoff,
+            "provider_config": {
                 "model": op_env.get("SIMPLICIO_MODEL", ""),
                 "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
             },
