@@ -187,6 +187,43 @@ def test_prepare_operator_receipt_uses_typed_task_spec_file(tmp_path, monkeypatc
     assert task_spec["original_text"] == task["original_text"]
 
 
+def test_prepare_operator_receipt_propagates_canonical_context_when_mapper_supplies_it(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "worker.py").write_text("pass\n", encoding="utf-8")
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    handle = "sha256:" + "a" * 64
+    (run_root / "mapper-context.json").write_text(json.dumps({
+        "handoff": {"stdout": {
+            "context_snapshot": {"schema": "simplicio.context-snapshot/v1", "snapshot_id": "snap-1"},
+            "canonical_context_pack": {"schema": "simplicio.context-pack/v1", "pack_hash": "pack-1"},
+            "execution_context": {"schema": "simplicio.execution-context/v1", "snapshot_id": "snap-1"},
+            "context_handle": handle,
+        }}
+    }), encoding="utf-8")
+    task = runner_mod.compile_many(TASK)["tasks"][0]
+    captured = {}
+
+    monkeypatch.setattr(runner_mod, "_preflight_operator", lambda *args: {})
+
+    def fake_run(argv, **kwargs):
+        if "--task-spec" in argv:
+            captured["task_argv"] = list(argv)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True}), stderr="")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+    receipt = runner_mod._prepare_operator_receipt(repo, run_root, task, "src/worker.py")
+    task_argv = captured["task_argv"]
+
+    assert receipt["context_handoff"]["status"] == "propagated"
+    assert receipt["context_handoff"]["context_handle"] == handle
+    assert task_argv[task_argv.index("--context-handle") + 1] == handle
+    assert json.loads((run_root / "context-snapshot.json").read_text(encoding="utf-8"))["snapshot_id"] == "snap-1"
+    assert json.loads((run_root / "context-pack.json").read_text(encoding="utf-8"))["pack_hash"] == "pack-1"
+
+
 def test_build_plan_uses_filtered_candidate_targets(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
