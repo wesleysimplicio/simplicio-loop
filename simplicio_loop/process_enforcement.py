@@ -314,7 +314,7 @@ def _proc_entry_identity(entry: Path) -> Optional[str]:
 
 
 def kill_process_tree(
-    pid: int, *, sig: int = signal.SIGKILL, expected_identity: Optional[str] = None,
+    pid: int, *, sig: int = getattr(signal, "SIGKILL", signal.SIGTERM), expected_identity: Optional[str] = None,
     dedicated_process_group: bool = False,
 ) -> bool:
     """Best-effort kill of ``pid`` and its descendants, from a thread/process that never held
@@ -620,7 +620,7 @@ class ProcessRegistry:
             return False
         return _process_identity(pid) == expected
 
-    def terminate(self, lease_id: str, *, sig: int = signal.SIGKILL) -> Dict[str, Any]:
+    def terminate(self, lease_id: str, *, sig: int = getattr(signal, "SIGKILL", signal.SIGTERM)) -> Dict[str, Any]:
         """Kill the live, supervised process registered under ``lease_id``, for real.
 
         Looks up the pid the registry already tracks for this lease and kills its whole tree
