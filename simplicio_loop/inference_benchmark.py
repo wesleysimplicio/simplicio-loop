@@ -8,13 +8,86 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
+import subprocess
 import sys
+import time
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 SCHEMA = "simplicio.inference-benchmark/v1"
 SCENARIOS = ("L0", "L1", "L2", "L3", "L4")
+LOCAL_MODEL_SMOKE_SCHEMA = "simplicio.local-model-smoke/v1"
+
+
+class LocalModelSmokeError(ValueError):
+    """A local model smoke request is malformed or cannot be executed safely."""
+
+
+def run_local_model_smoke(
+    model_path: str,
+    *,
+    llama_binary: str,
+    prompt: str = "OK",
+    max_tokens: int = 2,
+    timeout_seconds: float = 120.0,
+) -> Dict[str, Any]:
+    """Run a bounded, offline llama.cpp probe and return measured evidence.
+
+    The benchmark previously labelled a model in its manifest without proving that
+    the model could load.  This helper keeps the probe explicit and reproducible:
+    the caller supplies the executable and GGUF path, no shell is involved, and
+    the output records the exact command/result without claiming quality.
+    """
+    model = os.path.abspath(os.path.expanduser(str(model_path)))
+    binary = os.path.abspath(os.path.expanduser(str(llama_binary)))
+    if not model or not os.path.isfile(model) or not model.lower().endswith(".gguf"):
+        raise LocalModelSmokeError("model_path must be an existing .gguf file")
+    if not binary or not os.path.isfile(binary):
+        raise LocalModelSmokeError("llama_binary must be an existing executable")
+    if not str(prompt).strip() or max_tokens < 1 or timeout_seconds <= 0:
+        raise LocalModelSmokeError("prompt, max_tokens and timeout_seconds must be positive")
+    command = [
+        binary, "-m", model, "-p", str(prompt), "-n", str(int(max_tokens)),
+        "-c", "512", "-t", "2", "-tb", "2", "-b", "128", "-ub", "32",
+        "-ngl", "0", "-no-cnv", "--simple-io", "--no-display-prompt",
+        "--no-warmup", "--no-perf",
+    ]
+    started = time.perf_counter()
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True,
+            timeout=float(timeout_seconds), check=False,
+            env={**os.environ, "SIMPLICIO_RUNTIME_SUPERVISED": "1"},
+        )
+        timed_out = False
+        returncode = result.returncode
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        returncode = None
+        stdout = str(exc.stdout or "")
+        stderr = str(exc.stderr or "")
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+    return {
+        "schema": LOCAL_MODEL_SMOKE_SCHEMA,
+        "backend": "llama.cpp",
+        "model_path": model,
+        "model_size_bytes": os.path.getsize(model),
+        "command": command,
+        "prompt": str(prompt),
+        "max_tokens": int(max_tokens),
+        "timeout_seconds": float(timeout_seconds),
+        "inference_ran": not timed_out and returncode == 0,
+        "status": "MEASURED" if not timed_out and returncode == 0 else "UNVERIFIED",
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "elapsed_ms": elapsed_ms,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
 
 
 @dataclass(frozen=True)
@@ -159,4 +232,8 @@ def run_benchmark(*, scenarios: Sequence[str] = SCENARIOS, repeats: int = 1, see
             "report_hash": _digest(trials)}
 
 
-__all__ = ["DEFAULT_WORKLOAD", "SCENARIOS", "SCHEMA", "SyntheticTask", "aggregate_samples", "run_benchmark", "run_trial"]
+__all__ = [
+    "DEFAULT_WORKLOAD", "LOCAL_MODEL_SMOKE_SCHEMA", "LocalModelSmokeError",
+    "SCENARIOS", "SCHEMA", "SyntheticTask", "aggregate_samples", "run_benchmark",
+    "run_local_model_smoke", "run_trial",
+]
