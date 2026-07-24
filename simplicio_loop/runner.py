@@ -935,6 +935,101 @@ def _task_spec_payload(task: Mapping[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _context_handoff_args(
+    repo_path: Path,
+    run_root: Path,
+    *,
+    attempt_id: str = "",
+    lease_id: str = "",
+    fencing_token: str = "",
+) -> Tuple[List[str], Dict[str, Any]]:
+    """Project canonical Mapper context artifacts into the Dev CLI argv.
+
+    The compact Mapper handoff is not a ContextSnapshot.  This helper only
+    forwards explicitly supplied canonical artifacts and never derives a
+    handle from a path or from ``mapper_context_hash``.  Missing artifacts are
+    recorded as a diagnostic; the integrated Dev CLI remains the fail-closed
+    owner of the final context gate.
+    """
+    mapper_path = run_root / "mapper-context.json"
+    if not mapper_path.exists():
+        return [], {"status": "missing", "reason_code": "CONTEXT_ARTIFACTS_UNAVAILABLE"}
+    try:
+        mapper = _load_json(mapper_path)
+    except (OSError, ValueError):
+        return [], {"status": "invalid", "reason_code": "CONTEXT_ARTIFACTS_INVALID"}
+    handoff = mapper.get("handoff") if isinstance(mapper.get("handoff"), Mapping) else {}
+    stdout = handoff.get("stdout") if isinstance(handoff.get("stdout"), Mapping) else handoff
+    if not isinstance(stdout, Mapping):
+        stdout = {}
+
+    def first_value(keys: Sequence[str]) -> Any:
+        for container in (mapper, stdout):
+            for key in keys:
+                value = container.get(key) if isinstance(container, Mapping) else None
+                if value not in (None, "", {}):
+                    return value
+        return None
+
+    def persist_artifact(value: Any, filename: str) -> Path | None:
+        if isinstance(value, Mapping):
+            path = run_root / filename
+            _write_json(path, dict(value))
+            return path
+        if not isinstance(value, str) or not value.strip():
+            return None
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            for base in (repo_path, run_root):
+                resolved = (base / candidate).resolve()
+                if resolved.exists():
+                    return resolved
+            return None
+        return candidate.resolve() if candidate.exists() else None
+
+    snapshot_path = persist_artifact(
+        first_value(("context_snapshot", "canonical_context_snapshot", "context_snapshot_path")),
+        "context-snapshot.json",
+    )
+    pack_path = persist_artifact(
+        first_value(("canonical_context_pack", "context_pack_path")),
+        "context-pack.json",
+    )
+    execution_path = persist_artifact(
+        first_value(("execution_context", "canonical_execution_context", "execution_context_path")),
+        "execution-context.json",
+    )
+    context_handle = first_value(("context_handle", "canonical_context_handle"))
+    if not all((snapshot_path, pack_path, execution_path, context_handle)):
+        return [], {
+            "status": "missing",
+            "reason_code": "CONTEXT_ARTIFACTS_INCOMPLETE",
+            "snapshot": bool(snapshot_path),
+            "pack": bool(pack_path),
+            "execution_context": bool(execution_path),
+            "context_handle": bool(context_handle),
+        }
+    args = [
+        "--context-snapshot", str(snapshot_path),
+        "--context-pack", str(pack_path),
+        "--execution-context", str(execution_path),
+        "--context-handle", str(context_handle),
+    ]
+    if all(value.strip() for value in (attempt_id, lease_id, fencing_token)):
+        args.extend([
+            "--attempt-id", attempt_id,
+            "--lease-id", lease_id,
+            "--fencing-token", fencing_token,
+        ])
+    return args, {
+        "status": "propagated",
+        "context_handle": str(context_handle),
+        "snapshot_path": str(snapshot_path),
+        "pack_path": str(pack_path),
+        "execution_context_path": str(execution_path),
+    }
+
+
 def _auto_fan_out_enabled() -> bool:
     """Return whether batch execution may provision isolated workers automatically.
 
@@ -2478,6 +2573,7 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
     _preflight_operator(repo_path, run_root)
     task_spec_path = run_root / "task-spec.json"
     _write_json(task_spec_path, _task_spec_payload(task))
+    context_args, context_handoff = _context_handoff_args(repo_path, run_root)
     fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", "").strip()
     if fake:
         payload = json.loads(fake)
@@ -2495,6 +2591,7 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
             "timed_out": False,
             "measured_at": _now(),
             "source": "env_override",
+            "context_handoff": context_handoff,
             "repo_state_before": _repo_fingerprint(repo_path),
         }
         _write_json(run_root / "operator-receipt.json", receipt)
@@ -2505,6 +2602,7 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
         "--mode", "integrated", "--target", target, "--dry-run-task", "--json",
         "--bound-paths", target,
     )
+    argv.extend(context_args)
     try:
         op_env = _devcli_env(repo_path, _operator_env())
         result = subprocess.run(
@@ -2536,6 +2634,7 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
             "timed_out": False,
             "measured_at": _now(),
             "source": "live_cli",
+            "context_handoff": context_handoff,
             "provider_config": {
                 "model": op_env.get("SIMPLICIO_MODEL", ""),
                 "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
@@ -2558,6 +2657,7 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
             "timed_out": True,
             "measured_at": _now(),
             "source": "live_cli",
+            "context_handoff": context_handoff,
             "provider_config": {
                 "model": op_env.get("SIMPLICIO_MODEL", ""),
                 "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
@@ -3137,6 +3237,15 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     _preflight_operator(repo_path, run_dir)
     task_spec_path = run_dir / "task-spec.json"
     _write_json(task_spec_path, _task_spec_payload(task))
+    lease = getattr(getattr(guarded_attempt, "lease", None), "lease_id", "")
+    fence = getattr(getattr(guarded_attempt, "lease", None), "fencing_token", "")
+    context_args, context_handoff = _context_handoff_args(
+        repo_path,
+        run_dir,
+        attempt_id=f"{run_id}:attempt:{attempt}",
+        lease_id=str(lease or ""),
+        fencing_token=str(fence or ""),
+    )
     argv = _devcli_cmd(
         repo_path,
         "task",
@@ -3152,6 +3261,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "--bound-paths",
         target,
     )
+    argv.extend(context_args)
     checkpoint = _capture_operator_checkpoint(run_dir, repo_path, targets or [target])
     # #285 remaining gap: this dispatch has a real guarded lease (when the caller wired
     # one) and a real repo checkout/branch on hand -- surface them on the event so
@@ -3243,6 +3353,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         # measurement.
         "measured_at": _now(),
         "source": source,
+        "context_handoff": context_handoff,
         "provider_config": provider_config,
         "execution_profile": profile,
         "executor_profile": (effect_receipt or {}).get("executor_profile", profile),
