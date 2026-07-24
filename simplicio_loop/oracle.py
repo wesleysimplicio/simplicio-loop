@@ -10,6 +10,7 @@ from .delivery import delivery_rank, validate_delivery_receipt
 from .evidence import watcher_truth_from_receipt
 from .github_lifecycle import load_lifecycle_receipt
 from .quality_matrix import evaluate_quality_matrix
+from .execution_route import verify_route_hash
 
 PROMISE_RE = re.compile(r"<promise>\s*(.*?)\s*</promise>", re.IGNORECASE | re.DOTALL)
 COMPLETION_SCHEMA = "simplicio.completion-receipt/v1"
@@ -229,6 +230,11 @@ def persist_completion_receipt(payload: Dict[str, Any], loop_dir: str, run_dir: 
     anchor = _load_json(loop / "anchor.json") or {}
     manifest = _load_json(run / "manifest.json") if run else {}
     delivery = _load_json(run / "delivery-receipt.json") if run else {}
+    execution_route = (delivery or {}).get("execution_route") or {}
+    if not execution_route and run:
+        execution_route = _load_json(run / "execution-route.json") or {}
+    if execution_route and not verify_route_hash(execution_route):
+        execution_route = {}
     out = {
         "schema": COMPLETION_SCHEMA,
         "ready": bool(payload.get("ready")),
@@ -251,6 +257,8 @@ def persist_completion_receipt(payload: Dict[str, Any], loop_dir: str, run_dir: 
         },
         "delivery_target": manifest.get("delivery_target", ""),
         "delivery_state": delivery.get("current_state", ""),
+        "execution_route": execution_route,
+        "route_receipt_sha": execution_route.get("receipt_sha", ""),
         "challenge": challenge.get("challenge", ""),
         "goal_fp": challenge.get("goal_fp") or anchor.get("goal_fp") or "",
         "watcher_status": watcher_state.get("status", "UNVERIFIED"),

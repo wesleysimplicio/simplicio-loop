@@ -64,6 +64,35 @@ def _stable_hash(data: Any) -> str:
     blob = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
+CAPABILITY_SCHEMA = "simplicio.execution-capabilities/v1"
+
+
+def normalize_capability_manifest(value: Any) -> Any:
+    """Return a stable, order-insensitive representation of capabilities."""
+    if isinstance(value, Mapping):
+        return {str(key): normalize_capability_manifest(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        normalized = [normalize_capability_manifest(item) for item in value]
+        return sorted(normalized, key=lambda item: json.dumps(
+            item, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+        ))
+    return value
+
+
+def capability_fingerprint(value: Any) -> str:
+    """Hash the effective capability manifest used to select an execution route."""
+    return _stable_hash({
+        "schema": CAPABILITY_SCHEMA,
+        "capabilities": normalize_capability_manifest(value),
+    })
+
+
+def route_receipt_is_current(record: Mapping[str, Any], capability_manifest: Any) -> bool:
+    """Return whether a verified receipt matches the current capability manifest."""
+    return bool(record) and verify_route_hash(record) and (
+        str(record.get("capability_fingerprint") or "") == capability_fingerprint(capability_manifest)
+    )
+
 
 class ExecutionRouteError(ValueError):
     """Raised for malformed route-building input."""
@@ -267,6 +296,9 @@ __all__ = [
     "ExecutionRouteError",
     "build_execution_route",
     "decide_route",
+    "capability_fingerprint",
+    "normalize_capability_manifest",
+    "route_receipt_is_current",
     "record_route",
     "read_routes",
     "verify_route_hash",

@@ -51,8 +51,8 @@ from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
 from .execution_board import ExecutionBoard
 from .execution_route import AGENT_KEYWORDS, SCHEMA as EXECUTION_ROUTE_SCHEMA
 from .execution_route import _stable_hash as _execution_route_hash
+from .execution_route import capability_fingerprint, normalize_capability_manifest, route_receipt_is_current
 from .execution_route import decide_route, verify_route_hash
-
 try:
     from scripts.agent_identity import ensure_identity
 except ImportError:  # pragma: no cover - installed package without scripts namespace
@@ -2780,29 +2780,75 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     task_text = _task_goal(task)
     worker_capabilities = task.get("worker_capabilities") or task.get("capabilities") or ()
     worker_available = bool(worker_capabilities) or os.environ.get("SIMPLICIO_DETERMINISTIC_WORKER", "1").lower() not in {"0", "false", "no", "off"}
-    route = decide_route(task_text, has_deterministic_worker=worker_available,
-                         is_ambiguous=bool(task.get("ambiguous") or task.get("requires_semantic_review")))
-    route_record = route.to_dict()
-    route_record.update({
-        "run_id": run_id,
-        "task_index": task_index,
-        "task_id": str(task.get("id") or ""),
-        "evidence_handles": sorted({
-            str(value) for value in (
-                (plan.get("steps") or [])[task_index - 1].get("mapper_context_hash", ""),
-                (plan.get("steps") or [])[task_index - 1].get("context_pack_hash", ""),
-            ) if str(value)
-        }),
-        "causal_ids": [run_id, str(task.get("id") or task_index)],
-        "route_authority": "loop-runner",
-    })
-    route_record["receipt_sha"] = _execution_route_hash(
-        {key: value for key, value in route_record.items() if key != "receipt_sha"}
-    )
+    capability_manifest = {
+        "declared": normalize_capability_manifest(worker_capabilities),
+        "deterministic_worker_available": worker_available,
+    }
+    capability_hash = capability_fingerprint(capability_manifest)
+    route_path = run_dir / "execution-route.json"
+    previous_route = None
+    if route_path.exists():
+        try:
+            candidate = _load_json(route_path)
+            if verify_route_hash(candidate):
+                previous_route = candidate
+        except (OSError, TypeError, ValueError):
+            previous_route = None
+    route_cache_status = "new"
+    route_record = None
+    if previous_route and route_receipt_is_current(previous_route, capability_manifest):
+        route_record = previous_route
+        route_cache_status = "reused"
+    else:
+        invalidation = {}
+        if previous_route:
+            route_cache_status = "invalidated"
+            invalidation = {
+                "status": "invalidated",
+                "reason_code": (
+                    "capability_manifest_changed"
+                    if previous_route.get("capability_fingerprint")
+                    else "capability_manifest_missing"
+                ),
+                "previous_receipt_sha": str(previous_route.get("receipt_sha") or ""),
+                "previous_capability_fingerprint": str(previous_route.get("capability_fingerprint") or ""),
+            }
+        route = decide_route(
+            task_text,
+            has_deterministic_worker=worker_available,
+            is_ambiguous=bool(task.get("ambiguous") or task.get("requires_semantic_review")),
+        )
+        route_record = route.to_dict()
+        route_record.update({
+            "run_id": run_id,
+            "task_index": task_index,
+            "task_id": str(task.get("id") or ""),
+            "evidence_handles": sorted({
+                str(value) for value in (
+                    (plan.get("steps") or [])[task_index - 1].get("mapper_context_hash", ""),
+                    (plan.get("steps") or [])[task_index - 1].get("context_pack_hash", ""),
+                ) if str(value)
+            }),
+            "causal_ids": [run_id, str(task.get("id") or task_index)],
+            "route_authority": "loop-runner",
+            "capability_manifest": capability_manifest,
+            "capability_fingerprint": capability_hash,
+        })
+        if invalidation:
+            route_record["invalidation"] = invalidation
+        route_record["receipt_sha"] = _execution_route_hash(
+            {key: value for key, value in route_record.items() if key != "receipt_sha"}
+        )
     if not verify_route_hash(route_record):
         raise RuntimeError("execution-route receipt failed deterministic hash verification")
-    _write_json(run_dir / "execution-route.json", route_record)
-    status["state"].setdefault("operator", {})["execution_route"] = route_record
+    _write_json(route_path, route_record)
+    operator_state = status["state"].setdefault("operator", {})
+    operator_state["execution_route"] = route_record
+    operator_state["execution_route_cache"] = {
+        "status": route_cache_status,
+        "capability_fingerprint": capability_hash,
+        "previous_receipt_sha": str((previous_route or {}).get("receipt_sha") or ""),
+    }
     _write_json(run_dir / "state.json", status["state"])
     attempt = int((status["state"] or {}).get("attempts", 0)) + 1
     # #284: mutation-authority gate, mandatory by default. execute_operator()
@@ -4379,6 +4425,8 @@ def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:
                 "next_action": "none",
                 "message": "no runs directory found; run simplicio-loop to start",
             },
+            "execution_route": None,
+            "route_receipt_status": "UNVERIFIED",
         }
     chosen = None
     if run_id:
@@ -4398,15 +4446,30 @@ def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:
                     "next_action": "none",
                     "message": "no runs found; run simplicio-loop to start",
                 },
+                "execution_route": None,
+                "route_receipt_status": "UNVERIFIED",
             }
         chosen = candidates[-1]
     manifest = _load_json(chosen / "manifest.json")
     state = _load_json(chosen / "state.json")
     state["completion"] = _completion_state(chosen, state.get("completion"))
+    execution_route = None
+    route_path = chosen / "execution-route.json"
+    if route_path.is_file():
+        try:
+            candidate = _load_json(route_path)
+            if verify_route_hash(candidate):
+                execution_route = candidate
+                state.setdefault("operator", {})["execution_route"] = candidate
+                state["execution_route"] = candidate
+        except (OSError, ValueError, TypeError):
+            execution_route = None
     return {
         "run_dir": str(chosen),
         "manifest": manifest,
         "state": state,
+        "execution_route": execution_route,
+        "route_receipt_status": "MEASURED" if execution_route else "UNVERIFIED",
     }
 
 
@@ -4450,9 +4513,24 @@ def reconcile_delivery(repo: str, run_id: str, current_state: str, source_kind: 
             previous_receipt = _load_json(previous_path)
         except (OSError, ValueError, TypeError):
             previous_receipt = None
+    execution_route = None
+    route_path = run_dir / "execution-route.json"
+    if route_path.is_file():
+        try:
+            candidate = _load_json(route_path)
+            if verify_route_hash(candidate):
+                execution_route = candidate
+        except (OSError, ValueError, TypeError):
+            execution_route = None
+    delivery_payload = dict(source_payload or {})
+    if execution_route:
+        delivery_payload.setdefault("execution_route", execution_route)
     receipt = build_delivery_receipt(str(run_dir), manifest.get("delivery_target") or "verified",
                                      current_state=current_state, source_kind=source_kind,
-                                     source_payload=source_payload or {})
+                                     source_payload=delivery_payload)
+    if execution_route:
+        receipt["execution_route"] = execution_route
+        receipt["route_receipt_sha"] = execution_route.get("receipt_sha", "")
     receipt["reconciliation"] = reconcile_delivery_observation(previous_receipt, receipt)
     write_delivery_receipt(str(run_dir), receipt)
     state["delivery"] = {
@@ -4462,6 +4540,8 @@ def reconcile_delivery(repo: str, run_id: str, current_state: str, source_kind: 
         "receipt": str(run_dir / "delivery-receipt.json"),
         "source_checked_at": receipt["source_checked_at"],
         "source_kind": source_kind,
+        "execution_route": execution_route,
+        "route_receipt_sha": receipt.get("route_receipt_sha", ""),
     }
     reconciliation = receipt.get("reconciliation") or {}
     if reconciliation.get("status") == "reopened":
@@ -4492,7 +4572,8 @@ def reconcile_delivery(repo: str, run_id: str, current_state: str, source_kind: 
     _emit_event(run_dir, state, "delivery_reconciled", receipt=str(run_dir / "delivery-receipt.json"),
                 blocker="" if receipt["ready"] else "delivery_reconciliation_failed",
                 message="delivery state reconciled", current_state=receipt["current_state"],
-                reconciliation=reconciliation)
+                reconciliation=reconciliation, execution_route=execution_route,
+                route_receipt_sha=receipt.get("route_receipt_sha", ""))
     if reconciliation.get("status") == "reopened":
         _emit_event(run_dir, state, "rollback", receipt=str(run_dir / "delivery-receipt.json"),
                     blocker=str(reconciliation.get("reason_code") or "delivery_reopened"),
@@ -4544,7 +4625,9 @@ def apply_human_decision(repo: str, run_id: str, decision_id: str, answer: str,
     _write_json(_contract_path(run_dir), contract_payload)
     _emit_event(run_dir, state, "handoff", receipt=str(_contract_path(run_dir)),
                 task_id=str(tasks[0].get("id") or ""), ac_ids=_task_ac_ids(tasks[0]),
-                message="human decision handed off to replanning", decision_id=decision_id)
+                message="human decision handed off to replanning", decision_id=decision_id,
+                execution_route=state.get("execution_route") or {},
+                route_receipt_sha=str((state.get("execution_route") or {}).get("receipt_sha") or ""))
     invalidated = []
     for name in ("plan.json", "operator-receipt.json", "evidence-receipt.json", "delivery-receipt.json"):
         path = run_dir / name
