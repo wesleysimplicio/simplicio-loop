@@ -44,6 +44,7 @@ from .merge_executor import MergeExecutor, MergeExecutorError
 from .model_registry import ModelCapabilityRegistry, ModelRegistryError
 from .model_router import ModelRouterError, route as _model_route
 from .runtime_drivers import CLI_PROBE_HOOKS, driver_for_runtime
+from .runtime_context import ContextAuthorizationError, ContextBudgetError, RuntimeContextRequest
 from .runtime_execution_receipt import RuntimeExecutionReceiptError
 from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
@@ -953,7 +954,35 @@ def _execute_routed_runtime(item: Mapping[str, Any], run_dir: Path, *,
         summary["reason"] = "no task goal text available to prompt the runtime"
         return summary
     repo_path = Path(str(item.get("repo") or "."))
-    result = driver.execute(goal, cwd=repo_path if repo_path.exists() else None)
+    context_request: Optional[RuntimeContextRequest] = None
+    if all(context_pack.get(key) for key in (
+        "mapper_envelope_hash", "plan_hash", "authorized_targets", "target",
+    )):
+        try:
+            context_request = RuntimeContextRequest(
+                goal=goal,
+                acceptance_criteria=tuple(context_pack.get("acs") or context_pack.get("acceptance_criteria") or ()),
+                source_refs=tuple(context_pack.get("source_refs") or ()),
+                verification_routes=tuple(context_pack.get("verification_routes") or ()),
+                graph_evidence=tuple(context_pack.get("graph_evidence") or ()),
+                trusted_constraints=tuple(context_pack.get("trusted_constraints") or ()),
+                untrusted_evidence=tuple(context_pack.get("untrusted_evidence") or ()),
+                authorized_targets=tuple(context_pack.get("authorized_targets") or ()),
+                target=str(context_pack.get("target") or ""),
+                remaining_budget_tokens=int(context_pack.get("remaining_budget_tokens") or 0),
+                mapper_envelope_hash=str(context_pack.get("mapper_envelope_hash") or ""),
+                plan_hash=str(context_pack.get("plan_hash") or ""),
+            )
+            result = driver.execute_context(
+                context_request, cwd=repo_path if repo_path.exists() else None,
+                expected_mapper_envelope_hash=str(context_pack.get("mapper_envelope_hash")),
+                expected_plan_hash=str(context_pack.get("plan_hash")),
+            )
+        except (ContextAuthorizationError, ContextBudgetError, TypeError, ValueError) as exc:
+            summary["error"] = f"RuntimeContextError: {exc}"
+            return summary
+    else:
+        result = driver.execute(goal, cwd=repo_path if repo_path.exists() else None)
     base_sha = ""
     head_sha = ""
     changed: List[str] = []
@@ -977,6 +1006,12 @@ def _execute_routed_runtime(item: Mapping[str, Any], run_dir: Path, *,
             },
             result=result,
             tree={"base_sha": base_sha, "head_sha": head_sha, "changed_paths": changed},
+            evidence_refs=(
+                ["runtime-context:" + context_request.request_hash,
+                 "mapper-envelope:" + context_request.mapper_envelope_hash,
+                 "plan:" + context_request.plan_hash]
+                if context_request is not None else None
+            ),
         )
     except RuntimeExecutionReceiptError as exc:
         summary["error"] = f"{type(exc).__name__}: {exc}"
