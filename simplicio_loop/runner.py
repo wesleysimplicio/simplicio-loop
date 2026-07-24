@@ -939,6 +939,13 @@ def _task_spec_payload(task: Mapping[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _task_spec_hash(payload: Mapping[str, Any]) -> str:
+    """Return the Dev CLI canonical TaskSpec hash for receipt correlation."""
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def _context_handoff_args(
     repo_path: Path,
     run_root: Path,
@@ -2589,7 +2596,9 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
         raise ValueError(f"operator target outside authorized repo: {target!r}") from exc
     _preflight_operator(repo_path, run_root)
     task_spec_path = run_root / "task-spec.json"
-    _write_json(task_spec_path, _task_spec_payload(task))
+    task_spec = _task_spec_payload(task)
+    task_spec_hash = _task_spec_hash(task_spec)
+    _write_json(task_spec_path, task_spec)
     context_args, context_handoff = _context_handoff_args(repo_path, run_root)
     fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", "").strip()
     if fake:
@@ -2610,6 +2619,8 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
             "source": "env_override",
             "context_handoff": context_handoff,
             "repo_state_before": _repo_fingerprint(repo_path),
+            "task_spec_path": str(task_spec_path),
+            "task_spec_hash": task_spec_hash,
         }
         _write_json(run_root / "operator-receipt.json", receipt)
         return receipt
@@ -2657,6 +2668,8 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
                 "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
             },
             "repo_state_before": _repo_fingerprint(repo_path),
+            "task_spec_path": str(task_spec_path),
+            "task_spec_hash": task_spec_hash,
         }
     except subprocess.TimeoutExpired as exc:
         op_env = _operator_env()
@@ -2680,6 +2693,8 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
                 "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
             },
             "repo_state_before": _repo_fingerprint(repo_path),
+            "task_spec_path": str(task_spec_path),
+            "task_spec_hash": task_spec_hash,
         }
     _write_json(run_root / "operator-receipt.json", receipt)
     return receipt
@@ -3253,7 +3268,9 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         )
     _preflight_operator(repo_path, run_dir)
     task_spec_path = run_dir / "task-spec.json"
-    _write_json(task_spec_path, _task_spec_payload(task))
+    task_spec = _task_spec_payload(task)
+    task_spec_hash = _task_spec_hash(task_spec)
+    _write_json(task_spec_path, task_spec)
     lease = getattr(getattr(guarded_attempt, "lease", None), "lease_id", "")
     fence = getattr(getattr(guarded_attempt, "lease", None), "fencing_token", "")
     profile = _execution_profile()
@@ -3393,6 +3410,8 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "changed_paths": changed,
         "diff_hash": after.get("tree_hash", ""),
         "no_change_proof": no_change_proof,
+        "task_spec_path": str(task_spec_path),
+        "task_spec_hash": task_spec_hash,
     }
     receipt["receipt_hash"] = _operator_receipt_hash(receipt)
     _write_json(operator_path, receipt)
