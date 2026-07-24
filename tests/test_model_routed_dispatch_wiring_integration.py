@@ -12,6 +12,7 @@ underlying dev-cli operator mutation this repo's actual apply/verify contract st
 performs.
 """
 import json
+import sys
 
 import pytest
 
@@ -19,6 +20,9 @@ from simplicio_loop import runner as runner_mod
 from simplicio_loop.model_registry import ModelCapabilityRegistry
 from simplicio_loop.receipt_verifier import ReceiptStatus, verify_receipt
 from simplicio_loop.runtime_execution_receipt import RUNTIME_EXECUTION_RECEIPT_SCHEMA
+
+
+_AVAILABLE_PROBE_TARGET = sys.executable
 
 
 class _FakeResult:
@@ -49,7 +53,12 @@ class _FakeDriver:
         return "codex-cli 0.0.0-test"
 
     def execute(self, prompt, cwd=None, timeout=180):
+        self.last_prompt = prompt
         return _FakeResult(self._ok)
+
+    def execute_context(self, request, cwd=None, timeout=180, **kwargs):
+        self.context_request = request
+        return self.execute("[context]" + request.goal, cwd=cwd, timeout=timeout)
 
     def build_receipt(self, **kwargs):
         from simplicio_loop.runtime_execution_receipt import build_runtime_execution_receipt
@@ -60,13 +69,14 @@ class _FakeDriver:
             session=kwargs["session"], argv_redacted=result.argv, env_allowlist=[], tree=kwargs["tree"],
             exit_status=result.exit_status, duration_seconds=result.duration_seconds,
             stop_reason=result.stop_reason, usage=result.usage,
+            evidence_refs=kwargs.get("evidence_refs"),
         )
 
 
 def test_execute_routed_runtime_writes_real_receipts_when_driver_available(tmp_path, monkeypatch):
     registry = ModelCapabilityRegistry([
         {"runtime": "codex", "provider": "openai", "model_id": "gpt-5.6",
-         "capabilities": ["execute"], "probe": {"kind": "binary_on_path", "target": "true"}},
+         "capabilities": ["execute"], "probe": {"kind": "binary_on_path", "target": _AVAILABLE_PROBE_TARGET}},
     ])
     monkeypatch.setattr(runner_mod, "driver_for_runtime", lambda runtime: _FakeDriver(ok=True))
     item = {
@@ -91,6 +101,33 @@ def test_execute_routed_runtime_writes_real_receipts_when_driver_available(tmp_p
     assert verdict.status == ReceiptStatus.VERIFIED
 
 
+def test_execute_routed_runtime_consumes_authorized_mapper_context(tmp_path, monkeypatch):
+    registry = ModelCapabilityRegistry([
+        {"runtime": "codex", "provider": "openai", "model_id": "gpt-5.6",
+         "capabilities": ["execute"], "probe": {"kind": "binary_on_path", "target": _AVAILABLE_PROBE_TARGET}},
+    ])
+    driver = _FakeDriver(ok=True)
+    monkeypatch.setattr(runner_mod, "driver_for_runtime", lambda runtime: driver)
+    item = {
+        "repo": str(tmp_path), "task_id": "task-context", "task_index": 1, "worker_id": "w1",
+        "context_pack": {
+            "goal": "reply with PING_OK", "acs": ["AC-1: preserve evidence"],
+            "source_refs": ["simplicio_loop/runner.py"], "verification_routes": ["pytest -q"],
+            "trusted_constraints": ["do not widen target"],
+            "untrusted_evidence": ["mapper observation"], "graph_evidence": ["runner seam"],
+            "authorized_targets": ["simplicio_loop/runner.py"],
+            "target": "simplicio_loop/runner.py", "remaining_budget_tokens": 200,
+            "mapper_envelope_hash": "mapper-envelope-1", "plan_hash": "plan-1",
+        },
+    }
+    summary = runner_mod._execute_routed_runtime(item, tmp_path / "run", registry=registry)
+    assert summary["executed"] is True
+    assert driver.context_request.goal == "reply with PING_OK"
+    receipt = json.loads((tmp_path / "run" / "loop" / "runtime-execution-receipt.json").read_text(encoding="utf-8"))
+    assert any(ref.startswith("runtime-context:") for ref in receipt["evidence_refs"])
+    assert any(ref == "mapper-envelope:mapper-envelope-1" for ref in receipt["evidence_refs"])
+
+
 def test_execute_routed_runtime_reports_blocked_when_no_candidate_eligible(tmp_path):
     # No entries at all: routing is genuinely blocked, never fabricated as a selection.
     registry = ModelCapabilityRegistry([])
@@ -109,7 +146,7 @@ def test_execute_routed_runtime_reports_no_driver_wired_honestly(tmp_path):
     # (e.g. any of the other 10 adapters) must say so explicitly, never silently no-op.
     registry = ModelCapabilityRegistry([
         {"runtime": "cursor", "provider": "cursor", "model_id": "cursor-default",
-         "capabilities": ["execute"], "probe": {"kind": "binary_on_path", "target": "true"}},
+         "capabilities": ["execute"], "probe": {"kind": "binary_on_path", "target": _AVAILABLE_PROBE_TARGET}},
     ])
     item = {"repo": str(tmp_path), "task_id": "task-3", "task_index": 1, "worker_id": "w1",
             "context_pack": {"goal": "do something"}}
