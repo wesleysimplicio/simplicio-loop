@@ -177,6 +177,10 @@ class RenderStatusTextUnitTest(TestCase):
         from simplicio_loop import cli
         payload = {
             "run_dir": "/tmp/x",
+            "execution_route": {
+                "route": "worker", "receipt_sha": "route-sha-1",
+                "backend": "deterministic-worker",
+            },
             "state": {
                 "phase": "executing",
                 "completion": {"tag": "VERIFIED", "coverage": "3/3"},
@@ -189,6 +193,9 @@ class RenderStatusTextUnitTest(TestCase):
         self.assertIn("completion_tag: VERIFIED", out)
         self.assertIn("coverage: 3/3", out)
         self.assertIn("delivery_ready: True", out)
+        self.assertIn("execution_route: worker", out)
+        self.assertIn("route_receipt_sha: route-sha-1", out)
+        self.assertIn("route_backend: deterministic-worker", out)
 
     def test_render_with_minimal_payload(self):
         from simplicio_loop import cli
