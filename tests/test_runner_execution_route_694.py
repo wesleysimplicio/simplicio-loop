@@ -9,7 +9,7 @@ from simplicio_loop.execution_route import (
 )
 from simplicio_loop.oracle import persist_completion_receipt
 from simplicio_loop.progress import build_progress
-from simplicio_loop.runner import read_status, reconcile_delivery
+from simplicio_loop.runner import _fanout_execution_route, read_status, reconcile_delivery
 
 
 def _receipt_with_capabilities(manifest):
@@ -100,3 +100,32 @@ def test_route_receipt_identity_reaches_status_progress_delivery_and_completion(
     completion = json.loads(open(completion_path, encoding="utf-8").read())
     assert completion["execution_route"] == route
     assert completion["route_receipt_sha"] == route["receipt_sha"]
+
+
+def test_fanout_items_receive_independent_pre_llm_routes(tmp_path):
+    worker = _fanout_execution_route({
+        "run_id": "run-694", "task_id": "mechanical", "task_index": 1,
+        "context_pack": {
+            "goal": "mechanically edit and test the indexed file",
+            "worker_capabilities": ["edit", "test"],
+            "mapper_envelope_hash": "mapper-1",
+        },
+    }, tmp_path)
+    agent = _fanout_execution_route({
+        "run_id": "run-694", "task_id": "semantic", "task_index": 2,
+        "context_pack": {
+            "goal": "investigate ambiguous semantic failure",
+            "ambiguous": True,
+            "mapper_envelope_hash": "mapper-2",
+        },
+    }, tmp_path)
+    assert worker["route"] == "worker"
+    assert worker["token_usage"] == {
+        "input_tokens": 0, "output_tokens": 0, "reason": "deterministic_worker_no_llm",
+    }
+    assert agent["route"] == "agent"
+    assert agent["token_usage"]["input_tokens"] is None
+    assert verify_route_hash(worker) and verify_route_hash(agent)
+    assert worker["receipt_sha"] != agent["receipt_sha"]
+    assert (tmp_path / "execution-route-1.json").exists()
+    assert (tmp_path / "execution-route-2.json").exists()

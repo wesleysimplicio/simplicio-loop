@@ -287,6 +287,10 @@ def _render_status_text(payload: dict) -> str:
         lines.append(f"coverage: {coverage}")
     delivery = state.get("delivery") or {}
     lines.append(f"delivery_ready: {delivery.get('ready', False)}")
+    route = payload.get("execution_route") or state.get("execution_route") or {}
+    lines.append(f"execution_route: {route.get('route', 'UNVERIFIED')}")
+    lines.append(f"route_receipt_sha: {route.get('receipt_sha', '') or 'UNVERIFIED'}")
+    lines.append(f"route_backend: {route.get('backend', 'UNVERIFIED')}")
     return "\n".join(lines) + "\n"
 
 
