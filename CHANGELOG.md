@@ -8,6 +8,11 @@
   and completion evidence to the exact run/attempt and repository state; add atomic,
   auditable invalidation tombstones and fail-closed legacy migration.
 
+## [3.38.2] — 2026-07-25
+
+- Raised the `simplicio-cli` (Dev CLI) dependency floor to `>=0.16.3`, the
+  latest confirmed PyPI release, and synchronized the loop's release surfaces.
+
 ## [3.38.1] — 2026-07-20
 
 - Raised the `simplicio-cli` dependency floor to `>=0.16.2`, consuming the
