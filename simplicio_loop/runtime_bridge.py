@@ -185,6 +185,21 @@ class _RuntimeProcess:
             str(item.get("name")) for item in tools
             if isinstance(item, Mapping) and isinstance(item.get("name"), str)
         }
+        self.tool_classes = {}
+        for item in tools:
+            if not isinstance(item, Mapping) or not isinstance(item.get("name"), str):
+                continue
+            annotations = item.get("annotations")
+            annotations = annotations if isinstance(annotations, Mapping) else {}
+            if bool(annotations.get("readOnlyHint")):
+                kind = "read"
+            elif item["name"] == "simplicio_exec":
+                kind = "process"
+            elif bool(annotations.get("destructiveHint")):
+                kind = "exclusive"
+            else:
+                kind = "write"
+            self.tool_classes[item["name"]] = kind
 
     def call_tool(self, name: str, arguments: Mapping[str, Any], *,
                   timeout: float = 10.0) -> Dict[str, Any]:
@@ -241,6 +256,8 @@ class _WorkspaceSession:
         self.cancelled = 0
         self.timeouts = 0
         self.throttled = 0
+        self._resource_fences: Dict[str, int] = {}
+        self._active_resources: Dict[str, int] = {}
 
     def acquire(self, *, exclusive: bool, deadline: float,
                 cancel_event: Optional[threading.Event]) -> int:
@@ -291,6 +308,37 @@ class _WorkspaceSession:
                 self.exclusive_active = False
             self.condition.notify_all()
 
+    def acquire_resources(self, resources: Tuple[str, ...], *, deadline: float,
+                          cancel_event: Optional[threading.Event]) -> Dict[str, int]:
+        """Lease a normalized write set with monotonically increasing fences."""
+        if not resources:
+            return {}
+        with self.condition:
+            while any(resource in self._active_resources for resource in resources):
+                if cancel_event is not None and cancel_event.is_set():
+                    self.cancelled += 1
+                    raise RuntimeBridgeCancelled(receipt=self.status())
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.timeouts += 1
+                    raise RuntimeBridgeTimeout(receipt=self.status())
+                self.wait_count += 1
+                self.condition.wait(timeout=min(remaining, 0.05))
+            leases = {}
+            for resource in resources:
+                fence = self._resource_fences.get(resource, 0) + 1
+                self._resource_fences[resource] = fence
+                self._active_resources[resource] = fence
+                leases[resource] = fence
+            return leases
+
+    def release_resources(self, leases: Mapping[str, int]) -> None:
+        with self.condition:
+            for resource, fence in leases.items():
+                if self._active_resources.get(resource) == fence:
+                    self._active_resources.pop(resource, None)
+            self.condition.notify_all()
+
     def mark_recovery(self, process: Optional[_RuntimeProcess]) -> None:
         with self.lifecycle_lock:
             if self.process is process:
@@ -316,6 +364,8 @@ class _WorkspaceSession:
                 "timeouts": self.timeouts,
                 "reconnects": self.reconnects,
                 "throttled": self.throttled,
+                "active_resource_leases": dict(sorted(self._active_resources.items())),
+                "resource_fences": dict(sorted(self._resource_fences.items())),
             }
 
 
@@ -325,7 +375,8 @@ class RuntimeBridge:
     def __init__(self, binary: Optional[str] = None, *, max_inflight_per_workspace: int = 1,
                  max_queue_per_workspace: int = 32, max_global_inflight: int = 8,
                  max_global_queue: Optional[int] = None,
-                 safe_read_tools: Optional[Set[str]] = None) -> None:
+                 safe_read_tools: Optional[Set[str]] = None,
+                 tool_classes: Optional[Mapping[str, str]] = None) -> None:
         if min(max_inflight_per_workspace, max_queue_per_workspace, max_global_inflight) < 1:
             raise ValueError("RuntimeBridge limits must be positive")
         # Keep an unspecified binary unspecified: canonical resolution must try the
@@ -338,6 +389,11 @@ class RuntimeBridge:
         if self.max_global_queue < 1:
             raise ValueError("RuntimeBridge limits must be positive")
         self.safe_read_tools = frozenset(safe_read_tools or ())
+        self.tool_classes = {
+            str(name): str(kind) for name, kind in dict(tool_classes or {}).items()
+            if str(kind) in {"read", "write", "process", "exclusive"}
+        }
+        self._manifest_tool_classes: Dict[str, str] = {}
         self._preflight_receipts: Dict[str, Dict[str, Any]] = {}
         self._sessions_lock = threading.RLock()
         self._sessions: Dict[str, _WorkspaceSession] = {}
@@ -391,6 +447,12 @@ class RuntimeBridge:
                 session.state = "failed"
                 raise
             session.process = process
+            advertised_classes = getattr(process, "tool_classes", None)
+            if isinstance(advertised_classes, Mapping):
+                self._manifest_tool_classes.update({
+                    str(name): str(kind) for name, kind in advertised_classes.items()
+                    if str(kind) in {"read", "write", "process", "exclusive"}
+                })
             session.generation += 1
             session.state = "ready"
             return process
@@ -467,11 +529,41 @@ class RuntimeBridge:
         bounded_timeout_ms = min(max(int(timeout_ms), 1), 120_000)
         deadline = time.monotonic() + bounded_timeout_ms / 1000.0
         session = self._session_for_workspace(workspace_path)
-        exclusive = tool not in self.safe_read_tools
+        tool_class = self.tool_classes.get(
+            tool, self._manifest_tool_classes.get(
+                tool, "read" if tool in self.safe_read_tools else
+                ("process" if tool == "simplicio_exec" else "write"),
+            ),
+        )
+        exclusive = tool_class in {"process", "exclusive"}
         session.acquire(exclusive=exclusive, deadline=deadline, cancel_event=cancel_event)
         global_acquired = False
         process: Optional[_RuntimeProcess] = None
+        resource_leases: Dict[str, int] = {}
         try:
+            transaction = arguments.get("__runtime_effect_transaction")
+            request = transaction.get("request") if isinstance(transaction, Mapping) else {}
+            write_set = request.get("write_set") if isinstance(request, Mapping) else ()
+            resources = tuple(sorted({
+                str(resource) for resource in (write_set or ())
+                if isinstance(resource, str) and resource
+            }))
+            if tool_class == "write":
+                resource_leases = session.acquire_resources(
+                    resources, deadline=deadline, cancel_event=cancel_event,
+                )
+                if resource_leases and isinstance(transaction, Mapping):
+                    enriched = dict(arguments)
+                    effect = dict(transaction)
+                    effect_request = dict(request)
+                    effect_request["lease"] = {
+                        "id": "loop-hub-runtime-resource-lease",
+                        "resources": dict(sorted(resource_leases.items())),
+                        "fence": max(resource_leases.values()),
+                    }
+                    effect["request"] = effect_request
+                    enriched["__runtime_effect_transaction"] = effect
+                    arguments = enriched
             self._acquire_global(deadline=deadline, cancel_event=cancel_event)
             global_acquired = True
             if cancel_event is not None and cancel_event.is_set():
@@ -500,6 +592,7 @@ class RuntimeBridge:
                 session.mark_recovery(process)
                 raise RuntimeBridgeRecoveryUnknown(receipt={**session.status(), "outcome": "unknown"}) from exc
         finally:
+            session.release_resources(resource_leases)
             session.release(exclusive=exclusive)
             if global_acquired:
                 self._release_global()
