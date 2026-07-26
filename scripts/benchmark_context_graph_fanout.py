@@ -1,12 +1,16 @@
 """Measured ContextGraph/Map Service fan-out benchmark for issue #687."""
 import argparse
 import json
-import resource
 import time
 from pathlib import Path
 
 from simplicio_loop.context_graph_fanout import CanonicalMapClient, TaskEnvelope, WorktreeMapLeaseManager
 from simplicio_loop.map_service import MapServiceRegistry, RepositoryIdentity
+
+try:
+    import resource
+except ImportError:  # Windows: report null with reason instead of fabricating zero.
+    resource = None
 
 
 def benchmark(tasks: int) -> dict:
@@ -28,11 +32,15 @@ def benchmark(tasks: int) -> dict:
     for index in range(tasks):
         manager.release(str(index))
     elapsed = (time.perf_counter() - started) * 1000
-    usage = resource.getrusage(resource.RUSAGE_SELF)
+    usage = resource.getrusage(resource.RUSAGE_SELF) if resource is not None else None
     metrics = manager.status()["metrics"]
     return {"schema": "simplicio.context-graph-benchmark/v1", "tasks": tasks,
-            "wall_ms": round(elapsed, 3), "cpu_ms": round((usage.ru_utime + usage.ru_stime) * 1000, 3),
-            "peak_rss_kib": usage.ru_maxrss, "io": None, "io_reason": "portable per-process bytes unavailable",
+            "wall_ms": round(elapsed, 3),
+            "cpu_ms": round((usage.ru_utime + usage.ru_stime) * 1000, 3) if usage else None,
+            "cpu_reason": None if usage else "resource module unavailable",
+            "peak_rss_kib": usage.ru_maxrss if usage else None,
+            "rss_reason": None if usage else "resource module unavailable",
+            "io": None, "io_reason": "portable per-process bytes unavailable",
             "cache_hits": metrics["cache_hits"], "remap_count": 1, "overlay_files": metrics["overlay_files"]}
 
 
