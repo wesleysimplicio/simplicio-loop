@@ -95,6 +95,27 @@ def test_fallback_is_visible_and_configurable(tmp_path: Path) -> None:
         required.probe()
 
 
+def test_explicit_rust_requires_doctor_selection(tmp_path: Path) -> None:
+    fake = FakeFast(tmp_path)
+    integration = FastLoopIntegration(
+        tmp_path, config=FastConfig(command=("fast",), engine="rust"), runner=fake
+    )
+    probe = integration.probe()
+    assert probe["integrated_ready"] is False
+    assert probe["reason"] == "rust_not_verified"
+    assert probe["requested_engine"] == "rust"
+
+
+def test_explicit_python_is_reported_without_loading_rust(tmp_path: Path) -> None:
+    fake = FakeFast(tmp_path)
+    integration = FastLoopIntegration(
+        tmp_path, config=FastConfig(command=("fast",), engine="python"), runner=fake
+    )
+    probe = integration.probe()
+    assert probe["integrated_ready"] is True
+    assert probe["selected_engine"] == "python"
+
+
 def test_real_fast_prepare_on_small_repository(tmp_path: Path) -> None:
     command = (sys.executable, "-m", "simplicio_fast.cli")
     try:

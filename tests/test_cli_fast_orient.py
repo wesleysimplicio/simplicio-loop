@@ -30,6 +30,29 @@ def test_orient_prefers_fast_and_emits_bounded_receipt(tmp_path, monkeypatch, ca
     assert payload["local_llm"] is False
     assert _ReadyFast.last_config.mode == "required"
     assert _ReadyFast.last_config.max_bytes == 1234
+    assert _ReadyFast.last_config.engine == "auto"
+
+
+def test_orient_exposes_explicit_engine_selection(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "FastLoopIntegration", _ReadyFast)
+    assert cli.orient(str(tmp_path), "change app", "on", 1234, "rust") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["fast_engine"] == "rust"
+    assert _ReadyFast.last_config.engine == "rust"
+
+
+def test_explicit_rust_does_not_fallback_to_mapper(tmp_path, monkeypatch, capsys):
+    class _UnavailableRust(_ReadyFast):
+        def prepare(self, task):
+            return {"status": "FALLBACK", "reason": "rust_not_verified"}
+
+    monkeypatch.setattr(cli, "FastLoopIntegration", _UnavailableRust)
+    assert cli.orient(str(tmp_path), "change app", "auto", 1234, "rust") == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "BLOCKED"
+    assert payload["fallback"] is False
+    assert payload["fast_engine"] == "rust"
+    assert _UnavailableRust.last_config.mode == "required"
 
 
 def test_orient_auto_uses_mapper_fallback_with_reason(tmp_path, monkeypatch, capsys):
