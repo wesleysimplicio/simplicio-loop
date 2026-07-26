@@ -84,6 +84,7 @@ def build_runtime_execution_receipt(
     evidence_refs: Optional[Sequence[str]] = None,
     previous_route_id: str = "",
     fallback_reason_code: str = "",
+    context_consumption: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build one runtime-execution-receipt (never fabricates unmeasured fields).
 
@@ -160,6 +161,7 @@ def build_runtime_execution_receipt(
         "stream_hashes": dict(stream_hashes or {}),
         "usage": usage_out,
         "evidence_refs": sorted({str(e) for e in (evidence_refs or [])}),
+        "context_consumption": dict(context_consumption or {}),
         "measured_at": _now(),
     }
     content_fields = [k for k in receipt if k != "receipt_sha"]

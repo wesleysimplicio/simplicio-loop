@@ -37,6 +37,7 @@ class _FakeResult:
         self.resolved_model = {"runtime": "codex", "provider": "openai", "model_id": "UNAVAILABLE", "verified": False}
         self.usage = {"tokens": 42, "cost_usd": "UNAVAILABLE", "latency_seconds": 1.5}
         self.argv = ["codex", "exec", "--json", "<prompt>"]
+        self.context_consumption = None
 
 
 class _FakeDriver:
@@ -58,7 +59,18 @@ class _FakeDriver:
 
     def execute_context(self, request, cwd=None, timeout=180, **kwargs):
         self.context_request = request
-        return self.execute("[context]" + request.goal, cwd=cwd, timeout=timeout)
+        result = self.execute("[context]" + request.goal, cwd=cwd, timeout=timeout)
+        result.context_consumption = {
+            "request_hash": request.request_hash,
+            "mapper_envelope_hash": request.mapper_envelope_hash,
+            "plan_hash": request.plan_hash,
+            "rendered_tokens": 10,
+            "selected_paths": list(request.source_refs),
+            "selected_spans": list(request.source_spans),
+            "omitted_fields": list(request.omissions),
+            "observable_usage": {"input_tokens": None, "unavailable_reason": "test_driver_no_usage"},
+        }
+        return result
 
     def build_receipt(self, **kwargs):
         from simplicio_loop.runtime_execution_receipt import build_runtime_execution_receipt
@@ -70,6 +82,7 @@ class _FakeDriver:
             exit_status=result.exit_status, duration_seconds=result.duration_seconds,
             stop_reason=result.stop_reason, usage=result.usage,
             evidence_refs=kwargs.get("evidence_refs"),
+            context_consumption=result.context_consumption,
         )
 
 
@@ -112,7 +125,9 @@ def test_execute_routed_runtime_consumes_authorized_mapper_context(tmp_path, mon
         "repo": str(tmp_path), "task_id": "task-context", "task_index": 1, "worker_id": "w1",
         "context_pack": {
             "goal": "reply with PING_OK", "acs": ["AC-1: preserve evidence"],
+            "source_spans": ["simplicio_loop/runner.py:1310-1340"],
             "source_refs": ["simplicio_loop/runner.py"], "verification_routes": ["pytest -q"],
+            "omissions": ["cache telemetry unavailable"],
             "trusted_constraints": ["do not widen target"],
             "untrusted_evidence": ["mapper observation"], "graph_evidence": ["runner seam"],
             "authorized_targets": ["simplicio_loop/runner.py"],
@@ -126,6 +141,12 @@ def test_execute_routed_runtime_consumes_authorized_mapper_context(tmp_path, mon
     receipt = json.loads((tmp_path / "run" / "loop" / "runtime-execution-receipt.json").read_text(encoding="utf-8"))
     assert any(ref.startswith("runtime-context:") for ref in receipt["evidence_refs"])
     assert any(ref == "mapper-envelope:mapper-envelope-1" for ref in receipt["evidence_refs"])
+    consumption = receipt["context_consumption"]
+    assert consumption["selected_spans"] == ["simplicio_loop/runner.py:1310-1340"]
+    assert consumption["selected_paths"] == ["simplicio_loop/runner.py"]
+    assert consumption["omitted_fields"] == ["cache telemetry unavailable"]
+    assert consumption["observable_usage"]["input_tokens"] is None
+    assert consumption["observable_usage"]["unavailable_reason"] == "test_driver_no_usage"
 
 
 def test_execute_routed_runtime_reports_blocked_when_no_candidate_eligible(tmp_path):

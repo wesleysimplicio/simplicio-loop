@@ -114,6 +114,7 @@ class RuntimeDriverResult:
     usage: Dict[str, Any]
     argv: List[str]
     error: str = ""
+    context_consumption: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.stop_reason not in STOP_REASONS:
@@ -211,7 +212,24 @@ class _BaseCliRuntimeDriver:
             expected_mapper_envelope_hash=expected_mapper_envelope_hash,
             expected_plan_hash=expected_plan_hash,
         )
-        return self.execute(prompt, cwd=cwd, timeout=timeout, extra_args=extra_args)
+        result = self.execute(prompt, cwd=cwd, timeout=timeout, extra_args=extra_args)
+        result.context_consumption = {
+            "request_hash": request.request_hash,
+            "mapper_envelope_hash": request.mapper_envelope_hash,
+            "plan_hash": request.plan_hash,
+            "rendered_tokens": len(prompt.split()),
+            "selected_paths": list(request.source_refs),
+            "selected_spans": list(request.source_spans),
+            "omitted_fields": list(request.omissions),
+            "observable_usage": {
+                "input_tokens": None,
+                "output_tokens": None,
+                "cache_tokens": None,
+                "reasoning_tokens": None,
+                "unavailable_reason": "driver_did_not_report_usage_dimensions",
+            },
+        }
+        return result
 
     def build_receipt(self, *, route_id: str, requested: Dict[str, Any],
                        session: Dict[str, Any], result: RuntimeDriverResult,
@@ -248,6 +266,7 @@ class _BaseCliRuntimeDriver:
             evidence_refs=evidence_refs,
             previous_route_id=previous_route_id,
             fallback_reason_code=fallback_reason_code,
+            context_consumption=result.context_consumption,
         )
 
 
