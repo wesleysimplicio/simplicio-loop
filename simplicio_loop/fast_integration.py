@@ -86,16 +86,16 @@ class FastConfig:
     """Explicit, environment-configurable Fast policy."""
 
     mode: str = "auto"
-    # Engine selection is independent from Loop's availability policy.  In
-    # ``auto`` Fast itself performs Rust-first health/capability negotiation;
-    # ``rust`` is fail-closed and ``python`` is an explicit compatibility path.
-    engine: str = "auto"
     command: tuple[str, ...] = ("simplicio-fast",)
     snapshot: str = ".simplicio-fast/project.sfast"
     state: str = ".simplicio-fast/loop-ingest.json"
     max_bytes: int = 48_000
     timeout_seconds: int = 180
     require_binding: bool = True
+    # Engine selection is independent from Loop's availability policy.  In
+    # ``auto`` Fast itself performs Rust-first health/capability negotiation;
+    # ``rust`` is fail-closed and ``python`` is an explicit compatibility path.
+    engine: str = "auto"
 
     @classmethod
     def from_env(cls) -> "FastConfig":
