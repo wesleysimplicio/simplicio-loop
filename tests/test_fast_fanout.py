@@ -27,6 +27,10 @@ class _FakeIntegration:
         self.refreshes += 1
         return {"status": "MEASURED", "generation": "g2"}
 
+    def rollout(self, mode, *, generation=None, reason=None):
+        return {"status": "rolled-back" if mode == "rollback" else "accepted",
+                "mode": mode, "generation": generation, "reason": reason}
+
 
 def _changeset(generation="g1", context_hash="ctx1"):
     return {"schema": FAST_CHANGESET_SCHEMA,
@@ -92,3 +96,18 @@ def test_snapshot_rejects_unknown_winner(tmp_path):
     snapshot["winner"] = "missing"
     with pytest.raises(FastFanoutError, match="winner"):
         FastFanoutCoordinator.restore(tmp_path, snapshot, integration=fake)
+
+
+def test_rollout_modes_and_disable_gate_promotion(tmp_path):
+    fake = _FakeIntegration()
+    coordinator = FastFanoutCoordinator(tmp_path, integration=fake)
+    coordinator.prepare("change app")
+    for mode in ("shadow", "canary", "integrated"):
+        receipt = coordinator.transition_rollout(mode, reason="test")
+        assert receipt["status"] == "ROLLOUT_UPDATED"
+        assert receipt["rollout"]["mode"] == mode
+    disabled = coordinator.transition_rollout("disable", reason="operator stop")
+    assert disabled["rollout"]["fast_mode"] == "fallback"
+    assert coordinator.snapshot()["rollout"]["mode"] == "disable"
+    with pytest.raises(FastFanoutError, match="unsupported rollout"):
+        coordinator.transition_rollout("unknown")

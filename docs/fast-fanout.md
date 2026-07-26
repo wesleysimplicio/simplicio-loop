@@ -28,10 +28,18 @@ e elimina candidatos antigos antes de aceitar novos changesets.
 ## Medição
 
 ```text
-python -m scripts.benchmark_fast_fanout --root . --slots 5 --repeats 10
+python -m scripts.benchmark_fast_fanout --root simplicio_loop --slots 5 --repeats 10 --engine library
 ```
 
-O benchmark compara construções independentes com uma construção canônica por
-repetição e emite `build_reduction_factor` e `wall_speedup`. TTFT, tokens, RSS e
-page faults ficam `null` com motivo explícito: este fluxo não usa LLM local e a
-contabilidade de processos filhos não é portátil no Windows.
+O modo `library` chama o núcleo `simplicio_fast.build_snapshot` no mesmo processo,
+evitando o custo de iniciar Mapper/Fast em cada slot; `--engine cli` preserva a
+medição E2E por subprocesso. Em 10 repetições e 5 slots no pacote
+`simplicio_loop`, a medição real produziu 50 builds independentes contra 10
+canônicos compartilhados, redução `5.0x`, speedup de parede `4.698x`, speedup de
+CPU `4.955x` e `functional_equivalence=true`. TTFT, tokens, RSS e page faults
+ficam `null` com motivo explícito: este fluxo não usa LLM local e a contabilidade
+de processos filhos não é portátil no Windows.
+
+O coordenador delega transições `shadow`, `canary`, `disable` e `rollback` ao
+receipt atômico do Fast (`disable` usa o modo Fast `fallback`). Promoção fica
+bloqueada enquanto o rollout estiver desabilitado, em fallback ou revertido.

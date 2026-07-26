@@ -42,6 +42,12 @@ class FakeFast:
             return subprocess.CompletedProcess(command, 0, json.dumps({"schema": "simplicio.fast.plandag/v2", "nodes": []}), "")
         if args and args[0] == "refresh":
             return subprocess.CompletedProcess(command, 0, json.dumps({"schema": "simplicio.fast.ingest/v2", "generation": "g2", "metrics": {}}), "")
+        if args and args[0] == "rollout":
+            return subprocess.CompletedProcess(
+                command, 0,
+                json.dumps({"schema": "simplicio.fast.rollout-receipt/v1", "status": "accepted", "mode": args[1]}),
+                "",
+            )
         if args and args[0] == "apply":
             return subprocess.CompletedProcess(command, 0, json.dumps({"schema": "simplicio.fast.apply-receipt/v2", "outcome": "applied"}), "")
         raise AssertionError(command)
@@ -134,3 +140,15 @@ def test_apply_runtime_gate_and_incremental_refresh(tmp_path: Path) -> None:
     assert refreshed["status"] == "MEASURED"
     assert refreshed["no_full_remap"] is True
     assert refreshed["generation"] == "g2"
+
+
+def test_rollout_transition_is_delegated_to_fast(tmp_path: Path) -> None:
+    fake = FakeFast(tmp_path)
+    integration = FastLoopIntegration(
+        tmp_path, config=FastConfig(command=("fast",), snapshot=".fast/project.sfast", state=".fast/state.json"),
+        runner=fake,
+    )
+    receipt = integration.rollout("canary", generation="g1", reason="bounded-test")
+    assert receipt["schema"] == "simplicio.fast.rollout-receipt/v1"
+    assert receipt["mode"] == "canary"
+    assert [call[1] for call in fake.calls].count("rollout") == 1

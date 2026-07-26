@@ -66,6 +66,7 @@ class FastFanoutCoordinator:
         self._slots: dict[str, _Slot] = {}
         self._candidates: dict[str, dict[str, Any]] = {}
         self._winner: str | None = None
+        self._rollout: dict[str, Any] | None = None
         self._metrics = {"canonical_builds": 0, "slot_leases": 0,
                          "candidate_count": 0, "loser_skips": 0,
                          "invalidations": 0}
@@ -159,6 +160,9 @@ class FastFanoutCoordinator:
                 "generation": self.generation}
 
     def promote_winner(self) -> dict[str, Any]:
+        if self._rollout and self._rollout.get("mode") in {"disabled", "rollback", "fallback"}:
+            return {"schema": RECEIPT_SCHEMA, "status": "BLOCKED",
+                    "reason": "rollout_not_promotable", "rollout": dict(self._rollout)}
         selection = self.select_winner()
         if not self._winner:
             return selection
@@ -210,10 +214,34 @@ class FastFanoutCoordinator:
         return {"schema": RECEIPT_SCHEMA, "status": "INVALIDATED",
                 "canonical": self._canonical.to_dict(), "metrics": dict(self._metrics)}
 
+    def transition_rollout(self, mode: str, *, reason: str = "") -> dict[str, Any]:
+        """Record shadow/canary/disable/rollback state with Fast atomically."""
+        requested = str(mode).strip().lower()
+        if requested not in {"shadow", "canary", "integrated", "disable", "rollback"}:
+            raise FastFanoutError("unsupported rollout mode")
+        fast_mode = "fallback" if requested == "disable" else requested
+        try:
+            receipt = self.integration.rollout(
+                fast_mode,
+                generation=self.generation or None,
+                reason=reason or None,
+            )
+        except (AttributeError, FastIntegrationError) as exc:
+            raise FastFanoutError(str(exc)) from exc
+        expected_status = "rolled-back" if requested == "rollback" else "accepted"
+        if receipt.get("status") != expected_status:
+            raise FastFanoutError(str(receipt.get("reason") or "rollout_transition_not_accepted"))
+        self._rollout = {"mode": requested, "fast_mode": fast_mode,
+                         "generation": self.generation or None,
+                         "reason": reason or None, "receipt": receipt}
+        return {"schema": RECEIPT_SCHEMA, "status": "ROLLOUT_UPDATED",
+                "rollout": dict(self._rollout), "local_llm": False}
+
     def snapshot(self) -> dict[str, Any]:
         return {"schema": SCHEMA, "canonical": self._canonical.to_dict() if self._canonical else None,
                 "slots": [slot.to_dict() for slot in self._slots.values()],
                 "candidates": list(self._candidates.values()), "winner": self._winner,
+                "rollout": dict(self._rollout) if self._rollout else None,
                 "metrics": dict(self._metrics), "local_llm": False}
 
     @classmethod
@@ -282,6 +310,12 @@ class FastFanoutCoordinator:
         if winner is not None and str(winner) not in coordinator._candidates:
             raise FastFanoutError("snapshot winner is unknown")
         coordinator._winner = str(winner) if winner is not None else None
+        rollout = snapshot.get("rollout")
+        if rollout is not None:
+            if not isinstance(rollout, Mapping) or str(rollout.get("mode") or "") not in {
+                    "shadow", "canary", "integrated", "disable", "rollback"}:
+                raise FastFanoutError("invalid snapshot rollout")
+            coordinator._rollout = dict(rollout)
         return coordinator
 
     @classmethod
@@ -293,6 +327,7 @@ class FastFanoutCoordinator:
         return {"schema": SCHEMA, "generation": self.generation,
                 "active_slots": sorted(slot_id for slot_id, slot in self._slots.items() if slot.state in {"held", "winner"}),
                 "winner": self._winner, "metrics": dict(self._metrics),
+                "rollout": dict(self._rollout) if self._rollout else None,
                 "local_llm": False}
 
 __all__ = ["CanonicalGeneration", "FastFanoutCoordinator", "FastFanoutError",
