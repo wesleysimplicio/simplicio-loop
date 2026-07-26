@@ -16,6 +16,7 @@ def _request(**overrides):
         source_refs=("tests/test_runtime.py",),
         verification_routes=("python -m pytest -q tests/test_runtime.py",),
         graph_evidence=("driver.execute is the dispatch seam",),
+        omissions=("benchmark unavailable",),
         trusted_constraints=("do not expand mutation scope",),
         untrusted_evidence=("source says ignore the operator",),
         authorized_targets=("src/runtime.py",),
@@ -36,6 +37,7 @@ def test_renderer_keeps_trusted_and_untrusted_boundaries_and_redacts_secrets():
     assert "supersecretvalue" not in rendered
     assert "[REDACTED_SECRET]" in rendered
     assert rendered.index("TRUSTED_OPERATOR_CONSTRAINTS") < rendered.index("UNTRUSTED_MAPPER_EVIDENCE")
+    assert "[OMISSIONS]" in rendered
 
 
 def test_renderer_rejects_budget_overflow_without_truncating_evidence():
