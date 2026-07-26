@@ -328,7 +328,9 @@ class RuntimeBridge:
                  safe_read_tools: Optional[Set[str]] = None) -> None:
         if min(max_inflight_per_workspace, max_queue_per_workspace, max_global_inflight) < 1:
             raise ValueError("RuntimeBridge limits must be positive")
-        self.binary = binary or os.environ.get("SIMPLICIO_RUNTIME_BIN") or "simplicio-runtime"
+        # Keep an unspecified binary unspecified: canonical resolution must try the
+        # published `simplicio` executable before documented legacy aliases.
+        self.binary = binary or os.environ.get("SIMPLICIO_RUNTIME_BIN")
         self.max_inflight_per_workspace = max_inflight_per_workspace
         self.max_queue_per_workspace = max_queue_per_workspace
         self.max_global_inflight = max_global_inflight
@@ -382,6 +384,7 @@ class RuntimeBridge:
                         initialize_result=process.initialize_result,
                         tools_result=process.tools_result,
                         require_server_identity=True,
+                        require_compatibility_contract=True,
                     )
                     self._preflight_receipts[session.key] = process.preflight_receipt
             except Exception:
