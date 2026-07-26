@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
-from .runtime_bridge import RuntimeBridge, RuntimeBridgeError
+from .runtime_bridge import (
+    RuntimeBridge,
+    RuntimeBridgeError,
+    RuntimeBridgeRecoveryUnknown,
+)
 from .canonical_plan import CanonicalPlan, canonical_plan_metadata
 
 SCHEMA = "simplicio.runtime-effect-adapter/v1"
@@ -82,6 +87,25 @@ class RuntimeEffectAdapter:
             raise RuntimeEffectError("runtime-backed profile requires RuntimeBridge")
         self.profile = profile
         self.bridge = bridge
+        self._latency_ms: list[float] = []
+
+    def _metrics(self, result: Mapping[str, Any]) -> Dict[str, Any]:
+        samples = sorted(self._latency_ms)
+        p50 = samples[len(samples) // 2] if samples else None
+        p95 = samples[min(len(samples) - 1, int((len(samples) - 1) * 0.95))] if samples else None
+        return {
+            "latency": {
+                "p50_ms": round(p50, 3) if p50 is not None else None,
+                "p95_ms": round(p95, 3) if p95 is not None else None,
+                "reason": "measured" if samples else "no_samples",
+            },
+            "process_count": result.get("process_count"),
+            "process_count_reason": None if result.get("process_count") is not None else "runtime_not_reported",
+            "tokens": result.get("tokens"),
+            "tokens_reason": None if result.get("tokens") is not None else "runtime_not_reported",
+            "rss_bytes": result.get("rss_bytes"),
+            "rss_reason": None if result.get("rss_bytes") is not None else "runtime_not_reported",
+        }
 
     @staticmethod
     def _json_digest(value: Mapping[str, Any]) -> str:
@@ -152,6 +176,7 @@ class RuntimeEffectAdapter:
             "correlation_id": transaction["idempotency"]["transaction_id"],
             "delivery": delivery or ("RUNTIME" if self.profile == "runtime-backed" else STANDALONE),
             "transaction": transaction, "result": dict(result),
+            "metrics": self._metrics(result),
         }
         if request.canonical_plan is not None:
             receipt["canonical_plan"] = canonical_plan_metadata(request.canonical_plan)
@@ -182,18 +207,31 @@ class RuntimeEffectAdapter:
         action = {"tool": tool, "arguments": dict(arguments)}
         if self.profile == "standalone":
             return self._standalone(request, kind=kind, action=action)
+        started = time.perf_counter()
         try:
             result = self.bridge.runtime_call(  # type: ignore[union-attr]
                 request.workspace, tool, arguments, cwd=request.cwd,
                 timeout_ms=request.timeout_ms, idempotency_key=request.idempotency_key,
                 canonical_plan=request.canonical_plan,
             )
+        except RuntimeBridgeRecoveryUnknown as exc:
+            self._latency_ms.append((time.perf_counter() - started) * 1000)
+            return self._receipt(
+                request, kind=kind, action=action,
+                result={
+                    "status": "UNCERTAIN", "reason": str(exc),
+                    "reconcile_required": True, "safe_to_replay": False,
+                },
+                status="UNCERTAIN", delivery="RUNTIME_RECONCILE_REQUIRED",
+            )
         except Exception as exc:
+            self._latency_ms.append((time.perf_counter() - started) * 1000)
             return self._receipt(
                 request, kind=kind, action=action,
                 result={"status": UNAVAILABLE, "reason": str(exc), "delivery": "RUNTIME_UNAVAILABLE"},
                 status=UNAVAILABLE, delivery="RUNTIME_UNAVAILABLE",
             )
+        self._latency_ms.append((time.perf_counter() - started) * 1000)
         result_mapping = dict(result)
         result_status = result_mapping.get("status")
         status = result_status if result_status in {UNAVAILABLE, "UNCERTAIN"} else "MEASURED"
@@ -205,16 +243,42 @@ class RuntimeEffectAdapter:
         action = {"argv": list(argv), "env": dict(env or {})}
         if self.profile == "standalone":
             return self._standalone(request, kind="execute", action=action)
+        started = time.perf_counter()
         try:
             result = self.bridge.execute(request.workspace, argv, cwd=request.cwd, env=env, timeout_ms=request.timeout_ms, idempotency_key=request.idempotency_key, canonical_plan=request.canonical_plan)  # type: ignore[union-attr]
+        except RuntimeBridgeRecoveryUnknown as exc:
+            self._latency_ms.append((time.perf_counter() - started) * 1000)
+            return self._receipt(
+                request, kind="execute", action=action,
+                result={
+                    "status": "UNCERTAIN", "reason": str(exc),
+                    "reconcile_required": True, "safe_to_replay": False,
+                },
+                status="UNCERTAIN", delivery="RUNTIME_RECONCILE_REQUIRED",
+            )
         except Exception as exc:
+            self._latency_ms.append((time.perf_counter() - started) * 1000)
             return self._receipt(request, kind="execute", action=action,
                                  result={"status": UNAVAILABLE, "reason": str(exc), "delivery": "RUNTIME_UNAVAILABLE"},
                                  status=UNAVAILABLE, delivery="RUNTIME_UNAVAILABLE")
+        self._latency_ms.append((time.perf_counter() - started) * 1000)
         result_mapping = dict(result)
         result_status = result_mapping.get("status")
         status = result_status if result_status in {UNAVAILABLE, "UNCERTAIN"} else "MEASURED"
         return self._receipt(request, kind="execute", action=action, result=result_mapping, status=status)
+
+    def reconcile(self, request: EffectRequest) -> Dict[str, Any]:
+        """Query Runtime for an uncertain transaction; never replay the effect."""
+        return self._runtime_call(
+            request,
+            kind="call",
+            tool="simplicio_reconcile",
+            arguments={
+                "idempotency_key": request.idempotency_key,
+                "transaction_id": request.transaction_id or request.idempotency_key,
+                "replay": False,
+            },
+        )
 
     def call(self, request: EffectRequest, tool: str, arguments: Mapping[str, Any]) -> Dict[str, Any]:
         return self._runtime_call(request, kind="call", tool=tool, arguments=arguments)
