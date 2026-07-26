@@ -47,6 +47,7 @@ class RuntimeContextRequest:
     source_refs: Tuple[str, ...] = field(default_factory=tuple)
     verification_routes: Tuple[str, ...] = field(default_factory=tuple)
     graph_evidence: Tuple[str, ...] = field(default_factory=tuple)
+    omissions: Tuple[str, ...] = field(default_factory=tuple)
     trusted_constraints: Tuple[str, ...] = field(default_factory=tuple)
     untrusted_evidence: Tuple[str, ...] = field(default_factory=tuple)
     authorized_targets: Tuple[str, ...] = field(default_factory=tuple)
@@ -64,7 +65,7 @@ class RuntimeContextRequest:
         object.__setattr__(self, "goal", goal)
         for name in (
             "acceptance_criteria", "source_spans", "source_refs", "verification_routes",
-            "graph_evidence", "trusted_constraints", "untrusted_evidence", "authorized_targets",
+            "graph_evidence", "omissions", "trusted_constraints", "untrusted_evidence", "authorized_targets",
         ):
             object.__setattr__(self, name, _stable_items(getattr(self, name)))
         object.__setattr__(self, "target", str(self.target or "").replace("\\", "/").strip())
@@ -79,6 +80,7 @@ class RuntimeContextRequest:
             "source_refs": self.source_refs,
             "verification_routes": self.verification_routes,
             "graph_evidence": self.graph_evidence,
+            "omissions": self.omissions,
             "trusted_constraints": self.trusted_constraints,
             "untrusted_evidence": self.untrusted_evidence,
             "authorized_targets": self.authorized_targets,
@@ -139,6 +141,7 @@ def render_runtime_context(
     ]
     rows += _section("ACCEPTANCE_CRITERIA", request.acceptance_criteria)
     rows += _section("VERIFICATION_ROUTES", request.verification_routes)
+    rows += _section("OMISSIONS", request.omissions)
     rows += _section("AUTHORIZED_TARGETS", (request.target,))
     rows += _section("TRUSTED_OPERATOR_CONSTRAINTS", request.trusted_constraints)
     rows += _section("UNTRUSTED_MAPPER_EVIDENCE", request.source_spans + request.source_refs + request.graph_evidence + request.untrusted_evidence)
