@@ -16,6 +16,12 @@ from pathlib import Path
 from statistics import quantiles
 from typing import Any, Mapping, Optional, Sequence
 
+from .installed_e2e_gates import (
+    NEGATIVE_LANES,
+    verify_negative_lane,
+    verify_watcher_receipt,
+)
+
 SCHEMA = "simplicio.installed-runtime-process-e2e/v1"
 COMPONENTS = ("mapper", "dev_cli", "watcher", "hbp", "runtime")
 
@@ -276,6 +282,8 @@ def run_installed_process_smoke(
     executable_overrides: Optional[Mapping[str, str]] = None,
     watcher_command: Optional[Sequence[str]] = None,
     hbp_command: Optional[Sequence[str]] = None,
+    watcher_receipt: Optional[Mapping[str, Any]] = None,
+    watcher_challenge: str = "",
     timeout_seconds: float = 30,
 ) -> dict[str, Any]:
     """Run real installed component processes and return an honest causal report."""
@@ -349,6 +357,15 @@ def run_installed_process_smoke(
             receipt["correlation_id"] = correlation_id
             receipt["receipt_hash"] = _digest(receipt)
         components["watcher"], components["hbp"] = watcher, hbp
+        watcher_gate = verify_watcher_receipt(
+            watcher_receipt,
+            challenge=watcher_challenge,
+            correlation_id=correlation_id,
+        )
+        components["watcher"]["receipt_gate"] = watcher_gate
+        if watcher_gate["status"] != "READY":
+            components["watcher"]["status"] = "BLOCKED"
+            components["watcher"]["reason"] = watcher_gate["reason"]
         components["runtime"] = _runtime(runtime, fixture, timeout_seconds)
         components["runtime"]["correlation_id"] = correlation_id
         components["runtime"]["receipt_hash"] = _digest(components["runtime"])
@@ -376,9 +393,7 @@ def run_installed_process_smoke(
                 "receipt_bytes": len(json.dumps(components, sort_keys=True).encode()),
             },
             "negative_lanes": {
-                "direct_mutation_bypass": "BLOCKED_NOT_ATTEMPTED",
-                "duplicate_idempotency": "BLOCKED_BY_EFFECT_POLICY",
-                "stale_receipt": "BLOCKED_BY_LINK_GATE",
+                lane: "REQUIRES_INJECTED_EVIDENCE" for lane in NEGATIVE_LANES
             },
             "report_hash": _digest(components),
         }
@@ -397,6 +412,9 @@ def run_installed_process_smoke(
 __all__ = [
     "COMPONENTS",
     "InstalledProcessError",
+    "NEGATIVE_LANES",
     "SCHEMA",
     "run_installed_process_smoke",
+    "verify_negative_lane",
+    "verify_watcher_receipt",
 ]
