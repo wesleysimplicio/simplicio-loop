@@ -239,7 +239,6 @@ def _verify_server_identity(initialize_result: Mapping[str, Any], binary: Runtim
     manifest = _compatibility_manifest(initialize_result)
     compatibility: dict[str, str] = {
         "runtime_version": "PASS", "hbi": "UNVERIFIED", "hbp": "UNVERIFIED",
-        "effect_transaction_schema": "UNVERIFIED",
     }
     contracts = (
         ("hbi", HBI_COMPATIBILITY, ("hbi", "hbiVersion")),
