@@ -290,6 +290,8 @@ class FastLoopIntegration:
             ready, reason, selected_engine = False, "doctor_failed", None
         if self.config.engine == "auto" and selected_engine is None and ready:
             selected_engine = "rust" if bool(doctor.get("rust_ready")) else "python"
+        if self.config.engine == "python" and selected_engine is None and ready:
+            selected_engine = "python"
         probe = FastProbe(version_text or "0.0.0", ready, not ready, reason, self.config.command,
                           requested_engine=self.config.engine, selected_engine=selected_engine)
         self._probe_cache = probe
