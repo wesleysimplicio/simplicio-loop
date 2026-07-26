@@ -9,11 +9,11 @@ SAFETY: fail-open. On ANY error, ambiguity, or missing state, ALLOW STOP — a b
 hook must never trap the agent in an endless loop. The real guards are the
 `max_iterations` cap, explicit STOP, and evidence gates, never this script's cleverness.
 
-State (single source of truth): .orchestrator/loop/scratchpad.md  (+ sibling `done` flag)
+State (single source of truth): .simplicio/orchestrator/loop/scratchpad.md  (+ sibling `done` flag)
 Reads stdin JSON from the host (Claude: {transcript_path,...}; Cursor: {text,...}).
 
 Cross-agent handoff: an INCOMPLETE stop (iteration cap, manual STOP signal, or spindle
-handoff) writes `.orchestrator/loop/HANDOFF.md` before clearing the scratchpad, so a
+handoff) writes `.simplicio/orchestrator/loop/HANDOFF.md` before clearing the scratchpad, so a
 different agent/runtime picking up this repo cold can resume without re-deriving the
 goal, the verified acceptance criteria, or the dead-end attempts. A successful
 (promise-fulfilled) stop needs no handoff.
@@ -35,7 +35,7 @@ try:  # Windows consoles default to cp1252; hook protocols and evidence are UTF-
 except Exception:
     pass
 
-LOOP_DIR = os.path.join(".orchestrator", "loop")
+LOOP_DIR = os.path.join(".simplicio/orchestrator", "loop")
 SCRATCHPAD = os.path.join(LOOP_DIR, "scratchpad.md")
 DONE_FLAG = os.path.join(LOOP_DIR, "done.flag")
 LEGACY_DONE_FLAG = os.path.join(LOOP_DIR, "done")
@@ -43,14 +43,14 @@ LAST_RESP = os.path.join(LOOP_DIR, "last_response.txt")
 ANCHOR = os.path.join(LOOP_DIR, "anchor.json")
 JOURNAL = os.path.join(LOOP_DIR, "journal.jsonl")
 HANDOFF = os.path.join(LOOP_DIR, "HANDOFF.md")
-STOP_SIGNAL = os.path.join(".orchestrator", "STOP")
+STOP_SIGNAL = os.path.join(".simplicio/orchestrator", "STOP")
 GATE_LOCK = os.path.join(LOOP_DIR, "gate.lock")
 GATE_TTL_SEC = 1800  # 30 min — a stale lock must NEVER permanently trap the loop (fail-open)
 WATCHER_STATE = os.path.join(LOOP_DIR, "watcher_state.json")
 WATCHER_CHALLENGE = os.path.join(LOOP_DIR, "watcher_challenge.json")
 SPINDLE_STATE = os.path.join(LOOP_DIR, "spindle_state.json")
 PHASE_FILE = os.path.join(LOOP_DIR, "phase.json")
-FLOW_AUDIT_RECEIPT = os.path.join(".orchestrator", "flow-audit.json")
+FLOW_AUDIT_RECEIPT = os.path.join(".simplicio/orchestrator", "flow-audit.json")
 SIMPLICIO_LOOP_SKILL_MARKER = os.path.join(".claude", "skills", "simplicio-loop", "SKILL.md")
 BOUND_OPERATORS = ("simplicio-mapper", "simplicio-dev-cli")
 WEB_EXTS = {".tsx", ".jsx", ".vue", ".svelte", ".html"}
@@ -196,7 +196,7 @@ def last_assistant_text(stdin):
 def gate_running():
     """True when a background gate (verification workflow / CI / long task) is in flight + fresh.
 
-    The orchestrator touches `.orchestrator/loop/gate.lock` before launching a background gate and
+    The orchestrator touches `.simplicio/orchestrator/loop/gate.lock` before launching a background gate and
     removes it on completion. While present AND fresh, the turn ended because we are WAITING on that
     gate — not because the loop is idle — so the Stop hook must NOT re-feed the goal. A stale lock
     (older than the TTL) is ignored so a leftover file can never trap the agent (fail-open).
@@ -253,7 +253,7 @@ def _delivery_stop_guard(cwd, iteration):
         from simplicio_loop.delivery_contract import normalize_contract
         contract = normalize_contract(contract)
 
-        baseline_path = os.path.join(cwd, ".orchestrator", "loop", "delivery_baseline.json")
+        baseline_path = os.path.join(cwd, ".simplicio/orchestrator", "loop", "delivery_baseline.json")
         baseline = {}
         if os.path.exists(baseline_path):
             with open(baseline_path, encoding="utf-8") as handle:
@@ -272,7 +272,7 @@ def _delivery_stop_guard(cwd, iteration):
                 if " -> " in path:
                     path = path.rsplit(" -> ", 1)[1]
                 path = path.strip('"')
-                if path.replace("\\", "/").startswith(".orchestrator/"):
+                if path.replace("\\", "/").startswith(".simplicio/orchestrator/"):
                     continue
                 current_paths.add(path)
         baseline_paths = set(baseline.get("paths") or [])
@@ -544,7 +544,7 @@ def _changed_files():
     """Best-effort set of files touched in the working tree (uncommitted + untracked + last
     commit). A heuristic, not a precise "since loop start" diff — fail-open: {} on any error.
 
-    Excludes `.orchestrator/` (the loop's own state files — never source, and would otherwise
+    Excludes `.simplicio/orchestrator/` (the loop's own state files — never source, and would otherwise
     make the receipt's own write, or a sibling state write, look like a "later" source change),
     `.simplicio/` (the simplicio runtime/dev-cli's own state — checkpoints, events.jsonl, survey
     artifacts — written by this very hook's fire-and-forget CLI callouts mid-turn, the same
@@ -566,7 +566,7 @@ def _changed_files():
             continue
     return {
         f for f in out
-        if not f.startswith((".orchestrator/", ".simplicio/"))
+        if not f.startswith((".simplicio/orchestrator/", ".simplicio/"))
         and "__pycache__" not in f and not f.endswith((".pyc", ".pyo"))
     }
 
@@ -587,7 +587,7 @@ def _touches_web_surface(files):
 
 def flow_audit_gap():
     """Return a human-readable gap string when a web-touching diff lacks a fresh, passing
-    `.orchestrator/flow-audit.json` receipt; None when there is nothing to require (#80).
+    `.simplicio/orchestrator/flow-audit.json` receipt; None when there is nothing to require (#80).
 
     Mechanizes what was previously prose-only (SKILL.md instructions the agent could skip under
     context pressure): the anchor gate, watcher gate, and cap are all enforced IN this
@@ -604,13 +604,13 @@ def flow_audit_gap():
             return None
         if not os.path.exists(FLOW_AUDIT_RECEIPT):
             return ("flow audit missing — run `python3 scripts/flow_audit.py audit . "
-                     "--fail-on high --json > .orchestrator/flow-audit.json`")
+                     "--fail-on high --json > .simplicio/orchestrator/flow-audit.json`")
         receipt_mtime = os.path.getmtime(FLOW_AUDIT_RECEIPT)
         for f in files:
             try:
                 if os.path.getmtime(f) > receipt_mtime:
                     return ("flow audit stale — re-run `python3 scripts/flow_audit.py audit . "
-                             "--fail-on high --json > .orchestrator/flow-audit.json`")
+                             "--fail-on high --json > .simplicio/orchestrator/flow-audit.json`")
             except OSError:
                 continue
         with open(FLOW_AUDIT_RECEIPT, encoding="utf-8") as f:
@@ -627,7 +627,7 @@ def auto_record_journal(iteration, has_evidence):
     """Fallback journal record so the hierarchical planner is never blind (#67).
 
     `scripts/hierarchical_planner.py` derives `iterations_run` from
-    `.orchestrator/loop/journal.jsonl` — but nothing auto-writes that file; only the manual
+    `.simplicio/orchestrator/loop/journal.jsonl` — but nothing auto-writes that file; only the manual
     `loop_journal.py record` call (SKILL.md Step 4) does. An agent that forgets it leaves the
     planner permanently frozen at "no history". This writes a minimal fallback record for THIS
     iteration if — and only if — the agent hasn't already recorded one itself this turn (checked
@@ -858,7 +858,7 @@ def write_watcher_challenge(iteration):
 def watcher_verify():
     """Run pre-promise watcher verification per Asolaria N-Nest Corrective Gate pattern.
 
-    Reads `.orchestrator/loop/watcher_state.json` written by the watcher process (a separate
+    Reads `.simplicio/orchestrator/loop/watcher_state.json` written by the watcher process (a separate
     agent/PID that independently re-executes the work and compares results against the agent's
     reported output). Gate: `reported == watcher.recomputed_truth`.
 
@@ -900,7 +900,7 @@ def watcher_verify():
 
 def latest_run_dir():
     try:
-        runs = Path(".orchestrator") / "runs"
+        runs = Path(".simplicio/orchestrator") / "runs"
         if not runs.exists():
             return ""
         candidates = sorted([p for p in runs.iterdir() if p.is_dir()], key=lambda p: p.name)
@@ -1276,7 +1276,7 @@ def _call_hierarchical_planner():
     """Run the HRM-style hierarchical planner if a scratchpad exists. Fail-open.
 
     The planner reads the journal and current phase, then MAY write a new phase
-    (`.orchestrator/loop/phase.json`) on stall detection or every N iterations.
+    (`.simplicio/orchestrator/loop/phase.json`) on stall detection or every N iterations.
     The phase context is consumed by the re-feed header or the loop's decision logic.
     Fail-open: any error here must never trap the loop; the loop runs in flat mode
     if the planner is missing or broken.

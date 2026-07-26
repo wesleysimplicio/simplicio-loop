@@ -242,7 +242,7 @@ def test_build_plan_uses_filtered_candidate_targets(tmp_path):
                 "context_pack": {
                     "pack_hash": "pack-1",
                     "files": [
-                        {"path": ".orchestrator/loop/runtime_run_task.md"},
+                        {"path": ".simplicio/orchestrator/loop/runtime_run_task.md"},
                         {"path": "src/worker.py"},
                     ],
                 }
@@ -412,7 +412,7 @@ def test_maintenance_deferred_cli_rejects_non_deferred_mode(tmp_path):
         "reason_code": "maintenance_mode_invalid",
         "tag": "UNVERIFIED",
     }
-    assert not (repo / ".orchestrator" / "runs" / run_id / "maintenance-receipt.json").exists()
+    assert not (repo / ".simplicio/orchestrator" / "runs" / run_id / "maintenance-receipt.json").exists()
 
 
 def test_resume_rejects_terminal_cancelled_run(tmp_path):

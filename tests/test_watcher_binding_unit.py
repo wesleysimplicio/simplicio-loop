@@ -16,8 +16,8 @@ def _write_anchor_bundle(loop, challenge="c1"):
 
 def test_watcher_rejects_run_from_different_commit(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
-    loop = repo / ".orchestrator" / "loop"
-    run = repo / ".orchestrator" / "runs" / "r1"
+    loop = repo / ".simplicio/orchestrator" / "loop"
+    run = repo / ".simplicio/orchestrator" / "runs" / "r1"
     loop.mkdir(parents=True)
     run.mkdir(parents=True)
     watcher._set_repo(str(repo))
@@ -35,8 +35,8 @@ def test_watcher_rejects_run_from_different_commit(tmp_path, monkeypatch):
 
 def test_watcher_accepts_independent_receipt_when_evidence_receipt_is_deferred(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
-    loop = repo / ".orchestrator" / "loop"
-    run = repo / ".orchestrator" / "runs" / "r1"
+    loop = repo / ".simplicio/orchestrator" / "loop"
+    run = repo / ".simplicio/orchestrator" / "runs" / "r1"
     loop.mkdir(parents=True)
     run.mkdir(parents=True)
     watcher._set_repo(str(repo))
@@ -72,8 +72,8 @@ def test_watcher_accepts_independent_receipt_when_evidence_receipt_is_deferred(t
 
 def test_watcher_rejects_independent_receipt_with_mismatched_challenge(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
-    loop = repo / ".orchestrator" / "loop"
-    run = repo / ".orchestrator" / "runs" / "r1"
+    loop = repo / ".simplicio/orchestrator" / "loop"
+    run = repo / ".simplicio/orchestrator" / "runs" / "r1"
     loop.mkdir(parents=True)
     run.mkdir(parents=True)
     watcher._set_repo(str(repo))

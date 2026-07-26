@@ -393,7 +393,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 - **Phase 0 — intake & decomposition + genesis mode** (`scripts/task_backlog.py`):
   a new deterministic worker that freezes, orders and gates a vague goal's
   LLM-brainstormed multi-item decomposition ABOVE the per-item task anchor
-  (state: `.orchestrator/backlog/backlog.jsonl`, override
+  (state: `.simplicio/orchestrator/backlog/backlog.jsonl`, override
   `$SIMPLICIO_BACKLOG_FILE`). Fail-closed `init` (refuses an empty plan, a
   zero-AC item, unknown/cyclic `depends_on`; a changed master goal needs
   `--force`; re-`init` with the same goal preserves per-item progress);
@@ -556,7 +556,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   docs (ARCHITECTURE.md, DESIGN.md, `.specs/architecture/*.md` + `ADR-*.md`, `docs/adr/*.md`) plus
   its OWN test-runner and lint command (Makefile `test:`/`lint:` targets, `package.json`
   `scripts.test`/`scripts.lint`, `scripts/check.py`, pytest/eslint/ruff/flake8 config) into the
-  `.orchestrator/conventions.json` profile (`architecture: {docs, test_runner, lint_cmd}`),
+  `.simplicio/orchestrator/conventions.json` profile (`architecture: {docs, test_runner, lint_cmd}`),
   degrading to an honest empty result rather than guessing. `simplicio-tasks` Step 1a' now mines
   it and Step 4 requires reading every listed doc and running the discovered test/lint command
   before any edit, so generated code follows the project's own architecture and quality gates
@@ -589,7 +589,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   alias). `simplicio-loop`'s orient step now documents `simplicio-mapper handoff . --for-llm
   toon` with a `--json` fallback + a machine-readable, journaled reason when the installed
   mapper predates `--for-llm`.
-- First `savings_harness.py` snapshots committed at `.orchestrator/savings/snapshots.jsonl`
+- First `savings_harness.py` snapshots committed at `.simplicio/orchestrator/savings/snapshots.jsonl`
   (`.gitignore` now carries a scoped exception for this one file) — a real JSON-vs-TOON pair for
   a `task_anchor.py check` verdict and a `loop_journal.py stall` verdict, closing the open
   benchmark box from #88 with measured numbers instead of an estimate.
@@ -713,7 +713,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ### Added
 - **Cross-agent handoff on incomplete stop (`hooks/loop_stop.py`).** A manual-stop or
-  iteration-cap stop now writes `.orchestrator/loop/HANDOFF.md` before clearing the scratchpad —
+  iteration-cap stop now writes `.simplicio/orchestrator/loop/HANDOFF.md` before clearing the scratchpad —
   the frozen goal/acceptance criteria from `task_anchor.py`, the last attempts from
   `loop_journal.py`, and concrete resume steps. Previously these stops deleted the scratchpad with
   nothing durable left for a different agent/runtime to pick the task back up cold; a successful
@@ -788,7 +788,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 - **`pr_evidence` worker (`scripts/pr_evidence.py`) — every PR carries prints + an item-by-item AC
   check.** Assembles the PR body mechanically (never hand-written): the item-by-item
   acceptance-criteria checklist from the task anchor PLUS the screenshots/recordings captured by
-  `web_verify`/`video_evidence` under `.orchestrator/tee/web`. With `--require-evidence` it FAILS
+  `web_verify`/`video_evidence` under `.simplicio/orchestrator/tee/web`. With `--require-evidence` it FAILS
   CLOSED (exit 3) rather than open a PR that has neither a checklist nor a print, and it honors a
   discovered `.github/PULL_REQUEST_TEMPLATE.md`. Closes the "PR opened without prints / without an
   item-by-item check of the task" complaint.
@@ -827,9 +827,9 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 
 ### Changed
 - **`PreToolUse` (Bash) hooks are now project-scoped** — `action_gate.py` and `orient_rewrite.py`
-  fire only inside an active simplicio-loop project (an `.orchestrator/` marker in cwd/an ancestor,
+  fire only inside an active simplicio-loop project (an `.simplicio/orchestrator/` marker in cwd/an ancestor,
   or `SIMPLICIO_LOOP=1`); elsewhere they no-op so the command runs unchanged. The home directory is
-  never treated as a project, so a stray `~/.orchestrator` cannot widen the scope. This clears the
+  never treated as a project, so a stray `~/.simplicio/orchestrator` cannot widen the scope. This clears the
   marketplace-scanner `has_broad_scope_hooks` finding (the gate no longer intercepts Bash globally)
   while preserving the full fail-closed behavior inside a real run. Verified: outside a project a
   `git push --force` is a no-op (exit 0); inside, it is BLOCKED (exit 2).
@@ -895,7 +895,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   learns the repo's OWN playbook by mining git history (branch scheme, commit convention + the real
   scope list, ticket pattern — by frequency) + merged PRs via `gh` + static config (CONTRIBUTING/AGENTS/
   pyproject for a Conventional-Commits hint, PR template for section structure) into a hash-pinned
-  `.orchestrator/conventions.json`. Confidence-gated: a sparse/inconsistent history degrades to an honest
+  `.simplicio/orchestrator/conventions.json`. Confidence-gated: a sparse/inconsistent history degrades to an honest
   Conventional-Commits default, never an over-fit guess. Steps 4–6 shape branch/commit/PR names
   deterministically from it. Wired into `simplicio-tasks` Step 1a'/Step 3/Step 6,
   `references/extension-points.md`, `references/orchestration.md`; added to `claims_audit`
@@ -904,7 +904,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   conflict); a shared checkout is the opt-out for big compiled modules.
 - **Genuine fast-path:** a single interactive item no longer auto-arms the loop (no scratchpad → the
   stop-hook lets the turn end). The loop engages only for a real body of work (queue / drain / 24-7).
-- **Stop-hook background-gate awareness** (`hooks/loop_stop.py`): a fresh `.orchestrator/loop/gate.lock`
+- **Stop-hook background-gate awareness** (`hooks/loop_stop.py`): a fresh `.simplicio/orchestrator/loop/gate.lock`
   marks "waiting on a background gate (verification workflow / CI / long task)" so the hook does NOT
   re-fire as an idle turn; the lock is TTL-bounded (30 min) so a stale lock can never trap the loop
   (fail-open).
@@ -1125,7 +1125,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   `_bundle` synced.
 
 ### Added — loop attempt-memory + stall detector (`scripts/loop_journal.py`)
-- **Durable run-journal** `.orchestrator/loop/journal.jsonl` (append-only: `iteration`, `action`,
+- **Durable run-journal** `.simplicio/orchestrator/loop/journal.jsonl` (append-only: `iteration`, `action`,
   `hypothesis`, `gate`, error `fingerprint`) — the loop's working memory of WHAT WAS TRIED, beside
   the scratchpad's WHAT (the goal). Closes the two failure modes of a memoryless re-feed loop:
   re-deriving the same triage every turn, and **oscillation** (try X → fail → try X again).
@@ -1159,7 +1159,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
 - **Worker** `scripts/video_evidence.py` — five verbs (`detect`/`scaffold`/`lint`/`render`/`verify`).
   `detect` classifies the request in-terminal (EN/PT/ES regex, no LLM); `verify` scaffolds a
   hyperframes composition from the `web_verify` per-step screenshots and renders the MP4 under
-  `.orchestrator/tee/video/`. Missing toolchain (Node 22+, FFmpeg, hyperframes) → **BLOCKED**, never
+  `.simplicio/orchestrator/tee/video/`. Missing toolchain (Node 22+, FFmpeg, hyperframes) → **BLOCKED**, never
   a fake pass. Chains after `web_verify` (Playwright captures the screens; hyperframes assembles them).
 - **Contract** `.claude/skills/simplicio-tasks/references/video-evidence.md`; wired into
   `simplicio-tasks` (Step 2b routing + Step 4b evidence) and `simplicio-loop` (in-turn evidence

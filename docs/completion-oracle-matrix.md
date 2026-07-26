@@ -8,8 +8,8 @@ Example:
 
 ```bash
 python scripts/completion_oracle_matrix.py \
-  --loop-dir .orchestrator/loop \
-  --run-dir .orchestrator/runs/<run-id> \
+  --loop-dir .simplicio/orchestrator/loop \
+  --run-dir .simplicio/orchestrator/runs/<run-id> \
   --response-text '<promise>EXACT TEXT</promise>'
 ```
 

@@ -87,8 +87,8 @@ class FastConfig:
 
     mode: str = "auto"
     command: tuple[str, ...] = ("simplicio-fast",)
-    snapshot: str = ".simplicio-fast/project.sfast"
-    state: str = ".simplicio-fast/loop-ingest.json"
+    snapshot: str = ".simplicio/fast/project.sfast"
+    state: str = ".simplicio/fast/loop-ingest.json"
     max_bytes: int = 48_000
     timeout_seconds: int = 180
     require_binding: bool = True
@@ -496,7 +496,7 @@ class FastLoopIntegration:
         """Persist an atomic Fast rollout transition for this Loop root."""
         if mode not in {"shadow", "canary", "integrated", "fallback", "rollback"}:
             raise ValueError("unsupported Fast rollout mode")
-        state_path = Path(state) if state is not None else self.root / ".simplicio-fast" / "rollout.json"
+        state_path = Path(state) if state is not None else self.root / ".simplicio/fast" / "rollout.json"
         command = ["rollout", mode, "--state", str(state_path)]
         if generation:
             command.extend(["--generation", str(generation)])

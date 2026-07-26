@@ -64,4 +64,4 @@ gemini -p "/simplicio-tasks finish all the open issues"
 ## Progresso do run
 
 Self-paced (N2): the tick echoes the turn-header (`render --turn-header`). Universal fallback
-(N3): open `.orchestrator/loop/PROGRESS.md` (auto-regenerated every turn).
+(N3): open `.simplicio/orchestrator/loop/PROGRESS.md` (auto-regenerated every turn).

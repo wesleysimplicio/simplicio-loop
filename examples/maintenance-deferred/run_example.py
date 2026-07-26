@@ -100,7 +100,7 @@ def main() -> int:
             correction_summary="Backlog-only capture for the frozen control-plane correction.",
             deferral_reason="The active run found a correction but the maintenance window owns mutation.",
             resume_instructions=[
-                "Inspect .orchestrator/runs/<run-id>/maintenance-receipt.json.",
+                "Inspect .simplicio/orchestrator/runs/<run-id>/maintenance-receipt.json.",
                 "Resume the run after the maintenance window and rerun mapper/operator.",
             ],
             evidence_status="UNVERIFIED",

@@ -59,10 +59,10 @@ Each step buys a concrete gain in **quality**, **token economy**, or **delivery 
 | `PreToolUse` (Bash) | `action_gate.py` (fail-closed safety gate) · `orient_rewrite.py` (opt-in output clamp, shells out to `orient_clamp.py`) |
 
 **Project-scoped by design.** The two `PreToolUse` (Bash) hooks act **only inside an active
-simplicio-loop project** — a directory tree containing an `.orchestrator/` marker, or any session
+simplicio-loop project** — a directory tree containing an `.simplicio/orchestrator/` marker, or any session
 where `SIMPLICIO_LOOP=1` is set. In every other repo on the machine they no-op and the command runs
 unchanged, so installing this plugin never intercepts Bash globally. The home directory is never
-treated as a project, so a stray `~/.orchestrator` cannot widen the scope. All hooks run locally and
+treated as a project, so a stray `~/.simplicio/orchestrator` cannot widen the scope. All hooks run locally and
 make zero network calls.
 
 ## Maintainers

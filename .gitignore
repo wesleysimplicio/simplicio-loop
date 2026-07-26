@@ -1,13 +1,14 @@
-.simplicio/
+.simplicio/*
+!.simplicio/orchestrator/
+.simplicio/orchestrator/*
+!.simplicio/orchestrator/savings/
+!.simplicio/orchestrator/savings/snapshots.jsonl
+# Legacy Simplicio state roots are quarantined; all new state belongs under .simplicio/.
+.orchestrator/
+.simplicio-fast/
 *.egg-info/
 __pycache__/
 dist/
-.orchestrator/*
-# Exception: the committed first savings-harness snapshot pair (#92) is real measured evidence,
-# not scratch runtime state — keep it tracked even though the rest of .orchestrator/ is ignored.
-# (git can't re-include a path under an EXCLUDED parent dir, hence `.orchestrator/*` here instead
-# of `.orchestrator/` — see `git help gitignore`.)
-!.orchestrator/savings/
 *.db
 .serena/
 .agents/

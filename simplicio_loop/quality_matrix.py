@@ -431,7 +431,7 @@ def _resolve_ref(run_dir: Path, ref: str) -> "Path | None":
     run_candidate = run_dir / ref
     if run_candidate.exists():
         return run_candidate
-    repo_candidate = run_dir.parent.parent.parent / ref  # best-effort: .orchestrator/runs/<id>/..
+    repo_candidate = run_dir.parent.parent.parent / ref  # best-effort: .simplicio/orchestrator/runs/<id>/..
     if repo_candidate.exists():
         return repo_candidate
     return None

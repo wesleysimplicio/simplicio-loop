@@ -44,4 +44,4 @@ digests and approval prompts come back on the same channel.
 
 Native scheduler (N1-equivalent): call `loop_progress.py emit`/`render --turn-header` at the
 plugin SDK's own tick points, same contract as any other extension point. Universal fallback (N3):
-open `.orchestrator/loop/PROGRESS.md` (auto-regenerated every turn).
+open `.simplicio/orchestrator/loop/PROGRESS.md` (auto-regenerated every turn).

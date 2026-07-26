@@ -183,7 +183,7 @@ Implement the thing and prove it works.
 
 
 def _arm(root, iteration=1, max_iter=5):
-    loop = os.path.join(root, ".orchestrator", "loop")
+    loop = os.path.join(root, ".simplicio/orchestrator", "loop")
     os.makedirs(loop, exist_ok=True)
     with open(os.path.join(loop, "scratchpad.md"), "w", encoding="utf-8") as f:
         f.write(SCRATCHPAD.format(iteration=iteration, max_iter=max_iter))
@@ -191,7 +191,7 @@ def _arm(root, iteration=1, max_iter=5):
 
 
 def _write_stalled_journal(root, fp="deadbeef0001", n=3):
-    loop = os.path.join(root, ".orchestrator", "loop")
+    loop = os.path.join(root, ".simplicio/orchestrator", "loop")
     os.makedirs(loop, exist_ok=True)
     with open(os.path.join(loop, "journal.jsonl"), "w", encoding="utf-8") as f:
         for i in range(1, n + 1):
@@ -253,7 +253,7 @@ def test_run_blocked_on_missing_operator_appends_hbp_topic(tmp_path):
 
 def test_gate_blocked_appends_hbp_topic(tmp_path):
     root = str(tmp_path)
-    os.makedirs(os.path.join(root, ".orchestrator"), exist_ok=True)  # project-relevance marker
+    os.makedirs(os.path.join(root, ".simplicio/orchestrator"), exist_ok=True)  # project-relevance marker
     log = os.path.join(root, "hbp_calls.log")
     bin_dir = os.path.join(root, "bin")
     _fake_simplicio(bin_dir, log)

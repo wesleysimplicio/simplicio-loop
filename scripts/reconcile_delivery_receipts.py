@@ -6,7 +6,7 @@ Closes the known gap: cron ticks reported canonical_state=done via GitHub truth
 written and the ledger canonical_state was not updated for most WIs.
 
 This script:
-  1. Iterates .orchestrator/intake/issue-*/ directories.
+  1. Iterates .simplicio/orchestrator/intake/issue-*/ directories.
   2. Reads intake-contract.json to recover the issue number.
   3. Verifies GitHub truth independently via `gh issue view <n> --json state`.
   4. If MERGED/CLOSED, writes delivery-receipt.json (ready:true) with evidence.
@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
-LEDGER_DIR = HERE / ".orchestrator" / "intake"
+LEDGER_DIR = HERE / ".simplicio/orchestrator" / "intake"
 LEDGER_PATH = LEDGER_DIR / "ledger.jsonl"
 
 

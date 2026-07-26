@@ -75,4 +75,4 @@ model-per-role choices (pstack-style) if you use the simplicio-runtime model rou
 
 Hook-bound (N1): both the `stop` hook and `afterAgentResponse` capture feed `loop_stop.py`, which
 injects fase/etapa/item/ACs/% into the re-feed header — no action needed. Universal fallback (N3):
-open `.orchestrator/loop/PROGRESS.md` (auto-regenerated every turn).
+open `.simplicio/orchestrator/loop/PROGRESS.md` (auto-regenerated every turn).

@@ -34,14 +34,14 @@ there, not fixed in this PR.
 
 Verbs:
   run       Execute the 4 hops for real against a target repo (default: this repo). Writes:
-              .orchestrator/savings/snapshots.jsonl        (via savings_harness — so
+              .simplicio/orchestrator/savings/snapshots.jsonl        (via savings_harness — so
                                                               `billing_aggregator.py collect` and
                                                               `savings_harness.py score` pick these
                                                               hops up for free, no new aggregation
                                                               code)
-              .orchestrator/savings/e2e-demo-events.jsonl  (one simplicio.savings-event/v1-shaped
+              .simplicio/orchestrator/savings/e2e-demo-events.jsonl  (one simplicio.savings-event/v1-shaped
                                                               receipt per hop)
-              .orchestrator/savings/e2e-demo.md            (the human-readable report)
+              .simplicio/orchestrator/savings/e2e-demo.md            (the human-readable report)
             A hop whose live tool is missing/failing is BLOCKED and reported as such — never a
             fake pass.
   audit     Read an existing e2e-demo events file and fail closed when any hop is still
@@ -76,7 +76,7 @@ if HERE not in sys.path:
 from toon_codec import encode_toon  # noqa: E402 — same codec task_anchor.py uses for --format toon
 import savings_harness  # noqa: E402 — reused snapshot store + tokenizer (single source of truth)
 
-DEFAULT_STORE = os.path.join(REPO, ".orchestrator", "savings")
+DEFAULT_STORE = os.path.join(REPO, ".simplicio/orchestrator", "savings")
 EVENTS_FILE = "e2e-demo-events.jsonl"
 REPORT_FILE = "e2e-demo.md"
 SCHEMA = "simplicio.savings-event/v1"
@@ -144,7 +144,7 @@ def build_event(hop, baseline_text, treatment_text, proof_kind, methodology, not
 
 def _snapshot(store, item, label, baseline_text, treatment_text):
     """Feed the SAME snapshot store savings_harness.py owns, so `savings_harness.py score` and
-    `billing_aggregator.py collect` (which reads .orchestrator/savings/snapshots.jsonl) pick this
+    `billing_aggregator.py collect` (which reads .simplicio/orchestrator/savings/snapshots.jsonl) pick this
     hop up for free — no new aggregation code (issue #93: 'agregado pelo billing_aggregator.py')."""
     bf = tf = None
     try:
@@ -323,8 +323,8 @@ def hop_verify(store, item, out_dir):
     marks = [
         ("AC1", "done", "scripts/e2e_demo.py selftest; registered in claims_audit.py "
                         "SELFTEST_SCRIPTS + tests/test_worker_selftests_system.py"),
-        ("AC2", "done", ".orchestrator/savings/e2e-demo-events.jsonl (4 records, one per hop)"),
-        ("AC3", "done", ".orchestrator/savings/e2e-demo.md"),
+        ("AC2", "done", ".simplicio/orchestrator/savings/e2e-demo-events.jsonl (4 records, one per hop)"),
+        ("AC3", "done", ".simplicio/orchestrator/savings/e2e-demo.md"),
         ("AC4", "partial", "local TOON-vs-JSON stand-in attached (EDIT hop note); the live "
                            "SIMPLICIO_PROMPT_TOON on/off A/B needs dev-cli#88, not yet shipped"),
         ("AC5", "done", "selftest is fully offline: no subprocess to simplicio-mapper/"
@@ -587,7 +587,7 @@ def cmd_selftest(_opts):
     chk("event_id differs across hops", ev["event_id"] != ev2["event_id"])
 
     # 3) snapshot + score round-trip through the REAL savings_harness store format, in a temp dir
-    #    so this never touches the repo's real .orchestrator/savings/ during the audit gate
+    #    so this never touches the repo's real .simplicio/orchestrator/savings/ during the audit gate
     tmp_store = tempfile.mkdtemp(prefix="e2e-demo-selftest-")
     try:
         _snapshot(tmp_store, "map", "selftest map", "x" * 400, "x" * 100)

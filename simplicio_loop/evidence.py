@@ -125,7 +125,7 @@ def _changed_paths(root: Path) -> List[str]:
     return sorted({
         path for path in out
         if path
-        and not path.startswith(".orchestrator/")
+        and not path.startswith(".simplicio/orchestrator/")
         and not path.startswith(".simplicio/")
         and "__pycache__" not in path
         and not path.endswith((".pyc", ".pyo"))

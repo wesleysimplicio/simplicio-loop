@@ -21,7 +21,7 @@ cross the boundary. The outbox is JSONL, so duplicate delivery is safe when the 
 ```python
 bridge = LoopRuntimeAdapter(
     run_id="run-...", work_item_id="wi-...", actor="claude@host-b",
-    transport=runtime_client, outbox_path=".orchestrator/runtime-outbox.jsonl",
+    transport=runtime_client, outbox_path=".simplicio/orchestrator/runtime-outbox.jsonl",
 )
 bridge.negotiate()              # fails closed on contract mismatch
 bridge.register_run(manifest)

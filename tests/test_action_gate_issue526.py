@@ -34,7 +34,7 @@ def make_repo(tmp_path: Path, text: str = "ok") -> Path:
 
 
 def freeze_delivery(repo: Path, **overrides) -> None:
-    state = repo / ".orchestrator" / "loop"
+    state = repo / ".simplicio/orchestrator" / "loop"
     state.mkdir(parents=True)
     contract = {
         "schema": "simplicio.delivery-contract/v1",

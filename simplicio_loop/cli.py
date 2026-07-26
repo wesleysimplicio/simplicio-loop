@@ -676,7 +676,7 @@ def main(argv=None) -> int:
 
     p_plan = sub.add_parser("plan", help="compile a raw task into a contract and preview it")
     p_plan.add_argument("--task", required=True, help="markdown task file")
-    p_plan.add_argument("--out", default=os.path.join(".orchestrator", "task-contract.json"),
+    p_plan.add_argument("--out", default=os.path.join(".simplicio/orchestrator", "task-contract.json"),
                         help="where to write the compiled contract")
 
     p_run = sub.add_parser("run", help="arm, execute, and independently verify a raw markdown task")
@@ -725,7 +725,7 @@ def main(argv=None) -> int:
     p_ext_doctor.add_argument("--json", action="store_true", help="machine-readable output (always JSON)")
 
     p_oracle = sub.add_parser("oracle", help="evaluate completion and cross-runtime parity")
-    p_oracle.add_argument("--loop-dir", default=os.path.join(".orchestrator", "loop"))
+    p_oracle.add_argument("--loop-dir", default=os.path.join(".simplicio/orchestrator", "loop"))
     p_oracle.add_argument("--run-dir", default=os.environ.get("SIMPLICIO_RUN_DIR", ""))
     p_oracle.add_argument("--response-text", default="")
     p_oracle.add_argument("--flow-gap", default="")

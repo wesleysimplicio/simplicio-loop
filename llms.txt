@@ -18,11 +18,11 @@ Non-negotiables:
 - On Claude/Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Simplicio Agent, `simplicio-runtime` binding is required before driving the loop.
 
 Key loop artifacts:
-- `.orchestrator/loop/scratchpad.md` — single source of truth for loop state
-- `.orchestrator/loop/journal.jsonl` — durable attempt memory / stall detector input
-- `.orchestrator/loop/phase.json` — current HRM phase
-- `.orchestrator/loop/HANDOFF.md` — resume note for the next agent/runtime
-- `.orchestrator/wiki/SUMMARY.md` — cross-agent persistent summary
+- `.simplicio/orchestrator/loop/scratchpad.md` — single source of truth for loop state
+- `.simplicio/orchestrator/loop/journal.jsonl` — durable attempt memory / stall detector input
+- `.simplicio/orchestrator/loop/phase.json` — current HRM phase
+- `.simplicio/orchestrator/loop/HANDOFF.md` — resume note for the next agent/runtime
+- `.simplicio/orchestrator/wiki/SUMMARY.md` — cross-agent persistent summary
 
 Key commands:
 - `python3 scripts/check.py`

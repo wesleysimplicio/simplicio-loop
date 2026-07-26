@@ -244,7 +244,7 @@ def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]
     if ensure_identity is None:
         raise RuntimeError("distributed identity adapter unavailable")
     identity = ensure_identity(
-        path=os.environ.get("SIMPLICIO_IDENTITY_FILE") or str(Path(repo) / ".orchestrator" / "agent-identity.json"),
+        path=os.environ.get("SIMPLICIO_IDENTITY_FILE") or str(Path(repo) / ".simplicio/orchestrator" / "agent-identity.json"),
         runtime=os.environ.get("SIMPLICIO_RUNTIME", "unknown-runtime"),
         capabilities=["claim", "heartbeat", "fencing", "receipts", "events", "evidence", "completion"],
     )
@@ -487,7 +487,7 @@ def _dispatch_identity_fields(repo_path: Optional[Path]) -> Dict[str, str]:
         return {}
     try:
         identity = ensure_identity(
-            path=os.environ.get("SIMPLICIO_IDENTITY_FILE") or str(repo_path / ".orchestrator" / "agent-identity.json"),
+            path=os.environ.get("SIMPLICIO_IDENTITY_FILE") or str(repo_path / ".simplicio/orchestrator" / "agent-identity.json"),
             runtime=os.environ.get("SIMPLICIO_RUNTIME", "unknown-runtime"),
         )
     except Exception:
@@ -706,7 +706,7 @@ def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
     digest = hashlib.sha256()
     files = []
     for root, dirs, names in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in {".git", ".orchestrator", ".simplicio", "__pycache__"}]
+        dirs[:] = [d for d in dirs if d not in {".git", ".simplicio/orchestrator", ".simplicio", "__pycache__"}]
         for name in names:
             path = Path(root) / name
             try:
@@ -735,7 +735,7 @@ def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
                 parts = [part.strip() for part in path_text.split("->")] if "->" in path_text else [path_text]
                 normalized = [part.replace("\\", "/").lstrip("./").lower() for part in parts if part.strip()]
                 if normalized and all(
-                    item.startswith(".orchestrator/")
+                    item.startswith(".simplicio/orchestrator/")
                     or item.startswith(".simplicio/")
                     or item.startswith(".claude/")
                     for item in normalized
@@ -756,7 +756,7 @@ def _repo_state_equivalent(left: Dict[str, str], right: Dict[str, str]) -> bool:
     """Return True when repo content and base commit are unchanged.
 
     `dirty_status_hash` is useful telemetry, but it can drift because helper-generated
-    `.orchestrator`/`.simplicio` state or other non-material status noise changes while the
+    `.simplicio/orchestrator`/`.simplicio` state or other non-material status noise changes while the
     tracked working tree bytes remain identical. Freshness gates should therefore key on the
     semantic repository state: commit + tree content hash.
     """
@@ -2324,7 +2324,7 @@ def _extract_repo_file_hints(task_text: str, repo_path: Path) -> List[str]:
         except (OSError, ValueError):
             continue
         low = rel.lower()
-        if low.startswith(".orchestrator/") or low.startswith(".claude/") or low.startswith(".github/"):
+        if low.startswith(".simplicio/orchestrator/") or low.startswith(".claude/") or low.startswith(".github/"):
             continue
         if low.startswith(".venv/") or low.startswith("venv/") or "/site-packages/" in low:
             continue
@@ -2383,7 +2383,7 @@ def _task_context_plan_data(context: Mapping[str, Any], task: Mapping[str, Any],
         except (OSError, ValueError):
             continue
         low = path.lower()
-        if (low.startswith((".orchestrator/", ".claude/", ".github/", ".venv/", "venv/"))
+        if (low.startswith((".simplicio/orchestrator/", ".claude/", ".github/", ".venv/", "venv/"))
                 or "/site-packages/" in low or "/_bundle/" in low):
             continue
         if path not in targets:
@@ -2521,7 +2521,7 @@ def _fallback_targets(repo_path: Path) -> List[str]:
     for root, dirs, files in os.walk(repo_path):
         dirs[:] = [
             d for d in dirs
-            if d not in {".git", ".orchestrator", ".claude", ".simplicio", "__pycache__", ".venv", "venv", "site-packages"}
+            if d not in {".git", ".simplicio/orchestrator", ".claude", ".simplicio", "__pycache__", ".venv", "venv", "site-packages"}
         ]
         for name in files:
             if not name.endswith((".py", ".ts", ".tsx", ".js")):
@@ -2553,7 +2553,7 @@ def _candidate_targets(mapper_payload: Dict[str, Any], repo_path: Path) -> List[
         except (OSError, ValueError):
             continue
         low = path.lower()
-        if low.startswith(".orchestrator/") or low.startswith(".claude/"):
+        if low.startswith(".simplicio/orchestrator/") or low.startswith(".claude/"):
             continue
         if low.startswith(".venv/") or low.startswith("venv/") or "/site-packages/" in low:
             continue
@@ -2719,7 +2719,7 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
 
     run_id = _run_id()
     # Keep loop run state under .simplicio/ (which simplicio-mapper ignores for
-    # freshness) instead of .orchestrator/ (which the mapper sees as repo churn and
+    # freshness) instead of .simplicio/orchestrator/ (which the mapper sees as repo churn and
     # marks artifacts_not_fresh, blocking the loop before any implementation work).
     run_root = repo_path / ".simplicio" / "loop-runs" / run_id
     loop_dir = run_root / "loop"
@@ -3708,7 +3708,7 @@ def _persist_isolated_run_context(item: Dict[str, Any], context: Dict[str, Any])
         return
     target_root = Path(path).resolve()
     target_root.mkdir(parents=True, exist_ok=True)
-    context_dir = target_root / ".orchestrator" / "dispatch-context"
+    context_dir = target_root / ".simplicio/orchestrator" / "dispatch-context"
     context_dir.mkdir(parents=True, exist_ok=True)
     context_path = context_dir / (str(context.get("task_id") or item.get("task_index")) + ".json")
     context["context_path"] = str(context_path)

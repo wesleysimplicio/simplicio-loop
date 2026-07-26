@@ -35,7 +35,7 @@ EXCLUDED_DIRS = {
     ".git",
     ".hg",
     ".svn",
-    ".orchestrator",
+    ".simplicio/orchestrator",
     ".playwright-cli",
     ".playwright-mcp",
     ".pytest_cache",

@@ -4,17 +4,17 @@ Contrato mínimo do runner público iniciado por `simplicio-loop run`.
 
 Artefatos persistidos:
 
-- `.orchestrator/runs/<run-id>/manifest.json`
-- `.orchestrator/runs/<run-id>/state.json`
-- `.orchestrator/runs/<run-id>/transitions.jsonl`
-- `.orchestrator/runs/<run-id>/task-contract.json`
-- `.orchestrator/runs/<run-id>/mapper-preflight.json`
-- `.orchestrator/runs/<run-id>/mapper-context.json`
-- `.orchestrator/runs/<run-id>/plan.json`
-- `.orchestrator/runs/<run-id>/operator-receipt.json`
-- `.orchestrator/runs/<run-id>/completion-receipt.json`
-- `.orchestrator/runs/<run-id>/loop/scratchpad.md`
-- `.orchestrator/runs/<run-id>/loop/watcher_challenge.json`
+- `.simplicio/orchestrator/runs/<run-id>/manifest.json`
+- `.simplicio/orchestrator/runs/<run-id>/state.json`
+- `.simplicio/orchestrator/runs/<run-id>/transitions.jsonl`
+- `.simplicio/orchestrator/runs/<run-id>/task-contract.json`
+- `.simplicio/orchestrator/runs/<run-id>/mapper-preflight.json`
+- `.simplicio/orchestrator/runs/<run-id>/mapper-context.json`
+- `.simplicio/orchestrator/runs/<run-id>/plan.json`
+- `.simplicio/orchestrator/runs/<run-id>/operator-receipt.json`
+- `.simplicio/orchestrator/runs/<run-id>/completion-receipt.json`
+- `.simplicio/orchestrator/runs/<run-id>/loop/scratchpad.md`
+- `.simplicio/orchestrator/runs/<run-id>/loop/watcher_challenge.json`
 
 Intenção:
 

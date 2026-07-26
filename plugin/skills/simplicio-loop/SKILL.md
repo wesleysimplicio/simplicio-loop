@@ -58,7 +58,7 @@ bare LLM) follows them mechanically — no paraphrase, no drift:
    deliberately self-paced by a durable scheduler — the loop is NEVER accidentally unbounded — and
    the cap is checked BEFORE every continuation.
 5. **Single source of truth.** All loop state lives in the one scratchpad below; the sibling
-   `.orchestrator/loop/done` flag is touched ONLY when the promise is verified.
+   `.simplicio/orchestrator/loop/done` flag is touched ONLY when the promise is verified.
 6. **Fallback obeys the same contract.** When the host has no hooks, the self-paced scheduler mode
    is first-class and MUST honor invariants 1–5 identically.
 7. **Definition-of-Done gate.** No issue/task item may be marked `done` (`task_backlog.py done`)
@@ -194,7 +194,7 @@ python3 scripts/loop_progress.py emit --step preflight --status begin --detail "
 python3 scripts/operator_check.py maybe-upgrade --json
 simplicio-mapper --version   # survey operator (direct simplicio-loop dependency)
 simplicio-dev-cli --help     # action operator (pkg simplicio-cli; exposes `simplicio-dev-cli`)
-python3 scripts/operator_check.py pin --scratchpad .orchestrator/loop/scratchpad.md \
+python3 scripts/operator_check.py pin --scratchpad .simplicio/orchestrator/loop/scratchpad.md \
   --versions "{\"simplicio-mapper\": \"<resolved-version>\", \"simplicio-dev-cli\": \"<resolved-version>\"}"
 python3 scripts/loop_progress.py emit --step preflight --status end --outcome pass \
     --detail "simplicio-mapper X.Y.Z; simplicio-dev-cli OK"
@@ -297,7 +297,7 @@ python3 scripts/video_evidence.py detect --goal "<the re-fed goal body>"
 # 2. capture the real screen (reuse web_verify — drives the UI, writes per-step PNGs)
 python3 scripts/web_verify.py run --url <URL> --expect "<text>" --issue <N>
 # 3. assemble those PNGs into a deterministic MP4 and attach it to the PR
-python3 scripts/video_evidence.py verify --name <slug> --frames .orchestrator/tee/web \
+python3 scripts/video_evidence.py verify --name <slug> --frames .simplicio/orchestrator/tee/web \
     --title "<screen>" --issue <N> [--upload --pr <N>]
 ```
 
@@ -307,7 +307,7 @@ so a video that never rendered can never satisfy the promise.
 
 ## State file (single source of truth)
 
-`.orchestrator/loop/scratchpad.md` — human-readable, trivially editable/cancellable:
+`.simplicio/orchestrator/loop/scratchpad.md` — human-readable, trivially editable/cancellable:
 
 ```markdown
 ---
@@ -322,9 +322,9 @@ started_at: "<ISO-8601>"
 <the task goal, verbatim — this body is re-fed every turn>
 ```
 
-A sibling flag file `.orchestrator/loop/done` is `touch`ed only when the promise is verified.
+A sibling flag file `.simplicio/orchestrator/loop/done` is `touch`ed only when the promise is verified.
 
-Alongside it, `.orchestrator/loop/journal.jsonl` is the loop's **durable attempt memory** (one
+Alongside it, `.simplicio/orchestrator/loop/journal.jsonl` is the loop's **durable attempt memory** (one
 append-only record per turn: `iteration`, `action`, `hypothesis`, `gate`, failure `fingerprint`).
 The scratchpad holds the GOAL; the journal holds WHAT WAS TRIED — see § Run-journal + stall
 detector below. It is the difference between a loop that converges and one that oscillates.
@@ -337,7 +337,7 @@ detector below. It is the difference between a loop that converges and one that 
 2. **Triage the live state FIRST (mandatory).** Before any action each turn, re-read the ground
    - If every open issue returns DEFER_ACTIVE_CLAIM (all claimed), do NOT idle — review open PRs against the 7-dimension DoD and the underlying issue frozen ACs using scripts/pr_dod_review.py, and comment what remains for the claiming agent (convention: references/multi-agent-coordination.md).
    truth — the **`simplicio-mapper` survey**, `git status`/`git diff`, the scratchpad, AND the
-   source of record (issues/PRs, branches, `.orchestrator/loop/done`). **Read the attempt memory
+   source of record (issues/PRs, branches, `.simplicio/orchestrator/loop/done`). **Read the attempt memory
    FIRST**: `python3 scripts/loop_journal.py resume` (dead-ends to AVOID; `since` for incremental
    triage). **Re-read the task anchor**: `python3 scripts/task_anchor.py check --goal "<goal>"
    --exit-code` (a `DRIFT` verdict, exit 11, means STOP and re-anchor with `--force`, never wander).
@@ -358,7 +358,7 @@ detector below. It is the difference between a loop that converges and one that 
    the **`simplicio-dev-cli` operator APPLIES and verifies it** — never hand-edit inside the loop.
    End EVERY iteration with a concrete verification. **After the operator passes, run the watcher
    producer**: `python3 scripts/watcher_verify.py verify` — independently recomputes the frozen
-   anchor's done/pending state from disk and writes `.orchestrator/loop/watcher_state.json` with
+   anchor's done/pending state from disk and writes `.simplicio/orchestrator/loop/watcher_state.json` with
    `{"match": true, "status": "MEASURED"}` only when it agrees AND echoes the current challenge.
    **Never hand-write `watcher_state.json`** — a missing/unchallenged/mismatched state is
    `UNVERIFIED` and gates the promise. Re-run `impact_audit.py`/`flow_audit.py` if the edit surface
@@ -443,7 +443,7 @@ the decomposition — subtasks with ≥1 acceptance criterion each, `depends_on`
 freeze it BEFORE any edit: `python3 scripts/task_backlog.py init --goal "<goal verbatim>"
 --item-file plan.json` (the worker refuses an empty plan, a zero-AC item, or an unknown/cyclic
 dependency — the AI decides, the worker freezes, orders and gates). State:
-`.orchestrator/backlog/backlog.jsonl`.
+`.simplicio/orchestrator/backlog/backlog.jsonl`.
 
 **Scaffolding a new repo.** Put exactly one explicit `scaffold` item first in `plan.json`
 (structure + toolchain + one minimal green test as its ACs) and make every later item depend on
@@ -460,17 +460,17 @@ provide the deterministic drain signal and active-lease view.
 Inspired by the **Hierarchical Reasoning Model** (arXiv:2506.21734, JesseBrown1980/HRM), the loop
 runs a slow **high-level planner** (`scripts/hierarchical_planner.py plan`, called by
 `loop_stop.py` before each re-feed) that MAY write a new **phase**
-(`.orchestrator/loop/phase.json`: `explore → debug → harden → refactor → implement → escalate`)
+(`.simplicio/orchestrator/loop/phase.json`: `explore → debug → harden → refactor → implement → escalate`)
 on top of the fast **low-level executor** (the normal per-turn re-feed, which executes one
 AC-scoped change within the current phase and never changes it itself). Deterministic and
 model-free; the loop runs flat if the planner script is missing. `hierarchical_planner.py status`
 reads the current phase before deciding the next action; `plan` forces a replan; `clear` resets to
 flat mode. Full phase table + usage: **`references/hierarchical-planner.md`**.
 
-## Cross-agent persistent wiki (`.orchestrator/wiki/`)
+## Cross-agent persistent wiki (`.simplicio/orchestrator/wiki/`)
 
 Every turn's key decisions, findings, and dead-ends are captured into a persistent markdown wiki
-at `.orchestrator/wiki/` (`scripts/cross_agent_wiki.py capture|summary|handoff|status`) — a
+at `.simplicio/orchestrator/wiki/` (`scripts/cross_agent_wiki.py capture|summary|handoff|status`) — a
 per-project, cross-agent, zero-friction knowledge base that survives across agent vendors (Simplicio Agent
 → Claude Code → Codex): a fresh agent reads it and sees "where we left off" with no transcript.
 Plain markdown, no vector DB. Full structure + per-turn mechanics:
@@ -480,7 +480,7 @@ Plain markdown, no vector DB. Full structure + per-turn mechanics:
 
 A re-feed loop with no memory of its own attempts **re-derives the same triage every turn** and
 **oscillates** (tries X, fails, tries X again until the cap burns). `scripts/loop_journal.py`
-closes both, deterministically: the **run-journal** (`.orchestrator/loop/journal.jsonl`,
+closes both, deterministically: the **run-journal** (`.simplicio/orchestrator/loop/journal.jsonl`,
 append-only, one record per turn with a normalized failure **fingerprint**) is the loop's memory
 of WHAT WAS TRIED; the **stall detector** (`loop_journal.py stall`) returns `PROGRESS | STALLED` —
 STALLED means the last **K** (default 3) attempts share the same fingerprint, and names the
@@ -502,7 +502,7 @@ memory.
 
 `scripts/loop_progress.py` is the ONE place "onde estamos / quanto falta" is computed —
 deterministically, from `task_backlog.py` items + `task_anchor.py` ACs + its own event trail, never
-fabricated. It writes `.orchestrator/loop/progress.jsonl` (events), `progress.json` (snapshot,
+fabricated. It writes `.simplicio/orchestrator/loop/progress.jsonl` (events), `progress.json` (snapshot,
 never authoritative — always recomputed) and `PROGRESS.md` (human render). Every stage calls
 `emit`; the transcript re-feed header calls `render --turn-header`. Full contract:
 **`references/progress-feedback.md`**.
@@ -527,7 +527,7 @@ only if, in the SAME turn, there is concrete evidence the work is truly done, AN
 **watcher-gate** has independently verified the result:
 
 - the **watcher-gate** — `python3 scripts/watcher_verify.py verify` independently recomputes the
-  anchor's done/pending state and writes `.orchestrator/loop/watcher_state.json` with `{"match":
+  anchor's done/pending state and writes `.simplicio/orchestrator/loop/watcher_state.json` with `{"match":
   true, "status": "MEASURED"}` only when it agrees AND echoes the current per-iteration challenge
   (`watcher_challenge.json`) — never hand-write this file, or
 - the run-verification gate passed ("works, not just compiles") — the `simplicio-dev-cli`
@@ -573,7 +573,7 @@ Where the host runtime supports lifecycle hooks, bind the two cross-platform hoo
 
 | Hook | Fires | Job |
 |---|---|---|
-| `afterAgentResponse` → `loop_capture.py` | after every turn | extract `<promise>…</promise>`; if it exactly equals `completion_promise` AND in-turn evidence exists → `touch .orchestrator/loop/done`. Fire-and-forget, `exit 0`. Never stops the loop itself. |
+| `afterAgentResponse` → `loop_capture.py` | after every turn | extract `<promise>…</promise>`; if it exactly equals `completion_promise` AND in-turn evidence exists → `touch .simplicio/orchestrator/loop/done`. Fire-and-forget, `exit 0`. Never stops the loop itself. |
 | `stop` → `loop_stop.py` | when the turn ends | guard clauses that each end the loop cleanly: no/corrupt scratchpad → stop; bound operator missing → write `HANDOFF.md`, stop (never silently hand-survey/hand-edit); `done` flag present → stop; `iteration >= max_iterations` → `HANDOFF.md` + stop (cap); spindle handoff latched → `HANDOFF.md` + stop. Before the promise check it runs the **watcher-gate** (rejects on `match: false`/stale challenge) and the **flow-audit gate** (rejects a web-touching diff with no fresh green `flow-audit.json`); a fallback journal record fires if the turn forgot one. Else increments `iteration` and re-feeds `{"followup_message": "<header>\n\n<goal body>"}`. |
 
 Detection (`capture`) and termination (`stop`) are split on purpose — neither parses the
@@ -596,8 +596,8 @@ uncertain rather than assuming a hook will re-feed the goal:
 
 ## Cancel
 
-Delete `.orchestrator/loop/` (the `cancel-ralph` analogue). A single STOP signal (flag file
-`.orchestrator/STOP` or a channel command) halts cleanly between iterations.
+Delete `.simplicio/orchestrator/loop/` (the `cancel-ralph` analogue). A single STOP signal (flag file
+`.simplicio/orchestrator/STOP` or a channel command) halts cleanly between iterations.
 
 ## Post-merge cleanup (mandatory)
 

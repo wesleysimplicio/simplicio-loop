@@ -16,11 +16,11 @@ descendants, worktrees, or leases.
 The CLI surface is JSON-first:
 
 ```text
-python -m simplicio_loop.cli agent-slots status --db .orchestrator/agent-slots.sqlite
-python -m simplicio_loop.cli agent-slots acquire agent-a --db .orchestrator/agent-slots.sqlite
-python -m simplicio_loop.cli agent-slots start agent-a --db .orchestrator/agent-slots.sqlite
-python -m simplicio_loop.cli agent-slots close agent-a --status completed --db .orchestrator/agent-slots.sqlite
-python -m simplicio_loop.cli agent-slots reclaim --db .orchestrator/agent-slots.sqlite
+python -m simplicio_loop.cli agent-slots status --db .simplicio/orchestrator/agent-slots.sqlite
+python -m simplicio_loop.cli agent-slots acquire agent-a --db .simplicio/orchestrator/agent-slots.sqlite
+python -m simplicio_loop.cli agent-slots start agent-a --db .simplicio/orchestrator/agent-slots.sqlite
+python -m simplicio_loop.cli agent-slots close agent-a --status completed --db .simplicio/orchestrator/agent-slots.sqlite
+python -m simplicio_loop.cli agent-slots reclaim --db .simplicio/orchestrator/agent-slots.sqlite
 ```
 
 `spawn_batch` is the programmatic seam for a real adapter. It retries a failed
