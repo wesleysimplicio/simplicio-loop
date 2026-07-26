@@ -121,6 +121,28 @@ def test_initialize_and_close_cover_protocol_and_process_shutdown():
     assert fake.terminated and fake.returncode == 0
 
 
+def test_runtime_manifest_annotations_classify_tool_effects():
+    fake = _FakePopen()
+    process = _process_for_unit(fake)
+    responses = iter([
+        {"protocolVersion": RUNTIME_MCP_PROTOCOL},
+        {"tools": [
+            {"name": "simplicio_status", "annotations": {"readOnlyHint": True}},
+            {"name": "simplicio_write", "annotations": {}},
+            {"name": "simplicio_delete", "annotations": {"destructiveHint": True}},
+            {"name": "simplicio_exec", "annotations": {}},
+        ]},
+    ])
+    process._request = lambda *_args, **_kwargs: next(responses)
+    process._initialize()
+    assert process.tool_classes == {
+        "simplicio_status": "read",
+        "simplicio_write": "write",
+        "simplicio_delete": "exclusive",
+        "simplicio_exec": "process",
+    }
+
+
 def test_tool_result_errors_are_structured():
     fake = _FakePopen()
     process = _process_for_unit(fake)
