@@ -449,6 +449,24 @@ class FastLoopIntegration:
         receipt["receipt_hash"] = _hash(receipt)
         return receipt
 
+    def rollout(self, mode: str, *, generation: str | None = None,
+                reason: str | None = None, state: str | Path | None = None) -> dict[str, Any]:
+        """Persist an atomic Fast rollout transition for this Loop root."""
+        if mode not in {"shadow", "canary", "integrated", "fallback", "rollback"}:
+            raise ValueError("unsupported Fast rollout mode")
+        state_path = Path(state) if state is not None else self.root / ".simplicio-fast" / "rollout.json"
+        command = ["rollout", mode, "--state", str(state_path)]
+        if generation:
+            command.extend(["--generation", str(generation)])
+        if reason:
+            command.extend(["--reason", str(reason)])
+        try:
+            return self._run(command)
+        except FastIntegrationError:
+            if self.config.mode == "required":
+                raise
+            raise
+
 
 __all__ = ["APPLY_RECEIPT_SCHEMA", "FAST_CHANGESET_SCHEMA", "FAST_PLAN_SCHEMA", "FastConfig",
            "FastIntegrationError", "FastLoopIntegration", "FastProbe", "FastStaleChangeset",
