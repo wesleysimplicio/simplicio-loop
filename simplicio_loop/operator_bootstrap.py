@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 SCHEMA = "simplicio.operator-bootstrap/v1"
-PACKAGE_SPECS = ("simplicio-cli>=0.16.2", "simplicio-mapper>=0.19.0")
+PACKAGE_SPECS = ("simplicio-cli>=0.16.3", "simplicio-mapper>=0.19.0")
 REQUIRED_BINARIES = ("simplicio-mapper", "simplicio-dev-cli")
 RECEIPT_NAME = "operator-bootstrap.json"
 AUTO_BOOTSTRAP_ENV = "SIMPLICIO_LOOP_AUTO_BOOTSTRAP_OPERATORS"
