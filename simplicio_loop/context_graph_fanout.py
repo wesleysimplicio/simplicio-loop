@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from .map_service import MapServiceError, MapServiceRegistry
@@ -60,6 +61,8 @@ class MapViewHandle:
     cache_hit: bool = False
     fallback: bool = False
     reason_code: str = ""
+    schema_identity: str = "simplicio.map-service/v1"
+    config_identity: str = ""
 
 
 @dataclass
@@ -79,13 +82,17 @@ class CanonicalMapClient:
             except MapServiceError:
                 self._handles.pop(key, None)
             else:
-                return MapViewHandle("ready", view.cache_key, view.trace_id, view.identity_key, view.tree_hash, view.mode, True)
+                identity = self.registry.identity(identity_key)
+                config = hashlib.sha256(json.dumps(identity.mapper_config, sort_keys=True).encode()).hexdigest()
+                return MapViewHandle("ready", view.cache_key, view.trace_id, view.identity_key, view.tree_hash, view.mode, True, config_identity=config)
         if self.registry is None:
             return MapViewHandle("degraded", fallback=True, reason_code="map_service_unavailable")
         view = self.registry.build_canonical(str(identity_key), tree_hash=str(tree_hash), files=normalized)
         # Acquire the registry-owned handle exactly once for this client.
         view = self.registry.get_view(view.cache_key)
-        handle = MapViewHandle("ready", view.cache_key, view.trace_id, view.identity_key, view.tree_hash, view.mode)
+        identity = self.registry.identity(identity_key)
+        config = hashlib.sha256(json.dumps(identity.mapper_config, sort_keys=True).encode()).hexdigest()
+        handle = MapViewHandle("ready", view.cache_key, view.trace_id, view.identity_key, view.tree_hash, view.mode, config_identity=config)
         self._handles[key] = handle
         return handle
 
@@ -94,7 +101,9 @@ class CanonicalMapClient:
             return MapViewHandle("degraded", mode="overlay", fallback=True, reason_code="map_service_unavailable")
         view = self.registry.build_overlay(str(identity_key), tree_hash=str(tree_hash), dirty_files=dirty_files)
         view = self.registry.get_view(view.cache_key)
-        return MapViewHandle("ready", view.cache_key, view.trace_id, view.identity_key, view.tree_hash, view.mode)
+        identity = self.registry.identity(identity_key)
+        config = hashlib.sha256(json.dumps(identity.mapper_config, sort_keys=True).encode()).hexdigest()
+        return MapViewHandle("ready", view.cache_key, view.trace_id, view.identity_key, view.tree_hash, view.mode, config_identity=config)
 
     def release(self, handle: MapViewHandle) -> None:
         if self.registry is not None and handle.cache_key:
@@ -102,6 +111,106 @@ class CanonicalMapClient:
         for key, value in tuple(self._handles.items()):
             if value.cache_key == handle.cache_key:
                 self._handles.pop(key, None)
+
+
+@dataclass(frozen=True)
+class WorktreeMapBinding:
+    task_id: str
+    owner_id: str
+    authority_hash: str
+    canonical: MapViewHandle
+    overlay: MapViewHandle
+    overlay_files: Tuple[str, ...]
+    generation: int = 1
+
+
+class WorktreeMapLeaseManager:
+    """Bind canonical+overlay views after authority and release them on every exit."""
+
+    def __init__(self, client: CanonicalMapClient) -> None:
+        self.client = client
+        self._bindings: Dict[str, WorktreeMapBinding] = {}
+        self._lock = RLock()
+        self._metrics = {"binds": 0, "cache_hits": 0, "overlay_files": 0,
+                         "drift_replans": 0, "releases": 0, "recoveries": 0}
+
+    def bind(self, task: TaskEnvelope, *, owner_id: str, canonical_identity: str,
+             canonical_tree_hash: str, canonical_files: Iterable[str],
+             worktree_identity: str, overlay_tree_hash: str,
+             dirty_files: Iterable[str]) -> WorktreeMapBinding:
+        if not task.authority_hash:
+            raise ConflictGraphError("mutation authority is required before worktree allocation")
+        normalized = tuple(sorted({str(path).replace("\\", "/") for path in dirty_files}))
+        with self._lock:
+            if task.task_id in self._bindings:
+                raise ConflictGraphError("task already has an active map binding")
+            canonical = self.client.request_canonical(
+                canonical_identity, tree_hash=canonical_tree_hash, files=canonical_files,
+            )
+            if canonical.status != "ready":
+                raise ConflictGraphError(canonical.reason_code or "canonical_map_unavailable")
+            try:
+                overlay = self.client.request_overlay(
+                    worktree_identity, tree_hash=overlay_tree_hash, dirty_files=normalized,
+                )
+            except BaseException:
+                self.client.release(canonical)
+                raise
+            if overlay.status != "ready":
+                self.client.release(canonical)
+                raise ConflictGraphError(overlay.reason_code or "overlay_map_unavailable")
+            binding = WorktreeMapBinding(
+                task.task_id, str(owner_id), task.authority_hash, canonical, overlay, normalized,
+            )
+            self._bindings[task.task_id] = binding
+            self._metrics["binds"] += 1
+            self._metrics["cache_hits"] += int(canonical.cache_hit)
+            self._metrics["overlay_files"] += len(normalized)
+            return binding
+
+    def replan_drift(self, task_id: str, *, overlay_tree_hash: str,
+                     dirty_files: Iterable[str]) -> WorktreeMapBinding:
+        with self._lock:
+            current = self._bindings.get(task_id)
+            if current is None:
+                raise ConflictGraphError("task has no active map binding")
+            self.client.release(current.overlay)
+            overlay = self.client.request_overlay(
+                current.overlay.identity_key, tree_hash=overlay_tree_hash, dirty_files=dirty_files,
+            )
+            updated = WorktreeMapBinding(
+                current.task_id, current.owner_id, current.authority_hash,
+                current.canonical, overlay,
+                tuple(sorted({str(path).replace("\\", "/") for path in dirty_files})),
+                current.generation + 1,
+            )
+            self._bindings[task_id] = updated
+            self._metrics["drift_replans"] += 1
+            return updated
+
+    def release(self, task_id: str) -> bool:
+        with self._lock:
+            binding = self._bindings.pop(task_id, None)
+            if binding is None:
+                return False
+            self.client.release(binding.overlay)
+            self.client.release(binding.canonical)
+            self._metrics["releases"] += 1
+            return True
+
+    def recover_owner(self, owner_id: str) -> Tuple[str, ...]:
+        released = []
+        with self._lock:
+            for task_id, binding in tuple(self._bindings.items()):
+                if binding.owner_id == owner_id and self.release(task_id):
+                    released.append(task_id)
+            self._metrics["recoveries"] += 1
+        return tuple(sorted(released))
+
+    def status(self) -> Dict[str, Any]:
+        with self._lock:
+            return {"schema": SCHEMA, "active": len(self._bindings),
+                    "tasks": sorted(self._bindings), "metrics": dict(self._metrics)}
 
 
 def conflict_graph(tasks: Sequence[TaskEnvelope]) -> Dict[str, Dict[str, Any]]:
@@ -170,4 +279,6 @@ def execution_waves(tasks: Sequence[TaskEnvelope], *, capacity: int = 4) -> Dict
             "task_count": len(tasks), "degraded": False}
 
 
-__all__ = ["SCHEMA", "CanonicalMapClient", "ConflictGraphError", "MapViewHandle", "TaskEnvelope", "conflict_graph", "execution_waves"]
+__all__ = ["SCHEMA", "CanonicalMapClient", "ConflictGraphError", "MapViewHandle",
+           "TaskEnvelope", "WorktreeMapBinding", "WorktreeMapLeaseManager",
+           "conflict_graph", "execution_waves"]
