@@ -20,6 +20,10 @@ PORCELAIN_FIXTURE = (
     "HEAD cccccccccccccccccccccccccccccccccccccccc\n"
     "branch refs/heads/other-task\n"
 )
+SAFE_SAFETY = {
+    "worktree_id": "wt-1", "terminal_handle": "term-1", "lease_owner": "worker-1",
+    "receipt_explicit": True, "terminal_exited": True, "no_changes_confirmed": True,
+}
 
 
 # ----- find_worktree_for_branch (pure parser) -----------------------------------------------
@@ -67,14 +71,14 @@ def test_decide_cleanup_skips_both_on_uncommitted_changes():
 
 
 def test_decide_cleanup_allows_branch_delete_when_no_worktree():
-    result = wc.decide_cleanup(True, "feature-x", None, False)
+    result = wc.decide_cleanup(True, "feature-x", None, False, safety=SAFE_SAFETY)
     assert result["action"] == "cleanup"
     assert result["delete_worktree"] is False
     assert result["delete_branch"] is True
 
 
 def test_decide_cleanup_cleans_both_when_safe():
-    result = wc.decide_cleanup(True, "feature-x", "/repo/wt", False)
+    result = wc.decide_cleanup(True, "feature-x", "/repo/wt", False, safety=SAFE_SAFETY)
     assert result["action"] == "cleanup"
     assert result["delete_worktree"] is True
     assert result["delete_branch"] is True
@@ -112,7 +116,7 @@ def _fake_calls():
     return {"remove_worktree": 0, "delete_local": 0, "delete_remote": 0}
 
 
-def _wire(calls, porcelain=PORCELAIN_FIXTURE, status="", fetch=None):
+def _wire(calls, porcelain=PORCELAIN_FIXTURE, status="", fetch=None, safety=SAFE_SAFETY):
     def fake_fetch(repo, pr_number):
         return {"state": "MERGED", "mergedAt": "2026-07-17T00:00:00Z", "headRefName": "feature-x"}
 
@@ -132,6 +136,7 @@ def _wire(calls, porcelain=PORCELAIN_FIXTURE, status="", fetch=None):
         remove_worktree_fn=fake_remove_worktree,
         delete_local_branch_fn=fake_delete_local,
         delete_remote_branch_fn=fake_delete_remote,
+        safety=safety,
     )
 
 
@@ -169,6 +174,34 @@ def test_cleanup_skip_uncommitted_never_calls_delete_functions():
                         **_wire(calls, status="M dirty.py\n"))
     assert result["decision"]["action"] == "skip"
     assert result["decision"]["reason"] == "uncommitted_changes"
+    assert calls == {"remove_worktree": 0, "delete_local": 0, "delete_remote": 0}
+
+
+def test_cleanup_receipt_is_fail_closed_for_active_terminal_and_lease():
+    calls = _fake_calls()
+    result = wc.cleanup("owner/repo", 484, "feature-x", dry_run=False,
+                        **_wire(calls, safety={
+                                    "worktree_id": "wt-1", "terminal_handle": "term-1",
+                                    "lease_owner": "worker-1", "lease_active": True,
+                                    "terminal_active": True, "receipt_explicit": True,
+                                    "terminal_exited": False,
+                                }))
+    assert result["decision"] == {"action": "skip", "reason": "active_worktree",
+                                  "detail": "lease, agent, or terminal is still active"}
+    assert result["receipt"]["cleanup_decision"] == "skip"
+    assert result["receipt"]["reason"] == "active_worktree"
+    assert calls == {"remove_worktree": 0, "delete_local": 0, "delete_remote": 0}
+
+
+def test_cleanup_requires_explicit_completion_receipt():
+    calls = _fake_calls()
+    result = wc.cleanup("owner/repo", 484, "feature-x", dry_run=False,
+                        **_wire(calls, safety={
+                                    "worktree_id": "wt-1", "terminal_handle": "term-1",
+                                    "lease_owner": "worker-1", "receipt_explicit": False,
+                                    "terminal_exited": False,
+                                }))
+    assert result["decision"]["reason"] == "missing_cleanup_receipt"
     assert calls == {"remove_worktree": 0, "delete_local": 0, "delete_remote": 0}
 
 

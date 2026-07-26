@@ -38,6 +38,7 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+CLEANUP_RECEIPT_SCHEMA = "simplicio.worktree-cleanup-receipt/v1"
 
 
 def log(msg):
@@ -171,10 +172,40 @@ def has_uncommitted_changes(worktree_path, status_fn=_git_status_porcelain):
     return bool(out.strip())
 
 
-def decide_cleanup(pr_merged, head_ref, worktree_path, has_uncommitted):
+def _cleanup_receipt(safety=None, decision="skip", reason=""):
+    """Return the stable, secret-free receipt required for every cleanup decision."""
+    safety = dict(safety or {})
+    return {
+        "schema": CLEANUP_RECEIPT_SCHEMA,
+        "worktree_id": str(safety.get("worktree_id") or ""),
+        "terminal_handle": str(safety.get("terminal_handle") or ""),
+        "lease_owner": str(safety.get("lease_owner") or ""),
+        "cleanup_decision": str(decision or "skip"),
+        "reason": str(reason or ""),
+    }
+
+
+def _cleanup_safety(safety=None):
+    """Normalize activity evidence without treating missing fields as safe."""
+    raw = dict(safety or {})
+    return {
+        **raw,
+        "lease_active": bool(raw.get("lease_active")),
+        "agent_active": bool(raw.get("agent_active")),
+        "terminal_active": bool(raw.get("terminal_active")),
+        "terminal_exited": bool(raw.get("terminal_exited")),
+        "receipt_explicit": bool(raw.get("receipt_explicit")),
+        "commit_receipt": bool(raw.get("commit_receipt")),
+        "pr_receipt": bool(raw.get("pr_receipt")),
+        "no_changes_confirmed": bool(raw.get("no_changes_confirmed")),
+    }
+
+
+def decide_cleanup(pr_merged, head_ref, worktree_path, has_uncommitted, safety=None):
     """PURE decision function — no I/O. Given the facts gathered above, decide what cleanup (if
     any) is safe. Branch and worktree deletion are independent: a missing worktree does not block
     branch deletion, but a DIRTY worktree blocks BOTH (report clearly, don't half-clean)."""
+    safety = _cleanup_safety(safety)
     if not pr_merged:
         return {"action": "skip", "reason": "pr_not_merged"}
     if worktree_path and has_uncommitted:
@@ -183,6 +214,19 @@ def decide_cleanup(pr_merged, head_ref, worktree_path, has_uncommitted):
             "detail": "worktree at %s has uncommitted changes — skipping branch AND "
                       "worktree deletion" % worktree_path,
         }
+    if safety.get("safety_error"):
+        return {"action": "skip", "reason": "safety_evidence_unavailable",
+                "detail": str(safety["safety_error"])[:240]}
+    if safety["lease_active"] or safety["agent_active"] or safety["terminal_active"]:
+        return {"action": "skip", "reason": "active_worktree",
+                "detail": "lease, agent, or terminal is still active"}
+    if not safety["receipt_explicit"]:
+        return {"action": "skip", "reason": "missing_cleanup_receipt",
+                "detail": "cleanup requires explicit terminal/commit/PR/no-change evidence"}
+    if not safety["terminal_exited"]:
+        return {"action": "skip", "reason": "terminal_exit_unconfirmed"}
+    if not (safety["commit_receipt"] or safety["pr_receipt"] or safety["no_changes_confirmed"]):
+        return {"action": "skip", "reason": "completion_receipt_unconfirmed"}
     if not worktree_path:
         return {
             "action": "cleanup", "head_ref": head_ref, "worktree_path": None,
@@ -206,18 +250,46 @@ def cleanup(
     remove_worktree_fn=_git_worktree_remove,
     delete_local_branch_fn=_git_branch_delete_local,
     delete_remote_branch_fn=_git_branch_delete_remote,
+    safety_fn=None,
+    safety=None,
 ):
     """Wire check_pr_merged -> find_worktree_for_branch -> has_uncommitted_changes ->
     decide_cleanup -> (dry-run print | real delete). Every I/O call is an injectable parameter so
     this whole orchestration is testable without a real `gh`/`git`/network."""
-    pr_state = check_pr_merged(repo, pr_number, fetch=fetch)
-    porcelain = worktree_list_fn()
+    try:
+        pr_state = check_pr_merged(repo, pr_number, fetch=fetch)
+        porcelain = worktree_list_fn()
+    except Exception as exc:
+        normalized_safety = _cleanup_safety(safety)
+        reason = "cleanup_evidence_unavailable"
+        decision = {"action": "skip", "reason": reason,
+                    "detail": "%s: %s" % (type(exc).__name__, str(exc)[:200])}
+        return {"repo": repo, "pr": pr_number, "branch": branch_name, "dry_run": bool(dry_run),
+                "decision": decision, "actions_taken": [],
+                "receipt": _cleanup_receipt(normalized_safety, "skip", reason)}
     worktree_path = find_worktree_for_branch(porcelain, branch_name)
-    dirty = has_uncommitted_changes(worktree_path, status_fn=status_fn) if worktree_path else False
+    try:
+        dirty = has_uncommitted_changes(worktree_path, status_fn=status_fn) if worktree_path else False
+    except Exception as exc:
+        normalized_safety = _cleanup_safety(safety)
+        reason = "git_status_unavailable"
+        decision = {"action": "skip", "reason": reason,
+                    "detail": "%s: %s" % (type(exc).__name__, str(exc)[:200])}
+        return {"repo": repo, "pr": pr_number, "branch": branch_name, "dry_run": bool(dry_run),
+                "decision": decision, "actions_taken": [],
+                "receipt": _cleanup_receipt(normalized_safety, "skip", reason)}
+    if safety_fn is not None:
+        try:
+            safety = safety_fn(worktree_path, branch_name) or {}
+        except Exception as exc:
+            safety = {"safety_error": "%s: %s" % (type(exc).__name__, exc)}
+    normalized_safety = _cleanup_safety(safety)
     decision = decide_cleanup(pr_state["merged"], pr_state["head_ref"] or branch_name,
-                              worktree_path, dirty)
+                              worktree_path, dirty, safety=normalized_safety)
     result = {"repo": repo, "pr": pr_number, "branch": branch_name, "dry_run": bool(dry_run),
-              "decision": decision, "actions_taken": []}
+              "decision": decision, "actions_taken": [],
+              "receipt": _cleanup_receipt(normalized_safety, decision.get("action"),
+                                           decision.get("reason"))}
     if decision["action"] != "cleanup":
         return result
     if dry_run:
@@ -271,13 +343,25 @@ def cmd_run(opts):
         print("run requires --repo owner/name --pr N --branch NAME")
         sys.exit(2)
     dry_run = bool(opts.get("dry-run"))
+    safety = None
+    if opts.get("safety-json"):
+        try:
+            with open(str(opts["safety-json"]), encoding="utf-8") as fh:
+                safety = json.load(fh)
+            if not isinstance(safety, dict):
+                raise ValueError("safety receipt must be an object")
+        except (OSError, ValueError, TypeError) as exc:
+            receipt = _cleanup_receipt({}, "skip", "invalid_safety_receipt")
+            print(json.dumps({"decision": {"action": "skip", "reason": "invalid_safety_receipt"},
+                              "receipt": receipt, "error": str(exc)}, ensure_ascii=False))
+            sys.exit(1)
     try:
         pr_number = int(pr)
     except (TypeError, ValueError):
         print("--pr must be an integer")
         sys.exit(2)
     try:
-        result = cleanup(repo, pr_number, branch, dry_run=dry_run)
+        result = cleanup(repo, pr_number, branch, dry_run=dry_run, safety=safety)
     except Exception as exc:
         print("error: %s" % exc)
         _emit_progress("cleanup", "blocked", outcome="blocked", detail=str(exc))
@@ -306,6 +390,11 @@ def cmd_run(opts):
 
 def cmd_selftest(_opts):
     checks = []
+    safe_safety = {
+        "worktree_id": "selftest-wt", "terminal_handle": "selftest-term",
+        "lease_owner": "selftest", "receipt_explicit": True,
+        "terminal_exited": True, "no_changes_confirmed": True,
+    }
 
     def chk(name, got, want):
         ok = got == want
@@ -342,12 +431,12 @@ def cmd_selftest(_opts):
     chk("decide.uncommitted.reason", dirty["reason"], "uncommitted_changes")
     chk("decide.uncommitted.path", dirty["path"], "/repo/wt")
 
-    no_wt = decide_cleanup(True, "feature-x", None, False)
+    no_wt = decide_cleanup(True, "feature-x", None, False, safety=safe_safety)
     chk("decide.no_worktree.action", no_wt["action"], "cleanup")
     chk("decide.no_worktree.delete_worktree", no_wt["delete_worktree"], False)
     chk("decide.no_worktree.delete_branch", no_wt["delete_branch"], True)
 
-    full = decide_cleanup(True, "feature-x", "/repo/wt", False)
+    full = decide_cleanup(True, "feature-x", "/repo/wt", False, safety=safe_safety)
     chk("decide.cleanup.action", full["action"], "cleanup")
     chk("decide.cleanup.delete_worktree", full["delete_worktree"], True)
     chk("decide.cleanup.delete_branch", full["delete_branch"], True)
@@ -387,6 +476,7 @@ def cmd_selftest(_opts):
         fetch=fake_fetch_merged, worktree_list_fn=fake_worktree_list,
         status_fn=fake_status_clean, remove_worktree_fn=fake_remove_worktree,
         delete_local_branch_fn=fake_delete_local, delete_remote_branch_fn=fake_delete_remote,
+        safety=safe_safety,
     )
     chk("cleanup.dry_run.action", result_dry["decision"]["action"], "cleanup")
     chk("cleanup.dry_run.no_delete_calls",
@@ -398,6 +488,7 @@ def cmd_selftest(_opts):
         fetch=fake_fetch_merged, worktree_list_fn=fake_worktree_list,
         status_fn=fake_status_clean, remove_worktree_fn=fake_remove_worktree,
         delete_local_branch_fn=fake_delete_local, delete_remote_branch_fn=fake_delete_remote,
+        safety=safe_safety,
     )
     chk("cleanup.real_run.action", result_real["decision"]["action"], "cleanup")
     chk("cleanup.real_run.remove_worktree_called_once", calls["remove_worktree"], 1)
@@ -413,6 +504,7 @@ def cmd_selftest(_opts):
         remove_worktree_fn=lambda p: calls2.__setitem__("remove_worktree", calls2["remove_worktree"] + 1),
         delete_local_branch_fn=lambda b: calls2.__setitem__("delete_local", calls2["delete_local"] + 1),
         delete_remote_branch_fn=lambda b: calls2.__setitem__("delete_remote", calls2["delete_remote"] + 1),
+        safety=safe_safety,
     )
     chk("cleanup.skip_not_merged.action", result_skip["decision"]["action"], "skip")
     chk("cleanup.skip_not_merged.no_calls",
@@ -431,7 +523,7 @@ def main():
     if argv[0] == "--describe-cli":
         print(json.dumps({
             "verbs": ["run", "selftest"],
-            "flags": ["--repo", "--pr", "--branch", "--dry-run", "--json", "--help"],
+             "flags": ["--repo", "--pr", "--branch", "--dry-run", "--safety-json", "--json", "--help"],
         }))
         sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])
