@@ -8,7 +8,6 @@ from simplicio_loop.model_routing_policy import (
     DOWNGRADE,
     LOCAL,
     REMOTE,
-    STRONG_LOCAL,
     RoutingPolicyError,
     evaluate,
     maybe_downgrade,
@@ -52,11 +51,13 @@ def test_safety_constraints_never_permit_remote(field):
     assert field in receipt["reason_codes"]
 
 
-def test_cost_and_provider_gates_fall_back_locally():
+def test_cost_and_provider_gates_block_when_local_llm_is_disabled():
     cost = evaluate(base(higher_capability_required=True, estimated_remote_cost_usd=2.0))
     provider = evaluate(base(higher_capability_required=True, allowed_remote_providers=["other"]))
-    assert cost["decision"] == STRONG_LOCAL
-    assert provider["decision"] == STRONG_LOCAL
+    assert cost["decision"] == BLOCKED
+    assert provider["decision"] == BLOCKED
+    assert "local_llm_disabled" in cost["reason_codes"]
+    assert "local_llm_disabled" in provider["reason_codes"]
 
 
 def test_stall_escalates_once_when_remote_is_allowed():
@@ -66,19 +67,22 @@ def test_stall_escalates_once_when_remote_is_allowed():
     assert "measured_escalation" in receipt["reason_codes"]
 
 
-def test_invalid_syntax_repairs_before_escalating():
+def test_invalid_syntax_repairs_without_local_llm_fallback():
     repair = evaluate(base(stall_detected=True, strong_local_capable=False, invalid_tool_syntax=True, syntax_repairs=0), now=20)
     exhausted = evaluate(base(stall_detected=True, strong_local_capable=False, invalid_tool_syntax=True, syntax_repairs=1), now=20)
-    assert repair["decision"] == LOCAL
+    assert repair["decision"] == BLOCKED
     assert "bounded_tool_syntax_repair" in repair["reason_codes"]
+    assert "local_llm_disabled" in repair["reason_codes"]
     assert exhausted["decision"] == REMOTE
 
 
-def test_cooldown_and_budget_cap_prevent_ping_pong():
+def test_cooldown_and_budget_cap_do_not_reenter_local_llm():
     cooldown = evaluate(base(stall_detected=True, current_tier=LOCAL, cooldown_until=100), now=20)
     capped = evaluate(base(stall_detected=True, escalation_count=1, max_escalations=1))
-    assert cooldown["decision"] == LOCAL
-    assert capped["decision"] == STRONG_LOCAL
+    assert cooldown["decision"] == BLOCKED
+    assert capped["decision"] == BLOCKED
+    assert "local_llm_disabled" in cooldown["reason_codes"]
+    assert "local_llm_disabled" in capped["reason_codes"]
 
 
 def test_observation_and_downgrade_preserve_effect_ids():

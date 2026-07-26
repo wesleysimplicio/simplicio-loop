@@ -162,3 +162,38 @@ def test_eligible_candidates_triggers_each_reason_code():
     assert set(reasons.values()).issubset(REASON_CODES)
     eligible_ids = {e["model_id"] for e in result["eligible"]}
     assert eligible_ids == {"claude-sonnet-5"}
+
+
+def test_local_llm_entries_are_eliminated_with_structured_reason():
+    registry = ModelCapabilityRegistry(
+        [
+            {"runtime": "local-devcli", "provider": "llama.cpp", "model_id": "qwen3.5.gguf"},
+            {"runtime": "codex", "provider": "openai", "model_id": "gpt-5.4"},
+        ]
+    )
+
+    result = registry.eligible_candidates({"require_probe_available": False})
+
+    assert [entry["model_id"] for entry in result["eligible"]] == ["gpt-5.4"]
+    assert result["eliminated"] == [
+        {
+            "runtime": "local-devcli",
+            "provider": "llama.cpp",
+            "model_id": "qwen3.5.gguf",
+            "reason_code": "local_llm_disabled",
+        }
+    ]
+
+
+def test_local_llm_marker_detection_is_case_insensitive_across_fields():
+    registry = ModelCapabilityRegistry(
+        [
+            {"runtime": "remote", "provider": "LMStudio", "model_id": "model"},
+            {"runtime": "claude", "provider": "anthropic", "model_id": "claude-sonnet"},
+        ]
+    )
+
+    result = registry.eligible_candidates({"require_probe_available": False})
+
+    assert [entry["model_id"] for entry in result["eligible"]] == ["claude-sonnet"]
+    assert result["eliminated"][0]["reason_code"] == "local_llm_disabled"
