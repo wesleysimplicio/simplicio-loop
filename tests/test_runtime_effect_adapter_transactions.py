@@ -1,3 +1,6 @@
+import pytest
+
+from simplicio_loop.runtime_bridge import RuntimeBridgeRecoveryUnknown
 from simplicio_loop.runtime_effect_adapter import EffectRequest, RuntimeEffectAdapter
 
 
@@ -52,3 +55,105 @@ def test_standalone_effects_are_explicitly_unavailable_and_deterministic():
     assert receipt["delivery"] == "STANDALONE"
     assert receipt["transaction"]["executor"] == "STANDALONE"
     assert receipt["correlation_id"] == "tx-1"
+
+
+class FailureBridge:
+    def __init__(self, failure):
+        self.failure = failure
+        self.calls = []
+
+    def execute(self, workspace, argv, **kwargs):
+        self.calls.append(("execute", kwargs["idempotency_key"]))
+        raise self.failure
+
+    def runtime_call(self, workspace, tool, arguments, **kwargs):
+        self.calls.append((tool, dict(arguments)))
+        if tool == "simplicio_reconcile":
+            return {
+                "status": "MEASURED",
+                "outcome": "COMMITTED",
+                "process_count": 1,
+                "tokens": 0,
+                "rss_bytes": 4096,
+            }
+        raise self.failure
+
+
+def test_uncertain_effect_requires_reconciliation_and_is_never_replayed():
+    bridge = FailureBridge(RuntimeBridgeRecoveryUnknown("disconnect after effect"))
+    adapter = RuntimeEffectAdapter(profile="runtime-backed", bridge=bridge)
+    uncertain = adapter.execute(request(), ["python", "-V"])
+    assert uncertain["status"] == "UNCERTAIN"
+    assert uncertain["delivery"] == "RUNTIME_RECONCILE_REQUIRED"
+    assert uncertain["result"]["safe_to_replay"] is False
+    assert bridge.calls == [("execute", "run-1:task-1:attempt-1")]
+
+    reconciled = adapter.reconcile(request())
+    assert reconciled["status"] == "MEASURED"
+    assert reconciled["result"]["outcome"] == "COMMITTED"
+    assert bridge.calls[1][0] == "simplicio_reconcile"
+    assert bridge.calls[1][1]["replay"] is False
+
+
+def test_runtime_missing_or_crash_never_downgrades_to_standalone():
+    bridge = FailureBridge(FileNotFoundError("simplicio missing"))
+    receipt = RuntimeEffectAdapter(profile="runtime-backed", bridge=bridge).execute(
+        request(), ["python", "-V"]
+    )
+    assert receipt["status"] == "UNAVAILABLE"
+    assert receipt["delivery"] == "RUNTIME_UNAVAILABLE"
+    assert receipt["profile"] == "runtime-backed"
+    assert receipt["executor"] == "simplicio-runtime"
+
+
+def test_metrics_publish_latency_and_null_reasons_or_runtime_values():
+    bridge = FailureBridge(RuntimeBridgeRecoveryUnknown("uncertain"))
+    adapter = RuntimeEffectAdapter(profile="runtime-backed", bridge=bridge)
+    first = adapter.execute(request(), ["python", "-V"])
+    assert first["metrics"]["latency"]["p50_ms"] is not None
+    assert first["metrics"]["tokens"] is None
+    assert first["metrics"]["tokens_reason"] == "runtime_not_reported"
+
+    measured = adapter.reconcile(request())
+    assert measured["metrics"]["process_count"] == 1
+    assert measured["metrics"]["tokens"] == 0
+    assert measured["metrics"]["rss_bytes"] == 4096
+
+
+def test_all_production_methods_route_only_to_their_allowlisted_runtime_tools():
+    bridge = FakeBridge()
+    adapter = RuntimeEffectAdapter(profile="runtime-backed", bridge=bridge)
+    expected = {
+        "map": "simplicio_map",
+        "read": "simplicio_read",
+        "edit": "simplicio_edit",
+        "validate": "simplicio_validate",
+        "checkpoint": "simplicio_checkpoint",
+        "evidence": "simplicio_evidence",
+    }
+    for method, tool in expected.items():
+        receipt = getattr(adapter, method)(request(), {"probe": method})
+        assert receipt["result"]["tool"] == tool
+
+
+def test_invalid_effect_surfaces_fail_before_runtime():
+    adapter = RuntimeEffectAdapter(profile="runtime-backed", bridge=FakeBridge())
+    with pytest.raises(Exception, match="argv"):
+        adapter.execute(request(), [])
+    with pytest.raises(Exception, match="allowlisted"):
+        adapter.call(request(), "subprocess", {})
+    with pytest.raises(Exception, match="allowlisted"):
+        adapter.call(request(), "simplicio_bad/tool", {})
+    with pytest.raises(Exception, match="object"):
+        adapter.call(request(), "simplicio_status", [])  # type: ignore[arg-type]
+    with pytest.raises(Exception, match="profile"):
+        RuntimeEffectAdapter(profile="automatic")  # type: ignore[arg-type]
+
+
+def test_runtime_call_failure_is_unavailable_without_fallback():
+    bridge = FailureBridge(ConnectionError("runtime crashed"))
+    receipt = RuntimeEffectAdapter(profile="runtime-backed", bridge=bridge).call(
+        request(), "simplicio_status", {}
+    )
+    assert receipt["status"] == "UNAVAILABLE"
+    assert receipt["delivery"] == "RUNTIME_UNAVAILABLE"
