@@ -852,6 +852,9 @@ def main(argv=None) -> int:
                          help="receipt JSON path (persist and load)")
     p_drain.add_argument("--polls-required", type=int, default=2,
                          help="identical empty polls required (default: %(default)s)")
+    p_slots = sub.add_parser("agent-slots", help="inspect and reclaim Loop-owned agent capacity")
+    p_slots.add_argument("slot_args", nargs=argparse.REMAINDER,
+                         help="pass-through args for the JSON-first agent slot registry")
     sub.add_parser(
         "hub-drain-plan",
         help="read-only PT-BR/EN GitHub drain intake; never executes the plan",
@@ -989,6 +992,12 @@ def main(argv=None) -> int:
         return sync_source(args.repo, args.run_id, args.source, args.external_repo, args.pr, args.tag)
     if command == "drain":
         return drain(args.action, args.snapshot_path, args.receipt_path, args.polls_required)
+    if command == "agent-slots":
+        from .agent_slots import cli_main as agent_slots_main
+        forwarded = list(args.slot_args or [])
+        if forwarded and forwarded[0] == "--":
+            forwarded = forwarded[1:]
+        return agent_slots_main(forwarded)
     if command == "ledger":
         return ledger_replay(
             args.path,
