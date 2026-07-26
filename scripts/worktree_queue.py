@@ -103,6 +103,9 @@ class Allocation:
     lane: str
     reattached: bool = False
     lock_receipt: Optional[str] = None
+    worktree_id: str = ""
+    terminal_handle: str = ""
+    lease_owner: str = ""
 
 
 @dataclass
@@ -358,6 +361,12 @@ class WorktreeQueue:
                     and existing.get("path") and existing.get("branch")):
                 path = existing["path"]
                 if os.path.isdir(path):
+                    existing.setdefault("worktree_id", "%s:%s" % (self.run_id, _slug(task.id)))
+                    existing.setdefault("terminal_handle", "")
+                    existing.setdefault("lease", {
+                        "schema": "simplicio.worktree-lease/v1", "owner": self.run_id,
+                        "status": "held", "acquired_at": _now(),
+                    })
                     allocation = self._allocation_from_entry(existing, reattached=True)
                     state["tasks"][task.id]["last_seen_at"] = _now()
                     self._write(state)
@@ -403,6 +412,10 @@ class WorktreeQueue:
             "status": "allocated", "owned": True, "created_at": _now(),
             "lock_receipt": lock_receipt,
             "conflict_keys": task.conflict_keys(),
+            "worktree_id": "%s:%s" % (self.run_id, _slug(task.id)),
+            "terminal_handle": "",
+            "lease": {"schema": "simplicio.worktree-lease/v1", "owner": self.run_id,
+                       "status": "held", "acquired_at": _now()},
         }
 
     def _allocation_from_entry(self, entry: Mapping[str, Any], reattached: bool) -> Allocation:
@@ -413,6 +426,9 @@ class WorktreeQueue:
             head_sha=str(entry.get("head_sha") or ""), tree_sha=str(entry.get("tree_sha") or ""),
             lane=str(entry.get("lane") or ""), reattached=reattached,
             lock_receipt=entry.get("lock_receipt"),
+            worktree_id=str(entry.get("worktree_id") or ""),
+            terminal_handle=str(entry.get("terminal_handle") or ""),
+            lease_owner=str((entry.get("lease") or {}).get("owner") or ""),
         )
 
     def _acquire_shared_receipt(self, task_id: str, state: Dict[str, Any]) -> str:
@@ -470,6 +486,14 @@ class WorktreeQueue:
             if not entry:
                 raise KeyError("unknown task: %s" % task_id)
             entry["operator_context"] = payload
+            entry["terminal_handle"] = str(payload.get("terminal_handle") or entry.get("terminal_handle") or "")
+            lease = entry.setdefault("lease", {})
+            lease.update({
+                "schema": "simplicio.worktree-lease/v1",
+                "owner": str(payload.get("lease_owner") or lease.get("owner") or self.run_id),
+                "status": "active" if payload.get("active", True) else "released",
+                "updated_at": _now(),
+            })
             entry["context_recorded_at"] = _now()
             self._write(state)
         return payload
@@ -606,6 +630,30 @@ class WorktreeQueue:
         )
 
     # ---- cleanup -----------------------------------------------------
+    def record_cleanup_receipt(self, task_id: str, receipt: Mapping[str, Any]) -> Dict[str, Any]:
+        """Persist explicit terminal/commit/PR/no-change evidence for safe teardown."""
+        required = ("worktree_id", "terminal_handle", "lease_owner", "cleanup_decision", "reason")
+        payload = dict(receipt or {})
+        missing = [name for name in required if name not in payload]
+        if missing:
+            raise ValueError("cleanup receipt missing: %s" % ",".join(missing))
+        if payload.get("cleanup_decision") != "cleanup":
+            raise ValueError("cleanup receipt decision must be cleanup")
+        payload.setdefault("schema", "simplicio.worktree-cleanup-receipt/v1")
+        payload["task_id"] = str(task_id)
+        payload["receipt_sha"] = _sha256(payload)
+        with self._lock():
+            state = self._read()
+            entry = state.setdefault("tasks", {}).get(task_id)
+            if not entry:
+                raise KeyError("unknown task: %s" % task_id)
+            if str(payload.get("worktree_id")) != str(entry.get("worktree_id") or ""):
+                raise ValueError("cleanup receipt worktree_id mismatch")
+            entry["cleanup_receipt"] = payload
+            entry["cleanup_receipt_sha"] = payload["receipt_sha"]
+            self._write(state)
+        return payload
+
     def teardown(self, task_id: str, delete_branch: bool = False) -> CleanupReport:
         with self._lock():
             state = self._read()
@@ -614,6 +662,24 @@ class WorktreeQueue:
                 return CleanupReport(task_id=task_id, removed=False, failures=["unknown-task"])
             failures: List[str] = []
             path, branch = str(entry.get("path") or ""), str(entry.get("branch") or "")
+            lease = entry.get("lease") or {}
+            context = entry.get("operator_context") or {}
+            if str(lease.get("status") or "").lower() == "active" or context.get("active") is True:
+                failures.append("active-worktree")
+            if path and os.path.isdir(path) and not failures:
+                try:
+                    if self._git(["status", "--porcelain"], cwd=path):
+                        failures.append("uncommitted-changes")
+                except (GitError, OSError) as exc:
+                    failures.append("status-unavailable: %s" % exc)
+            if context and not failures and not entry.get("cleanup_receipt"):
+                failures.append("missing-cleanup-receipt")
+            if failures:
+                entry["status"] = "cleanup-blocked"
+                entry["cleanup_at"] = _now()
+                entry["cleanup_failures"] = failures
+                self._write(state)
+                return CleanupReport(task_id=task_id, removed=False, failures=failures, path=path, branch=branch)
             if entry.get("mode") == "shared":
                 receipt = entry.get("lock_receipt") or ""
                 if receipt and os.path.exists(receipt):

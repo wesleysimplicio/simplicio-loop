@@ -90,6 +90,27 @@ def test_sync_canonical_projection_uses_eight_state_map():
     assert result["lifecycle_state"] == "MERGED"
 
 
+def test_sync_emits_cleanup_receipt_identity_and_decision():
+    def runner(args):
+        if args[:3] == ["worktree", "current", "--json"]:
+            return _completed(stdout=json.dumps({
+                "id": "wt-745", "terminal_handle": "term-745", "lease_owner": "worker-745",
+            }))
+        return _completed(stdout="{}")
+
+    result = sync_orca_status(
+        {"run_id": "run-745"},
+        {"lifecycle_state": "CLOSING", "cleanup_decision": "skip", "reason": "active_worktree"},
+        runner=runner,
+    )
+    receipt = result["cleanup_receipt"]
+    assert receipt["worktree_id"] == "wt-745"
+    assert receipt["terminal_handle"] == "term-745"
+    assert receipt["lease_owner"] == "worker-745"
+    assert receipt["cleanup_decision"] == "skip"
+    assert receipt["reason"] == "active_worktree"
+
+
 def test_sync_canonical_via_env_flag():
     calls = []
 
@@ -121,7 +142,11 @@ def test_sync_skips_when_disabled():
             {"run_id": "run-3"}, {"lifecycle_state": "IN_PROGRESS"},
             runner=lambda args: _completed(returncode=1, stderr="no orca"),
         )
-    assert result == {"status": "skipped", "reason": "disabled"}
+    assert result["status"] == "skipped"
+    assert result["reason"] == "disabled"
+    assert set((result["cleanup_receipt"] or {})) >= {
+        "worktree_id", "terminal_handle", "lease_owner", "cleanup_decision", "reason",
+    }
 
 
 def test_sync_skips_on_invalid_context():
@@ -155,4 +180,7 @@ def test_sync_is_a_typed_noop_outside_orca():
         {"run_id": "run-1"}, {"lifecycle_state": "IN_PROGRESS"},
         runner=lambda args: _completed(returncode=1, stderr="no active worktree"),
     )
-    assert result == {"status": "skipped", "reason": "not_in_orca", "detail": "no active worktree"}
+    assert result["status"] == "skipped"
+    assert result["reason"] == "not_in_orca"
+    assert result["detail"] == "no active worktree"
+    assert result["cleanup_receipt"]["reason"] == "not_in_orca"
