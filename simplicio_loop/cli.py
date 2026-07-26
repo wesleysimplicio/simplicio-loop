@@ -306,7 +306,10 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
     fast_payload = None
     fallback_reason = ""
     try:
-        effective_mode = "standalone" if fast_engine == "off" else config_mode
+        effective_mode = (
+            "required" if fast_engine == "rust"
+            else ("standalone" if fast_engine == "off" else config_mode)
+        )
         integration = FastLoopIntegration(
             root,
             config=FastConfig(mode=effective_mode, engine=fast_engine,
@@ -324,7 +327,7 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
                           "fast_engine": fast_engine, "fast": fast_payload, "local_llm": False},
                          ensure_ascii=False, indent=2))
         return 0
-    if fast_mode == "on":
+    if fast_mode == "on" or fast_engine == "rust":
         print(json.dumps({"schema": ORIENT_SCHEMA, "status": "BLOCKED",
                           "provider": "simplicio-fast", "fallback": False,
                           "fast_engine": fast_engine,
