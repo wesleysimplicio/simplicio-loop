@@ -4064,6 +4064,57 @@ def _operator_dispatch_attempt_remote_worker(
     }
 
 
+def _fanout_execution_route(item: Mapping[str, Any], run_dir: Path) -> Dict[str, Any]:
+    """Persist one independently verifiable route before any fan-out LLM call."""
+    context = item.get("context_pack") if isinstance(item.get("context_pack"), Mapping) else {}
+    goal = str(context.get("goal") or item.get("task_id") or "").strip()
+    capabilities = normalize_capability_manifest(
+        context.get("worker_capabilities") or item.get("worker_capabilities") or ()
+    )
+    worker_available = bool(capabilities) or os.environ.get(
+        "SIMPLICIO_DETERMINISTIC_WORKER", "1"
+    ).lower() not in {"0", "false", "no", "off"}
+    manifest = {
+        "declared": capabilities,
+        "deterministic_worker_available": worker_available,
+    }
+    record = decide_route(
+        goal,
+        has_deterministic_worker=worker_available,
+        is_ambiguous=bool(context.get("ambiguous") or context.get("requires_semantic_review")),
+    ).to_dict()
+    record.update({
+        "run_id": str(item.get("run_id") or ""),
+        "task_index": int(item.get("task_index") or 0),
+        "task_id": str(item.get("task_id") or ""),
+        "evidence_handles": sorted({
+            str(value) for value in (
+                context.get("mapper_envelope_hash"),
+                context.get("context_pack_hash"),
+                context.get("context_graph_handle"),
+            ) if str(value or "")
+        }),
+        "causal_ids": [str(item.get("run_id") or ""), str(item.get("task_id") or "")],
+        "route_authority": "loop-runner-fanout",
+        "capability_manifest": manifest,
+        "capability_fingerprint": capability_fingerprint(manifest),
+        "token_usage": (
+            {"input_tokens": 0, "output_tokens": 0, "reason": "deterministic_worker_no_llm"}
+            if record["route"] == "worker" else
+            {"input_tokens": None, "output_tokens": None,
+             "reason": "route_decision_precedes_provider_invocation"}
+        ),
+    })
+    record["receipt_sha"] = _execution_route_hash({
+        key: value for key, value in record.items() if key != "receipt_sha"
+    })
+    if not verify_route_hash(record):
+        raise RuntimeError("fan-out execution-route receipt failed hash verification")
+    route_path = run_dir / f"execution-route-{record['task_index']}.json"
+    _write_json(route_path, record)
+    return record
+
+
 def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Call the production operator and reduce its status to a durable worker record."""
     started = _now()
@@ -4086,6 +4137,10 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "agent": dict(item.get("agent_identity") or {}),
         "context_pack": dict(item.get("context_pack") or {}),
     }
+    run_dir = Path(read_status(item["repo"], item["run_id"])["run_dir"])
+    execution_route = _fanout_execution_route(item, run_dir)
+    common["execution_route"] = execution_route
+    common["route_receipt_sha"] = execution_route["receipt_sha"]
     if _model_routed_dispatch_enabled():
         # #287: route this dispatch attempt through the real model registry/router
         # instead of a hardcoded runtime, and -- when a real driver is wired for the
@@ -4093,8 +4148,14 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         # block or driver failure here never blocks the dev-cli operator mutation
         # below, which remains this repo's actual apply/verify contract.
         try:
-            run_dir = Path(read_status(item["repo"], item["run_id"])["run_dir"])
-            common["model_routing"] = _execute_routed_runtime(item, run_dir)
+            if execution_route["route"] == "worker":
+                common["model_routing"] = {
+                    "routed": False, "executed": False,
+                    "reason": "deterministic_worker_route_no_llm",
+                    "execution_route_sha": execution_route["receipt_sha"],
+                }
+            else:
+                common["model_routing"] = _execute_routed_runtime(item, run_dir)
         except Exception as exc:  # routing/execution evidence must never crash dispatch
             common["model_routing"] = {"routed": False, "executed": False, "error": f"{type(exc).__name__}: {exc}"}
     queue = item.get("distributed_queue")
