@@ -15,6 +15,8 @@ SCHEMA = "simplicio.runtime-preflight/v1"
 EFFECT_TRANSACTION_SCHEMA = "simplicio.effect-transaction/v1"
 HBI_COMPATIBILITY = "v1"
 HBP_COMPATIBILITY = "v1"
+RUNTIME_VERSION_MIN = (1, 0, 0)
+RUNTIME_VERSION_MAX_EXCLUSIVE = (5, 0, 0)
 REPAIR_COMMAND = "python -m pip install -U simplicio-runtime"
 RUNTIME_PRODUCTS = frozenset(("simplicio", "simplicio-runtime"))
 _VERSION_RE = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?:[-+.]([0-9A-Za-z.-]+))?")
@@ -194,7 +196,31 @@ def verify_mcp_capabilities(initialize_result: Mapping[str, Any], *, required_to
             "tools": sorted(available), "effects_authorized": False}
 
 
-def _verify_server_identity(initialize_result: Mapping[str, Any], binary: RuntimeBinary) -> dict[str, str]:
+def _compatibility_manifest(initialize_result: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Read the versioned Runtime contract from supported MCP manifest locations."""
+    server_info = initialize_result.get("serverInfo")
+    experimental = initialize_result.get("capabilities", {}).get("experimental", {})
+    candidates = (
+        server_info.get("compatibility") if isinstance(server_info, Mapping) else None,
+        experimental.get("simplicio") if isinstance(experimental, Mapping) else None,
+        initialize_result.get("simplicioCompatibility"),
+        server_info,
+    )
+    for candidate in candidates:
+        if isinstance(candidate, Mapping):
+            return candidate
+    return {}
+
+
+def _manifest_value(manifest: Mapping[str, Any], *names: str) -> Any:
+    for name in names:
+        if name in manifest:
+            return manifest[name]
+    return None
+
+
+def _verify_server_identity(initialize_result: Mapping[str, Any], binary: RuntimeBinary,
+                            *, require_contract: bool = False) -> dict[str, str]:
     server_info = initialize_result.get("serverInfo")
     if not isinstance(server_info, Mapping):
         raise _error("Runtime MCP initialize omitted server identity")
@@ -204,29 +230,78 @@ def _verify_server_identity(initialize_result: Mapping[str, Any], binary: Runtim
     server_version = str(server_info.get("version", ""))
     if not _versions_match(binary.version, server_version):
         raise _error("Runtime MCP server version does not match the probed binary")
-    compatibility: dict[str, str] = {"runtime_version": "PASS", "hbi": "UNVERIFIED", "hbp": "UNVERIFIED"}
-    for key, expected in (("hbi", HBI_COMPATIBILITY), ("hbp", HBP_COMPATIBILITY)):
-        value = server_info.get(key) or server_info.get(key + "Version")
-        if value is not None:
-            if str(value) != expected:
-                raise _error(f"Runtime MCP {key.upper()} compatibility mismatch")
-            compatibility[key] = "PASS"
+    parsed_version = _version_tuple(server_version)
+    if parsed_version is None:
+        raise _error("Runtime MCP server version is malformed")
+    if not (RUNTIME_VERSION_MIN <= parsed_version < RUNTIME_VERSION_MAX_EXCLUSIVE):
+        raise _error("Runtime MCP server version is outside the supported range")
+
+    manifest = _compatibility_manifest(initialize_result)
+    compatibility: dict[str, str] = {
+        "runtime_version": "PASS", "hbi": "UNVERIFIED", "hbp": "UNVERIFIED",
+    }
+    contracts = (
+        ("hbi", HBI_COMPATIBILITY, ("hbi", "hbiVersion")),
+        ("hbp", HBP_COMPATIBILITY, ("hbp", "hbpVersion")),
+        ("effect_transaction_schema", EFFECT_TRANSACTION_SCHEMA,
+         ("effectTransactionSchema", "effect_transaction_schema")),
+    )
+    for label, expected, names in contracts:
+        value = _manifest_value(manifest, *names)
+        if value is None:
+            if require_contract:
+                raise _error(f"Runtime MCP compatibility manifest omitted {label}")
+            continue
+        if str(value) != expected:
+            raise _error(f"Runtime MCP {label} compatibility mismatch")
+        compatibility[label] = "PASS"
     return compatibility
 
 
 def runtime_preflight(*, binary: RuntimeBinary, initialize_result: Mapping[str, Any], required_tools: Sequence[str] = (),
                       tools_result: Optional[Mapping[str, Any]] = None,
-                      require_server_identity: bool = False) -> dict[str, Any]:
+                      require_server_identity: bool = False,
+                      require_compatibility_contract: bool = False) -> dict[str, Any]:
     receipt = verify_mcp_capabilities(initialize_result, required_tools=required_tools, tools_result=tools_result)
     receipt.update({"binary": binary.path, "binary_source": binary.source, "version": binary.version,
                     "compiled_identity": binary.compiled_identity, "sha256": binary.sha256,
                     "effect_transaction_schema": EFFECT_TRANSACTION_SCHEMA})
     if require_server_identity:
-        receipt["compatibility"] = _verify_server_identity(initialize_result, binary)
+        receipt["compatibility"] = _verify_server_identity(
+            initialize_result, binary, require_contract=require_compatibility_contract,
+        )
     return receipt
+
+
+
+def runtime_doctor_report(*, receipt: Optional[Mapping[str, Any]] = None,
+                          error: Optional[BaseException] = None) -> dict[str, Any]:
+    """Return stable machine-readable Runtime diagnostics and one exact repair command."""
+    if error is not None:
+        return {
+            "schema": "simplicio.runtime-doctor/v1",
+            "status": "INCOMPATIBLE",
+            "error": str(error),
+            "repair_command": REPAIR_COMMAND,
+        }
+    data = dict(receipt or {})
+    compatibility = data.get("compatibility")
+    return {
+        "schema": "simplicio.runtime-doctor/v1",
+        "status": data.get("status", "UNAVAILABLE"),
+        "resolved_path": data.get("binary"),
+        "version": data.get("version"),
+        "sha256": data.get("sha256"),
+        "compiled_identity": data.get("compiled_identity"),
+        "protocol": data.get("protocol"),
+        "tools": list(data.get("tools", ())),
+        "compatibility": dict(compatibility) if isinstance(compatibility, Mapping) else {},
+        "repair_command": REPAIR_COMMAND,
+    }
 
 
 __all__ = ["EFFECT_TRANSACTION_SCHEMA", "HBI_COMPATIBILITY", "HBP_COMPATIBILITY", "MCP_PROTOCOL",
            "REPAIR_COMMAND", "SCHEMA", "RuntimeBinary", "RuntimeBinaryError",
            "probe_version", "repair_instruction", "resolve_and_probe_simplicio_binary",
+           "runtime_doctor_report",
            "resolve_simplicio_binary", "runtime_preflight", "verify_mcp_capabilities"]

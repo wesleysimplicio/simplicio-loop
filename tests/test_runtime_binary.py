@@ -9,6 +9,7 @@ from simplicio_loop.runtime_binary import (
     RuntimeBinaryError,
     probe_version,
     resolve_simplicio_binary,
+    runtime_doctor_report,
     runtime_preflight,
     verify_mcp_capabilities,
 )
@@ -153,3 +154,65 @@ def test_server_identity_and_hbi_hbp_compatibility_are_recorded(tmp_path):
         require_server_identity=True,
     )
     assert result["compatibility"] == {"runtime_version": "PASS", "hbi": "PASS", "hbp": "PASS"}
+
+
+
+def test_strict_contract_requires_versioned_hbi_hbp_and_effect_schema(tmp_path):
+    binary = RuntimeBinary(str(tmp_path / "simplicio"), "path", "simplicio 3.5.2", "abc", "simplicio")
+    initialize = {
+        "protocolVersion": "2024-11-05",
+        "serverInfo": {
+            "name": "simplicio",
+            "version": "3.5.2",
+            "compatibility": {
+                "hbi": "v1",
+                "hbp": "v1",
+                "effectTransactionSchema": "simplicio.effect-transaction/v1",
+            },
+        },
+        "capabilities": {"tools": {}},
+    }
+    receipt = runtime_preflight(
+        binary=binary,
+        initialize_result=initialize,
+        tools_result={"tools": [{"name": "simplicio_exec"}]},
+        required_tools=("simplicio_exec",),
+        require_server_identity=True,
+        require_compatibility_contract=True,
+    )
+    assert set(receipt["compatibility"].values()) == {"PASS"}
+
+    del initialize["serverInfo"]["compatibility"]["hbp"]
+    with pytest.raises(RuntimeBinaryError, match="omitted hbp.*Repair"):
+        runtime_preflight(
+            binary=binary,
+            initialize_result=initialize,
+            tools_result={"tools": [{"name": "simplicio_exec"}]},
+            required_tools=("simplicio_exec",),
+            require_server_identity=True,
+            require_compatibility_contract=True,
+        )
+
+
+def test_runtime_version_range_and_doctor_receipt_are_fail_closed(tmp_path):
+    binary = RuntimeBinary(str(tmp_path / "simplicio"), "explicit", "simplicio 9.0.0", "deadbeef", "simplicio")
+    initialize = {
+        "protocolVersion": "2024-11-05",
+        "serverInfo": {
+            "name": "simplicio",
+            "version": "9.0.0",
+            "hbi": "v1",
+            "hbp": "v1",
+            "effectTransactionSchema": "simplicio.effect-transaction/v1",
+        },
+        "capabilities": {"tools": []},
+    }
+    with pytest.raises(RuntimeBinaryError, match="supported range"):
+        runtime_preflight(
+            binary=binary, initialize_result=initialize,
+            require_server_identity=True, require_compatibility_contract=True,
+        )
+
+    report = runtime_doctor_report(error=RuntimeBinaryError("incompatible"))
+    assert report["status"] == "INCOMPATIBLE"
+    assert report["repair_command"] == "python -m pip install -U simplicio-runtime"
