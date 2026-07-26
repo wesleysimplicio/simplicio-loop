@@ -209,7 +209,7 @@ def test_dependency_dag_all_resolved_has_no_blocked_ids():
 # Boundary enforcement -- "Não pode alterar código do produto / commit/PR/merge"
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("path", [
-    ".orchestrator/loop/PROGRESS.md",
+    ".simplicio/orchestrator/loop/PROGRESS.md",
     ".simplicio/context.json",
     "task-intake.json",
     "planning-receipt.json",

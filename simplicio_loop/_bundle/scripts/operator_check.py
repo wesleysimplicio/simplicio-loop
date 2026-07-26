@@ -12,7 +12,7 @@ upgrade" with two independent, deterministic rules:
    home directory with ``SIMPLICIO_HOME``, matching ``scripts/install_lib.py``). Within the TTL,
    `maybe_upgrade()` never invokes the upgrade command — no network call, no subprocess.
 2. **Per-run version pin.** The operator version actually resolved at arming time is written
-   once into the run's `.orchestrator/loop/scratchpad.md` frontmatter
+   once into the run's `.simplicio/orchestrator/loop/scratchpad.md` frontmatter
    (`operator_versions: {"simplicio-mapper": "0.23.1", ...}`) and never rewritten mid-run.
    A later iteration that observes a different version is a warning
    (`check_pin_mismatch()`), never a silent upgrade — the pin is deliberately one-way for the

@@ -435,7 +435,7 @@ def cli_main(argv: Optional[Iterable[str]] = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def common(command_parser: argparse.ArgumentParser) -> None:
-        command_parser.add_argument("--db", default=".orchestrator/agent-slots.sqlite")
+        command_parser.add_argument("--db", default=".simplicio/orchestrator/agent-slots.sqlite")
         command_parser.add_argument("--capacity", type=int, default=6)
         command_parser.add_argument("--retry-limit", type=int, default=1)
 

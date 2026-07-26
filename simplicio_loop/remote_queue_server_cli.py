@@ -20,7 +20,7 @@ from .remote_queue import SQLiteRemoteQueue, create_http_queue_server, tls_conte
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default=".orchestrator/shared-queue.db")
+    parser.add_argument("--db", default=".simplicio/orchestrator/shared-queue.db")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--token", default=os.environ.get("SIMPLICIO_QUEUE_TOKEN"),
@@ -32,7 +32,7 @@ def main() -> int:
                         help="required `scope` claim on tokens when --token-secret is set")
     parser.add_argument("--revocation-store",
                         default=os.environ.get("SIMPLICIO_QUEUE_REVOCATION_STORE",
-                                               ".orchestrator/security/revoked-jti.json"),
+                                               ".simplicio/orchestrator/security/revoked-jti.json"),
                         help="revocation store path checked when --token-secret is set")
     parser.add_argument("--tls-certfile", default=os.environ.get("SIMPLICIO_QUEUE_TLS_CERTFILE"))
     parser.add_argument("--tls-keyfile", default=os.environ.get("SIMPLICIO_QUEUE_TLS_KEYFILE"))

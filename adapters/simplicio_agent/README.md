@@ -61,4 +61,4 @@ when they fall back to the legacy one.
 Native loop (N1-equivalent): wire the native tick to call `python3 scripts/loop_progress.py emit
 --step <step> --status begin|end` at its own extension points and `render --turn-header` before
 re-feeding — same contract, native transport instead of a hook file. Universal fallback (N3): open
-`.orchestrator/loop/PROGRESS.md` (auto-regenerated every turn) regardless of native wiring.
+`.simplicio/orchestrator/loop/PROGRESS.md` (auto-regenerated every turn) regardless of native wiring.

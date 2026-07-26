@@ -239,7 +239,7 @@ def _typed_runner_action(name, args):
             raise ValueError("task is required")
         path = Path(task)
         if not path.is_file():
-            root = Path(repo).resolve() / ".orchestrator" / "mcp-tasks"
+            root = Path(repo).resolve() / ".simplicio/orchestrator" / "mcp-tasks"
             root.mkdir(parents=True, exist_ok=True)
             path = root / ("task-" + __import__("hashlib").sha256(task.encode()).hexdigest()[:16] + ".md")
             path.write_text(task, encoding="utf-8")

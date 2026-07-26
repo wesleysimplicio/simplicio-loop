@@ -269,8 +269,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--baseline", default="HEAD")
     parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES)
     parser.add_argument("--max-lines", type=int, default=DEFAULT_MAX_LINES)
-    parser.add_argument("--anchor", default=".orchestrator/loop/anchor.json")
-    parser.add_argument("--journal", default=".orchestrator/loop/journal.jsonl")
+    parser.add_argument("--anchor", default=".simplicio/orchestrator/loop/anchor.json")
+    parser.add_argument("--journal", default=".simplicio/orchestrator/loop/journal.jsonl")
     parser.add_argument("--iteration", type=int, default=0)
     args = parser.parse_args(argv)
     try:

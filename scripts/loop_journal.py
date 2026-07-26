@@ -10,7 +10,7 @@ escalates instead of re-feeding the same goal into the same failure.
 It is deterministic and model-free — the fingerprint + stall math never call an LLM, so a resume is
 reproducible from the on-disk journal (same discipline as `savings_harness`/`billing_aggregator`).
 
-State: `.orchestrator/loop/journal.jsonl` — one append-only record per attempt:
+State: `.simplicio/orchestrator/loop/journal.jsonl` — one append-only record per attempt:
     {"iteration", "action", "hypothesis", "gate": "pass|fail|blocked",
      "fingerprint": "<stable hash of the failure signature>", "note", "ts",
      "execution_state"?, "stage_id"?, "source_artifact"?, "chunk_id"?,
@@ -44,7 +44,7 @@ Verbs:
   |             mirrors `task_anchor.py check --format toon`). `--json` remains a working alias
   |             for `--format json`.
     suggest     Consult simplicio-learn lessons for strategy recommendations.
-  |             Reads `.orchestrator/lessons.jsonl` and `.orchestrator/patterns.jsonl`,
+  |             Reads `.simplicio/orchestrator/lessons.jsonl` and `.simplicio/orchestrator/patterns.jsonl`,
   |             filters by repo/task-type tags, and emits discouraged strategies (with
   |             lesson citations) and untried strategies. Deterministic and model-free.
   |             Fail-open: if lesson files don't exist, emits empty suggestions.
@@ -93,7 +93,7 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.environ.get("SIMPLICIO_REPO") or os.path.dirname(HERE))
-LOOP_DIR = os.path.join(REPO, ".orchestrator", "loop")
+LOOP_DIR = os.path.join(REPO, ".simplicio/orchestrator", "loop")
 JOURNAL = os.environ.get("SIMPLICIO_JOURNAL_FILE") or os.path.join(LOOP_DIR, "journal.jsonl")
 DEFAULT_K = 3
 
@@ -791,7 +791,7 @@ def cmd_claims_gate(opts):
 def cmd_suggest(opts):
     """Consult simplicio-learn lessons for strategy recommendations.
 
-    Reads `.orchestrator/lessons.jsonl` and `.orchestrator/patterns.jsonl`,
+    Reads `.simplicio/orchestrator/lessons.jsonl` and `.simplicio/orchestrator/patterns.jsonl`,
     filters by repo/task-type tags, and emits discouraged strategies.
     Fail-open: if files don't exist, emits empty suggestions.
     """
@@ -801,8 +801,8 @@ def cmd_suggest(opts):
     repo_tag = opts.get("repo", "")
     task_type = opts.get("task-type", "")
 
-    lessons_file = Path(root) / ".orchestrator" / "lessons.jsonl"
-    patterns_file = Path(root) / ".orchestrator" / "patterns.jsonl"
+    lessons_file = Path(root) / ".simplicio/orchestrator" / "lessons.jsonl"
+    patterns_file = Path(root) / ".simplicio/orchestrator" / "patterns.jsonl"
 
     discouraged: list[dict] = []
     strategies_failed: set[str] = set()

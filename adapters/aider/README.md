@@ -54,4 +54,4 @@ aider --message "/simplicio-tasks finish all the open issues"
 
 `CONVENTIONS.md` inlines SKILL.md verbatim, so the turn-header contract (§ Output) is part of
 what Aider reads every turn — the model echoes `render --turn-header` in its own reply. Universal
-fallback (N3): open `.orchestrator/loop/PROGRESS.md` in the editor.
+fallback (N3): open `.simplicio/orchestrator/loop/PROGRESS.md` in the editor.

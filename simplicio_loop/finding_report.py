@@ -2,7 +2,7 @@
 
 Emits a structured finding report (schema simplicio.finding-report/v1) for every
 problem detected across loop stages. Records are appended as JSONL under
-.orchestrator/findings/ so they are durable, deduplicable, and auditable.
+.simplicio/orchestrator/findings/ so they are durable, deduplicable, and auditable.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 SCHEMA = "simplicio.finding-report/v1"
 SEVERITY_ENUM = ("low", "medium", "high", "critical")
 
-_FINDINGS_DIR = Path(".orchestrator/findings")
+_FINDINGS_DIR = Path(".simplicio/orchestrator/findings")
 
 
 def _fingerprint(stage: str, finding_id: str, source: str) -> str:

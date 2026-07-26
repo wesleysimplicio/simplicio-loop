@@ -71,7 +71,7 @@ def record_anchor(anchor_path:str|Path,route:Mapping[str,Any])->bool:
     except (OSError,UnicodeError,ValueError): return False
 def main(argv:list[str]|None=None)->int:
     parser=argparse.ArgumentParser(description=__doc__); parser.add_argument("--root",default="."); parser.add_argument("--goal",required=True)
-    parser.add_argument("--map-dir",default=".simplicio"); parser.add_argument("--anchor",default=".orchestrator/loop/anchor.json"); parser.add_argument("--force-converge",action="store_true")
+    parser.add_argument("--map-dir",default=".simplicio"); parser.add_argument("--anchor",default=".simplicio/orchestrator/loop/anchor.json"); parser.add_argument("--force-converge",action="store_true")
     args=parser.parse_args(argv); route=dict(decide(args.root,args.goal,map_dir=args.map_dir,force_converge=args.force_converge)); route["anchor_updated"]=record_anchor(args.anchor,route)
     print(json.dumps(route,ensure_ascii=False,sort_keys=True)); return 0
 if __name__=="__main__": sys.exit(main())

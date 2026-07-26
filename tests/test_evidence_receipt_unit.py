@@ -88,7 +88,7 @@ def test_evidence_receipt_built_from_run_and_watcher_reads_it(tmp_path):
     assert receipt["criteria"][0]["id"] == "AC1"
     assert receipt["operator"]["coverage_ok"] is True
 
-    loop_dir = repo / ".orchestrator" / "loop"
+    loop_dir = repo / ".simplicio/orchestrator" / "loop"
     loop_dir.mkdir(parents=True, exist_ok=True)
     challenge = loop_dir / "watcher_challenge.json"
     challenge.write_text(json.dumps({"challenge": "abc", "goal_fp": "", "written_at": "2026-07-10T00:00:00Z"}),
@@ -116,7 +116,7 @@ def test_evidence_receipt_flags_uncovered_manual_diff(tmp_path, monkeypatch):
     _run(["git", "add", "."], str(repo))
     _run(["git", "commit", "-m", "init"], str(repo))
 
-    run_dir = repo / ".orchestrator" / "runs" / "r1"
+    run_dir = repo / ".simplicio/orchestrator" / "runs" / "r1"
     run_dir.mkdir(parents=True)
     (run_dir / "manifest.json").write_text(json.dumps({
         "schema": "simplicio.run-manifest/v1",
@@ -149,9 +149,9 @@ def test_evidence_receipt_flags_uncovered_manual_diff(tmp_path, monkeypatch):
 def test_watcher_rejects_uncovered_manual_diff_from_evidence(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    loop_dir = repo / ".orchestrator" / "loop"
+    loop_dir = repo / ".simplicio/orchestrator" / "loop"
     loop_dir.mkdir(parents=True, exist_ok=True)
-    run_dir = repo / ".orchestrator" / "runs" / "demo"
+    run_dir = repo / ".simplicio/orchestrator" / "runs" / "demo"
     run_dir.mkdir(parents=True)
     (loop_dir / "watcher_challenge.json").write_text(json.dumps({
         "challenge": "abc", "goal_fp": "", "written_at": "2026-07-10T00:00:00Z"
@@ -179,9 +179,9 @@ def test_watcher_rejects_uncovered_manual_diff_from_evidence(tmp_path):
 def test_watcher_rejects_verified_ac_without_proof_reference(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    loop_dir = repo / ".orchestrator" / "loop"
+    loop_dir = repo / ".simplicio/orchestrator" / "loop"
     loop_dir.mkdir(parents=True)
-    run_dir = repo / ".orchestrator" / "runs" / "demo"
+    run_dir = repo / ".simplicio/orchestrator" / "runs" / "demo"
     run_dir.mkdir(parents=True)
     (loop_dir / "watcher_challenge.json").write_text(json.dumps({
         "challenge": "proof-required", "goal_fp": "", "written_at": "2026-07-10T00:00:00Z"
@@ -261,7 +261,7 @@ def test_redact_sensitive_text_rewrites_generic_secret_assignments():
 def test_watcher_without_anchor_or_criteria_never_returns_ready(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    loop_dir = repo / ".orchestrator" / "loop"
+    loop_dir = repo / ".simplicio/orchestrator" / "loop"
     loop_dir.mkdir(parents=True, exist_ok=True)
     (loop_dir / "watcher_challenge.json").write_text(json.dumps({
         "challenge": "abc", "goal_fp": "", "written_at": "2026-07-10T00:00:00Z"

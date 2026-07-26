@@ -4,7 +4,7 @@
 The runnable form of the billing architecture sketched in `PRICING.md` (Open-core + usage-based
 hosted tier). It turns the metering records the loop ALREADY produces into usage rollups and
 tier-priced invoice line-items. It is the ONLY new component billing needs — everything it reads
-is already on disk under `.orchestrator/`.
+is already on disk under `.simplicio/orchestrator/`.
 
 Non-negotiable properties (mirror the loop's safety spine):
   • Deterministic & model-free — the math NEVER calls a model; `meter`/`invoice` are pure
@@ -20,18 +20,18 @@ Non-negotiable properties (mirror the loop's safety spine):
     so an invoice line always traces back to a snapshot, like the loop's `<promise>` evidence.
 
 Inputs (all optional — a missing source contributes 0, fail-open):
-  .orchestrator/savings/snapshots.jsonl → tokens_spent (treatment) + tokens_saved (baseline−treatment)
-  .orchestrator/trajectory/*.jsonl      → items_delivered (records with status merged|closed|delivered)
-  .orchestrator/tee/video/ledger.txt    → renders (one per `video_evidence: PASS` line)
+  .simplicio/orchestrator/savings/snapshots.jsonl → tokens_spent (treatment) + tokens_saved (baseline−treatment)
+  .simplicio/orchestrator/trajectory/*.jsonl      → items_delivered (records with status merged|closed|delivered)
+  .simplicio/orchestrator/tee/video/ledger.txt    → renders (one per `video_evidence: PASS` line)
 
 Verbs:
   collect   Read the sources for a window, write ONE normalized, text-free usage record
-            (append-only) to .orchestrator/billing/usage.jsonl. Repeat per billing window.
+            (append-only) to .simplicio/orchestrator/billing/usage.jsonl. Repeat per billing window.
   meter     Pure rollup over collected usage records → totals (usd_spent, tokens_spent,
             tokens_saved, items_delivered, renders, render_seconds).
   invoice   Apply a tier rule (seat | run | metered) + rates → line-item JSON. No model call.
   export    Emit the invoice as Stripe-style metered usage records (JSON) or CSV — counts only.
-  rates     Print the active rate card (defaults, or .orchestrator/billing/rates.json if present).
+  rates     Print the active rate card (defaults, or .simplicio/orchestrator/billing/rates.json if present).
   selftest  Prove meter()/invoice() arithmetic deterministically — no files needed.
 
 Usage:
@@ -56,12 +56,12 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-ORCH = os.path.join(REPO, ".orchestrator")
+ORCH = os.path.join(REPO, ".simplicio/orchestrator")
 DEFAULT_STORE = os.path.join(ORCH, "billing")
 USAGE = "usage.jsonl"
 
 # Default rate card (illustrative — PRICING.md says tune against the first month of real proxy
-# data before any public price). Override by writing .orchestrator/billing/rates.json.
+# data before any public price). Override by writing .simplicio/orchestrator/billing/rates.json.
 DEFAULT_RATES = {
     "seat_usd_per_month": 29.0,        # Pro flat per-seat
     "run_usd_per_item": 1.00,          # Team per delivered+merged item

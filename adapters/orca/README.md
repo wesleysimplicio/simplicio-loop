@@ -36,8 +36,8 @@ command; that registration is optional and never replaces the repo-level install
   automations**: schedule a tick that re-invokes `/simplicio-loop` per the skill's "Self-paced
   drive" section. Same exit conditions (evidence-gated promise, `max_iterations` cap, STOP).
 
-**Worktree isolation fits the loop's state model.** All loop state (`.orchestrator/loop/`,
-`.orchestrator/backlog/`) is per-worktree, so each Orca task runs its own independent loop — one
+**Worktree isolation fits the loop's state model.** All loop state (`.simplicio/orchestrator/loop/`,
+`.simplicio/orchestrator/backlog/`) is per-worktree, so each Orca task runs its own independent loop — one
 scratchpad, one journal, one anchor per task, with no cross-task interference. Orca's worktree
 checkpoints compose with (never replace) the loop's own journal + evidence gates.
 
@@ -79,13 +79,13 @@ Open a task in Orca (it allocates the worktree), then in the task's agent sessio
 
 Manual smoke (the one step a file-level harness can't do): run a small `/simplicio-loop` task in
 an Orca worktree, confirm the loop drives (hook or scheduled tick), the gates fire, and the state
-stays inside that worktree's `.orchestrator/`.
+stays inside that worktree's `.simplicio/orchestrator/`.
 
 ## Progresso do run
 
 Inner-agent hook or self-paced tick (N1/N2 depending on how the inner agent is configured): the
 turn-header contract applies identically inside the Orca worktree. Universal fallback (N3): open
-`.orchestrator/loop/PROGRESS.md` inside that worktree (auto-regenerated every turn, scoped to the
+`.simplicio/orchestrator/loop/PROGRESS.md` inside that worktree (auto-regenerated every turn, scoped to the
 worktree like all other loop state).
 
 ## Status e comentários automáticos

@@ -3,7 +3,7 @@
 
 Wraps :mod:`simplicio_loop.completion_auditor`'s pure reducer with the same
 run-local file layout the other stage-agent producers use
-(``.orchestrator/loop/*.json`` — see ``scripts/watcher_verify.py``,
+(``.simplicio/orchestrator/loop/*.json`` — see ``scripts/watcher_verify.py``,
 ``scripts/task_anchor.py``). It never trusts a bare self-report: every verb
 below either recomputes the verdict from disk-backed receipts or refuses to
 gate the promise.
@@ -11,10 +11,10 @@ gate the promise.
 Verbs:
   audit      Recompute the terminal verdict from the on-disk stage graph,
              instances, receipts, anchor, watcher and delivery/source state.
-             Writes `.orchestrator/loop/completion_audit.json` and prints
+             Writes `.simplicio/orchestrator/loop/completion_audit.json` and prints
              `COMPLETE|PARTIAL|BLOCKED|REGRESSED`.
   receipt    Build + persist the content-addressed completion receipt from the
-             last `audit` run (`.orchestrator/loop/completion_receipt.json`).
+             last `audit` run (`.simplicio/orchestrator/loop/completion_receipt.json`).
   gate       Check whether the promise may be honored: requires a valid,
              fresh, hash-matching completion receipt with verdict COMPLETE.
              Exits 0 only when the gate is satisfied.
@@ -33,7 +33,7 @@ from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-LOOP_DIR = os.path.join(REPO, ".orchestrator", "loop")
+LOOP_DIR = os.path.join(REPO, ".simplicio/orchestrator", "loop")
 
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
@@ -45,7 +45,7 @@ from simplicio_loop import stage_agents as sa  # noqa: E402
 def _set_repo(repo):
     global REPO, LOOP_DIR
     REPO = repo
-    LOOP_DIR = os.path.join(REPO, ".orchestrator", "loop")
+    LOOP_DIR = os.path.join(REPO, ".simplicio/orchestrator", "loop")
 
 
 def _paths():

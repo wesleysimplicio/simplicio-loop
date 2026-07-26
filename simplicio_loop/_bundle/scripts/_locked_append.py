@@ -2,8 +2,8 @@
 """simplicio-loop — locked JSONL append + tolerant-count helpers (issue #127).
 
 Multiple concurrent workers append to the SAME shared JSONL logs — the run journal
-(`.orchestrator/loop/journal.jsonl`, `scripts/loop_journal.py`), the handoff event log
-(`.orchestrator/handoffs/events.jsonl`, `scripts/handoff.py`), and (written by the external
+(`.simplicio/orchestrator/loop/journal.jsonl`, `scripts/loop_journal.py`), the handoff event log
+(`.simplicio/orchestrator/handoffs/events.jsonl`, `scripts/handoff.py`), and (written by the external
 `simplicio` runtime, only ever READ here) the savings ledger
 (`.simplicio/ledger/savings-events.jsonl`, `hooks/simplicio_watch.py`). Without a lock, two
 processes racing an ``open(path, "a").write()`` can interleave partial writes and corrupt a

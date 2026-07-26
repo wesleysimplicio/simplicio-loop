@@ -878,7 +878,7 @@ _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 def _progress_root():
     configured = os.environ.get("SIMPLICIO_RUNS_DIR", "")
-    return Path(configured).expanduser() if configured else Path.cwd() / ".orchestrator" / "runs"
+    return Path(configured).expanduser() if configured else Path.cwd() / ".simplicio/orchestrator" / "runs"
 
 
 def _progress_response(run_id):

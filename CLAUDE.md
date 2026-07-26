@@ -51,8 +51,8 @@ fake pass.
 The PR body is **assembled mechanically**, never hand-written, so it always shows the proof. Worker
 `scripts/pr_evidence.py build --require-evidence` pulls the **item-by-item acceptance-criteria
 checklist** from the task anchor (`scripts/task_anchor.py`, frozen at intake) AND embeds the
-screenshots (`web_verify`, under `.orchestrator/tee/web`) and recordings (`video_evidence`, under
-`.orchestrator/tee/video`). With
+screenshots (`web_verify`, under `.simplicio/orchestrator/tee/web`) and recordings (`video_evidence`, under
+`.simplicio/orchestrator/tee/video`). With
 `--require-evidence` it FAILS CLOSED (exit 3, `blocked`) rather than open a PR that has neither a
 checklist nor a print — the executable answer to "the PR opened without prints / without an
 item-by-item check of the task". It honors a discovered `.github/PULL_REQUEST_TEMPLATE.md` (keeps the
@@ -66,7 +66,7 @@ stops task deviation: every turn re-checks the frozen goal (`task_anchor.py chec
 backlog + anchor + its own event trail — never fabricated. Three surfaces, one denominator:
 **N1 hook** (Claude/Cursor re-feed header shows fase/etapa/item/ACs/%), **N2 transcript**
 (every turn's first line is `render --turn-header`, normative on all 15 runtimes), **N3 file**
-(`.orchestrator/loop/PROGRESS.md`/`progress.json`, regenerated every turn — the universal
+(`.simplicio/orchestrator/loop/PROGRESS.md`/`progress.json`, regenerated every turn — the universal
 fallback any host, adapted or not, can read with zero extra code). Status command:
 `python3 scripts/loop_progress.py status --json`. Full contract, event schema, and the
 turn×event/runtime×level tables: `.claude/skills/simplicio-loop/references/progress-feedback.md`.
