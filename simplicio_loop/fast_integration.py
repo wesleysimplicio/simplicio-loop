@@ -86,6 +86,10 @@ class FastConfig:
     """Explicit, environment-configurable Fast policy."""
 
     mode: str = "auto"
+    # Engine selection is independent from Loop's availability policy.  In
+    # ``auto`` Fast itself performs Rust-first health/capability negotiation;
+    # ``rust`` is fail-closed and ``python`` is an explicit compatibility path.
+    engine: str = "auto"
     command: tuple[str, ...] = ("simplicio-fast",)
     snapshot: str = ".simplicio-fast/project.sfast"
     state: str = ".simplicio-fast/loop-ingest.json"
@@ -98,11 +102,15 @@ class FastConfig:
         mode = os.environ.get("SIMPLICIO_FAST_MODE", "auto").strip().lower()
         if mode not in {"auto", "required", "standalone"}:
             raise ValueError("SIMPLICIO_FAST_MODE must be auto, required, or standalone")
+        engine = os.environ.get("SIMPLICIO_FAST_ENGINE", "auto").strip().lower()
+        if engine not in {"auto", "rust", "python", "off"}:
+            raise ValueError("SIMPLICIO_FAST_ENGINE must be auto, rust, python, or off")
         command = tuple(shlex.split(os.environ.get("SIMPLICIO_FAST_COMMAND", "simplicio-fast")))
         if not command:
             raise ValueError("SIMPLICIO_FAST_COMMAND must not be empty")
         return cls(
             mode=mode,
+            engine=engine,
             command=command,
             snapshot=os.environ.get("SIMPLICIO_FAST_SNAPSHOT", cls.snapshot),
             state=os.environ.get("SIMPLICIO_FAST_STATE", cls.state),
@@ -113,7 +121,7 @@ class FastConfig:
         )
 
     def digest(self) -> str:
-        return _hash({"mode": self.mode, "command": self.command, "snapshot": self.snapshot,
+        return _hash({"mode": self.mode, "engine": self.engine, "command": self.command, "snapshot": self.snapshot,
                       "max_bytes": self.max_bytes, "require_binding": self.require_binding})
 
 
@@ -125,6 +133,8 @@ class FastProbe:
     reason: str | None
     command: tuple[str, ...]
     capabilities: tuple[str, ...] = FAST_CAPABILITIES
+    requested_engine: str = "auto"
+    selected_engine: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -139,6 +149,8 @@ class FastProbe:
             "fallback": self.fallback,
             "status": "ready" if self.integrated_ready else "fallback",
             "reason": self.reason,
+            "requested_engine": self.requested_engine,
+            "selected_engine": self.selected_engine,
         }
         payload["receipt_hash"] = _hash(payload)
         return payload
@@ -189,6 +201,12 @@ class FastLoopIntegration:
         self._generation = ""
         self._context_hash = ""
 
+    def _runner_env(self) -> dict[str, str]:
+        env = dict(os.environ)
+        if self.config.engine != "auto":
+            env["SIMPLICIO_FAST_ENGINE"] = self.config.engine
+        return env
+
     @property
     def generation(self) -> str:
         return self._generation
@@ -209,7 +227,7 @@ class FastLoopIntegration:
         try:
             result = self._runner(
                 command, cwd=str(self.root), capture_output=True, text=True,
-                timeout=self.config.timeout_seconds, check=False,
+                timeout=self.config.timeout_seconds, check=False, env=self._runner_env(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise FastUnavailable(str(exc)) from exc
@@ -222,7 +240,13 @@ class FastLoopIntegration:
         if self._probe_cache is not None and not force:
             return self._probe_cache.to_dict()
         if self.config.mode == "standalone":
-            probe = FastProbe("0.0.0", False, True, "disabled_by_configuration", self.config.command)
+            probe = FastProbe("0.0.0", False, True, "disabled_by_configuration", self.config.command,
+                              requested_engine=self.config.engine)
+            self._probe_cache = probe
+            return probe.to_dict()
+        if self.config.engine == "off":
+            probe = FastProbe("0.0.0", False, True, "disabled_by_engine", self.config.command,
+                              requested_engine="off")
             self._probe_cache = probe
             return probe.to_dict()
         try:
@@ -232,13 +256,14 @@ class FastLoopIntegration:
             try:
                 completed = self._runner(
                     [*self.config.command, "--version"], cwd=str(self.root), capture_output=True,
-                    text=True, timeout=self.config.timeout_seconds, check=False,
+                    text=True, timeout=self.config.timeout_seconds, check=False, env=self._runner_env(),
                 )
                 if completed.returncode != 0:
                     raise FastUnavailable((completed.stderr or "command unavailable").strip())
                 version_text = (completed.stdout or completed.stderr or "").strip().split()[-1]
             except (OSError, subprocess.SubprocessError, FastUnavailable) as exc:
-                probe = FastProbe("0.0.0", False, True, "missing_operator", self.config.command)
+                probe = FastProbe("0.0.0", False, True, "missing_operator", self.config.command,
+                                  requested_engine=self.config.engine)
                 self._probe_cache = probe
                 if self.config.mode == "required":
                     raise FastUnavailable(str(exc)) from exc
@@ -246,16 +271,27 @@ class FastLoopIntegration:
         try:
             completed = self._runner(
                 [*self.config.command, "doctor", "--json"], cwd=str(self.root), capture_output=True,
-                text=True, timeout=self.config.timeout_seconds, check=False,
+                text=True, timeout=self.config.timeout_seconds, check=False, env=self._runner_env(),
             )
             doctor = _json_output(completed.stdout or completed.stderr)
             integration = doctor.get("integration") if isinstance(doctor.get("integration"), Mapping) else {}
             integrated = bool(doctor.get("integrated_ready") or integration.get("integrated_ready"))
             ready = integrated and _version(version_text) >= FAST_MINIMUM
             reason = None if ready else "incompatible_operator"
+            selected_engine = str(
+                doctor.get("selected_engine") or doctor.get("engine")
+                or integration.get("selected_engine") or ""
+            ).strip().lower() or None
+            if self.config.engine == "rust" and selected_engine not in {"rust"}:
+                ready, reason = False, "rust_not_verified"
+            elif self.config.engine == "python" and selected_engine not in {None, "python"}:
+                ready, reason = False, "python_not_selected"
         except (OSError, subprocess.SubprocessError, FastIntegrationError):
-            ready, reason = False, "doctor_failed"
-        probe = FastProbe(version_text or "0.0.0", ready, not ready, reason, self.config.command)
+            ready, reason, selected_engine = False, "doctor_failed", None
+        if self.config.engine == "auto" and selected_engine is None and ready:
+            selected_engine = "rust" if bool(doctor.get("rust_ready")) else "python"
+        probe = FastProbe(version_text or "0.0.0", ready, not ready, reason, self.config.command,
+                          requested_engine=self.config.engine, selected_engine=selected_engine)
         self._probe_cache = probe
         if not ready and self.config.mode == "required":
             raise FastUnavailable(reason or "Fast is not integrated-ready")
@@ -273,6 +309,8 @@ class FastLoopIntegration:
             "probe": probe,
             "generation": self._generation or None,
             "context_hash": self._context_hash or None,
+            "requested_engine": self.config.engine,
+            "selected_engine": probe.get("selected_engine"),
         }
         payload["receipt_hash"] = _hash(payload)
         return payload
@@ -321,6 +359,8 @@ class FastLoopIntegration:
             "generation": generation,
             "fast_receipt": payload,
             "config_hash": self.config.digest(),
+            "requested_engine": self.config.engine,
+            "selected_engine": probe.get("selected_engine"),
         }
         receipt["receipt_hash"] = _hash(receipt)
         state_path.parent.mkdir(parents=True, exist_ok=True)
