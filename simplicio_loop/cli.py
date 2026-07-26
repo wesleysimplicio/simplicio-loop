@@ -287,7 +287,7 @@ def _mapper_orient_fallback(root: Path, task: str) -> dict:
                 pass
 
 def orient(repo: str, task: str, fast_mode: str = "auto",
-           fast_context_budget: int = 48000) -> int:
+           fast_context_budget: int = 48000, fast_engine: str = "auto") -> int:
     """Run bounded Fast orient with an explicit Mapper fallback receipt."""
     root = Path(repo).resolve()
     if not root.is_dir() or not str(task).strip():
@@ -298,14 +298,19 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
         print(json.dumps({"schema": ORIENT_SCHEMA, "status": "BLOCKED",
                           "reason": "fast_context_budget_invalid", "local_llm": False}))
         return 2
+    if fast_engine not in {"auto", "rust", "python", "off"}:
+        raise ValueError("fast_engine must be auto, rust, python, or off")
     config_mode = {"auto": "auto", "on": "required", "off": "standalone"}.get(fast_mode)
     if config_mode is None:
         raise ValueError("fast_mode must be auto, on, or off")
     fast_payload = None
     fallback_reason = ""
     try:
+        effective_mode = "standalone" if fast_engine == "off" else config_mode
         integration = FastLoopIntegration(
-            root, config=FastConfig(mode=config_mode, max_bytes=int(fast_context_budget))
+            root,
+            config=FastConfig(mode=effective_mode, engine=fast_engine,
+                              max_bytes=int(fast_context_budget)),
         )
         fast_payload = integration.prepare(str(task))
         if fast_mode == "on" and fast_payload.get("status") != "READY":
@@ -316,12 +321,13 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
     if fast_payload and fast_payload.get("status") == "READY":
         print(json.dumps({"schema": ORIENT_SCHEMA, "status": "READY",
                           "provider": "simplicio-fast", "fallback": False,
-                          "fast": fast_payload, "local_llm": False},
+                          "fast_engine": fast_engine, "fast": fast_payload, "local_llm": False},
                          ensure_ascii=False, indent=2))
         return 0
     if fast_mode == "on":
         print(json.dumps({"schema": ORIENT_SCHEMA, "status": "BLOCKED",
                           "provider": "simplicio-fast", "fallback": False,
+                          "fast_engine": fast_engine,
                           "fallback_reason": fallback_reason or "fast_not_ready",
                           "fast": fast_payload, "local_llm": False},
                          ensure_ascii=False, indent=2))
@@ -331,7 +337,8 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
     status = "FALLBACK" if mapper.get("status") == "READY" else "BLOCKED"
     print(json.dumps({"schema": ORIENT_SCHEMA, "status": status,
                       "provider": "simplicio-mapper", "fallback": True,
-                      "fallback_reason": fallback_reason, "fast": fast_payload,
+                      "fallback_reason": fallback_reason, "fast_engine": fast_engine,
+                      "fast": fast_payload,
                       "mapper": mapper, "local_llm": False},
                      ensure_ascii=False, indent=2))
     return 0 if status == "FALLBACK" else 2
@@ -703,6 +710,8 @@ def main(argv=None) -> int:
                           help="Fast policy: auto fallback, on fail-closed, or off")
     p_orient.add_argument("--fast-context-budget", type=int, default=48000,
                           help="bounded Fast context bytes (default: 48000)")
+    p_orient.add_argument("--fast-engine", choices=("auto", "rust", "python", "off"), default="auto",
+                          help="Fast engine: Rust-first auto, explicit rust/python, or off")
 
     p_extensions = sub.add_parser("extensions", help="negotiate installed Loop extension runtimes")
     extensions_sub = p_extensions.add_subparsers(dest="extensions_command", required=True)
@@ -933,7 +942,7 @@ def main(argv=None) -> int:
                    args.quality_provider, args.quality_policy, args.result_file,
                    args.require_handshake_fingerprint)
     if command == "orient":
-        return orient(args.repo, args.task, args.fast, args.fast_context_budget)
+        return orient(args.repo, args.task, args.fast, args.fast_context_budget, args.fast_engine)
     if command == "extensions":
         return extensions_doctor(args.provider, args.policy, args.schema)
     if command == "oracle":
