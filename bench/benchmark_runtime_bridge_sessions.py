@@ -7,6 +7,8 @@ admission and scheduling rather than an installed Runtime's workload.
 from __future__ import annotations
 
 import json
+import os
+import resource
 import statistics
 import sys
 import threading
@@ -92,6 +94,8 @@ def main() -> None:
         parallel_ms, durations = _parallel(parallel_bridge, workspaces, count)
         _, peak_bytes = tracemalloc.get_traced_memory()
         tracemalloc.stop()
+        peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        peak_rss_bytes = peak_rss * (1024 if os.name == "posix" else 1)
         result = {
             "schema": "simplicio.runtime-bridge-benchmark/v1",
             "workspaces": len(workspaces),
@@ -103,6 +107,8 @@ def main() -> None:
             "call_p50_ms": round(statistics.median(durations), 3),
             "call_p95_ms": round(sorted(durations)[int(len(durations) * 0.95) - 1], 3),
             "peak_tracemalloc_bytes": peak_bytes,
+            "peak_rss_bytes": peak_rss_bytes,
+            "rss_source": "resource.getrusage",
             "session_status": parallel_bridge.status(),
         }
         print(json.dumps(result, sort_keys=True))
