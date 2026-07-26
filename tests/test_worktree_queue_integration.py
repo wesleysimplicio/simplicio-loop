@@ -13,7 +13,7 @@ from worktree_queue import TaskSpec, WorktreeQueue  # noqa: E402
 
 def _git(cwd, *args):
     return subprocess.run(["git"] + list(args), cwd=str(cwd), check=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                           close_fds=True).stdout.strip()
 
 

@@ -92,9 +92,9 @@ except Exception:
     pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(HERE)
+REPO = os.path.abspath(os.environ.get("SIMPLICIO_REPO") or os.path.dirname(HERE))
 LOOP_DIR = os.path.join(REPO, ".orchestrator", "loop")
-JOURNAL = os.path.join(LOOP_DIR, "journal.jsonl")
+JOURNAL = os.environ.get("SIMPLICIO_JOURNAL_FILE") or os.path.join(LOOP_DIR, "journal.jsonl")
 DEFAULT_K = 3
 
 # The dev-cli's own structured event log (#128) — `<repo>/.simplicio/events.jsonl`, schema
@@ -228,9 +228,9 @@ def _git(args):
     import subprocess
     try:
         r = subprocess.run(["git"] + args, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", cwd=REPO)
+                           encoding="utf-8", errors="replace", cwd=REPO, close_fds=True)
         return r.stdout.strip() if r.returncode == 0 else None
-    except FileNotFoundError:
+    except (FileNotFoundError, OSError):
         return None
 
 
