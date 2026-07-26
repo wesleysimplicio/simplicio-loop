@@ -48,7 +48,25 @@ REASON_CODES = frozenset((
     "budget_exceeded",
     "device_incompatible",
     "capacity_exhausted",
+    "local_llm_disabled",
 ))
+
+LOCAL_LLM_MARKERS = (
+    "local",
+    "llama",
+    "llama.cpp",
+    "gguf",
+    "ollama",
+    "lmstudio",
+    "llamacpp",
+)
+
+
+def _is_local_llm(entry: Mapping[str, Any]) -> bool:
+    haystack = " ".join(
+        _text(entry.get(field)) for field in ("runtime", "provider", "model_id")
+    ).casefold()
+    return any(marker.casefold() in haystack for marker in LOCAL_LLM_MARKERS)
 
 PROBE_STATUSES = frozenset(("MEASURED", "UNVERIFIED", "UNAVAILABLE"))
 
@@ -294,6 +312,8 @@ class ModelCapabilityRegistry:
     def _eliminate_reason(self, entry: Mapping[str, Any], *, required_caps, allowed_providers,
                            denied_providers, req_os: str, req_arch: str, context_min: int,
                            require_probe: bool) -> Optional[str]:
+        if _is_local_llm(entry):
+            return "local_llm_disabled"
         if denied_providers and entry["provider"] in denied_providers:
             return "policy_denied"
         if allowed_providers and entry["provider"] not in allowed_providers:

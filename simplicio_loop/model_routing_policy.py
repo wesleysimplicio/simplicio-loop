@@ -83,12 +83,6 @@ def _fallback(request: Mapping[str, Any], reasons: list[str], handoff: Dict[str,
     if _bool(request.get("deterministic_capable"), "deterministic_capable"):
         reasons.append("deterministic_capable")
         return DETERMINISTIC
-    if _bool(request.get("local_capable"), "local_capable"):
-        reasons.append("remote_forbidden_local_fallback")
-        return LOCAL
-    if _bool(request.get("strong_local_capable"), "strong_local_capable"):
-        reasons.append("strong_local_fallback")
-        return STRONG_LOCAL
     reasons.append("no_safe_fallback")
     return BLOCKED
 
@@ -115,6 +109,10 @@ def evaluate(request: Mapping[str, Any], *, now: Optional[float] = None) -> Dict
         deterministic_capable = _bool(request.get("deterministic_capable"), "deterministic_capable")
         local_capable = _bool(request.get("local_capable"), "local_capable")
         strong_local_capable = _bool(request.get("strong_local_capable"), "strong_local_capable")
+        if local_capable or strong_local_capable:
+            reasons.append("local_llm_disabled")
+            local_capable = False
+            strong_local_capable = False
         stall = _bool(request.get("stall_detected"), "stall_detected")
         invalid_syntax = _bool(request.get("invalid_tool_syntax"), "invalid_tool_syntax")
         higher_required = _bool(request.get("higher_capability_required"), "higher_capability_required")
@@ -179,9 +177,10 @@ def evaluate(request: Mapping[str, Any], *, now: Optional[float] = None) -> Dict
     elif local_capable and not needs_escalation:
         decision = LOCAL
         reasons.append("local_first")
-    elif needs_escalation and cooldown_until > now and current in {LOCAL, STRONG_LOCAL}:
-        decision = current
-        reasons.append("escalation_cooldown")
+    elif (needs_escalation and cooldown_until > now and
+          current in {LOCAL, STRONG_LOCAL} and not (local_capable or strong_local_capable)):
+        decision = BLOCKED
+        reasons.append("local_llm_disabled")
     elif strong_local_capable and needs_escalation:
         decision = STRONG_LOCAL
         reasons.append("strong_local_after_evidence")

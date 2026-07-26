@@ -13,7 +13,8 @@ from worktree_queue import TaskSpec, WorktreeQueue  # noqa: E402
 
 def _git(cwd, *args):
     return subprocess.run(["git"] + list(args), cwd=str(cwd), check=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout.strip()
+                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          close_fds=True).stdout.strip()
 
 
 def _repo(tmp_path):
@@ -128,3 +129,40 @@ def test_teardown_does_not_remove_unowned_path_and_reports_failure(tmp_path):
     report = q.teardown("A")
     assert report.removed is False
     assert "path-not-owned" in report.failures
+
+
+def test_active_operator_context_blocks_teardown_and_preserves_receipt_fields(tmp_path):
+    q = WorktreeQueue(str(tmp_path), str(tmp_path / "queue.json"), run_id="run-safety")
+    state = q.state()
+    state["tasks"]["A"] = {
+        "task_id": "A", "run_id": "run-safety", "mode": "worktree",
+        "path": str(tmp_path / "owned"), "branch": "simplicio/run-safety/A",
+        "worktree_id": "run-safety:A", "lease": {"status": "held", "owner": "worker"},
+        "owned": True,
+    }
+    q._write(state)
+    q.record_context("A", {"terminal_handle": "term-delayed", "lease_owner": "worker", "active": True})
+    report = q.teardown("A")
+    assert report.removed is False
+    assert report.failures == ["active-worktree"]
+    entry = q.state()["tasks"]["A"]
+    assert entry["terminal_handle"] == "term-delayed"
+    assert entry["lease"]["owner"] == "worker"
+
+
+def test_cleanup_receipt_requires_identity_and_is_hash_linked(tmp_path):
+    q = WorktreeQueue(str(tmp_path), str(tmp_path / "queue.json"), run_id="run-safety")
+    state = q.state()
+    state["tasks"]["A"] = {
+        "task_id": "A", "run_id": "run-safety", "mode": "worktree",
+        "path": str(tmp_path / "owned"), "branch": "simplicio/run-safety/A",
+        "worktree_id": "run-safety:A", "lease": {"status": "held", "owner": "worker"},
+        "owned": True,
+    }
+    q._write(state)
+    receipt = q.record_cleanup_receipt("A", {
+        "worktree_id": "run-safety:A", "terminal_handle": "term-exited",
+        "lease_owner": "worker", "cleanup_decision": "cleanup", "reason": "no_changes_confirmed",
+    })
+    assert receipt["receipt_sha"]
+    assert q.state()["tasks"]["A"]["cleanup_receipt_sha"] == receipt["receipt_sha"]
