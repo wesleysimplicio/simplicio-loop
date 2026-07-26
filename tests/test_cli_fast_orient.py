@@ -41,6 +41,20 @@ def test_orient_exposes_explicit_engine_selection(tmp_path, monkeypatch, capsys)
     assert _ReadyFast.last_config.engine == "rust"
 
 
+def test_explicit_rust_does_not_fallback_to_mapper(tmp_path, monkeypatch, capsys):
+    class _UnavailableRust(_ReadyFast):
+        def prepare(self, task):
+            return {"status": "FALLBACK", "reason": "rust_not_verified"}
+
+    monkeypatch.setattr(cli, "FastLoopIntegration", _UnavailableRust)
+    assert cli.orient(str(tmp_path), "change app", "auto", 1234, "rust") == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "BLOCKED"
+    assert payload["fallback"] is False
+    assert payload["fast_engine"] == "rust"
+    assert _UnavailableRust.last_config.mode == "required"
+
+
 def test_orient_auto_uses_mapper_fallback_with_reason(tmp_path, monkeypatch, capsys):
     class _FallbackFast(_ReadyFast):
         def prepare(self, task):
