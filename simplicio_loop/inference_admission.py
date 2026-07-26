@@ -36,6 +36,7 @@ class AdmissionJob:
     client_id: str
     session_id: str
     priority: str = "background"
+    repository_id: str = "default"
     runnable: int = 1
     active_workers: int = 1
     inference_requests: int = 1
@@ -43,7 +44,7 @@ class AdmissionJob:
     memory_bytes: int = 0
     enqueued_at: int = 0
     def __post_init__(self) -> None:
-        if not self.job_id or not self.client_id or not self.session_id or self.priority not in PRIORITY_WEIGHT:
+        if not self.job_id or not self.client_id or not self.session_id or not self.repository_id or self.priority not in PRIORITY_WEIGHT:
             raise ValueError("job identity and priority are required")
         if any(value < 1 for value in (self.runnable, self.active_workers, self.inference_requests, self.backend_slots)) or self.memory_bytes < 0:
             raise ValueError("job resource costs are invalid")
@@ -66,10 +67,12 @@ class FairAdmissionController:
         if aging_ticks < 1:
             raise ValueError("aging_ticks must be positive")
         self.limits, self.aging_ticks = limits, aging_ticks
-        self._pending: Dict[str, Deque[AdmissionJob]] = defaultdict(deque)
+        self._pending: Dict[Tuple[str, str, str], Deque[AdmissionJob]] = defaultdict(deque)
         self._pending_by_id: Dict[str, AdmissionJob] = {}
         self._active: Dict[str, AdmissionJob] = {}
-        self._served: Dict[str, int] = defaultdict(int)
+        self._served: Dict[Tuple[str, str, str], int] = defaultdict(int)
+        self._decisions: Dict[str, int] = defaultdict(int)
+        self._wait_ticks_total = 0
         self._tick = 0
         self._starvation_preventions = 0
     @property
@@ -91,35 +94,45 @@ class FairAdmissionController:
     def submit(self, job: AdmissionJob) -> AdmissionDecision:
         if job.job_id in self._active or job.job_id in self._pending_by_id:
             reason = "duplicate_job"
+            self._decisions["rejected"] += 1
             return AdmissionDecision("rejected", reason, job.job_id, self._receipt("rejected", reason, job))
         if self._too_large(job):
             reason = "job_exceeds_limit"
+            self._decisions["rejected"] += 1
             return AdmissionDecision("rejected", reason, job.job_id, self._receipt("rejected", reason, job))
         self._tick += 1
         if self._fits(job):
             self._active[job.job_id] = job
+            self._decisions["admitted"] += 1
             return AdmissionDecision("admitted", "capacity_available", job.job_id, self._receipt("admitted", "capacity_available", job))
         if self.queued >= self.limits.max_queue:
+            self._decisions["rejected"] += 1
+            self._decisions["saturated"] += 1
             return AdmissionDecision("rejected", "queue_saturated", job.job_id, self._receipt("rejected", "queue_saturated", job))
         queued = replace(job, enqueued_at=self._tick)
-        self._pending[queued.client_id].append(queued)
+        self._pending[self._fairness_key(queued)].append(queued)
         self._pending_by_id[queued.job_id] = queued
+        self._decisions["deferred"] += 1
         return AdmissionDecision("deferred", "capacity_unavailable", job.job_id, self._receipt("deferred", "capacity_unavailable", queued, self.queued))
+    @staticmethod
+    def _fairness_key(job: AdmissionJob) -> Tuple[str, str, str]:
+        return (job.repository_id, job.session_id, job.client_id)
     def _score(self, job: AdmissionJob) -> Tuple[float, float, int]:
         waited = self._tick - job.enqueued_at
         if waited >= self.aging_ticks:
             self._starvation_preventions += 1
-        return (PRIORITY_WEIGHT[job.priority] + max(0, waited) * 4.0 / self.aging_ticks, -float(self._served[job.client_id]), -job.enqueued_at)
+        return (PRIORITY_WEIGHT[job.priority] + max(0, waited) * 4.0 / self.aging_ticks, -float(self._served[self._fairness_key(job)]), -job.enqueued_at)
     def next(self) -> Optional[AdmissionJob]:
         self._tick += 1
         choices = [(self._score(queue[0]), client, queue[0]) for client, queue in self._pending.items() if queue and self._fits(queue[0])]
         if not choices:
             return None
-        _, client, job = max(choices, key=lambda item: item[0])
-        self._pending[client].popleft()
+        _, fairness_key, job = max(choices, key=lambda item: item[0])
+        self._pending[fairness_key].popleft()
         self._pending_by_id.pop(job.job_id, None)
         self._active[job.job_id] = job
-        self._served[client] += 1
+        self._served[fairness_key] += 1
+        self._wait_ticks_total += max(0, self._tick - job.enqueued_at)
         return job
     def release(self, job_id: str) -> bool:
         return self._active.pop(job_id, None) is not None
@@ -129,10 +142,12 @@ class FairAdmissionController:
         job = self._pending_by_id.pop(job_id, None)
         if job is None:
             return False
-        self._pending[job.client_id] = deque(item for item in self._pending[job.client_id] if item.job_id != job_id)
+        key = self._fairness_key(job)
+        self._pending[key] = deque(item for item in self._pending[key] if item.job_id != job_id)
         return True
     def status(self) -> Dict[str, Any]:
-        return {"schema": "simplicio.inference-admission/v1", "queued": self.queued, "active": len(self._active), "usage": self._usage(), "limits": self.limits.__dict__.copy(), "served": dict(self._served), "starvation_preventions": self._starvation_preventions}
+        served = {"/".join(key): value for key, value in self._served.items()}
+        return {"schema": "simplicio.inference-admission/v1", "queued": self.queued, "active": len(self._active), "usage": self._usage(), "limits": self.limits.__dict__.copy(), "served": served, "decisions": dict(self._decisions), "queue_wait_ticks_total": self._wait_ticks_total, "starvation_preventions": self._starvation_preventions}
 
 @dataclass(frozen=True)
 class InferenceRequest:
@@ -177,6 +192,8 @@ class InferenceCoordinator:
         self._lock = asyncio.Lock()
         self._inflight: Dict[str, _SharedExecution] = {}
         self._shared: Dict[str, _SharedExecution] = {}
+        self._dedup_hits = 0
+        self._dedup_misses = 0
     async def run(self, request: InferenceRequest, executor: Callable[[InferenceRequest], Any], *, client_id: str = "inference", session_id: str = "inference", priority: str = "inference", correlation_id: Optional[str] = None) -> InferenceReceipt:
         correlation_id = correlation_id or uuid.uuid4().hex
         key = request.equivalence_key()
@@ -184,6 +201,7 @@ class InferenceCoordinator:
         async with self._lock:
             shared = self._inflight.get(key) if key is not None else None
             if shared is None:
+                self._dedup_misses += 1
                 execution_id = uuid.uuid4().hex
                 admission_id = "inference:" + execution_id
                 decision = self.admission.submit(AdmissionJob(admission_id, client_id, session_id, priority=priority))
@@ -197,6 +215,7 @@ class InferenceCoordinator:
                     self._inflight[key] = shared
             else:
                 deduplicated = True
+                self._dedup_hits += 1
                 shared.waiters[correlation_id] = None
         try:
             result = await asyncio.shield(shared.future)
@@ -229,7 +248,7 @@ class InferenceCoordinator:
                     self._inflight.pop(key, None)
                 self._shared.pop(execution_id, None)
     def status(self) -> Dict[str, Any]:
-        return {"schema": "simplicio.inference-coordinator/v1", "inflight": len(self._inflight), "shared_executions": len(self._shared), "admission": self.admission.status()}
+        return {"schema": "simplicio.inference-coordinator/v1", "inflight": len(self._inflight), "shared_executions": len(self._shared), "dedup_hits": self._dedup_hits, "dedup_misses": self._dedup_misses, "admission": self.admission.status()}
 
 @dataclass(frozen=True)
 class RetryPolicy:

@@ -129,3 +129,38 @@ def test_one_waiter_cancel_does_not_cancel_shared_work():
         assert receipt.result == "done"
         assert calls == 1
     asyncio.run(scenario())
+
+
+def test_fairness_and_saturation_metrics_include_repository_session_boundaries():
+    limits = CapacityLimits(max_runnable=1, max_active_workers=1, max_inference_requests=1,
+                            max_backend_slots=1, max_memory_bytes=2, max_queue=2)
+    controller = FairAdmissionController(limits, aging_ticks=1)
+    assert controller.submit(AdmissionJob("active", "c", "s", repository_id="repo-a", memory_bytes=2)).state == "admitted"
+    assert controller.submit(AdmissionJob("a", "c", "s", repository_id="repo-a")).state == "deferred"
+    assert controller.submit(AdmissionJob("b", "c", "s", repository_id="repo-b")).state == "deferred"
+    assert controller.submit(AdmissionJob("overflow", "c", "other", repository_id="repo-c")).reason == "queue_saturated"
+    controller.release("active")
+    first = controller.next()
+    controller.release(first.job_id)
+    second = controller.next()
+    status = controller.status()
+    assert {first.repository_id, second.repository_id} == {"repo-a", "repo-b"}
+    assert status["decisions"] == {"admitted": 1, "deferred": 2, "rejected": 1, "saturated": 1}
+    assert status["queue_wait_ticks_total"] > 0
+    assert max(status["usage"].values()) <= 1
+
+
+def test_one_byte_request_difference_is_a_dedup_miss_and_metrics_are_truthful():
+    async def scenario():
+        coordinator = InferenceCoordinator()
+        async def execute(value):
+            await asyncio.sleep(0)
+            return value.canonical_request_hash
+        left, right = await asyncio.gather(
+            coordinator.run(request(canonical_request_hash="abc"), execute),
+            coordinator.run(request(canonical_request_hash="abd"), execute),
+        )
+        assert left.shared_execution_id != right.shared_execution_id
+        assert coordinator.status()["dedup_hits"] == 0
+        assert coordinator.status()["dedup_misses"] == 2
+    asyncio.run(scenario())
