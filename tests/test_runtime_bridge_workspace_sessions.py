@@ -251,3 +251,85 @@ def test_transport_recovery_increments_generation_without_replay(tmp_path, monke
                                idempotency_key="new-generation")["ok"] is True
     status = bridge.status(str(workspace))["sessions"][0]
     assert status["generation"] == 2 and status["reconnects"] == 1
+
+
+def test_conflicting_resource_effects_are_fenced_and_nonconflicting_effects_overlap(tmp_path):
+    bridge = RuntimeBridge(
+        binary="unused", max_inflight_per_workspace=3,
+        tool_classes={"simplicio_write": "write"},
+    )
+    workspace = tmp_path / "resources"
+    workspace.mkdir()
+    release = threading.Event()
+    lock = threading.Lock()
+    active = {}
+    max_same = 0
+    both_paths = threading.Event()
+    seen_leases = []
+
+    class Process(_FakeProcess):
+        def call_tool(self, _tool, arguments, **_kwargs):
+            nonlocal max_same
+            transaction = arguments["__runtime_effect_transaction"]
+            resource = transaction["request"]["write_set"][0]
+            seen_leases.append(transaction["request"]["lease"])
+            with lock:
+                active[resource] = active.get(resource, 0) + 1
+                max_same = max(max_same, active[resource])
+                if len(active) == 2:
+                    both_paths.set()
+            release.wait(2)
+            with lock:
+                active[resource] -= 1
+                if active[resource] == 0:
+                    active.pop(resource)
+            return {"ok": True}
+
+    process = Process(threading.Event(), release)
+    bridge._process_for_workspace = lambda _path: process  # type: ignore[method-assign]
+
+    def invoke(key, cwd):
+        bridge.runtime_call(
+            str(workspace), "simplicio_write", {}, cwd=cwd, idempotency_key=key,
+        )
+
+    (workspace / "a").mkdir()
+    (workspace / "b").mkdir()
+    first = threading.Thread(target=invoke, args=("a-1", "a"))
+    conflicting = threading.Thread(target=invoke, args=("a-2", "a"))
+    independent = threading.Thread(target=invoke, args=("b-1", "b"))
+    first.start()
+    time.sleep(0.02)
+    conflicting.start()
+    independent.start()
+    assert both_paths.wait(1), "non-conflicting resource leases should overlap"
+    time.sleep(0.03)
+    assert max_same == 1, "the same write resource must remain serialized"
+    release.set()
+    for thread in (first, conflicting, independent):
+        thread.join(1)
+    fences = sorted(
+        lease["resources"]["repo:a"] for lease in seen_leases
+        if "repo:a" in lease["resources"]
+    )
+    assert fences == [1, 2]
+    assert bridge.status(str(workspace))["sessions"][0]["active_resource_leases"] == {}
+
+
+def test_close_drains_all_owned_workspace_processes(tmp_path):
+    bridge = RuntimeBridge(binary="unused")
+    closed = []
+
+    class Process(_FakeProcess):
+        def close(self):
+            closed.append(self)
+
+    for name in ("one", "two"):
+        workspace = tmp_path / name
+        workspace.mkdir()
+        session = bridge._session_for_workspace(workspace.resolve())
+        session.process = Process(threading.Event(), threading.Event())
+        session.state = "ready"
+    bridge.close()
+    assert len(closed) == 2
+    assert bridge.status()["sessions"] == []
