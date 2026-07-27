@@ -227,6 +227,56 @@ def test_prepare_operator_receipt_propagates_canonical_context_when_mapper_suppl
     assert task_argv[task_argv.index("--context-handle") + 1] == handle
     assert json.loads((run_root / "context-snapshot.json").read_text(encoding="utf-8"))["snapshot_id"] == "snap-1"
     assert json.loads((run_root / "context-pack.json").read_text(encoding="utf-8"))["pack_hash"] == "pack-1"
+    assert json.loads((run_root / "execution-context.json").read_text(encoding="utf-8"))["snapshot_id"] == "snap-1"
+
+
+def test_context_handoff_uses_snapshot_fallback_without_requiring_handle(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    snapshot_dir = repo / ".simplicio"
+    snapshot_dir.mkdir()
+    (snapshot_dir / "context-snapshot.json").write_text(
+        json.dumps({"schema": "simplicio.context-snapshot/v1", "snapshot_id": "snap-fallback"}),
+        encoding="utf-8",
+    )
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    (run_root / "mapper-context.json").write_text(json.dumps({
+        "handoff": {"stdout": {
+            "context_pack": {"schema": "simplicio.context-pack/v1", "pack_hash": "pack-1"},
+            "execution_context": {"schema": "simplicio.execution-context/v1", "snapshot_id": "snap-fallback"},
+        }}
+    }), encoding="utf-8")
+
+    args, receipt = runner_mod._context_handoff_args(repo, run_root)
+
+    assert receipt["status"] == "propagated", receipt
+    assert "--context-handle" not in args
+    assert args[args.index("--context-snapshot") + 1] == str(snapshot_dir / "context-snapshot.json")
+    assert json.loads((run_root / "context-pack.json").read_text(encoding="utf-8"))["pack_hash"] == "pack-1"
+    assert json.loads((run_root / "execution-context.json").read_text(encoding="utf-8"))["snapshot_id"] == "snap-fallback"
+
+
+def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    calls = []
+
+    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {"task_aware_supported": True})
+    monkeypatch.setattr(runner_mod, "_validate_mapper_receipt", lambda *args: None)
+
+    def fake_run(argv, cwd):
+        calls.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")
+
+    monkeypatch.setattr(runner_mod, "_run_cmd", fake_run)
+    runner_mod._run_mapper(repo, run_root, goal="goal")
+
+    assert ["simplicio-mapper", "snapshot", "build", ".", "--json"] in calls
+    handoff_argv = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "handoff"])
+    assert "--execution-context" in handoff_argv
 
 
 def test_build_plan_uses_filtered_candidate_targets(tmp_path):
@@ -243,6 +293,7 @@ def test_build_plan_uses_filtered_candidate_targets(tmp_path):
                     "pack_hash": "pack-1",
                     "files": [
                         {"path": ".simplicio/orchestrator/loop/runtime_run_task.md"},
+                        {"path": "docs/README.md"},
                         {"path": "src/worker.py"},
                     ],
                 }
@@ -254,7 +305,7 @@ def test_build_plan_uses_filtered_candidate_targets(tmp_path):
     }
 
     plan = runner_mod._build_plan(tasks, mapper_payload, repo)
-    assert plan["mapper_targets"] == ["src/worker.py"]
+    assert plan["mapper_targets"] == ["src/worker.py"], plan["mapper_targets"]
     assert plan["steps"][0]["candidate_targets"] == ["src/worker.py"]
 
 
