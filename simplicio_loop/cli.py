@@ -55,6 +55,7 @@ from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
 from .delivery import DELIVERY_ORDER
 from .map_service_status import default_status_path, load_status_file
+from .context_provider import ContextProviderError, ERROR_SCHEMA, request_context
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -694,6 +695,22 @@ def findings_command(args) -> int:
     return 2
 
 
+def context_command(repo: str, term: str, snapshot: str, max_bytes: int, timeout: float) -> int:
+    try:
+        packet = request_context(
+            repo,
+            term,
+            snapshot=snapshot or None,
+            max_bytes=max_bytes,
+            timeout=timeout,
+        )
+    except ContextProviderError as exc:
+        print(json.dumps({"schema": ERROR_SCHEMA, "error": str(exc)}, ensure_ascii=False, sort_keys=True))
+        return 2
+    print(json.dumps(packet, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="simplicio-loop",
@@ -764,6 +781,14 @@ def main(argv=None) -> int:
                           help="emit machine-readable JSON (this is also the default)")
     p_status.add_argument("--text", dest="as_text", action="store_true",
                           help="emit human-readable text instead of JSON")
+
+    p_context = sub.add_parser("context", help="request a validated Fast context packet")
+    p_context.add_argument("--repo", default=".", help="repository root")
+    p_context.add_argument("--term", required=True, help="symbol or term to retrieve through simplicio-fast")
+    p_context.add_argument("--snapshot", default=os.path.join(".simplicio", "fast", "project.sfast"), help="Fast snapshot under <repo>/.simplicio")
+    p_context.add_argument("--max-bytes", type=int, default=131072, help="maximum context bytes")
+    p_context.add_argument("--timeout", type=float, default=60.0, help="Fast request timeout in seconds")
+    p_context.add_argument("--json", action="store_true", help="emit machine-readable JSON (the default)")
 
     p_map = sub.add_parser("map", help="map-service cross-module status")
     map_sub = p_map.add_subparsers(dest="map_command", required=True)
@@ -960,6 +985,8 @@ def main(argv=None) -> int:
                       args.write_receipt)
     if command == "status":
         return status(args.repo, args.run_id, args.json, args.as_text)
+    if command == "context":
+        return context_command(args.repo, args.term, args.snapshot, args.max_bytes, args.timeout)
     if command == "map":
         if args.map_command == "status":
             return map_status(args.repo, args.status_file, args.json)
