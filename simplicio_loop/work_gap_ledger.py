@@ -209,7 +209,12 @@ class WorkGapLedger:
             "evidence": [item.as_dict() for item in evidence],
         }
         event = LedgerEvent(
-            **payload,
+            sequence=payload["sequence"],
+            gap_key=key,
+            from_state=gap.state,
+            to_state=to_state,
+            actor_id=actor_id,
+            seat=seat,
             evidence=tuple(evidence),
             previous_hash=previous_hash,
             hash=_event_hash(previous_hash, payload),
