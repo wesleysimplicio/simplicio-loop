@@ -12,7 +12,7 @@ promovido.
 simplicio-loop orient --repo . --task "..." --fast auto --fast-context-budget 48000
 ```
 
-O preflight exige o operador Fast `>=2.0.13` e a integração `integrated_ready`.
+O preflight exige o operador Fast `>=2.0.14` e a integração `integrated_ready`.
 `--fast on` falha fechado se o operador Fast não estiver pronto. `--fast auto`
 emite uma receipt `FALLBACK` usando Mapper quando Fast não estiver disponível;
 `--fast off` mantém o comportamento standalone. Todas as receipts declaram

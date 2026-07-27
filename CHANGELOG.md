@@ -2,7 +2,7 @@
 
 ## [3.38.4] - 2026-07-27
 
-- Require Simplicio Fast `>=2.0.13` in the Loop preflight and integrated flow.
+- Require Simplicio Fast `>=2.0.14` in the Loop preflight and integrated flow.
 - Document Fast as the canonical `orient`/fan-out context operator while
   retaining explicit Mapper fallback receipts.
 

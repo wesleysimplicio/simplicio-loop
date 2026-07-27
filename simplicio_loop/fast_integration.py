@@ -24,11 +24,11 @@ FAST_INGEST_SCHEMA = "simplicio.fast.ingest/v2"
 FAST_UNDERSTANDING_SCHEMA = "simplicio.fast.understanding/v2"
 FAST_PLAN_SCHEMA = "simplicio.fast.plandag/v2"
 FAST_CHANGESET_SCHEMA = "simplicio.fast.changeset/v2"
-# v2.0.13 is the current Fast release validated for the Loop flow.  Keep the
+# v2.0.14 is the current Fast release validated for the Loop flow.  Keep the
 # floor aligned with the release that contains the integrated-ready contract;
 # accepting an arbitrary 2.x binary would silently re-enable older operators
 # that predate the Loop ingest/understand/plan/apply flow.
-FAST_MINIMUM = (2, 0, 13)
+FAST_MINIMUM = (2, 0, 14)
 FAST_CAPABILITIES = ("ingest", "understand", "plan", "apply", "refresh")
 
 
