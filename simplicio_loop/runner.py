@@ -3553,10 +3553,15 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             "finished_at": _now(),
         }
     try:
-        payload = execute_operator(
-            item["repo"], item["run_id"], task_index=item["task_index"],
-            attempt_coordinator=attempt_coordinator, guarded_attempt=attempt_obj,
-        )
+        if attempt_coordinator is None and attempt_obj is None:
+            payload = execute_operator(
+                item["repo"], item["run_id"], item["task_index"],
+            )
+        else:
+            payload = execute_operator(
+                item["repo"], item["run_id"], task_index=item["task_index"],
+                attempt_coordinator=attempt_coordinator, guarded_attempt=attempt_obj,
+            )
         state = payload.get("state") or {}
         operator = state.get("operator") or {}
         execution_state = str(operator.get("execution_state") or "")
