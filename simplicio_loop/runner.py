@@ -50,6 +50,13 @@ from .runtime_execution_receipt import RuntimeExecutionReceiptError
 from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
 from .runtime_bridge import RuntimeBridge
 from .runtime_effect_adapter import EffectRequest, RuntimeEffectAdapter, RuntimeEffectError
+from .hookwall_gate import (
+    HookwallBlocked,
+    gate_completion,
+    validate_envelope,
+    validate_pre_decision,
+    verify_post_receipt,
+)
 from .canonical_plan import CanonicalPlan, load_canonical_plan
 from .authority_boundary import prepare_authorization_handoff
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
@@ -622,7 +629,7 @@ def _parse_effect_stdout(value: Any) -> Dict[str, Any]:
     return {}
 
 
-def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
+def _execute_operator_effect_unchecked(*, profile: str, adapter: RuntimeEffectAdapter,
                              request: EffectRequest, argv: List[str],
                              env: Mapping[str, str], repo_path: Path,
                              attempt_coordinator: Optional[AttemptCoordinator],
@@ -689,6 +696,124 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
             "effect_receipt": None,
             "uncertain": False,
         }
+
+
+
+def _hookwall_digest(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
+                             request: EffectRequest, argv: List[str],
+                             env: Mapping[str, str], repo_path: Path,
+                             attempt_coordinator: Optional[AttemptCoordinator],
+                             guarded_attempt: Any,
+                             source_hash: Optional[str] = None) -> Dict[str, Any]:
+    """Run one mutable operator only inside a lineage-bound Hookwall chain."""
+    source_hash = source_hash or str(_repo_fingerprint(repo_path).get("tree_hash") or "")
+    plan_id = request.gate_id or request.transaction_id or request.idempotency_key
+    policy_hash = _hookwall_digest({
+        "profile": profile,
+        "gate_id": request.gate_id or "",
+        "runtime_generation": request.runtime_generation or "",
+        "write_set": list(request.write_set),
+    })
+    envelope = validate_envelope({
+        "schema": "simplicio.dispatch-envelope/v1",
+        "envelope_id": request.transaction_id or request.idempotency_key,
+        "run_id": request.idempotency_key.split(":task-", 1)[0],
+        "plan_id": plan_id,
+        "source_hash": source_hash,
+        "policy_hash": policy_hash,
+        "idempotency_key": request.idempotency_key,
+        "workspace": request.workspace,
+        "fence": request.fencing_token,
+        "effect_set": ["process", "write"],
+    })
+    pre_decision = {
+        "schema": "simplicio.hookwall-decision/v1",
+        "phase": "pre",
+        "verdict": "proceed",
+        "reason_code": "policy_authorized",
+        "envelope_id": envelope["envelope_id"],
+        "envelope_hash": envelope["envelope_hash"],
+        "source_hash": source_hash,
+        "policy_hash": policy_hash,
+        "fence": request.fencing_token,
+    }
+    validate_pre_decision(envelope, pre_decision)
+
+    outcome = _execute_operator_effect_unchecked(
+        profile=profile,
+        adapter=adapter,
+        request=request,
+        argv=argv,
+        env=env,
+        repo_path=repo_path,
+        attempt_coordinator=attempt_coordinator,
+        guarded_attempt=guarded_attempt,
+    )
+    outcome["hookwall_envelope"] = envelope
+    outcome["hookwall_pre_decision"] = pre_decision
+    if outcome.get("returncode") != 0 or outcome.get("uncertain"):
+        outcome["hookwall_evidence"] = None
+        outcome["hookwall_reason"] = (
+            "effect_uncertain" if outcome.get("uncertain") else "effect_not_committed"
+        )
+        return outcome
+
+    mutation_receipt = {
+        "schema": "simplicio.mutation-receipt/v1",
+        "envelope_id": envelope["envelope_id"],
+        "source_hash": source_hash,
+        "policy_hash": policy_hash,
+        "idempotency_key": request.idempotency_key,
+        "fence": request.fencing_token,
+        "status": "committed",
+        "result_hash": _hookwall_digest({
+            "returncode": outcome.get("returncode"),
+            "stdout": outcome.get("stdout") or {},
+            "source": outcome.get("source") or "",
+        }),
+    }
+    mutation_receipt["receipt_hash"] = _hookwall_digest(mutation_receipt)
+    post_decision = {
+        "schema": "simplicio.hookwall-decision/v1",
+        "phase": "post",
+        "verdict": "proceed",
+        "reason_code": "effect_verified",
+        "envelope_id": envelope["envelope_id"],
+        "source_hash": source_hash,
+        "policy_hash": policy_hash,
+        "idempotency_key": request.idempotency_key,
+        "fence": request.fencing_token,
+        "receipt_hash": mutation_receipt["receipt_hash"],
+    }
+    try:
+        evidence = verify_post_receipt(
+            envelope, pre_decision, mutation_receipt, post_decision
+        )
+    except HookwallBlocked as exc:
+        outcome["returncode"] = None
+        outcome["uncertain"] = True
+        outcome["hookwall_evidence"] = None
+        outcome["hookwall_reason"] = exc.reason_code
+        return outcome
+    verified, reason = gate_completion(evidence)
+    if not verified:
+        outcome["returncode"] = None
+        outcome["uncertain"] = True
+        outcome["hookwall_evidence"] = None
+        outcome["hookwall_reason"] = reason
+        return outcome
+    outcome["hookwall_mutation_receipt"] = mutation_receipt
+    outcome["hookwall_post_decision"] = post_decision
+    outcome["hookwall_evidence"] = evidence
+    outcome["hookwall_reason"] = "ok"
+    return outcome
 
 
 
@@ -3368,6 +3493,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         repo_path=repo_path,
         attempt_coordinator=attempt_coordinator,
         guarded_attempt=guarded_attempt,
+        source_hash=str(before.get("tree_hash") or ""),
     )
     returncode = effect_outcome["returncode"]
     stdout = effect_outcome["stdout"]
@@ -3375,6 +3501,8 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     source = effect_outcome["source"]
     effect_receipt = effect_outcome.get("effect_receipt")
     uncertain = bool(effect_outcome.get("uncertain"))
+    hookwall_evidence = effect_outcome.get("hookwall_evidence")
+    hookwall_verified, hookwall_reason = gate_completion(hookwall_evidence)
     after = _repo_fingerprint(repo_path)
     changed = _changed_paths(repo_path)
     rollback = {"attempted": False, "restored": False, "reason": "not_needed"}
@@ -3430,6 +3558,13 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "effect_receipt": effect_receipt,
         "effect_transaction_id": (effect_receipt or {}).get("transaction_id", ""),
         "effect_correlation_id": (effect_receipt or {}).get("correlation_id", ""),
+        "hookwall_envelope": effect_outcome.get("hookwall_envelope"),
+        "hookwall_pre_decision": effect_outcome.get("hookwall_pre_decision"),
+        "hookwall_mutation_receipt": effect_outcome.get("hookwall_mutation_receipt"),
+        "hookwall_post_decision": effect_outcome.get("hookwall_post_decision"),
+        "hookwall_evidence": hookwall_evidence,
+        "hookwall_verified": hookwall_verified,
+        "hookwall_reason": hookwall_reason,
         "checkpoint": checkpoint,
         "rollback": rollback,
         "failure_fingerprint": "" if returncode == 0 else _operator_failure_fingerprint(returncode, stderr, stdout),
@@ -3452,7 +3587,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
                     blocker=str(rollback.get("reason") or "operator execution failed"),
                     message="operator changes rolled back")
     state["operator"] = {
-        "ready": returncode == 0 and not uncertain,
+        "ready": returncode == 0 and not uncertain and hookwall_verified,
         "receipt": str(operator_path),
         "target": target,
         "execution_state": receipt["execution_state"],
