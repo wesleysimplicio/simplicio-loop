@@ -145,6 +145,16 @@ def test_devcli_cmd_prefers_repo_checkout(tmp_path):
     assert cmd[:3] == [sys.executable, "-m", "simplicio.cli"]
     assert cmd[3:] == ["task", "--help"]
     assert env["PYTHONPATH"].split(os.pathsep)[0] == str(repo)
+    assert env["SIMPLICIO_LOCAL_LLM_DISABLED"] == "1"
+    assert "--local" not in cmd
+
+
+def test_devcli_env_removes_local_model_selector(tmp_path):
+    env = runner_mod._devcli_env(tmp_path, {"SIMPLICIO_MODEL": "local/qwen"})
+
+    assert env["SIMPLICIO_LOCAL_LLM_DISABLED"] == "1"
+    assert "SIMPLICIO_MODEL" not in env
+
 
 
 def test_task_spec_payload_preserves_loop_contract_and_source():

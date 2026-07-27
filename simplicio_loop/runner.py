@@ -525,29 +525,26 @@ def _operator_timeout(kind: str) -> int:
     except ValueError:
         return default
     return max(30, value)
-
-
 def _devcli_env(repo_path: Path, base_env: Dict[str, str] | None = None) -> Dict[str, str]:
     env = dict(base_env or os.environ)
     repo_str = str(repo_path)
     current = env.get("PYTHONPATH", "").strip()
     env["PYTHONPATH"] = repo_str if not current else f"{repo_str}{os.pathsep}{current}"
+    # Local LLM execution is paused globally; child Dev CLI flows must inherit
+    # the policy and must not receive a local model selector.
+    env["SIMPLICIO_LOCAL_LLM_DISABLED"] = "1"
+    model = env.get("SIMPLICIO_MODEL", "").strip().casefold()
+    if model.startswith(("local/", "llama", "ollama")):
+        env.pop("SIMPLICIO_MODEL", None)
     return env
-
 
 def _devcli_cmd(repo_path: Path, *args: str) -> List[str]:
     if (repo_path / "simplicio" / "cli.py").exists():
         base = [sys.executable, "-m", "simplicio.cli", *args]
     else:
         base = ["simplicio-dev-cli", *args]
-    # Route the operator offline. Prefer an OpenAI-compatible local server when
-    # SIMPLICIO_BASE_URL is set (e.g. llama-server on 127.0.0.1:11435 with a Q4 model);
-    # otherwise fall back to the bundled llama-cpp-python '--local' mode.
-    base_url = os.environ.get("SIMPLICIO_BASE_URL", "").strip()
-    if not base_url:
-        model = os.environ.get("SIMPLICIO_MODEL", "").strip()
-        if model.startswith("local/") and "--local" not in base:
-            base.append("--local")
+    # Runtime-backed execution is optional; local model execution is not an
+    # allowed fallback. The command remains usable in standalone mode.
     return base
 
 _RUNTIME_EFFECT_ADAPTERS: Dict[str, RuntimeEffectAdapter] = {}
