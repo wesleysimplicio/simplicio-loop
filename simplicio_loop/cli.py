@@ -55,6 +55,7 @@ from .oracle import evaluate_matrix, persist_completion_receipt
 from .delivery import DELIVERY_ORDER
 from .map_service_status import default_status_path, load_status_file
 from .context_provider import ContextProviderError, ERROR_SCHEMA, request_context
+from .token_budget import TokenBudget
 from .checkpoints import (
     CheckpointError,
     build_checkpoint,
@@ -905,6 +906,35 @@ def context_command(repo: str, term: str, snapshot: str, max_bytes: int, timeout
     return 0
 
 
+def token_budget(args) -> int:
+    envelope = TokenBudget(
+        args.run_id,
+        total_tokens=args.total_tokens,
+        per_attempt_tokens=args.per_attempt_tokens,
+        total_calls=args.total_calls,
+        input_tokens=args.input_tokens,
+        output_tokens=args.output_tokens,
+        reasoning_tokens=args.reasoning_tokens,
+        cache_tokens=args.cache_tokens,
+        context_bytes=args.context_bytes,
+        context_tokens=args.context_tokens,
+        retry_delta_bytes=args.retry_delta_bytes,
+        exhaustion_policy=args.exhaustion_policy,
+    )
+    payload = envelope.as_dict() if args.budget_action == "inspect" else envelope.receipt(
+        spent_tokens=args.spent_tokens,
+        spent_calls=args.spent_calls,
+        attempts=args.attempts,
+        status=args.status,
+        reason_code=args.reason_code,
+        local_llm_started=False,
+    )
+    if args.out:
+        _write_checkpoint_cli_json(args.out, payload)
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="simplicio-loop",
@@ -1072,6 +1102,27 @@ def main(argv=None) -> int:
     p_checkpoint.add_argument("--candidate-file", default="")
     p_checkpoint.add_argument("--winner-id", default="")
     p_checkpoint.add_argument("--fence-path", default="")
+
+    p_budget = sub.add_parser("budget", help="emit a bounded token budget or receipt")
+    p_budget.add_argument("budget_action", choices=("inspect", "receipt"))
+    p_budget.add_argument("--run-id", required=True)
+    p_budget.add_argument("--total-tokens", type=int, required=True)
+    p_budget.add_argument("--per-attempt-tokens", type=int, required=True)
+    p_budget.add_argument("--total-calls", type=int, default=0)
+    p_budget.add_argument("--input-tokens", type=int, default=None)
+    p_budget.add_argument("--output-tokens", type=int, default=None)
+    p_budget.add_argument("--reasoning-tokens", type=int, default=None)
+    p_budget.add_argument("--cache-tokens", type=int, default=None)
+    p_budget.add_argument("--context-bytes", type=int, default=None)
+    p_budget.add_argument("--context-tokens", type=int, default=None)
+    p_budget.add_argument("--retry-delta-bytes", type=int, default=None)
+    p_budget.add_argument("--exhaustion-policy", choices=("stop", "compress", "serial", "downgrade", "escalate"), default="stop")
+    p_budget.add_argument("--spent-tokens", type=int, default=0)
+    p_budget.add_argument("--spent-calls", type=int, default=0)
+    p_budget.add_argument("--attempts", type=int, default=0)
+    p_budget.add_argument("--status", default="ACTIVE")
+    p_budget.add_argument("--reason-code", default=None)
+    p_budget.add_argument("--out", default="")
 
     p_maintenance = sub.add_parser(
         "maintenance-deferred",
@@ -1242,6 +1293,8 @@ def main(argv=None) -> int:
         return sync_source(args.repo, args.run_id, args.source, args.external_repo, args.pr, args.tag)
     if command == "drain":
         return drain(args.action, args.snapshot_path, args.receipt_path, args.polls_required)
+    if command == "budget":
+        return token_budget(args)
     if command == "ledger":
         return ledger_replay(
             args.path,
