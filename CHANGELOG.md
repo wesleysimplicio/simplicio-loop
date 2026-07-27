@@ -8,7 +8,12 @@
   and completion evidence to the exact run/attempt and repository state; add atomic,
   auditable invalidation tombstones and fail-closed legacy migration.
 
-## [3.38.2] — 2026-07-25
+## [3.38.3] - 2026-07-27
+
+- Published the current main line with HubQueueAgentClient and the latest completion, coverage, Hookwall, and local-inference guard changes.
+- Kept the Dev CLI dependency floor and all release surfaces synchronized for the Mapper -> Fast -> Dev CLI -> Loop chain.
+
+## [3.38.2] - 2026-07-25
 
 - Raised the `simplicio-cli` (Dev CLI) dependency floor to `>=0.16.3`, the
   latest confirmed PyPI release, and synchronized the loop's release surfaces.
