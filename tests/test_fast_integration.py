@@ -26,7 +26,7 @@ class FakeFast:
         self.calls.append(command)
         args = command[1:]
         if args == ["--version"]:
-            return subprocess.CompletedProcess(command, 0, "simplicio-fast 2.0.2\n", "")
+            return subprocess.CompletedProcess(command, 0, "simplicio-fast 2.0.14\n", "")
         if args == ["doctor", "--json"]:
             return subprocess.CompletedProcess(command, 0, json.dumps({"integrated_ready": True}), "")
         if command[0] == "git":
