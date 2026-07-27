@@ -43,6 +43,11 @@ from .runtime_execution_receipt import RuntimeExecutionReceiptError
 from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
 from .execution_board import ExecutionBoard
+from .validation_policy import (
+    ValidationCandidate,
+    ValidationInputs,
+    ValidationPolicy,
+)
 
 try:
     from scripts.agent_identity import ensure_identity
@@ -410,6 +415,130 @@ def _write_maintenance_deferred_receipt(
         "completion_reason_code": str(completion.get("reason_code") or "oracle_incomplete"),
     }
     _write_json(run_dir / "maintenance-receipt.json", payload)
+    return payload
+
+
+def _validation_policy_candidates(
+    plan: Mapping[str, Any], task_index: int
+) -> Tuple[ValidationCandidate, ...]:
+    steps = list(plan.get("steps") or [])
+    if task_index < 1 or task_index > len(steps):
+        return ()
+    task_step = steps[task_index - 1]
+    if not isinstance(task_step, Mapping):
+        return ()
+    candidates = []
+    seen = set()
+    for scenario in task_step.get("steps") or []:
+        scenario_plan = scenario.get("plan") if isinstance(scenario, Mapping) else {}
+        if not isinstance(scenario_plan, Mapping):
+            continue
+        for test_path in scenario_plan.get("test_paths") or []:
+            name = f"test:{str(test_path).replace(chr(92), '/')}"
+            if name not in seen:
+                seen.add(name)
+                candidates.append(ValidationCandidate(name=name, tier="focused"))
+        for command in scenario_plan.get("test_commands") or []:
+            text = str(command).strip()
+            name = f"command:{text}" if text else ""
+            if name and name not in seen:
+                seen.add(name)
+                candidates.append(ValidationCandidate(name=name, tier="focused"))
+    return tuple(candidates)
+
+
+def _validation_previous_failures(state: Mapping[str, Any]) -> int:
+    failures = 0
+    for entry in state.get("history") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        extra = entry.get("extra") or {}
+        if entry.get("to") == "blocked" or (
+            isinstance(extra, Mapping) and extra.get("error")
+        ):
+            failures += 1
+    return failures
+
+
+def _persist_validation_policy_receipt(
+    run_dir: Path,
+    run_id: str,
+    task_index: int,
+    *,
+    task: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    state: Mapping[str, Any],
+    phase: str = "edit",
+) -> Dict[str, Any]:
+    freshness = plan.get("freshness") or {}
+    map_fresh = bool(freshness.get("verified", False))
+    impact_known = bool(
+        plan.get("mapper_pack_hash")
+        and plan.get("context_pack_hash")
+        and plan.get("mapper_targets")
+    )
+    raw_coverage = task.get("coverage_ratio")
+    coverage_ratio = raw_coverage if isinstance(raw_coverage, (int, float)) else None
+    change_kind = str(task.get("change_kind") or "code").strip().lower()
+    critical = bool(task.get("critical")) or str(task.get("risk") or "").lower() == "critical"
+    inputs = ValidationInputs(
+        phase=phase,
+        change_kind=change_kind,
+        critical=critical,
+        map_fresh=map_fresh,
+        impact_known=impact_known,
+        previous_failures=_validation_previous_failures(state),
+        coverage_ratio=coverage_ratio,
+        candidates=_validation_policy_candidates(plan, task_index),
+    )
+    receipt = ValidationPolicy().decide(inputs)
+    payload = receipt.as_dict()
+    payload.update(
+        {
+            "runner_schema": "simplicio.loop.validation-policy-receipt/v1",
+            "run_id": run_id,
+            "task_index": task_index,
+            "task_contract_hash": str(contract.get("collection_hash") or ""),
+            "plan_hash": _planning_content_hash(plan),
+            "mapper_pack_hash": str(plan.get("mapper_pack_hash") or ""),
+            "context_pack_hash": str(plan.get("context_pack_hash") or ""),
+            "map_fresh": map_fresh,
+            "impact_known": impact_known,
+            "local_llm_started": False,
+            "generated_at": _now(),
+        }
+    )
+    receipt_path = run_dir / "validation-policy" / f"task-{task_index}.json"
+    payload["receipt_path"] = str(receipt_path)
+    payload["receipt_hash"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    _write_json(receipt_path, payload)
+    state_payload = dict(state)
+    state_payload["validation_policy"] = {
+        "ready": True,
+        "receipt": str(receipt_path),
+        "profile": payload["profile"],
+        "selected_tests": list(payload["selected_tests"]),
+        "reason_codes": list(payload["reason_codes"]),
+        "final_gate_required": payload["final_gate_required"],
+        "cache_allowed": payload["cache_allowed"],
+    }
+    if isinstance(state, dict):
+        state["validation_policy"] = dict(state_payload["validation_policy"])
+        state_payload = state
+    _write_json(run_dir / "state.json", state_payload)
+    _emit_event(
+        run_dir,
+        state_payload,
+        "validation_policy",
+        receipt=str(receipt_path),
+        message="validation policy selected bounded runner checks",
+        profile=payload["profile"],
+        selected_tests=list(payload["selected_tests"]),
+        reason_codes=list(payload["reason_codes"]),
+    )
     return payload
 
 
@@ -2569,6 +2698,16 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         raise RuntimeError("repository changed after planning; re-run mapper before execution")
     task = tasks[task_index - 1]
     attempt = int((status["state"] or {}).get("attempts", 0)) + 1
+    _persist_validation_policy_receipt(
+        run_dir,
+        run_id,
+        task_index,
+        task=task,
+        contract=contract,
+        plan=plan,
+        state=status["state"],
+        phase="edit",
+    )
     # #284: mutation-authority gate, mandatory by default. execute_operator()
     # refuses to run without a valid planning-receipt.json whose mutation_authority
     # token matches THIS run/attempt/task-contract/plan identity -- any drift (stale
