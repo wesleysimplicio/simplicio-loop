@@ -314,5 +314,71 @@ class WorkGapLedger:
         )
 
 
+def validate_work_gap_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate an immutable ledger snapshot before terminal completion."""
+    errors: list[str] = []
+    if not isinstance(snapshot, Mapping):
+        return {"ok": False, "reason_code": "work_gap_ledger_invalid", "detail": {"errors": ["snapshot must be an object"]}}
+    if snapshot.get("schema") != SCHEMA:
+        errors.append("schema mismatch")
+    gaps = snapshot.get("gaps")
+    events = snapshot.get("events")
+    if not isinstance(gaps, list) or not gaps:
+        errors.append("gaps must be a non-empty list")
+        gaps = []
+    if not isinstance(events, list):
+        errors.append("events must be a list")
+        events = []
+
+    delivered = set()
+    for index, gap in enumerate(gaps):
+        if not isinstance(gap, Mapping):
+            errors.append(f"gap {index} is not an object")
+            continue
+        key = f"{gap.get('requirement_id', '')}:{gap.get('acceptance_criterion_id', '')}"
+        if gap.get("state") != "DELIVERED":
+            errors.append(f"{key} is {gap.get('state')!r}, not DELIVERED")
+        else:
+            delivered.add(key)
+        if not gap.get("owner_project") or not gap.get("owner_agent"):
+            errors.append(f"{key} has no owner")
+        identities = [gap.get("executor_id"), gap.get("verifier_id"), gap.get("completion_auditor_id")]
+        if gap.get("state") == "DELIVERED" and (not all(identities) or len(set(identities)) != 3):
+            errors.append(f"{key} lacks three independent terminal seats")
+        for dependency in gap.get("dependencies") or []:
+            if dependency not in delivered and not any(
+                f"{item.get('requirement_id', '')}:{item.get('acceptance_criterion_id', '')}" == dependency
+                for item in gaps if isinstance(item, Mapping)
+            ):
+                errors.append(f"{key} references an unknown dependency {dependency!r}")
+
+    previous = "0" * 64
+    for expected_sequence, event in enumerate(events, 1):
+        if not isinstance(event, Mapping):
+            errors.append(f"event {expected_sequence} is not an object")
+            continue
+        payload = {name: event.get(name) for name in ("sequence", "gap_key", "from_state", "to_state", "actor_id", "seat", "evidence")}
+        if event.get("sequence") != expected_sequence or event.get("previous_hash") != previous:
+            errors.append(f"event {expected_sequence} sequence/link mismatch")
+        if event.get("hash") != _event_hash(previous, payload):
+            errors.append(f"event {expected_sequence} hash mismatch")
+        previous = str(event.get("hash") or previous)
+
+    detail = {
+        "errors": errors,
+        "gap_count": len(gaps),
+        "event_count": len(events),
+        "unresolved": [
+            f"{gap.get('requirement_id', '')}:{gap.get('acceptance_criterion_id', '')}"
+            for gap in gaps if isinstance(gap, Mapping) and gap.get("state") != "DELIVERED"
+        ],
+    }
+    detail["digest"] = hashlib.sha256(_canonical(snapshot)).hexdigest()
+    return {
+        "ok": not errors,
+        "reason_code": "work_gap_ledger_ready" if not errors else "work_gap_ledger_invalid",
+        "detail": detail,
+    }
+
 def sha256_evidence(kind: str, handle: str, content: bytes, actor_id: str) -> Evidence:
     return Evidence(kind, handle, hashlib.sha256(content).hexdigest(), actor_id)

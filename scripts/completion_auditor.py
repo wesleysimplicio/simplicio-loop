@@ -94,6 +94,10 @@ def cmd_audit(_opts):
     delivery_receipt = _read_json(paths["delivery"])
     source_requery = _read_json(paths["source_requery"])
     prev_completion = _read_json(paths["prev_completion"])
+    work_gap_path = os.path.join(os.path.dirname(paths["audit_out"]), "work-gap-ledger.json")
+    work_gap_snapshot = _read_json(work_gap_path)
+    if work_gap_snapshot is None:
+        work_gap_snapshot = {}
 
     auditor_instance_id = os.environ.get("SIMPLICIO_AUDITOR_INSTANCE_ID", "").strip()
     if not auditor_instance_id:
@@ -127,6 +131,7 @@ def cmd_audit(_opts):
         delivery_receipt=delivery_receipt,
         source_requery=source_requery,
         previous_completion_receipt=prev_completion,
+        work_gap_snapshot=work_gap_snapshot,
     )
     _write_json(paths["audit_out"], result)
     tag = "MEASURED" if result["verdict"] == ca.VERDICT_COMPLETE else "UNVERIFIED"

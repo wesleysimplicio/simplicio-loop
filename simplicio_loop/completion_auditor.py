@@ -523,6 +523,7 @@ def audit(
     source_requery: Mapping[str, Any] | None = None,
     previous_completion_receipt: Mapping[str, Any] | None = None,
     journal_state: Mapping[str, Any] | None = None,
+    work_gap_snapshot: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Independently recompute the terminal verdict. Never trusts a summary.
 
@@ -554,6 +555,10 @@ def audit(
         previous_completion_receipt,
         ac_coverage=ac_coverage, watcher_check=watcher_check, delivery_check=delivery_check,
     )
+    work_gap_check = None
+    if work_gap_snapshot is not None:
+        from .work_gap_ledger import validate_work_gap_snapshot
+        work_gap_check = validate_work_gap_snapshot(work_gap_snapshot)
 
     all_evidence_refs = sorted({
         ref
@@ -576,6 +581,7 @@ def audit(
         "regression": regression,
         "evidence_refs": all_evidence_refs,
         "journal_state": dict(journal_state or {}),
+        "work_gap_check": work_gap_check,
     }
 
     # Priority order is fixed and mechanical, so the chosen reason_code never
@@ -606,6 +612,11 @@ def audit(
         return _finish_blocked(result, watcher_check["reason_code"], {"detail": watcher_check["detail"]})
     if not delivery_check["ok"]:
         return _finish_blocked(result, delivery_check["reason_code"], {"detail": delivery_check["detail"]})
+
+    if work_gap_check is not None and not work_gap_check["ok"]:
+        return _finish_blocked(
+            result, work_gap_check["reason_code"], {"detail": work_gap_check["detail"]}
+        )
 
     if ac_coverage["unverified"]:
         # Structure is sound and nothing is stale/conflicting/missing outright —
@@ -671,6 +682,7 @@ def build_completion_receipt(
         "ac_coverage": audit_result.get("ac_coverage", {}),
         "watcher_check": audit_result.get("watcher_check", {}),
         "delivery_check": audit_result.get("delivery_check", {}),
+        "work_gap_check": audit_result.get("work_gap_check", {}),
         "evidence_refs": audit_result.get("evidence_refs", []),
     }
     evidence_set_hash = _sha256_json(evidence_set)
