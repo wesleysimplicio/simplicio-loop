@@ -12,6 +12,26 @@ from simplicio_loop.hub_daemon import HubDaemon, HubSocketServer, CODE_HUB_CLIEN
 from simplicio_loop.runtime_bridge import RuntimeBridge, RuntimeBridgeError
 
 
+def _endpoint(directory):
+    unix_family = getattr(socket, "AF_UNIX", None)
+    if unix_family is not None:
+        return str(Path(directory) / "hub.sock"), "unix"
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return f"tcp://127.0.0.1:{probe.getsockname()[1]}", "tcp"
+
+
+def _connect(endpoint):
+    if endpoint.startswith("tcp://"):
+        host, port = endpoint.removeprefix("tcp://").rsplit(":", 1)
+        stream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        stream.connect((host, int(port)))
+        return stream
+    stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stream.connect(endpoint)
+    return stream
+
+
 def _request(stream, reader, request_id, method, payload):
     value = _request_raw(stream, reader, request_id, method, payload)
     assert value["schema"] == CODE_HUB_CLIENT_SCHEMA
@@ -30,15 +50,14 @@ def _request_raw(stream, reader, request_id, method, payload):
 def test_code_client_contract_uses_one_hub_identity_and_replays_lifecycle():
     with tempfile.TemporaryDirectory() as directory:
         lock = str(Path(directory) / "hub.lock")
-        endpoint = str(Path(directory) / "hub.sock")
+        endpoint, transport = _endpoint(directory)
         daemon = HubDaemon(lock)
         daemon.start()
-        server = HubSocketServer(daemon, endpoint, transport="unix")
+        server = HubSocketServer(daemon, endpoint, transport=transport)
         server.start()
         try:
             client, workspace, session = "code", "workspace", "session"
-            stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            stream.connect(endpoint)
+            stream = _connect(endpoint)
             reader = stream.makefile("rb")
             handshake = _request(stream, reader, 1, "handshake", {
                 "schema": CODE_HUB_CLIENT_SCHEMA, "protocol": CODE_HUB_PROTOCOL,
@@ -95,15 +114,14 @@ def test_code_runtime_execute_is_forwarded_to_hub_owned_runtime_bridge():
 
     with tempfile.TemporaryDirectory() as directory:
         lock = str(Path(directory) / "hub.lock")
-        endpoint = str(Path(directory) / "hub.sock")
+        endpoint, transport = _endpoint(directory)
         bridge = RecordingRuntime()
         daemon = HubDaemon(lock, runtime_bridge=bridge)
         daemon.start()
-        server = HubSocketServer(daemon, endpoint, transport="unix")
+        server = HubSocketServer(daemon, endpoint, transport=transport)
         server.start()
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
-                stream.connect(endpoint)
+            with _connect(endpoint) as stream:
                 reader = stream.makefile("rb")
                 result = _request(stream, reader, 1, "runtime_execute", {
                     "workspace": directory,
@@ -144,15 +162,14 @@ def test_code_runtime_call_is_forwarded_to_hub_owned_runtime_bridge():
 
     with tempfile.TemporaryDirectory() as directory:
         lock = str(Path(directory) / "hub.lock")
-        endpoint = str(Path(directory) / "hub.sock")
+        endpoint, transport = _endpoint(directory)
         bridge = RecordingRuntime()
         daemon = HubDaemon(lock, runtime_bridge=bridge)
         daemon.start()
-        server = HubSocketServer(daemon, endpoint, transport="unix")
+        server = HubSocketServer(daemon, endpoint, transport=transport)
         server.start()
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
-                stream.connect(endpoint)
+            with _connect(endpoint) as stream:
                 reader = stream.makefile("rb")
                 result = _request(stream, reader, 1, "runtime_call", {
                     "workspace": directory,
@@ -244,14 +261,13 @@ def test_code_runtime_execute_reaches_real_runtime_mcp():
         pytest.skip("set SIMPLICIO_RUNTIME_BIN to a compatible Runtime binary")
     with tempfile.TemporaryDirectory() as directory:
         lock = str(Path(directory) / "hub.lock")
-        endpoint = str(Path(directory) / "hub.sock")
+        endpoint, transport = _endpoint(directory)
         daemon = HubDaemon(lock, runtime_bridge=RuntimeBridge(binary=binary))
         daemon.start()
-        server = HubSocketServer(daemon, endpoint, transport="unix")
+        server = HubSocketServer(daemon, endpoint, transport=transport)
         server.start()
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
-                stream.connect(endpoint)
+            with _connect(endpoint) as stream:
                 reader = stream.makefile("rb")
                 result = _request(stream, reader, 1, "runtime_execute", {
                     "workspace": str(Path.cwd()),
@@ -280,14 +296,13 @@ def test_code_runtime_call_reaches_real_runtime_fs_stat():
         probe = Path(directory) / "probe.txt"
         probe.write_text("runtime-stat-probe", encoding="utf-8")
         lock = str(Path(directory) / "hub.lock")
-        endpoint = str(Path(directory) / "hub.sock")
+        endpoint, transport = _endpoint(directory)
         daemon = HubDaemon(lock, runtime_bridge=RuntimeBridge(binary=binary))
         daemon.start()
-        server = HubSocketServer(daemon, endpoint, transport="unix")
+        server = HubSocketServer(daemon, endpoint, transport=transport)
         server.start()
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
-                stream.connect(endpoint)
+            with _connect(endpoint) as stream:
                 reader = stream.makefile("rb")
                 try:
                     value = _request_raw(stream, reader, 1, "runtime_call", {
@@ -318,10 +333,10 @@ def test_code_runtime_call_reaches_real_runtime_fs_stat():
 def test_external_worker_contract_is_durable_idempotent_and_cancel_fail_closed():
     with tempfile.TemporaryDirectory() as directory:
         lock = str(Path(directory) / "hub.lock")
-        endpoint = str(Path(directory) / "hub.sock")
+        endpoint, transport = _endpoint(directory)
         daemon = HubDaemon(lock)
         daemon.start()
-        server = HubSocketServer(daemon, endpoint, transport="unix")
+        server = HubSocketServer(daemon, endpoint, transport=transport)
         server.start()
         payload = {
             "schema": "simplicio.code-worker-adapter/v1",
@@ -340,8 +355,7 @@ def test_external_worker_contract_is_durable_idempotent_and_cancel_fail_closed()
             ],
         }
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
-                stream.connect(endpoint)
+            with _connect(endpoint) as stream:
                 reader = stream.makefile("rb")
                 first = _request(stream, reader, 1, "worker_delegate", payload)
                 replay = _request(stream, reader, 2, "worker_delegate", payload)
@@ -366,11 +380,10 @@ def test_external_worker_contract_is_durable_idempotent_and_cancel_fail_closed()
             daemon.stop()
         restarted = HubDaemon(lock)
         restarted.start()
-        restarted_server = HubSocketServer(restarted, endpoint, transport="unix")
+        restarted_server = HubSocketServer(restarted, endpoint, transport=transport)
         restarted_server.start()
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
-                stream.connect(endpoint)
+            with _connect(endpoint) as stream:
                 reader = stream.makefile("rb")
                 status = _request(stream, reader, 6, "worker_status", {
                     "workflow_id": first["workflow_id"], "after_sequence": 2,
