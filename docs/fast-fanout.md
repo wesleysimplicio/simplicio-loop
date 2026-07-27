@@ -1,6 +1,6 @@
 # Fast fan-out no Loop
 
-O Loop usa o Simplicio Fast como contexto canônico opcional no estágio `orient` e
+O Loop usa o Simplicio Fast como contexto canônico integrado no estágio `orient` e
 como base compartilhada do fan-out. O Fast não é autoridade de escrita: cada
 slot recebe uma chave de overlay própria, os candidatos são vinculados à
 `generation` e ao `context_hash`, e somente um candidato verificado pode ser
@@ -12,6 +12,7 @@ promovido.
 simplicio-loop orient --repo . --task "..." --fast auto --fast-context-budget 48000
 ```
 
+O preflight exige o operador Fast `>=2.0.13` e a integração `integrated_ready`.
 `--fast on` falha fechado se o operador Fast não estiver pronto. `--fast auto`
 emite uma receipt `FALLBACK` usando Mapper quando Fast não estiver disponível;
 `--fast off` mantém o comportamento standalone. Todas as receipts declaram

@@ -51,7 +51,8 @@ MINIMUMS = {
 }
 MAPPER_CAPABILITIES = ("inspect", "handoff", "ask", "sync", "drift")
 DEVCLI_CAPABILITIES = (" task", "--dry-run-task", "--json")
-FAST_MINIMUM = (2, 0, 0)
+# Keep preflight aligned with the Fast release validated by the Loop flow.
+FAST_MINIMUM = (2, 0, 13)
 FAST_CAPABILITIES = ("build", "understand", "plan", "apply", "doctor")
 
 

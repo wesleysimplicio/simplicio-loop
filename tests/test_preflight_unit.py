@@ -10,6 +10,10 @@ def test_version_parser_fails_closed_for_unknown_and_accepts_patch():
     assert preflight._version("runtime 3.5") == (3, 5, 0)
 
 
+def test_fast_floor_matches_current_validated_release():
+    assert preflight.FAST_MINIMUM == (2, 0, 13)
+
+
 def test_last_json_ignores_progress_lines():
     assert preflight._last_json('progress\n{"status":"passed"}\n') == {"status": "passed"}
 
@@ -52,7 +56,7 @@ def test_build_report_is_stable_shape(monkeypatch, tmp_path: Path):
     })
     monkeypatch.setattr(preflight, "_probe_fast", lambda cwd: {
         "name": "simplicio-fast", "status": "ready", "integrated_ready": True,
-        "version": "2.0.2", "returncode": 0,
+        "version": "2.0.13", "returncode": 0,
     })
     report = preflight.build_report(tmp_path)
     assert report["schema"] == "simplicio.preflight/v1"
