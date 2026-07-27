@@ -274,7 +274,7 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
     monkeypatch.setattr(runner_mod, "_run_cmd", fake_run)
     runner_mod._run_mapper(repo, run_root, goal="goal")
 
-    assert ["simplicio-mapper", "snapshot", "build", ".", "--json"] in calls
+    assert ["simplicio-mapper", "snapshot", "build", "--json", "."] in calls
     handoff_argv = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "handoff"])
     assert "--execution-context" in handoff_argv
 
