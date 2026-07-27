@@ -31,7 +31,6 @@ from .drain import (
     persist_drain_receipt,
 )
 from .runner import (
-    arm_run,
     conduct_run,
     apply_human_decision,
     change_phase,
@@ -56,6 +55,14 @@ from .oracle import evaluate_matrix, persist_completion_receipt
 from .delivery import DELIVERY_ORDER
 from .map_service_status import default_status_path, load_status_file
 from .context_provider import ContextProviderError, ERROR_SCHEMA, request_context
+from .checkpoints import (
+    CheckpointError,
+    build_checkpoint,
+    fanin_checkpoints,
+    promote_winner,
+    read_checkpoint,
+    write_checkpoint,
+)
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -391,6 +398,193 @@ def cancel(repo: str, run_id: str) -> int:
     return 0
 
 
+def _checkpoint_expected_identity(args) -> dict[str, str]:
+    mapping = {
+        "task_id": "expected_task_id",
+        "attempt_id": "expected_attempt_id",
+        "candidate_id": "expected_candidate_id",
+        "shard_id": "expected_shard_id",
+        "fast_generation": "expected_fast_generation",
+        "snapshot_sha256": "expected_snapshot_sha256",
+    }
+    return {
+        key: value
+        for key, attr in mapping.items()
+        if (value := str(getattr(args, attr, "") or "").strip())
+    }
+
+
+def _write_checkpoint_cli_json(path: str, payload: dict) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", dir=str(target.parent), text=True
+    )
+    try:
+        with os.fdopen(
+            descriptor, "w", encoding="utf-8", newline="\n"
+        ) as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, target)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def checkpoint(args) -> int:
+    action = args.checkpoint_action
+    identity = _checkpoint_expected_identity(args)
+    paths = [Path(value) for value in (args.path or [])]
+    try:
+        if action == "list":
+            directory = Path(args.directory)
+            entries = []
+            for path in sorted(directory.rglob("*.json")) if directory.exists() else []:
+                try:
+                    value = read_checkpoint(path, expected_identity=identity)
+                    entries.append(
+                        {
+                            "path": str(path),
+                            "status": "VALID",
+                            "checkpoint_id": value["checkpoint_id"],
+                            "state": value["state"],
+                            "shard_id": value["shard_id"],
+                        }
+                    )
+                except CheckpointError as exc:
+                    entries.append(
+                        {
+                            "path": str(path),
+                            "status": "HELD",
+                            "reason_code": "checkpoint_invalid",
+                            "error": str(exc),
+                        }
+                    )
+            payload = {
+                "schema": "simplicio.loop.checkpoint-cli/v1",
+                "action": action,
+                "directory": str(directory),
+                "entries": entries,
+                "status": "READY"
+                if all(item["status"] == "VALID" for item in entries)
+                else "HELD",
+            }
+        elif action in {"inspect", "verify", "resume"}:
+            if len(paths) != 1:
+                raise CheckpointError(f"{action} requires exactly one --path")
+            value = read_checkpoint(paths[0], expected_identity=identity)
+            payload = {
+                "schema": "simplicio.loop.checkpoint-cli/v1",
+                "action": action,
+                "status": "RESUME_READY" if action == "resume" else "VALID",
+                "path": str(paths[0]),
+                "checkpoint": value,
+            }
+        elif action == "cancel":
+            if len(paths) != 1 or not args.out:
+                raise CheckpointError("cancel requires one --path and --out")
+            source = read_checkpoint(paths[0], expected_identity=identity)
+            cancelled = build_checkpoint(
+                task_id=source["task_id"],
+                attempt_id=source["attempt_id"],
+                candidate_id=source["candidate_id"],
+                shard_id=source["shard_id"],
+                state="CANCELLED",
+                repo=source["repo"],
+                source_commit=source["source_commit"],
+                fast_generation=source["fast_generation"],
+                snapshot_sha256=source["snapshot_sha256"],
+                capabilities=source.get("capabilities"),
+                handles=source.get("handles"),
+                receipts=source.get("receipts"),
+                previous_digest=source["checkpoint_digest"],
+            )
+            write_checkpoint(args.out, cancelled)
+            payload = {
+                "schema": "simplicio.loop.checkpoint-cli/v1",
+                "action": action,
+                "status": "CANCELLED",
+                "source": str(paths[0]),
+                "path": str(args.out),
+                "checkpoint": cancelled,
+            }
+        elif action == "fanin":
+            if len(paths) < 1 or not args.expected_shard_ids:
+                raise CheckpointError(
+                    "fanin requires --path for each shard and --expected-shard-id"
+                )
+            checkpoints = [
+                read_checkpoint(path, expected_identity=identity) for path in paths
+            ]
+            result = fanin_checkpoints(
+                checkpoints,
+                expected_shard_ids=args.expected_shard_ids,
+                expected_identity=identity,
+            )
+            if args.out:
+                _write_checkpoint_cli_json(args.out, result)
+            payload = {
+                "schema": "simplicio.loop.checkpoint-cli/v1",
+                "action": action,
+                "status": result["status"],
+                "path": str(args.out or ""),
+                "fan_in": result,
+            }
+        elif action == "seal":
+            if not args.candidate_file or not args.fence_path or not args.winner_id:
+                raise CheckpointError(
+                    "seal requires --candidate-file, --winner-id and --fence-path"
+                )
+            candidates = json.loads(
+                Path(args.candidate_file).read_text(encoding="utf-8")
+            )
+            if isinstance(candidates, dict):
+                candidates = candidates.get("candidates") or []
+            if not isinstance(candidates, list):
+                raise CheckpointError("candidate file must contain a list or candidates object")
+            result = promote_winner(
+                candidates, winner_id=args.winner_id, fence_path=args.fence_path
+            )
+            payload = {
+                "schema": "simplicio.loop.checkpoint-cli/v1",
+                "action": action,
+                "status": result["status"],
+                "path": str(args.fence_path),
+                "promotion_fence": result,
+            }
+        elif action == "gc":
+            directory = Path(args.directory)
+            paths = sorted(directory.rglob("*.json")) if directory.exists() else []
+            payload = {
+                "schema": "simplicio.loop.checkpoint-cli/v1",
+                "action": action,
+                "status": "HELD",
+                "reason_code": "gc_requires_lease_and_retention_store",
+                "directory": str(directory),
+                "candidates": [str(path) for path in paths],
+                "removed": [],
+            }
+        else:
+            raise CheckpointError(f"unsupported checkpoint action: {action}")
+    except (CheckpointError, OSError, ValueError, json.JSONDecodeError) as exc:
+        payload = {
+            "schema": "simplicio.loop.checkpoint-cli/v1",
+            "action": action,
+            "status": "HELD",
+            "reason_code": "checkpoint_cli_error",
+            "error": str(exc),
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def oracle(loop_dir: str, run_dir: str, response_text: str, flow_gap: str,
            write_receipt: bool) -> int:
     """Evaluate the shared completion oracle and its cross-runtime parity."""
@@ -691,7 +885,7 @@ def findings_command(args) -> int:
               f"findings_store_present={findings_present} routes_store_present={routes_present} "
               f"router_ok={payload['router_importable']}")
         return 0
-    parser.error("unknown findings subcommand")
+    print("unknown findings subcommand", file=sys.stderr)
     return 2
 
 
@@ -858,6 +1052,27 @@ def main(argv=None) -> int:
     p_cancel.add_argument("--repo", default=".", help="repository root")
     p_cancel.add_argument("run_id", help="run id to cancel")
 
+    p_checkpoint = sub.add_parser(
+        "checkpoint", help="inspect and operate resumable Loop checkpoints"
+    )
+    p_checkpoint.add_argument(
+        "checkpoint_action",
+        choices=("list", "inspect", "verify", "resume", "cancel", "fanin", "seal", "gc"),
+    )
+    p_checkpoint.add_argument("--path", action="append", default=[], help="checkpoint path; repeat for fanin")
+    p_checkpoint.add_argument("--directory", default=os.path.join(".simplicio", "loop-runs"))
+    p_checkpoint.add_argument("--out", default="", help="output checkpoint or fan-in receipt")
+    p_checkpoint.add_argument("--expected-shard-id", dest="expected_shard_ids", action="append", default=[])
+    p_checkpoint.add_argument("--expected-task-id", dest="expected_task_id", default="")
+    p_checkpoint.add_argument("--expected-attempt-id", dest="expected_attempt_id", default="")
+    p_checkpoint.add_argument("--expected-candidate-id", dest="expected_candidate_id", default="")
+    p_checkpoint.add_argument("--expected-shard-id-value", dest="expected_shard_id", default="")
+    p_checkpoint.add_argument("--expected-fast-generation", dest="expected_fast_generation", default="")
+    p_checkpoint.add_argument("--expected-snapshot-sha256", dest="expected_snapshot_sha256", default="")
+    p_checkpoint.add_argument("--candidate-file", default="")
+    p_checkpoint.add_argument("--winner-id", default="")
+    p_checkpoint.add_argument("--fence-path", default="")
+
     p_maintenance = sub.add_parser(
         "maintenance-deferred",
         aliases=["defer-maintenance"],
@@ -1011,6 +1226,8 @@ def main(argv=None) -> int:
         return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget, args.serial)
     if command == "cancel":
         return cancel(args.repo, args.run_id)
+    if command == "checkpoint":
+        return checkpoint(args)
     if command in {"maintenance-deferred", "defer-maintenance"}:
         return maintenance_deferred(
             args.repo, args.run_id, args.mode, args.disposition,
