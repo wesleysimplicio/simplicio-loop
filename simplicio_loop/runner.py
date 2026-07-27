@@ -992,36 +992,55 @@ def _context_handoff_args(
                     return value
         return None
 
-    def persist_artifact(value: Any, filename: str) -> Path | None:
+    def persist_artifact(value: Any, filename: str, fallbacks: Sequence[Path] = ()) -> Path | None:
         if isinstance(value, Mapping):
             path = run_root / filename
             _write_json(path, dict(value))
             return path
-        if not isinstance(value, str) or not value.strip():
-            return None
-        candidate = Path(value)
-        if not candidate.is_absolute():
-            for base in (repo_path, run_root):
-                resolved = (base / candidate).resolve()
+        candidates: List[Path] = []
+        if isinstance(value, str) and value.strip():
+            candidate = Path(value)
+            candidates = ([candidate] if candidate.is_absolute()
+                          else [base / candidate for base in (repo_path, run_root)])
+        candidates.extend(fallbacks)
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
                 if resolved.exists():
                     return resolved
-            return None
-        return candidate.resolve() if candidate.exists() else None
+            except OSError:
+                continue
+        return None
 
     snapshot_path = persist_artifact(
         first_value(("context_snapshot", "canonical_context_snapshot", "context_snapshot_path")),
         "context-snapshot.json",
+        (repo_path / ".simplicio" / "context-snapshot.json",),
     )
     pack_path = persist_artifact(
-        first_value(("canonical_context_pack", "context_pack_path")),
+        first_value(("context_pack", "canonical_context_pack", "context_pack_path")),
         "context-pack.json",
     )
     execution_path = persist_artifact(
         first_value(("execution_context", "canonical_execution_context", "execution_context_path")),
         "execution-context.json",
     )
-    context_handle = first_value(("context_handle", "canonical_context_handle"))
-    if not all((snapshot_path, pack_path, execution_path, context_handle)):
+    raw_context_handle = first_value(("context_handle", "canonical_context_handle"))
+    context_handle = str(raw_context_handle).strip() if raw_context_handle not in (None, "", {}) else ""
+    identity_values = (attempt_id.strip(), lease_id.strip(), fencing_token.strip())
+    identity_present = any(identity_values)
+    identity_complete = all(identity_values)
+    if identity_present and not identity_complete:
+        return list(authorization_args), {
+            "status": "missing",
+            "reason_code": "CONTEXT_AUTHORIZATION_INCOMPLETE",
+            "snapshot": bool(snapshot_path),
+            "pack": bool(pack_path),
+            "execution_context": bool(execution_path),
+            "context_handle": bool(context_handle),
+            "authorization": authorization_handoff,
+        }
+    if not all((snapshot_path, pack_path, execution_path)) or (identity_present and not context_handle):
         return list(authorization_args), {
             "status": "missing",
             "reason_code": "CONTEXT_ARTIFACTS_INCOMPLETE",
@@ -1035,9 +1054,10 @@ def _context_handoff_args(
         "--context-snapshot", str(snapshot_path),
         "--context-pack", str(pack_path),
         "--execution-context", str(execution_path),
-        "--context-handle", str(context_handle),
     ]
-    if all(value.strip() for value in (attempt_id, lease_id, fencing_token)):
+    if context_handle:
+        args.extend(["--context-handle", context_handle])
+    if identity_complete:
         args.extend([
             "--attempt-id", attempt_id,
             "--lease-id", lease_id,
@@ -1046,7 +1066,8 @@ def _context_handoff_args(
     args.extend(authorization_args)
     return args, {
         "status": "propagated",
-        "context_handle": str(context_handle),
+        "context_handle": context_handle,
+        "context_handle_derived_by": "simplicio-dev-cli" if not context_handle else "mapper",
         "snapshot_path": str(snapshot_path),
         "pack_path": str(pack_path),
         "execution_context_path": str(execution_path),
@@ -2265,7 +2286,10 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
     mapper_preflight = _preflight_mapper(repo_path, run_root)
     scan = _run_cmd(["simplicio-mapper", "scan", ".", "--json", "--sync"], repo_path)
     inspect = _run_cmd(["simplicio-mapper", "inspect", ".", "--json", "--await"], repo_path)
-    handoff_argv = ["simplicio-mapper", "handoff", ".", "--json", "--await"]
+    snapshot = _run_cmd(["simplicio-mapper", "snapshot", "build", ".", "--json"], repo_path)
+    handoff_argv = [
+        "simplicio-mapper", "handoff", ".", "--json", "--await", "--execution-context",
+    ]
     task_aware_supported = bool(mapper_preflight.get("task_aware_supported"))
     if task_aware_supported and goal.strip():
         handoff_argv.extend(["--goal", goal.strip()])
@@ -2287,6 +2311,11 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
             "stdout": json.loads(inspect.stdout) if inspect.stdout.strip() else {},
             "stderr": (inspect.stderr or "").strip(),
         },
+        "snapshot": {
+            "returncode": snapshot.returncode,
+            "stdout": json.loads(snapshot.stdout) if snapshot.stdout.strip() else {},
+            "stderr": (snapshot.stderr or "").strip(),
+        },
         "handoff": {
             "returncode": handoff.returncode,
             "stdout": json.loads(handoff.stdout) if handoff.stdout.strip() else {},
@@ -2297,8 +2326,9 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         "repo_state_after": _repo_fingerprint(repo_path),
     }
     _write_json(run_root / "mapper-context.json", payload)
-    if scan.returncode != 0 or inspect.returncode != 0 or handoff.returncode != 0:
-        raise RuntimeError("mapper scan/inspect/handoff failed")
+    if (scan.returncode != 0 or inspect.returncode != 0 or snapshot.returncode != 0
+            or handoff.returncode != 0):
+        raise RuntimeError("mapper scan/inspect/snapshot/handoff failed")
     if not _repo_state_equivalent(payload["repo_state_before"], payload["repo_state_after"]):
         raise RuntimeError("repository changed during mapper survey; freshness cannot be proven")
     # Test fixtures intentionally replace the operator preflight; production runs
@@ -2385,6 +2415,8 @@ def _task_context_plan_data(context: Mapping[str, Any], task: Mapping[str, Any],
         low = path.lower()
         if (low.startswith((".simplicio/orchestrator/", ".claude/", ".github/", ".venv/", "venv/"))
                 or "/site-packages/" in low or "/_bundle/" in low):
+            continue
+        if not low.endswith((".py", ".ts", ".tsx", ".js")):
             continue
         if path not in targets:
             targets.append(path)
@@ -2561,7 +2593,7 @@ def _candidate_targets(mapper_payload: Dict[str, Any], repo_path: Path) -> List[
             continue
         if "/_bundle/" in low.replace("\\", "/"):
             continue
-        if low.endswith(".py") or low.endswith(".ts") or low.endswith(".tsx") or low.endswith(".js"):
+        if low.endswith((".py", ".ts", ".tsx", ".js")):
             ranked.append(path)
     ranked = ranked[:8]
     return ranked or _fallback_targets(repo_path)
