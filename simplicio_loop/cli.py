@@ -560,16 +560,70 @@ def checkpoint(args) -> int:
             }
         elif action == "gc":
             directory = Path(args.directory)
-            paths = sorted(directory.rglob("*.json")) if directory.exists() else []
-            payload = {
-                "schema": "simplicio.loop.checkpoint-cli/v1",
-                "action": action,
-                "status": "HELD",
-                "reason_code": "gc_requires_lease_and_retention_store",
-                "directory": str(directory),
-                "candidates": [str(path) for path in paths],
-                "removed": [],
-            }
+            resolved_directory = directory.resolve()
+            outside_simplicio = ".simplicio" not in resolved_directory.parts
+            if outside_simplicio and args.apply:
+                raise CheckpointError("gc apply requires a directory inside .simplicio")
+            lease_path = Path(args.lease_file) if args.lease_file else None
+            lease = None
+            if lease_path and lease_path.is_file():
+                lease = json.loads(lease_path.read_text(encoding="utf-8"))
+            if not isinstance(lease, dict) or lease.get("status") != "ACTIVE" or not lease.get("lease_id"):
+                payload = {
+                    "schema": "simplicio.loop.checkpoint-cli/v1",
+                    "action": action,
+                    "status": "HELD",
+                    "reason_code": "gc_requires_active_lease",
+                    "directory": str(directory),
+                    "candidates": [str(path) for path in sorted(directory.rglob('*.json'))] if directory.exists() else [],
+                    "eligible": [],
+                    "removed": [],
+                }
+            else:
+                scope = str(lease.get("scope") or "").strip()
+                if scope and Path(scope).resolve() != resolved_directory:
+                    raise CheckpointError("gc lease scope does not match directory")
+                retention = max(0, int(args.retention_seconds))
+                now = time.time()
+                candidates = []
+                eligible = []
+                skipped = []
+                for path in sorted(directory.rglob("*.json")) if directory.exists() else []:
+                    resolved_path = path.resolve()
+                    if ".simplicio" not in resolved_path.parts:
+                        skipped.append({"path": str(path), "reason_code": "outside_simplicio"})
+                        continue
+                    try:
+                        value = read_checkpoint(path)
+                    except (CheckpointError, OSError, ValueError, json.JSONDecodeError) as exc:
+                        skipped.append({"path": str(path), "reason_code": "invalid_checkpoint", "error": str(exc)})
+                        continue
+                    state = str(value.get("state") or "").upper()
+                    age_seconds = max(0.0, now - path.stat().st_mtime)
+                    row = {"path": str(path), "checkpoint_id": value.get("checkpoint_id"), "state": state, "age_seconds": round(age_seconds, 3)}
+                    candidates.append(row)
+                    if state == "CANCELLED" and age_seconds >= retention:
+                        eligible.append(row)
+                    else:
+                        skipped.append({**row, "reason_code": "state_or_retention_not_eligible"})
+                removed = []
+                if args.apply:
+                    for row in eligible:
+                        Path(row["path"]).unlink()
+                        removed.append(row["path"])
+                payload = {
+                    "schema": "simplicio.loop.checkpoint-cli/v1",
+                    "action": action,
+                    "status": "GC_APPLIED" if args.apply else "DRY_RUN",
+                    "reason_code": "cancelled_retention_gc",
+                    "directory": str(directory),
+                    "retention_seconds": retention,
+                    "lease_id": lease.get("lease_id"),
+                    "candidates": candidates,
+                    "eligible": eligible,
+                    "skipped": skipped,
+                    "removed": removed,
+                }
         else:
             raise CheckpointError(f"unsupported checkpoint action: {action}")
     except (CheckpointError, OSError, ValueError, json.JSONDecodeError) as exc:
@@ -1102,6 +1156,9 @@ def main(argv=None) -> int:
     p_checkpoint.add_argument("--candidate-file", default="")
     p_checkpoint.add_argument("--winner-id", default="")
     p_checkpoint.add_argument("--fence-path", default="")
+    p_checkpoint.add_argument("--lease-file", default="", help="active JSON lease scoped to --directory")
+    p_checkpoint.add_argument("--retention-seconds", type=int, default=86400)
+    p_checkpoint.add_argument("--apply", action="store_true", help="delete only eligible CANCELLED checkpoints")
 
     p_budget = sub.add_parser("budget", help="emit a bounded token budget or receipt")
     p_budget.add_argument("budget_action", choices=("inspect", "receipt"))
