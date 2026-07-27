@@ -241,6 +241,45 @@ def decide_cleanup(pr_merged, head_ref, worktree_path, has_uncommitted, safety=N
 
 # ----- orchestration -------------------------------------------------------------------------
 
+def _remote_matches(repo_root, repo):
+    """Return whether a local checkout's origin is the requested GitHub repo."""
+    try:
+        proc = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_root, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+    except OSError:
+        return False
+    if proc.returncode != 0:
+        return False
+    remote = proc.stdout.strip().lower().rstrip("/").removesuffix(".git")
+    expected = str(repo).strip().lower().strip("/")
+    return remote.endswith("github.com/" + expected) or remote.endswith("github.com:" + expected)
+
+
+def _resolve_repo_root(repo, explicit=None):
+    """Find the exact local checkout for a remote repo, failing closed when ambiguous."""
+    requested = explicit or os.environ.get("SIMPLICIO_REPO")
+    if requested:
+        root = os.path.abspath(str(requested))
+        return root if _remote_matches(root, repo) else None
+
+    target_name = str(repo).rsplit("/", 1)[-1]
+    cursor = os.path.abspath(REPO)
+    seen = set()
+    while cursor not in seen:
+        seen.add(cursor)
+        candidate = os.path.join(cursor, target_name)
+        if os.path.isdir(candidate) and _remote_matches(candidate, repo):
+            return candidate
+        parent = os.path.dirname(cursor)
+        if parent == cursor:
+            break
+        cursor = parent
+    return os.path.abspath(REPO) if _remote_matches(REPO, repo) else None
+
+
 def cleanup(
     repo, pr_number, branch_name,
     dry_run=False,
@@ -252,13 +291,13 @@ def cleanup(
     delete_remote_branch_fn=_git_branch_delete_remote,
     safety_fn=None,
     safety=None,
+    repo_root=None,
 ):
-    """Wire check_pr_merged -> find_worktree_for_branch -> has_uncommitted_changes ->
-    decide_cleanup -> (dry-run print | real delete). Every I/O call is an injectable parameter so
-    this whole orchestration is testable without a real `gh`/`git`/network."""
+    """Wire evidence checks to the verified checkout for the requested remote repo."""
     try:
         pr_state = check_pr_merged(repo, pr_number, fetch=fetch)
-        porcelain = worktree_list_fn()
+        porcelain = (worktree_list_fn(cwd=repo_root) if repo_root
+                     else worktree_list_fn())
     except Exception as exc:
         normalized_safety = _cleanup_safety(safety)
         reason = "cleanup_evidence_unavailable"
@@ -302,13 +341,22 @@ def cleanup(
         result["would_do"] = would
         return result
     if decision.get("delete_worktree"):
-        remove_worktree_fn(decision["worktree_path"])
+        if repo_root:
+            remove_worktree_fn(decision["worktree_path"], cwd=repo_root)
+        else:
+            remove_worktree_fn(decision["worktree_path"])
         result["actions_taken"].append("removed_worktree")
     if decision.get("delete_branch"):
-        delete_local_branch_fn(branch_name)
+        if repo_root:
+            delete_local_branch_fn(branch_name, cwd=repo_root)
+        else:
+            delete_local_branch_fn(branch_name)
         result["actions_taken"].append("deleted_local_branch")
         try:
-            delete_remote_branch_fn(branch_name)
+            if repo_root:
+                delete_remote_branch_fn(branch_name, cwd=repo_root)
+            else:
+                delete_remote_branch_fn(branch_name)
             result["actions_taken"].append("deleted_remote_branch")
         except Exception as exc:  # remote branch may already be gone (e.g. GitHub auto-delete)
             result["remote_delete_note"] = str(exc)
@@ -343,6 +391,19 @@ def cmd_run(opts):
         print("run requires --repo owner/name --pr N --branch NAME")
         sys.exit(2)
     dry_run = bool(opts.get("dry-run"))
+    repo_root = _resolve_repo_root(repo, opts.get("repo-root"))
+    if not repo_root:
+        result = {"repo": repo, "pr": pr, "branch": branch, "dry_run": dry_run,
+                  "decision": {"action": "skip", "reason": "repo_root_unresolved",
+                               "detail": "pass --repo-root or configure SIMPLICIO_REPO for the requested remote"},
+                  "actions_taken": [],
+                  "receipt": _cleanup_receipt({}, "skip", "repo_root_unresolved")}
+        if opts.get("json"):
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print("skip")
+            log(result["decision"]["detail"])
+        return
     safety = None
     if opts.get("safety-json"):
         try:
@@ -361,7 +422,7 @@ def cmd_run(opts):
         print("--pr must be an integer")
         sys.exit(2)
     try:
-        result = cleanup(repo, pr_number, branch, dry_run=dry_run, safety=safety)
+        result = cleanup(repo, pr_number, branch, dry_run=dry_run, safety=safety, repo_root=repo_root)
     except Exception as exc:
         print("error: %s" % exc)
         _emit_progress("cleanup", "blocked", outcome="blocked", detail=str(exc))

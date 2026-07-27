@@ -216,6 +216,39 @@ def test_cleanup_no_worktree_still_deletes_branch():
     assert calls["delete_remote"] == 1
 
 
+def test_cleanup_resolves_repo_root_before_git_mutations():
+    seen = {}
+
+    def list_worktrees(*, cwd):
+        seen["list_cwd"] = cwd
+        return PORCELAIN_FIXTURE
+
+    def remove_worktree(path, *, cwd):
+        seen["remove"] = (path, cwd)
+
+    def delete_local(branch, *, cwd):
+        seen["local"] = (branch, cwd)
+
+    def delete_remote(branch, *, cwd):
+        seen["remote"] = (branch, cwd)
+
+    result = wc.cleanup("owner/repo", 484, "feature-x", dry_run=False,
+                        worktree_list_fn=list_worktrees,
+                        status_fn=lambda path: "",
+                        remove_worktree_fn=remove_worktree,
+                        delete_local_branch_fn=delete_local,
+                        delete_remote_branch_fn=delete_remote,
+                        fetch=lambda repo, pr: {"state": "MERGED", "mergedAt": "now",
+                                                "headRefName": "feature-x"},
+                        safety=SAFE_SAFETY, repo_root="C:/target/repo")
+
+    assert result["decision"]["action"] == "cleanup"
+    assert seen["list_cwd"] == "C:/target/repo"
+    assert seen["remove"][1] == "C:/target/repo"
+    assert seen["local"][1] == "C:/target/repo"
+    assert seen["remote"][1] == "C:/target/repo"
+
+
 def test_worktree_cleanup_selftest_passes():
     # In-process (no subprocess spawn) so this doesn't depend on the host being able to fork a
     # child process; `cmd_selftest` calls sys.exit(0) on success, which pytest surfaces as
