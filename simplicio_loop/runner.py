@@ -2286,7 +2286,7 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
     mapper_preflight = _preflight_mapper(repo_path, run_root)
     scan = _run_cmd(["simplicio-mapper", "scan", ".", "--json", "--sync"], repo_path)
     inspect = _run_cmd(["simplicio-mapper", "inspect", ".", "--json", "--await"], repo_path)
-    snapshot = _run_cmd(["simplicio-mapper", "snapshot", "build", ".", "--json"], repo_path)
+    snapshot = _run_cmd(["simplicio-mapper", "snapshot", "build", "--json", "."], repo_path)
     handoff_argv = [
         "simplicio-mapper", "handoff", ".", "--json", "--await", "--execution-context",
     ]
