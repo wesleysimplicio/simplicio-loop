@@ -57,6 +57,7 @@ class ValidationInputs:
     previous_failures: int = 0
     coverage_ratio: Optional[float] = None
     candidates: Tuple[ValidationCandidate, ...] = ()
+    cache_context: Tuple[Tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if self.phase not in _PHASES:
@@ -83,6 +84,7 @@ class ValidationInputs:
             impact_known=bool(value.get("impact_known", True)),
             previous_failures=int(value.get("previous_failures", 0)),
             coverage_ratio=value.get("coverage_ratio"),
+            cache_context=tuple(sorted((str(key), str(item)) for key, item in dict(value.get("cache_context") or {}).items())),
             candidates=candidates,
         )
 
@@ -98,6 +100,7 @@ class ValidationReceipt:
     final_gate_required: bool
     cache_allowed: bool
     cache_key: str
+    cache_context: Tuple[Tuple[str, str], ...] = ()
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -110,6 +113,7 @@ class ValidationReceipt:
             "final_gate_required": self.final_gate_required,
             "cache_allowed": self.cache_allowed,
             "cache_key": self.cache_key,
+            "cache_context": dict(self.cache_context),
         }
 
     def explain(self) -> str:
@@ -167,15 +171,23 @@ class ValidationPolicy:
         if profile in {"orient", "edit", "converge"} and not mandatory:
             ordered = self._bounded(ordered)
         selected = tuple(candidate.name for candidate in ordered)
+        cache_context = dict(inputs.cache_context)
+        cache_context_ready = not cache_context or all(
+            cache_context.get(name)
+            for name in ("source_hash", "test_hash", "dependency_hash", "environment_hash", "command_hash")
+        )
         cache_allowed = (
             inputs.map_fresh
             and inputs.impact_known
             and not inputs.critical
             and inputs.previous_failures == 0
             and not mandatory
+            and cache_context_ready
         )
         if not cache_allowed:
             reasons.append("CACHE_DISABLED")
+        if not cache_context_ready:
+            reasons.append("CACHE_CONTEXT_INCOMPLETE")
         return ValidationReceipt(
             schema=VALIDATION_RECEIPT_SCHEMA_V1,
             policy_version=_POLICY_VERSION,
@@ -186,6 +198,7 @@ class ValidationPolicy:
             final_gate_required=mandatory or expanded,
             cache_allowed=cache_allowed,
             cache_key=self._cache_key(inputs),
+            cache_context=inputs.cache_context,
         )
 
     @staticmethod
@@ -214,6 +227,7 @@ class ValidationPolicy:
             "impact_known": inputs.impact_known,
             "previous_failures": inputs.previous_failures,
             "coverage_ratio": inputs.coverage_ratio,
+            "cache_context": dict(inputs.cache_context),
             "candidates": [
                 candidate.as_dict()
                 for candidate in sorted(

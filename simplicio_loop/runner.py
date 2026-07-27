@@ -460,6 +460,30 @@ def _validation_previous_failures(state: Mapping[str, Any]) -> int:
     return failures
 
 
+def _validation_cache_context(
+    *,
+    task: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    candidates: Sequence[ValidationCandidate],
+) -> Dict[str, str]:
+    def digest(value: Any) -> str:
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    commands = [candidate.as_dict() for candidate in candidates]
+    environment = {
+        name: os.environ.get(name, "")
+        for name in ("SIMPLICIO_MODEL", "SIMPLICIO_CODEX_EFFORT", "SIMPLICIO_TEST_CMD")
+    }
+    return {
+        "source_hash": digest({"plan_hash": _planning_content_hash(plan), "repo_state": plan.get("repo_state")}),
+        "test_hash": digest(commands),
+        "dependency_hash": digest({"contract": contract.get("collection_hash"), "mapper": plan.get("mapper_pack_hash"), "context": plan.get("context_pack_hash"), "dependencies": task.get("dependencies")}),
+        "environment_hash": digest({"os": os.name, "environment": environment}),
+        "command_hash": digest([candidate.name for candidate in candidates]),
+    }
+
 def _persist_validation_policy_receipt(
     run_dir: Path,
     run_id: str,
@@ -482,6 +506,10 @@ def _persist_validation_policy_receipt(
     coverage_ratio = raw_coverage if isinstance(raw_coverage, (int, float)) else None
     change_kind = str(task.get("change_kind") or "code").strip().lower()
     critical = bool(task.get("critical")) or str(task.get("risk") or "").lower() == "critical"
+    candidates = _validation_policy_candidates(plan, task_index)
+    cache_context = _validation_cache_context(
+        task=task, contract=contract, plan=plan, candidates=candidates,
+    )
     inputs = ValidationInputs(
         phase=phase,
         change_kind=change_kind,
@@ -490,7 +518,8 @@ def _persist_validation_policy_receipt(
         impact_known=impact_known,
         previous_failures=_validation_previous_failures(state),
         coverage_ratio=coverage_ratio,
-        candidates=_validation_policy_candidates(plan, task_index),
+        candidates=candidates,
+        cache_context=tuple(sorted(cache_context.items())),
     )
     receipt = ValidationPolicy().decide(inputs)
     payload = receipt.as_dict()
