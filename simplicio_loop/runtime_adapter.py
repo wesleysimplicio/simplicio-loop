@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Union
 
 from .phase_events import PhaseEventError, validate_phase_event
 from .agent_contract import AgentContractError, bind_receipt, validate_identity
+from .context_provider import request_context
 
 SCHEMA = "simplicio.loop-runtime-adapter/v1"
 CONTRACT_VERSION = "1"
@@ -133,6 +134,32 @@ class LoopRuntimeAdapter:
         self._negotiated_ok = True
         self.degraded = False
         return dict(response)
+
+    def context(
+        self,
+        repo: Union[str, Path],
+        term: str,
+        *,
+        snapshot: Optional[Union[str, Path]] = None,
+        max_bytes: int = 131072,
+        timeout: float = 60.0,
+    ) -> Dict[str, Any]:
+        """Return Fast context only for explicit standalone Loop operation.
+
+        A bound adapter must consume the Runtime-produced packet so Full mode
+        keeps Runtime as the authority for cross-process context.
+        """
+        if not self.standalone:
+            raise RuntimeCompatibilityError(
+                "bound runtime must produce context through the Runtime transport"
+            )
+        return request_context(
+            repo,
+            term,
+            snapshot=snapshot,
+            max_bytes=max_bytes,
+            timeout=timeout,
+        )
 
     def register_run(self, manifest: Mapping[str, Any]) -> Dict[str, Any]:
         return self._submit(_envelope("register_run", self.run_id, self.work_item_id, self.actor, manifest, self.identity))
