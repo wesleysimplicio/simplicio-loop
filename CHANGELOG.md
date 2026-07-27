@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.38.5] - 2026-07-27
+
+- Install Simplicio Fast `>=2.0.14` as a direct Loop dependency so the
+  `simplicio-fast` operator is placed on PATH with a standard Loop install.
+- Keep the existing Mapper fallback and fail-closed Fast preflight behavior.
+
 ## [3.38.4] - 2026-07-27
 
 - Require Simplicio Fast `>=2.0.14` in the Loop preflight and integrated flow.
