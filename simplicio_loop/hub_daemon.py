@@ -5,6 +5,7 @@ import hashlib
 import asyncio
 import os
 import socket
+import signal
 import sqlite3
 import tempfile
 import threading
@@ -1086,16 +1087,12 @@ def _recv_line(conn: socket.socket) -> str:
 
 
 class HubSocketServer:
-    """Local IPC transport for HubDaemon: Unix socket on POSIX, named pipe on Windows.
+    """Local IPC transport for HubDaemon: TCP/Unix sockets or a Windows named pipe.
 
-    The Unix transport is event-driven (asyncio): a single background thread runs an
-    asyncio event loop hosting an ``asyncio.start_unix_server`` server, so accepting a
-    connection spawns an asyncio Task, never an OS thread. The named-pipe (Windows)
-    transport keeps the pre-existing thread-per-connection model as a documented
-    exception: asyncio has no first-class Proactor-based server API for
-    ``multiprocessing.connection``-style named pipes equivalent to
-    ``loop.create_unix_server``, so building one would mean hand-rolling pipe I/O via
-    ``ProactorEventLoop`` internals rather than a mechanical API swap (see issue #584).
+    TCP uses the same newline-delimited JSON protocol as Unix sockets and is
+    available on every host, including Windows builds where asyncio does not
+    expose ``start_unix_server``. Named pipes remain the native Windows option
+    for callers that need it.
     """
 
     _DISPATCH_TIMEOUT_SECONDS = 5.0
@@ -1105,8 +1102,8 @@ class HubSocketServer:
         self.socket_path = Path(socket_path)
         self.endpoint = socket_path
         self.transport = transport or default_transport()
-        if self.transport not in {"unix", "named-pipe"}:
-            raise ValueError("transport must be unix or named-pipe")
+        if self.transport not in {"unix", "named-pipe", "tcp"}:
+            raise ValueError("transport must be unix, named-pipe, or tcp")
         self._listener = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -1128,9 +1125,12 @@ class HubSocketServer:
             self._thread = threading.Thread(target=self._serve_forever_named_pipe, daemon=True)
             self._thread.start()
             return
-        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.socket_path.exists():
-            self.socket_path.unlink()
+        if self.transport == "unix":
+            self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.socket_path.exists():
+                self.socket_path.unlink()
+        elif self.transport != "tcp":
+            raise ValueError("unsupported socket transport")
         self._running = True
         ready = threading.Event()
         error: Dict[str, BaseException] = {}
@@ -1141,15 +1141,31 @@ class HubSocketServer:
         if "exc" in error:
             self._running = False
             raise error["exc"]
-        os.chmod(str(self.socket_path), 0o600)
+        if self.transport == "unix":
+            os.chmod(str(self.socket_path), 0o600)
 
     def _run_loop(self, ready: threading.Event, error: Dict[str, BaseException]) -> None:
         asyncio.set_event_loop(self._loop)
         try:
-            self._async_server = self._loop.run_until_complete(
-                asyncio.start_unix_server(self._handle_conn_async, path=str(self.socket_path))
-            )
-        except OSError as exc:
+            if self.transport == "tcp":
+                address = self.endpoint.removeprefix("tcp://")
+                host, port = address.rsplit(":", 1)
+                self._async_server = self._loop.run_until_complete(
+                    asyncio.start_server(self._handle_conn_async, host, int(port))
+                )
+            elif hasattr(asyncio, "start_unix_server"):
+                self._async_server = self._loop.run_until_complete(
+                    asyncio.start_unix_server(self._handle_conn_async, path=str(self.socket_path))
+                )
+            else:
+                unix_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                unix_listener.bind(str(self.socket_path))
+                unix_listener.listen(socket.SOMAXCONN)
+                unix_listener.setblocking(False)
+                self._async_server = self._loop.run_until_complete(
+                    asyncio.start_server(self._handle_conn_async, sock=unix_listener)
+                )
+        except (OSError, ValueError, AttributeError) as exc:
             error["exc"] = exc
             ready.set()
             return
@@ -1508,22 +1524,34 @@ def main(argv=None) -> int:
     serve = sub.add_parser("serve")
     serve.add_argument("--lock", default=str(Path(tempfile.gettempdir()) / "simplicio-loop-hub.lock"))
     serve.add_argument("--endpoint", default=default_endpoint())
-    serve.add_argument("--transport", choices=("unix", "named-pipe"), default=default_transport())
+    serve.add_argument("--transport", choices=("unix", "named-pipe", "tcp"), default=default_transport())
+    serve.add_argument("--shutdown-file", default=None)
     check = sub.add_parser("doctor")
     check.add_argument("--lock", default=str(Path(tempfile.gettempdir()) / "simplicio-loop-hub.lock"))
     check.add_argument("--endpoint", default=default_endpoint())
-    check.add_argument("--transport", choices=("unix", "named-pipe"), default=default_transport())
+    check.add_argument("--transport", choices=("unix", "named-pipe", "tcp"), default=default_transport())
     args = parser.parse_args(argv)
     if args.command == "doctor":
         print(json.dumps(doctor(args.lock, args.endpoint, args.transport), sort_keys=True))
         return 0
+    shutdown_requested = threading.Event()
+
+    def _handle_shutdown(_signum, _frame):
+        shutdown_requested.set()
+
+    for _signal in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", None)):
+        if _signal is not None:
+            signal.signal(_signal, _handle_shutdown)
+
     daemon = HubDaemon(args.lock)
     server = HubSocketServer(daemon, args.endpoint, args.transport)
     try:
         daemon.start()
         server.start()
         print(json.dumps({"ready": True, "endpoint": args.endpoint, "transport": args.transport}), flush=True)
-        threading.Event().wait()
+        while not shutdown_requested.wait(0.1):
+            if args.shutdown_file and Path(args.shutdown_file).exists():
+                break
     except KeyboardInterrupt:
         return 0
     finally:
