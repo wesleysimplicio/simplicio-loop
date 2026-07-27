@@ -586,3 +586,126 @@ def test_journal_replay_empty_when_no_file(tmp_path):
     journal = sc.StageCoordinatorJournal(tmp_path / "missing.jsonl")
     assert journal.replay() == []
     assert journal.passed_stage_ids() == set()
+
+
+class FakeAgentFabricOps:
+    def __init__(self, host_id="host-a", *, completion_authority="loop"):
+        self.address = f"agent://{host_id}/default"
+        self.completion_authority = completion_authority
+        self.fire_calls = 0
+        self.states = {}
+        self.inputs = {}
+
+    def status(self, address):
+        return {
+            "schema": "simplicio.agent-fabric.host-status/v1",
+            "address": self.address,
+            "completion_authority": self.completion_authority,
+            "registration": {
+                "state": "virtual",
+                "manifest": {
+                    "schema": "simplicio.agent-fabric/v1",
+                    "roles": ["implementation"],
+                    "capabilities": ["stage.execute"],
+                },
+            },
+            "host": {"ready": True},
+        }
+
+    def fire(self, address, *, role, stage, context):
+        self.fire_calls += 1
+        receipt_id = f"receipt-{self.fire_calls}"
+        self.states[receipt_id] = "ready"
+        return {
+            "schema": "simplicio.agent-fabric.materialization-receipt/v1",
+            "address": self.address,
+            "worker_id": f"worker-{self.fire_calls}",
+            "fire_receipt_digest": "a" * 64,
+            "receipt_id": receipt_id,
+        }
+
+    def poll(self, receipt_id):
+        return {"status": self.states[receipt_id], "heartbeat_at": time.time()}
+
+    def send(self, receipt_id, stage_input):
+        self.inputs[receipt_id] = dict(stage_input)
+        self.states[receipt_id] = "running"
+
+    def collect(self, receipt_id):
+        return {
+            "state": "host-terminal",
+            "output": {"summary": "fabric output"},
+            "receipt": {"schema": "simplicio.stage-receipt/v1", "verdict": "pass"},
+        }
+
+    def cancel(self, receipt_id, *, reason):
+        self.states[receipt_id] = "cancelled"
+
+    def binding(self):
+        return {
+            "status": self.status,
+            "fire": self.fire,
+            "poll": self.poll,
+            "send": self.send,
+            "collect": self.collect,
+            "cancel": self.cancel,
+        }
+
+
+def _fabric_adapter(fake):
+    return sc.AgentFabricAdapter(address=fake.address, fabric_ops=fake.binding())
+
+
+def test_agent_fabric_probe_and_registry_do_not_materialize_worker():
+    fake = FakeAgentFabricOps()
+    adapter = _fabric_adapter(fake)
+    registry = sc.AdapterRegistry([adapter])
+
+    selected = registry.select(role=ROLE, stage=STAGE_NONE)
+
+    assert selected is adapter
+    assert fake.fire_calls == 0
+
+
+def test_two_interchangeable_agent_fabric_hosts_use_same_stage_driver_contract():
+    for host_id in ("host-a", "host-b"):
+        fake = FakeAgentFabricOps(host_id)
+        adapter = _fabric_adapter(fake)
+        instance = adapter.spawn(role=ROLE, stage=STAGE_NONE, stage_context={"attempt_id": "a1"})
+        assert instance.status == "created"
+        assert instance.transport_handle["address"] == fake.address
+        assert fake.fire_calls == 1
+
+        adapter.poll(instance)
+        assert instance.status == "ready"
+        adapter.send(instance, {"payload_handle": "fast://context/1"})
+        assert instance.status == "running"
+        fake.states["receipt-1"] = "passed"
+        adapter.poll(instance)
+        output, receipt = adapter.collect(instance)
+
+        assert output == {"summary": "fabric output"}
+        assert receipt["schema"] == "simplicio.stage-receipt/v1"
+
+
+def test_agent_fabric_host_cannot_declare_loop_completion():
+    fake = FakeAgentFabricOps()
+    adapter = _fabric_adapter(fake)
+    instance = adapter.spawn(role=ROLE, stage=STAGE_NONE, stage_context={})
+    fake.states["receipt-1"] = "delivered"
+
+    with pytest.raises(sc.StageCoordinatorError) as excinfo:
+        adapter.poll(instance)
+
+    assert excinfo.value.reason_code == "agent_fabric_completion_conflict"
+
+
+def test_agent_fabric_competing_completion_authority_is_not_selectable():
+    fake = FakeAgentFabricOps(completion_authority="agent")
+    adapter = _fabric_adapter(fake)
+
+    assert adapter.probe() is False
+    registry = sc.AdapterRegistry([adapter])
+    with pytest.raises(sc.StageCoordinatorError) as excinfo:
+        registry.select(role=ROLE, stage=STAGE_NONE)
+    assert excinfo.value.reason_code == sc.REASON_NO_COMPATIBLE_ADAPTER

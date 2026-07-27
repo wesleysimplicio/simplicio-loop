@@ -236,6 +236,166 @@ class AgentDriver(Protocol):
 
 _NON_HUMAN_LEVELS = frozenset(("process", "session", "worker", "command"))
 
+_AGENT_FABRIC_ROLE_MAP = {
+    "intake_planner": "intake",
+    "implementation_agent": "implementation",
+    "safety_gate": "safety",
+    "review_panel": "reviewer",
+    "delivery_agent": "delivery",
+    "feedback_recovery_agent": "recovery",
+    "completion_auditor": "audit",
+    "github_reporter": "audit",
+}
+_AGENT_FABRIC_FORBIDDEN_TERMINAL = frozenset(("completed", "delivered"))
+
+
+class AgentFabricAdapter:
+    """Transport-neutral consumer of the public Simplicio Agent Fabric ABI.
+
+    The binding may be in-process, IPC, or remote, but must expose status,
+    fire, poll, send, collect, and cancel callables. Loop owns stage admission,
+    receipt validation, retries, delivery, and completion. A host reporting
+    ``completed`` or ``delivered`` is rejected as competing authority.
+    """
+
+    kind = "agent-fabric"
+
+    def __init__(self, *, address: str, fabric_ops: Mapping[str, Any], max_slots: int | None = None):
+        self.address = str(address).strip()
+        self._ops = dict(fabric_ops)
+        self.max_slots = max_slots
+        self._receipts: dict[str, dict[str, Any]] = {}
+
+    def _status(self) -> Mapping[str, Any]:
+        status = self._ops["status"](self.address)
+        if not isinstance(status, Mapping):
+            raise StageCoordinatorError("Agent Fabric status is not an object", reason_code="agent_fabric_invalid_status")
+        if status.get("schema") != "simplicio.agent-fabric.host-status/v1":
+            raise StageCoordinatorError("Agent Fabric status schema mismatch", reason_code="agent_fabric_schema_mismatch")
+        if status.get("completion_authority") != "loop":
+            raise StageCoordinatorError("Agent Fabric attempted competing completion authority", reason_code="agent_fabric_completion_conflict")
+        if status.get("address") != self.address:
+            raise StageCoordinatorError("Agent Fabric address mismatch", reason_code="agent_fabric_address_mismatch")
+        return status
+
+    def probe(self) -> bool:
+        if not self.address.startswith("agent://"):
+            return False
+        if not all(name in self._ops for name in ("status", "fire", "poll", "send", "collect", "cancel")):
+            return False
+        try:
+            self._status()
+        except (StageCoordinatorError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+        return True
+
+    def compatible_with(self, role: Mapping[str, Any], stage: Mapping[str, Any]) -> bool:
+        if not self.probe() or stage.get("isolation_level", "process") not in _NON_HUMAN_LEVELS:
+            return False
+        status = self._status()
+        registration = status.get("registration")
+        if not isinstance(registration, Mapping):
+            return False
+        manifest = registration.get("manifest")
+        if not isinstance(manifest, Mapping):
+            return False
+        role_name = _AGENT_FABRIC_ROLE_MAP.get(str(role.get("role_id", "")))
+        roles = manifest.get("roles", ())
+        capabilities = manifest.get("capabilities", ())
+        required_capability = str(stage.get("required_capability", "stage.execute"))
+        return role_name in roles and required_capability in capabilities
+
+    def spawn(self, *, role: Mapping[str, Any], stage: Mapping[str, Any],
+              stage_context: Mapping[str, Any]) -> AgentInstance:
+        if not self.compatible_with(role, stage):
+            raise StageCoordinatorError("Agent Fabric host is incompatible", reason_code=REASON_NO_COMPATIBLE_ADAPTER)
+        fired = self._ops["fire"](
+            self.address,
+            role=dict(role),
+            stage=dict(stage),
+            context=dict(stage_context),
+        )
+        if not isinstance(fired, Mapping):
+            raise StageCoordinatorError("Agent Fabric fire receipt is not an object", reason_code="agent_fabric_invalid_receipt")
+        receipt = fired.get("materialization_receipt", fired)
+        if not isinstance(receipt, Mapping) or receipt.get("schema") != "simplicio.agent-fabric.materialization-receipt/v1":
+            raise StageCoordinatorError("Agent Fabric materialization receipt schema mismatch", reason_code="agent_fabric_schema_mismatch")
+        if receipt.get("address") != self.address:
+            raise StageCoordinatorError("Agent Fabric materialization address mismatch", reason_code="agent_fabric_address_mismatch")
+        receipt_id = str(receipt.get("receipt_id", "")).strip()
+        worker_id = str(receipt.get("worker_id", "")).strip()
+        if not receipt_id or not worker_id:
+            raise StageCoordinatorError("Agent Fabric materialization receipt is incomplete", reason_code="agent_fabric_invalid_receipt")
+        self._receipts[worker_id] = dict(receipt)
+        return AgentInstance(
+            instance_id=worker_id,
+            role_id=str(role["role_id"]),
+            stage_id=str(stage["stage_id"]),
+            adapter_kind=self.kind,
+            status="created",
+            runtime="simplicio-agent",
+            provider="agent-fabric",
+            isolation_level=str(stage.get("isolation_level", "worker")),
+            transport_handle={
+                "schema": "simplicio.fabric-address/v1",
+                "address": self.address,
+                "materialization_receipt_id": receipt_id,
+            },
+        )
+
+    def _receipt_id(self, instance: AgentInstance) -> str:
+        receipt = self._receipts.get(instance.instance_id)
+        if receipt is None:
+            raise StageCoordinatorError("Agent Fabric receipt is unavailable", reason_code="agent_fabric_invalid_receipt")
+        return str(receipt["receipt_id"])
+
+    def poll(self, instance: AgentInstance) -> AgentInstance:
+        observed = self._ops["poll"](self._receipt_id(instance))
+        if not isinstance(observed, Mapping):
+            raise StageCoordinatorError("Agent Fabric poll result is not an object", reason_code="agent_fabric_invalid_status")
+        status = str(observed.get("status", "created")).lower()
+        if status in _AGENT_FABRIC_FORBIDDEN_TERMINAL:
+            raise StageCoordinatorError("Agent Fabric host attempted to declare completion", reason_code="agent_fabric_completion_conflict")
+        if status not in DRIVER_STATUSES:
+            raise StageCoordinatorError("Agent Fabric returned an unknown state", reason_code="agent_fabric_invalid_status")
+        if instance.status == "created" and status == "ready":
+            instance.ready_at = _now_iso()
+        instance.status = status
+        if observed.get("heartbeat_at") is not None:
+            instance.last_heartbeat_at = float(observed["heartbeat_at"])
+        return instance
+
+    def send(self, instance: AgentInstance, stage_input: Mapping[str, Any]) -> None:
+        if instance.status != "ready":
+            raise StageCoordinatorError(
+                f"cannot send to Agent Fabric instance in status {instance.status}",
+                reason_code=REASON_NOT_READY,
+            )
+        self._ops["send"](self._receipt_id(instance), dict(stage_input))
+        instance.status = "running"
+
+    def collect(self, instance: AgentInstance) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        if instance.status not in TERMINAL_DRIVER_STATUSES:
+            return None, None
+        result = self._ops["collect"](self._receipt_id(instance))
+        if not isinstance(result, Mapping):
+            raise StageCoordinatorError("Agent Fabric collect result is not an object", reason_code=REASON_INVALID_RECEIPT)
+        if str(result.get("state", "")).lower() in _AGENT_FABRIC_FORBIDDEN_TERMINAL:
+            raise StageCoordinatorError("Agent Fabric collect attempted to declare completion", reason_code="agent_fabric_completion_conflict")
+        output = result.get("output")
+        receipt = result.get("receipt")
+        if output is not None and not isinstance(output, dict):
+            raise StageCoordinatorError("Agent Fabric output is not an object", reason_code=REASON_INVALID_RECEIPT)
+        if receipt is not None and not isinstance(receipt, dict):
+            raise StageCoordinatorError("Agent Fabric stage receipt is not an object", reason_code=REASON_INVALID_RECEIPT)
+        instance.output, instance.receipt = output, receipt
+        return output, receipt
+
+    def cancel(self, instance: AgentInstance, *, reason: str) -> None:
+        self._ops["cancel"](self._receipt_id(instance), reason=reason)
+        if instance.status not in TERMINAL_DRIVER_STATUSES:
+            instance.status = "cancelled"
+            instance.error_reason_code = reason
 
 # --------------------------------------------------------------------------
 # NativeAgentAdapter — for hosts exposing a native subagent/session API.
@@ -615,7 +775,7 @@ class HumanGateAdapter:
 # Capability probe + adapter registry (fallback order per issue #424).
 # --------------------------------------------------------------------------
 
-FALLBACK_ORDER = ("native", "hub", "command", "queue", "human")
+FALLBACK_ORDER = ("native", "agent-fabric", "hub", "command", "queue", "human")
 
 
 class AdapterRegistry:
@@ -1032,7 +1192,7 @@ class StageAgentCoordinator:
 __all__ = [
     "COORDINATOR_AGENT_ID", "REASON_CANCELLED", "REASON_INVALID_INSTANCE", "REASON_INVALID_RECEIPT",
     "REASON_NOT_READY", "REASON_NO_COMPATIBLE_ADAPTER", "REASON_STALE_RECEIPT", "REASON_TIMEOUT",
-    "REASON_ZERO_CAPACITY", "AdapterRegistry", "AgentDriver", "AgentInstance", "CommandAgentAdapter",
+    "REASON_ZERO_CAPACITY", "AdapterRegistry", "AgentDriver", "AgentFabricAdapter", "AgentInstance", "CommandAgentAdapter",
     "FALLBACK_ORDER", "HubQueueAgentClient", "HumanGateAdapter", "NativeAgentAdapter", "QueueAgentAdapter", "StageAgentCoordinator",
     "StageCoordinatorError", "StageCoordinatorJournal", "StageResult", "available_slots", "plan_waves",
     "role_by_id", "stage_by_id",
