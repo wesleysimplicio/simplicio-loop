@@ -989,6 +989,32 @@ def token_budget(args) -> int:
     return 0
 
 
+def validation_explain(args) -> int:
+    try:
+        receipt = json.loads(Path(args.receipt).read_text(encoding="utf-8"))
+        if receipt.get("schema") != "simplicio.validation-receipt/v1":
+            raise ValueError("unexpected validation receipt schema")
+        payload = {
+            "schema": "simplicio.validation-explain/v1",
+            "policy_version": receipt.get("policy_version"),
+            "phase": receipt.get("phase"),
+            "profile": receipt.get("profile"),
+            "selected_tests": list(receipt.get("selected_tests") or []),
+            "reason_codes": sorted(set(receipt.get("reason_codes") or [])),
+            "final_gate_required": bool(receipt.get("final_gate_required")),
+            "cache_allowed": bool(receipt.get("cache_allowed")),
+            "cache_key": receipt.get("cache_key"),
+            "map_fresh": receipt.get("map_fresh"),
+            "impact_known": receipt.get("impact_known"),
+            "local_llm_started": False,
+        }
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        print(json.dumps({"schema": "simplicio.validation-explain/v1", "status": "HELD", "reason_code": "invalid_validation_receipt", "error": str(exc)}, sort_keys=True))
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="simplicio-loop",
@@ -1159,6 +1185,10 @@ def main(argv=None) -> int:
     p_checkpoint.add_argument("--lease-file", default="", help="active JSON lease scoped to --directory")
     p_checkpoint.add_argument("--retention-seconds", type=int, default=86400)
     p_checkpoint.add_argument("--apply", action="store_true", help="delete only eligible CANCELLED checkpoints")
+
+    p_validation = sub.add_parser("validation", help="explain a validation-policy receipt")
+    p_validation.add_argument("validation_action", choices=("explain",))
+    p_validation.add_argument("--receipt", required=True)
 
     p_budget = sub.add_parser("budget", help="emit a bounded token budget or receipt")
     p_budget.add_argument("budget_action", choices=("inspect", "receipt"))
@@ -1350,6 +1380,8 @@ def main(argv=None) -> int:
         return sync_source(args.repo, args.run_id, args.source, args.external_repo, args.pr, args.tag)
     if command == "drain":
         return drain(args.action, args.snapshot_path, args.receipt_path, args.polls_required)
+    if command == "validation":
+        return validation_explain(args)
     if command == "budget":
         return token_budget(args)
     if command == "ledger":
