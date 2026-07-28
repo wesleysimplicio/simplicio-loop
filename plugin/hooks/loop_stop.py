@@ -52,8 +52,14 @@ SPINDLE_STATE = os.path.join(LOOP_DIR, "spindle_state.json")
 PHASE_FILE = os.path.join(LOOP_DIR, "phase.json")
 FLOW_AUDIT_RECEIPT = os.path.join(".simplicio/orchestrator", "flow-audit.json")
 SIMPLICIO_LOOP_SKILL_MARKER = os.path.join(".claude", "skills", "simplicio-loop", "SKILL.md")
+# Core operate/survey pair — always required when the simplicio-loop skill is present.
 BOUND_OPERATORS = ("simplicio-mapper", "simplicio-dev-cli")
+# Adaptive: Runtime (simplicio) and Fast are required only when operational (or forced).
+RUNTIME_BINARY = "simplicio"
+FAST_BINARY = "simplicio-fast"
 WEB_EXTS = {".tsx", ".jsx", ".vue", ".svelte", ".html"}
+_TRUE = frozenset({"1", "true", "yes", "on", "strict", "full-stack", "required"})
+_FALSE = frozenset({"0", "false", "no", "off", "disabled", "standalone", "legacy"})
 
 EVIDENCE_RE = re.compile(
     r"(https?://\S+/pull/\d+)"          # a PR URL
@@ -450,8 +456,77 @@ def write_handoff(reason, meta=None, body=None):
         pass  # fail-open: a broken handoff write must never block the stop
 
 
+def _env_flag(name, default=""):
+    return str(os.environ.get(name, default) or "").strip().lower()
+
+
+def _strict_loop_enabled():
+    if _env_flag("SIMPLICIO_LOOP_STRICT") in _TRUE:
+        return True
+    return _env_flag("SIMPLICIO_LOOP_MODE") in {"strict", "full-stack"}
+
+
+def _binary_operational(binary, args=("--version",)):
+    """True when binary is on PATH and a cheap probe exits 0."""
+    try:
+        path = shutil.which(binary)
+        if not path:
+            return False
+        completed = subprocess.run(
+            [path, *args],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+def _action_operator_operational():
+    # Either public name satisfies the operate role.
+    if _binary_operational("simplicio-dev-cli", ("--help",)):
+        return True
+    if _binary_operational("simplicio-py", ("--version",)):
+        return True
+    return False
+
+
+def required_bound_operators():
+    """Binaries this running loop must keep available.
+
+    Always (skill present): mapper + operate.
+    Runtime (``simplicio``): when SIMPLICIO_LOOP_REQUIRE_RUNTIME=required, always;
+    when auto (default), only if currently operational — then it is required so a
+    mid-run disappearance cannot silently drop to standalone.
+    Fast: under strict mode, if currently operational it becomes required.
+    """
+    required = list(BOUND_OPERATORS)
+    rt_mode = _env_flag("SIMPLICIO_LOOP_REQUIRE_RUNTIME", "auto") or "auto"
+    if rt_mode in _FALSE:
+        rt_mode = "off"
+    elif rt_mode in _TRUE:
+        rt_mode = "required"
+    elif rt_mode not in {"auto", "off", "required"}:
+        rt_mode = "auto"
+    runtime_ok = _binary_operational(RUNTIME_BINARY, ("--version",))
+    if rt_mode == "required" or (rt_mode == "auto" and runtime_ok):
+        required.append(RUNTIME_BINARY)
+    if _strict_loop_enabled() and _binary_operational(FAST_BINARY, ("--version",)):
+        required.append(FAST_BINARY)
+    # de-dupe
+    seen = set()
+    ordered = []
+    for name in required:
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return ordered
+
+
 def missing_bound_operators():
-    """Return the bound-operator binaries missing from PATH, or [] if not applicable.
+    """Return the bound-operator binaries missing/non-operational, or [] if not applicable.
 
     CLAUDE.md / `simplicio-loop` SKILL.md: when a body-of-work loop is driven by the
     `simplicio-loop` companion skill, `simplicio-mapper` (survey) and `simplicio-dev-cli`
@@ -460,9 +535,10 @@ def missing_bound_operators():
     marketplace install, a PATH mismatch, or an operator uninstalled after setup silently
     degraded to LLM hand-survey/hand-edit — exactly what the operators exist to prevent.
 
-    `simplicio` (the separate `simplicio-runtime` CLI/MCP binary) is intentionally not in this
-    set. It augments HBP/checkpoint integrations when present, but those calls are already
-    best-effort and the core mapper → dev-cli loop must keep running when it is unavailable.
+    Runtime (``simplicio`` from simplicio-runtime) is adaptive: if available and operational
+    (or forced via SIMPLICIO_LOOP_REQUIRE_RUNTIME=1 / strict+required), it is part of the
+    required set and mid-run disappearance BLOCKS. If it is not installed, the core
+    mapper → dev-cli loop continues.
 
     Scoped to repos that actually ship the `simplicio-loop` skill (its SKILL.md is the marker) —
     a bare `simplicio-tasks` loop with no `simplicio-loop` companion has no operator requirement.
@@ -471,7 +547,23 @@ def missing_bound_operators():
     try:
         if not os.path.exists(SIMPLICIO_LOOP_SKILL_MARKER):
             return []
-        return [b for b in BOUND_OPERATORS if shutil.which(b) is None]
+        missing = []
+        for binary in required_bound_operators():
+            if binary == "simplicio-dev-cli":
+                if not _action_operator_operational():
+                    missing.append("simplicio-dev-cli")
+                continue
+            if binary == RUNTIME_BINARY:
+                if not _binary_operational(RUNTIME_BINARY, ("--version",)):
+                    missing.append(RUNTIME_BINARY)
+                continue
+            if binary == FAST_BINARY:
+                if not _binary_operational(FAST_BINARY, ("--version",)):
+                    missing.append(FAST_BINARY)
+                continue
+            if shutil.which(binary) is None or not _binary_operational(binary, ("--version",)):
+                missing.append(binary)
+        return missing
     except Exception:
         return []
 
@@ -1116,12 +1208,15 @@ def main():
         promise = meta.get("completion_promise", "null")
         promise = None if promise in (None, "null", "") else promise
         evidence_required = str(meta.get("evidence_required", "true")).lower() != "false"
+        # Strict mode locks evidence_required=true — agents cannot opt out via scratchpad.
+        if _strict_loop_enabled():
+            evidence_required = True
 
         # (2b) Bound operators required (#83) — when this repo ships the simplicio-loop
         # companion skill, `simplicio-mapper`/`simplicio-dev-cli` are hard deps of the running
-        # loop, not just the installer. A genuine BLOCK (handoff + stop), mirroring the cap gate,
-        # so a marketplace install / PATH gap can never silently degrade to LLM
-        # hand-survey/hand-edit.
+        # loop, not just the installer. Runtime/Fast join the set when operational (or forced).
+        # A genuine BLOCK (handoff + stop), mirroring the cap gate, so a marketplace install /
+        # PATH gap can never silently degrade to LLM hand-survey/hand-edit.
         missing_ops = missing_bound_operators()
         if missing_ops:
             reason = "bound operator missing: %s" % ", ".join(missing_ops)
