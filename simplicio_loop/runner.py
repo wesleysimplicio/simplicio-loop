@@ -58,6 +58,7 @@ from .hookwall_gate import (
     validate_pre_decision,
     verify_post_receipt,
 )
+from .hookwall_persistence import HookwallEffectLedger
 from .canonical_plan import CanonicalPlan, load_canonical_plan
 from .authority_boundary import prepare_authorization_handoff
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
@@ -733,6 +734,8 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
         "workspace": request.workspace,
         "fence": request.fencing_token,
         "effect_set": ["process", "write"],
+        "write_set": list(request.write_set),
+        "command": list(argv),
     })
     pre_decision = {
         "schema": "simplicio.hookwall-decision/v1",
@@ -746,6 +749,19 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
         "fence": request.fencing_token,
     }
     validate_pre_decision(envelope, pre_decision)
+    hookwall_ledger = HookwallEffectLedger(
+        repo_path / ".simplicio" / "orchestrator" / "hookwall.sqlite3"
+    )
+    reservation = hookwall_ledger.reserve(envelope, pre_decision)
+    if reservation["action"] == "REPLAY_VERIFIED":
+        return {
+            "returncode": 0, "stdout": {}, "stderr": "",
+            "source": "hookwall_verified_replay", "effect_receipt": None,
+            "uncertain": False, "hookwall_envelope": envelope,
+            "hookwall_pre_decision": pre_decision,
+            "hookwall_evidence": reservation["evidence"],
+            "hookwall_reason": "idempotent_replay",
+        }
 
     outcome = _execute_operator_effect_unchecked(
         profile=profile,
@@ -760,11 +776,22 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
     outcome["hookwall_envelope"] = envelope
     outcome["hookwall_pre_decision"] = pre_decision
     if outcome.get("returncode") != 0 or outcome.get("uncertain"):
+        hookwall_ledger.mark_unresolved(
+            request.idempotency_key,
+            "effect_uncertain" if outcome.get("uncertain") else "effect_not_committed",
+        )
         outcome["hookwall_evidence"] = None
         outcome["hookwall_reason"] = (
             "effect_uncertain" if outcome.get("uncertain") else "effect_not_committed"
         )
         return outcome
+
+    hookwall_ledger.effect_confirmed(
+        request.idempotency_key,
+        {"returncode": outcome.get("returncode"),
+         "stdout": outcome.get("stdout") or {},
+         "source": outcome.get("source") or ""},
+    )
 
     mutation_receipt = {
         "schema": "simplicio.mutation-receipt/v1",
@@ -794,10 +821,11 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
         "receipt_hash": mutation_receipt["receipt_hash"],
     }
     try:
-        evidence = verify_post_receipt(
+        evidence = hookwall_ledger.verify_and_commit(
             envelope, pre_decision, mutation_receipt, post_decision
         )
     except HookwallBlocked as exc:
+        hookwall_ledger.mark_unresolved(request.idempotency_key, exc.reason_code)
         outcome["returncode"] = None
         outcome["uncertain"] = True
         outcome["hookwall_evidence"] = None
@@ -805,6 +833,7 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
         return outcome
     verified, reason = gate_completion(evidence)
     if not verified:
+        hookwall_ledger.mark_unresolved(request.idempotency_key, reason)
         outcome["returncode"] = None
         outcome["uncertain"] = True
         outcome["hookwall_evidence"] = None
