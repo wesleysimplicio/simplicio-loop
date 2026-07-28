@@ -81,6 +81,7 @@ class CheckpointLifecycle:
         self.checkpoints = self.attempt / "checkpoints"
         self.cancellations = self.attempt / "cancellations"
         self.leases = self.attempt / "leases"
+        self.fence_path = self.attempt / "promotion-fence.json"
 
     def create_overlay(self, candidate_id: str) -> Path:
         candidate = _require(candidate_id, "candidate_id")
@@ -263,6 +264,61 @@ class CheckpointLifecycle:
         }
         result["digest"] = _digest(result)
         return result
+
+    def seal_winner(self, fanin: Mapping[str, Any]) -> dict[str, Any]:
+        value = dict(fanin)
+        supplied = value.pop("digest", None)
+        if value.get("schema") != FANIN_SCHEMA or supplied != _digest(value):
+            raise LifecycleError("fan-in digest mismatch")
+        if value.get("status") != "READY":
+            raise LifecycleError("fan-in is not ready")
+        fence: dict[str, Any] = {
+            "schema": SCHEMA,
+            "task_id": self.task_id,
+            "attempt_id": self.attempt_id,
+            "winner_id": _require(value.get("winner_id"), "winner_id"),
+            "fan_in_digest": supplied,
+            "status": "SEALED",
+        }
+        fence["digest"] = _digest(fence)
+        if self.fence_path.exists():
+            existing = json.loads(self.fence_path.read_text(encoding="utf-8"))
+            if existing == fence:
+                return existing
+            raise LifecycleError("promotion fence already sealed by another winner")
+        _write_json(self.fence_path, fence)
+        return fence
+
+    def converge(
+        self,
+        specs: Sequence[CandidateSpec],
+        *,
+        expected_shards: Sequence[str],
+        cancel_callback: Callable[[str], None] | None = None,
+        risk_threshold: float = 0.65,
+        uncertainty_threshold: float = 0.55,
+        max_candidates: int = 3,
+    ) -> dict[str, Any]:
+        fanin = self.fanin(
+            specs,
+            expected_shards=expected_shards,
+            risk_threshold=risk_threshold,
+            uncertainty_threshold=uncertainty_threshold,
+            max_candidates=max_candidates,
+        )
+        fence = self.seal_winner(fanin)
+        cancellation = self.cancel(
+            fanin["loser_ids"],
+            reason=f"winner:{fanin['winner_id']}",
+            cancel_callback=cancel_callback,
+        )
+        return {
+            "schema": SCHEMA,
+            "status": "SEALED" if cancellation["status"] == "CANCELLED" else "HELD",
+            "fan_in": fanin,
+            "fence": fence,
+            "cancellation": cancellation,
+        }
 
     def lease(self, candidate_id: str, *, expires_ns: int) -> dict[str, Any]:
         candidate = _require(candidate_id, "candidate_id")
