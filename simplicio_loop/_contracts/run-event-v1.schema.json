@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/run-event-v1.schema.json",
+  "title": "RunEvent/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "event_id", "run_id", "sequence", "kind", "causal_parent",
+    "idempotency_key", "payload", "created_at", "previous_hash", "event_hash"
+  ],
+  "properties": {
+    "schema": {"const": "simplicio.run-event/v1"},
+    "event_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "sequence": {"type": "integer", "minimum": 1},
+    "kind": {"type": "string", "minLength": 1},
+    "causal_parent": {"type": ["string", "null"]},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "payload": {"type": "object"},
+    "created_at": {"type": "number"},
+    "previous_hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "event_hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+  }
+}
