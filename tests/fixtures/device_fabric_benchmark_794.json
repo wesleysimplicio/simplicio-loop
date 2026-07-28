@@ -1,0 +1,76 @@
+{
+  "classification": "MEASURED_LOCAL",
+  "cpu_seconds": null,
+  "local_llm": false,
+  "null_reason": "portable per-coroutine CPU and RSS attribution unavailable",
+  "physical_capacity": {
+    "CPU": 2,
+    "GPU": 1,
+    "NPU": 1
+  },
+  "receipt_hash": "sha256:0a8fd5bd6ddb36ec7b652c49883ba77d3c571f2b17e9d15b73911cf743d51162",
+  "rows": [
+    {
+      "completed": 1,
+      "duration_median_ns": 1219533,
+      "duration_ns": 1197721,
+      "execution_p50_ns": 1101908,
+      "fairness_first_window_sessions": 1,
+      "fallbacks": 0,
+      "lost": 0,
+      "max_logical_in_flight": 1,
+      "max_physical": {
+        "CPU": 0,
+        "GPU": 0,
+        "NPU": 1
+      },
+      "model_provider_started": false,
+      "queue_p50_median_ns": 47361,
+      "queue_p50_ns": 43044,
+      "repeats": 5,
+      "tasks": 1
+    },
+    {
+      "completed": 6,
+      "duration_median_ns": 2693204,
+      "duration_ns": 2669018,
+      "execution_p50_ns": 1232382,
+      "fairness_first_window_sessions": 4,
+      "fallbacks": 4,
+      "lost": 0,
+      "max_logical_in_flight": 6,
+      "max_physical": {
+        "CPU": 2,
+        "GPU": 1,
+        "NPU": 1
+      },
+      "model_provider_started": false,
+      "queue_p50_median_ns": 142346,
+      "queue_p50_ns": 142346,
+      "repeats": 5,
+      "tasks": 6
+    },
+    {
+      "completed": 64,
+      "duration_median_ns": 22591661,
+      "duration_ns": 21972229,
+      "execution_p50_ns": 1223564,
+      "fairness_first_window_sessions": 4,
+      "fallbacks": 48,
+      "lost": 0,
+      "max_logical_in_flight": 6,
+      "max_physical": {
+        "CPU": 2,
+        "GPU": 1,
+        "NPU": 1
+      },
+      "model_provider_started": false,
+      "queue_p50_median_ns": 10716463,
+      "queue_p50_ns": 10458485,
+      "repeats": 5,
+      "tasks": 64
+    }
+  ],
+  "rss_peak_bytes": null,
+  "schema": "simplicio.device-fabric-benchmark/v1"
+}
