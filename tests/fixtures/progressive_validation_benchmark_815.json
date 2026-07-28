@@ -1,0 +1,23 @@
+{
+  "classification": "MEASURED_LOCAL",
+  "cold": {
+    "max_ns": 44253438,
+    "median_ns": 1118242,
+    "min_ns": 901240
+  },
+  "cpu_seconds": null,
+  "limitations": [
+    "Controller overhead only; command runtime depends on the repository test suite.",
+    "CPU and RSS are null because portable per-call attribution was not available."
+  ],
+  "local_llm": false,
+  "receipt_hash": "sha256:c6696d7f752801873c01c487a7e242aa11d03bad70b14cee761a80574cc76d33",
+  "rss_peak_bytes": null,
+  "runs": 1000,
+  "schema": "simplicio.progressive-validation-benchmark/v1",
+  "warm": {
+    "max_ns": 467234,
+    "median_ns": 151099,
+    "min_ns": 131575
+  }
+}
