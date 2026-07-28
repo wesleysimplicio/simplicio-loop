@@ -18,5 +18,18 @@
     "conflict_100",
     "recovery_fault"
   ],
-  "sample_rows": 62500
+  "sample_rows": 62500,
+  "quant_lanes": [
+    "Q0_FULL_PRECISION",
+    "Q1_INT8",
+    "Q2_4BIT",
+    "Q2_4BIT_RERANK"
+  ],
+  "quant_corpora": [
+    "C10K",
+    "C100K",
+    "C1M"
+  ],
+  "quant_sample_rows": 30000,
+  "total_sample_rows": 92500
 }

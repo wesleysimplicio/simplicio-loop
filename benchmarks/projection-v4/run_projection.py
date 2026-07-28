@@ -222,6 +222,111 @@ def summarize(samples: pd.DataFrame) -> pd.DataFrame:
     return summary
 
 
+def simulate_quant(config: dict[str, Any], repetitions: int) -> pd.DataFrame:
+    """Simulate comparable Q0/Q1/Q2 lanes on identical corpus inputs."""
+    rng = np.random.default_rng(int(config["seed"]) + 198)
+    quant = config["quant_benchmark"]
+    uncertainty = quant["uncertainty"]
+    rows: list[dict[str, Any]] = []
+    for corpus_id, corpus in quant["corpora"].items():
+        for lane_id, lane in quant["lanes"].items():
+            for repetition in range(repetitions):
+                query_ms = (
+                    float(corpus["q0_query_ms"])
+                    * float(lane["query_multiplier"])
+                    * float(rng.lognormal(0.0, float(uncertainty["query_lognormal_sigma"])))
+                    + float(lane["rerank_ms"])
+                )
+                rows.append(
+                    {
+                        "benchmark_id": config["benchmark_id"],
+                        "classification": "SIMULATED",
+                        "seed": config["seed"],
+                        "repetition": repetition,
+                        "corpus": corpus_id,
+                        "corpus_label": corpus["label"],
+                        "vectors": corpus["vectors"],
+                        "lane": lane_id,
+                        "lane_label": lane["label"],
+                        "index_mb": float(corpus["q0_index_mb"])
+                        * float(lane["index_multiplier"])
+                        * float(rng.lognormal(0.0, float(uncertainty["size_lognormal_sigma"]))),
+                        "rss_mb": float(corpus["q0_rss_mb"])
+                        * float(lane["rss_multiplier"])
+                        * float(rng.lognormal(0.0, float(uncertainty["rss_lognormal_sigma"]))),
+                        "build_seconds": float(corpus["q0_build_seconds"])
+                        * float(lane["build_multiplier"])
+                        * float(rng.lognormal(0.0, float(uncertainty["build_lognormal_sigma"]))),
+                        "query_ms": query_ms,
+                        "rerank_ms": float(lane["rerank_ms"]),
+                        "recall_at_10": float(
+                            np.clip(
+                                rng.normal(
+                                    float(lane["recall_at_10"]),
+                                    float(uncertainty["quality_sigma"]),
+                                ),
+                                0.0,
+                                1.0,
+                            )
+                        ),
+                        "ndcg_at_10": float(
+                            np.clip(
+                                rng.normal(
+                                    float(lane["ndcg_at_10"]),
+                                    float(uncertainty["quality_sigma"]),
+                                ),
+                                0.0,
+                                1.0,
+                            )
+                        ),
+                        "qps": 1000.0 / query_ms,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def summarize_quant(samples: pd.DataFrame) -> pd.DataFrame:
+    records: list[dict[str, Any]] = []
+    grouped = samples.groupby(["corpus", "corpus_label", "lane", "lane_label"], sort=False)
+    for keys, frame in grouped:
+        corpus, corpus_label, lane, lane_label = keys
+        records.append(
+            {
+                "classification": "SIMULATED",
+                "corpus": corpus,
+                "corpus_label": corpus_label,
+                "lane": lane,
+                "lane_label": lane_label,
+                "runs": len(frame),
+                "index_p50_mb": quantile(frame["index_mb"], 0.5),
+                "rss_p50_mb": quantile(frame["rss_mb"], 0.5),
+                "build_p50_seconds": quantile(frame["build_seconds"], 0.5),
+                "query_p50_ms": quantile(frame["query_ms"], 0.5),
+                "query_p95_ms": quantile(frame["query_ms"], 0.95),
+                "qps_p50": quantile(frame["qps"], 0.5),
+                "recall_at_10_mean": float(frame["recall_at_10"].mean()),
+                "ndcg_at_10_mean": float(frame["ndcg_at_10"].mean()),
+            }
+        )
+    summary = pd.DataFrame(records)
+    q0 = summary[summary["lane"] == "Q0_FULL_PRECISION"][
+        ["corpus", "index_p50_mb", "rss_p50_mb", "query_p50_ms"]
+    ].rename(
+        columns={
+            "index_p50_mb": "q0_index_p50_mb",
+            "rss_p50_mb": "q0_rss_p50_mb",
+            "query_p50_ms": "q0_query_p50_ms",
+        }
+    )
+    summary = summary.merge(q0, on="corpus", how="left")
+    summary["index_reduction_percent"] = (1.0 - summary["index_p50_mb"] / summary["q0_index_p50_mb"]) * 100
+    summary["rss_reduction_percent"] = (1.0 - summary["rss_p50_mb"] / summary["q0_rss_p50_mb"]) * 100
+    summary["query_reduction_percent"] = (
+        1.0 - summary["query_p50_ms"] / summary["q0_query_p50_ms"]
+    ) * 100
+    return summary
+
+
 def setup_charts() -> None:
     sns.set_theme(style="whitegrid", context="notebook")
     plt.rcParams.update(
@@ -243,7 +348,13 @@ def save_figure(fig: plt.Figure, path: Path) -> None:
     plt.close(fig)
 
 
-def create_charts(samples: pd.DataFrame, summary: pd.DataFrame, config: dict[str, Any], out: Path) -> list[Path]:
+def create_charts(
+    samples: pd.DataFrame,
+    summary: pd.DataFrame,
+    quant_summary: pd.DataFrame,
+    config: dict[str, Any],
+    out: Path,
+) -> list[Path]:
     setup_charts()
     charts = out / "charts"
     charts.mkdir(parents=True, exist_ok=True)
@@ -378,6 +489,90 @@ def create_charts(samples: pd.DataFrame, summary: pd.DataFrame, config: dict[str
     save_figure(fig, path)
     paths.append(path)
 
+    corpus_order = list(config["quant_benchmark"]["corpora"])
+    lane_order = list(config["quant_benchmark"]["lanes"])
+    quant_labels = {
+        key: value["label"] for key, value in config["quant_benchmark"]["lanes"].items()
+    }
+    quant_palette = ["#64748B", "#0EA5E9", "#F59E0B", "#10B981"]
+
+    fig, ax = plt.subplots(figsize=(10.8, 5.8))
+    for lane_id, color in zip(lane_order, quant_palette):
+        lane_frame = quant_summary[quant_summary["lane"] == lane_id].set_index("corpus").loc[corpus_order]
+        ax.plot(
+            range(len(corpus_order)),
+            lane_frame["query_p50_ms"],
+            marker="o",
+            linewidth=2.2,
+            label=quant_labels[lane_id],
+            color=color,
+        )
+    ax.set_xticks(
+        range(len(corpus_order)),
+        [config["quant_benchmark"]["corpora"][key]["label"] for key in corpus_order],
+    )
+    ax.set_ylabel("Query latency p50 (ms)")
+    ax.set_title("Q0/Q1/Q2 projected query latency")
+    ax.legend(fontsize=8)
+    path = charts / "07_quant_latency_line.png"
+    save_figure(fig, path)
+    paths.append(path)
+
+    million = quant_summary[quant_summary["corpus"] == "C1M"].set_index("lane").loc[lane_order]
+    positions = np.arange(len(lane_order))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(10.8, 5.8))
+    ax.bar(
+        positions - width / 2,
+        million["index_reduction_percent"],
+        width,
+        label="Index reduction",
+        color="#0EA5E9",
+    )
+    ax.bar(
+        positions + width / 2,
+        million["rss_reduction_percent"],
+        width,
+        label="RSS reduction",
+        color="#8B5CF6",
+    )
+    ax.set_xticks(positions, [quant_labels[key].replace(" ", "\n", 1) for key in lane_order])
+    ax.set_ylabel("Reduction versus Q0 (%)")
+    ax.set_ylim(0, 90)
+    ax.set_title("Projected 1m-vector footprint reduction")
+    ax.legend()
+    path = charts / "08_quant_footprint_bar.png"
+    save_figure(fig, path)
+    paths.append(path)
+
+    fig, ax = plt.subplots(figsize=(10.8, 5.8))
+    for lane_id, color in zip(lane_order, quant_palette):
+        row = million.loc[lane_id]
+        ax.scatter(
+            row["query_p50_ms"],
+            row["recall_at_10_mean"],
+            s=max(90, row["index_p50_mb"] / 3),
+            color=color,
+            alpha=0.8,
+            edgecolor="white",
+            linewidth=1,
+            label=quant_labels[lane_id],
+        )
+        ax.annotate(
+            quant_labels[lane_id].split(" ")[0],
+            (row["query_p50_ms"], row["recall_at_10_mean"]),
+            xytext=(5, 5),
+            textcoords="offset points",
+        )
+    ax.set_xlabel("Query latency p50 (ms)")
+    ax.set_ylabel("Recall@10")
+    ax.set_ylim(0.915, 1.0)
+    ax.set_title("Projected quality-speed trade-off at 1m vectors")
+    ax.legend(fontsize=8, loc="lower right")
+    path = charts / "09_quant_quality_tradeoff_scatter.png"
+    save_figure(fig, path)
+    paths.append(path)
+
     return paths
 
 
@@ -393,7 +588,9 @@ def seconds_human(value: float) -> str:
     return f"{value / 3600.0:.1f} h"
 
 
-def write_markdown(config: dict[str, Any], summary: pd.DataFrame, out: Path) -> Path:
+def write_markdown(
+    config: dict[str, Any], summary: pd.DataFrame, quant_summary: pd.DataFrame, out: Path
+) -> Path:
     target = summary[summary["scenario"] == "S4_PROJECTED_DISTRIBUTED"]
     lines = [
         "# Simplicio Loop 4.0 - Simulated Benchmark Projection",
@@ -417,12 +614,30 @@ def write_markdown(config: dict[str, Any], summary: pd.DataFrame, out: Path) -> 
             f"{seconds_human(row['duration_p95_seconds'])} | {pct(row['token_reduction_percent'])} | "
             f"{pct(row['completion_rate'] * 100)} | {row['throughput_p50_tasks_hour']:.2f} tasks/h |"
         )
+    million = quant_summary[quant_summary["corpus"] == "C1M"]
+    lines += [
+        "",
+        "## Projected quantization outcomes at 1m vectors",
+        "",
+        "> Q0/Q1/Q2 results are also **SIMULATED**. Q2a isolates 4-bit retrieval; Q2b adds integral re-ranking.",
+        "",
+        "| Lane | Query p50 | Index | Index reduction | RSS reduction | Recall@10 | nDCG@10 |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for _, row in million.iterrows():
+        lines.append(
+            f"| {row['lane_label']} | {row['query_p50_ms']:.2f} ms | {row['index_p50_mb']:.0f} MB | "
+            f"{pct(row['index_reduction_percent'])} | {pct(row['rss_reduction_percent'])} | "
+            f"{row['recall_at_10_mean']:.3f} | {row['ndcg_at_10_mean']:.3f} |"
+        )
     lines += [
         "",
         "## Method",
         "",
         "A deterministic Monte Carlo model samples phase duration, token volume, failures and retries.",
         "Parallel capacity is bounded by scenario capacity and reduced by workload conflict ratio.",
+        "The quant matrix uses identical corpus inputs across Q0 full precision, Q1 int8, "
+        "Q2a TurboQuant 4-bit and Q2b 4-bit with integral re-ranking.",
         "Every coefficient is editable in `assumptions.json`; rerun the script to regenerate all outputs.",
         "",
         "## Interpretation rules",
@@ -437,6 +652,7 @@ def write_markdown(config: dict[str, Any], summary: pd.DataFrame, out: Path) -> 
         "- Phase baselines are calibration assumptions, not timings from production receipts.",
         "- The blended USD token rate is a normalization input, not a provider price claim.",
         "- Network, repository shape, model behavior and test suites can dominate real results.",
+        "- Quant quality values are assumptions until measured on identical corpus, queries, embeddings and hardware.",
         "- The simulation must be replaced progressively with measured distributions from issue #816.",
         "",
         "## Reproduce",
@@ -470,7 +686,13 @@ def footer(canvas: Any, document: Any) -> None:
     canvas.restoreState()
 
 
-def create_pdf(config: dict[str, Any], summary: pd.DataFrame, chart_paths: list[Path], out: Path) -> Path:
+def create_pdf(
+    config: dict[str, Any],
+    summary: pd.DataFrame,
+    quant_summary: pd.DataFrame,
+    chart_paths: list[Path],
+    out: Path,
+) -> Path:
     register_fonts()
     pdf_path = out / "simplicio-loop-v4-simulated-benchmark.pdf"
     doc = SimpleDocTemplate(
@@ -621,6 +843,62 @@ def create_pdf(config: dict[str, Any], summary: pd.DataFrame, chart_paths: list[
         )
     )
 
+    story.append(PageBreak())
+    story.append(Paragraph("Q0/Q1/Q2 quantization projection", styles["H1DV"]))
+    story.append(
+        Paragraph(
+            "All values below are SIMULATED. Q2a isolates 4-bit retrieval and Q2b measures the projected "
+            "effect of integral re-ranking. The promotion gate requires identical corpus, queries, embeddings "
+            "and hardware across every lane.",
+            styles["BodyDV"],
+        )
+    )
+    story.append(Spacer(1, 5 * mm))
+    million = quant_summary[quant_summary["corpus"] == "C1M"]
+    quant_data = [["Lane", "Query p50", "Index", "Index red.", "RSS red.", "Recall@10"]]
+    for _, row in million.iterrows():
+        quant_data.append(
+            [
+                row["lane_label"],
+                f"{row['query_p50_ms']:.2f} ms",
+                f"{row['index_p50_mb']:.0f} MB",
+                pct(row["index_reduction_percent"]),
+                pct(row["rss_reduction_percent"]),
+                f"{row['recall_at_10_mean']:.3f}",
+            ]
+        )
+    quant_table = Table(
+        quant_data,
+        colWidths=[55 * mm, 24 * mm, 23 * mm, 23 * mm, 23 * mm, 23 * mm],
+        repeatRows=1,
+    )
+    quant_table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), "DejaVu"),
+                ("FONTNAME", (0, 0), (-1, 0), "DejaVu-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7.8),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7C3AED")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.append(quant_table)
+    story.append(Spacer(1, 5 * mm))
+    story.append(
+        Paragraph(
+            "Decision lane: Q2b is promoted only if measured recall/nDCG parity survives while retaining "
+            "the projected footprint and latency advantage. Otherwise the safe fallback is Q1 or Q0.",
+            styles["BodyDV"],
+        )
+    )
+
     for index, path in enumerate(chart_paths):
         story.append(PageBreak())
         story.append(Paragraph(path.stem.replace("_", " ").title(), styles["H1DV"]))
@@ -634,6 +912,9 @@ def create_pdf(config: dict[str, Any], summary: pd.DataFrame, chart_paths: list[
             "Cost uses an editable blended token-rate normalization and is not a provider price quote.",
             "Phase composition shows where optimization remains valuable after context and scheduling improvements.",
             "Recovery includes checkpoint replay plus retry work after an injected crash.",
+            "Quant latency compares Q0, Q1, raw Q2 and re-ranked Q2 across the same projected corpus sizes.",
+            "Footprint reduction normalizes index size and resident memory against Q0 at one million vectors.",
+            "The quant frontier combines p50 latency and Recall@10; marker area represents projected index size.",
         ]
         story.append(Paragraph(captions[index], styles["BodyDV"]))
 
@@ -646,6 +927,8 @@ def create_pdf(config: dict[str, Any], summary: pd.DataFrame, chart_paths: list[
         "validate and review phases receive that parallel speedup.",
         "S0 through S4 are architectural scenarios. S4 represents the projected combination of a resident Fast layer, "
         "Python control plane, Rust hot paths, bounded multi-device workers and heterogeneous runtime routing.",
+        "The quantization model evaluates Q0 full precision, Q1 int8, Q2a TurboQuant 4-bit and Q2b 4-bit with "
+        "integral re-ranking. Its quality priors are deliberately separated from measured evidence.",
         "The simulation does not model every repository topology, model provider, rate limit, CI queue or human approval. "
         "Real receipts must progressively replace each assumed distribution.",
     ]
@@ -690,6 +973,8 @@ def create_pdf(config: dict[str, Any], summary: pd.DataFrame, chart_paths: list[
         "Measure S1 on the same hardware, repository, provider, model and task inputs.",
         "Recalibrate each phase after the corresponding #801 child issue lands.",
         "Run at least 10 measured repetitions per lane; keep warmup separate.",
+        "For quant lanes, freeze corpus, queries, embeddings, hardware and candidate count.",
+        "Record Q2 both before and after integral re-ranking; compare Recall@10, nDCG@10 and MRR.",
         "Report p50, p95, dispersion, quality and acceptance-criteria coverage together.",
         "Publish null plus a reason when tokens, cost, CPU, RSS or I/O cannot be observed.",
         "Never promote a simulated value into README or release claims.",
@@ -739,6 +1024,8 @@ def create_reusable_package(source_dir: Path, out: Path) -> tuple[Path, Path]:
         out / "simplicio-loop-v4-simulated-benchmark.pdf",
         out / "simulated_raw_samples.csv.gz",
         out / "simulated_summary.csv",
+        out / "quant_simulated_raw_samples.csv.gz",
+        out / "quant_simulated_summary.csv",
         out / "simulation_manifest.json",
         *sorted((out / "charts").glob("*.png")),
     ]
@@ -769,6 +1056,8 @@ def main() -> None:
 
     samples = simulate(config, repetitions)
     summary = summarize(samples)
+    quant_samples = simulate_quant(config, repetitions)
+    quant_summary = summarize_quant(quant_samples)
 
     raw_csv = args.output / "simulated_raw_samples.csv"
     samples.to_csv(raw_csv, index=False, quoting=csv.QUOTE_MINIMAL)
@@ -777,6 +1066,15 @@ def main() -> None:
             target.write(source.read())
     raw_csv.unlink()
     summary.to_csv(args.output / "simulated_summary.csv", index=False)
+    quant_raw_csv = args.output / "quant_simulated_raw_samples.csv"
+    quant_samples.to_csv(quant_raw_csv, index=False, quoting=csv.QUOTE_MINIMAL)
+    with quant_raw_csv.open("rb") as source, (
+        args.output / "quant_simulated_raw_samples.csv.gz"
+    ).open("wb") as compressed:
+        with gzip.GzipFile(fileobj=compressed, mode="wb", mtime=0) as target:
+            target.write(source.read())
+    quant_raw_csv.unlink()
+    quant_summary.to_csv(args.output / "quant_simulated_summary.csv", index=False)
     (args.output / "simulation_manifest.json").write_text(
         json.dumps(
             {
@@ -788,15 +1086,19 @@ def main() -> None:
                 "scenarios": list(config["scenarios"]),
                 "workloads": list(config["workloads"]),
                 "sample_rows": len(samples),
+                "quant_lanes": list(config["quant_benchmark"]["lanes"]),
+                "quant_corpora": list(config["quant_benchmark"]["corpora"]),
+                "quant_sample_rows": len(quant_samples),
+                "total_sample_rows": len(samples) + len(quant_samples),
             },
             indent=2,
         )
         + "\n",
         encoding="utf-8",
     )
-    charts = create_charts(samples, summary, config, args.output)
-    write_markdown(config, summary, args.output)
-    create_pdf(config, summary, charts, args.output)
+    charts = create_charts(samples, summary, quant_summary, config, args.output)
+    write_markdown(config, summary, quant_summary, args.output)
+    create_pdf(config, summary, quant_summary, charts, args.output)
     checksum_path, archive_path = create_reusable_package(args.assumptions.parent, args.output)
     print(
         json.dumps(
@@ -804,6 +1106,8 @@ def main() -> None:
                 "status": "ok",
                 "output": str(args.output),
                 "rows": len(samples),
+                "quant_rows": len(quant_samples),
+                "total_rows": len(samples) + len(quant_samples),
                 "checksums": str(checksum_path),
                 "package": str(archive_path),
             },

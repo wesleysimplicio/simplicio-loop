@@ -33,8 +33,91 @@
     {
       "label": "Submodule PR #817",
       "url": "https://github.com/wesleysimplicio/simplicio-loop/pull/817"
+    },
+    {
+      "label": "Quant benchmark issue simplicio-fast #198",
+      "url": "https://github.com/wesleysimplicio/simplicio-fast/issues/198"
     }
   ],
+  "quant_benchmark": {
+    "classification": "SIMULATED",
+    "issue": "https://github.com/wesleysimplicio/simplicio-fast/issues/198",
+    "corpora": {
+      "C10K": {
+        "label": "10k vectors",
+        "vectors": 10000,
+        "q0_index_mb": 30.5,
+        "q0_rss_mb": 95.0,
+        "q0_build_seconds": 3.5,
+        "q0_query_ms": 5.0
+      },
+      "C100K": {
+        "label": "100k vectors",
+        "vectors": 100000,
+        "q0_index_mb": 305.0,
+        "q0_rss_mb": 500.0,
+        "q0_build_seconds": 35.0,
+        "q0_query_ms": 12.0
+      },
+      "C1M": {
+        "label": "1m vectors",
+        "vectors": 1000000,
+        "q0_index_mb": 3050.0,
+        "q0_rss_mb": 3800.0,
+        "q0_build_seconds": 350.0,
+        "q0_query_ms": 35.0
+      }
+    },
+    "lanes": {
+      "Q0_FULL_PRECISION": {
+        "label": "Q0 full precision",
+        "index_multiplier": 1.0,
+        "rss_multiplier": 1.0,
+        "build_multiplier": 1.0,
+        "query_multiplier": 1.0,
+        "rerank_ms": 0.0,
+        "recall_at_10": 0.99,
+        "ndcg_at_10": 0.99
+      },
+      "Q1_INT8": {
+        "label": "Q1 int8",
+        "index_multiplier": 0.35,
+        "rss_multiplier": 0.55,
+        "build_multiplier": 0.8,
+        "query_multiplier": 0.72,
+        "rerank_ms": 0.7,
+        "recall_at_10": 0.975,
+        "ndcg_at_10": 0.98
+      },
+      "Q2_4BIT": {
+        "label": "Q2a TurboQuant 4-bit",
+        "index_multiplier": 0.18,
+        "rss_multiplier": 0.34,
+        "build_multiplier": 0.62,
+        "query_multiplier": 0.48,
+        "rerank_ms": 0.0,
+        "recall_at_10": 0.93,
+        "ndcg_at_10": 0.94
+      },
+      "Q2_4BIT_RERANK": {
+        "label": "Q2b 4-bit + integral rerank",
+        "index_multiplier": 0.18,
+        "rss_multiplier": 0.34,
+        "build_multiplier": 0.62,
+        "query_multiplier": 0.58,
+        "rerank_ms": 1.4,
+        "recall_at_10": 0.985,
+        "ndcg_at_10": 0.988
+      }
+    },
+    "uncertainty": {
+      "size_lognormal_sigma": 0.025,
+      "rss_lognormal_sigma": 0.05,
+      "build_lognormal_sigma": 0.09,
+      "query_lognormal_sigma": 0.08,
+      "quality_sigma": 0.004
+    }
+  },
   "workloads": {
     "mechanical_change": {
       "label": "Mechanical change",
