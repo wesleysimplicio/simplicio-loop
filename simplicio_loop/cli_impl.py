@@ -406,68 +406,70 @@ def status(repo: str, run_id: str, as_json: bool = False, as_text: bool = False)
     return 0
 
 
-def preflight(repo: str, as_json: bool = False) -> int:
-    """Verify the core operators required by the loop and report runtime availability.
+def preflight(repo: str, as_json: bool = False, *, strict: bool = False) -> int:
+    """Verify bound operators and report Runtime/Fast availability.
 
-    Returns exit 0 when all required operators are present, 1 otherwise. Always emits a
-    machine-readable JSON document (also when --json is omitted, for script consumption).
+    Under ``--strict`` / ``SIMPLICIO_LOOP_STRICT=1``:
+    - Runtime is required when operational (auto) or always when forced
+    - Fast is required when operational
+    - hand-edit is reported as forbidden
+
+    Returns exit 0 when all *required* operators are present, 1 otherwise.
     """
-    from .finding_router import route_finding as _route_finding
+    import os as _os
 
-    def _probe(name: str, cmd) -> dict:
-        try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-            ok = out.returncode == 0
-            version = (out.stdout or out.stderr).strip().splitlines()[0] if ok else ""
-            return {"name": name, "present": ok, "version": version,
-                    "error": "" if ok else (out.stderr or out.stdout).strip()[:200]}
-        except (OSError, subprocess.SubprocessError) as exc:
-            return {"name": name, "present": False, "version": "", "error": str(exc)[:200]}
+    from .finding_router import route_finding as _route_finding
+    from .strict_mode import preflight_payload, recommended_env
 
     repo_path = Path(repo).resolve()
-    operators = [
-        _probe("simplicio-mapper", ["simplicio-mapper", "--version"]),
-        _probe("simplicio-dev-cli", ["simplicio-dev-cli", "--help"]),
-        _probe("simplicio-py", ["simplicio-py", "--version"]),
-        _probe("simplicio-runtime", ["simplicio", "--version"]),
-    ]
-    # dev-cli and simplicio-py are alternative names for the same action operator.
-    action_present = any(o["present"] for o in operators
-                         if o["name"] in ("simplicio-dev-cli", "simplicio-py"))
-    all_present = operators[0]["present"] and action_present
-    runtime_available = operators[3]["present"]
-    payload = {
-        "schema": "simplicio.preflight/v1",
-        "repo": str(repo_path),
-        "all_present": all_present,
-        "operators": operators,
-        "runtime_available": runtime_available,
-        "degraded_features": [] if runtime_available else ["runtime-integration"],
-    }
+    if strict:
+        _os.environ["SIMPLICIO_LOOP_STRICT"] = "1"
+    payload = preflight_payload(str(repo_path), strict=strict)
+    all_present = bool(payload.get("all_present"))
+    runtime_available = bool(payload.get("runtime_available"))
+    missing = list(payload.get("missing_operators") or [])
     if as_json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        print("simplicio-loop preflight")
-        for op in operators:
-            mark = "OK " if op["present"] else ("OPTIONAL" if op["name"] == "simplicio-runtime" else "MISSING")
-            ver = f" ({op['version']})" if op["version"] else ""
-            print(f"  [{mark}] {op['name']}{ver}")
-        print("  all_present:" if all_present else "  NOT ALL REQUIRED OPERATORS PRESENT")
-        if not runtime_available:
-            print("  runtime integration: unavailable (core loop continues)")
+        print("simplicio-loop preflight" + (" [STRICT]" if payload.get("strict") else ""))
+        required = set(payload.get("required_operators") or [])
+        for op in payload.get("operators") or []:
+            name = op.get("name", "")
+            present = bool(op.get("present"))
+            if present:
+                mark = "OK "
+            elif name in required or name in {"simplicio-mapper", "simplicio-dev-cli"}:
+                mark = "MISSING"
+            else:
+                mark = "OPTIONAL"
+            ver = f" ({op['version']})" if op.get("version") else ""
+            extra = ""
+            if name == "simplicio-dev-cli" and op.get("resolved_as"):
+                extra = f" via {op['resolved_as']}"
+            print(f"  [{mark}] {name}{ver}{extra}")
+        print("  all_present: true" if all_present else "  NOT ALL REQUIRED OPERATORS PRESENT")
+        print(f"  execution_profile: {payload.get('execution_profile')}")
+        print(f"  hand_edit_forbidden: {payload.get('hand_edit_forbidden')}")
+        if runtime_available:
+            print("  runtime integration: operational (bound when auto/required)")
+        else:
+            print("  runtime integration: unavailable (core loop continues unless required)")
+        if payload.get("strict"):
+            print("  recommended_env:")
+            for key, value in (recommended_env() or {}).items():
+                print(f"    {key}={value}")
     if not all_present:
-        for op in operators:
-            if not op["present"] and op["name"] != "simplicio-runtime":
-                _route_finding(
-                    stage="preflight",
-                    finding_id=f"missing-operator-{op['name']}",
-                    severity="high",
-                    source=f"preflight:{op['name']}",
-                    confirmed=True,
-                    item_id=None,
-                    repo=str(repo_path),
-                    detail=f"Bound operator {op['name']} not present: {op.get('error','')}",
-                )
+        for name in missing:
+            _route_finding(
+                stage="preflight",
+                finding_id=f"missing-operator-{name}",
+                severity="high",
+                source=f"preflight:{name}",
+                confirmed=True,
+                item_id=None,
+                repo=str(repo_path),
+                detail=f"bound operator {name} not present or not operational",
+            )
     return 0 if all_present else 1
 
 
@@ -779,10 +781,16 @@ def main(argv=None) -> int:
     configure_map_commands(map_sub)
 
     p_preflight = sub.add_parser(
-        "preflight", help="verify bound operators (mapper/dev-cli/runtime) are installed")
+        "preflight", help="verify bound operators (mapper/dev-cli/runtime/fast) are installed")
     p_preflight.add_argument("--repo", default=".", help="repository root")
     p_preflight.add_argument("--json", action="store_true",
                              help="emit machine-readable JSON (default: human-readable text)")
+    p_preflight.add_argument(
+        "--strict",
+        action="store_true",
+        help="arm SIMPLICIO_LOOP_STRICT: require operational Runtime/Fast when present, "
+             "forbid hand-edit, lock evidence/mutation authority",
+    )
 
     p_verify = sub.add_parser("verify", help="run the independent watcher and delivery gates")
     p_verify.add_argument("--repo", default=".", help="repository root")
@@ -1009,7 +1017,7 @@ def main(argv=None) -> int:
     if command == "map":
         return dispatch_map(args)
     if command == "preflight":
-        return preflight(args.repo, args.json)
+        return preflight(args.repo, args.json, strict=bool(getattr(args, "strict", False)))
     if command == "findings":
         return findings_command(args)
     if command == "verify":

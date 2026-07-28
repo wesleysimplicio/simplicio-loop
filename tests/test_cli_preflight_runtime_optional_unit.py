@@ -1,4 +1,4 @@
-"""Runtime availability is reported, but is not a prerequisite for core loop work."""
+"""Preflight: Runtime optional when absent; bound when operational/strict."""
 from __future__ import annotations
 
 import contextlib
@@ -11,16 +11,22 @@ from simplicio_loop import cli
 
 def test_preflight_continues_without_optional_runtime(monkeypatch, tmp_path):
     def fake_run(command, **_kwargs):
-        if command[0] == "simplicio":
+        binary = command[0]
+        if binary == "simplicio" or binary.endswith("simplicio.exe"):
             return SimpleNamespace(returncode=127, stdout="", stderr="runtime missing")
+        if "simplicio-fast" in binary:
+            return SimpleNamespace(returncode=127, stdout="", stderr="fast missing")
         return SimpleNamespace(returncode=0, stdout="ready\n", stderr="")
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr("simplicio_loop.strict_mode.subprocess.run", fake_run)
+    monkeypatch.setattr("simplicio_loop.strict_mode.shutil.which", lambda b: None if b in {"simplicio", "simplicio-fast"} else "/bin/" + b)
     findings = []
     monkeypatch.setattr(
         "simplicio_loop.finding_router.route_finding",
         lambda **finding: findings.append(finding),
     )
+    monkeypatch.delenv("SIMPLICIO_LOOP_STRICT", raising=False)
+    monkeypatch.setenv("SIMPLICIO_LOOP_REQUIRE_RUNTIME", "auto")
 
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
@@ -29,5 +35,31 @@ def test_preflight_continues_without_optional_runtime(monkeypatch, tmp_path):
     receipt = json.loads(output.getvalue())
     assert receipt["all_present"] is True
     assert receipt["runtime_available"] is False
-    assert receipt["degraded_features"] == ["runtime-integration"]
+    assert "runtime-integration" in receipt["degraded_features"]
     assert findings == []
+
+
+def test_preflight_strict_binds_operational_runtime(monkeypatch, tmp_path):
+    def which(binary):
+        return "/bin/" + binary
+
+    def fake_run(command, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout="Simplicio Runtime 3.5.5\n", stderr="")
+
+    monkeypatch.setattr("simplicio_loop.strict_mode.shutil.which", which)
+    monkeypatch.setattr("simplicio_loop.strict_mode.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "simplicio_loop.finding_router.route_finding",
+        lambda **_finding: None,
+    )
+
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = cli.preflight(str(tmp_path), as_json=True, strict=True)
+    assert code == 0
+    receipt = json.loads(output.getvalue())
+    assert receipt["strict"] is True
+    assert receipt["runtime_available"] is True
+    assert receipt["execution_profile"] == "runtime-backed"
+    assert receipt["hand_edit_forbidden"] is True
+    assert "simplicio" in receipt["required_operators"]

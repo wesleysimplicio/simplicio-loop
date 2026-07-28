@@ -1,0 +1,87 @@
+"""Strict mode + adaptive Runtime/Fast bind."""
+from __future__ import annotations
+
+from simplicio_loop import strict_mode as sm
+
+
+def test_strict_enabled_from_env():
+    assert sm.strict_enabled({"SIMPLICIO_LOOP_STRICT": "1"}) is True
+    assert sm.strict_enabled({"SIMPLICIO_LOOP_MODE": "full-stack"}) is True
+    assert sm.strict_enabled({}) is False
+
+
+def test_required_operators_include_runtime_when_operational(monkeypatch):
+    monkeypatch.setattr(sm, "runtime_status", lambda env=None: {
+        "binary": "simplicio", "present": True, "operational": True, "version": "3.5.5", "error": "",
+    })
+    monkeypatch.setattr(sm, "fast_status", lambda env=None: {
+        "binary": "simplicio-fast", "present": False, "operational": False, "version": "", "error": "",
+    })
+    monkeypatch.setattr(sm, "action_operator_status", lambda env=None: {
+        "operational": True, "resolved_as": "simplicio-dev-cli", "version": "ok", "error": "",
+    })
+    monkeypatch.setattr(sm, "_probe_version", lambda binary, args=("--version",), timeout=8.0: {
+        "binary": binary, "present": True, "operational": True, "version": "ok", "error": "",
+    })
+    required = sm.required_bound_operators({"SIMPLICIO_LOOP_REQUIRE_RUNTIME": "auto"})
+    assert "simplicio-mapper" in required
+    assert "simplicio-dev-cli" in required
+    assert "simplicio" in required
+
+
+def test_required_operators_skip_runtime_when_absent(monkeypatch):
+    monkeypatch.setattr(sm, "runtime_status", lambda env=None: {
+        "binary": "simplicio", "present": False, "operational": False, "version": "", "error": "missing",
+    })
+    monkeypatch.setattr(sm, "fast_status", lambda env=None: {
+        "binary": "simplicio-fast", "present": False, "operational": False, "version": "", "error": "",
+    })
+    required = sm.required_bound_operators({"SIMPLICIO_LOOP_REQUIRE_RUNTIME": "auto"})
+    assert "simplicio" not in required
+
+
+def test_strict_requires_operational_fast(monkeypatch):
+    monkeypatch.setattr(sm, "runtime_status", lambda env=None: {
+        "binary": "simplicio", "present": False, "operational": False, "version": "", "error": "",
+    })
+    monkeypatch.setattr(sm, "fast_status", lambda env=None: {
+        "binary": "simplicio-fast", "present": True, "operational": True, "version": "2.0.14", "error": "",
+    })
+    required = sm.required_bound_operators({"SIMPLICIO_LOOP_STRICT": "1"})
+    assert "simplicio-fast" in required
+
+
+def test_resolve_profile_runtime_backed_when_operational(monkeypatch):
+    monkeypatch.setattr(sm, "runtime_status", lambda env=None: {
+        "binary": "simplicio", "present": True, "operational": True, "version": "3.5.5", "error": "",
+    })
+    assert sm.resolve_execution_profile({"SIMPLICIO_EXECUTION_PROFILE": "auto"}) == "runtime-backed"
+    assert sm.resolve_execution_profile({}) == "runtime-backed"
+    assert sm.resolve_execution_profile({"SIMPLICIO_EXECUTION_PROFILE": "standalone"}) == "standalone"
+
+
+def test_hand_edit_forbidden_under_strict():
+    assert sm.hand_edit_forbidden({"SIMPLICIO_LOOP_STRICT": "1"}) is True
+    assert sm.hand_edit_forbidden({}) is False
+
+
+def test_preflight_payload_shape(monkeypatch, tmp_path):
+    monkeypatch.setattr(sm, "runtime_status", lambda env=None: {
+        "binary": "simplicio", "present": True, "operational": True, "version": "3.5.5", "error": "",
+    })
+    monkeypatch.setattr(sm, "fast_status", lambda env=None: {
+        "binary": "simplicio-fast", "present": True, "operational": True, "version": "2.0.14", "error": "",
+    })
+    monkeypatch.setattr(sm, "action_operator_status", lambda env=None: {
+        "operational": True, "resolved_as": "simplicio-dev-cli", "version": "ok", "error": "",
+    })
+    monkeypatch.setattr(sm, "_probe_version", lambda binary, args=("--version",), timeout=8.0: {
+        "binary": binary, "present": True, "operational": True, "version": "ok", "error": "",
+    })
+    payload = sm.preflight_payload(str(tmp_path), strict=True)
+    assert payload["schema"] == "simplicio.preflight/v1"
+    assert payload["strict"] is True
+    assert payload["runtime_available"] is True
+    assert payload["execution_profile"] == "runtime-backed"
+    assert payload["hand_edit_forbidden"] is True
+    assert "simplicio" in payload["required_operators"]

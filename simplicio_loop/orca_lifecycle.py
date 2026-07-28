@@ -89,9 +89,16 @@ def lifecycle_to_orca_canonical_status(state: str) -> str:
 
 
 def _disabled() -> bool:
-    return str(os.environ.get("SIMPLICIO_LOOP_ORCA_LIFECYCLE_SYNC") or "").strip().lower() in {
-        "0", "false", "no", "off", "legacy",
-    }
+    """Orca is opt-in only.
+
+    Default (unset) is disabled so a normal loop never depends on Orca.
+    Enable explicitly with ``SIMPLICIO_LOOP_ORCA_LIFECYCLE_SYNC=1`` (or true/on/yes).
+    """
+    raw = str(os.environ.get("SIMPLICIO_LOOP_ORCA_LIFECYCLE_SYNC") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on", "enabled", "canonical"}:
+        return False
+    # Unset, empty, off, 0, false, no, legacy → disabled (optional host integration).
+    return True
 
 
 def _command() -> str:

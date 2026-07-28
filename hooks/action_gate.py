@@ -500,8 +500,23 @@ def cmd_scan_diff(opts):
     sys.exit(0)
 
 
+def _hand_edit_forbidden():
+    """Strict operator-only mode: host Write/Edit tools must not mutate the tree."""
+    val = (os.environ.get("SIMPLICIO_LOOP_STRICT") or os.environ.get("SIMPLICIO_LOOP_FORBID_HAND_EDIT") or "").strip().lower()
+    if val in {"1", "true", "yes", "on", "strict", "full-stack", "required"}:
+        return True
+    mode = (os.environ.get("SIMPLICIO_LOOP_MODE") or "").strip().lower()
+    return mode in {"strict", "full-stack"}
+
+
+_HAND_EDIT_TOOLS = frozenset({
+    "write", "edit", "strreplace", "search_replace", "applypatch", "apply_patch",
+    "create_file", "delete_file", "notebookedit", "editnotebook",
+})
+
+
 def from_pretooluse():
-    """Claude PreToolUse mode: read tool call JSON on stdin, gate the Bash command."""
+    """Claude PreToolUse mode: gate Bash and, under strict mode, block hand-edit tools."""
     try:
         relevant = _project_relevant()
     except Exception:
@@ -513,6 +528,17 @@ def from_pretooluse():
         data = json.loads(raw) if raw.strip() else {}
     except Exception:
         sys.exit(0)  # not our JSON → don't interfere with non-Bash tools
+    tool_name = str(data.get("tool_name") or data.get("name") or "").strip().lower()
+    # Normalize names like "Write", "Edit", "mcp__...__Write"
+    tool_tail = tool_name.rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+    if _hand_edit_forbidden() and (tool_name in _HAND_EDIT_TOOLS or tool_tail in _HAND_EDIT_TOOLS):
+        reason = (
+            "SIMPLICIO_LOOP_STRICT forbids host hand-edit tools (%s); "
+            "use simplicio-dev-cli / simplicio-py task for mutations"
+            % (tool_name or tool_tail or "edit")
+        )
+        _emit_and_exit(_verdict(False, reason), pretooluse=True, cmd=tool_name)
+        return
     cmd = (data.get("tool_input", {}) or {}).get("command", "")
     if not cmd:
         sys.exit(0)
