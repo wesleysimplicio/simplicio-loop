@@ -166,6 +166,9 @@ def test_s1_loop_stop_helpers_degrade_silently_without_loop_progress(tmp_path):
     os.chdir(str(tmp_path))
     try:
         with _s1_loop_progress_deleted():
+            # Other tests may have placed a bundled copy on sys.path. Exercise
+            # the hook's actual optional-dependency boundary deterministically.
+            ls._loop_progress_module = lambda: None
             prefix = ls._progress_header_prefix(1, 0)
             ls._emit_final_progress("reason", "blocked")  # must not raise
     finally:

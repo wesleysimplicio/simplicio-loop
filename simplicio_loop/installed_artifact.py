@@ -37,7 +37,10 @@ def query_installed_artifact(
         "'path':str(p.resolve()),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()},"
         "sort_keys=True))"
     )
-    argv = list(command or (python_executable, "-I", "-c", probe))
+    # Keep the probe in a separate interpreter while allowing the core
+    # no-network guard to propagate through sitecustomize.  Isolation flags
+    # such as -I/-S intentionally suppress that guard and are rejected.
+    argv = list(command or (python_executable, "-c", probe))
     process = subprocess.run(
         argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False
     )

@@ -6,7 +6,11 @@ import threading
 import pytest
 
 from simplicio_loop.github_drain_admission import build_admission_request
-from simplicio_loop.github_drain_intake import _digest
+from simplicio_loop.github_drain_intake import (
+    PLANNER_REVISION,
+    _build_item_planning_receipt,
+    _digest,
+)
 from simplicio_loop.hub_governor import ResourceGovernor, ResourceLimits, ResourceRequest
 from simplicio_loop.hub_queue_retry import HubRetryQueue, QueueRetryError
 from simplicio_loop.hub_scheduler import FairScheduler, ScheduledJob
@@ -14,6 +18,23 @@ from simplicio_loop.hub_service import HubService
 
 
 def _job(run_digest: str = "a" * 64, *, title: str = "one"):
+    acceptance_criteria = [{
+        "id": "AC-TITLE",
+        "text": f"Implementar e verificar: {title}",
+        "origin": "source",
+        "state": "pending",
+    }, {
+        "id": "AC-EVIDENCE-GATE",
+        "text": "Concluir somente com evidência concreta e receipt de entrega.",
+        "origin": "derived",
+        "state": "pending",
+    }]
+    planning_receipt = _build_item_planning_receipt(
+        item_number=1,
+        source_revision="r1",
+        acceptance_criteria=acceptance_criteria,
+        planner_revision=PLANNER_REVISION,
+    )
     source = {
         "digest": _digest([1]), "open_issues": [1], "observed_at": "2026-07-19T00:00:00Z",
     }
@@ -44,6 +65,8 @@ def _job(run_digest: str = "a" * 64, *, title: str = "one"):
             "labels": [], "source_revision": "r1", "observed_at": "2026-07-19T00:00:00Z",
             "dependencies": [], "external_dependencies_closed": [], "risk": "low",
             "state": "planned",
+            "acceptance_criteria": acceptance_criteria,
+            "planning_receipt": planning_receipt,
         }},
         "external_dependencies": {},
         "plan": plan,

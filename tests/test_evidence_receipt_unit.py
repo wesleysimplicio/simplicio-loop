@@ -101,7 +101,9 @@ else:
                        "SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
                        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
                        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight,
-                       "PATH": str(operator_bin) + os.pathsep + os.environ.get("PATH", ""),
+                       # Do not inherit a host-installed operator: this test proves the
+                       # explicit dry-run boundary and must remain PARTIAL everywhere.
+                       "PATH": str(operator_bin) + os.pathsep + os.defpath,
                    })
     assert started.returncode == 22, started.stdout + started.stderr
     payload = json.loads(started.stdout)
