@@ -663,6 +663,9 @@ def findings_command(args) -> int:
 
 def main(argv=None) -> int:
     argv_list = list(argv) if argv is not None else list(sys.argv[1:])
+    if argv_list[:1] == ["fast-v3"]:
+        from .fast_v3_cli import main as fast_v3_main
+        return fast_v3_main(argv_list[1:])
     if argv_list[:1] == ["hub-drain-admit"]:
         from .hub_drain_admission_cli import main as drain_admission_main
         return drain_admission_main(argv_list[1:])
