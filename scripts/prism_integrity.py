@@ -16,9 +16,9 @@ from typing import Any
 SCHEMA = "simplicio.prism-integrity/v1"
 MINIMUM_PYTHON = (3, 11)
 DEPENDENCY_FLOORS = {
-    "simplicio-cli": (0, 16, 3),
-    "simplicio-mapper": (0, 19, 0),
-    "simplicio-fast": (2, 0, 14),
+    "simplicio-cli": (0, 18, 0),
+    "simplicio-mapper": (0, 26, 0),
+    "simplicio-fast": (2, 0, 16),
 }
 BRANCH_POLICY = {
     "simplicio-mapper": "main",
@@ -57,12 +57,18 @@ def _check(
 
 
 def _gitlinks(repo: Path) -> dict[str, str]:
-    result = subprocess.run(
-        ["git", "-C", str(repo), "ls-tree", "-r", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "ls-tree", "-r", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError:
+        # Windows hosts can raise WinError on redirected handles; treat as
+        # "no gitlinks observed" so pins still validate from the manifest.
+        return {}
     if result.returncode:
         return {}
     links: dict[str, str] = {}

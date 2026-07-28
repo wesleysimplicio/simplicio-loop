@@ -277,13 +277,23 @@ def _runtime_probe(runtime_binary: str | None) -> dict[str, Any]:
             "version": None,
             "reason_code": "RUNTIME_BINARY_NOT_FOUND",
         }
-    result = subprocess.run(
-        [resolved, "--version"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [resolved, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError:
+        return {
+            "available": False,
+            "compatible": False,
+            "binary": resolved,
+            "version": None,
+            "reason_code": "RUNTIME_VERSION_PROBE_FAILED",
+        }
     version = (result.stdout or result.stderr).strip() or None
     return {
         "available": result.returncode == 0,
@@ -299,12 +309,16 @@ def _runtime_probe(runtime_binary: str | None) -> dict[str, Any]:
 
 
 def _git_sha() -> str | None:
-    result = subprocess.run(
-        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
     return result.stdout.strip() or None
 
 

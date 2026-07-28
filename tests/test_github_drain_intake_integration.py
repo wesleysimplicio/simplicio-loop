@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 import json
-import fcntl
+import os
+import sys
 
 import pytest
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - non-Windows
+    msvcrt = None  # type: ignore[assignment]
 
 from simplicio_loop.github_drain_intake import (
     PLANNER_REVISION,
@@ -534,7 +544,13 @@ def test_checkpoint_schema_workspace_items_and_lock_fail_closed(tmp_path):
 
     lock_path = valid_path.with_suffix(".json.lock")
     with lock_path.open("a+b") as stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if fcntl is not None:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt is not None:
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:  # pragma: no cover
+            pytest.skip("no file-lock primitive available")
         with pytest.raises(DrainCheckpointError) as excinfo:
             _run(tmp_path, source, checkpoint="valid.json")
     assert excinfo.value.reason_code == "checkpoint_locked"

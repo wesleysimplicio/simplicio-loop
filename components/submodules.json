@@ -11,19 +11,19 @@
       "path": "components/simplicio-mapper",
       "url": "https://github.com/wesleysimplicio/simplicio-mapper.git",
       "ref": "main",
-      "sha": "412d5fbe23188aef3f0bfd1dbe56b867e2ad6f96"
+      "sha": "dfa15b324f6051c1d5ed37fb033a946a7a638bd5"
     },
     "simplicio-dev-cli": {
       "path": "components/simplicio-dev-cli",
       "url": "https://github.com/wesleysimplicio/simplicio-dev-cli.git",
       "ref": "main",
-      "sha": "229b9b245c1f2dec901d9206a900d750d6520d74"
+      "sha": "4776b20fcdf6d46f429e5dc11f53baa39cec5b4d"
     },
     "simplicio-fast": {
       "path": "components/simplicio-fast",
       "url": "https://github.com/wesleysimplicio/simplicio-fast.git",
       "ref": "master",
-      "sha": "12f337149f908fa1a268fc9f6f8c7dd33b959ff0"
+      "sha": "12f85e4abc09dc4c94562c3863bdf934fca1ffc0"
     }
   }
 }
