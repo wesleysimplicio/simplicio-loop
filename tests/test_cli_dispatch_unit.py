@@ -135,9 +135,29 @@ def test_main_run_dispatches_all_positional_and_flags(monkeypatch):
 
 
 def test_run_wraps_conduct_run_and_prints_json(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "conduct_run", lambda repo, task_path, delivery, max_iterations: {"ok": True})
-    rc = cli.run("/r", "t.md", "verified", 3)
+    captured = {}
+
+    def fake_conduct_run(repo, task_path, delivery, max_iterations, *,
+                         quality_provider, quality_policy):
+        captured.update(
+            quality_provider=quality_provider,
+            quality_policy=quality_policy,
+        )
+        return {"ok": True, "outcome": {"exit_code": 0}}
+
+    monkeypatch.setattr(cli, "conduct_run", fake_conduct_run)
+    rc = cli.run(
+        "/r",
+        "t.md",
+        "verified",
+        3,
+        quality_provider="simplicio_loop_quality",
+    )
     assert rc == 0
+    assert captured == {
+        "quality_provider": "simplicio_loop_quality",
+        "quality_policy": "strict-default",
+    }
     assert json.loads(capsys.readouterr().out)["ok"] is True
 
 
