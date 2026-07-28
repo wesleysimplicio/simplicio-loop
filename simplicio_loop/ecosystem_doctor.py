@@ -23,6 +23,11 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+try:  # Keep wheel installs independent from the checkout-only scripts helper.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows uses the best-effort append below.
+    fcntl = None
+
 SCHEMA = "simplicio.ecosystem-doctor/v1"
 HANDSHAKE_SCHEMA = "simplicio.ecosystem-handshake/v1"
 STATUS_AVAILABLE = "available"
@@ -300,6 +305,36 @@ def _handshake_digest(payload: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
+def _append_journal_line(target: Path, line: str) -> bool:
+    """Append atomically in a wheel install, or reuse the checkout lock helper."""
+    try:
+        scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
+        if (scripts_dir / "_locked_append.py").is_file():
+            if str(scripts_dir) not in sys.path:
+                sys.path.insert(0, str(scripts_dir))
+            from _locked_append import locked_append_line
+            return bool(locked_append_line(str(target), line))
+    except (ImportError, OSError, TypeError, ValueError):
+        pass
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = Path(str(target) + ".lock")
+    try:
+        with lock_path.open("a+") as lock:
+            if fcntl is not None:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                with target.open("a", encoding="utf-8") as output:
+                    output.write(line if line.endswith("\n") else line + "\n")
+                    output.flush()
+                    os.fsync(output.fileno())
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        return True
+    except OSError:
+        return False
+
+
 def persist_handshake(report: Mapping[str, Any], repo: Path, *, journal_path: Path | None = None) -> dict[str, Any]:
     """Append the handshake before planning, using the loop's cross-process lock."""
     target = journal_path or repo / ".simplicio" / "orchestrator" / "loop" / "journal.jsonl"
@@ -308,14 +343,7 @@ def persist_handshake(report: Mapping[str, Any], repo: Path, *, journal_path: Pa
               "doctor_schema": SCHEMA, "status": report.get("status"),
               "profile": report.get("profile"), "handshake_sha": _handshake_digest(report),
               "components": report.get("components", [])}
-    try:
-        scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
-        if str(scripts_dir) not in sys.path:
-            sys.path.insert(0, str(scripts_dir))
-        from _locked_append import locked_append_line
-        written = bool(locked_append_line(str(target), json.dumps(record, ensure_ascii=False, sort_keys=True)))
-    except (ImportError, OSError, TypeError, ValueError):
-        written = False
+    written = _append_journal_line(target, json.dumps(record, ensure_ascii=False, sort_keys=True))
     return {"path": str(target), "written": written, "record": record}
 
 
