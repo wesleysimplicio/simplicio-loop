@@ -22,8 +22,23 @@ There is no mutating fallback. Runtime and Dev CLI never declare work complete.
 
 ## Integration contract
 
-Call `validate_pre_decision` immediately before any side effect, persist the
-idempotency set durably in the caller, then call `verify_post_receipt`. Feed
-the resulting evidence into `gate_completion` alongside the existing
-Completion Auditor checks. The in-memory set accepted by these pure functions
-is a testable adapter; production owns durable storage and atomic commit.
+`HookwallEffectLedger` is the production persistence boundary. It uses a
+SQLite WAL with `synchronous=FULL` and an atomic reservation before execution.
+Only one caller may execute an idempotency key; verified retries reuse compact
+evidence, while reserved, effect-confirmed, or uncertain retries fail closed
+for reconciliation. Its append-only hash chain detects offline tampering.
+
+The sealed envelope also contains the exact write set and allowlisted command.
+Traversal, globs, absolute paths, symlink escapes, and non-Dev-CLI mutation
+commands are rejected before reservation.
+
+`HookwallRollout` persists shadow, canary, enforced, and rollback transitions
+using fsync plus atomic replacement. All four modes retain
+`mutation_requires_hookwall=true`; rollout changes observation and routing,
+never whether a mutable effect must pass the boundary.
+
+The cross-repository inventory is
+`contracts/hookwall/v1/entrypoints.json`. Loop's entrypoint is verified. The
+Runtime Stage ABI and Dev CLI apply/rollback entrypoints remain explicit open
+dependencies in Runtime #3629 and Dev CLI #353. Therefore Loop issue #783 must
+remain open until those repositories publish compatible, tested evidence.
