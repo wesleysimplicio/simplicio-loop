@@ -79,6 +79,22 @@ def test_cancellation_propagates_and_partial_failure_is_held(tmp_path):
     assert called == ["a", "b"]
 
 
+def test_converge_seals_exactly_one_winner_and_cancels_loser(tmp_path):
+    run = lifecycle(tmp_path)
+    for candidate, work in (("a", 2), ("b", 1)):
+        run.checkpoint(candidate, "s1", "READY_TO_PROMOTE", receipts=["tests"], work_units=work)
+    cancelled = []
+    result = run.converge(
+        [CandidateSpec("a", 0.9, 0.1), CandidateSpec("b", 0.1, 0.1)],
+        expected_shards=["s1"],
+        cancel_callback=cancelled.append,
+    )
+    assert result["status"] == "SEALED"
+    assert result["fence"]["winner_id"] == "b"
+    assert cancelled == ["a"]
+    assert run.seal_winner(result["fan_in"]) == result["fence"]
+
+
 def test_gc_never_removes_active_lease_then_reclaims_cancelled_overlay(tmp_path):
     run = lifecycle(tmp_path)
     run.checkpoint("a", "s1", "CANCELLED")
