@@ -243,7 +243,6 @@ class CheckpointLifecycle:
                 -spec.risk,
                 -spec.uncertainty,
                 -sum(item["work_units"] for item in values),
-                spec.candidate_id,
             )
             candidates.append({"candidate_id": spec.candidate_id, "score": score, "checkpoints": values})
         winner = max(candidates, key=lambda item: item["score"])
