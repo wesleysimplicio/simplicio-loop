@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/telemetry-event-v1.schema.json",
+  "title": "TelemetryEvent/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "event_id", "recorded_at_ns", "correlation", "labels",
+    "metrics", "payload", "previous_hash", "event_hash"
+  ],
+  "properties": {
+    "schema": {"const": "simplicio.telemetry-event/v1"},
+    "event_id": {"type": "string"},
+    "recorded_at_ns": {"type": "integer"},
+    "correlation": {"type": "object", "additionalProperties": {"type": "string"}},
+    "labels": {"type": "object", "additionalProperties": {"type": "string"}},
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["value", "unit", "origin", "reason"],
+        "properties": {
+          "value": {"type": ["number", "null"]},
+          "unit": {"type": "string", "minLength": 1},
+          "origin": {"type": "string", "minLength": 1},
+          "reason": {"type": ["string", "null"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "payload": {"type": "object"},
+    "previous_hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "event_hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+  }
+}
