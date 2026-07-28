@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.38.7] - 2026-07-28
+
+- Raise the installed dependency floors and exact submodule pins to Mapper
+  0.26.0, Dev CLI 0.18.0, and Fast 2.0.16.
+- Advance Fast to the post-release verified tip with corrected version tests
+  and Git-tree-only quant benchmark provenance.
+- Keep strict routing, admission planning receipts, subprocess network guards,
+  plugin parity, and the full core gate fail-closed.
+
 ## [3.38.6] - 2026-07-28
 
 - Enforce strict operator/Runtime routing with Orca available only by explicit
