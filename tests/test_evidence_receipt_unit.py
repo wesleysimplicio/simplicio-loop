@@ -49,6 +49,32 @@ def test_evidence_receipt_built_from_run_and_watcher_reads_it(tmp_path):
     (src / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
     task = tmp_path / "task.md"
     task.write_text(TASK, encoding="utf-8")
+    operator_bin = tmp_path / "bin"
+    operator_bin.mkdir()
+    mapper = operator_bin / "simplicio-mapper"
+    mapper.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+
+if len(sys.argv) > 1 and sys.argv[1] == "inspect":
+    print(json.dumps({
+        "status": {"artifacts_present": True, "fresh": True},
+        "evidence": {"artifacts": {"snapshot": {"exists": True}}},
+    }))
+elif len(sys.argv) > 1 and sys.argv[1] == "handoff":
+    print(json.dumps({
+        "context_pack": {
+            "pack_hash": "test-evidence-receipt",
+            "files": [{"path": "src/app.py"}],
+        }
+    }))
+else:
+    print("{}")
+""",
+        encoding="utf-8",
+    )
+    mapper.chmod(0o755)
     fake_operator = json.dumps({
         "execution_state": "dry_run",
         "returncode": 0,
@@ -57,24 +83,29 @@ def test_evidence_receipt_built_from_run_and_watcher_reads_it(tmp_path):
         "argv": ["simplicio-dev-cli", "task", "demo"]
     })
     fake_mapper_preflight = json.dumps({
-        "version_stdout": "simplicio-mapper 0.14.0",
+        "version_stdout": "simplicio-mapper 0.26.0",
         "help_stdout": " inspect handoff ask sync drift ",
         "version_returncode": 0,
         "help_returncode": 0,
     })
     fake_devcli_preflight = json.dumps({
-        "help_stdout": " task --dry-run-task --json ",
+        "version_stdout": "simplicio-dev-cli 0.18.0",
+        "help_stdout": " task --dry-run-task --json --bound-paths --target --task-spec --mode ",
+        "version_returncode": 0,
         "help_returncode": 0,
     })
     started = _run(CLI + ["run", "--repo", str(repo), "--task", str(task),
-                          "--delivery", "verified", "--max-iterations", "9"], REPO,
+                          "--delivery", "verified", "--max-iterations", "9",
+                          "--quality-provider", "simplicio_loop_quality"], REPO,
                    env={
                        "SIMPLICIO_LOOP_FAKE_OPERATOR_JSON": fake_operator,
                        "SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON": fake_mapper_preflight,
                        "SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON": fake_devcli_preflight,
+                       "PATH": str(operator_bin) + os.pathsep + os.environ.get("PATH", ""),
                    })
-    assert started.returncode == 0, started.stdout + started.stderr
+    assert started.returncode == 22, started.stdout + started.stderr
     payload = json.loads(started.stdout)
+    assert payload["outcome"]["outcome"] == "PARTIAL"
     run_dir = payload["run_dir"]
     evidence_path = os.path.join(run_dir, "evidence-receipt.json")
     assert os.path.exists(evidence_path)
@@ -95,7 +126,11 @@ def test_evidence_receipt_built_from_run_and_watcher_reads_it(tmp_path):
                          encoding="utf-8")
     (loop_dir / "anchor.json").write_text(json.dumps({"criteria": [{"id": "AC1", "status": "done"}]}),
                                           encoding="utf-8")
-    r = _run([sys.executable, WATCHER, "verify"], str(repo), env={"SIMPLICIO_RUN_DIR": run_dir})
+    r = _run(
+        [sys.executable, WATCHER, "verify"],
+        str(repo),
+        env={"SIMPLICIO_RUN_DIR": run_dir, "SIMPLICIO_LOOP_REPO": str(repo)},
+    )
     assert r.returncode == 0
     state = json.loads((loop_dir / "watcher_state.json").read_text(encoding="utf-8"))
     assert state["status"] == "UNVERIFIED"
