@@ -1,0 +1,37 @@
+{
+  "schema": "simplicio.loop-submodules-receipt/v1",
+  "source": {
+    "superproject_base": "16b8f94cf31a719cb7c48fe320d87ec88e8b663a",
+    "generated_from": "agent/add-ecosystem-submodules"
+  },
+  "checks": {
+    "gitmodules_urls_match_manifest": "PASS",
+    "gitlink_shas_match_manifest": "PASS",
+    "floating_update_disabled": "PASS",
+    "clean_checkout_probe": "PASS",
+    "dirty_and_divergent_diagnostics": "PASS"
+  },
+  "components": {
+    "simplicio-mapper": {
+      "path": "components/simplicio-mapper",
+      "sha": "412d5fbe23188aef3f0bfd1dbe56b867e2ad6f96"
+    },
+    "simplicio-dev-cli": {
+      "path": "components/simplicio-dev-cli",
+      "sha": "229b9b245c1f2dec901d9206a900d750d6520d74"
+    },
+    "simplicio-fast": {
+      "path": "components/simplicio-fast",
+      "sha": "12f337149f908fa1a268fc9f6f8c7dd33b959ff0"
+    }
+  },
+  "hashes": {
+    ".gitmodules": "5fef866b3ebd3ceb84225fa572d16d9154463f757efa794e6463774c9f1cab9e",
+    "components/submodules.json": "047165cb8491f501306c3b16678e26b4cb912d61614753d33c518a1207f14597"
+  },
+  "metrics": {
+    "network_requests": 0,
+    "duration_ms": null,
+    "duration_reason": "The contract is deterministic; wall-clock timing is environment-specific."
+  }
+}

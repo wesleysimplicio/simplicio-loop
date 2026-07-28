@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json.schemastore.org/simplicio-submodules-v1.json",
+  "schema": "simplicio.loop-submodules/v1",
+  "policy": {
+    "floating_updates": false,
+    "provider_bootstrap": false,
+    "network_is_optional": true
+  },
+  "components": {
+    "simplicio-mapper": {
+      "path": "components/simplicio-mapper",
+      "url": "https://github.com/wesleysimplicio/simplicio-mapper.git",
+      "ref": "main",
+      "sha": "412d5fbe23188aef3f0bfd1dbe56b867e2ad6f96"
+    },
+    "simplicio-dev-cli": {
+      "path": "components/simplicio-dev-cli",
+      "url": "https://github.com/wesleysimplicio/simplicio-dev-cli.git",
+      "ref": "main",
+      "sha": "229b9b245c1f2dec901d9206a900d750d6520d74"
+    },
+    "simplicio-fast": {
+      "path": "components/simplicio-fast",
+      "url": "https://github.com/wesleysimplicio/simplicio-fast.git",
+      "ref": "master",
+      "sha": "12f337149f908fa1a268fc9f6f8c7dd33b959ff0"
+    }
+  }
+}
