@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Offline contract tests for scripts/submodules.py."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import submodules  # noqa: E402
+
+
+class SubmoduleContracts(unittest.TestCase):
+    def test_manifest_and_gitmodules_have_three_known_pins(self):
+        pins = submodules.load_pins(ROOT / "components" / "submodules.json")
+        modules = submodules.load_gitmodules(ROOT / ".gitmodules")
+        self.assertEqual(set(pins), {"simplicio-mapper", "simplicio-dev-cli", "simplicio-fast"})
+        self.assertEqual(len(modules), 3)
+        for item in pins.values():
+            self.assertEqual(modules[item["path"]]["path"], item["path"])
+            self.assertEqual(len(item["sha"]), 40)
+
+    def test_floating_policy_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pins.json"
+            document = json.loads((ROOT / "components" / "submodules.json").read_text())
+            document["policy"]["floating_updates"] = True
+            path.write_text(json.dumps(document))
+            with self.assertRaises(submodules.SubmoduleError):
+                submodules.load_pins(path)
+
+    def test_status_reports_missing_without_mutation(self):
+        pins = submodules.load_pins(ROOT / "components" / "submodules.json")
+        with mock.patch.object(submodules, "_gitlink_shas", return_value={
+            item["path"]: item["sha"] for item in pins.values()
+        }), mock.patch.object(submodules, "REPO", ROOT):
+            report = submodules.inspect()
+        self.assertIn(report["components"]["simplicio-fast"]["state"], {"missing", "not_repository", "ok"})
+        self.assertFalse(report["ok"])
+
+    def test_clean_checkout_and_divergence_receipts(self):
+        """Exercise the same checkout probe used by a clean-clone preflight."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            component = root / "components" / "simplicio-fast"
+            component.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(component)], check=True)
+            subprocess.run(["git", "-C", str(component), "config", "user.email", "test@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(component), "config", "user.name", "submodule-test"], check=True)
+            (component / "README").write_text("pinned\n")
+            subprocess.run(["git", "-C", str(component), "add", "README"], check=True)
+            subprocess.run(["git", "-C", str(component), "commit", "-qm", "fixture"], check=True)
+            sha = subprocess.check_output(["git", "-C", str(component), "rev-parse", "HEAD"], text=True).strip()
+            pins = {
+                "simplicio-fast": {"path": "components/simplicio-fast", "url": "file:///fixture", "ref": "master", "sha": sha},
+            }
+            modules = {"components/simplicio-fast": {"path": "components/simplicio-fast", "url": "file:///fixture"}}
+            with mock.patch.object(submodules, "REPO", root), mock.patch.object(submodules, "load_pins", return_value=pins), mock.patch.object(submodules, "load_gitmodules", return_value=modules), mock.patch.object(submodules, "_gitlink_shas", return_value={"components/simplicio-fast": sha}):
+                self.assertTrue(submodules.inspect()["ok"])
+                (component / "dirty").write_text("x")
+                self.assertEqual(submodules.inspect()["components"]["simplicio-fast"]["state"], "dirty")
+                (component / "dirty").unlink()
+                subprocess.run(["git", "-C", str(component), "commit", "--allow-empty", "-qm", "divergence"], check=True)
+                self.assertEqual(submodules.inspect()["components"]["simplicio-fast"]["state"], "diverged")
+
+    def test_run_manifest_requires_verified_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "run.json"
+            with mock.patch.object(submodules, "verify", side_effect=submodules.SubmoduleError("missing")):
+                with self.assertRaises(submodules.SubmoduleError):
+                    submodules.write_run_manifest(destination)
+            self.assertFalse(destination.exists())
+
+    def test_no_remote_update_command_is_present(self):
+        source = (ROOT / "scripts" / "submodules.py").read_text()
+        self.assertNotIn('"submodule", "update", "--remote"', source)
+        self.assertIn("floating_updates", source)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
