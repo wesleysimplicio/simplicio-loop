@@ -40,11 +40,14 @@ def _request(tmp_path):
     )
 
 
-def test_execution_profile_is_explicit_and_rejects_unknown(monkeypatch):
+def test_execution_profile_is_validated_and_rejects_unknown(monkeypatch):
     monkeypatch.setenv("SIMPLICIO_EXECUTION_PROFILE", "runtime-backed")
     assert runner._execution_profile() == "runtime-backed"
     monkeypatch.setenv("SIMPLICIO_EXECUTION_PROFILE", "unexpected")
-    with pytest.raises(RuntimeEffectError, match="explicitly"):
+    with pytest.raises(
+        RuntimeEffectError,
+        match="standalone, runtime-backed, or auto",
+    ):
         runner._execution_profile()
 
 
