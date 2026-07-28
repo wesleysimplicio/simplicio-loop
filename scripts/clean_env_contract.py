@@ -54,7 +54,11 @@ def evaluate_contract() -> dict:
     add("bundle.root.exists", BUNDLE_ROOT.exists(), str(BUNDLE_ROOT))
     add("bundle.skill.exists", (BUNDLE_ROOT / "skills" / "simplicio-loop" / "SKILL.md").exists(),
         str(BUNDLE_ROOT / "skills" / "simplicio-loop" / "SKILL.md"))
-    add("python.requires_declared", meta["requires_python"] != "", meta["requires_python"] or "missing")
+    add(
+        "python.requires_311",
+        meta["requires_python"].startswith(">=3.11"),
+        meta["requires_python"] or "missing",
+    )
 
     ok = all(item["ok"] for item in checks)
     return {"ok": ok, "checks": checks}

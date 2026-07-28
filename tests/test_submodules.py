@@ -24,6 +24,8 @@ class SubmoduleContracts(unittest.TestCase):
         self.assertEqual(len(modules), 3)
         for item in pins.values():
             self.assertEqual(modules[item["path"]]["path"], item["path"])
+            self.assertEqual(modules[item["path"]]["shallow"], "true")
+            self.assertEqual(modules[item["path"]]["branch"], item["ref"])
             self.assertEqual(len(item["sha"]), 40)
 
     def test_committed_receipt_covers_the_three_gitlinks(self):
@@ -70,7 +72,13 @@ class SubmoduleContracts(unittest.TestCase):
             pins = {
                 "simplicio-fast": {"path": "components/simplicio-fast", "url": "file:///fixture", "ref": "master", "sha": sha},
             }
-            modules = {"components/simplicio-fast": {"path": "components/simplicio-fast", "url": "file:///fixture"}}
+            modules = {
+                "components/simplicio-fast": {
+                    "path": "components/simplicio-fast",
+                    "url": "file:///fixture",
+                    "branch": "master",
+                }
+            }
             with mock.patch.object(submodules, "REPO", root), mock.patch.object(submodules, "load_pins", return_value=pins), mock.patch.object(submodules, "load_gitmodules", return_value=modules), mock.patch.object(submodules, "_gitlink_shas", return_value={"components/simplicio-fast": sha}):
                 self.assertTrue(submodules.inspect()["ok"])
                 (component / "dirty").write_text("x")

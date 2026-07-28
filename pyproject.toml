@@ -7,7 +7,7 @@ name = "simplicio-loop"
 version = "3.38.5"
 description = "The Universal Looping AI Orchestrator — a runtime-agnostic super-plugin (7 skills) that drains any queue of work end-to-end on any LLM/runtime."
 readme = "PYPI.md"
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Wesley Simplicio", email = "wesleybob4@gmail.com" }]
 keywords = ["ai", "agent", "orchestrator", "llm", "claude", "cursor", "automation", "ralph-loop", "token-economy", "cli"]
@@ -17,6 +17,9 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Build Tools",
   "Topic :: Utilities",
   "Operating System :: OS Independent",

@@ -129,6 +129,44 @@ def test_secret_like_probe_errors_are_redacted():
     )
 
 
+def test_environment_probe_reports_python_platform_and_abi():
+    row = doctor._environment_probe()
+    assert row["status"] == doctor.STATUS_AVAILABLE
+    assert row["minimum_python"] == "3.11"
+    assert row["platform"]
+    assert row["machine"]
+    assert row["python_abi"]
+
+
+def test_environment_probe_blocks_incompatible_python(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor.sys, "version_info", (3, 10, 14))
+    row = doctor._environment_probe()
+    assert row["status"] == doctor.STATUS_INCOMPATIBLE
+    assert "PYTHON_VERSION_INCOMPATIBLE" in row["reason_codes"]
+
+    monkeypatch.setattr(
+        doctor,
+        "_probe_component",
+        lambda name, spec, root, policy, **kwargs: {
+            "name": name,
+            "status": doctor.STATUS_AVAILABLE,
+            "required": policy["required"],
+            "version": policy["min_version"],
+            "minimum_version": policy["min_version"],
+            "capabilities": list(policy["capabilities"]),
+            "missing_capabilities": [],
+            "git_sha": None,
+            "submodule_shas": {},
+            "supported_schemas": [],
+            "entrypoints": [],
+            "remediation": None,
+        },
+    )
+    report = doctor.build_report(tmp_path, persist=False)
+    assert report["status"] == "BLOCKED"
+    assert report["blockers"] == ["environment"]
+
+
 def test_wheel_fallback_persists_without_checkout_scripts(monkeypatch, tmp_path):
     fake_module = tmp_path / "wheel" / "simplicio_loop" / "ecosystem_doctor.py"
     monkeypatch.setattr(doctor, "__file__", str(fake_module))

@@ -2,16 +2,21 @@
 
 `simplicio-loop` coordinates three repositories as Git submodules:
 
-| Component | Checkout | Pinned commit |
-| --- | --- | --- |
-| `simplicio-mapper` | `components/simplicio-mapper` | `412d5fbe23188aef3f0bfd1dbe56b867e2ad6f96` |
-| `simplicio-dev-cli` | `components/simplicio-dev-cli` | `229b9b245c1f2dec901d9206a900d750d6520d74` |
-| `simplicio-fast` | `components/simplicio-fast` | `12f337149f908fa1a268fc9f6f8c7dd33b959ff0` |
+| Component | Checkout | Declared branch | Pinned commit |
+| --- | --- | --- | --- |
+| `simplicio-mapper` | `components/simplicio-mapper` | `main` | `412d5fbe23188aef3f0bfd1dbe56b867e2ad6f96` |
+| `simplicio-dev-cli` | `components/simplicio-dev-cli` | `main` | `229b9b245c1f2dec901d9206a900d750d6520d74` |
+| `simplicio-fast` | `components/simplicio-fast` | `master` | `12f337149f908fa1a268fc9f6f8c7dd33b959ff0` |
 
 The exact URLs, source branches observed when the pins were recorded, and policy are in
 [`components/submodules.json`](../components/submodules.json). The superproject gitlink is the
 only revision used by a run. The helper **never** calls `git submodule update --remote` and never
 silently moves to a branch tip.
+
+The branch names in `.gitmodules` are compatibility metadata and are checked
+against the manifest. In particular, Fast intentionally remains on `master`;
+this policy does not rename or delete any branch. Execution always uses the
+reviewed gitlink SHA, never a floating branch head.
 
 ## Clone and install
 
