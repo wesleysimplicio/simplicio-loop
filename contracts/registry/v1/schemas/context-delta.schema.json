@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/context-delta/v1/schema.json",
+  "contract": "simplicio.context-delta/v1",
+  "version": "1.0.0",
+  "payload_required": ["base_hash", "operations"],
+  "payload_schema": {
+    "type": "object",
+    "required": ["base_hash", "operations"],
+    "properties": {
+      "base_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+      "operations": {"type": "array", "items": {"type": "object"}},
+      "metadata": {"type": "object"}
+    },
+    "additionalProperties": true
+  }
+}

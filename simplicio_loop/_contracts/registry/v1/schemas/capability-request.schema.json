@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/capability-request/v1/schema.json",
+  "contract": "simplicio.capability-request/v1",
+  "version": "1.0.0",
+  "payload_required": ["capability", "constraints"],
+  "payload_schema": {
+    "type": "object",
+    "required": ["capability", "constraints"],
+    "properties": {
+      "capability": {"type": "string", "minLength": 1},
+      "constraints": {"type": "object"},
+      "required": {"type": "boolean"}
+    },
+    "additionalProperties": true
+  }
+}
