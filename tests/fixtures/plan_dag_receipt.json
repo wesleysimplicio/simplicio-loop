@@ -1,0 +1,12 @@
+{
+  "assignments": {
+    "a": "slot-1"
+  },
+  "event": "slots_bound",
+  "logical_tasks_unchanged": true,
+  "plan_hash": "sha256:654bfe291d64b1bdde6d75d1f935b6909fd64c4b3416bd3e6b5a5f26f2769a1c",
+  "plan_id": "plan-fixture",
+  "plan_revision": 1,
+  "receipt_hash": "sha256:140fb76ee5b87b267d5e6c9159c2a23671ee1dacd338f7dff63fcfdaa6c891b5",
+  "schema": "simplicio.plan-dag-receipt/v1"
+}
