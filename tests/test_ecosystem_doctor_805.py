@@ -1,0 +1,137 @@
+import json
+from pathlib import Path
+
+from simplicio_loop import ecosystem_doctor as doctor
+
+
+def _fake_dist(version="1.0.0", installed=True):
+    return {"installed": installed, "version": version if installed else None,
+            "path": "/tmp/site-packages", "entrypoints": ["fake-entry"]}
+
+
+def _probe(monkeypatch, *, component="simplicio-mapper", version="0.19.0",
+           help_text="orient recall", executable="/usr/local/bin/simplicio-mapper",
+           installed=True):
+    monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist(version, installed))
+    monkeypatch.setattr(doctor.shutil, "which", lambda _: executable)
+    monkeypatch.setattr(doctor, "_git_sha", lambda _: "a" * 40)
+    monkeypatch.setattr(doctor, "_submodule_shas", lambda _: {"vendor/fast": "b" * 40})
+    monkeypatch.setattr(doctor, "_run", lambda *args, **kwargs: type(
+        "Result", (), {"returncode": 0, "stdout": help_text, "stderr": ""})())
+    return doctor._probe_component(component, doctor.COMPONENTS[component], Path("."),
+                                   doctor.PROFILES["standalone"][component])
+
+
+def test_probe_reports_available_with_identity_version_capabilities_and_shas(monkeypatch):
+    row = _probe(monkeypatch, help_text="simplicio-mapper 0.19.0 orient recall")
+    assert row["status"] == doctor.STATUS_AVAILABLE
+    assert row["git_sha"] is None
+    assert row["sha_source"] == "unavailable"
+    assert row["submodule_shas"]["vendor/fast"] == "b" * 40
+    assert row["entrypoints"] == ["fake-entry"]
+    assert "simplicio.context-snapshot/v1" in row["supported_schemas"]
+
+
+def test_loop_sha_is_only_reported_for_the_loop_checkout(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist("3.38.5", True))
+    monkeypatch.setattr(doctor.shutil, "which", lambda _: None)
+    monkeypatch.setattr(doctor, "_git_sha", lambda _: "a" * 40)
+    monkeypatch.setattr(doctor, "_submodule_shas", lambda _: {})
+    row = doctor._probe_component("simplicio-loop", doctor.COMPONENTS["simplicio-loop"],
+                                  tmp_path, doctor.PROFILES["standalone"]["simplicio-loop"])
+    assert row["git_sha"] == "a" * 40
+    assert row["sha_source"] == "checkout"
+
+
+def test_probe_distinguishes_missing_incompatible_disabled_and_degraded(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist(installed=False))
+    monkeypatch.setattr(doctor.shutil, "which", lambda _: None)
+    missing = doctor._probe_component("simplicio-fast", doctor.COMPONENTS["simplicio-fast"],
+                                      tmp_path, doctor.PROFILES["standalone"]["simplicio-fast"])
+    assert missing["status"] == doctor.STATUS_MISSING
+    assert "install simplicio-fast" in missing["remediation"]
+
+    incompatible = _probe(monkeypatch, component="simplicio-fast", version="1.0.0",
+                          help_text="build understand plan apply doctor")
+    assert incompatible["status"] == doctor.STATUS_INCOMPATIBLE
+    assert "no automatic upgrade" in incompatible["remediation"]
+
+    disabled = doctor._probe_component("simplicio-fast", doctor.COMPONENTS["simplicio-fast"],
+                                       tmp_path, doctor.PROFILES["standalone"]["simplicio-fast"],
+                                       disabled=["simplicio-fast"])
+    assert disabled["status"] == doctor.STATUS_DISABLED
+    assert disabled["reason_code"] == "disabled"
+
+    monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist("2.0.14", installed=True))
+    monkeypatch.setattr(doctor.shutil, "which", lambda _: None)
+    degraded = doctor._probe_component("simplicio-fast", doctor.COMPONENTS["simplicio-fast"],
+                                       tmp_path, doctor.PROFILES["standalone"]["simplicio-fast"])
+    assert degraded["status"] == doctor.STATUS_DEGRADED
+    assert degraded["reason_code"] == "distribution_installed_but_entrypoint_missing"
+
+
+def test_build_report_persists_preplanning_handshake_and_no_secrets(monkeypatch, tmp_path):
+    rows = []
+    for name, policy in doctor.PROFILES["standalone"].items():
+        rows.append({"name": name, "status": doctor.STATUS_AVAILABLE, "required": policy["required"],
+                     "version": policy["min_version"], "minimum_version": policy["min_version"],
+                     "capabilities": list(policy["capabilities"]), "missing_capabilities": [],
+                     "git_sha": "c" * 40, "submodule_shas": {}, "supported_schemas": [],
+                     "entrypoints": [], "remediation": None})
+    monkeypatch.setattr(doctor, "_probe_component", lambda *args, **kwargs: rows.pop(0))
+    report = doctor.build_report(tmp_path, profile="standalone", persist=True)
+    assert report["schema"] == doctor.SCHEMA
+    assert report["status"] == "READY"
+    handshake = report["handshake"]
+    assert handshake["written"] is True
+    line = (tmp_path / ".simplicio/orchestrator/loop/journal.jsonl").read_text().strip()
+    record = json.loads(line)
+    assert record["schema"] == doctor.HANDSHAKE_SCHEMA
+    assert record["phase"] == "pre_planning"
+    assert record["handshake_sha"].startswith("sha256:")
+    assert "API_KEY" not in line and "TOKEN" not in line
+
+
+def test_full_stack_profile_fails_closed_on_required_component(monkeypatch, tmp_path):
+    def probe(name, spec, root, policy, **kwargs):
+        return {"name": name, "status": doctor.STATUS_INCOMPATIBLE if name == "simplicio-fast" else doctor.STATUS_AVAILABLE,
+                "required": policy["required"], "version": "0.0.0", "minimum_version": policy["min_version"],
+                "capabilities": [], "missing_capabilities": ["apply"] if name == "simplicio-fast" else [],
+                "git_sha": None, "submodule_shas": {}, "supported_schemas": [], "entrypoints": [],
+                "remediation": "upgrade simplicio-fast"}
+    monkeypatch.setattr(doctor, "_probe_component", probe)
+    report = doctor.build_report(tmp_path, profile="full-stack", persist=False)
+    assert report["ready"] is False
+    assert report["status"] == "BLOCKED"
+    assert report["blockers"] == ["simplicio-fast"]
+    assert report["handshake"]["written"] is False
+
+
+def test_standalone_declares_only_real_optional_fallbacks(monkeypatch, tmp_path):
+    def probe(name, spec, root, policy, **kwargs):
+        status = doctor.STATUS_MISSING if name in {"simplicio-fast", "simplicio-runtime"} else doctor.STATUS_AVAILABLE
+        return {"name": name, "status": status, "required": policy["required"],
+                "version": policy["min_version"], "minimum_version": policy["min_version"],
+                "capabilities": list(policy["capabilities"]), "missing_capabilities": [],
+                "git_sha": None, "submodule_shas": {}, "supported_schemas": [], "entrypoints": [],
+                "remediation": None}
+    monkeypatch.setattr(doctor, "_probe_component", probe)
+    report = doctor.build_report(tmp_path, profile="standalone", persist=False)
+    assert report["ready"] is True
+    assert {item["feature"] for item in report["policy"]["fallbacks"]} == {
+        "context_acceleration", "runtime_integration"
+    }
+
+
+def test_secret_like_probe_errors_are_redacted():
+    assert doctor._redact("api_key=abc token:xyz password = foo") == (
+        "api_key=[REDACTED] token:[REDACTED] password = [REDACTED]"
+    )
+
+
+def test_wheel_fallback_persists_without_checkout_scripts(monkeypatch, tmp_path):
+    fake_module = tmp_path / "wheel" / "simplicio_loop" / "ecosystem_doctor.py"
+    monkeypatch.setattr(doctor, "__file__", str(fake_module))
+    target = tmp_path / "journal" / "journal.jsonl"
+    assert doctor._append_journal_line(target, '{"schema":"test/v1"}') is True
+    assert json.loads(target.read_text()) == {"schema": "test/v1"}
