@@ -192,11 +192,12 @@ class FastFanoutCoordinator:
         self._slots[winner["slot_id"]].state = "winner"
         lifecycle_receipt = None
         if self.lifecycle is not None:
-            eligible_ids = sorted(
-                row["candidate_id"] for row in self._candidates.values()
-                if row.get("verified") is True and row.get("generation") == self.generation)
-            specs = [CandidateSpec(candidate_id, 0.0, 0.0, stalled=index == 0 and len(eligible_ids) > 1)
-                     for index, candidate_id in enumerate(eligible_ids)]
+            candidate_rows = sorted(
+                (row for row in self._candidates.values() if row.get("generation") == self.generation),
+                key=lambda row: str(row["candidate_id"]))
+            specs = [CandidateSpec(str(row["candidate_id"]), 0.0 if row.get("verified") else 1.0,
+                                   0.0, stalled=index == 0 and len(candidate_rows) > 1)
+                     for index, row in enumerate(candidate_rows)]
             try:
                 lifecycle_receipt = self.lifecycle.converge(
                     specs, expected_shards=["candidate"], cancel_callback=self._release_candidate)
