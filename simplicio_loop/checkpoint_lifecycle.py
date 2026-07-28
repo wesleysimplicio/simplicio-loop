@@ -319,6 +319,49 @@ class CheckpointLifecycle:
             "cancellation": cancellation,
         }
 
+    def converge_selected(
+        self,
+        *,
+        winner_id: str,
+        candidate_ids: Sequence[str],
+        shard_id: str,
+        cancel_callback: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        winner = _require(winner_id, "winner_id")
+        candidates = sorted(set(_require(value, "candidate_id") for value in candidate_ids))
+        if winner not in candidates:
+            raise LifecycleError("selected winner is not a candidate")
+        checkpoints = [self.load(candidate, shard_id) for candidate in candidates]
+        by_candidate = {item["candidate_id"]: item for item in checkpoints}
+        if by_candidate[winner]["state"] != "READY_TO_PROMOTE":
+            raise LifecycleError("selected winner is not verified")
+        if any(item["state"] not in TERMINAL_STATES for item in checkpoints):
+            raise LifecycleError("candidate has non-terminal shard")
+        fanin: dict[str, Any] = {
+            "schema": FANIN_SCHEMA,
+            "status": "READY",
+            "fanout_reason": "coordinator_selected",
+            "selected_candidates": candidates,
+            "winner_id": winner,
+            "loser_ids": [candidate for candidate in candidates if candidate != winner],
+            "reused_work_units": by_candidate[winner]["work_units"],
+            "checkpoint_digests": [by_candidate[candidate]["digest"] for candidate in candidates],
+        }
+        fanin["digest"] = _digest(fanin)
+        fence = self.seal_winner(fanin)
+        cancellation = self.cancel(
+            fanin["loser_ids"],
+            reason=f"winner:{winner}",
+            cancel_callback=cancel_callback,
+        )
+        return {
+            "schema": SCHEMA,
+            "status": "SEALED" if cancellation["status"] == "CANCELLED" else "HELD",
+            "fan_in": fanin,
+            "fence": fence,
+            "cancellation": cancellation,
+        }
+
     def lease(self, candidate_id: str, *, expires_ns: int) -> dict[str, Any]:
         candidate = _require(candidate_id, "candidate_id")
         value = {
