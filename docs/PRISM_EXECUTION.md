@@ -1,0 +1,64 @@
+# Prism execution
+
+Prism introduces a bounded hierarchy:
+
+```text
+Goal
+└── PrismExecution (up to 20 active slots)
+    ├── SlotSupervisor (up to 10 logical tasks)
+    │   ├── TaskOwnership (one owner, lease, attempt, fence)
+    │   └── child SlotSupervisor
+    └── deterministic reducer → independent completion oracle
+```
+
+Logical capacity is not process count. A slot can hold ten tasks while adaptive
+budgets admit fewer physical workers. The global logical ceiling is 200 tasks;
+CPU, memory, disk, I/O, provider, model, network, device, context, evidence and
+exclusive-resource limits determine actual overlap.
+
+## Valid construction
+
+```python
+from simplicio_loop.prism_contracts import (
+    PrismExecution, SlotSupervisor, TaskOwnership, admit_task
+)
+
+prism = PrismExecution(
+    goal_id="goal-1",
+    owner_agent="root",
+    policy_hash="a" * 64,
+    config_hash="b" * 64,
+    source_generation="git-sha",
+    reducer_ref="prism-reducer",
+)
+slot = SlotSupervisor(prism.prism_id, "slot-supervisor")
+owner = TaskOwnership(
+    "task-1", slot.slot_id, 1, "implementation-agent", "lease-1", 1,
+    "git-sha", ("implementation",), ("running", "accepted", "failed")
+)
+slot, receipt = admit_task(slot, owner)
+assert receipt.reason_code == "ADMITTED"
+```
+
+The eleventh `admit_task` returns `admitted=False`,
+`reason_code=SLOT_LOGICAL_CAPACITY`, and position 11. It never silently widens
+the slot. A transition from a different owner or stale fence raises
+`PrismContractError`.
+
+## Failure semantics
+
+- Unknown schema or extra JSON schema field: rejected; authority is not widened.
+- Missing owner, duplicate owner, orphan parent, cycle or depth >4: rejected.
+- Missing metric: conservative bound plus `null_reason`.
+- Provider 429: `PROVIDER_RETRY_AFTER`, followed by automatic admission only
+  after relief.
+- Device loss: fenced reassignment or `DEVICE_LOST_RECOVERY_REQUIRED`; no
+  duplicate execution.
+- Orphan effect intent: consult an existing Dev CLI receipt; never re-execute
+  the unresolved effect.
+- Corrupt, truncated or partial HBP journal: fail closed.
+- Runtime unavailable/incompatible: reason-coded Python fallback.
+
+The schemas and cross-language fixtures ship under
+`simplicio_loop/_contracts/prism/v1`. `hbp-golden.json` freezes exact bytes for
+Python/Runtime parity; `conformance-cases.json` freezes adversarial decisions.

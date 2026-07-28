@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/prism/v1/task-ownership.schema.json",
+  "title": "simplicio.task-ownership/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "ownership_id",
+    "task_id",
+    "slot_id",
+    "attempt",
+    "owner_agent",
+    "lease_id",
+    "fence",
+    "source_generation",
+    "capabilities",
+    "allowed_transitions",
+    "state"
+  ],
+  "properties": {
+    "schema": {"const": "simplicio.task-ownership/v1"},
+    "ownership_id": {"type": "string", "pattern": "^ownership:[0-9a-f]{64}$"},
+    "task_id": {"type": "string", "minLength": 1},
+    "slot_id": {"type": "string", "pattern": "^slot:[0-9a-f]{64}$"},
+    "attempt": {"type": "integer", "minimum": 1},
+    "owner_agent": {"type": "string", "minLength": 1},
+    "lease_id": {"type": "string", "minLength": 1},
+    "fence": {"type": "integer", "minimum": 1},
+    "source_generation": {"type": "string", "minLength": 1},
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "allowed_transitions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["queued", "ready", "running", "validating", "accepted", "failed", "blocked", "cancelled"]
+      }
+    },
+    "causal_parent": {"type": ["string", "null"]},
+    "state": {
+      "enum": ["queued", "ready", "running", "validating", "accepted", "failed", "blocked", "cancelled"]
+    }
+  }
+}

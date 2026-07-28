@@ -95,13 +95,23 @@ def load_gitmodules(path: Path = GITMODULES) -> dict[str, dict[str, str]]:
             raise SubmoduleError(f"unsupported .gitmodules section: {section}")
         name = section[len(prefix):-1]
         values = {key: value.strip() for key, value in parser.items(section)}
-        if set(values) != {"path", "url"}:
-            raise SubmoduleError(f"{section} must contain exactly path and url")
+        if not {"path", "url", "branch"} <= set(values) or set(values) - {
+            "path",
+            "url",
+            "branch",
+            "shallow",
+        }:
+            raise SubmoduleError(
+                f"{section} must contain path/url/branch and may contain shallow"
+            )
+        if values.get("shallow", "true").lower() != "true":
+            raise SubmoduleError(f"{section} must use shallow = true")
         path_value = Path(values["path"])
         if not values["path"] or path_value.is_absolute() or ".." in path_value.parts:
             raise SubmoduleError(f"unsafe submodule path for {name}: {values['path']!r}")
-        if not values["url"]:
-            raise SubmoduleError(f"empty submodule URL for {name}")
+        if not values["url"] or not values["branch"]:
+            raise SubmoduleError(f"empty submodule URL or branch for {name}")
+        values["shallow"] = "true"
         result[name] = values
     return result
 
@@ -125,8 +135,15 @@ def expected_components() -> dict[str, dict[str, str]]:
         module = modules.get(item["path"]) or modules.get(name)
         if module is None:
             raise SubmoduleError(f"{name} missing from .gitmodules")
-        if module["path"] != item["path"] or module["url"] != item["url"]:
-            raise SubmoduleError(f".gitmodules drift for {name}: expected {item['path']} / {item['url']}")
+        if (
+            module["path"] != item["path"]
+            or module["url"] != item["url"]
+            or module["branch"] != item["ref"]
+        ):
+            raise SubmoduleError(
+                f".gitmodules drift for {name}: expected "
+                f"{item['path']} / {item['url']} / {item['ref']}"
+            )
     return pins
 
 

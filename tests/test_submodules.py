@@ -24,6 +24,8 @@ class SubmoduleContracts(unittest.TestCase):
         self.assertEqual(len(modules), 3)
         for item in pins.values():
             self.assertEqual(modules[item["path"]]["path"], item["path"])
+            self.assertEqual(modules[item["path"]]["shallow"], "true")
+            self.assertEqual(modules[item["path"]]["branch"], item["ref"])
             self.assertEqual(len(item["sha"]), 40)
 
     def test_committed_receipt_covers_the_three_gitlinks(self):
@@ -47,11 +49,14 @@ class SubmoduleContracts(unittest.TestCase):
 
     def test_status_reports_missing_without_mutation(self):
         pins = submodules.load_pins(ROOT / "components" / "submodules.json")
+        missing = lambda _path, expected_sha: {
+            "state": "missing", "expected_sha": expected_sha, "observed_sha": None,
+        }
         with mock.patch.object(submodules, "_gitlink_shas", return_value={
             item["path"]: item["sha"] for item in pins.values()
-        }), mock.patch.object(submodules, "REPO", ROOT):
+        }), mock.patch.object(submodules, "_path_status", side_effect=missing):
             report = submodules.inspect()
-        self.assertIn(report["components"]["simplicio-fast"]["state"], {"missing", "not_repository", "ok"})
+        self.assertEqual(report["components"]["simplicio-fast"]["state"], "missing")
         self.assertFalse(report["ok"])
 
     def test_clean_checkout_and_divergence_receipts(self):
@@ -70,7 +75,13 @@ class SubmoduleContracts(unittest.TestCase):
             pins = {
                 "simplicio-fast": {"path": "components/simplicio-fast", "url": "file:///fixture", "ref": "master", "sha": sha},
             }
-            modules = {"components/simplicio-fast": {"path": "components/simplicio-fast", "url": "file:///fixture"}}
+            modules = {
+                "components/simplicio-fast": {
+                    "path": "components/simplicio-fast",
+                    "url": "file:///fixture",
+                    "branch": "master",
+                }
+            }
             with mock.patch.object(submodules, "REPO", root), mock.patch.object(submodules, "load_pins", return_value=pins), mock.patch.object(submodules, "load_gitmodules", return_value=modules), mock.patch.object(submodules, "_gitlink_shas", return_value={"components/simplicio-fast": sha}):
                 self.assertTrue(submodules.inspect()["ok"])
                 (component / "dirty").write_text("x")

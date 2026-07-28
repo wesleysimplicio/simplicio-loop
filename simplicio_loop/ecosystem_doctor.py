@@ -15,6 +15,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import platform as platform_module
 import re
 import shutil
 import subprocess
@@ -30,6 +31,7 @@ except ImportError:  # pragma: no cover - Windows uses the best-effort append be
 
 SCHEMA = "simplicio.ecosystem-doctor/v1"
 HANDSHAKE_SCHEMA = "simplicio.ecosystem-handshake/v1"
+MINIMUM_PYTHON = (3, 11)
 STATUS_AVAILABLE = "available"
 STATUS_MISSING = "missing"
 STATUS_DISABLED = "disabled"
@@ -123,6 +125,29 @@ def _version(value: Any) -> tuple[int, int, int]:
 
 def _version_text(value: Sequence[int]) -> str:
     return ".".join(str(x) for x in value)
+
+
+def _environment_probe() -> dict[str, Any]:
+    python = tuple(int(item) for item in sys.version_info[:3])
+    system = platform_module.system() or None
+    machine = platform_module.machine() or None
+    abi = getattr(sys.implementation, "cache_tag", None)
+    reasons = []
+    if python < MINIMUM_PYTHON + (0,):
+        reasons.append("PYTHON_VERSION_INCOMPATIBLE")
+    if not system or not machine:
+        reasons.append("PLATFORM_IDENTITY_UNAVAILABLE")
+    if not abi:
+        reasons.append("PYTHON_ABI_UNAVAILABLE")
+    return {
+        "status": STATUS_AVAILABLE if not reasons else STATUS_INCOMPATIBLE,
+        "reason_codes": reasons or ["verified"],
+        "python_version": _version_text(python),
+        "minimum_python": _version_text(MINIMUM_PYTHON),
+        "platform": system,
+        "machine": machine,
+        "python_abi": abi,
+    }
 
 
 def _redact(value: Any) -> str:
@@ -342,6 +367,7 @@ def persist_handshake(report: Mapping[str, Any], repo: Path, *, journal_path: Pa
               "phase": "pre_planning", "recorded_at": report.get("checked_at"),
               "doctor_schema": SCHEMA, "status": report.get("status"),
               "profile": report.get("profile"), "handshake_sha": _handshake_digest(report),
+              "environment": report.get("environment"),
               "components": report.get("components", [])}
     written = _append_journal_line(target, json.dumps(record, ensure_ascii=False, sort_keys=True))
     return {"path": str(target), "written": written, "record": record}
@@ -354,8 +380,11 @@ def build_report(repo: str | Path = ".", *, profile: str = "standalone",
         raise ValueError("unknown profile %r; choose one of %s" % (profile, ", ".join(sorted(PROFILES))))
     components = [_probe_component(name, COMPONENTS[name], root, PROFILES[profile][name], disabled=disabled)
                   for name in COMPONENTS]
+    environment = _environment_probe()
     required = [item for item in components if item["required"]]
     blockers = [item["name"] for item in required if item["status"] != STATUS_AVAILABLE]
+    if environment["status"] != STATUS_AVAILABLE:
+        blockers.insert(0, "environment")
     degraded = [item["name"] for item in components if item["status"] == STATUS_DEGRADED]
     status = "BLOCKED" if blockers else ("DEGRADED" if degraded else "READY")
     optional = [item["name"] for item in components if not item["required"]]
@@ -369,7 +398,8 @@ def build_report(repo: str | Path = ".", *, profile: str = "standalone",
     report: dict[str, Any] = {
         "schema": SCHEMA, "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "repo": str(root), "profile": profile, "status": status, "ready": not blockers,
-        "blockers": blockers, "degraded": degraded, "components": components,
+        "blockers": blockers, "degraded": degraded, "environment": environment,
+        "components": components,
         "policy": {"automatic_upgrade": False, "required_components": [x["name"] for x in required],
                     "optional_components": optional, "fallbacks": fallbacks},
     }
@@ -380,6 +410,18 @@ def build_report(repo: str | Path = ".", *, profile: str = "standalone",
 def render_human(report: Mapping[str, Any]) -> str:
     lines = ["simplicio ecosystem doctor: %s" % report.get("status"),
              "profile: %s" % report.get("profile"), ""]
+    environment = report.get("environment") or {}
+    lines.append(
+        "environment: python=%s (min=%s) platform=%s/%s abi=%s status=%s"
+        % (
+            environment.get("python_version") or "unknown",
+            environment.get("minimum_python") or "unknown",
+            environment.get("platform") or "unknown",
+            environment.get("machine") or "unknown",
+            environment.get("python_abi") or "unknown",
+            environment.get("status") or "unknown",
+        )
+    )
     for item in report.get("components", []):
         marker = {STATUS_AVAILABLE: "✓", STATUS_MISSING: "✗", STATUS_DISABLED: "○",
                   STATUS_DEGRADED: "△", STATUS_INCOMPATIBLE: "!"}.get(item.get("status"), "?")
