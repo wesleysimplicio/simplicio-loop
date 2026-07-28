@@ -1,0 +1,62 @@
+{
+  "fixture_hash": "2fb1b08cf9511b738d83415a64d6aed2ad62f028ae836b6bdbc2fd6aac4339d7",
+  "receipts": [
+    {
+      "acceptance_evidence": [
+        {
+          "ac_id": "AC1",
+          "evidence_hash": "ebacc79a22f4ac2052a362ee69a87f6e1d3b1f3d5503c967a114568d9a273ea4",
+          "evidence_uri": "artifact://pytest/report",
+          "verdict": "PASS"
+        }
+      ],
+      "binding": {
+        "attempt": 1,
+        "fence": 7,
+        "generation": "g1",
+        "plan_hash": "plan-sha256",
+        "run_id": "run-813",
+        "stage": "verify"
+      },
+      "local_llm": false,
+      "observed_at_ns": 1,
+      "payload": {
+        "exit_code": 0
+      },
+      "payload_hash": "e81bc160c0843ee56f31f12997bb3aff50528d596002d4866676cb8a1b19195a",
+      "previous_receipt_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "receipt_hash": "c5b9d02cf3df37005f2fc0231a1755cd8d128898255d85585148467f66fff36c",
+      "schema": "simplicio.hbp-ledger-receipt/v1",
+      "sequence": 1
+    },
+    {
+      "acceptance_evidence": [
+        {
+          "ac_id": "AC2",
+          "evidence_hash": "818c6d59b35da763603a84f05f9ef8756041ab8821fbd4c660a38ea726e56d61",
+          "evidence_uri": "artifact://pytest/report",
+          "verdict": "PASS"
+        }
+      ],
+      "binding": {
+        "attempt": 1,
+        "fence": 7,
+        "generation": "g1",
+        "plan_hash": "plan-sha256",
+        "run_id": "run-813",
+        "stage": "verify"
+      },
+      "local_llm": false,
+      "observed_at_ns": 2,
+      "payload": {
+        "coverage": 92
+      },
+      "payload_hash": "8897959e6ce4e28c7acf3316b37579291575e96556fda71449bbdc7be481fed1",
+      "previous_receipt_hash": "c5b9d02cf3df37005f2fc0231a1755cd8d128898255d85585148467f66fff36c",
+      "receipt_hash": "c3d2b0ab236c95407319603482fe0a02decec2cb887689cd3e1766445d4c70d0",
+      "schema": "simplicio.hbp-ledger-receipt/v1",
+      "sequence": 2
+    }
+  ],
+  "schema": "simplicio.hbp-golden-fixture/v1"
+}
