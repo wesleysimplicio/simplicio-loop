@@ -25,6 +25,7 @@ from .orca_lifecycle import sync_orca_status
 from .source_adapter import GitHubSourceAdapter
 from .task_contract import compile_many, validate_contract
 from .technical_debt import record_notice as _record_technical_debt
+from .checkpoint_lifecycle import CandidateSpec, CheckpointLifecycle, LifecycleError
 from .operator_bootstrap import (
     OperatorBootstrapError,
     ensure_operators as _ensure_required_operators,
@@ -4905,6 +4906,68 @@ def execute_operator_batch(
         journal_dir=str(Path(status["run_dir"])),
         worktree_queue=worktree_queue,
     )
+    lifecycle_result: Dict[str, Any]
+    try:
+        repo_root = Path(status["manifest"].get("repo") or repo).resolve()
+        source_commit = str(status["manifest"].get("source_commit") or "")
+        if not source_commit:
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=str(repo_root), capture_output=True,
+                text=True, timeout=15, check=False,
+            )
+            source_commit = (head.stdout or "").strip() or "unavailable"
+        fast_state = status["state"].get("fast") or {}
+        fast_generation = str(
+            fast_state.get("generation")
+            or (status["state"].get("mapper") or {}).get("generation")
+            or "mapper-fallback"
+        )
+        lifecycle = CheckpointLifecycle(
+            repo_root / ".simplicio" / "loop-runs",
+            task_id=run_id,
+            attempt_id=f"batch-{int((status['state'] or {}).get('attempts', 0)) + 1}",
+            source_commit=source_commit,
+            fast_generation=fast_generation,
+            base_path=repo_root,
+        )
+        workers = list(result.get("workers") or [])
+        specs = []
+        for index, worker in enumerate(sorted(workers, key=lambda row: str(row.get("task_id") or row.get("task_index")))):
+            candidate_id = str(worker.get("task_id") or f"task-{worker.get('task_index')}")
+            succeeded = worker.get("status") == "succeeded"
+            lifecycle.checkpoint(
+                candidate_id, "operator", "READY_TO_PROMOTE" if succeeded else "HELD",
+                receipts=[value for value in (
+                    str(worker.get("operator_receipt") or ""),
+                    str(worker.get("evidence_receipt") or ""),
+                ) if value],
+                work_units=int(worker.get("attempt_count") or 1),
+            )
+            specs.append(CandidateSpec(
+                candidate_id, 0.0 if succeeded else 1.0, 0.0,
+                stalled=index == 0 and len(workers) > 1,
+            ))
+        if not any(worker.get("status") == "succeeded" for worker in workers):
+            lifecycle_result = {"schema": "simplicio.loop.checkpoint-lifecycle/v1",
+                                "status": "HELD", "reason": "no_successful_candidate"}
+        else:
+            def _cancel_boundary(candidate_id: str) -> None:
+                if worktree_queue is None:
+                    return
+                for method_name in ("cancel_task", "release_task", "cancel"):
+                    method = getattr(worktree_queue, method_name, None)
+                    if callable(method):
+                        method(candidate_id)
+                        return
+            lifecycle_result = lifecycle.converge(
+                specs, expected_shards=["operator"], cancel_callback=_cancel_boundary,
+                max_candidates=max(1, len(specs)),
+            )
+    except (LifecycleError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        lifecycle_result = {"schema": "simplicio.loop.checkpoint-lifecycle/v1",
+                            "status": "HELD", "reason": "lifecycle_integration_failed",
+                            "error": str(exc)}
+    result["checkpoint_lifecycle"] = lifecycle_result
     technical_debts: List[Dict[str, Any]] = []
     # Fan-out is an optimization. A safe serial lane is still useful work, so
     # capability loss is recorded as advisory debt instead of a global blocker.
