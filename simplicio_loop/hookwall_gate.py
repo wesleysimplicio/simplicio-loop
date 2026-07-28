@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, MutableSet
 
 ENVELOPE_SCHEMA = "simplicio.dispatch-envelope/v1"
@@ -19,8 +20,10 @@ EVIDENCE_SCHEMA = "simplicio.hookwall-evidence/v1"
 _ALLOWED_EFFECTS = frozenset({"read", "write", "process", "exclusive"})
 _REQUIRED_ENVELOPE = (
     "envelope_id", "run_id", "plan_id", "source_hash", "policy_hash",
-    "idempotency_key", "workspace", "fence", "effect_set",
+    "idempotency_key", "workspace", "fence", "effect_set", "write_set",
+    "command",
 )
+_MUTABLE_COMMANDS = frozenset({"simplicio-dev-cli"})
 
 
 class HookwallBlocked(RuntimeError):
@@ -54,8 +57,33 @@ def validate_envelope(envelope: Mapping[str, Any]) -> dict[str, Any]:
     unknown = sorted(set(effects) - _ALLOWED_EFFECTS)
     if unknown:
         raise HookwallBlocked("effect_unknown", "unsupported effects: " + ", ".join(unknown))
+    command = envelope.get("command")
+    if not isinstance(command, list) or not command or str(command[0]) not in _MUTABLE_COMMANDS:
+        raise HookwallBlocked("command_not_allowlisted", "mutable command is not allowlisted")
+    workspace = Path(_text(envelope["workspace"]))
+    if not workspace.is_absolute():
+        raise HookwallBlocked("workspace_invalid", "workspace must be absolute")
+    root = workspace.resolve()
+    write_set = envelope.get("write_set")
+    if not isinstance(write_set, list) or not write_set:
+        raise HookwallBlocked("write_set_invalid", "resolved write_set is required")
+    normalized_paths: list[str] = []
+    for raw in write_set:
+        value = _text(raw).replace("\\", "/")
+        path = Path(value)
+        if (not value or path.is_absolute() or ".." in path.parts
+                or any(char in value for char in "*?[]")):
+            raise HookwallBlocked("path_escape", f"unsafe write path: {value}")
+        candidate = (root / path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise HookwallBlocked("symlink_escape", f"write path escapes workspace: {value}") from exc
+        normalized_paths.append(path.as_posix())
     normalized = dict(envelope)
     normalized["effect_set"] = list(effects)
+    normalized["write_set"] = sorted(set(normalized_paths))
+    normalized["command"] = [str(item) for item in command]
     normalized["envelope_hash"] = _hash({
         key: normalized[key] for key in sorted(normalized) if key != "envelope_hash"
     })
