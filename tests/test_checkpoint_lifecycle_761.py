@@ -95,6 +95,19 @@ def test_converge_seals_exactly_one_winner_and_cancels_loser(tmp_path):
     assert run.seal_winner(result["fan_in"]) == result["fence"]
 
 
+def test_explicit_winner_must_be_verified_and_is_never_reselected(tmp_path):
+    run = lifecycle(tmp_path)
+    run.checkpoint("good", "candidate", "READY_TO_PROMOTE", receipts=["tests"])
+    run.checkpoint("failed", "candidate", "HELD", receipts=["error"])
+    with pytest.raises(LifecycleError, match="not verified"):
+        run.converge_selected(
+            winner_id="failed", candidate_ids=["good", "failed"], shard_id="candidate")
+    result = run.converge_selected(
+        winner_id="good", candidate_ids=["good", "failed"], shard_id="candidate")
+    assert result["fence"]["winner_id"] == "good"
+    assert result["cancellation"]["cancelled"] == ["failed"]
+
+
 def test_gc_never_removes_active_lease_then_reclaims_cancelled_overlay(tmp_path):
     run = lifecycle(tmp_path)
     run.checkpoint("a", "s1", "CANCELLED")
