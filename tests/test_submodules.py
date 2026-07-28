@@ -26,6 +26,16 @@ class SubmoduleContracts(unittest.TestCase):
             self.assertEqual(modules[item["path"]]["path"], item["path"])
             self.assertEqual(len(item["sha"]), 40)
 
+    def test_committed_receipt_covers_the_three_gitlinks(self):
+        receipt = json.loads((ROOT / "tests" / "fixtures" / "submodules_receipt.json").read_text())
+        pins = submodules.load_pins(ROOT / "components" / "submodules.json")
+        self.assertEqual(receipt["schema"], "simplicio.loop-submodules-receipt/v1")
+        self.assertEqual(set(receipt["components"]), set(pins))
+        for name, item in pins.items():
+            self.assertEqual(receipt["components"][name]["sha"], item["sha"])
+        self.assertEqual(receipt["metrics"]["duration_ms"], None)
+        self.assertEqual(receipt["metrics"]["network_requests"], 0)
+
     def test_floating_policy_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "pins.json"
