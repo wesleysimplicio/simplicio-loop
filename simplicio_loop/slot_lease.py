@@ -77,7 +77,27 @@ class LeaseStore:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
+            # SQLite does not consistently apply busy_timeout while changing
+            # journal_mode. Multiple first-start workers can therefore race
+            # before the database header records WAL. Read first and retry only
+            # the bounded header transition; once one worker wins, all others
+            # observe WAL without issuing another write.
+            deadline = time.monotonic() + 30.0
+            while True:
+                try:
+                    current = connection.execute("PRAGMA journal_mode").fetchone()
+                    if current is None or str(current[0]).lower() != "wal":
+                        connection.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    detail = str(exc).lower()
+                    remaining = deadline - time.monotonic()
+                    if (
+                        ("locked" not in detail and "busy" not in detail)
+                        or remaining <= 0
+                    ):
+                        raise
+                    time.sleep(min(0.01, remaining))
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS lease_counters (
