@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | `simplicio-mapper` | `components/simplicio-mapper` | `main` | `dfa15b324f6051c1d5ed37fb033a946a7a638bd5` |
 | `simplicio-dev-cli` | `components/simplicio-dev-cli` | `main` | `4776b20fcdf6d46f429e5dc11f53baa39cec5b4d` |
-| `simplicio-fast` | `components/simplicio-fast` | `master` | `12f337149f908fa1a268fc9f6f8c7dd33b959ff0` |
+| `simplicio-fast` | `components/simplicio-fast` | `master` | `e059304bf0b977a8d71893269481a9965da6839b` |
 
 The exact URLs, source branches observed when the pins were recorded, and policy are in
 [`components/submodules.json`](../components/submodules.json). The superproject gitlink is the

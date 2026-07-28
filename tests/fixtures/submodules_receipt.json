@@ -22,12 +22,12 @@
     },
     "simplicio-fast": {
       "path": "components/simplicio-fast",
-      "sha": "12f337149f908fa1a268fc9f6f8c7dd33b959ff0"
+      "sha": "e059304bf0b977a8d71893269481a9965da6839b"
     }
   },
   "hashes": {
     ".gitmodules": "fdf518535fba67828c6c784f52b30b9dc563957bb7927aafbb01a9b6fdb57c94",
-    "components/submodules.json": "7bd55f49a42e8f631db4dd9444d66f30ee167149b4801015fdf1b0b00b990db5"
+    "components/submodules.json": "e7ce7bf273eae1c2456eae9af069451f48bbf60d728a40237cc01de3b904f92e"
   },
   "metrics": {
     "network_requests": 0,

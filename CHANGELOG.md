@@ -5,7 +5,8 @@
 - Enforce strict operator/Runtime routing with Orca available only by explicit
   opt-in.
 - Synchronize the PRISM bundle with Mapper 0.26.0, Dev CLI 0.18.0, and the
-  hardened Fast 2.0.15 master pin.
+  hardened Fast 2.0.16 master pin, including reproducible Git-tree-bound
+  quant benchmark provenance.
 
 ## [3.38.5] - 2026-07-27
 
