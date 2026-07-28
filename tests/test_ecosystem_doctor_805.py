@@ -127,3 +127,11 @@ def test_secret_like_probe_errors_are_redacted():
     assert doctor._redact("api_key=abc token:xyz password = foo") == (
         "api_key=[REDACTED] token:[REDACTED] password = [REDACTED]"
     )
+
+
+def test_wheel_fallback_persists_without_checkout_scripts(monkeypatch, tmp_path):
+    fake_module = tmp_path / "wheel" / "simplicio_loop" / "ecosystem_doctor.py"
+    monkeypatch.setattr(doctor, "__file__", str(fake_module))
+    target = tmp_path / "journal" / "journal.jsonl"
+    assert doctor._append_journal_line(target, '{"schema":"test/v1"}') is True
+    assert json.loads(target.read_text()) == {"schema": "test/v1"}
