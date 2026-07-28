@@ -51,7 +51,7 @@ def execute(runs: int, chain_length: int) -> dict:
         "runs": runs, "chain_length": chain_length,
         "verdict": verdict["verdict"],
         "latency_ns": {
-            "p50": statistics.median(samples),
+            "p50": int(statistics.median(samples)),
             "p95": sorted(samples)[max(0, int(runs * .95) - 1)],
             "min": min(samples), "max": max(samples),
         },
