@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover - keeps `simplicio-loop` importable if thi
 
 from . import __version__
 from .fast_integration import FastConfig, FastIntegrationError, FastLoopIntegration
+from .checkpoint_lifecycle import CheckpointLifecycle, LifecycleError
 from . import delivery
 from .drain import (
     SCHEMA as DRAIN_SCHEMA,
@@ -509,6 +510,37 @@ def cancel(repo: str, run_id: str) -> int:
     return 0
 
 
+def checkpoint_lifecycle(args) -> int:
+    root = Path(args.repo).resolve()
+    lifecycle = CheckpointLifecycle(
+        root / ".simplicio" / "loop-runs",
+        task_id=args.task_id,
+        attempt_id=args.attempt_id,
+        source_commit=args.source_commit,
+        fast_generation=args.fast_generation,
+        base_path=args.base_path or root,
+    )
+    try:
+        if args.lifecycle_action == "inspect":
+            payload = lifecycle.load(args.candidate_id, args.shard_id)
+        elif args.lifecycle_action == "cancel":
+            payload = lifecycle.cancel(args.candidate_id, reason=args.reason)
+        elif args.lifecycle_action == "gc":
+            payload = lifecycle.gc(
+                retention_ns=max(0, args.retention_seconds) * 1_000_000_000,
+                apply=args.apply,
+            )
+        else:
+            raise LifecycleError("unsupported lifecycle action")
+    except (LifecycleError, OSError, ValueError) as exc:
+        payload = {"schema": "simplicio.loop.checkpoint-lifecycle/v1",
+                   "status": "HELD", "error": str(exc)}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def oracle(loop_dir: str, run_dir: str, response_text: str, flow_gap: str,
            write_receipt: bool) -> int:
     """Evaluate the shared completion oracle and its cross-runtime parity."""
@@ -801,6 +833,21 @@ def main(argv=None) -> int:
     p_cancel.add_argument("--repo", default=".", help="repository root")
     p_cancel.add_argument("run_id", help="run id to cancel")
 
+    p_checkpoint = sub.add_parser(
+        "checkpoint", help="inspect, cancel, or garbage-collect Fast V3 checkpoints")
+    p_checkpoint.add_argument("lifecycle_action", choices=("inspect", "cancel", "gc"))
+    p_checkpoint.add_argument("--repo", default=".")
+    p_checkpoint.add_argument("--task-id", required=True)
+    p_checkpoint.add_argument("--attempt-id", required=True)
+    p_checkpoint.add_argument("--source-commit", required=True)
+    p_checkpoint.add_argument("--fast-generation", required=True)
+    p_checkpoint.add_argument("--base-path", default="")
+    p_checkpoint.add_argument("--candidate-id", action="append", default=[])
+    p_checkpoint.add_argument("--shard-id", default="candidate")
+    p_checkpoint.add_argument("--reason", default="operator_cancelled")
+    p_checkpoint.add_argument("--retention-seconds", type=int, default=86400)
+    p_checkpoint.add_argument("--apply", action="store_true")
+
     p_maintenance = sub.add_parser(
         "maintenance-deferred",
         aliases=["defer-maintenance"],
@@ -978,6 +1025,12 @@ def main(argv=None) -> int:
         return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget, args.serial)
     if command == "cancel":
         return cancel(args.repo, args.run_id)
+    if command == "checkpoint":
+        if args.lifecycle_action == "inspect":
+            if len(args.candidate_id) != 1:
+                parser.error("checkpoint inspect requires exactly one --candidate-id")
+            args.candidate_id = args.candidate_id[0]
+        return checkpoint_lifecycle(args)
     if command in {"maintenance-deferred", "defer-maintenance"}:
         return maintenance_deferred(
             args.repo, args.run_id, args.mode, args.disposition,
