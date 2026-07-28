@@ -43,6 +43,23 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
         raise
 
 
+def _write_json_exclusive(path: Path, value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(value, handle, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _require(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise LifecycleError(f"{name} must be a non-empty string")
@@ -285,7 +302,13 @@ class CheckpointLifecycle:
             if existing == fence:
                 return existing
             raise LifecycleError("promotion fence already sealed by another winner")
-        _write_json(self.fence_path, fence)
+        try:
+            _write_json_exclusive(self.fence_path, fence)
+        except FileExistsError:
+            existing = json.loads(self.fence_path.read_text(encoding="utf-8"))
+            if existing == fence:
+                return existing
+            raise LifecycleError("promotion fence already sealed by another winner")
         return fence
 
     def converge(
