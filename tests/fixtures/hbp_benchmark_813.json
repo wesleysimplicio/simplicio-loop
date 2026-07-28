@@ -1,0 +1,23 @@
+{
+  "chain_length": 20,
+  "classification": "MEASURED_LOCAL",
+  "environment": {
+    "platform": "linux",
+    "python": "3.12.13",
+    "source_sha": "d2d7ad7e3d842c6b59611fc20d1629a23150515b",
+    "source_sha_reason": null
+  },
+  "latency_ns": {
+    "max": 5339519,
+    "min": 514184,
+    "p50": 525646,
+    "p95": 856924
+  },
+  "local_llm": false,
+  "provider_metrics": null,
+  "provider_metrics_reason": "offline verifier does not invoke a provider",
+  "receipt_hash": "b50858d8843e788d3e72d760a4f00b9d0dffb8082eda551dd3454b007edb121c",
+  "runs": 1000,
+  "schema": "simplicio.hbp-benchmark/v1",
+  "verdict": "COMPLETE"
+}
