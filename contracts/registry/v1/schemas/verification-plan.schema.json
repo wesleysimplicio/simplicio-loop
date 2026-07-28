@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/verification-plan/v1/schema.json",
+  "contract": "simplicio.verification-plan/v1",
+  "version": "1.0.0",
+  "payload_required": ["checks"],
+  "payload_schema": {
+    "type": "object",
+    "required": ["checks"],
+    "properties": {
+      "checks": {"type": "array", "items": {"type": "object"}},
+      "required_coverage": {"type": "number", "minimum": 0, "maximum": 1}
+    },
+    "additionalProperties": true
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/effect-receipt/v1/schema.json",
+  "contract": "simplicio.effect-receipt/v1",
+  "version": "1.0.0",
+  "payload_required": ["effect_id", "status"],
+  "payload_schema": {
+    "type": "object",
+    "required": ["effect_id", "status"],
+    "properties": {
+      "effect_id": {"type": "string", "minLength": 1},
+      "status": {"type": "string", "enum": ["applied", "rejected", "failed", "skipped"]},
+      "result_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+      "reason_code": {"type": "string"}
+    },
+    "additionalProperties": true
+  }
+}

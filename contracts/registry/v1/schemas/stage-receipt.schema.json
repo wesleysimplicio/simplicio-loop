@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/stage-receipt/v1/schema.json",
+  "contract": "simplicio.stage-receipt/v1",
+  "version": "1.0.0",
+  "payload_required": ["stage_id", "status"],
+  "payload_schema": {
+    "type": "object",
+    "required": ["stage_id", "status"],
+    "properties": {
+      "stage_id": {"type": "string", "minLength": 1},
+      "status": {"type": "string", "enum": ["started", "completed", "failed", "blocked"]},
+      "output_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+      "evidence": {"type": "array", "items": {"type": "string"}}
+    },
+    "additionalProperties": true
+  }
+}
