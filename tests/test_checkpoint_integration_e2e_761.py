@@ -3,14 +3,15 @@ from __future__ import annotations
 import json
 
 from simplicio_loop import cli
-from simplicio_loop.checkpoint_lifecycle import CheckpointLifecycle
+from simplicio_loop.checkpoint_lifecycle import CheckpointLifecycle, LifecycleError
 from simplicio_loop.fast_fanout import FastFanoutCoordinator
 from simplicio_loop.fast_integration import FAST_CHANGESET_SCHEMA
 
 
 class FakeFast:
-    def __init__(self):
+    def __init__(self, lifecycle=None):
         self.applied = []
+        self.lifecycle = lifecycle
 
     def prepare(self, task):
         return {
@@ -21,6 +22,8 @@ class FakeFast:
         }
 
     def apply(self, changeset, *, winner, generation, context_hash):
+        if self.lifecycle is not None:
+            assert self.lifecycle.fence_path.exists(), "apply happened before winner fence"
         self.applied.append((winner, generation, context_hash))
         return {"status": "READY"}
 
@@ -47,7 +50,8 @@ def test_fast_fanout_uses_durable_overlays_fence_and_cancellation(tmp_path):
         fast_generation="generation-1",
         base_path=tmp_path,
     )
-    coordinator = FastFanoutCoordinator(tmp_path, integration=FakeFast(), lifecycle=lifecycle)
+    fast = FakeFast(lifecycle)
+    coordinator = FastFanoutCoordinator(tmp_path, integration=fast, lifecycle=lifecycle)
     coordinator.prepare("task")
     left = coordinator.acquire_slot("left", overlay_tree_hash="tree-left")
     right = coordinator.acquire_slot("right", overlay_tree_hash="tree-right")
@@ -60,9 +64,39 @@ def test_fast_fanout_uses_durable_overlays_fence_and_cancellation(tmp_path):
     assert result["status"] == "PROMOTED"
     assert result["checkpoint_lifecycle"]["status"] == "SEALED"
     assert result["checkpoint_lifecycle"]["fence"]["winner_id"] == "candidate-a"
+    assert result["checkpoint_lifecycle"]["fence"]["winner_id"] == result["winner"]
+    assert fast.applied == [(True, "generation-1", "context-1")]
     assert coordinator.snapshot()["slots"][0]["state"] == "released"
     assert lifecycle.load("candidate-a", "candidate")["state"] == "READY_TO_PROMOTE"
     assert (lifecycle.cancellations / "candidate-b.json").exists()
+
+
+def test_lifecycle_failure_blocks_before_any_fast_apply(tmp_path, monkeypatch):
+    lifecycle = CheckpointLifecycle(
+        tmp_path / ".simplicio" / "loop-runs",
+        task_id="task",
+        attempt_id="attempt",
+        source_commit="commit",
+        fast_generation="generation-1",
+        base_path=tmp_path,
+    )
+    fast = FakeFast()
+    coordinator = FastFanoutCoordinator(tmp_path, integration=fast, lifecycle=lifecycle)
+    coordinator.prepare("task")
+    coordinator.acquire_slot("slot", overlay_tree_hash="tree")
+    coordinator.record_candidate("slot", "candidate", changeset(), verified=True)
+    monkeypatch.setattr(
+        lifecycle,
+        "converge_selected",
+        lambda **kwargs: (_ for _ in ()).throw(LifecycleError("fence unavailable")),
+    )
+
+    result = coordinator.promote_winner()
+
+    assert result["status"] == "BLOCKED"
+    assert result["reason"] == "checkpoint_lifecycle_failed"
+    assert result["apply"] is None
+    assert fast.applied == []
 
 
 def test_checkpoint_cli_inspect_cancel_and_gc(tmp_path, capsys):
