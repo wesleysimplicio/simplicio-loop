@@ -40,6 +40,9 @@ if REPO not in sys.path:
 
 from simplicio_loop import completion_auditor as ca  # noqa: E402
 from simplicio_loop import stage_agents as sa  # noqa: E402
+from simplicio_loop.work_gap_ledger import (  # noqa: E402
+    WorkGap, WorkGapLedger, sha256_evidence,
+)
 
 
 def _set_repo(repo):
@@ -230,6 +233,57 @@ def cmd_selftest(_opts):
             })
             _write_json(paths["delivery"], {"current_state": "merged", "source_checked_at": now})
             _write_json(paths["source_requery"], {"state": "merged", "checked_at": now})
+            ledger = WorkGapLedger()
+            gap = WorkGap(
+                "REQ-selftest", "AC-terminal",
+                expected_evidence=("implementation", "verification", "integration", "delivery"),
+                delivery_target="package:simplicio-loop",
+                expected_revision="selftest-commit",
+            )
+            ledger.register(gap)
+            ledger.assign_owner(
+                gap.key, owner_project="simplicio-loop", owner_agent="owner",
+                actor_id="coverage-seat",
+            )
+            ledger.transition(gap.key, "PLANNED", actor_id="planner-seat", seat="planner")
+            ledger.transition(
+                gap.key, "IMPLEMENTED", actor_id="executor-seat", seat="executor",
+                executor_id="executor-seat",
+                evidence=(sha256_evidence(
+                    "implementation", "commit:selftest", b"patch", "executor-seat"
+                ),),
+            )
+            ledger.transition(
+                gap.key, "VERIFIED", actor_id="verifier-seat", seat="verifier",
+                verifier_id="verifier-seat",
+                evidence=(sha256_evidence(
+                    "verification", "test:selftest", b"pass", "verifier-seat"
+                ),),
+            )
+            ledger.transition(
+                gap.key, "INTEGRATED", actor_id="integration-seat", seat="integration",
+                evidence=(sha256_evidence(
+                    "integration", "wheel:selftest", b"wheel", "integration-seat"
+                ),),
+            )
+            ledger.transition(
+                gap.key, "DELIVERED", actor_id="completion-seat", seat="completion",
+                completion_auditor_id="completion-seat",
+                evidence=(sha256_evidence(
+                    "delivery", "source:selftest", b"merged", "completion-seat"
+                ),),
+                installed_artifact={
+                    "expected_commit": "selftest-commit",
+                    "installed_commit": "selftest-commit",
+                    "sha256": "a" * 64,
+                    "match": True,
+                },
+                source_requery={"commit": "selftest-commit", "state": "merged"},
+            )
+            _write_json(
+                os.path.join(LOOP_DIR, "work-gap-ledger.json"),
+                ledger.snapshot(),
+            )
 
             os.environ["SIMPLICIO_AUDITOR_INSTANCE_ID"] = "inst-auditor"
             rc = cmd_audit({})
