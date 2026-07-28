@@ -50,7 +50,7 @@ def test_dependency_version_and_fast_branch_drift_are_blocked(tmp_path):
     pyproject = repo / "pyproject.toml"
     pyproject.write_text(
         pyproject.read_text(encoding="utf-8").replace(
-            "simplicio-fast>=2.0.14",
+            "simplicio-fast>=2.0.16",
             "simplicio-fast>=1.0.0",
         ),
         encoding="utf-8",
@@ -72,7 +72,7 @@ def test_version_fallback_drift_is_blocked(tmp_path):
     repo = fixture_repo(tmp_path)
     package = repo / "simplicio_loop" / "__init__.py"
     package.write_text(
-        package.read_text(encoding="utf-8").replace("3.38.5", "9.9.9"),
+        package.read_text(encoding="utf-8").replace("3.38.7", "9.9.9"),
         encoding="utf-8",
     )
     report = evaluate(repo)
