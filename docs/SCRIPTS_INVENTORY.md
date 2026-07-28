@@ -34,6 +34,7 @@ any skill/doc invoker), **legacy** (superseded, kept for compatibility/history).
 | `verify_adapters.py` | `claims_audit.py` check 7 (adapter-install-contract) | active |
 | `doctor.py` | manual (`python3 scripts/doctor.py [--repair]`), also wrapped by `scripts/simplicio-engine doctor` | active |
 | `preflight.py` | fail-closed identity, minimum-version, capability, and Runtime contract smoke gate (`python3 scripts/preflight.py --json`) | active |
+| `ecosystem_doctor.py` | pre-planning cross-component version/capability/schema/SHA handshake (`python3 scripts/ecosystem_doctor.py --json`) | active |
 | `install.sh` / `install.ps1` | README § Install; the plugin/marketplace install path | active |
 | `install_lib.py` | imported by `install.sh` / `install.ps1` | active |
 | `install_services.py` | install flow (service/daemon registration) | active |

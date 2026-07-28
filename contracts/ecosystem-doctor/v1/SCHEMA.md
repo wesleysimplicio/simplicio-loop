@@ -1,0 +1,16 @@
+# `simplicio.ecosystem-doctor/v1`
+
+The doctor is a read-only, fail-closed pre-planning receipt. It probes the
+checkout and installed distributions without changing packages or provider
+configuration. Each component reports one of `available`, `missing`,
+`disabled`, `degraded`, or `incompatible`, plus its observed version,
+entrypoints, capabilities, supported schemas and evidence-backed SHA.
+
+`standalone` requires Loop, Mapper and Dev CLI. Fast and Runtime are optional
+and are reported as explicit fallbacks. `full-stack` requires all five
+components. A required mismatch makes `ready=false` and exits non-zero.
+
+When persistence is enabled, the exact receipt is bound by a `handshake_sha`
+and appended under the loop journal lock with phase `pre_planning`. The doctor
+never upgrades silently; every non-ready component carries a deterministic
+remediation instruction.

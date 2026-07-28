@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wesleysimplicio/simplicio-loop/blob/main/contracts/ecosystem-doctor/v1/schema.json",
+  "title": "Simplicio ecosystem doctor receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "checked_at", "repo", "profile", "status", "ready", "blockers", "degraded", "components", "policy", "handshake"],
+  "properties": {
+    "schema": {"const": "simplicio.ecosystem-doctor/v1"},
+    "checked_at": {"type": "string", "format": "date-time"},
+    "repo": {"type": "string"},
+    "profile": {"enum": ["standalone", "full-stack"]},
+    "status": {"enum": ["READY", "DEGRADED", "BLOCKED"]},
+    "ready": {"type": "boolean"},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "degraded": {"type": "array", "items": {"type": "string"}},
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "required", "command", "distribution", "minimum_version", "required_capabilities", "missing_capabilities", "supported_schemas", "submodule_shas"],
+        "properties": {
+          "name": {"type": "string"},
+          "status": {"enum": ["available", "missing", "disabled", "degraded", "incompatible"]},
+          "required": {"type": "boolean"},
+          "command": {"type": "string"},
+          "distribution": {"type": "string"},
+          "path": {"type": ["string", "null"]},
+          "version": {"type": ["string", "null"]},
+          "parsed_version": {"type": ["string", "null"]},
+          "minimum_version": {"type": "string"},
+          "entrypoints": {"type": "array", "items": {"type": "string"}},
+          "capabilities": {"type": "array", "items": {"type": "string"}},
+          "required_capabilities": {"type": "array", "items": {"type": "string"}},
+          "missing_capabilities": {"type": "array", "items": {"type": "string"}},
+          "supported_schemas": {"type": "array", "items": {"type": "string"}},
+          "git_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+          "sha_source": {"enum": ["checkout", "submodule", "unavailable"]},
+          "submodule_shas": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{40}$"}},
+          "reason_code": {"type": "string"},
+          "remediation": {"type": ["string", "null"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "policy": {"type": "object", "required": ["automatic_upgrade", "required_components", "optional_components", "fallbacks"], "additionalProperties": true},
+    "handshake": {
+      "type": "object",
+      "required": ["written", "path"],
+      "properties": {
+        "written": {"type": "boolean"},
+        "path": {"type": ["string", "null"]},
+        "record": {"type": "object"}
+      },
+      "additionalProperties": true
+    }
+  }
+}
