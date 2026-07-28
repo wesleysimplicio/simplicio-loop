@@ -4,7 +4,7 @@
 
 | Component | Checkout | Declared branch | Pinned commit |
 | --- | --- | --- | --- |
-| `simplicio-mapper` | `components/simplicio-mapper` | `main` | `dfa15b324f6051c1d5ed37fb033a946a7a638bd5` |
+| `simplicio-mapper` | `components/simplicio-mapper` | `main` | `8f3bc3bbb0c4925938b2f0f0ff8c4f0c69fad64d` |
 | `simplicio-dev-cli` | `components/simplicio-dev-cli` | `main` | `4776b20fcdf6d46f429e5dc11f53baa39cec5b4d` |
 | `simplicio-fast` | `components/simplicio-fast` | `master` | `e059304bf0b977a8d71893269481a9965da6839b` |
 

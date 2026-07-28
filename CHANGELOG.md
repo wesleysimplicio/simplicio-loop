@@ -6,6 +6,7 @@
   0.26.0, Dev CLI 0.18.0, and Fast 2.0.16.
 - Advance Fast to the post-release verified tip with corrected version tests
   and Git-tree-only quant benchmark provenance.
+- Advance Mapper to the final 0.26.0 release-metadata correction.
 - Keep strict routing, admission planning receipts, subprocess network guards,
   plugin parity, and the full core gate fail-closed.
 
