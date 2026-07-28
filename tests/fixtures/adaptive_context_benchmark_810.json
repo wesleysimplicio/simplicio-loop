@@ -1,0 +1,32 @@
+{
+  "classification": "MEASURED_LOCAL",
+  "counter": "regex-v1",
+  "environment": {
+    "platform": "linux",
+    "python": "3.12.13",
+    "source_sha": "99e4170b368cd2762276fad8fc318beb5413c48d",
+    "source_sha_reason": null
+  },
+  "latency_ms": {
+    "max": 0.556067,
+    "min": 0.229511,
+    "p50": 0.2331665,
+    "p95": 0.30265
+  },
+  "local_llm": false,
+  "provider_tokens": null,
+  "provider_tokens_reason": "offline benchmark did not invoke a provider",
+  "quality": {
+    "adaptive_fact_recall": 1.0,
+    "full_fact_recall": 1.0,
+    "static_fact_recall": 0.6666666666666666
+  },
+  "receipt_hash": "sha256:0e8dc0adef8e22fffd1a70f501ddc4615ada1e68757cba399e53b34c3cd2817c",
+  "runs": 500,
+  "schema": "simplicio.loop-adaptive-context-benchmark/v1",
+  "tokens": {
+    "adaptive_context": 11,
+    "full_context": 101,
+    "static_soft_context": 8
+  }
+}
