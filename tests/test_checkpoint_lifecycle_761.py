@@ -122,7 +122,25 @@ def test_gc_never_removes_active_lease_then_reclaims_cancelled_overlay(tmp_path)
 def test_missing_corrupt_and_nonterminal_shards_fail_closed(tmp_path):
     run = lifecycle(tmp_path)
     run.checkpoint("a", "s1", "PLANNED")
-    with pytest.raises(LifecycleError, match="non-terminal"):
+    with pytest.raises(LifecycleError, match="not promotion-ready"):
         run.fanin([CandidateSpec("a", 0, 0)], expected_shards=["s1"])
     with pytest.raises(LifecycleError, match="missing or corrupt"):
         run.fanin([CandidateSpec("a", 0, 0)], expected_shards=["missing"])
+
+
+def test_generic_fanin_rejects_held_candidate_even_with_better_score(tmp_path):
+    run = lifecycle(tmp_path)
+    run.checkpoint(
+        "ready", "candidate", "READY_TO_PROMOTE",
+        receipts=["test"], work_units=10)
+    run.checkpoint(
+        "held", "candidate", "HELD",
+        receipts=["test", "lint", "coverage"], work_units=1)
+    with pytest.raises(LifecycleError, match="not promotion-ready.*HELD"):
+        run.fanin(
+            [
+                CandidateSpec("held", risk=0.0, uncertainty=0.0, stalled=True),
+                CandidateSpec("ready", risk=0.9, uncertainty=0.9),
+            ],
+            expected_shards=["candidate"],
+        )
