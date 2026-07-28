@@ -1,0 +1,143 @@
+{
+  "classification": "MEASURED_LOCAL",
+  "evidence_paths": [
+    "/tmp/simplicio-device-evidence-794/e2e-host-a.json",
+    "/tmp/simplicio-device-evidence-794/e2e-host-b.json"
+  ],
+  "local_llm": false,
+  "model_provider_started": false,
+  "physical_max_used": {
+    "CPU": 1
+  },
+  "physical_slots_available_after": 1,
+  "receipt_hash": "sha256:d96d08a42f33e69b6c9864c40ceae7564d5c1ef008c46d833fb2fe27d1790f8f",
+  "receipts": [
+    {
+      "device_receipt": {
+        "attempts": 1,
+        "capacity_revision": 1,
+        "effective": {
+          "backend": "fake-litert-cpu",
+          "capabilities": [
+            "completion",
+            "embedding"
+          ],
+          "device": "CPU"
+        },
+        "execution_time_ns": 3193028,
+        "fallback": {
+          "policy_allowed": true,
+          "used": true
+        },
+        "idempotency_key": "e2e:host-a",
+        "lease": {
+          "deadline": 47517.06830408,
+          "fence": 1,
+          "lease_id": "runtime-lease-61bf2cd8a41c414cad88b0d9a5e7f805"
+        },
+        "loop_spawns_engine": false,
+        "model_provider_started": false,
+        "owner_id": "host-a",
+        "queue_time_ns": 189361,
+        "reason_code": null,
+        "receipt_hash": "sha256:b63023779197c5ce2ceb77a0f6d85c4366e2537ea33b2e4e5ca36c6736fa5507",
+        "request_id": "e2e-host-a",
+        "requested": {
+          "allowed_fallback_devices": [
+            "CPU"
+          ],
+          "capability": "completion",
+          "latency_class": "interactive",
+          "memory_bytes": 128,
+          "memory_class": "small",
+          "preferred_devices": [
+            "NPU",
+            "CPU"
+          ]
+        },
+        "result_hash": "sha256:4f9a7eb9af82fac82bf91b3d6264f3116cdb8243133f637894a2037babeb55ee",
+        "runtime_authority": true,
+        "schema": "simplicio.device-execution-receipt/v1",
+        "session_id": "session-a",
+        "status": "succeeded"
+      },
+      "device_receipt_hash": "sha256:b63023779197c5ce2ceb77a0f6d85c4366e2537ea33b2e4e5ca36c6736fa5507",
+      "loop_spawns_engine": false,
+      "model_provider_started": false,
+      "reason_code": null,
+      "receipt_hash": "sha256:541b6a916909658f3dee1ba91d406870ca16a5724ac34efefca47a5a409787f4",
+      "request_id": "e2e-host-a",
+      "runtime_authority": true,
+      "schema": "simplicio.device-stage-receipt/v1",
+      "stage_id": "validating",
+      "stage_instance_id": "validating@host-a",
+      "status": "pass"
+    },
+    {
+      "device_receipt": {
+        "attempts": 1,
+        "capacity_revision": 2,
+        "effective": {
+          "backend": "fake-litert-cpu",
+          "capabilities": [
+            "completion",
+            "embedding"
+          ],
+          "device": "CPU"
+        },
+        "execution_time_ns": 3124355,
+        "fallback": {
+          "policy_allowed": true,
+          "used": true
+        },
+        "idempotency_key": "e2e:host-b",
+        "lease": {
+          "deadline": 47517.071652359,
+          "fence": 2,
+          "lease_id": "runtime-lease-8983b99fd304490d87a8c070bf6ccdc9"
+        },
+        "loop_spawns_engine": false,
+        "model_provider_started": false,
+        "owner_id": "host-b",
+        "queue_time_ns": 3521226,
+        "reason_code": null,
+        "receipt_hash": "sha256:afc78e428b6271213ff7ee0e46fa11c79e91e5b44b5ffa45afd83a3934adbd55",
+        "request_id": "e2e-host-b",
+        "requested": {
+          "allowed_fallback_devices": [
+            "CPU"
+          ],
+          "capability": "completion",
+          "latency_class": "interactive",
+          "memory_bytes": 128,
+          "memory_class": "small",
+          "preferred_devices": [
+            "NPU",
+            "CPU"
+          ]
+        },
+        "result_hash": "sha256:4f9a7eb9af82fac82bf91b3d6264f3116cdb8243133f637894a2037babeb55ee",
+        "runtime_authority": true,
+        "schema": "simplicio.device-execution-receipt/v1",
+        "session_id": "session-b",
+        "status": "succeeded"
+      },
+      "device_receipt_hash": "sha256:afc78e428b6271213ff7ee0e46fa11c79e91e5b44b5ffa45afd83a3934adbd55",
+      "loop_spawns_engine": false,
+      "model_provider_started": false,
+      "reason_code": null,
+      "receipt_hash": "sha256:63584aa418313889b6e48b13583d7b787e3f676d5176f2b57277637bb3604016",
+      "request_id": "e2e-host-b",
+      "runtime_authority": true,
+      "schema": "simplicio.device-stage-receipt/v1",
+      "stage_id": "validating",
+      "stage_instance_id": "validating@host-b",
+      "status": "pass"
+    }
+  ],
+  "runtime_execution_calls": {
+    "e2e:host-a": 1,
+    "e2e:host-b": 1
+  },
+  "schema": "simplicio.device-fabric-e2e/v1"
+}
