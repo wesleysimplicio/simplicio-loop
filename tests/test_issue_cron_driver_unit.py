@@ -33,8 +33,8 @@ def _issue(title, labels=None, body=""):
 
 # AC1: prefix set covers Hub/Supervisor/Async/Architecture/Epic/Performance/ReleaseTrain
 def test_prefix_set_covers_domains():
-    for p in ("[HUB]", "[SUPERVISOR]", "[ASYNC]", "[ARCHITECTURE]",
-              "[EPIC]", "[PERFORMANCE]", "[RELEASE TRAIN]", "[P0][EPIC]"):
+    for p in ("HUB", "SUPERVISOR", "ASYNC", "ARCHITECTURE",
+              "EPIC", "PERFORMANCE", "RELEASE TRAIN"):
         assert p in mod.INFRA_DEPENDENT_DOMAINS, p
 
 

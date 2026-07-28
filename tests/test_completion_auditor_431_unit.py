@@ -586,7 +586,7 @@ def test_cli_blocks_when_anchor_file_missing(tmp_path, monkeypatch):
 
     fake_repo = tmp_path / "repo"
     (fake_repo / ".simplicio/orchestrator" / "loop").mkdir(parents=True)
-    (fake_repo / ".simplicio").mkdir(parents=True)
+    (fake_repo / ".simplicio").mkdir(parents=True, exist_ok=True)
     (fake_repo / ".simplicio/orchestrator" / "loop" / "stage_instances.json").write_text("[]", encoding="utf-8")
     (fake_repo / ".simplicio/orchestrator" / "loop" / "stage_receipts.json").write_text("[]", encoding="utf-8")
 

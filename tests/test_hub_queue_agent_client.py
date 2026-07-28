@@ -140,7 +140,7 @@ def _process_spec(*argv: str, timeout: float = 5.0) -> dict:
     }
 
 
-def test_real_hub_socket_lifecycle_stale_fence_and_cancel():
+def test_real_hub_socket_lifecycle_stale_fence_and_cancel(require_af_unix):
     with tempfile.TemporaryDirectory() as directory:
         daemon = HubDaemon(str(Path(directory) / "hub.lock"))
         daemon.start()
@@ -174,7 +174,7 @@ def test_real_hub_socket_lifecycle_stale_fence_and_cancel():
             daemon.stop()
 
 
-def test_real_hub_restart_marks_claimed_recovery_unknown_without_redispatch():
+def test_real_hub_restart_marks_claimed_recovery_unknown_without_redispatch(require_af_unix):
     with tempfile.TemporaryDirectory() as directory:
         lock_path = str(Path(directory) / "hub.lock")
         daemon = HubDaemon(lock_path)

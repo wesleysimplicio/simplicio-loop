@@ -169,7 +169,11 @@ def test_watcher_rejects_uncovered_manual_diff_from_evidence(tmp_path):
                     "scenario_verified": 1, "rule_total": 0, "rule_verified": 0},
         "checks": [],
     }), encoding="utf-8")
-    r = _run([sys.executable, WATCHER, "verify"], str(repo), env={"SIMPLICIO_RUN_DIR": str(run_dir)})
+    r = _run(
+        [sys.executable, WATCHER, "verify"],
+        str(repo),
+        env={"SIMPLICIO_RUN_DIR": str(run_dir), "SIMPLICIO_LOOP_REPO": str(repo)},
+    )
     assert r.returncode == 0
     state = json.loads((loop_dir / "watcher_state.json").read_text(encoding="utf-8"))
     assert state["match"] is False
@@ -196,8 +200,11 @@ def test_watcher_rejects_verified_ac_without_proof_reference(tmp_path):
         "summary": {"criteria_total": 1, "criteria_verified": 1, "scenario_total": 1,
                     "scenario_verified": 1, "rule_total": 0, "rule_verified": 0}, "checks": [],
     }), encoding="utf-8")
-    r = _run([sys.executable, WATCHER, "verify"], str(repo),
-             env={"SIMPLICIO_RUN_DIR": str(run_dir)})
+    r = _run(
+        [sys.executable, WATCHER, "verify"],
+        str(repo),
+        env={"SIMPLICIO_RUN_DIR": str(run_dir), "SIMPLICIO_LOOP_REPO": str(repo)},
+    )
     assert r.returncode == 0
     state = json.loads((loop_dir / "watcher_state.json").read_text(encoding="utf-8"))
     assert state["match"] is False

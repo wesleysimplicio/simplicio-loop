@@ -47,7 +47,7 @@ def _request_raw(stream, reader, request_id, method, payload):
     return json.loads(line)
 
 
-def test_code_client_contract_uses_one_hub_identity_and_replays_lifecycle():
+def test_code_client_contract_uses_one_hub_identity_and_replays_lifecycle(require_af_unix):
     with tempfile.TemporaryDirectory() as directory:
         lock = str(Path(directory) / "hub.lock")
         endpoint, transport = _endpoint(directory)
@@ -94,7 +94,7 @@ def test_code_client_contract_uses_one_hub_identity_and_replays_lifecycle():
             daemon.stop()
 
 
-def test_code_runtime_execute_is_forwarded_to_hub_owned_runtime_bridge():
+def test_code_runtime_execute_is_forwarded_to_hub_owned_runtime_bridge(require_af_unix):
     class RecordingRuntime:
         def __init__(self):
             self.calls = []
@@ -143,7 +143,7 @@ def test_code_runtime_execute_is_forwarded_to_hub_owned_runtime_bridge():
             daemon.stop()
 
 
-def test_code_runtime_call_is_forwarded_to_hub_owned_runtime_bridge():
+def test_code_runtime_call_is_forwarded_to_hub_owned_runtime_bridge(require_af_unix):
     class RecordingRuntime:
         def __init__(self):
             self.calls = []
@@ -330,7 +330,7 @@ def test_code_runtime_call_reaches_real_runtime_fs_stat():
             daemon.stop()
 
 
-def test_external_worker_contract_is_durable_idempotent_and_cancel_fail_closed():
+def test_external_worker_contract_is_durable_idempotent_and_cancel_fail_closed(require_af_unix):
     with tempfile.TemporaryDirectory() as directory:
         lock = str(Path(directory) / "hub.lock")
         endpoint, transport = _endpoint(directory)
