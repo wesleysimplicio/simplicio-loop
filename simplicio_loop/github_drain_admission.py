@@ -14,6 +14,7 @@ from .github_drain_intake import (
     INTENT_SCHEMA,
     MAP_SCHEMA,
     PLAN_SCHEMA,
+    PLANNING_RECEIPT_SCHEMA,
     PLANNED_NOT_EXECUTED_EXIT,
     PLANNER_REVISION,
     _digest,
@@ -39,6 +40,7 @@ _JOB_KEYS = {
 _ITEM_KEYS = {
     "number", "title", "url", "labels", "source_revision", "observed_at",
     "dependencies", "external_dependencies_closed", "risk", "state",
+    "acceptance_criteria", "planning_receipt",
 }
 _CANONICAL_MAP_REQUIRED = {"schema", "status", "mode", "repository", "cache_key"}
 _CANONICAL_MAP_ALLOWED = _CANONICAL_MAP_REQUIRED | {
@@ -105,6 +107,54 @@ def _utc_timestamp(value: Any) -> bool:
         )
     except (TypeError, ValueError, OverflowError):
         return False
+
+
+def _valid_planning_evidence(item: Mapping[str, Any], number: int) -> bool:
+    criteria = item.get("acceptance_criteria")
+    receipt = item.get("planning_receipt")
+    if (
+        not isinstance(criteria, list) or not 1 <= len(criteria) <= 100
+        or not isinstance(receipt, Mapping)
+        or set(receipt) != {
+            "schema", "planner_revision", "item_number", "source_revision",
+            "acceptance_criteria_hash", "plan_hash", "receipt_hash", "created_at",
+        }
+    ):
+        return False
+    seen = set()
+    for criterion in criteria:
+        if (
+            not isinstance(criterion, Mapping)
+            or set(criterion) != {"id", "text", "origin", "state"}
+            or not _identifier(criterion.get("id"), maximum=128)
+            or criterion.get("id") in seen
+            or not _safe_text(criterion.get("text"), maximum=MAX_JOB_TEXT_LENGTH)
+            or criterion.get("origin") not in {"source", "derived"}
+            or criterion.get("state") != "pending"
+        ):
+            return False
+        seen.add(criterion["id"])
+    source_revision = item.get("source_revision")
+    ac_hash = _digest({"acceptance_criteria": criteria})
+    return (
+        receipt.get("schema") == PLANNING_RECEIPT_SCHEMA
+        and receipt.get("planner_revision") == PLANNER_REVISION
+        and receipt.get("item_number") == number
+        and receipt.get("source_revision") == source_revision
+        and receipt.get("acceptance_criteria_hash") == ac_hash
+        and receipt.get("plan_hash") == _digest({
+            "number": number,
+            "source_revision": source_revision,
+            "acs": ac_hash,
+        })
+        and receipt.get("receipt_hash") == _digest({
+            "planner_revision": PLANNER_REVISION,
+            "number": number,
+            "source_revision": source_revision,
+            "acs": ac_hash,
+        })
+        and _utc_timestamp(receipt.get("created_at"))
+    )
 
 
 def _github_issue_url(value: Any, repository: str, number: int) -> bool:
@@ -220,6 +270,7 @@ def validate_projected_job(job: Mapping[str, Any]) -> None:
             or any(dependency not in dependencies for dependency in external_closed)
             or raw_item.get("risk") not in {"high", "medium", "low"}
             or raw_item.get("state") not in {"planned", "remote_closed"}
+            or not _valid_planning_evidence(raw_item, number)
         ):
             raise DrainAdmissionProjectionError(
                 "projected item values are invalid", reason_code="job_items_invalid"

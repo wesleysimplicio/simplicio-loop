@@ -434,7 +434,7 @@ def test_benchmark_hub_transport_produces_real_latency_receipt(
 def test_socket_server_rejects_unknown_transport() -> None:
     with tempfile.TemporaryDirectory() as directory:
         daemon = HubDaemon(str(Path(directory) / "hub.lock"))
-        with pytest.raises(ValueError, match="transport must be unix or named-pipe"):
+        with pytest.raises(ValueError, match="transport must be unix, named-pipe, or tcp"):
             HubSocketServer(daemon, str(Path(directory) / "hub.sock"), transport="carrier-pigeon")
 
 

@@ -1,8 +1,8 @@
 {
   "schema": "simplicio.loop-submodules-receipt/v1",
   "source": {
-    "superproject_base": "16b8f94cf31a719cb7c48fe320d87ec88e8b663a",
-    "generated_from": "agent/add-ecosystem-submodules"
+    "superproject_base": "324713e4137dc0cd12fb8e2e7173e10188a5dc51",
+    "generated_from": "chore/sync-prism-operator-pins"
   },
   "checks": {
     "gitmodules_urls_match_manifest": "PASS",
@@ -14,20 +14,20 @@
   "components": {
     "simplicio-mapper": {
       "path": "components/simplicio-mapper",
-      "sha": "412d5fbe23188aef3f0bfd1dbe56b867e2ad6f96"
+      "sha": "dfa15b324f6051c1d5ed37fb033a946a7a638bd5"
     },
     "simplicio-dev-cli": {
       "path": "components/simplicio-dev-cli",
-      "sha": "229b9b245c1f2dec901d9206a900d750d6520d74"
+      "sha": "4776b20fcdf6d46f429e5dc11f53baa39cec5b4d"
     },
     "simplicio-fast": {
       "path": "components/simplicio-fast",
-      "sha": "12f337149f908fa1a268fc9f6f8c7dd33b959ff0"
+      "sha": "e059304bf0b977a8d71893269481a9965da6839b"
     }
   },
   "hashes": {
-    ".gitmodules": "5fef866b3ebd3ceb84225fa572d16d9154463f757efa794e6463774c9f1cab9e",
-    "components/submodules.json": "047165cb8491f501306c3b16678e26b4cb912d61614753d33c518a1207f14597"
+    ".gitmodules": "fdf518535fba67828c6c784f52b30b9dc563957bb7927aafbb01a9b6fdb57c94",
+    "components/submodules.json": "e7ce7bf273eae1c2456eae9af069451f48bbf60d728a40237cc01de3b904f92e"
   },
   "metrics": {
     "network_requests": 0,

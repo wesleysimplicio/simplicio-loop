@@ -110,7 +110,7 @@ def test_orient_rewrite_noop_outside_a_simplicio_loop_project(tmp_path):
 
 
 def test_orient_rewrite_wraps_allowed_readonly_command_inside_project(tmp_path):
-    (tmp_path / ".simplicio/orchestrator").mkdir()
+    (tmp_path / ".simplicio/orchestrator").mkdir(parents=True)
     out = _rewrite({"command": "git status"}, cwd=str(tmp_path))
     updated = out["hookSpecificOutput"].get("updatedInput", {}).get("command", "")
     assert "orient_clamp.py" in updated and "git status" in updated
@@ -123,21 +123,21 @@ def test_orient_rewrite_env_var_gate_without_orchestrator_dir(tmp_path):
 
 
 def test_orient_rewrite_leaves_compound_command_unchanged(tmp_path):
-    (tmp_path / ".simplicio/orchestrator").mkdir()
+    (tmp_path / ".simplicio/orchestrator").mkdir(parents=True)
     out = _rewrite({"command": "git status && rm -rf /tmp/x"}, cwd=str(tmp_path))
     assert "updatedInput" not in out["hookSpecificOutput"], \
         "a compound/unsafe-shaped command must never be rewritten"
 
 
 def test_orient_rewrite_leaves_non_allowlisted_command_unchanged(tmp_path):
-    (tmp_path / ".simplicio/orchestrator").mkdir()
+    (tmp_path / ".simplicio/orchestrator").mkdir(parents=True)
     out = _rewrite({"command": "npm install left-pad"}, cwd=str(tmp_path))
     assert "updatedInput" not in out["hookSpecificOutput"], \
         "a write command outside the read-only allowlist must never be rewritten"
 
 
 def test_orient_rewrite_leaves_already_wrapped_command_unchanged(tmp_path):
-    (tmp_path / ".simplicio/orchestrator").mkdir()
+    (tmp_path / ".simplicio/orchestrator").mkdir(parents=True)
     out = _rewrite({"command": 'python3 "hooks/orient_clamp.py" -- git status'}, cwd=str(tmp_path))
     assert "updatedInput" not in out["hookSpecificOutput"]
 

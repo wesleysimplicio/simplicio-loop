@@ -113,7 +113,12 @@ def test_route_blocked_with_diagnostics_when_no_candidate_qualifies():
     assert receipt["block_reason"] == "no candidate satisfies mandatory requirements"
     assert len(receipt["candidates"]) == len(entries)
     assert all(c["status"] == "rejected" for c in receipt["candidates"])
-    assert all(c["reason_code"] == "missing_capability" for c in receipt["candidates"])
+    reasons = {c["runtime"]: c["reason_code"] for c in receipt["candidates"]}
+    assert reasons == {
+        "claude": "missing_capability",
+        "codex": "missing_capability",
+        "local-devcli": "local_llm_disabled",
+    }
 
 
 def test_scoring_prefers_more_preferred_capabilities_and_receipt_has_all_fields():

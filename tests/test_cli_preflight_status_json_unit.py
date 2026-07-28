@@ -114,22 +114,25 @@ class DirectCallCoverageTest(TestCase):
             "simplicio-dev-cli": "simplicio-dev-cli 0.16.1",
             "simplicio-py": "simplicio-py 0.16.1",
             "simplicio": "simplicio-runtime 1.0.0",
+            "simplicio-fast": "simplicio-fast 2.0.16",
         }
         return subprocess.CompletedProcess(command, 0, stdout=names[command[0]] + "\n", stderr="")
 
     def test_preflight_direct_call_text(self):
-        from simplicio_loop import cli
+        from simplicio_loop import cli, strict_mode
         buf = io.StringIO()
         with patch.object(cli.subprocess, "run", side_effect=self._present_operator_run), \
+             patch.object(strict_mode.shutil, "which", side_effect=lambda name: name), \
              contextlib.redirect_stdout(buf):
             rc = cli.preflight(str(REPO), as_json=False)
         self.assertEqual(rc, 0)
         self.assertIn("simplicio-loop preflight", buf.getvalue())
 
     def test_preflight_direct_call_json(self):
-        from simplicio_loop import cli
+        from simplicio_loop import cli, strict_mode
         buf = io.StringIO()
         with patch.object(cli.subprocess, "run", side_effect=self._present_operator_run), \
+             patch.object(strict_mode.shutil, "which", side_effect=lambda name: name), \
              contextlib.redirect_stdout(buf):
             rc = cli.preflight(str(REPO), as_json=True)
         self.assertEqual(rc, 0)
@@ -137,7 +140,7 @@ class DirectCallCoverageTest(TestCase):
         self.assertEqual(doc["schema"], "simplicio.preflight/v1")
 
     def test_preflight_direct_call_missing_core_operator_blocks(self):
-        from simplicio_loop import cli, finding_router
+        from simplicio_loop import cli, finding_router, strict_mode
 
         def missing_mapper(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
             if command[0] == "simplicio-mapper":
@@ -146,6 +149,7 @@ class DirectCallCoverageTest(TestCase):
 
         buf = io.StringIO()
         with patch.object(cli.subprocess, "run", side_effect=missing_mapper), \
+             patch.object(strict_mode.shutil, "which", side_effect=lambda name: name), \
              patch.object(finding_router, "route_finding"), \
              contextlib.redirect_stdout(buf):
             rc = cli.preflight(str(REPO), as_json=True)

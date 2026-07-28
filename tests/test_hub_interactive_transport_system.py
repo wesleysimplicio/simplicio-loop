@@ -22,7 +22,7 @@ def _stop(process):
     process.terminate(); process.wait(timeout=10)
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX external socket proof")
-def test_external_interactive_reconnect_replay_and_idempotent_submit():
+def test_external_interactive_reconnect_replay_and_idempotent_submit(require_af_unix):
     with tempfile.TemporaryDirectory() as directory:
         lock, endpoint = str(Path(directory)/"hub.lock"), str(Path(directory)/"hub.sock")
         process = _start(lock, endpoint)

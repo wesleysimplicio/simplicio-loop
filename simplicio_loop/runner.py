@@ -4322,6 +4322,19 @@ def _fanout_execution_route(item: Mapping[str, Any], run_dir: Path) -> Dict[str,
     return record
 
 
+def _operator_dispatch_run_dir(item: Mapping[str, Any]) -> Path:
+    """Resolve canonical run storage, with isolated storage for synthetic dispatches."""
+    status = read_status(item["repo"], item["run_id"])
+    if status.get("run_dir"):
+        return Path(status["run_dir"])
+
+    repo_path = Path(item["repo"]).resolve()
+    run_scope = hashlib.sha256(str(item["run_id"]).encode("utf-8")).hexdigest()[:16]
+    run_dir = repo_path / ".simplicio" / "orchestrator" / "dispatch-routes" / run_scope
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
 def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
     """Call the production operator and reduce its status to a durable worker record."""
     started = _now()
@@ -4344,7 +4357,7 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "agent": dict(item.get("agent_identity") or {}),
         "context_pack": dict(item.get("context_pack") or {}),
     }
-    run_dir = Path(read_status(item["repo"], item["run_id"])["run_dir"])
+    run_dir = _operator_dispatch_run_dir(item)
     execution_route = _fanout_execution_route(item, run_dir)
     common["execution_route"] = execution_route
     common["route_receipt_sha"] = execution_route["receipt_sha"]

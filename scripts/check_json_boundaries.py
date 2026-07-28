@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import subprocess
 import sys
 from pathlib import Path
 
@@ -36,8 +37,29 @@ def _config(root: Path):
     return roots, formats, exceptions
 
 
+def _tracked_paths(root: Path, roots: list[str]) -> set[str] | None:
+    """Return the Git inventory, or None when root is not a Git worktree."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--", *roots],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return {
+        path.decode("utf-8", errors="surrogateescape")
+        for path in result.stdout.split(b"\0")
+        if path
+    }
+
+
 def check(root: Path) -> list[str]:
     roots, formats, exceptions = _config(root)
+    tracked = _tracked_paths(root, roots)
     findings = []
     for rel_root in roots:
         directory = root / rel_root
@@ -47,6 +69,8 @@ def check(root: Path) -> list[str]:
             if not path.is_file() or path.suffix.lower() not in formats:
                 continue
             rel = path.relative_to(root).as_posix()
+            if tracked is not None and rel not in tracked:
+                continue
             entry = exceptions.get(rel)
             if entry is None:
                 findings.append(f"UNCLASSIFIED {rel}")

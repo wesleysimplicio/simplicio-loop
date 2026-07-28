@@ -113,6 +113,18 @@ def test_closed_external_dependency_evidence_is_preserved_and_bound(tmp_path):
         (lambda value: value["source_observation"].update(path="/private/source"), "job_source_invalid"),
         (lambda value: value["items"]["1"].update(path="/private/worktree"), "job_items_invalid"),
         (
+            lambda value: value["items"]["1"]["acceptance_criteria"][0].update(
+                text="tampered after planning"
+            ),
+            "job_items_invalid",
+        ),
+        (
+            lambda value: value["items"]["1"]["planning_receipt"].update(
+                receipt_hash="0" * 64
+            ),
+            "job_items_invalid",
+        ),
+        (
             lambda value: value["items"]["1"].update(
                 dependencies=[99], external_dependencies_closed=[99],
             ),

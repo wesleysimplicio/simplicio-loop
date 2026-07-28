@@ -9,7 +9,7 @@ def _fake_dist(version="1.0.0", installed=True):
             "path": "/tmp/site-packages", "entrypoints": ["fake-entry"]}
 
 
-def _probe(monkeypatch, *, component="simplicio-mapper", version="0.19.0",
+def _probe(monkeypatch, *, component="simplicio-mapper", version="0.26.0",
            help_text="orient recall", executable="/usr/local/bin/simplicio-mapper",
            installed=True):
     monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist(version, installed))
@@ -23,7 +23,7 @@ def _probe(monkeypatch, *, component="simplicio-mapper", version="0.19.0",
 
 
 def test_probe_reports_available_with_identity_version_capabilities_and_shas(monkeypatch):
-    row = _probe(monkeypatch, help_text="simplicio-mapper 0.19.0 orient recall")
+    row = _probe(monkeypatch, help_text="simplicio-mapper 0.26.0 orient recall")
     assert row["status"] == doctor.STATUS_AVAILABLE
     assert row["git_sha"] is None
     assert row["sha_source"] == "unavailable"
@@ -33,7 +33,7 @@ def test_probe_reports_available_with_identity_version_capabilities_and_shas(mon
 
 
 def test_loop_sha_is_only_reported_for_the_loop_checkout(monkeypatch, tmp_path):
-    monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist("3.38.5", True))
+    monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist("3.38.7", True))
     monkeypatch.setattr(doctor.shutil, "which", lambda _: None)
     monkeypatch.setattr(doctor, "_git_sha", lambda _: "a" * 40)
     monkeypatch.setattr(doctor, "_submodule_shas", lambda _: {})
@@ -62,7 +62,7 @@ def test_probe_distinguishes_missing_incompatible_disabled_and_degraded(monkeypa
     assert disabled["status"] == doctor.STATUS_DISABLED
     assert disabled["reason_code"] == "disabled"
 
-    monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist("2.0.14", installed=True))
+    monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist("2.0.16", installed=True))
     monkeypatch.setattr(doctor.shutil, "which", lambda _: None)
     degraded = doctor._probe_component("simplicio-fast", doctor.COMPONENTS["simplicio-fast"],
                                        tmp_path, doctor.PROFILES["standalone"]["simplicio-fast"])
