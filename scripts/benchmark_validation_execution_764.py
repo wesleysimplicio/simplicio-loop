@@ -75,7 +75,7 @@ def run_repository(repo: Path, commands: Sequence[Sequence[str]], repetitions: i
     sha = _sha(repo)
     context = _context(repo, sha, commands)
     all_tasks = tuple(
-        ValidationTask(str(index), tuple(command), resources=(str(repo),))
+        ValidationTask(str(index), tuple(command), resources=(str(repo),), cwd=str(repo))
         for index, command in enumerate(commands)
     )
     # Adaptive is intentionally capped at 20 during edit/converge; final gate remains full.

@@ -103,3 +103,13 @@ def test_receipt_and_explain_are_deterministic():
         receipt["results"][0]["duration_ms"] = 0
         receipt.pop("receipt_hash")
     assert explain_execution(first) == explain_execution(second)
+
+
+def test_task_executes_in_pinned_worktree(tmp_path):
+    (tmp_path / "marker.py").write_text("value = 1\n", encoding="utf-8")
+    task = ValidationTask(
+        "cwd", command("from pathlib import Path; assert Path('marker.py').is_file()"),
+        cwd=str(tmp_path),
+    )
+    receipt = ValidationExecutor().execute([task], context=context(), final_gate_required=False)
+    assert receipt["promotable"] is True

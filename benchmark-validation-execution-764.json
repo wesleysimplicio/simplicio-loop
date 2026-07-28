@@ -1,0 +1,323 @@
+{
+  "hardware": {
+    "platform": "linux",
+    "python": "3.12.13 (main, Mar  3 2026, 14:59:34) [Clang 21.1.4 ]",
+    "same_process": true
+  },
+  "local_llm_started": false,
+  "repositories": [
+    {
+      "repetitions": 3,
+      "repo": "bench-mapper",
+      "samples": {
+        "adaptive": [
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0008569279999999999,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.043186999999999996,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.043599936994723976
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0007849399999999979,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.03897,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.03937643300014315
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0007344980000000001,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.03537,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.03574321499763755
+          }
+        ],
+        "baseline": [
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.000921360000000003,
+            "peak_rss_kib_delta": 440,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.378377,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.37885797600029036
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0008926209999999962,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.035109,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.03560400800051866
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0007624789999999965,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.034274,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.03466701499564806
+          }
+        ]
+      },
+      "sha": "412d5fbe23188aef3f0bfd1dbe56b867e2ad6f96",
+      "summary": {
+        "adaptive": {
+          "attempts": 1,
+          "cpu_seconds": 0.0007921219999999993,
+          "peak_rss_kib_delta": 0,
+          "resolution_rate": 1.0,
+          "test_seconds": 0.039175666666666664,
+          "tokens": null,
+          "tokens_null_reason": "NO_LLM_USED",
+          "total_seconds": 0.03957319499750156
+        },
+        "baseline": {
+          "attempts": 1,
+          "cpu_seconds": 0.0008588199999999985,
+          "peak_rss_kib_delta": 146.66666666666666,
+          "resolution_rate": 1.0,
+          "test_seconds": 0.14925333333333335,
+          "tokens": null,
+          "tokens_null_reason": "NO_LLM_USED",
+          "total_seconds": 0.14970966633215235
+        },
+        "quality_regression": false
+      },
+      "workload_count": 1
+    },
+    {
+      "repetitions": 3,
+      "repo": "bench-dev-cli",
+      "samples": {
+        "adaptive": [
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0009751409999999988,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.03575,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.036285770998802036
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0008877989999999947,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.045351,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.04581438899913337
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0012036449999999893,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.046359000000000004,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.046950328003731556
+          }
+        ],
+        "baseline": [
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0011561120000000008,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.49469799999999997,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.49542008100252133
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0009968199999999955,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.038183999999999996,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.038694713002769276
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0011177140000000058,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.038261,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.03888696899957722
+          }
+        ]
+      },
+      "sha": "229b9b245c1f2dec901d9206a900d750d6520d74",
+      "summary": {
+        "adaptive": {
+          "attempts": 1,
+          "cpu_seconds": 0.0010221949999999942,
+          "peak_rss_kib_delta": 0,
+          "resolution_rate": 1.0,
+          "test_seconds": 0.042486666666666666,
+          "tokens": null,
+          "tokens_null_reason": "NO_LLM_USED",
+          "total_seconds": 0.043016829333888985
+        },
+        "baseline": {
+          "attempts": 1,
+          "cpu_seconds": 0.001090215333333334,
+          "peak_rss_kib_delta": 0,
+          "resolution_rate": 1.0,
+          "test_seconds": 0.190381,
+          "tokens": null,
+          "tokens_null_reason": "NO_LLM_USED",
+          "total_seconds": 0.19100058766828928
+        },
+        "quality_regression": false
+      },
+      "workload_count": 1
+    },
+    {
+      "repetitions": 3,
+      "repo": "repo",
+      "samples": {
+        "adaptive": [
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0011100379999999938,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.038507,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.039084924006601796
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0008176940000000077,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.049220999999999994,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.04967631100589642
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0009984639999999906,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.036613,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.03711805999773787
+          }
+        ],
+        "baseline": [
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.00125807,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.997111,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.997722285996133
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0007740680000000028,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.038827,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.03922609299479518
+          },
+          {
+            "attempts": 1,
+            "cpu_seconds": 0.0007514449999999895,
+            "peak_rss_kib_delta": 0,
+            "promotable": true,
+            "resolution_rate": 1.0,
+            "test_seconds": 0.037689999999999994,
+            "tokens": null,
+            "tokens_null_reason": "NO_LLM_USED",
+            "total_seconds": 0.03813860700029181
+          }
+        ]
+      },
+      "sha": "b4948b139eb00c572e19fd0d56ebbb3d7aa3df40",
+      "summary": {
+        "adaptive": {
+          "attempts": 1,
+          "cpu_seconds": 0.000975398666666664,
+          "peak_rss_kib_delta": 0,
+          "resolution_rate": 1.0,
+          "test_seconds": 0.041447,
+          "tokens": null,
+          "tokens_null_reason": "NO_LLM_USED",
+          "total_seconds": 0.04195976500341203
+        },
+        "baseline": {
+          "attempts": 1,
+          "cpu_seconds": 0.0009278609999999974,
+          "peak_rss_kib_delta": 0,
+          "resolution_rate": 1.0,
+          "test_seconds": 0.35787599999999997,
+          "tokens": null,
+          "tokens_null_reason": "NO_LLM_USED",
+          "total_seconds": 0.35836232866374
+        },
+        "quality_regression": false
+      },
+      "workload_count": 1
+    }
+  ],
+  "schema": "simplicio.validation-execution-benchmark/v1",
+  "workload": [
+    [
+      "python",
+      "-m",
+      "compileall",
+      "-q",
+      "."
+    ]
+  ]
+}
