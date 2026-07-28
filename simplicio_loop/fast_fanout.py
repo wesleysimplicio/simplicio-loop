@@ -200,7 +200,8 @@ class FastFanoutCoordinator:
                      for index, row in enumerate(candidate_rows)]
             try:
                 lifecycle_receipt = self.lifecycle.converge(
-                    specs, expected_shards=["candidate"], cancel_callback=self._release_candidate)
+                    specs, expected_shards=["candidate"], cancel_callback=self._release_candidate,
+                    max_candidates=max(1, len(specs)))
             except LifecycleError as exc:
                 return {"schema": RECEIPT_SCHEMA, "status": "BLOCKED", "winner": self._winner,
                         "apply": result, "reason": "checkpoint_lifecycle_failed", "error": str(exc)}
