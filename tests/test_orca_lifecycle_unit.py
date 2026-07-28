@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import unittest.mock as mock
 
 from simplicio_loop.orca_lifecycle import (
     lifecycle_to_orca_status,
@@ -14,6 +15,14 @@ from simplicio_loop.orca_lifecycle import (
 
 def _completed(returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(["orca"], returncode, stdout, stderr)
+
+
+def _enable_orca(extra: dict[str, str] | None = None):
+    env = dict(os.environ)
+    env["SIMPLICIO_LOOP_ORCA_LIFECYCLE_SYNC"] = "1"
+    if extra:
+        env.update(extra)
+    return env
 
 
 def test_lifecycle_status_mapping_is_stable():
@@ -51,6 +60,18 @@ def test_canonical_mapping_is_total_and_distinct():
     assert lifecycle_to_orca_canonical_status("NONEXISTENT") == "In progress"
 
 
+def test_sync_default_unset_is_disabled_opt_in():
+    env = {k: v for k, v in os.environ.items() if k != "SIMPLICIO_LOOP_ORCA_LIFECYCLE_SYNC"}
+    with mock.patch.dict(os.environ, env, clear=True):
+        result = sync_orca_status(
+            {"run_id": "run-default"},
+            {"lifecycle_state": "IN_PROGRESS"},
+            runner=lambda args: (_ for _ in ()).throw(AssertionError("orca must not run")),
+        )
+    assert result["status"] == "skipped"
+    assert result["reason"] == "disabled"
+
+
 def test_sync_updates_only_active_orca_worktree():
     calls = []
 
@@ -60,11 +81,12 @@ def test_sync_updates_only_active_orca_worktree():
             return _completed(stdout=json.dumps({"id": "wt-1"}))
         return _completed(stdout="{}")
 
-    result = sync_orca_status(
-        {"run_id": "run-1", "phase": "in_progress"},
-        {"lifecycle_state": "PR_OPEN", "message": "PR criada"},
-        runner=runner,
-    )
+    with mock.patch.dict(os.environ, _enable_orca(), clear=False):
+        result = sync_orca_status(
+            {"run_id": "run-1", "phase": "in_progress"},
+            {"lifecycle_state": "PR_OPEN", "message": "PR criada"},
+            runner=runner,
+        )
     assert result["status"] == "synced"
     assert result["workspace_status"] == "in-review"
     assert calls[-1][0:4] == ["worktree", "set", "--worktree", "active"]
@@ -80,11 +102,12 @@ def test_sync_canonical_projection_uses_eight_state_map():
             return _completed(stdout=json.dumps({"id": "wt-1"}))
         return _completed(stdout="{}")
 
-    result = sync_orca_status(
-        {"run_id": "run-1"},
-        {"lifecycle_state": "MERGED", "message": "merged"},
-        runner=runner, canonical=True,
-    )
+    with mock.patch.dict(os.environ, _enable_orca(), clear=False):
+        result = sync_orca_status(
+            {"run_id": "run-1"},
+            {"lifecycle_state": "MERGED", "message": "merged"},
+            runner=runner, canonical=True,
+        )
     assert result["status"] == "synced"
     assert result["workspace_status"] == "Done"
     assert result["lifecycle_state"] == "MERGED"
@@ -98,11 +121,12 @@ def test_sync_emits_cleanup_receipt_identity_and_decision():
             }))
         return _completed(stdout="{}")
 
-    result = sync_orca_status(
-        {"run_id": "run-745"},
-        {"lifecycle_state": "CLOSING", "cleanup_decision": "skip", "reason": "active_worktree"},
-        runner=runner,
-    )
+    with mock.patch.dict(os.environ, _enable_orca(), clear=False):
+        result = sync_orca_status(
+            {"run_id": "run-745"},
+            {"lifecycle_state": "CLOSING", "cleanup_decision": "skip", "reason": "active_worktree"},
+            runner=runner,
+        )
     receipt = result["cleanup_receipt"]
     assert receipt["worktree_id"] == "wt-745"
     assert receipt["terminal_handle"] == "term-745"
@@ -120,10 +144,11 @@ def test_sync_canonical_via_env_flag():
             return _completed(stdout=json.dumps({"id": "wt-1"}))
         return _completed(stdout="{}")
 
-    env = dict(os.environ)
-    env["SIMPLICIO_LOOP_ORCA_CANONICAL"] = "1"
-    import unittest.mock as mock
-    with mock.patch.dict(os.environ, env, clear=False):
+    with mock.patch.dict(
+        os.environ,
+        _enable_orca({"SIMPLICIO_LOOP_ORCA_CANONICAL": "1"}),
+        clear=False,
+    ):
         result = sync_orca_status(
             {"run_id": "run-2"},
             {"lifecycle_state": "BLOCKED", "message": "stuck"},
@@ -136,7 +161,6 @@ def test_sync_canonical_via_env_flag():
 def test_sync_skips_when_disabled():
     env = dict(os.environ)
     env["SIMPLICIO_LOOP_ORCA_LIFECYCLE_SYNC"] = "off"
-    import unittest.mock as mock
     with mock.patch.dict(os.environ, env, clear=False):
         result = sync_orca_status(
             {"run_id": "run-3"}, {"lifecycle_state": "IN_PROGRESS"},
@@ -155,9 +179,10 @@ def test_sync_skips_on_invalid_context():
             return _completed(stdout="not-json")
         return _completed(stdout="{}")
 
-    result = sync_orca_status(
-        {"run_id": "run-4"}, {"lifecycle_state": "IN_PROGRESS"}, runner=runner,
-    )
+    with mock.patch.dict(os.environ, _enable_orca(), clear=False):
+        result = sync_orca_status(
+            {"run_id": "run-4"}, {"lifecycle_state": "IN_PROGRESS"}, runner=runner,
+        )
     assert result["status"] == "skipped"
     assert result["reason"] == "invalid_orca_context"
 
@@ -168,18 +193,20 @@ def test_sync_skips_when_no_active_worktree():
             return _completed(stdout=json.dumps({"foo": "bar"}))
         return _completed(stdout="{}")
 
-    result = sync_orca_status(
-        {"run_id": "run-5"}, {"lifecycle_state": "IN_PROGRESS"}, runner=runner,
-    )
+    with mock.patch.dict(os.environ, _enable_orca(), clear=False):
+        result = sync_orca_status(
+            {"run_id": "run-5"}, {"lifecycle_state": "IN_PROGRESS"}, runner=runner,
+        )
     assert result["status"] == "skipped"
     assert result["reason"] == "no_active_worktree"
 
 
 def test_sync_is_a_typed_noop_outside_orca():
-    result = sync_orca_status(
-        {"run_id": "run-1"}, {"lifecycle_state": "IN_PROGRESS"},
-        runner=lambda args: _completed(returncode=1, stderr="no active worktree"),
-    )
+    with mock.patch.dict(os.environ, _enable_orca(), clear=False):
+        result = sync_orca_status(
+            {"run_id": "run-1"}, {"lifecycle_state": "IN_PROGRESS"},
+            runner=lambda args: _completed(returncode=1, stderr="no active worktree"),
+        )
     assert result["status"] == "skipped"
     assert result["reason"] == "not_in_orca"
     assert result["detail"] == "no active worktree"

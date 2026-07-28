@@ -185,6 +185,32 @@ gates, the operator dispatch table): **`references/bound-operators.md`**.
 |---|---|---|---|
 | **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
 | **simplicio-dev-cli** | `simplicio-dev-cli` | `execute` / `deterministic_edit` / `validate` / `diagnostics` | **Operate** — applies a DECIDED change through its 6-layer contract (mapper context → precedent → prompt → diff → test → verify, ≤3 retries). The CLI edits and verifies; the AI does not hand-write the diff. |
+| **simplicio-runtime** (adaptive) | `simplicio` | effects / HBP / contracts | **When available and operational**, the loop **binds and requires** it (`SIMPLICIO_EXECUTION_PROFILE=runtime-backed`). Mid-run disappearance BLOCKS. When absent, core mapper→dev-cli continues unless `SIMPLICIO_LOOP_REQUIRE_RUNTIME=1`. |
+| **simplicio-fast** (strict-adaptive) | `simplicio-fast` | understand / plan / apply | Under `SIMPLICIO_LOOP_STRICT=1`, if Fast is operational it becomes required so the session cannot silently drop it. |
+
+### Strict mode (force every AI onto the full stack)
+
+Arm once per session / shell before any autonomous work:
+
+```bash
+export SIMPLICIO_LOOP=1
+export SIMPLICIO_LOOP_STRICT=1
+export SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto   # bind Runtime if operational
+export SIMPLICIO_REQUIRE_MUTATION_AUTHORITY=1
+export SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT=1
+export SIMPLICIO_LOOP_FORBID_HAND_EDIT=1
+simplicio-loop preflight --strict --json
+```
+
+What strict changes mechanically:
+
+1. **Stop-hook** refuses missing bound operators (mapper/dev-cli; Runtime/Fast when operational).
+2. **`evidence_required` is locked true** — scratchpad cannot opt out.
+3. **`action_gate` PreToolUse** blocks host Write/Edit/StrReplace tools — mutations must go through `simplicio-dev-cli` / `simplicio-py task`.
+4. **Execution profile auto-selects `runtime-backed`** when Runtime probes clean.
+5. **Preflight `--strict`** prints `recommended_env` and fails if any required operator is missing.
+
+Without hooks + strict env, a free-form chat agent can still ignore the skill text. Strict is the enforceable floor.
 
 **Preflight (MANDATORY, BLOCKING) — TTL-gated, never mid-run (issue #526 Etapa 6).** Before
 iteration 1, announce the step; `scripts/operator_check.py` decides mechanically whether THIS

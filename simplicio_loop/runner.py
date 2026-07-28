@@ -562,12 +562,25 @@ _RUNTIME_EFFECT_CACHE_LOCK = RLock()
 
 
 def _execution_profile() -> str:
-    profile = os.environ.get("SIMPLICIO_EXECUTION_PROFILE", "standalone").strip().lower()
-    if profile not in {"standalone", "runtime-backed"}:
-        raise RuntimeEffectError(
-            "SIMPLICIO_EXECUTION_PROFILE must be explicitly standalone or runtime-backed"
-        )
-    return profile
+    """Resolve standalone vs runtime-backed.
+
+    Explicit ``SIMPLICIO_EXECUTION_PROFILE=standalone|runtime-backed`` wins.
+    Otherwise adaptive: when Runtime is operational (or required), use
+    ``runtime-backed``; else ``standalone``. Invalid values fail closed.
+    """
+    raw = os.environ.get("SIMPLICIO_EXECUTION_PROFILE", "").strip().lower()
+    if raw in {"standalone", "runtime-backed"}:
+        return raw
+    if raw in {"", "auto"}:
+        try:
+            from .strict_mode import resolve_execution_profile
+
+            return resolve_execution_profile()
+        except Exception:
+            return "standalone"
+    raise RuntimeEffectError(
+        "SIMPLICIO_EXECUTION_PROFILE must be standalone, runtime-backed, or auto"
+    )
 
 
 def _runtime_effect_adapter(repo_path: Path, profile: str) -> RuntimeEffectAdapter:
