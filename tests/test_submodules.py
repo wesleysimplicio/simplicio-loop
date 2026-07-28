@@ -49,11 +49,14 @@ class SubmoduleContracts(unittest.TestCase):
 
     def test_status_reports_missing_without_mutation(self):
         pins = submodules.load_pins(ROOT / "components" / "submodules.json")
+        missing = lambda _path, expected_sha: {
+            "state": "missing", "expected_sha": expected_sha, "observed_sha": None,
+        }
         with mock.patch.object(submodules, "_gitlink_shas", return_value={
             item["path"]: item["sha"] for item in pins.values()
-        }), mock.patch.object(submodules, "REPO", ROOT):
+        }), mock.patch.object(submodules, "_path_status", side_effect=missing):
             report = submodules.inspect()
-        self.assertIn(report["components"]["simplicio-fast"]["state"], {"missing", "not_repository", "ok"})
+        self.assertEqual(report["components"]["simplicio-fast"]["state"], "missing")
         self.assertFalse(report["ok"])
 
     def test_clean_checkout_and_divergence_receipts(self):
