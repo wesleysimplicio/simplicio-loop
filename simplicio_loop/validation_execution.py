@@ -43,6 +43,7 @@ class ValidationTask:
     resources: Tuple[str, ...] = ()
     timeout_seconds: float = 120.0
     final_gate: bool = False
+    cwd: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name or not self.command:
@@ -103,6 +104,7 @@ class ValidationCache:
                 "tier": task.tier,
                 "resources": sorted(task.resources),
                 "final_gate": task.final_gate,
+                "cwd": task.cwd,
             },
             "context": dict(sorted(context.items())),
         })
@@ -202,7 +204,7 @@ class ValidationExecutor:
             try:
                 completed = subprocess.run(
                     task.command, capture_output=True, text=True, timeout=task.timeout_seconds,
-                    check=False,
+                    check=False, cwd=task.cwd,
                 )
                 status = "PASSED" if completed.returncode == 0 else "FAILED"
                 result = TaskResult(
