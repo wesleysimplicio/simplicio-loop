@@ -251,8 +251,13 @@ class CheckpointLifecycle:
         candidates: list[dict[str, Any]] = []
         for spec in selected:
             values = [self.load(spec.candidate_id, shard) for shard in shards]
-            if any(item["state"] not in TERMINAL_STATES for item in values):
-                raise LifecycleError(f"candidate {spec.candidate_id} has non-terminal shard")
+            unsafe_states = sorted({
+                str(item["state"]) for item in values
+                if item["state"] != "READY_TO_PROMOTE"
+            })
+            if unsafe_states:
+                raise LifecycleError(
+                    f"candidate {spec.candidate_id} is not promotion-ready: {unsafe_states}")
             if len({item["digest"] for item in values}) != len(values):
                 raise LifecycleError("duplicate or replayed checkpoint")
             score = (
