@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .fast_integration import FastIntegrationError, FastLoopIntegration, validate_changeset
-from .checkpoint_lifecycle import CandidateSpec, CheckpointLifecycle, LifecycleError
+from .checkpoint_lifecycle import CheckpointLifecycle, LifecycleError
 
 SCHEMA = "simplicio.loop-fast-fanout/v1"
 RECEIPT_SCHEMA = "simplicio.loop-fast-fanout-receipt/v1"
@@ -182,29 +182,42 @@ class FastFanoutCoordinator:
         if not self._winner:
             return selection
         winner = self._candidates[self._winner]
+        lifecycle_receipt = None
+        if self.lifecycle is not None:
+            candidate_ids = sorted(
+                str(row["candidate_id"]) for row in self._candidates.values()
+                if row.get("generation") == self.generation
+            )
+            try:
+                lifecycle_receipt = self.lifecycle.converge_selected(
+                    winner_id=self._winner,
+                    candidate_ids=candidate_ids,
+                    shard_id="candidate",
+                    cancel_callback=self._release_candidate,
+                )
+            except LifecycleError as exc:
+                return {"schema": RECEIPT_SCHEMA, "status": "BLOCKED",
+                        "winner": self._winner, "apply": None,
+                        "reason": "checkpoint_lifecycle_failed", "error": str(exc)}
+            if lifecycle_receipt.get("status") != "SEALED":
+                return {"schema": RECEIPT_SCHEMA, "status": "BLOCKED",
+                        "winner": self._winner, "apply": None,
+                        "reason": "checkpoint_lifecycle_not_sealed",
+                        "checkpoint_lifecycle": lifecycle_receipt}
+            if lifecycle_receipt["fence"].get("winner_id") != self._winner:
+                return {"schema": RECEIPT_SCHEMA, "status": "BLOCKED",
+                        "winner": self._winner, "apply": None,
+                        "reason": "checkpoint_winner_mismatch",
+                        "checkpoint_lifecycle": lifecycle_receipt}
         result = self.integration.apply(winner["changeset"], winner=True,
                                         generation=self.generation, context_hash=self.context_hash)
         if result.get("status") != "READY":
             return {"schema": RECEIPT_SCHEMA, "status": "BLOCKED",
                     "winner": self._winner, "apply": result,
-                    "reason": "winner_apply_not_verified"}
+                    "reason": "winner_apply_not_verified",
+                    "checkpoint_lifecycle": lifecycle_receipt}
         winner["state"] = "promoted"
         self._slots[winner["slot_id"]].state = "winner"
-        lifecycle_receipt = None
-        if self.lifecycle is not None:
-            candidate_rows = sorted(
-                (row for row in self._candidates.values() if row.get("generation") == self.generation),
-                key=lambda row: str(row["candidate_id"]))
-            specs = [CandidateSpec(str(row["candidate_id"]), 0.0 if row.get("verified") else 1.0,
-                                   0.0, stalled=index == 0 and len(candidate_rows) > 1)
-                     for index, row in enumerate(candidate_rows)]
-            try:
-                lifecycle_receipt = self.lifecycle.converge(
-                    specs, expected_shards=["candidate"], cancel_callback=self._release_candidate,
-                    max_candidates=max(1, len(specs)))
-            except LifecycleError as exc:
-                return {"schema": RECEIPT_SCHEMA, "status": "BLOCKED", "winner": self._winner,
-                        "apply": result, "reason": "checkpoint_lifecycle_failed", "error": str(exc)}
         skipped = []
         for candidate_id, row in self._candidates.items():
             if candidate_id != self._winner:
