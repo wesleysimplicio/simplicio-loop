@@ -33,6 +33,8 @@ def envelope(**updates):
         "workspace": "/workspace/repo",
         "fence": "7",
         "effect_set": ["write"],
+        "write_set": ["app.py"],
+        "command": ["simplicio-dev-cli", "task", "apply"],
     }
     value.update(updates)
     return validate_envelope(value)
