@@ -1,0 +1,10 @@
+{
+  "frame_bytes": 91,
+  "frame_hex": "53504831000000337b22636f756e74223a322c22736368656d61223a22666978747572652f7631222c227461736b73223a5b2261222c2262225d7ddbcafeac6afa4ca8b33f408248d410f9028df0b6ceb65f475d6fe29805e7fb95",
+  "schema": "simplicio.prism-hbp-golden/v1",
+  "value": {
+    "count": 2,
+    "schema": "fixture/v1",
+    "tasks": ["a", "b"]
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/prism/v1/slot-supervisor.schema.json",
+  "title": "simplicio.slot-supervisor/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "slot_id",
+    "parent_prism_id",
+    "supervisor_agent",
+    "capacity",
+    "task_ids",
+    "child_slot_ids",
+    "resource_budget",
+    "state"
+  ],
+  "properties": {
+    "schema": {"const": "simplicio.slot-supervisor/v1"},
+    "slot_id": {"type": "string", "pattern": "^slot:[0-9a-f]{64}$"},
+    "parent_prism_id": {"type": "string", "pattern": "^prism:[0-9a-f]{64}$"},
+    "supervisor_agent": {"type": "string", "minLength": 1},
+    "capacity": {"type": "integer", "minimum": 1, "maximum": 10},
+    "task_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 10,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "child_slot_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 20,
+      "items": {"type": "string", "pattern": "^slot:[0-9a-f]{64}$"}
+    },
+    "parent_slot_id": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "pattern": "^slot:[0-9a-f]{64}$"}
+      ]
+    },
+    "resource_budget": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {"type": "string", "minLength": 1},
+          {"type": "integer", "minimum": 0}
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "state": {
+      "enum": ["declared", "ready", "running", "reducing", "completed", "partial", "blocked", "cancelled"]
+    }
+  }
+}

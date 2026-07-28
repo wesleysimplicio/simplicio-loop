@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/prism/v1/prism-execution.schema.json",
+  "title": "simplicio.prism-execution/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "prism_id",
+    "goal_id",
+    "owner_agent",
+    "policy_hash",
+    "config_hash",
+    "source_generation",
+    "reducer_ref",
+    "budget",
+    "child_slot_ids",
+    "state",
+    "max_depth"
+  ],
+  "properties": {
+    "schema": {"const": "simplicio.prism-execution/v1"},
+    "prism_id": {"type": "string", "pattern": "^prism:[0-9a-f]{64}$"},
+    "goal_id": {"type": "string", "minLength": 1},
+    "owner_agent": {"type": "string", "minLength": 1},
+    "policy_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "config_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_generation": {"type": "string", "minLength": 1},
+    "reducer_ref": {"type": "string", "minLength": 1},
+    "parent_prism_id": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "pattern": "^prism:[0-9a-f]{64}$"}
+      ]
+    },
+    "budget": {"$ref": "#/$defs/budget"},
+    "child_slot_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 20,
+      "items": {"type": "string", "pattern": "^slot:[0-9a-f]{64}$"}
+    },
+    "state": {
+      "enum": ["declared", "running", "reducing", "completed", "partial", "blocked", "cancelled"]
+    },
+    "max_depth": {"type": "integer", "minimum": 1, "maximum": 4}
+  },
+  "$defs": {
+    "budget": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {"type": "string", "minLength": 1},
+          {"type": "integer", "minimum": 0}
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    }
+  }
+}

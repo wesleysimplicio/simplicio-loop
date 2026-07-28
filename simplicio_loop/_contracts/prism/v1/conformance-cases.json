@@ -1,0 +1,31 @@
+{
+  "schema": "simplicio.prism-conformance-cases/v1",
+  "cases": [
+    {
+      "name": "legacy-is-non-authoritative",
+      "input": {"schema": "legacy.task/v0", "task_id": "old"},
+      "expected_reason_code": "LEGACY_NOT_AUTHORITATIVE",
+      "authoritative": false
+    },
+    {
+      "name": "eleventh-task-is-not-admitted",
+      "logical_capacity": 10,
+      "attempted_position": 11,
+      "expected_reason_code": "SLOT_LOGICAL_CAPACITY",
+      "admitted": false
+    },
+    {
+      "name": "stale-fence-cannot-transition",
+      "current_fence": 2,
+      "attempted_fence": 1,
+      "expected_reason_code": "PRISM_CONTRACT_INVALID",
+      "authorized": false
+    },
+    {
+      "name": "unknown-version-does-not-widen-authority",
+      "schema": "simplicio.task-ownership/v999",
+      "expected_reason_code": "PRISM_CONTRACT_INVALID",
+      "authorized": false
+    }
+  ]
+}
