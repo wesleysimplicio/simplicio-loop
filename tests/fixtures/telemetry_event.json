@@ -1,0 +1,34 @@
+{
+  "correlation": {
+    "run_id": "id:4cd392699ad12ed97bc5fd4f",
+    "stage_id": "id:64879f7d6b960a01909762d9",
+    "task_id": "id:740707ee91f2c7201532aa63"
+  },
+  "event_hash": "sha256:80d3e2704342d5544c09742f4a7d37049de75dc354f2d8cf518021ba8efc8ad2",
+  "event_id": "telemetry:1",
+  "labels": {
+    "stage": "plan",
+    "status": "passed"
+  },
+  "metrics": {
+    "queue_wait_ns": {
+      "origin": "scheduler",
+      "reason": "queue_timestamp_unavailable",
+      "unit": "nanoseconds",
+      "value": null
+    },
+    "retry_count": {
+      "origin": "scheduler",
+      "reason": null,
+      "unit": "count",
+      "value": 0
+    }
+  },
+  "payload": {
+    "note": "ok",
+    "prompt": "[REDACTED]"
+  },
+  "previous_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "recorded_at_ns": 100,
+  "schema": "simplicio.telemetry-event/v1"
+}
