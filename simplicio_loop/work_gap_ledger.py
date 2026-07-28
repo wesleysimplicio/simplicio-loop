@@ -88,6 +88,9 @@ class WorkGap:
     completion_auditor_id: str | None = None
     evidence: tuple[Evidence, ...] = ()
     revision: int = 0
+    expected_revision: str | None = None
+    installed_artifact: Mapping[str, Any] | None = None
+    source_requery: Mapping[str, Any] | None = None
 
     @property
     def key(self) -> str:
@@ -118,6 +121,13 @@ class WorkGap:
             "completion_auditor_id": self.completion_auditor_id,
             "evidence": [item.as_dict() for item in self.evidence],
             "revision": self.revision,
+            "expected_revision": self.expected_revision,
+            "installed_artifact": (
+                dict(self.installed_artifact) if self.installed_artifact is not None else None
+            ),
+            "source_requery": (
+                dict(self.source_requery) if self.source_requery is not None else None
+            ),
         }
 
 
@@ -130,6 +140,7 @@ class LedgerEvent:
     actor_id: str
     seat: str
     evidence: tuple[Evidence, ...]
+    facts: Mapping[str, Any]
     previous_hash: str
     hash: str
 
@@ -142,6 +153,7 @@ class LedgerEvent:
             "actor_id": self.actor_id,
             "seat": self.seat,
             "evidence": [item.as_dict() for item in self.evidence],
+            "facts": dict(self.facts),
         }
 
     def as_dict(self) -> dict[str, Any]:
@@ -182,6 +194,10 @@ class WorkGapLedger:
         executor_id: str | None = None,
         verifier_id: str | None = None,
         completion_auditor_id: str | None = None,
+        expected_revision: str | None = None,
+        installed_artifact: Mapping[str, Any] | None = None,
+        source_requery: Mapping[str, Any] | None = None,
+        facts: Mapping[str, Any] | None = None,
     ) -> LedgerEvent:
         gap = self._get(key)
         if to_state not in ALL_STATES:
@@ -194,10 +210,20 @@ class WorkGapLedger:
             completion_auditor_id=completion_auditor_id or gap.completion_auditor_id,
             evidence=gap.evidence + tuple(evidence),
             revision=gap.revision + 1,
+            expected_revision=expected_revision or gap.expected_revision,
+            installed_artifact=installed_artifact or gap.installed_artifact,
+            source_requery=source_requery or gap.source_requery,
         )
         self._validate_authority(updated, to_state, actor_id, seat)
         self._validate_evidence(updated, to_state)
         self._validate_dependencies(updated, to_state)
+        event_facts = dict(facts or {})
+        if expected_revision is not None:
+            event_facts["expected_revision"] = expected_revision
+        if installed_artifact is not None:
+            event_facts["installed_artifact"] = dict(installed_artifact)
+        if source_requery is not None:
+            event_facts["source_requery"] = dict(source_requery)
         previous_hash = self.events[-1].hash if self.events else "0" * 64
         payload = {
             "sequence": len(self.events) + 1,
@@ -207,6 +233,7 @@ class WorkGapLedger:
             "actor_id": actor_id,
             "seat": seat,
             "evidence": [item.as_dict() for item in evidence],
+            "facts": event_facts,
         }
         event = LedgerEvent(
             sequence=payload["sequence"],
@@ -216,6 +243,7 @@ class WorkGapLedger:
             actor_id=actor_id,
             seat=seat,
             evidence=tuple(evidence),
+            facts=event_facts,
             previous_hash=previous_hash,
             hash=_event_hash(previous_hash, payload),
         )
@@ -224,7 +252,7 @@ class WorkGapLedger:
         return event
 
     def _validate_transition(self, gap: WorkGap, to_state: str) -> None:
-        if gap.state in TERMINAL_STATES:
+        if gap.state in TERMINAL_STATES and to_state != "REGRESSED":
             raise LedgerError("terminal work gaps require an immutable addendum/new revision")
         if to_state in EXCEPTION_STATES:
             if to_state == "N_A_APPROVED" and gap.state == "UNMAPPED":
@@ -269,6 +297,33 @@ class WorkGapLedger:
         if state in {"PLANNED", "IMPLEMENTED", "VERIFIED", "INTEGRATED", "DELIVERED"}:
             if not gap.expected_evidence or not gap.delivery_target:
                 raise LedgerError(f"{state} requires expected evidence and delivery target")
+        if state == "DELIVERED":
+            WorkGapLedger._validate_installed_delivery(gap)
+
+    @staticmethod
+    def _validate_installed_delivery(gap: WorkGap) -> None:
+        if not gap.expected_revision:
+            raise LedgerError("DELIVERED requires an expected revision")
+        installed = gap.installed_artifact
+        source = gap.source_requery
+        if not isinstance(installed, Mapping):
+            raise LedgerError("DELIVERED requires an installed artifact re-query")
+        if not isinstance(source, Mapping):
+            raise LedgerError("DELIVERED requires a source re-query")
+        expected = gap.expected_revision
+        if installed.get("expected_commit") != expected:
+            raise LedgerError("installed artifact expected commit mismatch")
+        if installed.get("installed_commit") != expected:
+            raise LedgerError("installed artifact commit mismatch")
+        if installed.get("match") is not True:
+            raise LedgerError("installed artifact content does not match checkout")
+        digest = str(installed.get("sha256") or "")
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise LedgerError("installed artifact requires a sha256 digest")
+        if source.get("commit") != expected:
+            raise LedgerError("source re-query commit mismatch")
+        if source.get("state") not in {"merged", "released", "closed"}:
+            raise LedgerError("source re-query is not terminal")
 
     def _validate_dependencies(self, gap: WorkGap, state: str) -> None:
         if state not in {"INTEGRATED", "DELIVERED"}:
@@ -313,6 +368,74 @@ class WorkGapLedger:
             if self.gaps[key].state not in TERMINAL_STATES
         )
 
+    def regress(
+        self, key: str, *, actor_id: str, evidence: Sequence[Evidence]
+    ) -> tuple[LedgerEvent, ...]:
+        """Append regression events for a gap and every transitive dependent."""
+        affected = {key}
+        changed = True
+        while changed:
+            changed = False
+            for candidate in self.gaps.values():
+                if candidate.key not in affected and any(
+                    dependency in affected for dependency in candidate.dependencies
+                ):
+                    affected.add(candidate.key)
+                    changed = True
+        events = []
+        for affected_key in sorted(affected):
+            gap = self.gaps[affected_key]
+            if gap.state == "REGRESSED":
+                continue
+            events.append(self.transition(
+                affected_key, "REGRESSED", actor_id=actor_id,
+                seat="completion", evidence=evidence,
+                facts={"regressed_from": gap.state, "root_gap": key},
+            ))
+        return tuple(events)
+
+    def explain(self, key: str) -> dict[str, Any]:
+        gap = self._get(key)
+        missing = [
+            kind for kind in gap.expected_evidence
+            if not any(item.kind == kind for item in gap.evidence)
+        ]
+        dependencies = {
+            dependency: self._get(dependency).state for dependency in gap.dependencies
+        }
+        next_state = None
+        if gap.state in PROGRESS_STATES and gap.state not in TERMINAL_STATES:
+            next_state = PROGRESS_STATES[PROGRESS_STATES.index(gap.state) + 1]
+        blockers = []
+        if not gap.owner_project or not gap.owner_agent:
+            blockers.append("owner_missing")
+        blockers.extend(
+            "dependency:%s:%s" % (dependency, state)
+            for dependency, state in dependencies.items()
+            if state not in TERMINAL_STATES
+        )
+        if gap.state == "REGRESSED":
+            blockers.append("regression_open")
+        if next_state == "DELIVERED":
+            try:
+                self._validate_installed_delivery(gap)
+            except LedgerError as exc:
+                blockers.append(str(exc))
+        return {
+            "schema": "simplicio.work-gap-explain/v1",
+            "gap_key": key,
+            "state": gap.state,
+            "terminal": gap.state in TERMINAL_STATES,
+            "next_state": next_state,
+            "missing_evidence": missing,
+            "dependencies": dependencies,
+            "blockers": blockers,
+            "event_sequences": [
+                event.sequence for event in self.events if event.gap_key == key
+            ],
+            "ledger_digest": self.digest(),
+        }
+
 
 def validate_work_gap_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     """Validate an immutable ledger snapshot before terminal completion."""
@@ -331,11 +454,15 @@ def validate_work_gap_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         events = []
 
     delivered = set()
+    gap_by_key: dict[str, Mapping[str, Any]] = {}
     for index, gap in enumerate(gaps):
         if not isinstance(gap, Mapping):
             errors.append(f"gap {index} is not an object")
             continue
         key = f"{gap.get('requirement_id', '')}:{gap.get('acceptance_criterion_id', '')}"
+        if key in gap_by_key:
+            errors.append(f"duplicate gap {key}")
+        gap_by_key[key] = gap
         if gap.get("state") != "DELIVERED":
             errors.append(f"{key} is {gap.get('state')!r}, not DELIVERED")
         else:
@@ -351,18 +478,132 @@ def validate_work_gap_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                 for item in gaps if isinstance(item, Mapping)
             ):
                 errors.append(f"{key} references an unknown dependency {dependency!r}")
+        evidence = gap.get("evidence")
+        if not isinstance(evidence, list):
+            errors.append(f"{key} evidence must be a list")
+            evidence = []
+        kinds = set()
+        for item in evidence:
+            if not isinstance(item, Mapping):
+                errors.append(f"{key} has malformed evidence")
+                continue
+            kinds.add(item.get("kind"))
+            digest = str(item.get("digest") or "")
+            if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                errors.append(f"{key} has invalid evidence digest")
+        if gap.get("state") == "DELIVERED":
+            for required in ("implementation", "verification", "integration", "delivery"):
+                if required not in kinds:
+                    errors.append(f"{key} lacks {required} evidence")
+            try:
+                WorkGapLedger._validate_installed_delivery(_gap_from_mapping(gap))
+            except LedgerError as exc:
+                errors.append(f"{key}: {exc}")
+
+    # Detect cycles independently of current state. A cycle must be explicit,
+    # even when every referenced key exists.
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(key: str, trail: tuple[str, ...]) -> None:
+        if key in visiting:
+            errors.append("dependency cycle: " + " -> ".join(trail + (key,)))
+            return
+        if key in visited:
+            return
+        visiting.add(key)
+        gap = gap_by_key.get(key, {})
+        for dependency in gap.get("dependencies") or []:
+            if dependency in gap_by_key:
+                visit(str(dependency), trail + (key,))
+        visiting.remove(key)
+        visited.add(key)
+
+    for key in sorted(gap_by_key):
+        visit(key, ())
+    for key, gap in gap_by_key.items():
+        for dependency in gap.get("dependencies") or []:
+            dependency_gap = gap_by_key.get(str(dependency))
+            if (
+                gap.get("state") in {"INTEGRATED", "DELIVERED"}
+                and dependency_gap is not None
+                and dependency_gap.get("state") not in TERMINAL_STATES
+            ):
+                errors.append(
+                    f"{key} depends on non-terminal {dependency}: "
+                    f"{dependency_gap.get('state')}"
+                )
 
     previous = "0" * 64
+    replay_states = {key: "UNMAPPED" for key in gap_by_key}
+    replay_evidence: dict[str, list[Mapping[str, Any]]] = {
+        key: [] for key in gap_by_key
+    }
     for expected_sequence, event in enumerate(events, 1):
         if not isinstance(event, Mapping):
             errors.append(f"event {expected_sequence} is not an object")
             continue
-        payload = {name: event.get(name) for name in ("sequence", "gap_key", "from_state", "to_state", "actor_id", "seat", "evidence")}
+        payload_names = [
+            "sequence", "gap_key", "from_state", "to_state", "actor_id", "seat", "evidence"
+        ]
+        if "facts" in event:
+            payload_names.append("facts")
+        payload = {name: event.get(name) for name in payload_names}
         if event.get("sequence") != expected_sequence or event.get("previous_hash") != previous:
             errors.append(f"event {expected_sequence} sequence/link mismatch")
         if event.get("hash") != _event_hash(previous, payload):
             errors.append(f"event {expected_sequence} hash mismatch")
         previous = str(event.get("hash") or previous)
+        key = str(event.get("gap_key") or "")
+        if key not in gap_by_key:
+            errors.append(f"event {expected_sequence} references unknown gap {key!r}")
+            continue
+        current = replay_states[key]
+        if event.get("from_state") != current:
+            errors.append(
+                f"event {expected_sequence} replay state mismatch: "
+                f"{event.get('from_state')!r} != {current!r}"
+            )
+        target = str(event.get("to_state") or "")
+        legal = False
+        if target in EXCEPTION_STATES:
+            legal = not (target == "N_A_APPROVED" and current == "UNMAPPED")
+        elif current in TERMINAL_STATES:
+            legal = target == "REGRESSED"
+        elif current in EXCEPTION_STATES:
+            legal = target in {"UNMAPPED", "OWNED"}
+        elif current in PROGRESS_STATES:
+            index = PROGRESS_STATES.index(current)
+            legal = index + 1 < len(PROGRESS_STATES) and PROGRESS_STATES[index + 1] == target
+        if not legal:
+            errors.append(f"event {expected_sequence} illegal transition {current} -> {target}")
+        replay_states[key] = target
+        evidence_rows = event.get("evidence")
+        if isinstance(evidence_rows, list):
+            replay_evidence[key].extend(
+                item for item in evidence_rows if isinstance(item, Mapping)
+            )
+        gap = gap_by_key[key]
+        seat = event.get("seat")
+        actor = event.get("actor_id")
+        to_state = event.get("to_state")
+        expected_actor = {
+            "IMPLEMENTED": ("executor", gap.get("executor_id")),
+            "VERIFIED": ("verifier", gap.get("verifier_id")),
+            "DELIVERED": ("completion", gap.get("completion_auditor_id")),
+        }.get(to_state)
+        if expected_actor and (seat, actor) != expected_actor:
+            errors.append(f"event {expected_sequence} has invalid authority")
+
+    for key, gap in gap_by_key.items():
+        if replay_states[key] != gap.get("state"):
+            errors.append(
+                f"{key} replay ended at {replay_states[key]!r}, "
+                f"snapshot claims {gap.get('state')!r}"
+            )
+        declared_evidence = gap.get("evidence") or []
+        if replay_evidence[key] != declared_evidence:
+            errors.append(f"{key} replay evidence differs from snapshot")
 
     detail = {
         "errors": errors,
@@ -379,6 +620,37 @@ def validate_work_gap_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "reason_code": "work_gap_ledger_ready" if not errors else "work_gap_ledger_invalid",
         "detail": detail,
     }
+
+
+def _gap_from_mapping(value: Mapping[str, Any]) -> WorkGap:
+    evidence = tuple(
+        Evidence(
+            str(item.get("kind") or ""),
+            str(item.get("handle") or ""),
+            str(item.get("digest") or ""),
+            str(item.get("actor_id") or ""),
+        )
+        for item in value.get("evidence") or []
+        if isinstance(item, Mapping)
+    )
+    return WorkGap(
+        requirement_id=str(value.get("requirement_id") or ""),
+        acceptance_criterion_id=str(value.get("acceptance_criterion_id") or ""),
+        state=str(value.get("state") or "UNMAPPED"),
+        owner_project=value.get("owner_project"),
+        owner_agent=value.get("owner_agent"),
+        dependencies=tuple(value.get("dependencies") or ()),
+        expected_evidence=tuple(value.get("expected_evidence") or ()),
+        delivery_target=value.get("delivery_target"),
+        executor_id=value.get("executor_id"),
+        verifier_id=value.get("verifier_id"),
+        completion_auditor_id=value.get("completion_auditor_id"),
+        evidence=evidence,
+        revision=int(value.get("revision") or 0),
+        expected_revision=value.get("expected_revision"),
+        installed_artifact=value.get("installed_artifact"),
+        source_requery=value.get("source_requery"),
+    )
 
 def sha256_evidence(kind: str, handle: str, content: bytes, actor_id: str) -> Evidence:
     return Evidence(kind, handle, hashlib.sha256(content).hexdigest(), actor_id)

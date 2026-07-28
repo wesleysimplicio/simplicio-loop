@@ -1,0 +1,26 @@
+{
+  "classification": "MEASURED_LOCAL",
+  "command": [
+    "/tmp/loop-785-installed-tq3w43ub/venv/bin/python",
+    "-I",
+    "-c",
+    "import hashlib,importlib,importlib.metadata,json,pathlib;m=importlib.import_module('simplicio_loop.work_gap_ledger');p=pathlib.Path(m.__file__);print(json.dumps({'version':importlib.metadata.version('simplicio-loop'),'path':str(p.resolve()),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()},sort_keys=True))"
+  ],
+  "distribution": "simplicio-loop",
+  "exit_code": 0,
+  "expected_commit": "f0257b39e22759dc2a32719b1517823ff7729f5e",
+  "expected_sha256": "c3215defbafb379887cb3b164204fa9f51ac6a8639667e081a6be19281cc3c5b",
+  "installed_commit": "f0257b39e22759dc2a32719b1517823ff7729f5e",
+  "local_llm": false,
+  "match": true,
+  "module": "simplicio_loop.work_gap_ledger",
+  "path": "/tmp/loop-785-installed-tq3w43ub/venv/lib/python3.12/site-packages/simplicio_loop/work_gap_ledger.py",
+  "schema": "simplicio.installed-artifact-observation/v1",
+  "sha256": "c3215defbafb379887cb3b164204fa9f51ac6a8639667e081a6be19281cc3c5b",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "version": "3.38.5",
+  "wheel": {
+    "name": "simplicio_loop-3.38.5-py3-none-any.whl",
+    "size": 1207426
+  }
+}

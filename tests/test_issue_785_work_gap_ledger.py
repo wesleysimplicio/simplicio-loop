@@ -17,6 +17,7 @@ def _gap(*, dependencies=()):
         dependencies=tuple(dependencies),
         expected_evidence=("implementation", "verification", "integration", "delivery"),
         delivery_target="package:simplicio-loop",
+        expected_revision="commit-abc",
     )
 
 
@@ -32,6 +33,7 @@ def _advance_to_implemented(ledger: WorkGapLedger, key: str) -> None:
         seat="executor",
         executor_id="executor-1",
         evidence=(sha256_evidence("implementation", "commit:abc", b"patch", "executor-1"),),
+        expected_revision="commit-abc",
     )
 
 
@@ -116,6 +118,13 @@ def test_three_independent_seats_deliver_and_digest_is_deterministic():
         seat="completion",
         completion_auditor_id="auditor-1",
         evidence=(sha256_evidence("delivery", "release:1", b"ok", "auditor-1"),),
+        installed_artifact={
+            "expected_commit": "commit-abc",
+            "installed_commit": "commit-abc",
+            "sha256": "a" * 64,
+            "match": True,
+        },
+        source_requery={"commit": "commit-abc", "state": "merged"},
     )
     ledger.verify_chain()
     assert ledger.unresolved() == ()
