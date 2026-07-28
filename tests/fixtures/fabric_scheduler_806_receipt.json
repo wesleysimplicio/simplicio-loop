@@ -1,0 +1,33 @@
+{
+  "schema": "simplicio.fabric-acceptance-receipt/v1",
+  "issue": 806,
+  "classification": "MEASURED",
+  "base_commit": "e5b4cb578db70c231d429436290d7b3837bdb929",
+  "environment": {
+    "python": "3.12.13",
+    "provider_or_llm": null,
+    "provider_or_llm_reason": "scheduler tests are deterministic and provider-independent"
+  },
+  "command": "PYTHONPATH=/tmp/simplicio-issue-806-pytest python -m pytest -q tests/test_fabric_scheduler.py tests/test_async_bounded_queue.py tests/test_async_bounded_queue_integration.py tests/test_async_bounded_queue_restart.py tests/test_async_bounded_queue_system.py tests/test_async_core_composed_integration.py tests/test_process_supervisor_spec.py tests/test_process_supervisor_hardening.py tests/test_async_io_supervisor.py tests/test_async_io_supervisor_system.py",
+  "result": {
+    "passed": 70,
+    "failed": 0,
+    "duration_seconds": 5.59
+  },
+  "criteria": {
+    "capacity_never_exceeded": "tests/test_fabric_scheduler.py::test_capacity_backpressure_and_stress_matrix",
+    "failure_does_not_abandon_tasks": "tests/test_fabric_scheduler.py::test_failure_is_isolated_and_every_job_becomes_terminal",
+    "cancellation_leaves_no_orphan_process": "tests/test_fabric_scheduler.py::test_process_cancellation_reaps_child",
+    "parallel_reads_conflicting_writes": "tests/test_fabric_scheduler.py::test_reads_parallelize_and_conflicting_writes_serialize",
+    "backpressure_without_busy_loop": "tests/test_fabric_scheduler.py::test_capacity_backpressure_and_stress_matrix",
+    "replay_reconstructs_terminal": "tests/test_fabric_scheduler.py::test_replay_reconstructs_terminal_and_detects_tampering",
+    "starvation_aging": "tests/test_fabric_scheduler.py::test_priority_aging_prevents_starvation",
+    "cancel_storm": "tests/test_fabric_scheduler.py::test_cancel_storm_cancels_pending_and_running_jobs",
+    "stress_1_6_64": "tests/test_fabric_scheduler.py::test_capacity_backpressure_and_stress_matrix",
+    "bounded_capability_resource_lanes": "tests/test_fabric_scheduler.py::test_capability_and_resource_admission_lanes_are_bounded"
+  },
+  "performance_metrics": null,
+  "performance_metrics_reason": "this acceptance run is a correctness gate; no performance claim is made",
+  "rollback": "stop constructing AsyncFabricScheduler; existing queue and process supervisor APIs are unchanged",
+  "receipt_sha": "3b2e563f087c4b56a704895c3a86162e2558ca2998fcbde986e06b9d43687bcd"
+}
