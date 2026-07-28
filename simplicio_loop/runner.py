@@ -25,7 +25,7 @@ from .orca_lifecycle import sync_orca_status
 from .source_adapter import GitHubSourceAdapter
 from .task_contract import compile_many, validate_contract
 from .technical_debt import record_notice as _record_technical_debt
-from .checkpoint_lifecycle import CandidateSpec, CheckpointLifecycle, LifecycleError
+from .checkpoint_lifecycle import CheckpointLifecycle, LifecycleError
 from .operator_bootstrap import (
     OperatorBootstrapError,
     ensure_operators as _ensure_required_operators,
@@ -4931,8 +4931,9 @@ def execute_operator_batch(
             base_path=repo_root,
         )
         workers = list(result.get("workers") or [])
-        specs = []
-        for index, worker in enumerate(sorted(workers, key=lambda row: str(row.get("task_id") or row.get("task_index")))):
+        candidate_ids = []
+        successful_ids = []
+        for worker in sorted(workers, key=lambda row: str(row.get("task_id") or row.get("task_index"))):
             candidate_id = str(worker.get("task_id") or f"task-{worker.get('task_index')}")
             succeeded = worker.get("status") == "succeeded"
             lifecycle.checkpoint(
@@ -4943,10 +4944,9 @@ def execute_operator_batch(
                 ) if value],
                 work_units=int(worker.get("attempt_count") or 1),
             )
-            specs.append(CandidateSpec(
-                candidate_id, 0.0 if succeeded else 1.0, 0.0,
-                stalled=index == 0 and len(workers) > 1,
-            ))
+            candidate_ids.append(candidate_id)
+            if succeeded:
+                successful_ids.append(candidate_id)
         if not any(worker.get("status") == "succeeded" for worker in workers):
             lifecycle_result = {"schema": "simplicio.loop.checkpoint-lifecycle/v1",
                                 "status": "HELD", "reason": "no_successful_candidate"}
@@ -4959,9 +4959,12 @@ def execute_operator_batch(
                     if callable(method):
                         method(candidate_id)
                         return
-            lifecycle_result = lifecycle.converge(
-                specs, expected_shards=["operator"], cancel_callback=_cancel_boundary,
-                max_candidates=max(1, len(specs)),
+            selected_winner = sorted(successful_ids)[0]
+            lifecycle_result = lifecycle.converge_selected(
+                winner_id=selected_winner,
+                candidate_ids=candidate_ids,
+                shard_id="operator",
+                cancel_callback=_cancel_boundary,
             )
     except (LifecycleError, OSError, ValueError, subprocess.SubprocessError) as exc:
         lifecycle_result = {"schema": "simplicio.loop.checkpoint-lifecycle/v1",
