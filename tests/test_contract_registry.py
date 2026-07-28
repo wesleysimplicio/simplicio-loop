@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -155,3 +157,21 @@ def test_unknown_contract_is_rejected_without_dynamic_registration():
             producer="test",
         )
     assert error.value.reason_code == "CONTRACT_SCHEMA_UNKNOWN"
+
+
+def test_portable_cli_emits_a_reproducible_cross_repo_receipt():
+    script = Path(__file__).resolve().parent.parent / "scripts" / "contract_registry_check.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--json"],
+        cwd=str(script.parent.parent),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["schema"] == "simplicio.contract-registry/v1"
+    assert receipt["verdict"] == "PASS"
+    assert receipt["contracts"] == 10
+    assert len(receipt["valid_fixtures"]) == 1
+    assert len(receipt["invalid_fixtures"]) == 2
