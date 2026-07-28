@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .fast_integration import FastIntegrationError, FastLoopIntegration, validate_changeset
+from .checkpoint_lifecycle import CandidateSpec, CheckpointLifecycle, LifecycleError
 
 SCHEMA = "simplicio.loop-fast-fanout/v1"
 RECEIPT_SCHEMA = "simplicio.loop-fast-fanout-receipt/v1"
@@ -57,11 +58,13 @@ class _Slot:
 class FastFanoutCoordinator:
     """Share one Fast prepare across slots and promote only a verified winner."""
 
-    def __init__(self, root: str | Path, *, integration: FastLoopIntegration | None = None) -> None:
+    def __init__(self, root: str | Path, *, integration: FastLoopIntegration | None = None,
+                 lifecycle: CheckpointLifecycle | None = None) -> None:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ValueError("Fast fan-out root must be a directory")
         self.integration = integration or FastLoopIntegration(self.root)
+        self.lifecycle = lifecycle
         self._canonical: CanonicalGeneration | None = None
         self._slots: dict[str, _Slot] = {}
         self._candidates: dict[str, dict[str, Any]] = {}
@@ -115,8 +118,12 @@ class FastFanoutCoordinator:
         slot = _Slot(slot_id, overlay_key, files)
         self._slots[slot_id] = slot
         self._metrics["slot_leases"] += 1
+        overlay_path = None
+        if self.lifecycle is not None:
+            overlay_path = str(self.lifecycle.create_overlay(slot_id))
         return {"schema": RECEIPT_SCHEMA, "status": "LEASED",
                 "generation": self.generation, "slot": slot.to_dict(),
+                "overlay_path": overlay_path,
                 "canonical_receipt_hash": self._canonical.receipt_hash}
 
     def checkpoint(self, slot_id: str, *, generation: str | None = None) -> dict[str, Any]:
@@ -125,9 +132,13 @@ class FastFanoutCoordinator:
             raise FastFanoutError("slot is not active")
         if generation is not None and str(generation) != self.generation:
             raise FastFanoutError("slot checkpoint generation is stale")
+        durable = None
+        if self.lifecycle is not None:
+            durable = self.lifecycle.checkpoint(
+                slot.slot_id, "slot", "PLANNED", receipts=[slot.overlay_key])
         return {"schema": RECEIPT_SCHEMA, "status": "CHECKPOINT",
                 "slot_id": slot.slot_id, "generation": self.generation,
-                "overlay_key": slot.overlay_key}
+                "overlay_key": slot.overlay_key, "durable": durable}
 
     def record_candidate(self, slot_id: str, candidate_id: str, changeset: Mapping[str, Any], *, verified: bool) -> dict[str, Any]:
         self.checkpoint(slot_id)
@@ -144,6 +155,10 @@ class FastFanoutCoordinator:
                "changeset": raw, "state": "eligible" if verified else "rejected"}
         row["receipt_hash"] = _hash({k: v for k, v in row.items() if k != "changeset"})
         self._candidates[candidate_id] = row
+        if self.lifecycle is not None:
+            self.lifecycle.checkpoint(
+                candidate_id, "candidate", "READY_TO_PROMOTE" if verified else "HELD",
+                receipts=[row["receipt_hash"]], work_units=len(raw.get("changes", [])))
         self._metrics["candidate_count"] += 1
         return {"schema": RECEIPT_SCHEMA, "status": "RECORDED",
                 "candidate": {k: v for k, v in row.items() if k != "changeset"}}
@@ -175,6 +190,19 @@ class FastFanoutCoordinator:
                     "reason": "winner_apply_not_verified"}
         winner["state"] = "promoted"
         self._slots[winner["slot_id"]].state = "winner"
+        lifecycle_receipt = None
+        if self.lifecycle is not None:
+            eligible_ids = sorted(
+                row["candidate_id"] for row in self._candidates.values()
+                if row.get("verified") is True and row.get("generation") == self.generation)
+            specs = [CandidateSpec(candidate_id, 0.0, 0.0, stalled=index == 0 and len(eligible_ids) > 1)
+                     for index, candidate_id in enumerate(eligible_ids)]
+            try:
+                lifecycle_receipt = self.lifecycle.converge(
+                    specs, expected_shards=["candidate"], cancel_callback=self._release_candidate)
+            except LifecycleError as exc:
+                return {"schema": RECEIPT_SCHEMA, "status": "BLOCKED", "winner": self._winner,
+                        "apply": result, "reason": "checkpoint_lifecycle_failed", "error": str(exc)}
         skipped = []
         for candidate_id, row in self._candidates.items():
             if candidate_id != self._winner:
@@ -184,7 +212,18 @@ class FastFanoutCoordinator:
         return {"schema": RECEIPT_SCHEMA, "status": "PROMOTED",
                 "winner": self._winner, "generation": self.generation,
                 "apply": result, "losers_skipped": skipped,
+                "checkpoint_lifecycle": lifecycle_receipt,
                 "metrics": dict(self._metrics)}
+
+    def _release_candidate(self, candidate_id: str) -> None:
+        row = self._candidates.get(str(candidate_id))
+        if row is None:
+            raise FastFanoutError("candidate is unknown")
+        slot = self._slots.get(str(row.get("slot_id") or ""))
+        if slot is None:
+            raise FastFanoutError("candidate slot is unknown")
+        slot.state = "released"
+        row["state"] = "cancelled"
 
     def invalidate(self, *, source_commit: str = "") -> dict[str, Any]:
         if self._canonical is None:
