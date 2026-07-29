@@ -1,4 +1,10 @@
-# Orca adapter
+# Orca adapter (**client opt-in only**)
+
+> **Not part of the default Simplicio armada.** Install and enable Orca **only when the client
+> contracted the Orca host**. Core Loop / Mapper / Fast / Dev-CLI never depend on Orca.
+> Lifecycle card sync stays **off** unless the client enables the `orca` integration
+> (`SIMPLICIO_LOOP_CLIENT_INTEGRATIONS=orca` or `.simplicio/client-integrations.json`).
+> See `docs/CLIENT_INTEGRATIONS.md` and `simplicio_loop/client_integrations.py`.
 
 [Orca](https://www.onorca.dev/docs) is a desktop **worktree IDE for AI coding agents**: it runs
 multiple agent CLIs (Claude Code, Codex, Cursor CLI) in parallel, each task in its own isolated
@@ -7,13 +13,16 @@ checkpoints, scheduled automations, and an MCP/skills registry.
 
 Orca is a **host of hosts**: the simplicio-loop protocol runs inside whichever inner agent CLI
 Orca drives. The adapter therefore installs into the *repo* (which every Orca worktree sees), and
-the inner runtime picks the skills up natively.
+the inner runtime picks the skills up natively. **There is no Orca stop-hook in the core loop.**
 
-## Install
+## Install (only if client requested Orca)
 
 ```bash
 bash scripts/install.sh orca            # macOS/Linux
 pwsh scripts/install.ps1 orca           # Windows
+# enable lifecycle card projection (optional, client-requested):
+export SIMPLICIO_LOOP_CLIENT_INTEGRATIONS=orca
+# or: echo '{"schema":"simplicio.client-integrations/v1","integrations":["orca"]}' > .simplicio/client-integrations.json
 ```
 
 The installer copies the 7 skills into `.claude/skills/` and writes the idempotent

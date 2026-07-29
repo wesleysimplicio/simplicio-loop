@@ -67,7 +67,7 @@ path names how to enable the optional bind; it is not a precondition for the loo
 | 12 | **Aider** | `CONVENTIONS.md` (read) | self-paced | ❌ | optional — no host MCP client; standalone LLM execution remains available | N2 (inlined transcript) + N3 | [aider](aider/README.md) |
 | 13 | **Simplicio Agent** *(formerly Hermes)* | native skill recall | native loop | ✅ native | optional — native extension points (no MCP shim needed) | N1-equiv (native tick) + N3 | [simplicio_agent](simplicio_agent/README.md) |
 | 14 | **OpenClaw** | plugin SDK / `skills/` | native scheduler | ✅ native | optional — **native** (plugin SDK) | N1-equiv (native tick) + N3 | [openclaw](openclaw/README.md) |
-| 15 | **Orca** | via inner agent (`.claude/skills/` + `AGENTS.md`) + skills registry | inner hook / self-paced (scheduled automations) | ⚠️ via inner agent | optional — Orca MCP registry / inner agent's own config | N1/N2 (inner agent) + N3 | [orca](orca/README.md#mcp-config) |
+| 15 | **Orca** *(client opt-in only — not default)* | via inner agent (`.claude/skills/` + `AGENTS.md`) | **no core Orca hook**; inner agent hook / self-paced if client installed Orca | — | only if client requests (`CLIENT_INTEGRATIONS=orca`) | N1/N2 (inner) + N3 | [orca](orca/README.md#mcp-config) |
 
 Rows 9–11 (Kimi, Qwen, DeepSeek) and Antigravity's IDE-side config are explicitly
 **best-effort / community-reported, not gated** — see `docs/MCP_SETUP.md` for the verified-vs-

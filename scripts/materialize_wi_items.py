@@ -3,16 +3,16 @@
 
 For each issue in the given range that has an intake contract + planning receipt
 but no ``.simplicio/orchestrator/backlog/items/wiNNN/`` trio (anchor + mapping + run state),
-create the trio from the intake artifacts. This closes the gap between the Orca
-projection (``gh-issue-cursor.json``) and the execution source-of-truth
-(``items/wiNNN/``) so the canonical lifecycle (intake -> mapping -> planning ->
-executing -> validating -> watching -> delivering -> done) has a real on-disk
-home for every work item.
+create the trio from the intake artifacts. This closes the gap between the
+issue cursor projection (``gh-issue-cursor.json``) and the execution
+source-of-truth (``items/wiNNN/``) so the canonical lifecycle (intake ->
+mapping -> planning -> executing -> validating -> watching -> delivering ->
+done) has a real on-disk home for every work item.
 
 Deterministic + idempotent: re-running never overwrites an existing trio, only
 fills missing ones. Classifies infra-dependent issues as ``blocked`` (with a
-documented reason) and the rest as ``planning`` (ready for execution in an Orca
-worktree).
+documented reason) and the rest as ``planning`` (ready for local or
+client-requested worktree execution — Orca is never assumed).
 """
 import json
 import os
@@ -120,8 +120,11 @@ def materialize(issue_num, issue_meta):
     if infra:
         status = "blocked"
         phase = "blocked"
-        blocked_reason = ("execution deferred fail-closed: requires Orca worktree mutation "
-                          "with Hub/Supervisor/Async backend absent on this single host")
+        blocked_reason = (
+            "execution deferred fail-closed: requires multi-host/worktree "
+            "infra (Hub/Supervisor/Async) absent on this single host; "
+            "do not assume Orca — only enable a client-requested host integration"
+        )
     else:
         status = "planning"
         phase = "planning"

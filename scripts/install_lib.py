@@ -88,9 +88,9 @@ RUNTIMES = {
     "simplicio_agent": {"entry": None,                          "mcp": None,          "hooks": "native"},
     "hermes":      {"entry": None,                              "mcp": None,          "hooks": "native"},  # legacy alias — see simplicio_agent
     "openclaw":    {"entry": None,                              "mcp": None,          "hooks": "native"},
-    # Orca (onorca.dev) — worktree IDE hosting inner agent CLIs (Claude Code/Codex/Cursor);
-    # skills + AGENTS.md land in the repo and every Orca worktree sees them; loop drive is the
-    # inner agent's hook where it has one, else Orca scheduled automations (self-paced).
+    # Orca (onorca.dev) — **client opt-in only**. Install with `install_lib.py orca` solely
+    # when the client contracted the Orca host. Core loop never requires Orca; lifecycle
+    # card sync stays off unless SIMPLICIO_LOOP_CLIENT_INTEGRATIONS includes `orca`.
     "orca":        {"entry": "AGENTS.md",                       "mcp": "orca",        "hooks": None},
 }
 

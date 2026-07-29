@@ -21,6 +21,7 @@ from .delivery import (build_delivery_receipt, normalize_delivery_target,
 from .evidence import build_evidence_receipt, redact_sensitive_text
 from .source_state import github_delivery_payload, infer_github_delivery_state
 from . import github_lifecycle as _github_lifecycle
+from .client_integrations import integration_enabled
 from .orca_lifecycle import sync_orca_status
 from .source_adapter import GitHubSourceAdapter
 from .task_contract import compile_many, validate_contract
@@ -1747,16 +1748,20 @@ def _record_event(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any],
     _write_json(run_dir / "state.json", state)
     _append_jsonl(run_dir / "events.jsonl", event)
     _sync_github_lifecycle(run_dir, state, event)
-    _sync_orca_lifecycle(run_dir, state, event)
+    # Host integrations (Orca cards, boards, chat) are NEVER default — only when
+    # the client explicitly requested them via SIMPLICIO_LOOP_CLIENT_INTEGRATIONS
+    # / .simplicio/client-integrations.json (see client_integrations.py).
+    if integration_enabled("orca"):
+        _sync_orca_lifecycle(run_dir, state, event)
     return state
 
 
 def _sync_orca_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any]) -> None:
-    """Project the same lifecycle event onto the active Orca Dev card.
+    """Project lifecycle onto an Orca worktree card **only** for Orca clients.
 
-    Orca is optional and host-local: a missing Orca context is recorded as a
-    typed skip rather than treated as a failed delivery or a reason to touch a
-    different worktree.
+    Not a core loop hook. Requires client opt-in via
+    ``integration_enabled("orca")`` (caller already gated). Missing Orca context
+    is a typed skip — never a delivery failure.
     """
     lifecycle_state = _github_lifecycle.lifecycle_state_for_phase_event(
         str(event.get("kind") or event.get("phase") or ""))
