@@ -509,10 +509,31 @@ def _hand_edit_forbidden():
     return mode in {"strict", "full-stack"}
 
 
+def _mcp_force_enabled():
+    """Require Simplicio Runtime MCP-first tool use when Runtime is expected."""
+    val = (
+        os.environ.get("SIMPLICIO_REQUIRE_MCP")
+        or os.environ.get("SIMPLICIO_MCP_FORCE")
+        or ""
+    ).strip().lower()
+    return val in {"1", "true", "yes", "on", "required", "force"}
+
+
 _HAND_EDIT_TOOLS = frozenset({
     "write", "edit", "strreplace", "search_replace", "applypatch", "apply_patch",
     "create_file", "delete_file", "notebookedit", "editnotebook",
 })
+
+# Host tools that dump repo context without Runtime MCP economy layer.
+_MCP_BYPASS_READ_TOOLS = frozenset({
+    "read", "read_file", "grep", "glob", "search_code", "list_dir", "listdir",
+})
+
+# Bash that floods context instead of simplicio_map / simplicio_search / simplicio_read.
+_CONTEXT_FLOOD_RE = re.compile(
+    r"(?i)(^|[;&|]\s*)(cat|type|Get-Content|rg\s|findstr\s|find\s+.+\s+-name)"
+    r".+\.(py|ts|tsx|js|jsx|rs|go|java|md)\b"
+)
 
 
 def from_pretooluse():
@@ -531,17 +552,38 @@ def from_pretooluse():
     tool_name = str(data.get("tool_name") or data.get("name") or "").strip().lower()
     # Normalize names like "Write", "Edit", "mcp__...__Write"
     tool_tail = tool_name.rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+    # Allow MCP tools always (simplicio__*, mcp__simplicio__*)
+    if "simplicio" in tool_name and ("mcp" in tool_name or tool_name.startswith("simplicio")):
+        sys.exit(0)
     if _hand_edit_forbidden() and (tool_name in _HAND_EDIT_TOOLS or tool_tail in _HAND_EDIT_TOOLS):
         reason = (
             "SIMPLICIO_LOOP_STRICT forbids host hand-edit tools (%s); "
-            "use simplicio-dev-cli / simplicio-py task for mutations"
+            "use simplicio-dev-cli / simplicio-py task / simplicio_edit (MCP) for mutations"
             % (tool_name or tool_tail or "edit")
+        )
+        _emit_and_exit(_verdict(False, reason), pretooluse=True, cmd=tool_name)
+        return
+    if _mcp_force_enabled() and (tool_name in _MCP_BYPASS_READ_TOOLS or tool_tail in _MCP_BYPASS_READ_TOOLS):
+        reason = (
+            "SIMPLICIO_REQUIRE_MCP forbids host bulk-read tool %s as primary survey; "
+            "use simplicio_map / simplicio_search / simplicio_memory / simplicio_read (Runtime MCP)"
+            % (tool_name or tool_tail or "read")
         )
         _emit_and_exit(_verdict(False, reason), pretooluse=True, cmd=tool_name)
         return
     cmd = (data.get("tool_input", {}) or {}).get("command", "")
     if not cmd:
         sys.exit(0)
+    if _mcp_force_enabled() and _CONTEXT_FLOOD_RE.search(cmd):
+        # Allow short targeted reads (single file via head -n small) still blocked — force MCP.
+        if not re.search(r"(?i)\bsimplicio\b", cmd):
+            reason = (
+                "SIMPLICIO_REQUIRE_MCP blocks context-flood shell (%s…); "
+                "use simplicio_map / simplicio_search / simplicio_read MCP tools"
+                % (cmd.strip()[:80],)
+            )
+            _emit_and_exit(_verdict(False, reason), pretooluse=True, cmd=cmd)
+            return
     _emit_and_exit(gate_command(cmd), pretooluse=True, cmd=cmd)
 
 

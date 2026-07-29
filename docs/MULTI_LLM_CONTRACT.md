@@ -19,7 +19,9 @@ contract + `host_rule_sync` + STRICT env make that a **contract violation**, not
 1. **Operators do; models decide.**
 2. **STRICT forbids host hand-edit** as primary mutation path.
 3. **Fast required when operational** at preflight.
-4. **Runtime adaptive** — explicit degrade when absent.
+4. **Runtime MCP forced when operational** — `SIMPLICIO_REQUIRE_MCP=1`; prefer
+   `simplicio_map` / `simplicio_search` / `simplicio_memory` / `simplicio_gate` / `simplicio_edit`
+   over host bulk reads; register with `mcp_force_sync.py` / `simplicio mcp register`.
 5. **Prism parallelism** for queue drain when armed (`arm_drain_prism.py`).
 6. **Self-paced hosts are first-class** — no hooks ≠ optional protocol.
 7. **Client integrations opt-in only** — Orca is never default (`docs/CLIENT_INTEGRATIONS.md`).
@@ -35,6 +37,7 @@ export SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT=1
 export SIMPLICIO_LOOP_FORBID_HAND_EDIT=1
 export SIMPLICIO_FAST_MODE=required
 python3 scripts/host_rule_sync.py --global --json
+python3 scripts/mcp_force_sync.py --global --json    # FORCE Runtime MCP into hosts + env
 simplicio-loop preflight --strict --json
 python3 scripts/arm_drain_prism.py --repo . --slots 4 --json   # when draining issues
 ```
