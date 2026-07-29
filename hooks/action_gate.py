@@ -509,14 +509,29 @@ def _hand_edit_forbidden():
     return mode in {"strict", "full-stack"}
 
 
+def _runtime_binary_present():
+    """Runtime is optional for the loop; probe only (no subprocess)."""
+    try:
+        return shutil.which("simplicio") is not None
+    except Exception:
+        return False
+
+
 def _mcp_force_enabled():
-    """Require Simplicio Runtime MCP-first tool use when Runtime is expected."""
+    """MCP-first tool use when flag set AND Runtime binary is present.
+
+    ``simplicio-runtime`` is **not** mandatory for simplicio-loop (core =
+    mapper + dev-cli; Fast when operational). ``SIMPLICIO_REQUIRE_MCP`` only
+    forces MCP tools when Runtime is available — never bricks a standalone loop.
+    """
     val = (
         os.environ.get("SIMPLICIO_REQUIRE_MCP")
         or os.environ.get("SIMPLICIO_MCP_FORCE")
         or ""
     ).strip().lower()
-    return val in {"1", "true", "yes", "on", "required", "force"}
+    if val not in {"1", "true", "yes", "on", "required", "force"}:
+        return False
+    return _runtime_binary_present()
 
 
 _HAND_EDIT_TOOLS = frozenset({
@@ -565,8 +580,9 @@ def from_pretooluse():
         return
     if _mcp_force_enabled() and (tool_name in _MCP_BYPASS_READ_TOOLS or tool_tail in _MCP_BYPASS_READ_TOOLS):
         reason = (
-            "SIMPLICIO_REQUIRE_MCP forbids host bulk-read tool %s as primary survey; "
-            "use simplicio_map / simplicio_search / simplicio_memory / simplicio_read (Runtime MCP)"
+            "SIMPLICIO_REQUIRE_MCP (Runtime present) forbids host bulk-read tool %s; "
+            "use simplicio_map / simplicio_search / simplicio_memory / simplicio_read (MCP). "
+            "Without Runtime, host tools remain allowed (Runtime is optional for loop)."
             % (tool_name or tool_tail or "read")
         )
         _emit_and_exit(_verdict(False, reason), pretooluse=True, cmd=tool_name)
@@ -575,10 +591,9 @@ def from_pretooluse():
     if not cmd:
         sys.exit(0)
     if _mcp_force_enabled() and _CONTEXT_FLOOD_RE.search(cmd):
-        # Allow short targeted reads (single file via head -n small) still blocked — force MCP.
         if not re.search(r"(?i)\bsimplicio\b", cmd):
             reason = (
-                "SIMPLICIO_REQUIRE_MCP blocks context-flood shell (%s…); "
+                "SIMPLICIO_REQUIRE_MCP (Runtime present) blocks context-flood shell (%s…); "
                 "use simplicio_map / simplicio_search / simplicio_read MCP tools"
                 % (cmd.strip()[:80],)
             )

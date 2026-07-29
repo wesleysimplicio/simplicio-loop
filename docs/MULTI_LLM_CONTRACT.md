@@ -19,12 +19,14 @@ contract + `host_rule_sync` + STRICT env make that a **contract violation**, not
 1. **Operators do; models decide.**
 2. **STRICT forbids host hand-edit** as primary mutation path.
 3. **Fast required when operational** at preflight.
-4. **Runtime MCP forced when operational** — `SIMPLICIO_REQUIRE_MCP=1`; prefer
-   `simplicio_map` / `simplicio_search` / `simplicio_memory` / `simplicio_gate` / `simplicio_edit`
-   over host bulk reads; register with `mcp_force_sync.py` / `simplicio mcp register`.
-5. **Prism parallelism** for queue drain when armed (`arm_drain_prism.py`).
-6. **Self-paced hosts are first-class** — no hooks ≠ optional protocol.
-7. **Client integrations opt-in only** — Orca is never default (`docs/CLIENT_INTEGRATIONS.md`).
+4. **Runtime is optional** for simplicio-loop (`SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto`,
+   `SIMPLICIO_EXECUTION_PROFILE=auto`). Core = mapper + dev-cli (+ Fast when up).
+5. **When Runtime is present, force MCP tools for economy** — `SIMPLICIO_REQUIRE_MCP=1`
+   prefers `simplicio_map` / `search` / `memory` / `gate` / `edit` over host bulk reads;
+   action_gate only enforces this if `simplicio` is on PATH. Without Runtime: standalone continues.
+6. **Prism parallelism** for queue drain when armed (`arm_drain_prism.py`).
+7. **Self-paced hosts are first-class** — no hooks ≠ optional protocol.
+8. **Client integrations opt-in only** — Orca is never default (`docs/CLIENT_INTEGRATIONS.md`).
 
 ## Armada (before iteration 1)
 

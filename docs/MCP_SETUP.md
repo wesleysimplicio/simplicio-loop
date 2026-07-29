@@ -1,20 +1,25 @@
 # MCP setup — `simplicio-runtime` across every host
 
-`simplicio-runtime` (binary `simplicio`, MCP subcommand `simplicio serve --mcp --stdio`,
-installed via `pip install -U simplicio-installer && simplicio install --global`) is the
-**token-economy tool surface** for every LLM host. With `SIMPLICIO_REQUIRE_MCP=1` (default after
-`scripts/mcp_force_sync.py --global` / host rule install), agents are **instructed and gated** to
-prefer Runtime MCP tools (`simplicio_map`, `simplicio_search`, `simplicio_memory`, `simplicio_gate`,
-`simplicio_edit`, `simplicio_validate`, …) over bulk host Read/Grep/cat of source trees.
+`simplicio-runtime` (binary `simplicio`, MCP subcommand `simplicio serve --mcp --stdio`) is an
+**optional** token-economy tool surface. It is **not** a dependency of `simplicio-loop`
+(core = mapper + dev-cli; Fast when operational).
 
-When Runtime/MCP is missing or unreachable, the loop continues with `simplicio-mapper` /
-`simplicio-dev-cli` and must report degraded mode — never fake MCP use.
+When Runtime **is** installed and `SIMPLICIO_REQUIRE_MCP=1` (set by
+`scripts/mcp_force_sync.py --global`), agents are instructed and gated to prefer Runtime MCP
+tools (`simplicio_map`, `simplicio_search`, `simplicio_memory`, `simplicio_gate`,
+`simplicio_edit`, …) over bulk host Read/Grep/cat of source trees. The gate only blocks host
+bulk-reads if `simplicio` is on PATH.
 
-**Force wiring (all hosts):**
+When Runtime/MCP is missing or unreachable, the **standalone loop continues** with
+`simplicio-mapper` / `simplicio-dev-cli` and must report degraded mode — never fake MCP use,
+never fail the loop solely because Runtime is absent.
+
+**Optional force wiring (all hosts, when you want Runtime MCP):**
 
 ```bash
 python3 scripts/mcp_force_sync.py --global --json
-# sets SIMPLICIO_REQUIRE_MCP=1, writes rules, merges MCP configs, runs `simplicio mcp register`
+# sets REQUIRE_MCP=1 + EXECUTION_PROFILE=auto, writes rules, merges MCP configs, runs register
+# Runtime remains optional: REQUIRE_RUNTIME=auto
 ```
 
 This page is the single skimmable entry point for wiring the bind on any of the 15 hosts this

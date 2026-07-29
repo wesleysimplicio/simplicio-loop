@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Force-wire Simplicio Runtime MCP for every LLM host + sync FORCE rules.
 
-1. Writes SIMPLICIO_REQUIRE_MCP / SIMPLICIO_MCP_FORCE into ~/.simplicio/loop-env.*
+Runtime is OPTIONAL for simplicio-loop. This script only prefers MCP tools when
+Runtime is present; it never makes Runtime a hard dependency of the loop.
+
+1. Writes SIMPLICIO_REQUIRE_MCP / SIMPLICIO_MCP_FORCE + REQUIRE_RUNTIME=auto into loop-env.*
 2. Copies packaging/host-rules/simplicio-runtime-mcp-force.md to host rule surfaces
 3. Best-effort: runs `simplicio mcp register` and merges common MCP config files
 4. Idempotent merge for Claude/Cursor/VS Code/Codex/Kiro JSON-TOML snippets
@@ -102,13 +105,15 @@ def _patch_env_file(path: Path, shell: str) -> str:
     if shell == "ps1":
         lines = [
             '# Simplicio loop + MCP force (mcp_force_sync.py)',
+            '# Runtime OPTIONAL for loop (REQUIRE_RUNTIME=auto; EXECUTION_PROFILE=auto).',
+            '# REQUIRE_MCP forces MCP tools only when `simplicio` is on PATH.',
             '$env:SIMPLICIO_LOOP = "1"',
             '$env:SIMPLICIO_LOOP_STRICT = "1"',
             '$env:SIMPLICIO_LOOP_REQUIRE_RUNTIME = "auto"',
             '$env:SIMPLICIO_REQUIRE_MUTATION_AUTHORITY = "1"',
             '$env:SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT = "1"',
             '$env:SIMPLICIO_LOOP_FORBID_HAND_EDIT = "1"',
-            '$env:SIMPLICIO_EXECUTION_PROFILE = "runtime-backed"',
+            '$env:SIMPLICIO_EXECUTION_PROFILE = "auto"',
             '$env:SIMPLICIO_FAST_MODE = "required"',
             '$env:SIMPLICIO_REQUIRE_MCP = "1"',
             '$env:SIMPLICIO_MCP_FORCE = "1"',
@@ -117,13 +122,15 @@ def _patch_env_file(path: Path, shell: str) -> str:
         text = "\n".join(lines)
     else:
         text = """# Simplicio loop + MCP force (mcp_force_sync.py)
+# Runtime OPTIONAL for loop (REQUIRE_RUNTIME=auto; EXECUTION_PROFILE=auto).
+# REQUIRE_MCP forces MCP tools only when `simplicio` is on PATH.
 export SIMPLICIO_LOOP=1
 export SIMPLICIO_LOOP_STRICT=1
 export SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto
 export SIMPLICIO_REQUIRE_MUTATION_AUTHORITY=1
 export SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT=1
 export SIMPLICIO_LOOP_FORBID_HAND_EDIT=1
-export SIMPLICIO_EXECUTION_PROFILE=runtime-backed
+export SIMPLICIO_EXECUTION_PROFILE=auto
 export SIMPLICIO_FAST_MODE=required
 export SIMPLICIO_REQUIRE_MCP=1
 export SIMPLICIO_MCP_FORCE=1
