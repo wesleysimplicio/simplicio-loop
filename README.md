@@ -11,7 +11,8 @@
   <a href="#-source-adapters"><img src="https://img.shields.io/badge/source%20adapters-5-00E08A" alt="5 source adapters"></a>
   <a href="#-15-runtimes-one-protocol"><img src="https://img.shields.io/badge/runtimes-15%20(3%20garantidos%2B12%20best--effort)-2563EB" alt="15 runtimes (3 guaranteed + 12 best-effort)"></a>
   <a href="#-the-49-extension-points"><img src="https://img.shields.io/badge/extension%20points-50-00E08A" alt="50 extension points"></a>
-  <a href="#-token-economy"><img src="https://img.shields.io/badge/savings-unverified-888888" alt="Savings — unverified"></a>
+  <a href="#measured-benchmark-issue-17"><img src="https://img.shields.io/badge/bench%20%2317-90%25%20fewer%20est.%20tokens-00E08A" alt="Issue #17 bench: ~90% fewer estimated tokens with loop"></a>
+  <a href="#-token-economy"><img src="https://img.shields.io/badge/savings-mixed%20(see%20bench)-2563EB" alt="Savings — see measured bench + evidence-gated monitor"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
   <a href="https://discord.gg/wM6tr7xVb"><img src="https://img.shields.io/badge/Discord-Join%20Simplicio-5865F2?logo=discord&logoColor=white" alt="Join the Simplicio Discord"></a>
 </p>
@@ -23,6 +24,7 @@
   <a href="#-15-runtimes-one-protocol">15 Runtimes</a> ·
   <a href="#-the-loop">The Loop</a> ·
   <a href="#-token-economy">Token Economy</a> ·
+  <a href="#measured-benchmark-issue-17">Bench #17</a> ·
   <a href="#-token-economy">Capture Engine</a> ·
   <a href="#-install--use">Install</a>
 </p>
@@ -570,9 +572,58 @@ path to the same result. **Savings reporting is evidence-gated, not mandatory:**
 shown only when a turn actually ran an economy-producing command and the number traces to a
 measured receipt (clamp tee, signatures-read, cache hit, `deterministic_edit`, `savings_ledger`).
 No measured economy → no savings line; the orchestrator never fabricates a baseline or a percentage.
-**All quantitative savings figures in this README are currently UNVERIFIED** — no receipt snapshot
-exists in `.simplicio/orchestrator/savings/snapshots.jsonl`. See `references/token-economy.md` and
-`scripts/claims_manifest.py`.
+**Most quantitative savings figures in this README remain UNVERIFIED** (no receipt snapshot in
+`.simplicio/orchestrator/savings/snapshots.jsonl`) — except the **measured comparative bench**
+below. See `references/token-economy.md` and `scripts/claims_manifest.py`.
+
+### Measured benchmark (issue #17)
+
+**Task:** [simplicio-agent#17](https://github.com/wesleysimplicio/simplicio-agent/issues/17) — Asolaria
+HRM + N-Nest-Prime, **P0 slice completed in both arms**: Brown-Hilbert `port.port.port` addressing +
+Agent/Watcher corrective gate (`agent/asolaria_nest_contract.py` + unit tests, both arms green).
+
+**Arms (same machine, Windows):**
+
+| Arm | How work was done |
+|---|---|
+| **Without loop** | Ad-hoc `gh` + `rg` + **full-file reads** of candidate modules (LLM-style survey) |
+| **With loop** | STRICT env → `preflight --strict` → `simplicio-mapper` scan/inspect/handoff → `simplicio-fast doctor` → `arm_drain_prism` → **signatures-only** reads |
+
+**Stack measured:** `simplicio-loop 3.38.9` · `mapper 0.26.0` · `cli 0.18.0` · `fast 2.0.17`.
+
+| Metric | Without loop | With loop | Ratio (with/without) |
+|---|---:|---:|---:|
+| **Wall time** | 2.72 s | 13.20 s | **4.86× slower** (operator startup) |
+| **Est. tokens** *(context_bytes ÷ 4)* | ~156 576 | **~15 246** | **0.097×** |
+| **Token savings** | — | **~90.3% fewer** est. tokens | — |
+| **Context bytes** | 626 303 | 60 982 | 0.097× |
+| **Shell/tool commands** | 16 | 12 | — |
+| **Operator calls** | 0 | 6 | preflight + mapper×3 + fast + arm |
+| **Tests success** | true | true | same deliverable |
+
+**Phase times (seconds):**
+
+| Phase | Without | With |
+|---|---:|---:|
+| preflight | — | 2.78 |
+| survey | 1.50 | 7.31 |
+| plan / arm | ~0 | 1.99 |
+| implement | ~0 | ~0 |
+| test | 1.21 | 1.13 |
+
+**How to read this:** the loop **cuts intake context/tokens hard** (good for multi-turn LLM cost).
+Wall-clock can be **higher on a cold operator run** (preflight + mapper). Over a long session the
+token reduction usually dominates billed cost; wall-clock amortizes when the map/snapshot is warm.
+
+**Caveats (honest):**
+
+- “Tokens” here are **estimated** as `context_bytes / 4`, not provider-billed usage.
+- Implementation code was the **same P0 contract** in both arms so the comparison isolates
+  **survey/orchestration**, not two different implementations of the full epic.
+- Not a substitute for the Token Monitor (proxy-routed measurement).
+
+**Artifacts:** PDF report [`docs/evidence/issue17_loop_vs_baseline.pdf`](docs/evidence/issue17_loop_vs_baseline.pdf) ·
+raw metrics in the bench scratch (re-run with the harness under `docs/evidence/` notes).
 
 ### 🔎 Running `simplicio-loop`: economy vs measurement (per runtime)
 
