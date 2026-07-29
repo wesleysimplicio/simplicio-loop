@@ -123,8 +123,11 @@ def build_item(row):
     infra_dep = _is_infra_dependent_issue(title, labels, body)
     if infra_dep:
         _status = "blocked"
-        _blocked_reason = ("execution deferred fail-closed: requires Orca worktree "
-                           "mutation (backend incapable in cron)")
+        _blocked_reason = (
+            "execution deferred fail-closed: requires multi-host/worktree "
+            "infra not available on this single-host cron runner "
+            "(enable a client-requested worktree host only if contracted)"
+        )
         _reason_code = "infra-dependent"
         _ready = row.get("ready_for_mutation", False)
     else:

@@ -1,10 +1,14 @@
-"""Best-effort Orca Dev worktree-card lifecycle projection.
+"""Best-effort Orca Dev worktree-card lifecycle projection (**client opt-in only**).
 
-Orca is a host rather than a second source-of-truth API.  The adapter therefore
-uses the public ``orca worktree`` CLI and scopes every write to the active
-worktree only after ``worktree current`` proves that an Orca context exists.
-Outside Orca this is an explicit no-op, so a local or GitHub-only run cannot
-touch another workspace's card.
+Not part of the default loop path. The runner only enters this module when the
+client requested the ``orca`` integration (see ``client_integrations.py``):
+
+* ``SIMPLICIO_LOOP_CLIENT_INTEGRATIONS=orca``
+* ``.simplicio/client-integrations.json`` listing ``"orca"``
+* legacy ``SIMPLICIO_LOOP_ORCA_LIFECYCLE_SYNC=1``
+
+When enabled, uses the public ``orca worktree`` CLI and scopes writes to the
+active worktree after ``worktree current``. Outside Orca: explicit no-op.
 """
 from __future__ import annotations
 
@@ -12,6 +16,8 @@ import json
 import os
 import subprocess
 from typing import Any, Callable, Dict, Mapping, Sequence
+
+from .client_integrations import integration_enabled
 
 
 ORCA_STATUS_BY_LIFECYCLE = {
@@ -89,16 +95,8 @@ def lifecycle_to_orca_canonical_status(state: str) -> str:
 
 
 def _disabled() -> bool:
-    """Orca is opt-in only.
-
-    Default (unset) is disabled so a normal loop never depends on Orca.
-    Enable explicitly with ``SIMPLICIO_LOOP_ORCA_LIFECYCLE_SYNC=1`` (or true/on/yes).
-    """
-    raw = str(os.environ.get("SIMPLICIO_LOOP_ORCA_LIFECYCLE_SYNC") or "").strip().lower()
-    if raw in {"1", "true", "yes", "on", "enabled", "canonical"}:
-        return False
-    # Unset, empty, off, 0, false, no, legacy → disabled (optional host integration).
-    return True
+    """True unless the client explicitly requested the Orca integration."""
+    return not integration_enabled("orca")
 
 
 def _command() -> str:
