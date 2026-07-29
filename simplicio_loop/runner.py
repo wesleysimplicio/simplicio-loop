@@ -1095,7 +1095,9 @@ def _task_spec_payload(task: Mapping[str, Any]) -> Dict[str, Any]:
         ],
         "uncertainties": questions + assumptions + blockers,
         "human_gates": [dict(item) for item in questions],
-        "verification_commands": [],
+        "verification_commands": ([{"command": test_command, "verifier": "declared"}]
+                              if (test_command := os.environ.get("SIMPLICIO_TEST_CMD", "").strip())
+                              else []),
         "source_span": {},
         "original_text": original_text,
         # Additive field: preserves every Loop-only field and makes the handoff
