@@ -169,6 +169,15 @@ def test_task_spec_payload_preserves_loop_contract_and_source():
     assert payload["source"]["locator"] == "issue-299.md"
 
 
+def test_task_spec_payload_uses_declared_test_command(monkeypatch):
+    task = runner_mod.compile_many(TASK)["tasks"][0]
+    monkeypatch.setenv("SIMPLICIO_TEST_CMD", "npm test")
+
+    payload = runner_mod._task_spec_payload(task)
+
+    assert payload["verification_commands"] == [{"command": "npm test", "verifier": "declared"}]
+
+
 def test_prepare_operator_receipt_uses_typed_task_spec_file(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
