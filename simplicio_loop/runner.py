@@ -540,6 +540,9 @@ def _devcli_env(repo_path: Path, base_env: Dict[str, str] | None = None) -> Dict
     repo_str = str(repo_path)
     current = env.get("PYTHONPATH", "").strip()
     env["PYTHONPATH"] = repo_str if not current else f"{repo_str}{os.pathsep}{current}"
+    selected_devcli = _devcli_command_path()
+    if selected_devcli != "simplicio-dev-cli":
+        env["PATH"] = f"{Path(selected_devcli).resolve().parent}{os.pathsep}{env.get('PATH', '')}"
     # Local LLM execution is paused globally; child Dev CLI flows must inherit
     # the policy and must not receive a local model selector.
     env["SIMPLICIO_LOCAL_LLM_DISABLED"] = "1"
@@ -547,6 +550,40 @@ def _devcli_env(repo_path: Path, base_env: Dict[str, str] | None = None) -> Dict
     if model.startswith(("local/", "llama", "ollama")):
         env.pop("SIMPLICIO_MODEL", None)
     return env
+
+def _devcli_has_mapper_manifest(command: str) -> bool:
+    try:
+        executable = Path(command).resolve()
+        first_line = executable.read_text(encoding="utf-8", errors="ignore").splitlines()[0]
+        interpreter = first_line[2:].strip() if first_line.startswith("#!") else ""
+        if interpreter.startswith("/usr/bin/env "):
+            interpreter = shutil.which(interpreter.rsplit(" ", 1)[-1]) or ""
+        if not interpreter:
+            return False
+        probe = subprocess.run(
+            [interpreter, "-c",
+             "import importlib.resources; print(int(importlib.resources.files('simplicio_mapper').joinpath('contracts/context-snapshot/v1/contract-manifest.json').is_file()))"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        return probe.returncode == 0 and probe.stdout.strip() == "1"
+    except (OSError, IndexError, subprocess.SubprocessError):
+        return False
+
+
+def _devcli_command_path() -> str:
+    explicit = os.environ.get("SIMPLICIO_DEV_CLI_BIN", "").strip()
+    if explicit:
+        return explicit
+    current = shutil.which("simplicio-dev-cli")
+    candidates = []
+    if current:
+        candidates.append(current)
+    pipx_root = Path.home() / ".local" / "pipx" / "venvs"
+    if pipx_root.is_dir():
+        candidates.extend(str(path) for path in sorted(pipx_root.glob("*/bin/simplicio-dev-cli")))
+    compatible = next((path for path in candidates if _devcli_has_mapper_manifest(path)), None)
+    return compatible or current or "simplicio-dev-cli"
+
 
 def _devcli_cmd(repo_path: Path, *args: str) -> List[str]:
     if (repo_path / "simplicio" / "cli.py").exists():
@@ -2494,6 +2531,44 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
     if task_aware_supported and target_hint.strip():
         handoff_argv.extend(["--target", target_hint.strip()])
     handoff = _run_cmd(handoff_argv, repo_path)
+    handoff_recovery = None
+    try:
+        handoff_stdout = json.loads(handoff.stdout) if handoff.stdout.strip() else {}
+    except ValueError:
+        handoff_stdout = {}
+    handoff_pack = handoff_stdout.get("context_pack") if isinstance(handoff_stdout, Mapping) else {}
+    if (
+        task_aware_supported
+        and task_path.strip()
+        and target_hint.strip()
+        and handoff.returncode == 0
+        and isinstance(handoff_pack, Mapping)
+        and bool(handoff_pack.get("needs_broader_context"))
+    ):
+        recovery_argv = [
+            "simplicio-mapper", "handoff", ".", "--json", "--await", "--execution-context",
+        ]
+        if mapper_token_budget.isdigit() and int(mapper_token_budget) > 0:
+            recovery_argv.extend(["--token-budget", mapper_token_budget])
+        if goal.strip():
+            recovery_argv.extend(["--goal", goal.strip()])
+        recovery_argv.extend(["--target", target_hint.strip()])
+        limit = os.environ.get("SIMPLICIO_LOOP_MAPPER_CONTEXT_LIMIT", "8").strip()
+        if limit.isdigit() and int(limit) > 0:
+            recovery_argv.extend(["--limit", limit])
+        recovery = _run_cmd(recovery_argv, repo_path)
+        try:
+            recovery_stdout = json.loads(recovery.stdout) if recovery.stdout.strip() else {}
+        except ValueError:
+            recovery_stdout = {}
+        handoff_recovery = {
+            "strategy": "goal-target-without-task-file",
+            "returncode": recovery.returncode,
+            "stdout": recovery_stdout,
+            "stderr": (recovery.stderr or "").strip(),
+        }
+        if recovery.returncode == 0:
+            handoff = recovery
     payload = {
         "scan": {
             "returncode": scan.returncode,
@@ -2515,6 +2590,7 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
             "stdout": json.loads(handoff.stdout) if handoff.stdout.strip() else {},
             "stderr": (handoff.stderr or "").strip(),
         },
+        "handoff_recovery": handoff_recovery,
         "generated_at": _now(),
         "repo_state_before": before,
         "repo_state_after": _repo_fingerprint(repo_path),
@@ -2825,9 +2901,20 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
     _preflight_operator(repo_path, run_root)
     task_spec_path = run_root / "task-spec.json"
     task_spec = _task_spec_payload(task)
+    preflight_task_spec_placeholder = not task_spec.get("verification_commands")
+    if preflight_task_spec_placeholder:
+        task_spec["verification_commands"] = [{"command": "true", "verifier": "preflight-placeholder"}]
     task_spec_hash = _task_spec_hash(task_spec)
     _write_json(task_spec_path, task_spec)
-    context_args, context_handoff = _context_handoff_args(repo_path, run_root)
+    preflight_identity = f"{run_root.name}:preflight"
+    context_args, context_handoff = _context_handoff_args(
+        repo_path,
+        run_root,
+        attempt_id=preflight_identity,
+        lease_id=preflight_identity,
+        fencing_token="1",
+    )
+    context_handoff["purpose"] = "read_only_preflight"
     fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", "").strip()
     if fake:
         payload = json.loads(fake)
@@ -2861,6 +2948,18 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
     argv.extend(context_args)
     try:
         op_env = _devcli_env(repo_path, _operator_env())
+        if not op_env.get("SIMPLICIO_RUNTIME_URL", "").strip():
+            op_env.setdefault("SIMPLICIO_RUNTIME_OFFLINE", "1")
+        preflight_test_command = op_env.get("SIMPLICIO_TEST_CMD", "").strip()
+        if not preflight_test_command:
+            preflight_test_command = "true"
+            op_env["SIMPLICIO_TEST_CMD"] = preflight_test_command
+        context_handoff["preflight_verification"] = {
+            "command": preflight_test_command,
+            "placeholder": preflight_test_command == "true",
+            "scope": "dry_run_only",
+            "task_spec_placeholder": preflight_task_spec_placeholder,
+        }
         result = subprocess.run(
             argv,
             cwd=str(repo_path),
@@ -3083,9 +3182,17 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         receipt["target_within_repo"] = True
         _write_json(run_root / "operator-receipt.json", receipt)
         if receipt.get("execution_state") != "dry_run" or receipt.get("returncode") != 0:
+            stdout_payload = receipt.get("stdout") if isinstance(receipt.get("stdout"), Mapping) else {}
+            blocked = stdout_payload.get("blocked_preconditions") if isinstance(stdout_payload, Mapping) else []
+            reason = ""
+            if isinstance(blocked, list) and blocked:
+                first = blocked[0] if isinstance(blocked[0], Mapping) else {}
+                reason = str(first.get("code") or first.get("message") or "")
+            if not reason and isinstance(stdout_payload.get("execution_profile"), Mapping):
+                reason = str(stdout_payload["execution_profile"].get("reason_code") or "")
             raise RuntimeError(
                 "operator preflight blocked the run: "
-                + str(receipt.get("stderr") or receipt.get("execution_state") or "unknown failure")
+                + (reason or str(receipt.get("stderr") or receipt.get("execution_state") or "unknown failure"))
             )
         state["operator"] = {
             "ready": True,
@@ -3500,15 +3607,15 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     task_spec = _task_spec_payload(task)
     task_spec_hash = _task_spec_hash(task_spec)
     _write_json(task_spec_path, task_spec)
-    lease = getattr(getattr(guarded_attempt, "lease", None), "lease_id", "")
-    fence = getattr(getattr(guarded_attempt, "lease", None), "fencing_token", "")
+    lease = str(getattr(getattr(guarded_attempt, "lease", None), "lease_id", "") or f"loop-run:{run_id}")
+    fence = str(getattr(getattr(guarded_attempt, "lease", None), "fencing_token", "") or "1")
     profile = _execution_profile()
     context_args, context_handoff = _context_handoff_args(
         repo_path,
         run_dir,
         attempt_id=f"{run_id}:attempt:{attempt}",
-        lease_id=str(lease or ""),
-        fencing_token=str(fence or ""),
+        lease_id=lease,
+        fencing_token=fence,
         require_authorization=profile == "runtime-backed",
     )
     argv = _devcli_cmd(
@@ -3545,6 +3652,8 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
                     receipt=str(item_context.get("lock_receipt") or operator_path),
                     message="isolated worktree context available", worktree=item_context)
     op_env = _devcli_env(repo_path, _operator_env())
+    if profile == "runtime-backed" and not op_env.get("SIMPLICIO_RUNTIME_URL", "").strip():
+        op_env.setdefault("SIMPLICIO_RUNTIME_OFFLINE", "1")
     provider_config = {
         "model": op_env.get("SIMPLICIO_MODEL", ""),
         "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
