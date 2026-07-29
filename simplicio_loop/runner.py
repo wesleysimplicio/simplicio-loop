@@ -1112,6 +1112,23 @@ def _task_spec_hash(payload: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
+def _derive_context_handle(snapshot_path: Path, pack_path: Path, execution_path: Path, repo_path: Path) -> str:
+    """Derive the canonical Dev CLI handle from Mapper-owned artifacts."""
+    try:
+        from simplicio.plan_compiler.mapper_context import bind_mapper_context
+
+        binding = bind_mapper_context(
+            _load_json(snapshot_path),
+            _load_json(pack_path),
+            source_root=repo_path,
+            execution_context_payload=_load_json(execution_path),
+        )
+        return str(binding.context_handle.value)
+    except Exception:
+        # Context derivation is fail-closed; Dev CLI reports the typed gate.
+        return ""
+
+
 def _context_handoff_args(
     repo_path: Path,
     run_root: Path,
@@ -1193,6 +1210,8 @@ def _context_handoff_args(
     )
     raw_context_handle = first_value(("context_handle", "canonical_context_handle"))
     context_handle = str(raw_context_handle).strip() if raw_context_handle not in (None, "", {}) else ""
+    if not context_handle and all((snapshot_path, pack_path, execution_path)):
+        context_handle = _derive_context_handle(snapshot_path, pack_path, execution_path, repo_path)
     identity_values = (attempt_id.strip(), lease_id.strip(), fencing_token.strip())
     identity_present = any(identity_values)
     identity_complete = all(identity_values)
