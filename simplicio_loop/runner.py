@@ -2461,6 +2461,9 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         "simplicio-mapper", "handoff", ".", "--json", "--await", "--execution-context",
     ]
     task_aware_supported = bool(mapper_preflight.get("task_aware_supported"))
+    mapper_token_budget = os.environ.get("SIMPLICIO_LOOP_MAPPER_TOKEN_BUDGET", "").strip()
+    if mapper_token_budget.isdigit() and int(mapper_token_budget) > 0:
+        handoff_argv.extend(["--token-budget", mapper_token_budget])
     if task_aware_supported and goal.strip():
         handoff_argv.extend(["--goal", goal.strip()])
     if task_aware_supported and task_path.strip():
