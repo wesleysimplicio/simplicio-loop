@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Arm a Prism-style drain scratchpad + recommended strict env.
+
+Does not start agents — freezes loop state so Claude/Codex/Grok/Cursor/etc.
+self-pace or hook-drive the same contract.
+
+Usage:
+  python3 scripts/arm_drain_prism.py --repo . --slots 4 --max-iterations 200 --json
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+PROMISE = "all open issues drained with honest ACs and merged PRs"
+
+
+def _run(cmd: list[str], cwd: Path) -> str:
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _open_issue_count(repo: Path) -> int | None:
+    out = _run(
+        [
+            "gh",
+            "issue",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            "500",
+            "--json",
+            "number",
+            "--jq",
+            "length",
+        ],
+        repo,
+    )
+    return int(out) if out.isdigit() else None
+
+
+def _versions() -> dict[str, str]:
+    versions: dict[str, str] = {}
+    for dist in ("simplicio-loop", "simplicio-mapper", "simplicio-cli", "simplicio-fast"):
+        try:
+            import importlib.metadata as md
+
+            versions[dist] = md.version(dist)
+        except Exception:
+            versions[dist] = "unknown"
+    return versions
+
+
+def arm(
+    repo: Path,
+    *,
+    slots: int,
+    max_iterations: int,
+    promise: str,
+) -> dict:
+    repo = repo.resolve()
+    loop_dir = repo / ".simplicio" / "orchestrator" / "loop"
+    loop_dir.mkdir(parents=True, exist_ok=True)
+    open_n = _open_issue_count(repo)
+    versions = _versions()
+    slots = max(1, min(20, int(slots)))
+    capacity = slots * 10
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    body = f"""---
+iteration: 1
+max_iterations: {max_iterations}
+completion_promise: "{promise}"
+evidence_required: true
+mode: drain
+route_mode: drain
+prism_slots: {slots}
+prism_max_tasks_per_slot: 10
+prism_logical_capacity: {capacity}
+started_at: "{now}"
+operator_versions: {json.dumps(versions, sort_keys=True)}
+strict: true
+forbid_hand_edit: true
+fast_mode: required
+client_integrations: []
+---
+
+Prism drain armed for `{repo.name}`.
+
+Hard rules (all LLMs / all hosts):
+1. `simplicio-loop preflight --strict --json` before work.
+2. Survey via `simplicio-mapper`; hot path via `simplicio-fast` when operational.
+3. Mutate via `simplicio-dev-cli` / `simplicio-py task` (STRICT forbids host hand-edit primary path).
+4. Parallelism: up to **{slots}** slots × **10** tasks (capacity {capacity});
+   lease/fence claims; one agent ownership per transition; reducer before merge pile-up.
+5. PR to main with honest `Closes #N`; no theater AC stubs.
+6. Host integrations (Orca, etc.) only if client requested (`CLIENT_INTEGRATIONS`).
+7. When open stays empty across dry≥2 re-queries → promise only with MEASURED evidence.
+
+Open issues at arm: {open_n if open_n is not None else "unknown (gh unavailable)"}
+"""
+    scratch = loop_dir / "scratchpad.md"
+    scratch.write_text(body, encoding="utf-8", newline="\n")
+    env_hint = {
+        "SIMPLICIO_LOOP": "1",
+        "SIMPLICIO_LOOP_STRICT": "1",
+        "SIMPLICIO_LOOP_REQUIRE_RUNTIME": "auto",
+        "SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": "1",
+        "SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT": "1",
+        "SIMPLICIO_LOOP_FORBID_HAND_EDIT": "1",
+        "SIMPLICIO_EXECUTION_PROFILE": "runtime-backed",
+        "SIMPLICIO_FAST_MODE": "required",
+    }
+    return {
+        "schema": "simplicio.arm-drain-prism/v1",
+        "ok": True,
+        "repo": str(repo),
+        "scratchpad": str(scratch),
+        "open_issues_at_arm": open_n,
+        "prism_slots": slots,
+        "prism_max_tasks_per_slot": 10,
+        "prism_logical_capacity": capacity,
+        "max_iterations": max_iterations,
+        "completion_promise": promise,
+        "operator_versions": versions,
+        "recommended_env": env_hint,
+        "next_steps": [
+            "source ~/.simplicio/loop-env.sh (or set recommended_env)",
+            "simplicio-loop preflight --strict --json",
+            "simplicio-mapper scan . --json",
+            "claim issues into slots (≤10/slot); operate via dev-cli/fast; PR+merge",
+        ],
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--repo", default=".")
+    p.add_argument("--slots", type=int, default=4)
+    p.add_argument("--max-iterations", type=int, default=200)
+    p.add_argument("--promise", default=PROMISE)
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+    receipt = arm(
+        Path(args.repo),
+        slots=args.slots,
+        max_iterations=args.max_iterations,
+        promise=args.promise,
+    )
+    if args.json:
+        print(json.dumps(receipt, indent=2, sort_keys=True))
+    else:
+        print(f"armed Prism drain -> {receipt['scratchpad']}")
+        print(
+            f"  open={receipt['open_issues_at_arm']} "
+            f"slots={receipt['prism_slots']} "
+            f"capacity={receipt['prism_logical_capacity']}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

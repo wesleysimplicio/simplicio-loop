@@ -11,8 +11,9 @@ Also installs+verifies the REQUIRED loop operator distributions (`simplicio-cli`
 
 Usage:
     python3 scripts/install_lib.py <runtime> [--global] [--target DIR] [--skip-operators] [--lite]
-    <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent
-               openclaw orca (hermes accepted as a legacy alias for simplicio_agent)
+    <runtime> ∈ claude codex grok vscode cursor antigravity kiro opencode gemini aider
+               simplicio_agent openclaw orca
+               (hermes accepted as a legacy alias for simplicio_agent)
     omit <runtime> to auto-detect.
 
 --lite mode:
@@ -61,23 +62,35 @@ def entry_block(runtime=None):
     """
     body = (
         MARK_A + "\n"
-        "## simplicio-loop — Unified Core + Loop\n\n"
-        "Load and follow the protocol in `.claude/skills/simplicio-loop/SKILL.md` and its "
-        "companion skills (`simplicio-tasks` as legacy alias, `simplicio-orient`, "
-        "`simplicio-review`, `simplicio-compress`, `simplicio-learn`, `simplicio-autoresearch`) "
-        "IN FULL — every step, "
-        "no partial subset. Run "
-        "commands for real; clamp heavy output via `python3 hooks/orient_clamp.py -- <cmd>`; "
-        "never close work without a merged PR or concrete evidence; honor the irreversible-op "
-        "human gate and explicit STOP/cancel path.\n"
+        "## simplicio-loop — Unified Core + Loop (multi-LLM floor)\n\n"
+        "Load and follow `.claude/skills/simplicio-loop/SKILL.md` and companions "
+        "(`simplicio-orient`, `simplicio-review`, `simplicio-compress`, `simplicio-learn`, "
+        "`simplicio-autoresearch`; `simplicio-tasks` = legacy alias) **IN FULL**.\n\n"
+        "**Operator floor (Claude / Codex / Grok / Cursor / VS Code / Antigravity / Kiro / Hermes):**\n"
+        "1. Arm STRICT env (`SIMPLICIO_LOOP_STRICT=1`, `FORBID_HAND_EDIT=1`, `FAST_MODE=required`).\n"
+        "2. `simplicio-loop preflight --strict --json` before work.\n"
+        "3. Survey with `simplicio-mapper`; hot path with `simplicio-fast`; mutate with "
+        "`simplicio-dev-cli` / `simplicio-py task` — not host Write/Edit as primary path under STRICT.\n"
+        "4. Host integrations (Orca, boards, chat) **only if the client requested** them "
+        "(`docs/CLIENT_INTEGRATIONS.md`).\n"
+        "5. Evidence-gated close/PR; MEASURED|/UNVERIFIED|; no theater ACs.\n"
+        "6. Self-paced hosts re-read `.simplicio/orchestrator/loop/scratchpad.md` every turn.\n\n"
+        "Rules: `packaging/host-rules/simplicio-loop-operator-flow.md` · "
+        "`docs/MULTI_LLM_CONTRACT.md` · clamp: `python3 hooks/orient_clamp.py -- <cmd>`.\n"
     )
-    body += "\nInvoke with: `/simplicio-loop <the body of work>`\n" + MARK_B
+    body += (
+        "\nInvoke: `/simplicio-loop <body of work>` · "
+        "Prism drain: `python3 scripts/arm_drain_prism.py --repo . --slots 4 --json`\n"
+        + MARK_B
+    )
     return body
 
 # entry file + MCP client id per runtime; None entry = no instructions file needed
 RUNTIMES = {
     "claude":      {"entry": None,                              "mcp": "claude-code", "hooks": "claude"},
     "codex":       {"entry": "AGENTS.md",                       "mcp": "codex",       "hooks": None},
+    # Grok Build / CLI — self-paced; skills under ~/.grok/skills via --global target HOME
+    "grok":        {"entry": "AGENTS.md",                       "mcp": None,          "hooks": None},
     "vscode":      {"entry": ".github/copilot-instructions.md", "mcp": "vscode",      "hooks": None},
     "cursor":      {"entry": None,                              "mcp": "cursor",      "hooks": "cursor"},
     "antigravity": {"entry": "AGENTS.md",                       "mcp": "antigravity", "hooks": None},
@@ -438,14 +451,22 @@ def merge_claude_hooks(target, is_global):
             {"type": "command", "command": cmd("loop_stop.py")},
         ]})
     wired = "Stop"
+    # action_gate: Bash safety + under STRICT block Write/Edit/StrReplace (operator-only).
+    # Project-local and global: gate is fail-open outside simplicio projects
+    # (see hooks/action_gate.py _project_relevant).
+    if not has("PreToolUse", "action_gate.py"):
+        hooks.setdefault("PreToolUse", []).append({
+            "hooks": [{"type": "command", "command": cmd("action_gate.py")}],
+        })
+        wired = "Stop + PreToolUse(action_gate)"
     # orient_rewrite rewrites Bash calls; only wire it project-locally (opt-in), never
-    # globally — a global PreToolUse would touch every session on the machine.
+    # globally — a global PreToolUse rewrite would touch every session on the machine.
     if not is_global and not has("PreToolUse", "orient_rewrite.py"):
         hooks.setdefault("PreToolUse", []).append({
             "matcher": "Bash",
             "hooks": [{"type": "command", "command": cmd("orient_rewrite.py")}],
         })
-        wired = "Stop + PreToolUse"
+        wired = "Stop + PreToolUse(action_gate+orient)"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     log("hooks wired -> %s settings.json (%s)" % ("global" if is_global else ".claude", wired))
@@ -1033,6 +1054,16 @@ def main():
         copy_skills(target)
         if runtime == "vscode" and is_global:
             sync_global_vscode_copilot()
+        if runtime == "grok" and is_global:
+            # Mirror skills into Grok + agents discovery roots
+            for extra in (
+                os.path.join(HOME, ".grok", "skills"),
+                os.path.join(HOME, ".agents", "skills"),
+            ):
+                try:
+                    copy_skills(extra, skills_dst=extra)
+                except Exception as exc:
+                    log("! grok skill mirror failed (%s): %s" % (extra, exc))
         copy_hooks(target, is_global)
         copy_scripts(target, is_global)
         ensure_entry(target, cfg["entry"], runtime)
@@ -1040,6 +1071,18 @@ def main():
             merge_claude_hooks(target, is_global)
     install_git_precommit_hook(target)
     install_git_prepush_hook(target)
+    # Always-on multi-LLM rules + strict env (Claude/Codex/Grok/Cursor/VS Code/…)
+    try:
+        sys.path.insert(0, HERE)
+        import host_rule_sync as _hrs
+        from pathlib import Path as _Path
+        if is_global:
+            _hrs_receipt = _hrs.sync(do_global=True, target=None)
+        else:
+            _hrs_receipt = _hrs.sync(do_global=False, target=_Path(target))
+        log("host rules synced -> %d surfaces (multi-LLM floor)" % _hrs_receipt.get("count", 0))
+    except Exception as exc:
+        log("! host_rule_sync skipped (fail-open): %s" % exc)
     if cfg["hooks"] == "cursor":
         log("loop hooks active via hooks/hooks.json (Cursor format)")
     elif cfg["hooks"] == "native":

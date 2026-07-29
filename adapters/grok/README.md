@@ -1,0 +1,34 @@
+# Grok adapter (self-paced)
+
+Grok Build / Grok CLI has **no stop-hook** in this matrix. The loop is **self-paced**:
+same scratchpad, journal, promise, and operator stack as Claude — the host re-invokes
+each turn (or the operator ticks manually).
+
+## Install
+
+```bash
+python3 scripts/install_lib.py grok --global
+python3 scripts/host_rule_sync.py --global --json
+```
+
+- Skills → `~/.grok/skills/` (and `~/.agents/skills/` via host_rule_sync mirrors)
+- Always-on rule → `~/.grok/rules/simplicio-loop-operator-flow.md`
+- Strict env → `~/.simplicio/loop-env.ps1` / `loop-env.sh`
+
+## MUST
+
+1. Source strict env (`loop-env`).
+2. `simplicio-loop preflight --strict --json`
+3. Mapper survey · Fast hot path · dev-cli mutate under STRICT
+4. Never mass hand-edit as primary path when STRICT is on
+5. Orca only if client requested (`CLIENT_INTEGRATIONS`)
+
+## Invoke
+
+```text
+/simplicio-loop <body of work>
+# or
+python3 scripts/arm_drain_prism.py --repo . --slots 4 --json
+```
+
+See `docs/MULTI_LLM_CONTRACT.md`.

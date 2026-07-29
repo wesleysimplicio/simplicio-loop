@@ -57,6 +57,7 @@ path names how to enable the optional bind; it is not a precondition for the loo
 | # | Runtime | Skill load | Loop drive | Hooks | Optional native bind (MCP config) | Feedback | Adapter |
 |---|---|---|---|---|---|---|---|
 | 4 | **VS Code (Copilot)** | `.github/copilot-instructions.md` | self-paced (tasks) | ⚠️ tasks | optional — `.vscode/mcp.json` (`servers` key) | N2 (transcript) + N3 | [vscode](vscode/README.md#mcp-config) |
+| 4b | **Grok** | `~/.grok/skills` + `~/.grok/rules` + `AGENTS.md` | self-paced | — | none required | N2 + N3 | [grok](grok/README.md) |
 | 5 | **Antigravity** | rules / `AGENTS.md` | self-paced | ⚠️ | optional — IDE MCP settings (path not verified) | N2 (transcript) + N3 | [antigravity](antigravity/README.md#mcp-config) |
 | 6 | **Kiro** | `.kiro/steering/` | self-paced (specs) | ⚠️ | optional — `.kiro/settings/mcp.json` | N2 (transcript) + N3 | [kiro](kiro/README.md#mcp-config) |
 | 7 | **OpenCode** | `AGENTS.md` + config | self-paced | ⚠️ | optional — `opencode.json` (`mcp` key) | N2 (transcript) + N3 | [opencode](opencode/README.md#mcp-config) |
@@ -110,7 +111,7 @@ the progress-injecting `loop_stop.py`.
 # from a clone of this repo:
 bash scripts/install.sh <runtime> [--global]      # macOS/Linux
 pwsh scripts/install.ps1 <runtime> [-Global]      # Windows / pwsh
-# <runtime> ∈ claude codex vscode cursor antigravity kiro opencode gemini aider simplicio_agent
+# <runtime> ∈ claude codex grok vscode cursor antigravity kiro opencode gemini aider simplicio_agent
 #            openclaw orca   (hermes still accepted as a legacy alias for simplicio_agent)
 # omit <runtime> to auto-detect
 # kimi / qwen / deepseek are NOT yet wired into scripts/install.sh — see their adapter READMEs
