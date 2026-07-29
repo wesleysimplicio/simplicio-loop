@@ -283,11 +283,12 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
         return SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")
 
     monkeypatch.setattr(runner_mod, "_run_cmd", fake_run)
-    runner_mod._run_mapper(repo, run_root, goal="goal")
+    runner_mod._run_mapper(repo, run_root, goal="goal", target_hint="src/app.py")
 
     assert ["simplicio-mapper", "snapshot", "build", "--json", "."] in calls
     handoff_argv = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "handoff"])
     assert "--execution-context" in handoff_argv
+    assert handoff_argv[handoff_argv.index("--target") + 1] == "src/app.py"
 
 
     assert handoff_argv[handoff_argv.index("--token-budget") + 1] == "24000"
