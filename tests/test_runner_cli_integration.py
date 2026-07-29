@@ -267,6 +267,27 @@ def test_context_handoff_uses_snapshot_fallback_without_requiring_handle(tmp_pat
     assert json.loads((run_root / "execution-context.json").read_text(encoding="utf-8"))["snapshot_id"] == "snap-fallback"
 
 
+def test_context_handoff_derives_handle_when_mapper_omits_it(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    handle = "sha256:" + "b" * 64
+    (run_root / "mapper-context.json").write_text(json.dumps({
+        "handoff": {"stdout": {
+            "context_snapshot": {"schema": "simplicio.context-snapshot/v1", "snapshot_id": "snap-2"},
+            "context_pack": {"schema": "simplicio.context-pack/v1", "pack_hash": "pack-2"},
+            "execution_context": {"schema": "simplicio.execution-context/v1", "snapshot_id": "snap-2"},
+        }}
+    }), encoding="utf-8")
+    monkeypatch.setattr(runner_mod, "_derive_context_handle", lambda *args: handle)
+
+    args, receipt = runner_mod._context_handoff_args(repo, run_root)
+
+    assert receipt["context_handle"] == handle
+    assert args[args.index("--context-handle") + 1] == handle
+
+
 def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
