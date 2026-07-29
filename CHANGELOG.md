@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.9
+
+- Multi-LLM host floor: host_rule_sync, arm_drain_prism, Grok adapter, STRICT action_gate
+- Client integrations opt-in only (Orca off by default)
+- Operator floors unchanged (mapper>=0.26, cli>=0.18, fast>=2.0.16)
+
 ## 3.38.8
 
 - Prism execution issues #845-#852, #819, #801 closed with measured evidence

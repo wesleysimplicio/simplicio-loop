@@ -27,7 +27,7 @@ Ecosystem floors in `pyproject.toml` at close time:
 | `simplicio-cli` | `>=0.18.0` |
 | `simplicio-mapper` | `>=0.26.0` |
 | `simplicio-fast` | `>=2.0.16` |
-| Loop package | `3.38.8` (`requires-python >=3.11`) |
+| Loop package | `3.38.9` (`requires-python >=3.11`) |
 
 Operator product docs: `docs/PRISM_EXECUTION.md`, `docs/PRISM_BENCHMARK_852.md`,
 `docs/PRISM_COMPATIBILITY.md`. Contracts under
@@ -262,7 +262,7 @@ Pins verified in `pyproject.toml` dependencies:
 - `simplicio-mapper>=0.26.0`
 - `simplicio-fast>=2.0.16`
 
-Loop version surface: `3.38.8`.
+Loop version surface: `3.38.9`.
 
 ---
 
