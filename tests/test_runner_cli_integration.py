@@ -274,6 +274,7 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
     run_root.mkdir()
     calls = []
 
+    monkeypatch.setenv("SIMPLICIO_LOOP_MAPPER_TOKEN_BUDGET", "24000")
     monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {"task_aware_supported": True})
     monkeypatch.setattr(runner_mod, "_validate_mapper_receipt", lambda *args: None)
 
@@ -287,6 +288,31 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
     assert ["simplicio-mapper", "snapshot", "build", "--json", "."] in calls
     handoff_argv = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "handoff"])
     assert "--execution-context" in handoff_argv
+
+
+    assert handoff_argv[handoff_argv.index("--token-budget") + 1] == "24000"
+
+
+def test_run_mapper_ignores_invalid_mapper_token_budget(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    calls = []
+
+    monkeypatch.setenv("SIMPLICIO_LOOP_MAPPER_TOKEN_BUDGET", "invalid")
+    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {"task_aware_supported": True})
+    monkeypatch.setattr(runner_mod, "_validate_mapper_receipt", lambda *args: None)
+
+    def fake_run(argv, cwd):
+        calls.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")
+
+    monkeypatch.setattr(runner_mod, "_run_cmd", fake_run)
+    runner_mod._run_mapper(repo, run_root, goal="goal")
+
+    handoff_argv = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "handoff"])
+    assert "--token-budget" not in handoff_argv
 
 
 def test_build_plan_uses_filtered_candidate_targets(tmp_path):
