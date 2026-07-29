@@ -3003,6 +3003,7 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
                 task_path=str(Path(task_path).resolve()),
                 goal=primary_goal,
                 task_fingerprint=compiled["collection_hash"],
+                target_hint=next(iter(_extract_repo_file_hints(raw, repo_path)), ""),
             ),
         )
         mapper_payload["run_id"] = run_id
