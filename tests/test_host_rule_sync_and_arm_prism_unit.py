@@ -32,7 +32,10 @@ def test_host_rule_sync_global_env_files(tmp_path, monkeypatch):
     assert receipt["ok"] is True
     env_sh = home / ".simplicio" / "loop-env.sh"
     assert env_sh.is_file()
-    assert "SIMPLICIO_LOOP_STRICT=1" in env_sh.read_text(encoding="utf-8")
+    env_text = env_sh.read_text(encoding="utf-8")
+    assert "SIMPLICIO_LOOP_STRICT=1" in env_text
+    assert "SIMPLICIO_REQUIRE_MCP=1" in env_text
+    assert "SIMPLICIO_MCP_FORCE=1" in env_text
     grok_rule = home / ".grok" / "rules" / "simplicio-loop-operator-flow.md"
     assert grok_rule.is_file()
 

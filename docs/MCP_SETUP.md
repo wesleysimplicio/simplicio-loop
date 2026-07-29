@@ -1,10 +1,21 @@
 # MCP setup — `simplicio-runtime` across every host
 
 `simplicio-runtime` (binary `simplicio`, MCP subcommand `simplicio serve --mcp --stdio`,
-installed via `pip install -U simplicio-installer && simplicio install --global`) is an optional
-native integration on every adapter in this repo. When it is missing or unreachable, the loop
-continues with `simplicio-mapper`/`simplicio-dev-cli` and reports that runtime-specific
-integrations were skipped.
+installed via `pip install -U simplicio-installer && simplicio install --global`) is the
+**token-economy tool surface** for every LLM host. With `SIMPLICIO_REQUIRE_MCP=1` (default after
+`scripts/mcp_force_sync.py --global` / host rule install), agents are **instructed and gated** to
+prefer Runtime MCP tools (`simplicio_map`, `simplicio_search`, `simplicio_memory`, `simplicio_gate`,
+`simplicio_edit`, `simplicio_validate`, …) over bulk host Read/Grep/cat of source trees.
+
+When Runtime/MCP is missing or unreachable, the loop continues with `simplicio-mapper` /
+`simplicio-dev-cli` and must report degraded mode — never fake MCP use.
+
+**Force wiring (all hosts):**
+
+```bash
+python3 scripts/mcp_force_sync.py --global --json
+# sets SIMPLICIO_REQUIRE_MCP=1, writes rules, merges MCP configs, runs `simplicio mcp register`
+```
 
 This page is the single skimmable entry point for wiring the bind on any of the 15 hosts this
 repo documents. Each row's config differs by host — read the linked adapter section for the exact

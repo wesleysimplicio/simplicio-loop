@@ -69,6 +69,8 @@ $env:SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT = "1"
 $env:SIMPLICIO_LOOP_FORBID_HAND_EDIT = "1"
 $env:SIMPLICIO_EXECUTION_PROFILE = "runtime-backed"
 $env:SIMPLICIO_FAST_MODE = "required"
+$env:SIMPLICIO_REQUIRE_MCP = "1"
+$env:SIMPLICIO_MCP_FORCE = "1"
 """
 
 ENV_SH = """# Simplicio loop strict operator floor (synced by host_rule_sync.py)
@@ -80,6 +82,8 @@ export SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT=1
 export SIMPLICIO_LOOP_FORBID_HAND_EDIT=1
 export SIMPLICIO_EXECUTION_PROFILE=runtime-backed
 export SIMPLICIO_FAST_MODE=required
+export SIMPLICIO_REQUIRE_MCP=1
+export SIMPLICIO_MCP_FORCE=1
 """
 
 

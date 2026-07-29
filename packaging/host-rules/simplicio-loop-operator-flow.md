@@ -19,8 +19,12 @@ Installers copy this file into each host's always-on surface via
    - `SIMPLICIO_LOOP_FORBID_HAND_EDIT=1`
    - `SIMPLICIO_EXECUTION_PROFILE=runtime-backed` (when Runtime healthy)
    - `SIMPLICIO_FAST_MODE=required` (when Fast operational)
+   - `SIMPLICIO_REQUIRE_MCP=1` / `SIMPLICIO_MCP_FORCE=1` (force Runtime MCP tools when operational)
 
-2. **Preflight (blocking):** `simplicio-loop preflight --strict --json`
+2. **Preflight (blocking):** `simplicio-loop preflight --strict --json`  
+   Prefer **Simplicio Runtime MCP** tools (`simplicio_map`, `simplicio_search`, `simplicio_memory`,
+   `simplicio_gate`, `simplicio_edit`, `simplicio_validate`, …) over host bulk Read/Grep/cat of source.
+   Wire with: `python3 scripts/mcp_force_sync.py --global` · `simplicio mcp register`.
 
 3. **Survey:** `simplicio-mapper` (scan / inspect / handoff) — not ad-hoc full-tree LLM walks.
 
