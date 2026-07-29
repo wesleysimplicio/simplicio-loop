@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.38.10
+
+- FORCE Runtime MCP when present: `mcp_force_sync`, host rule, PreToolUse bulk-read gate
+- **Runtime remains optional** for simplicio-loop (`REQUIRE_RUNTIME=auto`, `EXECUTION_PROFILE=auto`)
+- MCP force only applies when `simplicio` is on PATH; standalone mapper+dev-cli continues without Runtime
+- Operator floors unchanged (mapper>=0.26, cli>=0.18, fast>=2.0.16)
+
 ## 3.38.9
 
 - Multi-LLM host floor: host_rule_sync, arm_drain_prism, Grok adapter, STRICT action_gate
