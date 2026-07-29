@@ -7,7 +7,7 @@ before installation.
 
 | Component | Distribution floor | Python floor | Source branch policy | Runtime role |
 | --- | --- | --- | --- | --- |
-| Loop | `simplicio-loop>=3.38.8` | 3.11 | `main` | scheduling, ownership, reducer, completion |
+| Loop | `simplicio-loop>=3.38.9` | 3.11 | `main` | scheduling, ownership, reducer, completion |
 | Mapper | `simplicio-mapper>=0.26.0` | 3.10 individually; 3.11 in bundle | `main` | facts, dependencies, conflicts |
 | Dev CLI | `simplicio-cli>=0.18.0` | 3.10 individually; 3.11 in bundle | `main` | bounded external effects and receipts |
 | Fast | `simplicio-fast>=2.0.16` | 3.11 | `master` | mmap snapshots, overlays, hot paths |
@@ -23,7 +23,7 @@ renamed or deleted. Reproducible executions use the gitlink SHAs recorded in
 python3 scripts/prism_integrity.py --json
 python3 scripts/submodules.py verify
 python3 scripts/version_sync.py check
-python3 scripts/install_smoke.py run --expected-version 3.38.8
+python3 scripts/install_smoke.py run --expected-version 3.38.9
 ```
 
 `prism_integrity.py` blocks Python, dependency floor, version surface, branch,
