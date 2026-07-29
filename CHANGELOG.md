@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.8
+
+- Prism execution issues #845-#852, #819, #801 closed with measured evidence
+- Operator floors: mapper>=0.26.0, cli>=0.18.0, fast>=2.0.16
+- prism_integrity and preflight --strict green
+
 ## [3.38.7] - 2026-07-28
 
 - Raise the installed dependency floors and exact submodule pins to Mapper
