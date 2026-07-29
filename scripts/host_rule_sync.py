@@ -61,26 +61,30 @@ def project_destinations(root: Path) -> list[tuple[str, Path]]:
 
 
 ENV_PS1 = """# Simplicio loop strict operator floor (synced by host_rule_sync.py)
+# Runtime is OPTIONAL (REQUIRE_RUNTIME=auto). Core = mapper + dev-cli; Fast when present.
+# REQUIRE_MCP only forces MCP tools when Runtime binary is available — never blocks standalone.
 $env:SIMPLICIO_LOOP = "1"
 $env:SIMPLICIO_LOOP_STRICT = "1"
 $env:SIMPLICIO_LOOP_REQUIRE_RUNTIME = "auto"
 $env:SIMPLICIO_REQUIRE_MUTATION_AUTHORITY = "1"
 $env:SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT = "1"
 $env:SIMPLICIO_LOOP_FORBID_HAND_EDIT = "1"
-$env:SIMPLICIO_EXECUTION_PROFILE = "runtime-backed"
+$env:SIMPLICIO_EXECUTION_PROFILE = "auto"
 $env:SIMPLICIO_FAST_MODE = "required"
 $env:SIMPLICIO_REQUIRE_MCP = "1"
 $env:SIMPLICIO_MCP_FORCE = "1"
 """
 
 ENV_SH = """# Simplicio loop strict operator floor (synced by host_rule_sync.py)
+# Runtime is OPTIONAL (REQUIRE_RUNTIME=auto). Core = mapper + dev-cli; Fast when present.
+# REQUIRE_MCP only forces MCP tools when Runtime binary is available — never blocks standalone.
 export SIMPLICIO_LOOP=1
 export SIMPLICIO_LOOP_STRICT=1
 export SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto
 export SIMPLICIO_REQUIRE_MUTATION_AUTHORITY=1
 export SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT=1
 export SIMPLICIO_LOOP_FORBID_HAND_EDIT=1
-export SIMPLICIO_EXECUTION_PROFILE=runtime-backed
+export SIMPLICIO_EXECUTION_PROFILE=auto
 export SIMPLICIO_FAST_MODE=required
 export SIMPLICIO_REQUIRE_MCP=1
 export SIMPLICIO_MCP_FORCE=1

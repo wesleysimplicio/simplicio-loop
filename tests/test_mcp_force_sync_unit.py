@@ -1,4 +1,7 @@
-"""mcp_force_sync + action_gate MCP force unit tests."""
+"""mcp_force_sync + action_gate MCP force unit tests.
+
+Runtime is optional for simplicio-loop: REQUIRE_MCP only gates when Runtime is present.
+"""
 
 from __future__ import annotations
 
@@ -20,22 +23,31 @@ def test_mcp_force_sync_writes_env_and_rules(tmp_path, monkeypatch):
     env = (home / ".simplicio" / "loop-env.sh").read_text(encoding="utf-8")
     assert "SIMPLICIO_REQUIRE_MCP=1" in env
     assert "SIMPLICIO_MCP_FORCE=1" in env
+    assert "SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto" in env
+    assert "SIMPLICIO_EXECUTION_PROFILE=auto" in env
+    assert "runtime-backed" not in env  # must not hard-force runtime profile
     rule = home / ".grok" / "rules" / "simplicio-runtime-mcp-force.md"
     assert rule.is_file()
-    assert "simplicio_map" in rule.read_text(encoding="utf-8")
-    # project mcp.json
+    body = rule.read_text(encoding="utf-8")
+    assert "simplicio_map" in body
+    assert "NOT mandatory" in body or "not mandatory" in body.lower() or "optional" in body.lower()
     mcp = tmp_path / "repo" / ".mcp.json"
     assert mcp.is_file()
     data = json.loads(mcp.read_text(encoding="utf-8"))
     assert "simplicio" in data.get("mcpServers", {}) or "simplicio" in data.get("servers", {})
 
 
-def test_action_gate_mcp_force_blocks_host_read(monkeypatch):
+def test_action_gate_mcp_force_requires_runtime_binary(monkeypatch):
     import action_gate as ag
 
     monkeypatch.setenv("SIMPLICIO_REQUIRE_MCP", "1")
     monkeypatch.delenv("SIMPLICIO_LOOP_STRICT", raising=False)
     monkeypatch.delenv("SIMPLICIO_MCP_FORCE", raising=False)
+    # Without Runtime on PATH → force OFF (standalone loop allowed)
+    monkeypatch.setattr(ag.shutil, "which", lambda name: None)
+    assert ag._mcp_force_enabled() is False
+    # With Runtime on PATH → force ON
+    monkeypatch.setattr(ag.shutil, "which", lambda name: "/bin/simplicio" if name == "simplicio" else None)
     assert ag._mcp_force_enabled() is True
     assert ag._CONTEXT_FLOOD_RE.search("cat agent/foo.py")
     assert ag._CONTEXT_FLOOD_RE.search("rg -n def src/main.py")
@@ -49,6 +61,7 @@ def test_action_gate_mcp_force_disabled_by_default(monkeypatch):
 
     monkeypatch.delenv("SIMPLICIO_REQUIRE_MCP", raising=False)
     monkeypatch.delenv("SIMPLICIO_MCP_FORCE", raising=False)
+    monkeypatch.setattr(ag.shutil, "which", lambda name: "/bin/simplicio")
     assert ag._mcp_force_enabled() is False
 
 

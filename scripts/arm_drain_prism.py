@@ -122,7 +122,7 @@ Open issues at arm: {open_n if open_n is not None else "unknown (gh unavailable)
         "SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": "1",
         "SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT": "1",
         "SIMPLICIO_LOOP_FORBID_HAND_EDIT": "1",
-        "SIMPLICIO_EXECUTION_PROFILE": "runtime-backed",
+        "SIMPLICIO_EXECUTION_PROFILE": "auto",
         "SIMPLICIO_FAST_MODE": "required",
     }
     return {
