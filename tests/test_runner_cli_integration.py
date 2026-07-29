@@ -1579,3 +1579,83 @@ if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module
     run_module(globals(), "test_runner_cli")
+
+
+def test_run_mapper_recovers_with_goal_and_target_when_task_pack_is_too_broad(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "app.py").write_text("pass\n", encoding="utf-8")
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    task = tmp_path / "task.md"
+    task.write_text("Cenário 1: alvo\nAcesso: src/app.py\n", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {"task_aware_supported": True})
+    monkeypatch.setattr(runner_mod, "_validate_mapper_receipt", lambda *args: None)
+
+    def fake_run(argv, cwd):
+        calls.append(list(argv))
+        if argv[1] == "handoff":
+            if "--task-file" in argv:
+                payload = {
+                    "ready": False,
+                    "context_pack": {"needs_broader_context": True, "fidelity": {"gate": "needs_broader_context"}},
+                }
+            else:
+                payload = {
+                    "ready": True,
+                    "context_pack": {"needs_broader_context": False, "fidelity": {"gate": "ready"}, "files": [{"path": "src/app.py"}]},
+                }
+        else:
+            payload = {}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(runner_mod, "_run_cmd", fake_run)
+    result = runner_mod._run_mapper(
+        repo, run_root, task_path=str(task), goal="app target",
+        task_fingerprint="a" * 64, target_hint="src/app.py",
+    )
+
+    handoffs = [argv for argv in calls if argv[1] == "handoff"]
+    assert len(handoffs) == 2
+    assert "--task-file" in handoffs[0]
+    assert "--task-file" not in handoffs[1]
+    assert result["handoff_recovery"]["strategy"] == "goal-target-without-task-file"
+    assert result["handoff"]["stdout"]["ready"] is True
+
+
+def test_operator_dry_run_receipt_marks_ephemeral_identity(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "worker.py").write_text("pass\n", encoding="utf-8")
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    handle = "sha256:" + "a" * 64
+    (run_root / "mapper-context.json").write_text(json.dumps({
+        "handoff": {"stdout": {
+            "context_snapshot": {"schema": "simplicio.context-snapshot/v1", "snapshot_id": "snap-1"},
+            "context_pack": {"schema": "simplicio.context-pack/v1", "pack_hash": "pack-1"},
+            "execution_context": {"schema": "simplicio.execution-context/v1", "snapshot_id": "snap-1"},
+            "context_handle": handle,
+        }}
+    }), encoding="utf-8")
+    task = runner_mod.compile_many(TASK)["tasks"][0]
+    captured = {}
+
+    monkeypatch.setattr(runner_mod, "_preflight_operator", lambda *args: {})
+    monkeypatch.delenv("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", raising=False)
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True}), stderr="")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+    receipt = runner_mod._prepare_operator_receipt(repo, run_root, task, "src/worker.py")
+
+    assert receipt["context_handoff"]["purpose"] == "read_only_preflight"
+    assert receipt["argv"][receipt["argv"].index("--attempt-id") + 1].endswith(":preflight")
+    assert receipt["argv"][receipt["argv"].index("--lease-id") + 1].endswith(":preflight")
+    assert receipt["argv"][receipt["argv"].index("--fencing-token") + 1] == "1"
