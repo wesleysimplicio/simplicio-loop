@@ -370,6 +370,22 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
     assert handoff_argv[handoff_argv.index("--token-budget") + 1] == "24000"
 
 
+def test_mapper_subprocess_uses_configured_timeout(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setenv("SIMPLICIO_LOOP_MAPPER_TIMEOUT_SEC", "17")
+
+    def fake_subprocess_run(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_subprocess_run)
+    runner_mod._run_cmd(["simplicio-mapper", "scan", "."], tmp_path)
+    runner_mod._run_cmd(["git", "status"], tmp_path)
+
+    assert calls[0][1]["timeout"] == 17
+    assert calls[1][1]["timeout"] == 180
+
+
 def test_run_mapper_ignores_invalid_mapper_token_budget(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
