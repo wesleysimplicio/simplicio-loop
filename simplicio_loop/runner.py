@@ -618,12 +618,14 @@ def _degraded_mapper_payload(
     handoff: Any,
     target_hint: str,
 ) -> Dict[str, Any]:
-    """Build an explicitly UNVERIFIED context for a local explicit-target retry.
+    """Build an explicitly UNVERIFIED context for a bounded local retry.
 
     This is not a substitute for a Mapper receipt: the original command results remain
-    persisted, the degraded marker is durable, and only a target already named by the
-    task and resolved inside the repository is exposed to planning.
+    persisted, the degraded marker is durable, and only targets resolved inside the
+    repository are exposed to planning. When the task has no target hint, the same
+    bounded candidate selector used by planning supplies at most eight local files.
     """
+    had_target_hint = bool(str(target_hint or "").strip())
     target = str(target_hint or "").strip().replace("\\", "/")
     files: List[Dict[str, Any]] = []
     if target:
@@ -637,6 +639,11 @@ def _degraded_mapper_payload(
                 files.append({"path": target, "source": "explicit_task_target"})
             else:
                 target = ""
+    if not files and not had_target_hint:
+        files = [
+            {"path": path, "source": "bounded_local_candidate"}
+            for path in _fallback_targets(repo_path)[:8]
+        ]
     pack_seed = {
         "repo_state": dict(before),
         "target": target,
