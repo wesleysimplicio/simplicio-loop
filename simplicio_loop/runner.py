@@ -551,6 +551,33 @@ def _operator_timeout(kind: str) -> int:
     except ValueError:
         return default
     return max(30, value)
+
+
+def _mapper_timeout_seconds() -> int:
+    """Return the bounded wait used by every Mapper deep-pass command.
+
+    Large repositories routinely need more than the Mapper CLI's 120-second default.
+    Keep the wait bounded, but make the production default generous and let operators
+    lower it explicitly for constrained environments.
+    """
+    default = 3600
+    raw = os.environ.get("SIMPLICIO_LOOP_MAPPER_TIMEOUT_SEC", "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(1, value)
+
+
+def _mapper_supports_command(preflight: Mapping[str, Any], command: str) -> bool:
+    """Detect an optional Mapper command from its measured help surface."""
+    help_stdout = str(preflight.get("help_stdout") or "")
+    return any(
+        line.strip().startswith(command + " ") or line.strip() == command
+        for line in help_stdout.splitlines()
+    )
 def _devcli_env(repo_path: Path, base_env: Dict[str, str] | None = None) -> Dict[str, str]:
     env = dict(base_env or os.environ)
     repo_str = str(repo_path)
@@ -2528,11 +2555,29 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
                 task_fingerprint: str = "", target_hint: str = "") -> Dict[str, Any]:
     before = _repo_fingerprint(repo_path)
     mapper_preflight = _preflight_mapper(repo_path, run_root)
-    scan = _run_cmd(["simplicio-mapper", "scan", ".", "--json", "--sync"], repo_path)
-    inspect = _run_cmd(["simplicio-mapper", "inspect", ".", "--json", "--await"], repo_path)
-    snapshot = _run_cmd(["simplicio-mapper", "snapshot", "build", "--json", "."], repo_path)
+    mapper_timeout = str(_mapper_timeout_seconds())
+    scan = _run_cmd(
+        ["simplicio-mapper", "scan", ".", "--json", "--sync", "--timeout", mapper_timeout],
+        repo_path,
+    )
+    inspect = _run_cmd(
+        ["simplicio-mapper", "inspect", ".", "--json", "--await", "--timeout", mapper_timeout],
+        repo_path,
+    )
+    if _mapper_supports_command(mapper_preflight, "snapshot"):
+        snapshot = _run_cmd(["simplicio-mapper", "snapshot", "build", "--json", "."], repo_path)
+    else:
+        # Snapshot is an optional capability and is not present in current Mapper
+        # releases. Do not turn an otherwise usable inspect/handoff into a hard block.
+        snapshot = subprocess.CompletedProcess(
+            ["simplicio-mapper", "snapshot", "build", "--json", "."],
+            0,
+            json.dumps({"status": "skipped", "reason": "optional_command_unavailable"}),
+            "",
+        )
     handoff_argv = [
-        "simplicio-mapper", "handoff", ".", "--json", "--await", "--execution-context",
+        "simplicio-mapper", "handoff", ".", "--json", "--await", "--timeout", mapper_timeout,
+        "--execution-context",
     ]
     task_aware_supported = bool(mapper_preflight.get("task_aware_supported"))
     mapper_token_budget = os.environ.get("SIMPLICIO_LOOP_MAPPER_TOKEN_BUDGET", "").strip()
@@ -2562,7 +2607,8 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         and bool(handoff_pack.get("needs_broader_context"))
     ):
         recovery_argv = [
-            "simplicio-mapper", "handoff", ".", "--json", "--await", "--execution-context",
+            "simplicio-mapper", "handoff", ".", "--json", "--await", "--timeout", mapper_timeout,
+            "--execution-context",
         ]
         if mapper_token_budget.isdigit() and int(mapper_token_budget) > 0:
             recovery_argv.extend(["--token-budget", mapper_token_budget])

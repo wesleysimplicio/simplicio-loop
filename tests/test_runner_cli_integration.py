@@ -305,7 +305,11 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
     calls = []
 
     monkeypatch.setenv("SIMPLICIO_LOOP_MAPPER_TOKEN_BUDGET", "24000")
-    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {"task_aware_supported": True})
+    monkeypatch.setenv("SIMPLICIO_LOOP_MAPPER_TIMEOUT_SEC", "2400")
+    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {
+        "task_aware_supported": True,
+        "help_stdout": "  snapshot build",
+    })
     monkeypatch.setattr(runner_mod, "_validate_mapper_receipt", lambda *args: None)
 
     def fake_run(argv, cwd):
@@ -316,8 +320,12 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
     runner_mod._run_mapper(repo, run_root, goal="goal", target_hint="src/app.py")
 
     assert ["simplicio-mapper", "snapshot", "build", "--json", "."] in calls
+    for argv in calls:
+        if argv[:2] in (["simplicio-mapper", "scan"], ["simplicio-mapper", "inspect"]):
+            assert argv[argv.index("--timeout") + 1] == "2400"
     handoff_argv = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "handoff"])
     assert "--execution-context" in handoff_argv
+    assert handoff_argv[handoff_argv.index("--timeout") + 1] == "2400"
     assert handoff_argv[handoff_argv.index("--target") + 1] == "src/app.py"
 
 
@@ -332,7 +340,10 @@ def test_run_mapper_ignores_invalid_mapper_token_budget(tmp_path, monkeypatch):
     calls = []
 
     monkeypatch.setenv("SIMPLICIO_LOOP_MAPPER_TOKEN_BUDGET", "invalid")
-    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {"task_aware_supported": True})
+    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {
+        "task_aware_supported": True,
+        "help_stdout": "",
+    })
     monkeypatch.setattr(runner_mod, "_validate_mapper_receipt", lambda *args: None)
 
     def fake_run(argv, cwd):
@@ -344,6 +355,33 @@ def test_run_mapper_ignores_invalid_mapper_token_budget(tmp_path, monkeypatch):
 
     handoff_argv = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "handoff"])
     assert "--token-budget" not in handoff_argv
+
+
+def test_run_mapper_skips_unsupported_optional_snapshot(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    calls = []
+
+    monkeypatch.delenv("SIMPLICIO_LOOP_MAPPER_TIMEOUT_SEC", raising=False)
+    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {
+        "task_aware_supported": False,
+        "help_stdout": "  inspect <path>\n  handoff <path>",
+    })
+    monkeypatch.setattr(runner_mod, "_validate_mapper_receipt", lambda *args: None)
+
+    def fake_run(argv, cwd):
+        calls.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({}), stderr="")
+
+    monkeypatch.setattr(runner_mod, "_run_cmd", fake_run)
+    result = runner_mod._run_mapper(repo, run_root)
+
+    assert result["snapshot"]["returncode"] == 0
+    assert result["snapshot"]["stdout"]["reason"] == "optional_command_unavailable"
+    assert not any(argv[:2] == ["simplicio-mapper", "snapshot"] for argv in calls)
+    assert any(argv[:2] == ["simplicio-mapper", "scan"] and "--timeout" in argv for argv in calls)
 
 
 def test_build_plan_uses_filtered_candidate_targets(tmp_path):
