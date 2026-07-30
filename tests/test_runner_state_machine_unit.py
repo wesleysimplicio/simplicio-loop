@@ -1033,7 +1033,7 @@ def test_release_shared_context_swallows_teardown_exceptions(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _distributed_configuration: opt-in remote coordinator (no local fallback once armed)
+# _distributed_configuration: optional remote coordinator with local fallback
 # ---------------------------------------------------------------------------
 
 def test_distributed_configuration_defaults_to_local_fan_out(monkeypatch):
@@ -1045,8 +1045,19 @@ def test_distributed_configuration_defaults_to_local_fan_out(monkeypatch):
     assert identity is None
 
 
-def test_distributed_configuration_raises_without_identity_adapter(monkeypatch):
+def test_distributed_configuration_falls_back_without_identity_adapter(monkeypatch):
     monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_URL", "https://queue.example/api")
+    monkeypatch.setattr(runner_mod, "ensure_identity", None)
+
+    queue, identity = runner_mod._distributed_configuration("/tmp/repo")
+
+    assert queue is None
+    assert identity is None
+
+
+def test_distributed_configuration_can_require_remote(monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_REMOTE_QUEUE_URL", "https://queue.example/api")
+    monkeypatch.setenv("SIMPLICIO_LOOP_LOCAL_FALLBACK", "0")
     monkeypatch.setattr(runner_mod, "ensure_identity", None)
 
     with pytest.raises(RuntimeError, match="distributed identity adapter unavailable"):
@@ -1351,6 +1362,34 @@ def test_operator_dispatch_attempt_pauses_on_queue_unavailable(tmp_path):
     assert record["status"] == "failed"
     assert record["reason_code"] == "network_paused"
     assert record["dead_letter"] is True
+
+
+def test_operator_dispatch_falls_back_to_local_for_unavailable_http_queue(monkeypatch, tmp_path):
+    from simplicio_loop.remote_queue import HTTPRemoteQueue, QueueUnavailable
+
+    queue = HTTPRemoteQueue("http://127.0.0.1:9/api")
+
+    def unavailable(*args, **kwargs):
+        raise QueueUnavailable("cloud offline")
+
+    monkeypatch.setattr(queue, "claim", unavailable)
+    monkeypatch.setattr(
+        runner_mod,
+        "execute_operator",
+        lambda *args, **kwargs: {
+            "run_dir": str(tmp_path),
+            "state": {"phase": "done", "operator": {"execution_state": "applied", "receipt": ""}},
+        },
+    )
+
+    record = runner_mod._operator_dispatch_attempt({
+        "repo": str(tmp_path), "run_id": "run-local-fallback", "task_index": 1,
+        "worker_id": "w1", "task_id": "task-1", "distributed_queue": queue,
+    })
+
+    assert record["distributed_fallback"]["selected"] == "local"
+    assert record["distributed_fallback"]["reason_code"] == "remote_unavailable"
+    assert record.get("reason_code") != "network_paused"
 
 
 def test_operator_dispatch_attempt_fails_closed_on_worktree_error(tmp_path):

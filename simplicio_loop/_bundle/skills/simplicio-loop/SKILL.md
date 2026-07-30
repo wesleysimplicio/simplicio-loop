@@ -185,8 +185,19 @@ gates, the operator dispatch table): **`references/bound-operators.md`**.
 |---|---|---|---|
 | **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
 | **simplicio-dev-cli** | `simplicio-dev-cli` | `execute` / `deterministic_edit` / `validate` / `diagnostics` | **Operate** — applies a DECIDED change through its 6-layer contract (mapper context → precedent → prompt → diff → test → verify, ≤3 retries). The CLI edits and verifies; the AI does not hand-write the diff. |
-| **simplicio-runtime** (adaptive) | `simplicio` | effects / HBP / contracts | **When available and operational**, the loop **binds and requires** it (`SIMPLICIO_EXECUTION_PROFILE=runtime-backed`). Mid-run disappearance BLOCKS. When absent, core mapper→dev-cli continues unless `SIMPLICIO_LOOP_REQUIRE_RUNTIME=1`. |
+| **simplicio-runtime** (adaptive) | `simplicio` | effects / HBP / contracts | **When available and operational**, the loop binds it (`SIMPLICIO_EXECUTION_PROFILE=runtime-backed`). When absent or unavailable, the core mapper→dev-cli/local operator path continues; only `SIMPLICIO_LOOP_REQUIRE_RUNTIME=1` makes it a hard prerequisite. |
 | **simplicio-fast** (strict-adaptive) | `simplicio-fast` | understand / plan / apply | Under `SIMPLICIO_LOOP_STRICT=1`, if Fast is operational it becomes required so the session cannot silently drop it. |
+
+### Local execution is the native fallback
+
+Cloud workers and host adapters are accelerators, not prerequisites. If no cloud
+environment/queue is configured, the queue is unavailable, or Orca is absent, the Loop
+continues with isolated local worktrees and bounded parallelism based on the measured machine
+capacity. `dispatch_operator_batch` admits local tasks through the native
+`simplicio_loop.prism_scheduler.PrismScheduler` (dependencies, conflicts, leases, and worker
+budget) and then runs the admitted work concurrently; it does not require a remote worker or
+Orca client. Set `SIMPLICIO_LOOP_LOCAL_FALLBACK=0` only for deployments that explicitly require
+remote claims. A remote task that was accepted is never duplicated locally after a timeout.
 
 ### Strict mode (force every AI onto the full stack)
 
