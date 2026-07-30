@@ -625,6 +625,35 @@ token reduction usually dominates billed cost; wall-clock amortizes when the map
 **Artifacts:** PDF report [`docs/evidence/issue17_loop_vs_baseline.pdf`](docs/evidence/issue17_loop_vs_baseline.pdf) ·
 raw metrics in the bench scratch (re-run with the harness under `docs/evidence/` notes).
 
+### Loop-stack economy report (5 issues × 5 lanes + interpretation)
+
+Full interpretation of why multi-lane benches look the way they do — including **Fast as part of STRICT loop**, why `loop_no_fast` can “save more tokens” while doing less work, why **MCP is a bus not a compressor**, and why savings % depends on baseline size.
+
+| | |
+|--|--|
+| **PDF (pizza + bars + barramento + narrative)** | [`docs/evidence/loop_stack_economy_benchmark_report.pdf`](docs/evidence/loop_stack_economy_benchmark_report.pdf) |
+| **Raw metrics JSON** | [`docs/evidence/multi_issue_lanes_metrics.json`](docs/evidence/multi_issue_lanes_metrics.json) |
+| **Harness charts** | [`docs/evidence/multi_issue_lanes_bench.pdf`](https://github.com/wesleysimplicio/simplicio-agent/blob/main/docs/evidence/multi_issue_lanes_bench.pdf) (agent harness) |
+
+**Mean token savings vs host baseline (issues #9, #96, #171, #322, #711):**
+
+| Lane | Mean | Median | Min → Max | Mean wall | Fast acting |
+|------|-----:|-------:|-----------|----------:|:------------|
+| **loop** (STRICT = mapper+fast) | ~39% | ~34% | −31% → ~83% | ~50 s | **yes (5)** |
+| **loop + Agent MCP** | ~38% | ~34% | −32% → ~83% | ~53 s | **yes (5)** |
+| **loop_no_fast** (diagnostic) | ~64% | ~61% | ~22% → ~90% | ~18 s | no |
+| **mcp_only** | ~99%* | ~99% | ~98% → ~100% | ~11 s | n/a |
+
+\*mcp_only high % = almost no repo survey (tool metadata only), **not** better delivery.
+
+**Contract reminder:** under STRICT, **Fast is already inside the loop** when operational — not a second stack on top of loop. Runtime/MCP remain optional for the loop core.
+
+Regenerate the interpretation PDF:
+
+```bash
+python scripts/render_loop_stack_economy_report_pdf.py
+```
+
 ### 🔎 Running `simplicio-loop`: economy vs measurement (per runtime)
 
 Two different things happen when you call **`simplicio-loop`**, and they behave differently per runtime:
