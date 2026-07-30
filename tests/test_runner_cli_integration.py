@@ -179,6 +179,7 @@ def test_task_spec_payload_uses_declared_test_command(monkeypatch):
 
 
 def test_prepare_operator_receipt_uses_typed_task_spec_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_EXECUTION_PROFILE", "runtime-backed")
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "src").mkdir()
@@ -212,6 +213,7 @@ def test_prepare_operator_receipt_uses_typed_task_spec_file(tmp_path, monkeypatc
 
 
 def test_prepare_operator_receipt_propagates_canonical_context_when_mapper_supplies_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_EXECUTION_PROFILE", "runtime-backed")
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "src").mkdir()
@@ -273,7 +275,7 @@ def test_prepare_operator_receipt_uses_standalone_degraded_context_pack(tmp_path
     monkeypatch.setattr(runner_mod, "_preflight_operator", lambda *args: {})
 
     def fake_run(argv, **kwargs):
-        if "--task-spec" in argv:
+        if "--mode" in argv and argv[argv.index("--mode") + 1] == "standalone":
             captured["task_argv"] = list(argv)
         return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True}), stderr="")
 
@@ -284,6 +286,9 @@ def test_prepare_operator_receipt_uses_standalone_degraded_context_pack(tmp_path
     assert receipt["context_handoff"]["status"] == "degraded_local"
     assert "--mode" in task_argv, task_argv
     assert task_argv[task_argv.index("--mode") + 1] == "standalone"
+    assert "--task-spec" not in task_argv
+    assert "--criteria" in task_argv
+    assert "--constraints" in task_argv
     assert task_argv[task_argv.index("--context-pack") + 1] == str(run_root / "context-pack.json")
 
 
