@@ -148,6 +148,10 @@ def test_dispatch_allocates_and_persists_isolated_context_without_git(monkeypatc
                                              str((tmp_path / "workers" / "B").resolve())}
     assert set(queue.contexts) == {"A", "B"}
     assert all(row["worktree_context"]["context_path"] for row in result["workers"])
+    assert result["prism"]["schema"] == "simplicio.loop.native-prism-dispatch/v1"
+    assert result["prism"]["mode"] == "native-local"
+    assert result["prism"]["max_workers"] == 2
+    assert result["prism"]["snapshot"]["metrics"]["logical_tasks"] == 2
 
 
 def test_dispatch_serializes_explicit_shared_queue_context(monkeypatch, tmp_path):

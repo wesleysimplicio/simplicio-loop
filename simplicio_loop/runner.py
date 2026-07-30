@@ -126,6 +126,7 @@ DEVCLI_REQUIRED_CAPABILITIES = ("task", "--dry-run-task", "--json", "--bound-pat
 DEFAULT_OPERATOR_WORKERS = 6
 BATCH_SCHEMA = "simplicio.operator-batch/v1"
 BATCH_PREFLIGHT_SCHEMA = "simplicio.operator-batch-preflight/v1"
+NATIVE_PRISM_SCHEMA = "simplicio.loop.native-prism-dispatch/v1"
 
 MaintenanceMode = Literal["active", "maintenance_deferred"]
 MaintenanceDisposition = Literal["operator", "backlog_only"]
@@ -243,15 +244,18 @@ def _resolve_trusted_queue_url(url: str) -> str:
 def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]]:
     """Return the opt-in network coordinator and stable worker identity.
 
-    Local fan-out remains the default when no URL is configured. Once a URL is
-    present, an outage has no local fallback: work pauses instead of mutating
-    without a remote claim.
+    Local fan-out is the default and remains the fallback when the optional
+    distributed environment is not usable.  Trust-policy violations still fail
+    closed; a missing identity adapter is an infrastructure absence, not a
+    reason to stop independent local work.
     """
     url = os.environ.get("SIMPLICIO_REMOTE_QUEUE_URL", "").strip()
     if not url and not os.environ.get("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "").strip():
         return None, None
     url, environment_id, policy = _resolve_trusted_queue_context(url)
     if ensure_identity is None:
+        if _local_fallback_enabled():
+            return None, None
         raise RuntimeError("distributed identity adapter unavailable")
     identity = ensure_identity(
         path=os.environ.get("SIMPLICIO_IDENTITY_FILE") or str(Path(repo) / ".simplicio/orchestrator" / "agent-identity.json"),
@@ -267,6 +271,18 @@ def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]
         policy=policy,
     )
     return queue, identity
+
+
+def _local_fallback_enabled() -> bool:
+    """Allow local execution when optional cloud coordination is absent.
+
+    This is deliberately enabled by default: the cloud queue is an accelerator
+    and claim transport, not a prerequisite for the Loop's local worktree
+    scheduler. Set ``SIMPLICIO_LOOP_LOCAL_FALLBACK=0`` only when a deployment
+    explicitly requires remote claims.
+    """
+    raw = os.environ.get("SIMPLICIO_LOOP_LOCAL_FALLBACK", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
 
 
 STATIC_QUEUE_TOKEN_OPT_IN_VAR = "SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN"
@@ -3991,6 +4007,94 @@ def _operator_worker_limit(requested: Optional[int], item_count: int) -> int:
     return max(1, min(int(requested), item_count))
 
 
+def _build_native_prism_scheduler(
+    items: Sequence[Mapping[str, Any]],
+    worker_limit: int,
+) -> tuple[Any, str]:
+    """Build the native Prism admission authority for a local operator batch.
+
+    Prism is intentionally an in-process contract here: it admits independent
+    work up to the measured worker limit, preserves dependency/conflict edges,
+    and leaves the existing worktree/operator bridge as the mutation boundary.
+    This keeps the fast local path useful without requiring cloud workers or
+    an Orca client, while still emitting the same bounded Prism decisions.
+    """
+    from .prism_contracts import (
+        TASK_STATES,
+        PrismExecution,
+        SlotSupervisor,
+        TaskOwnership,
+    )
+    from .prism_scheduler import PrismPolicy, PrismScheduler, ResourceVector, ScheduledTask
+
+    if not items or worker_limit < 1:
+        raise ValueError("native Prism requires work and a positive worker limit")
+    run_id = str(items[0].get("run_id") or "local-batch")
+    slot_capacity = min(10, max(1, len(items)))
+    policy = PrismPolicy(
+        max_tasks_per_slot=10,
+        max_active_slots=min(20, max(1, (len(items) + 9) // 10)),
+        global_worker_limit=max(1, int(worker_limit)),
+        recovery_reserve=0,
+        validation_reserve=0,
+    )
+    policy_hash = hashlib.sha256(
+        json.dumps({"policy": repr(policy), "run_id": run_id}, sort_keys=True).encode()
+    ).hexdigest()
+    config_hash = hashlib.sha256(
+        json.dumps({"items": [str(item.get("task_id") or "") for item in items]}, sort_keys=True).encode()
+    ).hexdigest()
+    root = PrismExecution(
+        goal_id=run_id,
+        owner_agent="simplicio-loop",
+        policy_hash=policy_hash,
+        config_hash=config_hash,
+        source_generation=run_id,
+        reducer_ref="simplicio_loop.runner.dispatch_operator_batch",
+        budget=(("workers", max(1, int(worker_limit))),),
+    )
+    slot = SlotSupervisor(
+        parent_prism_id=root.prism_id,
+        supervisor_agent="simplicio-loop",
+        capacity=slot_capacity,
+    )
+    scheduler = PrismScheduler(policy)
+    scheduler.register_slot(slot)
+    for item in items:
+        task_spec = item.get("task_spec")
+        task_spec = dict(task_spec) if isinstance(task_spec, Mapping) else {}
+        raw_dependencies = task_spec.get("depends_on") or task_spec.get("dependencies") or ()
+        if isinstance(raw_dependencies, Mapping):
+            raw_dependencies = raw_dependencies.get("items") or ()
+        kind = str(task_spec.get("kind") or "implementation")
+        if kind not in {"implementation", "recovery", "validation", "review", "integration"}:
+            kind = "implementation"
+        task_id = str(item.get("task_id") or "")
+        ownership = TaskOwnership(
+            task_id=task_id,
+            slot_id=slot.slot_id,
+            attempt=1,
+            owner_agent=str(item.get("worker_id") or "simplicio-local"),
+            lease_id=str(item.get("lease_id") or task_id),
+            fence=1,
+            source_generation=run_id,
+            capabilities=("operator", "local", "worktree"),
+            allowed_transitions=tuple(sorted(TASK_STATES)),
+        )
+        scheduler.submit(ScheduledTask(
+            task_id=task_id,
+            slot_id=slot.slot_id,
+            ownership=ownership,
+            depends_on=tuple(str(value) for value in raw_dependencies if str(value).strip()),
+            hard_conflicts=tuple(str(value) for value in (task_spec.get("hard_conflicts") or ())),
+            exclusive_resources=tuple(str(value) for value in (task_spec.get("exclusive_resources") or ())),
+            priority=int(task_spec.get("priority") or 0),
+            kind=kind,
+            resources=ResourceVector(workers=1),
+        ))
+    return scheduler, root.prism_id
+
+
 def _worktree_task_spec(item: Mapping[str, Any]) -> Any:
     """Build the queue's impact contract without importing it at module load time.
 
@@ -4345,7 +4449,8 @@ def _operator_dispatch_attempt_remote_worker(
         return {**common, "status": "failed", "phase": "blocked", "execution_state": "error",
                 "receipt": "", "operator_receipt": "", "evidence_receipt": "",
                 "receipt_status": "UNVERIFIED", "attempt": 0,
-                "reason_code": "remote_enqueue_failed", "error": str(exc), "dead_letter": True,
+                "reason_code": "remote_enqueue_failed", "remote_error_class": type(exc).__name__,
+                "error": str(exc), "dead_letter": True,
                 "started_at": started, "finished_at": _now()}
 
     timeout = float(os.environ.get("SIMPLICIO_REMOTE_DISPATCH_TIMEOUT_SECONDS", "3600"))
@@ -4522,7 +4627,25 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         # #286: a genuine network queue means genuine remote workers -- the coordinator
         # enqueues and waits, it never claims/executes the operator itself. See
         # `_remote_worker_dispatch_enabled` for the opt-out and rationale.
-        return _operator_dispatch_attempt_remote_worker(item, common, queue, started)
+        remote_record = _operator_dispatch_attempt_remote_worker(item, common, queue, started)
+        # Enqueue failure means the remote task was not accepted and is safe to
+        # continue locally.  A poll timeout is deliberately not downgraded: the
+        # remote task may still be executing and a local retry could duplicate an
+        # effect.
+        if not (
+            _local_fallback_enabled()
+            and remote_record.get("reason_code") == "remote_enqueue_failed"
+            and remote_record.get("remote_error_class") in {"QueueUnavailable", "OSError"}
+        ):
+            return remote_record
+        common["distributed_fallback"] = {
+            "schema": "simplicio.loop.distributed-fallback/v1",
+            "requested": "remote",
+            "selected": "local",
+            "reason_code": "remote_unavailable",
+            "error": str(remote_record.get("error") or "remote enqueue unavailable")[:512],
+        }
+        queue = None
     lease = None
     guarded = _guarded_dispatch_enabled()
     attempt_coordinator: Optional[AttemptCoordinator] = None
@@ -4567,7 +4690,25 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
                     "reason_code": "claim_conflict", "error": str(exc), "dead_letter": True,
                     "started_at": started, "finished_at": _now()}
-        except (QueueUnavailable, OSError, ValueError) as exc:
+        except (QueueUnavailable, OSError) as exc:
+            # The remote queue is an optional accelerator.  If it is genuinely
+            # unavailable, release the unclaimed item into the isolated local
+            # lane instead of dead-lettering the whole batch.  Keep conflicts
+            # and malformed/trust-invalid configuration fail-closed below.
+            if _local_fallback_enabled() and isinstance(queue, HTTPRemoteQueue):
+                common["distributed_fallback"] = {
+                    "schema": "simplicio.loop.distributed-fallback/v1",
+                    "requested": "remote",
+                    "selected": "local",
+                    "reason_code": "remote_unavailable",
+                    "error": str(exc)[:512],
+                }
+                queue = None
+            else:
+                return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
+                        "reason_code": "network_paused", "error": str(exc), "dead_letter": True,
+                        "started_at": started, "finished_at": _now()}
+        except ValueError as exc:
             return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
                     "reason_code": "network_paused", "error": str(exc), "dead_letter": True,
                     "started_at": started, "finished_at": _now()}
@@ -4804,6 +4945,9 @@ def dispatch_operator_batch(
         serial_fallback_reason = "shared_run_state"
     retry_budget = max(0, int(retry_budget))
 
+    prism_scheduler, prism_id = _build_native_prism_scheduler(normalized, effective_workers)
+    prism_admitted = deque(task.task_id for task in prism_scheduler.next_batch())
+
     pending = deque(
         item for item in normalized
         if prior.get((item["repo"], item["run_id"], item["task_index"]), {}).get("status") != "succeeded"
@@ -4855,11 +4999,27 @@ def dispatch_operator_batch(
         ]
         return attempts
 
+    def _take_prism_admitted() -> Optional[Dict[str, Any]]:
+        for item in pending:
+            if item.get("task_id") not in prism_admitted:
+                continue
+            pending.remove(item)
+            prism_admitted.remove(item.get("task_id"))
+            return item
+        return None
+
+    def _refill_prism() -> None:
+        for task in prism_scheduler.next_batch():
+            if task.task_id not in prism_admitted:
+                prism_admitted.append(task.task_id)
+
     if pending and effective_workers:
         with ThreadPoolExecutor(max_workers=effective_workers, thread_name_prefix="simplicio-operator") as pool:
             active = {}
             while pending and len(active) < effective_workers:
-                item = pending.popleft()
+                item = _take_prism_admitted()
+                if item is None:
+                    break
                 active[pool.submit(_run_item, item)] = item
             while active:
                 done, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
@@ -4883,9 +5043,21 @@ def dispatch_operator_batch(
                         _persist_attempt(record)
                     final = attempts[-1]
                     completed.append(final)
+                    try:
+                        prism_scheduler.complete(
+                            str(item.get("task_id") or ""),
+                            "accepted" if final.get("status") == "succeeded" else "failed",
+                            owner_agent=str(item.get("worker_id") or "simplicio-local"),
+                            fence=1,
+                        )
+                        _refill_prism()
+                    except Exception as exc:
+                        final.setdefault("prism_error", f"{type(exc).__name__}: {exc}")
                     # Refill as soon as this worker exits; there is no frozen wave barrier.
                     if pending:
-                        next_item = pending.popleft()
+                        next_item = _take_prism_admitted()
+                        if next_item is None:
+                            continue
                         active[pool.submit(_run_item, next_item)] = next_item
                         refill_count += 1
 
@@ -4952,6 +5124,15 @@ def dispatch_operator_batch(
                 str(r["task_index"]): int(r.get("attempt_count") or 0)
                 for r in final_records
             },
+        },
+        "prism": {
+            "schema": NATIVE_PRISM_SCHEMA,
+            "mode": "native-local",
+            "prism_id": prism_id,
+            "scheduler": "simplicio_loop.prism_scheduler.PrismScheduler",
+            "admission": "governed",
+            "max_workers": effective_workers,
+            "snapshot": prism_scheduler.snapshot(),
         },
         "journal": str(journal_path) if journal_path else "",
     }
