@@ -463,8 +463,14 @@ def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
         fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
-def _run_cmd(argv: List[str], cwd: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, timeout=180)
+def _run_cmd(
+    argv: List[str], cwd: Path, *, timeout_seconds: int = 180,
+) -> subprocess.CompletedProcess:
+    if argv and argv[0] == "simplicio-mapper":
+        timeout_seconds = _mapper_timeout_seconds()
+    return subprocess.run(
+        argv, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_seconds,
+    )
 
 
 def _run_repo_path(run_dir: Path) -> Optional[Path]:
