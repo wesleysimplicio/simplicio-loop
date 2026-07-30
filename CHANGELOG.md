@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.11
+
+- Python standalone path: bounded Mapper timeouts now produce degraded receipts,
+  bounded local candidates, and a provider-free Dev CLI preflight.
+- Release floors aligned to Mapper 0.26.1, Dev CLI 0.18.1, and Fast 2.0.18.
+
 ## 3.38.10
 
 - FORCE Runtime MCP when present: `mcp_force_sync`, host rule, PreToolUse bulk-read gate
