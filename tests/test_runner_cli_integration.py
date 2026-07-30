@@ -386,6 +386,21 @@ def test_mapper_subprocess_uses_configured_timeout(tmp_path, monkeypatch):
     assert calls[1][1]["timeout"] == 180
 
 
+def test_mapper_timeout_becomes_degraded_receipt_instead_of_raising(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_LOOP_MAPPER_TIMEOUT_SEC", "17")
+
+    def fake_subprocess_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"], output="partial", stderr="worker stalled")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_subprocess_run)
+    result = runner_mod._run_cmd(["simplicio-mapper", "scan", "."], tmp_path)
+
+    assert result.returncode == 124
+    assert result.stdout == "partial"
+    assert "worker stalled" in result.stderr
+    assert "timed out after 17s" in result.stderr
+
+
 def test_run_mapper_ignores_invalid_mapper_token_budget(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()

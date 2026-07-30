@@ -468,9 +468,21 @@ def _run_cmd(
 ) -> subprocess.CompletedProcess:
     if argv and argv[0] == "simplicio-mapper":
         timeout_seconds = _mapper_timeout_seconds()
-    return subprocess.run(
-        argv, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_seconds,
-    )
+    try:
+        return subprocess.run(
+            argv, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        def _text(value: Any) -> str:
+            if isinstance(value, bytes):
+                return value.decode(errors="replace")
+            return str(value or "")
+
+        stderr = _text(exc.stderr)
+        timeout_note = f"command timed out after {timeout_seconds}s"
+        if timeout_note not in stderr:
+            stderr = f"{stderr}\n{timeout_note}".strip()
+        return subprocess.CompletedProcess(argv, 124, _text(exc.stdout), stderr)
 
 
 def _run_repo_path(run_dir: Path) -> Optional[Path]:
