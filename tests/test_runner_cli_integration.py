@@ -502,6 +502,32 @@ def test_run_mapper_degrades_to_explicit_local_target_on_scan_timeout(tmp_path, 
     assert any(argv[:2] == ["simplicio-mapper", "scan"] for argv in calls)
 
 
+def test_run_mapper_degraded_pack_uses_bounded_candidates_without_target_hint(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "candidate.py").write_text("pass\n", encoding="utf-8")
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+
+    monkeypatch.setenv("SIMPLICIO_EXECUTION_PROFILE", "standalone")
+    monkeypatch.setenv("SIMPLICIO_LOOP_LOCAL_FALLBACK", "1")
+    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {
+        "task_aware_supported": False,
+        "help_stdout": "  inspect <path>\n  handoff <path>",
+    })
+
+    def fake_run(argv, cwd):
+        return SimpleNamespace(returncode=1, stdout="{}", stderr="timed out")
+
+    monkeypatch.setattr(runner_mod, "_run_cmd", fake_run)
+    result = runner_mod._run_mapper(repo, run_root)
+
+    files = result["handoff"]["stdout"]["context_pack"]["files"]
+    assert files == [{"path": "src/candidate.py", "source": "bounded_local_candidate"}]
+    assert result["evidence_status"] == "UNVERIFIED"
+
+
 def test_run_mapper_does_not_degrade_runtime_backed_profile(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
