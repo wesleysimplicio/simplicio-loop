@@ -686,6 +686,8 @@ def _devcli_env(repo_path: Path, base_env: Dict[str, str] | None = None) -> Dict
     # Local LLM execution is paused globally; child Dev CLI flows must inherit
     # the policy and must not receive a local model selector.
     env["SIMPLICIO_LOCAL_LLM_DISABLED"] = "1"
+    if _degraded_mapper_fallback_enabled():
+        env["SIMPLICIO_ALLOW_DEGRADED_MAPPER"] = "1"
     model = env.get("SIMPLICIO_MODEL", "").strip().casefold()
     if model.startswith(("local/", "llama", "ollama")):
         env.pop("SIMPLICIO_MODEL", None)
@@ -1387,6 +1389,18 @@ def _context_handoff_args(
         first_value(("execution_context", "canonical_execution_context", "execution_context_path")),
         "execution-context.json",
     )
+    if mapper.get("degraded_local") and pack_path and _degraded_mapper_fallback_enabled():
+        # Standalone Dev CLI can consume the explicit local pack without the
+        # Mapper-owned snapshot/execution artifacts that a full handoff provides.
+        args = ["--context-pack", str(pack_path)]
+        args.extend(authorization_args)
+        return args, {
+            "status": "degraded_local",
+            "context_handle": "",
+            "pack_path": str(pack_path),
+            "authorization": authorization_handoff,
+            "evidence_status": "UNVERIFIED",
+        }
     raw_context_handle = first_value(("context_handle", "canonical_context_handle"))
     context_handle = str(raw_context_handle).strip() if raw_context_handle not in (None, "", {}) else ""
     if not context_handle and all((snapshot_path, pack_path, execution_path)):
@@ -3116,7 +3130,8 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
 
     argv = _devcli_cmd(
         repo_path, "task", "--root", str(repo_path), "--task-spec", str(task_spec_path),
-        "--mode", "integrated", "--target", target, "--dry-run-task", "--json",
+        "--mode", "standalone" if _execution_profile() == "standalone" else "integrated",
+        "--target", target, "--dry-run-task", "--json",
         "--bound-paths", target,
     )
     argv.extend(context_args)
@@ -3810,7 +3825,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         "--task-spec",
         str(task_spec_path),
         "--mode",
-        "integrated",
+        "standalone" if profile == "standalone" else "integrated",
         "--target",
         target,
         "--json",

@@ -249,6 +249,44 @@ def test_prepare_operator_receipt_propagates_canonical_context_when_mapper_suppl
     assert json.loads((run_root / "execution-context.json").read_text(encoding="utf-8"))["snapshot_id"] == "snap-1"
 
 
+def test_prepare_operator_receipt_uses_standalone_degraded_context_pack(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "worker.py").write_text("pass\n", encoding="utf-8")
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    (run_root / "mapper-context.json").write_text(json.dumps({
+        "degraded_local": True,
+        "handoff": {"stdout": {"context_pack": {
+            "schema": "simplicio.context-pack/v1",
+            "pack_hash": "pack-degraded",
+            "files": [{"path": "src/worker.py"}],
+            "fidelity": {"gate": "degraded_local", "status": "UNVERIFIED"},
+        }}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("SIMPLICIO_EXECUTION_PROFILE", "standalone")
+    monkeypatch.setenv("SIMPLICIO_LOOP_ALLOW_DEGRADED_MAPPER", "1")
+    task = runner_mod.compile_many(TASK)["tasks"][0]
+    captured = {}
+
+    monkeypatch.setattr(runner_mod, "_preflight_operator", lambda *args: {})
+
+    def fake_run(argv, **kwargs):
+        if "--task-spec" in argv:
+            captured["task_argv"] = list(argv)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": True}), stderr="")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+    receipt = runner_mod._prepare_operator_receipt(repo, run_root, task, "src/worker.py")
+
+    task_argv = captured["task_argv"]
+    assert receipt["context_handoff"]["status"] == "degraded_local"
+    assert "--mode" in task_argv, task_argv
+    assert task_argv[task_argv.index("--mode") + 1] == "standalone"
+    assert task_argv[task_argv.index("--context-pack") + 1] == str(run_root / "context-pack.json")
+
+
 def test_context_handoff_uses_snapshot_fallback_without_requiring_handle(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
