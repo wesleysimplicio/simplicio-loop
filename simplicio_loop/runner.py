@@ -578,6 +578,103 @@ def _mapper_supports_command(preflight: Mapping[str, Any], command: str) -> bool
         line.strip().startswith(command + " ") or line.strip() == command
         for line in help_stdout.splitlines()
     )
+
+
+def _degraded_mapper_fallback_enabled() -> bool:
+    """Allow explicit-target local work to continue when deep mapping is unavailable."""
+    if _execution_profile() != "standalone":
+        return False
+    raw = os.environ.get("SIMPLICIO_LOOP_ALLOW_DEGRADED_MAPPER", "").strip().lower()
+    if raw:
+        return raw not in {"0", "false", "no", "off", "disabled"}
+    return _local_fallback_enabled()
+
+
+def _degraded_mapper_payload(
+    repo_path: Path,
+    before: Mapping[str, Any],
+    mapper_preflight: Mapping[str, Any],
+    scan: Any,
+    inspect: Any,
+    snapshot: Any,
+    handoff: Any,
+    target_hint: str,
+) -> Dict[str, Any]:
+    """Build an explicitly UNVERIFIED context for a local explicit-target retry.
+
+    This is not a substitute for a Mapper receipt: the original command results remain
+    persisted, the degraded marker is durable, and only a target already named by the
+    task and resolved inside the repository is exposed to planning.
+    """
+    target = str(target_hint or "").strip().replace("\\", "/")
+    files: List[Dict[str, Any]] = []
+    if target:
+        candidate = (repo_path / target).resolve()
+        try:
+            candidate.relative_to(repo_path.resolve())
+        except (OSError, ValueError):
+            target = ""
+        else:
+            if candidate.is_file() or candidate.is_dir():
+                files.append({"path": target, "source": "explicit_task_target"})
+            else:
+                target = ""
+    pack_seed = {
+        "repo_state": dict(before),
+        "target": target,
+        "files": files,
+        "reason": "mapper_deep_pass_unavailable",
+    }
+    pack_hash = hashlib.sha256(
+        json.dumps(pack_seed, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    degraded_handoff = {
+        "ready": bool(files),
+        "context_pack": {
+            "schema": "simplicio.context-pack/v1",
+            "pack_hash": pack_hash,
+            "files": files,
+            "fidelity": {"gate": "degraded_local", "status": "UNVERIFIED"},
+            "source": "simplicio-loop-local-fallback",
+        },
+        "degraded_local": True,
+    }
+    return {
+        "scan": {
+            "returncode": scan.returncode,
+            "stdout": json.loads(scan.stdout) if scan.stdout.strip() else {},
+            "stderr": (scan.stderr or "").strip(),
+        },
+        "inspect": {
+            "returncode": inspect.returncode,
+            "stdout": json.loads(inspect.stdout) if inspect.stdout.strip() else {},
+            "stderr": (inspect.stderr or "").strip(),
+        },
+        "snapshot": {
+            "returncode": snapshot.returncode,
+            "stdout": json.loads(snapshot.stdout) if snapshot.stdout.strip() else {},
+            "stderr": (snapshot.stderr or "").strip(),
+        },
+        "handoff": {
+            "returncode": 0,
+            "stdout": degraded_handoff,
+            "stderr": (handoff.stderr or "").strip(),
+        },
+        "handoff_original": {
+            "returncode": handoff.returncode,
+            "stdout": json.loads(handoff.stdout) if handoff.stdout.strip() else {},
+            "stderr": (handoff.stderr or "").strip(),
+        },
+        "generated_at": _now(),
+        "repo_state_before": dict(before),
+        "repo_state_after": _repo_fingerprint(repo_path),
+        "mapper_preflight": dict(mapper_preflight),
+        "degraded_local": True,
+        "degraded_reason_code": "mapper_deep_pass_unavailable",
+        "evidence_status": "UNVERIFIED",
+    }
+
+
 def _devcli_env(repo_path: Path, base_env: Dict[str, str] | None = None) -> Dict[str, str]:
     env = dict(base_env or os.environ)
     repo_str = str(repo_path)
@@ -2397,11 +2494,19 @@ def _validate_run_receipts(
     if actual_mapper_context_hash != mapper_context_hash:
         raise RuntimeError("plan receipt does not match the current mapper context bytes")
 
-    for name, payload in (("scan", mapper.get("scan")), ("inspect", mapper.get("inspect")),
-                          ("handoff", mapper.get("handoff"))):
-        if not isinstance(payload, Mapping) or payload.get("returncode") != 0:
-            raise RuntimeError(f"stale mapper context: {name} did not complete successfully")
-    _validate_mapper_receipt(mapper, repo_path)
+    degraded_mapper = bool(mapper.get("degraded_local"))
+    if degraded_mapper:
+        if not _degraded_mapper_fallback_enabled():
+            raise RuntimeError("degraded mapper context requires standalone local fallback")
+        context_pack = ((mapper.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
+        if not context_pack.get("pack_hash"):
+            raise RuntimeError("degraded mapper context has no local context-pack hash")
+    else:
+        for name, payload in (("scan", mapper.get("scan")), ("inspect", mapper.get("inspect")),
+                              ("handoff", mapper.get("handoff"))):
+            if not isinstance(payload, Mapping) or payload.get("returncode") != 0:
+                raise RuntimeError(f"stale mapper context: {name} did not complete successfully")
+        _validate_mapper_receipt(mapper, repo_path)
     planned_state = mapper.get("repo_state_after") or {}
     current_state = _repo_fingerprint(repo_path)
     mapper_before = mapper.get("repo_state_before") or {}
@@ -2660,6 +2765,13 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
     _write_json(run_root / "mapper-context.json", payload)
     if (scan.returncode != 0 or inspect.returncode != 0 or snapshot.returncode != 0
             or handoff.returncode != 0):
+        if _degraded_mapper_fallback_enabled():
+            degraded = _degraded_mapper_payload(
+                repo_path, before, mapper_preflight, scan, inspect, snapshot, handoff,
+                target_hint,
+            )
+            _write_json(run_root / "mapper-context.json", degraded)
+            return degraded
         raise RuntimeError("mapper scan/inspect/snapshot/handoff failed")
     if not _repo_state_equivalent(payload["repo_state_before"], payload["repo_state_after"]):
         raise RuntimeError("repository changed during mapper survey; freshness cannot be proven")
@@ -3192,18 +3304,28 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         mapper_payload["task_contract_hash"] = compiled["collection_hash"]
         _write_json(run_root / "mapper-context.json", mapper_payload)
         state = _load_json(run_root / "state.json")
+        mapper_degraded = bool(mapper_payload.get("degraded_local"))
         state["mapper"] = {
             "ready": True,
             "receipt": str(run_root / "mapper-context.json"),
             "targets": _candidate_targets(mapper_payload, repo_path),
+            "degraded": mapper_degraded,
+            "status": "UNVERIFIED" if mapper_degraded else "MEASURED",
         }
-        state["current_action"] = "mapper_context_persisted"
+        state["current_action"] = "mapper_context_degraded" if mapper_degraded else "mapper_context_persisted"
         state["next_action"] = "plan_ready_for_decision"
         _write_json(run_root / "state.json", state)
-        _emit_event(run_root, state, "mapper_fresh", receipt=str(run_root / "mapper-context.json"),
-                    message="mapper scan, inspect, and handoff are fresh")
-        _transition(run_root, state, "planning", "mapper scan/inspect/handoff persisted",
-                    receipt=str(run_root / "mapper-context.json"))
+        if mapper_degraded:
+            _emit_event(run_root, state, "mapper_degraded", receipt=str(run_root / "mapper-context.json"),
+                        blocker="mapper_deep_pass_unavailable",
+                        message="continuing with explicit-target local context; evidence is UNVERIFIED")
+            _transition(run_root, state, "planning", "local context fallback persisted; mapper evidence is UNVERIFIED",
+                        receipt=str(run_root / "mapper-context.json"))
+        else:
+            _emit_event(run_root, state, "mapper_fresh", receipt=str(run_root / "mapper-context.json"),
+                        message="mapper scan, inspect, and handoff are fresh")
+            _transition(run_root, state, "planning", "mapper scan/inspect/handoff persisted",
+                        receipt=str(run_root / "mapper-context.json"))
         plan = _build_plan_with_hints(tasks, mapper_payload, repo_path, raw,
                                       contract_hash=compiled["collection_hash"])
         plan["run_id"] = run_id
