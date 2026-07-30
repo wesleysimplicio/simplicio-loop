@@ -72,7 +72,7 @@ def test_version_fallback_drift_is_blocked(tmp_path):
     repo = fixture_repo(tmp_path)
     package = repo / "simplicio_loop" / "__init__.py"
     package.write_text(
-        package.read_text(encoding="utf-8").replace("3.38.7", "9.9.9"),
+        package.read_text(encoding="utf-8").replace("3.38.10", "9.9.9"),
         encoding="utf-8",
     )
     report = evaluate(repo)

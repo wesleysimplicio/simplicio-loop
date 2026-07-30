@@ -706,6 +706,10 @@ def _devcli_env(repo_path: Path, base_env: Dict[str, str] | None = None) -> Dict
     env["SIMPLICIO_LOCAL_LLM_DISABLED"] = "1"
     if _degraded_mapper_fallback_enabled():
         env["SIMPLICIO_ALLOW_DEGRADED_MAPPER"] = "1"
+    if _execution_profile() == "standalone":
+        # The Loop's standalone operator preflight is a context/target gate;
+        # it must not invoke the deterministic Dev CLI provider.
+        env["SIMPLICIO_STANDALONE_PREFLIGHT"] = "1"
     model = env.get("SIMPLICIO_MODEL", "").strip().casefold()
     if model.startswith(("local/", "llama", "ollama")):
         env.pop("SIMPLICIO_MODEL", None)
@@ -3146,10 +3150,17 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
         _write_json(run_root / "operator-receipt.json", receipt)
         return receipt
 
+    operator_mode = "standalone" if _execution_profile() == "standalone" else "integrated"
+    task_input = (
+        [_task_goal(task) or str(task.get("id") or "execute task"),
+         "--criteria", _criteria_text(task) or "- true state",
+         "--constraints", _constraints_text(task) or "- build passes"]
+        if operator_mode == "standalone"
+        else ["--task-spec", str(task_spec_path)]
+    )
     argv = _devcli_cmd(
-        repo_path, "task", "--root", str(repo_path), "--task-spec", str(task_spec_path),
-        "--mode", "standalone" if _execution_profile() == "standalone" else "integrated",
-        "--target", target, "--dry-run-task", "--json",
+        repo_path, "task", "--root", str(repo_path), *task_input,
+        "--mode", operator_mode, "--target", target, "--dry-run-task", "--json",
         "--bound-paths", target,
     )
     argv.extend(context_args)
@@ -3835,20 +3846,17 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         fencing_token=fence,
         require_authorization=profile == "runtime-backed",
     )
+    operator_mode = "standalone" if profile == "standalone" else "integrated"
+    task_input = (
+        [_task_goal(task) or str(task.get("id") or "execute task"),
+         "--criteria", _criteria_text(task) or "- true state",
+         "--constraints", _constraints_text(task) or "- build passes"]
+        if operator_mode == "standalone"
+        else ["--task-spec", str(task_spec_path)]
+    )
     argv = _devcli_cmd(
-        repo_path,
-        "task",
-        "--root",
-        str(repo_path),
-        "--task-spec",
-        str(task_spec_path),
-        "--mode",
-        "standalone" if profile == "standalone" else "integrated",
-        "--target",
-        target,
-        "--json",
-        "--bound-paths",
-        target,
+        repo_path, "task", "--root", str(repo_path), *task_input,
+        "--mode", operator_mode, "--target", target, "--json", "--bound-paths", target,
     )
     argv.extend(context_args)
     checkpoint = _capture_operator_checkpoint(run_dir, repo_path, targets or [target])
