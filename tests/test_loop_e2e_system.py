@@ -271,6 +271,28 @@ def test_continue_runs_planner_and_refreshes_wiki(tmp_path):
     assert os.listdir(journal_dir), "continue path should capture at least one wiki journal entry"
 
 
+def test_refeed_injects_canonical_startup_orientation_once(tmp_path):
+    root = str(tmp_path)
+    _arm(root, iteration=1, max_iter=5)
+    r = _tick(root, "Still implementing; no promise yet.")
+    assert r.returncode == 0
+    payload = json.loads(r.stdout)
+    followup = payload["followup_message"]
+    assert "[simplicio-loop startup orientation]" in followup
+    assert "Não faça pesquisa web genérica" in followup
+    assert "Use GitHub/gh somente quando" in followup
+    assert "Use somente ferramentas locais autorizadas" in followup
+    assert followup.count("[simplicio-loop startup orientation]") == 1
+    assert followup.count("Use somente ferramentas locais autorizadas") == 1
+
+
+def test_startup_orientation_has_one_canonical_marker_pair():
+    skill = Path(REPO) / ".claude" / "skills" / "simplicio-loop" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    assert text.count("<!-- SIMPLICIO-LLM-ORIENTATION:BEGIN -->") == 1
+    assert text.count("<!-- SIMPLICIO-LLM-ORIENTATION:END -->") == 1
+
+
 def test_iteration_cap_stops(tmp_path):
     root = str(tmp_path)
     _arm(root, iteration=5, max_iter=5)  # at the cap
