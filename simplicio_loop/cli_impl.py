@@ -663,6 +663,13 @@ def findings_command(args) -> int:
     return _inspection_cli.findings_command(args)
 
 
+def retrospective_command(args) -> int:
+    from .retrospective import retrospective
+    result = retrospective(args.repo, args.run_id)
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
 def main(argv=None) -> int:
     argv_list = list(argv) if argv is not None else list(sys.argv[1:])
     if argv_list[:1] == ["fast-v3"]:
@@ -932,6 +939,11 @@ def main(argv=None) -> int:
     p_f_reconcile.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     p_f_doctor = findings_sub.add_parser("doctor", help="health-check the findings store and router state")
     p_f_doctor.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    p_learn = sub.add_parser("learn", help="derive durable lessons from completed runs")
+    learn_sub = p_learn.add_subparsers(dest="learn_command", required=True)
+    p_ret = learn_sub.add_parser("retrospective", help="deduplicate trajectory lessons and write a receipt")
+    p_ret.add_argument("--repo", default=".")
+    p_ret.add_argument("--run", dest="run_id", default=None)
     ledger_sub = p_ledger.add_subparsers(dest="ledger_command", required=True)
     for ledger_command in ("replay", "validate"):
         p_ledger_action = ledger_sub.add_parser(
@@ -1020,6 +1032,10 @@ def main(argv=None) -> int:
         return preflight(args.repo, args.json, strict=bool(getattr(args, "strict", False)))
     if command == "findings":
         return findings_command(args)
+    if command == "learn":
+        if args.learn_command == "retrospective":
+            return retrospective_command(args)
+        parser.error("unknown learn command")
     if command == "verify":
         return verify(args.repo, args.run_id)
     if command == "progress":
