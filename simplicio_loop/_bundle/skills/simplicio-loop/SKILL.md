@@ -68,6 +68,26 @@ bare LLM) follows them mechanically — no paraphrase, no drift:
 
 The rest of this file is the mechanism that enforces this contract.
 
+## LLM startup orientation (canonical; every Loop turn)
+
+The following marked block is the single source of truth for the short operating
+instructions that must reach every LLM turn started or re-fed by `simplicio-loop`.
+The stop hook extracts the block mechanically and prepends it to each re-feed. Keep
+the block concise, stable, and free of task-specific details; update the ADR and
+the focused hook tests when changing it.
+
+<!-- SIMPLICIO-LLM-ORIENTATION:BEGIN -->
+Orientação operacional do Loop:
+- Trabalhe somente na tarefa/ACs atuais; faça a menor alteração segura e preserve dirty work e ownership.
+- Use o menor raciocínio suficiente; não mostre raciocínio privado passo a passo; seja conciso.
+- Não faça pesquisa web genérica nem use conectores externos, agentes/subagentes ou LLM local por padrão.
+- Use GitHub/gh somente quando a tarefa exigir estado atual de issue, PR ou release, pois é a fonte de verdade do Loop.
+- Use somente ferramentas locais autorizadas: Mapper/Fast para contexto e Dev CLI/Runtime para edição e verificação.
+- Não edite com contexto stale, lock ativo, artifacts ausentes ou capacidade não verificada.
+- Rode testes focados; não declare concluído sem evidência desta rodada e gates do Loop.
+- Se houver falha ou ambiguidade, informe o bloqueio real; não invente nem repita a mesma tentativa cegamente.
+<!-- SIMPLICIO-LLM-ORIENTATION:END -->
+
 ## Definition of Done (DoD) — mandatory quality gate
 
 Every task/issue anchored via `task_anchor.py set` MUST include, as explicit acceptance criteria
