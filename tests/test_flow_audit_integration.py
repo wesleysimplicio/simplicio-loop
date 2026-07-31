@@ -97,6 +97,21 @@ def login():
     assert "flow-audit: PASS" in r.stdout, r.stdout
 
 
+def test_flow_audit_ignores_pytest_temp_directories(tmp_path):
+    from importlib.util import module_from_spec, spec_from_file_location
+    import sys
+
+    spec = spec_from_file_location("flow_audit", FLOW)
+    module = module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _write(tmp_path / ".pytest-fixture" / "backend" / "routes.py", "@app.post('/bad')\ndef bad():\n    raise NotImplementedError\n")
+    _write(tmp_path / "backend" / "routes.py", "@app.get('/ok')\ndef ok():\n    return {}\n")
+    files = [path.relative_to(tmp_path).as_posix() for path in module.iter_files(tmp_path)]
+    assert ".pytest-fixture/backend/routes.py" not in files
+    assert "backend/routes.py" in files
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module
