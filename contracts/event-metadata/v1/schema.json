@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/event-metadata/v1/schema.json",
+  "title": "simplicio.event-metadata/v1",
+  "type": "object",
+  "required": ["schema", "scope", "event_id", "run_id", "task_id", "ac_ids"],
+  "properties": {
+    "schema": {"const": "simplicio.event-metadata/v1"},
+    "scope": {"enum": ["collection", "task", "scenario"]},
+    "event_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": ["string", "null"]},
+    "ac_ids": {"type": "array", "items": {"type": "string"}},
+    "receipt": {"type": "string"},
+    "blocker": {"type": "string"}
+  },
+  "allOf": [
+    {"if": {"properties": {"scope": {"const": "collection"}}}, "then": {"properties": {"task_id": {"type": "null"}}}},
+    {"if": {"properties": {"scope": {"enum": ["task", "scenario"]}}}, "then": {"properties": {"task_id": {"type": "string", "minLength": 1}}}},
+    {"if": {"properties": {"scope": {"const": "scenario"}}}, "then": {"properties": {"ac_ids": {"minItems": 1}}}}
+  ],
+  "additionalProperties": true
+}

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
 
 from .execution_route import verify_route_hash
+from .event_metadata import metadata_policy, normalise_event
 
 SCHEMA = "simplicio.progress/v1"
 PHASES = ("intake", "mapping", "planning", "executing", "validating", "watching", "delivering", "done")
@@ -87,48 +88,11 @@ def _normalise_ac_ids(item: Mapping[str, Any]) -> list[str]:
 
 
 def _normalise_events(value: Any, *, run_id: str = "") -> list[Dict[str, Any]]:
-    """Normalize visual events without manufacturing evidence.
-
-    A renderer may fill the run identity from the enclosing state, but it must not invent a
-    task, acceptance criterion, receipt, or blocker. Missing provenance is surfaced as an
-    ``UNVERIFIED`` metadata blocker so every consumer sees the same honest payload.
-    """
+    """Normalize events through the versioned collection/task/scenario policy."""
     if not isinstance(value, (list, tuple)):
         return []
-    events = []
-    for item in value[-12:]:
-        if not isinstance(item, Mapping):
-            continue
-        kind = _event_kind(item)
-        task_id = str(item.get("task_id") or item.get("work_item_id") or "")
-        ac_ids = _normalise_ac_ids(item)
-        receipt = str(item.get("receipt") or item.get("receipt_ref") or "")
-        blocker = str(item.get("blocker") or item.get("reason") or "")
-        missing = []
-        if not run_id and not item.get("run_id"):
-            missing.append("run_id")
-        if not task_id:
-            missing.append("task_id")
-        if not ac_ids:
-            missing.append("ac_ids")
-        if not receipt and not blocker:
-            missing.append("receipt_or_blocker")
-        if missing:
-            blocker = blocker or "missing_event_metadata:" + ",".join(missing)
-        events.append({
-            "event_id": str(item.get("event_id") or ""),
-            "kind": kind,
-            "phase": str(item.get("phase") or kind),
-            "status": str(item.get("status") or "INFO").upper(),
-            "run_id": str(item.get("run_id") or run_id),
-            "task_id": task_id,
-            "ac_ids": ac_ids,
-            "receipt": receipt,
-            "blocker": blocker,
-            "metadata_status": "UNVERIFIED" if missing else "MEASURED",
-            "message": str(item.get("message") or item.get("reason_code") or ""),
-        })
-    return events
+    return [normalise_event(item, run_id=run_id) for item in value[-12:]
+            if isinstance(item, Mapping)]
 
 
 def _normalise_technical_debts(state: Mapping[str, Any]) -> list[Dict[str, Any]]:
@@ -257,6 +221,7 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
         # the same JSON contract useful for fan-out dashboards and chat adapters.
         "lanes": _normalise_lanes(state.get("lanes")),
         "events": events,
+        "event_metadata_policy": metadata_policy(),
         "blockers": blockers,
         "technical_debt_count": len(technical_debts),
         "technical_debts": technical_debts,

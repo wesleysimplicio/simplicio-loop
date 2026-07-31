@@ -1,6 +1,6 @@
 import json
 
-from simplicio_loop.runner import _emit_event, _record_event, _transition
+from simplicio_loop.runner import _emit_event, _transition
 from simplicio_loop.progress import build_progress
 
 
@@ -34,7 +34,9 @@ def test_runner_events_are_persisted_with_provenance_and_progress_can_render_the
         "contract_frozen", "mapper_fresh", "plan_ready", "worker_claimed", "test_gate"
     ]
     assert all(event["run_id"] == "run-events" for event in payload["events"])
-    assert all(event["task_id"] == "T1" for event in payload["events"])
+    assert [event["task_id"] for event in payload["events"]] == [None, None, None, "T1", "T1"]
+    assert [event["scope"] for event in payload["events"]] == ["collection", "collection", "collection", "task", "task"]
+    assert all(event["schema"] == "simplicio.event-metadata/v1" for event in payload["events"])
     assert all(event["ac_ids"] == ["AC-1"] for event in payload["events"])
     assert payload["events"][-1]["metadata_status"] == "MEASURED"
     assert "evidence_unverified" in payload["blockers"]
