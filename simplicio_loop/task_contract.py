@@ -27,9 +27,9 @@ RULE_RE = re.compile(r"^\s*(?P<id>RN\d+)\s*[–-]\s*(?P<text>.+?)\s*$", re.I)
 RULE_REF_RE = re.compile(r"\[(RN\d+)\]", re.I)
 IDENTITY_RE = re.compile(r"^\s*(Sistema|Funcionalidade|Tipo)\s*:\s*(.+?)\s*$", re.I)
 STORY_RE = re.compile(r"^\s*(COMO|QUERO|PARA)\s+(.+?)\s*$", re.I)
-GIVEN_RE = re.compile(r"^\s*Dado que\s+(.+?)\s*$", re.I)
-WHEN_RE = re.compile(r"^\s*Quando\s+(.+?)\s*$", re.I)
-THEN_RE = re.compile(r"^\s*Ent[aã]o\s+(.+?)\s*$", re.I)
+GIVEN_RE = re.compile(r"^\s*(?:Dado(?: que)?|Given)\s+(.+?)\s*$", re.I)
+WHEN_RE = re.compile(r"^\s*(?:Quando|When)\s+(.+?)\s*$", re.I)
+THEN_RE = re.compile(r"^\s*(?:Ent[aã]o|Then)\s+(.+?)\s*$", re.I)
 MULTI_TASK_SPLIT_RE = re.compile(r"(?=^\s*Sistema\s*:)", re.I | re.M)
 WS_RE = re.compile(r"\s+")
 URL_RE = re.compile(r"https?://\S+", re.I)
@@ -106,6 +106,38 @@ def _collect_sections(lines: List[str]) -> Tuple[Dict[str, List[str]], List[str]
     preamble: List[str] = []
     current = None
     for line in lines:
+        heading = re.match(r"^\s*#{1,6}\s*(.+?)\s*#*\s*$", line)
+        if heading:
+            label = heading.group(1).strip().lower()
+            heading_map = {
+                "acceptance criteria": "acceptance_criteria",
+                "acceptance criteria / cenários": "acceptance_criteria",
+                "critérios de aceite": "acceptance_criteria",
+                "criterios de aceite": "acceptance_criteria",
+                "cenários de aceitação": "acceptance_criteria",
+                "cenarios de aceitacao": "acceptance_criteria",
+                "business rules": "business_rules",
+                "regras de negócio": "business_rules",
+                "regras de negocio": "business_rules",
+                "non-functional requirements": "nfrs",
+                "requisitos não funcionais": "nfrs",
+                "requisitos nao funcionais": "nfrs",
+                "dependencies": "dependencies",
+                "dependências": "dependencies",
+                "dependencias": "dependencies",
+            }
+            mapped = heading_map.get(label)
+            if mapped:
+                current = mapped
+                continue
+            scenario_heading = re.match(
+                r"(?:scn|scenario|cenário|cenario)\s*[-#:]?\s*(\d+)\s*(?:[-—:]\s*)?(.*)$",
+                label, re.I,
+            )
+            if scenario_heading and current == "acceptance_criteria":
+                number, title = scenario_heading.groups()
+                sections[current].append(f"Cenário {number}: {title or 'Scenario ' + number}")
+                continue
         matched = False
         for name, rx in SECTION_PATTERNS.items():
             if rx.match(line):
