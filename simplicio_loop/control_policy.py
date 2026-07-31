@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .technical_debt import is_hard_blocker, is_non_blocking_reason
+from .recovery_policy import recovery_stage
 
 SCHEMA = "simplicio.control-policy/v1"
 WEIGHTS_VERSION = "v1"
@@ -229,6 +230,21 @@ def decide(
 
     blocker_reason = str(projection.get("blocked_reason") or "").strip()
     if bool(projection.get("blocked")) or blocker_reason:
+        blocker_type = str(projection.get("blocker_type") or "").strip().lower()
+        if blocker_type:
+            recovery = recovery_stage(
+                blocker_type,
+                attempts=int(projection.get("recovery_attempts") or 0),
+                max_attempts=int(projection.get("recovery_max_attempts") or 2),
+            )
+            if recovery["status"] == "CONTINUE":
+                return _attach_debt(_result(
+                    "CONTINUE_SERIAL", "recovery_pending",
+                    "a recoverable blocker requires bounded safe recovery before handoff",
+                    recovery=recovery, v_t=compute_v(projection, weights), delta_v=0.0,
+                ), debts)
+            if recovery["status"] == "BLOCKED" and not blocker_reason:
+                blocker_reason = str(recovery.get("reason_code") or "")
         if debts and (not blocker_reason or (
                 is_non_blocking_reason(blocker_reason) and not is_hard_blocker(blocker_reason))):
             return _attach_debt(_result(
