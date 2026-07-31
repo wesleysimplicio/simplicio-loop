@@ -288,7 +288,8 @@ def _mapper_orient_fallback(root: Path, task: str) -> dict:
                 pass
 
 def orient(repo: str, task: str, fast_mode: str = "auto",
-           fast_context_budget: int = 48000, fast_engine: str = "auto") -> int:
+           fast_context_budget: int = 48000, fast_engine: str = "auto",
+           tee: bool = False) -> int:
     """Run bounded Fast orient with an explicit Mapper fallback receipt."""
     root = Path(repo).resolve()
     if not root.is_dir() or not str(task).strip():
@@ -323,28 +324,40 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
         fallback_reason = str(exc)
         fast_payload = {"status": "BLOCKED", "reason": fallback_reason}
     if fast_payload and fast_payload.get("status") == "READY":
-        print(json.dumps({"schema": ORIENT_SCHEMA, "status": "READY",
+        payload = {"schema": ORIENT_SCHEMA, "status": "READY",
                           "provider": "simplicio-fast", "fallback": False,
-                          "fast_engine": fast_engine, "fast": fast_payload, "local_llm": False},
-                         ensure_ascii=False, indent=2))
+                          "fast_engine": fast_engine, "fast": fast_payload, "local_llm": False}
+        if tee:
+            from .tee_cache import write
+            path = write(root, json.dumps(payload, ensure_ascii=False, indent=2))
+            payload["tee_path"] = str(path)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     if fast_mode == "on" or fast_engine == "rust":
-        print(json.dumps({"schema": ORIENT_SCHEMA, "status": "BLOCKED",
+        payload = {"schema": ORIENT_SCHEMA, "status": "BLOCKED",
                           "provider": "simplicio-fast", "fallback": False,
                           "fast_engine": fast_engine,
                           "fallback_reason": fallback_reason or "fast_not_ready",
-                          "fast": fast_payload, "local_llm": False},
-                         ensure_ascii=False, indent=2))
+                          "fast": fast_payload, "local_llm": False}
+        if tee:
+            from .tee_cache import write
+            path = write(root, json.dumps(payload, ensure_ascii=False, indent=2))
+            payload["tee_path"] = str(path)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 2
     fallback_reason = fallback_reason or str((fast_payload or {}).get("reason") or "fast_disabled_or_unavailable")
     mapper = _mapper_orient_fallback(root, str(task))
     status = "FALLBACK" if mapper.get("status") == "READY" else "BLOCKED"
-    print(json.dumps({"schema": ORIENT_SCHEMA, "status": status,
+    payload = {"schema": ORIENT_SCHEMA, "status": status,
                       "provider": "simplicio-mapper", "fallback": True,
                       "fallback_reason": fallback_reason, "fast_engine": fast_engine,
                       "fast": fast_payload,
-                      "mapper": mapper, "local_llm": False},
-                     ensure_ascii=False, indent=2))
+                      "mapper": mapper, "local_llm": False}
+    if tee:
+        from .tee_cache import write
+        path = write(root, json.dumps(payload, ensure_ascii=False, indent=2))
+        payload["tee_path"] = str(path)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if status == "FALLBACK" else 2
 
 
@@ -759,6 +772,11 @@ def main(argv=None) -> int:
                           help="bounded Fast context bytes (default: 48000)")
     p_orient.add_argument("--fast-engine", choices=("auto", "rust", "python", "off"), default="auto",
                           help="Fast engine: Rust-first auto, explicit rust/python, or off")
+    p_orient.add_argument("--tee", action="store_true", help="persist full JSON output in the reversible tee cache")
+
+    p_retrieve = sub.add_parser("retrieve", help="retrieve and verify a tee-cache output")
+    p_retrieve.add_argument("path")
+    p_retrieve.add_argument("--repo", default=".")
 
     p_extensions = sub.add_parser("extensions", help="negotiate installed Loop extension runtimes")
     extensions_sub = p_extensions.add_subparsers(dest="extensions_command", required=True)
@@ -1018,7 +1036,15 @@ def main(argv=None) -> int:
                    args.quality_provider, args.quality_policy, args.result_file,
                    args.require_handshake_fingerprint)
     if command == "orient":
-        return orient(args.repo, args.task, args.fast, args.fast_context_budget, args.fast_engine)
+        return orient(args.repo, args.task, args.fast, args.fast_context_budget, args.fast_engine, args.tee)
+    if command == "retrieve":
+        from .tee_cache import retrieve
+        try:
+            print(retrieve(args.path, args.repo), end="")
+            return 0
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"status": "BLOCKED", "reason": str(exc)}))
+            return 2
     if command == "extensions":
         return extensions_doctor(args.provider, args.policy, args.schema)
     if command == "oracle":
