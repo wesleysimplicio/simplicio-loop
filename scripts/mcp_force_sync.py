@@ -109,11 +109,11 @@ def _patch_env_file(path: Path, shell: str) -> str:
             '# REQUIRE_MCP forces MCP tools only when `simplicio` is on PATH.',
             '$env:SIMPLICIO_LOOP = "1"',
             '$env:SIMPLICIO_LOOP_STRICT = "1"',
-            '$env:SIMPLICIO_LOOP_REQUIRE_RUNTIME = "auto"',
+            '$env:SIMPLICIO_LOOP_REQUIRE_RUNTIME = "off"',
             '$env:SIMPLICIO_REQUIRE_MUTATION_AUTHORITY = "1"',
             '$env:SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT = "1"',
             '$env:SIMPLICIO_LOOP_FORBID_HAND_EDIT = "1"',
-            '$env:SIMPLICIO_EXECUTION_PROFILE = "auto"',
+            '$env:SIMPLICIO_EXECUTION_PROFILE = "standalone"',
             '$env:SIMPLICIO_FAST_MODE = "required"',
             '$env:SIMPLICIO_REQUIRE_MCP = "1"',
             '$env:SIMPLICIO_MCP_FORCE = "1"',
@@ -126,11 +126,11 @@ def _patch_env_file(path: Path, shell: str) -> str:
 # REQUIRE_MCP forces MCP tools only when `simplicio` is on PATH.
 export SIMPLICIO_LOOP=1
 export SIMPLICIO_LOOP_STRICT=1
-export SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto
+export SIMPLICIO_LOOP_REQUIRE_RUNTIME=off
 export SIMPLICIO_REQUIRE_MUTATION_AUTHORITY=1
 export SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT=1
 export SIMPLICIO_LOOP_FORBID_HAND_EDIT=1
-export SIMPLICIO_EXECUTION_PROFILE=auto
+export SIMPLICIO_EXECUTION_PROFILE=standalone
 export SIMPLICIO_FAST_MODE=required
 export SIMPLICIO_REQUIRE_MCP=1
 export SIMPLICIO_MCP_FORCE=1

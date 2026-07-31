@@ -567,13 +567,13 @@ def required_bound_operators():
     Fast: under strict mode, if currently operational it becomes required.
     """
     required = list(BOUND_OPERATORS)
-    rt_mode = _env_flag("SIMPLICIO_LOOP_REQUIRE_RUNTIME", "auto") or "auto"
+    rt_mode = _env_flag("SIMPLICIO_LOOP_REQUIRE_RUNTIME", "off") or "off"
     if rt_mode in _FALSE:
         rt_mode = "off"
     elif rt_mode in _TRUE:
         rt_mode = "required"
     elif rt_mode not in {"auto", "off", "required"}:
-        rt_mode = "auto"
+        rt_mode = "off"
     runtime_ok = _binary_operational(RUNTIME_BINARY, ("--version",))
     if rt_mode == "required" or (rt_mode == "auto" and runtime_ok):
         required.append(RUNTIME_BINARY)
