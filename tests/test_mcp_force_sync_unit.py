@@ -23,8 +23,8 @@ def test_mcp_force_sync_writes_env_and_rules(tmp_path, monkeypatch):
     env = (home / ".simplicio" / "loop-env.sh").read_text(encoding="utf-8")
     assert "SIMPLICIO_REQUIRE_MCP=1" in env
     assert "SIMPLICIO_MCP_FORCE=1" in env
-    assert "SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto" in env
-    assert "SIMPLICIO_EXECUTION_PROFILE=auto" in env
+    assert "SIMPLICIO_LOOP_REQUIRE_RUNTIME=off" in env
+    assert "SIMPLICIO_EXECUTION_PROFILE=standalone" in env
     assert "runtime-backed" not in env  # must not hard-force runtime profile
     rule = home / ".grok" / "rules" / "simplicio-runtime-mcp-force.md"
     assert rule.is_file()

@@ -19,8 +19,8 @@ contract + `host_rule_sync` + STRICT env make that a **contract violation**, not
 1. **Operators do; models decide.**
 2. **STRICT forbids host hand-edit** as primary mutation path.
 3. **Fast required when operational** at preflight.
-4. **Runtime is optional** for simplicio-loop (`SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto`,
-   `SIMPLICIO_EXECUTION_PROFILE=auto`). Core = mapper + dev-cli (+ Fast when up).
+4. **Runtime is disabled by default** for simplicio-loop (`SIMPLICIO_LOOP_REQUIRE_RUNTIME=off`,
+   `SIMPLICIO_EXECUTION_PROFILE=standalone`). Runtime/MCP use requires explicit opt-in.
 5. **When Runtime is present, force MCP tools for economy** — `SIMPLICIO_REQUIRE_MCP=1`
    prefers `simplicio_map` / `search` / `memory` / `gate` / `edit` over host bulk reads;
    action_gate only enforces this if `simplicio` is on PATH. Without Runtime: standalone continues.

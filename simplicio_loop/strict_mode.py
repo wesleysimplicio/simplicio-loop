@@ -126,17 +126,17 @@ def action_operator_status(env: Optional[Mapping[str, str]] = None) -> dict[str,
 
 def require_runtime_mode(env: Optional[Mapping[str, str]] = None) -> str:
     """Return auto|required|off for Runtime binding policy."""
-    raw = env_flag("SIMPLICIO_LOOP_REQUIRE_RUNTIME", env=env, default="auto")
+    raw = env_flag("SIMPLICIO_LOOP_REQUIRE_RUNTIME", env=env, default="off")
     if not raw:
-        return "auto"
+        return "off"
     if is_falsy(raw):
         return "off"
     if raw in {"1", "true", "yes", "on", "required", "strict"}:
         return "required"
     if raw == "auto":
         return "auto"
-    # Unknown → fail-closed to auto (never silently off).
-    return "auto"
+    # Unknown → fail-closed to off; Runtime is opt-in while disabled by default.
+    return "off"
 
 
 def required_bound_operators(env: Optional[Mapping[str, str]] = None) -> list[str]:
@@ -202,7 +202,7 @@ def resolve_execution_profile(env: Optional[Mapping[str, str]] = None) -> str:
     """Pick standalone vs runtime-backed.
 
     Explicit ``SIMPLICIO_EXECUTION_PROFILE`` wins when set to a valid value.
-    Otherwise: runtime-backed when Runtime is operational (auto/required), else standalone.
+    Otherwise: standalone; Runtime is opt-in via explicit environment configuration.
     """
     source = _env(env)
     explicit = env_flag("SIMPLICIO_EXECUTION_PROFILE", env=source)
@@ -212,6 +212,9 @@ def resolve_execution_profile(env: Optional[Mapping[str, str]] = None) -> str:
         # Invalid explicit value — raise at call site via runner; here fall through to auto.
         pass
     rt_mode = require_runtime_mode(source)
+    # ``auto`` remains an explicit opt-in; the absent-variable default is off.
+    if explicit == "auto" and not env_flag("SIMPLICIO_LOOP_REQUIRE_RUNTIME", env=source):
+        rt_mode = "auto"
     if rt_mode == "off":
         return "standalone"
     if runtime_status(source)["operational"]:
@@ -242,8 +245,8 @@ def recommended_env(env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
         "SIMPLICIO_LOOP_STRICT": "1",
         "SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": "1",
         "SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT": "1",
-        "SIMPLICIO_LOOP_REQUIRE_RUNTIME": "auto",
-        "SIMPLICIO_EXECUTION_PROFILE": profile,
+        "SIMPLICIO_LOOP_REQUIRE_RUNTIME": "off",
+        "SIMPLICIO_EXECUTION_PROFILE": "standalone",
         "SIMPLICIO_LOOP_FORBID_HAND_EDIT": "1",
     }
     if fast_status(env)["operational"]:

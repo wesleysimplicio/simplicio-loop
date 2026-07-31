@@ -118,11 +118,11 @@ Open issues at arm: {open_n if open_n is not None else "unknown (gh unavailable)
     env_hint = {
         "SIMPLICIO_LOOP": "1",
         "SIMPLICIO_LOOP_STRICT": "1",
-        "SIMPLICIO_LOOP_REQUIRE_RUNTIME": "auto",
+        "SIMPLICIO_LOOP_REQUIRE_RUNTIME": "off",
         "SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": "1",
         "SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT": "1",
         "SIMPLICIO_LOOP_FORBID_HAND_EDIT": "1",
-        "SIMPLICIO_EXECUTION_PROFILE": "auto",
+        "SIMPLICIO_EXECUTION_PROFILE": "standalone",
         "SIMPLICIO_FAST_MODE": "required",
     }
     return {

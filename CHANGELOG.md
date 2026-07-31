@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.38.14
+
+- Disable Simplicio Runtime and Runtime MCP by default; the standalone path is now the
+  default until Runtime is explicitly enabled.
+
 ## [3.38.12] - 2026-07-31
 
 - Inject a canonical, concise startup orientation into every `simplicio-loop`

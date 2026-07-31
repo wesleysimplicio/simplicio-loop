@@ -56,7 +56,7 @@ def test_resolve_profile_runtime_backed_when_operational(monkeypatch):
         "binary": "simplicio", "present": True, "operational": True, "version": "3.5.5", "error": "",
     })
     assert sm.resolve_execution_profile({"SIMPLICIO_EXECUTION_PROFILE": "auto"}) == "runtime-backed"
-    assert sm.resolve_execution_profile({}) == "runtime-backed"
+    assert sm.resolve_execution_profile({}) == "standalone"
     assert sm.resolve_execution_profile({"SIMPLICIO_EXECUTION_PROFILE": "standalone"}) == "standalone"
 
 
