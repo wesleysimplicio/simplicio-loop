@@ -182,6 +182,11 @@ _CROSS_REPOSITORY_DEPENDENCY = re.compile(
     r"(?:https?://github\.com/)?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/issues/|#)\d+",
     re.IGNORECASE,
 )
+_EXTERNAL_DEPENDENCY_LABEL = re.compile(
+    r"\b(?:runtime|simplicio-runtime)\b[^\n]{0,120}",
+    re.IGNORECASE,
+)
+_MIGRATION_MARKER = re.compile(r"SIMPLICIO-MIGRATION:v1", re.IGNORECASE)
 
 
 def _local_dependency_numbers(value: str) -> set[int]:
@@ -189,10 +194,13 @@ def _local_dependency_numbers(value: str) -> set[int]:
     if _DEPENDENCY_NEGATION.search(folded):
         return set()
     local_only = _CROSS_REPOSITORY_DEPENDENCY.sub("", value)
+    local_only = _EXTERNAL_DEPENDENCY_LABEL.sub("", local_only)
     return {int(number) for number in re.findall(r"#(\d+)", local_only)}
 
 
 def extract_issue_dependencies(body: str) -> list[int]:
+    if _MIGRATION_MARKER.search(str(body or "")):
+        return []
     found: set[int] = set()
     heading = False
     fence = False
@@ -769,12 +777,12 @@ class GitHubDrainIntake:
             raise DrainIntakeError("issue snapshot has wrong repository", reason_code=reason_code)
         if str(value.get("issue") or "") != str(issue):
             raise DrainIntakeError("issue snapshot has wrong id", reason_code=reason_code)
-        if _is_pull_request(value):
+        state = str(value.get("state") or "").lower()
+        if _is_pull_request(value) and state != "closed":
             raise DrainIntakeError(
                 "GitHub pull requests are excluded from issue intake",
                 reason_code="github_pull_request_excluded",
             )
-        state = str(value.get("state") or "").lower()
         if state not in {"open", "closed"} or not str(value.get("source_revision") or ""):
             raise DrainIntakeError("issue snapshot state/revision is ambiguous", reason_code=reason_code)
         return dict(value)

@@ -477,7 +477,9 @@ def get_details(owner: str, repo: str, issue: str, *, runner: Callable = subproc
         issue_data = json.loads(completed.stdout or "{}")
     except ValueError as exc:
         raise GitHubTransportError("NETWORK_UNAVAILABLE", "gh api returned non-JSON issue: %s" % exc)
-    if "pull_request" in issue_data:
+    # A merged PR is a valid historical dependency for intake planning.  Keep
+    # rejecting open PRs so issue-only lifecycle operations remain fail-closed.
+    if "pull_request" in issue_data and issue_data.get("state") != "closed":
         raise GitHubTransportError("SOURCE_NOT_FOUND", f"#{issue} is a pull request, not an issue")
 
     comments = _paginated_gh_api(f"repos/{owner}/{repo}/issues/{issue}/comments",
