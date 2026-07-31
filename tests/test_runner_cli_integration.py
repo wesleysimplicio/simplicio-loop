@@ -375,6 +375,33 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
     assert handoff_argv[handoff_argv.index("--token-budget") + 1] == "24000"
 
 
+def test_run_mapper_preserves_explicit_target_when_handoff_omits_it(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "src" / "app.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {
+        "task_aware_supported": True, "help_stdout": ""
+    })
+    monkeypatch.setattr(runner_mod, "_validate_mapper_receipt", lambda *args: None)
+
+    def fake_run(argv, cwd):
+        if argv[:2] == ["simplicio-mapper", "handoff"]:
+            stdout = {"context_pack": {"files": [{"path": "scripts/other.py"}]}}
+        else:
+            stdout = {}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(stdout), stderr="")
+
+    monkeypatch.setattr(runner_mod, "_run_cmd", fake_run)
+    result = runner_mod._run_mapper(repo, run_root, target_hint="src/app.py")
+    files = result["handoff"]["stdout"]["context_pack"]["files"]
+    assert {item["path"] for item in files} == {"scripts/other.py", "src/app.py"}
+    assert result["handoff"]["stdout"]["context_pack"]["explicit_target_added"] == "src/app.py"
+
+
 def test_mapper_subprocess_uses_configured_timeout(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setenv("SIMPLICIO_LOOP_MAPPER_TIMEOUT_SEC", "17")

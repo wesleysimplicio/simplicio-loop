@@ -2818,6 +2818,31 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         "repo_state_before": before,
         "repo_state_after": _repo_fingerprint(repo_path),
     }
+    # Mapper may return a fresh, goal-relevant pack that omits a caller's
+    # explicit target. Preserve the target as an authorized, local hint so the
+    # downstream operator preflight does not reject an otherwise valid run.
+    if target_hint.strip() and handoff.returncode == 0:
+        target_path = target_hint.strip().replace("\\", "/")
+        try:
+            resolved_target = (repo_path / target_path).resolve()
+            resolved_target.relative_to(repo_path.resolve())
+            if resolved_target.is_file():
+                context_pack = payload["handoff"]["stdout"].get("context_pack")
+                if isinstance(context_pack, dict):
+                    files = context_pack.setdefault("files", [])
+                    known = {
+                        str(item.get("path") or "").replace("\\", "/")
+                        for item in files if isinstance(item, dict)
+                    }
+                    if target_path not in known:
+                        files.append({
+                            "path": target_path,
+                            "selection_reason": "explicit_task_target",
+                            "tests": [],
+                        })
+                        context_pack["explicit_target_added"] = target_path
+        except (OSError, ValueError):
+            pass
     _write_json(run_root / "mapper-context.json", payload)
     if (scan.returncode != 0 or inspect.returncode != 0 or snapshot.returncode != 0
             or handoff.returncode != 0):
