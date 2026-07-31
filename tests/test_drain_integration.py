@@ -84,6 +84,34 @@ def test_done_task_requires_measured_watcher_oracle_and_delivery():
     assert result["reason_code"] == "evidence_pending"
 
 
+def test_merged_pr_with_open_issue_review_residual_continues_drain():
+    task = _task()
+    task["live_state"] = {
+        "pr_state": "MERGED",
+        "issue_state": "OPEN",
+        "review_status": "REQUIRED",
+    }
+
+    result = evaluate_drain(_snapshot([task]))
+
+    assert result["verdict"] == "CONTINUE"
+    assert result["ready"] is False
+    assert result["reason_code"] == "post_merge_residuals"
+    assert result["pending_tasks"] == ["T1"]
+    assert result["post_merge_residuals"]["T1"] == [
+        "adversarial review/acceptance review remains unresolved"
+    ]
+
+
+def test_merged_pr_with_closed_issue_remains_terminal():
+    task = _task()
+    task["live_state"] = {"pr_state": "MERGED", "issue_state": "CLOSED"}
+
+    result = evaluate_drain(_snapshot([task]))
+
+    assert result["verdict"] == "DRAINED"
+
+
 def test_unknown_task_state_is_fail_closed():
     result = evaluate_drain(_snapshot([_task(state="wat")]))
     assert result["reason_code"] == "task_state_unknown"
