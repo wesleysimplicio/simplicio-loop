@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from simplicio_loop.runtime_bridge import RuntimeBridgeRecoveryUnknown
@@ -157,3 +159,18 @@ def test_runtime_call_failure_is_unavailable_without_fallback():
     )
     assert receipt["status"] == "UNAVAILABLE"
     assert receipt["delivery"] == "RUNTIME_UNAVAILABLE"
+
+
+def test_authorization_digest_is_bound_to_transaction_and_receipt():
+    digest = "sha256:" + "a" * 64
+    req = replace(request(), authorization_digest=digest)
+    receipt = RuntimeEffectAdapter(profile="runtime-backed", bridge=FakeBridge()).execute(
+        req, ["python", "-V"]
+    )
+    assert receipt["authorization_digest"] == digest
+    assert receipt["transaction"]["authorization_digest"] == digest
+
+
+def test_authorization_digest_rejects_non_sha256_values():
+    with pytest.raises(Exception, match="authorization_digest"):
+        replace(request(), authorization_digest="not-a-digest")
