@@ -25,6 +25,7 @@ from .client_integrations import integration_enabled
 from .orca_lifecycle import sync_orca_status
 from .source_adapter import GitHubSourceAdapter
 from .task_contract import compile_many, validate_contract
+from .event_metadata import SCHEMA as EVENT_METADATA_SCHEMA, infer_scope
 from .technical_debt import record_notice as _record_technical_debt
 from .checkpoint_lifecycle import CheckpointLifecycle, LifecycleError
 from .operator_bootstrap import (
@@ -57,14 +58,14 @@ from .hookwall_gate import (
     gate_completion,
     validate_envelope,
     validate_pre_decision,
-    verify_post_receipt,
+
 )
 from .hookwall_persistence import HookwallEffectLedger
 from .canonical_plan import CanonicalPlan, load_canonical_plan
 from .authority_boundary import prepare_authorization_handoff
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
 from .execution_board import ExecutionBoard
-from .execution_route import AGENT_KEYWORDS, SCHEMA as EXECUTION_ROUTE_SCHEMA
+
 from .execution_route import _stable_hash as _execution_route_hash
 from .execution_route import capability_fingerprint, normalize_capability_manifest, route_receipt_is_current
 from .execution_route import decide_route, verify_route_hash
@@ -1964,6 +1965,8 @@ def _record_event(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any],
     never populated it.
     """
     event = dict(event)
+    event.setdefault("schema", EVENT_METADATA_SCHEMA)
+    event.setdefault("scope", infer_scope(event))
     event.setdefault("event_id", "evt-" + hashlib.sha256(
         (json.dumps(event, sort_keys=True, ensure_ascii=False) + _now()).encode("utf-8")
     ).hexdigest()[:12])
@@ -1972,7 +1975,9 @@ def _record_event(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any],
     event.setdefault("phase", state.get("phase", ""))
     task_ids = state.get("task_ids") or []
     ac_ids = state.get("ac_ids") or []
-    if not event.get("task_id") and task_ids:
+    if event.get("scope") == "collection":
+        event["task_id"] = None
+    elif not event.get("task_id") and task_ids:
         event["task_id"] = task_ids[0]
     if not event.get("ac_ids") and ac_ids:
         event["ac_ids"] = list(ac_ids)

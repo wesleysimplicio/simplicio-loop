@@ -57,3 +57,18 @@ lanes: worker-a 75%/RUNNING · worker-b 25%/BLOCKED
 
 Em chat sem streaming, use `--format markdown --once`; em adapters e dashboards, consuma
 `--format json --once` e preserve `schema`, `run_id`, `gates`, `lanes` e `events`.
+
+## Event metadata policy (`simplicio.event-metadata/v1`)
+
+Every new event carries `schema`, `scope`, `event_id`, `run_id`, and `task_id` when applicable.
+The scope is explicit: `collection`, `task`, or `scenario`. Collection lifecycle events such as
+`contract_frozen`, `watcher_challenge`, phase transitions, and mapping/planning milestones use
+`task_id: null`; that null is valid and never becomes `missing_event_metadata:task_id`. Task and
+scenario events require a non-empty `task_id`; scenario events also require `ac_ids`, and a
+missing value remains a precise fail-closed diagnostic containing `event_id`, `kind`, and `scope`.
+
+Receipts remain append-only. Historical events without `scope` are read using the legacy
+kind-based compatibility rule without rewriting the source record. The JSON progress envelope
+includes `event_metadata_policy` so dashboards and cross-session watchers can distinguish an
+expected collection null from a real task/scenario metadata blocker. The contract is defined in
+[`contracts/event-metadata/v1/SCHEMA.md`](../contracts/event-metadata/v1/SCHEMA.md).
