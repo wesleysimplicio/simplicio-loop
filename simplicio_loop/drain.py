@@ -222,6 +222,26 @@ def _evidence_ok(evidence: Mapping[str, Any], challenge: str) -> bool:
     return not challenge or evidence.get("challenge") == challenge
 
 
+def _post_merge_residuals(task: Mapping[str, Any]) -> List[str]:
+    """Keep merged items active while live review or closure work remains."""
+    live = task.get("live_state")
+    if not isinstance(live, Mapping):
+        live = task
+    pr_state = str(live.get("pr_state") or live.get("pull_request_state") or "").strip().lower()
+    issue_state = str(live.get("issue_state") or live.get("source_state") or "").strip().lower()
+    if pr_state != "merged" or issue_state != "open":
+        return []
+    residuals = live.get("unresolved_residuals")
+    values = ([str(item).strip() for item in residuals if str(item).strip()]
+              if isinstance(residuals, (list, tuple)) else [])
+    review = str(live.get("review_status") or "").strip().lower()
+    if review in {"required", "pending", "changes_requested", "unresolved"}:
+        values.append("adversarial review/acceptance review remains unresolved")
+    if not values:
+        values.append("merged PR has an open live issue requiring re-query before closure")
+    return list(dict.fromkeys(values))
+
+
 def evaluate_drain(snapshot: Mapping[str, Any], polls_required: int = 2) -> Dict[str, Any]:
     """Recompute a queue verdict from an immutable scheduler/source snapshot.
 
@@ -249,11 +269,16 @@ def evaluate_drain(snapshot: Mapping[str, Any], polls_required: int = 2) -> Dict
 
     pending: List[str] = []
     evidence_pending: List[str] = []
+    post_merge_pending: Dict[str, List[str]] = {}
     challenge = str(snapshot.get("challenge") or "")
     for index, raw_task in enumerate(tasks):
         if not isinstance(raw_task, Mapping):
             return _fail("task_invalid", "task record is not an object", task_index=index)
         task_id = _task_id(raw_task, index)
+        residuals = _post_merge_residuals(raw_task)
+        if residuals:
+            post_merge_pending[task_id] = residuals
+            continue
         state = str(raw_task.get("state") or "").strip().lower()
         if state in ACTIVE_STATES or state in {"ready", "blocked", "dead-letter"}:
             pending.append(task_id)
@@ -272,6 +297,13 @@ def evaluate_drain(snapshot: Mapping[str, Any], polls_required: int = 2) -> Dict
 
     if pending:
         return _fail("tasks_pending", "queue still has unresolved tasks", pending_tasks=pending)
+    if post_merge_pending:
+        return _fail(
+            "post_merge_residuals",
+            "merged delivery still has live review/acceptance or closure residuals; re-query and continue",
+            pending_tasks=sorted(post_merge_pending),
+            post_merge_residuals=post_merge_pending,
+        )
     if evidence_pending:
         return _fail("evidence_pending", "done tasks lack fresh measured evidence", evidence_pending=evidence_pending)
 
