@@ -49,6 +49,7 @@ class EffectRequest:
     gate_id: Optional[str] = None
     runtime_generation: Optional[str] = None
     transaction_id: Optional[str] = None
+    authorization_digest: Optional[str] = None
     canonical_plan: Optional[CanonicalPlan] = None
 
     def __post_init__(self) -> None:
@@ -67,10 +68,14 @@ class EffectRequest:
                 raise RuntimeEffectError("deadline must be a non-empty string or positive number")
         if not isinstance(self.cancellation_boundary, str) or not self.cancellation_boundary.strip():
             raise RuntimeEffectError("cancellation_boundary must be a non-empty string")
-        for name in ("gate_id", "runtime_generation", "transaction_id"):
+        for name in ("gate_id", "runtime_generation", "transaction_id", "authorization_digest"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise RuntimeEffectError(f"{name} must be a non-empty string when supplied")
+        if self.authorization_digest is not None:
+            digest = self.authorization_digest.removeprefix("sha256:")
+            if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                raise RuntimeEffectError("authorization_digest must be a sha256 digest")
         if self.canonical_plan is not None and not isinstance(self.canonical_plan, CanonicalPlan):
             raise RuntimeEffectError("canonical_plan must be a validated CanonicalPlan")
         if Path(self.cwd).is_absolute() or ".." in Path(self.cwd).parts:
@@ -129,6 +134,7 @@ class RuntimeEffectAdapter:
             "cancellation_boundary": request.cancellation_boundary,
             "gate_id": gate,
             "runtime_generation": request.runtime_generation or UNAVAILABLE,
+            "authorization_digest": request.authorization_digest or UNAVAILABLE,
             "transaction_id": transaction_id,
         }
         transaction = {
@@ -150,6 +156,7 @@ class RuntimeEffectAdapter:
                 "action_digest": action_digest,
             },
             "request": identity,
+            "authorization_digest": request.authorization_digest or UNAVAILABLE,
         }
         if request.canonical_plan is not None:
             transaction["canonical_plan"] = canonical_plan_metadata(request.canonical_plan)
@@ -172,6 +179,7 @@ class RuntimeEffectAdapter:
             "cancellation_boundary": request.cancellation_boundary,
             "runtime_generation": runtime_generation, "gate_id": gate_id,
             "transaction_id": transaction["idempotency"]["transaction_id"],
+            "authorization_digest": request.authorization_digest or UNAVAILABLE,
             "transaction_correlation": transaction["idempotency"]["transaction_id"],
             "correlation_id": transaction["idempotency"]["transaction_id"],
             "delivery": delivery or ("RUNTIME" if self.profile == "runtime-backed" else STANDALONE),
