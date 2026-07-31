@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
+from .recovery_policy import recovery_stage
+
 try:
     # Reuse the repository's cross-process lock implementation.  Importing the
     # helper by path keeps this module usable from a source checkout as well as
@@ -268,6 +270,7 @@ def evaluate_drain(snapshot: Mapping[str, Any], polls_required: int = 2) -> Dict
         return _fail("leases_active", "active leases remain", active_leases=active_leases)
 
     pending: List[str] = []
+    recovery_pending: Dict[str, Dict[str, Any]] = {}
     evidence_pending: List[str] = []
     post_merge_pending: Dict[str, List[str]] = {}
     challenge = str(snapshot.get("challenge") or "")
@@ -281,6 +284,15 @@ def evaluate_drain(snapshot: Mapping[str, Any], polls_required: int = 2) -> Dict
             continue
         state = str(raw_task.get("state") or "").strip().lower()
         if state in ACTIVE_STATES or state in {"ready", "blocked", "dead-letter"}:
+            blocker = str(raw_task.get("blocker_type") or "").strip().lower()
+            if state == "blocked" and blocker:
+                recovery = recovery_stage(
+                    blocker,
+                    attempts=int(raw_task.get("recovery_attempts") or 0),
+                    max_attempts=int(raw_task.get("recovery_max_attempts") or 2),
+                )
+                if recovery["status"] == "CONTINUE":
+                    recovery_pending[task_id] = recovery
             pending.append(task_id)
             continue
         if state != "done":
@@ -296,7 +308,11 @@ def evaluate_drain(snapshot: Mapping[str, Any], polls_required: int = 2) -> Dict
             evidence_pending.append(task_id)
 
     if pending:
-        return _fail("tasks_pending", "queue still has unresolved tasks", pending_tasks=pending)
+        result = _fail("tasks_pending", "queue still has unresolved tasks", pending_tasks=pending)
+        if recovery_pending:
+            result["reason_code"] = "recovery_pending"
+            result["recovery"] = recovery_pending
+        return result
     if post_merge_pending:
         return _fail(
             "post_merge_residuals",
