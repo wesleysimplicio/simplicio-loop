@@ -110,6 +110,16 @@ editing skills or a wired hook); `scripts/check.py` fails if `plugin/` drifts fr
 /simplicio-loop finish all the open issues
 ```
 
+## Current LLM operating sequence
+
+Read `llms.txt` and `AGENTS.md` first. Then verify the installed operator interfaces with
+`simplicio-mapper --help`, `simplicio-fast --help`, and `simplicio-dev-cli --help`.
+Survey with Mapper (`scan` → `inspect` → `handoff`), use Fast for bounded snapshots/PlanDAG
+context when available, and delegate the decided AC-scoped edit and verification to Dev CLI.
+Run focused tests and local gates before publishing. Runtime/MCP is disabled by default in the
+current release (`REQUIRE_RUNTIME=off`, `EXECUTION_PROFILE=standalone`); it is opt-in only and
+never substitutes for Mapper/Fast/Dev CLI evidence.
+
 ## Hooks (the loop + token economy)
 
 `hooks/` ships cross-platform Python hooks (fail-open): `loop_stop.py` (re-feed/exit),

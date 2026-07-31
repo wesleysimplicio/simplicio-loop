@@ -62,6 +62,12 @@ The user invokes it with a target body of work:
 If no argument is given, default to "all open work-items in the default source" and
 confirm scope in one line only if ambiguous.
 
+## LLM quick flow
+
+The compact current sequence is canonical in [`llms.txt`](llms.txt): Mapper `--help` →
+`scan`/`inspect`/`handoff`, Fast bounded context, Dev CLI governed edit/verify, focused gates,
+then live PR re-query. Default is standalone/off; Runtime/MCP is opt-in only.
+
 ## Extension points (bind native when available)
 
 The skill defines **50 named extension points** (see the Step 1b table in `SKILL.md`).

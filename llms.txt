@@ -10,12 +10,20 @@ What this repo is:
 - Current reference task flow for the Simplicio line
 - Evidence-gated loop: never exit on a fake “done”
 
+Current operator flow:
+- `simplicio-mapper --help` — survey operator; run `scan`, `inspect`, then `handoff`.
+- `simplicio-fast --help` — bounded snapshot/PlanDAG context when operational; readiness is not implementation.
+- `simplicio-dev-cli --help` — governed edit/verify operator; use `task ... --target ...` for the decided AC.
+- Run focused tests and `git diff --check`; re-query live PR/check/merge state before publishing.
+- Default profile is standalone: `SIMPLICIO_LOOP_REQUIRE_RUNTIME=off` and `SIMPLICIO_EXECUTION_PROFILE=standalone`.
+- Runtime/MCP is opt-in only; it is not part of the default flow and never replaces the three operators above.
+
 Non-negotiables:
 - Run commands for real; never simulate output.
 - Never mark work done without green gates + evidence.
 - Verify claims locally before push with `python3 scripts/check.py`.
 - Keep `_bundle` and source in parity; `scripts/check.py` audits this.
-- On Claude/Codex/Cursor/VS Code/Antigravity/Kiro/OpenCode/Simplicio Agent, `simplicio-runtime` binding is required before driving the loop.
+- Do not use `simplicio-runtime`, `simplicio`, or Runtime MCP by default; record missing-operator residuals honestly.
 
 Key loop artifacts:
 - `.simplicio/orchestrator/loop/scratchpad.md` — single source of truth for loop state
@@ -32,5 +40,6 @@ Key commands:
 
 If you are an LLM agent:
 - Prefer deterministic edits / local verification.
+- Do not use stale Mapper/Fast artifacts or fabricate a handoff; start a fresh bounded survey.
 - Read the journal before retrying a failed approach.
 - Treat blocker receipts and next-action hints in the wiki/handoff as first-class context.

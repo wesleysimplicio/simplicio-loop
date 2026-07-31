@@ -20,6 +20,15 @@ Claude-specific — it uses only shell, git, gh, file edit, and web.
 simplicio-loop: finish all the open issues
 ```
 
+## Current flow for any LLM
+
+Read `llms.txt` → `AGENTS.md` → `.claude/skills/simplicio-loop/SKILL.md`. Check
+`simplicio-mapper --help`, `simplicio-fast --help`, and `simplicio-dev-cli --help`; then run
+Mapper `scan`, `inspect`, and `handoff` before deciding an AC-scoped change. Use Fast for
+bounded snapshot/PlanDAG context, Dev CLI for the edit plus verification, and real tests/gates
+for evidence. Runtime/MCP is off by default (`standalone`); do not invoke it unless explicitly
+opted in.
+
 The orchestrator delegates, when loaded, to five satellite skills — `simplicio-loop`
 (Ralph loop), `simplicio-orient` (terminal-first token economy), `simplicio-review`
 (adversarial review), `simplicio-compress` (prose + memory compression), `simplicio-learn`
