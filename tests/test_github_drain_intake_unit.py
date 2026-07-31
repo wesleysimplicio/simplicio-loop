@@ -85,6 +85,18 @@ Requires not #92
     assert extract_issue_dependencies(body) == [1, 2, 3, 4, 5]
 
 
+def test_dependency_parser_ignores_runtime_and_migration_references():
+    body = """
+Depends on #927.
+Runtime #3664 and #3692-#3697 are tracked in the external repository.
+"""
+    assert extract_issue_dependencies(body) == [927]
+
+
+def test_dependency_parser_ignores_migration_marker():
+    assert extract_issue_dependencies("SIMPLICIO-MIGRATION:v1\nDepends on #927") == []
+
+
 def test_same_repository_repeated_in_request_is_not_false_ambiguity():
     intent = parse_natural_drain_request(
         "finish all issues in acme/widgets from https://github.com/acme/widgets"
