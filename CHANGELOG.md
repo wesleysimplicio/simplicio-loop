@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.38.12] - 2026-07-31
+
+- Inject a canonical, concise startup orientation into every `simplicio-loop`
+  LLM re-feed without growing the task body.
+- Mirror the orientation across the plugin/bundle, add E2E coverage, and record
+  the decision in ADR 0007 (issue #921).
+
 ## 3.38.11
 
 - Python standalone path: bounded Mapper timeouts now produce degraded receipts,
