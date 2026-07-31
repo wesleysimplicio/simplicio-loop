@@ -2746,20 +2746,33 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
     except ValueError:
         handoff_stdout = {}
     handoff_pack = handoff_stdout.get("context_pack") if isinstance(handoff_stdout, Mapping) else {}
+    configured_budget = int(mapper_token_budget) if mapper_token_budget.isdigit() else 8_000
+    estimated_tokens = (
+        handoff_pack.get("estimated_tokens")
+        if isinstance(handoff_pack, Mapping) else None
+    )
+    over_budget = (
+        isinstance(estimated_tokens, (int, float))
+        and not isinstance(estimated_tokens, bool)
+        and estimated_tokens > configured_budget
+    )
     if (
         task_aware_supported
         and task_path.strip()
         and target_hint.strip()
         and handoff.returncode == 0
         and isinstance(handoff_pack, Mapping)
-        and bool(handoff_pack.get("needs_broader_context"))
+        and (bool(handoff_pack.get("needs_broader_context")) or over_budget)
     ):
         recovery_argv = [
             "simplicio-mapper", "handoff", ".", "--json", "--await", "--timeout", mapper_timeout,
             "--execution-context",
         ]
-        if mapper_token_budget.isdigit() and int(mapper_token_budget) > 0:
-            recovery_argv.extend(["--token-budget", mapper_token_budget])
+        recovery_budget = min(
+            128_000,
+            max(configured_budget, int(estimated_tokens) if over_budget else configured_budget),
+        )
+        recovery_argv.extend(["--token-budget", str(recovery_budget)])
         if goal.strip():
             recovery_argv.extend(["--goal", goal.strip()])
         recovery_argv.extend(["--target", target_hint.strip()])
