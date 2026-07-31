@@ -14,6 +14,7 @@ from simplicio_loop.drain import (
     load_drain_receipt,
     persist_drain_receipt,
 )
+from simplicio_loop.recovery_policy import recovery_stage
 
 
 def _task(task_id="T1", state="done", delivered=True, evidence=None):
@@ -110,6 +111,30 @@ def test_merged_pr_with_closed_issue_remains_terminal():
     result = evaluate_drain(_snapshot([task]))
 
     assert result["verdict"] == "DRAINED"
+
+
+def test_blocked_task_enters_bounded_recovery_before_handoff():
+    task = _task(state="blocked")
+    task.update({"blocker_type": "live_lock", "recovery_attempts": 0})
+    result = evaluate_drain(_snapshot([task]))
+    assert result["reason_code"] == "recovery_pending"
+    assert result["recovery"]["T1"]["action"] == "diagnose_ownership"
+
+
+def test_recovery_exhaustion_is_honest_and_non_destructive():
+    result = recovery_stage("live_lock", attempts=2)
+    assert result == {
+        "status": "BLOCKED", "reason_code": "live_lock_recovery_exhausted",
+        "attempts": 2, "max_attempts": 2,
+        "allowed_actions": ["diagnose_ownership", "bounded_wait"],
+        "tag": "UNVERIFIED",
+    }
+
+
+def test_unknown_external_blocker_does_not_get_bypassed():
+    result = recovery_stage("branch_protection")
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "external_authority_blocked"
 
 
 def test_unknown_task_state_is_fail_closed():

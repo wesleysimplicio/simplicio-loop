@@ -93,6 +93,25 @@ def test_all_clear_stops_success():
     assert result["reason_code"] == "verified"
 
 
+def test_recoverable_blocker_continues_before_blocked_handoff():
+    result = decide({
+        "acs_open": 1, "blocked": True, "blocker_type": "operator_failure",
+        "recovery_attempts": 0,
+    })
+    assert result["decision"] == "CONTINUE_SERIAL"
+    assert result["reason_code"] == "recovery_pending"
+    assert result["recovery"]["action"] == "capability_check"
+
+
+def test_exhausted_recoverable_blocker_remains_explicitly_blocked():
+    result = decide({
+        "acs_open": 1, "blocked": True, "blocker_type": "operator_failure",
+        "recovery_attempts": 2,
+    })
+    assert result["decision"] == "STOP_BLOCKED"
+    assert result["reason_code"] == "operator_failure_recovery_exhausted"
+
+
 # -- hysteresis: one bad tick must not flip strategy -------------------------
 
 def test_single_stall_tick_under_cooldown_observes_instead_of_replanning():
