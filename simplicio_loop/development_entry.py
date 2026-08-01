@@ -32,6 +32,20 @@ class DevelopmentAssessment:
         payload["assessment_hash"] = _hash(payload)
         return payload
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DevelopmentAssessment":
+        if not isinstance(payload, dict) or not str(payload.get("task_id") or "").strip():
+            raise DevelopmentRouteError("assessment requires task_id")
+        expected = cls(
+            task_id=str(payload["task_id"]), complexity=str(payload.get("complexity", "simple")),
+            independent_ready=int(payload.get("independent_ready", 0)),
+            critical=bool(payload.get("critical", False)), heavy=bool(payload.get("heavy", False)),
+            uncertain=bool(payload.get("uncertain", False)), version=str(payload.get("version", "1")),
+        )
+        if payload.get("assessment_hash") != expected.to_dict()["assessment_hash"]:
+            raise DevelopmentRouteError("assessment hash is invalid")
+        return expected
+
 
 @dataclass(frozen=True)
 class DevelopmentRoute:
@@ -50,6 +64,23 @@ class DevelopmentRoute:
                    "max_iterations": self.max_iterations}
         payload["receipt_hash"] = _hash(payload)
         return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DevelopmentRoute":
+        if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
+            raise DevelopmentRouteError("unsupported development route schema")
+        fields = ("task_id", "requested_mode", "selected_mode", "reason_code",
+                  "assessment_hash", "max_iterations")
+        if any(field not in payload for field in fields):
+            raise DevelopmentRouteError("development route is incomplete")
+        route = cls(
+            task_id=str(payload["task_id"]), requested_mode=str(payload["requested_mode"]),
+            selected_mode=str(payload["selected_mode"]), reason_code=str(payload["reason_code"]),
+            assessment_hash=str(payload["assessment_hash"]), max_iterations=int(payload["max_iterations"]),
+        )
+        if payload.get("receipt_hash") != route.to_dict()["receipt_hash"]:
+            raise DevelopmentRouteError("route receipt hash is invalid")
+        return route
 
 
 class DevelopmentRouteError(ValueError):
@@ -74,6 +105,12 @@ def validate_route(route: DevelopmentRoute, assessment: DevelopmentAssessment) -
                "reason_code": "ROUTE_FRESH_AND_POLICY_VALID"}
     payload["receipt_hash"] = _hash(payload)
     return payload
+
+
+def admit_route_payload(route_payload: dict[str, Any], assessment_payload: dict[str, Any]) -> dict[str, Any]:
+    """Rehydrate and admit a persisted route without trusting caller fields."""
+    return validate_route(DevelopmentRoute.from_dict(route_payload),
+                          DevelopmentAssessment.from_dict(assessment_payload))
 
 
 def route_development(assessment: DevelopmentAssessment, mode: str = "auto", *, max_iterations: int = 1) -> DevelopmentRoute:
@@ -104,4 +141,4 @@ def route_development(assessment: DevelopmentAssessment, mode: str = "auto", *, 
 
 
 __all__ = ["GATE_SCHEMA", "MODES", "SCHEMA", "DevelopmentAssessment", "DevelopmentRoute",
-           "DevelopmentRouteError", "route_development", "validate_route"]
+           "DevelopmentRouteError", "admit_route_payload", "route_development", "validate_route"]
