@@ -142,3 +142,40 @@ def test_ledger_replay_uses_live_cli_ledger_exports(monkeypatch, capsys):
     assert payload["events"] == [{"event_id": "from-cli-seam"}]
     assert payload["context_schema"] == "test.context/v1"
     assert payload["required_context"] == ["run_id"]
+
+
+def test_findings_import_validates_array_before_creating(tmp_path, capsys):
+    payload = tmp_path / "bad.json"
+    payload.write_text(json.dumps([{"finding_id": "a"}]), encoding="utf-8")
+    args = _Args("import", json_flag=True)
+    args.path, args.repo_map, args.label, args.dry_run = str(payload), "", [], False
+    assert cli_mod.findings_command(args) == 2
+    assert "requires non-empty" in capsys.readouterr().out
+
+
+def test_findings_import_dry_run_resolves_repo_map(tmp_path, capsys):
+    payload = tmp_path / "findings.json"
+    payload.write_text(json.dumps([{"finding_id": "a", "stage": "test", "severity": "high", "source": str(tmp_path / "x.py:1")}]), encoding="utf-8")
+    repo_map = tmp_path / "repos.json"
+    repo_map.write_text(json.dumps({str(tmp_path): "acme/widgets"}), encoding="utf-8")
+    args = _Args("import", json_flag=True)
+    args.path, args.repo_map, args.label, args.dry_run = str(payload), str(repo_map), ["bug"], True
+    assert cli_mod.findings_command(args) == 0
+    assert json.loads(capsys.readouterr().out) == {"0": "https://github.com/acme/widgets/issues/dry-run-0"}
+
+
+def test_findings_import_creates_issue_per_finding(tmp_path, monkeypatch, capsys):
+    payload = tmp_path / "findings.json"
+    payload.write_text(json.dumps([{"finding_id": "a", "stage": "test", "severity": "high", "source": str(tmp_path / "x.py")}, {"finding_id": "b", "stage": "test", "severity": "low", "source": str(tmp_path / "x.py")}]), encoding="utf-8")
+    repo_map = tmp_path / "repos.json"
+    repo_map.write_text(json.dumps({str(tmp_path): "acme/widgets"}), encoding="utf-8")
+    calls = []
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return type("Result", (), {"returncode": 0, "stdout": json.dumps({"url": f"https://github.com/acme/widgets/issues/{len(calls)}"})})()
+    monkeypatch.setattr(cli_mod._inspection_cli.subprocess, "run", fake_run)
+    args = _Args("import", json_flag=True)
+    args.path, args.repo_map, args.label, args.dry_run = str(payload), str(repo_map), ["bug"], False
+    assert cli_mod.findings_command(args) == 0
+    assert len(calls) == 2
+    assert json.loads(capsys.readouterr().out) == {"0": "https://github.com/acme/widgets/issues/1", "1": "https://github.com/acme/widgets/issues/2"}

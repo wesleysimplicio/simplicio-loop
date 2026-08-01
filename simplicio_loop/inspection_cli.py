@@ -1,6 +1,7 @@
 """Support command surfaces extracted from :mod:`simplicio_loop.cli`."""
 from __future__ import annotations
 
+import subprocess
 import json
 from pathlib import Path
 
@@ -189,13 +190,113 @@ def ledger_replay(path: str, compatibility: bool, recover_trailing: bool,
         return 2
 
 
+def _github_repo_from_remote(remote: str):
+    remote = remote.strip().removesuffix(".git")
+    if remote.startswith("git@github.com:"):
+        candidate = remote.split(":", 1)[1]
+    elif "github.com/" in remote:
+        candidate = remote.split("github.com/", 1)[1]
+    else:
+        return None
+    parts = candidate.strip("/").split("/")
+    return "/".join(parts[:2]) if len(parts) >= 2 and all(parts[:2]) else None
+
+
+def _source_parent(source: str) -> Path:
+    candidate = source
+    if ":" in source and source.rsplit(":", 1)[1].isdigit():
+        candidate = source.rsplit(":", 1)[0]
+    path = Path(candidate).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path if path.is_dir() else path.parent
+
+
+def _repo_for_source(source: str, repo_map):
+    parent = _source_parent(source).resolve()
+    mapped = (repo_map or {}).get("repos", repo_map or {})
+    for directory in (parent, *parent.parents):
+        value = mapped.get(str(directory), mapped.get(directory.as_posix()))
+        if isinstance(value, str) and value:
+            return value
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(directory), "config", "--get", "remote.origin.url"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            repo = _github_repo_from_remote(result.stdout)
+            if repo:
+                return repo
+    return None
+
+
+def _load_findings_import(path: str):
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid findings file: {exc}") from exc
+    findings = payload.get("findings") if isinstance(payload, dict) else payload
+    if not isinstance(findings, list):
+        raise ValueError("findings input must be a JSON array or an object with a findings array")
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, dict):
+            raise ValueError(f"findings[{index}] must be an object")
+        required = ("finding_id", "stage", "severity", "source")
+        if any(not isinstance(finding.get(key), str) or not finding[key].strip() for key in required):
+            raise ValueError(f"findings[{index}] requires non-empty finding_id, stage, severity, and source")
+    return findings
+
+
+def _import_findings(args):
+    try:
+        findings = _load_findings_import(args.path)
+        repo_map = json.loads(Path(args.repo_map).read_text(encoding="utf-8")) if args.repo_map else {}
+        if not isinstance(repo_map, dict):
+            raise ValueError("repo map must be a JSON object")
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, sort_keys=True))
+        return 2
+    labels = list(getattr(args, "label", []) or [])
+    urls = {}
+    for index, finding in enumerate(findings):
+        repo = _repo_for_source(finding["source"], repo_map)
+        if not repo:
+            print(json.dumps({"error": f"could not resolve repository for findings[{index}]"}, sort_keys=True))
+            return 2
+        if args.dry_run:
+            urls[str(index)] = f"https://github.com/{repo}/issues/dry-run-{index}"
+            continue
+        title = f"[finding] {finding['stage']}: {finding['finding_id']} ({finding['severity']})"
+        body = finding.get("detail") or finding.get("message") or json.dumps(finding, sort_keys=True)
+        command = ["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body, "--json", "url"]
+        for label in labels:
+            command.extend(("--label", label))
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+            response = json.loads(result.stdout) if result.returncode == 0 else {}
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            response = {}
+        url = response.get("url") if isinstance(response, dict) else None
+        if not isinstance(url, str) or not url:
+            print(json.dumps({"error": f"gh issue create failed for findings[{index}]"}, sort_keys=True))
+            return 1
+        urls[str(index)] = url
+    print(json.dumps(urls, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def findings_command(args) -> int:
-    """List, report, reconcile, or diagnose continuous findings."""
+    """List, report, import, reconcile, or diagnose continuous findings."""
     from . import finding_report as fr
     from . import finding_router as rt
 
     cmd = getattr(args, "findings_command", None)
     json_output = bool(getattr(args, "json", False))
+    if cmd == "import":
+        return _import_findings(args)
     if cmd == "list":
         records = fr.read_findings()
         if json_output:
@@ -252,11 +353,7 @@ def findings_command(args) -> int:
     payload = {
         "schema": "simplicio.finding-command-error/v1",
         "ok": False,
-        "error": {
-            "code": "unknown_findings_command",
-            "message": "unknown findings subcommand",
-            "value": cmd,
-        },
+        "error": {"code": "unknown_findings_command", "message": "unknown findings subcommand", "value": cmd},
     }
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
     return 2
