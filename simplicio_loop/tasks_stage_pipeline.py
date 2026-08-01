@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import time
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -19,6 +20,17 @@ def _receipt_digest(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 def _git_result(argv: Sequence[str]) -> subprocess.CompletedProcess:
+    if os.name == "nt":
+        with tempfile.TemporaryDirectory(prefix="simplicio-tasks-git-") as directory:
+            stdout_path = Path(directory) / "stdout.txt"
+            stderr_path = Path(directory) / "stderr.txt"
+            command = " ".join('"' + str(arg).replace('"', '\\"') + '"' for arg in argv) + f' > "{stdout_path}" 2> "{stderr_path}"'
+            result = subprocess.run(command, shell=True, timeout=10, check=False)
+            return subprocess.CompletedProcess(
+                list(argv), result.returncode,
+                stdout_path.read_text(encoding="utf-8", errors="replace"),
+                stderr_path.read_text(encoding="utf-8", errors="replace"),
+            )
     last = None
     for attempt in range(5):
         try:
