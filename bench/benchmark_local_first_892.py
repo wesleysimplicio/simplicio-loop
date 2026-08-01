@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import platform
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,18 @@ from bench.prism_benchmark_852 import (  # noqa: E402
 )
 
 SCHEMA = "simplicio.local-first-benchmark/v1"
+
+
+def _source_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(REPO), capture_output=True,
+            text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
 
 
 async def benchmark(
@@ -62,13 +76,41 @@ async def benchmark(
             "provider_or_model_invoked": False,
             "correctness_before_performance": True,
             "modes": ["serial", "physical_capped", "prism_python"],
+            "phases": {
+                "cold": {"status": "UNVERIFIED", "value": None,
+                          "null_reason": "benchmark does not control OS/filesystem cache state"},
+                "warm": {"status": "UNVERIFIED", "value": None,
+                          "null_reason": "warm-cache protocol is not part of this offline matrix"},
+                "incremental": {"status": "UNVERIFIED", "value": None,
+                                "null_reason": "no source mutation/invalidation workload in this matrix"},
+            },
+            "unsupported_modes": {
+                "baseline_host": "no equivalent frozen host-flow adapter",
+                "threaded_local_batch": "not acceptance-equivalent to the model-free scheduler harness",
+                "supervised_process_workers": "requires process receipt harness",
+                "full_local_first_stack": "requires Mapper/Fast/Dev CLI integration fixture",
+            },
         },
         "environment": {
             "python": platform.python_version(),
             "platform": platform.platform(),
-            "cpu_count": __import__("os").cpu_count(),
+            "cpu_count": os.cpu_count(),
+            "source_commit": _source_commit(),
+            "source_commit_null_reason": None if _source_commit() else "git commit unavailable",
             "provider": None,
             "provider_null_reason": "offline_model_free_benchmark",
+        },
+        "resource_metrics": {
+            "cpu_time_ns": None, "peak_rss_bytes": None, "disk_bytes": None,
+            "mmap_bytes": None, "page_faults": None, "tokens": None,
+            "null_reasons": {
+                "cpu_time_ns": "harness does not isolate per-mode CPU time",
+                "peak_rss_bytes": "harness does not sample coordinator/worker RSS",
+                "disk_bytes": "harness is in-memory and does not track file deltas",
+                "mmap_bytes": "harness uses no mmap contract",
+                "page_faults": "platform counter collection not enabled",
+                "tokens": "offline model-free benchmark",
+            },
         },
         "loads": loads,
     }
