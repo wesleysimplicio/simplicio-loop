@@ -353,10 +353,14 @@ class LocalTaskQueue(SQLiteRemoteQueue):
                                 raise QueueUnavailable(f"invalid legacy {field} for {row['task_id']}") from exc
                             if not isinstance(raw, dict):
                                 raise QueueUnavailable(f"invalid legacy {field} for {row['task_id']}")
-                            if "schema" in raw or "digest" in raw:
+                            if field in {"intent", "receipt"}:
+                                supplied = raw.pop("digest", "")
+                                if raw.get("schema") != LEGACY_SCHEMA or supplied != _digest(raw):
+                                    raise QueueUnavailable(f"invalid legacy {field} digest for {row['task_id']}")
+                            elif "schema" in raw or "digest" in raw:
                                 supplied = raw.pop("digest", "")
                                 if raw.get("schema") not in {LEGACY_SCHEMA, SCHEMA} or supplied != _digest(raw):
-                                    raise QueueUnavailable(f"invalid legacy {field} digest for {row['task_id']}")
+                                    raise QueueUnavailable(f"invalid legacy provenance digest for {row['task_id']}")
                     for row in transitions:
                         try:
                             payload = json.loads(row["payload"])

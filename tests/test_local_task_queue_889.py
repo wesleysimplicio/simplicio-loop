@@ -261,6 +261,43 @@ def test_v1_migration_rejects_tamper_before_rehash_and_preserves_legacy(tmp_path
         assert db.execute("SELECT value FROM local_meta WHERE key='schema'").fetchone()[0] == LEGACY_SCHEMA
 
 
+@pytest.mark.parametrize("field", ["intent", "receipt"])
+def test_v1_migration_rejects_unversioned_effect_envelopes(tmp_path, field):
+    queue = LocalTaskQueue(tmp_path)
+    queue.submit("legacy-unversioned")
+    lease = queue.claim_local("legacy-unversioned", "w", idempotency_key="legacy-unversioned")
+    queue.persist_intent(lease, {"effect": "original"})
+    if field == "receipt":
+        queue.record_outcome(lease, "verified_success", receipt={"proof": "ok"})
+    with sqlite3.connect(queue.path) as db:
+        db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (LEGACY_SCHEMA,))
+        from simplicio_loop.local_task_queue import _digest
+        for envelope_field in ("intent", "receipt"):
+            raw = db.execute(
+                f"SELECT {envelope_field} FROM local_outcomes WHERE task_id='legacy-unversioned'"
+            ).fetchone()[0]
+            if raw:
+                envelope = json.loads(raw)
+                envelope["schema"] = LEGACY_SCHEMA
+                envelope.pop("digest", None)
+                envelope["digest"] = _digest(envelope)
+                db.execute(
+                    f"UPDATE local_outcomes SET {envelope_field}=? WHERE task_id='legacy-unversioned'",
+                    (json.dumps(envelope),),
+                )
+        value = json.loads(db.execute(
+            f"SELECT {field} FROM local_outcomes WHERE task_id='legacy-unversioned'"
+        ).fetchone()[0])
+        value.pop("schema", None)
+        value.pop("digest", None)
+        db.execute(f"UPDATE local_outcomes SET {field}=? WHERE task_id='legacy-unversioned'",
+                   (json.dumps(value),))
+
+    legacy = LocalTaskQueue(tmp_path, allow_legacy=True)
+    with pytest.raises(QueueUnavailable, match=f"invalid legacy {field} digest"):
+        legacy.migrate(dry_run=False)
+
+
 def test_v1_migration_is_exposed_through_json_cli(tmp_path, capsys):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     queue = LocalTaskQueue(tmp_path)
