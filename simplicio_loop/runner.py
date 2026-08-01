@@ -5418,6 +5418,7 @@ def dispatch_operator_batch(
     records: Dict[Tuple[str, str, int], Dict[str, Any]] = dict(prior)
     completed: List[Dict[str, Any]] = []
     refill_count = 0
+    initial_admissions = 0
     stop_reason = ""
 
     def _drain_requested() -> bool:
@@ -5516,6 +5517,7 @@ def dispatch_operator_batch(
                         f"dispatch:{item['task_id']}:started",
                     )
                     active[pool.submit(_run_operator_item_process, item, retry_budget)] = item
+                    initial_admissions += 1
                 else:
                     _append_dispatch_journal(
                         durable_journal_path, item["run_id"], "dispatch_started",
@@ -5524,6 +5526,7 @@ def dispatch_operator_batch(
                         f"dispatch:{item['task_id']}:started",
                     )
                     active[pool.submit(_run_item, item)] = item
+                    initial_admissions += 1
             while active:
                 done, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
                 for future in done:
@@ -5612,6 +5615,7 @@ def dispatch_operator_batch(
         "worker_count": len(final_records),
         "queue_depth": 0,
         "refill_count": refill_count,
+        "initial_admissions": initial_admissions,
         "serial_fallback_reason": serial_fallback_reason,
         "dispatch_mode": dispatch_mode,
         "drain": {
