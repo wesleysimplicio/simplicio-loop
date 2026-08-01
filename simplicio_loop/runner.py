@@ -5651,11 +5651,10 @@ def dispatch_operator_batch(
     dispatch_mode = os.environ.get("SIMPLICIO_LOOP_DISPATCH_MODE", "process").strip().lower()
     if dispatch_mode not in {"process", "thread"}:
         raise ValueError("SIMPLICIO_LOOP_DISPATCH_MODE must be process or thread")
-    # Remote queue clients are coordinator-owned and intentionally not pickled into
-    # children; callers can explicitly select the thread rollback for that legacy lane.
-    if dispatch_mode == "process" and worktree_queue is not None:
-        dispatch_mode = "thread"
-        serial_fallback_reason = serial_fallback_reason or "process_queue_context_unavailable"
+    # Queue clients remain coordinator-owned and are never sent to children.  The
+    # child receives only the already-persisted, JSON-safe worktree context; the
+    # coordinator releases the queue lease after the child returns.  This keeps
+    # process supervision as the default even when isolated worktrees are enabled.
     executor_type = ProcessPoolExecutor if dispatch_mode == "process" else ThreadPoolExecutor
     executor_kwargs = {"max_workers": effective_workers}
     if dispatch_mode == "thread":
