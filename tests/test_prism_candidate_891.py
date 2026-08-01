@@ -1,6 +1,12 @@
 import pytest
 
-from simplicio_loop.prism_reducer import Candidate, ExpectedTask, PrismReducer, PrismReducerError, TaskResult
+from simplicio_loop.prism_reducer import (
+    Candidate,
+    ExpectedTask,
+    PrismReducer,
+    PrismReducerError,
+    TaskResult,
+)
 
 
 HASH = "a" * 64
@@ -57,3 +63,23 @@ def test_reducer_emits_structured_conflict_bundle_without_selecting_winner():
             "task-1", 1, "slot-1", "not-a-hash", HASH, HASH, (), HASH, "generation",
             HASH, HASH, "verified",
         )
+
+
+def test_reducer_snapshot_restores_results_and_rejects_contract_drift():
+    expected = [ExpectedTask("task-1", "slot-1", "agent-1", 1, "generation-1")]
+    result = TaskResult(
+        "task-1", "slot-1", "agent-1", 1, 1, "generation-1", "accepted", HASH,
+        impact_test_hash=HASH,
+    )
+    original = PrismReducer(expected)
+    original.submit(result)
+    snapshot = original.snapshot()
+
+    restored = PrismReducer(expected)
+    restored.restore(snapshot)
+    assert restored.reduce_slot("slot-1")["verdict"] == "accepted"
+    with pytest.raises(PrismReducerError, match="hash"):
+        restored.restore(snapshot | {"snapshot_hash": "bad"})
+    drifted = PrismReducer([ExpectedTask("task-1", "slot-1", "agent-2", 1, "generation-1")])
+    with pytest.raises(PrismReducerError, match="contract"):
+        drifted.restore(snapshot)
