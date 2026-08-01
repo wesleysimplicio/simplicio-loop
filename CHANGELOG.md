@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.38.26
+
+- Resolve explicitly selected external quality providers through the Loop extension entry-point contract.
+
 ## 3.38.25
 
 - Keep quality providers opt-in for `simplicio-loop run`; an explicitly selected provider remains fail-closed.

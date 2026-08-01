@@ -18,14 +18,16 @@ provider transitions the run to BLOCKED -- never a silent fallback.
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import json
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 QUALITY_MATRIX_SCHEMA = "simplicio.quality-matrix/v1"
 PROVIDER_MODULE_TEMPLATE = "simplicio_loop.quality_providers.{name}"
+EXTENSION_ENTRY_POINT_GROUP = "simplicio.loop_extension"
 PROVIDER_TIMEOUT_SECONDS = 30.0
 MIN_PROVIDER_PROTOCOL_VERSION = (1, 0, 0)
 
@@ -104,20 +106,56 @@ def _parse_version(version: str) -> tuple:
     return tuple(parts[:3])
 
 
+def _quality_extension_entry(name: str) -> Any:
+    """Return an explicitly selected external quality entry point, if installed."""
+
+    try:
+        candidates = importlib.metadata.entry_points(group=EXTENSION_ENTRY_POINT_GROUP)
+    except TypeError:  # pragma: no cover - Python 3.9 compatibility
+        candidates = importlib.metadata.entry_points().get(EXTENSION_ENTRY_POINT_GROUP, [])
+    return next((item for item in candidates if str(getattr(item, "name", "")) == name), None)
+
+
+def _load_entry_point_module(name: str, entry: Any) -> tuple[Any, str]:
+    loaded = entry.load()
+    runtime = loaded() if callable(loaded) else loaded
+    manifest = getattr(runtime, "manifest", None)
+    if not isinstance(manifest, Mapping) or manifest.get("extension_id") != name:
+        raise ValueError("extension entry point manifest identity is invalid")
+    module_name = str(getattr(entry, "value", "")).split(":", 1)[0]
+    return importlib.import_module(module_name), module_name
+
+
 def load_quality_provider(name: str, policy: str, *, repo: str = ".") -> QualityProviderSpec:
     """Import and negotiate a quality provider. Fail-closed on any problem."""
     module_name = PROVIDER_MODULE_TEMPLATE.format(name=name)
-    try:
-        module = importlib.import_module(module_name)
-    except ModuleNotFoundError as exc:
-        raise QualityProviderError(
-            f"quality provider '{name}' not found (module {module_name}: {exc})",
-            kind="absent",
-        )
-    except Exception as exc:  # pragma: no cover - import side effects
-        raise QualityProviderError(
-            f"quality provider '{name}' failed to import: {exc}", kind="crash"
-        )
+    # Prefer a selected extension entry point over a legacy same-named builtin.
+    # This prevents the core compatibility shim from shadowing a real external
+    # provider that owns the Hub-backed execution contract.
+    selected_entry = _quality_extension_entry(name)
+    if selected_entry is not None:
+        # External quality distributions are opt-in extensions. Resolve only
+        # an explicitly requested entry point; the Loop core never imports or
+        # depends on a particular quality package.
+        try:
+            module, module_name = _load_entry_point_module(name, selected_entry)
+        except Exception as entry_exc:
+            raise QualityProviderError(
+                f"quality provider '{name}' extension entry point failed: {entry_exc}",
+                kind="crash",
+            ) from entry_exc
+    else:
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            raise QualityProviderError(
+                f"quality provider '{name}' not found (module {module_name}: {exc})",
+                kind="absent",
+            ) from exc
+        except Exception as exc:  # pragma: no cover - import side effects
+            raise QualityProviderError(
+                f"quality provider '{name}' failed to import: {exc}", kind="crash"
+            ) from exc
 
     negotiate = getattr(module, "capability_negotiate", None)
     if not callable(negotiate):
@@ -156,7 +194,7 @@ def load_quality_provider(name: str, policy: str, *, repo: str = ".") -> Quality
         name=name,
         policy=policy,
         version=version,
-        capabilities=caps,
+        capabilities=(caps.get("capabilities", caps) if isinstance(caps.get("capabilities", caps), dict) else {}),
         module_path=module_name,
     )
 
