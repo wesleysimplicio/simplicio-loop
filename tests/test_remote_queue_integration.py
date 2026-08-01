@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -37,26 +38,32 @@ def _concurrent_queue_first_start(tmp_path: Path, *, legacy: bool) -> Path:
 
     go = tmp_path / "go"
     worker = (
-        "import pathlib,sys,time; "
+        "import json,pathlib,sys,time,traceback; "
         "from simplicio_loop.remote_queue import SQLiteRemoteQueue; "
         "pathlib.Path(sys.argv[2]).write_text('ready', encoding='utf-8'); "
         "deadline=time.monotonic()+10; "
         "go=pathlib.Path(sys.argv[3]); "
         "\nwhile not go.exists() and time.monotonic()<deadline: time.sleep(0.005)\n"
         "if not go.exists(): raise SystemExit('barrier timeout')\n"
-        "SQLiteRemoteQueue(sys.argv[1], busy_timeout=10); print('READY')"
+        "result=pathlib.Path(sys.argv[4]);\n"
+        "try:\n SQLiteRemoteQueue(sys.argv[1], busy_timeout=10); "
+        "result.write_text(json.dumps({'status':'READY'}),encoding='utf-8')\n"
+        "except BaseException as exc:\n result.write_text(json.dumps({'status':'ERROR','error':repr(exc),"
+        "'traceback':traceback.format_exc()}),encoding='utf-8'); raise\n"
     )
     processes = []
     try:
         for index in range(6):
             ready = tmp_path / ("ready-%d" % index)
+            result = tmp_path / ("result-%d.json" % index)
             processes.append(
                 subprocess.Popen(
-                    [sys.executable, "-c", worker, str(db_path), str(ready), str(go)],
+                    [sys.executable, "-c", worker, str(db_path), str(ready), str(go), str(result)],
                     cwd=str(Path(__file__).resolve().parents[1]),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
                 )
             )
         deadline = time.monotonic() + 10
@@ -66,10 +73,12 @@ def _concurrent_queue_first_start(tmp_path: Path, *, legacy: bool) -> Path:
             time.sleep(0.01)
         assert len(list(tmp_path.glob("ready-*"))) == len(processes)
         go.write_text("go", encoding="utf-8")
-        for process in processes:
-            stdout, stderr = process.communicate(timeout=20)
-            assert process.returncode == 0, stderr
-            assert stdout.strip() == "READY"
+        for index, process in enumerate(processes):
+            process.wait(timeout=20)
+            result_path = tmp_path / ("result-%d.json" % index)
+            result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else {}
+            assert process.returncode == 0, result
+            assert result == {"status": "READY"}
     finally:
         for process in processes:
             if process.poll() is None:
