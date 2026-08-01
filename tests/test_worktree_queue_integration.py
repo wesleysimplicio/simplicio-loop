@@ -105,6 +105,34 @@ def test_composed_verification_receipt_is_hash_linked_and_not_delivery(tmp_path)
     assert q.state()["tasks"]["A"]["status"] != "delivered"
 
 
+def test_generation_binding_is_pinned_to_worker_and_merge_candidate(tmp_path):
+    repo = _repo(tmp_path)
+    q = _queue(tmp_path, repo)
+    q.allocate(TaskSpec("A", files_affected=["a.py"]))
+    binding = {
+        "schema": "simplicio.loop.generation-binding/v1",
+        "candidate_id": "A",
+        "mapper_generation": "mapper-1",
+        "fast_generation": "fast-1",
+        "canonical_cache_key": "sha256:base",
+        "overlay_path": str(tmp_path / "overlay-A"),
+        "receipt_hash": "sha256:binding",
+    }
+
+    q.record_generation_binding("A", binding)
+    candidate = q.enqueue_merge("A")
+
+    assert q.state()["tasks"]["A"]["generation_binding_hash"] == "sha256:binding"
+    assert candidate["generation_binding"] == {
+        "schema": "simplicio.loop.generation-binding/v1",
+        "mapper_generation": "mapper-1",
+        "fast_generation": "fast-1",
+        "canonical_cache_key": "sha256:base",
+        "overlay_path": str(tmp_path / "overlay-A"),
+        "receipt_hash": "sha256:binding",
+    }
+
+
 def test_shared_checkout_requires_policy_and_one_owned_lock(tmp_path):
     repo = _repo(tmp_path)
     q = _queue(tmp_path, repo)
