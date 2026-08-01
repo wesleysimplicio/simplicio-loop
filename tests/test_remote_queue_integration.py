@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import runpy
 import sqlite3
 import subprocess
 import sys
@@ -10,7 +12,6 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-
 from simplicio_loop.remote_queue import (
     HTTPRemoteQueue,
     QueueConflict,
@@ -20,6 +21,20 @@ from simplicio_loop.remote_queue import (
     _lease_json,
     create_http_queue_server,
 )
+
+
+def _run_server_script(script, argv, *, cwd=None):
+    previous_argv, previous_cwd = sys.argv, os.getcwd()
+    try:
+        sys.argv = [script, *argv]
+        if cwd:
+            os.chdir(cwd)
+        with pytest.raises(SystemExit) as raised:
+            runpy.run_path(script, run_name="__main__")
+        return int(raised.value.code)
+    finally:
+        sys.argv = previous_argv
+        os.chdir(previous_cwd)
 
 
 def _concurrent_queue_first_start(tmp_path: Path, *, legacy: bool) -> Path:
@@ -37,26 +52,32 @@ def _concurrent_queue_first_start(tmp_path: Path, *, legacy: bool) -> Path:
 
     go = tmp_path / "go"
     worker = (
-        "import pathlib,sys,time; "
+        "import json,pathlib,sys,time,traceback; "
         "from simplicio_loop.remote_queue import SQLiteRemoteQueue; "
         "pathlib.Path(sys.argv[2]).write_text('ready', encoding='utf-8'); "
         "deadline=time.monotonic()+10; "
         "go=pathlib.Path(sys.argv[3]); "
         "\nwhile not go.exists() and time.monotonic()<deadline: time.sleep(0.005)\n"
         "if not go.exists(): raise SystemExit('barrier timeout')\n"
-        "SQLiteRemoteQueue(sys.argv[1], busy_timeout=10); print('READY')"
+        "result=pathlib.Path(sys.argv[4]);\n"
+        "try:\n SQLiteRemoteQueue(sys.argv[1], busy_timeout=10); "
+        "result.write_text(json.dumps({'status':'READY'}),encoding='utf-8')\n"
+        "except BaseException as exc:\n result.write_text(json.dumps({'status':'ERROR','error':repr(exc),"
+        "'traceback':traceback.format_exc()}),encoding='utf-8'); raise\n"
     )
     processes = []
     try:
         for index in range(6):
             ready = tmp_path / ("ready-%d" % index)
+            result = tmp_path / ("result-%d.json" % index)
             processes.append(
                 subprocess.Popen(
-                    [sys.executable, "-c", worker, str(db_path), str(ready), str(go)],
+                    [sys.executable, "-c", worker, str(db_path), str(ready), str(go), str(result)],
                     cwd=str(Path(__file__).resolve().parents[1]),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
                 )
             )
         deadline = time.monotonic() + 10
@@ -66,10 +87,12 @@ def _concurrent_queue_first_start(tmp_path: Path, *, legacy: bool) -> Path:
             time.sleep(0.01)
         assert len(list(tmp_path.glob("ready-*"))) == len(processes)
         go.write_text("go", encoding="utf-8")
-        for process in processes:
-            stdout, stderr = process.communicate(timeout=20)
-            assert process.returncode == 0, stderr
-            assert stdout.strip() == "READY"
+        for index, process in enumerate(processes):
+            process.wait(timeout=20)
+            result_path = tmp_path / ("result-%d.json" % index)
+            result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else {}
+            assert process.returncode == 0, result
+            assert result == {"status": "READY"}
     finally:
         for process in processes:
             if process.poll() is None:
@@ -299,19 +322,16 @@ def test_network_bind_requires_explicit_tls(tmp_path):
         create_http_queue_server(backend, host="0.0.0.0", token="secret")
 
 
-def test_server_cli_requires_tls_pair(tmp_path):
+def test_server_cli_requires_tls_pair(tmp_path, capsys):
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     script = os.path.join(repo, "scripts", "remote_queue_server.py")
-    result = subprocess.run(
-        [sys.executable, script, "--db", str(tmp_path / "q.db"),
-         "--token", "secret", "--tls-certfile", "only-cert.pem"],
-        capture_output=True, text=True, timeout=10,
-    )
-    assert result.returncode == 2
-    assert "must be provided together" in (result.stderr + result.stdout)
+    code = _run_server_script(script, ["--db", str(tmp_path / "q.db"),
+                                      "--token", "secret", "--tls-certfile", "only-cert.pem"])
+    assert code == 2
+    assert "must be provided together" in capsys.readouterr().err
 
 
-def test_server_cli_imports_from_any_cwd_without_module_error(tmp_path):
+def test_server_cli_imports_from_any_cwd_without_module_error(tmp_path, capsys):
     # Regression for the import-path bug: the script lives in scripts/ but imports the
     # top-level ``simplicio_loop`` package. Running it as a subprocess used to add only the
     # script's own directory to sys.path, so the import failed with a bare ModuleNotFoundError
@@ -320,14 +340,13 @@ def test_server_cli_imports_from_any_cwd_without_module_error(tmp_path):
     # intended exit code even when invoked from a neutral working directory.
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     script = os.path.join(repo, "scripts", "remote_queue_server.py")
-    result = subprocess.run(
-        [sys.executable, script, "--db", str(tmp_path / "q.db"),
-         "--token", "secret", "--tls-certfile", "only-cert.pem"],
-        capture_output=True, text=True, timeout=10, cwd=str(tmp_path),
-    )
-    assert result.returncode == 2, result.stderr
-    assert "must be provided together" in (result.stderr + result.stdout)
-    assert "ModuleNotFoundError" not in result.stderr
+    code = _run_server_script(script, ["--db", str(tmp_path / "q.db"),
+                                      "--token", "secret", "--tls-certfile", "only-cert.pem"],
+                              cwd=str(tmp_path))
+    error = capsys.readouterr().err
+    assert code == 2
+    assert "must be provided together" in error
+    assert "ModuleNotFoundError" not in error
 
 
 def test_claim_retry_after_broken_response_reuses_same_lease_without_duplicate_claim(tmp_path):

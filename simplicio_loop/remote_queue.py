@@ -396,7 +396,7 @@ class SQLiteRemoteQueue:
             raise
 
     def _init(self) -> None:
-        with self._connect() as c:
+        with contextlib.closing(self._connect()) as c:
             # Schema discovery plus ALTER must be one serialized transaction.  If
             # two first-start workers inspect table_info concurrently, both can
             # otherwise decide that the same column is missing and one loses with
@@ -501,7 +501,7 @@ class SQLiteRemoteQueue:
         limit = max(1, int(limit))
         caps = {str(cap).strip() for cap in (capabilities or ()) if str(cap).strip()}
         try:
-            with self._connect() as c:
+            with contextlib.closing(self._connect()) as c:
                 statuses = {row["task_id"]: row["status"]
                            for row in c.execute("SELECT task_id, status FROM tasks").fetchall()}
                 rows = c.execute(
@@ -542,6 +542,15 @@ class SQLiteRemoteQueue:
         lid = _lease_id(task_id, agent_id, idempotency_key)
         try:
             with self._tx() as c:
+                return self._claim_in_tx(c, task_id, agent_id, idempotency_key, ttl,
+                                         normalized_identity, normalized_caps, now, lid)
+        except sqlite3.Error as exc:
+            raise QueueUnavailable("queue unavailable: %s" % exc) from exc
+
+    def _claim_in_tx(self, c: sqlite3.Connection, task_id: str, agent_id: str,
+                     idempotency_key: str, ttl: float,
+                     normalized_identity: Optional[Mapping[str, Any]],
+                     normalized_caps: Sequence[str], now: float, lid: str) -> Lease:
                 existing = c.execute("SELECT task_id,lease_id FROM idempotency WHERE idempotency_key=?",
                                      (idempotency_key,)).fetchone()
                 if existing and existing["task_id"] != task_id:
@@ -582,8 +591,6 @@ class SQLiteRemoteQueue:
                 self._event(c, task_id, "claimed", agent_id, token, {"lease_id": lid, "expires_at": expires})
                 return Lease(task_id, agent_id, lid, token, expires, idempotency_key,
                              normalized_identity, normalized_caps, False)
-        except sqlite3.Error as exc:
-            raise QueueUnavailable("queue unavailable: %s" % exc) from exc
 
     def _owned(self, c: sqlite3.Connection, lease: Lease) -> sqlite3.Row:
         row = c.execute("SELECT * FROM leases WHERE task_id=?", (lease.task_id,)).fetchone()
@@ -697,14 +704,14 @@ class SQLiteRemoteQueue:
             return {"task_id": lease.task_id, "status": "ready", "handoff": True, "reason": reason}
 
     def events(self, *, after: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
-        with self._connect() as c:
+        with contextlib.closing(self._connect()) as c:
             rows = c.execute("SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT ?", (after, limit)).fetchall()
             return [{"seq": r["seq"], "task_id": r["task_id"], "kind": r["kind"],
                      "agent_id": r["agent_id"], "fencing_token": r["fencing_token"],
                      "payload": json.loads(r["payload"]), "created_at": r["created_at"]} for r in rows]
 
     def task(self, task_id: str) -> Dict[str, Any]:
-        with self._connect() as c:
+        with contextlib.closing(self._connect()) as c:
             row = c.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if row is None:
                 raise KeyError(task_id)
