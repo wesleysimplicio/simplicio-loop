@@ -12,7 +12,7 @@ import sys
 from threading import RLock
 import time
 from collections import deque
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Tuple, TypedDict
 
@@ -5195,6 +5195,41 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         }
 
 
+def _run_operator_item_process(item: Mapping[str, Any], retry_budget: int) -> List[Dict[str, Any]]:
+    """Run one complete operator lane in a supervised child process.
+
+    The input is a plain dispatch item and the returned records are compact JSON-like
+    values, so the coordinator can persist the existing journal and receipt contracts.
+    Queue/worktree release remains coordinator-owned after the child exits.
+    """
+    attempts: List[Dict[str, Any]] = []
+    previous_fingerprint = ""
+    for attempt_no in range(1, max(0, int(retry_budget)) + 2):
+        record = _operator_dispatch_attempt(item)
+        record["dispatch_attempt"] = attempt_no
+        if previous_fingerprint and record.get("failure_fingerprint") == previous_fingerprint:
+            record["retry_strategy"] = "same_fingerprint_bounded"
+        elif attempt_no > 1:
+            record["retry_strategy"] = "alternate_strategy"
+        else:
+            record["retry_strategy"] = "initial"
+        attempts.append(record)
+        if record.get("status") == "succeeded":
+            break
+        previous_fingerprint = str(record.get("failure_fingerprint") or "")
+    final = attempts[-1]
+    final["dead_letter"] = final.get("status") != "succeeded"
+    final["attempt_count"] = len(attempts)
+    final["retry_scope"] = "worker-process"
+    final["attempt_history"] = [
+        {"dispatch_attempt": int(record.get("dispatch_attempt") or index),
+         "status": record.get("status", "UNVERIFIED"),
+         "failure_fingerprint": record.get("failure_fingerprint", "")}
+        for index, record in enumerate(attempts, start=1)
+    ]
+    return attempts
+
+
 def dispatch_operator_batch(
     items: Iterable[Mapping[str, Any]],
     *,
@@ -5355,14 +5390,30 @@ def dispatch_operator_batch(
             if task.task_id not in prism_admitted:
                 prism_admitted.append(task.task_id)
 
+    dispatch_mode = os.environ.get("SIMPLICIO_LOOP_DISPATCH_MODE", "process").strip().lower()
+    if dispatch_mode not in {"process", "thread"}:
+        raise ValueError("SIMPLICIO_LOOP_DISPATCH_MODE must be process or thread")
+    # Remote queue clients are coordinator-owned and intentionally not pickled into
+    # children; callers can explicitly select the thread rollback for that legacy lane.
+    if dispatch_mode == "process" and worktree_queue is not None:
+        dispatch_mode = "thread"
+        serial_fallback_reason = serial_fallback_reason or "process_queue_context_unavailable"
+    executor_type = ProcessPoolExecutor if dispatch_mode == "process" else ThreadPoolExecutor
+    executor_kwargs = {"max_workers": effective_workers}
+    if dispatch_mode == "thread":
+        executor_kwargs["thread_name_prefix"] = "simplicio-operator"
     if pending and effective_workers:
-        with ThreadPoolExecutor(max_workers=effective_workers, thread_name_prefix="simplicio-operator") as pool:
+        with executor_type(**executor_kwargs) as pool:
             active = {}
             while pending and len(active) < effective_workers:
                 item = _take_prism_admitted()
                 if item is None:
                     break
-                active[pool.submit(_run_item, item)] = item
+                if dispatch_mode == "process":
+                    _ensure_deferred_worktree_context(item, worktree_queue)
+                    active[pool.submit(_run_operator_item_process, item, retry_budget)] = item
+                else:
+                    active[pool.submit(_run_item, item)] = item
             while active:
                 done, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
                 for future in done:
@@ -5381,6 +5432,8 @@ def dispatch_operator_batch(
                             "error": f"{type(exc).__name__}: {exc}", "dead_letter": True,
                             "started_at": _now(), "finished_at": _now(),
                         }]
+                    if dispatch_mode == "process":
+                        _release_shared_context(item, worktree_queue)
                     for record in attempts:
                         _persist_attempt(record)
                     final = attempts[-1]
@@ -5400,7 +5453,11 @@ def dispatch_operator_batch(
                         next_item = _take_prism_admitted()
                         if next_item is None:
                             continue
-                        active[pool.submit(_run_item, next_item)] = next_item
+                        if dispatch_mode == "process":
+                            _ensure_deferred_worktree_context(next_item, worktree_queue)
+                            active[pool.submit(_run_operator_item_process, next_item, retry_budget)] = next_item
+                        else:
+                            active[pool.submit(_run_item, next_item)] = next_item
                         refill_count += 1
 
     final_records = []
@@ -5426,6 +5483,7 @@ def dispatch_operator_batch(
         "queue_depth": 0,
         "refill_count": refill_count,
         "serial_fallback_reason": serial_fallback_reason,
+        "dispatch_mode": dispatch_mode,
         "leases": [],
         "blockers": [
             {
