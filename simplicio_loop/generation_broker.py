@@ -32,7 +32,14 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    for attempt in range(5):
+        try:
+            os.replace(temporary, path)
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.01 * (2**attempt))
 
 
 @dataclass(frozen=True)
@@ -161,7 +168,7 @@ class GenerationBroker:
                 "dirty_fingerprint": item.dirty_fingerprint,
                 "mapper_config": item.mapper_config,
             }
-            for key, item in self.registry._identities.items()
+            for key, item in self.registry.snapshot_identities().items()
         ]
         state = {
             "schema": SCHEMA,
@@ -417,31 +424,25 @@ class GenerationBroker:
             self._promoted_generation = generation.generation
             self.lifecycle.fast_generation = generation.generation
             self.lifecycle.source_commit = generation.source_commit
-            if self._bindings:
-                old_key = next(iter(self._bindings.values())).identity_key
-                identity = self.registry.identity(old_key)
+            identities = self.registry.snapshot_identities()
+            if identities:
+                old_key = (
+                    next(iter(self._bindings.values())).identity_key
+                    if self._bindings else next(iter(identities))
+                )
+                old_identity = identities[old_key]
                 identity = RepositoryIdentity(
-                    repository=identity.repository,
-                    canonical_root=identity.canonical_root,
-                    default_branch=identity.default_branch,
-                    worktree_root=identity.worktree_root,
+                    repository=old_identity.repository,
+                    canonical_root=old_identity.canonical_root,
+                    default_branch=old_identity.default_branch,
+                    worktree_root=old_identity.worktree_root,
                     base_sha=generation.source_commit,
-                    dirty=identity.dirty,
-                    dirty_fingerprint=identity.dirty_fingerprint,
-                    mapper_config=identity.mapper_config,
+                    dirty=old_identity.dirty,
+                    dirty_fingerprint=old_identity.dirty_fingerprint,
+                    mapper_config=old_identity.mapper_config,
                 )
                 new_key = self.registry.register(identity)
-                self.registry._identities[old_key] = self.registry._identities.get(old_key, self.registry.identity(new_key))
-                self.registry._identities[old_key] = RepositoryIdentity(
-                    repository=identity.repository,
-                    canonical_root=identity.canonical_root,
-                    default_branch=identity.default_branch,
-                    worktree_root=identity.worktree_root,
-                    base_sha=next(iter(self._bindings.values())).repository_base_sha,
-                    dirty=identity.dirty,
-                    dirty_fingerprint=identity.dirty_fingerprint,
-                    mapper_config=identity.mapper_config,
-                )
+                self.registry.restore_identity(old_identity)
                 self._identity_aliases[old_key] = new_key
             self._persist_state()
             self._record("promotion", previous=previous, generation=generation.generation)

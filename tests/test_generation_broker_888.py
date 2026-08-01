@@ -11,7 +11,7 @@ import pytest
 from simplicio_loop.checkpoint_lifecycle import CheckpointLifecycle, LifecycleError
 from simplicio_loop.fast_fanout import CanonicalGeneration
 from simplicio_loop.generation_broker import GenerationBroker, _digest
-from simplicio_loop.generation_broker_cli import cli_main
+from simplicio_loop.generation_broker_cli import _load, cli_main
 from simplicio_loop.map_service import MapServiceRegistry, RepositoryIdentity
 
 
@@ -352,12 +352,19 @@ def test_gc_recovery_completes_partially_deleted_candidate(tmp_path: Path):
     GenerationBroker(service.registry, service.lifecycle)
     assert json.loads(journal.read_text())["state"] == "COMMITTED"
     assert not (service.lifecycle.cancellations / "a.json").exists()
+    assert not (service.lifecycle.leases / "a.json").exists()
+    assert GenerationBroker(service.registry, service.lifecycle).doctor()["healthy"] is True
 
 
 def test_no_binding_promotion_persists_and_fresh_cli_reloads(tmp_path: Path, capsys):
-    service, _, _ = broker(tmp_path)
+    service, identity_key, _ = broker(tmp_path)
     promoted = CanonicalGeneration("generation-2", "ctx2", "def", "plan2", "receipt2")
     service.promote(promoted)
     attempt = str(service.lifecycle.attempt)
     assert cli_main(["status", "--attempt-dir", attempt]) == 0
     assert json.loads(capsys.readouterr().out)["promoted_generation"] == "generation-2"
+    reloaded = _load(service.lifecycle.attempt.resolve())
+    binding = reloaded.bind(
+        identity_key, tree_hash="tree-2", files=[], candidate_id="first", generation=promoted
+    )
+    assert binding.source_commit == "def"

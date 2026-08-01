@@ -25,7 +25,10 @@ def _load(attempt: Path) -> GenerationBroker:
     for row in state.get("identities", []):
         value = dict(row)
         key = value.pop("key")
-        registry._identities[key] = RepositoryIdentity(**value)
+        identity = RepositoryIdentity(**value)
+        if identity.key != key:
+            raise LifecycleError("generation broker identity key mismatch")
+        registry.restore_identity(identity)
     lifecycle = CheckpointLifecycle(
         state["root"],
         task_id=state["task_id"],

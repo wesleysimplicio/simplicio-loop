@@ -455,6 +455,7 @@ class CheckpointLifecycle:
                 if checkpoints.exists():
                     shutil.rmtree(checkpoints, ignore_errors=False)
                 cancellation.unlink(missing_ok=True)
+                (self.leases / f"{candidate}.json").unlink(missing_ok=True)
                 removed.append(candidate)
         return {
             "schema": SCHEMA,
