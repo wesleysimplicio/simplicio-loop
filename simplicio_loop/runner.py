@@ -2710,11 +2710,15 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
     mapper_preflight = _preflight_mapper(repo_path, run_root)
     mapper_timeout = str(_mapper_timeout_seconds())
     scan = _run_cmd(
-        ["simplicio-mapper", "scan", ".", "--json", "--sync", "--timeout", mapper_timeout],
+        # The foreground route must return the mapper's macro receipt without
+        # waiting for the deep index.  Deep completion is polled/reconciled by
+        # the subsequent inspect/handoff stages and is never a prerequisite
+        # for obtaining the first bounded context.
+        ["simplicio-mapper", "scan", ".", "--json", "--timeout", mapper_timeout],
         repo_path,
     )
     inspect = _run_cmd(
-        ["simplicio-mapper", "inspect", ".", "--json", "--await", "--timeout", mapper_timeout],
+        ["simplicio-mapper", "inspect", ".", "--json", "--timeout", mapper_timeout],
         repo_path,
     )
     if _mapper_supports_command(mapper_preflight, "snapshot"):
@@ -2729,7 +2733,7 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
             "",
         )
     handoff_argv = [
-        "simplicio-mapper", "handoff", ".", "--json", "--await", "--timeout", mapper_timeout,
+        "simplicio-mapper", "handoff", ".", "--json", "--timeout", mapper_timeout,
         "--execution-context",
     ]
     task_aware_supported = bool(mapper_preflight.get("task_aware_supported"))
@@ -2770,7 +2774,7 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         and (bool(handoff_pack.get("needs_broader_context")) or over_budget)
     ):
         recovery_argv = [
-            "simplicio-mapper", "handoff", ".", "--json", "--await", "--timeout", mapper_timeout,
+            "simplicio-mapper", "handoff", ".", "--json", "--timeout", mapper_timeout,
             "--execution-context",
         ]
         recovery_budget = min(
@@ -2819,6 +2823,13 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
             "stderr": (handoff.stderr or "").strip(),
         },
         "handoff_recovery": handoff_recovery,
+        "execution_route": {
+            "mode": "foreground_first",
+            "deep_completion_required_for_first_context": False,
+            "scan_wait": False,
+            "inspect_wait": False,
+            "handoff_wait": False,
+        },
         "generated_at": _now(),
         "repo_state_before": before,
         "repo_state_after": _repo_fingerprint(repo_path),
