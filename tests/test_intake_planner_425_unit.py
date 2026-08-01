@@ -589,7 +589,7 @@ def test_local_single_task_operations_execute_process_seams_end_to_end(tmp_path,
     assert target.read_text(encoding="utf-8") == "old\n"
     assert "SECRET_SHOULD_NOT_REACH_OPERATOR" not in observed[0][1]
     assert observed[0][1]["SIMPLICIO_EXECUTION_PROFILE"] == "standalone"
-    assert receipt["stop_recovery_receipt"]["applied"] is True
+    assert receipt["stop_recovery_receipt"]["applied"] is False
 
 
 def test_local_single_task_operations_reject_dev_cli_refusal(tmp_path, monkeypatch):

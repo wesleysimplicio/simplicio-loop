@@ -875,7 +875,8 @@ def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = "
         "background_status": lambda background: background,
         "watcher_verify": lambda contract, mutation, verification: dict(task.get("watcher_receipt") or {}),
         "regression_gates": lambda contract, mutation: dict(task.get("dod_receipt") or {}),
-        "stop_recovery": lambda blocked: {"applied": True, "preserved": bool((task.get("stop") or {}).get("preserve")), "status": "stopped"},
+        "stop_recovery": lambda blocked: {"applied": False, "preserved": False,
+                                            "reason": "verifiable_stop_recovery_operator_unavailable"},
         "full_pipeline": lambda contract, triggers: {"status": "BLOCKED", "reason_code": "full_pipeline_handoff_required", "triggers": triggers},
     }
 
