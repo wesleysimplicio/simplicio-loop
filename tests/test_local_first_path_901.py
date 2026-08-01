@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
+import json
 
 import pytest
 
@@ -49,6 +51,16 @@ def test_local_first_path_binds_mapper_fast_and_apply(tmp_path: Path) -> None:
     assert result.status == "APPLIED"
     assert result.binding.base_generation == "base"
     assert result.to_dict()["apply_receipt"]["status"] == "APPLIED"
+    assert Path(result.receipt_path).is_file()
+    stored = json.loads(Path(result.receipt_path).read_text(encoding="utf-8"))
+    unsigned = dict(stored)
+    unsigned["receipt_path"] = ""
+    unsigned["receipt_hash"] = ""
+    expected = "sha256:" + hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    assert stored["receipt_hash"] == expected == result.receipt_hash
+    assert stored["binding"]["overlay_generation"] == "overlay"
     assert store.builds == 1
     assert store.released == ["lease"]
 
