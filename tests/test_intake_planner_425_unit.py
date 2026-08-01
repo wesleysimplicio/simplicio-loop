@@ -523,7 +523,9 @@ def test_single_task_fast_cli_is_real_fail_closed_dispatch(tmp_path, capsys):
     assert main(["single-task-fast", "--task-file", str(path)]) == 2
     payload = json.loads(capsys.readouterr().out)
     assert payload["route"] == "single-task-fast"
-    assert payload["reason_code"] == "mapper_operation_failed"
+    assert payload["reason_code"] in {"optional_local_operator_unavailable", "mapper_operation_failed"}
+    if payload["reason_code"] == "optional_local_operator_unavailable":
+        assert payload["missing_tools"]
 
 
 @pytest.mark.parametrize("change", [

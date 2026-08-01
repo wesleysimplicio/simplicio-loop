@@ -892,6 +892,15 @@ def dispatch_single_task_fast(tasks: Sequence[Mapping[str, Any]], operations: Op
         return {"schema": SINGLE_TASK_FAST_SCHEMA, **selection, "status": "ESCALATED"}
     if operations is None:
         operations = build_local_single_task_operations(tasks[0], root=str(tasks[0].get("repo") or "."))
+        available = operations.get("available_tools") if isinstance(operations, Mapping) else None
+        if isinstance(available, Mapping):
+            missing = sorted(str(name) for name, present in available.items() if not present)
+            if missing:
+                return {
+                    "schema": SINGLE_TASK_FAST_SCHEMA, **selection, "status": "BLOCKED",
+                    "reason_code": "optional_local_operator_unavailable",
+                    "available_tools": dict(available), "missing_tools": missing,
+                }
     return run_single_task_fast(tasks[0], operations)
 
 
