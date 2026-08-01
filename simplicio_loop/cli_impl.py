@@ -58,6 +58,7 @@ from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
 from .delivery import DELIVERY_ORDER
 from .map_service_cli import configure_commands as configure_map_commands, dispatch as dispatch_map
+from .serverless_deploy import build_plan as build_serverless_plan, execute_plan as execute_serverless_plan
 
 BUNDLE = Path(__file__).resolve().parent / "_bundle"
 DASHBOARD = BUNDLE / "hooks" / "simplicio_dashboard.py"
@@ -812,6 +813,16 @@ def main(argv=None) -> int:
              "forbid hand-edit, lock evidence/mutation authority",
     )
 
+    p_deploy = sub.add_parser(
+        "deploy", help="plan a gated serverless deployment (dry-run unless --apply is explicit)"
+    )
+    p_deploy.add_argument("--repo", default=".")
+    p_deploy.add_argument("--backend", choices=("modal", "daytona"), default="modal")
+    p_deploy.add_argument("--environment", default="")
+    p_deploy.add_argument("--image", default="")
+    p_deploy.add_argument("--apply", action="store_true")
+    p_deploy.add_argument("--action-gate", action="store_true")
+
     p_verify = sub.add_parser("verify", help="run the independent watcher and delivery gates")
     p_verify.add_argument("--repo", default=".", help="repository root")
     p_verify.add_argument("run_id", help="run id to verify")
@@ -1079,6 +1090,19 @@ def main(argv=None) -> int:
         return dispatch_map(args)
     if command == "preflight":
         return preflight(args.repo, args.json, strict=bool(getattr(args, "strict", False)))
+    if command == "deploy":
+        try:
+            deploy_plan = build_serverless_plan(args.repo, backend=args.backend,
+                                                environment=args.environment, image=args.image)
+            result = execute_serverless_plan(deploy_plan, apply=args.apply,
+                                             action_gate=args.action_gate)
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0 if not args.apply or result.get("status") == "PLAN_READY" else 2
+        except (ValueError, RuntimeError) as exc:
+            print(json.dumps({"schema": "simplicio.loop-serverless-deploy/v1",
+                              "status": "BLOCKED", "reason_code": type(exc).__name__,
+                              "error": str(exc), "effects_attempted": False}, sort_keys=True))
+            return 2
     if command == "findings":
         return findings_command(args)
     if command == "learn":
