@@ -106,3 +106,14 @@ opt-out, plan v2 DAG validation, crash/resume/replan idempotence), and
 `tests/test_planning_gate_live_e2e.py` (opt-in, `SIMPLICIO_LIVE_GH_E2E=1`: a REAL scratch GitHub
 issue, a real source snapshot, a real CLAIMED→PLANNED canonical-comment update, and a trivial
 guarded mutation through the real `execute_operator()` gate — no fake GitHub transport).
+
+
+## Local-first `single-task-fast` route (#885)
+
+A run with exactly one bounded task automatically selects `single-task-fast`. Before Mapper starts, Loop freezes the goal, ACs, delivery contract, target hints, verification commands, STOP/recovery behavior, and the byte/token/diff/iteration budgets. Mapper returns only the verified foreground target-to-collaborator-to-test corridor and enqueues its durable deep pass. Fast builds bounded context and a PlanDAG using the pinned foreground Mapper generation; both Mapper and Fast generations remain pinned for the entire attempt. A later deep generation is recorded as available and is eligible only for a new attempt or an explicit drift replan.
+
+The route requires local Mapper, Fast, and Dev CLI. Runtime, cloud, Orca, and a local LLM are not required. Strict mode accepts a healthy Rust Fast engine or the deterministic Python fallback. Mapper and Fast never mutate source; one contract/plan/generation/lease/fence-bound authority permits exactly one atomic Dev CLI transaction. Focused verification runs immediately, followed by the independent watcher and required regression/DoD gates.
+
+Standalone execution is fail-closed: Mapper/Fast generation pins, mutation authority, Dev CLI changeset results, watcher, and DoD must be hash-verifiable receipts with operator provenance and matching issue/source/target/plan bindings. Loop does not synthesize these receipts. An installed operator that lacks the contract produces a BLOCKED receipt with STOP/recovery evidence. Operator subprocesses receive only the minimal standalone environment allowlist.
+
+Automatic escalation to `full-pipeline` is deterministic and receipt-backed for target expansion, hub/sensitive surfaces, new files, diff-budget overshoot, verification failure, or source drift. Tuning is limited to the frozen `max_context_bytes`, `max_context_tokens`, `max_diff_lines`, and `max_iterations` budgets. Receipts persist phase timings, time-to-first-edit, total time, context bytes/tokens, cache decisions, reason codes, active generations, and background-generation availability. The regression benchmark requires at least ten repetitions and gates p95 time-to-first-edit against a frozen local threshold.
