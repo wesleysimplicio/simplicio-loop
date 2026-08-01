@@ -4276,7 +4276,7 @@ def _operator_worker_limit(requested: Optional[int], item_count: int) -> int:
 def _build_native_prism_scheduler(
     items: Sequence[Mapping[str, Any]],
     worker_limit: int,
-) -> tuple[Any, str]:
+) -> tuple[Any, str, dict[str, Any]]:
     """Build the native Prism admission authority for a local operator batch.
 
     Prism is intentionally an in-process contract here: it admits independent
@@ -4295,6 +4295,12 @@ def _build_native_prism_scheduler(
 
     if not items or worker_limit < 1:
         raise ValueError("native Prism requires work and a positive worker limit")
+    from .local_capacity import probe_local_capacity
+
+    capacity_sample = probe_local_capacity(
+        str(items[0].get("repo") or "."), requested_workers=worker_limit,
+    )
+    worker_limit = max(1, min(int(worker_limit), capacity_sample.safe_workers))
     run_id = str(items[0].get("run_id") or "local-batch")
     # Keep logical partitioning independent from physical workers.  A task may
     # provide an explicit partition identity; otherwise derive one from the
@@ -4391,7 +4397,7 @@ def _build_native_prism_scheduler(
             kind=kind,
             resources=ResourceVector(workers=1),
         ))
-    return scheduler, root.prism_id
+    return scheduler, root.prism_id, capacity_sample.to_dict()
 
 
 def _worktree_task_spec(item: Mapping[str, Any]) -> Any:
@@ -5278,7 +5284,10 @@ def dispatch_operator_batch(
         serial_fallback_reason = "shared_run_state"
     retry_budget = max(0, int(retry_budget))
 
-    prism_scheduler, prism_id = _build_native_prism_scheduler(normalized, effective_workers)
+    prism_scheduler, prism_id, capacity_sample = _build_native_prism_scheduler(
+        normalized, effective_workers,
+    )
+    effective_workers = max(1, min(effective_workers, int(capacity_sample["safe_workers"])))
     prism_admitted = deque(task.task_id for task in prism_scheduler.next_batch())
 
     pending = deque(
@@ -5465,6 +5474,7 @@ def dispatch_operator_batch(
             "scheduler": "simplicio_loop.prism_scheduler.PrismScheduler",
             "admission": "governed",
             "max_workers": effective_workers,
+            "capacity": capacity_sample,
             "snapshot": prism_scheduler.snapshot(),
         },
         "journal": str(journal_path) if journal_path else "",
