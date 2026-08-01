@@ -4413,12 +4413,14 @@ def _build_native_prism_scheduler(
         kept = ordered_partitions[: max_slots - 1]
         merged = [item for _, group in ordered_partitions[max_slots - 1:] for item in group]
         ordered_partitions = kept + [("overflow", merged)]
+    recovery_reserve = min(1, max(0, worker_limit - 1))
+    validation_reserve = min(1, max(0, worker_limit - recovery_reserve - 1))
     policy = PrismPolicy(
         max_tasks_per_slot=10,
         max_active_slots=max(1, len(ordered_partitions)),
         global_worker_limit=max(1, int(worker_limit)),
-        recovery_reserve=0,
-        validation_reserve=0,
+        recovery_reserve=recovery_reserve,
+        validation_reserve=validation_reserve,
     )
     policy_hash = hashlib.sha256(
         json.dumps({"policy": repr(policy), "run_id": run_id}, sort_keys=True).encode()
@@ -4436,10 +4438,26 @@ def _build_native_prism_scheduler(
         budget=(("workers", max(1, int(worker_limit))),),
     )
     governor = AdaptiveBudgetGovernor(policy, relief_samples=2)
-    observation = governor.observe(BudgetSample(
-        workers=int(capacity_sample.safe_workers),
-        observed_at_ns=int(capacity_sample.observed_at_ns),
-    ))
+
+    def _budget_sample(sample: Any) -> BudgetSample:
+        # Only worker capacity is measured by the local probe. Keep every other
+        # governor dimension explicitly unavailable instead of inferring it from
+        # an unrelated CPU, memory, or disk value.
+        null_reasons = {
+            name: "local_probe_not_supported"
+            for name in (
+                "cpu_millis", "rss_bytes", "io_units", "provider_requests",
+                "tokens", "model_slots", "network_queue", "context_tokens",
+                "evidence_bytes",
+            )
+        }
+        return BudgetSample(
+            workers=int(sample.safe_workers),
+            observed_at_ns=int(sample.observed_at_ns),
+            null_reasons=null_reasons,
+        )
+
+    observation = governor.observe(_budget_sample(capacity_sample))
     scheduler = PrismScheduler(policy, observation=observation)
     slots_by_partition: dict[str, SlotSupervisor] = {}
     for partition, group in ordered_partitions:
@@ -4485,6 +4503,30 @@ def _build_native_prism_scheduler(
         ))
     capacity_receipt = capacity_sample.to_dict()
     capacity_receipt["budget_governor"] = governor.status()
+    capacity_receipt["policy"] = {
+        "recovery_reserve": policy.recovery_reserve,
+        "validation_reserve": policy.validation_reserve,
+        "global_worker_limit": policy.global_worker_limit,
+    }
+
+    def refresh_capacity() -> None:
+        refreshed = probe_local_capacity(
+            str(capacity_root), requested_workers=worker_limit,
+        )
+        scheduler.controller.update(governor.observe(_budget_sample(refreshed)))
+        capacity_receipt.clear()
+        capacity_receipt.update(refreshed.to_dict())
+        capacity_receipt["budget_governor"] = governor.status()
+        capacity_receipt["policy"] = {
+            "recovery_reserve": policy.recovery_reserve,
+            "validation_reserve": policy.validation_reserve,
+            "global_worker_limit": policy.global_worker_limit,
+        }
+
+    # The dispatch bridge calls this before each refill. Keeping the hook on the
+    # scheduler preserves the existing return contract while making every
+    # admission wave use a fresh, hash-addressed governor event.
+    scheduler.native_capacity_refresh = refresh_capacity
     return scheduler, root.prism_id, capacity_receipt
 
 
@@ -5558,6 +5600,9 @@ def dispatch_operator_batch(
         return None
 
     def _refill_prism() -> None:
+        refresh = getattr(prism_scheduler, "native_capacity_refresh", None)
+        if refresh is not None:
+            refresh()
         for task in prism_scheduler.next_batch():
             if task.task_id not in prism_admitted:
                 prism_admitted.append(task.task_id)
