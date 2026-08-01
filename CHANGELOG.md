@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.38.28] - 2026-08-01
+
+- Synchronize package, plugin, runtime, and release metadata versions.
+
 ## [3.38.27] - 2026-08-01
 
 - Publish the external Hub-backed quality-provider entry-point integration from PR #969.
