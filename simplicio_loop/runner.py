@@ -65,6 +65,7 @@ from .canonical_plan import CanonicalPlan, load_canonical_plan
 from .authority_boundary import prepare_authorization_handoff
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
 from .execution_board import ExecutionBoard
+from .run_journal import RunJournal
 
 from .execution_route import _stable_hash as _execution_route_hash
 from .execution_route import capability_fingerprint, normalize_capability_manifest, route_receipt_is_current
@@ -4298,8 +4299,14 @@ def _build_native_prism_scheduler(
         raise ValueError("native Prism requires work and a positive worker limit")
     from .local_capacity import probe_local_capacity
 
+    capacity_root = Path(str(items[0].get("repo") or ".")).resolve()
+    # Queue/worktree adapters may hand the scheduler a path that is created only
+    # after admission. Probe the nearest existing ancestor instead of treating
+    # that normal pre-launch state as an unavailable disk signal.
+    while not capacity_root.exists() and capacity_root != capacity_root.parent:
+        capacity_root = capacity_root.parent
     capacity_sample = probe_local_capacity(
-        str(items[0].get("repo") or "."), requested_workers=worker_limit,
+        str(capacity_root), requested_workers=worker_limit,
     )
     worker_limit = max(1, min(int(worker_limit), capacity_sample.safe_workers))
     run_id = str(items[0].get("run_id") or "local-batch")
@@ -5238,6 +5245,43 @@ def _run_operator_item_process(item: Mapping[str, Any], retry_budget: int) -> Li
     return attempts
 
 
+def _append_dispatch_journal(
+    journal_path: Optional[Path], run_id: str, kind: str,
+    payload: Mapping[str, Any], idempotency_key: str,
+) -> None:
+    """Persist one idempotent batch lifecycle event in the existing RunJournal."""
+    if journal_path is None:
+        return
+    journal = RunJournal(journal_path)
+    if not journal.events(run_id):
+        journal.append(
+            run_id, "run_started", {"scope": "operator_batch"},
+            idempotency_key="run:started",
+        )
+    journal.append(
+        run_id, kind, dict(payload), idempotency_key=idempotency_key,
+    )
+
+
+def _dispatch_journal_recovery(journal_path: Optional[Path], run_id: str) -> List[int]:
+    """Return task indexes with a durable start but no terminal event."""
+    if journal_path is None or not journal_path.exists():
+        return []
+    events = RunJournal(journal_path).events(run_id)
+    active: Dict[int, bool] = {}
+    for event in events:
+        payload = event.get("payload") or {}
+        try:
+            task_index = int(payload.get("task_index"))
+        except (TypeError, ValueError):
+            continue
+        if event.get("kind") == "dispatch_started":
+            active[task_index] = True
+        elif event.get("kind") == "dispatch_terminal":
+            active.pop(task_index, None)
+    return sorted(active)
+
+
 def dispatch_operator_batch(
     items: Iterable[Mapping[str, Any]],
     *,
@@ -5245,6 +5289,7 @@ def dispatch_operator_batch(
     retry_budget: int = 3,
     journal_dir: Optional[str] = None,
     worktree_queue: Any = None,
+    stop_requested: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Continuously dispatch real operator workers and refill freed slots.
 
@@ -5269,9 +5314,11 @@ def dispatch_operator_batch(
     # expects) -- re-validating it as if it were still a pending dry-run would always fail
     # and permanently block every resumed batch that contains even one completed item.
     journal_path: Optional[Path] = None
+    durable_journal_path: Optional[Path] = None
     if journal_dir:
         journal_path = Path(journal_dir).resolve() / "operator-batch.jsonl"
         journal_path.parent.mkdir(parents=True, exist_ok=True)
+        durable_journal_path = journal_path.parent / "run-journal.sqlite"
     prior: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
     if journal_path and journal_path.exists():
         for line in journal_path.read_text(encoding="utf-8").splitlines():
@@ -5331,17 +5378,61 @@ def dispatch_operator_batch(
         normalized, effective_workers,
     )
     effective_workers = max(1, min(effective_workers, int(capacity_sample["safe_workers"])))
-    prism_admitted = deque(task.task_id for task in prism_scheduler.next_batch())
-
     pending = deque(
         item for item in normalized
         if prior.get((item["repo"], item["run_id"], item["task_index"]), {}).get("status") != "succeeded"
     )
     skipped = len(normalized) - len(pending)
+    pending_task_ids = {str(item.get("task_id") or "") for item in pending}
+    prism_admitted: deque[str] = deque()
+    # A resumed batch can have a completed item at the head of Prism's ready queue.
+    # Retire those durable successes before admitting fresh work; otherwise a full
+    # capacity sample leaves the pending item permanently invisible behind the skip.
+    while True:
+        admitted = prism_scheduler.next_batch()
+        if not admitted:
+            break
+        for task in admitted:
+            if task.task_id in pending_task_ids:
+                prism_admitted.append(task.task_id)
+                continue
+            try:
+                prism_scheduler.complete(
+                    task.task_id, "accepted", owner_agent=task.ownership.owner_agent,
+                    fence=task.ownership.fence,
+                )
+            except Exception:
+                # The scheduler remains authoritative; a later normal admission or
+                # terminal path will surface any unexpected state mismatch.
+                continue
+    for item in pending:
+        _append_dispatch_journal(
+            durable_journal_path, item["run_id"], "dispatch_queued",
+            {
+                "task_id": item["task_id"], "task_index": item["task_index"],
+                "worker_id": item["worker_id"], "isolation_key": item["isolation_key"],
+            },
+            f"dispatch:{item['task_id']}:queued",
+        )
     started = _now()
     records: Dict[Tuple[str, str, int], Dict[str, Any]] = dict(prior)
     completed: List[Dict[str, Any]] = []
     refill_count = 0
+    initial_admissions = 0
+    stop_reason = ""
+
+    def _drain_requested() -> bool:
+        nonlocal stop_reason
+        if stop_requested is None:
+            return False
+        try:
+            requested = bool(stop_requested())
+        except Exception as exc:
+            stop_reason = f"stop_callback_failed:{type(exc).__name__}"
+            return True
+        if requested and not stop_reason:
+            stop_reason = "operator_stop_requested"
+        return requested
 
     def _persist_attempt(record: Dict[str, Any]) -> None:
         if journal_path:
@@ -5413,15 +5504,29 @@ def dispatch_operator_batch(
     if pending and effective_workers:
         with executor_type(**executor_kwargs) as pool:
             active = {}
-            while pending and len(active) < effective_workers:
+            while pending and len(active) < effective_workers and not _drain_requested():
                 item = _take_prism_admitted()
                 if item is None:
                     break
                 if dispatch_mode == "process":
                     _ensure_deferred_worktree_context(item, worktree_queue)
+                    _append_dispatch_journal(
+                        durable_journal_path, item["run_id"], "dispatch_started",
+                        {"task_id": item["task_id"], "task_index": item["task_index"],
+                         "worker_id": item["worker_id"], "mode": dispatch_mode},
+                        f"dispatch:{item['task_id']}:started",
+                    )
                     active[pool.submit(_run_operator_item_process, item, retry_budget)] = item
+                    initial_admissions += 1
                 else:
+                    _append_dispatch_journal(
+                        durable_journal_path, item["run_id"], "dispatch_started",
+                        {"task_id": item["task_id"], "task_index": item["task_index"],
+                         "worker_id": item["worker_id"], "mode": dispatch_mode},
+                        f"dispatch:{item['task_id']}:started",
+                    )
                     active[pool.submit(_run_item, item)] = item
+                    initial_admissions += 1
             while active:
                 done, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
                 for future in done:
@@ -5446,6 +5551,13 @@ def dispatch_operator_batch(
                         _persist_attempt(record)
                     final = attempts[-1]
                     completed.append(final)
+                    _append_dispatch_journal(
+                        durable_journal_path, item["run_id"], "dispatch_terminal",
+                        {"task_id": item["task_id"], "task_index": item["task_index"],
+                         "worker_id": item["worker_id"], "status": final.get("status"),
+                         "receipt": final.get("receipt", "")},
+                        f"dispatch:{item['task_id']}:terminal:{final.get('status', 'unknown')}",
+                    )
                     try:
                         prism_scheduler.complete(
                             str(item.get("task_id") or ""),
@@ -5457,14 +5569,26 @@ def dispatch_operator_batch(
                     except Exception as exc:
                         final.setdefault("prism_error", f"{type(exc).__name__}: {exc}")
                     # Refill as soon as this worker exits; there is no frozen wave barrier.
-                    if pending:
+                    if pending and not _drain_requested():
                         next_item = _take_prism_admitted()
                         if next_item is None:
                             continue
                         if dispatch_mode == "process":
                             _ensure_deferred_worktree_context(next_item, worktree_queue)
+                            _append_dispatch_journal(
+                                durable_journal_path, next_item["run_id"], "dispatch_started",
+                                {"task_id": next_item["task_id"], "task_index": next_item["task_index"],
+                                 "worker_id": next_item["worker_id"], "mode": dispatch_mode},
+                                f"dispatch:{next_item['task_id']}:started",
+                            )
                             active[pool.submit(_run_operator_item_process, next_item, retry_budget)] = next_item
                         else:
+                            _append_dispatch_journal(
+                                durable_journal_path, next_item["run_id"], "dispatch_started",
+                                {"task_id": next_item["task_id"], "task_index": next_item["task_index"],
+                                 "worker_id": next_item["worker_id"], "mode": dispatch_mode},
+                                f"dispatch:{next_item['task_id']}:started",
+                            )
                             active[pool.submit(_run_item, next_item)] = next_item
                         refill_count += 1
 
@@ -5478,6 +5602,7 @@ def dispatch_operator_batch(
             "source_repo": item.get("source_repo", item["repo"]),
             "worktree_context": item.get("worktree_context", {}),
             "status": "pending", "phase": "queued", "execution_state": "pending",
+            "drain_status": "held" if stop_reason else "queued",
         }))
     result = {
         "schema": BATCH_SCHEMA,
@@ -5490,8 +5615,20 @@ def dispatch_operator_batch(
         "worker_count": len(final_records),
         "queue_depth": 0,
         "refill_count": refill_count,
+        "initial_admissions": initial_admissions,
         "serial_fallback_reason": serial_fallback_reason,
         "dispatch_mode": dispatch_mode,
+        "drain": {
+            "status": "drained" if stop_reason else "not_requested",
+            "reason_code": stop_reason or "none",
+            "pending_task_indices": [item["task_index"] for item in pending],
+        },
+        "durable_journal": str(durable_journal_path) if durable_journal_path else "",
+        "recovery_pending_task_indices": sorted({
+            task_index
+            for run_id in {item["run_id"] for item in normalized}
+            for task_index in _dispatch_journal_recovery(durable_journal_path, run_id)
+        }),
         "leases": [],
         "blockers": [
             {
@@ -5683,12 +5820,20 @@ def execute_operator_batch(
                 issue_ref=issue_ref, issue_url=issue_url,
             )
         items.append(item)
+    def _batch_stop_requested() -> bool:
+        try:
+            current = _load_json(Path(status["run_dir"]) / "state.json")
+        except (OSError, TypeError, ValueError):
+            return False
+        return str(current.get("phase") or "") == "cancelled"
+
     result = dispatch_operator_batch(
         items,
         max_workers=max_workers,
         retry_budget=retry_budget,
         journal_dir=str(Path(status["run_dir"])),
         worktree_queue=worktree_queue,
+        stop_requested=_batch_stop_requested,
     )
     lifecycle_result: Dict[str, Any]
     try:
