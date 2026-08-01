@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.38.27] - 2026-08-01
+
+- Publish the external Hub-backed quality-provider entry-point integration from PR #969.
+
 ## [3.38.26] - 2026-08-01
 
 - Resolve explicitly selected external quality providers through the Loop extension entry-point contract.
