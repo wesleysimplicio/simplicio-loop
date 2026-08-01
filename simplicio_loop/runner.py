@@ -4285,10 +4285,39 @@ def _build_native_prism_scheduler(
     if not items or worker_limit < 1:
         raise ValueError("native Prism requires work and a positive worker limit")
     run_id = str(items[0].get("run_id") or "local-batch")
-    slot_capacity = min(10, max(1, len(items)))
+    # Keep logical partitioning independent from physical workers.  A task may
+    # provide an explicit partition identity; otherwise derive one from the
+    # existing impact/dependency metadata so independent work does not collapse
+    # into the historical single supervisor.
+    def _partition_key(item: Mapping[str, Any]) -> str:
+        spec = item.get("task_spec")
+        spec = spec if isinstance(spec, Mapping) else {}
+        explicit = (
+            spec.get("slot_key") or spec.get("dependency_component")
+            or spec.get("repository") or spec.get("repo")
+        )
+        if explicit:
+            return str(explicit).strip()
+        paths = spec.get("files_affected") or spec.get("candidate_targets") or ()
+        if isinstance(paths, str):
+            paths = (paths,)
+        first = sorted(str(path).replace("\\", "/") for path in paths if str(path).strip())[:1]
+        if first:
+            return first[0].split("/", 1)[0]
+        return "default"
+
+    partitions: dict[str, list[Mapping[str, Any]]] = {}
+    for item in items:
+        partitions.setdefault(_partition_key(item), []).append(item)
+    ordered_partitions = sorted(partitions.items(), key=lambda pair: pair[0])
+    max_slots = min(20, max(1, len(items)))
+    if len(ordered_partitions) > max_slots:
+        kept = ordered_partitions[: max_slots - 1]
+        merged = [item for _, group in ordered_partitions[max_slots - 1:] for item in group]
+        ordered_partitions = kept + [("overflow", merged)]
     policy = PrismPolicy(
         max_tasks_per_slot=10,
-        max_active_slots=min(20, max(1, (len(items) + 9) // 10)),
+        max_active_slots=max(1, len(ordered_partitions)),
         global_worker_limit=max(1, int(worker_limit)),
         recovery_reserve=0,
         validation_reserve=0,
@@ -4308,13 +4337,16 @@ def _build_native_prism_scheduler(
         reducer_ref="simplicio_loop.runner.dispatch_operator_batch",
         budget=(("workers", max(1, int(worker_limit))),),
     )
-    slot = SlotSupervisor(
-        parent_prism_id=root.prism_id,
-        supervisor_agent="simplicio-loop",
-        capacity=slot_capacity,
-    )
     scheduler = PrismScheduler(policy)
-    scheduler.register_slot(slot)
+    slots_by_partition: dict[str, SlotSupervisor] = {}
+    for partition, group in ordered_partitions:
+        slot = SlotSupervisor(
+            parent_prism_id=root.prism_id,
+            supervisor_agent=f"simplicio-loop:{partition}",
+            capacity=min(10, max(1, len(group))),
+        )
+        scheduler.register_slot(slot)
+        slots_by_partition[partition] = slot
     for item in items:
         task_spec = item.get("task_spec")
         task_spec = dict(task_spec) if isinstance(task_spec, Mapping) else {}
@@ -4325,6 +4357,7 @@ def _build_native_prism_scheduler(
         if kind not in {"implementation", "recovery", "validation", "review", "integration"}:
             kind = "implementation"
         task_id = str(item.get("task_id") or "")
+        slot = slots_by_partition[_partition_key(item)]
         ownership = TaskOwnership(
             task_id=task_id,
             slot_id=slot.slot_id,

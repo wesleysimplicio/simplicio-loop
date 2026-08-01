@@ -152,6 +152,31 @@ def test_dispatch_allocates_and_persists_isolated_context_without_git(monkeypatc
     assert result["prism"]["mode"] == "native-local"
     assert result["prism"]["max_workers"] == 2
     assert result["prism"]["snapshot"]["metrics"]["logical_tasks"] == 2
+    assert result["prism"]["snapshot"]["metrics"]["logical_slots"] == 2
+
+
+def test_dispatch_partitions_independent_impacts_into_multiple_prism_slots(monkeypatch, tmp_path):
+    queue = FakeQueue(tmp_path / "workers")
+
+    def fake_execute(repo, run_id, task_index, **_kwargs):
+        return _success(repo, run_id, task_index)
+
+    monkeypatch.setattr(runner, "execute_operator", fake_execute)
+    result = runner.dispatch_operator_batch(
+        [
+            {"repo": str(tmp_path), "run_id": "run-1", "task_index": 1, "task_id": "A",
+             "task_spec": {"id": "A", "files_affected": ["alpha/a.py"]}},
+            {"repo": str(tmp_path), "run_id": "run-1", "task_index": 2, "task_id": "B",
+             "task_spec": {"id": "B", "files_affected": ["beta/b.py"]}},
+        ],
+        max_workers=2,
+        retry_budget=0,
+        worktree_queue=queue,
+    )
+
+    snapshot = result["prism"]["snapshot"]
+    assert snapshot["metrics"]["logical_slots"] == 2
+    assert len(snapshot["slots"]) == 2
 
 
 def test_dispatch_serializes_explicit_shared_queue_context(monkeypatch, tmp_path):

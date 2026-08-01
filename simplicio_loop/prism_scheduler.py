@@ -550,6 +550,7 @@ class PrismScheduler:
             "affected_ready_sets": sorted(self._affected_ready_sets),
             "metrics": {
                 "logical_tasks": len(self.tasks),
+                "logical_slots": len(self.slots),
                 "max_temporal_overlap": self._max_overlap,
                 "timings": dict(sorted(self._timings.items())),
             },
