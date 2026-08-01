@@ -1,6 +1,7 @@
 """Thin, action-gated bridge for the native tasks pipeline."""
 from __future__ import annotations
 
+from pathlib import Path
 import hashlib
 import json
 from typing import Any, Callable, Mapping
@@ -16,6 +17,12 @@ def _digest(value: Any) -> str:
 
 def _evidence_complete(rows: Any) -> bool:
     return bool(rows) and all(row.get("pr") and row.get("verification") for row in rows)
+
+def _write_receipt(path: Path, value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_suffix(".tmp")
+    pending.write_text(json.dumps(value, sort_keys=True, default=str, indent=2), encoding="utf-8")
+    pending.replace(path)
 
 class TasksOrchestrator:
     """Join existing intake, dispatcher and stage/review/delivery coordinator."""
@@ -42,6 +49,7 @@ class TasksOrchestrator:
         self.journal_dir = journal_dir
         self.worktree_queue = worktree_queue
         self.governor = governor or ResourceGovernor(ResourceLimits(processes=self.max_workers))
+        self.idempotency_dir = Path(journal_dir).resolve().parent / "idempotency" if journal_dir else None
 
     def run(self, request: str, *, action_gate: bool = False, cancel: bool = False) -> dict[str, Any]:
         plan = self.intake.run(request)
@@ -64,12 +72,26 @@ class TasksOrchestrator:
         if not items:
             receipt.update(state="blocked", reason="no_validated_loop_contracts", evidence=[])
             return receipt
+        idempotency_path = self.idempotency_dir / f"{key}.json" if self.idempotency_dir else None
+        if idempotency_path and idempotency_path.exists():
+            durable = json.loads(idempotency_path.read_text(encoding="utf-8"))
+            if durable.get("idempotency_key") != key:
+                receipt.update(state="blocked", reason="idempotency_receipt_mismatch", evidence=[])
+                return receipt
+            if durable.get("state") == "completed":
+                return durable
+            receipt.update(state="blocked", reason="dispatch_already_admitted", evidence=[])
+            return receipt
         requested = min(self.max_workers, len(items))
         try:
             lease = self.governor.admit("simplicio-tasks", key, ResourceRequest(processes=requested), lease_id=key)
         except ResourceThrottled as exc:
             receipt.update(state="blocked", reason="governor_throttled", governor=exc.receipt, evidence=[])
             return receipt
+        if idempotency_path:
+            admitted = dict(receipt)
+            admitted.update(state="dispatching", reason="durable_admission", evidence=[])
+            _write_receipt(idempotency_path, admitted)
         try:
             dispatched = self.dispatch(items, max_workers=requested, retry_budget=self.retry_budget, journal_dir=self.journal_dir, worktree_queue=self.worktree_queue)
             coordinated = self.coordinate(dispatched)
@@ -78,4 +100,6 @@ class TasksOrchestrator:
         evidence = coordinated.get("evidence", [])
         passed = bool(coordinated.get("passed")) and _evidence_complete(evidence)
         receipt.update(state="completed" if passed else "partial", reason="verified" if passed else "evidence_incomplete", dispatch=dispatched, evidence=evidence, review=coordinated, governor_release=release)
+        if idempotency_path:
+            _write_receipt(idempotency_path, receipt)
         return receipt

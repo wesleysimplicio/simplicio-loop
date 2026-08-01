@@ -42,7 +42,10 @@ class LoopRunContractMaterializer:
         if not armed.get("run_dir"):
             state = armed.get("state", {})
             raise ContractMaterializationError(f"issue {number} run preflight blocked: {state.get('blockers', [])}")
-        run_dir = Path(str(armed["run_dir"]))
+        run_dir = Path(str(armed["run_dir"])).resolve()
+        runs_root = (self.repo / ".simplicio" / "loop-runs").resolve()
+        if run_dir == runs_root or runs_root not in run_dir.parents:
+            raise ContractMaterializationError(f"issue {number} run_dir escapes canonical loop-runs root")
         state_path = run_dir / "state.json"
         state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else armed.get("state", {})
         if state.get("phase") != "awaiting_decision":
@@ -51,8 +54,9 @@ class LoopRunContractMaterializer:
         targets = list(((plan.get("steps") or [{}])[0].get("candidate_targets") or []))
         if not targets:
             raise ContractMaterializationError(f"issue {number} has no authorized targets")
-        return {"repo": str(self.repo), "run_id": armed["manifest"]["run_id"], "task_index": 1, "task_id": f"issue-{number}", "isolation": "worktree", "isolation_key": f"issue-{number}", "task_spec": {"id": f"issue-{number}", "goal": str(item.get("title") or ""), "files_affected": targets}}
-
+        authority = {"request": str(item.get("title") or ""), "source": {"issue": str(number), "revision": item.get("source_revision"), "planning_receipt": item.get("planning_receipt")}, "command": {"delivery": self.delivery, "max_iterations": self.max_iterations}, "targets": targets, "operator": "simplicio-dev-cli"}
+        authority["receipt_hash"] = _digest(authority)
+        return {"repo": str(self.repo), "run_id": armed["manifest"]["run_id"], "task_index": 1, "task_id": f"issue-{number}", "isolation": "worktree", "isolation_key": f"issue-{number}", "authority_receipt": authority, "task_spec": {"id": f"issue-{number}", "goal": str(item.get("title") or ""), "files_affected": targets}}
     def __call__(self, intake: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         identity = intake.get("run_identity", {})
         batch = _safe(identity.get("run_id") or identity.get("request_digest") or "tasks")
@@ -64,8 +68,11 @@ class LoopRunContractMaterializer:
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError) as exc:
                 raise ContractMaterializationError(f"invalid materialization receipt: {exc}") from exc
+            stored_hash = receipt.pop("receipt_hash", None)
             if receipt.get("schema") != RECEIPT_SCHEMA or not isinstance(receipt.get("items"), dict):
                 raise ContractMaterializationError("invalid materialization receipt schema")
+            if not stored_hash or stored_hash != _digest(receipt):
+                raise ContractMaterializationError("invalid materialization receipt hash")
         else:
             receipt = {"schema": RECEIPT_SCHEMA, "items": {}}
         rows = []
@@ -83,6 +90,8 @@ class LoopRunContractMaterializer:
             armed = self.arm(str(self.repo), str(task_path), self.delivery, self.max_iterations)
             row = self._row(str(number), item, armed)
             receipt["items"][str(number)] = {"fingerprint": fingerprint, "armed": {"manifest": armed["manifest"], "run_dir": armed["run_dir"]}}
-            receipt_path.write_text(json.dumps(receipt, sort_keys=True, indent=2), encoding="utf-8")
+            persisted = dict(receipt)
+            persisted["receipt_hash"] = _digest(receipt)
+            receipt_path.write_text(json.dumps(persisted, sort_keys=True, indent=2), encoding="utf-8")
             rows.append(row)
         return rows

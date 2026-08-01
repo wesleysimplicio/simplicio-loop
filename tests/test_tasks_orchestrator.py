@@ -1,3 +1,4 @@
+import json
 from simplicio_loop.hub_governor import ResourceGovernor, ResourceLimits
 from simplicio_loop.tasks_orchestrator import TasksOrchestrator
 
@@ -5,7 +6,7 @@ class Intake:
     def run(self, request):
         return {"run_identity": {"request": request}, "outcome": {"status": "PLANNED_NOT_EXECUTED"}}
 
-def build(*, evidence=None, governor=None, item_count=1):
+def build(*, evidence=None, governor=None, item_count=1, journal_dir=None):
     calls = []
     def dispatch(items, **kwargs):
         calls.append((items, kwargs))
@@ -14,11 +15,7 @@ def build(*, evidence=None, governor=None, item_count=1):
         Intake(),
         lambda plan: [{"task_id": str(index)} for index in range(item_count)],
         lambda dispatched: {"passed": True, "evidence": evidence or [{"pr": "#1", "verification": "passed"}]},
-        dispatch=dispatch,
-        governor=governor,
-        max_workers=2,
-        retry_budget=3,
-        journal_dir="journal",
+        dispatch=dispatch, governor=governor, max_workers=2, retry_budget=3, journal_dir=journal_dir,
     )
     return bridge, calls
 
@@ -33,15 +30,19 @@ def test_cancel_stops_before_dispatch():
     assert result["state"] == "cancelled"
     assert calls == []
 
-def test_authorized_pipeline_binds_governor_dispatch_and_evidence():
-    bridge, calls = build()
+def test_authorized_pipeline_binds_governor_dispatch_and_evidence(tmp_path):
+    bridge, calls = build(journal_dir=str(tmp_path / "journals"))
     first = bridge.run("all issues", action_gate=True)
     second = bridge.run("all issues", action_gate=True)
     assert first["state"] == "completed"
     assert first["governor_release"]["released"] is True
-    assert first["idempotency_key"] == second["idempotency_key"]
+    assert first == second
+    assert len(calls) == 1
     assert calls[0][1]["retry_budget"] == 3
-    assert calls[0][1]["journal_dir"] == "journal"
+    assert calls[0][1]["journal_dir"] == str(tmp_path / "journals")
+    durable = list((tmp_path / "idempotency").glob("*.json"))
+    assert len(durable) == 1
+    assert json.loads(durable[0].read_text(encoding="utf-8"))["state"] == "completed"
 
 def test_missing_verification_stays_partial():
     bridge, _ = build(evidence=[{"pr": "#1", "verification": None}])
