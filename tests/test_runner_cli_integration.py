@@ -379,6 +379,39 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
     assert handoff_argv[handoff_argv.index("--token-budget") + 1] == "24000"
 
 
+def test_run_mapper_sync_rollback_is_explicit_and_receipted(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    calls = []
+
+    monkeypatch.setenv("SIMPLICIO_LOOP_MAPPER_SYNC_ROLLBACK", "1")
+    monkeypatch.setattr(runner_mod, "_preflight_mapper", lambda *args: {
+        "task_aware_supported": False, "help_stdout": ""
+    })
+    monkeypatch.setattr(runner_mod, "_validate_mapper_receipt", lambda *args: None)
+
+    def fake_run(argv, cwd):
+        calls.append(list(argv))
+        if argv[:2] == ["simplicio-mapper", "scan"]:
+            stdout = {"deep": {"job_id": "job-1", "pid": 42}}
+        else:
+            stdout = {}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(stdout), stderr="")
+
+    monkeypatch.setattr(runner_mod, "_run_cmd", fake_run)
+    result = runner_mod._run_mapper(repo, run_root)
+
+    scan = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "scan"])
+    assert "--sync" in scan
+    assert result["execution_route"]["mode"] == "synchronous_rollback"
+    assert result["execution_route"]["background"] == {
+        "status": "consumed_by_sync_rollback", "work_id": "job-1", "pid": 42,
+    }
+    assert result["execution_route"]["phase_timings_seconds"]["scan_wall_seconds"] >= 0
+
+
 def test_run_mapper_preserves_explicit_target_when_handoff_omits_it(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()

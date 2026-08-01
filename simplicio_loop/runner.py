@@ -7,10 +7,10 @@ import random
 import re
 import shutil
 import subprocess
+import time
 import string
 import sys
 from threading import RLock
-import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -2710,18 +2710,35 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
     before = _repo_fingerprint(repo_path)
     mapper_preflight = _preflight_mapper(repo_path, run_root)
     mapper_timeout = str(_mapper_timeout_seconds())
+    rollback_sync = os.environ.get("SIMPLICIO_LOOP_MAPPER_SYNC_ROLLBACK", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    route_started = time.monotonic()
+    phase_timings: Dict[str, Any] = {}
+    scan_started = time.monotonic()
     scan = _run_cmd(
         # The foreground route must return the mapper's macro receipt without
         # waiting for the deep index.  Deep completion is polled/reconciled by
         # the subsequent inspect/handoff stages and is never a prerequisite
         # for obtaining the first bounded context.
-        ["simplicio-mapper", "scan", ".", "--json", "--timeout", mapper_timeout],
+        [
+            "simplicio-mapper", "scan", ".", "--json",
+            *( ["--sync"] if rollback_sync else [] ),
+            "--timeout", mapper_timeout,
+        ],
         repo_path,
     )
+    phase_timings["scan_wall_seconds"] = round(time.monotonic() - scan_started, 6)
+    inspect_started = time.monotonic()
     inspect = _run_cmd(
-        ["simplicio-mapper", "inspect", ".", "--json", "--timeout", mapper_timeout],
+        [
+            "simplicio-mapper", "inspect", ".", "--json",
+            *( ["--await"] if rollback_sync else [] ),
+            "--timeout", mapper_timeout,
+        ],
         repo_path,
     )
+    phase_timings["inspect_wall_seconds"] = round(time.monotonic() - inspect_started, 6)
     if _mapper_supports_command(mapper_preflight, "snapshot"):
         snapshot = _run_cmd(["simplicio-mapper", "snapshot", "build", "--json", "."], repo_path)
     else:
@@ -2733,10 +2750,10 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
             json.dumps({"status": "skipped", "reason": "optional_command_unavailable"}),
             "",
         )
-    handoff_argv = [
-        "simplicio-mapper", "handoff", ".", "--json", "--timeout", mapper_timeout,
-        "--execution-context",
-    ]
+    handoff_argv = ["simplicio-mapper", "handoff", ".", "--json"]
+    if rollback_sync:
+        handoff_argv.append("--await")
+    handoff_argv.extend(["--timeout", mapper_timeout, "--execution-context"])
     task_aware_supported = bool(mapper_preflight.get("task_aware_supported"))
     mapper_token_budget = os.environ.get("SIMPLICIO_LOOP_MAPPER_TOKEN_BUDGET", "").strip()
     if mapper_token_budget.isdigit() and int(mapper_token_budget) > 0:
@@ -2749,7 +2766,9 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         handoff_argv.extend(["--task-fingerprint", task_fingerprint.strip()])
     if task_aware_supported and target_hint.strip():
         handoff_argv.extend(["--target", target_hint.strip()])
+    handoff_started = time.monotonic()
     handoff = _run_cmd(handoff_argv, repo_path)
+    phase_timings["handoff_wall_seconds"] = round(time.monotonic() - handoff_started, 6)
     handoff_recovery = None
     try:
         handoff_stdout = json.loads(handoff.stdout) if handoff.stdout.strip() else {}
@@ -2774,10 +2793,10 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         and isinstance(handoff_pack, Mapping)
         and (bool(handoff_pack.get("needs_broader_context")) or over_budget)
     ):
-        recovery_argv = [
-            "simplicio-mapper", "handoff", ".", "--json", "--timeout", mapper_timeout,
-            "--execution-context",
-        ]
+        recovery_argv = ["simplicio-mapper", "handoff", ".", "--json"]
+        if rollback_sync:
+            recovery_argv.append("--await")
+        recovery_argv.extend(["--timeout", mapper_timeout, "--execution-context"])
         recovery_budget = min(
             128_000,
             max(configured_budget, int(estimated_tokens) if over_budget else configured_budget),
@@ -2802,34 +2821,52 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         }
         if recovery.returncode == 0:
             handoff = recovery
+    scan_stdout = json.loads(scan.stdout) if scan.stdout.strip() else {}
+    inspect_stdout = json.loads(inspect.stdout) if inspect.stdout.strip() else {}
+    snapshot_stdout = json.loads(snapshot.stdout) if snapshot.stdout.strip() else {}
+    handoff_stdout = json.loads(handoff.stdout) if handoff.stdout.strip() else {}
     payload = {
         "scan": {
             "returncode": scan.returncode,
-            "stdout": json.loads(scan.stdout) if scan.stdout.strip() else {},
+            "stdout": scan_stdout,
             "stderr": (scan.stderr or "").strip(),
         },
         "inspect": {
             "returncode": inspect.returncode,
-            "stdout": json.loads(inspect.stdout) if inspect.stdout.strip() else {},
+            "stdout": inspect_stdout,
             "stderr": (inspect.stderr or "").strip(),
         },
         "snapshot": {
             "returncode": snapshot.returncode,
-            "stdout": json.loads(snapshot.stdout) if snapshot.stdout.strip() else {},
+            "stdout": snapshot_stdout,
             "stderr": (snapshot.stderr or "").strip(),
         },
         "handoff": {
             "returncode": handoff.returncode,
-            "stdout": json.loads(handoff.stdout) if handoff.stdout.strip() else {},
+            "stdout": handoff_stdout,
             "stderr": (handoff.stderr or "").strip(),
         },
         "handoff_recovery": handoff_recovery,
         "execution_route": {
-            "mode": "foreground_first",
-            "deep_completion_required_for_first_context": False,
-            "scan_wait": False,
-            "inspect_wait": False,
-            "handoff_wait": False,
+            "mode": "synchronous_rollback" if rollback_sync else "foreground_first",
+            "rollback_flag": "SIMPLICIO_LOOP_MAPPER_SYNC_ROLLBACK" if rollback_sync else None,
+            "deep_completion_required_for_first_context": rollback_sync,
+            "scan_wait": rollback_sync,
+            "inspect_wait": rollback_sync,
+            "handoff_wait": rollback_sync,
+            "background": {
+                "status": "queued" if not rollback_sync else "consumed_by_sync_rollback",
+                "work_id": (
+                    (scan_stdout.get("deep") or {}).get("job_id")
+                    if isinstance(scan_stdout, Mapping) else None
+                ),
+                "pid": (
+                    (scan_stdout.get("deep") or {}).get("pid")
+                    if isinstance(scan_stdout, Mapping) else None
+                ),
+            },
+            "phase_timings_seconds": phase_timings,
+            "route_wall_seconds": round(time.monotonic() - route_started, 6),
         },
         "generated_at": _now(),
         "repo_state_before": before,
