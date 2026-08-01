@@ -24,12 +24,27 @@ def _git_result(argv: Sequence[str]) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory(prefix="simplicio-tasks-git-") as directory:
             stdout_path = Path(directory) / "stdout.txt"
             stderr_path = Path(directory) / "stderr.txt"
-            command = " ".join('"' + str(arg).replace('"', '\\"') + '"' for arg in argv) + f' > "{stdout_path}" 2> "{stderr_path}"'
-            result = subprocess.run(command, shell=True, timeout=10, check=False)
+            result = None
+            for attempt in range(5):
+                try:
+                    with stdout_path.open("w", encoding="utf-8") as stdout_handle, \
+                            stderr_path.open("w", encoding="utf-8") as stderr_handle:
+                        result = subprocess.run(list(argv), shell=False, stdout=stdout_handle,
+                                                stderr=stderr_handle, stdin=subprocess.DEVNULL,
+                                                close_fds=False, text=True,
+                                                timeout=10, check=False)
+                    break
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) not in {6, 50}:
+                        return subprocess.CompletedProcess(list(argv), 1, "", str(exc))
+                    if attempt < 4:
+                        time.sleep(0.25)
+            if result is None:
+                return subprocess.CompletedProcess(list(argv), 1, "", "git capture unavailable")
             return subprocess.CompletedProcess(
                 list(argv), result.returncode,
-                stdout_path.read_text(encoding="utf-8", errors="replace"),
-                stderr_path.read_text(encoding="utf-8", errors="replace"),
+                stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else "",
+                stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else "",
             )
     last = None
     for attempt in range(5):

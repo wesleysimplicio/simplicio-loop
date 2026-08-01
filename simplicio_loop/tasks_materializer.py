@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -30,9 +31,24 @@ def _git_text(repo: Path, *args: str) -> str:
         with tempfile.TemporaryDirectory(prefix="simplicio-tasks-base-") as directory:
             output = Path(directory) / "stdout.txt"
             error = Path(directory) / "stderr.txt"
-            command = " ".join('"' + str(arg).replace('"', '\\"') + '"' for arg in argv) + f' > "{output}" 2> "{error}"'
-            result = subprocess.run(command, shell=True, timeout=10, check=False)
-            stdout = output.read_text(encoding="utf-8", errors="replace")
+            result = None
+            for attempt in range(5):
+                try:
+                    with output.open("w", encoding="utf-8") as stdout_handle, \
+                            error.open("w", encoding="utf-8") as stderr_handle:
+                        result = subprocess.run(argv, shell=False, stdout=stdout_handle,
+                                                stderr=stderr_handle, stdin=subprocess.DEVNULL,
+                                                close_fds=False, text=True,
+                                                timeout=10, check=False)
+                    break
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) not in {6, 50}:
+                        return ""
+                    if attempt < 4:
+                        time.sleep(0.25)
+            if result is None:
+                return ""
+            stdout = output.read_text(encoding="utf-8", errors="replace") if output.exists() else ""
     else:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False)
         stdout = result.stdout

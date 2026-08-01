@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,7 @@ def test_corrupt_replay_receipt_fails_closed_without_rearming(tmp_path):
 
 def test_canonical_git_base_flows_from_materializer_to_merge_receipt(tmp_path):
     import subprocess
+    from simplicio_loop.tasks_materializer import _git_text
     from simplicio_loop.tasks_stage_pipeline import _coordinator_merge_receipt
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
@@ -95,10 +97,15 @@ def test_canonical_git_base_flows_from_materializer_to_merge_receipt(tmp_path):
     (tmp_path / "base").write_text("base", encoding="utf-8")
     subprocess.run(["git", "-C", str(tmp_path), "add", "base"], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "base"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "checkout", "-qb", "feature"], check=True)
+    feature_ref = "feature&echo-PWNED"
+    subprocess.run(["git", "-C", str(tmp_path), "checkout", "-qb", feature_ref], check=True)
     (tmp_path / "feature").write_text("feature", encoding="utf-8")
     subprocess.run(["git", "-C", str(tmp_path), "add", "feature"], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "feature"], check=True)
+    feature_sha = _git_text(tmp_path, "rev-parse", "--verify", feature_ref)
+    assert re.fullmatch(r"[0-9a-f]{40}", feature_sha)
+    assert _git_text(tmp_path, "rev-parse", "--verify", 'missing"&echo PWNED>PWNED&"') == ""
+    assert not (tmp_path / "PWNED").exists()
     subprocess.run(["git", "-C", str(tmp_path), "checkout", "-q", "master"], check=True)
     (tmp_path / "main").write_text("main", encoding="utf-8")
     subprocess.run(["git", "-C", str(tmp_path), "add", "main"], check=True)
@@ -109,13 +116,14 @@ def test_canonical_git_base_flows_from_materializer_to_merge_receipt(tmp_path):
     (run_dir / "plan.json").write_text(json.dumps({"steps": [{"candidate_targets": ["src/a.py"]}]}), encoding="utf-8")
     (run_dir / "state.json").write_text(json.dumps({"phase": "awaiting_decision"}), encoding="utf-8")
     item = dict(intake()["items"]["7"])
-    item.pop("base_ref"); item.pop("base_sha")
+    item.pop("base_ref")
+    item.pop("base_sha")
     row = LoopRunContractMaterializer(str(tmp_path), arm=lambda *args: {
         "manifest": {"run_id": "run-7"}, "run_dir": str(run_dir)})
     materialized = row._row("7", item, {"manifest": {"run_id": "run-7"}, "run_dir": str(run_dir)})
-    subprocess.run(["git", "-C", str(tmp_path), "merge", "--no-ff", "-qm", "merge", "feature"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "merge", "--no-ff", "-qm", "merge", feature_ref], check=True)
     merge_sha = (tmp_path / ".git" / "refs" / "heads" / "master").read_text(encoding="utf-8").strip()
-    worker = dict(materialized, worktree_path=str(tmp_path), branch="feature", admission_fence=3)
+    worker = dict(materialized, worktree_path=str(tmp_path), branch=feature_ref, admission_fence=3)
     receipt = _coordinator_merge_receipt(
         {"pr_url": "https://github.com/acme/widgets/pull/7", "pr_repo": "acme/widgets",
          "merge_receipt": {"merge_commit_sha": merge_sha}}, worker)
