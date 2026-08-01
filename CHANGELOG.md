@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.38.26
+## [3.38.26] - 2026-08-01
 
 - Restore generated `flow_audit.py` parity across plugin and package mirrors (#963).
 - Define bounded delivery with frozen live-source provenance, cross-session authority,
