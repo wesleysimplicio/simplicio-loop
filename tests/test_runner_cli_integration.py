@@ -366,8 +366,12 @@ def test_run_mapper_requests_snapshot_and_execution_context(tmp_path, monkeypatc
     for argv in calls:
         if argv[:2] in (["simplicio-mapper", "scan"], ["simplicio-mapper", "inspect"]):
             assert argv[argv.index("--timeout") + 1] == "2400"
+            assert "--await" not in argv
+            if argv[:2] == ["simplicio-mapper", "scan"]:
+                assert "--sync" not in argv
     handoff_argv = next(argv for argv in calls if argv[:2] == ["simplicio-mapper", "handoff"])
     assert "--execution-context" in handoff_argv
+    assert "--await" not in handoff_argv
     assert handoff_argv[handoff_argv.index("--timeout") + 1] == "2400"
     assert handoff_argv[handoff_argv.index("--target") + 1] == "src/app.py"
 
