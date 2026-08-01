@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import subprocess
@@ -210,7 +211,8 @@ def test_v1_provenance_migration_and_schema_gate(tmp_path):
             value["digest"] = _digest(value)
             db.execute(f"UPDATE local_outcomes SET {field}=? WHERE task_id='legacy'", (json.dumps(value),))
         for seq, raw in db.execute("SELECT seq,payload FROM local_transitions").fetchall():
-            value = json.loads(raw); value["schema"] = LEGACY_SCHEMA
+            value = json.loads(raw)
+            value["schema"] = LEGACY_SCHEMA
             db.execute("UPDATE local_transitions SET payload=?,digest=? WHERE seq=?",
                        (json.dumps(value), _digest(value), seq))
     with pytest.raises(QueueUnavailable, match="run `simplicio-loop queue migrate`"):
@@ -224,6 +226,39 @@ def test_v1_provenance_migration_and_schema_gate(tmp_path):
     stored = json.loads(restarted.inspect_local("legacy")["outcome"]["provenance"])
     assert stored["schema"] == SCHEMA and stored["digest"].startswith("sha256:")
     assert restarted.inspect_local("legacy")["transitions"][0]["payload"].find(SCHEMA) >= 0
+
+
+@pytest.mark.parametrize("target", ["intent", "transition"])
+def test_v1_migration_rejects_tamper_before_rehash_and_preserves_legacy(tmp_path, target):
+    queue = LocalTaskQueue(tmp_path)
+    queue.submit("legacy-tamper")
+    lease = queue.claim_local("legacy-tamper", "w", idempotency_key="legacy-tamper")
+    queue.persist_intent(lease, {"effect": "original"})
+    with sqlite3.connect(queue.path) as db:
+        db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (LEGACY_SCHEMA,))
+        if target == "intent":
+            value = json.loads(db.execute(
+                "SELECT intent FROM local_outcomes WHERE task_id='legacy-tamper'"
+            ).fetchone()[0])
+            value["schema"] = LEGACY_SCHEMA
+            value["effect"] = "tampered"
+            db.execute("UPDATE local_outcomes SET intent=? WHERE task_id='legacy-tamper'",
+                       (json.dumps(value),))
+        else:
+            seq, raw = db.execute(
+                "SELECT seq,payload FROM local_transitions ORDER BY seq LIMIT 1"
+            ).fetchone()
+            value = json.loads(raw)
+            value["schema"] = LEGACY_SCHEMA
+            value["payload"]["tampered"] = True
+            db.execute("UPDATE local_transitions SET payload=? WHERE seq=?",
+                       (json.dumps(value), seq))
+
+    legacy = LocalTaskQueue(tmp_path, allow_legacy=True)
+    with pytest.raises(QueueUnavailable, match="invalid legacy .* digest"):
+        legacy.migrate(dry_run=False)
+    with contextlib.closing(sqlite3.connect(legacy.path)) as db:
+        assert db.execute("SELECT value FROM local_meta WHERE key='schema'").fetchone()[0] == LEGACY_SCHEMA
 
 
 def test_v1_migration_is_exposed_through_json_cli(tmp_path, capsys):
