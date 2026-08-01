@@ -5434,6 +5434,12 @@ def dispatch_operator_batch(
         journal_path = Path(journal_dir).resolve() / "operator-batch.jsonl"
         journal_path.parent.mkdir(parents=True, exist_ok=True)
         durable_journal_path = journal_path.parent / "run-journal.sqlite"
+    recovery_pending_by_run: Dict[str, set[int]] = {}
+    if durable_journal_path is not None:
+        for run_id in {item["run_id"] for item in normalized}:
+            pending_indices = set(_dispatch_journal_recovery(durable_journal_path, run_id))
+            if pending_indices:
+                recovery_pending_by_run[run_id] = pending_indices
     prior: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
     if journal_path and journal_path.exists():
         for line in journal_path.read_text(encoding="utf-8").splitlines():
@@ -5496,6 +5502,7 @@ def dispatch_operator_batch(
     pending = deque(
         item for item in normalized
         if prior.get((item["repo"], item["run_id"], item["task_index"]), {}).get("status") != "succeeded"
+        and item["task_index"] not in recovery_pending_by_run.get(item["run_id"], set())
     )
     skipped = len(normalized) - len(pending)
     pending_task_ids = {str(item.get("task_id") or "") for item in pending}
@@ -5512,8 +5519,15 @@ def dispatch_operator_batch(
                 prism_admitted.append(task.task_id)
                 continue
             try:
+                recovery = any(
+                    item.get("task_id") == task.task_id
+                    and int(item.get("task_index", -1))
+                    in recovery_pending_by_run.get(str(item.get("run_id") or ""), set())
+                    for item in normalized
+                )
                 prism_scheduler.complete(
-                    task.task_id, "accepted", owner_agent=task.ownership.owner_agent,
+                    task.task_id, "blocked" if recovery else "accepted",
+                    owner_agent=task.ownership.owner_agent,
                     fence=task.ownership.fence,
                 )
             except Exception:
@@ -5529,8 +5543,35 @@ def dispatch_operator_batch(
             },
             f"dispatch:{item['task_id']}:queued",
         )
+    for run_id, task_indices in recovery_pending_by_run.items():
+        for task_index in sorted(task_indices):
+            _append_dispatch_journal(
+                durable_journal_path, run_id, "dispatch_recovery_pending",
+                {
+                    "task_index": task_index,
+                    "reason_code": "unknown_effect_reconciliation_required",
+                },
+                f"dispatch:{run_id}:{task_index}:recovery-pending",
+            )
     started = _now()
     records: Dict[Tuple[str, str, int], Dict[str, Any]] = dict(prior)
+    for item in normalized:
+        if item["task_index"] not in recovery_pending_by_run.get(item["run_id"], set()):
+            continue
+        records[(item["repo"], item["run_id"], item["task_index"])] = {
+            "schema": "simplicio.operator-worker/v1",
+            "worker_id": item["worker_id"], "repo": item["repo"],
+            "source_repo": item.get("source_repo", item["repo"]),
+            "run_id": item["run_id"], "task_index": item["task_index"],
+            "task_id": item.get("task_id", ""),
+            "worktree_context": item.get("worktree_context", {}),
+            "status": "blocked", "phase": "recovery",
+            "execution_state": "unknown_effect",
+            "reason_code": "unknown_effect_reconciliation_required",
+            "recovery_pending": True, "dead_letter": False,
+            "attempt": 0, "attempt_count": 0,
+            "started_at": _now(), "finished_at": _now(),
+        }
     completed: List[Dict[str, Any]] = []
     refill_count = 0
     initial_admissions = 0
@@ -5727,6 +5768,9 @@ def dispatch_operator_batch(
         "run_id": normalized[0]["run_id"] if normalized and len({i["run_id"] for i in normalized}) == 1 else "",
         "requested_tasks": [item["task_index"] for item in normalized],
         "skipped_completed": skipped,
+        "recovery_blocked_count": sum(
+            len(indices) for indices in recovery_pending_by_run.values()
+        ),
         "max_workers_requested": requested_workers,
         "max_workers": effective_workers,
         "active_workers": 0,
@@ -5751,12 +5795,15 @@ def dispatch_operator_batch(
         "blockers": [
             {
                 "task_index": record["task_index"],
-                "reason_code": "operator_failed",
+                "reason_code": record.get(
+                    "reason_code",
+                    "operator_failed",
+                ),
                 "error": record.get("error", ""),
                 "failure_fingerprint": record.get("failure_fingerprint", ""),
             }
             for record in final_records
-            if record.get("status") == "failed"
+            if record.get("status") in {"failed", "blocked"}
         ],
         "attempts": {
             str(record["task_index"]): int(record.get("dispatch_attempt") or 0)
@@ -5767,6 +5814,7 @@ def dispatch_operator_batch(
         "workers": final_records,
         "completed_task_indices": sorted(r["task_index"] for r in final_records if r.get("status") == "succeeded"),
         "failed_task_indices": sorted(r["task_index"] for r in final_records if r.get("status") == "failed"),
+        "blocked_task_indices": sorted(r["task_index"] for r in final_records if r.get("status") == "blocked"),
         "dead_letter_task_indices": sorted(r["task_index"] for r in final_records if r.get("dead_letter")),
         "receipt_contract": {
             "scope": "worker",

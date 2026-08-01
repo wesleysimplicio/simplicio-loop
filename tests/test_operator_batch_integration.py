@@ -3,6 +3,7 @@ import threading
 import time
 
 from simplicio_loop import runner
+from simplicio_loop.run_journal import RunJournal
 
 
 def test_dispatch_operator_batch_refills_without_wave_barrier(monkeypatch, tmp_path):
@@ -119,6 +120,37 @@ def test_dispatch_operator_batch_resumes_successful_journal_entries(monkeypatch,
     assert result["skipped_completed"] == 1
     assert calls == [2]
     assert result["completed_task_indices"] == [1, 2]
+
+
+def test_dispatch_operator_batch_blocks_unknown_effect_after_restart(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_execute(repo, run_id, task_index, **_kwargs):
+        calls.append(task_index)
+        return {"state": {"phase": "validating", "attempts": 1}}
+
+    monkeypatch.setattr(runner, "execute_operator", fake_execute)
+    journal = RunJournal(tmp_path / "run-journal.sqlite")
+    journal.append("crashed", "run_started", {"scope": "operator_batch"}, idempotency_key="run:started")
+    journal.append(
+        "crashed", "dispatch_started",
+        {"task_id": "task-crashed-1", "task_index": 1, "worker_id": "worker-1", "mode": "process"},
+        idempotency_key="dispatch:task-crashed-1:started",
+    )
+
+    result = runner.dispatch_operator_batch(
+        [{"repo": str(tmp_path / "tree"), "run_id": "crashed", "task_index": 1}],
+        max_workers=1,
+        retry_budget=0,
+        journal_dir=str(tmp_path),
+    )
+
+    assert calls == []
+    assert result["recovery_pending_task_indices"] == [1]
+    assert result["recovery_blocked_count"] == 1
+    assert result["blocked_task_indices"] == [1]
+    assert result["completed_task_indices"] == []
+    assert result["workers"][0]["reason_code"] == "unknown_effect_reconciliation_required"
 
 
 def test_dispatch_operator_batch_drains_before_admitting_new_work(monkeypatch, tmp_path):
