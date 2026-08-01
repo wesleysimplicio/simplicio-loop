@@ -121,6 +121,7 @@ def _success(repo, run_id, task_index):
 
 
 def test_dispatch_allocates_and_persists_isolated_context_without_git(monkeypatch, tmp_path):
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "thread")
     queue = FakeQueue(tmp_path / "workers")
     calls = []
 
@@ -156,6 +157,7 @@ def test_dispatch_allocates_and_persists_isolated_context_without_git(monkeypatc
 
 
 def test_dispatch_partitions_independent_impacts_into_multiple_prism_slots(monkeypatch, tmp_path):
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "thread")
     queue = FakeQueue(tmp_path / "workers")
 
     def fake_execute(repo, run_id, task_index, **_kwargs):
@@ -179,7 +181,28 @@ def test_dispatch_partitions_independent_impacts_into_multiple_prism_slots(monke
     assert len(snapshot["slots"]) == 2
 
 
+def test_process_mode_keeps_queue_lease_coordinator_owned(monkeypatch, tmp_path):
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "process")
+    queue = FakeQueue(tmp_path / "workers")
+
+    result = runner.dispatch_operator_batch(
+        [{
+            "repo": str(tmp_path), "run_id": "run-process", "task_index": 1,
+            "task_id": "A", "task_spec": {"id": "A", "files_affected": ["a.py"]},
+        }],
+        max_workers=1,
+        retry_budget=0,
+        worktree_queue=queue,
+    )
+
+    assert result["dispatch_mode"] == "process"
+    assert result["serial_fallback_reason"] == ""
+    assert result["workers"][0]["status"] == "failed"
+    assert queue.contexts["A"]["context_path"]
+
+
 def test_dispatch_serializes_explicit_shared_queue_context(monkeypatch, tmp_path):
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "thread")
     queue = FakeQueue(tmp_path / "shared")
     calls = []
 
@@ -208,6 +231,7 @@ def test_dispatch_serializes_explicit_shared_queue_context(monkeypatch, tmp_path
 
 
 def test_dispatch_queue_context_error_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "thread")
     class BrokenQueue(FakeQueue):
         def record_context(self, task_id, context):
             raise RuntimeError("context store offline")
