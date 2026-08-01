@@ -406,3 +406,128 @@ def test_cli_stage_receipt_subcommand_is_a_real_live_path(tmp_path, capsys):
     assert exit_code == 0
     assert out["schema"] == "simplicio.stage-receipt/v1"
     assert out["role_id"] == INTAKE_PLANNER_ROLE_ID
+
+
+# Issue #885: local-first single-task fast route.
+def _fast_task(stack="python", **extra):
+    task = {
+        "goal": f"edit one {stack} target", "acceptance_criteria": ["correct edit"],
+        "target_hints": [f"fixture/main.{ {'python':'py','csharp':'cs','typescript':'ts'}[stack] }"],
+        "verification_commands": [["test", stack]], "bounded": True,
+        "delivery_contract": {"watcher": True, "dod": True},
+        "budgets": {"max_context_bytes": 4096, "max_context_tokens": 1000, "max_diff_lines": 20, "max_iterations": 3},
+        "stop": {"preserve": True}, "recovery": {"preserve": True},
+    }
+    task.update(extra)
+    return task
+
+
+def _fast_operations(*, deep_available=True, mutation=None, focused_ok=True, fast_engine="python"):
+    calls = []
+    digests = iter(["source-0", "source-1"] * 20)
+    mutation_payload = {"diff_lines": 2, "receipt": "dev-cli-1", "source_before": "source-0"}
+    mutation_payload.update(mutation or {})
+
+    def record(name, result):
+        def operation(*args):
+            calls.append(name)
+            return result(*args) if callable(result) else dict(result)
+        return operation
+
+    operations = {
+        "available_tools": {"mapper": True, "fast": True, "dev_cli": True, "runtime": False, "cloud": False, "orca": False},
+        "fast_engine": fast_engine,
+        "mapper_foreground": record("mapper_foreground", {"verified": True, "generation": "G0", "corridor": ["target", "collaborator", "test"]}),
+        "mapper_enqueue_deep": record("mapper_enqueue_deep", {"job": "deep-1"}),
+        "fast_context": record("fast_context", {"generation": "F0", "bytes": 512, "tokens": 128, "cache_decision": "hit"}),
+        "fast_plan": record("fast_plan", {"generation": "F0", "schema": "simplicio.fast.plandag/v2"}),
+        "pin_generation": record("pin_generation", lambda component, generation: {"component": component, "generation": generation, "lease": f"{component}-lease"}),
+        "issue_authority": record("issue_authority", lambda contract, plan, pins: {"valid": True, "contract_hash": contract["contract_hash"], "plan": plan["schema"], "pins": pins, "lease": "attempt", "fence": 1}),
+        "source_digest": record("source_digest", lambda: next(digests)),
+        "dev_cli_transaction": record("dev_cli_transaction", mutation_payload),
+        "focused_verify": record("focused_verify", {"focused_ok": focused_ok}),
+        "background_status": record("background_status", {"available": deep_available, "generation": "G1" if deep_available else None}),
+        "watcher_verify": record("watcher_verify", {"ok": True}),
+        "regression_gates": record("regression_gates", {"ok": True, "dod": True}),
+        "full_pipeline": record("full_pipeline", lambda contract, triggers: {"receipt": "full-1", "triggers": triggers}),
+    }
+    return operations, calls
+
+
+@pytest.mark.parametrize("stack", ["python", "csharp", "typescript"])
+@pytest.mark.parametrize("deep_available", [False, True])
+def test_single_task_fast_e2e_fixtures_pin_g0_and_complete(stack, deep_available):
+    from simplicio_loop.intake_planner import run_single_task_fast
+    operations, calls = _fast_operations(deep_available=deep_available)
+    receipt = run_single_task_fast(_fast_task(stack), operations)
+    assert receipt["status"] == "COMPLETED"
+    assert receipt["active_generations"] == {"mapper": "G0", "fast": "F0"}
+    assert receipt["background"]["promoted_mid_attempt"] is False
+    assert calls.count("dev_cli_transaction") == 1
+    assert calls.index("mapper_enqueue_deep") < calls.index("dev_cli_transaction") < calls.index("watcher_verify")
+
+
+def test_single_task_fast_freezes_contract_and_preserves_stop_recovery():
+    from simplicio_loop.intake_planner import freeze_single_task_contract, run_single_task_fast
+    task = _fast_task()
+    frozen = freeze_single_task_contract(task)
+    task["acceptance_criteria"].append("late drift")
+    assert frozen["acceptance_criteria"] == ["correct edit"]
+    operations, _ = _fast_operations()
+    receipt = run_single_task_fast(_fast_task(), operations)
+    assert receipt["stop"]["preserve"] and receipt["recovery"]["preserve"] and receipt["max_iterations"] == 3
+
+
+@pytest.mark.parametrize("mutation,focused_ok,reason", [
+    ({"target_expanded": True}, True, "target_expansion"),
+    ({"sensitive_surface": True}, True, "sensitive_surface"),
+    ({"new_files": True}, True, "new_files"),
+    ({"diff_lines": 21}, True, "diff_overshoot"),
+    ({}, False, "verification_failure"),
+    ({"source_before": "drifted"}, True, "source_drift"),
+])
+def test_single_task_fast_escalates_deterministically_with_receipt(mutation, focused_ok, reason):
+    from simplicio_loop.intake_planner import run_single_task_fast
+    operations, calls = _fast_operations(mutation=mutation, focused_ok=focused_ok)
+    receipt = run_single_task_fast(_fast_task(), operations)
+    assert receipt["status"] == "ESCALATED" and receipt["reason_code"] == reason
+    assert receipt["escalation"]["receipt"] == "full-1" and calls.count("full_pipeline") == 1
+
+
+def test_single_task_route_selection_and_local_tool_contract():
+    from simplicio_loop.intake_planner import select_single_task_route, run_single_task_fast
+    assert select_single_task_route([_fast_task()])["route"] == "single-task-fast"
+    assert select_single_task_route([_fast_task(), _fast_task()])["route"] == "full-pipeline"
+    operations, _ = _fast_operations(fast_engine="python")
+    assert run_single_task_fast(_fast_task(), operations, strict=True)["status"] == "COMPLETED"
+    operations["available_tools"]["fast"] = False
+    assert run_single_task_fast(_fast_task(), operations)["status"] == "BLOCKED"
+
+
+def test_single_task_fast_benchmark_freezes_ten_run_threshold():
+    from simplicio_loop.intake_planner import benchmark_single_task_fast
+    result = benchmark_single_task_fast(lambda: (_fast_task(), _fast_operations()[0]), repetitions=10, threshold_ms=1000)
+    assert result["repetitions"] == 10 and result["passed"] is True
+    with pytest.raises(ValueError, match="ten repetitions"):
+        benchmark_single_task_fast(lambda: (_fast_task(), _fast_operations()[0]), repetitions=9)
+
+
+def test_single_task_fast_adversarial_fail_closed_gates():
+    from simplicio_loop.intake_planner import run_single_task_fast
+
+    operations, _ = _fast_operations()
+    operations["mapper_foreground"] = lambda contract: {"verified": False, "generation": "G0"}
+    assert run_single_task_fast(_fast_task(), operations)["reason_code"] == "foreground_context_unverified"
+
+    operations, _ = _fast_operations()
+    operations["fast_plan"] = lambda contract, context, generation: {"generation": "other"}
+    assert run_single_task_fast(_fast_task(), operations)["reason_code"] == "fast_generation_mismatch"
+
+    operations, _ = _fast_operations()
+    operations["issue_authority"] = lambda contract, plan, pins: {"valid": True, "contract_hash": contract["contract_hash"], "pins": {}, "lease": "x", "fence": 1}
+    assert run_single_task_fast(_fast_task(), operations)["reason_code"] == "mutation_authority_invalid"
+
+    operations, _ = _fast_operations()
+    operations["fast_context"] = lambda contract, foreground, engine: {"generation": "F0", "bytes": 4097, "tokens": 10}
+    receipt = run_single_task_fast(_fast_task(), operations)
+    assert receipt["status"] == "ESCALATED" and receipt["reason_code"] == "context_budget_exceeded"

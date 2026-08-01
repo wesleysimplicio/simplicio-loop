@@ -465,3 +465,159 @@ __all__ = [
     "receipt_is_passed",
     "to_stage_receipt",
 ]
+
+
+SINGLE_TASK_FAST_SCHEMA = "simplicio.single-task-fast-receipt/v1"
+SINGLE_TASK_FAST_ROUTE = "single-task-fast"
+FULL_PIPELINE_ROUTE = "full-pipeline"
+_SINGLE_TASK_REQUIRED_TOOLS = ("mapper", "fast", "dev_cli")
+_ESCALATION_ORDER = ("target_expansion", "sensitive_surface", "new_files", "diff_overshoot", "verification_failure", "source_drift")
+
+
+def freeze_single_task_contract(task: Mapping[str, Any]) -> Dict[str, Any]:
+    """Freeze the complete bounded-task contract before any mapping call."""
+    required = ("goal", "acceptance_criteria", "target_hints", "verification_commands", "budgets")
+    if any(key not in task for key in required):
+        raise ValueError("single-task-fast requires goal, ACs, target hints, verification commands, and budgets")
+    if not isinstance(task["acceptance_criteria"], list) or not task["acceptance_criteria"]:
+        raise ValueError("acceptance criteria must be a non-empty list")
+    if not isinstance(task["target_hints"], list) or not task["target_hints"]:
+        raise ValueError("target hints must be a non-empty list")
+    budgets = dict(task["budgets"])
+    for key in ("max_context_bytes", "max_context_tokens", "max_diff_lines", "max_iterations"):
+        if not isinstance(budgets.get(key), int) or budgets[key] <= 0:
+            raise ValueError(f"budgets.{key} must be a positive integer")
+    contract = {
+        "goal": str(task["goal"]),
+        "acceptance_criteria": list(task["acceptance_criteria"]),
+        "delivery_contract": dict(task.get("delivery_contract") or {}),
+        "target_hints": list(task["target_hints"]),
+        "verification_commands": list(task["verification_commands"]),
+        "budgets": budgets,
+        "stop": dict(task.get("stop") or {"preserve": True}),
+        "recovery": dict(task.get("recovery") or {"preserve": True}),
+    }
+    frozen = json.loads(json.dumps(contract, sort_keys=True))
+    frozen["contract_hash"] = content_hash(frozen)
+    return frozen
+
+
+def select_single_task_route(tasks: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    if len(tasks) != 1:
+        return {"route": FULL_PIPELINE_ROUTE, "reason_code": "task_count_not_one"}
+    task = tasks[0]
+    triggers = []
+    if not task.get("bounded", True):
+        triggers.append("target_expansion")
+    if task.get("sensitive_surface") or task.get("hub_surface"):
+        triggers.append("sensitive_surface")
+    if task.get("new_files"):
+        triggers.append("new_files")
+    if triggers:
+        return {"route": FULL_PIPELINE_ROUTE, "reason_code": triggers[0], "triggers": triggers}
+    return {"route": SINGLE_TASK_FAST_ROUTE, "reason_code": "one_bounded_task", "triggers": []}
+
+
+def _measured_escalations(contract, mutation, verification, source_drift):
+    reasons = set()
+    if mutation.get("target_expanded"):
+        reasons.add("target_expansion")
+    if mutation.get("sensitive_surface"):
+        reasons.add("sensitive_surface")
+    if mutation.get("new_files"):
+        reasons.add("new_files")
+    if int(mutation.get("diff_lines", 0)) > contract["budgets"]["max_diff_lines"]:
+        reasons.add("diff_overshoot")
+    if not verification.get("focused_ok", False):
+        reasons.add("verification_failure")
+    if source_drift:
+        reasons.add("source_drift")
+    return [reason for reason in _ESCALATION_ORDER if reason in reasons]
+
+
+def _call(operations, name, *args):
+    operation = operations.get(name)
+    if not callable(operation):
+        raise ValueError(f"missing single-task-fast operation: {name}")
+    return operation(*args)
+
+
+def run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any], *, strict: bool = True, clock=time.perf_counter) -> Dict[str, Any]:
+    """Execute one pinned local-first attempt through one Dev CLI mutation."""
+    started = clock()
+    selection = select_single_task_route([task])
+    if selection["route"] != SINGLE_TASK_FAST_ROUTE:
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, **selection, "status": "ESCALATED"}
+    available = dict(operations.get("available_tools") or {})
+    missing = [tool for tool in _SINGLE_TASK_REQUIRED_TOOLS if not available.get(tool)]
+    fast_engine = str(operations.get("fast_engine") or "python")
+    if missing or (strict and fast_engine not in {"rust", "python"}):
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "BLOCKED", "reason_code": "required_local_tool_unavailable", "missing_tools": missing, "fast_engine": fast_engine}
+    contract = freeze_single_task_contract(task)
+    timings = {}
+    phase = clock()
+    foreground = _call(operations, "mapper_foreground", contract)
+    timings["foreground_mapper_ms"] = (clock() - phase) * 1000
+    if not foreground.get("verified") or not foreground.get("generation"):
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "BLOCKED", "reason_code": "foreground_context_unverified"}
+    mapper_generation = foreground["generation"]
+    background = _call(operations, "mapper_enqueue_deep", contract, mapper_generation)
+    phase = clock()
+    context = _call(operations, "fast_context", contract, foreground, fast_engine)
+    if int(context.get("bytes", 0)) > contract["budgets"]["max_context_bytes"] or int(context.get("tokens", 0)) > contract["budgets"]["max_context_tokens"]:
+        escalation = _call(operations, "full_pipeline", contract, ["target_expansion"])
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "ESCALATED", "reason_code": "context_budget_exceeded", "triggers": ["target_expansion"], "escalation": escalation}
+    plan = _call(operations, "fast_plan", contract, context, mapper_generation)
+    timings["fast_context_plan_ms"] = (clock() - phase) * 1000
+    fast_generation = context.get("generation")
+    if not fast_generation or plan.get("generation") != fast_generation:
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "BLOCKED", "reason_code": "fast_generation_mismatch"}
+    pins = {"mapper": _call(operations, "pin_generation", "mapper", mapper_generation), "fast": _call(operations, "pin_generation", "fast", fast_generation)}
+    authority = _call(operations, "issue_authority", contract, plan, pins)
+    if not authority.get("valid") or authority.get("contract_hash") != contract["contract_hash"] or authority.get("pins") != pins or not authority.get("lease") or authority.get("fence") is None:
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "BLOCKED", "reason_code": "mutation_authority_invalid"}
+    before = _call(operations, "source_digest")
+    phase = clock()
+    mutation = _call(operations, "dev_cli_transaction", authority, plan)
+    timings["time_to_first_edit_ms"] = (clock() - started) * 1000
+    timings["mutation_ms"] = (clock() - phase) * 1000
+    after = _call(operations, "source_digest")
+    verification = _call(operations, "focused_verify", contract["verification_commands"], mutation)
+    triggers = _measured_escalations(contract, mutation, verification, before != mutation.get("source_before", before))
+    deep = _call(operations, "background_status", background)
+    active_generations = {"mapper": mapper_generation, "fast": fast_generation}
+    if triggers:
+        escalation = _call(operations, "full_pipeline", contract, triggers)
+        status = "ESCALATED"
+    else:
+        watcher = _call(operations, "watcher_verify", contract, mutation, verification)
+        regression = _call(operations, "regression_gates", contract, mutation)
+        escalation = None
+        status = "COMPLETED" if verification.get("focused_ok") and watcher.get("ok") and regression.get("ok") else "BLOCKED"
+    timings["total_ms"] = (clock() - started) * 1000
+    return {
+        "schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": status,
+        "reason_code": triggers[0] if triggers else ("verified_completion" if status == "COMPLETED" else "evidence_gate_failed"),
+        "contract_hash": contract["contract_hash"], "active_generations": active_generations, "pins": pins,
+        "background": {"enqueued": True, "available": bool(deep.get("available")), "generation": deep.get("generation"), "promoted_mid_attempt": False},
+        "mutation": {"transactions": 1, "receipt": mutation.get("receipt"), "source_after": after},
+        "verification": verification, "triggers": triggers, "escalation": escalation,
+        "metrics": {"phase_timings_ms": timings, "context_bytes": int(context.get("bytes", 0)), "context_tokens": int(context.get("tokens", 0)), "cache_decision": context.get("cache_decision", "miss")},
+        "stop": contract["stop"], "recovery": contract["recovery"], "max_iterations": contract["budgets"]["max_iterations"],
+    }
+
+
+def benchmark_single_task_fast(factory, *, repetitions: int = 10, threshold_ms: float = 1000.0):
+    if repetitions < 10:
+        raise ValueError("benchmark requires at least ten repetitions")
+    samples = []
+    for _ in range(repetitions):
+        task, operations = factory()
+        receipt = run_single_task_fast(task, operations)
+        samples.append(float(receipt["metrics"]["phase_timings_ms"]["time_to_first_edit_ms"]))
+    ordered = sorted(samples)
+    p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
+    return {"schema": "simplicio.single-task-fast-benchmark/v1", "repetitions": repetitions, "cold_ms": samples[0], "warm_ms": sum(samples[1:]) / (len(samples) - 1), "p95_time_to_first_edit_ms": p95, "threshold_ms": threshold_ms, "passed": p95 <= threshold_ms}
+
+
+__all__.extend(["SINGLE_TASK_FAST_SCHEMA", "SINGLE_TASK_FAST_ROUTE", "FULL_PIPELINE_ROUTE", "freeze_single_task_contract", "select_single_task_route", "run_single_task_fast", "benchmark_single_task_fast"])
