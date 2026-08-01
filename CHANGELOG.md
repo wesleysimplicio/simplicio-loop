@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.26
+
+- Restore generated `flow_audit.py` parity across plugin and package mirrors (#963).
+- Define bounded delivery with frozen live-source provenance, cross-session authority,
+  review limits, and explicit integration/release boundaries (#960).
+
 ## 3.38.25
 
 - Keep quality providers opt-in for `simplicio-loop run`; an explicitly selected provider remains fail-closed.
