@@ -441,13 +441,18 @@ class WorktreeQueue:
         if os.path.exists(path):
             try:
                 old = json.load(open(path, encoding="utf-8"))
-                if old.get("run_id") == self.run_id and old.get("task_id") == task_id:
+                supplied_sha = str(old.pop("receipt_sha", ""))
+                if (supplied_sha and supplied_sha == _sha256(old)
+                        and old.get("run_id") == self.run_id
+                        and old.get("task_id") == task_id
+                        and old.get("repo_root") == self.repo_root):
                     return path
             except (OSError, ValueError):
                 pass
             raise RuntimeError("shared checkout lock is already owned: %s" % path)
         payload = {"schema": "simplicio.shared-checkout-lock/v1", "task_id": task_id,
                    "run_id": self.run_id, "repo_root": self.repo_root, "acquired_at": _now()}
+        payload["receipt_sha"] = _sha256(payload)
         with open(path, "x", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2)
             fh.write("\n")
@@ -650,6 +655,10 @@ class WorktreeQueue:
                 raise KeyError("unknown task: %s" % task_id)
             if str(payload.get("worktree_id")) != str(entry.get("worktree_id") or ""):
                 raise ValueError("cleanup receipt worktree_id mismatch")
+            if str(payload.get("lease_owner")) != str((entry.get("lease") or {}).get("owner") or ""):
+                raise ValueError("cleanup receipt lease_owner mismatch")
+            if str(payload.get("terminal_handle")) != str(entry.get("terminal_handle") or ""):
+                raise ValueError("cleanup receipt terminal_handle mismatch")
             entry["cleanup_receipt"] = payload
             entry["cleanup_receipt_sha"] = payload["receipt_sha"]
             self._write(state)
@@ -685,11 +694,22 @@ class WorktreeQueue:
                 receipt = entry.get("lock_receipt") or ""
                 if receipt and os.path.exists(receipt):
                     try:
-                        payload = json.load(open(receipt, encoding="utf-8"))
-                        if payload.get("run_id") != self.run_id or payload.get("task_id") != task_id:
-                            failures.append("lock-receipt-owner-mismatch")
+                        expected = Path(os.path.dirname(self.state_path), "shared-locks", self.run_id,
+                                        "shared-checkout.lock.json").resolve()
+                        actual = Path(receipt).resolve()
+                        if actual != expected:
+                            failures.append("lock-receipt-path-not-owned")
+                            payload = {}
                         else:
-                            os.unlink(receipt)
+                            payload = json.loads(actual.read_text(encoding="utf-8"))
+                        supplied = str(payload.pop("receipt_sha", ""))
+                        if actual == expected and (not supplied or supplied != _sha256(payload)):
+                            failures.append("lock-receipt-hash-mismatch")
+                        elif actual == expected and (payload.get("run_id") != self.run_id or payload.get("task_id") != task_id
+                                or payload.get("repo_root") != self.repo_root):
+                            failures.append("lock-receipt-owner-mismatch")
+                        elif actual == expected:
+                            actual.unlink()
                     except (OSError, ValueError) as exc:
                         failures.append("lock-release: %s" % exc)
             elif path:

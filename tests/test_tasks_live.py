@@ -33,6 +33,8 @@ class Pipeline:
         self.command = command
     def __call__(self, dispatched):
         return {"passed": True, "evidence": [{"pr": "https://example/pr/1", "verification": "passed"}]}
+    def cancel_all(self, *, reason):
+        return [reason]
 
 class Orchestrator:
     def __init__(self, intake, contracts, pipeline, **kwargs):
@@ -48,6 +50,14 @@ def test_live_composition_wires_intake_materializer_queue_and_pipeline(tmp_path)
     assert result["state"] == "completed"
     assert Queue.instances[-1].specs[0].id == "issue-1"
     assert Queue.instances[-1].specs[0].files_affected == ["src/a.py"]
+
+def test_live_cancel_persists_before_source_or_intake_construction(tmp_path):
+    def forbidden_source(*args, **kwargs):
+        raise AssertionError("source must not be constructed during cancellation")
+
+    result = tasks_live.run_live("not even a valid drain request", workspace=str(tmp_path), agent_command=["agent"], action_gate=True, cancel=True, source_factory=forbidden_source, pipeline_factory=Pipeline)
+    assert result["state"] == "cancelled"
+    assert result["cancelled"] == ["cancel_requested"]
 
 def test_cli_live_requires_agent_command(capsys):
     assert cli.main(["tasks", "run", "finish all issues in acme/widgets", "--action-gate"]) == 2

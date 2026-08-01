@@ -18,18 +18,28 @@ def _safe(value: Any) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-") or "item"
 
 def _digest(value: Any) -> str:
-    blob = json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
+    blob = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 def _task_markdown(number: str, item: Mapping[str, Any]) -> str:
     title = str(item.get("title") or f"Issue {number}")
     criteria = item.get("acceptance_criteria") or []
     statements = [str(row.get("statement") or row.get("text") or "").strip() for row in criteria if isinstance(row, Mapping)]
-    expected = statements[0] if statements else "a implementação satisfaz o objetivo e a verificação declarada da issue"
+    if not statements:
+        statements = ["a implementação satisfaz o objetivo e a verificação declarada da issue"]
+    scenarios = "\n\n".join(
+        f"Cenário {index}: {title}\n  Dado o contexto congelado da issue #{number}\n"
+        f"  Quando a implementação for verificada\n  Então {statement} [RN{index:02d}]"
+        for index, statement in enumerate(statements, start=1)
+    )
+    rules = "\n".join(
+        f"RN{index:02d} – {statement}"
+        for index, statement in enumerate(statements, start=1)
+    )
     return (f"Sistema: Simplicio Loop\nFuncionalidade: {title}\nTipo: Evolução\n\n"
             f"COMO mantenedor,\nQUERO resolver a issue #{number},\nPARA entregar o comportamento solicitado.\n\n"
-            f"1. Critérios de Aceite\n\nCenário 1: {title}\n  Dado o contexto congelado da issue #{number}\n  Quando a implementação for verificada\n  Então {expected} [RN01]\n\n"
-            f"2. Regras de Negócio\n\nRN01 – O resultado deve permanecer vinculado à revisão da fonte da issue.\n")
+            f"1. Critérios de Aceite\n\n{scenarios}\n\n"
+            f"2. Regras de Negócio\n\n{rules}\n")
 
 class LoopRunContractMaterializer:
     def __init__(self, repo: str, *, arm: Callable[..., Mapping[str, Any]] = arm_run, delivery: str = "pr", max_iterations: int = 12):

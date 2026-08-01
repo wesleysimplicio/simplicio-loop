@@ -33,14 +33,24 @@ def run_live(
     queue_factory: Callable[..., Any] = WorktreeQueue,
 ) -> dict[str, Any]:
     root = Path(workspace).resolve()
-    intent = parse_natural_drain_request(request)
     batch = hashlib.sha256(request.encode("utf-8")).hexdigest()[:16]
+    journal_dir = root / ".simplicio" / "tasks-run" / batch / "journals"
+    pipeline = pipeline_factory(agent_command, str(journal_dir), host_total_slots=max_workers + 1)
+    if cancel:
+        return {
+            "schema": "simplicio.tasks-orchestrator/v1",
+            "plan": None,
+            "idempotency_key": hashlib.sha256(request.encode("utf-8")).hexdigest(),
+            "state": "cancelled",
+            "reason": "cancel_requested",
+            "cancelled": pipeline.cancel_all(reason="cancel_requested"),
+            "evidence": [],
+        }
+    intent = parse_natural_drain_request(request)
     checkpoint_path = checkpoint or str(root / ".simplicio" / "tasks-run" / batch / "intake.json")
     source = source_factory(intent.owner, intent.repo, publish_comment_fn=_forbidden_publish)
     intake = intake_factory(source=source, checkpoint=checkpoint_path, workspace=str(root), map_reader=ReadOnlyLocalGitMap())
     materializer = materializer_factory(str(root))
-    journal_dir = root / ".simplicio" / "tasks-run" / batch / "journals"
-    pipeline = pipeline_factory(agent_command, str(journal_dir), host_total_slots=max_workers + 1)
     holder = {}
 
     def contracts(plan):

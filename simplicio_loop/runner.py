@@ -4570,6 +4570,29 @@ def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
     normalized["isolation"] = str(item.get("isolation") or "worktree")
     if isinstance(item.get("task_spec"), Mapping):
         normalized["task_spec"] = dict(item["task_spec"])
+    authority = item.get("authority_receipt")
+    if authority is not None:
+        if not isinstance(authority, Mapping):
+            raise ValueError("authority_receipt must be an object")
+        authority = dict(authority)
+        supplied = str(authority.pop("receipt_hash", ""))
+        if not supplied or supplied != _planning_content_hash(authority):
+            raise ValueError("authority_receipt hash mismatch")
+        source = authority.get("source")
+        targets = authority.get("targets")
+        task_spec = normalized.get("task_spec") or {}
+        expected_issue = normalized["task_id"].removeprefix("issue-")
+        if (authority.get("operator") != "simplicio-dev-cli"
+                or not isinstance(source, Mapping)
+                or str(source.get("issue") or "") != expected_issue
+                or not str(source.get("revision") or "")
+                or not str(source.get("planning_receipt") or "")
+                or not isinstance(targets, list) or not targets
+                or any(not isinstance(target, str) or not target.strip() for target in targets)
+                or sorted(targets) != sorted(task_spec.get("files_affected") or [])):
+            raise ValueError("authority_receipt binding mismatch")
+        authority["receipt_hash"] = supplied
+        normalized["authority_receipt"] = authority
     if isinstance(item.get("operator_context"), Mapping):
         normalized["operator_context"] = dict(item["operator_context"])
     if item.get("distributed_queue") is not None:
@@ -4859,6 +4882,7 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "receipt_status": "UNVERIFIED",
         "agent": dict(item.get("agent_identity") or {}),
         "context_pack": dict(item.get("context_pack") or {}),
+        "authority_receipt": dict(item.get("authority_receipt") or {}),
     }
     run_dir = _operator_dispatch_run_dir(item)
     execution_route = _fanout_execution_route(item, run_dir)

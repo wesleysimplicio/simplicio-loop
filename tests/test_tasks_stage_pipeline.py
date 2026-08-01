@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 import pytest
 from types import SimpleNamespace
 
@@ -5,13 +8,15 @@ from simplicio_loop.tasks_stage_pipeline import CommandPipelineCoordinator
 
 class FakeCoordinator:
     instances = []
-    pr_url = "https://example.test/pr/1"
+    pr_url = "https://github.com/acme/widgets/pull/1"
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         self.cancelled = []
         self.__class__.instances.append(self)
     def run_all(self):
-        delivery = {"pr_url": self.pr_url, "pr_repo": "acme/widgets", "pr_head": "feature/1", "source_issue": "1", "checks": [{"name": "test", "conclusion": "SUCCESS"}]}
+        merge = {"schema": "simplicio.tasks-merge-receipt/v1", "merged": True, "pr_url": self.pr_url, "merge_commit_sha": "a" * 40}
+        merge["receipt_sha"] = hashlib.sha256(json.dumps(merge, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        delivery = {"pr_url": self.pr_url, "pr_repo": "acme/widgets", "pr_head": "feature/1", "source_issue": "1", "checks": [{"name": "test", "conclusion": "SUCCESS"}], "operation": "merge", "merge_receipt": merge}
         instance = SimpleNamespace(receipt={"schema": "receipt"}, output=delivery)
         return {"delivery": SimpleNamespace(status="passed", instance=instance)}
     def terminal_reached(self):
@@ -26,7 +31,7 @@ def test_pipeline_collects_pr_and_verification_receipts(tmp_path):
     pipeline = CommandPipelineCoordinator(["python", "agent.py"], str(tmp_path), coordinator_factory=FakeCoordinator)
     result = pipeline({"workers": [{"run_id": "run-1", "task_id": "issue-1", "expected_pr_repo": "acme/widgets", "branch": "feature/1"}]})
     assert result["passed"] is True
-    assert result["evidence"][0]["pr"] == "https://example.test/pr/1"
+    assert result["evidence"][0]["pr"] == "https://github.com/acme/widgets/pull/1"
     assert result["evidence"][0]["verification"] == "passed"
     assert FakeCoordinator.instances[-1].kwargs["journal"] is not None
 
@@ -69,7 +74,18 @@ def test_pipeline_fails_closed_on_repo_head_source_or_check_mismatch(tmp_path):
     worker = {"task_id": "issue-1", "expected_pr_repo": "acme/widgets", "branch": "feature/1"}
     result = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=InvalidDelivery)({"workers": [worker]})
     assert result["passed"] is False
-    assert result["evidence"][0]["delivery_errors"] == ["checks_not_successful", "pr_head_mismatch", "pr_repo_mismatch", "source_issue_mismatch"]
+    assert result["evidence"][0]["delivery_errors"] == ["checks_not_successful", "merge_receipt_invalid", "pr_head_mismatch", "pr_repo_mismatch", "pr_url_mismatch", "source_issue_mismatch"]
+
+
+def test_pipeline_rejects_non_github_pr_malformed_checks_and_missing_merge(tmp_path):
+    class ForgedDelivery(FakeCoordinator):
+        def run_all(self):
+            delivery = {"pr_url": "file:///not-a-pr", "pr_repo": "acme/widgets", "pr_head": "feature/1", "source_issue": "1", "checks": [{"conclusion": "SUCCESS"}, "garbage"]}
+            return {"delivery": SimpleNamespace(status="passed", instance=SimpleNamespace(receipt={}, output=delivery))}
+    worker = {"task_id": "issue-1", "expected_pr_repo": "acme/widgets", "branch": "feature/1"}
+    result = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=ForgedDelivery)({"workers": [worker]})
+    assert result["passed"] is False
+    assert result["evidence"][0]["delivery_errors"] == ["checks_not_successful", "merge_receipt_invalid", "pr_url_mismatch"]
 
 def test_cancel_propagates_to_active_coordinator(tmp_path):
     pipeline = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=FakeCoordinator)

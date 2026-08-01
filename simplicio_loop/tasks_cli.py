@@ -35,13 +35,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.dry_run:
         try:
-            items = _items(args.scope)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            _emit({"schema": SCHEMA, "state": "blocked", "reason": str(exc)})
+            from .tasks_live import run_live
+            result = run_live(
+                args.scope, workspace=args.workspace, checkpoint=args.checkpoint,
+                agent_command=(), action_gate=False, cancel=False,
+                max_workers=args.max_workers, retry_budget=args.retry_budget,
+            )
+        except Exception as exc:
+            _emit({"schema": SCHEMA, "state": "blocked", "reason": f"{type(exc).__name__}: {exc}"})
             return 2
-        pipeline = ["implement:coding-loop", "review:adversarial-review", "pr"]
-        rows = [{"item": item, "state": "partial", "worktree_isolation": True, "action_gate": "required", "pipeline": pipeline, "evidence": {"pr": None, "verification": None}} for item in items]
-        _emit({"schema": SCHEMA, "dry_run": True, "items": rows, "deduplicated_count": len(rows), "state": "partial"})
+        result = dict(result)
+        result["dry_run"] = True
+        _emit(result)
         return 0
     if not args.cancel and not args.action_gate:
         _emit({"schema": SCHEMA, "state": "blocked", "reason": "action_gate_required"})

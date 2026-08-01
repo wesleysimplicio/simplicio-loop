@@ -1,13 +1,19 @@
 """Concrete stage/review/delivery coordinator for dispatched task items."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .stage_agent_coordinator import CommandAgentAdapter, StageAgentCoordinator, StageCoordinatorJournal
 
 _SENSITIVE_KEYS = frozenset({"authorization", "token", "password", "secret", "api_key", "access_token"})
+
+def _receipt_digest(value: Mapping[str, Any]) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 def _redact(value: Any) -> Any:
     if isinstance(value, Mapping):
@@ -22,8 +28,26 @@ def _delivery_receipt(values: Sequence[Any], worker: Mapping[str, Any]) -> tuple
         return None, ["pr_url_missing"]
     required = [name for name in ("pr_repo", "pr_head", "source_issue", "checks") if not delivery.get(name)]
     checks = delivery.get("checks") or []
-    if not isinstance(checks, list) or any(str(check.get("conclusion", "")).upper() != "SUCCESS" for check in checks if isinstance(check, Mapping)):
+    if (not isinstance(checks, list) or not checks
+            or any(not isinstance(check, Mapping)
+                   or not str(check.get("name") or "").strip()
+                   or str(check.get("conclusion") or "").upper() != "SUCCESS"
+                   for check in checks)):
         required.append("checks_not_successful")
+    repo = str(delivery.get("pr_repo") or "")
+    url = str(delivery.get("pr_url") or "")
+    if not repo or not re.fullmatch(rf"https://github\.com/{re.escape(repo)}/pull/[1-9][0-9]*", url):
+        required.append("pr_url_mismatch")
+    merge = delivery.get("merge_receipt")
+    merge_payload = dict(merge) if isinstance(merge, Mapping) else {}
+    merge_digest = str(merge_payload.pop("receipt_sha", ""))
+    if (delivery.get("operation") != "merge" or not isinstance(merge, Mapping)
+            or merge.get("schema") != "simplicio.tasks-merge-receipt/v1"
+            or merge.get("merged") is not True
+            or str(merge.get("pr_url") or "") != url
+            or not re.fullmatch(r"[0-9a-fA-F]{40}", str(merge.get("merge_commit_sha") or ""))
+            or not merge_digest or merge_digest != _receipt_digest(merge_payload)):
+        required.append("merge_receipt_invalid")
     expected_repo = str(worker.get("expected_pr_repo") or "")
     expected_head = str(worker.get("branch") or worker.get("expected_pr_head") or "")
     expected_source = str(worker.get("source_issue") or worker.get("task_id") or "").removeprefix("issue-")

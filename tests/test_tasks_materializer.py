@@ -4,9 +4,10 @@ from pathlib import Path
 import pytest
 
 from simplicio_loop.tasks_materializer import ContractMaterializationError, LoopRunContractMaterializer
+from simplicio_loop.runner import _operator_dispatch_item
 
 def intake():
-    return {"run_identity": {"run_id": "batch-1"}, "items": {"7": {"state": "planned", "title": "Do work", "acceptance_criteria": [{"statement": "the check passes"}]}, "8": {"state": "remote_closed", "title": "Skip"}}}
+    return {"run_identity": {"run_id": "batch-1"}, "items": {"7": {"state": "planned", "title": "Do work", "source_revision": "rev-7", "planning_receipt": "plan-7", "acceptance_criteria": [{"statement": "the check passes"}, {"statement": "the package smoke passes"}]}, "8": {"state": "remote_closed", "title": "Skip"}}}
 
 def test_materializes_canonical_run_and_authorized_worktree_item(tmp_path):
     calls = []
@@ -27,6 +28,13 @@ def test_materializes_canonical_run_and_authorized_worktree_item(tmp_path):
     assert authority["targets"] == ["src/a.py"]
     assert authority["operator"] == "simplicio-dev-cli"
     assert "the check passes" in calls[0][1]
+    assert "the package smoke passes" in calls[0][1]
+    assert "Cenário 2" in calls[0][1]
+    normalized = _operator_dispatch_item(rows[0])
+    assert normalized["authority_receipt"] == authority
+    tampered = dict(rows[0], authority_receipt=dict(authority, targets=["src/other.py"]))
+    with pytest.raises(ValueError, match="hash mismatch"):
+        _operator_dispatch_item(tampered)
 
 def test_materialization_fails_closed_on_blocked_preflight(tmp_path):
     def arm(*args):

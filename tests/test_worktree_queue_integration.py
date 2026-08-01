@@ -139,6 +139,7 @@ def test_active_operator_context_blocks_teardown_and_preserves_receipt_fields(tm
         "task_id": "A", "run_id": "run-safety", "mode": "worktree",
         "path": str(tmp_path / "owned"), "branch": "simplicio/run-safety/A",
         "worktree_id": "run-safety:A", "lease": {"status": "held", "owner": "worker"},
+        "terminal_handle": "term-exited",
         "owned": True,
     }
     q._write(state)
@@ -158,6 +159,7 @@ def test_cleanup_receipt_requires_identity_and_is_hash_linked(tmp_path):
         "task_id": "A", "run_id": "run-safety", "mode": "worktree",
         "path": str(tmp_path / "owned"), "branch": "simplicio/run-safety/A",
         "worktree_id": "run-safety:A", "lease": {"status": "held", "owner": "worker"},
+        "terminal_handle": "term-exited",
         "owned": True,
     }
     q._write(state)
@@ -167,6 +169,42 @@ def test_cleanup_receipt_requires_identity_and_is_hash_linked(tmp_path):
     })
     assert receipt["receipt_sha"]
     assert q.state()["tasks"]["A"]["cleanup_receipt_sha"] == receipt["receipt_sha"]
+
+
+def test_cleanup_receipt_must_match_lease_and_terminal_authority(tmp_path):
+    q = WorktreeQueue(str(tmp_path), str(tmp_path / "queue.json"), run_id="run-safety")
+    state = q.state()
+    state["tasks"]["A"] = {
+        "task_id": "A", "run_id": "run-safety", "mode": "worktree", "path": "",
+        "branch": "simplicio/run-safety/A", "worktree_id": "run-safety:A",
+        "terminal_handle": "real-terminal", "lease": {"status": "released", "owner": "real-owner"},
+        "owned": True,
+    }
+    q._write(state)
+    receipt = {"worktree_id": "run-safety:A", "terminal_handle": "forged",
+               "lease_owner": "attacker", "cleanup_decision": "cleanup", "reason": "fake"}
+    with pytest.raises(ValueError, match="lease_owner mismatch"):
+        q.record_cleanup_receipt("A", receipt)
+    receipt.update(lease_owner="real-owner")
+    with pytest.raises(ValueError, match="terminal_handle mismatch"):
+        q.record_cleanup_receipt("A", receipt)
+
+
+def test_shared_lock_receipt_cannot_delete_path_outside_owned_root(tmp_path):
+    q = WorktreeQueue(str(tmp_path), str(tmp_path / "queue.json"), run_id="run-safety")
+    victim = tmp_path / "victim.json"
+    victim.write_text(json.dumps({"run_id": "run-safety", "task_id": "A"}), encoding="utf-8")
+    state = q.state()
+    state["tasks"]["A"] = {
+        "task_id": "A", "run_id": "run-safety", "mode": "shared", "path": "",
+        "branch": "simplicio/run-safety/A", "owned": True,
+        "lock_receipt": str(victim), "lease": {"status": "released"},
+    }
+    q._write(state)
+    report = q.teardown("A")
+    assert report.removed is False
+    assert report.failures == ["lock-receipt-path-not-owned"]
+    assert victim.exists()
 
 
 def test_packaged_queue_mapping_cli_selftest_and_corrupt_state(tmp_path, monkeypatch, capsys):
