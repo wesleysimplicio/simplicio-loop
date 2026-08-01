@@ -11,7 +11,8 @@ class FakeCoordinator:
         self.cancelled = []
         self.__class__.instances.append(self)
     def run_all(self):
-        instance = SimpleNamespace(receipt={"schema": "receipt"}, output={"pr_url": self.pr_url})
+        delivery = {"pr_url": self.pr_url, "pr_repo": "acme/widgets", "pr_head": "feature/1", "source_issue": "1", "checks": [{"name": "test", "conclusion": "SUCCESS"}]}
+        instance = SimpleNamespace(receipt={"schema": "receipt"}, output=delivery)
         return {"delivery": SimpleNamespace(status="passed", instance=instance)}
     def terminal_reached(self):
         return True
@@ -23,7 +24,7 @@ class FakeCoordinator:
 
 def test_pipeline_collects_pr_and_verification_receipts(tmp_path):
     pipeline = CommandPipelineCoordinator(["python", "agent.py"], str(tmp_path), coordinator_factory=FakeCoordinator)
-    result = pipeline({"workers": [{"run_id": "run-1", "task_id": "issue-1"}]})
+    result = pipeline({"workers": [{"run_id": "run-1", "task_id": "issue-1", "expected_pr_repo": "acme/widgets", "branch": "feature/1"}]})
     assert result["passed"] is True
     assert result["evidence"][0]["pr"] == "https://example.test/pr/1"
     assert result["evidence"][0]["verification"] == "passed"
@@ -57,6 +58,18 @@ def test_pipeline_fails_closed_without_pr_evidence(tmp_path):
         FakeCoordinator.pr_url = previous
     assert result["passed"] is False
     assert result["evidence"][0]["pr"] is None
+
+
+def test_pipeline_fails_closed_on_repo_head_source_or_check_mismatch(tmp_path):
+    class InvalidDelivery(FakeCoordinator):
+        def run_all(self):
+            delivery = {"pr_url": self.pr_url, "pr_repo": "wrong/repo", "pr_head": "wrong", "source_issue": "2", "checks": [{"conclusion": "FAILURE"}]}
+            instance = SimpleNamespace(receipt={}, output=delivery)
+            return {"delivery": SimpleNamespace(status="passed", instance=instance)}
+    worker = {"task_id": "issue-1", "expected_pr_repo": "acme/widgets", "branch": "feature/1"}
+    result = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=InvalidDelivery)({"workers": [worker]})
+    assert result["passed"] is False
+    assert result["evidence"][0]["delivery_errors"] == ["checks_not_successful", "pr_head_mismatch", "pr_repo_mismatch", "source_issue_mismatch"]
 
 def test_cancel_propagates_to_active_coordinator(tmp_path):
     pipeline = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=FakeCoordinator)

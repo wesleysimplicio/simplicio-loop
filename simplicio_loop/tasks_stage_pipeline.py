@@ -16,6 +16,25 @@ def _redact(value: Any) -> Any:
         return [_redact(item) for item in value]
     return value
 
+def _delivery_receipt(values: Sequence[Any], worker: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None, list[str]]:
+    delivery = next((value for value in values if isinstance(value, Mapping) and value.get("pr_url")), None)
+    if delivery is None:
+        return None, ["pr_url_missing"]
+    required = [name for name in ("pr_repo", "pr_head", "source_issue", "checks") if not delivery.get(name)]
+    checks = delivery.get("checks") or []
+    if not isinstance(checks, list) or any(str(check.get("conclusion", "")).upper() != "SUCCESS" for check in checks if isinstance(check, Mapping)):
+        required.append("checks_not_successful")
+    expected_repo = str(worker.get("expected_pr_repo") or "")
+    expected_head = str(worker.get("branch") or worker.get("expected_pr_head") or "")
+    expected_source = str(worker.get("source_issue") or worker.get("task_id") or "").removeprefix("issue-")
+    if expected_repo and str(delivery.get("pr_repo")) != expected_repo:
+        required.append("pr_repo_mismatch")
+    if expected_head and str(delivery.get("pr_head")) != expected_head:
+        required.append("pr_head_mismatch")
+    if expected_source and str(delivery.get("source_issue")).removeprefix("#") != expected_source.removeprefix("#"):
+        required.append("source_issue_mismatch")
+    return delivery, sorted(set(required))
+
 class CommandPipelineCoordinator:
     def __init__(self, command: Sequence[str], journal_dir: str, *, host_total_slots: int = 4, coordinator_factory: Callable[..., Any] = StageAgentCoordinator):
         if not command:
@@ -58,9 +77,11 @@ class CommandPipelineCoordinator:
                 passed = bool(results) and all(result.status == "passed" for result in results.values()) and coordinator.terminal_reached()
                 receipts = [_redact(result.instance.receipt) for result in results.values() if result.instance and result.instance.receipt]
                 outputs = [_redact(result.instance.output) for result in results.values() if result.instance and result.instance.output]
-                pr_url = next((str(value.get("pr_url")) for value in [*outputs, *receipts] if isinstance(value, Mapping) and value.get("pr_url")), "")
-                all_passed = all_passed and passed and bool(pr_url)
-                evidence.append({"task_id": task_id, "pr": pr_url or None, "verification": "passed" if passed else None, "receipts": receipts, "status": coordinator.status_report()})
+                delivery, delivery_errors = _delivery_receipt([*outputs, *receipts], worker)
+                pr_url = str(delivery.get("pr_url")) if delivery else ""
+                verified = passed and not delivery_errors
+                all_passed = all_passed and verified
+                evidence.append({"task_id": task_id, "pr": pr_url or None, "verification": "passed" if verified else None, "delivery_errors": delivery_errors, "receipts": receipts, "status": coordinator.status_report()})
             finally:
                 self.active.remove(coordinator)
         return {"passed": bool(evidence) and all_passed, "evidence": evidence}
