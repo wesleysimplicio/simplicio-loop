@@ -351,7 +351,14 @@ def kill_process_tree(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 capture_output=True, timeout=5, check=False,
             )
-            return completed.returncode == 0
+            if completed.returncode == 0:
+                return True
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+            kernel32.TerminateProcess.restype = wintypes.BOOL
+            return bool(kernel32.TerminateProcess(handle, 1))
         except (AttributeError, OSError, subprocess.SubprocessError):
             return False
         finally:
@@ -359,7 +366,7 @@ def kill_process_tree(
                 try:
                     _windows_close_handle(handle)
                 except (AttributeError, OSError):
-                    return False
+                    pass
 
     pidfd = _linux_pidfd_open(pid)
     if pidfd is None:
@@ -395,20 +402,86 @@ class ProcessRecord:
     process_identity: Optional[str] = None
 
 
-def scan_host_processes() -> List[ProcessRecord]:
-    """Enumerate running processes with their argv.
+def _scan_windows_processes() -> List[ProcessRecord]:
+    """Observe Windows processes with psutil, retaining CIM as fallback."""
+    try:
+        import psutil  # type: ignore
+        records: List[ProcessRecord] = []
+        for process in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                info = process.info
+                pid = int(info["pid"])
+                cmdline = list(info.get("cmdline") or [])
+                if not is_simplicio_cmdline(cmdline):
+                    records.append(ProcessRecord(pid, cmdline))
+                    continue
+                identity_before = _process_identity(pid)
+                identity_after = _process_identity(pid)
+                if identity_before and identity_before == identity_after:
+                    records.append(ProcessRecord(pid, cmdline, identity_before))
+            except (psutil.AccessDenied, psutil.NoSuchProcess, KeyError, TypeError, ValueError):
+                continue
+        if records:
+            return records
+    except ImportError:
+        pass
+    command = "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+    try:
+        completed = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command], capture_output=True, text=True, timeout=5, check=False)
+        if completed.returncode != 0:
+            return []
+        payload = json.loads(completed.stdout or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
+        return []
+    rows = payload if isinstance(payload, list) else [payload]
+    records = []
+    for row in rows:
+        try:
+            pid = int(row["ProcessId"])
+            cmdline = _split_windows_command_line(str(row.get("CommandLine") or ""))
+            if not is_simplicio_cmdline(cmdline):
+                records.append(ProcessRecord(pid, cmdline))
+                continue
+            identity_before = _process_identity(pid)
+            identity_after = _process_identity(pid)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if identity_before and identity_before == identity_after:
+            records.append(ProcessRecord(pid, cmdline, identity_before))
+    return records
 
-    Linux reads procfs and captures a start-time identity around argv collection. Windows
-    currently has no scanner. macOS/BSD fall back to ``ps`` for observation only: their records
-    have no signal-safe identity, so enabled enforcement fails closed.
-    """
+def _split_windows_command_line(command_line: str) -> List[str]:
+    """Parse a Windows command line with the platform's own quoting rules."""
+    if not command_line:
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        argc = ctypes.c_int()
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        shell32.CommandLineToArgvW.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int))
+        shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+        argv = shell32.CommandLineToArgvW(command_line, ctypes.byref(argc))
+        if not argv:
+            return []
+        try:
+            return [argv[index] for index in range(argc.value)]
+        finally:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
+            kernel32.LocalFree.restype = ctypes.c_void_p
+            kernel32.LocalFree(ctypes.cast(argv, ctypes.c_void_p))
+    except (AttributeError, OSError, ValueError):
+        return []
+
+def scan_host_processes() -> List[ProcessRecord]:
+    """Enumerate running processes with their argv."""
     proc_root = Path("/proc")
     if proc_root.is_dir():
         return _scan_proc(proc_root)
     if os.name == "nt":
-        return []
+        return _scan_windows_processes()
     return _scan_ps()
-
 
 def _scan_proc(proc_root: Path) -> List[ProcessRecord]:
     records: List[ProcessRecord] = []

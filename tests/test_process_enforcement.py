@@ -21,6 +21,7 @@ import signal
 import subprocess
 import sys
 import time
+import pytest
 from pathlib import Path
 from typing import Any
 
@@ -376,6 +377,7 @@ def test_registry_terminate_forwards_explicit_dedicated_group_evidence(tmp_path,
     assert calls == [(23457, signal.SIGTERM, "start-a", True)]
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='requires POSIX pidfd/process-group primitives')
 def test_unsupervised_target_never_kills_group_even_when_pid_is_group_leader(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(process_enforcement_module, "_linux_pidfd_open", lambda pid: 99)
@@ -391,6 +393,7 @@ def test_unsupervised_target_never_kills_group_even_when_pid_is_group_leader(mon
     assert calls == [("pidfd", 99, signal.SIGTERM), ("close", 99)]
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='requires POSIX pidfd/process-group primitives')
 def test_supervised_dedicated_group_evidence_allows_group_signal(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(process_enforcement_module, "_linux_pidfd_open", lambda pid: 99)
@@ -410,6 +413,7 @@ def test_supervised_dedicated_group_evidence_allows_group_signal(monkeypatch) ->
     assert calls == [("killpg", 123, signal.SIGTERM), ("close", 99)]
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='requires POSIX pidfd/process-group primitives')
 def test_kill_process_tree_revalidates_identity_after_pidfd_pinning(monkeypatch) -> None:
     """A PID recycled between registry validation and pidfd acquisition is never signalled."""
     calls = []
@@ -491,6 +495,84 @@ def test_windows_taskkill_failure_is_not_reported_as_success(monkeypatch) -> Non
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1),
     )
     assert process_enforcement_module.kill_process_tree(123) is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires CommandLineToArgvW")
+def test_windows_command_line_parser_preserves_quoted_arguments() -> None:
+    assert process_enforcement_module._split_windows_command_line(
+        '"C:\\Program Files\\Python\\python.exe" -c "print(1 + 2)"'
+    ) == ["C:\\Program Files\\Python\\python.exe", "-c", "print(1 + 2)"]
+
+
+def test_windows_scanner_pins_identity_and_preserves_argv(monkeypatch) -> None:
+    class Process:
+        info = {"pid": 123, "cmdline": ["simplicio-mapper", "argument with spaces"]}
+
+    import psutil
+    monkeypatch.setattr(psutil, "process_iter", lambda fields: [Process()])
+    monkeypatch.setattr(process_enforcement_module, "_process_identity", lambda pid: "windows-creation:1")
+
+    assert process_enforcement_module._scan_windows_processes() == [
+        process_enforcement_module.ProcessRecord(
+            123, ["simplicio-mapper", "argument with spaces"], "windows-creation:1",
+        )
+    ]
+
+
+def test_windows_scanner_cim_fallback_parses_and_pins(monkeypatch) -> None:
+    import psutil
+    monkeypatch.setattr(psutil, "process_iter", lambda fields: [])
+    monkeypatch.setattr(
+        process_enforcement_module.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 0, stdout='{"ProcessId":123,"CommandLine":"simplicio-mapper \\\"argument with spaces\\\""}',
+        ),
+    )
+    monkeypatch.setattr(process_enforcement_module, "_process_identity", lambda pid: "windows-creation:1")
+
+    assert process_enforcement_module._scan_windows_processes() == [
+        process_enforcement_module.ProcessRecord(
+            123, ["simplicio-mapper", "argument with spaces"], "windows-creation:1",
+        )
+    ]
+
+
+def test_windows_scanner_rejects_failed_cim_and_identity_drift(monkeypatch) -> None:
+    import psutil
+    monkeypatch.setattr(psutil, "process_iter", lambda fields: [])
+    monkeypatch.setattr(
+        process_enforcement_module.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 1, stdout="[]"),
+    )
+    assert process_enforcement_module._scan_windows_processes() == []
+
+
+def test_windows_scanner_skips_invalid_rows_and_keeps_non_simplicio_cim(monkeypatch) -> None:
+    import psutil
+    class InvalidProcess:
+        info = {"pid": "invalid", "cmdline": []}
+    monkeypatch.setattr(psutil, "process_iter", lambda fields: [InvalidProcess()])
+    monkeypatch.setattr(
+        process_enforcement_module.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 0, stdout='[{"ProcessId":"bad"},{"ProcessId":123,"CommandLine":"python worker.py"}]',
+        ),
+    )
+    assert process_enforcement_module._scan_windows_processes() == [
+        process_enforcement_module.ProcessRecord(123, ["python", "worker.py"]),
+    ]
+    assert process_enforcement_module._split_windows_command_line("") == []
+
+    class Process:
+        info = {"pid": 123, "cmdline": ["simplicio-mapper"]}
+    identities = iter(["windows-creation:1", "windows-creation:2"])
+    monkeypatch.setattr(psutil, "process_iter", lambda fields: [Process()])
+    monkeypatch.setattr(process_enforcement_module, "_process_identity", lambda pid: next(identities))
+    monkeypatch.setattr(
+        process_enforcement_module.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="[]"),
+    )
+    assert process_enforcement_module._scan_windows_processes() == []
 
 
 def test_events_log_round_trips(tmp_path) -> None:

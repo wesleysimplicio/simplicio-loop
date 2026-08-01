@@ -215,3 +215,12 @@ including a monkeypatched `os.kill` spy that asserts it is never called).
 `enabled`; any real canary-percentage evaluation; any production writer of the governor
 snapshot this worker reads. Treat `enable`/`rollout` as recording operator *intent* for
 a future consumer, not as live safety controls, until one of those gaps above is closed.
+
+## Windows scanner migration and rollback
+
+The Windows process table now prefers `psutil` and falls back to read-only CIM. Simplicio
+processes are admitted to detection/enforcement only after their creation-time identity is
+stable across argv collection; CIM command lines are parsed with `CommandLineToArgvW`.
+Rollout remains protected by the existing opt-in enforcement switch. Roll back by disabling
+enforcement first, then reverting the scanner change; persisted registry and JSONL receipt
+schemas are unchanged, so restart/replay requires no data migration or destructive cleanup.

@@ -8,7 +8,7 @@ import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, Mapping, Optional, Tuple
 
 
 PROCESS_SPEC_SCHEMA = "simplicio.process-spec/v1"
@@ -189,23 +189,42 @@ class PythonProcessAdapter:
 
     @staticmethod
     def _kill_tree(process: "asyncio.subprocess.Process") -> None:
-        """Kill the process and, on POSIX, its whole process group.
-
-        The child is started with start_new_session=True so it heads its own
-        process group; killing that group reaps grandchildren the direct pid
-        would otherwise leave orphaned (and running) past the deadline.
-        """
-        if os.name != "nt" and process.pid is not None:
+        """Kill a supervised process and its complete descendant tree."""
+        if process.pid is None:
+            return
+        if os.name == "nt":
             try:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-                return
-            except (ProcessLookupError, PermissionError, OSError):
+                import subprocess
+                completed = subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, check=False, timeout=10,
+                )
+                if completed.returncode == 0:
+                    return
+            except (OSError, subprocess.SubprocessError):
                 pass
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            return
+        except (AttributeError, ProcessLookupError, PermissionError, OSError):
+            pass
         try:
             process.kill()
         except ProcessLookupError:
             pass
 
+    @staticmethod
+    async def _reap_after_kill(process: "asyncio.subprocess.Process") -> Tuple[bytes, bytes]:
+        """Bound cleanup after STOP/deadline so a failed tree kill cannot hang the caller."""
+        try:
+            return await asyncio.wait_for(process.communicate(), timeout=10)
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            return b"", b""
     async def run(
         self,
         spec: ProcessSpec,
@@ -261,7 +280,7 @@ class PythonProcessAdapter:
         except asyncio.TimeoutError:
             if process is not None:
                 self._kill_tree(process)
-                stdout, stderr = await process.communicate()
+                stdout, stderr = await self._reap_after_kill(process)
                 out, out_truncated = self._bounded(stdout or b"", spec.max_output_bytes)
                 err, err_truncated = self._bounded(stderr or b"", spec.max_output_bytes)
             else:
@@ -279,7 +298,7 @@ class PythonProcessAdapter:
         except asyncio.CancelledError:
             if process is not None:
                 self._kill_tree(process)
-                await process.communicate()
+                await self._reap_after_kill(process)
             return ProcessResult(
                 process.returncode if process is not None else None,
                 duration_seconds=time.monotonic() - started,

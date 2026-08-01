@@ -54,6 +54,8 @@ async def _run(rounds: int, concurrency: int) -> Dict[str, Any]:
         "concurrency": concurrency,
         "processes": rounds * concurrency,
         "throughput_processes_per_second": (rounds * concurrency) / elapsed if elapsed else 0.0,
+        "first_batch_startup_seconds": durations[0],
+        "batch_p50_seconds": statistics.median(durations),
         "batch_p95_seconds": sorted_durations[p95_index],
         "cpu_process_seconds": time.process_time(),
         "rss_bytes": _rss_bytes(),
