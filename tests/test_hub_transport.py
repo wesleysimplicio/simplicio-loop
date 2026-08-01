@@ -438,6 +438,34 @@ def test_socket_server_rejects_unknown_transport() -> None:
             HubSocketServer(daemon, str(Path(directory) / "hub.sock"), transport="carrier-pigeon")
 
 
+def test_tcp_loopback_client_round_trip_and_endpoint_validation() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            port = reservation.getsockname()[1]
+        endpoint = f"tcp://127.0.0.1:{port}"
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        server = HubSocketServer(daemon, endpoint, transport="tcp")
+        server.start()
+        try:
+            response = HubSocketClient(endpoint, transport="tcp").request("tcp-1", "ping")
+            assert response["ok"] is True
+            assert doctor(str(Path(directory) / "hub.lock"), endpoint, "tcp")[
+                "socket_reachable"
+            ] is True
+        finally:
+            server.shutdown()
+            daemon.stop()
+
+    with pytest.raises(HubError, match="loopback"):
+        HubSocketClient("tcp://0.0.0.0:1234", transport="tcp").request_raw("{}")
+    with pytest.raises(HubError, match="loopback"):
+        HubSocketServer(object(), "tcp://0.0.0.0:1234", transport="tcp")
+    with pytest.raises(ValueError, match="transport must"):
+        HubSocketClient("unused", transport="carrier-pigeon")
+
+
 def test_socket_server_named_pipe_transport_unavailable_off_windows() -> None:
     if os.name == "nt":
         pytest.skip("this asserts the POSIX-only guard against named-pipe transport")

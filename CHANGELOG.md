@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.23
+
+- Preserve complete Hub agent handles and stage input across the productive
+  process lifecycle, refresh supervised execution state, and support TCP
+  loopback clients.
+
 ## 3.38.22
 
 - Discover extension providers through the PEP-compliant
