@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import subprocess
+import hashlib
+import re
+from urllib.parse import urlparse
 import json
 from pathlib import Path
 
@@ -190,16 +193,25 @@ def ledger_replay(path: str, compatibility: bool, recover_trailing: bool,
         return 2
 
 
+_REPO_COMPONENT = r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,98}[A-Za-z0-9])?"
+_REPO_RE = re.compile(rf"^{_REPO_COMPONENT}/{_REPO_COMPONENT}$")
+_IMPORT_RECEIPT_SCHEMA = "simplicio.findings-import-receipt/v1"
+
+
+def _valid_repo(repo: str):
+    candidate = repo.strip().removesuffix(".git")
+    return candidate if _REPO_RE.fullmatch(candidate) else None
+
+
 def _github_repo_from_remote(remote: str):
-    remote = remote.strip().removesuffix(".git")
-    if remote.startswith("git@github.com:"):
-        candidate = remote.split(":", 1)[1]
-    elif "github.com/" in remote:
-        candidate = remote.split("github.com/", 1)[1]
-    else:
+    remote = remote.strip()
+    scp = re.fullmatch(r"git@github\.com:(.+)", remote)
+    if scp:
+        return _valid_repo(scp.group(1))
+    parsed = urlparse(remote)
+    if parsed.scheme not in {"git", "https", "ssh"} or parsed.hostname != "github.com":
         return None
-    parts = candidate.strip("/").split("/")
-    return "/".join(parts[:2]) if len(parts) >= 2 and all(parts[:2]) else None
+    return _valid_repo(parsed.path.strip("/"))
 
 
 def _source_parent(source: str) -> Path:
@@ -217,8 +229,10 @@ def _repo_for_source(source: str, repo_map):
     mapped = (repo_map or {}).get("repos", repo_map or {})
     for directory in (parent, *parent.parents):
         value = mapped.get(str(directory), mapped.get(directory.as_posix()))
-        if isinstance(value, str) and value:
-            return value
+        if value is not None:
+            if not isinstance(value, str) or not _valid_repo(value):
+                raise ValueError(f"invalid GitHub repository mapping for {directory}")
+            return _valid_repo(value)
         try:
             result = subprocess.run(
                 ["git", "-C", str(directory), "config", "--get", "remote.origin.url"],
@@ -250,24 +264,71 @@ def _load_findings_import(path: str):
     return findings
 
 
+def _batch_id(findings, repositories, labels):
+    canonical = json.dumps(
+        {"findings": findings, "repositories": repositories, "labels": labels},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _receipt_path(args, batch_id: str) -> Path:
+    explicit = str(getattr(args, "receipt", "") or "")
+    return Path(explicit) if explicit else Path(".simplicio/orchestrator/findings/import-batches") / f"{batch_id}.json"
+
+
+def _load_import_receipt(path: Path, batch_id: str):
+    if not path.exists():
+        return {"schema": _IMPORT_RECEIPT_SCHEMA, "batch_id": batch_id, "urls": {}}
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid import receipt: {exc}") from exc
+    urls = receipt.get("urls") if isinstance(receipt, dict) else None
+    if receipt.get("schema") != _IMPORT_RECEIPT_SCHEMA or receipt.get("batch_id") != batch_id or not isinstance(urls, dict):
+        raise ValueError("import receipt does not match this findings batch")
+    if any(not isinstance(key, str) or not isinstance(url, str) for key, url in urls.items()):
+        raise ValueError("import receipt contains invalid index-to-URL entries")
+    return receipt
+
+
+def _save_import_receipt(path: Path, receipt) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
 def _import_findings(args):
     try:
         findings = _load_findings_import(args.path)
         repo_map = json.loads(Path(args.repo_map).read_text(encoding="utf-8")) if args.repo_map else {}
         if not isinstance(repo_map, dict):
             raise ValueError("repo map must be a JSON object")
-    except ValueError as exc:
+        labels = list(getattr(args, "label", []) or [])
+        if any(not isinstance(label, str) or not label.strip() for label in labels):
+            raise ValueError("labels must be non-empty strings")
+        repositories = []
+        for index, finding in enumerate(findings):
+            repo = _repo_for_source(finding["source"], repo_map)
+            if not repo:
+                raise ValueError(f"could not resolve repository for findings[{index}]")
+            repositories.append(repo)
+        batch_id = _batch_id(findings, repositories, labels)
+        receipt_path = _receipt_path(args, batch_id)
+        receipt = _load_import_receipt(receipt_path, batch_id)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"error": str(exc)}, sort_keys=True))
         return 2
-    labels = list(getattr(args, "label", []) or [])
-    urls = {}
-    for index, finding in enumerate(findings):
-        repo = _repo_for_source(finding["source"], repo_map)
-        if not repo:
-            print(json.dumps({"error": f"could not resolve repository for findings[{index}]"}, sort_keys=True))
-            return 2
-        if args.dry_run:
-            urls[str(index)] = f"https://github.com/{repo}/issues/dry-run-{index}"
+
+    urls = dict(receipt["urls"])
+    if args.dry_run:
+        print(json.dumps({str(index): f"https://github.com/{repo}/issues/dry-run-{index}" for index, repo in enumerate(repositories)}, sort_keys=True))
+        return 0
+
+    for index, (finding, repo) in enumerate(zip(findings, repositories)):
+        key = str(index)
+        if key in urls:
             continue
         title = f"[finding] {finding['stage']}: {finding['finding_id']} ({finding['severity']})"
         body = finding.get("detail") or finding.get("message") or json.dumps(finding, sort_keys=True)
@@ -280,10 +341,13 @@ def _import_findings(args):
         except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
             response = {}
         url = response.get("url") if isinstance(response, dict) else None
-        if not isinstance(url, str) or not url:
-            print(json.dumps({"error": f"gh issue create failed for findings[{index}]"}, sort_keys=True))
+        expected = re.compile(rf"^https://github\.com/{re.escape(repo)}/issues/[0-9]+$")
+        if not isinstance(url, str) or not expected.fullmatch(url):
+            print(json.dumps(urls, ensure_ascii=False, sort_keys=True))
             return 1
-        urls[str(index)] = url
+        urls[key] = url
+        receipt["urls"] = urls
+        _save_import_receipt(receipt_path, receipt)
     print(json.dumps(urls, ensure_ascii=False, sort_keys=True))
     return 0
 

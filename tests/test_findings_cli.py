@@ -144,38 +144,96 @@ def test_ledger_replay_uses_live_cli_ledger_exports(monkeypatch, capsys):
     assert payload["required_context"] == ["run_id"]
 
 
+def _import_args(payload, repo_map="", labels=None, dry_run=False, receipt=""):
+    args = _Args("import", json_flag=True)
+    args.path = str(payload)
+    args.repo_map = str(repo_map) if repo_map else ""
+    args.label = list(labels or [])
+    args.dry_run = dry_run
+    args.receipt = str(receipt) if receipt else ""
+    return args
+
+
+def _finding(source, finding_id="a"):
+    return {"finding_id": finding_id, "stage": "test", "severity": "high", "source": str(source)}
+
+
 def test_findings_import_validates_array_before_creating(tmp_path, capsys):
     payload = tmp_path / "bad.json"
     payload.write_text(json.dumps([{"finding_id": "a"}]), encoding="utf-8")
-    args = _Args("import", json_flag=True)
-    args.path, args.repo_map, args.label, args.dry_run = str(payload), "", [], False
-    assert cli_mod.findings_command(args) == 2
+    assert cli_mod.findings_command(_import_args(payload)) == 2
     assert "requires non-empty" in capsys.readouterr().out
 
 
 def test_findings_import_dry_run_resolves_repo_map(tmp_path, capsys):
     payload = tmp_path / "findings.json"
-    payload.write_text(json.dumps([{"finding_id": "a", "stage": "test", "severity": "high", "source": str(tmp_path / "x.py:1")}]), encoding="utf-8")
+    payload.write_text(json.dumps([_finding(tmp_path / "x.py:1")]), encoding="utf-8")
     repo_map = tmp_path / "repos.json"
     repo_map.write_text(json.dumps({str(tmp_path): "acme/widgets"}), encoding="utf-8")
-    args = _Args("import", json_flag=True)
-    args.path, args.repo_map, args.label, args.dry_run = str(payload), str(repo_map), ["bug"], True
-    assert cli_mod.findings_command(args) == 0
+    assert cli_mod.findings_command(_import_args(payload, repo_map, ["bug"], True)) == 0
     assert json.loads(capsys.readouterr().out) == {"0": "https://github.com/acme/widgets/issues/dry-run-0"}
 
 
-def test_findings_import_creates_issue_per_finding(tmp_path, monkeypatch, capsys):
+def test_findings_import_pre_resolves_every_repo_before_effects(tmp_path, monkeypatch, capsys):
     payload = tmp_path / "findings.json"
-    payload.write_text(json.dumps([{"finding_id": "a", "stage": "test", "severity": "high", "source": str(tmp_path / "x.py")}, {"finding_id": "b", "stage": "test", "severity": "low", "source": str(tmp_path / "x.py")}]), encoding="utf-8")
+    payload.write_text(json.dumps([_finding(tmp_path / "one.py"), _finding(tmp_path.parent / "two.py", "b")]), encoding="utf-8")
     repo_map = tmp_path / "repos.json"
     repo_map.write_text(json.dumps({str(tmp_path): "acme/widgets"}), encoding="utf-8")
     calls = []
     def fake_run(command, **kwargs):
         calls.append(command)
-        return type("Result", (), {"returncode": 0, "stdout": json.dumps({"url": f"https://github.com/acme/widgets/issues/{len(calls)}"})})()
+        return type("Result", (), {"returncode": 1, "stdout": ""})()
     monkeypatch.setattr(cli_mod._inspection_cli.subprocess, "run", fake_run)
-    args = _Args("import", json_flag=True)
-    args.path, args.repo_map, args.label, args.dry_run = str(payload), str(repo_map), ["bug"], False
+    assert cli_mod.findings_command(_import_args(payload, repo_map)) == 2
+    assert not any(command[0] == "gh" for command in calls)
+    assert "could not resolve repository" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("remote", [
+    "https://github.com.evil/acme/widgets.git",
+    "https://github.com@evil.example/acme/widgets.git",
+    "git@github.com.evil:acme/widgets.git",
+    "https://github.com/acme/../widgets.git",
+])
+def test_findings_import_rejects_malicious_remote(remote):
+    assert cli_mod._inspection_cli._github_repo_from_remote(remote) is None
+
+
+def test_findings_import_rejects_invalid_repo_map_before_effects(tmp_path, monkeypatch, capsys):
+    payload = tmp_path / "findings.json"
+    payload.write_text(json.dumps([_finding(tmp_path / "x.py")]), encoding="utf-8")
+    repo_map = tmp_path / "repos.json"
+    repo_map.write_text(json.dumps({str(tmp_path): "acme/../widgets"}), encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(cli_mod._inspection_cli.subprocess, "run", lambda command, **kwargs: calls.append(command))
+    assert cli_mod.findings_command(_import_args(payload, repo_map)) == 2
+    assert calls == []
+    assert "invalid GitHub repository mapping" in capsys.readouterr().out
+
+
+def test_findings_import_partial_failure_receipt_makes_retry_idempotent(tmp_path, monkeypatch, capsys):
+    payload = tmp_path / "findings.json"
+    payload.write_text(json.dumps([_finding(tmp_path / "x.py"), _finding(tmp_path / "y.py", "b")]), encoding="utf-8")
+    repo_map = tmp_path / "repos.json"
+    repo_map.write_text(json.dumps({str(tmp_path): "acme/widgets"}), encoding="utf-8")
+    receipt = tmp_path / "receipt.json"
+    calls = []
+    def fail_second(command, **kwargs):
+        calls.append(command)
+        if len(calls) == 2:
+            return type("Result", (), {"returncode": 1, "stdout": ""})()
+        return type("Result", (), {"returncode": 0, "stdout": json.dumps({"url": "https://github.com/acme/widgets/issues/1"})})()
+    monkeypatch.setattr(cli_mod._inspection_cli.subprocess, "run", fail_second)
+    args = _import_args(payload, repo_map, ["bug"], receipt=receipt)
+    assert cli_mod.findings_command(args) == 1
+    assert json.loads(capsys.readouterr().out) == {"0": "https://github.com/acme/widgets/issues/1"}
+    assert json.loads(receipt.read_text(encoding="utf-8"))["urls"] == {"0": "https://github.com/acme/widgets/issues/1"}
+
+    retry_calls = []
+    def retry(command, **kwargs):
+        retry_calls.append(command)
+        return type("Result", (), {"returncode": 0, "stdout": json.dumps({"url": "https://github.com/acme/widgets/issues/2"})})()
+    monkeypatch.setattr(cli_mod._inspection_cli.subprocess, "run", retry)
     assert cli_mod.findings_command(args) == 0
-    assert len(calls) == 2
+    assert len(retry_calls) == 1
     assert json.loads(capsys.readouterr().out) == {"0": "https://github.com/acme/widgets/issues/1", "1": "https://github.com/acme/widgets/issues/2"}

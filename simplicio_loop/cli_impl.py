@@ -965,6 +965,7 @@ def main(argv=None) -> int:
     p_f_import.add_argument("--repo-map", default="", help="JSON map from source parent to owner/repo")
     p_f_import.add_argument("--label", action="append", default=[], help="label to add to each issue (repeatable)")
     p_f_import.add_argument("--dry-run", action="store_true", help="resolve repositories without creating issues")
+    p_f_import.add_argument("--receipt", default="", help="persistent batch receipt path for safe retries")
     p_learn = sub.add_parser("learn", help="derive durable lessons from completed runs")
     learn_sub = p_learn.add_subparsers(dest="learn_command", required=True)
     p_ret = learn_sub.add_parser("retrospective", help="deduplicate trajectory lessons and write a receipt")
