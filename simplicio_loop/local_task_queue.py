@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import os
 import sqlite3
 import time
 from pathlib import Path
@@ -77,6 +76,9 @@ class LocalTaskQueue(SQLiteRemoteQueue):
         dependencies = sorted(set(map(str, depends_on)))
         task_payload = {**dict(payload or {}), "depends_on": dependencies}
         with self._tx() as db:
+            stopped = db.execute("SELECT value FROM local_meta WHERE key='stopped'").fetchone()
+            if stopped and stopped[0] == "1":
+                raise QueueConflict("queue is stopped")
             db.execute("INSERT OR IGNORE INTO tasks(task_id,status,payload,updated_at) VALUES(?,?,?,?)",
                        (task_id, "ready", json.dumps(task_payload, sort_keys=True), time.time()))
             if db.execute("SELECT 1 FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone():
@@ -134,13 +136,19 @@ class LocalTaskQueue(SQLiteRemoteQueue):
                  "outcome": outcome, "receipt": dict(receipt or {}),
                  "provenance": dict(provenance or {}), "created_ns": time.time_ns()}
         value["digest"] = _digest(value)
+        provenance_value = None
+        if provenance:
+            provenance_value = {"schema": SCHEMA, "task_id": lease.task_id,
+                                "provenance": dict(provenance), "created_ns": time.time_ns()}
+            provenance_value["digest"] = _digest(provenance_value)
         with self._tx() as db:
             self._owned(db, lease)
             old = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (lease.task_id,)).fetchone()[0]
             if old in {"verified_success", "blocked", "dead_letter"}:
                 raise QueueConflict("terminal outcome is immutable")
             db.execute("UPDATE local_outcomes SET outcome=?,receipt=?,provenance=?,updated_at=? WHERE task_id=?",
-                       (outcome, json.dumps(value, sort_keys=True), json.dumps(provenance or {}, sort_keys=True),
+                       (outcome, json.dumps(value, sort_keys=True),
+                        json.dumps(provenance_value, sort_keys=True) if provenance_value else None,
                         time.time(), lease.task_id))
             self._transition(db, lease.task_id, old, outcome, {"fence": lease.fencing_token})
             task_status = {
@@ -168,13 +176,19 @@ class LocalTaskQueue(SQLiteRemoteQueue):
             receipt_value = {"schema": SCHEMA, "task_id": task_id, "outcome": target,
                              "receipt": dict(receipt), "created_ns": time.time_ns()}
             receipt_value["digest"] = _digest(receipt_value)
+        provenance_value = None
+        if provenance:
+            provenance_value = {"schema": SCHEMA, "task_id": task_id,
+                                "provenance": dict(provenance), "created_ns": time.time_ns()}
+            provenance_value["digest"] = _digest(provenance_value)
         with self._tx() as db:
             row = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()
             if row is None or row[0] != "unknown_outcome":
                 raise QueueConflict("task does not require reconciliation")
             db.execute("UPDATE local_outcomes SET outcome=?,receipt=?,provenance=?,updated_at=? WHERE task_id=?",
                        (target, json.dumps(receipt_value, sort_keys=True) if receipt_value else None,
-                        json.dumps(provenance or {}, sort_keys=True), time.time(), task_id))
+                        json.dumps(provenance_value, sort_keys=True) if provenance_value else None,
+                        time.time(), task_id))
             db.execute("UPDATE tasks SET status=?,updated_at=? WHERE task_id=?",
                        ("completed" if verified else "ready", time.time(), task_id))
             db.execute("UPDATE leases SET status=?,updated_at=? WHERE task_id=?",
@@ -191,12 +205,14 @@ class LocalTaskQueue(SQLiteRemoteQueue):
             task = db.execute("SELECT status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if task is None:
                 raise KeyError(task_id)
+            old = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()[0]
+            if old in {"verified_success", "blocked", "dead_letter"}:
+                raise QueueConflict("terminal outcome is immutable")
             lease = db.execute("SELECT status,expires_at FROM leases WHERE task_id=?", (task_id,)).fetchone()
             if lease and lease["status"] == "active" and lease["expires_at"] > time.time():
                 db.execute("UPDATE leases SET cancel_requested=1,updated_at=? WHERE task_id=?",
                            (time.time(), task_id))
                 return {"schema": SCHEMA, "task_id": task_id, "status": "cancelling"}
-            old = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()[0]
             db.execute("UPDATE local_outcomes SET outcome='blocked',updated_at=? WHERE task_id=?",
                        (time.time(), task_id))
             db.execute("UPDATE tasks SET status='cancelled',updated_at=? WHERE task_id=?",
@@ -280,8 +296,8 @@ class LocalTaskQueue(SQLiteRemoteQueue):
                     except (TypeError, ValueError, json.JSONDecodeError):
                         corrupt.append(row["seq"])
                 corrupt_records = []
-                for row in db.execute("SELECT task_id,intent,receipt FROM local_outcomes"):
-                    for field in ("intent", "receipt"):
+                for row in db.execute("SELECT task_id,intent,receipt,provenance FROM local_outcomes"):
+                    for field in ("intent", "receipt", "provenance"):
                         raw = row[field]
                         if not raw:
                             continue
@@ -309,7 +325,10 @@ class LocalTaskQueue(SQLiteRemoteQueue):
         try:
             self._init_local()
         except Exception:
-            os.replace(backup, self.path)
+            # Restore through SQLite rather than replacing the live database file;
+            # Windows can retain a WAL/shared-memory handle between connections.
+            with sqlite3.connect(backup) as source, sqlite3.connect(self.path) as destination:
+                source.backup(destination)
             raise
         return {"schema": SCHEMA, "dry_run": False, "backup": str(backup)}
 

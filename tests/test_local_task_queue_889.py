@@ -33,6 +33,10 @@ def test_stop_prevents_claim_and_requests_active_cancellation(tmp_path):
     queue.submit("b")
     queue.stop()
     with pytest.raises(QueueConflict, match="stopped"):
+        queue.submit("after-stop")
+    with sqlite3.connect(queue.path) as db:
+        assert db.execute("SELECT 1 FROM tasks WHERE task_id='after-stop'").fetchone() is None
+    with pytest.raises(QueueConflict, match="stopped"):
         queue.claim_local("b", "w", idempotency_key="b1")
     assert queue.task("a")["lease"]["cancel_requested"] == 1
     queue.resume()
@@ -64,6 +68,9 @@ def test_receipts_history_doctor_and_migration(tmp_path):
     assert receipt["digest"].startswith("sha256:")
     assert len(queue.inspect_local("a")["transitions"]) == 3
     assert queue.doctor_local()["healthy"] is True
+    with sqlite3.connect(queue.path) as db:
+        db.execute("UPDATE local_outcomes SET provenance='{}' WHERE task_id='a'")
+    assert queue.doctor_local()["healthy"] is False
     assert queue.migrate(dry_run=True)["dry_run"] is True
     migrated = queue.migrate(dry_run=False)
     assert migrated["dry_run"] is False
@@ -89,6 +96,8 @@ def test_cancel_reclaim_drain_top_and_retention(tmp_path):
     queue.submit("done")
     lease = queue.claim_local("done", "w", idempotency_key="done")
     queue.record_outcome(lease, "verified_success", receipt={"proof": True})
+    with pytest.raises(QueueConflict, match="terminal"):
+        queue.cancel_local("done")
     assert queue.task("done")["lease"]["status"] == "completed"
     with pytest.raises(QueueConflict, match="stale"):
         queue.release(lease)
@@ -140,6 +149,20 @@ def test_submit_is_atomic_and_doctor_verifies_transition_digests(tmp_path, monke
     assert result["healthy"] is False and result["corrupt_transitions"]
     queue.submit("b")
     assert queue.inspect_local("b")["outcome"]["outcome"] == "never_started"
+
+
+def test_migration_failure_restores_original_database(tmp_path, monkeypatch):
+    queue = LocalTaskQueue(tmp_path)
+    queue.submit("survives")
+
+    def fail_init():
+        raise RuntimeError("migration failed")
+
+    monkeypatch.setattr(queue, "_init_local", fail_init)
+    with pytest.raises(RuntimeError, match="migration failed"):
+        queue.migrate(dry_run=False)
+    restarted = LocalTaskQueue(tmp_path)
+    assert restarted.inspect_local("survives")["outcome"]["outcome"] == "never_started"
 
 
 def test_cli_rejects_non_root_repo(tmp_path):
