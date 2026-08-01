@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import sqlite3
 import subprocess
 import sys
@@ -11,7 +12,6 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-
 from simplicio_loop.remote_queue import (
     HTTPRemoteQueue,
     QueueConflict,
@@ -21,6 +21,20 @@ from simplicio_loop.remote_queue import (
     _lease_json,
     create_http_queue_server,
 )
+
+
+def _run_server_script(script, argv, *, cwd=None):
+    previous_argv, previous_cwd = sys.argv, os.getcwd()
+    try:
+        sys.argv = [script, *argv]
+        if cwd:
+            os.chdir(cwd)
+        with pytest.raises(SystemExit) as raised:
+            runpy.run_path(script, run_name="__main__")
+        return int(raised.value.code)
+    finally:
+        sys.argv = previous_argv
+        os.chdir(previous_cwd)
 
 
 def _concurrent_queue_first_start(tmp_path: Path, *, legacy: bool) -> Path:
@@ -308,19 +322,16 @@ def test_network_bind_requires_explicit_tls(tmp_path):
         create_http_queue_server(backend, host="0.0.0.0", token="secret")
 
 
-def test_server_cli_requires_tls_pair(tmp_path):
+def test_server_cli_requires_tls_pair(tmp_path, capsys):
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     script = os.path.join(repo, "scripts", "remote_queue_server.py")
-    result = subprocess.run(
-        [sys.executable, script, "--db", str(tmp_path / "q.db"),
-         "--token", "secret", "--tls-certfile", "only-cert.pem"],
-        capture_output=True, text=True, timeout=10,
-    )
-    assert result.returncode == 2
-    assert "must be provided together" in (result.stderr + result.stdout)
+    code = _run_server_script(script, ["--db", str(tmp_path / "q.db"),
+                                      "--token", "secret", "--tls-certfile", "only-cert.pem"])
+    assert code == 2
+    assert "must be provided together" in capsys.readouterr().err
 
 
-def test_server_cli_imports_from_any_cwd_without_module_error(tmp_path):
+def test_server_cli_imports_from_any_cwd_without_module_error(tmp_path, capsys):
     # Regression for the import-path bug: the script lives in scripts/ but imports the
     # top-level ``simplicio_loop`` package. Running it as a subprocess used to add only the
     # script's own directory to sys.path, so the import failed with a bare ModuleNotFoundError
@@ -329,14 +340,13 @@ def test_server_cli_imports_from_any_cwd_without_module_error(tmp_path):
     # intended exit code even when invoked from a neutral working directory.
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     script = os.path.join(repo, "scripts", "remote_queue_server.py")
-    result = subprocess.run(
-        [sys.executable, script, "--db", str(tmp_path / "q.db"),
-         "--token", "secret", "--tls-certfile", "only-cert.pem"],
-        capture_output=True, text=True, timeout=10, cwd=str(tmp_path),
-    )
-    assert result.returncode == 2, result.stderr
-    assert "must be provided together" in (result.stderr + result.stdout)
-    assert "ModuleNotFoundError" not in result.stderr
+    code = _run_server_script(script, ["--db", str(tmp_path / "q.db"),
+                                      "--token", "secret", "--tls-certfile", "only-cert.pem"],
+                              cwd=str(tmp_path))
+    error = capsys.readouterr().err
+    assert code == 2
+    assert "must be provided together" in error
+    assert "ModuleNotFoundError" not in error
 
 
 def test_claim_retry_after_broken_response_reuses_same_lease_without_duplicate_claim(tmp_path):

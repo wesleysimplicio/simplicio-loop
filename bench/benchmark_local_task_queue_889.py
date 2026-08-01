@@ -5,12 +5,17 @@ from __future__ import annotations
 import json
 import tempfile
 import time
+import argparse
 from pathlib import Path
 
 from simplicio_loop.local_task_queue import LocalTaskQueue
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--max-enqueue-us", type=float, default=30000.0)
+    parser.add_argument("--max-claim-us", type=float, default=30000.0)
+    args = parser.parse_args(argv)
     rows = []
     for size in (1, 10, 100, 1000):
         with tempfile.TemporaryDirectory() as temporary:
@@ -25,9 +30,14 @@ def main() -> int:
             claim_ns = time.perf_counter_ns() - claim_started
             rows.append({"queued_tasks": size, "enqueue_ns": enqueue_ns,
                          "claim_ns": claim_ns, "db_bytes": Path(queue.path).stat().st_size})
-    print(json.dumps({"schema": "simplicio.loop.local-task-queue-benchmark/v1", "rows": rows},
+    thresholds = {
+        "enqueue": max(row["enqueue_ns"] / row["queued_tasks"] / 1000 for row in rows) <= args.max_enqueue_us,
+        "claim": max(row["claim_ns"] / row["queued_tasks"] / 1000 for row in rows) <= args.max_claim_us,
+    }
+    print(json.dumps({"schema": "simplicio.loop.local-task-queue-benchmark/v1", "rows": rows,
+                      "thresholds": thresholds},
                      sort_keys=True))
-    return 0
+    return 0 if all(thresholds.values()) else 1
 
 
 if __name__ == "__main__":

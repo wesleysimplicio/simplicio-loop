@@ -7,3 +7,5 @@ Supported outcomes are `never_started`, `running`, `unknown_outcome`, `verified_
 Operator commands are JSON: `simplicio-loop queue --repo <path> status|top|inspect|cancel|drain|resume|doctor|reclaim|gc`.
 
 Run the benchmark with `python -m bench.benchmark_local_task_queue_889`; it measures 1, 10, 100 and 1000 queued tasks.
+The benchmark exits non-zero when per-task enqueue or claim latency exceeds its configurable thresholds.
+The queue CLI accepts only a resolved Git worktree root for `--repo`; library callers may still use isolated temporary roots.

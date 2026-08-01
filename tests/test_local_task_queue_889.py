@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+import subprocess
+
 import pytest
 
 from simplicio_loop.local_task_queue import LocalTaskQueue
@@ -42,7 +46,9 @@ def test_unknown_outcome_requires_reconciliation_and_retry_provenance(tmp_path):
     queue.record_outcome(lease, "unknown_outcome")
     with pytest.raises(QueueConflict, match="receipt"):
         queue.reconcile_unknown("a", verified=True)
-    queue.reconcile_unknown("a", verified=False)
+    with pytest.raises(QueueConflict, match="provenance"):
+        queue.reconcile_unknown("a", verified=False)
+    queue.reconcile_unknown("a", verified=False, provenance={"idempotent": True})
     retry = queue.claim_local("a", "w2", idempotency_key="a2")
     with pytest.raises(QueueConflict, match="provenance"):
         queue.record_outcome(retry, "retryable_failure")
@@ -61,6 +67,9 @@ def test_receipts_history_doctor_and_migration(tmp_path):
     assert queue.migrate(dry_run=True)["dry_run"] is True
     migrated = queue.migrate(dry_run=False)
     assert migrated["dry_run"] is False
+    with sqlite3.connect(migrated["backup"]) as backup:
+        assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert backup.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
     assert queue.status_local()["journal_mode"] in {"wal", "delete"}
 
 
@@ -80,12 +89,15 @@ def test_cancel_reclaim_drain_top_and_retention(tmp_path):
     queue.submit("done")
     lease = queue.claim_local("done", "w", idempotency_key="done")
     queue.record_outcome(lease, "verified_success", receipt={"proof": True})
-    queue.release(lease)
+    assert queue.task("done")["lease"]["status"] == "completed"
+    with pytest.raises(QueueConflict, match="stale"):
+        queue.release(lease)
     assert queue.gc_terminal()["eligible"] == ["done"]
     assert queue.gc_terminal(apply=True)["removed"] == ["done"]
 
 
 def test_json_cli_surface(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     queue = LocalTaskQueue(tmp_path)
     queue.submit("a")
     repo = str(tmp_path)
@@ -102,3 +114,45 @@ def test_json_cli_surface(tmp_path, capsys):
     ):
         assert cli_main(args) == 0
         assert capsys.readouterr().out.strip().startswith(("{", "["))
+
+
+def test_stale_fence_cannot_write_intent_or_terminal_outcome(tmp_path):
+    queue = LocalTaskQueue(tmp_path)
+    queue.submit("a")
+    stale = queue.claim_local("a", "old", idempotency_key="old", ttl=0.01)
+    queue.reclaim_stale(now=10**30)
+    current = queue.claim_local("a", "new", idempotency_key="new")
+    with pytest.raises(QueueConflict, match="stale"):
+        queue.persist_intent(stale, {"effect": "write"})
+    with pytest.raises(QueueConflict, match="stale"):
+        queue.record_outcome(stale, "verified_success", receipt={"proof": "stale"})
+    queue.record_outcome(current, "verified_success", receipt={"proof": "current"})
+    assert queue.task("a")["lease"]["status"] == "completed"
+
+
+def test_submit_is_atomic_and_doctor_verifies_transition_digests(tmp_path, monkeypatch):
+    queue = LocalTaskQueue(tmp_path)
+    queue.submit("a")
+    assert queue.doctor_local()["healthy"] is True
+    with sqlite3.connect(queue.path) as db:
+        db.execute("UPDATE local_transitions SET digest='tampered' WHERE task_id='a'")
+    result = queue.doctor_local()
+    assert result["healthy"] is False and result["corrupt_transitions"]
+    queue.submit("b")
+    assert queue.inspect_local("b")["outcome"]["outcome"] == "never_started"
+
+
+def test_cli_rejects_non_root_repo(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    child = tmp_path / "child"
+    child.mkdir()
+    with pytest.raises(SystemExit):
+        cli_main(["--repo", str(child), "status"])
+
+
+def test_benchmark_thresholds_are_enforced(monkeypatch, capsys):
+    from bench import benchmark_local_task_queue_889 as benchmark
+
+    assert benchmark.main(["--max-enqueue-us", "0", "--max-claim-us", "0"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["thresholds"] == {"claim": False, "enqueue": False}

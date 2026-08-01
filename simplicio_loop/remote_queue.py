@@ -542,6 +542,15 @@ class SQLiteRemoteQueue:
         lid = _lease_id(task_id, agent_id, idempotency_key)
         try:
             with self._tx() as c:
+                return self._claim_in_tx(c, task_id, agent_id, idempotency_key, ttl,
+                                         normalized_identity, normalized_caps, now, lid)
+        except sqlite3.Error as exc:
+            raise QueueUnavailable("queue unavailable: %s" % exc) from exc
+
+    def _claim_in_tx(self, c: sqlite3.Connection, task_id: str, agent_id: str,
+                     idempotency_key: str, ttl: float,
+                     normalized_identity: Optional[Mapping[str, Any]],
+                     normalized_caps: Sequence[str], now: float, lid: str) -> Lease:
                 existing = c.execute("SELECT task_id,lease_id FROM idempotency WHERE idempotency_key=?",
                                      (idempotency_key,)).fetchone()
                 if existing and existing["task_id"] != task_id:
@@ -582,8 +591,6 @@ class SQLiteRemoteQueue:
                 self._event(c, task_id, "claimed", agent_id, token, {"lease_id": lid, "expires_at": expires})
                 return Lease(task_id, agent_id, lid, token, expires, idempotency_key,
                              normalized_identity, normalized_caps, False)
-        except sqlite3.Error as exc:
-            raise QueueUnavailable("queue unavailable: %s" % exc) from exc
 
     def _owned(self, c: sqlite3.Connection, lease: Lease) -> sqlite3.Row:
         row = c.execute("SELECT * FROM leases WHERE task_id=?", (lease.task_id,)).fetchone()

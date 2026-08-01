@@ -6,13 +6,14 @@ import contextlib
 import hashlib
 import json
 import os
-import shutil
 import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .remote_queue import Lease, QueueConflict, QueueUnavailable, SQLiteRemoteQueue
+from .remote_queue import (
+    Lease, QueueConflict, QueueUnavailable, SQLiteRemoteQueue, _lease_id, _now,
+)
 
 SCHEMA = "simplicio.loop.local-task-queue/v1"
 OUTCOMES = frozenset({
@@ -64,23 +65,34 @@ class LocalTaskQueue(SQLiteRemoteQueue):
         db.execute(
             "INSERT INTO local_transitions(task_id,from_state,to_state,payload,digest,created_at) "
             "VALUES(?,?,?,?,?,?)",
-            (task_id, old, new, json.dumps(value["payload"], sort_keys=True),
+            (task_id, old, new, json.dumps(value, sort_keys=True),
              _digest(value), time.time()),
         )
 
     def submit(self, task_id: str, payload: Mapping[str, Any] | None = None,
                *, depends_on: Sequence[str] = ()) -> None:
-        self.enqueue(task_id, {**dict(payload or {}), "depends_on": sorted(set(depends_on))})
+        task_id = str(task_id).strip()
+        if not task_id:
+            raise ValueError("task_id is required")
+        dependencies = sorted(set(map(str, depends_on)))
+        task_payload = {**dict(payload or {}), "depends_on": dependencies}
         with self._tx() as db:
-            db.execute("INSERT OR REPLACE INTO local_outcomes VALUES(?,?,?,?,?,?)",
+            db.execute("INSERT OR IGNORE INTO tasks(task_id,status,payload,updated_at) VALUES(?,?,?,?)",
+                       (task_id, "ready", json.dumps(task_payload, sort_keys=True), time.time()))
+            if db.execute("SELECT 1 FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone():
+                return
+            self._event(db, task_id, "enqueued", "system", None, task_payload)
+            db.execute("INSERT INTO local_outcomes VALUES(?,?,?,?,?,?)",
                        (task_id, "never_started", None, None, None, time.time()))
             db.executemany("INSERT OR IGNORE INTO local_dependencies VALUES(?,?)",
-                           ((task_id, dep) for dep in sorted(set(depends_on))))
+                           ((task_id, dep) for dep in dependencies))
             self._transition(db, task_id, None, "never_started")
 
     def claim_local(self, task_id: str, worker_id: str, *, idempotency_key: str,
                     ttl: float = 60.0) -> Lease:
-        with contextlib.closing(self._connect()) as db:
+        if ttl <= 0 or not worker_id or not idempotency_key:
+            raise ValueError("worker_id, idempotency_key and positive ttl are required")
+        with self._tx() as db:
             stopped = db.execute("SELECT value FROM local_meta WHERE key='stopped'").fetchone()
             deps = db.execute("SELECT depends_on FROM local_dependencies WHERE task_id=?", (task_id,)).fetchall()
             if stopped and stopped[0] == "1":
@@ -89,8 +101,11 @@ class LocalTaskQueue(SQLiteRemoteQueue):
                 row = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (dep[0],)).fetchone()
                 if row is None or row[0] != "verified_success":
                     raise QueueConflict("task dependencies are not verified")
-        lease = self.claim(task_id, worker_id, idempotency_key=idempotency_key, ttl=ttl)
-        with self._tx() as db:
+            now = _now()
+            lease = self._claim_in_tx(
+                db, task_id, worker_id, idempotency_key, ttl, None, (), now,
+                _lease_id(task_id, worker_id, idempotency_key),
+            )
             old = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()[0]
             db.execute("UPDATE local_outcomes SET outcome='running',updated_at=? WHERE task_id=?",
                        (time.time(), task_id))
@@ -98,11 +113,11 @@ class LocalTaskQueue(SQLiteRemoteQueue):
         return lease
 
     def persist_intent(self, lease: Lease, intent: Mapping[str, Any]) -> dict[str, Any]:
-        self.assert_active(lease)
         value = {"schema": SCHEMA, "task_id": lease.task_id, "fence": lease.fencing_token,
                  "intent": dict(intent), "created_ns": time.time_ns()}
         value["digest"] = _digest(value)
         with self._tx() as db:
+            self._owned(db, lease)
             db.execute("UPDATE local_outcomes SET intent=?,updated_at=? WHERE task_id=?",
                        (json.dumps(value, sort_keys=True), time.time(), lease.task_id))
         return value
@@ -111,7 +126,6 @@ class LocalTaskQueue(SQLiteRemoteQueue):
                        provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
         if outcome not in OUTCOMES - {"never_started", "running"}:
             raise ValueError("unsafe outcome")
-        self.assert_active(lease)
         if outcome == "verified_success" and receipt is None:
             raise QueueConflict("verified success requires receipt")
         if outcome == "retryable_failure" and not provenance:
@@ -121,32 +135,50 @@ class LocalTaskQueue(SQLiteRemoteQueue):
                  "provenance": dict(provenance or {}), "created_ns": time.time_ns()}
         value["digest"] = _digest(value)
         with self._tx() as db:
+            self._owned(db, lease)
             old = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (lease.task_id,)).fetchone()[0]
+            if old in {"verified_success", "blocked", "dead_letter"}:
+                raise QueueConflict("terminal outcome is immutable")
             db.execute("UPDATE local_outcomes SET outcome=?,receipt=?,provenance=?,updated_at=? WHERE task_id=?",
                        (outcome, json.dumps(value, sort_keys=True), json.dumps(provenance or {}, sort_keys=True),
                         time.time(), lease.task_id))
             self._transition(db, lease.task_id, old, outcome, {"fence": lease.fencing_token})
-            if outcome == "verified_success":
-                db.execute("UPDATE tasks SET status='completed',updated_at=? WHERE task_id=?",
-                           (time.time(), lease.task_id))
+            task_status = {
+                "verified_success": "completed", "dead_letter": "completed",
+                "blocked": "cancelled", "retryable_failure": "ready",
+            }.get(outcome, "claimed")
+            db.execute("UPDATE tasks SET status=?,updated_at=? WHERE task_id=?",
+                       (task_status, time.time(), lease.task_id))
+            if outcome in {"verified_success", "blocked", "dead_letter", "retryable_failure"}:
+                lease_status = "completed" if outcome in {"verified_success", "dead_letter"} else "released"
+                db.execute("UPDATE leases SET status=?,updated_at=? WHERE task_id=?",
+                           (lease_status, time.time(), lease.task_id))
         return value
 
     def reconcile_unknown(self, task_id: str, *, verified: bool,
-                          receipt: Mapping[str, Any] | None = None) -> None:
+                          receipt: Mapping[str, Any] | None = None,
+                          provenance: Mapping[str, Any] | None = None) -> None:
         target = "verified_success" if verified else "retryable_failure"
         if verified and receipt is None:
             raise QueueConflict("verified reconciliation requires receipt")
+        if not verified and not provenance:
+            raise QueueConflict("retry reconciliation requires idempotency provenance")
+        receipt_value = None
+        if receipt is not None:
+            receipt_value = {"schema": SCHEMA, "task_id": task_id, "outcome": target,
+                             "receipt": dict(receipt), "created_ns": time.time_ns()}
+            receipt_value["digest"] = _digest(receipt_value)
         with self._tx() as db:
             row = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()
             if row is None or row[0] != "unknown_outcome":
                 raise QueueConflict("task does not require reconciliation")
-            db.execute("UPDATE local_outcomes SET outcome=?,receipt=?,updated_at=? WHERE task_id=?",
-                       (target, json.dumps(receipt or {}, sort_keys=True), time.time(), task_id))
+            db.execute("UPDATE local_outcomes SET outcome=?,receipt=?,provenance=?,updated_at=? WHERE task_id=?",
+                       (target, json.dumps(receipt_value, sort_keys=True) if receipt_value else None,
+                        json.dumps(provenance or {}, sort_keys=True), time.time(), task_id))
             db.execute("UPDATE tasks SET status=?,updated_at=? WHERE task_id=?",
                        ("completed" if verified else "ready", time.time(), task_id))
-            if not verified:
-                db.execute("UPDATE leases SET status='released',updated_at=? WHERE task_id=?",
-                           (time.time(), task_id))
+            db.execute("UPDATE leases SET status=?,updated_at=? WHERE task_id=?",
+                       ("completed" if verified else "released", time.time(), task_id))
             self._transition(db, task_id, "unknown_outcome", target)
 
     def stop(self) -> None:
@@ -234,8 +266,37 @@ class LocalTaskQueue(SQLiteRemoteQueue):
             with contextlib.closing(self._connect()) as db:
                 integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
                 schema = db.execute("SELECT value FROM local_meta WHERE key='schema'").fetchone()[0]
-            return {"schema": SCHEMA, "healthy": integrity == "ok" and schema == SCHEMA,
-                    "integrity": integrity}
+                missing = [row[0] for row in db.execute(
+                    "SELECT t.task_id FROM tasks t LEFT JOIN local_outcomes o USING(task_id) "
+                    "WHERE o.task_id IS NULL ORDER BY t.task_id")]
+                corrupt = []
+                for row in db.execute("SELECT seq,task_id,from_state,to_state,payload,digest FROM local_transitions"):
+                    try:
+                        value = json.loads(row["payload"])
+                        if value.get("schema") != SCHEMA or value.get("task_id") != row["task_id"] \
+                                or value.get("from") != row["from_state"] or value.get("to") != row["to_state"] \
+                                or _digest(value) != row["digest"]:
+                            corrupt.append(row["seq"])
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        corrupt.append(row["seq"])
+                corrupt_records = []
+                for row in db.execute("SELECT task_id,intent,receipt FROM local_outcomes"):
+                    for field in ("intent", "receipt"):
+                        raw = row[field]
+                        if not raw:
+                            continue
+                        try:
+                            value = json.loads(raw)
+                            supplied = value.pop("digest", "")
+                            if value.get("schema") != SCHEMA or value.get("task_id") != row["task_id"] \
+                                    or supplied != _digest(value):
+                                corrupt_records.append(f"{row['task_id']}:{field}")
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            corrupt_records.append(f"{row['task_id']}:{field}")
+            return {"schema": SCHEMA,
+                    "healthy": integrity == "ok" and schema == SCHEMA and not missing and not corrupt and not corrupt_records,
+                    "integrity": integrity, "missing_outcomes": missing,
+                    "corrupt_transitions": corrupt, "corrupt_records": corrupt_records}
         except sqlite3.Error as exc:
             return {"schema": SCHEMA, "healthy": False, "error": str(exc)}
 
@@ -243,7 +304,8 @@ class LocalTaskQueue(SQLiteRemoteQueue):
         backup = self.orchestrator / f"queue.sqlite3.backup-{time.time_ns()}"
         if dry_run:
             return {"schema": SCHEMA, "dry_run": True, "backup": str(backup)}
-        shutil.copy2(self.path, backup)
+        with contextlib.closing(self._connect()) as source, sqlite3.connect(backup) as destination:
+            source.backup(destination)
         try:
             self._init_local()
         except Exception:
