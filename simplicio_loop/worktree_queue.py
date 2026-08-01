@@ -615,7 +615,8 @@ class WorktreeQueue:
             try:
                 proc = subprocess.run(
                     argv, cwd=entry.get("path") or self.repo_root,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, timeout=timeout, close_fds=True,
                 )
                 out, err = (proc.stdout or "")[-4000:], (proc.stderr or "")[-4000:]
                 outcomes.append({"command": argv, "returncode": proc.returncode,

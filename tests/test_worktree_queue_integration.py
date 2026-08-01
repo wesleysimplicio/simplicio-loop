@@ -9,6 +9,9 @@ import pytest
 from simplicio_loop.worktree_queue import TaskSpec, WorktreeQueue
 
 
+import simplicio_loop.worktree_queue as queue_module
+
+
 def _git(cwd, *args):
     return subprocess.run(["git"] + list(args), cwd=str(cwd), check=True,
                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -164,3 +167,66 @@ def test_cleanup_receipt_requires_identity_and_is_hash_linked(tmp_path):
     })
     assert receipt["receipt_sha"]
     assert q.state()["tasks"]["A"]["cleanup_receipt_sha"] == receipt["receipt_sha"]
+
+
+def test_packaged_queue_mapping_cli_selftest_and_corrupt_state(tmp_path, monkeypatch, capsys):
+    mapped = TaskSpec.from_mapping({"id": "mapped", "plan_files": ["src/a.py"], "contracts": ["api.v1"]})
+    assert mapped.conflict_keys() == ["contract:api.v1", "path:src/a.py"]
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{"id": "A", "files_affected": ["a.py"]}]), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["worktree_queue.py", "graph", "--tasks", str(tasks)])
+    assert queue_module._cli() == 0
+    assert "lane-" in capsys.readouterr().out
+    monkeypatch.setattr(sys, "argv", ["worktree_queue.py", "graph"])
+    with pytest.raises(SystemExit):
+        queue_module._cli()
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{broken", encoding="utf-8")
+    queue = WorktreeQueue(str(tmp_path), str(corrupt), "corrupt")
+    assert queue.state()["schema"] == queue_module.SCHEMA
+    assert queue_module.selftest() == 0
+    assert "selftest: ALL PASS" in capsys.readouterr().out
+
+
+def test_packaged_queue_public_guards_and_failure_receipt(tmp_path):
+    repo = _repo(tmp_path)
+    queue = _queue(tmp_path, repo)
+    with pytest.raises(ValueError, match="task id"):
+        queue.allocate(TaskSpec(""))
+    with pytest.raises(ValueError, match="isolation"):
+        queue.allocate(TaskSpec("A"), isolation="invalid")
+    with pytest.raises(KeyError, match="unknown task"):
+        queue.snapshot("missing")
+    with pytest.raises(ValueError, match="task_id"):
+        queue.record_context("", {})
+    with pytest.raises(KeyError, match="unknown task"):
+        queue.record_context("missing", {})
+    with pytest.raises(KeyError, match="unknown task"):
+        queue.record_composed_verification("missing", True)
+
+    queue.allocate(TaskSpec("A"))
+    with pytest.raises(ValueError, match="not queued"):
+        queue.record_composed_verification("A", True)
+    queue.enqueue_merge("A")
+    receipt = queue.run_composed_verification("A", [[]], suite="empty-command")
+    assert receipt["passed"] is False
+    assert receipt["details"]["commands"][0]["returncode"] == 2
+    assert queue.composed_candidates() == []
+    assert queue.cleanup_orphans(["missing"]) == []
+    assert queue.teardown("missing").failures == ["unknown-task"]
+
+
+def test_packaged_queue_rejects_frozen_base_and_bad_cleanup_receipts(tmp_path):
+    repo = _repo(tmp_path)
+    queue = _queue(tmp_path, repo)
+    base = _git(repo, "rev-parse", "HEAD")
+    queue.register_tasks([TaskSpec("A")], base_sha=base)
+    with pytest.raises(ValueError, match="frozen base SHA"):
+        queue.register_tasks([TaskSpec("B")], base_sha="0" * 40)
+    with pytest.raises(ValueError, match="cleanup receipt missing"):
+        queue.record_cleanup_receipt("A", {})
+    with pytest.raises(ValueError, match="decision"):
+        queue.record_cleanup_receipt("A", {
+            "worktree_id": "", "terminal_handle": "done", "lease_owner": "worker",
+            "cleanup_decision": "keep", "reason": "still active",
+        })
