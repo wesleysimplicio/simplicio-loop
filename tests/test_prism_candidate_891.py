@@ -1,6 +1,6 @@
 import pytest
 
-from simplicio_loop.prism_reducer import Candidate, PrismReducerError
+from simplicio_loop.prism_reducer import Candidate, ExpectedTask, PrismReducer, PrismReducerError, TaskResult
 
 
 HASH = "a" * 64
@@ -33,6 +33,25 @@ def test_candidate_rejects_unverified_or_malformed_receipts():
             "task-1", 1, "slot-1", HASH, HASH, HASH, (), HASH, "generation",
             HASH, HASH, "unverified",
         )
+
+
+def test_reducer_emits_structured_conflict_bundle_without_selecting_winner():
+    reducer = PrismReducer([
+        ExpectedTask("task-a", "slot-1", "agent-a", 1, "generation"),
+        ExpectedTask("task-b", "slot-1", "agent-b", 1, "generation"),
+    ])
+    for task_id, agent, path in (("task-a", "agent-a", "shared.py"),
+                                 ("task-b", "agent-b", "shared.py")):
+        reducer.submit(TaskResult(task_id, "slot-1", agent, 1, 1, "generation",
+                                  "accepted", HASH, write_set=(path,), impact_test_hash=HASH))
+
+    receipt = reducer.reduce_slot("slot-1")
+    bundle = receipt["conflict_bundle"]
+    assert receipt["verdict"] == "blocked"
+    assert receipt["reason_code"] == "COMPOSITION_CONFLICT"
+    assert bundle["schema"] == "simplicio.loop.conflict-bundle/v1"
+    assert bundle["winner"] is None
+    assert bundle["resolution"] == "bounded_integration_task_required"
     with pytest.raises(PrismReducerError, match="lowercase SHA-256"):
         Candidate(
             "task-1", 1, "slot-1", "not-a-hash", HASH, HASH, (), HASH, "generation",
