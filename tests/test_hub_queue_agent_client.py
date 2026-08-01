@@ -61,16 +61,21 @@ class FakeHub:
 
     def hub_agent_send(self, **payload):
         self.calls.append(("send", payload))
+        assert isinstance(payload["handle"], dict)
+        assert payload["handle"]["generation"] == 7
+        assert payload["stage_input"] == {"payload": {"hello": "hub"}}
         job = self._job(payload["handle"])
         job["status"] = "passed"
         return {"ok": True, "state": "passed"}
 
     def hub_agent_collect(self, **payload):
         self.calls.append(("collect", payload))
+        assert isinstance(payload["handle"], dict)
         return {"ok": True, "result": {"output": {"fake": True}, "receipt": {"verdict": "pass"}}}
 
     def hub_agent_cancel(self, **payload):
         self.calls.append(("cancel", payload))
+        assert isinstance(payload["handle"], dict)
         return {"ok": True, "state": "cancelled"}
 
 
@@ -88,7 +93,7 @@ def test_fake_hub_preserves_handle_and_journals_lifecycle(tmp_path):
     client.cancel(handle, reason="test-cleanup")
 
     assert result["output"] == {"fake": True}
-    assert all(call[1].get("handle") in {"fake-job-1", handle["handle_id"]}
+    assert all(call[1].get("handle") == handle
                for call in hub.calls if call[0] in {"status", "send", "collect", "cancel"})
     events = journal.replay()
     assert [event["event_type"] for event in events] == ["intent", "effect", "intent", "effect", "intent", "effect"]

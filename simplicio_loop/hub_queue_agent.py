@@ -270,7 +270,8 @@ class HubQueueAgentClient:
 
     def status(self, handle: str | Mapping[str, Any]) -> dict[str, Any]:
         self._ensure_capability()
-        response = self._invoke("hub_agent_status", {"client_id": self.client_id, "handle": self._handle_id(handle)}, identity=self._handle_id(handle))
+        value = self._handle_payload(handle)
+        response = self._invoke("hub_agent_status", {"client_id": self.client_id, "handle": value}, identity=self._handle_id(handle))
         result = dict(response.get("execution") or response.get("status") or response.get("job") or response)
         state = str(result.get("state") or result.get("status") or "")
         result["status"] = {"claimed": "ready", "completed": "passed"}.get(state, state)
@@ -286,9 +287,11 @@ class HubQueueAgentClient:
 
     def send(self, handle: str | Mapping[str, Any], stage_input: Mapping[str, Any]) -> dict[str, Any]:
         self._ensure_capability()
+        if not isinstance(stage_input, Mapping):
+            raise HubQueueAgentError("stage_input must be an object", reason_code="invalid_stage_input")
         value = self._handle_payload(handle)
         operation_id = str(value.get("idempotency_key") or self._handle_id(handle)) + ":send"
-        payload = {"client_id": self.client_id, "handle": self._handle_id(handle), "fence": value.get("fence"), "operation_id": operation_id}
+        payload = {"client_id": self.client_id, "handle": value, "fence": value.get("fence"), "stage_input": dict(stage_input), "operation_id": operation_id}
         self._journal_intent("send", operation_id, {"handle": value})
         response = self._invoke("hub_agent_send", payload, identity=operation_id)
         self._journal_effect("send", operation_id, response)
@@ -296,7 +299,8 @@ class HubQueueAgentClient:
 
     def collect(self, handle: str | Mapping[str, Any]) -> dict[str, Any]:
         self._ensure_capability()
-        response = self._invoke("hub_agent_collect", {"client_id": self.client_id, "handle": self._handle_id(handle)}, identity=self._handle_id(handle))
+        value = self._handle_payload(handle)
+        response = self._invoke("hub_agent_collect", {"client_id": self.client_id, "handle": value}, identity=self._handle_id(handle))
         execution = dict(response.get("execution") or response)
         result = dict(execution.get("result") or {})
         result.setdefault("output", execution.get("output"))
@@ -312,7 +316,7 @@ class HubQueueAgentClient:
         self._ensure_capability()
         value = self._handle_payload(handle)
         operation_id = str(value.get("idempotency_key") or self._handle_id(handle)) + ":cancel:" + str(reason)
-        payload = {"client_id": self.client_id, "handle": self._handle_id(handle), "fence": value.get("fence"), "reason": str(reason), "operation_id": operation_id}
+        payload = {"client_id": self.client_id, "handle": value, "fence": value.get("fence"), "reason": str(reason), "operation_id": operation_id}
         self._journal_intent("cancel", operation_id, {"handle": value, "reason": str(reason)})
         response = self._invoke("hub_agent_cancel", payload, identity=operation_id)
         self._journal_effect("cancel", operation_id, response)

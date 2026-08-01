@@ -463,12 +463,14 @@ class HubDaemon:
                     "fence": execution["fence"], "idempotency_key": idempotency_key,
                     "client_id": client_id, "worker_id": worker_id,
                 }
-            self._agent_jobs[job_id] = {
+            storage_id = str(handle["handle_id"])
+            self._agent_jobs[storage_id] = {
                 "client_id": client_id, "worker_id": worker_id, "idempotency_key": idempotency_key,
                 "handle": handle, "state": "ready", "progress": 0.0,
                 "heartbeat_at": time.time(), "stage_input": None, "result": None,
                 "request": dict(payload),
                 "executor_handle": execution["handle"] if process_spec is not None else None,
+                "execution": process_spec is not None,
             }
             return {"ok": True, "handle": dict(handle), "replayed": False}
         if envelope.method == "hub_agent_status":
@@ -1064,6 +1066,18 @@ def default_endpoint(root: Optional[str] = None) -> str:
     return str((Path(root) if root else Path(tempfile.gettempdir())) / "simplicio-loop-hub.sock")
 
 
+def _tcp_address(endpoint: str) -> Tuple[str, int]:
+    address = str(endpoint).removeprefix("tcp://")
+    try:
+        host, raw_port = address.rsplit(":", 1)
+        port = int(raw_port)
+    except (TypeError, ValueError) as exc:
+        raise HubError("invalid TCP Hub endpoint") from exc
+    if host not in {"127.0.0.1", "localhost"} or not 1 <= port <= 65535:
+        raise HubError("TCP Hub endpoint must use loopback and a valid port")
+    return host, port
+
+
 def _pipe_listener(endpoint: str):
     from multiprocessing.connection import Listener
     return Listener(endpoint, family="AF_PIPE")
@@ -1104,6 +1118,8 @@ class HubSocketServer:
         self.transport = transport or default_transport()
         if self.transport not in {"unix", "named-pipe", "tcp"}:
             raise ValueError("transport must be unix, named-pipe, or tcp")
+        if self.transport == "tcp":
+            _tcp_address(self.endpoint)
         self._listener = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -1148,10 +1164,9 @@ class HubSocketServer:
         asyncio.set_event_loop(self._loop)
         try:
             if self.transport == "tcp":
-                address = self.endpoint.removeprefix("tcp://")
-                host, port = address.rsplit(":", 1)
+                host, port = _tcp_address(self.endpoint)
                 self._async_server = self._loop.run_until_complete(
-                    asyncio.start_server(self._handle_conn_async, host, int(port))
+                    asyncio.start_server(self._handle_conn_async, host, port)
                 )
             elif hasattr(asyncio, "start_unix_server"):
                 self._async_server = self._loop.run_until_complete(
@@ -1467,6 +1482,8 @@ class HubSocketClient:
         self.timeout = timeout
         self.endpoint = socket_path
         self.transport = transport or default_transport()
+        if self.transport not in {"unix", "named-pipe", "tcp"}:
+            raise ValueError("transport must be unix, named-pipe, or tcp")
 
     def request(self, request_id: str, method: str, **payload: Any) -> Dict[str, Any]:
         return self.request_raw(HubEnvelope(request_id, method, payload).encode())
@@ -1479,6 +1496,11 @@ class HubSocketClient:
                 raw = conn.recv_bytes().decode("utf-8")
             finally:
                 conn.close()
+        elif self.transport == "tcp":
+            host, port = _tcp_address(self.endpoint)
+            with socket.create_connection((host, port), timeout=self.timeout) as sock:
+                sock.sendall((raw + "\n").encode("utf-8"))
+                raw = _recv_line(sock)
         else:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 sock.settimeout(self.timeout)
@@ -1496,7 +1518,7 @@ def doctor(lock_path: str, socket_path: str, transport: Optional[str] = None) ->
     result: Dict[str, Any] = {
         "lock_exists": lock_file.exists(),
         "lock_pid_alive": False,
-        "socket_exists": (transport or default_transport()) == "named-pipe" or Path(socket_path).exists(),
+        "socket_exists": (transport or default_transport()) in {"named-pipe", "tcp"} or Path(socket_path).exists(),
         "socket_reachable": False,
     }
     if lock_file.exists():
