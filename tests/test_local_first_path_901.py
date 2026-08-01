@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from simplicio_loop.fast_task_bridge import FastTaskBridge
 from simplicio_loop.local_first_path import LocalFirstTaskPath
 
@@ -9,6 +11,7 @@ from simplicio_loop.local_first_path import LocalFirstTaskPath
 class Store:
     def __init__(self, root: Path, storage: Path | None) -> None:
         self.builds = 0
+        self.released: list[str] = []
 
     def build_base(self, *, config=None):
         self.builds += 1
@@ -21,7 +24,7 @@ class Store:
         return {"overlay_generation": "overlay"}
 
     def release_lease(self, lease_id):
-        return None
+        self.released.append(lease_id)
 
 
 class Integration:
@@ -47,3 +50,20 @@ def test_local_first_path_binds_mapper_fast_and_apply(tmp_path: Path) -> None:
     assert result.binding.base_generation == "base"
     assert result.to_dict()["apply_receipt"]["status"] == "APPLIED"
     assert store.builds == 1
+    assert store.released == ["lease"]
+
+
+def test_local_first_path_releases_lease_when_plan_fails(tmp_path: Path) -> None:
+    store = Store(tmp_path, None)
+
+    class FailedIntegration:
+        def prepare(self, task):
+            return {"status": "BLOCKED", "reason": "missing-target"}
+
+    path = LocalFirstTaskPath(str(tmp_path),
+                              bridge=FastTaskBridge(tmp_path, store_factory=lambda root, storage: store),
+                              integration=FailedIntegration())
+    with pytest.raises(Exception, match="did not become READY"):
+        path.run(task_id="task", attempt_id="attempt", worktree_id="worktree", task="change app",
+                 mapper_receipt={"generation": "mapper", "context_hash": "ctx"})
+    assert store.released == ["lease"]
