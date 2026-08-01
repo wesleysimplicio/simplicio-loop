@@ -15,4 +15,4 @@ try:
     except PackageNotFoundError:
         __version__ = "3.38.21"
 except Exception:  # pragma: no cover
-        __version__ = "3.38.21"
+    __version__ = "3.38.21"

@@ -938,6 +938,9 @@ def main(argv=None) -> int:
     p_slots = sub.add_parser("agent-slots", help="inspect and reclaim Loop-owned agent capacity")
     p_slots.add_argument("slot_args", nargs=argparse.REMAINDER,
                          help="pass-through args for the JSON-first agent slot registry")
+    p_generation_broker = sub.add_parser(
+        "generation-broker", help="operate persisted generation bindings")
+    p_generation_broker.add_argument("broker_args", nargs=argparse.REMAINDER)
     sub.add_parser(
         "hub-drain-plan",
         help="read-only PT-BR/EN GitHub drain intake; never executes the plan",
@@ -1104,6 +1107,9 @@ def main(argv=None) -> int:
         if forwarded and forwarded[0] == "--":
             forwarded = forwarded[1:]
         return agent_slots_main(forwarded)
+    if command == "generation-broker":
+        from .generation_broker_cli import cli_main as generation_broker_main
+        return generation_broker_main(list(args.broker_args or []))
     if command == "ledger":
         return ledger_replay(
             args.path,

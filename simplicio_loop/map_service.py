@@ -199,6 +199,17 @@ class MapServiceRegistry:
             self._identities[identity.key] = identity
             return identity.key
 
+    def snapshot_identities(self) -> Dict[str, RepositoryIdentity]:
+        """Return a stable copy suitable for durable broker state."""
+        with self._lock:
+            return dict(self._identities)
+
+    def restore_identity(self, identity: RepositoryIdentity) -> str:
+        """Restore one previously validated identity without transition invalidation."""
+        with self._lock:
+            self._identities[identity.key] = identity
+            return identity.key
+
     def identity(self, identity_key: str) -> RepositoryIdentity:
         try:
             return self._identities[identity_key]
