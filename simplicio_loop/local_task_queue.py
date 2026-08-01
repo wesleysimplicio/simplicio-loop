@@ -327,7 +327,8 @@ class LocalTaskQueue(SQLiteRemoteQueue):
         backup = self.orchestrator / f"queue.sqlite3.backup-{time.time_ns()}"
         if dry_run:
             return {"schema": SCHEMA, "dry_run": True, "backup": str(backup)}
-        with contextlib.closing(self._connect()) as source, sqlite3.connect(backup) as destination:
+        with contextlib.closing(self._connect()) as source, \
+                contextlib.closing(sqlite3.connect(backup)) as destination:
             source.backup(destination)
         try:
             with self._tx() as db:
@@ -338,6 +339,36 @@ class LocalTaskQueue(SQLiteRemoteQueue):
                 migrated_provenance = 0
                 if stored == LEGACY_SCHEMA:
                     rows = db.execute("SELECT task_id,intent,receipt,provenance FROM local_outcomes").fetchall()
+                    transitions = db.execute("SELECT seq,payload,digest FROM local_transitions").fetchall()
+                    # Authenticate every versioned v1 envelope before the first
+                    # migration write. Re-hashing untrusted bytes would turn a
+                    # forged legacy receipt into apparently healthy v2 evidence.
+                    for row in rows:
+                        for field in ("intent", "receipt", "provenance"):
+                            if not row[field]:
+                                continue
+                            try:
+                                raw = json.loads(row[field])
+                            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                                raise QueueUnavailable(f"invalid legacy {field} for {row['task_id']}") from exc
+                            if not isinstance(raw, dict):
+                                raise QueueUnavailable(f"invalid legacy {field} for {row['task_id']}")
+                            if field in {"intent", "receipt"}:
+                                supplied = raw.pop("digest", "")
+                                if raw.get("schema") != LEGACY_SCHEMA or supplied != _digest(raw):
+                                    raise QueueUnavailable(f"invalid legacy {field} digest for {row['task_id']}")
+                            elif "schema" in raw or "digest" in raw:
+                                supplied = raw.pop("digest", "")
+                                if raw.get("schema") not in {LEGACY_SCHEMA, SCHEMA} or supplied != _digest(raw):
+                                    raise QueueUnavailable(f"invalid legacy provenance digest for {row['task_id']}")
+                    for row in transitions:
+                        try:
+                            payload = json.loads(row["payload"])
+                        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                            raise QueueUnavailable(f"invalid legacy transition {row['seq']}") from exc
+                        if (not isinstance(payload, dict) or payload.get("schema") not in {LEGACY_SCHEMA, SCHEMA}
+                                or row["digest"] != _digest(payload)):
+                            raise QueueUnavailable(f"invalid legacy transition digest {row['seq']}")
                     for row in rows:
                         for field in ("intent", "receipt", "provenance"):
                             if not row[field]:
@@ -361,7 +392,7 @@ class LocalTaskQueue(SQLiteRemoteQueue):
                             migrated += 1
                             if field == "provenance":
                                 migrated_provenance += 1
-                    for row in db.execute("SELECT seq,payload FROM local_transitions").fetchall():
+                    for row in transitions:
                         try:
                             payload = json.loads(row["payload"])
                         except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -380,7 +411,8 @@ class LocalTaskQueue(SQLiteRemoteQueue):
         except Exception:
             # Restore through SQLite rather than replacing the live database file;
             # Windows can retain a WAL/shared-memory handle between connections.
-            with sqlite3.connect(backup) as source, sqlite3.connect(self.path) as destination:
+            with contextlib.closing(sqlite3.connect(backup)) as source, \
+                    contextlib.closing(sqlite3.connect(self.path)) as destination:
                 source.backup(destination)
             raise
         return {"schema": SCHEMA, "dry_run": False, "backup": str(backup),
