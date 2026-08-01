@@ -228,7 +228,10 @@ class GenerationBroker:
         started = time.perf_counter_ns()
         with self._lock, self._process_lock():
             candidate_id = validate_candidate_id(candidate_id)
-            identity_key = self._identity_aliases.get(identity_key, identity_key)
+            seen: set[str] = set()
+            while identity_key in self._identity_aliases and identity_key not in seen:
+                seen.add(identity_key)
+                identity_key = self._identity_aliases[identity_key]
             if generation.generation != self.lifecycle.fast_generation:
                 raise LifecycleError("stale canonical generation")
             identity = self.registry.identity(identity_key)
@@ -425,11 +428,18 @@ class GenerationBroker:
             if self._bindings:
                 old_key = next(iter(self._bindings.values())).identity_key
             else:
-                matching = [
+                rooted = [
                     key for key, item in identities.items()
                     if Path(item.worktree_root or item.canonical_root).resolve()
                     == self.lifecycle.base_path
                 ]
+                current = [
+                    key for key in rooted
+                    if identities[key].base_sha == self.lifecycle.source_commit
+                ]
+                alias_targets = set(self._identity_aliases.values())
+                promoted = [key for key in current if key in alias_targets]
+                matching = promoted or current
                 if len(matching) != 1:
                     raise LifecycleError("promotion requires one lifecycle repository identity")
                 old_key = matching[0]

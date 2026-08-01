@@ -383,3 +383,18 @@ def test_no_binding_promotion_fails_closed_for_ambiguous_lifecycle_identity(tmp_
     promoted = CanonicalGeneration("generation-2", "ctx2", "def", "plan2", "receipt2")
     with pytest.raises(LifecycleError, match="requires one lifecycle repository identity"):
         service.promote(promoted)
+
+
+def test_reloaded_zero_binding_broker_can_promote_twice_then_first_bind(tmp_path: Path):
+    service, identity_key, _ = broker(tmp_path)
+    second = CanonicalGeneration("generation-2", "ctx2", "def", "plan2", "receipt2")
+    service.promote(second)
+    reloaded = _load(service.lifecycle.attempt.resolve())
+    third = CanonicalGeneration("generation-3", "ctx3", "ghi", "plan3", "receipt3")
+    reloaded.promote(third)
+    final = _load(service.lifecycle.attempt.resolve())
+    binding = final.bind(
+        identity_key, tree_hash="tree-3", files=[], candidate_id="first", generation=third
+    )
+    assert binding.source_commit == "ghi"
+    assert binding.fast_generation == "generation-3"

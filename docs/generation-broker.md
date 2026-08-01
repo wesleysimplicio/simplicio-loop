@@ -32,3 +32,4 @@ The CLI reconstructs the authoritative registry and lifecycle from the verified 
 Durable bindings and canonical manifests are reloaded under the process lock before fencing decisions.
 Atomic state replacement uses bounded retry for transient Windows sharing violations.
 Zero-binding promotion requires exactly one registry identity rooted at the lifecycle base.
+Repeated zero-binding promotion follows the identity matching the lifecycle source commit and alias chain.
