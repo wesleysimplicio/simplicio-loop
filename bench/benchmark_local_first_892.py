@@ -41,17 +41,22 @@ def _source_commit() -> str | None:
 
 
 async def benchmark(
-    *, repetitions: int = 10, physical_cap: int = 4, delay_seconds: float = 0.0005,
+    *, repetitions: int = 10, warmups: int = 2, physical_cap: int = 4,
+    delay_seconds: float = 0.0005,
 ) -> dict[str, Any]:
-    if repetitions < 3:
-        raise ValueError("repetitions must be >=3")
-    if physical_cap < 1 or delay_seconds <= 0:
-        raise ValueError("physical_cap must be positive and delay_seconds must be positive")
+    if repetitions < 10:
+        raise ValueError("repetitions must be >=10")
+    if warmups < 0 or physical_cap < 1 or delay_seconds <= 0:
+        raise ValueError("warmups must be non-negative, physical_cap positive, and delay_seconds positive")
     loads: dict[str, Any] = {}
     for count in (1, 5, 10, 20, 50):
         slots, tasks = _definitions((count + 9) // 10, conflicted=True, task_count=count)
         ids = [task.task_id for task in tasks]
         cap = min(physical_cap, count)
+        for _ in range(warmups):
+            await _serial(ids, delay_seconds)
+            await _legacy(ids, delay_seconds, cap)
+            await _prism(slots, tasks, delay_seconds, cap)
         loads[str(count)] = {
             "task_count": count,
             "slot_count": len(slots),
@@ -70,7 +75,7 @@ async def benchmark(
         "measurement": "measured",
         "projection": False,
         "methodology": {
-            "warmups": 0,
+            "warmups": warmups,
             "repetitions": repetitions,
             "delay_seconds": delay_seconds,
             "provider_or_model_invoked": False,
@@ -119,12 +124,14 @@ async def benchmark(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repetitions", type=int, default=10)
+    parser.add_argument("--warmups", type=int, default=2)
     parser.add_argument("--physical-cap", type=int, default=4)
     parser.add_argument("--delay-seconds", type=float, default=0.0005)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     receipt = asyncio.run(benchmark(
         repetitions=args.repetitions,
+        warmups=args.warmups,
         physical_cap=args.physical_cap,
         delay_seconds=args.delay_seconds,
     ))
