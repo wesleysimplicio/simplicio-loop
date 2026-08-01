@@ -1,8 +1,11 @@
 # Changelog
 
-## 3.38.26
+## [3.38.26] - 2026-08-01
 
 - Resolve explicitly selected external quality providers through the Loop extension entry-point contract.
+- Restore generated `flow_audit.py` parity across plugin and package mirrors (#963).
+- Define bounded delivery with frozen live-source provenance, cross-session authority,
+  review limits, and explicit integration/release boundaries (#960).
 
 ## 3.38.25
 

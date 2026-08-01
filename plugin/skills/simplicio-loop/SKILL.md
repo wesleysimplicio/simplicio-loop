@@ -28,6 +28,39 @@ merge only through the repository's approved PR path, and re-query live state be
 silently substitute another tracker or local scratchpad for GitHub; use another system only when the
 user explicitly requests it or the repository's documented workflow requires it.
 
+## Bounded delivery policy
+
+Keep delivery finite and ownership explicit; a repository may set stricter limits, never looser
+ones without a recorded human decision.
+
+- **Bounded WIP:** one implementation issue and one delivery PR per worker/session. Finish,
+  hand off, or mark the item blocked before claiming another; reviews do not transfer ownership.
+- **Live intake and frozen scope:** immediately before freezing, re-query the canonical source and
+  record its revision plus provenance in the anchor. Freeze that exact issue goal and acceptance
+  criteria before mutation. A review finding may prove an AC incomplete, but cannot add an AC
+  silently; source drift or scope changes require a fresh query, re-anchoring, and an explicit
+  owner decision.
+- **Finding categories:** classify every finding as `AC_BLOCKER` (violates a frozen AC),
+  `REGRESSION_BLOCKER` (security, correctness, compatibility, or evidence regression caused by the
+  patch), or `FOLLOW_UP` (valuable but outside the frozen scope). Only blockers hold the current
+  delivery; follow-ups become separate work and are never smuggled into its diff.
+- **Review limits:** use one implementation review and one final independent verification, with at
+  most two AC-scoped repair rounds. If a blocker remains, stop `BLOCKED` with evidence and ownership
+  instead of opening an unbounded review/fix loop.
+- **Ownership and integration:** only the active owner mutates the delivery branch. Reviewers are
+  read-only unless ownership is explicitly handed off. Before the first mutation, acquire and
+  confirm the cross-session claim/lease/fence against the live source; a stale or conflicting
+  authority blocks mutation. A handoff must update the authority record and the receiver must
+  confirm the new claim/lease/fence before continuing. Rebase once onto the current canonical base
+  immediately before final verification/merge; after any rebase, rerun the affected gates and
+  prove ancestry/patch scope.
+- **Release boundary:** merge, issue closure, packaging, and release are separate states. Do not
+  close the issue before merged evidence satisfies the frozen ACs, and do not tag/publish a release
+  unless the task or an authorized release owner explicitly includes it; re-query the canonical
+  branch and release state immediately before publication.
+
+Rationale and rollout: `docs/adr/0008-bounded-delivery-policy.md`.
+
 ## Normative contract (non-negotiable)
 
 **Design principle (issue #526): always route to the fastest path the project's structure
