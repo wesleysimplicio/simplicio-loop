@@ -479,6 +479,8 @@ class HubDaemon:
                 execution = self.hub_agent.status(job["handle"]["handle_id"])
                 job["state"] = execution["state"]
                 job["result"] = execution.get("result")
+                if execution.get("fence") is not None:
+                    job["handle"]["fence"] = execution["fence"]
                 return {"ok": True, "execution": execution}
             return {"ok": True, "status": {"state": job["state"], "status": job["state"],
                                               "progress": job["progress"], "heartbeat_at": job["heartbeat_at"],
@@ -512,6 +514,8 @@ class HubDaemon:
                     raise HubProtocolError("hub agent send blocked: %s" % exc) from exc
                 job["state"] = execution["state"]
                 job["result"] = execution.get("result")
+                if execution.get("fence") is not None:
+                    job["handle"]["fence"] = execution["fence"]
                 return {"ok": True, "execution": execution, "handle": dict(job["handle"])}
             if self.agent_executor is not None:
                 try:
@@ -534,7 +538,9 @@ class HubDaemon:
                     if "not terminal" in str(exc):
                         return {"ok": True, "execution": self.hub_agent.status(job["handle"]["handle_id"])}
                     raise HubProtocolError(str(exc)) from exc
-                return {"ok": True, "execution": execution}
+                if execution.get("fence") is not None:
+                    job["handle"]["fence"] = execution["fence"]
+                return {"ok": True, "execution": execution, "handle": dict(job["handle"])}
             if job["state"] not in ("passed", "failed", "blocked", "cancelled", "timed_out", "recovery_unknown"):
                 return {"ok": True, "state": job["state"], "result": None}
             return {"ok": True, "state": job["state"], "result": dict(job.get("result") or {}),
@@ -546,6 +552,10 @@ class HubDaemon:
                     execution = self.hub_agent.cancel(job["executor_handle"], int(job["handle"]["fence"]))
                 except (HubAgentError, TypeError, ValueError) as exc:
                     raise HubProtocolError("hub agent cancel blocked: %s" % exc) from exc
+                job["state"] = execution["state"]
+                job["result"] = execution.get("result")
+                if execution.get("fence") is not None:
+                    job["handle"]["fence"] = execution["fence"]
                 return {"ok": True, "execution": execution, "handle": dict(job["handle"])}
             if job["state"] not in ("passed", "failed", "blocked", "cancelled", "timed_out", "recovery_unknown"):
                 job["state"] = "cancelled"

@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.38.24
+
+- Synchronize supervised Hub execution fences and state through send, status,
+  collect and cancellation responses.
+
 ## 3.38.23
 
 - Preserve complete Hub agent handles and stage input across the productive
