@@ -7,6 +7,8 @@ def test_benchmark_reports_real_process_metrics() -> None:
     assert receipt["processes"] == 4
     assert receipt["throughput_processes_per_second"] > 0
     assert receipt["batch_p95_seconds"] > 0
+    assert receipt["batch_p50_seconds"] > 0
+    assert receipt["first_batch_startup_seconds"] > 0
     assert receipt["duplicate_outcomes"] == 0
 
 

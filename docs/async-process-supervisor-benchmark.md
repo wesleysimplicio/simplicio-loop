@@ -1,7 +1,7 @@
 # Async process supervisor benchmark
 
 Issue #509 is measured with real `python -c` subprocesses, recreating the
-supervisor between rounds. The benchmark records throughput, batch p95,
+supervisor between rounds. The benchmark records first-batch startup, throughput, batch p50/p95,
 process CPU time, RSS when `psutil` is available, and duplicate outcomes.
 
 ```powershell

@@ -1,10 +1,10 @@
 import asyncio
-import os
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+import subprocess
 
 from simplicio_loop.async_io_supervisor import AsyncProcessSupervisor, DuplicateLease
 from simplicio_loop.process_supervisor import (
@@ -12,6 +12,70 @@ from simplicio_loop.process_supervisor import (
     ProcessSpecError,
     PythonProcessAdapter,
 )
+from simplicio_loop import process_supervisor as supervisor_module
+
+
+def test_windows_taskkill_nonzero_falls_back_to_direct_kill(monkeypatch) -> None:
+    class Process:
+        pid = 123
+        killed = False
+        def kill(self):
+            self.killed = True
+
+    process = Process()
+    monkeypatch.setattr(supervisor_module.os, "name", "nt")
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 1),
+    )
+    monkeypatch.setattr(supervisor_module.os, "getpgid", lambda pid: (_ for _ in ()).throw(OSError()), raising=False)
+
+    PythonProcessAdapter._kill_tree(process)
+
+    assert process.killed is True
+
+
+def test_windows_taskkill_success_does_not_direct_kill(monkeypatch) -> None:
+    class Process:
+        pid = 123
+        killed = False
+        def kill(self):
+            self.killed = True
+
+    process = Process()
+    monkeypatch.setattr(supervisor_module.os, "name", "nt")
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0),
+    )
+    PythonProcessAdapter._kill_tree(process)
+    assert process.killed is False
+
+
+def test_reap_after_kill_is_bounded_and_retries_direct_kill(monkeypatch) -> None:
+    class Process:
+        killed = False
+        async def communicate(self):
+            return b"never", b"never"
+        def kill(self):
+            self.killed = True
+
+    async def timeout(awaitable, *, timeout):
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    process = Process()
+    monkeypatch.setattr(supervisor_module.asyncio, "wait_for", timeout)
+    assert asyncio.run(PythonProcessAdapter._reap_after_kill(process)) == (b"", b"")
+    assert process.killed is True
+
+
+def test_reap_after_kill_returns_collected_output() -> None:
+    class Process:
+        async def communicate(self):
+            return b"out", b"err"
+
+    assert asyncio.run(PythonProcessAdapter._reap_after_kill(Process())) == (b"out", b"err")
 
 
 def test_argv_with_shell_metacharacters_is_never_shell_interpreted() -> None:
