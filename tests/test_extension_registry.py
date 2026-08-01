@@ -8,6 +8,8 @@ import pytest
 
 from simplicio_loop.extension_manifest import validate_manifest
 from simplicio_loop.extension_registry import (
+    ENTRY_POINT_GROUP,
+    LEGACY_ENTRY_POINT_GROUP,
     ExtensionRegistry,
     ExtensionRegistryError,
 )
@@ -88,6 +90,52 @@ def test_discover_entry_points_loads_manifest_dict():
     got = reg.get("demo_ext")
     assert got is not None
     assert got["extension_id"] == "demo_ext"
+
+
+def test_default_entry_point_group_is_pep_compliant():
+    with mock.patch.object(importlib.metadata, "entry_points", return_value=[]) as entry_points:
+        ExtensionRegistry().discover_entry_points()
+    assert entry_points.call_args_list == [
+        mock.call(group="simplicio.loop_extension"),
+        mock.call(group="simplicio.loop-extension"),
+    ]
+    assert ENTRY_POINT_GROUP == "simplicio.loop_extension"
+
+
+def test_default_discovery_bridges_legacy_group():
+    class FakeEP:
+        name = "legacy_ep"
+        value = "legacy:provider"
+        def load(self):
+            return dict(VALID_MANIFEST)
+
+    def entry_points(*, group):
+        return [FakeEP()] if group == LEGACY_ENTRY_POINT_GROUP else []
+
+    with mock.patch.object(importlib.metadata, "entry_points", side_effect=entry_points):
+        found = ExtensionRegistry().discover_entry_points()
+    assert [item["extension_id"] for item in found] == ["demo_ext"]
+
+
+def test_discovery_rejects_conflicting_duplicate_ids():
+    conflicting = dict(VALID_MANIFEST, name="Conflicting Extension")
+
+    class FakeEP:
+        def __init__(self, name, manifest):
+            self.name = name
+            self.value = f"{name}:provider"
+            self._manifest = manifest
+        def load(self):
+            return dict(self._manifest)
+
+    def entry_points(*, group):
+        if group == ENTRY_POINT_GROUP:
+            return [FakeEP("canonical", VALID_MANIFEST)]
+        return [FakeEP("legacy", conflicting)]
+
+    with mock.patch.object(importlib.metadata, "entry_points", side_effect=entry_points):
+        with pytest.raises(ExtensionRegistryError, match="conflicting extension registration"):
+            ExtensionRegistry().discover_entry_points()
 
 
 def test_discover_entry_points_callable_factory():
