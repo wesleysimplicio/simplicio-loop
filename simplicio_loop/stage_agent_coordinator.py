@@ -500,7 +500,8 @@ class CommandAgentAdapter:
     kind = "command"
 
     def __init__(self, *, command: Sequence[str] | None = None, env_allowlist: Sequence[str] = _DEFAULT_ENV_ALLOWLIST,
-                 base_tmp_dir: Path | None = None, extra_env: Mapping[str, str] | None = None):
+                 base_tmp_dir: Path | None = None, extra_env: Mapping[str, str] | None = None,
+                 cwd: str | Path | None = None):
         raw = command or os.environ.get("SIMPLICIO_AGENT_COMMAND")
         if isinstance(raw, str):
             # Safe placeholder templating only — never shell-interpolated:
@@ -510,6 +511,7 @@ class CommandAgentAdapter:
         self.env_allowlist = tuple(env_allowlist)
         self.base_tmp_dir = base_tmp_dir or Path(tempfile.gettempdir()) / "simplicio-stage-agents"
         self.extra_env = dict(extra_env or {})
+        self.cwd = Path(cwd).resolve() if cwd is not None else REPO_ROOT
         self._procs: dict[str, _CommandProc] = {}
 
     def probe(self) -> bool:
@@ -559,7 +561,7 @@ class CommandAgentAdapter:
         env.update(self.extra_env)
         timeout_seconds = stage.get("timeout_seconds", 600)
         kwargs: dict[str, Any] = dict(
-            cwd=str(REPO_ROOT), env=env, stdin=subprocess.DEVNULL,
+            cwd=str(self.cwd), env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         if os.name == "posix":
