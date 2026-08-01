@@ -5,8 +5,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from scripts.worktree_queue import TaskSpec, WorktreeQueue
-
+from .worktree_queue import TaskSpec, WorktreeQueue
 from .github_drain_intake import GitHubDrainIntake, ReadOnlyLocalGitMap, parse_natural_drain_request
 from .source_adapter import GitHubSourceAdapter
 from .tasks_materializer import LoopRunContractMaterializer
