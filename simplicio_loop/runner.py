@@ -4299,8 +4299,14 @@ def _build_native_prism_scheduler(
         raise ValueError("native Prism requires work and a positive worker limit")
     from .local_capacity import probe_local_capacity
 
+    capacity_root = Path(str(items[0].get("repo") or ".")).resolve()
+    # Queue/worktree adapters may hand the scheduler a path that is created only
+    # after admission. Probe the nearest existing ancestor instead of treating
+    # that normal pre-launch state as an unavailable disk signal.
+    while not capacity_root.exists() and capacity_root != capacity_root.parent:
+        capacity_root = capacity_root.parent
     capacity_sample = probe_local_capacity(
-        str(items[0].get("repo") or "."), requested_workers=worker_limit,
+        str(capacity_root), requested_workers=worker_limit,
     )
     worker_limit = max(1, min(int(worker_limit), capacity_sample.safe_workers))
     run_id = str(items[0].get("run_id") or "local-batch")
@@ -5283,6 +5289,7 @@ def dispatch_operator_batch(
     retry_budget: int = 3,
     journal_dir: Optional[str] = None,
     worktree_queue: Any = None,
+    stop_requested: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Continuously dispatch real operator workers and refill freed slots.
 
@@ -5411,6 +5418,20 @@ def dispatch_operator_batch(
     records: Dict[Tuple[str, str, int], Dict[str, Any]] = dict(prior)
     completed: List[Dict[str, Any]] = []
     refill_count = 0
+    stop_reason = ""
+
+    def _drain_requested() -> bool:
+        nonlocal stop_reason
+        if stop_requested is None:
+            return False
+        try:
+            requested = bool(stop_requested())
+        except Exception as exc:
+            stop_reason = f"stop_callback_failed:{type(exc).__name__}"
+            return True
+        if requested and not stop_reason:
+            stop_reason = "operator_stop_requested"
+        return requested
 
     def _persist_attempt(record: Dict[str, Any]) -> None:
         if journal_path:
@@ -5482,7 +5503,7 @@ def dispatch_operator_batch(
     if pending and effective_workers:
         with executor_type(**executor_kwargs) as pool:
             active = {}
-            while pending and len(active) < effective_workers:
+            while pending and len(active) < effective_workers and not _drain_requested():
                 item = _take_prism_admitted()
                 if item is None:
                     break
@@ -5545,7 +5566,7 @@ def dispatch_operator_batch(
                     except Exception as exc:
                         final.setdefault("prism_error", f"{type(exc).__name__}: {exc}")
                     # Refill as soon as this worker exits; there is no frozen wave barrier.
-                    if pending:
+                    if pending and not _drain_requested():
                         next_item = _take_prism_admitted()
                         if next_item is None:
                             continue
@@ -5578,6 +5599,7 @@ def dispatch_operator_batch(
             "source_repo": item.get("source_repo", item["repo"]),
             "worktree_context": item.get("worktree_context", {}),
             "status": "pending", "phase": "queued", "execution_state": "pending",
+            "drain_status": "held" if stop_reason else "queued",
         }))
     result = {
         "schema": BATCH_SCHEMA,
@@ -5592,6 +5614,11 @@ def dispatch_operator_batch(
         "refill_count": refill_count,
         "serial_fallback_reason": serial_fallback_reason,
         "dispatch_mode": dispatch_mode,
+        "drain": {
+            "status": "drained" if stop_reason else "not_requested",
+            "reason_code": stop_reason or "none",
+            "pending_task_indices": [item["task_index"] for item in pending],
+        },
         "durable_journal": str(durable_journal_path) if durable_journal_path else "",
         "recovery_pending_task_indices": sorted({
             task_index

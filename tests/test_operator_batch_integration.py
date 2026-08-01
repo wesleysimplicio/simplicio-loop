@@ -119,6 +119,39 @@ def test_dispatch_operator_batch_resumes_successful_journal_entries(monkeypatch,
     assert result["completed_task_indices"] == [1, 2]
 
 
+def test_dispatch_operator_batch_drains_before_admitting_new_work(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_execute(repo, run_id, task_index, **_kwargs):
+        calls.append(task_index)
+        return {
+            "state": {
+                "phase": "validating",
+                "attempts": 1,
+                "operator": {"execution_state": "applied", "receipt": "receipt.json"},
+            }
+        }
+
+    monkeypatch.setattr(runner, "execute_operator", fake_execute)
+    result = runner.dispatch_operator_batch(
+        [
+            {"repo": str(tmp_path / "tree-1"), "run_id": "r1", "task_index": 1},
+            {"repo": str(tmp_path / "tree-2"), "run_id": "r1", "task_index": 2},
+        ],
+        max_workers=1,
+        retry_budget=0,
+        stop_requested=lambda: True,
+    )
+
+    assert calls == []
+    assert result["drain"] == {
+        "status": "drained",
+        "reason_code": "operator_stop_requested",
+        "pending_task_indices": [1, 2],
+    }
+    assert all(worker["drain_status"] == "held" for worker in result["workers"])
+
+
 def test_fan_out_receipts_and_retries_are_worker_scoped(monkeypatch, tmp_path):
     """A retry must stay on its lane and every successful lane exposes both receipts."""
     calls = []
