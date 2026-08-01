@@ -205,6 +205,8 @@ _MARKER_PREFIX = "simplicio-findings-import:"
 _MARKER_STATE_SCHEMA = "simplicio.findings-marker-state/v1"
 _MARKER_LEASE_SECONDS = 60.0
 _MARKER_WAIT_SECONDS = 60.0
+_GH_TIMEOUT_SECONDS = 60.0
+_MARKER_LEASE_MARGIN_SECONDS = 5.0
 
 
 class _MarkerStateError(ValueError):
@@ -396,6 +398,10 @@ def _read_marker_state(path: Path):
     return value
 
 
+def _active_lease_seconds():
+    return max(_MARKER_LEASE_SECONDS, _GH_TIMEOUT_SECONDS + _MARKER_LEASE_MARGIN_SECONDS)
+
+
 def _claim_marker(path: Path, repo: str, finding_hash: str, owner: str):
     now = time.time()
     with _drain._receipt_lock(path):
@@ -406,7 +412,7 @@ def _claim_marker(path: Path, repo: str, finding_hash: str, owner: str):
             if state.get("status") == "in_progress" and float(state.get("expires", 0)) > now:
                 return "wait", state
         fence = uuid.uuid4().hex
-        state = _state_payload("in_progress", repo, finding_hash, owner, fence, now, now + _MARKER_LEASE_SECONDS)
+        state = _state_payload("in_progress", repo, finding_hash, owner, fence, now, now + _active_lease_seconds())
         _drain._atomic_write_receipt(path, state)
         return "owner", state
 
@@ -437,7 +443,7 @@ def _run_gh(command):
     if os.name == "nt" and executable and Path(executable).suffix.casefold() in {".cmd", ".bat"}:
         command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", executable, *command[1:]]
     try:
-        return subprocess.run(command, capture_output=True, text=True, timeout=60)
+        return subprocess.run(command, capture_output=True, text=True, timeout=_GH_TIMEOUT_SECONDS)
     except OSError as exc:
         if os.name != "nt" or getattr(exc, "winerror", None) != 6:
             raise
@@ -445,7 +451,7 @@ def _run_gh(command):
             stdout_path = Path(directory) / "stdout.txt"
             stderr_path = Path(directory) / "stderr.txt"
             shell_command = subprocess.list2cmdline(command) + f' > "{stdout_path}" 2> "{stderr_path}"'
-            completed = subprocess.run(shell_command, shell=True, timeout=60)
+            completed = subprocess.run(shell_command, shell=True, timeout=_GH_TIMEOUT_SECONDS)
             return subprocess.CompletedProcess(command, completed.returncode, stdout_path.read_text(encoding="utf-8"), stderr_path.read_text(encoding="utf-8"))
 
 

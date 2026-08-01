@@ -287,6 +287,47 @@ def test_cross_receipt_concurrency_creates_once(tmp_path, monkeypatch):
     assert results == [0, 0] and len(creates) == 1
 
 
+def test_remote_timeout_margin_prevents_takeover_past_base_lease(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    import time
+
+    mod = cli_mod._inspection_cli
+    finding = _finding(tmp_path / "x.py")
+    created = threading.Event()
+    creates = []
+    observed_leases = []
+    url = "https://github.com/acme/widgets/issues/19"
+    monkeypatch.setattr(mod, "_MARKER_LEASE_SECONDS", 0.01)
+    monkeypatch.setattr(mod, "_GH_TIMEOUT_SECONDS", 0.10)
+    monkeypatch.setattr(mod, "_MARKER_LEASE_MARGIN_SECONDS", 0.05)
+
+    def find_remote(repo, canonical, labels, marker):
+        return (True, url) if created.is_set() else (True, None)
+
+    def create_remote(repo, canonical, labels, marker):
+        state_path = mod._marker_state_path(tmp_path, mod._finding_hash(canonical, repo, "x.py"))
+        state = mod._read_marker_state(state_path)
+        observed_leases.append(state["expires"] - state["created"])
+        creates.append(marker)
+        time.sleep(0.08)
+        created.set()
+        return url
+
+    monkeypatch.setattr(mod, "_find_remote_issue", find_remote)
+    monkeypatch.setattr(mod, "_create_remote_issue", create_remote)
+
+    def coordinate(delay):
+        time.sleep(delay)
+        return mod._coordinate_finding(finding, "acme/widgets", [], tmp_path, "x.py")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(coordinate, (0.0, 0.03)))
+    assert len(creates) == 1
+    assert observed_leases[0] == pytest.approx(0.15)
+    assert all(result[2] == url and result[3] is None for result in results)
+
+
 def test_remote_parsing_and_source_resolution_branches(tmp_path, monkeypatch):
     mod = cli_mod._inspection_cli
     assert mod._github_repo_from_remote("git@github.com:acme/widgets.git") == "acme/widgets"
