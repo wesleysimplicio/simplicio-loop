@@ -421,29 +421,35 @@ class GenerationBroker:
             if not all(generation.to_dict().values()):
                 raise LifecycleError("generation promotion parity failed")
             previous = self._promoted_generation
+            identities = self.registry.snapshot_identities()
+            if self._bindings:
+                old_key = next(iter(self._bindings.values())).identity_key
+            else:
+                matching = [
+                    key for key, item in identities.items()
+                    if Path(item.worktree_root or item.canonical_root).resolve()
+                    == self.lifecycle.base_path
+                ]
+                if len(matching) != 1:
+                    raise LifecycleError("promotion requires one lifecycle repository identity")
+                old_key = matching[0]
+            old_identity = identities[old_key]
+            identity = RepositoryIdentity(
+                repository=old_identity.repository,
+                canonical_root=old_identity.canonical_root,
+                default_branch=old_identity.default_branch,
+                worktree_root=old_identity.worktree_root,
+                base_sha=generation.source_commit,
+                dirty=old_identity.dirty,
+                dirty_fingerprint=old_identity.dirty_fingerprint,
+                mapper_config=old_identity.mapper_config,
+            )
+            new_key = self.registry.register(identity)
+            self.registry.restore_identity(old_identity)
+            self._identity_aliases[old_key] = new_key
             self._promoted_generation = generation.generation
             self.lifecycle.fast_generation = generation.generation
             self.lifecycle.source_commit = generation.source_commit
-            identities = self.registry.snapshot_identities()
-            if identities:
-                old_key = (
-                    next(iter(self._bindings.values())).identity_key
-                    if self._bindings else next(iter(identities))
-                )
-                old_identity = identities[old_key]
-                identity = RepositoryIdentity(
-                    repository=old_identity.repository,
-                    canonical_root=old_identity.canonical_root,
-                    default_branch=old_identity.default_branch,
-                    worktree_root=old_identity.worktree_root,
-                    base_sha=generation.source_commit,
-                    dirty=old_identity.dirty,
-                    dirty_fingerprint=old_identity.dirty_fingerprint,
-                    mapper_config=old_identity.mapper_config,
-                )
-                new_key = self.registry.register(identity)
-                self.registry.restore_identity(old_identity)
-                self._identity_aliases[old_key] = new_key
             self._persist_state()
             self._record("promotion", previous=previous, generation=generation.generation)
             return {"previous": previous, "generation": generation.generation}

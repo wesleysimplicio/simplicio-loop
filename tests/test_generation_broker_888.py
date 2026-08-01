@@ -358,6 +358,11 @@ def test_gc_recovery_completes_partially_deleted_candidate(tmp_path: Path):
 
 def test_no_binding_promotion_persists_and_fresh_cli_reloads(tmp_path: Path, capsys):
     service, identity_key, _ = broker(tmp_path)
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    service.registry.restore_identity(
+        RepositoryIdentity("owner/unrelated", str(unrelated), base_sha="abc")
+    )
     promoted = CanonicalGeneration("generation-2", "ctx2", "def", "plan2", "receipt2")
     service.promote(promoted)
     attempt = str(service.lifecycle.attempt)
@@ -368,3 +373,13 @@ def test_no_binding_promotion_persists_and_fresh_cli_reloads(tmp_path: Path, cap
         identity_key, tree_hash="tree-2", files=[], candidate_id="first", generation=promoted
     )
     assert binding.source_commit == "def"
+
+
+def test_no_binding_promotion_fails_closed_for_ambiguous_lifecycle_identity(tmp_path: Path):
+    service, _, _ = broker(tmp_path)
+    service.registry.restore_identity(
+        RepositoryIdentity("other/project", str(service.lifecycle.base_path), base_sha="abc")
+    )
+    promoted = CanonicalGeneration("generation-2", "ctx2", "def", "plan2", "receipt2")
+    with pytest.raises(LifecycleError, match="requires one lifecycle repository identity"):
+        service.promote(promoted)
