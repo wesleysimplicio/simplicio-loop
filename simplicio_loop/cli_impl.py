@@ -695,6 +695,9 @@ def main(argv=None) -> int:
         from .github_drain_intake_cli import main as drain_intake_main
         forwarded = argv_list[1:]
         return drain_intake_main(forwarded[1:] if forwarded[:1] == ["--"] else forwarded)
+    if argv_list[:1] == ["tasks"]:
+        from .tasks_cli import main as tasks_main
+        return tasks_main(argv_list[1:])
     parser = argparse.ArgumentParser(
         prog="simplicio-loop",
         description=(
