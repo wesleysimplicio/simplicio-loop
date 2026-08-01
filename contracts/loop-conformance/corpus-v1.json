@@ -1,0 +1,16 @@
+{
+  "schema": "simplicio.loop-conformance/v1",
+  "version": "1",
+  "cases": [
+    {"id": "python-selection-fallback", "family": "engine-selection",
+     "input": {"mode": "auto", "rust_probe": {"available": false}},
+     "expected": {"selected_engine": "python-loop", "reason_code": "rust_unavailable_python_canonical"}},
+    {"id": "rust-selection-requires-conformance", "family": "engine-selection",
+     "input": {"mode": "rust", "rust_probe": {"available": true, "compatible": false}},
+     "expected": {"error": "rust_requested_but_conformance_unavailable"}},
+    {"id": "shadow-keeps-python-authority", "family": "engine-selection",
+     "input": {"mode": "shadow", "rust_probe": {"available": true, "compatible": true,
+     "conformance_passed": true}},
+     "expected": {"selected_engine": "python-loop", "reason_code": "shadow_read_only_python_authority"}}
+  ]
+}
