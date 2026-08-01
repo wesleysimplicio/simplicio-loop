@@ -952,6 +952,9 @@ def main(argv=None) -> int:
     for queue_action in ("inspect", "cancel"):
         queue_command = queue_sub.add_parser(queue_action)
         queue_command.add_argument("task_id")
+    p_single_fast = sub.add_parser(
+        "single-task-fast", help="select the bounded single-task local-first route")
+    p_single_fast.add_argument("--task-file", required=True, help="JSON task or task array")
     sub.add_parser(
         "hub-drain-plan",
         help="read-only PT-BR/EN GitHub drain intake; never executes the plan",
@@ -1139,6 +1142,17 @@ def main(argv=None) -> int:
         elif args.queue_action in {"inspect", "cancel"}:
             forwarded.append(args.task_id)
         return local_queue_main(forwarded)
+    if command == "single-task-fast":
+        from .intake_planner import dispatch_single_task_fast
+        try:
+            payload = json.loads(Path(args.task_file).read_text(encoding="utf-8"))
+            tasks = payload if isinstance(payload, list) else [payload]
+            result = dispatch_single_task_fast(tasks)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            print(json.dumps({"status": "BLOCKED", "reason_code": "invalid_task_file", "error": str(exc)}, sort_keys=True))
+            return 2
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result["status"] != "BLOCKED" else 2
     if command == "ledger":
         return ledger_replay(
             args.path,

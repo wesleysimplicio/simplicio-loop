@@ -425,7 +425,7 @@ def _fast_task(stack="python", **extra):
 def _fast_operations(*, deep_available=True, mutation=None, focused_ok=True, fast_engine="python"):
     calls = []
     digests = iter(["source-0", "source-1"] * 20)
-    mutation_payload = {"diff_lines": 2, "receipt": "dev-cli-1", "source_before": "source-0"}
+    mutation_payload = {"diff_lines": 2, "receipt": "dev-cli-1", "source_before": "source-0", "source_after": "source-1"}
     mutation_payload.update(mutation or {})
 
     def record(name, result):
@@ -476,6 +476,37 @@ def test_single_task_fast_freezes_contract_and_preserves_stop_recovery():
     operations, _ = _fast_operations()
     receipt = run_single_task_fast(_fast_task(), operations)
     assert receipt["stop"]["preserve"] and receipt["recovery"]["preserve"] and receipt["max_iterations"] == 3
+
+
+@pytest.mark.parametrize("change", [
+    {"goal": ""},
+    {"verification_commands": []},
+    {"verification_commands": [[""]]},
+])
+def test_single_task_fast_rejects_semantically_empty_contract(change):
+    from simplicio_loop.intake_planner import freeze_single_task_contract
+    with pytest.raises(ValueError):
+        freeze_single_task_contract(_fast_task(**change))
+
+
+def test_single_task_fast_escalates_when_real_post_digest_disagrees_with_receipt():
+    from simplicio_loop.intake_planner import run_single_task_fast
+    operations, _ = _fast_operations(mutation={"source_after": "expected-after"})
+    digests = iter(["source-0", "tampered-after"])
+    operations["source_digest"] = lambda: next(digests)
+    receipt = run_single_task_fast(_fast_task(), operations)
+    assert receipt["status"] == "ESCALATED"
+    assert receipt["reason_code"] == "source_drift"
+
+
+def test_single_task_fast_cli_is_real_fail_closed_dispatch(tmp_path, capsys):
+    from simplicio_loop.cli import main
+    path = tmp_path / "task.json"
+    path.write_text(json.dumps(_fast_task()), encoding="utf-8")
+    assert main(["single-task-fast", "--task-file", str(path)]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["route"] == "single-task-fast"
+    assert payload["reason_code"] == "local_operations_required"
 
 
 @pytest.mark.parametrize("mutation,focused_ok,reason", [

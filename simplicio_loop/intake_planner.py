@@ -483,16 +483,30 @@ def freeze_single_task_contract(task: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValueError("acceptance criteria must be a non-empty list")
     if not isinstance(task["target_hints"], list) or not task["target_hints"]:
         raise ValueError("target hints must be a non-empty list")
+    if not isinstance(task["goal"], str) or not task["goal"].strip():
+        raise ValueError("goal must be a non-empty string")
+    commands = task["verification_commands"]
+    if (
+        not isinstance(commands, list)
+        or not commands
+        or any(
+            not isinstance(command, (list, tuple))
+            or not command
+            or any(not isinstance(part, str) or not part.strip() for part in command)
+            for command in commands
+        )
+    ):
+        raise ValueError("verification commands must be non-empty argv arrays")
     budgets = dict(task["budgets"])
     for key in ("max_context_bytes", "max_context_tokens", "max_diff_lines", "max_iterations"):
         if not isinstance(budgets.get(key), int) or budgets[key] <= 0:
             raise ValueError(f"budgets.{key} must be a positive integer")
     contract = {
-        "goal": str(task["goal"]),
+        "goal": task["goal"].strip(),
         "acceptance_criteria": list(task["acceptance_criteria"]),
         "delivery_contract": dict(task.get("delivery_contract") or {}),
         "target_hints": list(task["target_hints"]),
-        "verification_commands": list(task["verification_commands"]),
+        "verification_commands": [list(command) for command in commands],
         "budgets": budgets,
         "stop": dict(task.get("stop") or {"preserve": True}),
         "recovery": dict(task.get("recovery") or {"preserve": True}),
@@ -583,7 +597,14 @@ def run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any],
     timings["mutation_ms"] = (clock() - phase) * 1000
     after = _call(operations, "source_digest")
     verification = _call(operations, "focused_verify", contract["verification_commands"], mutation)
-    triggers = _measured_escalations(contract, mutation, verification, before != mutation.get("source_before", before))
+    expected_after = mutation.get("source_after")
+    source_drift = (
+        before != mutation.get("source_before", before)
+        or not isinstance(expected_after, str)
+        or not expected_after
+        or after != expected_after
+    )
+    triggers = _measured_escalations(contract, mutation, verification, source_drift)
     deep = _call(operations, "background_status", background)
     active_generations = {"mapper": mapper_generation, "fast": fast_generation}
     if triggers:
@@ -620,4 +641,23 @@ def benchmark_single_task_fast(factory, *, repetitions: int = 10, threshold_ms: 
     return {"schema": "simplicio.single-task-fast-benchmark/v1", "repetitions": repetitions, "cold_ms": samples[0], "warm_ms": sum(samples[1:]) / (len(samples) - 1), "p95_time_to_first_edit_ms": p95, "threshold_ms": threshold_ms, "passed": p95 <= threshold_ms}
 
 
-__all__.extend(["SINGLE_TASK_FAST_SCHEMA", "SINGLE_TASK_FAST_ROUTE", "FULL_PIPELINE_ROUTE", "freeze_single_task_contract", "select_single_task_route", "run_single_task_fast", "benchmark_single_task_fast"])
+def dispatch_single_task_fast(tasks: Sequence[Mapping[str, Any]], operations: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    """Production dispatch boundary used by the CLI and runner adapters.
+
+    Route selection is always available. Execution fails closed until a local
+    Mapper/Fast/Dev-CLI adapter supplies the operation set.
+    """
+    selection = select_single_task_route(tasks)
+    if selection["route"] != SINGLE_TASK_FAST_ROUTE:
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, **selection, "status": "ESCALATED"}
+    if operations is None:
+        return {
+            "schema": SINGLE_TASK_FAST_SCHEMA,
+            **selection,
+            "status": "BLOCKED",
+            "reason_code": "local_operations_required",
+        }
+    return run_single_task_fast(tasks[0], operations)
+
+
+__all__.extend(["SINGLE_TASK_FAST_SCHEMA", "SINGLE_TASK_FAST_ROUTE", "FULL_PIPELINE_ROUTE", "freeze_single_task_contract", "select_single_task_route", "run_single_task_fast", "benchmark_single_task_fast", "dispatch_single_task_fast"])
