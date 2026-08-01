@@ -207,14 +207,6 @@ def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int,
     # passed the fingerprint as the seventh argument.
     if not required_handshake_fingerprint and str(result_file).startswith("sha256:"):
         required_handshake_fingerprint, result_file = str(result_file), ""
-    # Issue #613: a quality provider is mandatory between execution and
-    # verify/oracle. Fail-closed at the CLI boundary when none is supplied so the
-    # run is never silently executed without the quality gate.
-    if not quality_provider:
-        print("error: --quality-provider is required (#613): conduct_run needs a "
-              "non-None quality_provider between execution and verify/oracle",
-              file=sys.stderr)
-        return 2
     if required_handshake_fingerprint:
         from .extension_handshake import ExtensionHandshakeError, verify_runtime_fingerprint
         try:
@@ -754,8 +746,8 @@ def main(argv=None) -> int:
     p_run.add_argument("--result-file", default="", help="write only simplicio.run-outcome/v1 JSON here")
     p_run.add_argument(
         "--quality-provider", default=None,
-        help="mandatory quality provider name (simplicio_loop.quality_providers.<name>); "
-             "absent/incompatible/crashing/timed-out -> BLOCKED (issue #613)",
+        help="optional quality provider name (simplicio_loop.quality_providers.<name>); "
+             "when selected, absent/incompatible/crashing/timed-out -> BLOCKED",
     )
     p_run.add_argument(
         "--quality-policy", default="strict-default",

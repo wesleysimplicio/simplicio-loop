@@ -260,12 +260,8 @@ def test_no_provider_conduct_quality_skips():
     assert res["status"] == "SKIPPED"
 
 
-def test_conduct_run_without_provider_is_blocked(monkeypatch):
-    """Issue #613: quality_provider is MANDATORY.
-
-    A conduct_run invoked without a quality_provider must fail-closed
-    (BLOCKED) and must NEVER reach verify_run. This is the core #613 gate.
-    """
+def test_conduct_run_without_provider_skips_quality_and_verifies(monkeypatch):
+    """Quality is opt-in; a plain run continues through normal verification."""
     import simplicio_loop.runner as runner_mod
 
     called = {"verify": False, "transition": None}
@@ -294,10 +290,9 @@ def test_conduct_run_without_provider_is_blocked(monkeypatch):
     monkeypatch.setattr(runner_mod, "_transition", fake_transition)
 
     runner_mod.conduct_run(".", "task.md", "verified", 1)  # no quality_provider
-    # Fail-closed: verify_run must never run, and the run must be BLOCKED.
-    assert called["verify"] is False
-    assert called["transition"] == "blocked"
-    assert any("quality provider mandatory" in (r or "") for _, r in transitions)
+    assert called["verify"] is True
+    assert called["transition"] is None
+    assert transitions == []
 
 
 # --------------------------------------------------------------------------

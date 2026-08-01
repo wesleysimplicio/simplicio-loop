@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.38.25
+
+- Keep quality providers opt-in for `simplicio-loop run`; an explicitly selected provider remains fail-closed.
+
 ## 3.38.24
 
 - Synchronize supervised Hub execution fences and state through send, status,
