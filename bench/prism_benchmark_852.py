@@ -87,6 +87,7 @@ def _definitions(
     slot_count: int,
     *,
     conflicted: bool,
+    task_count: int | None = None,
 ) -> tuple[list[SlotSupervisor], list[ScheduledTask]]:
     prism = PrismExecution(
         "benchmark-goal",
@@ -101,10 +102,21 @@ def _definitions(
         for index in range(slot_count)
     ]
     tasks: list[ScheduledTask] = []
-    for slot_index, slot in enumerate(slots):
-        for index in range(10):
-            task_id = f"s{slot_index:02d}-t{index:02d}"
-            pair = f"s{slot_index:02d}-t{index ^ 1:02d}"
+    if task_count is None:
+        for slot_index, slot in enumerate(slots):
+            for index in range(10):
+                task_id = f"s{slot_index:02d}-t{index:02d}"
+                pair = f"s{slot_index:02d}-t{index ^ 1:02d}"
+                conflict = pair if conflicted and index < 2 else None
+                tasks.append(_task(task_id, slot.slot_id, conflict))
+    else:
+        total = max(1, int(task_count))
+        for index in range(total):
+            slot_index = index % max(1, slot_count)
+            slot = slots[slot_index]
+            task_index = index % 10
+            task_id = f"s{slot_index:02d}-t{task_index:02d}-{index:03d}"
+            pair = f"s{slot_index:02d}-t{task_index ^ 1:02d}-{index ^ 1:03d}"
             conflict = pair if conflicted and index < 2 else None
             tasks.append(_task(task_id, slot.slot_id, conflict))
     return slots, tasks
