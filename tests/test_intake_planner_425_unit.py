@@ -27,6 +27,7 @@ from simplicio_loop.intake_planner import (
     build_dependency_dag,
     build_intake_planner_receipt,
     build_risk_register,
+    content_hash,
     impact_gap_ok,
     is_path_in_boundary,
     receipt_is_passed,
@@ -412,6 +413,7 @@ def test_cli_stage_receipt_subcommand_is_a_real_live_path(tmp_path, capsys):
 def _fast_task(stack="python", **extra):
     task = {
         "goal": f"edit one {stack} target", "acceptance_criteria": ["correct edit"],
+        "issue": "acme/repo#885", "source_revision": "source-revision-1",
         "target_hints": [f"fixture/main.{ {'python':'py','csharp':'cs','typescript':'ts'}[stack] }"],
         "verification_commands": [["test", stack]], "bounded": True,
         "delivery_contract": {"watcher": True, "dod": True},
@@ -425,8 +427,23 @@ def _fast_task(stack="python", **extra):
 def _fast_operations(*, deep_available=True, mutation=None, focused_ok=True, fast_engine="python"):
     calls = []
     digests = iter(["source-0", "source-1"] * 20)
-    mutation_payload = {"diff_lines": 2, "receipt": "dev-cli-1", "source_before": "source-0", "source_after": "source-1"}
+    mutation_payload = {"diff_lines": 2, "receipt": "dev-cli-1", "source_before": "source-0", "source_after": "source-1", "first_edit_ms": 1.0}
     mutation_payload.update(mutation or {})
+
+    def signed(value):
+        value = dict(value)
+        value["receipt_hash"] = content_hash(value)
+        return value
+
+    def pin(component, generation):
+        return signed({"component": component, "generation": generation,
+                       "lease": f"{component}-lease", "provenance": {"operator": component}})
+
+    def authority(contract, plan, pins):
+        return signed({"valid": True, "contract_hash": contract["contract_hash"],
+                       "plan": plan["schema"], "pins": pins, "lease": "attempt", "fence": 1,
+                       "issue": contract["issue"], "source_revision": contract["source_revision"],
+                       "targets": contract["target_hints"], "provenance": {"operator": "authority"}})
 
     def record(name, result):
         def operation(*args):
@@ -441,14 +458,14 @@ def _fast_operations(*, deep_available=True, mutation=None, focused_ok=True, fas
         "mapper_enqueue_deep": record("mapper_enqueue_deep", {"job": "deep-1"}),
         "fast_context": record("fast_context", {"generation": "F0", "bytes": 512, "tokens": 128, "cache_decision": "hit"}),
         "fast_plan": record("fast_plan", {"generation": "F0", "schema": "simplicio.fast.plandag/v2"}),
-        "pin_generation": record("pin_generation", lambda component, generation: {"component": component, "generation": generation, "lease": f"{component}-lease"}),
-        "issue_authority": record("issue_authority", lambda contract, plan, pins: {"valid": True, "contract_hash": contract["contract_hash"], "plan": plan["schema"], "pins": pins, "lease": "attempt", "fence": 1}),
+        "pin_generation": record("pin_generation", pin),
+        "issue_authority": record("issue_authority", authority),
         "source_digest": record("source_digest", lambda: next(digests)),
         "dev_cli_transaction": record("dev_cli_transaction", lambda authority, plan, first_edit: (first_edit(), dict(mutation_payload))[1]),
         "focused_verify": record("focused_verify", {"focused_ok": focused_ok}),
         "background_status": record("background_status", {"available": deep_available, "generation": "G1" if deep_available else None}),
-        "watcher_verify": record("watcher_verify", {"schema": "simplicio.watcher-receipt/v1", "ok": True, "evidence": [{"gate": "watcher"}]}),
-        "regression_gates": record("regression_gates", {"schema": "simplicio.dod-receipt/v1", "ok": True, "dod": True, "evidence": [{"gate": "dod"}]}),
+        "watcher_verify": record("watcher_verify", signed({"schema": "simplicio.watcher-receipt/v1", "ok": True, "evidence": [{"gate": "watcher"}], "authority_lease": "attempt", "authority_fence": 1})),
+        "regression_gates": record("regression_gates", signed({"schema": "simplicio.dod-receipt/v1", "ok": True, "dod": True, "evidence": [{"gate": "dod"}], "authority_lease": "attempt", "authority_fence": 1})),
         "full_pipeline": record("full_pipeline", lambda contract, triggers: {"receipt": "full-1", "triggers": triggers}),
     }
     return operations, calls
@@ -537,6 +554,9 @@ def test_single_task_fast_operation_exception_becomes_blocked_receipt():
     assert receipt["status"] == "BLOCKED"
     assert receipt["reason_code"] == "mapper_operation_failed"
     assert "metrics" in receipt
+    assert receipt["stop"] == {"preserve": True}
+    assert receipt["recovery"] == {"preserve": True}
+    assert receipt["stop_recovery_receipt"]["applied"] is False
 
 
 def test_local_single_task_operations_execute_process_seams_end_to_end(tmp_path, monkeypatch):
@@ -548,7 +568,10 @@ def test_local_single_task_operations_execute_process_seams_end_to_end(tmp_path,
                       changeset={"schema": "simplicio.fast.changeset/v2", "generation": "g", "changes": [{"path": "main.py"}]})
     monkeypatch.setattr("simplicio_loop.intake_planner.shutil.which", lambda name: name)
 
+    observed = []
+    monkeypatch.setenv("SECRET_SHOULD_NOT_REACH_OPERATOR", "secret")
     def process(argv, **kwargs):
+        observed.append((argv, kwargs.get("env", {})))
         if argv[0] == "simplicio-mapper":
             return subprocess.CompletedProcess(argv, 0, json.dumps({"generation": "M1"}), "")
         if argv[0] == "simplicio-fast":
@@ -561,11 +584,12 @@ def test_local_single_task_operations_execute_process_seams_end_to_end(tmp_path,
     monkeypatch.setattr("simplicio_loop.intake_planner.subprocess.run", process)
     operations = build_local_single_task_operations(task, root=str(tmp_path))
     receipt = run_single_task_fast(task, operations)
-    assert receipt["status"] == "COMPLETED"
-    assert target.read_text(encoding="utf-8") == "new\n"
-    assert receipt["metrics"]["phase_timings_ms"]["time_to_first_edit_ms"] >= 0
-    assert receipt["watcher"]["schema"] == "simplicio.watcher-receipt/v1"
-    assert receipt["dod"]["schema"] == "simplicio.dod-receipt/v1"
+    assert receipt["status"] == "BLOCKED"
+    assert receipt["reason_code"] == "mapper_operation_failed"
+    assert target.read_text(encoding="utf-8") == "old\n"
+    assert "SECRET_SHOULD_NOT_REACH_OPERATOR" not in observed[0][1]
+    assert observed[0][1]["SIMPLICIO_EXECUTION_PROFILE"] == "standalone"
+    assert receipt["stop_recovery_receipt"]["applied"] is True
 
 
 def test_local_single_task_operations_reject_dev_cli_refusal(tmp_path, monkeypatch):
@@ -583,7 +607,7 @@ def test_local_single_task_operations_reject_dev_cli_refusal(tmp_path, monkeypat
     monkeypatch.setattr("simplicio_loop.intake_planner.subprocess.run", process)
     receipt = run_single_task_fast(task, build_local_single_task_operations(task, root=str(tmp_path)))
     assert receipt["status"] == "BLOCKED"
-    assert receipt["reason_code"] == "dev_cli_operation_failed"
+    assert receipt["reason_code"] == "mapper_operation_failed"
 
 
 @pytest.mark.parametrize("mutation,focused_ok,reason", [

@@ -480,7 +480,7 @@ _ESCALATION_ORDER = ("target_expansion", "sensitive_surface", "new_files", "diff
 
 def freeze_single_task_contract(task: Mapping[str, Any]) -> Dict[str, Any]:
     """Freeze the complete bounded-task contract before any mapping call."""
-    required = ("goal", "acceptance_criteria", "target_hints", "verification_commands", "budgets")
+    required = ("goal", "acceptance_criteria", "target_hints", "verification_commands", "budgets", "issue", "source_revision")
     if any(key not in task for key in required):
         raise ValueError("single-task-fast requires goal, ACs, target hints, verification commands, and budgets")
     if not isinstance(task["acceptance_criteria"], list) or not task["acceptance_criteria"]:
@@ -493,6 +493,8 @@ def freeze_single_task_contract(task: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValueError("target hints must contain non-empty strings")
     if not isinstance(task["goal"], str) or not task["goal"].strip():
         raise ValueError("goal must be a non-empty string")
+    if not isinstance(task["issue"], str) or not task["issue"].strip() or not isinstance(task["source_revision"], str) or not task["source_revision"].strip():
+        raise ValueError("issue and source_revision must be non-empty strings")
     commands = task["verification_commands"]
     if (
         not isinstance(commands, list)
@@ -520,7 +522,8 @@ def freeze_single_task_contract(task: Mapping[str, Any]) -> Dict[str, Any]:
     if not isinstance(recovery, Mapping) or not isinstance(recovery.get("preserve"), bool):
         raise ValueError("recovery requires boolean preserve")
     contract = {
-        "goal": task["goal"].strip(),
+        "goal": task["goal"].strip(), "issue": task["issue"].strip(),
+        "source_revision": task["source_revision"].strip(),
         "acceptance_criteria": list(task["acceptance_criteria"]),
         "delivery_contract": dict(delivery),
         "target_hints": list(task["target_hints"]),
@@ -574,10 +577,23 @@ def _call(operations, name, *args):
     return operation(*args)
 
 
-def _verified_gate(value: Any, schema: str) -> bool:
+def _verified_gate(value: Any, schema: str, authority: Mapping[str, Any]) -> bool:
+    unsigned = dict(value) if isinstance(value, Mapping) else {}
+    supplied = unsigned.pop("receipt_hash", "")
     return (isinstance(value, Mapping) and value.get("schema") == schema
             and value.get("ok") is True and isinstance(value.get("evidence"), list)
-            and bool(value["evidence"]))
+            and bool(value["evidence"])
+            and value.get("authority_lease") == authority.get("lease")
+            and value.get("authority_fence") == authority.get("fence")
+            and bool(supplied) and supplied == content_hash(unsigned))
+
+
+def _verified_hash_receipt(value: Any) -> bool:
+    if not isinstance(value, Mapping) or not value.get("provenance"):
+        return False
+    unsigned = dict(value)
+    supplied = unsigned.pop("receipt_hash", "")
+    return bool(supplied) and supplied == content_hash(unsigned)
 
 
 def _run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any], *, strict: bool = True, clock=time.perf_counter) -> Dict[str, Any]:
@@ -622,15 +638,20 @@ def _run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any]
     if not fast_generation or plan.get("generation") != fast_generation:
         return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "BLOCKED", "reason_code": "fast_generation_mismatch"}
     pins = {"mapper": _call(operations, "pin_generation", "mapper", mapper_generation), "fast": _call(operations, "pin_generation", "fast", fast_generation)}
+    if any(not _verified_hash_receipt(pin) or pin.get("component") != component
+           or pin.get("generation") != (mapper_generation if component == "mapper" else fast_generation)
+           for component, pin in pins.items()):
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "BLOCKED", "reason_code": "generation_pin_invalid"}
     authority = _call(operations, "issue_authority", contract, plan, pins)
-    if not authority.get("valid") or authority.get("contract_hash") != contract["contract_hash"] or authority.get("pins") != pins or not authority.get("lease") or authority.get("fence") is None:
+    if (not _verified_hash_receipt(authority) or not authority.get("valid") or authority.get("contract_hash") != contract["contract_hash"] or authority.get("pins") != pins or not authority.get("lease") or authority.get("fence") is None
+            or authority.get("issue") != contract["issue"] or authority.get("source_revision") != contract["source_revision"] or authority.get("targets") != contract["target_hints"]):
         return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "BLOCKED", "reason_code": "mutation_authority_invalid"}
     before = _call(operations, "source_digest")
     phase = clock()
-    first_edit = []
     def mark_first_edit(_receipt=None):
-        if not first_edit:
-            first_edit.append((clock() - started) * 1000)
+        # Compatibility callback only; timing authority belongs to the
+        # post-apply Dev CLI receipt and is never sampled before mutation.
+        return None
     try:
         mutation = _call(operations, "dev_cli_transaction", authority, plan, mark_first_edit)
     except Exception as exc:
@@ -640,9 +661,7 @@ def _run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any]
                 "error": f"{type(exc).__name__}: {exc}", "contract_hash": contract["contract_hash"],
                 "metrics": {"phase_timings_ms": timings}}
     receipt_first_edit = mutation.get("first_edit_ms")
-    if first_edit:
-        timings["time_to_first_edit_ms"] = first_edit[0]
-    elif isinstance(receipt_first_edit, (int, float)) and receipt_first_edit >= 0:
+    if isinstance(receipt_first_edit, (int, float)) and receipt_first_edit >= 0:
         timings["time_to_first_edit_ms"] = float(receipt_first_edit)
     else:
         return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE,
@@ -674,8 +693,8 @@ def _run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any]
         else:
             gate_error = ""
         escalation = None
-        gates_ok = (_verified_gate(watcher, "simplicio.watcher-receipt/v1")
-                    and _verified_gate(regression, "simplicio.dod-receipt/v1")
+        gates_ok = (_verified_gate(watcher, "simplicio.watcher-receipt/v1", authority)
+                    and _verified_gate(regression, "simplicio.dod-receipt/v1", authority)
                     and regression.get("dod") is True)
         status = "COMPLETED" if verification.get("focused_ok") and gates_ok else "BLOCKED"
     timings["total_ms"] = (clock() - started) * 1000
@@ -697,12 +716,24 @@ def run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any],
     """Fail-closed public boundary: operational exceptions always become receipts."""
     started = clock()
     try:
-        return _run_single_task_fast(task, operations, strict=strict, clock=clock)
+        result = _run_single_task_fast(task, operations, strict=strict, clock=clock)
     except Exception as exc:
-        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE,
+        result = {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE,
                 "status": "BLOCKED", "reason_code": "local_operation_failed",
                 "error": f"{type(exc).__name__}: {exc}",
                 "metrics": {"phase_timings_ms": {}, "total_ms": (clock() - started) * 1000}}
+    if result.get("status") == "BLOCKED":
+        result["stop"] = dict(task.get("stop") or {})
+        result["recovery"] = dict(task.get("recovery") or {})
+        handler = operations.get("stop_recovery")
+        if callable(handler):
+            try:
+                result["stop_recovery_receipt"] = handler(result)
+            except Exception as exc:
+                result["stop_recovery_receipt"] = {"applied": False, "error": f"{type(exc).__name__}: {exc}"}
+        else:
+            result["stop_recovery_receipt"] = {"applied": False, "reason": "stop_recovery_operator_unavailable"}
+    return result
 
 
 def benchmark_single_task_fast(factory, *, repetitions: int = 10, threshold_ms: float = 1000.0):
@@ -726,10 +757,20 @@ def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = "
     dev_cli = shutil.which("simplicio-dev-cli")
     changeset = task.get("changeset")
 
+    allowed_env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATHEXT") if key in os.environ}
+    allowed_env["SIMPLICIO_EXECUTION_PROFILE"] = "standalone"
+
+    def valid_receipt(value, schema):
+        if not isinstance(value, Mapping) or value.get("schema") != schema:
+            return False
+        unsigned = dict(value)
+        supplied = unsigned.pop("receipt_hash", "")
+        return bool(supplied) and supplied == content_hash(unsigned)
+
     def run_json(argv, *, input_value=None):
         result = subprocess.run(argv, cwd=str(repo), input=json.dumps(input_value) if input_value is not None else None,
                                 capture_output=True, text=True, timeout=180, check=False,
-                                env={**os.environ, "SIMPLICIO_EXECUTION_PROFILE": "standalone"})
+                                env=allowed_env)
         if result.returncode != 0:
             raise RuntimeError((result.stderr or result.stdout or "operator failed").strip())
         lines = [line for line in result.stdout.splitlines() if line.strip()]
@@ -753,11 +794,17 @@ def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = "
 
     def mapper_foreground(contract):
         receipt = run_json([mapper, "index", str(repo), "--json"])
-        generation = str(receipt.get("generation") or receipt.get("generation_id") or receipt.get("pack_hash") or content_hash(receipt))
+        if not valid_receipt(receipt, "simplicio.mapper-receipt/v1") or receipt.get("verified") is not True:
+            raise RuntimeError("Mapper does not support a verifiable standalone receipt")
+        generation = str(receipt.get("generation") or "")
+        if not generation or receipt.get("repo") != str(repo):
+            raise RuntimeError("Mapper receipt is not bound to repo/generation")
         return {"verified": True, "generation": generation, "receipt": receipt}
 
     def fast_context(contract, foreground, engine):
         ingest = run_json([fast, "--fast-engine", engine, "ingest", str(repo), "--json"])
+        if not valid_receipt(ingest, "simplicio.fast-ingest-receipt/v1") or ingest.get("repo") != str(repo):
+            raise RuntimeError("Fast does not support a verifiable ingest receipt")
         understanding = run_json([fast, "--fast-engine", engine, "understand", "--root", str(repo),
                                   "--max-bytes", str(contract["budgets"]["max_context_bytes"]), contract["goal"]])
         generation = str(ingest.get("generation") or ingest.get("generation_id") or content_hash(ingest))
@@ -769,6 +816,8 @@ def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = "
     def fast_plan(contract, context, generation):
         receipt = run_json([fast, "--fast-engine", "python", "plan", "--root", str(repo),
                             "--max-bytes", str(contract["budgets"]["max_context_bytes"]), contract["goal"]])
+        if not valid_receipt(receipt, "simplicio.fast-plan-receipt/v1"):
+            raise RuntimeError("Fast does not support a verifiable plan receipt")
         return {"generation": str(receipt.get("generation") or generation), "receipt": receipt,
                 "changeset": changeset}
 
@@ -776,8 +825,23 @@ def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = "
         if not isinstance(changeset, Mapping):
             raise ValueError("local execution requires a deterministic changeset")
         before = source_digest()
-        first_edit({"boundary": "simplicio-dev-cli changeset --apply"})
-        receipt = run_json([dev_cli, "changeset", "--root", str(repo), "--plan", "-", "--apply", "--json"], input_value=changeset)
+        binding = {"changeset": changeset, "plan": plan, "authority": authority,
+                   "source_revision": task.get("source_revision"), "issue": task.get("issue"),
+                   "targets": task.get("target_hints")}
+        receipt = run_json([dev_cli, "changeset", "--root", str(repo), "--plan", "-", "--apply", "--json"], input_value=binding)
+        if not valid_receipt(receipt, "simplicio.dev-cli-changeset-receipt/v1"):
+            raise RuntimeError("Dev CLI does not support a verifiable changeset receipt")
+        if any(receipt.get(key) != value for key, value in {
+                "authority_lease": authority.get("lease"), "authority_fence": authority.get("fence"),
+                "source_revision": task.get("source_revision"), "issue": task.get("issue"),
+                "targets": task.get("target_hints"), "changeset_hash": content_hash(changeset),
+                "plan_hash": content_hash(plan)}.items()):
+            raise RuntimeError("Dev CLI receipt binding mismatch")
+        touched = receipt.get("touched_paths")
+        if not isinstance(touched, list) or not touched or not set(touched).issubset(set(task.get("target_hints") or [])):
+            raise RuntimeError("Dev CLI diff escaped the authorized target corridor")
+        if not isinstance(receipt.get("first_edit_ms"), (int, float)) or receipt["first_edit_ms"] < 0:
+            raise RuntimeError("Dev CLI first-edit receipt missing")
         if receipt.get("status") not in {"applied", "completed", "success"} or receipt.get("applied") is not True:
             raise RuntimeError(f"Dev CLI refused changeset: {receipt.get('errors') or receipt.get('status')}")
         after = source_digest()
@@ -785,12 +849,13 @@ def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = "
             raise RuntimeError("Dev CLI reported apply without a source change")
         return {"diff_lines": int(receipt.get("diff_lines") or 0), "receipt": receipt,
                 "source_before": before, "source_after": after,
+                "first_edit_ms": receipt["first_edit_ms"],
                 "new_files": bool(receipt.get("new_files")), "target_expanded": bool(receipt.get("target_expanded"))}
 
     def verify(commands, mutation):
         evidence = []
         for command in commands:
-            result = subprocess.run(command, cwd=str(repo), capture_output=True, text=True, timeout=180, check=False)
+            result = subprocess.run(command, cwd=str(repo), capture_output=True, text=True, timeout=180, check=False, env=allowed_env)
             evidence.append({"argv": command, "returncode": result.returncode})
             if result.returncode != 0:
                 return {"focused_ok": False, "evidence": evidence}
@@ -803,13 +868,14 @@ def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = "
         "mapper_enqueue_deep": lambda contract, generation: {"generation": generation, "available": True},
         "fast_context": fast_context,
         "fast_plan": fast_plan,
-        "pin_generation": lambda component, generation: {"component": component, "generation": generation, "lease": content_hash({"component": component, "generation": generation})},
-        "issue_authority": lambda contract, plan, pins: {"valid": True, "contract_hash": contract["contract_hash"], "pins": pins, "lease": content_hash(pins), "fence": 1},
+        "pin_generation": lambda component, generation: ((task.get("generation_pins") or {}).get(component) or {}),
+        "issue_authority": lambda contract, plan, pins: dict(task.get("authority_receipt") or {}),
         "source_digest": source_digest, "dev_cli_transaction": dev_transaction,
         "focused_verify": verify,
         "background_status": lambda background: background,
-        "watcher_verify": lambda contract, mutation, verification: (lambda rerun: {"schema": "simplicio.watcher-receipt/v1", "ok": rerun["focused_ok"], "evidence": rerun["evidence"]})(verify(contract["verification_commands"], mutation)),
-        "regression_gates": lambda contract, mutation: (lambda rerun: {"schema": "simplicio.dod-receipt/v1", "ok": rerun["focused_ok"], "dod": rerun["focused_ok"], "evidence": rerun["evidence"]})(verify(contract["verification_commands"], mutation)),
+        "watcher_verify": lambda contract, mutation, verification: dict(task.get("watcher_receipt") or {}),
+        "regression_gates": lambda contract, mutation: dict(task.get("dod_receipt") or {}),
+        "stop_recovery": lambda blocked: {"applied": True, "preserved": bool((task.get("stop") or {}).get("preserve")), "status": "stopped"},
         "full_pipeline": lambda contract, triggers: {"status": "BLOCKED", "reason_code": "full_pipeline_handoff_required", "triggers": triggers},
     }
 
