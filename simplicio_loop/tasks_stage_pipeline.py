@@ -6,6 +6,15 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .stage_agent_coordinator import CommandAgentAdapter, StageAgentCoordinator, StageCoordinatorJournal
 
+_SENSITIVE_KEYS = frozenset({"authorization", "token", "password", "secret", "api_key", "access_token"})
+
+def _redact(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): ("[REDACTED]" if str(key).lower() in _SENSITIVE_KEYS else _redact(item)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    return value
+
 class CommandPipelineCoordinator:
     def __init__(self, command: Sequence[str], journal_dir: str, *, host_total_slots: int = 4, coordinator_factory: Callable[..., Any] = StageAgentCoordinator):
         if not command:
@@ -40,8 +49,8 @@ class CommandPipelineCoordinator:
             self.active.append(coordinator)
             results = coordinator.run_all()
             passed = bool(results) and all(result.status == "passed" for result in results.values()) and coordinator.terminal_reached()
-            receipts = [result.instance.receipt for result in results.values() if result.instance and result.instance.receipt]
-            outputs = [result.instance.output for result in results.values() if result.instance and result.instance.output]
+            receipts = [_redact(result.instance.receipt) for result in results.values() if result.instance and result.instance.receipt]
+            outputs = [_redact(result.instance.output) for result in results.values() if result.instance and result.instance.output]
             pr_url = next((str(value.get("pr_url")) for value in [*outputs, *receipts] if isinstance(value, Mapping) and value.get("pr_url")), "")
             all_passed = all_passed and passed and bool(pr_url)
             evidence.append({"task_id": task_id, "pr": pr_url or None, "verification": "passed" if passed else None, "receipts": receipts, "status": coordinator.status_report()})

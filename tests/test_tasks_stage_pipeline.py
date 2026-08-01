@@ -37,6 +37,16 @@ def test_pipeline_binds_worker_worktree_context(tmp_path):
     adapter = FakeCoordinator.instances[-1].kwargs["adapters"][0]
     assert adapter.cwd == worktree.resolve()
     assert adapter.extra_env == {"SIMPLICIO_TASK_WORKTREE": str(worktree), "SIMPLICIO_TASK_BRANCH": "feature/1", "SIMPLICIO_TASK_HEAD": "abc123"}
+
+def test_pipeline_redacts_nested_secrets_from_evidence(tmp_path):
+    previous = FakeCoordinator.pr_url
+    class SecretCoordinator(FakeCoordinator):
+        def run_all(self):
+            instance = SimpleNamespace(receipt={"token": "secret", "nested": {"password": "hidden"}}, output={"pr_url": previous})
+            return {"delivery": SimpleNamespace(status="passed", instance=instance)}
+    result = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=SecretCoordinator)({"workers": [{"task_id": "issue-1"}]})
+    receipt = result["evidence"][0]["receipts"][0]
+    assert receipt == {"token": "[REDACTED]", "nested": {"password": "[REDACTED]"}}
 def test_pipeline_fails_closed_without_pr_evidence(tmp_path):
     previous = FakeCoordinator.pr_url
     FakeCoordinator.pr_url = ""
