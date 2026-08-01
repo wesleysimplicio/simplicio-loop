@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from simplicio_loop.development_entry import (
-    DevelopmentAssessment, DevelopmentRouteError, route_development, validate_route,
+    DevelopmentAssessment, DevelopmentRouteError, admit_route_payload, route_development, validate_route,
 )
 
 
@@ -42,3 +42,18 @@ def test_route_gate_rejects_tampered_decision() -> None:
                                route.reason_code, route.assessment_hash, route.max_iterations)
     with pytest.raises(DevelopmentRouteError, match="decision"):
         validate_route(tampered, assessment)
+
+
+def test_persisted_route_and_assessment_require_valid_schema_and_hashes() -> None:
+    assessment = DevelopmentAssessment("task", independent_ready=2)
+    route = route_development(assessment)
+    admitted = admit_route_payload(route.to_dict(), assessment.to_dict())
+    assert admitted["status"] == "ADMITTED"
+    bad_route = route.to_dict()
+    bad_route["selected_mode"] = "converge"
+    with pytest.raises(DevelopmentRouteError, match="receipt hash"):
+        admit_route_payload(bad_route, assessment.to_dict())
+    bad_assessment = assessment.to_dict()
+    bad_assessment["complexity"] = "critical"
+    with pytest.raises(DevelopmentRouteError, match="assessment hash"):
+        admit_route_payload(route.to_dict(), bad_assessment)
