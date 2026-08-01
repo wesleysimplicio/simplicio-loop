@@ -198,6 +198,51 @@ class PrismReducer:
         self.results[result.task_id] = result
         return "ACCEPTED_FOR_REDUCTION"
 
+    def snapshot(self) -> dict[str, Any]:
+        """Return a content-addressed reducer checkpoint safe for restart."""
+        payload: dict[str, Any] = {
+            "schema": "simplicio.loop.reducer-snapshot/v1",
+            "expected": [dataclasses.asdict(item) for item in sorted(
+                self.expected.values(), key=lambda item: item.task_id
+            )],
+            "results": [self.results[task_id].to_dict() for task_id in sorted(self.results)],
+            "replay_count": self.replay_count,
+        }
+        payload["snapshot_hash"] = canonical_sha256(payload)
+        return payload
+
+    def restore(self, snapshot: Mapping[str, Any]) -> None:
+        """Restore a checkpoint only when its task contract matches exactly."""
+        body = dict(snapshot)
+        supplied_hash = body.pop("snapshot_hash", None)
+        if body.get("schema") != "simplicio.loop.reducer-snapshot/v1":
+            raise PrismReducerError("unknown reducer snapshot schema")
+        if canonical_sha256(body) != supplied_hash:
+            raise PrismReducerError("reducer snapshot hash mismatch")
+        expected_rows = body.get("expected")
+        if not isinstance(expected_rows, list):
+            raise PrismReducerError("reducer snapshot expected tasks missing")
+        expected = tuple(
+            ExpectedTask(**row) for row in expected_rows if isinstance(row, Mapping)
+        )
+        if tuple(dataclasses.asdict(item) for item in sorted(expected, key=lambda item: item.task_id)) != tuple(
+            dataclasses.asdict(item) for item in sorted(self.expected.values(), key=lambda item: item.task_id)
+        ):
+            raise PrismReducerError("reducer snapshot task contract mismatch")
+        results = body.get("results")
+        if not isinstance(results, list):
+            raise PrismReducerError("reducer snapshot results missing")
+        self.results = {}
+        self.replay_count = 0
+        for row in results:
+            if not isinstance(row, Mapping):
+                raise PrismReducerError("reducer snapshot result is invalid")
+            self.submit(TaskResult(**row))
+        replay_count = body.get("replay_count", 0)
+        if isinstance(replay_count, bool) or not isinstance(replay_count, int) or replay_count < 0:
+            raise PrismReducerError("reducer snapshot replay count is invalid")
+        self.replay_count = replay_count
+
     def _topological(self, task_ids: set[str]) -> tuple[str, ...]:
         pending = set(task_ids)
         ordered: list[str] = []
