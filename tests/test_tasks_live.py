@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from simplicio_loop import cli
 from simplicio_loop import tasks_live
@@ -55,9 +56,22 @@ def test_live_cancel_persists_before_source_or_intake_construction(tmp_path):
     def forbidden_source(*args, **kwargs):
         raise AssertionError("source must not be constructed during cancellation")
 
-    result = tasks_live.run_live("not even a valid drain request", workspace=str(tmp_path), agent_command=["agent"], action_gate=True, cancel=True, source_factory=forbidden_source, pipeline_factory=Pipeline)
+    request = "finish all issues in acme/widgets"
+    result = tasks_live.run_live(request, workspace=str(tmp_path), agent_command=["agent"], action_gate=True, cancel=True, source_factory=forbidden_source, pipeline_factory=Pipeline)
     assert result["state"] == "cancelled"
     assert result["cancelled"] == ["cancel_requested"]
+    consumed = tasks_live.run_live(request, workspace=str(tmp_path),
+                                  agent_command=["agent"], action_gate=True,
+                                  source_factory=forbidden_source, pipeline_factory=Pipeline)
+    assert consumed["state"] == "cancelled"
+    assert consumed["reason"] == "persisted_cancel_enforced"
+    assert not (tmp_path / ".simplicio" / "tasks-run" / result["idempotency_key"][:16] / "journals" / "cancel.json").exists()
+    assert Path(consumed["cancel_ack"]).exists()
+    resumed = tasks_live.run_live(request, workspace=str(tmp_path), agent_command=["agent"],
+                                  action_gate=True, source_factory=Source, intake_factory=Intake,
+                                  materializer_factory=Materializer, pipeline_factory=Pipeline,
+                                  orchestrator_factory=Orchestrator, queue_factory=Queue)
+    assert resumed["state"] == "completed"
 
 def test_cli_live_requires_agent_command(capsys):
     assert cli.main(["tasks", "run", "finish all issues in acme/widgets", "--action-gate"]) == 2

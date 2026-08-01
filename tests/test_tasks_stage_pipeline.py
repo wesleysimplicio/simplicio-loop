@@ -30,6 +30,7 @@ class FakeCoordinator:
 
 def test_pipeline_collects_pr_and_verification_receipts(tmp_path, monkeypatch):
     monkeypatch.setattr("simplicio_loop.tasks_stage_pipeline._git_merge_authentic", lambda *args: True)
+    monkeypatch.setattr("simplicio_loop.tasks_stage_pipeline._coordinator_merge_receipt", lambda *args: {"merge_commit_sha": "a" * 40, "receipt_sha": "coordinator"})
     pipeline = CommandPipelineCoordinator(["python", "agent.py"], str(tmp_path), coordinator_factory=FakeCoordinator)
     result = pipeline({"workers": [{"run_id": "run-1", "task_id": "issue-1", "expected_pr_repo": "acme/widgets", "branch": "feature/1"}]})
     assert result["passed"] is True
@@ -39,7 +40,7 @@ def test_pipeline_collects_pr_and_verification_receipts(tmp_path, monkeypatch):
 
 
 def test_merge_authenticity_uses_real_git_ancestry(tmp_path):
-    from simplicio_loop.tasks_stage_pipeline import _git_merge_authentic
+    from simplicio_loop.tasks_stage_pipeline import _coordinator_merge_receipt, _git_merge_authentic, _receipt_digest
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
@@ -49,14 +50,28 @@ def test_merge_authenticity_uses_real_git_ancestry(tmp_path):
     subprocess.run(["git", "-C", str(tmp_path), "checkout", "-qb", "feature"], check=True)
     (tmp_path / "a").write_text("feature", encoding="utf-8")
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-qam", "feature"], check=True)
+    feature_sha = (tmp_path / ".git" / "refs" / "heads" / "feature").read_text(encoding="utf-8").strip()
     subprocess.run(["git", "-C", str(tmp_path), "checkout", "-q", "master"], check=True)
     (tmp_path / "b").write_text("main", encoding="utf-8")
     subprocess.run(["git", "-C", str(tmp_path), "add", "b"], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "main"], check=True)
+    base_sha = (tmp_path / ".git" / "refs" / "heads" / "master").read_text(encoding="utf-8").strip()
     subprocess.run(["git", "-C", str(tmp_path), "merge", "--no-ff", "-qm", "merge", "feature"], check=True)
     merge = (tmp_path / ".git" / "refs" / "heads" / "master").read_text(encoding="utf-8").strip()
-    assert _git_merge_authentic(str(tmp_path), "feature", merge) is True
-    assert _git_merge_authentic(str(tmp_path), "feature", "a" * 40) is False
+    assert _git_merge_authentic(str(tmp_path), feature_sha, merge) is True
+    assert _git_merge_authentic(str(tmp_path), feature_sha, "a" * 40) is False
+    delivery = {"pr_url": "https://github.com/acme/widgets/pull/1", "pr_repo": "acme/widgets",
+                "merge_receipt": {"merge_commit_sha": merge}}
+    worker = {"worktree_path": str(tmp_path), "branch": "feature", "expected_base_ref": "master",
+              "expected_base_sha": base_sha, "admission_fence": 7,
+              "authority_receipt": {"receipt_hash": "authority-7"}}
+    receipt = _coordinator_merge_receipt(delivery, worker)
+    assert receipt["issuer"] == "tasks-coordinator"
+    assert receipt["merge_parents"] == [receipt["base_sha"], receipt["head_sha"]]
+    assert receipt["admission_fence"] == 7 and receipt["authority_receipt_hash"] == "authority-7"
+    unsigned = dict(receipt)
+    supplied = unsigned.pop("receipt_sha")
+    assert supplied == _receipt_digest(unsigned)
 
 
 def test_pipeline_rejects_journal_path_injection(tmp_path):

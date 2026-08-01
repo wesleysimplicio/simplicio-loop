@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
+import time
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -16,6 +19,50 @@ def _receipt_digest(value: Mapping[str, Any]) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
+def _git_result(argv: Sequence[str]) -> subprocess.CompletedProcess:
+    if os.name == "nt":
+        with tempfile.TemporaryDirectory(prefix="simplicio-tasks-git-") as directory:
+            stdout_path = Path(directory) / "stdout.txt"
+            stderr_path = Path(directory) / "stderr.txt"
+            result = None
+            for attempt in range(5):
+                try:
+                    with stdout_path.open("w", encoding="utf-8") as stdout_handle, \
+                            stderr_path.open("w", encoding="utf-8") as stderr_handle:
+                        result = subprocess.run(list(argv), shell=False, stdout=stdout_handle,
+                                                stderr=stderr_handle, stdin=subprocess.DEVNULL,
+                                                close_fds=False, text=True,
+                                                timeout=10, check=False)
+                    break
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) not in {6, 50}:
+                        return subprocess.CompletedProcess(list(argv), 1, "", str(exc))
+                    if attempt < 4:
+                        time.sleep(0.25)
+            if result is None:
+                return subprocess.CompletedProcess(list(argv), 1, "", "git capture unavailable")
+            return subprocess.CompletedProcess(
+                list(argv), result.returncode,
+                stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else "",
+                stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else "",
+            )
+    last = None
+    for attempt in range(5):
+        try:
+            result = subprocess.run(list(argv), capture_output=True, text=True, timeout=10, check=False)
+            last = result
+            if result.returncode == 0:
+                return result
+        except OSError as exc:
+            last = exc
+            if getattr(exc, "winerror", None) != 6:
+                raise
+        if attempt < 4:
+            time.sleep(0.25)
+    if isinstance(last, subprocess.CompletedProcess):
+        return last
+    raise last  # type: ignore[misc]
+
 def _redact(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(key): ("[REDACTED]" if str(key).lower() in _SENSITIVE_KEYS else _redact(item)) for key, item in value.items()}
@@ -23,15 +70,51 @@ def _redact(value: Any) -> Any:
         return [_redact(item) for item in value]
     return value
 
-def _git_merge_authentic(worktree: str, head: str, merge_sha: str) -> bool:
-    if not worktree or not head:
+def _git_merge_authentic(worktree: str, head_sha: str, merge_sha: str) -> bool:
+    if not worktree or not re.fullmatch(r"[0-9a-fA-F]{40}", head_sha):
         return False
     try:
-        parents = subprocess.run(["git", "-C", worktree, "rev-parse", "--verify", f"{merge_sha}^2"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
-        ancestor = subprocess.run(["git", "-C", worktree, "merge-base", "--is-ancestor", head, merge_sha], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+        if os.name == "nt":
+            time.sleep(0.5)
+        resolved = _git_result(["git", "-C", worktree, "rev-parse", f"{merge_sha}^2"])
     except (OSError, subprocess.SubprocessError):
         return False
-    return parents.returncode == 0 and ancestor.returncode == 0
+    return resolved.returncode == 0 and resolved.stdout.strip() == head_sha
+
+def _coordinator_merge_receipt(delivery: Mapping[str, Any], worker: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    candidate = delivery.get("merge_receipt") if isinstance(delivery.get("merge_receipt"), Mapping) else {}
+    merge_sha = str(candidate.get("merge_commit_sha") or "")
+    worktree = str(worker.get("worktree_path") or worker.get("repo") or "")
+    head_ref = str(worker.get("branch") or worker.get("expected_pr_head") or "")
+    base_ref = str(worker.get("expected_base_ref") or "")
+    expected_base_sha = str(worker.get("expected_base_sha") or "")
+    if (not worktree or not head_ref or not base_ref
+            or not re.fullmatch(r"[0-9a-fA-F]{40}", expected_base_sha)
+            or not re.fullmatch(r"[0-9a-fA-F]{40}", merge_sha)):
+        return None
+    try:
+        def resolve(ref):
+            result = _git_result(["git", "-C", worktree, "rev-parse", "--verify", ref])
+            return result.stdout.strip() if result.returncode == 0 else ""
+        parent1, parent2 = resolve(f"{merge_sha}^1"), resolve(f"{merge_sha}^2")
+        base_sha, head_sha = expected_base_sha, resolve(head_ref)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not all((parent1, parent2, base_sha, head_sha)) or parent1 != base_sha or parent2 != head_sha:
+        return None
+    authority = worker.get("authority_receipt") if isinstance(worker.get("authority_receipt"), Mapping) else {}
+    authority_hash = str(authority.get("receipt_hash") or "")
+    if not authority_hash:
+        return None
+    receipt = {"schema": "simplicio.tasks-merge-receipt/v1", "issuer": "tasks-coordinator",
+               "merged": True, "pr_url": str(delivery.get("pr_url") or ""),
+               "repo": str(delivery.get("pr_repo") or ""), "base_ref": base_ref,
+               "pr_head": head_ref, "base_sha": base_sha, "head_sha": head_sha,
+               "merge_commit_sha": merge_sha, "merge_parents": [parent1, parent2],
+               "admission_fence": int(worker.get("admission_fence") or 0),
+               "authority_receipt_hash": authority_hash}
+    receipt["receipt_sha"] = _receipt_digest(receipt)
+    return receipt
 
 def _delivery_receipt(values: Sequence[Any], worker: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None, list[str]]:
     delivery = next((value for value in values if isinstance(value, Mapping) and value.get("pr_url")), None)
@@ -49,15 +132,8 @@ def _delivery_receipt(values: Sequence[Any], worker: Mapping[str, Any]) -> tuple
     url = str(delivery.get("pr_url") or "")
     if not repo or not re.fullmatch(rf"https://github\.com/{re.escape(repo)}/pull/[1-9][0-9]*", url):
         required.append("pr_url_mismatch")
-    merge = delivery.get("merge_receipt")
-    merge_payload = dict(merge) if isinstance(merge, Mapping) else {}
-    merge_digest = str(merge_payload.pop("receipt_sha", ""))
-    if (delivery.get("operation") != "merge" or not isinstance(merge, Mapping)
-            or merge.get("schema") != "simplicio.tasks-merge-receipt/v1"
-            or merge.get("merged") is not True
-            or str(merge.get("pr_url") or "") != url
-            or not re.fullmatch(r"[0-9a-fA-F]{40}", str(merge.get("merge_commit_sha") or ""))
-            or not merge_digest or merge_digest != _receipt_digest(merge_payload)):
+    merge = _coordinator_merge_receipt(delivery, worker)
+    if delivery.get("operation") != "merge" or merge is None:
         required.append("merge_receipt_invalid")
     expected_repo = str(worker.get("expected_pr_repo") or "")
     expected_head = str(worker.get("branch") or worker.get("expected_pr_head") or "")
@@ -66,7 +142,7 @@ def _delivery_receipt(values: Sequence[Any], worker: Mapping[str, Any]) -> tuple
     if int(delivery.get("admission_fence") or 0) != expected_fence:
         required.append("admission_fence_mismatch")
     worktree = str(worker.get("worktree_path") or worker.get("repo") or "")
-    if not _git_merge_authentic(worktree, expected_head, str(merge_payload.get("merge_commit_sha") or "")):
+    if merge is None or not _git_merge_authentic(worktree, str(merge.get("head_sha") or ""), str(merge.get("merge_commit_sha") or "")):
         required.append("merge_not_locally_verified")
     if expected_repo and str(delivery.get("pr_repo")) != expected_repo:
         required.append("pr_repo_mismatch")
@@ -74,7 +150,9 @@ def _delivery_receipt(values: Sequence[Any], worker: Mapping[str, Any]) -> tuple
         required.append("pr_head_mismatch")
     if expected_source and str(delivery.get("source_issue")).removeprefix("#") != expected_source.removeprefix("#"):
         required.append("source_issue_mismatch")
-    return delivery, sorted(set(required))
+    authoritative = dict(delivery)
+    authoritative["merge_receipt"] = merge
+    return authoritative, sorted(set(required))
 
 class CommandPipelineCoordinator:
     def __init__(self, command: Sequence[str], journal_dir: str, *, host_total_slots: int = 4, coordinator_factory: Callable[..., Any] = StageAgentCoordinator):

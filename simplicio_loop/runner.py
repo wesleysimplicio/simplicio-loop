@@ -4591,6 +4591,8 @@ def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
     if isinstance(item.get("task_spec"), Mapping):
         normalized["task_spec"] = dict(item["task_spec"])
     normalized["admission_fence"] = max(1, int(item.get("admission_fence") or 1))
+    normalized["expected_base_ref"] = str(item.get("expected_base_ref") or "")
+    normalized["expected_base_sha"] = str(item.get("expected_base_sha") or "")
     authority = item.get("authority_receipt")
     if authority is not None:
         if not isinstance(authority, Mapping):
@@ -4895,6 +4897,8 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "task_index": item["task_index"],
         "task_id": str(item.get("task_id") or ""),
         "worktree_context": context,
+        "worktree_path": str(context.get("worktree_path") or context.get("path") or item.get("repo") or ""),
+        "branch": str(context.get("branch") or item.get("branch") or ""),
         # These are deliberately worker-scoped aliases.  A fan-out consumer must never
         # infer a shared receipt from the coordinator's run-level state; every lane has
         # its own operator and evidence proof (or an explicit UNVERIFIED state).
@@ -4905,6 +4909,8 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "context_pack": dict(item.get("context_pack") or {}),
         "authority_receipt": dict(item.get("authority_receipt") or {}),
         "admission_fence": int(item.get("admission_fence") or 1),
+        "expected_base_ref": str(item.get("expected_base_ref") or ""),
+        "expected_base_sha": str(item.get("expected_base_sha") or ""),
     }
     run_dir = _operator_dispatch_run_dir(item)
     execution_route = _fanout_execution_route(item, run_dir)

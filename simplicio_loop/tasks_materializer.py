@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import subprocess
+import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -20,6 +24,37 @@ def _safe(value: Any) -> str:
 def _digest(value: Any) -> str:
     blob = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+def _git_text(repo: Path, *args: str) -> str:
+    argv = ["git", "-C", str(repo), *args]
+    if os.name == "nt":
+        with tempfile.TemporaryDirectory(prefix="simplicio-tasks-base-") as directory:
+            output = Path(directory) / "stdout.txt"
+            error = Path(directory) / "stderr.txt"
+            result = None
+            for attempt in range(5):
+                try:
+                    with output.open("w", encoding="utf-8") as stdout_handle, \
+                            error.open("w", encoding="utf-8") as stderr_handle:
+                        result = subprocess.run(argv, shell=False, stdout=stdout_handle,
+                                                stderr=stderr_handle, stdin=subprocess.DEVNULL,
+                                                close_fds=False, text=True,
+                                                timeout=10, check=False)
+                    break
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) not in {6, 50}:
+                        return ""
+                    if attempt < 4:
+                        time.sleep(0.25)
+            if result is None:
+                return ""
+            stdout = output.read_text(encoding="utf-8", errors="replace") if output.exists() else ""
+    else:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False)
+        stdout = result.stdout
+    if result.returncode != 0:
+        return ""
+    return stdout.strip()
 
 def _task_markdown(number: str, item: Mapping[str, Any]) -> str:
     title = str(item.get("title") or f"Issue {number}")
@@ -66,7 +101,15 @@ class LoopRunContractMaterializer:
             raise ContractMaterializationError(f"issue {number} has no authorized targets")
         authority = {"request": str(item.get("title") or ""), "source": {"issue": str(number), "revision": item.get("source_revision"), "planning_receipt": item.get("planning_receipt")}, "command": {"delivery": self.delivery, "max_iterations": self.max_iterations}, "targets": targets, "operator": "simplicio-dev-cli"}
         authority["receipt_hash"] = _digest(authority)
-        return {"repo": str(self.repo), "run_id": armed["manifest"]["run_id"], "task_index": 1, "task_id": f"issue-{number}", "isolation": "worktree", "isolation_key": f"issue-{number}", "authority_receipt": authority, "task_spec": {"id": f"issue-{number}", "goal": str(item.get("title") or ""), "files_affected": targets}}
+        base_ref = str(item.get("base_ref") or "")
+        if not base_ref:
+            base_ref = _git_text(self.repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+        if not base_ref:
+            base_ref = f"origin/{item.get('default_branch') or 'main'}"
+        base_sha = str(item.get("base_sha") or _git_text(self.repo, "rev-parse", "--verify", base_ref))
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", base_sha):
+            raise ContractMaterializationError(f"issue {number} has no canonical base SHA for {base_ref}")
+        return {"repo": str(self.repo), "run_id": armed["manifest"]["run_id"], "task_index": 1, "task_id": f"issue-{number}", "isolation": "worktree", "isolation_key": f"issue-{number}", "authority_receipt": authority, "expected_base_ref": base_ref, "expected_base_sha": base_sha, "task_spec": {"id": f"issue-{number}", "goal": str(item.get("title") or ""), "files_affected": targets}}
     def __call__(self, intake: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         identity = intake.get("run_identity", {})
         batch = _safe(identity.get("run_id") or identity.get("request_digest") or "tasks")
