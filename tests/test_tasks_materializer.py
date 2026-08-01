@@ -15,6 +15,7 @@ def test_materializes_canonical_run_and_authorized_worktree_item(tmp_path):
         run_dir = tmp_path / ".simplicio" / "loop-runs" / "run-7"
         run_dir.mkdir(parents=True)
         (run_dir / "plan.json").write_text(json.dumps({"steps": [{"candidate_targets": ["src/a.py"]}]}), encoding="utf-8")
+        (run_dir / "state.json").write_text(json.dumps({"phase": "awaiting_decision"}), encoding="utf-8")
         return {"manifest": {"run_id": "run-7"}, "state": {"phase": "awaiting_decision"}, "run_dir": str(run_dir)}
     rows = LoopRunContractMaterializer(str(tmp_path), arm=arm)(intake())
     assert len(rows) == 1
@@ -28,3 +29,29 @@ def test_materialization_fails_closed_on_blocked_preflight(tmp_path):
         return {"state": {"phase": "blocked", "blockers": ["mapper stale"]}}
     with pytest.raises(ContractMaterializationError, match="mapper stale"):
         LoopRunContractMaterializer(str(tmp_path), arm=arm)(intake())
+
+
+def test_replay_reuses_persisted_run_without_rearming(tmp_path):
+    calls = []
+    def arm(repo, task_path, delivery, max_iterations):
+        calls.append(task_path)
+        run_dir = tmp_path / ".simplicio" / "loop-runs" / "run-7"
+        run_dir.mkdir(parents=True)
+        (run_dir / "state.json").write_text(json.dumps({"phase": "awaiting_decision"}), encoding="utf-8")
+        (run_dir / "plan.json").write_text(json.dumps({"steps": [{"candidate_targets": ["src/a.py"]}]}), encoding="utf-8")
+        return {"manifest": {"run_id": "run-7"}, "state": {"phase": "awaiting_decision"}, "run_dir": str(run_dir)}
+    materialize = LoopRunContractMaterializer(str(tmp_path), arm=arm)
+    assert materialize(intake()) == materialize(intake())
+    assert len(calls) == 1
+    receipt = json.loads((tmp_path / ".simplicio" / "tasks-run" / "batch-1" / "materialization-receipt.json").read_text(encoding="utf-8"))
+    assert receipt["schema"] == "simplicio.tasks-materialization-receipt/v1"
+
+
+def test_corrupt_replay_receipt_fails_closed_without_rearming(tmp_path):
+    receipt = tmp_path / ".simplicio" / "tasks-run" / "batch-1" / "materialization-receipt.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text("{broken", encoding="utf-8")
+    calls = []
+    with pytest.raises(ContractMaterializationError, match="invalid materialization receipt"):
+        LoopRunContractMaterializer(str(tmp_path), arm=lambda *args: calls.append(args))(intake())
+    assert calls == []
