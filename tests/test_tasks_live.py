@@ -58,6 +58,11 @@ def test_live_cancel_persists_before_source_or_intake_construction(tmp_path):
     result = tasks_live.run_live("not even a valid drain request", workspace=str(tmp_path), agent_command=["agent"], action_gate=True, cancel=True, source_factory=forbidden_source, pipeline_factory=Pipeline)
     assert result["state"] == "cancelled"
     assert result["cancelled"] == ["cancel_requested"]
+    resumed = tasks_live.run_live("not even a valid drain request", workspace=str(tmp_path),
+                                  agent_command=["agent"], action_gate=True,
+                                  source_factory=forbidden_source, pipeline_factory=Pipeline)
+    assert resumed["state"] == "cancelled"
+    assert resumed["reason"] == "persisted_cancel_enforced"
 
 def test_cli_live_requires_agent_command(capsys):
     assert cli.main(["tasks", "run", "finish all issues in acme/widgets", "--action-gate"]) == 2

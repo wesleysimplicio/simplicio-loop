@@ -48,6 +48,12 @@ def run_live(
             "cancelled": ["cancel_requested"],
             "evidence": [],
         }
+    cancel_path = journal_dir / "cancel.json"
+    if cancel_path.exists():
+        return {"schema": "simplicio.tasks-orchestrator/v1", "plan": None,
+                "idempotency_key": hashlib.sha256(request.encode("utf-8")).hexdigest(),
+                "state": "cancelled", "reason": "persisted_cancel_enforced",
+                "cancelled": ["persisted_cancel"], "evidence": []}
     pipeline = pipeline_factory(agent_command, str(journal_dir), host_total_slots=max_workers + 1)
     intent = parse_natural_drain_request(request)
     checkpoint_path = checkpoint or str(root / ".simplicio" / "tasks-run" / batch / "intake.json")

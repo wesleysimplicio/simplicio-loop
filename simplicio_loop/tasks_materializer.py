@@ -66,7 +66,8 @@ class LoopRunContractMaterializer:
             raise ContractMaterializationError(f"issue {number} has no authorized targets")
         authority = {"request": str(item.get("title") or ""), "source": {"issue": str(number), "revision": item.get("source_revision"), "planning_receipt": item.get("planning_receipt")}, "command": {"delivery": self.delivery, "max_iterations": self.max_iterations}, "targets": targets, "operator": "simplicio-dev-cli"}
         authority["receipt_hash"] = _digest(authority)
-        return {"repo": str(self.repo), "run_id": armed["manifest"]["run_id"], "task_index": 1, "task_id": f"issue-{number}", "isolation": "worktree", "isolation_key": f"issue-{number}", "authority_receipt": authority, "task_spec": {"id": f"issue-{number}", "goal": str(item.get("title") or ""), "files_affected": targets}}
+        base_ref = str(item.get("base_ref") or f"origin/{item.get('default_branch') or 'main'}")
+        return {"repo": str(self.repo), "run_id": armed["manifest"]["run_id"], "task_index": 1, "task_id": f"issue-{number}", "isolation": "worktree", "isolation_key": f"issue-{number}", "authority_receipt": authority, "expected_base_ref": base_ref, "expected_base_sha": str(item.get("base_sha") or ""), "task_spec": {"id": f"issue-{number}", "goal": str(item.get("title") or ""), "files_affected": targets}}
     def __call__(self, intake: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         identity = intake.get("run_identity", {})
         batch = _safe(identity.get("run_id") or identity.get("request_digest") or "tasks")
