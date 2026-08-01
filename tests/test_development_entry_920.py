@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from simplicio_loop.development_entry import DevelopmentAssessment, route_development
+from simplicio_loop.development_entry import (
+    DevelopmentAssessment, DevelopmentRouteError, route_development, validate_route,
+)
 
 
 def test_auto_routes_simple_parallel_heavy_and_critical_assessments() -> None:
@@ -21,3 +23,22 @@ def test_critical_cannot_be_overridden_and_route_is_hash_bound() -> None:
     route = route_development(assessment)
     assert route.assessment_hash == assessment.to_dict()["assessment_hash"]
     assert route.to_dict()["receipt_hash"].startswith("sha256:")
+
+
+def test_route_gate_rejects_stale_assessment_and_admits_fresh_route() -> None:
+    assessment = DevelopmentAssessment("task", uncertain=True)
+    route = route_development(assessment, max_iterations=3)
+    gate = validate_route(route, assessment)
+    assert gate["status"] == "ADMITTED"
+    assert gate["selected_mode"] == "converge"
+    with pytest.raises(DevelopmentRouteError, match="stale"):
+        validate_route(route, DevelopmentAssessment("task", critical=True))
+
+
+def test_route_gate_rejects_tampered_decision() -> None:
+    assessment = DevelopmentAssessment("task")
+    route = route_development(assessment)
+    tampered = route.__class__(route.task_id, route.requested_mode, "converge",
+                               route.reason_code, route.assessment_hash, route.max_iterations)
+    with pytest.raises(DevelopmentRouteError, match="decision"):
+        validate_route(tampered, assessment)

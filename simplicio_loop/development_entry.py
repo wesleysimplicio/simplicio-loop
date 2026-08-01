@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 SCHEMA = "simplicio.loop-development-routing/v1"
+GATE_SCHEMA = "simplicio.loop-development-route-gate/v1"
 MODES = ("auto", "one_shot", "converge", "parallel_drain", "heavy_compute", "critical_serial")
 
 
@@ -51,6 +52,30 @@ class DevelopmentRoute:
         return payload
 
 
+class DevelopmentRouteError(ValueError):
+    """A route cannot be admitted for the current assessment."""
+
+
+def validate_route(route: DevelopmentRoute, assessment: DevelopmentAssessment) -> dict[str, Any]:
+    """Revalidate a persisted route before dispatch or promotion."""
+    if route.task_id != assessment.task_id:
+        raise DevelopmentRouteError("route task does not match assessment")
+    assessment_hash = assessment.to_dict()["assessment_hash"]
+    if route.assessment_hash != assessment_hash:
+        raise DevelopmentRouteError("route assessment is stale")
+    expected = route_development(assessment, route.requested_mode, max_iterations=route.max_iterations)
+    if (route.selected_mode, route.reason_code, route.max_iterations) != (
+        expected.selected_mode, expected.reason_code, expected.max_iterations
+    ):
+        raise DevelopmentRouteError("route decision does not match assessment policy")
+    payload = {"schema": GATE_SCHEMA, "task_id": route.task_id,
+               "assessment_hash": assessment_hash, "route_hash": route.to_dict()["receipt_hash"],
+               "selected_mode": route.selected_mode, "status": "ADMITTED",
+               "reason_code": "ROUTE_FRESH_AND_POLICY_VALID"}
+    payload["receipt_hash"] = _hash(payload)
+    return payload
+
+
 def route_development(assessment: DevelopmentAssessment, mode: str = "auto", *, max_iterations: int = 1) -> DevelopmentRoute:
     requested = str(mode or "auto").lower()
     if requested not in MODES:
@@ -78,4 +103,5 @@ def route_development(assessment: DevelopmentAssessment, mode: str = "auto", *, 
                             assessment.to_dict()["assessment_hash"], iterations)
 
 
-__all__ = ["MODES", "SCHEMA", "DevelopmentAssessment", "DevelopmentRoute", "route_development"]
+__all__ = ["GATE_SCHEMA", "MODES", "SCHEMA", "DevelopmentAssessment", "DevelopmentRoute",
+           "DevelopmentRouteError", "route_development", "validate_route"]
