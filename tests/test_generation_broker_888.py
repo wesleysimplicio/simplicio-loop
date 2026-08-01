@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -59,9 +60,8 @@ def test_candidates_share_canonical_cache_but_keep_isolated_overlays(tmp_path: P
     assert service.inspect("a") == first
     assert service.status()["metrics"]["cache_misses"] == 1
     assert service.status()["metrics"]["cache_hits"] == 1
-    manifest = json.loads(
-        (service.lifecycle.attempt / "generation-manifest.json").read_text()
-    )
+    manifest_path = next((service.lifecycle.attempt / "generation-manifests").glob("*.json"))
+    manifest = json.loads(manifest_path.read_text())
     assert manifest["canonical_cache_key"] == first.canonical_cache_key
     assert manifest["schema"] == "simplicio.loop.generation-binding/v1"
 
@@ -205,6 +205,7 @@ def test_reconcile_recovers_after_coordinator_restart_and_pin_release(tmp_path: 
     pinned = restarted.pin("a", expires_ns=binding.lease_expires_ns + 1)
     assert pinned.receipt_hash != binding.receipt_hash
     restarted.release("a")
+    assert restarted.inspect("a").lease_expires_ns == 0
     assert restarted.status()["events"][-1]["event"] == "release"
 
 
@@ -234,3 +235,46 @@ def test_promotion_preserves_active_pin_and_records_event(tmp_path: Path):
     event = service.event("mapper_background_refresh", identity_key=identity_key)
     assert event["event"] == "mapper_background_refresh"
     assert service.inspect("a") == binding
+    next_binding = service.bind(
+        identity_key, tree_hash="tree-2", files=[], candidate_id="b", generation=promoted
+    )
+    assert next_binding.fast_generation == "generation-2"
+
+
+def test_trusted_anchor_rejects_rehashed_repository_tamper(tmp_path: Path):
+    service, identity_key, generation = broker(tmp_path)
+    binding = service.bind(
+        identity_key, tree_hash="tree", files=[], candidate_id="a", generation=generation
+    )
+    path = Path(binding.overlay_path) / "generation-binding.json"
+    value = json.loads(path.read_text())
+    value["repository_base_sha"] = "attacker"
+    payload = dict(value)
+    payload.pop("receipt_hash")
+    value["receipt_hash"] = "sha256:" + hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    path.write_text(json.dumps(value))
+    service._bindings.clear()
+    with pytest.raises(LifecycleError, match="trusted-anchor mismatch"):
+        service.inspect("a")
+
+
+@pytest.mark.parametrize("field", ["task_id", "attempt_id"])
+def test_lifecycle_rejects_unsafe_path_identity(tmp_path: Path, field: str):
+    kwargs = {"task_id": "task", "attempt_id": "attempt"}
+    kwargs[field] = "../escape"
+    with pytest.raises(LifecycleError, match=f"unsafe {field}"):
+        CheckpointLifecycle(
+            tmp_path / "runs",
+            source_commit="abc",
+            fast_generation="generation",
+            base_path=tmp_path,
+            **kwargs,
+        )
+
+
+def test_lifecycle_rejects_unsafe_shard(tmp_path: Path):
+    service, _, _ = broker(tmp_path)
+    with pytest.raises(LifecycleError, match="unsafe shard_id"):
+        service.lifecycle.checkpoint("a", "../escape", "PLANNED")

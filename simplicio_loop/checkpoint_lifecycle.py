@@ -75,16 +75,19 @@ class CandidateSpec:
     stalled: bool = False
 
 
-_CANDIDATE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+
+
+def validate_path_component(value: Any, name: str) -> str:
+    if not isinstance(value, str) or value != value.strip():
+        raise LifecycleError(f"unsafe {name}")
+    if not _PATH_COMPONENT_RE.fullmatch(value) or value in {".", ".."}:
+        raise LifecycleError(f"unsafe {name}")
+    return value
 
 
 def validate_candidate_id(value: Any) -> str:
-    if not isinstance(value, str) or value != value.strip():
-        raise LifecycleError("unsafe candidate_id")
-    candidate = value
-    if not _CANDIDATE_RE.fullmatch(candidate) or candidate in {".", ".."}:
-        raise LifecycleError("unsafe candidate_id")
-    return candidate
+    return validate_path_component(value, "candidate_id")
 
 
 class CheckpointLifecycle:
@@ -101,8 +104,8 @@ class CheckpointLifecycle:
         base_path: str | Path,
     ) -> None:
         self.root = Path(root)
-        self.task_id = _require(task_id, "task_id")
-        self.attempt_id = _require(attempt_id, "attempt_id")
+        self.task_id = validate_path_component(task_id, "task_id")
+        self.attempt_id = validate_path_component(attempt_id, "attempt_id")
         self.source_commit = _require(source_commit, "source_commit")
         self.fast_generation = _require(fast_generation, "fast_generation")
         self.base_path = Path(base_path).resolve()
@@ -156,7 +159,7 @@ class CheckpointLifecycle:
         previous_digest: str | None = None,
     ) -> dict[str, Any]:
         candidate = validate_candidate_id(candidate_id)
-        shard = _require(shard_id, "shard_id")
+        shard = validate_path_component(shard_id, "shard_id")
         normalized_state = _require(state, "state").upper()
         if normalized_state not in ACTIVE_STATES | TERMINAL_STATES:
             raise LifecycleError(f"unsafe checkpoint state: {normalized_state}")
@@ -206,7 +209,7 @@ class CheckpointLifecycle:
         return item
 
     def load(self, candidate_id: str, shard_id: str) -> dict[str, Any]:
-        path = self.checkpoints / validate_candidate_id(candidate_id) / f"{_require(shard_id, 'shard_id')}.json"
+        path = self.checkpoints / validate_candidate_id(candidate_id) / f"{validate_path_component(shard_id, 'shard_id')}.json"
         try:
             return self.verify(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError) as exc:

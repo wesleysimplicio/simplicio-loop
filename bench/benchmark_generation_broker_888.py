@@ -49,11 +49,13 @@ def main(candidate_count: int = 100) -> None:
         )
         broker = GenerationBroker(registry, lifecycle)
         tracemalloc.start()
+        rss_samples = [_rss_bytes(0)[0]]
         cold_started = time.perf_counter_ns()
         broker.bind(
             identity_key, tree_hash="tree", files=["a.py"], candidate_id="candidate-0", generation=generation
         )
         cold_ns = time.perf_counter_ns() - cold_started
+        rss_samples.append(_rss_bytes(0)[0])
         warm_started = time.perf_counter_ns()
         for index in range(1, candidate_count):
             broker.bind(
@@ -64,6 +66,7 @@ def main(candidate_count: int = 100) -> None:
                 generation=generation,
             )
         warm_ns = time.perf_counter_ns() - warm_started
+        rss_samples.append(_rss_bytes(0)[0])
         incremental_started = time.perf_counter_ns()
         broker.bind(
             identity_key,
@@ -73,12 +76,36 @@ def main(candidate_count: int = 100) -> None:
             generation=generation,
         )
         incremental_ns = time.perf_counter_ns() - incremental_started
+        rss_samples.append(_rss_bytes(0)[0])
+        uncached_started = time.perf_counter_ns()
+        for index in range(candidate_count):
+            uncached_registry = MapServiceRegistry()
+            uncached_key = uncached_registry.register(
+                RepositoryIdentity("owner/project", str(base), base_sha="abc")
+            )
+            uncached_lifecycle = CheckpointLifecycle(
+                root / "uncached-runs",
+                task_id="benchmark-888",
+                attempt_id=f"attempt-{index}",
+                source_commit="abc",
+                fast_generation=generation.generation,
+                base_path=base,
+            )
+            GenerationBroker(uncached_registry, uncached_lifecycle).bind(
+                uncached_key,
+                tree_hash="tree",
+                files=["a.py"],
+                candidate_id="candidate",
+                generation=generation,
+            )
+        uncached_baseline_ns = time.perf_counter_ns() - uncached_started
+        rss_samples.append(_rss_bytes(0)[0])
         _, peak_rss_bytes = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        peak_rss_bytes, rss_source = _rss_bytes(peak_rss_bytes)
+        sampled_rss, rss_source = _rss_bytes(peak_rss_bytes)
+        peak_rss_bytes = max([sampled_rss, *rss_samples])
         manifests = list(lifecycle.overlays.glob("*/generation-binding.json"))
         overlay_bytes = sum(path.stat().st_size for path in manifests)
-        estimated_rebuild_ns = cold_ns * candidate_count
         measured_ns = cold_ns + warm_ns
         receipt: dict[str, object] = {
             "schema": "simplicio.loop.generation-broker-benchmark/v1",
@@ -87,15 +114,21 @@ def main(candidate_count: int = 100) -> None:
             "warm_total_ns": warm_ns,
             "warm_ns_per_binding": warm_ns // max(1, candidate_count - 1),
             "incremental_ns": incremental_ns,
+            "uncached_baseline_ns": uncached_baseline_ns,
             "peak_rss_bytes": peak_rss_bytes,
             "rss_source": rss_source,
             "mapped_bytes": overlay_bytes,
             "overlay_bytes_per_slot": overlay_bytes // len(manifests),
-            "estimated_time_saved_ns": max(0, estimated_rebuild_ns - measured_ns),
+            "actual_time_saved_ns": max(0, uncached_baseline_ns - measured_ns),
             "canonical_builds": broker.status()["metrics"]["cache_misses"],
             "cache_hits": broker.status()["metrics"]["cache_hits"],
         }
-        receipt["receipt_hash"] = _digest(receipt)
+        receipt["thresholds"] = {
+            "cache_reuse": receipt["cache_hits"] == candidate_count - 1,
+            "positive_savings": receipt["actual_time_saved_ns"] > 0,
+            "overlay_bytes_recorded": receipt["overlay_bytes_per_slot"] > 0,
+        }
+        receipt["digest"] = _digest(receipt)
         print(json.dumps(receipt, sort_keys=True))
 
 
