@@ -12,6 +12,7 @@ Covers the seven DoD acceptance criteria:
 from __future__ import annotations
 
 import importlib
+import types
 import json
 import threading
 import time
@@ -48,7 +49,33 @@ def test_load_quality_provider_returns_spec():
     assert spec.name == "simplicio_loop_quality"
     assert spec.policy == "strict-default"
     assert spec.version >= "1.0.0"
-    assert spec.module_path.endswith("simplicio_loop_quality")
+    assert spec.module_path.endswith(("simplicio_loop_quality", "simplicio_loop_quality.provider"))
+
+
+def test_load_quality_provider_resolves_explicit_extension_entry_point(monkeypatch):
+    runtime = types.SimpleNamespace(manifest={"extension_id": "simplicio_loop_quality"})
+    module = types.SimpleNamespace(
+        capability_negotiate=lambda: {"version": "1.0.0", "capabilities": {}},
+        run=lambda **_: {"status": "PASS"},
+    )
+    entry = types.SimpleNamespace(
+        name="simplicio_loop_quality",
+        value="simplicio_loop_quality.provider:provider",
+        load=lambda: (lambda: runtime),
+    )
+    real_import = qp.importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name == "simplicio_loop.quality_providers.simplicio_loop_quality":
+            raise ModuleNotFoundError(name)
+        if name == "simplicio_loop_quality.provider":
+            return module
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(qp.importlib, "import_module", fake_import)
+    monkeypatch.setattr(qp, "_quality_extension_entry", lambda name: entry if name == entry.name else None)
+    spec = load_quality_provider("simplicio_loop_quality", "strict-default")
+    assert spec.module_path == "simplicio_loop_quality.provider"
 
 
 # --------------------------------------------------------------------------
@@ -63,6 +90,7 @@ def test_absent_provider_blocks():
 def test_version_incompatible_blocks(monkeypatch):
     import simplicio_loop.quality_providers.simplicio_loop_quality as mod
 
+    monkeypatch.setattr(qp, "_quality_extension_entry", lambda _name: None)
     monkeypatch.setattr(mod, "capability_negotiate", lambda: {"version": "0.0.1"})
     with pytest.raises(QualityProviderError) as exc:
         load_quality_provider("simplicio_loop_quality", "strict-default")
@@ -72,6 +100,7 @@ def test_version_incompatible_blocks(monkeypatch):
 def test_crash_in_negotiate_blocks(monkeypatch):
     import simplicio_loop.quality_providers.simplicio_loop_quality as mod
 
+    monkeypatch.setattr(qp, "_quality_extension_entry", lambda _name: None)
     monkeypatch.setattr(mod, "capability_negotiate", lambda: 1 / 0)
     with pytest.raises(QualityProviderError) as exc:
         load_quality_provider("simplicio_loop_quality", "strict-default")
