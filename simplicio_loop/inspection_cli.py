@@ -196,7 +196,8 @@ def ledger_replay(path: str, compatibility: bool, recover_trailing: bool,
 
 _REPO_COMPONENT = r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,98}[A-Za-z0-9])?"
 _REPO_RE = re.compile(rf"^{_REPO_COMPONENT}/{_REPO_COMPONENT}$")
-_IMPORT_RECEIPT_SCHEMA = "simplicio.findings-import-receipt/v1"
+_IMPORT_RECEIPT_SCHEMA = "simplicio.findings-import-receipt/v2"
+_MARKER_PREFIX = "simplicio-findings-import:"
 
 
 def _valid_repo(repo: str):
@@ -216,10 +217,7 @@ def _github_repo_from_remote(remote: str):
 
 
 def _source_parent(source: str) -> Path:
-    candidate = source
-    if ":" in source and source.rsplit(":", 1)[1].isdigit():
-        candidate = source.rsplit(":", 1)[0]
-    path = Path(candidate).expanduser()
+    path = Path(source).expanduser()
     if not path.is_absolute():
         path = Path.cwd() / path
     return path if path.is_dir() else path.parent
@@ -235,10 +233,7 @@ def _repo_for_source(source: str, repo_map):
                 raise ValueError(f"invalid GitHub repository mapping for {directory}")
             return _valid_repo(value)
         try:
-            result = subprocess.run(
-                ["git", "-C", str(directory), "config", "--get", "remote.origin.url"],
-                capture_output=True, text=True, timeout=10,
-            )
+            result = subprocess.run(["git", "-C", str(directory), "config", "--get", "remote.origin.url"], capture_output=True, text=True, timeout=10)
         except (OSError, subprocess.TimeoutExpired):
             continue
         if result.returncode == 0:
@@ -259,49 +254,52 @@ def _load_findings_import(path: str):
     for index, finding in enumerate(findings):
         if not isinstance(finding, dict):
             raise ValueError(f"findings[{index}] must be an object")
-        required = ("finding_id", "stage", "severity", "source")
-        if any(not isinstance(finding.get(key), str) or not finding[key].strip() for key in required):
-            raise ValueError(f"findings[{index}] requires non-empty finding_id, stage, severity, and source")
+        required = {"file": str, "line": int, "summary": str, "failure_scenario": str}
+        if any(not isinstance(finding.get(key), kind) for key, kind in required.items()):
+            raise ValueError(f"findings[{index}] requires file, line, summary, and failure_scenario")
+        if finding["line"] < 1 or any(not finding[key].strip() for key in ("file", "summary", "failure_scenario")):
+            raise ValueError(f"findings[{index}] canonical fields must be non-empty and line positive")
+        if "verdict" in finding and (not isinstance(finding["verdict"], str) or not finding["verdict"].strip()):
+            raise ValueError(f"findings[{index}].verdict must be a non-empty string")
     return findings
 
 
-def _batch_id(findings, repositories, labels):
-    canonical = json.dumps(
-        {"findings": findings, "repositories": repositories, "labels": labels},
-        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def _finding_hash(finding, repo: str) -> str:
+    canonical = {key: finding[key] for key in ("file", "line", "summary", "failure_scenario")}
+    if "verdict" in finding:
+        canonical["verdict"] = finding["verdict"]
+    text = json.dumps({"repo": repo, "finding": canonical}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _receipt_path(args, batch_id: str) -> Path:
-    explicit = str(getattr(args, "receipt", "") or "")
-    return Path(explicit) if explicit else Path(".simplicio/orchestrator/findings/import-batches") / f"{batch_id}.json"
+def _marker(finding_hash: str) -> str:
+    return _MARKER_PREFIX + finding_hash
 
 
 def _issue_url(repo: str, url) -> bool:
-    return isinstance(url, str) and bool(re.fullmatch(
-        rf"https://github\.com/{re.escape(repo)}/issues/[0-9]+", url
-    ))
+    return isinstance(url, str) and bool(re.fullmatch(rf"https://github\.com/{re.escape(repo)}/issues/[0-9]+", url))
 
 
-def _load_import_receipt(path: Path, batch_id: str, repositories):
+def _receipt_path(args) -> Path:
+    explicit = str(getattr(args, "receipt", "") or "")
+    return Path(explicit) if explicit else Path(".simplicio/orchestrator/findings/import-receipt.json")
+
+
+def _load_import_receipt(path: Path):
     if not path.exists():
-        return {"schema": _IMPORT_RECEIPT_SCHEMA, "batch_id": batch_id, "urls": {}}
+        return {"schema": _IMPORT_RECEIPT_SCHEMA, "entries": {}}
     try:
         receipt = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid import receipt JSON: {exc}") from exc
-    if not isinstance(receipt, dict):
-        raise ValueError("import receipt must be a JSON object")
-    urls = receipt.get("urls")
-    if receipt.get("schema") != _IMPORT_RECEIPT_SCHEMA or receipt.get("batch_id") != batch_id or not isinstance(urls, dict):
-        raise ValueError("import receipt does not match this findings batch")
-    allowed = {str(index) for index in range(len(repositories))}
-    if not set(urls).issubset(allowed):
-        raise ValueError("import receipt contains an out-of-range finding index")
-    for key, url in urls.items():
-        if not _issue_url(repositories[int(key)], url):
-            raise ValueError(f"import receipt URL does not match repository for index {key}")
+    if not isinstance(receipt, dict) or receipt.get("schema") != _IMPORT_RECEIPT_SCHEMA or not isinstance(receipt.get("entries"), dict):
+        raise ValueError("import receipt must be a v2 object with entries")
+    for marker, entry in receipt["entries"].items():
+        if not isinstance(marker, str) or not marker.startswith(_MARKER_PREFIX) or not isinstance(entry, dict):
+            raise ValueError("import receipt entry is invalid")
+        repo, finding_hash, url = entry.get("repo"), entry.get("finding_hash"), entry.get("url")
+        if marker != _marker(str(finding_hash)) or not isinstance(repo, str) or not _valid_repo(repo) or not _issue_url(repo, url):
+            raise ValueError("import receipt entry provenance is invalid")
     return receipt
 
 
@@ -310,19 +308,40 @@ def _save_import_receipt(path: Path, receipt) -> None:
 
 
 def _import_error(code: str, message: str, urls=None):
-    return {
-        "error": {"code": code, "message": message},
-        "urls": dict(urls or {}),
-    }
+    return {"error": {"code": code, "message": message}, "urls": dict(urls or {})}
 
 
-def _issue_marker(batch_id: str, index: int) -> str:
-    return f"simplicio-findings-import:{batch_id}:{index}"
+def _marker_state_path(marker: str) -> Path:
+    return Path(".simplicio/orchestrator/findings/import-markers") / (marker.removeprefix(_MARKER_PREFIX) + ".json")
+
+
+def _read_marker_state(path: Path):
+    if not path.exists():
+        return None
+    value = json.loads(path.read_text(encoding="utf-8"))
+    return value if isinstance(value, dict) else None
+
+
+def _claim_marker(marker: str, repo: str, finding_hash: str):
+    path = _marker_state_path(marker)
+    with _drain._receipt_lock(path):
+        state = _read_marker_state(path)
+        if state and state.get("status") == "resolved" and state.get("repo") == repo and state.get("finding_hash") == finding_hash and _issue_url(repo, state.get("url")):
+            return "resolved", state["url"]
+        if state and state.get("status") == "in_progress" and state.get("repo") == repo and state.get("finding_hash") == finding_hash:
+            return "wait", None
+        _drain._atomic_write_receipt(path, {"status": "in_progress", "repo": repo, "finding_hash": finding_hash})
+        return "owner", None
+
+
+def _resolve_marker(marker: str, repo: str, finding_hash: str, url: str):
+    path = _marker_state_path(marker)
+    with _drain._receipt_lock(path):
+        _drain._atomic_write_receipt(path, {"status": "resolved", "repo": repo, "finding_hash": finding_hash, "url": url})
 
 
 def _find_remote_issue(repo: str, marker: str):
-    command = ["gh", "issue", "list", "--repo", repo, "--state", "all",
-               "--search", marker, "--json", "url,title,body", "--limit", "100"]
+    command = ["gh", "issue", "list", "--repo", repo, "--state", "all", "--search", marker, "--json", "url,title,body", "--limit", "1000000"]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=60)
         rows = json.loads(result.stdout) if result.returncode == 0 else None
@@ -330,30 +349,55 @@ def _find_remote_issue(repo: str, marker: str):
         rows = None
     if not isinstance(rows, list):
         return False, None
+    title_marker, body_marker = f"[{marker}]", f"<!-- {marker} -->"
     for row in rows:
-        if not isinstance(row, dict):
-            continue
-        haystack = f"{row.get('title', '')}\n{row.get('body', '')}"
-        if marker in haystack and _issue_url(repo, row.get("url")):
+        if isinstance(row, dict) and (str(row.get("title", "")).endswith(title_marker) or body_marker in str(row.get("body", ""))) and _issue_url(repo, row.get("url")):
             return True, row["url"]
     return True, None
 
 
 def _create_remote_issue(repo: str, finding, labels, marker: str):
-    title = f"[finding] {finding['stage']}: {finding['finding_id']} ({finding['severity']}) [{marker}]"
-    detail = finding.get("detail") or finding.get("message") or json.dumps(finding, sort_keys=True)
-    body = f"{detail}\n\n<!-- {marker} -->"
-    command = ["gh", "issue", "create", "--repo", repo, "--title", title,
-               "--body", body, "--json", "url"]
+    title = f"[finding] {finding['summary']} [{marker}]"
+    body = f"File: {finding['file']}:{finding['line']}\n\nFailure scenario: {finding['failure_scenario']}\n\n<!-- {marker} -->"
+    command = ["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body]
     for label in labels:
         command.extend(("--label", label))
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=60)
-        response = json.loads(result.stdout) if result.returncode == 0 else {}
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        response = {}
-    url = response.get("url") if isinstance(response, dict) else None
-    return url if _issue_url(repo, url) else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    urls = [line.strip() for line in result.stdout.splitlines() if _issue_url(repo, line.strip())]
+    return urls[-1] if urls else None
+
+
+def _coordinate_finding(finding, repo: str, labels):
+    finding_hash = _finding_hash(finding, repo)
+    marker = _marker(finding_hash)
+    reconciled, remote_url = _find_remote_issue(repo, marker)
+    if not reconciled:
+        return marker, finding_hash, None, "remote_reconciliation_failed"
+    if remote_url:
+        _resolve_marker(marker, repo, finding_hash, remote_url)
+        return marker, finding_hash, remote_url, None
+    claim, state_url = _claim_marker(marker, repo, finding_hash)
+    if claim == "resolved":
+        reconciled, verified = _find_remote_issue(repo, marker)
+        return marker, finding_hash, verified if reconciled else None, None if verified else "remote_reconciliation_failed"
+    if claim == "owner":
+        url = _create_remote_issue(repo, finding, labels, marker)
+        if url:
+            _resolve_marker(marker, repo, finding_hash, url)
+        return marker, finding_hash, url, None if url else "issue_create_failed"
+    for _ in range(20):
+        state = _read_marker_state(_marker_state_path(marker))
+        if state and state.get("status") == "resolved" and _issue_url(repo, state.get("url")):
+            reconciled, verified = _find_remote_issue(repo, marker)
+            if reconciled and verified:
+                return marker, finding_hash, verified, None
+        __import__("time").sleep(0.02)
+    return marker, finding_hash, None, "finding_in_progress"
 
 
 def _import_findings(args):
@@ -367,55 +411,43 @@ def _import_findings(args):
             raise ValueError("labels must be non-empty strings")
         repositories = []
         for index, finding in enumerate(findings):
-            repo = _repo_for_source(finding["source"], repo_map)
+            repo = _repo_for_source(finding["file"], repo_map)
             if not repo:
                 raise ValueError(f"could not resolve repository for findings[{index}]")
             repositories.append(repo)
-        batch_id = _batch_id(findings, repositories, labels)
-        receipt_path = _receipt_path(args, batch_id)
+        receipt_path = _receipt_path(args)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps(_import_error("invalid_import_input", str(exc)), sort_keys=True))
         return 2
-
     if args.dry_run:
-        print(json.dumps({str(index): f"https://github.com/{repo}/issues/dry-run-{index}" for index, repo in enumerate(repositories)}, sort_keys=True))
+        print(json.dumps({str(i): f"https://github.com/{repo}/issues/dry-run-{i}" for i, repo in enumerate(repositories)}, sort_keys=True))
         return 0
-
     try:
         with _drain._receipt_lock(receipt_path):
-            try:
-                receipt = _load_import_receipt(receipt_path, batch_id, repositories)
-            except ValueError as exc:
-                print(json.dumps(_import_error("corrupt_import_receipt", str(exc)), sort_keys=True))
-                return 2
-            urls = dict(receipt["urls"])
-            for index, (finding, repo) in enumerate(zip(findings, repositories)):
-                key = str(index)
-                if key in urls:
-                    continue
-                marker = _issue_marker(batch_id, index)
-                reconciled, url = _find_remote_issue(repo, marker)
-                if not reconciled:
-                    print(json.dumps(_import_error("remote_reconciliation_failed", f"could not reconcile findings[{index}]", urls), sort_keys=True))
-                    return 1
-                if url is None:
-                    url = _create_remote_issue(repo, finding, labels, marker)
-                if url is None:
-                    print(json.dumps(_import_error("issue_create_failed", f"gh issue create failed for findings[{index}]", urls), sort_keys=True))
-                    return 1
-                urls[key] = url
-                receipt["urls"] = urls
-                try:
-                    _save_import_receipt(receipt_path, receipt)
-                except OSError as exc:
-                    print(json.dumps(_import_error("receipt_write_failed", str(exc), urls), sort_keys=True))
-                    return 1
-    except _drain.DrainReceiptError as exc:
-        print(json.dumps(_import_error("receipt_lock_failed", str(exc)), sort_keys=True))
+            receipt = _load_import_receipt(receipt_path)
+    except (ValueError, _drain.DrainReceiptError) as exc:
+        print(json.dumps(_import_error("corrupt_import_receipt", str(exc)), sort_keys=True))
         return 2
+    urls = {}
+    for index, (finding, repo) in enumerate(zip(findings, repositories)):
+        marker, finding_hash, url, error = _coordinate_finding(finding, repo, labels)
+        if error:
+            print(json.dumps(_import_error(error, f"could not import findings[{index}]", urls), sort_keys=True))
+            return 1
+        receipt["entries"][marker] = {"repo": repo, "finding_hash": finding_hash, "url": url}
+        try:
+            with _drain._receipt_lock(receipt_path):
+                latest = _load_import_receipt(receipt_path)
+                latest["entries"].update(receipt["entries"])
+                receipt = latest
+                _save_import_receipt(receipt_path, receipt)
+        except (OSError, ValueError, _drain.DrainReceiptError) as exc:
+            urls[str(index)] = url
+            print(json.dumps(_import_error("receipt_write_failed", str(exc), urls), sort_keys=True))
+            return 1
+        urls[str(index)] = url
     print(json.dumps(urls, ensure_ascii=False, sort_keys=True))
     return 0
-
 
 def findings_command(args) -> int:
     """List, report, import, reconcile, or diagnose continuous findings."""
