@@ -7,6 +7,7 @@ import re
 from urllib.parse import urlparse
 import json
 from pathlib import Path
+from . import drain as _drain
 
 from .ops_ledger import (
     CONTEXT_SCHEMA,
@@ -277,26 +278,82 @@ def _receipt_path(args, batch_id: str) -> Path:
     return Path(explicit) if explicit else Path(".simplicio/orchestrator/findings/import-batches") / f"{batch_id}.json"
 
 
-def _load_import_receipt(path: Path, batch_id: str):
+def _issue_url(repo: str, url) -> bool:
+    return isinstance(url, str) and bool(re.fullmatch(
+        rf"https://github\.com/{re.escape(repo)}/issues/[0-9]+", url
+    ))
+
+
+def _load_import_receipt(path: Path, batch_id: str, repositories):
     if not path.exists():
         return {"schema": _IMPORT_RECEIPT_SCHEMA, "batch_id": batch_id, "urls": {}}
     try:
         receipt = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"invalid import receipt: {exc}") from exc
-    urls = receipt.get("urls") if isinstance(receipt, dict) else None
+        raise ValueError(f"invalid import receipt JSON: {exc}") from exc
+    if not isinstance(receipt, dict):
+        raise ValueError("import receipt must be a JSON object")
+    urls = receipt.get("urls")
     if receipt.get("schema") != _IMPORT_RECEIPT_SCHEMA or receipt.get("batch_id") != batch_id or not isinstance(urls, dict):
         raise ValueError("import receipt does not match this findings batch")
-    if any(not isinstance(key, str) or not isinstance(url, str) for key, url in urls.items()):
-        raise ValueError("import receipt contains invalid index-to-URL entries")
+    allowed = {str(index) for index in range(len(repositories))}
+    if not set(urls).issubset(allowed):
+        raise ValueError("import receipt contains an out-of-range finding index")
+    for key, url in urls.items():
+        if not _issue_url(repositories[int(key)], url):
+            raise ValueError(f"import receipt URL does not match repository for index {key}")
     return receipt
 
 
 def _save_import_receipt(path: Path, receipt) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    _drain._atomic_write_receipt(path, receipt)
+
+
+def _import_error(code: str, message: str, urls=None):
+    return {
+        "error": {"code": code, "message": message},
+        "urls": dict(urls or {}),
+    }
+
+
+def _issue_marker(batch_id: str, index: int) -> str:
+    return f"simplicio-findings-import:{batch_id}:{index}"
+
+
+def _find_remote_issue(repo: str, marker: str):
+    command = ["gh", "issue", "list", "--repo", repo, "--state", "all",
+               "--search", marker, "--json", "url,title,body", "--limit", "100"]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        rows = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        rows = None
+    if not isinstance(rows, list):
+        return False, None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        haystack = f"{row.get('title', '')}\n{row.get('body', '')}"
+        if marker in haystack and _issue_url(repo, row.get("url")):
+            return True, row["url"]
+    return True, None
+
+
+def _create_remote_issue(repo: str, finding, labels, marker: str):
+    title = f"[finding] {finding['stage']}: {finding['finding_id']} ({finding['severity']}) [{marker}]"
+    detail = finding.get("detail") or finding.get("message") or json.dumps(finding, sort_keys=True)
+    body = f"{detail}\n\n<!-- {marker} -->"
+    command = ["gh", "issue", "create", "--repo", repo, "--title", title,
+               "--body", body, "--json", "url"]
+    for label in labels:
+        command.extend(("--label", label))
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        response = json.loads(result.stdout) if result.returncode == 0 else {}
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        response = {}
+    url = response.get("url") if isinstance(response, dict) else None
+    return url if _issue_url(repo, url) else None
 
 
 def _import_findings(args):
@@ -316,38 +373,46 @@ def _import_findings(args):
             repositories.append(repo)
         batch_id = _batch_id(findings, repositories, labels)
         receipt_path = _receipt_path(args, batch_id)
-        receipt = _load_import_receipt(receipt_path, batch_id)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(json.dumps({"error": str(exc)}, sort_keys=True))
+        print(json.dumps(_import_error("invalid_import_input", str(exc)), sort_keys=True))
         return 2
 
-    urls = dict(receipt["urls"])
     if args.dry_run:
         print(json.dumps({str(index): f"https://github.com/{repo}/issues/dry-run-{index}" for index, repo in enumerate(repositories)}, sort_keys=True))
         return 0
 
-    for index, (finding, repo) in enumerate(zip(findings, repositories)):
-        key = str(index)
-        if key in urls:
-            continue
-        title = f"[finding] {finding['stage']}: {finding['finding_id']} ({finding['severity']})"
-        body = finding.get("detail") or finding.get("message") or json.dumps(finding, sort_keys=True)
-        command = ["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body, "--json", "url"]
-        for label in labels:
-            command.extend(("--label", label))
-        try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=60)
-            response = json.loads(result.stdout) if result.returncode == 0 else {}
-        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-            response = {}
-        url = response.get("url") if isinstance(response, dict) else None
-        expected = re.compile(rf"^https://github\.com/{re.escape(repo)}/issues/[0-9]+$")
-        if not isinstance(url, str) or not expected.fullmatch(url):
-            print(json.dumps(urls, ensure_ascii=False, sort_keys=True))
-            return 1
-        urls[key] = url
-        receipt["urls"] = urls
-        _save_import_receipt(receipt_path, receipt)
+    try:
+        with _drain._receipt_lock(receipt_path):
+            try:
+                receipt = _load_import_receipt(receipt_path, batch_id, repositories)
+            except ValueError as exc:
+                print(json.dumps(_import_error("corrupt_import_receipt", str(exc)), sort_keys=True))
+                return 2
+            urls = dict(receipt["urls"])
+            for index, (finding, repo) in enumerate(zip(findings, repositories)):
+                key = str(index)
+                if key in urls:
+                    continue
+                marker = _issue_marker(batch_id, index)
+                reconciled, url = _find_remote_issue(repo, marker)
+                if not reconciled:
+                    print(json.dumps(_import_error("remote_reconciliation_failed", f"could not reconcile findings[{index}]", urls), sort_keys=True))
+                    return 1
+                if url is None:
+                    url = _create_remote_issue(repo, finding, labels, marker)
+                if url is None:
+                    print(json.dumps(_import_error("issue_create_failed", f"gh issue create failed for findings[{index}]", urls), sort_keys=True))
+                    return 1
+                urls[key] = url
+                receipt["urls"] = urls
+                try:
+                    _save_import_receipt(receipt_path, receipt)
+                except OSError as exc:
+                    print(json.dumps(_import_error("receipt_write_failed", str(exc), urls), sort_keys=True))
+                    return 1
+    except _drain.DrainReceiptError as exc:
+        print(json.dumps(_import_error("receipt_lock_failed", str(exc)), sort_keys=True))
+        return 2
     print(json.dumps(urls, ensure_ascii=False, sort_keys=True))
     return 0
 

@@ -217,23 +217,112 @@ def test_findings_import_partial_failure_receipt_makes_retry_idempotent(tmp_path
     repo_map = tmp_path / "repos.json"
     repo_map.write_text(json.dumps({str(tmp_path): "acme/widgets"}), encoding="utf-8")
     receipt = tmp_path / "receipt.json"
-    calls = []
+    creates = []
     def fail_second(command, **kwargs):
-        calls.append(command)
-        if len(calls) == 2:
+        if command[2] == "list":
+            return type("Result", (), {"returncode": 0, "stdout": "[]"})()
+        creates.append(command)
+        if len(creates) == 2:
             return type("Result", (), {"returncode": 1, "stdout": ""})()
         return type("Result", (), {"returncode": 0, "stdout": json.dumps({"url": "https://github.com/acme/widgets/issues/1"})})()
     monkeypatch.setattr(cli_mod._inspection_cli.subprocess, "run", fail_second)
     args = _import_args(payload, repo_map, ["bug"], receipt=receipt)
     assert cli_mod.findings_command(args) == 1
-    assert json.loads(capsys.readouterr().out) == {"0": "https://github.com/acme/widgets/issues/1"}
-    assert json.loads(receipt.read_text(encoding="utf-8"))["urls"] == {"0": "https://github.com/acme/widgets/issues/1"}
+    failed = json.loads(capsys.readouterr().out)
+    assert failed["urls"] == {"0": "https://github.com/acme/widgets/issues/1"}
 
-    retry_calls = []
+    retry_creates = []
     def retry(command, **kwargs):
-        retry_calls.append(command)
+        if command[2] == "list":
+            return type("Result", (), {"returncode": 0, "stdout": "[]"})()
+        retry_creates.append(command)
         return type("Result", (), {"returncode": 0, "stdout": json.dumps({"url": "https://github.com/acme/widgets/issues/2"})})()
     monkeypatch.setattr(cli_mod._inspection_cli.subprocess, "run", retry)
     assert cli_mod.findings_command(args) == 0
-    assert len(retry_calls) == 1
+    assert len(retry_creates) == 1
     assert json.loads(capsys.readouterr().out) == {"0": "https://github.com/acme/widgets/issues/1", "1": "https://github.com/acme/widgets/issues/2"}
+
+
+def test_findings_import_crash_after_effect_reconciles_remote_marker(tmp_path, monkeypatch, capsys):
+    payload = tmp_path / "findings.json"
+    payload.write_text(json.dumps([_finding(tmp_path / "x.py")]), encoding="utf-8")
+    repo_map = tmp_path / "repos.json"
+    repo_map.write_text(json.dumps({str(tmp_path): "acme/widgets"}), encoding="utf-8")
+    receipt = tmp_path / "receipt.json"
+    calls = []
+    def remote(command, **kwargs):
+        calls.append(command)
+        if command[2] == "list":
+            marker = command[command.index("--search") + 1]
+            row = {"url": "https://github.com/acme/widgets/issues/9", "title": marker, "body": ""}
+            return type("Result", (), {"returncode": 0, "stdout": json.dumps([row])})()
+        raise AssertionError("create must not run after remote reconciliation")
+    monkeypatch.setattr(cli_mod._inspection_cli.subprocess, "run", remote)
+    assert cli_mod.findings_command(_import_args(payload, repo_map, receipt=receipt)) == 0
+    assert all(command[2] == "list" for command in calls)
+    assert json.loads(capsys.readouterr().out) == {"0": "https://github.com/acme/widgets/issues/9"}
+
+
+def test_findings_import_write_failure_returns_created_url(tmp_path, monkeypatch, capsys):
+    payload = tmp_path / "findings.json"
+    payload.write_text(json.dumps([_finding(tmp_path / "x.py")]), encoding="utf-8")
+    repo_map = tmp_path / "repos.json"
+    repo_map.write_text(json.dumps({str(tmp_path): "acme/widgets"}), encoding="utf-8")
+    def remote(command, **kwargs):
+        data = [] if command[2] == "list" else {"url": "https://github.com/acme/widgets/issues/7"}
+        return type("Result", (), {"returncode": 0, "stdout": json.dumps(data)})()
+    monkeypatch.setattr(cli_mod._inspection_cli.subprocess, "run", remote)
+    monkeypatch.setattr(cli_mod._inspection_cli, "_save_import_receipt", lambda *args: (_ for _ in ()).throw(OSError("disk full")))
+    rc = cli_mod.findings_command(_import_args(payload, repo_map, receipt=tmp_path / "receipt.json"))
+    result = json.loads(capsys.readouterr().out)
+    assert rc == 1 and result["error"]["code"] == "receipt_write_failed"
+    assert result["urls"] == {"0": "https://github.com/acme/widgets/issues/7"}
+
+
+@pytest.mark.parametrize("receipt_value", [
+    [],
+    {"schema": "simplicio.findings-import-receipt/v1", "batch_id": "wrong", "urls": {}},
+])
+def test_findings_import_non_dict_or_mismatched_receipt_is_structured(tmp_path, capsys, receipt_value):
+    payload = tmp_path / "findings.json"
+    payload.write_text(json.dumps([_finding(tmp_path / "x.py")]), encoding="utf-8")
+    repo_map = tmp_path / "repos.json"
+    repo_map.write_text(json.dumps({str(tmp_path): "acme/widgets"}), encoding="utf-8")
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(json.dumps(receipt_value), encoding="utf-8")
+    assert cli_mod.findings_command(_import_args(payload, repo_map, receipt=receipt)) == 2
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "corrupt_import_receipt"
+
+
+def test_findings_import_rejects_forged_receipt_indices_and_urls(tmp_path):
+    mod = cli_mod._inspection_cli
+    batch_id = "b" * 64
+    receipt = tmp_path / "receipt.json"
+    for urls in ({"1": "https://github.com/acme/widgets/issues/1"}, {"0": "https://github.com/evil/widgets/issues/1"}):
+        receipt.write_text(json.dumps({"schema": mod._IMPORT_RECEIPT_SCHEMA, "batch_id": batch_id, "urls": urls}), encoding="utf-8")
+        with pytest.raises(ValueError):
+            mod._load_import_receipt(receipt, batch_id, ["acme/widgets"])
+
+
+def test_findings_import_concurrent_calls_create_once(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    payload = tmp_path / "findings.json"
+    payload.write_text(json.dumps([_finding(tmp_path / "x.py")]), encoding="utf-8")
+    repo_map = tmp_path / "repos.json"
+    repo_map.write_text(json.dumps({str(tmp_path): "acme/widgets"}), encoding="utf-8")
+    receipt = tmp_path / "receipt.json"
+    creates = []
+    guard = threading.Lock()
+    def remote(command, **kwargs):
+        if command[2] == "list":
+            return type("Result", (), {"returncode": 0, "stdout": "[]"})()
+        with guard:
+            creates.append(command)
+        return type("Result", (), {"returncode": 0, "stdout": json.dumps({"url": "https://github.com/acme/widgets/issues/1"})})()
+    monkeypatch.setattr(cli_mod._inspection_cli.subprocess, "run", remote)
+    args = _import_args(payload, repo_map, receipt=receipt)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: cli_mod.findings_command(args), range(2)))
+    assert results == [0, 0]
+    assert len(creates) == 1
