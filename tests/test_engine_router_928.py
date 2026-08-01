@@ -17,9 +17,21 @@ def test_probe_is_called_without_effect_and_conformance_selects_rust() -> None:
     def probe():
         calls.append("probe")
         return {"available": True, "compatible": True, "conformance_passed": True,
+                "protocol": "simplicio.loop-engine/v1",
+                "operations": ["single", "batch", "prism", "recovery", "delivery"],
                 "build": "rust-test"}
 
     receipt, observed = route_backend("auto", probe=probe, attempt_id="a")
     assert calls == ["probe"]
     assert receipt.selected_engine == "rust"
     assert observed["build"] == "rust-test"
+
+
+def test_available_provider_with_invalid_abi_is_rejected() -> None:
+    receipt, observed = route_backend(
+        "auto", probe=lambda: {"available": True, "compatible": True,
+                                "conformance_passed": True, "protocol": "wrong"}
+    )
+    assert observed["abi_valid"] is False
+    assert observed["reason_code"] == "provider_abi_invalid"
+    assert receipt.selected_engine == "python-loop"
