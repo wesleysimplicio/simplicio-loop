@@ -6,9 +6,15 @@ repository identity, tree hash, and file set reuse the canonical cache key while
 receiving distinct writable overlay paths.
 
 Each binding returns a deterministic receipt hash over the candidate, canonical
-cache key, canonical generation receipt, and resolved overlay path. A binding is
+cache key, repository/tree/config identity, source/context/plan receipts,
+worktree, attempt, lease, and resolved overlay path. A binding is
 rejected before creating an overlay when its generation differs from the
 checkpoint lifecycle generation.
+
+The persisted `generation-binding.json` uses
+`simplicio.loop.generation-binding/v1`. `inspect`, `pin`, `release`, `reconcile`,
+`doctor`, `status`, and `promote` provide the durable local operator surface.
+Broker events and cache/build-wait counters are returned by `status`.
 
 Garbage collection delegates to `CheckpointLifecycle.gc`. Active leases pin
 candidate overlays; cancelled candidates become reclaimable only after their

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 import shutil
 import tempfile
@@ -74,6 +75,18 @@ class CandidateSpec:
     stalled: bool = False
 
 
+_CANDIDATE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+
+
+def validate_candidate_id(value: Any) -> str:
+    if not isinstance(value, str) or value != value.strip():
+        raise LifecycleError("unsafe candidate_id")
+    candidate = value
+    if not _CANDIDATE_RE.fullmatch(candidate) or candidate in {".", ".."}:
+        raise LifecycleError("unsafe candidate_id")
+    return candidate
+
+
 class CheckpointLifecycle:
     """Owns immutable base + isolated candidate overlays for one resumable attempt."""
 
@@ -101,7 +114,7 @@ class CheckpointLifecycle:
         self.fence_path = self.attempt / "promotion-fence.json"
 
     def create_overlay(self, candidate_id: str) -> Path:
-        candidate = _require(candidate_id, "candidate_id")
+        candidate = validate_candidate_id(candidate_id)
         target = self.overlays / candidate
         if target.exists():
             marker = self._read_marker(target)
@@ -142,7 +155,7 @@ class CheckpointLifecycle:
         work_units: int = 0,
         previous_digest: str | None = None,
     ) -> dict[str, Any]:
-        candidate = _require(candidate_id, "candidate_id")
+        candidate = validate_candidate_id(candidate_id)
         shard = _require(shard_id, "shard_id")
         normalized_state = _require(state, "state").upper()
         if normalized_state not in ACTIVE_STATES | TERMINAL_STATES:
@@ -193,7 +206,7 @@ class CheckpointLifecycle:
         return item
 
     def load(self, candidate_id: str, shard_id: str) -> dict[str, Any]:
-        path = self.checkpoints / _require(candidate_id, "candidate_id") / f"{_require(shard_id, 'shard_id')}.json"
+        path = self.checkpoints / validate_candidate_id(candidate_id) / f"{_require(shard_id, 'shard_id')}.json"
         try:
             return self.verify(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError) as exc:
@@ -209,7 +222,7 @@ class CheckpointLifecycle:
         cancelled: list[str] = []
         errors: list[dict[str, str]] = []
         for raw in sorted(set(candidate_ids)):
-            candidate = _require(raw, "candidate_id")
+            candidate = validate_candidate_id(raw)
             try:
                 if cancel_callback:
                     cancel_callback(candidate)
@@ -356,7 +369,7 @@ class CheckpointLifecycle:
         cancel_callback: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         winner = _require(winner_id, "winner_id")
-        candidates = sorted(set(_require(value, "candidate_id") for value in candidate_ids))
+        candidates = sorted(set(validate_candidate_id(value) for value in candidate_ids))
         if winner not in candidates:
             raise LifecycleError("selected winner is not a candidate")
         checkpoints = [self.load(candidate, shard_id) for candidate in candidates]
@@ -391,7 +404,7 @@ class CheckpointLifecycle:
         }
 
     def lease(self, candidate_id: str, *, expires_ns: int) -> dict[str, Any]:
-        candidate = _require(candidate_id, "candidate_id")
+        candidate = validate_candidate_id(candidate_id)
         value = {
             "schema": SCHEMA,
             "candidate_id": candidate,
