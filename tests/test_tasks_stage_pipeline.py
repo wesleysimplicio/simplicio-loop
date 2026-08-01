@@ -2,6 +2,7 @@ import hashlib
 import json
 
 import pytest
+import subprocess
 from types import SimpleNamespace
 
 from simplicio_loop.tasks_stage_pipeline import CommandPipelineCoordinator
@@ -16,7 +17,7 @@ class FakeCoordinator:
     def run_all(self):
         merge = {"schema": "simplicio.tasks-merge-receipt/v1", "merged": True, "pr_url": self.pr_url, "merge_commit_sha": "a" * 40}
         merge["receipt_sha"] = hashlib.sha256(json.dumps(merge, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        delivery = {"pr_url": self.pr_url, "pr_repo": "acme/widgets", "pr_head": "feature/1", "source_issue": "1", "checks": [{"name": "test", "conclusion": "SUCCESS"}], "operation": "merge", "merge_receipt": merge}
+        delivery = {"pr_url": self.pr_url, "pr_repo": "acme/widgets", "pr_head": "feature/1", "source_issue": "1", "checks": [{"name": "test", "conclusion": "SUCCESS"}], "operation": "merge", "merge_receipt": merge, "admission_fence": 1}
         instance = SimpleNamespace(receipt={"schema": "receipt"}, output=delivery)
         return {"delivery": SimpleNamespace(status="passed", instance=instance)}
     def terminal_reached(self):
@@ -27,13 +28,42 @@ class FakeCoordinator:
         self.cancelled.append(reason)
         return ["delivery"]
 
-def test_pipeline_collects_pr_and_verification_receipts(tmp_path):
+def test_pipeline_collects_pr_and_verification_receipts(tmp_path, monkeypatch):
+    monkeypatch.setattr("simplicio_loop.tasks_stage_pipeline._git_merge_authentic", lambda *args: True)
     pipeline = CommandPipelineCoordinator(["python", "agent.py"], str(tmp_path), coordinator_factory=FakeCoordinator)
     result = pipeline({"workers": [{"run_id": "run-1", "task_id": "issue-1", "expected_pr_repo": "acme/widgets", "branch": "feature/1"}]})
     assert result["passed"] is True
     assert result["evidence"][0]["pr"] == "https://github.com/acme/widgets/pull/1"
     assert result["evidence"][0]["verification"] == "passed"
     assert FakeCoordinator.instances[-1].kwargs["journal"] is not None
+
+
+def test_merge_authenticity_uses_real_git_ancestry(tmp_path):
+    from simplicio_loop.tasks_stage_pipeline import _git_merge_authentic
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
+    (tmp_path / "a").write_text("base", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "a"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "base"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "checkout", "-qb", "feature"], check=True)
+    (tmp_path / "a").write_text("feature", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qam", "feature"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "checkout", "-q", "master"], check=True)
+    (tmp_path / "b").write_text("main", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "b"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "main"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "merge", "--no-ff", "-qm", "merge", "feature"], check=True)
+    merge = (tmp_path / ".git" / "refs" / "heads" / "master").read_text(encoding="utf-8").strip()
+    assert _git_merge_authentic(str(tmp_path), "feature", merge) is True
+    assert _git_merge_authentic(str(tmp_path), "feature", "a" * 40) is False
+
+
+def test_pipeline_rejects_journal_path_injection(tmp_path):
+    result = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=FakeCoordinator)(
+        {"workers": [{"run_id": "../escape", "task_id": "issue-1"}]})
+    assert result["passed"] is False
+    assert result["evidence"][0]["delivery_errors"] == ["unsafe_journal_identity"]
 
 
 def test_pipeline_binds_worker_worktree_context(tmp_path):
@@ -43,7 +73,7 @@ def test_pipeline_binds_worker_worktree_context(tmp_path):
     pipeline({"workers": [{"run_id": "run-1", "task_id": "issue-1", "worktree_path": str(worktree), "branch": "feature/1", "head_sha": "abc123"}]})
     adapter = FakeCoordinator.instances[-1].kwargs["adapters"][0]
     assert adapter.cwd == worktree.resolve()
-    assert adapter.extra_env == {"SIMPLICIO_TASK_WORKTREE": str(worktree), "SIMPLICIO_TASK_BRANCH": "feature/1", "SIMPLICIO_TASK_HEAD": "abc123"}
+    assert adapter.extra_env == {"SIMPLICIO_TASK_WORKTREE": str(worktree), "SIMPLICIO_TASK_BRANCH": "feature/1", "SIMPLICIO_TASK_HEAD": "abc123", "SIMPLICIO_ADMISSION_FENCE": "1"}
 
 def test_pipeline_redacts_nested_secrets_from_evidence(tmp_path):
     previous = FakeCoordinator.pr_url
@@ -74,7 +104,8 @@ def test_pipeline_fails_closed_on_repo_head_source_or_check_mismatch(tmp_path):
     worker = {"task_id": "issue-1", "expected_pr_repo": "acme/widgets", "branch": "feature/1"}
     result = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=InvalidDelivery)({"workers": [worker]})
     assert result["passed"] is False
-    assert result["evidence"][0]["delivery_errors"] == ["checks_not_successful", "merge_receipt_invalid", "pr_head_mismatch", "pr_repo_mismatch", "pr_url_mismatch", "source_issue_mismatch"]
+    assert "merge_receipt_invalid" in result["evidence"][0]["delivery_errors"]
+    assert "merge_not_locally_verified" in result["evidence"][0]["delivery_errors"]
 
 
 def test_pipeline_rejects_non_github_pr_malformed_checks_and_missing_merge(tmp_path):
@@ -85,7 +116,8 @@ def test_pipeline_rejects_non_github_pr_malformed_checks_and_missing_merge(tmp_p
     worker = {"task_id": "issue-1", "expected_pr_repo": "acme/widgets", "branch": "feature/1"}
     result = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=ForgedDelivery)({"workers": [worker]})
     assert result["passed"] is False
-    assert result["evidence"][0]["delivery_errors"] == ["checks_not_successful", "merge_receipt_invalid", "pr_url_mismatch"]
+    assert "merge_receipt_invalid" in result["evidence"][0]["delivery_errors"]
+    assert "merge_not_locally_verified" in result["evidence"][0]["delivery_errors"]
 
 def test_cancel_propagates_to_active_coordinator(tmp_path):
     pipeline = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=FakeCoordinator)

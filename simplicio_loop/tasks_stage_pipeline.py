@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -21,6 +22,16 @@ def _redact(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact(item) for item in value]
     return value
+
+def _git_merge_authentic(worktree: str, head: str, merge_sha: str) -> bool:
+    if not worktree or not head:
+        return False
+    try:
+        parents = subprocess.run(["git", "-C", worktree, "rev-parse", "--verify", f"{merge_sha}^2"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+        ancestor = subprocess.run(["git", "-C", worktree, "merge-base", "--is-ancestor", head, merge_sha], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return parents.returncode == 0 and ancestor.returncode == 0
 
 def _delivery_receipt(values: Sequence[Any], worker: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None, list[str]]:
     delivery = next((value for value in values if isinstance(value, Mapping) and value.get("pr_url")), None)
@@ -51,6 +62,12 @@ def _delivery_receipt(values: Sequence[Any], worker: Mapping[str, Any]) -> tuple
     expected_repo = str(worker.get("expected_pr_repo") or "")
     expected_head = str(worker.get("branch") or worker.get("expected_pr_head") or "")
     expected_source = str(worker.get("source_issue") or worker.get("task_id") or "").removeprefix("issue-")
+    expected_fence = int(worker.get("admission_fence") or 1)
+    if int(delivery.get("admission_fence") or 0) != expected_fence:
+        required.append("admission_fence_mismatch")
+    worktree = str(worker.get("worktree_path") or worker.get("repo") or "")
+    if not _git_merge_authentic(worktree, expected_head, str(merge_payload.get("merge_commit_sha") or "")):
+        required.append("merge_not_locally_verified")
     if expected_repo and str(delivery.get("pr_repo")) != expected_repo:
         required.append("pr_repo_mismatch")
     if expected_head and str(delivery.get("pr_head")) != expected_head:
@@ -87,12 +104,22 @@ class CommandPipelineCoordinator:
         for index, worker in enumerate(workers, start=1):
             run_id = str(worker.get("run_id") or dispatched.get("run_id") or f"tasks-{index}")
             task_id = str(worker.get("task_id") or f"task-{index}")
-            journal = StageCoordinatorJournal(self.journal_dir / f"{run_id}-{task_id}.jsonl")
+            safe = re.compile(r"^[A-Za-z0-9_.-]+$")
+            if not safe.fullmatch(run_id) or not safe.fullmatch(task_id):
+                evidence.append({"task_id": task_id, "pr": None, "verification": None,
+                                 "delivery_errors": ["unsafe_journal_identity"], "receipts": [], "status": {}})
+                all_passed = False
+                continue
+            journal_path = (self.journal_dir / f"{run_id}-{task_id}.jsonl").resolve()
+            if self.journal_dir != journal_path.parent:
+                raise ValueError("journal path escapes tasks journal root")
+            journal = StageCoordinatorJournal(journal_path)
             worktree = str(worker.get("worktree_path") or worker.get("repo") or Path.cwd())
             adapter = CommandAgentAdapter(command=self.command, cwd=worktree, extra_env={
                 "SIMPLICIO_TASK_WORKTREE": worktree,
                 "SIMPLICIO_TASK_BRANCH": str(worker.get("branch") or ""),
                 "SIMPLICIO_TASK_HEAD": str(worker.get("head_sha") or ""),
+                "SIMPLICIO_ADMISSION_FENCE": str(int(worker.get("admission_fence") or 1)),
             })
             coordinator = self.coordinator_factory(run_id=run_id, task_id=task_id, adapters=[adapter], journal=journal, host_total_slots=self.host_total_slots)
             self.active.append(coordinator)

@@ -108,8 +108,10 @@ class TasksOrchestrator:
                     evidence=[],
                 )
                 _write_receipt(idempotency_path, admitted)
+            admission_fence = takeover + 1
+            fenced_items = [dict(item, admission_fence=admission_fence) for item in items]
             try:
-                dispatched = self.dispatch(items, max_workers=requested, retry_budget=self.retry_budget, journal_dir=self.journal_dir, worktree_queue=self.worktree_queue)
+                dispatched = self.dispatch(fenced_items, max_workers=requested, retry_budget=self.retry_budget, journal_dir=self.journal_dir, worktree_queue=self.worktree_queue)
                 coordinated = self.coordinate(dispatched)
             finally:
                 release = self.governor.release(lease)

@@ -3717,7 +3717,9 @@ def conclude_run(repo: str, run_id: str, *, force: bool = False) -> Dict[str, An
 
 def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
                       attempt_coordinator: Optional[AttemptCoordinator] = None,
-                      guarded_attempt: Any = None) -> Dict[str, Any]:
+                      guarded_attempt: Any = None,
+                      authority_receipt: Optional[Mapping[str, Any]] = None,
+                      admission_fence: int = 1) -> Dict[str, Any]:
     """Execute one planned task through the real dev-cli and persist an immutable receipt.
 
     `run` intentionally arms and dry-runs only.  This explicit tick is the mutation boundary;
@@ -3760,6 +3762,21 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     if planned_state and not _repo_state_equivalent(planned_state, current):
         raise RuntimeError("repository changed after planning; re-run mapper before execution")
     task = tasks[task_index - 1]
+    authority_path = None
+    if authority_receipt is not None:
+        authority = dict(authority_receipt)
+        supplied = str(authority.pop("receipt_hash", ""))
+        targets = list(((plan.get("steps") or [{}])[task_index - 1].get("candidate_targets") or []))
+        source = authority.get("source") or {}
+        if (not supplied or supplied != _planning_content_hash(authority)
+                or authority.get("operator") != "simplicio-dev-cli"
+                or sorted(authority.get("targets") or []) != sorted(targets)
+                or not str(source.get("revision") or "")
+                or not str(source.get("planning_receipt") or "")):
+            raise RuntimeError("authority_receipt invalid at mutation boundary")
+        authority_path = run_dir / f"mutation-authority-{task_index}.json"
+        _write_json(authority_path, {**authority, "receipt_hash": supplied,
+                                     "admission_fence": max(1, int(admission_fence))})
     # #694: every production item gets an authoritative route receipt before
     # mutation authority or an execution backend is selected.  The route is a
     # deterministic gate; Runtime remains the physical/policy owner.
@@ -3927,6 +3944,9 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
                     receipt=str(item_context.get("lock_receipt") or operator_path),
                     message="isolated worktree context available", worktree=item_context)
     op_env = _devcli_env(repo_path, _operator_env())
+    op_env["SIMPLICIO_ADMISSION_FENCE"] = str(max(1, int(admission_fence)))
+    if authority_path is not None:
+        op_env["SIMPLICIO_MUTATION_AUTHORITY_RECEIPT"] = str(authority_path)
     if profile == "runtime-backed" and not op_env.get("SIMPLICIO_RUNTIME_URL", "").strip():
         op_env.setdefault("SIMPLICIO_RUNTIME_OFFLINE", "1")
     provider_config = {
@@ -4570,6 +4590,7 @@ def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
     normalized["isolation"] = str(item.get("isolation") or "worktree")
     if isinstance(item.get("task_spec"), Mapping):
         normalized["task_spec"] = dict(item["task_spec"])
+    normalized["admission_fence"] = max(1, int(item.get("admission_fence") or 1))
     authority = item.get("authority_receipt")
     if authority is not None:
         if not isinstance(authority, Mapping):
@@ -4883,6 +4904,7 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         "agent": dict(item.get("agent_identity") or {}),
         "context_pack": dict(item.get("context_pack") or {}),
         "authority_receipt": dict(item.get("authority_receipt") or {}),
+        "admission_fence": int(item.get("admission_fence") or 1),
     }
     run_dir = _operator_dispatch_run_dir(item)
     execution_route = _fanout_execution_route(item, run_dir)
@@ -5020,6 +5042,8 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         payload = execute_operator(
             item["repo"], item["run_id"], task_index=item["task_index"],
             attempt_coordinator=attempt_coordinator, guarded_attempt=attempt_obj,
+            authority_receipt=item.get("authority_receipt"),
+            admission_fence=int(item.get("admission_fence") or 1),
         )
         state = payload.get("state") or {}
         operator = state.get("operator") or {}

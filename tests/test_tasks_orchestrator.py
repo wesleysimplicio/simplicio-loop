@@ -83,6 +83,8 @@ def test_dispatching_receipt_is_taken_over_after_crashed_owner_releases_lock(tmp
     result = bridge.run("all issues", action_gate=True)
     assert result["state"] == "completed"
     assert result["admission_fence"] == 2
+    assert calls[0][0]["admission_fence"] == 1
+    assert calls[1][0]["admission_fence"] == 2
 
 def test_missing_verification_stays_partial():
     bridge, _ = build(evidence=[{"pr": "#1", "verification": None}])

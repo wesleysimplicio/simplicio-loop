@@ -35,17 +35,20 @@ def run_live(
     root = Path(workspace).resolve()
     batch = hashlib.sha256(request.encode("utf-8")).hexdigest()[:16]
     journal_dir = root / ".simplicio" / "tasks-run" / batch / "journals"
-    pipeline = pipeline_factory(agent_command, str(journal_dir), host_total_slots=max_workers + 1)
     if cancel:
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        cancel_path = journal_dir / "cancel.json"
+        cancel_path.write_text('{"reason":"cancel_requested","schema":"simplicio.tasks-cancel/v1"}', encoding="utf-8")
         return {
             "schema": "simplicio.tasks-orchestrator/v1",
             "plan": None,
             "idempotency_key": hashlib.sha256(request.encode("utf-8")).hexdigest(),
             "state": "cancelled",
             "reason": "cancel_requested",
-            "cancelled": pipeline.cancel_all(reason="cancel_requested"),
+            "cancelled": ["cancel_requested"],
             "evidence": [],
         }
+    pipeline = pipeline_factory(agent_command, str(journal_dir), host_total_slots=max_workers + 1)
     intent = parse_natural_drain_request(request)
     checkpoint_path = checkpoint or str(root / ".simplicio" / "tasks-run" / batch / "intake.json")
     source = source_factory(intent.owner, intent.repo, publish_comment_fn=_forbidden_publish)
