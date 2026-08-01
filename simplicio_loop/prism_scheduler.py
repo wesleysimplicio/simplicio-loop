@@ -543,6 +543,12 @@ class PrismScheduler:
             "schema": SNAPSHOT_SCHEMA,
             "policy": dataclasses.asdict(self.policy),
             "slots": sorted(self.slots),
+            "slot_records": [
+                self.slots[slot_id].to_dict() for slot_id in sorted(self.slots)
+            ],
+            "task_records": [
+                dataclasses.asdict(self.tasks[task_id]) for task_id in sorted(self.tasks)
+            ],
             "states": dict(sorted(self.states.items())),
             "queued_reasons": dict(sorted(self.queued_reasons.items())),
             "active": sorted(self.controller.active),
@@ -566,6 +572,29 @@ class PrismScheduler:
         states = body.get("states")
         if not isinstance(states, Mapping) or set(states) != set(self.tasks):
             raise PrismSchedulerError("snapshot task set mismatch")
+        slot_records = body.get("slot_records")
+        if not isinstance(slot_records, list) or {
+            str(record.get("slot_id")) for record in slot_records
+            if isinstance(record, Mapping)
+        } != set(self.slots):
+            raise PrismSchedulerError("snapshot slot hierarchy mismatch")
+        task_records = body.get("task_records")
+        if not isinstance(task_records, list) or len(task_records) != len(self.tasks):
+            raise PrismSchedulerError("snapshot task records missing")
+        expected_tasks = {
+            task_id: dataclasses.asdict(task)
+            for task_id, task in self.tasks.items()
+        }
+        actual_tasks = {
+            str(record.get("task_id")): record
+            for record in task_records
+            if isinstance(record, Mapping)
+        }
+        if set(actual_tasks) != set(expected_tasks) or any(
+            canonical_sha256(actual_tasks[task_id]) != canonical_sha256(expected_tasks[task_id])
+            for task_id in expected_tasks
+        ):
+            raise PrismSchedulerError("snapshot task definition mismatch")
         if any(state == "running" for state in states.values()):
             raise PrismSchedulerError("running state requires lease reconciliation")
         self.states = {str(key): str(value) for key, value in states.items()}
