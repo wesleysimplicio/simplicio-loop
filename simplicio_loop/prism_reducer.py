@@ -10,6 +10,7 @@ from typing import Any
 from .hbp_ledger import canonical_sha256
 
 RESULT_SCHEMA = "simplicio.prism-task-result/v1"
+CANDIDATE_SCHEMA = "simplicio.loop.candidate/v1"
 SLOT_RECEIPT_SCHEMA = "simplicio.prism-slot-reducer-receipt/v1"
 PRISM_RECEIPT_SCHEMA = "simplicio.prism-reducer-receipt/v1"
 TERMINAL_VERDICTS = frozenset({"accepted", "failed", "blocked", "cancelled"})
@@ -98,6 +99,49 @@ class TaskResult:
 
     @property
     def result_hash(self) -> str:
+        return canonical_sha256(self.to_dict())
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """Verified worktree output eligible for deterministic integration."""
+
+    task_id: str
+    attempt: int
+    slot_id: str
+    base_tree_hash: str
+    head_tree_hash: str
+    tree_hash: str
+    changed_paths: tuple[str, ...]
+    plan_hash: str
+    generation: str
+    operator_receipt_hash: str
+    evidence_receipt_hash: str
+    verification_status: str
+    schema: str = CANDIDATE_SCHEMA
+
+    def __post_init__(self) -> None:
+        for name in ("task_id", "slot_id", "generation", "verification_status"):
+            if not str(getattr(self, name)).strip():
+                raise PrismReducerError(f"{name} is required")
+        if self.schema != CANDIDATE_SCHEMA:
+            raise PrismReducerError("unknown candidate schema")
+        if self.attempt < 1:
+            raise PrismReducerError("candidate attempt must be positive")
+        if self.verification_status not in {"verified", "failed", "blocked"}:
+            raise PrismReducerError("unsupported candidate verification status")
+        for name in (
+            "base_tree_hash", "head_tree_hash", "tree_hash", "plan_hash",
+            "operator_receipt_hash", "evidence_receipt_hash",
+        ):
+            object.__setattr__(self, name, _sha(getattr(self, name), name))
+        object.__setattr__(self, "changed_paths", _items(self.changed_paths))
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    @property
+    def candidate_hash(self) -> str:
         return canonical_sha256(self.to_dict())
 
 
@@ -289,10 +333,12 @@ class PrismReducer:
 
 
 __all__ = [
+    "CANDIDATE_SCHEMA",
     "PRISM_RECEIPT_SCHEMA",
     "RESULT_SCHEMA",
     "SLOT_RECEIPT_SCHEMA",
     "ExpectedTask",
+    "Candidate",
     "PrismReducer",
     "PrismReducerError",
     "TaskResult",
