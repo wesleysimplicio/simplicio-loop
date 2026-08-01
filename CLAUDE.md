@@ -73,6 +73,10 @@ turn×event/runtime×level tables: `.claude/skills/simplicio-loop/references/pro
 
 ## Tests & local checks (no paid CI)
 
+Delivery ownership and limits are host-independent; follow the canonical
+[bounded delivery policy](.claude/skills/simplicio-loop/SKILL.md#bounded-delivery-policy) and
+[ADR 0008](docs/adr/0008-bounded-delivery-policy.md) rather than restating them in this overlay.
+
 `python3 scripts/check.py` runs the local gate: the pytest suite (worker `selftest`s + an e2e of
 the loop driver), claims audit, mirror parity, loop/clean-environment contracts, token/repository
 budgets, and portable contract validation. `pytest` is mandatory for this command: install the

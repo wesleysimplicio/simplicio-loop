@@ -43,6 +43,10 @@ python3 hooks/orient_clamp.py -- <heavy command>   # reduce output before it hit
 
 ## Binding
 
+Use the host-independent [bounded delivery policy](.claude/skills/simplicio-loop/SKILL.md#bounded-delivery-policy)
+and its [ADR 0008](docs/adr/0008-bounded-delivery-policy.md) for WIP, frozen scope, reviews,
+ownership, integration, and release boundaries.
+
 Where your runtime exposes native capabilities (a repo mapper, a deterministic file
 writer, a local model fan-out, a durable scheduler), bind them to the matching
 extension points in the Step 1b table so the steps become deterministic and

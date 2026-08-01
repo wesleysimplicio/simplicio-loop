@@ -108,6 +108,10 @@ path + verdict; a missing toolchain BLOCKS, never a fake pass.
 
 ## Non-negotiables
 
+Delivery work follows the bounded WIP, frozen-AC, finding classification, review-cap, ownership,
+rebase, and release rules in [ADR 0008](docs/adr/0008-bounded-delivery-policy.md) and the canonical
+[`simplicio-loop` policy](.claude/skills/simplicio-loop/SKILL.md#bounded-delivery-policy).
+
 - Run commands for real — never simulate output.
 - **GitHub issue signature first:** before taking an issue, publish the canonical `CLAIMED`
   lifecycle comment with the worker/run/attempt identity and goal. Do this before mutation or a
