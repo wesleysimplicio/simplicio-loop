@@ -5816,12 +5816,20 @@ def execute_operator_batch(
                 issue_ref=issue_ref, issue_url=issue_url,
             )
         items.append(item)
+    def _batch_stop_requested() -> bool:
+        try:
+            current = _load_json(Path(status["run_dir"]) / "state.json")
+        except (OSError, TypeError, ValueError):
+            return False
+        return str(current.get("phase") or "") == "cancelled"
+
     result = dispatch_operator_batch(
         items,
         max_workers=max_workers,
         retry_budget=retry_budget,
         journal_dir=str(Path(status["run_dir"])),
         worktree_queue=worktree_queue,
+        stop_requested=_batch_stop_requested,
     )
     lifecycle_result: Dict[str, Any]
     try:
