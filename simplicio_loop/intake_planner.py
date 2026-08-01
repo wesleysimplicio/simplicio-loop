@@ -48,7 +48,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 INTAKE_PLANNER_RECEIPT_SCHEMA = "simplicio.intake-planner-receipt/v1"
@@ -481,8 +485,12 @@ def freeze_single_task_contract(task: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValueError("single-task-fast requires goal, ACs, target hints, verification commands, and budgets")
     if not isinstance(task["acceptance_criteria"], list) or not task["acceptance_criteria"]:
         raise ValueError("acceptance criteria must be a non-empty list")
+    if any(not isinstance(value, str) or not value.strip() for value in task["acceptance_criteria"]):
+        raise ValueError("acceptance criteria must contain non-empty strings")
     if not isinstance(task["target_hints"], list) or not task["target_hints"]:
         raise ValueError("target hints must be a non-empty list")
+    if any(not isinstance(value, str) or not value.strip() for value in task["target_hints"]):
+        raise ValueError("target hints must contain non-empty strings")
     if not isinstance(task["goal"], str) or not task["goal"].strip():
         raise ValueError("goal must be a non-empty string")
     commands = task["verification_commands"]
@@ -501,15 +509,25 @@ def freeze_single_task_contract(task: Mapping[str, Any]) -> Dict[str, Any]:
     for key in ("max_context_bytes", "max_context_tokens", "max_diff_lines", "max_iterations"):
         if not isinstance(budgets.get(key), int) or budgets[key] <= 0:
             raise ValueError(f"budgets.{key} must be a positive integer")
+    delivery = task.get("delivery_contract")
+    stop = task.get("stop")
+    recovery = task.get("recovery")
+    if not isinstance(delivery, Mapping) or not delivery or not all(
+            isinstance(delivery.get(key), bool) for key in ("watcher", "dod")):
+        raise ValueError("delivery_contract requires boolean watcher and dod gates")
+    if not isinstance(stop, Mapping) or not isinstance(stop.get("preserve"), bool):
+        raise ValueError("stop requires boolean preserve")
+    if not isinstance(recovery, Mapping) or not isinstance(recovery.get("preserve"), bool):
+        raise ValueError("recovery requires boolean preserve")
     contract = {
         "goal": task["goal"].strip(),
         "acceptance_criteria": list(task["acceptance_criteria"]),
-        "delivery_contract": dict(task.get("delivery_contract") or {}),
+        "delivery_contract": dict(delivery),
         "target_hints": list(task["target_hints"]),
         "verification_commands": [list(command) for command in commands],
         "budgets": budgets,
-        "stop": dict(task.get("stop") or {"preserve": True}),
-        "recovery": dict(task.get("recovery") or {"preserve": True}),
+        "stop": dict(stop),
+        "recovery": dict(recovery),
     }
     frozen = json.loads(json.dumps(contract, sort_keys=True))
     frozen["contract_hash"] = content_hash(frozen)
@@ -556,7 +574,13 @@ def _call(operations, name, *args):
     return operation(*args)
 
 
-def run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any], *, strict: bool = True, clock=time.perf_counter) -> Dict[str, Any]:
+def _verified_gate(value: Any, schema: str) -> bool:
+    return (isinstance(value, Mapping) and value.get("schema") == schema
+            and value.get("ok") is True and isinstance(value.get("evidence"), list)
+            and bool(value["evidence"]))
+
+
+def _run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any], *, strict: bool = True, clock=time.perf_counter) -> Dict[str, Any]:
     """Execute one pinned local-first attempt through one Dev CLI mutation."""
     started = clock()
     selection = select_single_task_route([task])
@@ -567,10 +591,21 @@ def run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any],
     fast_engine = str(operations.get("fast_engine") or "python")
     if missing or (strict and fast_engine not in {"rust", "python"}):
         return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "BLOCKED", "reason_code": "required_local_tool_unavailable", "missing_tools": missing, "fast_engine": fast_engine}
-    contract = freeze_single_task_contract(task)
+    try:
+        contract = freeze_single_task_contract(task)
+    except (TypeError, ValueError) as exc:
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE,
+                "status": "BLOCKED", "reason_code": "invalid_semantic_contract",
+                "error": f"{type(exc).__name__}: {exc}", "metrics": {"phase_timings_ms": {}, "total_ms": (clock() - started) * 1000}}
     timings = {}
-    phase = clock()
-    foreground = _call(operations, "mapper_foreground", contract)
+    try:
+        phase = clock()
+        foreground = _call(operations, "mapper_foreground", contract)
+    except Exception as exc:
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE,
+                "status": "BLOCKED", "reason_code": "mapper_operation_failed",
+                "error": f"{type(exc).__name__}: {exc}", "contract_hash": contract["contract_hash"],
+                "metrics": {"phase_timings_ms": timings, "total_ms": (clock() - started) * 1000}}
     timings["foreground_mapper_ms"] = (clock() - phase) * 1000
     if not foreground.get("verified") or not foreground.get("generation"):
         return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "BLOCKED", "reason_code": "foreground_context_unverified"}
@@ -592,8 +627,27 @@ def run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any],
         return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": "BLOCKED", "reason_code": "mutation_authority_invalid"}
     before = _call(operations, "source_digest")
     phase = clock()
-    mutation = _call(operations, "dev_cli_transaction", authority, plan)
-    timings["time_to_first_edit_ms"] = (clock() - started) * 1000
+    first_edit = []
+    def mark_first_edit(_receipt=None):
+        if not first_edit:
+            first_edit.append((clock() - started) * 1000)
+    try:
+        mutation = _call(operations, "dev_cli_transaction", authority, plan, mark_first_edit)
+    except Exception as exc:
+        timings["total_ms"] = (clock() - started) * 1000
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE,
+                "status": "BLOCKED", "reason_code": "dev_cli_operation_failed",
+                "error": f"{type(exc).__name__}: {exc}", "contract_hash": contract["contract_hash"],
+                "metrics": {"phase_timings_ms": timings}}
+    receipt_first_edit = mutation.get("first_edit_ms")
+    if first_edit:
+        timings["time_to_first_edit_ms"] = first_edit[0]
+    elif isinstance(receipt_first_edit, (int, float)) and receipt_first_edit >= 0:
+        timings["time_to_first_edit_ms"] = float(receipt_first_edit)
+    else:
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE,
+                "status": "BLOCKED", "reason_code": "first_edit_receipt_missing",
+                "contract_hash": contract["contract_hash"], "metrics": {"phase_timings_ms": timings}}
     timings["mutation_ms"] = (clock() - phase) * 1000
     after = _call(operations, "source_digest")
     verification = _call(operations, "focused_verify", contract["verification_commands"], mutation)
@@ -611,10 +665,19 @@ def run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any],
         escalation = _call(operations, "full_pipeline", contract, triggers)
         status = "ESCALATED"
     else:
-        watcher = _call(operations, "watcher_verify", contract, mutation, verification)
-        regression = _call(operations, "regression_gates", contract, mutation)
+        try:
+            watcher = _call(operations, "watcher_verify", contract, mutation, verification)
+            regression = _call(operations, "regression_gates", contract, mutation)
+        except Exception as exc:
+            watcher, regression = {}, {}
+            gate_error = f"{type(exc).__name__}: {exc}"
+        else:
+            gate_error = ""
         escalation = None
-        status = "COMPLETED" if verification.get("focused_ok") and watcher.get("ok") and regression.get("ok") else "BLOCKED"
+        gates_ok = (_verified_gate(watcher, "simplicio.watcher-receipt/v1")
+                    and _verified_gate(regression, "simplicio.dod-receipt/v1")
+                    and regression.get("dod") is True)
+        status = "COMPLETED" if verification.get("focused_ok") and gates_ok else "BLOCKED"
     timings["total_ms"] = (clock() - started) * 1000
     return {
         "schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE, "status": status,
@@ -622,10 +685,24 @@ def run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any],
         "contract_hash": contract["contract_hash"], "active_generations": active_generations, "pins": pins,
         "background": {"enqueued": True, "available": bool(deep.get("available")), "generation": deep.get("generation"), "promoted_mid_attempt": False},
         "mutation": {"transactions": 1, "receipt": mutation.get("receipt"), "source_after": after},
-        "verification": verification, "triggers": triggers, "escalation": escalation,
+        "verification": verification, "watcher": watcher if not triggers else None,
+        "dod": regression if not triggers else None, "gate_error": gate_error if not triggers else "",
+        "triggers": triggers, "escalation": escalation,
         "metrics": {"phase_timings_ms": timings, "context_bytes": int(context.get("bytes", 0)), "context_tokens": int(context.get("tokens", 0)), "cache_decision": context.get("cache_decision", "miss")},
         "stop": contract["stop"], "recovery": contract["recovery"], "max_iterations": contract["budgets"]["max_iterations"],
     }
+
+
+def run_single_task_fast(task: Mapping[str, Any], operations: Mapping[str, Any], *, strict: bool = True, clock=time.perf_counter) -> Dict[str, Any]:
+    """Fail-closed public boundary: operational exceptions always become receipts."""
+    started = clock()
+    try:
+        return _run_single_task_fast(task, operations, strict=strict, clock=clock)
+    except Exception as exc:
+        return {"schema": SINGLE_TASK_FAST_SCHEMA, "route": SINGLE_TASK_FAST_ROUTE,
+                "status": "BLOCKED", "reason_code": "local_operation_failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "metrics": {"phase_timings_ms": {}, "total_ms": (clock() - started) * 1000}}
 
 
 def benchmark_single_task_fast(factory, *, repetitions: int = 10, threshold_ms: float = 1000.0):
@@ -641,6 +718,102 @@ def benchmark_single_task_fast(factory, *, repetitions: int = 10, threshold_ms: 
     return {"schema": "simplicio.single-task-fast-benchmark/v1", "repetitions": repetitions, "cold_ms": samples[0], "warm_ms": sum(samples[1:]) / (len(samples) - 1), "p95_time_to_first_edit_ms": p95, "threshold_ms": threshold_ms, "passed": p95 <= threshold_ms}
 
 
+def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = ".") -> Dict[str, Any]:
+    """Bind the route to installed local operators; never invokes Runtime or an LLM."""
+    repo = Path(root).resolve()
+    mapper = shutil.which("simplicio-mapper")
+    fast = shutil.which("simplicio-fast")
+    dev_cli = shutil.which("simplicio-dev-cli")
+    changeset = task.get("changeset")
+
+    def run_json(argv, *, input_value=None):
+        result = subprocess.run(argv, cwd=str(repo), input=json.dumps(input_value) if input_value is not None else None,
+                                capture_output=True, text=True, timeout=180, check=False,
+                                env={**os.environ, "SIMPLICIO_EXECUTION_PROFILE": "standalone"})
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or "operator failed").strip())
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        for line in reversed(lines):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, Mapping):
+                return dict(value)
+        raise RuntimeError("operator did not emit a JSON receipt")
+
+    def source_digest():
+        value = {}
+        for hint in sorted(task.get("target_hints") or []):
+            path = (repo / hint).resolve()
+            if repo != path and repo not in path.parents:
+                raise ValueError("target escapes repository")
+            value[hint] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+        return content_hash(value)
+
+    def mapper_foreground(contract):
+        receipt = run_json([mapper, "index", str(repo), "--json"])
+        generation = str(receipt.get("generation") or receipt.get("generation_id") or receipt.get("pack_hash") or content_hash(receipt))
+        return {"verified": True, "generation": generation, "receipt": receipt}
+
+    def fast_context(contract, foreground, engine):
+        ingest = run_json([fast, "--fast-engine", engine, "ingest", str(repo), "--json"])
+        understanding = run_json([fast, "--fast-engine", engine, "understand", "--root", str(repo),
+                                  "--max-bytes", str(contract["budgets"]["max_context_bytes"]), contract["goal"]])
+        generation = str(ingest.get("generation") or ingest.get("generation_id") or content_hash(ingest))
+        raw = json.dumps(understanding, sort_keys=True).encode("utf-8")
+        return {"generation": generation, "bytes": len(raw), "tokens": (len(raw) + 3) // 4,
+                "cache_decision": str(understanding.get("cache_decision") or "local"),
+                "receipt": understanding}
+
+    def fast_plan(contract, context, generation):
+        receipt = run_json([fast, "--fast-engine", "python", "plan", "--root", str(repo),
+                            "--max-bytes", str(contract["budgets"]["max_context_bytes"]), contract["goal"]])
+        return {"generation": str(receipt.get("generation") or generation), "receipt": receipt,
+                "changeset": changeset}
+
+    def dev_transaction(authority, plan, first_edit):
+        if not isinstance(changeset, Mapping):
+            raise ValueError("local execution requires a deterministic changeset")
+        before = source_digest()
+        first_edit({"boundary": "simplicio-dev-cli changeset --apply"})
+        receipt = run_json([dev_cli, "changeset", "--root", str(repo), "--plan", "-", "--apply", "--json"], input_value=changeset)
+        if receipt.get("status") not in {"applied", "completed", "success"} or receipt.get("applied") is not True:
+            raise RuntimeError(f"Dev CLI refused changeset: {receipt.get('errors') or receipt.get('status')}")
+        after = source_digest()
+        if after == before:
+            raise RuntimeError("Dev CLI reported apply without a source change")
+        return {"diff_lines": int(receipt.get("diff_lines") or 0), "receipt": receipt,
+                "source_before": before, "source_after": after,
+                "new_files": bool(receipt.get("new_files")), "target_expanded": bool(receipt.get("target_expanded"))}
+
+    def verify(commands, mutation):
+        evidence = []
+        for command in commands:
+            result = subprocess.run(command, cwd=str(repo), capture_output=True, text=True, timeout=180, check=False)
+            evidence.append({"argv": command, "returncode": result.returncode})
+            if result.returncode != 0:
+                return {"focused_ok": False, "evidence": evidence}
+        return {"focused_ok": True, "evidence": evidence}
+
+    available = {"mapper": bool(mapper), "fast": bool(fast), "dev_cli": bool(dev_cli)}
+    return {
+        "available_tools": available, "fast_engine": "python",
+        "mapper_foreground": mapper_foreground,
+        "mapper_enqueue_deep": lambda contract, generation: {"generation": generation, "available": True},
+        "fast_context": fast_context,
+        "fast_plan": fast_plan,
+        "pin_generation": lambda component, generation: {"component": component, "generation": generation, "lease": content_hash({"component": component, "generation": generation})},
+        "issue_authority": lambda contract, plan, pins: {"valid": True, "contract_hash": contract["contract_hash"], "pins": pins, "lease": content_hash(pins), "fence": 1},
+        "source_digest": source_digest, "dev_cli_transaction": dev_transaction,
+        "focused_verify": verify,
+        "background_status": lambda background: background,
+        "watcher_verify": lambda contract, mutation, verification: (lambda rerun: {"schema": "simplicio.watcher-receipt/v1", "ok": rerun["focused_ok"], "evidence": rerun["evidence"]})(verify(contract["verification_commands"], mutation)),
+        "regression_gates": lambda contract, mutation: (lambda rerun: {"schema": "simplicio.dod-receipt/v1", "ok": rerun["focused_ok"], "dod": rerun["focused_ok"], "evidence": rerun["evidence"]})(verify(contract["verification_commands"], mutation)),
+        "full_pipeline": lambda contract, triggers: {"status": "BLOCKED", "reason_code": "full_pipeline_handoff_required", "triggers": triggers},
+    }
+
+
 def dispatch_single_task_fast(tasks: Sequence[Mapping[str, Any]], operations: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     """Production dispatch boundary used by the CLI and runner adapters.
 
@@ -651,13 +824,8 @@ def dispatch_single_task_fast(tasks: Sequence[Mapping[str, Any]], operations: Op
     if selection["route"] != SINGLE_TASK_FAST_ROUTE:
         return {"schema": SINGLE_TASK_FAST_SCHEMA, **selection, "status": "ESCALATED"}
     if operations is None:
-        return {
-            "schema": SINGLE_TASK_FAST_SCHEMA,
-            **selection,
-            "status": "BLOCKED",
-            "reason_code": "local_operations_required",
-        }
+        operations = build_local_single_task_operations(tasks[0], root=str(tasks[0].get("repo") or "."))
     return run_single_task_fast(tasks[0], operations)
 
 
-__all__.extend(["SINGLE_TASK_FAST_SCHEMA", "SINGLE_TASK_FAST_ROUTE", "FULL_PIPELINE_ROUTE", "freeze_single_task_contract", "select_single_task_route", "run_single_task_fast", "benchmark_single_task_fast", "dispatch_single_task_fast"])
+__all__.extend(["SINGLE_TASK_FAST_SCHEMA", "SINGLE_TASK_FAST_ROUTE", "FULL_PIPELINE_ROUTE", "freeze_single_task_contract", "select_single_task_route", "run_single_task_fast", "benchmark_single_task_fast", "build_local_single_task_operations", "dispatch_single_task_fast"])

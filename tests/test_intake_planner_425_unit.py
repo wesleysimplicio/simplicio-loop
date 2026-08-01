@@ -444,11 +444,11 @@ def _fast_operations(*, deep_available=True, mutation=None, focused_ok=True, fas
         "pin_generation": record("pin_generation", lambda component, generation: {"component": component, "generation": generation, "lease": f"{component}-lease"}),
         "issue_authority": record("issue_authority", lambda contract, plan, pins: {"valid": True, "contract_hash": contract["contract_hash"], "plan": plan["schema"], "pins": pins, "lease": "attempt", "fence": 1}),
         "source_digest": record("source_digest", lambda: next(digests)),
-        "dev_cli_transaction": record("dev_cli_transaction", mutation_payload),
+        "dev_cli_transaction": record("dev_cli_transaction", lambda authority, plan, first_edit: (first_edit(), dict(mutation_payload))[1]),
         "focused_verify": record("focused_verify", {"focused_ok": focused_ok}),
         "background_status": record("background_status", {"available": deep_available, "generation": "G1" if deep_available else None}),
-        "watcher_verify": record("watcher_verify", {"ok": True}),
-        "regression_gates": record("regression_gates", {"ok": True, "dod": True}),
+        "watcher_verify": record("watcher_verify", {"schema": "simplicio.watcher-receipt/v1", "ok": True, "evidence": [{"gate": "watcher"}]}),
+        "regression_gates": record("regression_gates", {"schema": "simplicio.dod-receipt/v1", "ok": True, "dod": True, "evidence": [{"gate": "dod"}]}),
         "full_pipeline": record("full_pipeline", lambda contract, triggers: {"receipt": "full-1", "triggers": triggers}),
     }
     return operations, calls
@@ -506,7 +506,84 @@ def test_single_task_fast_cli_is_real_fail_closed_dispatch(tmp_path, capsys):
     assert main(["single-task-fast", "--task-file", str(path)]) == 2
     payload = json.loads(capsys.readouterr().out)
     assert payload["route"] == "single-task-fast"
-    assert payload["reason_code"] == "local_operations_required"
+    assert payload["reason_code"] == "mapper_operation_failed"
+
+
+@pytest.mark.parametrize("change", [
+    {"acceptance_criteria": [""]}, {"target_hints": [""]},
+    {"delivery_contract": {}}, {"stop": {}}, {"recovery": {}},
+])
+def test_single_task_fast_rejects_incomplete_semantic_contract(change):
+    from simplicio_loop.intake_planner import freeze_single_task_contract
+    with pytest.raises(ValueError):
+        freeze_single_task_contract(_fast_task(**change))
+
+
+def test_single_task_fast_requires_typed_watcher_and_dod_receipts():
+    from simplicio_loop.intake_planner import run_single_task_fast
+    operations, _ = _fast_operations()
+    operations["watcher_verify"] = lambda *args: {"ok": True}
+    assert run_single_task_fast(_fast_task(), operations)["status"] == "BLOCKED"
+    operations, _ = _fast_operations()
+    operations["regression_gates"] = lambda *args: {"schema": "simplicio.dod-receipt/v1", "ok": True, "dod": False, "evidence": [{}]}
+    assert run_single_task_fast(_fast_task(), operations)["status"] == "BLOCKED"
+
+
+def test_single_task_fast_operation_exception_becomes_blocked_receipt():
+    from simplicio_loop.intake_planner import run_single_task_fast
+    operations, _ = _fast_operations()
+    operations["mapper_foreground"] = lambda contract: (_ for _ in ()).throw(RuntimeError("offline"))
+    receipt = run_single_task_fast(_fast_task(), operations)
+    assert receipt["status"] == "BLOCKED"
+    assert receipt["reason_code"] == "mapper_operation_failed"
+    assert "metrics" in receipt
+
+
+def test_local_single_task_operations_execute_process_seams_end_to_end(tmp_path, monkeypatch):
+    from simplicio_loop.intake_planner import build_local_single_task_operations, run_single_task_fast
+    import subprocess
+    target = tmp_path / "main.py"
+    target.write_text("old\n", encoding="utf-8")
+    task = _fast_task(target_hints=["main.py"], repo=str(tmp_path),
+                      changeset={"schema": "simplicio.fast.changeset/v2", "generation": "g", "changes": [{"path": "main.py"}]})
+    monkeypatch.setattr("simplicio_loop.intake_planner.shutil.which", lambda name: name)
+
+    def process(argv, **kwargs):
+        if argv[0] == "simplicio-mapper":
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"generation": "M1"}), "")
+        if argv[0] == "simplicio-fast":
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"generation": "F1", "cache_decision": "hit"}), "")
+        if argv[0] == "simplicio-dev-cli":
+            target.write_text("new\n", encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"status": "applied", "applied": True, "diff_lines": 1}), "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr("simplicio_loop.intake_planner.subprocess.run", process)
+    operations = build_local_single_task_operations(task, root=str(tmp_path))
+    receipt = run_single_task_fast(task, operations)
+    assert receipt["status"] == "COMPLETED"
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert receipt["metrics"]["phase_timings_ms"]["time_to_first_edit_ms"] >= 0
+    assert receipt["watcher"]["schema"] == "simplicio.watcher-receipt/v1"
+    assert receipt["dod"]["schema"] == "simplicio.dod-receipt/v1"
+
+
+def test_local_single_task_operations_reject_dev_cli_refusal(tmp_path, monkeypatch):
+    from simplicio_loop.intake_planner import build_local_single_task_operations, run_single_task_fast
+    import subprocess
+    (tmp_path / "main.py").write_text("old\n", encoding="utf-8")
+    task = _fast_task(target_hints=["main.py"], changeset={"schema": "x"})
+    monkeypatch.setattr("simplicio_loop.intake_planner.shutil.which", lambda name: name)
+    def process(argv, **kwargs):
+        value = ({"generation": "M1"} if argv[0] == "simplicio-mapper" else
+                 {"status": "refused", "applied": False, "errors": ["invalid"]})
+        if argv[0] == "simplicio-fast":
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"generation": "F1"}), "")
+        return subprocess.CompletedProcess(argv, 0, json.dumps(value), "")
+    monkeypatch.setattr("simplicio_loop.intake_planner.subprocess.run", process)
+    receipt = run_single_task_fast(task, build_local_single_task_operations(task, root=str(tmp_path)))
+    assert receipt["status"] == "BLOCKED"
+    assert receipt["reason_code"] == "dev_cli_operation_failed"
 
 
 @pytest.mark.parametrize("mutation,focused_ok,reason", [
