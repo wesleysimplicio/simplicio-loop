@@ -39,3 +39,26 @@ def test_corpus_validation_rejects_duplicate_or_malformed_cases() -> None:
         validate_corpus(duplicate)
     with pytest.raises(ValueError, match="non-empty array"):
         validate_corpus({"schema": valid["schema"], "cases": []})
+
+
+def test_runner_classifies_timeout_crash_and_oversized_provider_output() -> None:
+    corpus = {"schema": "simplicio.loop-conformance/v1", "cases": [
+        {"id": "timeout", "input": {}, "expected": {
+            "error": "deadline", "reason_code": "provider_timeout"}},
+        {"id": "crash", "input": {}, "expected": {
+            "error": "boom", "reason_code": "provider_failed"}},
+        {"id": "large", "input": {}, "expected": {
+            "error": "provider output exceeded limit", "reason_code": "provider_output_oversized"}},
+    ]}
+
+    def provider(payload):
+        if payload.get("case") == "timeout":
+            raise TimeoutError("deadline")
+        if payload.get("case") == "crash":
+            raise RuntimeError("boom")
+        return {"payload": "x" * 100}
+
+    for item, name in zip(corpus["cases"], ("timeout", "crash", "large")):
+        item["input"]["case"] = name
+    receipt = run_corpus(corpus, provider, max_output_bytes=32)
+    assert receipt["passed"] is True

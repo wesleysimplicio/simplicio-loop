@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -32,16 +32,29 @@ def compare(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> dict[str,
             "expected_hash": _hash(left), "actual_hash": _hash(right)}
 
 
-def run_corpus(corpus: Mapping[str, Any], provider: Callable[[Mapping[str, Any]], Mapping[str, Any]]) -> dict[str, Any]:
-    cases = corpus.get("cases") if isinstance(corpus.get("cases"), Sequence) else []
+def run_corpus(corpus: Mapping[str, Any], provider: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+               *, max_output_bytes: int = 1_048_576) -> dict[str, Any]:
+    """Run a validated corpus with bounded, classified provider failures."""
+    validate_corpus(corpus)
+    if max_output_bytes <= 0:
+        raise ValueError("max_output_bytes must be positive")
+    cases = corpus["cases"]
     results = []
     for case in cases:
         case = dict(case)
-        expected = case.get("expected") if isinstance(case.get("expected"), Mapping) else {}
+        expected = case["expected"]
         try:
-            actual = dict(provider(case.get("input") if isinstance(case.get("input"), Mapping) else {}))
+            raw = provider(case["input"])
+            if not isinstance(raw, Mapping):
+                raise TypeError("provider output must be an object")
+            actual = dict(raw)
+            encoded = json.dumps(actual, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            if len(encoded) > max_output_bytes:
+                actual = {"error": "provider output exceeded limit", "reason_code": "provider_output_oversized"}
+        except TimeoutError as exc:
+            actual = {"error": str(exc), "reason_code": "provider_timeout"}
         except Exception as exc:
-            actual = {"error": str(exc)}
+            actual = {"error": str(exc), "reason_code": "provider_failed"}
         result = compare(expected, actual)
         result.update({"id": str(case.get("id") or ""), "family": str(case.get("family") or "")})
         results.append(result)
