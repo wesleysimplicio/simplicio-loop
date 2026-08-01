@@ -21,9 +21,11 @@ def _load(attempt: Path) -> GenerationBroker:
     supplied = state.pop("receipt_hash", "")
     if supplied != _digest(state):
         raise LifecycleError("generation broker state receipt mismatch")
-    identity = RepositoryIdentity(**state["identity"])
     registry = MapServiceRegistry()
-    registry.register(identity)
+    for row in state.get("identities", []):
+        value = dict(row)
+        key = value.pop("key")
+        registry._identities[key] = RepositoryIdentity(**value)
     lifecycle = CheckpointLifecycle(
         state["root"],
         task_id=state["task_id"],
@@ -34,7 +36,10 @@ def _load(attempt: Path) -> GenerationBroker:
     )
     if lifecycle.attempt.resolve() != attempt:
         raise LifecycleError("generation broker attempt containment mismatch")
-    return GenerationBroker(registry, lifecycle)
+    broker = GenerationBroker(registry, lifecycle)
+    broker._identity_aliases.update(state.get("identity_aliases", {}))
+    broker._promoted_generation = state.get("promoted_generation", lifecycle.fast_generation)
+    return broker
 
 
 def _emit(value: Any) -> int:

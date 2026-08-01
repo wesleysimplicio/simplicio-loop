@@ -148,7 +148,21 @@ class GenerationBroker:
             except (OSError, KeyError, ValueError, json.JSONDecodeError):
                 return
 
-    def _persist_state(self, identity: Any) -> None:
+    def _persist_state(self, identity: Any | None = None) -> None:
+        identities = [
+            {
+                "key": key,
+                "repository": item.repository,
+                "canonical_root": item.canonical_root,
+                "default_branch": item.default_branch,
+                "worktree_root": item.worktree_root,
+                "base_sha": item.base_sha,
+                "dirty": item.dirty,
+                "dirty_fingerprint": item.dirty_fingerprint,
+                "mapper_config": item.mapper_config,
+            }
+            for key, item in self.registry._identities.items()
+        ]
         state = {
             "schema": SCHEMA,
             "root": str(self.lifecycle.root.resolve()),
@@ -158,19 +172,41 @@ class GenerationBroker:
             "fast_generation": self.lifecycle.fast_generation,
             "base_path": str(self.lifecycle.base_path),
             "promoted_generation": self._promoted_generation,
-            "identity": {
-                "repository": identity.repository,
-                "canonical_root": identity.canonical_root,
-                "default_branch": identity.default_branch,
-                "worktree_root": identity.worktree_root,
-                "base_sha": identity.base_sha,
-                "dirty": identity.dirty,
-                "dirty_fingerprint": identity.dirty_fingerprint,
-                "mapper_config": identity.mapper_config,
-            },
+            "identities": identities,
+            "identity_aliases": dict(self._identity_aliases),
         }
         state["receipt_hash"] = _digest(state)
         _write_json(self.lifecycle.attempt / "generation-broker-state.json", state)
+
+    def _durable_binding(self, candidate_id: str) -> GenerationBinding | None:
+        path = self.lifecycle.overlays / candidate_id / "generation-binding.json"
+        if not path.exists():
+            return None
+        binding = GenerationBinding.verify(json.loads(path.read_text(encoding="utf-8")))
+        self._bindings[candidate_id] = binding
+        return binding
+
+    def _canonical_anchor(self, binding: GenerationBinding) -> dict[str, Any]:
+        for path in (self.lifecycle.attempt / "generation-manifests").glob("*.json"):
+            value = json.loads(path.read_text(encoding="utf-8"))
+            supplied = value.pop("receipt_hash", "")
+            if supplied == _digest(value) and value.get("canonical_cache_key") == binding.canonical_cache_key:
+                return {
+                    "identity_key": value["identity_key"],
+                    "repository": value["repository"],
+                    "repository_base_sha": value["repository_base_sha"],
+                    "tree_hash": value["tree_hash"],
+                    "files_digest": value["files_digest"],
+                    "config_identity": value["config_identity"],
+                    "mapper_generation": value["mapper_generation"],
+                    "fast_generation": value["fast_generation"],
+                    "canonical_cache_key": value["canonical_cache_key"],
+                    "source_commit": value["source_commit"],
+                    "context_hash": value["context_hash"],
+                    "plan_hash": value["plan_hash"],
+                    "generation_receipt_hash": value["generation_receipt_hash"],
+                }
+        raise LifecycleError("trusted canonical manifest missing")
 
     def bind(
         self,
@@ -198,7 +234,7 @@ class GenerationBroker:
             worktree = str(Path(identity.worktree_root or identity.canonical_root).resolve())
             if Path(worktree) != self.lifecycle.base_path:
                 raise LifecycleError("cross-worktree generation binding")
-            existing = self._bindings.get(candidate_id)
+            existing = self._durable_binding(candidate_id)
             normalized_files = tuple(sorted(set(map(str, files))))
             files_digest = _digest({"files": normalized_files})
             config_identity = _digest({"mapper_config": identity.mapper_config})
@@ -296,6 +332,7 @@ class GenerationBroker:
             verified = GenerationBinding.verify(
                 binding.to_dict(),
                 trusted={
+                    **self._canonical_anchor(binding),
                     "repository": identity.repository,
                     "repository_base_sha": identity.base_sha,
                     "worktree": str(self.lifecycle.base_path),
@@ -365,6 +402,7 @@ class GenerationBroker:
                 try:
                     binding = GenerationBinding.verify(json.loads(path.read_text(encoding="utf-8")))
                     self._bindings[binding.candidate_id] = binding
+                    self.inspect(binding.candidate_id)
                     recovered.append(binding.candidate_id)
                 except (OSError, json.JSONDecodeError, LifecycleError):
                     corrupt.append(path.parent.name)
@@ -405,7 +443,7 @@ class GenerationBroker:
                     mapper_config=identity.mapper_config,
                 )
                 self._identity_aliases[old_key] = new_key
-                self._persist_state(identity)
+            self._persist_state()
             self._record("promotion", previous=previous, generation=generation.generation)
             return {"previous": previous, "generation": generation.generation}
 

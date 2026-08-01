@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -326,3 +327,37 @@ def test_restart_rolls_back_prepared_dry_run_gc_and_doctor_finds_orphan(tmp_path
     result = restarted.doctor()
     assert result["healthy"] is False
     assert result["overlay_orphans"] == ["orphan"]
+
+
+def test_gc_recovery_completes_partially_deleted_candidate(tmp_path: Path):
+    service, identity_key, generation = broker(tmp_path)
+    binding = service.bind(
+        identity_key, tree_hash="tree", files=[], candidate_id="a", generation=generation
+    )
+    service.lifecycle.checkpoint("a", "candidate", "CANCELLED")
+    service.lifecycle.cancel(["a"], reason="done")
+    service.release("a")
+    shutil.rmtree(binding.overlay_path)
+    transaction = {
+        "schema": "simplicio.loop.generation-binding/v1",
+        "state": "PREPARED",
+        "created_ns": 1,
+        "retention_ns": 0,
+        "now_ns": 10**30,
+        "apply": True,
+    }
+    transaction["receipt_hash"] = _digest(transaction)
+    journal = service.lifecycle.attempt / "generation-gc-journal.json"
+    journal.write_text(json.dumps(transaction))
+    GenerationBroker(service.registry, service.lifecycle)
+    assert json.loads(journal.read_text())["state"] == "COMMITTED"
+    assert not (service.lifecycle.cancellations / "a.json").exists()
+
+
+def test_no_binding_promotion_persists_and_fresh_cli_reloads(tmp_path: Path, capsys):
+    service, _, _ = broker(tmp_path)
+    promoted = CanonicalGeneration("generation-2", "ctx2", "def", "plan2", "receipt2")
+    service.promote(promoted)
+    attempt = str(service.lifecycle.attempt)
+    assert cli_main(["status", "--attempt-dir", attempt]) == 0
+    assert json.loads(capsys.readouterr().out)["promoted_generation"] == "generation-2"

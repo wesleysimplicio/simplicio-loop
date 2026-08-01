@@ -447,9 +447,14 @@ class CheckpointLifecycle:
         removed: list[str] = []
         if apply:
             for candidate in eligible:
-                shutil.rmtree(self.overlays / candidate, ignore_errors=False)
-                shutil.rmtree(self.checkpoints / candidate, ignore_errors=False)
-                (self.cancellations / f"{candidate}.json").unlink()
+                overlay = self.overlays / candidate
+                checkpoints = self.checkpoints / candidate
+                cancellation = self.cancellations / f"{candidate}.json"
+                if overlay.exists():
+                    shutil.rmtree(overlay, ignore_errors=False)
+                if checkpoints.exists():
+                    shutil.rmtree(checkpoints, ignore_errors=False)
+                cancellation.unlink(missing_ok=True)
                 removed.append(candidate)
         return {
             "schema": SCHEMA,
