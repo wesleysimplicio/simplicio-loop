@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +13,7 @@ RESULT_SCHEMA = "simplicio.prism-task-result/v1"
 CANDIDATE_SCHEMA = "simplicio.loop.candidate/v1"
 SLOT_RECEIPT_SCHEMA = "simplicio.prism-slot-reducer-receipt/v1"
 PRISM_RECEIPT_SCHEMA = "simplicio.prism-reducer-receipt/v1"
+CONFLICT_BUNDLE_SCHEMA = "simplicio.loop.conflict-bundle/v1"
 TERMINAL_VERDICTS = frozenset({"accepted", "failed", "blocked", "cancelled"})
 
 
@@ -237,6 +238,27 @@ class PrismReducer:
                     )
         return conflicts
 
+    def _conflict_bundle(self, slot_id: str, conflicts: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+        if not conflicts:
+            return None
+        task_ids = sorted({task_id for conflict in conflicts for task_id in
+                           (str(conflict["left"]), str(conflict["right"]))})
+        payload: dict[str, Any] = {
+            "schema": CONFLICT_BUNDLE_SCHEMA,
+            "slot_id": slot_id,
+            "reason_code": "MECHANICAL_WRITE_CONFLICT",
+            "task_ids": task_ids,
+            "conflicts": [dict(conflict) for conflict in conflicts],
+            "candidate_refs": [
+                {"task_id": task_id, "result_hash": self.results[task_id].result_hash}
+                for task_id in task_ids
+            ],
+            "resolution": "bounded_integration_task_required",
+            "winner": None,
+        }
+        payload["bundle_hash"] = canonical_sha256(payload)
+        return payload
+
     def reduce_slot(self, slot_id: str) -> dict[str, Any]:
         expected_ids = {
             task_id
@@ -297,6 +319,7 @@ class PrismReducer:
             "duplicate_task_ids": [],
             "blocked_by_dependency": sorted(blocked_by_dependency),
             "conflicts": conflicts,
+            "conflict_bundle": self._conflict_bundle(slot_id, conflicts),
             "tests_missing": tests_missing,
             "verdict": verdict,
             "reason_code": reason_code,
@@ -334,6 +357,7 @@ class PrismReducer:
 
 __all__ = [
     "CANDIDATE_SCHEMA",
+    "CONFLICT_BUNDLE_SCHEMA",
     "PRISM_RECEIPT_SCHEMA",
     "RESULT_SCHEMA",
     "SLOT_RECEIPT_SCHEMA",
