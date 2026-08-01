@@ -69,8 +69,11 @@ def test_receipts_history_doctor_and_migration(tmp_path):
     assert len(queue.inspect_local("a")["transitions"]) == 3
     assert queue.doctor_local()["healthy"] is True
     with sqlite3.connect(queue.path) as db:
+        original_provenance = db.execute("SELECT provenance FROM local_outcomes WHERE task_id='a'").fetchone()[0]
         db.execute("UPDATE local_outcomes SET provenance='{}' WHERE task_id='a'")
     assert queue.doctor_local()["healthy"] is False
+    with sqlite3.connect(queue.path) as db:
+        db.execute("UPDATE local_outcomes SET provenance=? WHERE task_id='a'", (original_provenance,))
     assert queue.migrate(dry_run=True)["dry_run"] is True
     migrated = queue.migrate(dry_run=False)
     assert migrated["dry_run"] is False
@@ -178,15 +181,38 @@ def test_migration_failure_restores_original_database(tmp_path, monkeypatch):
     assert restarted.inspect_local("survives")["outcome"]["outcome"] == "never_started"
 
 
+def test_migration_validation_failure_restores_original_schema(tmp_path, monkeypatch):
+    queue = LocalTaskQueue(tmp_path)
+    queue.submit("legacy-rollback")
+    with sqlite3.connect(queue.path) as db:
+        db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (LEGACY_SCHEMA,))
+    legacy = LocalTaskQueue(tmp_path, allow_legacy=True)
+    monkeypatch.setattr(legacy, "doctor_local", lambda: {"healthy": False, "error": "injected"})
+    with pytest.raises(QueueUnavailable, match="post-migration validation failed"):
+        legacy.migrate(dry_run=False)
+    with sqlite3.connect(legacy.path) as db:
+        assert db.execute("SELECT value FROM local_meta WHERE key='schema'").fetchone()[0] == LEGACY_SCHEMA
+
+
 def test_v1_provenance_migration_and_schema_gate(tmp_path):
     queue = LocalTaskQueue(tmp_path)
     queue.submit("legacy")
     lease = queue.claim_local("legacy", "w", idempotency_key="legacy")
+    queue.persist_intent(lease, {"effect": "legacy"})
     queue.record_outcome(lease, "retryable_failure", provenance={"idempotent": True})
     with sqlite3.connect(queue.path) as db:
         db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (LEGACY_SCHEMA,))
-        db.execute("UPDATE local_outcomes SET provenance=? WHERE task_id='legacy'",
-                   (json.dumps({"idempotent": True}),))
+        for field in ("intent", "receipt", "provenance"):
+            value = json.loads(db.execute(f"SELECT {field} FROM local_outcomes WHERE task_id='legacy'").fetchone()[0])
+            value["schema"] = LEGACY_SCHEMA
+            value.pop("digest", None)
+            from simplicio_loop.local_task_queue import _digest
+            value["digest"] = _digest(value)
+            db.execute(f"UPDATE local_outcomes SET {field}=? WHERE task_id='legacy'", (json.dumps(value),))
+        for seq, raw in db.execute("SELECT seq,payload FROM local_transitions").fetchall():
+            value = json.loads(raw); value["schema"] = LEGACY_SCHEMA
+            db.execute("UPDATE local_transitions SET payload=?,digest=? WHERE seq=?",
+                       (json.dumps(value), _digest(value), seq))
     with pytest.raises(QueueUnavailable, match="run `simplicio-loop queue migrate`"):
         LocalTaskQueue(tmp_path)
     legacy = LocalTaskQueue(tmp_path, allow_legacy=True)
@@ -197,6 +223,7 @@ def test_v1_provenance_migration_and_schema_gate(tmp_path):
     assert restarted.doctor_local()["healthy"] is True
     stored = json.loads(restarted.inspect_local("legacy")["outcome"]["provenance"])
     assert stored["schema"] == SCHEMA and stored["digest"].startswith("sha256:")
+    assert restarted.inspect_local("legacy")["transitions"][0]["payload"].find(SCHEMA) >= 0
 
 
 def test_v1_migration_is_exposed_through_json_cli(tmp_path, capsys):

@@ -335,27 +335,48 @@ class LocalTaskQueue(SQLiteRemoteQueue):
                 if stored not in {SCHEMA, LEGACY_SCHEMA}:
                     raise QueueUnavailable(f"unsupported local queue schema {stored!r}")
                 migrated = 0
+                migrated_provenance = 0
                 if stored == LEGACY_SCHEMA:
-                    rows = db.execute(
-                        "SELECT task_id,provenance FROM local_outcomes WHERE provenance IS NOT NULL"
-                    ).fetchall()
+                    rows = db.execute("SELECT task_id,intent,receipt,provenance FROM local_outcomes").fetchall()
                     for row in rows:
+                        for field in ("intent", "receipt", "provenance"):
+                            if not row[field]:
+                                continue
+                            try:
+                                raw = json.loads(row[field])
+                            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                                raise QueueUnavailable(f"invalid legacy {field} for {row['task_id']}") from exc
+                            if not isinstance(raw, dict):
+                                raise QueueUnavailable(f"invalid legacy {field} for {row['task_id']}")
+                            if field == "provenance" and "schema" not in raw:
+                                raw = {"schema": SCHEMA, "task_id": row["task_id"],
+                                       "provenance": raw, "created_ns": time.time_ns()}
+                            else:
+                                raw["schema"] = SCHEMA
+                                raw["task_id"] = row["task_id"]
+                                raw.pop("digest", None)
+                            raw["digest"] = _digest(raw)
+                            db.execute(f"UPDATE local_outcomes SET {field}=? WHERE task_id=?",
+                                       (json.dumps(raw, sort_keys=True), row["task_id"]))
+                            migrated += 1
+                            if field == "provenance":
+                                migrated_provenance += 1
+                    for row in db.execute("SELECT seq,payload FROM local_transitions").fetchall():
                         try:
-                            raw = json.loads(row["provenance"])
+                            payload = json.loads(row["payload"])
                         except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                            raise QueueUnavailable(
-                                f"invalid legacy provenance for {row['task_id']}"
-                            ) from exc
-                        if isinstance(raw, dict) and raw.get("schema") == SCHEMA and raw.get("digest"):
-                            continue
-                        value = {"schema": SCHEMA, "task_id": row["task_id"],
-                                 "provenance": dict(raw or {}), "created_ns": time.time_ns()}
-                        value["digest"] = _digest(value)
-                        db.execute("UPDATE local_outcomes SET provenance=? WHERE task_id=?",
-                                   (json.dumps(value, sort_keys=True), row["task_id"]))
+                            raise QueueUnavailable(f"invalid legacy transition {row['seq']}") from exc
+                        if not isinstance(payload, dict):
+                            raise QueueUnavailable(f"invalid legacy transition {row['seq']}")
+                        payload["schema"] = SCHEMA
+                        db.execute("UPDATE local_transitions SET payload=?,digest=? WHERE seq=?",
+                                   (json.dumps(payload, sort_keys=True), _digest(payload), row["seq"]))
                         migrated += 1
                     db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (SCHEMA,))
             self._init_local()
+            validation = self.doctor_local()
+            if not validation.get("healthy"):
+                raise QueueUnavailable(f"post-migration validation failed: {validation}")
         except Exception:
             # Restore through SQLite rather than replacing the live database file;
             # Windows can retain a WAL/shared-memory handle between connections.
@@ -363,7 +384,8 @@ class LocalTaskQueue(SQLiteRemoteQueue):
                 source.backup(destination)
             raise
         return {"schema": SCHEMA, "dry_run": False, "backup": str(backup),
-                "from_schema": stored, "migrated_provenance": migrated}
+                "from_schema": stored, "migrated_records": migrated,
+                "migrated_provenance": migrated_provenance}
 
     def gc_terminal(self, *, apply: bool = False) -> dict[str, Any]:
         eligible: list[str] = []
