@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.22
+
+- Discover extension providers through the PEP-compliant
+  `simplicio.loop_extension` entry-point group while retaining deterministic
+  compatibility with legacy metadata.
+
 ## 3.38.14
 
 - Disable Simplicio Runtime and Runtime MCP by default; the standalone path is now the

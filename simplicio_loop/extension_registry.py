@@ -10,7 +10,7 @@ Two discovery mechanisms are supported:
 * **Explicit registration** -- ``register(manifest)`` for manifests the
   caller already holds (e.g. loaded from a known path or config).
 * **Entry-point discovery** -- ``discover_entry_points()`` scans installed
-  packages for the ``simplicio.loop-extension`` group and loads each
+  packages for the ``simplicio.loop_extension`` group and loads each
   declared manifest. This is the "productive" path: an extension package
   simply declares an entry point and is picked up automatically.
 
@@ -27,7 +27,7 @@ later compose them.
 from __future__ import annotations
 
 import importlib.metadata
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from .extension_manifest import (
     SCHEMA_ID,
@@ -38,6 +38,13 @@ from .extension_manifest import (
 
 class ExtensionRegistryError(ValueError):
     """Raised when a registry operation fails and the caller wants a hard stop."""
+
+
+# Python packaging requires each entry-point group segment to be a valid
+# identifier.  Keep the manifest schema (``simplicio.loop-extension/v1``)
+# unchanged; only the distribution metadata group uses an underscore.
+ENTRY_POINT_GROUP = "simplicio.loop_extension"
+LEGACY_ENTRY_POINT_GROUP = "simplicio.loop-extension"
 
 
 class ExtensionRegistry:
@@ -68,6 +75,20 @@ class ExtensionRegistry:
             )
         manifest = dict(manifest)
         extension_id = str(manifest["extension_id"])
+        existing = self._by_id.get(extension_id)
+        if existing is not None:
+            existing_runtime = self._runtime_by_id.get(extension_id)
+            if existing != manifest or (
+                runtime is not None
+                and existing_runtime is not None
+                and existing_runtime is not runtime
+            ):
+                raise ExtensionRegistryError(
+                    f"conflicting extension registration for {extension_id!r}"
+                )
+            if runtime is not None and existing_runtime is None:
+                self._runtime_by_id[extension_id] = runtime
+            return existing
         self._by_id[extension_id] = manifest
         if runtime is not None:
             self._runtime_by_id[extension_id] = runtime
@@ -78,7 +99,7 @@ class ExtensionRegistry:
     # -- entry-point discovery -------------------------------------------- #
 
     def discover_entry_points(
-        self, group: str = "simplicio.loop-extension", *, strict: bool = True
+        self, group: str | None = None, *, strict: bool = True
     ) -> list[dict[str, Any]]:
         """Discover extensions declared via the named entry-point group.
 
@@ -89,11 +110,32 @@ class ExtensionRegistry:
         """
         discovered: list[dict[str, Any]] = []
         discovery_errors: list[dict[str, Any]] = []
-        try:
-            eps = importlib.metadata.entry_points(group=group)
-        except TypeError:  # pragma: no cover - py<3.10 shim
-            eps = importlib.metadata.entry_points().get(group, [])  # type: ignore[attr-defined]
-        for ep in eps:
+        groups = (group,) if group is not None else (
+            ENTRY_POINT_GROUP,
+            LEGACY_ENTRY_POINT_GROUP,
+        )
+        candidates: list[tuple[str, Any]] = []
+        seen_entries: set[tuple[str, str]] = set()
+        for candidate_group in groups:
+            try:
+                eps = importlib.metadata.entry_points(group=candidate_group)
+            except TypeError:  # pragma: no cover - py<3.10 shim
+                eps = importlib.metadata.entry_points().get(candidate_group, [])  # type: ignore[attr-defined]
+            for ep in eps:
+                entry_key = (
+                    str(getattr(ep, "name", "")),
+                    str(getattr(ep, "value", "")),
+                )
+                if entry_key not in seen_entries:
+                    candidates.append((candidate_group, ep))
+                    seen_entries.add(entry_key)
+        candidates.sort(key=lambda item: (
+            item[0] != ENTRY_POINT_GROUP,
+            getattr(item[1], "name", ""),
+            getattr(item[1], "value", ""),
+        ))
+        discovered_ids: set[str] = set()
+        for candidate_group, ep in candidates:
             try:
                 loaded = ep.load()
                 obj = loaded() if callable(loaded) else loaded
@@ -107,9 +149,16 @@ class ExtensionRegistry:
                 if isinstance(result, dict) and result.get("ok") is False:
                     discovery_errors.append({"entry_point": ep.name, "errors": result["errors"]})
                     continue
-                discovered.append(result)
+                extension_id = str(result["extension_id"])
+                if extension_id not in discovered_ids:
+                    discovered.append(result)
+                    discovered_ids.add(extension_id)
             except Exception as exc:  # noqa: BLE001 - surface, don't crash the scan
-                discovery_errors.append({"entry_point": getattr(ep, "name", "?"), "error": str(exc)})
+                discovery_errors.append({
+                    "entry_point": getattr(ep, "name", "?"),
+                    "group": candidate_group,
+                    "error": str(exc),
+                })
         if discovery_errors and strict:
             raise ExtensionRegistryError(
                 "entry-point discovery rejected manifests: " + str(discovery_errors)
