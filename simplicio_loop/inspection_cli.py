@@ -1,12 +1,17 @@
 """Support command surfaces extracted from :mod:`simplicio_loop.cli`."""
 from __future__ import annotations
-
-import subprocess
 import hashlib
-import re
-from urllib.parse import urlparse
 import json
+import os
+import re
+import subprocess
+import shutil
+import time
+import tempfile
+import uuid
 from pathlib import Path
+from urllib.parse import urlparse
+
 from . import drain as _drain
 
 from .ops_ledger import (
@@ -193,11 +198,17 @@ def ledger_replay(path: str, compatibility: bool, recover_trailing: bool,
         print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
         return 2
 
-
 _REPO_COMPONENT = r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,98}[A-Za-z0-9])?"
 _REPO_RE = re.compile(rf"^{_REPO_COMPONENT}/{_REPO_COMPONENT}$")
 _IMPORT_RECEIPT_SCHEMA = "simplicio.findings-import-receipt/v2"
 _MARKER_PREFIX = "simplicio-findings-import:"
+_MARKER_STATE_SCHEMA = "simplicio.findings-marker-state/v1"
+_MARKER_LEASE_SECONDS = 60.0
+_MARKER_WAIT_SECONDS = 60.0
+
+
+class _MarkerStateError(ValueError):
+    pass
 
 
 def _valid_repo(repo: str):
@@ -223,7 +234,32 @@ def _source_parent(source: str) -> Path:
     return path if path.is_dir() else path.parent
 
 
-def _repo_for_source(source: str, repo_map):
+def _git_context(directory: Path):
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(directory), "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if result.returncode != 0 or len(lines) != 2:
+        return None
+    return Path(lines[0]).resolve(), Path(lines[1]).resolve()
+
+
+def _canonical_file(source: str, root: Path) -> str:
+    path = Path(source).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    try:
+        relative = path.resolve().relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"finding file is outside repository root: {source}") from exc
+    return relative.as_posix().casefold()
+
+
+def _target_for_source(source: str, repo_map):
     parent = _source_parent(source).resolve()
     mapped = (repo_map or {}).get("repos", repo_map or {})
     for directory in (parent, *parent.parents):
@@ -231,16 +267,28 @@ def _repo_for_source(source: str, repo_map):
         if value is not None:
             if not isinstance(value, str) or not _valid_repo(value):
                 raise ValueError(f"invalid GitHub repository mapping for {directory}")
-            return _valid_repo(value)
-        try:
-            result = subprocess.run(["git", "-C", str(directory), "config", "--get", "remote.origin.url"], capture_output=True, text=True, timeout=10)
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        if result.returncode == 0:
-            repo = _github_repo_from_remote(result.stdout)
+            context = _git_context(directory)
+            root, common = context if context else (directory, directory / ".git")
+            return _valid_repo(value), _canonical_file(source, root), common
+        context = _git_context(directory)
+        if context:
+            root, common = context
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(root), "config", "--get", "remote.origin.url"],
+                    capture_output=True, text=True, timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            repo = _github_repo_from_remote(result.stdout) if result.returncode == 0 else None
             if repo:
-                return repo
+                return repo, _canonical_file(source, root), common
     return None
+
+
+def _repo_for_source(source: str, repo_map):
+    target = _target_for_source(source, repo_map)
+    return target[0] if target else None
 
 
 def _load_findings_import(path: str):
@@ -264,11 +312,17 @@ def _load_findings_import(path: str):
     return findings
 
 
-def _finding_hash(finding, repo: str) -> str:
-    canonical = {key: finding[key] for key in ("file", "line", "summary", "failure_scenario")}
+def _canonical_finding(finding, canonical_file: str):
+    canonical = {key: finding[key] for key in ("line", "summary", "failure_scenario")}
+    canonical["file"] = canonical_file
     if "verdict" in finding:
         canonical["verdict"] = finding["verdict"]
-    text = json.dumps({"repo": repo, "finding": canonical}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return canonical
+
+
+def _finding_hash(finding, repo: str, canonical_file=None) -> str:
+    canonical = _canonical_finding(finding, canonical_file or str(finding["file"]).replace("\\", "/").casefold())
+    text = json.dumps({"repo": repo.casefold(), "finding": canonical}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -311,59 +365,115 @@ def _import_error(code: str, message: str, urls=None):
     return {"error": {"code": code, "message": message}, "urls": dict(urls or {})}
 
 
-def _marker_state_path(marker: str) -> Path:
-    return Path(".simplicio/orchestrator/findings/import-markers") / (marker.removeprefix(_MARKER_PREFIX) + ".json")
+def _marker_state_path(coordination_root: Path, finding_hash: str) -> Path:
+    return coordination_root / "simplicio-findings-import-markers" / f"{finding_hash}.json"
+
+
+def _state_digest(state) -> str:
+    payload = {key: value for key, value in state.items() if key != "digest"}
+    text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _state_payload(status, repo, finding_hash, owner, fence, created, expires, url=None):
+    state = {"schema": _MARKER_STATE_SCHEMA, "status": status, "repo": repo, "finding_hash": finding_hash, "owner": owner, "pid": os.getpid(), "fence": fence, "created": created, "expires": expires}
+    if url is not None:
+        state["url"] = url
+    state["digest"] = _state_digest(state)
+    return state
 
 
 def _read_marker_state(path: Path):
     if not path.exists():
         return None
-    value = json.loads(path.read_text(encoding="utf-8"))
-    return value if isinstance(value, dict) else None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise _MarkerStateError(f"invalid marker state JSON: {exc}") from exc
+    required = {"schema", "status", "repo", "finding_hash", "owner", "pid", "fence", "created", "expires", "digest"}
+    if not isinstance(value, dict) or not required.issubset(value) or value.get("schema") != _MARKER_STATE_SCHEMA or value.get("digest") != _state_digest(value):
+        raise _MarkerStateError("marker state schema or digest is invalid")
+    return value
 
 
-def _claim_marker(marker: str, repo: str, finding_hash: str):
-    path = _marker_state_path(marker)
+def _claim_marker(path: Path, repo: str, finding_hash: str, owner: str):
+    now = time.time()
     with _drain._receipt_lock(path):
         state = _read_marker_state(path)
-        if state and state.get("status") == "resolved" and state.get("repo") == repo and state.get("finding_hash") == finding_hash and _issue_url(repo, state.get("url")):
-            return "resolved", state["url"]
-        if state and state.get("status") == "in_progress" and state.get("repo") == repo and state.get("finding_hash") == finding_hash:
-            return "wait", None
-        _drain._atomic_write_receipt(path, {"status": "in_progress", "repo": repo, "finding_hash": finding_hash})
-        return "owner", None
+        if state and state.get("repo") == repo and state.get("finding_hash") == finding_hash:
+            if state.get("status") == "resolved" and _issue_url(repo, state.get("url")):
+                return "resolved", state
+            if state.get("status") == "in_progress" and float(state.get("expires", 0)) > now:
+                return "wait", state
+        fence = uuid.uuid4().hex
+        state = _state_payload("in_progress", repo, finding_hash, owner, fence, now, now + _MARKER_LEASE_SECONDS)
+        _drain._atomic_write_receipt(path, state)
+        return "owner", state
 
 
-def _resolve_marker(marker: str, repo: str, finding_hash: str, url: str):
-    path = _marker_state_path(marker)
+def _finish_marker(path: Path, claim, repo: str, finding_hash: str, url=None):
     with _drain._receipt_lock(path):
-        _drain._atomic_write_receipt(path, {"status": "resolved", "repo": repo, "finding_hash": finding_hash, "url": url})
+        current = _read_marker_state(path)
+        if not current or current.get("fence") != claim.get("fence"):
+            return False
+        now = time.time()
+        status = "resolved" if url else "failed"
+        expires = now + _MARKER_LEASE_SECONDS if url else now
+        state = _state_payload(status, repo, finding_hash, claim["owner"], claim["fence"], claim["created"], expires, url)
+        _drain._atomic_write_receipt(path, state)
+        return True
 
 
-def _find_remote_issue(repo: str, marker: str):
-    command = ["gh", "issue", "list", "--repo", repo, "--state", "all", "--search", marker, "--json", "url,title,body", "--limit", "1000000"]
+def _issue_title(finding, marker):
+    return f"[finding] {finding['summary']} [{marker}]"
+
+
+def _issue_body(finding, marker):
+    return f"File: {finding['file']}:{finding['line']}\n\nFailure scenario: {finding['failure_scenario']}\n\n<!-- {marker} -->"
+
+
+def _run_gh(command):
+    executable = shutil.which(command[0])
+    if os.name == "nt" and executable and Path(executable).suffix.casefold() in {".cmd", ".bat"}:
+        command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", executable, *command[1:]]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        return subprocess.run(command, capture_output=True, text=True, timeout=60)
+    except OSError as exc:
+        if os.name != "nt" or getattr(exc, "winerror", None) != 6:
+            raise
+        with tempfile.TemporaryDirectory(prefix="simplicio-gh-") as directory:
+            stdout_path = Path(directory) / "stdout.txt"
+            stderr_path = Path(directory) / "stderr.txt"
+            shell_command = subprocess.list2cmdline(command) + f' > "{stdout_path}" 2> "{stderr_path}"'
+            completed = subprocess.run(shell_command, shell=True, timeout=60)
+            return subprocess.CompletedProcess(command, completed.returncode, stdout_path.read_text(encoding="utf-8"), stderr_path.read_text(encoding="utf-8"))
+
+
+def _find_remote_issue(repo: str, finding, labels, marker: str):
+    command = ["gh", "issue", "list", "--repo", repo, "--state", "all", "--author", "@me", "--search", f'"{marker}" in:title,body', "--json", "url,title,body,author,labels", "--limit", "1000"]
+    try:
+        result = _run_gh(command)
         rows = json.loads(result.stdout) if result.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
         rows = None
     if not isinstance(rows, list):
         return False, None
-    title_marker, body_marker = f"[{marker}]", f"<!-- {marker} -->"
+    expected_labels = {label.casefold() for label in labels}
     for row in rows:
-        if isinstance(row, dict) and (str(row.get("title", "")).endswith(title_marker) or body_marker in str(row.get("body", ""))) and _issue_url(repo, row.get("url")):
+        actual_labels = {str(item.get("name", "")).casefold() for item in row.get("labels", [])} if isinstance(row, dict) else set()
+        author = row.get("author") if isinstance(row, dict) else None
+        creator_ok = not author or bool(author.get("login"))
+        if isinstance(row, dict) and row.get("title") == _issue_title(finding, marker) and row.get("body") == _issue_body(finding, marker) and expected_labels == actual_labels and creator_ok and _issue_url(repo, row.get("url")):
             return True, row["url"]
     return True, None
 
 
 def _create_remote_issue(repo: str, finding, labels, marker: str):
-    title = f"[finding] {finding['summary']} [{marker}]"
-    body = f"File: {finding['file']}:{finding['line']}\n\nFailure scenario: {finding['failure_scenario']}\n\n<!-- {marker} -->"
-    command = ["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body]
+    command = ["gh", "issue", "create", "--repo", repo, "--title", _issue_title(finding, marker), "--body", _issue_body(finding, marker)]
     for label in labels:
         command.extend(("--label", label))
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        result = _run_gh(command)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
@@ -372,32 +482,40 @@ def _create_remote_issue(repo: str, finding, labels, marker: str):
     return urls[-1] if urls else None
 
 
-def _coordinate_finding(finding, repo: str, labels):
-    finding_hash = _finding_hash(finding, repo)
+def _coordinate_finding(finding, repo: str, labels, coordination_root: Path, canonical_file: str):
+    canonical = dict(finding)
+    canonical["file"] = canonical_file
+    finding_hash = _finding_hash(canonical, repo, canonical_file)
     marker = _marker(finding_hash)
-    reconciled, remote_url = _find_remote_issue(repo, marker)
-    if not reconciled:
-        return marker, finding_hash, None, "remote_reconciliation_failed"
-    if remote_url:
-        _resolve_marker(marker, repo, finding_hash, remote_url)
-        return marker, finding_hash, remote_url, None
-    claim, state_url = _claim_marker(marker, repo, finding_hash)
-    if claim == "resolved":
-        reconciled, verified = _find_remote_issue(repo, marker)
-        return marker, finding_hash, verified if reconciled else None, None if verified else "remote_reconciliation_failed"
-    if claim == "owner":
-        url = _create_remote_issue(repo, finding, labels, marker)
-        if url:
-            _resolve_marker(marker, repo, finding_hash, url)
-        return marker, finding_hash, url, None if url else "issue_create_failed"
-    for _ in range(20):
-        state = _read_marker_state(_marker_state_path(marker))
-        if state and state.get("status") == "resolved" and _issue_url(repo, state.get("url")):
-            reconciled, verified = _find_remote_issue(repo, marker)
-            if reconciled and verified:
-                return marker, finding_hash, verified, None
-        __import__("time").sleep(0.02)
-    return marker, finding_hash, None, "finding_in_progress"
+    path = _marker_state_path(coordination_root, finding_hash)
+    try:
+        reconciled, remote_url = _find_remote_issue(repo, canonical, labels, marker)
+        if not reconciled:
+            return marker, finding_hash, None, "remote_reconciliation_failed"
+        if remote_url:
+            return marker, finding_hash, remote_url, None
+        owner = f"{os.getpid()}:{uuid.uuid4().hex}"
+        claim_kind, claim = _claim_marker(path, repo, finding_hash, owner)
+        if claim_kind == "resolved":
+            reconciled, verified = _find_remote_issue(repo, canonical, labels, marker)
+            return marker, finding_hash, verified if reconciled else None, None if verified else "remote_reconciliation_failed"
+        if claim_kind == "owner":
+            url = _create_remote_issue(repo, canonical, labels, marker)
+            _finish_marker(path, claim, repo, finding_hash, url)
+            return marker, finding_hash, url, None if url else "issue_create_failed"
+        deadline = time.monotonic() + _MARKER_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            state = _read_marker_state(path)
+            if state and state.get("status") == "resolved" and _issue_url(repo, state.get("url")):
+                reconciled, verified = _find_remote_issue(repo, canonical, labels, marker)
+                if reconciled and verified:
+                    return marker, finding_hash, verified, None
+            if not state or state.get("status") == "failed" or float(state.get("expires", 0)) <= time.time():
+                return _coordinate_finding(finding, repo, labels, coordination_root, canonical_file)
+            time.sleep(0.05)
+        return marker, finding_hash, None, "finding_in_progress"
+    except _MarkerStateError as exc:
+        return marker, finding_hash, None, f"marker_state_corrupt:{exc}"
 
 
 def _import_findings(args):
@@ -409,18 +527,18 @@ def _import_findings(args):
         labels = list(getattr(args, "label", []) or [])
         if any(not isinstance(label, str) or not label.strip() for label in labels):
             raise ValueError("labels must be non-empty strings")
-        repositories = []
+        targets = []
         for index, finding in enumerate(findings):
-            repo = _repo_for_source(finding["file"], repo_map)
-            if not repo:
+            target = _target_for_source(finding["file"], repo_map)
+            if not target:
                 raise ValueError(f"could not resolve repository for findings[{index}]")
-            repositories.append(repo)
+            targets.append(target)
         receipt_path = _receipt_path(args)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps(_import_error("invalid_import_input", str(exc)), sort_keys=True))
         return 2
     if args.dry_run:
-        print(json.dumps({str(i): f"https://github.com/{repo}/issues/dry-run-{i}" for i, repo in enumerate(repositories)}, sort_keys=True))
+        print(json.dumps({str(i): f"https://github.com/{target[0]}/issues/dry-run-{i}" for i, target in enumerate(targets)}, sort_keys=True))
         return 0
     try:
         with _drain._receipt_lock(receipt_path):
@@ -429,10 +547,12 @@ def _import_findings(args):
         print(json.dumps(_import_error("corrupt_import_receipt", str(exc)), sort_keys=True))
         return 2
     urls = {}
-    for index, (finding, repo) in enumerate(zip(findings, repositories)):
-        marker, finding_hash, url, error = _coordinate_finding(finding, repo, labels)
+    for index, (finding, target) in enumerate(zip(findings, targets)):
+        repo, canonical_file, coordination_root = target
+        marker, finding_hash, url, error = _coordinate_finding(finding, repo, labels, coordination_root, canonical_file)
         if error:
-            print(json.dumps(_import_error(error, f"could not import findings[{index}]", urls), sort_keys=True))
+            code, _, detail = error.partition(":")
+            print(json.dumps(_import_error(code, detail or f"could not import findings[{index}]", urls), sort_keys=True))
             return 1
         receipt["entries"][marker] = {"repo": repo, "finding_hash": finding_hash, "url": url}
         try:
@@ -448,7 +568,6 @@ def _import_findings(args):
         urls[str(index)] = url
     print(json.dumps(urls, ensure_ascii=False, sort_keys=True))
     return 0
-
 def findings_command(args) -> int:
     """List, report, import, reconcile, or diagnose continuous findings."""
     from . import finding_report as fr

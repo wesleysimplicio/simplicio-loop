@@ -27,7 +27,7 @@ def _isolate(tmp_path, monkeypatch):
     import simplicio_loop.finding_report as fr_mod
 
     monkeypatch.setattr(fr_mod, "_FINDINGS_DIR", findings_dir)
-    monkeypatch.setattr(cli_mod._inspection_cli, "_marker_state_path", lambda marker: tmp_path / "markers" / (marker.rsplit(":", 1)[-1] + ".json"))
+    monkeypatch.setattr(cli_mod._inspection_cli, "_marker_state_path", lambda root, finding_hash: tmp_path / "markers" / f"{finding_hash}.json")
     return sp
 
 
@@ -209,15 +209,16 @@ def test_marker_stable_across_order_append_and_labels(tmp_path):
     assert marker == mod._marker(mod._finding_hash((a, b, _finding(tmp_path / "c.py"))[0], "acme/widgets"))
 
 
-def test_exact_marker_match_and_unbounded_list(tmp_path, monkeypatch):
+def test_exact_marker_match_and_paginated_server_search(tmp_path, monkeypatch):
     mod = cli_mod._inspection_cli
+    finding = _finding("x.py")
     marker = mod._marker("a" * 64)
     calls = []
-    rows = [{"url": "https://github.com/acme/widgets/issues/1", "title": f"x [{marker}evil]", "body": ""}]
+    rows = [{"url": "https://github.com/acme/widgets/issues/1", "title": f"x [{marker}evil]", "body": "", "labels": [], "author": {"login": "me"}}]
     monkeypatch.setattr(mod.subprocess, "run", lambda command, **kwargs: (calls.append(command) or _result(rows)))
-    assert mod._find_remote_issue("acme/widgets", marker) == (True, None)
-    assert calls[0][calls[0].index("--limit") + 1] == "1000000"
-
+    assert mod._find_remote_issue("acme/widgets", finding, [], marker) == (True, None)
+    assert calls[0][calls[0].index("--limit") + 1] == "1000"
+    assert calls[0][calls[0].index("--author") + 1] == "@me"
 
 def test_receipt_provenance_and_non_dict_rejected(tmp_path):
     mod = cli_mod._inspection_cli
@@ -235,7 +236,7 @@ def test_receipt_url_reverified_remotely(tmp_path, monkeypatch, capsys):
     mapping = tmp_path / "m.json"
     mapping.write_text(json.dumps({str(tmp_path): "acme/widgets"}), encoding="utf-8")
     mod = cli_mod._inspection_cli
-    finding_hash = mod._finding_hash(finding, "acme/widgets")
+    finding_hash = mod._finding_hash(finding, "acme/widgets", "x.py")
     marker = mod._marker(finding_hash)
     receipt = tmp_path / "r.json"
     receipt.write_text(json.dumps({"schema": mod._IMPORT_RECEIPT_SCHEMA, "entries": {marker: {"repo": "acme/widgets", "finding_hash": finding_hash, "url": "https://github.com/acme/widgets/issues/3"}}}), encoding="utf-8")
@@ -243,13 +244,13 @@ def test_receipt_url_reverified_remotely(tmp_path, monkeypatch, capsys):
 
     def gh(command, **kwargs):
         calls.append(command)
-        row = {"url": "https://github.com/acme/widgets/issues/3", "title": f"x [{marker}]", "body": ""}
+        canonical = dict(finding, file="x.py")
+        row = {"url": "https://github.com/acme/widgets/issues/3", "title": mod._issue_title(canonical, marker), "body": mod._issue_body(canonical, marker), "labels": [], "author": {"login": "me"}}
         return _result([row])
 
     monkeypatch.setattr(mod.subprocess, "run", gh)
     assert cli_mod.findings_command(_import_args(path, mapping, receipt=receipt)) == 0
     assert any(c[2] == "list" for c in calls) and json.loads(capsys.readouterr().out)["0"].endswith("/3")
-
 
 def test_cross_receipt_concurrency_creates_once(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
@@ -265,13 +266,16 @@ def test_cross_receipt_concurrency_creates_once(tmp_path, monkeypatch):
     mod = cli_mod._inspection_cli
 
     def gh(command, **kwargs):
+        if command[0] == "git":
+            return _result("", returncode=1)
+        marker = command[command.index("--search") + 1].split(chr(34))[1] if command[2] == "list" else ""
         if command[2] == "list":
             with guard:
                 created = bool(creates)
             if not created:
                 return _result([])
-            marker = command[command.index("--search") + 1]
-            return _result([{"url": "https://github.com/acme/widgets/issues/8", "title": f"x [{marker}]", "body": ""}])
+            canonical = dict(finding, file="x.py")
+            return _result([{"url": "https://github.com/acme/widgets/issues/8", "title": mod._issue_title(canonical, marker), "body": mod._issue_body(canonical, marker), "labels": [], "author": {"login": "me"}}])
         with guard:
             creates.append(command)
         return _result("https://github.com/acme/widgets/issues/8\n")
@@ -318,7 +322,7 @@ def test_remote_command_failure_branches(tmp_path, monkeypatch):
     mod = cli_mod._inspection_cli
     finding = _finding(tmp_path / "x.py")
     monkeypatch.setattr(mod.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("gh absent")))
-    assert mod._find_remote_issue("acme/widgets", "marker") == (False, None)
+    assert mod._find_remote_issue("acme/widgets", finding, [], "marker") == (False, None)
     assert mod._create_remote_issue("acme/widgets", finding, [], "marker") is None
 
 
@@ -336,3 +340,83 @@ def test_import_reports_corrupt_receipt_and_coordinate_failure(tmp_path, monkeyp
     monkeypatch.setattr(mod, "_coordinate_finding", lambda *args: ("m", "h", None, "issue_create_failed"))
     assert cli_mod.findings_command(_import_args(path, mapping, receipt=receipt)) == 1
     assert "issue_create_failed" in capsys.readouterr().out
+
+
+def test_marker_state_is_filesystem_safe_durable_and_detects_corruption(tmp_path):
+    mod = cli_mod._inspection_cli
+    finding_hash = "a" * 64
+    path = mod._marker_state_path(tmp_path, finding_hash)
+    assert path.name == f"{finding_hash}.json" and ":" not in path.name
+    kind, claim = mod._claim_marker(path, "acme/widgets", finding_hash, "owner-1")
+    assert kind == "owner"
+    assert {"schema", "owner", "pid", "fence", "created", "expires", "digest"}.issubset(claim)
+    assert mod._read_marker_state(path) == claim
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["owner"] = "tampered"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(mod._MarkerStateError, match="digest"):
+        mod._read_marker_state(path)
+
+
+def test_stale_claim_takeover_and_failed_owner_release(tmp_path, monkeypatch):
+    mod = cli_mod._inspection_cli
+    path = tmp_path / "marker.json"
+    finding_hash = "b" * 64
+    monkeypatch.setattr(mod, "_MARKER_LEASE_SECONDS", 0.01)
+    kind, first = mod._claim_marker(path, "acme/widgets", finding_hash, "crashed-owner")
+    assert kind == "owner"
+    monkeypatch.setattr(mod.time, "time", lambda: first["expires"] + 1)
+    kind, second = mod._claim_marker(path, "acme/widgets", finding_hash, "replacement")
+    assert kind == "owner" and second["fence"] != first["fence"]
+    assert mod._finish_marker(path, second, "acme/widgets", finding_hash, None) is True
+    kind, third = mod._claim_marker(path, "acme/widgets", finding_hash, "retry")
+    assert kind == "owner" and third["owner"] == "retry"
+
+
+def test_canonical_identity_across_worktrees_separators_and_case(tmp_path):
+    mod = cli_mod._inspection_cli
+    root_a = tmp_path / "WorkTree-A"
+    root_b = tmp_path / "worktree-b"
+    file_a = root_a / "Src" / "Thing.PY"
+    file_b = root_b / "src" / "thing.py"
+    canonical_a = mod._canonical_file(str(file_a), root_a)
+    canonical_b = mod._canonical_file(str(file_b).replace("\\", "/"), root_b)
+    finding_a = _finding(file_a)
+    finding_b = _finding(file_b)
+    assert canonical_a == canonical_b == "src/thing.py"
+    assert mod._finding_hash(finding_a, "Acme/Widgets", canonical_a) == mod._finding_hash(finding_b, "acme/widgets", canonical_b)
+
+
+def test_fake_gh_cmd_executable_e2e_on_windows(tmp_path, monkeypatch):
+    import os
+
+    fake = tmp_path / "fake-bin"
+    fake.mkdir()
+    (fake / "gh.py").write_text("print('fake-gh-ok')\n", encoding="utf-8")
+    (fake / "gh.cmd").write_text(f'@"{sys.executable}" "%~dp0gh.py" %*\n', encoding="utf-8")
+    monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ["PATH"])
+    result = cli_mod._inspection_cli._run_gh(["gh", "--version"])
+    assert result.returncode == 0 and result.stdout.strip() == "fake-gh-ok"
+
+
+def test_cross_process_different_cwd_slow_owner_shares_claim(tmp_path):
+    import os
+
+    coordination = tmp_path / "common-git"
+    cwd_a = tmp_path / "cwd-a"
+    cwd_b = tmp_path / "cwd-b"
+    cwd_a.mkdir()
+    cwd_b.mkdir()
+    runner = tmp_path / "claim-runner.py"
+    runner.write_text(
+        "import json,os,sys,time\nfrom pathlib import Path\nfrom simplicio_loop import inspection_cli as m\nos.chdir(sys.argv[2])\nh='c'*64; p=m._marker_state_path(Path(sys.argv[1]),h); kind,state=m._claim_marker(p,'acme/widgets',h,str(os.getpid()))\nif kind=='owner':\n time.sleep(0.4); m._finish_marker(p,state,'acme/widgets',h,'https://github.com/acme/widgets/issues/88'); state=m._read_marker_state(p)\nelse:\n end=time.time()+5\n while time.time()<end:\n  state=m._read_marker_state(p)\n  if state and state.get('status')=='resolved': break\n  time.sleep(0.05)\nPath(sys.argv[3]).write_text(json.dumps(state),encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT)
+    outputs = [tmp_path / f"claim-{index}.json" for index in range(2)]
+    pids = [os.spawnve(os.P_NOWAIT, sys.executable, [sys.executable, str(runner), str(coordination), str(cwd), str(output)], env) for cwd, output in zip((cwd_a, cwd_b), outputs)]
+    statuses = [os.waitpid(pid, 0)[1] for pid in pids]
+    states = [json.loads(output.read_text(encoding="utf-8")) for output in outputs]
+    assert statuses == [0, 0]
+    assert all(state["status"] == "resolved" and state["url"].endswith("/88") for state in states)
