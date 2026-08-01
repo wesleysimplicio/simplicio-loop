@@ -234,7 +234,7 @@ def test_v1_migration_rejects_tamper_before_rehash_and_preserves_legacy(tmp_path
     queue.submit("legacy-tamper")
     lease = queue.claim_local("legacy-tamper", "w", idempotency_key="legacy-tamper")
     queue.persist_intent(lease, {"effect": "original"})
-    with sqlite3.connect(queue.path) as db:
+    with contextlib.closing(sqlite3.connect(queue.path)) as db, db:
         db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (LEGACY_SCHEMA,))
         if target == "intent":
             value = json.loads(db.execute(
@@ -269,7 +269,7 @@ def test_v1_migration_rejects_unversioned_effect_envelopes(tmp_path, field):
     queue.persist_intent(lease, {"effect": "original"})
     if field == "receipt":
         queue.record_outcome(lease, "verified_success", receipt={"proof": "ok"})
-    with sqlite3.connect(queue.path) as db:
+    with contextlib.closing(sqlite3.connect(queue.path)) as db, db:
         db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (LEGACY_SCHEMA,))
         from simplicio_loop.local_task_queue import _digest
         for envelope_field in ("intent", "receipt"):
