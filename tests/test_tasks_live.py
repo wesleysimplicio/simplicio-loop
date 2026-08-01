@@ -38,7 +38,7 @@ class Orchestrator:
     def __init__(self, intake, contracts, pipeline, **kwargs):
         self.contracts = contracts
         self.worktree_queue = None
-    def run(self, request, action_gate):
+    def run(self, request, action_gate, cancel=False):
         rows = self.contracts({})
         assert self.worktree_queue is Queue.instances[-1]
         return {"state": "completed", "rows": rows}

@@ -22,6 +22,7 @@ def run_live(
     workspace: str,
     agent_command: Sequence[str],
     action_gate: bool,
+    cancel: bool = False,
     checkpoint: str = "",
     max_workers: int = 1,
     retry_budget: int = 1,
@@ -53,4 +54,4 @@ def run_live(
 
     orchestrator = orchestrator_factory(intake, contracts, pipeline, max_workers=max_workers, retry_budget=retry_budget, journal_dir=str(journal_dir))
     holder["orchestrator"] = orchestrator
-    return orchestrator.run(request, action_gate=action_gate)
+    return orchestrator.run(request, action_gate=action_gate, cancel=cancel)

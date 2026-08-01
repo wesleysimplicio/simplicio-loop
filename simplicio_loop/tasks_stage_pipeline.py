@@ -1,6 +1,7 @@
 """Concrete stage/review/delivery coordinator for dispatched task items."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -24,14 +25,19 @@ class CommandPipelineCoordinator:
         self.host_total_slots = host_total_slots
         self.coordinator_factory = coordinator_factory
         self.active = []
+        self.cancel_path = self.journal_dir / "cancel.json"
 
     def cancel_all(self, *, reason: str) -> list[str]:
+        self.journal_dir.mkdir(parents=True, exist_ok=True)
+        self.cancel_path.write_text(json.dumps({"schema": "simplicio.tasks-cancel/v1", "reason": reason}, sort_keys=True), encoding="utf-8")
         cancelled = []
-        for coordinator in self.active:
+        for coordinator in list(self.active):
             cancelled.extend(coordinator.cancel_all(reason=reason))
         return cancelled
-
     def __call__(self, dispatched: Mapping[str, Any]) -> Mapping[str, Any]:
+        if self.cancel_path.exists():
+            cancel = json.loads(self.cancel_path.read_text(encoding="utf-8"))
+            return {"passed": False, "cancelled": True, "reason": cancel.get("reason", "cancel_requested"), "evidence": []}
         evidence = []
         all_passed = True
         workers = dispatched.get("workers") or dispatched.get("completed") or []
@@ -47,12 +53,14 @@ class CommandPipelineCoordinator:
             })
             coordinator = self.coordinator_factory(run_id=run_id, task_id=task_id, adapters=[adapter], journal=journal, host_total_slots=self.host_total_slots)
             self.active.append(coordinator)
-            results = coordinator.run_all()
-            passed = bool(results) and all(result.status == "passed" for result in results.values()) and coordinator.terminal_reached()
-            receipts = [_redact(result.instance.receipt) for result in results.values() if result.instance and result.instance.receipt]
-            outputs = [_redact(result.instance.output) for result in results.values() if result.instance and result.instance.output]
-            pr_url = next((str(value.get("pr_url")) for value in [*outputs, *receipts] if isinstance(value, Mapping) and value.get("pr_url")), "")
-            all_passed = all_passed and passed and bool(pr_url)
-            evidence.append({"task_id": task_id, "pr": pr_url or None, "verification": "passed" if passed else None, "receipts": receipts, "status": coordinator.status_report()})
-            self.active.remove(coordinator)
+            try:
+                results = coordinator.run_all()
+                passed = bool(results) and all(result.status == "passed" for result in results.values()) and coordinator.terminal_reached()
+                receipts = [_redact(result.instance.receipt) for result in results.values() if result.instance and result.instance.receipt]
+                outputs = [_redact(result.instance.output) for result in results.values() if result.instance and result.instance.output]
+                pr_url = next((str(value.get("pr_url")) for value in [*outputs, *receipts] if isinstance(value, Mapping) and value.get("pr_url")), "")
+                all_passed = all_passed and passed and bool(pr_url)
+                evidence.append({"task_id": task_id, "pr": pr_url or None, "verification": "passed" if passed else None, "receipts": receipts, "status": coordinator.status_report()})
+            finally:
+                self.active.remove(coordinator)
         return {"passed": bool(evidence) and all_passed, "evidence": evidence}

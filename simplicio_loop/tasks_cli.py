@@ -26,6 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("scope", nargs="?", default="")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--action-gate", action="store_true")
+    run.add_argument("--cancel", action="store_true", help="persist cancellation for this tasks run")
     run.add_argument("--workspace", default=".")
     run.add_argument("--checkpoint", default="")
     run.add_argument("--agent-command", default="")
@@ -42,16 +43,16 @@ def main(argv: list[str] | None = None) -> int:
         rows = [{"item": item, "state": "partial", "worktree_isolation": True, "action_gate": "required", "pipeline": pipeline, "evidence": {"pr": None, "verification": None}} for item in items]
         _emit({"schema": SCHEMA, "dry_run": True, "items": rows, "deduplicated_count": len(rows), "state": "partial"})
         return 0
-    if not args.action_gate:
+    if not args.cancel and not args.action_gate:
         _emit({"schema": SCHEMA, "state": "blocked", "reason": "action_gate_required"})
         return 2
     command = shlex.split(args.agent_command, posix=False)
-    if not command:
+    if not args.cancel and not command:
         _emit({"schema": SCHEMA, "state": "blocked", "reason": "agent_command_required"})
         return 2
     try:
         from .tasks_live import run_live
-        result = run_live(args.scope, workspace=args.workspace, checkpoint=args.checkpoint, agent_command=command, action_gate=True, max_workers=args.max_workers, retry_budget=args.retry_budget)
+        result = run_live(args.scope, workspace=args.workspace, checkpoint=args.checkpoint, agent_command=command, action_gate=args.action_gate, cancel=args.cancel, max_workers=args.max_workers, retry_budget=args.retry_budget)
     except Exception as exc:
         _emit({"schema": SCHEMA, "state": "blocked", "reason": f"{type(exc).__name__}: {exc}"})
         return 2

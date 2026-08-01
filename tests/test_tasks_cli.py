@@ -35,3 +35,15 @@ def test_tasks_run_rejects_non_list_scope(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["state"] == "blocked"
     assert "JSON array" in payload["reason"]
+
+
+def test_tasks_cancel_forwards_without_action_gate_or_agent_command(monkeypatch, tmp_path, capsys):
+    from simplicio_loop import tasks_live
+    captured = {}
+    def fake(request, **kwargs):
+        captured.update(kwargs)
+        return {"state": "cancelled"}
+    monkeypatch.setattr(tasks_live, "run_live", fake)
+    assert cli.main(["tasks", "run", "finish all issues in acme/widgets", "--workspace", str(tmp_path), "--cancel"]) == 3
+    assert captured["cancel"] is True
+    assert json.loads(capsys.readouterr().out)["state"] == "cancelled"

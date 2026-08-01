@@ -1,3 +1,4 @@
+import pytest
 from types import SimpleNamespace
 
 from simplicio_loop.tasks_stage_pipeline import CommandPipelineCoordinator
@@ -63,3 +64,19 @@ def test_cancel_propagates_to_active_coordinator(tmp_path):
     pipeline.active.append(active)
     assert pipeline.cancel_all(reason="stop") == ["delivery"]
     assert active.cancelled == ["stop"]
+
+
+def test_cancel_persists_across_restart_and_finally_clears_active(tmp_path):
+    pipeline = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=FakeCoordinator)
+    pipeline.cancel_all(reason="operator_stop")
+    restarted = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=FakeCoordinator)
+    result = restarted({"workers": [{"task_id": "issue-1"}]})
+    assert (result["cancelled"], result["reason"], restarted.active) == (True, "operator_stop", [])
+
+    class FailingCoordinator(FakeCoordinator):
+        def run_all(self):
+            raise RuntimeError("boom")
+    clean = CommandPipelineCoordinator(["python"], str(tmp_path / "clean"), coordinator_factory=FailingCoordinator)
+    with pytest.raises(RuntimeError, match="boom"):
+        clean({"workers": [{"task_id": "issue-1"}]})
+    assert clean.active == []
