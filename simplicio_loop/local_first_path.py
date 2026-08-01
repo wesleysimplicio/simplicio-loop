@@ -42,18 +42,24 @@ class LocalFirstTaskPath:
             ) -> LocalFirstTaskResult:
         binding = self.bridge.prepare(task_id=task_id, attempt_id=attempt_id,
                                       worktree_id=worktree_id, mapper_receipt=mapper_receipt)
-        plan = self.integration.prepare(task)
-        if plan.get("status") != "READY":
-            raise LocalFirstPathError(f"Fast plan did not become READY: {plan.get('reason', 'unknown')}")
-        if changeset is None:
-            return LocalFirstTaskResult(task_id, "PLANNED", binding, plan)
-        candidate = self.bridge.validate_changeset(binding, changeset)
-        applied = self.integration.apply(candidate, winner=True,
-                                          generation=binding.overlay_generation,
-                                          context_hash=binding.mapper_context_hash)
-        if str(applied.get("status") or "").upper() not in {"APPLIED", "READY", "MEASURED"}:
-            raise LocalFirstPathError(f"Fast apply was not accepted: {applied.get('status', 'unknown')}")
-        return LocalFirstTaskResult(task_id, "APPLIED", binding, plan, applied)
+        try:
+            plan = self.integration.prepare(task)
+            if plan.get("status") != "READY":
+                raise LocalFirstPathError(f"Fast plan did not become READY: {plan.get('reason', 'unknown')}")
+            if changeset is None:
+                return LocalFirstTaskResult(task_id, "PLANNED", binding, plan)
+            candidate = self.bridge.validate_changeset(binding, changeset)
+            applied = self.integration.apply(candidate, winner=True,
+                                              generation=binding.overlay_generation,
+                                              context_hash=binding.mapper_context_hash)
+            if str(applied.get("status") or "").upper() not in {"APPLIED", "READY", "MEASURED"}:
+                raise LocalFirstPathError(f"Fast apply was not accepted: {applied.get('status', 'unknown')}")
+            result = LocalFirstTaskResult(task_id, "APPLIED", binding, plan, applied)
+            self.bridge.release(binding)
+            return result
+        except Exception:
+            self.bridge.release(binding)
+            raise
 
 
 __all__ = ["SCHEMA", "LocalFirstPathError", "LocalFirstTaskPath", "LocalFirstTaskResult"]
