@@ -6148,6 +6148,53 @@ def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:
     }
 
 
+def _cancel_mapper_background(repo_path: Path, run_dir: Path, state: Dict[str, Any]) -> Dict[str, Any]:
+    """Cancel an outstanding deep Mapper job before a run becomes terminal."""
+    mapper_state = state.get("mapper") if isinstance(state.get("mapper"), Mapping) else {}
+    route = mapper_state.get("execution_route") if isinstance(mapper_state, Mapping) else None
+    if not isinstance(route, Mapping):
+        context_path = run_dir / "mapper-context.json"
+        try:
+            context = _load_json(context_path) if context_path.is_file() else {}
+        except (OSError, TypeError, ValueError):
+            context = {}
+        candidate = context.get("execution_route") if isinstance(context, Mapping) else None
+        route = candidate if isinstance(candidate, Mapping) else {}
+    background = route.get("background") if isinstance(route, Mapping) else None
+    if not isinstance(background, Mapping) or background.get("status") != "queued":
+        return {"status": "not_active", "reason_code": "mapper_background_not_active"}
+
+    result = _run_cmd(
+        ["simplicio-mapper", "background", "cancel", ".", "--json"], repo_path,
+    )
+    try:
+        stdout = json.loads(result.stdout) if result.stdout.strip() else {}
+    except ValueError:
+        stdout = {"raw": result.stdout.strip()}
+    receipt = {
+        "schema": "simplicio.loop.mapper-background-cancellation/v1",
+        "status": "cancelled" if result.returncode == 0 else "blocked",
+        "reason_code": "mapper_background_cancelled" if result.returncode == 0 else "mapper_background_cancel_failed",
+        "returncode": result.returncode,
+        "stdout": stdout,
+        "stderr": (result.stderr or "").strip(),
+        "job_id": background.get("work_id"),
+        "pid": background.get("pid"),
+        "requested_at": _now(),
+    }
+    receipt_path = run_dir / "mapper-background-cancel.json"
+    _write_json(receipt_path, receipt)
+    state.setdefault("mapper", {})["background_cancellation"] = {
+        **receipt, "receipt": str(receipt_path),
+    }
+    state["mapper"]["execution_route"] = {
+        **dict(route),
+        "background": {**dict(background), "status": receipt["status"],
+                        "cancel_receipt": str(receipt_path)},
+    }
+    return receipt
+
+
 def change_phase(repo: str, run_id: str, to_phase: str, reason: str) -> Dict[str, Any]:
     status = read_status(repo, run_id)
     run_dir = Path(status["run_dir"])
@@ -6170,6 +6217,7 @@ def change_phase(repo: str, run_id: str, to_phase: str, reason: str) -> Dict[str
             }
         state["next_action"] = "mapper_scan_required"
     elif to_phase == "cancelled":
+        _cancel_mapper_background(Path(repo).resolve(), run_dir, state)
         state["next_action"] = "none"
     _transition(run_dir, state, to_phase, reason, receipt=str(run_dir / "state.json"))
     return read_status(repo, run_id)

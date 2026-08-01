@@ -413,6 +413,40 @@ def test_run_mapper_sync_rollback_is_explicit_and_receipted(tmp_path, monkeypatc
     assert result["execution_route"]["phase_timings_seconds"]["scan_wall_seconds"] >= 0
 
 
+def test_cancel_run_stops_queued_mapper_background_job(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = repo / ".simplicio" / "loop-runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    state = {
+        "run_id": "run-1",
+        "phase": "mapping",
+        "mapper": {
+            "execution_route": {
+                "background": {"status": "queued", "work_id": "job-1", "pid": 42}
+            }
+        },
+    }
+    calls = []
+
+    monkeypatch.setattr(runner_mod, "read_status", lambda *_args: {
+        "run_dir": str(run_dir), "state": state, "manifest": {}
+    })
+    monkeypatch.setattr(runner_mod, "_run_cmd", lambda argv, cwd: (
+        calls.append((argv, cwd)) or SimpleNamespace(
+            returncode=0, stdout=json.dumps({"status": "cancelled"}), stderr=""
+        )
+    ))
+    monkeypatch.setattr(runner_mod, "_transition", lambda *_args, **_kwargs: None)
+
+    runner_mod.change_phase(str(repo), "run-1", "cancelled", "operator stop")
+
+    assert calls[0][0] == ["simplicio-mapper", "background", "cancel", ".", "--json"]
+    receipt = json.loads((run_dir / "mapper-background-cancel.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "cancelled"
+    assert state["mapper"]["execution_route"]["background"]["status"] == "cancelled"
+
+
 def test_run_mapper_preserves_explicit_target_when_handoff_omits_it(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
