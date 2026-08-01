@@ -946,6 +946,8 @@ def main(argv=None) -> int:
     queue_sub = p_queue.add_subparsers(dest="queue_action", required=True)
     for queue_action in ("status", "resume", "doctor", "reclaim"):
         queue_sub.add_parser(queue_action)
+    queue_migrate = queue_sub.add_parser("migrate")
+    queue_migrate.add_argument("--apply", action="store_true")
     queue_top = queue_sub.add_parser("top")
     queue_top.add_argument("--limit", type=int, default=20)
     queue_drain = queue_sub.add_parser("drain")
@@ -1137,7 +1139,7 @@ def main(argv=None) -> int:
             forwarded += ["--limit", str(args.limit)]
         elif args.queue_action == "drain":
             forwarded += ["--timeout", str(args.timeout)]
-        elif args.queue_action == "gc" and args.apply:
+        elif args.queue_action in {"gc", "migrate"} and args.apply:
             forwarded.append("--apply")
         elif args.queue_action in {"inspect", "cancel"}:
             forwarded.append(args.task_id)

@@ -14,7 +14,8 @@ from .remote_queue import (
     Lease, QueueConflict, QueueUnavailable, SQLiteRemoteQueue, _lease_id, _now,
 )
 
-SCHEMA = "simplicio.loop.local-task-queue/v1"
+SCHEMA = "simplicio.loop.local-task-queue/v2"
+LEGACY_SCHEMA = "simplicio.loop.local-task-queue/v1"
 OUTCOMES = frozenset({
     "never_started", "running", "unknown_outcome", "verified_success",
     "retryable_failure", "blocked", "dead_letter",
@@ -29,16 +30,17 @@ def _digest(value: Mapping[str, Any]) -> str:
 class LocalTaskQueue(SQLiteRemoteQueue):
     """One crash-safe local queue; extension tables live in the inherited DB."""
 
-    def __init__(self, root: str | Path, *, busy_timeout: float = 10.0) -> None:
+    def __init__(self, root: str | Path, *, busy_timeout: float = 10.0,
+                 allow_legacy: bool = False) -> None:
         root = Path(root).resolve()
         if str(root).startswith("\\\\"):
             raise QueueUnavailable("network filesystem locking is not trusted")
         self.orchestrator = root / ".simplicio" / "orchestrator"
         self.orchestrator.mkdir(parents=True, exist_ok=True)
         super().__init__(str(self.orchestrator / "queue.sqlite3"), busy_timeout=busy_timeout)
-        self._init_local()
+        self._init_local(allow_legacy=allow_legacy)
 
-    def _init_local(self) -> None:
+    def _init_local(self, *, allow_legacy: bool = False) -> None:
         with self._tx() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS local_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -56,6 +58,11 @@ class LocalTaskQueue(SQLiteRemoteQueue):
             """)
             db.execute("INSERT OR IGNORE INTO local_meta VALUES('schema',?)", (SCHEMA,))
             db.execute("INSERT OR IGNORE INTO local_meta VALUES('stopped','0')")
+            stored = db.execute("SELECT value FROM local_meta WHERE key='schema'").fetchone()[0]
+            if stored != SCHEMA and not (allow_legacy and stored == LEGACY_SCHEMA):
+                raise QueueUnavailable(
+                    f"unsupported local queue schema {stored!r}; run `simplicio-loop queue migrate`"
+                )
 
     def _transition(self, db: sqlite3.Connection, task_id: str, old: str | None,
                     new: str, payload: Mapping[str, Any] | None = None) -> None:
@@ -323,6 +330,31 @@ class LocalTaskQueue(SQLiteRemoteQueue):
         with contextlib.closing(self._connect()) as source, sqlite3.connect(backup) as destination:
             source.backup(destination)
         try:
+            with self._tx() as db:
+                stored = db.execute("SELECT value FROM local_meta WHERE key='schema'").fetchone()[0]
+                if stored not in {SCHEMA, LEGACY_SCHEMA}:
+                    raise QueueUnavailable(f"unsupported local queue schema {stored!r}")
+                migrated = 0
+                if stored == LEGACY_SCHEMA:
+                    rows = db.execute(
+                        "SELECT task_id,provenance FROM local_outcomes WHERE provenance IS NOT NULL"
+                    ).fetchall()
+                    for row in rows:
+                        try:
+                            raw = json.loads(row["provenance"])
+                        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                            raise QueueUnavailable(
+                                f"invalid legacy provenance for {row['task_id']}"
+                            ) from exc
+                        if isinstance(raw, dict) and raw.get("schema") == SCHEMA and raw.get("digest"):
+                            continue
+                        value = {"schema": SCHEMA, "task_id": row["task_id"],
+                                 "provenance": dict(raw or {}), "created_ns": time.time_ns()}
+                        value["digest"] = _digest(value)
+                        db.execute("UPDATE local_outcomes SET provenance=? WHERE task_id=?",
+                                   (json.dumps(value, sort_keys=True), row["task_id"]))
+                        migrated += 1
+                    db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (SCHEMA,))
             self._init_local()
         except Exception:
             # Restore through SQLite rather than replacing the live database file;
@@ -330,7 +362,8 @@ class LocalTaskQueue(SQLiteRemoteQueue):
             with sqlite3.connect(backup) as source, sqlite3.connect(self.path) as destination:
                 source.backup(destination)
             raise
-        return {"schema": SCHEMA, "dry_run": False, "backup": str(backup)}
+        return {"schema": SCHEMA, "dry_run": False, "backup": str(backup),
+                "from_schema": stored, "migrated_provenance": migrated}
 
     def gc_terminal(self, *, apply: bool = False) -> dict[str, Any]:
         eligible: list[str] = []

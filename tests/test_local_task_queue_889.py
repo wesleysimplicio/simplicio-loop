@@ -6,9 +6,9 @@ import subprocess
 
 import pytest
 
-from simplicio_loop.local_task_queue import LocalTaskQueue
+from simplicio_loop.local_task_queue import LEGACY_SCHEMA, LocalTaskQueue, SCHEMA
 from simplicio_loop.local_task_queue_cli import cli_main
-from simplicio_loop.remote_queue import QueueConflict
+from simplicio_loop.remote_queue import QueueConflict, QueueUnavailable
 
 
 def test_fencing_restart_dependencies_and_verified_completion(tmp_path):
@@ -125,6 +125,19 @@ def test_json_cli_surface(tmp_path, capsys):
         assert capsys.readouterr().out.strip().startswith(("{", "["))
 
 
+def test_cli_terminal_conflict_is_stable_json(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    queue = LocalTaskQueue(tmp_path)
+    queue.submit("done")
+    lease = queue.claim_local("done", "w", idempotency_key="done")
+    queue.record_outcome(lease, "verified_success", receipt={"proof": True})
+    assert cli_main(["--repo", str(tmp_path), "cancel", "done"]) == 3
+    value = json.loads(capsys.readouterr().out)
+    assert value == {"schema": "simplicio.loop.local-task-queue-error/v1",
+                     "status": "error", "code": "conflict",
+                     "reason": "terminal outcome is immutable"}
+
+
 def test_stale_fence_cannot_write_intent_or_terminal_outcome(tmp_path):
     queue = LocalTaskQueue(tmp_path)
     queue.submit("a")
@@ -155,7 +168,7 @@ def test_migration_failure_restores_original_database(tmp_path, monkeypatch):
     queue = LocalTaskQueue(tmp_path)
     queue.submit("survives")
 
-    def fail_init():
+    def fail_init(**_kwargs):
         raise RuntimeError("migration failed")
 
     monkeypatch.setattr(queue, "_init_local", fail_init)
@@ -165,12 +178,48 @@ def test_migration_failure_restores_original_database(tmp_path, monkeypatch):
     assert restarted.inspect_local("survives")["outcome"]["outcome"] == "never_started"
 
 
+def test_v1_provenance_migration_and_schema_gate(tmp_path):
+    queue = LocalTaskQueue(tmp_path)
+    queue.submit("legacy")
+    lease = queue.claim_local("legacy", "w", idempotency_key="legacy")
+    queue.record_outcome(lease, "retryable_failure", provenance={"idempotent": True})
+    with sqlite3.connect(queue.path) as db:
+        db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (LEGACY_SCHEMA,))
+        db.execute("UPDATE local_outcomes SET provenance=? WHERE task_id='legacy'",
+                   (json.dumps({"idempotent": True}),))
+    with pytest.raises(QueueUnavailable, match="run `simplicio-loop queue migrate`"):
+        LocalTaskQueue(tmp_path)
+    legacy = LocalTaskQueue(tmp_path, allow_legacy=True)
+    result = legacy.migrate(dry_run=False)
+    assert result["from_schema"] == LEGACY_SCHEMA
+    assert result["migrated_provenance"] == 1
+    restarted = LocalTaskQueue(tmp_path)
+    assert restarted.doctor_local()["healthy"] is True
+    stored = json.loads(restarted.inspect_local("legacy")["outcome"]["provenance"])
+    assert stored["schema"] == SCHEMA and stored["digest"].startswith("sha256:")
+
+
+def test_v1_migration_is_exposed_through_json_cli(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    queue = LocalTaskQueue(tmp_path)
+    queue.submit("legacy-cli")
+    with sqlite3.connect(queue.path) as db:
+        db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (LEGACY_SCHEMA,))
+        db.execute("UPDATE local_outcomes SET provenance=? WHERE task_id='legacy-cli'",
+                   (json.dumps({"key": "legacy"}),))
+    assert cli_main(["--repo", str(tmp_path), "migrate"]) == 0
+    assert json.loads(capsys.readouterr().out)["dry_run"] is True
+    assert cli_main(["--repo", str(tmp_path), "migrate", "--apply"]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["from_schema"] == LEGACY_SCHEMA
+    assert applied["migrated_provenance"] == 1
+
+
 def test_cli_rejects_non_root_repo(tmp_path):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     child = tmp_path / "child"
     child.mkdir()
-    with pytest.raises(SystemExit):
-        cli_main(["--repo", str(child), "status"])
+    assert cli_main(["--repo", str(child), "status"]) == 2
 
 
 def test_benchmark_thresholds_are_enforced(monkeypatch, capsys):
