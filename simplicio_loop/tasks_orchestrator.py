@@ -111,8 +111,19 @@ class TasksOrchestrator:
             admission_fence = takeover + 1
             fenced_items = [dict(item, admission_fence=admission_fence) for item in items]
             try:
-                dispatched = self.dispatch(fenced_items, max_workers=requested, retry_budget=self.retry_budget, journal_dir=self.journal_dir, worktree_queue=self.worktree_queue)
-                coordinated = self.coordinate(dispatched)
+                try:
+                    dispatched = self.dispatch(fenced_items, max_workers=requested, retry_budget=self.retry_budget, journal_dir=self.journal_dir, worktree_queue=self.worktree_queue)
+                    coordinated = self.coordinate(dispatched)
+                except Exception as exc:
+                    if idempotency_path:
+                        interrupted = dict(receipt)
+                        interrupted.update(
+                            state="dispatching", reason="dispatch_interrupted",
+                            admission_fence=admission_fence,
+                            error=f"{type(exc).__name__}: {exc}", evidence=[],
+                        )
+                        _write_receipt(idempotency_path, interrupted)
+                    raise
             finally:
                 release = self.governor.release(lease)
             evidence = coordinated.get("evidence", [])

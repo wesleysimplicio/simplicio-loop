@@ -79,7 +79,10 @@ def test_dispatching_receipt_is_taken_over_after_crashed_owner_releases_lock(tmp
     with pytest.raises(RuntimeError, match="crash"):
         bridge.run("all issues", action_gate=True)
     receipt_path = next((tmp_path / "idempotency").glob("*.json"))
-    assert json.loads(receipt_path.read_text(encoding="utf-8"))["state"] == "dispatching"
+    interrupted = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert interrupted["state"] == "dispatching"
+    assert interrupted["reason"] == "dispatch_interrupted"
+    assert "crash" in interrupted["error"]
     result = bridge.run("all issues", action_gate=True)
     assert result["state"] == "completed"
     assert result["admission_fence"] == 2
