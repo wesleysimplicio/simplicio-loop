@@ -2491,6 +2491,26 @@ def _validate_mapper_receipt(payload: Mapping[str, Any], repo_path: Path) -> Non
             raise RuntimeError(f"mapper returned path outside authorized repo: {raw}") from exc
 
 
+def _mapper_generation(repo_path: Path) -> Dict[str, str]:
+    """Read the immutable Mapper index identity for the active attempt."""
+    path = repo_path / ".simplicio" / "index-state.json"
+    try:
+        document = _load_json(path)
+    except (OSError, TypeError, ValueError):
+        return {}
+    signature = document.get("signature") if isinstance(document, Mapping) else None
+    if not isinstance(signature, Mapping):
+        return {}
+    generation = {
+        key: str(signature.get(key) or "")
+        for key in ("head", "tree_hash", "status_hash")
+        if str(signature.get(key) or "")
+    }
+    if generation:
+        generation["updated_at"] = str(document.get("updated_at") or "")
+    return generation
+
+
 def _require_json_receipt(path: Path, label: str) -> Dict[str, Any]:
     if not path.is_file():
         raise RuntimeError(f"missing required {label} receipt: {path.name}")
@@ -2542,6 +2562,14 @@ def _validate_run_receipts(
     ).hexdigest()
     if actual_mapper_context_hash != mapper_context_hash:
         raise RuntimeError("plan receipt does not match the current mapper context bytes")
+    mapper_generation = dict(mapper.get("foreground_generation") or {})
+    plan_generation = dict(plan.get("mapper_generation") or {})
+    if mapper_generation != plan_generation:
+        raise RuntimeError("plan receipt does not match the pinned mapper generation")
+    if mapper_generation:
+        current_generation = _mapper_generation(repo_path)
+        if current_generation and current_generation != mapper_generation:
+            raise RuntimeError("active attempt mapper generation changed")
 
     degraded_mapper = bool(mapper.get("degraded_local"))
     if degraded_mapper:
@@ -2825,6 +2853,7 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
     inspect_stdout = json.loads(inspect.stdout) if inspect.stdout.strip() else {}
     snapshot_stdout = json.loads(snapshot.stdout) if snapshot.stdout.strip() else {}
     handoff_stdout = json.loads(handoff.stdout) if handoff.stdout.strip() else {}
+    foreground_generation = _mapper_generation(repo_path)
     payload = {
         "scan": {
             "returncode": scan.returncode,
@@ -2864,10 +2893,16 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
                     (scan_stdout.get("deep") or {}).get("pid")
                     if isinstance(scan_stdout, Mapping) else None
                 ),
+                "state_path": (
+                    (scan_stdout.get("deep") or {}).get("state_path")
+                    if isinstance(scan_stdout, Mapping) else None
+                ),
             },
+            "foreground_generation": foreground_generation,
             "phase_timings_seconds": phase_timings,
             "route_wall_seconds": round(time.monotonic() - route_started, 6),
         },
+        "foreground_generation": foreground_generation,
         "generated_at": _now(),
         "repo_state_before": before,
         "repo_state_after": _repo_fingerprint(repo_path),
@@ -3099,6 +3134,7 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
         "mapper_targets": aggregate_targets,
         "mapper_pack_hash": shared_pack_hash,
         "context_pack_hash": shared_pack_hash,
+        "mapper_generation": dict(mapper_payload.get("foreground_generation") or {}),
         "task_contexts": task_contexts,
         "repo_state": mapper_payload.get("repo_state_after") or {},
         "freshness": {

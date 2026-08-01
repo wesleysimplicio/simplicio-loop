@@ -408,6 +408,7 @@ def test_run_mapper_sync_rollback_is_explicit_and_receipted(tmp_path, monkeypatc
     assert result["execution_route"]["mode"] == "synchronous_rollback"
     assert result["execution_route"]["background"] == {
         "status": "consumed_by_sync_rollback", "work_id": "job-1", "pid": 42,
+        "state_path": None,
     }
     assert result["execution_route"]["phase_timings_seconds"]["scan_wall_seconds"] >= 0
 
