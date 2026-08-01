@@ -6,9 +6,7 @@ import sys
 
 import pytest
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO, "scripts"))
-from worktree_queue import TaskSpec, WorktreeQueue  # noqa: E402
+from simplicio_loop.worktree_queue import TaskSpec, WorktreeQueue
 
 
 def _git(cwd, *args):
