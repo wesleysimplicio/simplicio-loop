@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from simplicio_loop.hub_daemon import HubDaemon, HubSocketClient, HubSocketServer, default_endpoint
+from simplicio_loop.hub_daemon import (
+    HubDaemon,
+    HubSocketClient,
+    HubSocketServer,
+    default_endpoint,
+    default_transport,
+)
 from simplicio_loop.hub_queue_agent import (
     CAPABILITY,
     HubQueueAgentClient,
@@ -203,6 +209,45 @@ def test_real_hub_restart_marks_claimed_recovery_unknown_without_redispatch(requ
             assert result["process_result"] is None
         finally:
             restarted_server.shutdown()
+            daemon.stop()
+
+
+def test_real_default_transport_synchronizes_fence_for_cancellation():
+    with tempfile.TemporaryDirectory() as directory:
+        daemon = HubDaemon(str(Path(directory) / "hub.lock"))
+        daemon.start()
+        transport = default_transport()
+        endpoint = default_endpoint(directory)
+        server = HubSocketServer(daemon, endpoint, transport)
+        server.start()
+        try:
+            client = HubQueueAgentClient(
+                HubSocketClient(endpoint, transport=transport), strict=True
+            )
+            context = dict(
+                CONTEXT,
+                attempt_id="cancel-real",
+                process_spec=_process_spec(
+                    sys.executable, "-c", "import time; time.sleep(10)", timeout=20
+                ),
+            )
+            handle = client.claim(role="review_panel", stage="validating", context=context)
+            original_fence = int(handle["fence"])
+            sent = client.send(handle, context)
+            assert int(handle["fence"]) > original_fence
+            assert handle == sent["handle"]
+            cancelled = client.cancel(handle, reason="operator_cancelled")
+            assert handle == cancelled["handle"]
+            deadline = time.monotonic() + 5
+            status = client.status(handle)
+            while status["status"] != "cancelled" and time.monotonic() < deadline:
+                time.sleep(0.01)
+                status = client.status(handle)
+            assert status["status"] == "cancelled"
+            result = client.collect(handle)
+            assert result["process_result"]["cancelled"] is True
+        finally:
+            server.shutdown()
             daemon.stop()
 
 
