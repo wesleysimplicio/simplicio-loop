@@ -30,7 +30,13 @@ class CommandPipelineCoordinator:
             run_id = str(worker.get("run_id") or dispatched.get("run_id") or f"tasks-{index}")
             task_id = str(worker.get("task_id") or f"task-{index}")
             journal = StageCoordinatorJournal(self.journal_dir / f"{run_id}-{task_id}.jsonl")
-            coordinator = self.coordinator_factory(run_id=run_id, task_id=task_id, adapters=[CommandAgentAdapter(command=self.command)], journal=journal, host_total_slots=self.host_total_slots)
+            worktree = str(worker.get("worktree_path") or worker.get("repo") or Path.cwd())
+            adapter = CommandAgentAdapter(command=self.command, cwd=worktree, extra_env={
+                "SIMPLICIO_TASK_WORKTREE": worktree,
+                "SIMPLICIO_TASK_BRANCH": str(worker.get("branch") or ""),
+                "SIMPLICIO_TASK_HEAD": str(worker.get("head_sha") or ""),
+            })
+            coordinator = self.coordinator_factory(run_id=run_id, task_id=task_id, adapters=[adapter], journal=journal, host_total_slots=self.host_total_slots)
             self.active.append(coordinator)
             results = coordinator.run_all()
             passed = bool(results) and all(result.status == "passed" for result in results.values()) and coordinator.terminal_reached()

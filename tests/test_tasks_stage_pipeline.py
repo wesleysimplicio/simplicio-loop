@@ -28,6 +28,15 @@ def test_pipeline_collects_pr_and_verification_receipts(tmp_path):
     assert result["evidence"][0]["verification"] == "passed"
     assert FakeCoordinator.instances[-1].kwargs["journal"] is not None
 
+
+def test_pipeline_binds_worker_worktree_context(tmp_path):
+    worktree = tmp_path / "allocated"
+    worktree.mkdir()
+    pipeline = CommandPipelineCoordinator(["python"], str(tmp_path), coordinator_factory=FakeCoordinator)
+    pipeline({"workers": [{"run_id": "run-1", "task_id": "issue-1", "worktree_path": str(worktree), "branch": "feature/1", "head_sha": "abc123"}]})
+    adapter = FakeCoordinator.instances[-1].kwargs["adapters"][0]
+    assert adapter.cwd == worktree.resolve()
+    assert adapter.extra_env == {"SIMPLICIO_TASK_WORKTREE": str(worktree), "SIMPLICIO_TASK_BRANCH": "feature/1", "SIMPLICIO_TASK_HEAD": "abc123"}
 def test_pipeline_fails_closed_without_pr_evidence(tmp_path):
     previous = FakeCoordinator.pr_url
     FakeCoordinator.pr_url = ""
