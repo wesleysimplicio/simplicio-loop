@@ -6,6 +6,7 @@ import json
 from typing import Any, Callable, Mapping
 
 from .engine_boundary import EngineSelectionReceipt, select_engine
+from .conformance_cache import ConformanceCache
 
 PROBE_SCHEMA = "simplicio.loop-engine-probe/v1"
 ENGINE_PROTOCOL = "simplicio.loop-engine/v1"
@@ -51,8 +52,22 @@ def _valid_abi(payload: Mapping[str, Any]) -> bool:
 
 
 def route_backend(mode: str = "auto", *, probe: Callable[[], Mapping[str, Any]] | None = None,
-                  attempt_id: str = "") -> tuple[EngineSelectionReceipt, dict[str, Any]]:
+                  attempt_id: str = "", conformance_cache: ConformanceCache | None = None,
+                  corpus_digest: str = "", policy_digest: str = "") -> tuple[EngineSelectionReceipt, dict[str, Any]]:
     observation = probe_optional_backend(probe)
+    if (conformance_cache is not None and corpus_digest and policy_digest
+            and observation.get("available") and observation.get("abi_valid")):
+        key = conformance_cache.key(provider={
+            "name": observation.get("name"), "build": observation.get("build"),
+            "binary_digest": observation.get("binary_digest"),
+        }, corpus_digest=corpus_digest, policy_digest=policy_digest, schema=PROBE_SCHEMA)
+        receipt = conformance_cache.get(key)
+        if receipt is not None:
+            observation["conformance_passed"] = True
+            observation["conformance_cache"] = "hit"
+            observation["conformance_receipt_hash"] = receipt.get("receipt_hash")
+        else:
+            observation["conformance_cache"] = "miss"
     return select_engine(mode, rust_probe=observation, attempt_id=attempt_id), observation
 
 
