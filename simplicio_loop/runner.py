@@ -4291,6 +4291,7 @@ def _build_native_prism_scheduler(
         SlotSupervisor,
         TaskOwnership,
     )
+    from .prism_budgets import AdaptiveBudgetGovernor, BudgetSample
     from .prism_scheduler import PrismPolicy, PrismScheduler, ResourceVector, ScheduledTask
 
     if not items or worker_limit < 1:
@@ -4354,7 +4355,12 @@ def _build_native_prism_scheduler(
         reducer_ref="simplicio_loop.runner.dispatch_operator_batch",
         budget=(("workers", max(1, int(worker_limit))),),
     )
-    scheduler = PrismScheduler(policy)
+    governor = AdaptiveBudgetGovernor(policy, relief_samples=2)
+    observation = governor.observe(BudgetSample(
+        workers=int(capacity_sample.safe_workers),
+        observed_at_ns=int(capacity_sample.observed_at_ns),
+    ))
+    scheduler = PrismScheduler(policy, observation=observation)
     slots_by_partition: dict[str, SlotSupervisor] = {}
     for partition, group in ordered_partitions:
         slot = SlotSupervisor(
@@ -4397,7 +4403,9 @@ def _build_native_prism_scheduler(
             kind=kind,
             resources=ResourceVector(workers=1),
         ))
-    return scheduler, root.prism_id, capacity_sample.to_dict()
+    capacity_receipt = capacity_sample.to_dict()
+    capacity_receipt["budget_governor"] = governor.status()
+    return scheduler, root.prism_id, capacity_receipt
 
 
 def _worktree_task_spec(item: Mapping[str, Any]) -> Any:
