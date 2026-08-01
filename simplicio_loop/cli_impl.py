@@ -941,6 +941,20 @@ def main(argv=None) -> int:
     p_generation_broker = sub.add_parser(
         "generation-broker", help="operate persisted generation bindings")
     p_generation_broker.add_argument("broker_args", nargs=argparse.REMAINDER)
+    p_queue = sub.add_parser("queue", help="operate the durable local task queue")
+    p_queue.add_argument("--repo", default=".")
+    queue_sub = p_queue.add_subparsers(dest="queue_action", required=True)
+    for queue_action in ("status", "resume", "doctor", "reclaim"):
+        queue_sub.add_parser(queue_action)
+    queue_top = queue_sub.add_parser("top")
+    queue_top.add_argument("--limit", type=int, default=20)
+    queue_drain = queue_sub.add_parser("drain")
+    queue_drain.add_argument("--timeout", type=float, default=0.0)
+    queue_gc = queue_sub.add_parser("gc")
+    queue_gc.add_argument("--apply", action="store_true")
+    for queue_action in ("inspect", "cancel"):
+        queue_command = queue_sub.add_parser(queue_action)
+        queue_command.add_argument("task_id")
     sub.add_parser(
         "hub-drain-plan",
         help="read-only PT-BR/EN GitHub drain intake; never executes the plan",
@@ -1116,6 +1130,18 @@ def main(argv=None) -> int:
     if command == "generation-broker":
         from .generation_broker_cli import cli_main as generation_broker_main
         return generation_broker_main(list(args.broker_args or []))
+    if command == "queue":
+        from .local_task_queue_cli import cli_main as local_queue_main
+        forwarded = ["--repo", args.repo, args.queue_action]
+        if args.queue_action == "top":
+            forwarded += ["--limit", str(args.limit)]
+        elif args.queue_action == "drain":
+            forwarded += ["--timeout", str(args.timeout)]
+        elif args.queue_action == "gc" and args.apply:
+            forwarded.append("--apply")
+        elif args.queue_action in {"inspect", "cancel"}:
+            forwarded.append(args.task_id)
+        return local_queue_main(forwarded)
     if command == "ledger":
         return ledger_replay(
             args.path,

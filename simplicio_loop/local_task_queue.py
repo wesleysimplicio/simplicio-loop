@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -11,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .remote_queue import Lease, QueueConflict, SQLiteRemoteQueue
+from .remote_queue import Lease, QueueConflict, QueueUnavailable, SQLiteRemoteQueue
 
 SCHEMA = "simplicio.loop.local-task-queue/v1"
 OUTCOMES = frozenset({
@@ -30,6 +31,8 @@ class LocalTaskQueue(SQLiteRemoteQueue):
 
     def __init__(self, root: str | Path, *, busy_timeout: float = 10.0) -> None:
         root = Path(root).resolve()
+        if str(root).startswith("\\\\"):
+            raise QueueUnavailable("network filesystem locking is not trusted")
         self.orchestrator = root / ".simplicio" / "orchestrator"
         self.orchestrator.mkdir(parents=True, exist_ok=True)
         super().__init__(str(self.orchestrator / "queue.sqlite3"), busy_timeout=busy_timeout)
@@ -77,7 +80,7 @@ class LocalTaskQueue(SQLiteRemoteQueue):
 
     def claim_local(self, task_id: str, worker_id: str, *, idempotency_key: str,
                     ttl: float = 60.0) -> Lease:
-        with self._connect() as db:
+        with contextlib.closing(self._connect()) as db:
             stopped = db.execute("SELECT value FROM local_meta WHERE key='stopped'").fetchone()
             deps = db.execute("SELECT depends_on FROM local_dependencies WHERE task_id=?", (task_id,)).fetchall()
             if stopped and stopped[0] == "1":
@@ -151,20 +154,73 @@ class LocalTaskQueue(SQLiteRemoteQueue):
             db.execute("UPDATE local_meta SET value='1' WHERE key='stopped'")
             db.execute("UPDATE leases SET cancel_requested=1 WHERE status='active'")
 
+    def cancel_local(self, task_id: str, *, reason: str = "operator_cancelled") -> dict[str, Any]:
+        with self._tx() as db:
+            task = db.execute("SELECT status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if task is None:
+                raise KeyError(task_id)
+            lease = db.execute("SELECT status,expires_at FROM leases WHERE task_id=?", (task_id,)).fetchone()
+            if lease and lease["status"] == "active" and lease["expires_at"] > time.time():
+                db.execute("UPDATE leases SET cancel_requested=1,updated_at=? WHERE task_id=?",
+                           (time.time(), task_id))
+                return {"schema": SCHEMA, "task_id": task_id, "status": "cancelling"}
+            old = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()[0]
+            db.execute("UPDATE local_outcomes SET outcome='blocked',updated_at=? WHERE task_id=?",
+                       (time.time(), task_id))
+            db.execute("UPDATE tasks SET status='cancelled',updated_at=? WHERE task_id=?",
+                       (time.time(), task_id))
+            self._transition(db, task_id, old, "blocked", {"reason": reason})
+            return {"schema": SCHEMA, "task_id": task_id, "status": "cancelled"}
+
+    def reclaim_stale(self, *, now: float | None = None) -> list[str]:
+        current = time.time() if now is None else float(now)
+        reclaimed: list[str] = []
+        with self._tx() as db:
+            rows = db.execute(
+                "SELECT task_id FROM leases WHERE status='active' AND expires_at<=? ORDER BY task_id",
+                (current,),
+            ).fetchall()
+            for row in rows:
+                task_id = row[0]
+                old = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()[0]
+                db.execute("UPDATE leases SET status='expired',updated_at=? WHERE task_id=?",
+                           (current, task_id))
+                db.execute("UPDATE local_outcomes SET outcome='unknown_outcome',updated_at=? WHERE task_id=?",
+                           (current, task_id))
+                self._transition(db, task_id, old, "unknown_outcome", {"reason": "lease_expired"})
+                reclaimed.append(task_id)
+        return reclaimed
+
+    def drain(self, *, timeout: float = 0.0) -> dict[str, Any]:
+        self.stop()
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            with contextlib.closing(self._connect()) as db:
+                active = db.execute(
+                    "SELECT COUNT(*) FROM leases WHERE status='active' AND expires_at>?", (time.time(),)
+                ).fetchone()[0]
+            if active == 0 or time.monotonic() >= deadline:
+                return {"schema": SCHEMA, "status": "drained" if active == 0 else "cancelling",
+                        "active": active}
+            time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+
     def resume(self) -> None:
         with self._tx() as db:
             db.execute("UPDATE local_meta SET value='0' WHERE key='stopped'")
 
     def status_local(self) -> dict[str, Any]:
-        with self._connect() as db:
+        with contextlib.closing(self._connect()) as db:
             counts = {row[0]: row[1] for row in db.execute(
                 "SELECT outcome,COUNT(*) FROM local_outcomes GROUP BY outcome")}
             stopped = db.execute("SELECT value FROM local_meta WHERE key='stopped'").fetchone()[0] == "1"
             return {"schema": SCHEMA, "stopped": stopped, "outcomes": counts,
                     "journal_mode": db.execute("PRAGMA journal_mode").fetchone()[0]}
 
+    def top(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        return self.pull("operator", limit=limit)
+
     def inspect_local(self, task_id: str) -> dict[str, Any]:
-        with self._connect() as db:
+        with contextlib.closing(self._connect()) as db:
             row = db.execute("SELECT * FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()
             if row is None:
                 raise KeyError(task_id)
@@ -175,7 +231,7 @@ class LocalTaskQueue(SQLiteRemoteQueue):
 
     def doctor_local(self) -> dict[str, Any]:
         try:
-            with self._connect() as db:
+            with contextlib.closing(self._connect()) as db:
                 integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
                 schema = db.execute("SELECT value FROM local_meta WHERE key='schema'").fetchone()[0]
             return {"schema": SCHEMA, "healthy": integrity == "ok" and schema == SCHEMA,
@@ -194,3 +250,27 @@ class LocalTaskQueue(SQLiteRemoteQueue):
             os.replace(backup, self.path)
             raise
         return {"schema": SCHEMA, "dry_run": False, "backup": str(backup)}
+
+    def gc_terminal(self, *, apply: bool = False) -> dict[str, Any]:
+        eligible: list[str] = []
+        with self._tx() as db:
+            rows = db.execute(
+                "SELECT o.task_id,t.payload FROM local_outcomes o JOIN tasks t USING(task_id) "
+                "WHERE o.outcome IN ('verified_success','dead_letter') ORDER BY o.task_id"
+            ).fetchall()
+            for row in rows:
+                payload = json.loads(row["payload"] or "{}")
+                lease = db.execute(
+                    "SELECT status FROM leases WHERE task_id=?", (row["task_id"],)
+                ).fetchone()
+                if (lease is None or lease[0] != "active") and payload.get("generation_released", True) \
+                        and payload.get("worktree_released", True):
+                    eligible.append(row["task_id"])
+            if apply:
+                for task_id in eligible:
+                    db.execute("DELETE FROM local_dependencies WHERE task_id=? OR depends_on=?",
+                               (task_id, task_id))
+                    db.execute("DELETE FROM local_outcomes WHERE task_id=?", (task_id,))
+                    db.execute("DELETE FROM leases WHERE task_id=?", (task_id,))
+                    db.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
+        return {"schema": SCHEMA, "eligible": eligible, "removed": eligible if apply else []}

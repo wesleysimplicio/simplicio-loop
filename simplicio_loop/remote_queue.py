@@ -396,7 +396,7 @@ class SQLiteRemoteQueue:
             raise
 
     def _init(self) -> None:
-        with self._connect() as c:
+        with contextlib.closing(self._connect()) as c:
             # Schema discovery plus ALTER must be one serialized transaction.  If
             # two first-start workers inspect table_info concurrently, both can
             # otherwise decide that the same column is missing and one loses with
@@ -501,7 +501,7 @@ class SQLiteRemoteQueue:
         limit = max(1, int(limit))
         caps = {str(cap).strip() for cap in (capabilities or ()) if str(cap).strip()}
         try:
-            with self._connect() as c:
+            with contextlib.closing(self._connect()) as c:
                 statuses = {row["task_id"]: row["status"]
                            for row in c.execute("SELECT task_id, status FROM tasks").fetchall()}
                 rows = c.execute(
@@ -697,14 +697,14 @@ class SQLiteRemoteQueue:
             return {"task_id": lease.task_id, "status": "ready", "handoff": True, "reason": reason}
 
     def events(self, *, after: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
-        with self._connect() as c:
+        with contextlib.closing(self._connect()) as c:
             rows = c.execute("SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT ?", (after, limit)).fetchall()
             return [{"seq": r["seq"], "task_id": r["task_id"], "kind": r["kind"],
                      "agent_id": r["agent_id"], "fencing_token": r["fencing_token"],
                      "payload": json.loads(r["payload"]), "created_at": r["created_at"]} for r in rows]
 
     def task(self, task_id: str) -> Dict[str, Any]:
-        with self._connect() as c:
+        with contextlib.closing(self._connect()) as c:
             row = c.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if row is None:
                 raise KeyError(task_id)
