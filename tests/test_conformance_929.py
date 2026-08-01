@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from simplicio_loop.conformance import canonicalize, load_corpus, run_corpus
+import pytest
+
+from simplicio_loop.conformance import canonicalize, load_corpus, run_corpus, validate_corpus
 from simplicio_loop.engine_boundary import select_engine
 
 
@@ -25,3 +27,15 @@ def test_published_engine_selection_corpus_passes() -> None:
     assert receipt["passed"] is True
     assert receipt["case_count"] == 3
     assert receipt["receipt_hash"].startswith("sha256:")
+
+
+def test_corpus_validation_rejects_duplicate_or_malformed_cases() -> None:
+    valid = {"schema": "simplicio.loop-conformance/v1", "cases": [
+        {"id": "one", "input": {}, "expected": {}},
+    ]}
+    validate_corpus(valid)
+    duplicate = {"schema": valid["schema"], "cases": valid["cases"] * 2}
+    with pytest.raises(ValueError, match="duplicate"):
+        validate_corpus(duplicate)
+    with pytest.raises(ValueError, match="non-empty array"):
+        validate_corpus({"schema": valid["schema"], "cases": []})

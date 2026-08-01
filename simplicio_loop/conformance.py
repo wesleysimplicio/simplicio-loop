@@ -54,9 +54,29 @@ def run_corpus(corpus: Mapping[str, Any], provider: Callable[[Mapping[str, Any]]
 
 def load_corpus(path: str | Path) -> dict[str, Any]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    if payload.get("schema") != SCHEMA:
-        raise ValueError("unsupported conformance corpus schema")
+    validate_corpus(payload)
     return payload
 
 
-__all__ = ["SCHEMA", "canonicalize", "compare", "load_corpus", "run_corpus"]
+def validate_corpus(corpus: Mapping[str, Any]) -> None:
+    """Reject ambiguous corpus data before a provider can consume it."""
+    if corpus.get("schema") != SCHEMA:
+        raise ValueError("unsupported conformance corpus schema")
+    cases = corpus.get("cases")
+    if not isinstance(cases, list) or not cases:
+        raise ValueError("conformance corpus cases must be a non-empty array")
+    seen: set[str] = set()
+    for index, case in enumerate(cases):
+        if not isinstance(case, Mapping):
+            raise ValueError(f"conformance case {index} must be an object")
+        case_id = case.get("id")
+        if not isinstance(case_id, str) or not case_id.strip():
+            raise ValueError(f"conformance case {index} requires a non-empty id")
+        if case_id in seen:
+            raise ValueError(f"duplicate conformance case id: {case_id}")
+        seen.add(case_id)
+        if not isinstance(case.get("input"), Mapping) or not isinstance(case.get("expected"), Mapping):
+            raise ValueError(f"conformance case {case_id} requires input and expected objects")
+
+
+__all__ = ["SCHEMA", "canonicalize", "compare", "load_corpus", "run_corpus", "validate_corpus"]
