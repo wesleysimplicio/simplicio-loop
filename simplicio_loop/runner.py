@@ -7,10 +7,10 @@ import random
 import re
 import shutil
 import subprocess
+import time
 import string
 import sys
 from threading import RLock
-import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -2491,6 +2491,26 @@ def _validate_mapper_receipt(payload: Mapping[str, Any], repo_path: Path) -> Non
             raise RuntimeError(f"mapper returned path outside authorized repo: {raw}") from exc
 
 
+def _mapper_generation(repo_path: Path) -> Dict[str, str]:
+    """Read the immutable Mapper index identity for the active attempt."""
+    path = repo_path / ".simplicio" / "index-state.json"
+    try:
+        document = _load_json(path)
+    except (OSError, TypeError, ValueError):
+        return {}
+    signature = document.get("signature") if isinstance(document, Mapping) else None
+    if not isinstance(signature, Mapping):
+        return {}
+    generation = {
+        key: str(signature.get(key) or "")
+        for key in ("head", "tree_hash", "status_hash")
+        if str(signature.get(key) or "")
+    }
+    if generation:
+        generation["updated_at"] = str(document.get("updated_at") or "")
+    return generation
+
+
 def _require_json_receipt(path: Path, label: str) -> Dict[str, Any]:
     if not path.is_file():
         raise RuntimeError(f"missing required {label} receipt: {path.name}")
@@ -2542,6 +2562,14 @@ def _validate_run_receipts(
     ).hexdigest()
     if actual_mapper_context_hash != mapper_context_hash:
         raise RuntimeError("plan receipt does not match the current mapper context bytes")
+    mapper_generation = dict(mapper.get("foreground_generation") or {})
+    plan_generation = dict(plan.get("mapper_generation") or {})
+    if mapper_generation != plan_generation:
+        raise RuntimeError("plan receipt does not match the pinned mapper generation")
+    if mapper_generation:
+        current_generation = _mapper_generation(repo_path)
+        if current_generation and current_generation != mapper_generation:
+            raise RuntimeError("active attempt mapper generation changed")
 
     degraded_mapper = bool(mapper.get("degraded_local"))
     if degraded_mapper:
@@ -2710,18 +2738,35 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
     before = _repo_fingerprint(repo_path)
     mapper_preflight = _preflight_mapper(repo_path, run_root)
     mapper_timeout = str(_mapper_timeout_seconds())
+    rollback_sync = os.environ.get("SIMPLICIO_LOOP_MAPPER_SYNC_ROLLBACK", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    route_started = time.monotonic()
+    phase_timings: Dict[str, Any] = {}
+    scan_started = time.monotonic()
     scan = _run_cmd(
         # The foreground route must return the mapper's macro receipt without
         # waiting for the deep index.  Deep completion is polled/reconciled by
         # the subsequent inspect/handoff stages and is never a prerequisite
         # for obtaining the first bounded context.
-        ["simplicio-mapper", "scan", ".", "--json", "--timeout", mapper_timeout],
+        [
+            "simplicio-mapper", "scan", ".", "--json",
+            *( ["--sync"] if rollback_sync else [] ),
+            "--timeout", mapper_timeout,
+        ],
         repo_path,
     )
+    phase_timings["scan_wall_seconds"] = round(time.monotonic() - scan_started, 6)
+    inspect_started = time.monotonic()
     inspect = _run_cmd(
-        ["simplicio-mapper", "inspect", ".", "--json", "--timeout", mapper_timeout],
+        [
+            "simplicio-mapper", "inspect", ".", "--json",
+            *( ["--await"] if rollback_sync else [] ),
+            "--timeout", mapper_timeout,
+        ],
         repo_path,
     )
+    phase_timings["inspect_wall_seconds"] = round(time.monotonic() - inspect_started, 6)
     if _mapper_supports_command(mapper_preflight, "snapshot"):
         snapshot = _run_cmd(["simplicio-mapper", "snapshot", "build", "--json", "."], repo_path)
     else:
@@ -2733,10 +2778,10 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
             json.dumps({"status": "skipped", "reason": "optional_command_unavailable"}),
             "",
         )
-    handoff_argv = [
-        "simplicio-mapper", "handoff", ".", "--json", "--timeout", mapper_timeout,
-        "--execution-context",
-    ]
+    handoff_argv = ["simplicio-mapper", "handoff", ".", "--json"]
+    if rollback_sync:
+        handoff_argv.append("--await")
+    handoff_argv.extend(["--timeout", mapper_timeout, "--execution-context"])
     task_aware_supported = bool(mapper_preflight.get("task_aware_supported"))
     mapper_token_budget = os.environ.get("SIMPLICIO_LOOP_MAPPER_TOKEN_BUDGET", "").strip()
     if mapper_token_budget.isdigit() and int(mapper_token_budget) > 0:
@@ -2749,7 +2794,9 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         handoff_argv.extend(["--task-fingerprint", task_fingerprint.strip()])
     if task_aware_supported and target_hint.strip():
         handoff_argv.extend(["--target", target_hint.strip()])
+    handoff_started = time.monotonic()
     handoff = _run_cmd(handoff_argv, repo_path)
+    phase_timings["handoff_wall_seconds"] = round(time.monotonic() - handoff_started, 6)
     handoff_recovery = None
     try:
         handoff_stdout = json.loads(handoff.stdout) if handoff.stdout.strip() else {}
@@ -2774,10 +2821,10 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         and isinstance(handoff_pack, Mapping)
         and (bool(handoff_pack.get("needs_broader_context")) or over_budget)
     ):
-        recovery_argv = [
-            "simplicio-mapper", "handoff", ".", "--json", "--timeout", mapper_timeout,
-            "--execution-context",
-        ]
+        recovery_argv = ["simplicio-mapper", "handoff", ".", "--json"]
+        if rollback_sync:
+            recovery_argv.append("--await")
+        recovery_argv.extend(["--timeout", mapper_timeout, "--execution-context"])
         recovery_budget = min(
             128_000,
             max(configured_budget, int(estimated_tokens) if over_budget else configured_budget),
@@ -2802,35 +2849,60 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         }
         if recovery.returncode == 0:
             handoff = recovery
+    scan_stdout = json.loads(scan.stdout) if scan.stdout.strip() else {}
+    inspect_stdout = json.loads(inspect.stdout) if inspect.stdout.strip() else {}
+    snapshot_stdout = json.loads(snapshot.stdout) if snapshot.stdout.strip() else {}
+    handoff_stdout = json.loads(handoff.stdout) if handoff.stdout.strip() else {}
+    foreground_generation = _mapper_generation(repo_path)
     payload = {
         "scan": {
             "returncode": scan.returncode,
-            "stdout": json.loads(scan.stdout) if scan.stdout.strip() else {},
+            "stdout": scan_stdout,
             "stderr": (scan.stderr or "").strip(),
         },
         "inspect": {
             "returncode": inspect.returncode,
-            "stdout": json.loads(inspect.stdout) if inspect.stdout.strip() else {},
+            "stdout": inspect_stdout,
             "stderr": (inspect.stderr or "").strip(),
         },
         "snapshot": {
             "returncode": snapshot.returncode,
-            "stdout": json.loads(snapshot.stdout) if snapshot.stdout.strip() else {},
+            "stdout": snapshot_stdout,
             "stderr": (snapshot.stderr or "").strip(),
         },
         "handoff": {
             "returncode": handoff.returncode,
-            "stdout": json.loads(handoff.stdout) if handoff.stdout.strip() else {},
+            "stdout": handoff_stdout,
             "stderr": (handoff.stderr or "").strip(),
         },
         "handoff_recovery": handoff_recovery,
         "execution_route": {
-            "mode": "foreground_first",
-            "deep_completion_required_for_first_context": False,
-            "scan_wait": False,
-            "inspect_wait": False,
-            "handoff_wait": False,
+            "mode": "synchronous_rollback" if rollback_sync else "foreground_first",
+            "rollback_flag": "SIMPLICIO_LOOP_MAPPER_SYNC_ROLLBACK" if rollback_sync else None,
+            "deep_completion_required_for_first_context": rollback_sync,
+            "scan_wait": rollback_sync,
+            "inspect_wait": rollback_sync,
+            "handoff_wait": rollback_sync,
+            "background": {
+                "status": "queued" if not rollback_sync else "consumed_by_sync_rollback",
+                "work_id": (
+                    (scan_stdout.get("deep") or {}).get("job_id")
+                    if isinstance(scan_stdout, Mapping) else None
+                ),
+                "pid": (
+                    (scan_stdout.get("deep") or {}).get("pid")
+                    if isinstance(scan_stdout, Mapping) else None
+                ),
+                "state_path": (
+                    (scan_stdout.get("deep") or {}).get("state_path")
+                    if isinstance(scan_stdout, Mapping) else None
+                ),
+            },
+            "foreground_generation": foreground_generation,
+            "phase_timings_seconds": phase_timings,
+            "route_wall_seconds": round(time.monotonic() - route_started, 6),
         },
+        "foreground_generation": foreground_generation,
         "generated_at": _now(),
         "repo_state_before": before,
         "repo_state_after": _repo_fingerprint(repo_path),
@@ -3062,6 +3134,7 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
         "mapper_targets": aggregate_targets,
         "mapper_pack_hash": shared_pack_hash,
         "context_pack_hash": shared_pack_hash,
+        "mapper_generation": dict(mapper_payload.get("foreground_generation") or {}),
         "task_contexts": task_contexts,
         "repo_state": mapper_payload.get("repo_state_after") or {},
         "freshness": {
@@ -6075,6 +6148,53 @@ def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:
     }
 
 
+def _cancel_mapper_background(repo_path: Path, run_dir: Path, state: Dict[str, Any]) -> Dict[str, Any]:
+    """Cancel an outstanding deep Mapper job before a run becomes terminal."""
+    mapper_state = state.get("mapper") if isinstance(state.get("mapper"), Mapping) else {}
+    route = mapper_state.get("execution_route") if isinstance(mapper_state, Mapping) else None
+    if not isinstance(route, Mapping):
+        context_path = run_dir / "mapper-context.json"
+        try:
+            context = _load_json(context_path) if context_path.is_file() else {}
+        except (OSError, TypeError, ValueError):
+            context = {}
+        candidate = context.get("execution_route") if isinstance(context, Mapping) else None
+        route = candidate if isinstance(candidate, Mapping) else {}
+    background = route.get("background") if isinstance(route, Mapping) else None
+    if not isinstance(background, Mapping) or background.get("status") != "queued":
+        return {"status": "not_active", "reason_code": "mapper_background_not_active"}
+
+    result = _run_cmd(
+        ["simplicio-mapper", "background", "cancel", ".", "--json"], repo_path,
+    )
+    try:
+        stdout = json.loads(result.stdout) if result.stdout.strip() else {}
+    except ValueError:
+        stdout = {"raw": result.stdout.strip()}
+    receipt = {
+        "schema": "simplicio.loop.mapper-background-cancellation/v1",
+        "status": "cancelled" if result.returncode == 0 else "blocked",
+        "reason_code": "mapper_background_cancelled" if result.returncode == 0 else "mapper_background_cancel_failed",
+        "returncode": result.returncode,
+        "stdout": stdout,
+        "stderr": (result.stderr or "").strip(),
+        "job_id": background.get("work_id"),
+        "pid": background.get("pid"),
+        "requested_at": _now(),
+    }
+    receipt_path = run_dir / "mapper-background-cancel.json"
+    _write_json(receipt_path, receipt)
+    state.setdefault("mapper", {})["background_cancellation"] = {
+        **receipt, "receipt": str(receipt_path),
+    }
+    state["mapper"]["execution_route"] = {
+        **dict(route),
+        "background": {**dict(background), "status": receipt["status"],
+                        "cancel_receipt": str(receipt_path)},
+    }
+    return receipt
+
+
 def change_phase(repo: str, run_id: str, to_phase: str, reason: str) -> Dict[str, Any]:
     status = read_status(repo, run_id)
     run_dir = Path(status["run_dir"])
@@ -6097,6 +6217,7 @@ def change_phase(repo: str, run_id: str, to_phase: str, reason: str) -> Dict[str
             }
         state["next_action"] = "mapper_scan_required"
     elif to_phase == "cancelled":
+        _cancel_mapper_background(Path(repo).resolve(), run_dir, state)
         state["next_action"] = "none"
     _transition(run_dir, state, to_phase, reason, receipt=str(run_dir / "state.json"))
     return read_status(repo, run_id)
