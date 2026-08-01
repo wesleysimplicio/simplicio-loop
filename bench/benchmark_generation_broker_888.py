@@ -1,4 +1,4 @@
-"""Cold/warm/incremental #888 broker benchmark with a signed receipt."""
+"""Cold/warm/incremental #888 broker benchmark with a digest receipt."""
 
 from __future__ import annotations
 
@@ -7,12 +7,16 @@ import json
 import tempfile
 import time
 import tracemalloc
+import sys
 from pathlib import Path
 
-from simplicio_loop.checkpoint_lifecycle import CheckpointLifecycle
-from simplicio_loop.fast_fanout import CanonicalGeneration
-from simplicio_loop.generation_broker import GenerationBroker
-from simplicio_loop.map_service import MapServiceRegistry, RepositoryIdentity
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from simplicio_loop.checkpoint_lifecycle import CheckpointLifecycle  # noqa: E402
+from simplicio_loop.fast_fanout import CanonicalGeneration  # noqa: E402
+from simplicio_loop.generation_broker import GenerationBroker  # noqa: E402
+from simplicio_loop.map_service import MapServiceRegistry, RepositoryIdentity  # noqa: E402
 
 
 def _digest(value: dict[str, object]) -> str:
@@ -29,7 +33,7 @@ def _rss_bytes(fallback: int) -> tuple[int, str]:
         return fallback, "tracemalloc-fallback"
 
 
-def main(candidate_count: int = 100) -> None:
+def main(candidate_count: int = 100) -> int:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         base = root / "base"
@@ -115,7 +119,7 @@ def main(candidate_count: int = 100) -> None:
             "warm_ns_per_binding": warm_ns // max(1, candidate_count - 1),
             "incremental_ns": incremental_ns,
             "uncached_baseline_ns": uncached_baseline_ns,
-            "peak_rss_bytes": peak_rss_bytes,
+            "peak_sampled_rss_bytes": peak_rss_bytes,
             "rss_source": rss_source,
             "mapped_bytes": overlay_bytes,
             "overlay_bytes_per_slot": overlay_bytes // len(manifests),
@@ -130,7 +134,8 @@ def main(candidate_count: int = 100) -> None:
         }
         receipt["digest"] = _digest(receipt)
         print(json.dumps(receipt, sort_keys=True))
+        return 0 if all(receipt["thresholds"].values()) else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

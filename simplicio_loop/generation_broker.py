@@ -18,7 +18,7 @@ from .checkpoint_lifecycle import (
     validate_candidate_id,
 )
 from .fast_fanout import CanonicalGeneration
-from .map_service import MapServiceRegistry
+from .map_service import MapServiceRegistry, RepositoryIdentity
 
 SCHEMA = "simplicio.loop.generation-binding/v1"
 
@@ -88,9 +88,11 @@ class GenerationBroker:
         self._canonical: dict[tuple[str, str, tuple[str, ...]], str] = {}
         self._bindings: dict[str, GenerationBinding] = {}
         self._events: list[dict[str, Any]] = []
+        self._identity_aliases: dict[str, str] = {}
         self._promoted_generation = lifecycle.fast_generation
         self._metrics = {"cache_hits": 0, "cache_misses": 0, "build_wait_ns": 0}
         self._lock_path = lifecycle.attempt / ".generation-broker.lock"
+        self._recover_gc()
         self.reconcile()
 
     @contextmanager
@@ -120,6 +122,56 @@ class GenerationBroker:
     def _record(self, event: str, **details: Any) -> None:
         self._events.append({"event": event, "created_ns": time.time_ns(), **details})
 
+    def _recover_gc(self) -> None:
+        journal = self.lifecycle.attempt / "generation-gc-journal.json"
+        if not journal.exists():
+            return
+        with self._process_lock():
+            try:
+                transaction = json.loads(journal.read_text(encoding="utf-8"))
+                supplied = transaction.pop("receipt_hash")
+                if supplied != _digest(transaction) or transaction.get("state") != "PREPARED":
+                    return
+                removed: list[str] = []
+                state = "ROLLED_BACK"
+                if transaction.get("apply"):
+                    result = self.lifecycle.gc(
+                        retention_ns=transaction["retention_ns"],
+                        now_ns=transaction.get("now_ns"),
+                        apply=True,
+                    )
+                    removed = list(result["removed"])
+                    state = "COMMITTED"
+                recovered = {**transaction, "state": state, "removed": removed}
+                recovered["receipt_hash"] = _digest(recovered)
+                _write_json(journal, recovered)
+            except (OSError, KeyError, ValueError, json.JSONDecodeError):
+                return
+
+    def _persist_state(self, identity: Any) -> None:
+        state = {
+            "schema": SCHEMA,
+            "root": str(self.lifecycle.root.resolve()),
+            "task_id": self.lifecycle.task_id,
+            "attempt_id": self.lifecycle.attempt_id,
+            "source_commit": self.lifecycle.source_commit,
+            "fast_generation": self.lifecycle.fast_generation,
+            "base_path": str(self.lifecycle.base_path),
+            "promoted_generation": self._promoted_generation,
+            "identity": {
+                "repository": identity.repository,
+                "canonical_root": identity.canonical_root,
+                "default_branch": identity.default_branch,
+                "worktree_root": identity.worktree_root,
+                "base_sha": identity.base_sha,
+                "dirty": identity.dirty,
+                "dirty_fingerprint": identity.dirty_fingerprint,
+                "mapper_config": identity.mapper_config,
+            },
+        }
+        state["receipt_hash"] = _digest(state)
+        _write_json(self.lifecycle.attempt / "generation-broker-state.json", state)
+
     def bind(
         self,
         identity_key: str,
@@ -133,9 +185,16 @@ class GenerationBroker:
         started = time.perf_counter_ns()
         with self._lock, self._process_lock():
             candidate_id = validate_candidate_id(candidate_id)
+            identity_key = self._identity_aliases.get(identity_key, identity_key)
             if generation.generation != self.lifecycle.fast_generation:
                 raise LifecycleError("stale canonical generation")
             identity = self.registry.identity(identity_key)
+            if (
+                generation.source_commit != self.lifecycle.source_commit
+                or identity.base_sha != generation.source_commit
+                or not all(generation.to_dict().values())
+            ):
+                raise LifecycleError("canonical generation provenance mismatch")
             worktree = str(Path(identity.worktree_root or identity.canonical_root).resolve())
             if Path(worktree) != self.lifecycle.base_path:
                 raise LifecycleError("cross-worktree generation binding")
@@ -220,6 +279,7 @@ class GenerationBroker:
             self._bindings[candidate_id] = binding
             self._metrics["build_wait_ns"] += time.perf_counter_ns() - started
             self._record("binding", candidate_id=candidate_id, cache_key=cache_key)
+            self._persist_state(identity)
             return binding
 
     def inspect(self, candidate_id: str) -> GenerationBinding:
@@ -250,7 +310,7 @@ class GenerationBroker:
             return verified
 
     def pin(self, candidate_id: str, *, expires_ns: int) -> GenerationBinding:
-        with self._lock:
+        with self._lock, self._process_lock():
             current = self.inspect(candidate_id)
             self.lifecycle.lease(candidate_id, expires_ns=expires_ns)
             payload = current.to_dict()
@@ -263,7 +323,7 @@ class GenerationBroker:
             return updated
 
     def release(self, candidate_id: str) -> GenerationBinding:
-        with self._lock:
+        with self._lock, self._process_lock():
             binding = self.inspect(candidate_id)
             self.lifecycle.lease(candidate_id, expires_ns=0)
             payload = binding.to_dict()
@@ -278,12 +338,12 @@ class GenerationBroker:
 
     def event(self, event: str, **details: Any) -> dict[str, Any]:
         """Record a Mapper/Fast foreground or background event without repinning."""
-        with self._lock:
+        with self._lock, self._process_lock():
             self._record(str(event), **details)
             return dict(self._events[-1])
 
     def reconcile(self) -> dict[str, Any]:
-        with self._lock:
+        with self._lock, self._process_lock():
             recovered, corrupt, canonical = [], [], []
             for path in sorted((self.lifecycle.attempt / "generation-manifests").glob("*.json")):
                 try:
@@ -312,13 +372,40 @@ class GenerationBroker:
             return {"schema": SCHEMA, "recovered": recovered, "canonical": canonical, "corrupt": corrupt}
 
     def promote(self, generation: CanonicalGeneration) -> dict[str, Any]:
-        with self._lock:
+        with self._lock, self._process_lock():
             if not all(generation.to_dict().values()):
                 raise LifecycleError("generation promotion parity failed")
             previous = self._promoted_generation
             self._promoted_generation = generation.generation
             self.lifecycle.fast_generation = generation.generation
             self.lifecycle.source_commit = generation.source_commit
+            if self._bindings:
+                old_key = next(iter(self._bindings.values())).identity_key
+                identity = self.registry.identity(old_key)
+                identity = RepositoryIdentity(
+                    repository=identity.repository,
+                    canonical_root=identity.canonical_root,
+                    default_branch=identity.default_branch,
+                    worktree_root=identity.worktree_root,
+                    base_sha=generation.source_commit,
+                    dirty=identity.dirty,
+                    dirty_fingerprint=identity.dirty_fingerprint,
+                    mapper_config=identity.mapper_config,
+                )
+                new_key = self.registry.register(identity)
+                self.registry._identities[old_key] = self.registry._identities.get(old_key, self.registry.identity(new_key))
+                self.registry._identities[old_key] = RepositoryIdentity(
+                    repository=identity.repository,
+                    canonical_root=identity.canonical_root,
+                    default_branch=identity.default_branch,
+                    worktree_root=identity.worktree_root,
+                    base_sha=next(iter(self._bindings.values())).repository_base_sha,
+                    dirty=identity.dirty,
+                    dirty_fingerprint=identity.dirty_fingerprint,
+                    mapper_config=identity.mapper_config,
+                )
+                self._identity_aliases[old_key] = new_key
+                self._persist_state(identity)
             self._record("promotion", previous=previous, generation=generation.generation)
             return {"previous": previous, "generation": generation.generation}
 
@@ -342,17 +429,34 @@ class GenerationBroker:
                 orphaned_transaction = json.loads(journal.read_text(encoding="utf-8")).get("state") == "PREPARED"
             except (OSError, json.JSONDecodeError):
                 orphaned_transaction = True
+        overlay_orphans = sorted(
+            path.name for path in self.lifecycle.overlays.glob("*")
+            if path.is_dir() and not (path / "generation-binding.json").exists()
+        )
+        lease_orphans = sorted(
+            path.stem for path in self.lifecycle.leases.glob("*.json")
+            if not (self.lifecycle.overlays / path.stem).is_dir()
+        )
         return {
             "schema": SCHEMA,
-            "healthy": not result["corrupt"] and not orphaned_transaction,
+            "healthy": not result["corrupt"] and not orphaned_transaction and not overlay_orphans and not lease_orphans,
             "orphaned_transaction": orphaned_transaction,
+            "overlay_orphans": overlay_orphans,
+            "lease_orphans": lease_orphans,
             **result,
         }
 
     def gc(self, *, retention_ns: int, now_ns: int | None = None, apply: bool = False) -> dict[str, Any]:
         with self._lock, self._process_lock():
             journal = self.lifecycle.attempt / "generation-gc-journal.json"
-            transaction = {"schema": SCHEMA, "state": "PREPARED", "created_ns": time.time_ns()}
+            transaction = {
+                "schema": SCHEMA,
+                "state": "PREPARED",
+                "created_ns": time.time_ns(),
+                "retention_ns": int(retention_ns),
+                "now_ns": now_ns,
+                "apply": bool(apply),
+            }
             transaction["receipt_hash"] = _digest(transaction)
             _write_json(journal, transaction)
             result = self.lifecycle.gc(retention_ns=retention_ns, now_ns=now_ns, apply=apply)

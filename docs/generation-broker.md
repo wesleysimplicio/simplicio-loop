@@ -28,3 +28,4 @@ python -m bench.benchmark_generation_broker_888
 
 Persisted attempts expose JSON operations through `simplicio-loop generation-broker`:
 `inspect`, `pin`, `release`, `reconcile`, `status`, and `doctor`.
+The CLI reconstructs the authoritative registry and lifecycle from the verified attempt state.

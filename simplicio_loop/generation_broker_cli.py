@@ -1,65 +1,72 @@
-"""JSON operator commands for persisted generation-broker attempts."""
+"""Authoritative JSON operator commands for persisted generation brokers."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import time
 from pathlib import Path
+from typing import Any
 
-from .generation_broker import GenerationBinding, _digest, _write_json
+from .checkpoint_lifecycle import CheckpointLifecycle, LifecycleError
+from .generation_broker import GenerationBroker, _digest
+from .map_service import MapServiceRegistry, RepositoryIdentity
 
 
-def _bindings(attempt: Path) -> list[Path]:
-    return sorted((attempt / "overlays").glob("*/generation-binding.json"))
+def _load(attempt: Path) -> GenerationBroker:
+    state_path = attempt / "generation-broker-state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LifecycleError("generation broker state missing or corrupt") from exc
+    supplied = state.pop("receipt_hash", "")
+    if supplied != _digest(state):
+        raise LifecycleError("generation broker state receipt mismatch")
+    identity = RepositoryIdentity(**state["identity"])
+    registry = MapServiceRegistry()
+    registry.register(identity)
+    lifecycle = CheckpointLifecycle(
+        state["root"],
+        task_id=state["task_id"],
+        attempt_id=state["attempt_id"],
+        source_commit=state["source_commit"],
+        fast_generation=state["fast_generation"],
+        base_path=state["base_path"],
+    )
+    if lifecycle.attempt.resolve() != attempt:
+        raise LifecycleError("generation broker attempt containment mismatch")
+    return GenerationBroker(registry, lifecycle)
+
+
+def _emit(value: Any) -> int:
+    print(json.dumps(value, sort_keys=True))
+    return 0
 
 
 def cli_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="simplicio-loop generation-broker")
-    parser.add_argument("action", choices=("inspect", "pin", "release", "reconcile", "status", "doctor"))
-    parser.add_argument("--attempt-dir", required=True)
-    parser.add_argument("--candidate-id")
-    parser.add_argument("--expires-ns", type=int)
+    sub = parser.add_subparsers(dest="action", required=True)
+    for action in ("status", "reconcile", "doctor"):
+        command = sub.add_parser(action)
+        command.add_argument("--attempt-dir", required=True)
+    inspect = sub.add_parser("inspect")
+    inspect.add_argument("--attempt-dir", required=True)
+    inspect.add_argument("--candidate-id", required=True)
+    pin = sub.add_parser("pin")
+    pin.add_argument("--attempt-dir", required=True)
+    pin.add_argument("--candidate-id", required=True)
+    pin.add_argument("--expires-ns", required=True, type=int)
+    release = sub.add_parser("release")
+    release.add_argument("--attempt-dir", required=True)
+    release.add_argument("--candidate-id", required=True)
     args = parser.parse_args(argv)
-    attempt = Path(args.attempt_dir).resolve()
-    paths = _bindings(attempt)
-    corrupt: list[str] = []
-    values: dict[str, GenerationBinding] = {}
-    for path in paths:
-        try:
-            binding = GenerationBinding.verify(json.loads(path.read_text(encoding="utf-8")))
-            values[binding.candidate_id] = binding
-        except (OSError, ValueError, json.JSONDecodeError):
-            corrupt.append(path.parent.name)
-    if args.action in {"inspect", "pin", "release"}:
-        if not args.candidate_id or args.candidate_id not in values:
-            parser.error("action requires an existing --candidate-id")
-        binding = values[args.candidate_id]
-        if args.action in {"pin", "release"}:
-            expires = int(args.expires_ns or time.time_ns()) if args.action == "pin" else 0
-            payload = binding.to_dict()
-            payload.pop("receipt_hash")
-            payload["lease_expires_ns"] = expires
-            binding = GenerationBinding(**payload, receipt_hash=_digest(payload))
-            _write_json(Path(binding.overlay_path) / "generation-binding.json", binding.to_dict())
-        result = binding.to_dict()
-    else:
-        journal = attempt / "generation-gc-journal.json"
-        orphaned = False
-        if journal.exists():
-            try:
-                orphaned = json.loads(journal.read_text(encoding="utf-8")).get("state") == "PREPARED"
-            except (OSError, json.JSONDecodeError):
-                orphaned = True
-        result = {
-            "action": args.action,
-            "bindings": sorted(values),
-            "corrupt": corrupt,
-            "orphaned_transaction": orphaned,
-            "healthy": not corrupt and not orphaned,
-        }
-    print(json.dumps(result, sort_keys=True))
-    return 0 if not corrupt else 2
+    broker = _load(Path(args.attempt_dir).resolve())
+    if args.action == "inspect":
+        return _emit(broker.inspect(args.candidate_id).to_dict())
+    if args.action == "pin":
+        return _emit(broker.pin(args.candidate_id, expires_ns=args.expires_ns).to_dict())
+    if args.action == "release":
+        return _emit(broker.release(args.candidate_id).to_dict())
+    return _emit(getattr(broker, args.action)())
 
 
 if __name__ == "__main__":

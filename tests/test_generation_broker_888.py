@@ -9,7 +9,8 @@ import pytest
 
 from simplicio_loop.checkpoint_lifecycle import CheckpointLifecycle, LifecycleError
 from simplicio_loop.fast_fanout import CanonicalGeneration
-from simplicio_loop.generation_broker import GenerationBroker
+from simplicio_loop.generation_broker import GenerationBroker, _digest
+from simplicio_loop.generation_broker_cli import cli_main
 from simplicio_loop.map_service import MapServiceRegistry, RepositoryIdentity
 
 
@@ -278,3 +279,50 @@ def test_lifecycle_rejects_unsafe_shard(tmp_path: Path):
     service, _, _ = broker(tmp_path)
     with pytest.raises(LifecycleError, match="unsafe shard_id"):
         service.lifecycle.checkpoint("a", "../escape", "PLANNED")
+
+
+def test_json_cli_uses_authoritative_broker_for_inspect_pin_release(tmp_path: Path, capsys):
+    service, identity_key, generation = broker(tmp_path)
+    service.bind(
+        identity_key, tree_hash="tree", files=[], candidate_id="a", generation=generation
+    )
+    attempt = str(service.lifecycle.attempt)
+    assert cli_main(["inspect", "--attempt-dir", attempt, "--candidate-id", "a"]) == 0
+    assert json.loads(capsys.readouterr().out)["candidate_id"] == "a"
+    assert cli_main([
+        "pin", "--attempt-dir", attempt, "--candidate-id", "a", "--expires-ns", "999"
+    ]) == 0
+    assert json.loads(capsys.readouterr().out)["lease_expires_ns"] == 999
+    assert cli_main(["release", "--attempt-dir", attempt, "--candidate-id", "a"]) == 0
+    assert json.loads(capsys.readouterr().out)["lease_expires_ns"] == 0
+
+
+def test_first_bind_rejects_source_provenance_mismatch(tmp_path: Path):
+    service, identity_key, _ = broker(tmp_path)
+    mismatch = CanonicalGeneration("generation-1", "ctx", "different", "plan", "receipt")
+    with pytest.raises(LifecycleError, match="provenance mismatch"):
+        service.bind(
+            identity_key, tree_hash="tree", files=[], candidate_id="a", generation=mismatch
+        )
+
+
+def test_restart_rolls_back_prepared_dry_run_gc_and_doctor_finds_orphan(tmp_path: Path):
+    service, _, _ = broker(tmp_path)
+    transaction = {
+        "schema": "simplicio.loop.generation-binding/v1",
+        "state": "PREPARED",
+        "created_ns": 1,
+        "retention_ns": 0,
+        "now_ns": 2,
+        "apply": False,
+    }
+    transaction["receipt_hash"] = _digest(transaction)
+    journal = service.lifecycle.attempt / "generation-gc-journal.json"
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    journal.write_text(json.dumps(transaction))
+    (service.lifecycle.overlays / "orphan").mkdir(parents=True)
+    restarted = GenerationBroker(service.registry, service.lifecycle)
+    assert json.loads(journal.read_text())["state"] == "ROLLED_BACK"
+    result = restarted.doctor()
+    assert result["healthy"] is False
+    assert result["overlay_orphans"] == ["orphan"]
