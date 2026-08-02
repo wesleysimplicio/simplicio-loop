@@ -13,6 +13,7 @@ import importlib
 import json
 import os
 import platform
+import re
 import sys
 import uuid
 from collections.abc import Mapping
@@ -27,6 +28,7 @@ ROUTE_RECEIPT_SCHEMA = "simplicio.loop-store-route-receipt/v1"
 CAPABILITY_SCHEMA = "simplicio.mapper-store-capability/v1"
 MAPPER_MIN_VERSION = (0, 26, 1)
 REQUIRED_MAPPER_EXPORTS = ("OperationsStore", "inspect_store", "resolve_store_location")
+_MAPPER_VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
 
 
 class StoreAdapterError(ValueError):
@@ -54,23 +56,33 @@ def _sha(value: Any) -> str:
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
+    if not isinstance(value, str) or not _MAPPER_VERSION_RE.fullmatch(value):
+        return ()
     try:
-        return tuple(int(part) for part in value.split(".") if part != "")
+        return tuple(int(part) for part in value.split("."))
     except (AttributeError, ValueError):
         return ()
 
 
 def _mapper_version(module: Any) -> str | None:
     package = sys.modules.get("simplicio_mapper")
-    value = getattr(package, "__version__", None) if package else None
-    if value:
-        return str(value)
+    if package is not None and hasattr(package, "__version__"):
+        value = getattr(package, "__version__")
+        return None if value is None else str(value)
     try:
         from importlib.metadata import version
 
         return version("simplicio-mapper")
     except (ImportError, PackageNotFoundError, TypeError, ValueError):  # pragma: no cover
         return None
+
+
+def _version_failure(version: str | None) -> str | None:
+    if version is None or version == "":
+        return "MAPPER_VERSION_UNAVAILABLE"
+    if not _version_tuple(version):
+        return "MAPPER_VERSION_INVALID"
+    return None
 
 
 def _data_dir(value: str | os.PathLike[str] | None) -> Path | None:
@@ -164,7 +176,18 @@ def probe_mapper(
             tuple(sorted(missing | set(missing_exports))),
             str(target) if target else None,
         )
-    if version is not None and _version_tuple(version) < MAPPER_MIN_VERSION:
+    version_failure = _version_failure(version)
+    if version_failure is not None:
+        return CapabilityReport(
+            "incompatible",
+            version_failure,
+            version,
+            exports,
+            tuple(sorted(capabilities)),
+            tuple(sorted(missing)),
+            str(target) if target else None,
+        )
+    if _version_tuple(version) < MAPPER_MIN_VERSION:
         return CapabilityReport(
             "incompatible",
             "MAPPER_VERSION_TOO_OLD",
