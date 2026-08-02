@@ -26,25 +26,25 @@ def fake_mapper(monkeypatch, version="0.26.9"):
     return module
 
 
-def test_mapper_route_is_default_and_requires_capability(monkeypatch):
+def test_legacy_route_is_default_until_mapper_cutover(monkeypatch):
     fake_mapper(monkeypatch)
     report = storage_doctor()
     assert report["status"] == "READY"
-    assert report["selected"] == "mapper"
-    assert report["writer_authority"] == "mapper-store"
+    assert report["selected"] == "legacy"
+    assert report["writer_authority"] == "loop"
     assert report["effects_attempted"] is False
 
 
-def test_runner_effect_journal_defaults_to_mapper_and_requires_explicit_legacy(monkeypatch):
+def test_runner_effect_journal_defaults_to_legacy_and_requires_explicit_mapper(monkeypatch):
     from simplicio_loop import runner
 
     monkeypatch.delenv("SIMPLICIO_STORAGE_ROUTE", raising=False)
-    assert runner._mapper_journal_enabled() is True
-    monkeypatch.setenv("SIMPLICIO_STORAGE_ROUTE", "legacy")
     assert runner._mapper_journal_enabled() is False
+    monkeypatch.setenv("SIMPLICIO_STORAGE_ROUTE", "mapper")
+    assert runner._mapper_journal_enabled() is True
 
 
-def test_runner_hookwall_route_is_frozen_to_mapper_by_default(monkeypatch, tmp_path):
+def test_runner_hookwall_route_is_frozen_to_legacy_by_default(monkeypatch, tmp_path):
     from simplicio_loop import runner
 
     selected = []
@@ -54,12 +54,9 @@ def test_runner_hookwall_route_is_frozen_to_mapper_by_default(monkeypatch, tmp_p
             selected.append((database, kwargs))
 
     monkeypatch.delenv("SIMPLICIO_STORAGE_ROUTE", raising=False)
-    monkeypatch.setattr(runner, "MapperHookwallEffectLedger", FakeLedger)
-    monkeypatch.setattr(
-        runner, "_mapper_operations_database", lambda repo: tmp_path / "operations.sqlite"
-    )
+    monkeypatch.setattr(runner, "HookwallEffectLedger", FakeLedger)
     runner._hookwall_ledger(tmp_path)
-    assert selected == [(tmp_path / "operations.sqlite", {"auto_create": False})]
+    assert selected == [(tmp_path / ".simplicio" / "orchestrator" / "hookwall.sqlite3", {})]
 
 
 def test_mapper_route_selects_installed_capabilities_without_creating_state(
@@ -115,6 +112,39 @@ def test_shadow_route_freezes_and_rejects_fallback(monkeypatch):
     assert receipt["schema"] == "simplicio.loop-store-route-receipt/v1"
     assert receipt["immutable"] is True
     assert receipt["receipt_hash"].startswith("sha256:")
+
+
+def test_frozen_route_receipt_rejects_environment_drift(monkeypatch, tmp_path):
+    from simplicio_loop import runner
+
+    monkeypatch.delenv("SIMPLICIO_STORAGE_ROUTE", raising=False)
+    receipt = runner._freeze_storage_route(tmp_path, "run-1")
+    assert receipt["selected"] == "legacy"
+    assert runner._verify_storage_route(tmp_path)["receipt_hash"] == receipt["receipt_hash"]
+    monkeypatch.setenv("SIMPLICIO_STORAGE_ROUTE", "mapper")
+    with pytest.raises(StoreAdapterError, match="ROUTE_FROZEN_AFTER_FIRST_WRITE"):
+        runner._verify_storage_route(tmp_path)
+
+
+def test_mapper_route_freezes_only_with_verified_installed_api(monkeypatch, tmp_path):
+    from simplicio_loop import runner
+
+    fake_mapper(monkeypatch)
+    monkeypatch.setenv("SIMPLICIO_STORAGE_ROUTE", "mapper")
+    receipt = runner._freeze_storage_route(tmp_path, "run-2")
+    assert receipt["selected"] == "mapper"
+    assert runner._verify_storage_route(tmp_path)["selected"] == "mapper"
+
+
+def test_mapper_route_never_falls_back_when_api_is_missing(monkeypatch, tmp_path):
+    from simplicio_loop import runner
+
+    monkeypatch.setenv("SIMPLICIO_STORAGE_ROUTE", "mapper")
+    monkeypatch.setitem(sys.modules, "simplicio_mapper", None)
+    monkeypatch.setitem(sys.modules, "simplicio_mapper.store", None)
+    with pytest.raises(StoreAdapterError, match="MAPPER_NOT_INSTALLED"):
+        runner._freeze_storage_route(tmp_path, "run-3")
+    assert not (tmp_path / runner.STORAGE_ROUTE_RECEIPT).exists()
 
 
 def test_select_again_is_allowed_before_freeze(monkeypatch):

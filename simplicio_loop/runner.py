@@ -68,6 +68,12 @@ from .execution_board import ExecutionBoard
 from .run_journal import RunJournal
 from .mapper_run_journal import MapperRunJournal
 from .mapper_hookwall import MapperHookwallEffectLedger
+from .store_adapter import (
+    StorageRoute,
+    StorageRouter,
+    StoreAdapterError,
+    verify_route_receipt,
+)
 from .stack_lock import (
     StackLock,
     discover_installed_components,
@@ -454,6 +460,33 @@ def _verify_run_stack_lock(run_root: Path) -> StackLock:
     route = _execution_profile()
     lock.verify_unchanged(discover_installed_components(), route)
     return lock
+
+
+STORAGE_ROUTE_RECEIPT = "storage-route-receipt.json"
+
+
+def _storage_route_requested() -> str:
+    """Return the explicit store rollout flag; legacy is the safe pre-cutover default."""
+    return os.environ.get("SIMPLICIO_STORAGE_ROUTE", StorageRoute.LEGACY.value).strip().lower()
+
+
+def _freeze_storage_route(run_root: Path, run_id: str) -> dict[str, Any]:
+    """Select and persist the store route before any mapper-backed operation."""
+    router = StorageRouter(requested=_storage_route_requested(), run_id=run_id)
+    router.freeze("run_bootstrap")
+    receipt = router.receipt()
+    _write_json(run_root / STORAGE_ROUTE_RECEIPT, receipt)
+    return receipt
+
+
+def _verify_storage_route(run_root: Path) -> dict[str, Any]:
+    """Verify the immutable store route and current capability before mutation."""
+    path = run_root / STORAGE_ROUTE_RECEIPT
+    try:
+        receipt = _load_json(path)
+    except (OSError, TypeError, ValueError) as exc:
+        raise StoreAdapterError("STORAGE_ROUTE_RECEIPT_MISSING") from exc
+    return verify_route_receipt(receipt, requested=_storage_route_requested())
 
 
 def _write_maintenance_deferred_receipt(
@@ -844,11 +877,12 @@ def _build_effect_request(repo_path: Path, run_id: str, task_index: int,
                           task: Mapping[str, Any], attempt: int,
                           targets: Sequence[str], route_record: Mapping[str, Any],
                           guarded_attempt: Any,
-                          canonical_plan: Optional[CanonicalPlan] = None) -> EffectRequest:
+                          canonical_plan: Optional[CanonicalPlan] = None,
+                          storage_route: StorageRoute | str | None = None) -> EffectRequest:
     lease = getattr(guarded_attempt, "lease", None)
     lease_id = str(getattr(lease, "lease_id", "") or f"loop-run:{run_id}")
     raw_fence = getattr(lease, "fencing_token", 1)
-    if _mapper_journal_enabled() and str(raw_fence).strip():
+    if _mapper_journal_enabled(storage_route) and str(raw_fence).strip():
         fencing_token: int | str = str(raw_fence)
     else:
         try:
@@ -983,10 +1017,20 @@ def _mapper_operations_database(repo_path: Path) -> str:
         raise RuntimeError(f"MAPPER_OPERATIONS_DB_UNAVAILABLE:{error}") from error
 
 
-def _hookwall_ledger(repo_path: Path) -> Any:
-    """Select Hookwall persistence; legacy is available only by explicit opt-in."""
-    if _mapper_journal_enabled():
+def _hookwall_ledger(
+    repo_path: Path,
+    storage_route: StorageRoute | str | None = None,
+) -> Any:
+    """Select Hookwall persistence from the frozen route; shadow is fail-closed."""
+    route_value = _storage_route_requested() if storage_route is None else storage_route
+    try:
+        route = StorageRoute(route_value)
+    except ValueError as error:
+        raise StoreAdapterError("STORAGE_ROUTE_INVALID") from error
+    if route == StorageRoute.MAPPER:
         return MapperHookwallEffectLedger(_mapper_operations_database(repo_path), auto_create=False)
+    if route == StorageRoute.SHADOW:
+        raise StoreAdapterError("SHADOW_ROUTE_NOT_EXECUTABLE")
     return HookwallEffectLedger(
         repo_path / ".simplicio" / "orchestrator" / "hookwall.sqlite3"
     )
@@ -997,7 +1041,8 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
                              env: Mapping[str, str], repo_path: Path,
                              attempt_coordinator: Optional[AttemptCoordinator],
                              guarded_attempt: Any,
-                             source_hash: Optional[str] = None) -> Dict[str, Any]:
+                             source_hash: Optional[str] = None,
+                             storage_route: StorageRoute | str | None = None) -> Dict[str, Any]:
     """Run one mutable operator only inside a lineage-bound Hookwall chain."""
     source_hash = source_hash or str(_repo_fingerprint(repo_path).get("tree_hash") or "")
     plan_id = request.gate_id or request.transaction_id or request.idempotency_key
@@ -1034,7 +1079,7 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
         "fence": request.fencing_token,
     }
     validate_pre_decision(envelope, pre_decision)
-    hookwall_ledger = _hookwall_ledger(repo_path)
+    hookwall_ledger = _hookwall_ledger(repo_path, storage_route)
     reservation = hookwall_ledger.reserve(envelope, pre_decision)
     if reservation["action"] == "REPLAY_VERIFIED":
         return {
@@ -2592,6 +2637,7 @@ def _validate_run_receipts(
     require_dry_run: bool = True,
 ) -> Dict[str, Any]:
     """Require a current, run-bound mapper -> plan -> operator receipt chain."""
+    storage_route = _verify_storage_route(run_dir)
     mapper = _require_json_receipt(run_dir / "mapper-context.json", "mapper context")
     plan = _require_json_receipt(run_dir / "plan.json", "plan")
     mapper_preflight = _require_json_receipt(run_dir / "mapper-preflight.json", "mapper preflight")
@@ -2746,6 +2792,7 @@ def _validate_run_receipts(
         "plan": plan,
         "operator_preflight": operator_preflight,
         "operator": operator,
+        "storage_route": storage_route,
         "repo_state": current_state,
         "plan_hash": plan_hash,
     }
@@ -3504,6 +3551,15 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
             "lock_hash": "",
             "status": "UNVERIFIED",
         },
+        "storage_route": {
+            "ready": False,
+            "path": str(run_root / STORAGE_ROUTE_RECEIPT),
+            "requested": _storage_route_requested(),
+            "selected": "",
+            "generation": "",
+            "receipt_hash": "",
+            "status": "UNVERIFIED",
+        },
         "mapper": {"ready": False, "receipt": "", "targets": []},
         "operator": {"ready": False, "receipt": "", "target": "", "execution_state": "proposed"},
         "evidence": {"ready": False, "receipt": "", "status": "UNVERIFIED"},
@@ -3549,7 +3605,32 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
         _emit_event(run_root, state, "stack_lock_frozen",
                     receipt=str(run_root / "stack-lock.json"),
                     message="installed stack lock frozen before Mapper scan")
-        _transition(run_root, state, "mapping", "stack lock frozen; mapper required",
+        storage_route = _freeze_storage_route(run_root, run_id)
+        manifest.update({
+            "storage_route_path": str(run_root / STORAGE_ROUTE_RECEIPT),
+            "storage_route_hash": storage_route.get("receipt_hash", ""),
+            "storage_route": storage_route.get("selected"),
+            "storage_route_generation": storage_route.get("generation", ""),
+        })
+        _write_json(run_root / "manifest.json", manifest)
+        state = _load_json(run_root / "state.json")
+        state["storage_route"] = {
+            "ready": True,
+            "path": str(run_root / STORAGE_ROUTE_RECEIPT),
+            "requested": storage_route.get("requested", ""),
+            "selected": storage_route.get("selected", ""),
+            "generation": storage_route.get("generation", ""),
+            "receipt_hash": storage_route.get("receipt_hash", ""),
+            "status": "MEASURED",
+        }
+        _write_json(run_root / "state.json", state)
+        _emit_event(run_root, state, "storage_route_frozen",
+                    receipt=str(run_root / STORAGE_ROUTE_RECEIPT),
+                    message="store route selected and frozen before Mapper scan",
+                    route=storage_route.get("selected"),
+                    generation=storage_route.get("generation"),
+                    receipt_hash=storage_route.get("receipt_hash"))
+        _transition(run_root, state, "mapping", "stack and storage routes frozen; mapper required",
                     receipt=str(run_root / "stack-lock.json"))
         primary_goal = _task_goal(tasks[0]) if tasks else raw.strip()
         mapper_payload = _run_with_operator_recovery(
@@ -3912,12 +3993,24 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     run_dir = Path(status["run_dir"])
     repo_path = Path(status["manifest"]["repo"]).resolve()
     stack_lock = _verify_run_stack_lock(run_dir)
+    storage_route = _verify_storage_route(run_dir)
     status["state"]["stack_lock"] = {
         **dict(status["state"].get("stack_lock") or {}),
         "ready": True,
         "path": str(run_dir / "stack-lock.json"),
         "route": stack_lock.route,
         "lock_hash": stack_lock.lock_hash,
+        "status": "VERIFIED",
+        "verified_at": _now(),
+    }
+    status["state"]["storage_route"] = {
+        **dict(status["state"].get("storage_route") or {}),
+        "ready": True,
+        "path": str(run_dir / STORAGE_ROUTE_RECEIPT),
+        "requested": storage_route.get("requested", ""),
+        "selected": storage_route.get("selected", ""),
+        "generation": storage_route.get("generation", ""),
+        "receipt_hash": storage_route.get("receipt_hash", ""),
         "status": "VERIFIED",
         "verified_at": _now(),
     }
@@ -4137,6 +4230,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
     effect_adapter = _runtime_effect_adapter(repo_path, profile)
     effect_request = _build_effect_request(
         repo_path, run_id, task_index, task, attempt, targets, route_record, guarded_attempt,
+        storage_route=storage_route.get("selected"),
         canonical_plan=(
             load_canonical_plan(plan["canonical_plan"], expected_digest=str(plan.get("canonical_plan_digest") or ""))
             if isinstance(plan.get("canonical_plan"), Mapping) else None
@@ -4152,6 +4246,7 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         attempt_coordinator=attempt_coordinator,
         guarded_attempt=guarded_attempt,
         source_hash=str(before.get("tree_hash") or ""),
+        storage_route=storage_route.get("selected"),
     )
     returncode = effect_outcome["returncode"]
     stdout = effect_outcome["stdout"]
@@ -5456,12 +5551,16 @@ def _run_operator_item_process(item: Mapping[str, Any], retry_budget: int) -> Li
     return attempts
 
 
-def _mapper_journal_enabled() -> bool:
-    return os.environ.get("SIMPLICIO_STORAGE_ROUTE", "mapper").strip().lower() == "mapper"
+def _mapper_journal_enabled(storage_route: StorageRoute | str | None = None) -> bool:
+    raw = _storage_route_requested() if storage_route is None else storage_route
+    try:
+        return StorageRoute(raw) == StorageRoute.MAPPER
+    except ValueError as error:
+        raise StoreAdapterError("STORAGE_ROUTE_INVALID") from error
 
 
 def _dispatch_journal_backend(journal_path: Optional[Path]) -> Any:
-    """Select the journal; the canonical MapperStore route is the default."""
+    """Select the journal from the rollout route; legacy remains pre-cutover default."""
     if _mapper_journal_enabled():
         root = Path.cwd()
         return MapperRunJournal(_mapper_operations_database(root), auto_create=False)

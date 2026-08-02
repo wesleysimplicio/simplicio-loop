@@ -18,6 +18,7 @@
     "frozen": {"type": "boolean"},
     "freeze_reason": {"type": ["string", "null"]},
     "immutable": {"type": "boolean"},
+    "capability": {"type": ["object", "null"]},
     "receipt_hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
   }
 }
