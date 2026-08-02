@@ -698,3 +698,124 @@ def diagnose_stack(
                     "missing_component",
                     f"required component {entry.name!r} is not available for route {route!r}",
                     "install or expose the pinned component, then re-run stack diagnostics",
+                    (entry.name,),
+                ))
+            continue
+
+        if len(matches) != 1:
+            # Duplicate observations are already reported above. Avoid adding
+            # misleading version/capability claims for an ambiguous binary.
+            continue
+        component = matches[0]
+        if not component.available:
+            issues.append(_diagnostic(
+                "component_unavailable",
+                f"component {entry.name!r} is not available for route {route!r}",
+                "install a readable executable and re-run stack diagnostics",
+                (entry.name,),
+            ))
+        if not _version_matches(component.version, entry.version_range):
+            issues.append(_diagnostic(
+                "version_incompatible",
+                f"component {entry.name!r} version {component.version!r} does not match {entry.version_range!r}",
+                "install a version inside the registry range before locking",
+                (entry.name,),
+                {"actual": component.version, "expected": entry.version_range},
+            ))
+        missing_capabilities = sorted(
+            set(entry.required_capabilities) - set(component.capabilities)
+        )
+        if missing_capabilities:
+            issues.append(_diagnostic(
+                "capability_missing",
+                f"component {entry.name!r} lacks required capabilities: {', '.join(missing_capabilities)}",
+                "publish or install the declared capabilities before locking",
+                (entry.name,),
+                {"missing": ",".join(missing_capabilities)},
+            ))
+        if active and route not in entry.routes:
+            issues.append(_diagnostic(
+                "route_incompatible",
+                f"component {entry.name!r} is not declared for route {route!r}",
+                "select a supported route or update the compatibility registry",
+                (entry.name,),
+                {"routes": ",".join(entry.routes)},
+            ))
+
+    for rule in registry.compatibility:
+        producers = by_name.get(rule.producer, [])
+        consumers = by_name.get(rule.consumer, [])
+        if len(producers) != 1 or len(consumers) != 1:
+            continue
+        producer = producers[0]
+        consumer = consumers[0]
+        if (
+            not _version_matches(producer.version, rule.producer_range)
+            or not _version_matches(consumer.version, rule.consumer_range)
+            or not set(rule.required_capabilities).issubset(set(producer.capabilities))
+        ):
+            issues.append(_diagnostic(
+                "compatibility_mismatch",
+                f"compatibility rule {rule.producer!r} -> {rule.consumer!r} does not match observed versions/capabilities",
+                "install compatible producer/consumer artifacts before locking",
+                (rule.producer, rule.consumer),
+                {
+                    "producer_version": producer.version,
+                    "consumer_version": consumer.version,
+                    "producer_range": rule.producer_range,
+                    "consumer_range": rule.consumer_range,
+                },
+            ))
+
+    if locked is not None:
+        current = {name: tuple(items) for name, items in by_name.items()}
+        changed, unchanged = _lock_changes(locked, current)
+        for group in registry.upgrade_groups:
+            members = set(group.components)
+            changed_members = sorted(members & changed)
+            unchanged_members = sorted(members & unchanged)
+            if changed_members and unchanged_members:
+                issues.append(_diagnostic(
+                    "partial_upgrade",
+                    f"upgrade group {group.name!r} is only partially upgraded",
+                    "upgrade or roll back the complete group before resuming effects",
+                    tuple(members),
+                    {
+                        "changed": ",".join(changed_members),
+                        "unchanged": ",".join(unchanged_members),
+                    },
+                ))
+
+    return StackDiagnosis(
+        route=route,
+        registry_generation=registry.generation,
+        registry_hash=registry.registry_hash,
+        issues=tuple(issues),
+        lock_hash=locked.lock_hash if locked is not None else "",
+    )
+
+
+__all__ = [
+    "ROUTES",
+    "STACK_DIAGNOSTICS_SCHEMA",
+    "STACK_LOCK_SCHEMA",
+    "STACK_REGISTRY_SCHEMA",
+    "StackCompatibilityRegistry",
+    "StackCompatibilityRule",
+    "StackComponent",
+    "StackDiagnostic",
+    "StackDiagnosis",
+    "StackLock",
+    "StackLockError",
+    "StackRegistryEntry",
+    "StackUpgradeGroup",
+    "diagnose_stack",
+    "discover_installed_components",
+    "load_component_observations",
+    "load_stack_lock",
+    "load_stack_registry",
+    "observe_component",
+    "observe_components",
+    "validate_stack_lock",
+    "write_stack_lock",
+]
