@@ -25,6 +25,8 @@
           "checkpoint",
           "prepare_effect",
           "commit_effect",
+          "mark_effect_unknown",
+          "reconcile_effect",
           "append_event",
           "replay",
           "status"

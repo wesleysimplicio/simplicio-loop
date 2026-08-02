@@ -78,6 +78,14 @@ class FakeStore:
         self._record("commit_effect", *args, **kwargs)
         return {"status": "committed"}
 
+    def mark_effect_unknown(self, *args, **kwargs):
+        self._record("mark_effect_unknown", *args, **kwargs)
+        return {"status": "unknown"}
+
+    def reconcile_effect(self, *args, **kwargs):
+        self._record("reconcile_effect", *args, **kwargs)
+        return {"status": kwargs["outcome"]}
+
     def append_event(self, *args, **kwargs):
         self._record("append_event", *args, **kwargs)
         return {"status": "appended"}
@@ -141,10 +149,41 @@ def test_adapter_exposes_non_queue_operations_and_no_local_state(tmp_path):
     adapter.checkpoint(lease, 1, {"cursor": 1})
     adapter.prepare_effect(lease, effect_id="e", idempotency_key="i", payload={})
     adapter.commit_effect(lease, effect_id="e", receipt={"ok": True})
+    adapter.mark_effect_unknown(lease, effect_id="e")
+    adapter.reconcile_effect(
+        effect_id="e",
+        attempt_id="a",
+        outcome="committed",
+        receipt={"external": "proof"},
+        fence_token=None,
+    )
     adapter.append_event("run", "claimed", {}, expected_seq=0)
     assert adapter.replay("run")["valid"]
     assert adapter.status()["counts"] == {}
     assert not database.exists()
+
+
+def test_unknown_effect_keeps_fence_and_reconciliation_is_explicit():
+    fake = FakeStore([])
+    adapter = MapperOperationsAdapter("/tmp/loop-ops.db", store=fake)
+    lease = OperationLease("t", "attempt-1", "fence-1", "l", "w", {})
+    adapter.mark_effect_unknown(lease, effect_id="effect-1")
+    adapter.reconcile_effect(
+        effect_id="effect-1",
+        attempt_id=lease.attempt_id,
+        outcome="failed",
+        receipt={"reconciled": True},
+    )
+    assert fake.calls[0] == (
+        "mark_effect_unknown",
+        ("effect-1", "attempt-1", "fence-1"),
+        {},
+    )
+    assert fake.calls[1] == (
+        "reconcile_effect",
+        ("effect-1", "attempt-1", None),
+        {"outcome": "failed", "receipt": {"reconciled": True}},
+    )
 
 
 def test_adapter_maps_mapper_fencing_failure_to_queue_conflict(monkeypatch):
