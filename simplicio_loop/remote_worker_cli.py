@@ -2,8 +2,9 @@
 """Packaged CLI for the standalone remote-worker process (issue #286 step 11).
 
 Run as its own OS process (``python3 -m simplicio_loop.remote_worker_cli claim ...``, or the
-installed ``simplicio-remote-worker`` console script) against either a shared SQLite queue file
-(``--db``) or a real networked queue (``--http URL``, backed by
+installed ``simplicio-remote-worker`` console script) against the canonical MapperStore
+operations store by default, a shared legacy SQLite queue file (explicit ``--db``), or a real
+networked queue (``--http URL``, backed by
 ``simplicio_loop.remote_queue_server_cli`` / the installed ``simplicio-remote-queue-server``
 console script). Exists so end-to-end tests -- and real deployments -- can spawn genuinely
 independent processes -- not threads in one interpreter -- and prove the full claim/heartbeat/
@@ -68,7 +69,8 @@ async def _write_status_async(status_file: str, payload: dict) -> None:
 
 
 def _add_backend_args(parser: argparse.ArgumentParser) -> None:
-    """Select exactly one queue authority, including the explicit MapperStore lane."""
+    """Select one queue authority; no backend means the canonical MapperStore lane."""
+    parser.add_argument("--repo", default=".", help="Loop checkout used to resolve repo-scoped MapperStore data")
     parser.add_argument("--db", default=None, help="shared SQLite queue file path")
     parser.add_argument("--http", default=None, help="base URL of a real remote-queue-server instance")
     parser.add_argument("--mapper-db", default=None, help="initialized MapperStore operations.sqlite path")
@@ -78,10 +80,17 @@ def _add_backend_args(parser: argparse.ArgumentParser) -> None:
                         help="bearer token for --http (ignored for --db)")
 
 
+def _default_mapper_db(repo: str) -> Path:
+    """Resolve the repo-scoped canonical operations store without creating it."""
+    from .local_task_queue_cli import _default_mapper_db as resolve
+
+    return resolve(repo)
+
+
 def _build_queue(args: argparse.Namespace) -> RemoteQueue:
     backends = [getattr(args, name, None) for name in ("db", "http", "mapper_db")]
-    if sum(bool(value) for value in backends) != 1:
-        raise SystemExit("exactly one of --db, --http or --mapper-db is required")
+    if sum(bool(value) for value in backends) > 1:
+        raise SystemExit("at most one of --db, --http or --mapper-db may be provided")
     if getattr(args, "mapper_db", None):
         queue = MapperRemoteQueue(args.mapper_db, auto_create=False)
         if getattr(args, "mapper_init", False):
@@ -89,7 +98,15 @@ def _build_queue(args: argparse.Namespace) -> RemoteQueue:
         return queue  # type: ignore[return-value]
     if args.http:
         return HTTPRemoteQueue(args.http, token=args.token, timeout=10.0)
-    return SQLiteRemoteQueue(args.db)
+    if args.db:
+        # A legacy SQLite queue is retained only when the operator explicitly
+        # names --db; the default path never falls back after a Mapper error.
+        return SQLiteRemoteQueue(args.db)
+    mapper_db = _default_mapper_db(getattr(args, "repo", "."))
+    queue = MapperRemoteQueue(mapper_db, auto_create=False)
+    if getattr(args, "mapper_init", False):
+        queue.initialize()
+    return queue  # type: ignore[return-value]
 
 
 def _cmd_claim(args: argparse.Namespace) -> int:
