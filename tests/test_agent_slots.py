@@ -116,12 +116,13 @@ def test_invalid_configuration_and_status_are_fail_closed(tmp_path: Path) -> Non
 
 def test_cli_exposes_the_complete_lifecycle_as_json(tmp_path: Path, capsys) -> None:
     db = tmp_path / "cli.sqlite"
-    assert cli_main(["status", "--db", str(db)]) == 0
-    assert cli_main(["acquire", "cli-agent", "--db", str(db), "--worktree", "wt", "--lease-id", "lease"]) == 0
-    assert cli_main(["start", "cli-agent", "--db", str(db)]) == 0
-    assert cli_main(["update-blockers", "cli-agent", "--db", str(db), "--descendants", "0"]) == 0
-    assert cli_main(["close", "cli-agent", "--status", "shutdown", "--db", str(db)]) == 0
-    assert cli_main(["reclaim", "cli-agent", "--db", str(db)]) == 0
+    legacy = ["--route", "legacy", "--db", str(db)]
+    assert cli_main(["status", *legacy]) == 0
+    assert cli_main(["acquire", "cli-agent", *legacy, "--worktree", "wt", "--lease-id", "lease"]) == 0
+    assert cli_main(["start", "cli-agent", *legacy]) == 0
+    assert cli_main(["update-blockers", "cli-agent", *legacy, "--descendants", "0"]) == 0
+    assert cli_main(["close", "cli-agent", "--status", "shutdown", *legacy]) == 0
+    assert cli_main(["reclaim", "cli-agent", *legacy]) == 0
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
     assert len(lines) == 6
     assert '"schema": "simplicio.loop-agent-slot-receipt/v1"' not in lines[0]
