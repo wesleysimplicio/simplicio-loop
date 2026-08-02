@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -53,6 +54,29 @@ AGENT_KEYWORDS = (
     "new-failure-investigation", "investigar falha nova", "new failure investigation",
     "semantic-review", "revisao semantica", "semantic review", "revisão semântica",
     "recovery-choice", "escolher recuperacao", "recovery choice", "escolher recuperação",
+)
+
+# Mapper is an orientation/context provider, not a mandatory hop for every task.
+# Keep this list intentionally conservative: broad repository language, issue
+# triage, dependency/impact questions and historical context need Mapper; a
+# mechanical edit with an explicit target should stay on the cheap path.
+MAPPER_FULL_KEYWORDS = (
+    "repository", "repo", "repositorio", "repositório", "codebase",
+    "issue", "issues", "github", "pull request", "cross-repo", "cross repo",
+    "dependency", "dependencies", "dependencia", "dependências", "dependent",
+    "impact", "blast radius", "architecture", "arquitetura", "history", "historico",
+    "histórico", "background", "context", "contexto", "semantic", "semantica",
+    "semântica", "search", "buscar", "find all", "all open", "todas as issues",
+    "benchmark", "audit", "auditoria", "mapear", "mapper",
+)
+MAPPER_TARGETED_KEYWORDS = (
+    "understand", "entender", "investigate", "investigar", "trace", "rastrear",
+    "caller", "callers", "reference", "referencias", "related", "relacionad",
+    "where is", "onde está", "onde esta", "locate", "localizar",
+)
+EXPLICIT_TARGET_RE = re.compile(
+    r"(?:^|\s)(?:file|arquivo|path|caminho|src/|tests?/|[\w.-]+\.(?:py|rs|js|ts|toml|md))(?:$|\s|:)",
+    re.IGNORECASE,
 )
 
 
@@ -126,6 +150,9 @@ class ExecutionRoute:
     backend: str
     evidence: tuple
     measured_at: str
+    mapper_required: bool = False
+    mapper_mode: str = "none"
+    mapper_reason: str = "not required"
     receipt_sha: str = field(default="")
 
     def to_dict(self) -> Dict[str, Any]:
@@ -151,9 +178,16 @@ def build_execution_route(
     tokens_spent: int = 0,
     backend: str = "unassigned",
     evidence: Sequence[str] = (),
+    mapper_required: bool = False,
+    mapper_mode: str = "none",
+    mapper_reason: str = "not required",
 ) -> ExecutionRoute:
     """Build one execution-route receipt (never fabricates fields the caller omitted)."""
     _validate_common(route, confidence, tokens_saved, tokens_spent)
+    if mapper_mode not in {"none", "targeted", "full"}:
+        raise ExecutionRouteError("mapper_mode must be none, targeted, or full")
+    if mapper_required != (mapper_mode != "none"):
+        raise ExecutionRouteError("mapper_required must match mapper_mode")
     reason = str(reason or "").strip()
     if not reason:
         raise ExecutionRouteError("reason is required")
@@ -169,6 +203,9 @@ def build_execution_route(
         "backend": str(backend or "unassigned"),
         "evidence": tuple(str(e) for e in evidence),
         "measured_at": _now(),
+        "mapper_required": bool(mapper_required),
+        "mapper_mode": mapper_mode,
+        "mapper_reason": str(mapper_reason or "not required"),
     }
     receipt_sha = _stable_hash(payload)
     return ExecutionRoute(receipt_sha=receipt_sha, **payload)
@@ -177,6 +214,54 @@ def build_execution_route(
 def _match_keywords(task_description: str, keywords: Sequence[str]) -> list:
     lowered = task_description.lower()
     return [kw for kw in keywords if kw in lowered]
+
+
+def decide_mapper_requirement(
+    task_description: str,
+    *,
+    context_available: bool = False,
+) -> dict:
+    """Decide whether Mapper should be invoked before execution.
+
+    This is deliberately independent from an LLM and from Mapper itself, so it
+    can be used by Loop, Runtime, or another coordinator.  A fresh context pack
+    changes ``invoke`` to ``reuse``; it never silently turns a required context
+    lookup into ``skip``.
+    """
+    text = str(task_description or "").strip()
+    lowered = text.lower()
+    full_hits = _match_keywords(text, MAPPER_FULL_KEYWORDS)
+    targeted_hits = _match_keywords(text, MAPPER_TARGETED_KEYWORDS)
+    explicit_target = bool(EXPLICIT_TARGET_RE.search(text))
+    mechanical_hint = any(token in lowered for token in (
+        "mechanical", "mecanic", "edit", "editar", "replace", "substitu",
+        "format", "rename", "renome", "fix typo", "corrigir texto",
+    ))
+
+    if full_hits:
+        mode = "full"
+        reason = "broad repository, issue, dependency, history, or cross-repo context"
+    elif targeted_hits:
+        mode = "targeted"
+        reason = "targeted code understanding or reference lookup"
+    elif explicit_target and mechanical_hint:
+        mode = "none"
+        reason = "explicit target and mechanical operation; preserve fast path"
+    else:
+        mode = "none"
+        reason = "no deterministic signal that repository context is needed"
+
+    required = mode != "none"
+    return {
+        "required": required,
+        "mode": mode,
+        "action": "reuse" if required and context_available else ("invoke" if required else "skip"),
+        "reason": reason,
+        "evidence": [*(f"matched:{hit}" for hit in full_hits),
+                     *(f"matched:{hit}" for hit in targeted_hits),
+                     *( ["explicit_target=True"] if explicit_target else []),
+                     *( ["mechanical_hint=True"] if mechanical_hint else [])],
+    }
 
 
 def decide_route(
@@ -203,6 +288,12 @@ def decide_route(
          silently assumed mechanical.
     """
     task_description = str(task_description or "")
+    mapper = decide_mapper_requirement(task_description)
+    mapper_kwargs = {
+        "mapper_required": mapper["required"],
+        "mapper_mode": mapper["mode"],
+        "mapper_reason": mapper["reason"],
+    }
     agent_hits = _match_keywords(task_description, AGENT_KEYWORDS)
     worker_hits = _match_keywords(task_description, WORKER_KEYWORDS)
 
@@ -214,6 +305,7 @@ def decide_route(
             confidence=0.95 if agent_hits else 0.7,
             backend="llm",
             evidence=evidence,
+            **mapper_kwargs,
         )
 
     if worker_hits and has_deterministic_worker:
@@ -224,6 +316,7 @@ def decide_route(
             confidence=0.9,
             backend="deterministic-worker",
             evidence=evidence,
+            **mapper_kwargs,
         )
 
     if worker_hits and not has_deterministic_worker:
@@ -234,6 +327,7 @@ def decide_route(
             confidence=0.6,
             backend="unassigned",
             evidence=evidence,
+            **mapper_kwargs,
         )
 
     evidence = ["no keyword match"] + [f"matched:{kw}" for kw in agent_hits]
@@ -243,6 +337,7 @@ def decide_route(
         confidence=0.4,
         backend="llm",
         evidence=evidence,
+        **mapper_kwargs,
     )
 
 
@@ -292,10 +387,13 @@ __all__ = [
     "ROUTES",
     "WORKER_KEYWORDS",
     "AGENT_KEYWORDS",
+    "MAPPER_FULL_KEYWORDS",
+    "MAPPER_TARGETED_KEYWORDS",
     "ExecutionRoute",
     "ExecutionRouteError",
     "build_execution_route",
     "decide_route",
+    "decide_mapper_requirement",
     "capability_fingerprint",
     "normalize_capability_manifest",
     "route_receipt_is_current",
