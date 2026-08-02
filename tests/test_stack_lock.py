@@ -8,11 +8,14 @@ from simplicio_loop import runner as runner_mod
 from simplicio_loop.cli_impl import main
 from simplicio_loop.stack_lock import (
     STACK_LOCK_SCHEMA,
+    STACK_REGISTRY_SCHEMA,
+    StackCompatibilityRegistry,
     StackLock,
     StackLockError,
-    observe_components,
+    diagnose_stack,
     load_stack_lock,
     observe_component,
+    observe_components,
     validate_stack_lock,
     write_stack_lock,
 )
@@ -22,6 +25,45 @@ def _component(tmp_path, name="simplicio-mapper", content=b"mapper"):
     binary = tmp_path / name
     binary.write_bytes(content)
     return observe_component(name, "1.0.0", binary, build_sha="build", capabilities=("map",))
+
+
+def _stack_registry():
+    return StackCompatibilityRegistry.from_dict({
+        "schema": STACK_REGISTRY_SCHEMA,
+        "generation": "registry-2026-08",
+        "components": [
+            {
+                "name": "simplicio-loop",
+                "version_range": ">=1.0.0,<2.0.0",
+                "required_capabilities": ["orchestrator"],
+                "routes": ["standalone", "runtime-backed"],
+            },
+            {
+                "name": "simplicio-mapper",
+                "version_range": ">=1.0.0,<2.0.0",
+                "required_capabilities": ["map"],
+                "routes": ["standalone", "runtime-backed"],
+            },
+            {
+                "name": "simplicio-runtime",
+                "version_range": ">=1.0.0,<2.0.0",
+                "required_capabilities": ["runtime"],
+                "routes": ["runtime-backed"],
+                "required": False,
+            },
+        ],
+        "compatibility": [{
+            "producer": "simplicio-mapper",
+            "consumer": "simplicio-loop",
+            "producer_range": ">=1.0.0,<2.0.0",
+            "consumer_range": ">=1.0.0,<2.0.0",
+            "required_capabilities": ["map"],
+        }],
+        "upgrade_groups": [{
+            "name": "core",
+            "components": ["simplicio-loop", "simplicio-mapper"],
+        }],
+    })
 
 
 def test_lock_hash_is_canonical_and_route_is_frozen(tmp_path):
@@ -164,3 +206,55 @@ def test_runner_freezes_and_verifies_stack_lock_at_boundaries(tmp_path, monkeypa
     binary.write_bytes(b"mapper-upgraded")
     with pytest.raises(StackLockError, match="stack drift"):
         runner_mod._verify_run_stack_lock(run_root)
+
+
+def test_stack_registry_roundtrip_is_deterministic():
+    registry = _stack_registry()
+    payload = registry.to_dict()
+    assert payload["schema"] == STACK_REGISTRY_SCHEMA
+    assert StackCompatibilityRegistry.from_dict(payload) == registry
+    assert len(registry.registry_hash) == 64
+    assert [entry.name for entry in registry.components] == [
+        "simplicio-loop", "simplicio-mapper", "simplicio-runtime",
+    ]
+
+
+def test_stack_diagnosis_blocks_duplicate_binary_and_matrix_mismatch(tmp_path):
+    registry = _stack_registry()
+    loop_binary = tmp_path / "loop"
+    mapper_a = tmp_path / "mapper-a"
+    mapper_b = tmp_path / "mapper-b"
+    loop_binary.write_bytes(b"loop")
+    mapper_a.write_bytes(b"mapper-a")
+    mapper_b.write_bytes(b"mapper-b")
+    loop = observe_component(
+        "simplicio-loop", "1.0.0", loop_binary, capabilities=("orchestrator",)
+    )
+    mapper_a_observation = observe_component(
+        "simplicio-mapper", "2.0.0", mapper_a, capabilities=("map",)
+    )
+    mapper_b_observation = observe_component(
+        "simplicio-mapper", "1.0.0", mapper_b, capabilities=("map",)
+    )
+
+    diagnosis = diagnose_stack(
+        [loop, mapper_a_observation, mapper_b_observation], registry, "standalone"
+    )
+
+    assert diagnosis.status == "BLOCKED"
+    assert {issue.code for issue in diagnosis.issues} == {
+        "duplicate_binary", "version_incompatible", "compatibility_mismatch",
+    }
+    duplicate = next(issue for issue in diagnosis.issues if issue.code == "duplicate_binary")
+    assert "mapper-a" in duplicate.details[0][1]
+    assert "remove the shadowed binary" in duplicate.action
+
+
+def test_stack_diagnosis_reports_partial_upgrade_against_frozen_lock(tmp_path):
+    registry = _stack_registry()
+    loop_binary = tmp_path / "loop"
+    mapper_binary = tmp_path / "mapper"
+    loop_binary.write_bytes(b"loop-v1")
+    mapper_binary.write_bytes(b"mapper-v1")
+    loop = observe_component(
+        "simplicio-loop", "1.0.0", loop_binary, capabilities=("orchestrator",)
