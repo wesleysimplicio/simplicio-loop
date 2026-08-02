@@ -71,9 +71,9 @@ def test_agent_slots_cli_defaults_to_mapper_without_legacy_database(monkeypatch,
     assert '"active_slots": 0' in capsys.readouterr().out
 
 
-def test_legacy_route_requires_explicit_opt_in(tmp_path, capsys):
+def test_legacy_route_fails_closed_without_creating_a_database(tmp_path, capsys):
     assert agent_slots.cli_main([
         "status", "--route", "legacy", "--db", str(tmp_path / "legacy.sqlite"),
-    ]) == 0
-    assert (tmp_path / "legacy.sqlite").exists()
-    assert '"schema": "simplicio.loop-agent-slots/v1"' in capsys.readouterr().out
+    ]) == 3
+    assert not (tmp_path / "legacy.sqlite").exists()
+    assert '"reason_code": "LEGACY_ROUTE_REMOVED"' in capsys.readouterr().out
