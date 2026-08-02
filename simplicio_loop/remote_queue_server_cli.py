@@ -16,11 +16,14 @@ import signal
 from pathlib import Path
 
 from .mapper_remote_queue import MapperRemoteQueue
+from .local_task_queue_cli import _default_mapper_db
 from .remote_queue import SQLiteRemoteQueue, create_http_queue_server, tls_context_from_files
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo", default=".",
+                        help="Loop checkout used to resolve repo-scoped MapperStore data")
     parser.add_argument("--db", default=None, help="legacy shared SQLite queue file path")
     parser.add_argument("--mapper-db", default=None, help="canonical MapperStore operations.sqlite path")
     parser.add_argument("--mapper-init", action="store_true",
@@ -43,8 +46,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.db and args.mapper_db:
         parser.error("--db and --mapper-db are mutually exclusive")
-    if args.mapper_init and not args.mapper_db:
-        parser.error("--mapper-init requires --mapper-db")
+    if args.mapper_init and args.db:
+        parser.error("--mapper-init cannot be combined with legacy --db")
     if not args.token and not args.token_secret:
         parser.error("one of --token/SIMPLICIO_QUEUE_TOKEN or --token-secret/SIMPLICIO_QUEUE_TOKEN_SECRET is required")
     if args.token and args.token_secret:
@@ -58,8 +61,14 @@ def main() -> int:
             queue = MapperRemoteQueue(args.mapper_db, auto_create=False)
             if args.mapper_init:
                 queue.initialize()
+        elif args.db:
+            # Legacy SQLite remains available only when the operator explicitly names --db.
+            queue = SQLiteRemoteQueue(args.db)
         else:
-            queue = SQLiteRemoteQueue(args.db or ".simplicio/orchestrator/shared-queue.db")
+            database = _default_mapper_db(args.repo)
+            queue = MapperRemoteQueue(database, auto_create=False)
+            if args.mapper_init:
+                queue.initialize()
         server = create_http_queue_server(
             queue, args.host, args.port,
             token=args.token, token_secret=args.token_secret, token_scope=args.token_scope,

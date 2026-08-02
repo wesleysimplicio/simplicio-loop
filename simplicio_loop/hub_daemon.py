@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set, Tuple
 import uuid
 
 from .hub_queue_retry import HubRetryQueue, QueueRetryError
@@ -1430,7 +1430,8 @@ class HubSocketServer:
             elif event_type == "completed":
                 event["receipt_id"] = "complete:" + workflow_id
             elif event_type == "failed":
-                event["message"] = "Hub job failed"; event["receipt_id"] = "failed:" + workflow_id
+                event["message"] = "Hub job failed"
+                event["receipt_id"] = "failed:" + workflow_id
             else:
                 event["position"] = 1
             response["result"] = {"workflow_id": workflow_id, "next_sequence": 1,
