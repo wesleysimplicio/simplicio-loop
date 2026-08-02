@@ -702,37 +702,35 @@ def diagnose_stack(
                 ))
             continue
 
-        if len(matches) != 1:
-            # Duplicate observations are already reported above. Avoid adding
-            # misleading version/capability claims for an ambiguous binary.
+        if not matches:
             continue
-        component = matches[0]
-        if not component.available:
-            issues.append(_diagnostic(
-                "component_unavailable",
-                f"component {entry.name!r} is not available for route {route!r}",
-                "install a readable executable and re-run stack diagnostics",
-                (entry.name,),
-            ))
-        if not _version_matches(component.version, entry.version_range):
-            issues.append(_diagnostic(
-                "version_incompatible",
-                f"component {entry.name!r} version {component.version!r} does not match {entry.version_range!r}",
-                "install a version inside the registry range before locking",
-                (entry.name,),
-                {"actual": component.version, "expected": entry.version_range},
-            ))
-        missing_capabilities = sorted(
-            set(entry.required_capabilities) - set(component.capabilities)
-        )
-        if missing_capabilities:
-            issues.append(_diagnostic(
-                "capability_missing",
-                f"component {entry.name!r} lacks required capabilities: {', '.join(missing_capabilities)}",
-                "publish or install the declared capabilities before locking",
-                (entry.name,),
-                {"missing": ",".join(missing_capabilities)},
-            ))
+        for component in matches:
+            if not component.available:
+                issues.append(_diagnostic(
+                    "component_unavailable",
+                    f"component {entry.name!r} is not available for route {route!r}",
+                    "install a readable executable and re-run stack diagnostics",
+                    (entry.name,),
+                ))
+            if not _version_matches(component.version, entry.version_range):
+                issues.append(_diagnostic(
+                    "version_incompatible",
+                    f"component {entry.name!r} version {component.version!r} does not match {entry.version_range!r}",
+                    "install a version inside the registry range before locking",
+                    (entry.name,),
+                    {"actual": component.version, "expected": entry.version_range},
+                ))
+            missing_capabilities = sorted(
+                set(entry.required_capabilities) - set(component.capabilities)
+            )
+            if missing_capabilities:
+                issues.append(_diagnostic(
+                    "capability_missing",
+                    f"component {entry.name!r} lacks required capabilities: {', '.join(missing_capabilities)}",
+                    "publish or install the declared capabilities before locking",
+                    (entry.name,),
+                    {"missing": ",".join(missing_capabilities)},
+                ))
         if active and route not in entry.routes:
             issues.append(_diagnostic(
                 "route_incompatible",
@@ -745,7 +743,15 @@ def diagnose_stack(
     for rule in registry.compatibility:
         producers = by_name.get(rule.producer, [])
         consumers = by_name.get(rule.consumer, [])
+        if not producers or not consumers:
+            continue
         if len(producers) != 1 or len(consumers) != 1:
+            issues.append(_diagnostic(
+                "compatibility_mismatch",
+                f"compatibility rule {rule.producer!r} -> {rule.consumer!r} is ambiguous",
+                "remove duplicate observations before locking",
+                (rule.producer, rule.consumer),
+            ))
             continue
         producer = producers[0]
         consumer = consumers[0]
@@ -861,7 +867,7 @@ def validate_stack_lock(payload: Any) -> list[str]:
         normalized = tuple(sorted(components, key=lambda item: item.name))
         expected = _lock_hash(_lock_payload(str(route), run_id, normalized))
         if lock_hash != expected:
-            errors.append("lock_hash_invalid")
+            errors.append("lock_hash_mismatch")
     return errors
 
 
