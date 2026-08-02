@@ -134,3 +134,16 @@ rebase, and release rules in [ADR 0008](docs/adr/0008-bounded-delivery-policy.md
 - `simplicio-runtime` native binding (MCP or CLI) is optional. `simplicio doctor --json` can
   diagnose an installed runtime; its absence is reported as degraded runtime integration and
   never blocks the mapper/dev-cli loop.
+
+## LLM command and feature index
+
+The complete installed-entry-point and `simplicio-loop` command map is
+[`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md). Run the most specific
+`--help` before invoking a command. Every new public command must have
+meaningful `help=` text, documentation in that file, and a help regression
+check. The current train is Mapper 0.26.10, Dev CLI 0.18.6, Fast 2.0.22, and
+Loop 3.38.30.
+
+For GitHub work items, keep the body focused on objective, implementation,
+deployment, and tests. Do not add an Acceptance Criteria section to new or
+updated issues; report incomplete implementation or failed tests as such.

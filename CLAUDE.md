@@ -153,3 +153,14 @@ OpenClaw, and Orca ([onorca.dev](https://www.onorca.dev/docs), the worktree IDE 
 `adapters/orca/README.md`) — see [`adapters/MATRIX.md`](adapters/MATRIX.md) and
 [`AGENTS.md`](AGENTS.md) for the runtime-agnostic contract (50 extension points; the binding
 lives in the host, never in the skill).
+
+## LLM command and feature index
+
+Read [`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md) for the complete installed
+entry-point and command map. Use the most specific `--help` before invoking a
+command; every new command must add meaningful `help=` text and a regression
+check. The current train is Mapper 0.26.10, Dev CLI 0.18.6, Fast 2.0.22, and
+Loop 3.38.30.
+
+For GitHub work items, use objective, implementation/deployment, and test
+evidence. Do not add Acceptance Criteria sections to new or updated issues.

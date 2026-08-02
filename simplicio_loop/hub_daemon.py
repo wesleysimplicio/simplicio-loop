@@ -1610,14 +1610,17 @@ def doctor(lock_path: str, socket_path: str, transport: Optional[str] = None) ->
 
 def main(argv=None) -> int:
     import argparse
-    parser = argparse.ArgumentParser(prog="simplicio-hub")
+    parser = argparse.ArgumentParser(
+        prog="simplicio-hub",
+        description="run or inspect the local Loop Hub daemon",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
-    serve = sub.add_parser("serve")
+    serve = sub.add_parser("serve", help="start the local Hub daemon")
     serve.add_argument("--lock", default=str(Path(tempfile.gettempdir()) / "simplicio-loop-hub.lock"))
     serve.add_argument("--endpoint", default=default_endpoint())
     serve.add_argument("--transport", choices=("unix", "named-pipe", "tcp"), default=default_transport())
     serve.add_argument("--shutdown-file", default=None)
-    check = sub.add_parser("doctor")
+    check = sub.add_parser("doctor", help="check Hub lock and endpoint reachability")
     check.add_argument("--lock", default=str(Path(tempfile.gettempdir()) / "simplicio-loop-hub.lock"))
     check.add_argument("--endpoint", default=default_endpoint())
     check.add_argument("--transport", choices=("unix", "named-pipe", "tcp"), default=default_transport())
