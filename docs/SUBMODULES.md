@@ -4,9 +4,9 @@
 
 | Component | Checkout | Declared branch | Pinned commit |
 | --- | --- | --- | --- |
-| `simplicio-mapper` | `components/simplicio-mapper` | `main` | `8f3bc3bbb0c4925938b2f0f0ff8c4f0c69fad64d` |
-| `simplicio-dev-cli` | `components/simplicio-dev-cli` | `main` | `4776b20fcdf6d46f429e5dc11f53baa39cec5b4d` |
-| `simplicio-fast` | `components/simplicio-fast` | `master` | `e059304bf0b977a8d71893269481a9965da6839b` |
+| `simplicio-mapper` | `components/simplicio-mapper` | `main` | `b58c79e32df8c50fa2bef39f2dc0ed3abe67acec` |
+| `simplicio-dev-cli` | `components/simplicio-dev-cli` | `main` | `924aa394d9f6394875db8884f34d31d47dac7f74` |
+| `simplicio-fast` | `components/simplicio-fast` | `master` | `992c9807205db6f6e9fb0c530f7a06f499be49c7` |
 
 The exact URLs, source branches observed when the pins were recorded, and policy are in
 [`components/submodules.json`](../components/submodules.json). The superproject gitlink is the
