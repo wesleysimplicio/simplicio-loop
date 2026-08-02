@@ -67,6 +67,7 @@ from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
 from .execution_board import ExecutionBoard
 from .run_journal import RunJournal
 from .mapper_run_journal import MapperRunJournal
+from .mapper_hookwall import MapperHookwallEffectLedger
 
 from .execution_route import _stable_hash as _execution_route_hash
 from .execution_route import capability_fingerprint, normalize_capability_manifest, route_receipt_is_current
@@ -821,10 +822,13 @@ def _build_effect_request(repo_path: Path, run_id: str, task_index: int,
     lease = getattr(guarded_attempt, "lease", None)
     lease_id = str(getattr(lease, "lease_id", "") or f"loop-run:{run_id}")
     raw_fence = getattr(lease, "fencing_token", 1)
-    try:
-        fencing_token = max(1, int(raw_fence))
-    except (TypeError, ValueError):
-        fencing_token = 1
+    if _mapper_journal_enabled() and str(raw_fence).strip():
+        fencing_token: int | str = str(raw_fence)
+    else:
+        try:
+            fencing_token = max(1, int(raw_fence))
+        except (TypeError, ValueError):
+            fencing_token = 1
     transaction_id = f"{run_id}:{task.get('id') or task_index}:{attempt}"
     return EffectRequest(
         workspace=str(repo_path),
@@ -841,6 +845,7 @@ def _build_effect_request(repo_path: Path, run_id: str, task_index: int,
         runtime_generation=os.environ.get("SIMPLICIO_RUNTIME_GENERATION") or None,
         transaction_id=transaction_id,
         canonical_plan=canonical_plan,
+        attempt_id=str(getattr(guarded_attempt, "attempt_id", "") or lease_id),
     )
 
 
@@ -933,6 +938,18 @@ def _hookwall_digest(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _hookwall_ledger(repo_path: Path) -> Any:
+    """Select Hookwall persistence explicitly; legacy remains the default."""
+    if _mapper_journal_enabled():
+        database = os.environ.get("SIMPLICIO_MAPPER_OPERATIONS_DB", "").strip()
+        if not database:
+            raise RuntimeError("MAPPER_OPERATIONS_DB_REQUIRED")
+        return MapperHookwallEffectLedger(database, auto_create=False)
+    return HookwallEffectLedger(
+        repo_path / ".simplicio" / "orchestrator" / "hookwall.sqlite3"
+    )
+
+
 def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
                              request: EffectRequest, argv: List[str],
                              env: Mapping[str, str], repo_path: Path,
@@ -958,6 +975,7 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
         "idempotency_key": request.idempotency_key,
         "workspace": request.workspace,
         "fence": request.fencing_token,
+        "attempt_id": request.attempt_id or request.lease_id,
         "effect_set": ["process", "write"],
         "write_set": list(request.write_set),
         "command": list(argv),
@@ -974,9 +992,7 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
         "fence": request.fencing_token,
     }
     validate_pre_decision(envelope, pre_decision)
-    hookwall_ledger = HookwallEffectLedger(
-        repo_path / ".simplicio" / "orchestrator" / "hookwall.sqlite3"
-    )
+    hookwall_ledger = _hookwall_ledger(repo_path)
     reservation = hookwall_ledger.reserve(envelope, pre_decision)
     if reservation["action"] == "REPLAY_VERIFIED":
         return {
