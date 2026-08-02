@@ -347,6 +347,7 @@ def storage_doctor(
     requested: StorageRoute | str = StorageRoute.LEGACY,
     data_dir: str | os.PathLike[str] | None = None,
     required_capabilities: tuple[str, ...] = (),
+    repo_root: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """Return a JSON-safe route/capability report; never creates storage."""
 
@@ -364,6 +365,10 @@ def storage_doctor(
             "effects_attempted": False,
         }
     )
+    if repo_root is not None:
+        from .storage_cutover import inspect_storage_cutover
+
+        result["cutover"] = inspect_storage_cutover(repo_root)
     return result
 
 
@@ -377,12 +382,14 @@ def storage_cli(argv: list[str]) -> int:
         "--route", choices=[route.value for route in StorageRoute], default="legacy"
     )
     parser.add_argument("--data-dir", default=None)
+    parser.add_argument("--repo", default=None)
     parser.add_argument("--require-capability", action="append", default=[])
     args = parser.parse_args(argv)
     result = storage_doctor(
         requested=args.route,
         data_dir=args.data_dir,
         required_capabilities=tuple(args.require_capability),
+        repo_root=args.repo,
     )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0 if result["status"] == "READY" else 2
