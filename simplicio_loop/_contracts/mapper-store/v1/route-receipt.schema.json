@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "simplicio.loop-store-route-receipt/v1",
+  "title": "Loop MapperStore route receipt (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status", "requested", "selected", "route", "generation", "run_id", "writer_authority", "frozen", "immutable", "receipt_hash"],
+  "properties": {
+    "schema": {"const": "simplicio.loop-store-route-receipt/v1"},
+    "status": {"enum": ["READY", "BLOCKED"]},
+    "reason_code": {"type": "string"},
+    "requested": {"enum": ["legacy", "shadow", "mapper"]},
+    "selected": {"type": ["string", "null"]},
+    "route": {"type": ["string", "null"]},
+    "generation": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "writer_authority": {"type": ["string", "null"]},
+    "frozen": {"type": "boolean"},
+    "freeze_reason": {"type": ["string", "null"]},
+    "immutable": {"type": "boolean"},
+    "receipt_hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+  }
+}

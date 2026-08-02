@@ -797,6 +797,15 @@ def main(argv=None) -> int:
     p_status.add_argument("--text", dest="as_text", action="store_true",
                           help="emit human-readable text instead of JSON")
 
+    for storage_command in ("doctor", "inspect"):
+        p_storage = sub.add_parser(storage_command, help="inspect storage routing and MapperStore capabilities")
+        p_storage.add_argument("--storage", action="store_true", required=True,
+                               help="inspect the Loop storage adapter boundary")
+        p_storage.add_argument("--route", choices=("legacy", "shadow", "mapper"), default="legacy")
+        p_storage.add_argument("--data-dir", default=None)
+        p_storage.add_argument("--require-capability", action="append", default=[])
+        p_storage.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
     p_map = sub.add_parser("map", help="map-service cross-module status")
     map_sub = p_map.add_subparsers(dest="map_command", required=True)
     configure_map_commands(map_sub)
@@ -1086,6 +1095,14 @@ def main(argv=None) -> int:
                       args.write_receipt)
     if command == "status":
         return status(args.repo, args.run_id, args.json, args.as_text)
+    if command in {"doctor", "inspect"}:
+        from .store_adapter import storage_cli
+        forwarded = ["--route", args.route]
+        if args.data_dir:
+            forwarded += ["--data-dir", args.data_dir]
+        for capability in args.require_capability:
+            forwarded += ["--require-capability", capability]
+        return storage_cli(forwarded)
     if command == "map":
         return dispatch_map(args)
     if command == "preflight":
