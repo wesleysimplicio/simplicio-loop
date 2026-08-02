@@ -11,7 +11,9 @@ from __future__ import annotations
 import hashlib
 import argparse
 import json
+import os
 import sqlite3
+import subprocess
 import sys
 import time
 from contextlib import contextmanager
@@ -63,7 +65,7 @@ def _bool(value: Any, name: str) -> bool:
 
 
 class AgentSlotRegistry:
-    """SQLite-backed capacity authority with idempotent terminal reclaim."""
+    """Legacy SQLite-backed capacity authority kept for explicit compatibility."""
 
     def __init__(self, path: Path, *, capacity: int = 6, retry_limit: int = 1) -> None:
         if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity < 1:
@@ -435,8 +437,15 @@ def cli_main(argv: Optional[Iterable[str]] = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def common(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument(
+            "--repo", default=".",
+            help="Loop Git worktree used to resolve the repo-scoped MapperStore",
+        )
         command_parser.add_argument("--db", default=".simplicio/orchestrator/agent-slots.sqlite")
-        command_parser.add_argument("--route", choices=("legacy", "mapper"), default="legacy")
+        command_parser.add_argument(
+            "--route", choices=("legacy", "mapper"), default="mapper",
+            help="storage route (default: mapper; use legacy only for compatibility actions)",
+        )
         command_parser.add_argument("--mapper-db", default=None)
         command_parser.add_argument("--mapper-init", action="store_true")
         command_parser.add_argument("--capacity", type=int, default=6)
@@ -469,10 +478,9 @@ def cli_main(argv: Optional[Iterable[str]] = None) -> int:
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.route == "mapper":
-        if not args.mapper_db:
-            parser.error("--mapper-db is required with --route mapper")
+        mapper_db = args.mapper_db or str(_default_mapper_db(args.repo))
         from .mapper_agent_slots import MapperAgentSlotRegistry
-        registry = MapperAgentSlotRegistry(args.mapper_db, capacity=args.capacity, auto_create=False)
+        registry = MapperAgentSlotRegistry(mapper_db, capacity=args.capacity, auto_create=False)
         if args.mapper_init:
             registry.initialize()
     else:
@@ -496,3 +504,36 @@ def cli_main(argv: Optional[Iterable[str]] = None) -> int:
         )
     sys.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n")
     return 0
+
+
+def _git_root(repo: str) -> Path:
+    candidate = Path(repo).expanduser().resolve()
+    result = subprocess.run(
+        ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, check=False, timeout=10,
+    )
+    if result.returncode != 0:
+        raise AgentSlotError("--repo must resolve to a Git worktree root")
+    root = Path(result.stdout.strip()).resolve()
+    if root != candidate:
+        raise AgentSlotError("--repo must be the Git worktree root")
+    return root
+
+
+def _default_mapper_db(repo: str) -> Path:
+    """Resolve the canonical operations store without creating it."""
+    try:
+        from simplicio_mapper.store import resolve_store_location
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise AgentSlotError("MapperStore operations API is not installed") from exc
+    root = _git_root(repo)
+    environ = dict(os.environ)
+    environ.pop("SIMPLICIO_DATA_DIR", None)
+    environ.pop("SIMPLICIO_HOME", None)
+    environ["SIMPLICIO_STORE_SCOPE"] = "repo"
+    try:
+        return resolve_store_location(environ=environ, repo_root=root).database(
+            "operations.sqlite"
+        )
+    except (OSError, ValueError) as exc:
+        raise AgentSlotError(f"canonical MapperStore path unavailable: {exc}") from exc

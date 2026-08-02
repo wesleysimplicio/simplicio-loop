@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from simplicio_loop.mapper_agent_slots import MapperAgentSlotRegistry
+from simplicio_loop import agent_slots
 
 
 class FakeAdapter:
@@ -54,3 +55,25 @@ def test_mapper_registry_is_a_thin_lifecycle_facade():
         ("transition", "agent-a", "shutdown", {"reason": "test"}),
         ("reclaim", "agent-a"),
     ]
+
+
+def test_agent_slots_cli_defaults_to_mapper_without_legacy_database(monkeypatch, capsys, tmp_path):
+    adapter = FakeAdapter()
+    monkeypatch.setattr(agent_slots, "_default_mapper_db", lambda _repo: tmp_path / "operations.sqlite")
+    monkeypatch.setattr(
+        "simplicio_loop.mapper_agent_slots.MapperAgentSlotRegistry",
+        lambda database, **kwargs: MapperAgentSlotRegistry(database, adapter=adapter, **kwargs),
+    )
+
+    assert agent_slots.cli_main(["status", "--repo", str(tmp_path)]) == 0
+    assert adapter.calls == [("status",)]
+    assert not (tmp_path / ".simplicio" / "orchestrator" / "agent-slots.sqlite").exists()
+    assert '"active_slots": 0' in capsys.readouterr().out
+
+
+def test_legacy_route_requires_explicit_opt_in(tmp_path, capsys):
+    assert agent_slots.cli_main([
+        "status", "--route", "legacy", "--db", str(tmp_path / "legacy.sqlite"),
+    ]) == 0
+    assert (tmp_path / "legacy.sqlite").exists()
+    assert '"schema": "simplicio.loop-agent-slots/v1"' in capsys.readouterr().out
