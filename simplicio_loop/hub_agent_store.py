@@ -1,18 +1,16 @@
-"""Durable, fenced state machine for Hub stage-agent executions.
+"""Contract-only Hub stage-agent records.
 
-This module persists intent only.  It deliberately has no process-launching or
-``admitted_held`` activation path.
+The former local persistence authority was retired. Production callers must
+use the MapperStore operations boundary; this module retains pure validation
+and receipt helpers for import/compatibility tooling and fails closed if an
+old caller tries to instantiate the removed local store.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
-import time
-import uuid
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Any, Dict, Iterator, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Sequence
 
 JOB_SCHEMA = "contracts/hub-agent/v1/job"
 HANDLE_SCHEMA = "contracts/hub-agent/v1/handle"
@@ -24,7 +22,7 @@ _TRANSITIONS = {
     "prepared": frozenset(("queued",)),
     "queued": frozenset(("leased",)),
     "leased": frozenset(("running", "queued", "recovery_unknown")),
-    "running": frozenset(TERMINAL_STATES | frozenset(("recovery_unknown",))),
+    "running": TERMINAL_STATES | frozenset(("recovery_unknown",)),
     "recovery_unknown": frozenset(("queued",) + tuple(TERMINAL_STATES)),
 }
 _REQUIRED_IDS = ("graph_id", "run_id", "task_id", "stage_id", "role", "attempt_id")
@@ -44,6 +42,10 @@ class IdempotencyConflict(HubAgentStoreError):
 
 class TransitionConflict(HubAgentStoreError):
     reason_code = "transition_conflict"
+
+
+class LegacyStoreRemoved(HubAgentStoreError):
+    reason_code = "legacy_store_removed"
 
 
 def _canonical(value: Any) -> str:
@@ -128,125 +130,12 @@ def validate_receipt(value: Mapping[str, Any], *, job_id: str, generation: int, 
 
 
 class HubAgentStore:
-    """Transactional SQLite authority for stage-agent jobs and fencing."""
+    """Retired compatibility name; no local persistence is allowed."""
 
-    def __init__(self, path: Path) -> None:
-        self.path = Path(path)
-        self._initialize()
-
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(str(self.path), timeout=30, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        return connection
-
-    @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Connection]:
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
-
-    def _initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._transaction() as db:
-            db.execute("CREATE TABLE IF NOT EXISTS hub_agent_meta (version INTEGER NOT NULL)")
-            row = db.execute("SELECT version FROM hub_agent_meta").fetchone()
-            if row is None:
-                db.execute("INSERT INTO hub_agent_meta VALUES (?)", (STORE_SCHEMA_VERSION,))
-            elif row[0] != STORE_SCHEMA_VERSION:
-                raise ValidationError("unsupported store schema version")
-            db.execute("""CREATE TABLE IF NOT EXISTS hub_agent_jobs (
-                job_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, content_hash TEXT NOT NULL,
-                job_json TEXT NOT NULL, state TEXT NOT NULL, generation INTEGER NOT NULL,
-                fence TEXT NOT NULL, receipt_json TEXT, created_ns INTEGER NOT NULL, updated_ns INTEGER NOT NULL)""")
-
-    def prepare(self, job: Mapping[str, Any]) -> Tuple[Dict[str, Any], bool]:
-        job = validate_job(job)
-        now = time.time_ns()
-        with self._transaction() as db:
-            row = db.execute("SELECT * FROM hub_agent_jobs WHERE idempotency_key=?", (job["idempotency_key"],)).fetchone()
-            if row is not None:
-                existing = self._decode(row)
-                if existing["job"]["content_hash"] != job["content_hash"]:
-                    raise IdempotencyConflict("idempotency key already binds different content")
-                return existing, False
-            job_id = uuid.uuid4().hex
-            fence = uuid.uuid4().hex
-            db.execute("INSERT INTO hub_agent_jobs VALUES (?,?,?,?,?,?,?,?,?,?)",
-                       (job_id, job["idempotency_key"], job["content_hash"], _canonical(job),
-                        "prepared", 1, fence, None, now, now))
-            row = db.execute("SELECT * FROM hub_agent_jobs WHERE job_id=?", (job_id,)).fetchone()
-            return self._decode(row), True
-
-    def get(self, job_id: str) -> Dict[str, Any]:
-        with self._connect() as db:
-            row = db.execute("SELECT * FROM hub_agent_jobs WHERE job_id=?", (job_id,)).fetchone()
-        if row is None:
-            raise KeyError(job_id)
-        return self._decode(row)
-
-    def transition(self, job_id: str, *, expected_state: str, generation: int, fence: str,
-                   target_state: str, receipt: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
-        if expected_state not in STATES or target_state not in _TRANSITIONS.get(expected_state, frozenset()):
-            raise TransitionConflict("illegal state transition")
-        terminal = target_state in TERMINAL_STATES
-        if terminal != (receipt is not None):
-            raise ValidationError("terminal transitions require exactly one receipt")
-        with self._transaction() as db:
-            row = db.execute("SELECT * FROM hub_agent_jobs WHERE job_id=?", (job_id,)).fetchone()
-            if row is None:
-                raise KeyError(job_id)
-            if row["state"] != expected_state or row["generation"] != generation or row["fence"] != fence:
-                raise TransitionConflict("stale state, generation, or fence")
-            receipt_json = None
-            if receipt is not None:
-                receipt_json = _canonical(validate_receipt(receipt, job_id=job_id, generation=generation,
-                                                           fence=fence, terminal_state=target_state))
-            changed = db.execute("UPDATE hub_agent_jobs SET state=?,receipt_json=?,updated_ns=? "
-                                 "WHERE job_id=? AND state=? AND generation=? AND fence=?",
-                                 (target_state, receipt_json, time.time_ns(), job_id, expected_state, generation, fence))
-            if changed.rowcount != 1:
-                raise TransitionConflict("conditional transition lost")
-            return self._decode(db.execute("SELECT * FROM hub_agent_jobs WHERE job_id=?", (job_id,)).fetchone())
-
-    def recover(self, job_id: str, *, expected_state: str, generation: int, fence: str) -> Dict[str, Any]:
-        """Fence an ambiguous lease/run after a crash and make uncertainty durable."""
-        if expected_state not in ("leased", "running"):
-            raise TransitionConflict("only leased/running jobs can become recovery_unknown")
-        with self._transaction() as db:
-            row = db.execute("SELECT state,generation,fence FROM hub_agent_jobs WHERE job_id=?", (job_id,)).fetchone()
-            if row is None:
-                raise KeyError(job_id)
-            if tuple(row) != (expected_state, generation, fence):
-                raise TransitionConflict("stale recovery fence")
-            new_generation, new_fence = generation + 1, uuid.uuid4().hex
-            db.execute("UPDATE hub_agent_jobs SET state='recovery_unknown',generation=?,fence=?,updated_ns=? WHERE job_id=?",
-                       (new_generation, new_fence, time.time_ns(), job_id))
-            return self._decode(db.execute("SELECT * FROM hub_agent_jobs WHERE job_id=?", (job_id,)).fetchone())
-
-    @staticmethod
-    def _decode(row: sqlite3.Row) -> Dict[str, Any]:
-        job = validate_job(json.loads(row["job_json"]))
-        if job["content_hash"] != row["content_hash"] or row["state"] not in STATES or row["generation"] < 1:
-            raise ValidationError("persisted job metadata is corrupt")
-        handle = {"schema": HANDLE_SCHEMA, "job_id": row["job_id"], "generation": row["generation"],
-                  "fence": row["fence"], "idempotency_key": row["idempotency_key"]}
-        handle["handle_hash"] = _digest(handle)
-        receipt = None
-        if row["receipt_json"] is not None:
-            receipt = validate_receipt(json.loads(row["receipt_json"]), job_id=row["job_id"],
-                                       generation=row["generation"], fence=row["fence"], terminal_state=row["state"])
-        if (row["state"] in TERMINAL_STATES) != (receipt is not None):
-            raise ValidationError("terminal state and receipt are inconsistent")
-        return {"job": job, "handle": handle, "state": row["state"], "receipt": receipt,
-                "created_ns": row["created_ns"], "updated_ns": row["updated_ns"]}
+    def __init__(self, path: Any) -> None:
+        raise LegacyStoreRemoved(
+            "HubAgentStore local persistence was removed; use MapperStore operations"
+        )
 
 
 def build_receipt(*, job_id: str, generation: int, fence: str, terminal_state: str,
