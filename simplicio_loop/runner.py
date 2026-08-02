@@ -938,13 +938,29 @@ def _hookwall_digest(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _mapper_operations_database(repo_path: Path) -> str:
+    """Resolve the repo-scoped canonical operations store without creating it."""
+    explicit = os.environ.get("SIMPLICIO_MAPPER_OPERATIONS_DB", "").strip()
+    if explicit:
+        return str(Path(explicit).expanduser().absolute())
+    try:
+        from simplicio_mapper.store import resolve_store_location
+    except (ImportError, ModuleNotFoundError) as error:
+        raise RuntimeError("MAPPER_STORE_NOT_INSTALLED") from error
+    environ = dict(os.environ)
+    environ.pop("SIMPLICIO_DATA_DIR", None)
+    environ.pop("SIMPLICIO_HOME", None)
+    environ["SIMPLICIO_STORE_SCOPE"] = "repo"
+    try:
+        return str(resolve_store_location(environ=environ, repo_root=repo_path).database("operations.sqlite"))
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"MAPPER_OPERATIONS_DB_UNAVAILABLE:{error}") from error
+
+
 def _hookwall_ledger(repo_path: Path) -> Any:
-    """Select Hookwall persistence explicitly; legacy remains the default."""
+    """Select Hookwall persistence; legacy is available only by explicit opt-in."""
     if _mapper_journal_enabled():
-        database = os.environ.get("SIMPLICIO_MAPPER_OPERATIONS_DB", "").strip()
-        if not database:
-            raise RuntimeError("MAPPER_OPERATIONS_DB_REQUIRED")
-        return MapperHookwallEffectLedger(database, auto_create=False)
+        return MapperHookwallEffectLedger(_mapper_operations_database(repo_path), auto_create=False)
     return HookwallEffectLedger(
         repo_path / ".simplicio" / "orchestrator" / "hookwall.sqlite3"
     )
@@ -5378,16 +5394,14 @@ def _run_operator_item_process(item: Mapping[str, Any], retry_budget: int) -> Li
 
 
 def _mapper_journal_enabled() -> bool:
-    return os.environ.get("SIMPLICIO_STORAGE_ROUTE", "legacy").strip().lower() == "mapper"
+    return os.environ.get("SIMPLICIO_STORAGE_ROUTE", "mapper").strip().lower() == "mapper"
 
 
 def _dispatch_journal_backend(journal_path: Optional[Path]) -> Any:
-    """Select the journal explicitly; the default remains the legacy backend."""
+    """Select the journal; the canonical MapperStore route is the default."""
     if _mapper_journal_enabled():
-        database = os.environ.get("SIMPLICIO_MAPPER_OPERATIONS_DB", "").strip()
-        if not database:
-            raise RuntimeError("MAPPER_OPERATIONS_DB_REQUIRED")
-        return MapperRunJournal(database, auto_create=False)
+        root = Path.cwd()
+        return MapperRunJournal(_mapper_operations_database(root), auto_create=False)
     if journal_path is None:
         raise RuntimeError("JOURNAL_PATH_REQUIRED")
     return RunJournal(journal_path)

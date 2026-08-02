@@ -2,8 +2,38 @@ import json
 import threading
 import time
 
+import pytest
+
 from simplicio_loop import runner
-from simplicio_loop.run_journal import RunJournal
+
+
+class MemoryJournal:
+    def __init__(self):
+        self.rows = {}
+
+    def events(self, run_id):
+        return list(self.rows.get(run_id, []))
+
+    def append(self, run_id, kind, payload, *, idempotency_key, **_kwargs):
+        rows = self.rows.setdefault(run_id, [])
+        for event in rows:
+            if event["idempotency_key"] == idempotency_key:
+                return {"status": "DUPLICATE", "event": event}
+        event = {
+            "kind": kind,
+            "payload": dict(payload),
+            "idempotency_key": idempotency_key,
+            "sequence": len(rows) + 1,
+        }
+        rows.append(event)
+        return {"status": "APPENDED", "event": event}
+
+
+@pytest.fixture(autouse=True)
+def memory_dispatch_journal(monkeypatch):
+    journal = MemoryJournal()
+    monkeypatch.setattr(runner, "_dispatch_journal_backend", lambda _path: journal)
+    return journal
 
 
 def test_dispatch_operator_batch_refills_without_wave_barrier(monkeypatch, tmp_path):
@@ -122,7 +152,7 @@ def test_dispatch_operator_batch_resumes_successful_journal_entries(monkeypatch,
     assert result["completed_task_indices"] == [1, 2]
 
 
-def test_dispatch_operator_batch_blocks_unknown_effect_after_restart(monkeypatch, tmp_path):
+def test_dispatch_operator_batch_blocks_unknown_effect_after_restart(monkeypatch, tmp_path, memory_dispatch_journal):
     calls = []
 
     def fake_execute(repo, run_id, task_index, **_kwargs):
@@ -130,7 +160,7 @@ def test_dispatch_operator_batch_blocks_unknown_effect_after_restart(monkeypatch
         return {"state": {"phase": "validating", "attempts": 1}}
 
     monkeypatch.setattr(runner, "execute_operator", fake_execute)
-    journal = RunJournal(tmp_path / "run-journal.sqlite")
+    journal = memory_dispatch_journal
     journal.append("crashed", "run_started", {"scope": "operator_batch"}, idempotency_key="run:started")
     journal.append(
         "crashed", "dispatch_started",
