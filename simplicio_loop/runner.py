@@ -66,6 +66,7 @@ from .authority_boundary import prepare_authorization_handoff
 from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
 from .execution_board import ExecutionBoard
 from .run_journal import RunJournal
+from .mapper_run_journal import MapperRunJournal
 
 from .execution_route import _stable_hash as _execution_route_hash
 from .execution_route import capability_fingerprint, normalize_capability_manifest, route_receipt_is_current
@@ -5360,6 +5361,22 @@ def _run_operator_item_process(item: Mapping[str, Any], retry_budget: int) -> Li
     return attempts
 
 
+def _mapper_journal_enabled() -> bool:
+    return os.environ.get("SIMPLICIO_STORAGE_ROUTE", "legacy").strip().lower() == "mapper"
+
+
+def _dispatch_journal_backend(journal_path: Optional[Path]) -> Any:
+    """Select the journal explicitly; the default remains the legacy backend."""
+    if _mapper_journal_enabled():
+        database = os.environ.get("SIMPLICIO_MAPPER_OPERATIONS_DB", "").strip()
+        if not database:
+            raise RuntimeError("MAPPER_OPERATIONS_DB_REQUIRED")
+        return MapperRunJournal(database, auto_create=False)
+    if journal_path is None:
+        raise RuntimeError("JOURNAL_PATH_REQUIRED")
+    return RunJournal(journal_path)
+
+
 def _append_dispatch_journal(
     journal_path: Optional[Path], run_id: str, kind: str,
     payload: Mapping[str, Any], idempotency_key: str,
@@ -5367,7 +5384,7 @@ def _append_dispatch_journal(
     """Persist one idempotent batch lifecycle event in the existing RunJournal."""
     if journal_path is None:
         return
-    journal = RunJournal(journal_path)
+    journal = _dispatch_journal_backend(journal_path)
     if not journal.events(run_id):
         journal.append(
             run_id, "run_started", {"scope": "operator_batch"},
@@ -5380,9 +5397,11 @@ def _append_dispatch_journal(
 
 def _dispatch_journal_recovery(journal_path: Optional[Path], run_id: str) -> List[int]:
     """Return task indexes with a durable start but no terminal event."""
-    if journal_path is None or not journal_path.exists():
+    if journal_path is None or (
+        not _mapper_journal_enabled() and not journal_path.exists()
+    ):
         return []
-    events = RunJournal(journal_path).events(run_id)
+    events = _dispatch_journal_backend(journal_path).events(run_id)
     active: Dict[int, bool] = {}
     for event in events:
         payload = event.get("payload") or {}
