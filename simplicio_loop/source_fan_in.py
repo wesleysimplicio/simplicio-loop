@@ -19,6 +19,13 @@ FAN_IN_SCHEMA = "simplicio.source-fan-in/v1"
 GOVERNED_FIELDS = ("title", "body", "state")
 
 
+def _revision_key(envelope: DemandEnvelope) -> tuple[str, str, str]:
+    """Return the provider-independent ordering key for an envelope revision."""
+
+    revision = envelope.revision
+    return revision.updated_at, revision.tie_breaker, revision.token
+
+
 def _alias(envelope: DemandEnvelope) -> str:
     source = envelope.identity.source
     return f"{source.provider}|{source.tenant}|{source.project}|{source.repository}|{envelope.identity.external_id}"
@@ -103,15 +110,24 @@ class FanInReducer:
             }
         demand_id = next(iter(matches), digest({"canonical": envelope.envelope_id}))
         record = self._records.setdefault(demand_id, DemandRecord(demand_id))
-        if record.envelopes:
-            current = record.latest
-            for field_name in GOVERNED_FIELDS:
-                if getattr(current, field_name) != getattr(envelope, field_name):
-                    record.conflict_fields.add(field_name)
-        record.envelopes[envelope.envelope_id] = envelope
-        record.aliases.update(aliases)
-        for alias in aliases:
-            self._aliases[alias] = demand_id
+        existing = record.envelopes.get(envelope.envelope_id)
+        if existing is None:
+            if record.envelopes:
+                current = record.latest
+                for field_name in GOVERNED_FIELDS:
+                    if getattr(current, field_name) != getattr(envelope, field_name):
+                        record.conflict_fields.add(field_name)
+            record.envelopes[envelope.envelope_id] = envelope
+            record.aliases.update(aliases)
+            for alias in aliases:
+                self._aliases[alias] = demand_id
+        elif _revision_key(envelope) > _revision_key(existing):
+            # A newer revision updates the same source identity; it is not a
+            # cross-source conflict and must replace the older payload.
+            record.envelopes[envelope.envelope_id] = envelope
+            record.aliases.update(aliases)
+            for alias in aliases:
+                self._aliases[alias] = demand_id
         status = "CONFLICT" if record.conflicted else "ADMITTED"
         return {
             "schema": FAN_IN_SCHEMA,
