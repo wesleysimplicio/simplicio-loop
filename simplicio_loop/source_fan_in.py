@@ -193,6 +193,22 @@ class FanInReducer:
             write_receipt = dict(write(envelope))
         except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
             return {"schema": FAN_IN_SCHEMA, "status": "BLOCKED", "reason_code": "delivery_write_failed", "error": str(exc)}
+        write_status = str(write_receipt.get("status") or "").casefold()
+        if write_receipt.get("ok") is False or write_status in {
+            "blocked",
+            "conflict",
+            "failed",
+            "forbidden",
+            "rejected",
+            "unknown",
+            "unavailable",
+        }:
+            return {
+                "schema": FAN_IN_SCHEMA,
+                "status": "BLOCKED",
+                "reason_code": "delivery_write_rejected",
+                "write_receipt": write_receipt,
+            }
         try:
             observed = requery(envelope)
         except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
