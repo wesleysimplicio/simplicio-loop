@@ -35,6 +35,14 @@ class FakeStore:
         self._record("enqueue", *args, **kwargs)
         return {"status": "queued"}
 
+    def update_payload(self, task_id, payload):
+        self._record("update_payload", task_id, payload)
+        return {"task_id": task_id}
+
+    def find_task(self, idempotency_key):
+        self._record("find_task", idempotency_key)
+        return {"task_id": "task-1"} if idempotency_key == "idem-1" else None
+
     def claim(self, *args, **kwargs):
         self._record("claim", *args, **kwargs)
         return {
@@ -215,3 +223,17 @@ def test_adapter_wraps_unexpected_mapper_failure():
     adapter = MapperOperationsAdapter("/tmp/loop-ops.db", store=fake)
     with pytest.raises(MapperOperationsError, match="MAPPER_OPERATION_FAILED"):
         adapter.status()
+
+
+def test_adapter_exposes_canonical_task_payload_and_idempotency_lookup():
+    store = FakeStore([])
+    adapter = MapperOperationsAdapter("unused", store=store)
+
+    assert adapter.update_payload("task-1", {"value": 1}) == {"task_id": "task-1"}
+    assert adapter.find_task("idem-1") == {"task_id": "task-1"}
+    assert adapter.find_task("missing") is None
+    assert store.calls[-3:] == [
+        ("update_payload", ("task-1", {"value": 1}), {}),
+        ("find_task", ("idem-1",), {}),
+        ("find_task", ("missing",), {}),
+    ]
