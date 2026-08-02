@@ -35,6 +35,33 @@ def test_mapper_route_is_default_and_requires_capability(monkeypatch):
     assert report["effects_attempted"] is False
 
 
+def test_runner_effect_journal_defaults_to_mapper_and_requires_explicit_legacy(monkeypatch):
+    from simplicio_loop import runner
+
+    monkeypatch.delenv("SIMPLICIO_STORAGE_ROUTE", raising=False)
+    assert runner._mapper_journal_enabled() is True
+    monkeypatch.setenv("SIMPLICIO_STORAGE_ROUTE", "legacy")
+    assert runner._mapper_journal_enabled() is False
+
+
+def test_runner_hookwall_route_is_frozen_to_mapper_by_default(monkeypatch, tmp_path):
+    from simplicio_loop import runner
+
+    selected = []
+
+    class FakeLedger:
+        def __init__(self, database, **kwargs):
+            selected.append((database, kwargs))
+
+    monkeypatch.delenv("SIMPLICIO_STORAGE_ROUTE", raising=False)
+    monkeypatch.setattr(runner, "MapperHookwallEffectLedger", FakeLedger)
+    monkeypatch.setattr(
+        runner, "_mapper_operations_database", lambda repo: tmp_path / "operations.sqlite"
+    )
+    runner._hookwall_ledger(tmp_path)
+    assert selected == [(tmp_path / "operations.sqlite", {"auto_create": False})]
+
+
 def test_mapper_route_selects_installed_capabilities_without_creating_state(
     monkeypatch, tmp_path
 ):
