@@ -298,6 +298,9 @@ class MapperOperationsAdapter:
     def cancel(self, task_id: str) -> dict[str, Any]:
         return self._call("cancel", task_id)
 
+    def requeue(self, task_id: str) -> dict[str, Any]:
+        return self._call("requeue", task_id)
+
     def reclaim_expired(self) -> dict[str, Any]:
         return self._call("reclaim_expired")
 

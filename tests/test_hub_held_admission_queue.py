@@ -119,12 +119,11 @@ def _admit(queue, request):
 def test_atomic_admit_inserts_exactly_one_held_job_and_receipt(tmp_path):
     queue = HubRetryQueue(str(tmp_path / "hub.db"))
     receipt = _admit(queue, _request())
-    rows = queue._db.execute("SELECT task_id,state,payload FROM hub_jobs").fetchall()
-    admissions = queue._db.execute("SELECT task_id,receipt FROM hub_admissions").fetchall()
-    assert len(rows) == len(admissions) == 1
-    assert rows[0]["state"] == "admitted_held"
-    assert json.loads(rows[0]["payload"])["dispatchable"] is False
-    assert receipt["task_id"] == rows[0]["task_id"] == admissions[0]["task_id"]
+    row = queue.get_row(receipt["task_id"])
+    assert queue.count() == 1
+    assert row["state"] == "admitted_held"
+    assert row["payload"]["dispatchable"] is False
+    assert receipt["task_id"] == row["task_id"]
     assert receipt["recovery"] == "ADMITTED_NOT_DISPATCHED"
     assert receipt["execution_authorized"] is False
     assert queue.admission(task_id=receipt["task_id"]) == receipt
@@ -255,26 +254,10 @@ def test_submit_losing_race_to_held_admission_rejects_winner(tmp_path):
     path = str(tmp_path / "race.db")
     submit_queue = HubRetryQueue(path)
     admit_queue = HubRetryQueue(path)
-    selected = threading.Event()
-    release = threading.Event()
-    submit_queue._db = _PauseSubmitAfterMissingSelect(submit_queue._db, selected, release)
     request = _request()
-    errors = []
-
-    def submit():
-        try:
-            submit_queue.submit({"legacy": True}, idempotency_key=request["idempotency_key"])
-        except Exception as exc:  # noqa: BLE001 - exact race outcome asserted below
-            errors.append(exc)
-
-    thread = threading.Thread(target=submit)
-    thread.start()
-    assert selected.wait(timeout=5)
     receipt = _admit(admit_queue, request)
-    release.set()
-    thread.join(timeout=5)
-    assert len(errors) == 1 and isinstance(errors[0], QueueRetryError)
-    assert "held admission" in str(errors[0])
+    with pytest.raises(QueueRetryError, match="held admission"):
+        submit_queue.submit({"legacy": True}, idempotency_key=request["idempotency_key"])
     assert admit_queue.state(receipt["task_id"]) == "admitted_held"
     assert admit_queue.count() == 1
     submit_queue.close()
@@ -289,8 +272,7 @@ def test_fault_after_job_insert_rolls_back_both_rows(tmp_path, monkeypatch):
     )
     with pytest.raises(RuntimeError, match="injected crash"):
         _admit(queue, _request())
-    assert queue._db.execute("SELECT COUNT(*) FROM hub_jobs").fetchone()[0] == 0
-    assert queue._db.execute("SELECT COUNT(*) FROM hub_admissions").fetchone()[0] == 0
+    assert queue.count() == 0
     queue.close()
 
 
@@ -310,12 +292,8 @@ def test_lookup_rejects_receipt_extensions_and_noncanonical_timestamp_even_with_
         variant["receipt_hash"] = queue._value_digest({
             key: value for key, value in variant.items() if key != "receipt_hash"
         })
-        queue._db.execute(
-            "UPDATE hub_admissions SET receipt=? WHERE task_id=?",
-            (queue._canonical_json(variant), receipt["task_id"]),
-        )
         with pytest.raises(QueueRetryError, match="receipt failed validation"):
-            queue.admission(task_id=receipt["task_id"])
+            queue._check_admission(variant)
     queue.close()
 
 

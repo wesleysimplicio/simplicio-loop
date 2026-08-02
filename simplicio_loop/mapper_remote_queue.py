@@ -214,6 +214,7 @@ class MapperRemoteQueue:
         *,
         receipt_ref: str,
         receipt: Optional[Mapping[str, Any]] = None,
+        status: str = "completed",
     ) -> Dict[str, Any]:
         if not receipt:
             raise QueueConflict("RECEIPT_REQUIRED")
@@ -238,6 +239,7 @@ class MapperRemoteQueue:
                 lease.cancelled,
             ),
             receipt=supplied,
+            status=str(status),
         )
         return {"schema": MAPPER_QUEUE_SCHEMA, "task_id": lease.task_id, **operation}
 
@@ -257,6 +259,9 @@ class MapperRemoteQueue:
 
     def request_cancel(self, task_id: str, *, reason: str = "cancelled") -> Dict[str, Any]:
         return self.operations.request_cancel(str(task_id), reason=reason)
+
+    def requeue(self, task_id: str) -> Dict[str, Any]:
+        return self.operations.requeue(str(task_id))
 
     def release(self, lease: Lease, *, reason: str = "handoff") -> Dict[str, Any]:
         return self.operations.release(
