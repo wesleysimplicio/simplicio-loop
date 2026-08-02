@@ -197,6 +197,31 @@ def test_fan_in_governed_conflict_and_partial_source_are_fail_closed():
     assert result[0]["source_status"] == "rate_limited"
 
 
+def test_fan_in_revision_updates_are_ordered_and_stale_replay_cannot_regress():
+    source = SourceIdentity("github", "org", "repo")
+    first = _envelope(source, "42", title="Old title", revision="1")
+    second = DemandEnvelope(
+        first.identity,
+        SourceRevision("2026-01-02T00:00:00Z", "2"),
+        "New title",
+        body="new body",
+    )
+    reducer = FanInReducer()
+
+    assert reducer.ingest(first)["status"] == "ADMITTED"
+    updated = reducer.ingest(second)
+    assert updated["status"] == "ADMITTED"
+    assert updated["conflict_fields"] == []
+
+    stale = reducer.ingest(first)
+    assert stale["status"] == "ADMITTED"
+    stored = reducer.inspect()["demands"][0]["envelopes"]
+    assert len(stored) == 1
+    assert stored[0]["title"] == "New title"
+    assert stored[0]["revision"]["tie_breaker"] == "2"
+
+
+
 def test_source_and_resource_doctors_are_read_only(tmp_path, capsys):
     assert main(["doctor", "source", "--provider", "jira-cloud", "--json"]) == 0
     source = json.loads(capsys.readouterr().out)
