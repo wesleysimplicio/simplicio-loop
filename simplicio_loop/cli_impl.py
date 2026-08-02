@@ -767,6 +767,63 @@ def stack_doctor_command(args) -> int:
         return 2
 
 
+def source_doctor_command(args) -> int:
+    """Report SourceAdapter v1 contract readiness without contacting a provider."""
+    from .source_contract import SourceCapabilities
+
+    profiles = {
+        "local": "local-reference",
+        "github": "github-reference",
+        "azure-devops": "azure-devops-fixture",
+        "jira-cloud": "jira-cloud-fixture",
+        "asana": "asana-fixture",
+        "trello": "trello-fixture",
+    }
+    provider = str(args.source_provider)
+    capabilities = SourceCapabilities(provider, profiles[provider])
+    result = {
+        "schema": "simplicio.source-doctor/v1",
+        "status": "READY",
+        "provider": provider,
+        "profile": capabilities.profile,
+        "capabilities": capabilities.as_dict(),
+        "transport": "fixture-or-injected",
+        "real_provider_auth": "UNVERIFIED",
+        "effects_attempted": False,
+    }
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def resource_doctor_command(args) -> int:
+    """Inspect a prior Resource Fabric state file without constructing the fabric."""
+    path = Path(args.resource_root).expanduser().absolute() / "resource-fabric.json"
+    result = {
+        "schema": "simplicio.resource-doctor/v1",
+        "path": str(path),
+        "effects_attempted": False,
+    }
+    if not path.exists():
+        result.update({
+            "status": "UNVERIFIED",
+            "reason_code": "RESOURCE_FABRIC_NOT_STARTED",
+            "next_action": "start ResourceFabric explicitly before admitting work",
+        })
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 2
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("schema") != "simplicio.resource-fabric/v1":
+            raise ValueError("resource fabric state schema mismatch")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        result.update({"status": "BLOCKED", "reason_code": "RESOURCE_STATE_INVALID", "error": str(exc)})
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 2
+    result.update({"status": "OBSERVED", "state": payload})
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def main(argv=None) -> int:
     argv_list = list(argv) if argv is not None else list(sys.argv[1:])
     if argv_list[:1] == ["fast-v3"]:
@@ -907,7 +964,7 @@ def main(argv=None) -> int:
     p_stack_verify.add_argument("--route", choices=("standalone", "runtime-backed"), default=None)
 
     p_doctor = sub.add_parser("doctor", help="inspect the installed stack or storage routing")
-    p_doctor.set_defaults(doctor_command=None, stack_json=False)
+    p_doctor.set_defaults(doctor_command=None, stack_json=False, doctor_json=False)
     p_doctor.add_argument("--storage", action="store_true",
                           help="inspect the Loop storage adapter boundary")
     p_doctor.add_argument("--route", choices=("legacy", "shadow", "mapper"), default="mapper")
@@ -920,6 +977,26 @@ def main(argv=None) -> int:
     )
     p_doctor_stack.add_argument("--json", dest="stack_json", action="store_true",
                                 help="emit machine-readable JSON")
+    p_doctor_source = doctor_sub.add_parser(
+        "source", help="report SourceAdapter v1 contract readiness"
+    )
+    p_doctor_source.add_argument(
+        "--provider",
+        dest="source_provider",
+        choices=("local", "github", "azure-devops", "jira-cloud", "asana", "trello"),
+        default="local",
+    )
+    p_doctor_source.add_argument("--json", dest="doctor_json", action="store_true",
+                                 help="emit machine-readable JSON")
+    p_doctor_resource = doctor_sub.add_parser(
+        "resource", help="inspect Resource Fabric state without starting it"
+    )
+    p_doctor_resource.add_argument(
+        "--root", dest="resource_root",
+        default=os.path.join(".simplicio", "orchestrator", "resource-fabric"),
+    )
+    p_doctor_resource.add_argument("--json", dest="doctor_json", action="store_true",
+                                   help="emit machine-readable JSON")
 
     p_inspect = sub.add_parser("inspect", help="inspect storage routing and MapperStore capabilities")
     p_inspect.add_argument("--storage", action="store_true", required=True,
@@ -1228,6 +1305,10 @@ def main(argv=None) -> int:
         return stack_command(args)
     if command == "doctor" and getattr(args, "doctor_command", None) == "stack":
         return stack_doctor_command(args)
+    if command == "doctor" and getattr(args, "doctor_command", None) == "source":
+        return source_doctor_command(args)
+    if command == "doctor" and getattr(args, "doctor_command", None) == "resource":
+        return resource_doctor_command(args)
     if command in {"doctor", "inspect"}:
         if command == "doctor" and not args.storage:
             parser.error("doctor requires --storage or the stack subcommand")
