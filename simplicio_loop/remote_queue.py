@@ -65,7 +65,7 @@ class Lease:
     task_id: str
     agent_id: str
     lease_id: str
-    fencing_token: int
+    fencing_token: int | str
     expires_at: float
     idempotency_key: str
     identity: Optional[Dict[str, Any]] = None
@@ -96,8 +96,13 @@ class RemoteQueue(Protocol):
 
 def _lease_from_json(value: Mapping[str, Any]) -> Lease:
     """Decode the wire representation without trusting client-controlled fields."""
+    fencing_token = value["fencing_token"]
+    if isinstance(fencing_token, bool) or not isinstance(fencing_token, (int, str)):
+        raise ValueError("fencing_token must be an integer or opaque string")
+    if isinstance(fencing_token, str) and not fencing_token.strip():
+        raise ValueError("fencing_token must not be empty")
     return Lease(str(value["task_id"]), str(value["agent_id"]), str(value["lease_id"]),
-                 int(value["fencing_token"]), float(value["expires_at"]),
+                 fencing_token, float(value["expires_at"]),
                  str(value["idempotency_key"]), value.get("identity"),
                  tuple(value.get("capabilities") or ()), bool(value.get("cancelled", False)),
                  str(value.get("attempt_id") or ""))
