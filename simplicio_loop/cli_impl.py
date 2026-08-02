@@ -686,13 +686,34 @@ def _load_stack_components(path: str):
 
 
 def stack_command(args) -> int:
-    from .stack_lock import StackLock, StackLockError, load_stack_lock, write_stack_lock
+    from .stack_lock import (
+        StackLock,
+        StackLockError,
+        diagnose_stack,
+        load_stack_lock,
+        load_stack_registry,
+        write_stack_lock,
+    )
 
     try:
         if args.stack_command == "lock":
-            lock = StackLock.create(
-                _load_stack_components(args.components), args.route, run_id=args.run_id
-            )
+            components = _load_stack_components(args.components)
+            registry_path = getattr(args, "registry", "")
+            if registry_path:
+                diagnosis = diagnose_stack(
+                    components,
+                    load_stack_registry(registry_path),
+                    args.route,
+                )
+                if diagnosis.status != "READY":
+                    print(json.dumps({
+                        "schema": "simplicio.stack-lock-command/v1",
+                        "status": "BLOCKED",
+                        "reason_code": "stack_compatibility_blocked",
+                        "diagnostics": diagnosis.to_dict(),
+                    }, ensure_ascii=False, sort_keys=True))
+                    return 2
+            lock = StackLock.create(components, args.route, run_id=args.run_id)
             path = write_stack_lock(lock, args.output)
             result = {
                 "schema": "simplicio.stack-lock-command/v1",
@@ -951,6 +972,11 @@ def main(argv=None) -> int:
         "lock", help="persist a deterministic lock from JSON component observations"
     )
     p_stack_lock.add_argument("--components", required=True, help="JSON component observations")
+    p_stack_lock.add_argument(
+        "--registry",
+        default="",
+        help="optional simplicio.stack-registry/v1 compatibility registry; blocks incompatible locks",
+    )
     p_stack_lock.add_argument("--route", choices=("standalone", "runtime-backed"), required=True)
     p_stack_lock.add_argument("--run-id", default="")
     p_stack_lock.add_argument(
