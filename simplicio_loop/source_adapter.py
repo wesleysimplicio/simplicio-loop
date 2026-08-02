@@ -23,8 +23,35 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from . import github_lifecycle as _gl
+from .source_contract import (
+    CursorStore,
+    DemandEnvelope,
+    ItemIdentity,
+    SourceAdapterV1,
+    SourceCapabilities,
+    SourceCursor,
+    SourceIdentity,
+    SourcePage,
+    SourceReceipt,
+    SourceRevision,
+    SourceStatus,
+)
 
-__all__ = ["SourceAdapter", "GitHubSourceAdapter"]
+__all__ = [
+    "CursorStore",
+    "DemandEnvelope",
+    "GitHubSourceAdapter",
+    "ItemIdentity",
+    "SourceAdapter",
+    "SourceAdapterV1",
+    "SourceCapabilities",
+    "SourceCursor",
+    "SourceIdentity",
+    "SourcePage",
+    "SourceReceipt",
+    "SourceRevision",
+    "SourceStatus",
+]
 
 
 @runtime_checkable

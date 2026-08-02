@@ -369,6 +369,87 @@ class LeaseStore:
         self.mark_stale()
         return self.acquire(resource_key, new_owner_id, ttl_seconds=ttl_seconds)
 
+    def invalidate(
+        self, resource_key: str, *, reason: str = "invalidated"
+    ) -> dict[str, Any] | None:
+        """Fence the current owner immediately, without granting a replacement lease."""
+        now = float(self.clock())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM leases WHERE resource_key=?", (resource_key,)
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+            lease = self._lease(row)
+            if lease.state == "active":
+                stale = CapabilityLease(
+                    lease.resource_key, lease.owner_id, lease.attempt, lease.fence,
+                    lease.issued_at, lease.heartbeat_at, lease.expires_at, "stale",
+                )
+                connection.execute(
+                    "UPDATE leases SET state='stale' WHERE resource_key=? AND fence=?",
+                    (resource_key, lease.fence),
+                )
+            else:
+                stale = lease
+            receipt = self._receipt(
+                connection, "invalidated", stale, observed_at=now, reason=reason
+            )
+            connection.commit()
+            return {"lease": stale.to_dict(), "receipt": receipt}
+
+    def invalidate_owner(
+        self, owner_id: str, *, reason: str = "authority_takeover"
+    ) -> list[dict[str, Any]]:
+        """Invalidate every active claim owned by a supervisor being replaced."""
+        owner_id = str(owner_id).strip()
+        if not owner_id:
+            raise ValueError("owner_id is required")
+        now = float(self.clock())
+        receipts: list[dict[str, Any]] = []
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT * FROM leases WHERE owner_id=? AND state='active'", (owner_id,)
+            ).fetchall()
+            for row in rows:
+                lease = self._lease(row)
+                stale = CapabilityLease(
+                    lease.resource_key, lease.owner_id, lease.attempt, lease.fence,
+                    lease.issued_at, lease.heartbeat_at, lease.expires_at, "stale",
+                )
+                connection.execute(
+                    "UPDATE leases SET state='stale' WHERE resource_key=? AND fence=?",
+                    (lease.resource_key, lease.fence),
+                )
+                receipts.append(self._receipt(
+                    connection, "invalidated", stale, observed_at=now, reason=reason
+                ))
+            connection.commit()
+        return receipts
+
+    def list_leases(self, *, prefix: str = "") -> list[dict[str, Any]]:
+        """Read observable lease state for a coordinator/doctor without writing."""
+        now = float(self.clock())
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM leases WHERE resource_key LIKE ? ORDER BY resource_key",
+                (prefix + "%",),
+            ).fetchall()
+        result = []
+        for row in rows:
+            lease = self._lease(row)
+            state = "stale" if lease.state == "active" and lease.expires_at <= now else lease.state
+            result.append({
+                **lease.to_dict(),
+                "state": state,
+                "expires_in_seconds": max(0.0, lease.expires_at - now),
+                "conflict": state == "active",
+            })
+        return result
+
     def status(self, resource_key: str) -> dict[str, Any] | None:
         now = float(self.clock())
         with self._connect() as connection:
