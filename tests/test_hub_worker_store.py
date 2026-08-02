@@ -44,6 +44,10 @@ def test_worker_store_validates_contracts_and_requires_remote_delivery_confirmat
             ]})
 
         receipt = store.delegate(_payload())
+        replay = store._operations.replay(store._journal_id)
+        assert replay["valid"] is True
+        assert replay["events"][0]["event_type"] == "worker.workflow-created"
+        assert replay["events"][0]["payload"]["schema"] == "simplicio.loop-worker-store-event/v1"
         with pytest.raises(HubWorkerError, match="conflicting"):
             store.delegate({**_payload(), "tasks": [{"task_id": "task", "role": "implementer", "depends_on": [], "task_contract": "changed"}]})
         with pytest.raises(HubWorkerError):
@@ -64,11 +68,15 @@ def test_worker_store_validates_contracts_and_requires_remote_delivery_confirmat
         delivery_receipt = delivery_store.delegate(delivery)
         with pytest.raises(HubWorkerError, match="delivery requires"):
             delivery_store.deliver({"workflow_id": delivery_receipt["workflow_id"], "task_id": "task", "agent_id": "external-agent:task", "review_receipt_id": "review"})
-        with delivery_store._db:
-            delivery_store._db.execute(
-                "UPDATE worker_tasks SET state='done' WHERE workflow_id=? AND task_id='task'",
-                (delivery_receipt["workflow_id"],),
-            )
+        replay = delivery_store._replay()
+        state = delivery_store._state(replay)
+        task = state["tasks"][delivery_receipt["workflow_id"]]["task"]
+        delivery_store._append(replay, "worker.task-updated", {
+            "operation": "task_updated",
+            "workflow_id": delivery_receipt["workflow_id"],
+            "task": {**task, "state": "done"},
+            "events": [],
+        })
         unconfirmed = delivery_store.deliver({"workflow_id": delivery_receipt["workflow_id"], "task_id": "task", "agent_id": "external-agent:task", "review_receipt_id": "review"})
         assert unconfirmed["remotely_confirmed"] is False
         delivery_store.close()

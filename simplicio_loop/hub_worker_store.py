@@ -9,20 +9,28 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import threading
 import time
-from typing import Any, Dict, Iterable, List
+from pathlib import Path
+from typing import Any, Dict, List, Mapping
+
+from .mapper_operations import MapperOperationsAdapter
 
 
 WORKER_SCHEMA = "simplicio.code-worker-adapter/v1"
 WORKER_PROTOCOL = "simplicio.loop-worker/v1"
 WORKER_STATES = {"waiting", "working", "blocked", "failed", "done", "cancelled"}
 TERMINAL_STATES = {"failed", "done", "cancelled"}
+EVENT_SCHEMA = "simplicio.loop-worker-store-event/v1"
+JOURNAL_PREFIX = "simplicio.loop.hub-worker:"
 
 
 class HubWorkerError(RuntimeError):
     """Invalid, stale or unavailable worker workflow request."""
+
+
+class _JournalConflict(HubWorkerError):
+    """The projected state changed before this mutation committed."""
 
 
 def _digest(value: Any) -> str:
@@ -105,88 +113,107 @@ def _validate_delegate(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 class HubWorkerStore:
-    """Durable, Hub-owned reducer for worker delegation and cancellation."""
+    """Durable, Hub-owned reducer projected from the Mapper operations journal."""
 
-    def __init__(self, path: str) -> None:
-        self._db = sqlite3.connect(path, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+    def __init__(self, path: str, *, operations: Any | None = None) -> None:
+        self.path = str(Path(path).expanduser().absolute())
+        self._operations = operations or MapperOperationsAdapter(self.path)
+        self._journal_id = JOURNAL_PREFIX + self.path
         self._lock = threading.RLock()
-        with self._db:
-            self._db.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS worker_workflows (
-                    workflow_id TEXT PRIMARY KEY,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    request_digest TEXT NOT NULL,
-                    identity_json TEXT NOT NULL,
-                    max_concurrency INTEGER NOT NULL,
-                    state TEXT NOT NULL,
-                    mutation_authority INTEGER NOT NULL,
-                    delegate_receipt_id TEXT NOT NULL,
-                    cancel_receipt_json TEXT,
-                    created REAL NOT NULL,
-                    updated REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS worker_tasks (
-                    workflow_id TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    depends_on_json TEXT NOT NULL,
-                    task_contract TEXT NOT NULL,
-                    state TEXT NOT NULL,
-                    owner TEXT NOT NULL,
-                    attempt INTEGER NOT NULL,
-                    fence INTEGER NOT NULL,
-                    worktree_id TEXT NOT NULL,
-                    branch TEXT NOT NULL,
-                    path_token TEXT NOT NULL,
-                    lease_id TEXT NOT NULL,
-                    reason TEXT,
-                    receipt_id TEXT,
-                    PRIMARY KEY(workflow_id, task_id)
-                );
-                CREATE TABLE IF NOT EXISTS worker_events (
-                    workflow_id TEXT NOT NULL,
-                    sequence INTEGER NOT NULL,
-                    event_json TEXT NOT NULL,
-                    PRIMARY KEY(workflow_id, sequence)
-                );
-                """
-            )
+        self._operations.initialize()
 
     def close(self) -> None:
-        self._db.close()
+        """Retain the old lifecycle hook; Mapper owns the underlying store."""
 
-    def _workflow(self, workflow_id: str) -> sqlite3.Row:
-        row = self._db.execute(
-            "SELECT * FROM worker_workflows WHERE workflow_id=?", (workflow_id,)
-        ).fetchone()
-        if row is None:
+    @staticmethod
+    def _last_seq(replay: Mapping[str, Any]) -> int:
+        events = replay.get("events") or []
+        if events:
+            return int(events[-1]["seq"])
+        compaction = replay.get("compaction")
+        return int(compaction["through_seq"]) if compaction else 0
+
+    def _replay(self) -> dict[str, Any]:
+        replay = self._operations.replay(self._journal_id)
+        if not replay.get("valid", False):
+            raise HubWorkerError("worker journal is invalid")
+        return replay
+
+    @staticmethod
+    def _state(replay: Mapping[str, Any]) -> dict[str, Any]:
+        state: dict[str, Any] = {"workflows": {}, "tasks": {}, "events": {}}
+        for journal_event in replay.get("events", []):
+            payload = journal_event.get("payload")
+            if not isinstance(payload, Mapping) or payload.get("schema") != EVENT_SCHEMA:
+                raise HubWorkerError("worker journal contains an unknown event")
+            operation = payload.get("operation")
+            workflow_id = str(payload.get("workflow_id", ""))
+            if operation == "workflow_created":
+                workflow = dict(payload["workflow"])
+                tasks = {str(task["task_id"]): dict(task) for task in payload["tasks"]}
+                state["workflows"][workflow_id] = workflow
+                state["tasks"][workflow_id] = tasks
+                state["events"][workflow_id] = [dict(event) for event in payload["events"]]
+            elif operation == "workflow_cancelled":
+                state["workflows"][workflow_id] = dict(payload["workflow"])
+                state["tasks"].setdefault(workflow_id, {}).update(
+                    {str(task["task_id"]): dict(task) for task in payload["tasks"]}
+                )
+                state["events"].setdefault(workflow_id, []).extend(
+                    dict(event) for event in payload["events"]
+                )
+            elif operation == "task_updated":
+                state["tasks"].setdefault(workflow_id, {})[str(payload["task"]["task_id"])] = dict(
+                    payload["task"]
+                )
+                state["events"].setdefault(workflow_id, []).extend(
+                    dict(event) for event in payload.get("events", [])
+                )
+            else:
+                raise HubWorkerError("worker journal contains an unknown operation")
+        return state
+
+    @staticmethod
+    def _is_conflict(error: BaseException) -> bool:
+        return "JOURNAL_CONFLICT" in str(error) or getattr(error, "reason_code", "") == "JOURNAL_CONFLICT"
+
+    def _append(self, replay: Mapping[str, Any], event_type: str, payload: Mapping[str, Any]) -> None:
+        try:
+            self._operations.append_event(
+                self._journal_id,
+                event_type,
+                {"schema": EVENT_SCHEMA, **dict(payload)},
+                expected_seq=self._last_seq(replay),
+            )
+        except Exception as error:
+            if self._is_conflict(error):
+                raise _JournalConflict("worker journal changed concurrently") from error
+            raise HubWorkerError("worker journal append failed: " + str(error)) from error
+
+    @staticmethod
+    def _workflow(state: Mapping[str, Any], workflow_id: str) -> dict[str, Any]:
+        workflow = state["workflows"].get(workflow_id)
+        if workflow is None:
             raise HubWorkerError("unknown worker workflow")
-        return row
+        return workflow
 
-    def _receipt(self, row: sqlite3.Row) -> Dict[str, Any]:
+    @staticmethod
+    def _receipt(state: Mapping[str, Any], workflow: Mapping[str, Any]) -> Dict[str, Any]:
+        workflow_id = str(workflow["workflow_id"])
         return {
             "schema": WORKER_SCHEMA,
-            "workflow_id": row["workflow_id"],
-            "receipt_id": row["delegate_receipt_id"],
+            "workflow_id": workflow_id,
+            "receipt_id": workflow["delegate_receipt_id"],
             "accepted_task_ids": [
-                item["task_id"] for item in self._db.execute(
-                    "SELECT task_id FROM worker_tasks WHERE workflow_id=? ORDER BY rowid",
-                    (row["workflow_id"],),
-                ).fetchall()
+                task["task_id"] for task in state["tasks"][workflow_id].values()
             ],
         }
 
-    def _append_event(self, workflow_id: str, task: sqlite3.Row, *, state: str,
-                      reason: Any = None, receipt_id: Any = None) -> None:
-        last = self._db.execute(
-            "SELECT COALESCE(MAX(sequence), -1) AS sequence FROM worker_events WHERE workflow_id=?",
-            (workflow_id,),
-        ).fetchone()["sequence"]
-        sequence = int(last) + 1
+    @staticmethod
+    def _event(workflow_id: str, task: Mapping[str, Any], sequence: int, *, state: str,
+               reason: Any = None, receipt_id: Any = None) -> dict[str, Any]:
         event_id = f"worker-event:{workflow_id}:{sequence}"
-        event = {
+        return {
             "sequence": sequence,
             "event_id": event_id,
             "causal_event_id": None,
@@ -211,10 +238,6 @@ class HubWorkerStore:
             },
             "receipt_id": receipt_id,
         }
-        self._db.execute(
-            "INSERT INTO worker_events(workflow_id,sequence,event_json) VALUES (?,?,?)",
-            (workflow_id, sequence, json.dumps(event, sort_keys=True)),
-        )
 
     def delegate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         tasks = _validate_delegate(payload)
@@ -226,39 +249,72 @@ class HubWorkerStore:
             "max_concurrency": int(payload["max_concurrency"]), "tasks": tasks,
         }
         request_digest = _digest(normalized)
-        with self._lock, self._db:
-            existing = self._db.execute(
-                "SELECT * FROM worker_workflows WHERE idempotency_key=?", (key,)
-            ).fetchone()
-            if existing is not None:
-                if existing["request_digest"] != request_digest:
-                    raise HubWorkerError("conflicting worker idempotency key reuse")
-                return self._receipt(existing)
-            workflow_id = "worker:" + _digest(key)[:32]
-            receipt_id = "delegate:" + _digest(key)[:32]
-            now = time.time()
-            self._db.execute(
-                "INSERT INTO worker_workflows VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (workflow_id, key, request_digest, json.dumps(identity, sort_keys=True),
-                 int(payload["max_concurrency"]), "running", 1, receipt_id, None, now, now),
-            )
-            for index, task in enumerate(tasks, start=1):
-                task_id = task["task_id"]
-                worktree_id = f"worker:{workflow_id}:{task_id}"
-                path_token = _digest([workflow_id, task_id])
-                self._db.execute(
-                    "INSERT INTO worker_tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (workflow_id, task_id, task["role"], json.dumps(task["depends_on"]),
-                     task["task_contract"], "waiting", f"external-agent:{task_id}", 1, index,
-                     worktree_id, f"worker/{workflow_id}/{task_id}", path_token,
-                     f"lease:{workflow_id}:{task_id}:1", None, None),
+        workflow_id = "worker:" + _digest(key)[:32]
+        receipt_id = "delegate:" + _digest(key)[:32]
+        with self._lock:
+            for _ in range(32):
+                replay = self._replay()
+                state = self._state(replay)
+                existing = next(
+                    (workflow for workflow in state["workflows"].values()
+                     if workflow["idempotency_key"] == key),
+                    None,
                 )
-                row = self._db.execute(
-                    "SELECT * FROM worker_tasks WHERE workflow_id=? AND task_id=?",
-                    (workflow_id, task_id),
-                ).fetchone()
-                self._append_event(workflow_id, row, state="waiting")
-            return self._receipt(self._workflow(workflow_id))
+                if existing is not None:
+                    if existing["request_digest"] != request_digest:
+                        raise HubWorkerError("conflicting worker idempotency key reuse")
+                    return self._receipt(state, existing)
+                now = time.time()
+                workflow = {
+                    "workflow_id": workflow_id,
+                    "idempotency_key": key,
+                    "request_digest": request_digest,
+                    "identity": identity,
+                    "max_concurrency": int(payload["max_concurrency"]),
+                    "state": "running",
+                    "mutation_authority": 1,
+                    "delegate_receipt_id": receipt_id,
+                    "cancel_receipt": None,
+                    "created": now,
+                    "updated": now,
+                }
+                task_rows = []
+                events = []
+                for index, task in enumerate(tasks, start=1):
+                    task_id = task["task_id"]
+                    row = {
+                        "workflow_id": workflow_id,
+                        "task_id": task_id,
+                        "role": task["role"],
+                        "depends_on": list(task["depends_on"]),
+                        "task_contract": task["task_contract"],
+                        "state": "waiting",
+                        "owner": f"external-agent:{task_id}",
+                        "attempt": 1,
+                        "fence": index,
+                        "worktree_id": f"worker:{workflow_id}:{task_id}",
+                        "branch": f"worker/{workflow_id}/{task_id}",
+                        "path_token": _digest([workflow_id, task_id]),
+                        "lease_id": f"lease:{workflow_id}:{task_id}:1",
+                        "reason": None,
+                        "receipt_id": None,
+                    }
+                    task_rows.append(row)
+                    events.append(self._event(workflow_id, row, index - 1, state="waiting"))
+                try:
+                    self._append(replay, "worker.workflow-created", {
+                        "operation": "workflow_created", "workflow_id": workflow_id,
+                        "workflow": workflow, "tasks": task_rows, "events": events,
+                    })
+                    return self._receipt(
+                        {"workflows": {workflow_id: workflow}, "tasks": {workflow_id: {
+                            task["task_id"]: task for task in task_rows
+                        }}},
+                        workflow,
+                    )
+                except _JournalConflict:
+                    continue
+        raise HubWorkerError("worker delegation remained contended")
 
     def status(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         workflow_id = _require_text(payload.get("workflow_id"), "workflow_id")
@@ -269,20 +325,14 @@ class HubWorkerStore:
         if after < 0:
             raise HubWorkerError("after_sequence must be non-negative")
         with self._lock:
-            self._workflow(workflow_id)
-            rows = self._db.execute(
-                "SELECT event_json FROM worker_events WHERE workflow_id=? AND sequence>=? ORDER BY sequence",
-                (workflow_id, after),
-            ).fetchall()
-            next_sequence = self._db.execute(
-                "SELECT COALESCE(MAX(sequence), -1) + 1 AS next_sequence FROM worker_events WHERE workflow_id=?",
-                (workflow_id,),
-            ).fetchone()["next_sequence"]
+            state = self._state(self._replay())
+            self._workflow(state, workflow_id)
+            events = state["events"].get(workflow_id, [])
             return {
                 "schema": WORKER_SCHEMA,
                 "workflow_id": workflow_id,
-                "next_sequence": int(next_sequence),
-                "events": [json.loads(row["event_json"]) for row in rows],
+                "next_sequence": len(events),
+                "events": events[after:],
             }
 
     def cancel(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -291,36 +341,42 @@ class HubWorkerStore:
         reason = _require_text(payload.get("reason"), "reason")
         if payload.get("revoke_mutation_authority") is not True:
             raise HubWorkerError("worker cancellation must revoke mutation authority")
-        with self._lock, self._db:
-            workflow = self._workflow(workflow_id)
-            if workflow["cancel_receipt_json"] is not None:
-                return json.loads(workflow["cancel_receipt_json"])
-            receipt = {
-                "schema": WORKER_SCHEMA,
-                "workflow_id": workflow_id,
-                "receipt_id": "cancel:" + _digest(key)[:32],
-                "accepted_task_ids": [],
-            }
-            self._db.execute(
-                "UPDATE worker_workflows SET state='cancelled',mutation_authority=0,cancel_receipt_json=?,updated=? WHERE workflow_id=?",
-                (json.dumps(receipt, sort_keys=True), time.time(), workflow_id),
-            )
-            tasks = self._db.execute(
-                "SELECT * FROM worker_tasks WHERE workflow_id=? AND state NOT IN ('failed','done','cancelled') ORDER BY rowid",
-                (workflow_id,),
-            ).fetchall()
-            for task in tasks:
-                self._db.execute(
-                    "UPDATE worker_tasks SET state='cancelled',reason=?,receipt_id=? WHERE workflow_id=? AND task_id=?",
-                    (reason, receipt["receipt_id"], workflow_id, task["task_id"]),
-                )
-                updated = self._db.execute(
-                    "SELECT * FROM worker_tasks WHERE workflow_id=? AND task_id=?",
-                    (workflow_id, task["task_id"]),
-                ).fetchone()
-                self._append_event(workflow_id, updated, state="cancelled", reason=reason,
-                                   receipt_id=receipt["receipt_id"])
-            return receipt
+        with self._lock:
+            for _ in range(32):
+                replay = self._replay()
+                state = self._state(replay)
+                workflow = self._workflow(state, workflow_id)
+                if workflow["cancel_receipt"] is not None:
+                    return dict(workflow["cancel_receipt"])
+                receipt = {
+                    "schema": WORKER_SCHEMA,
+                    "workflow_id": workflow_id,
+                    "receipt_id": "cancel:" + _digest(key)[:32],
+                    "accepted_task_ids": [],
+                }
+                updated_workflow = {**workflow, "state": "cancelled", "mutation_authority": 0,
+                                    "cancel_receipt": receipt, "updated": time.time()}
+                updated_tasks = []
+                events = []
+                sequence = len(state["events"].get(workflow_id, []))
+                for task in state["tasks"][workflow_id].values():
+                    if task["state"] in TERMINAL_STATES:
+                        continue
+                    updated = {**task, "state": "cancelled", "reason": reason,
+                                "receipt_id": receipt["receipt_id"]}
+                    updated_tasks.append(updated)
+                    events.append(self._event(workflow_id, updated, sequence, state="cancelled",
+                                              reason=reason, receipt_id=receipt["receipt_id"]))
+                    sequence += 1
+                try:
+                    self._append(replay, "worker.workflow-cancelled", {
+                        "operation": "workflow_cancelled", "workflow_id": workflow_id,
+                        "workflow": updated_workflow, "tasks": updated_tasks, "events": events,
+                    })
+                    return receipt
+                except _JournalConflict:
+                    continue
+        raise HubWorkerError("worker cancellation remained contended")
 
     def deliver(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         workflow_id = _require_text(payload.get("workflow_id"), "workflow_id")
@@ -328,10 +384,9 @@ class HubWorkerStore:
         _require_text(payload.get("agent_id"), "agent_id")
         _require_text(payload.get("review_receipt_id"), "review_receipt_id")
         with self._lock:
-            workflow = self._workflow(workflow_id)
-            task = self._db.execute(
-                "SELECT * FROM worker_tasks WHERE workflow_id=? AND task_id=?", (workflow_id, task_id)
-            ).fetchone()
+            state = self._state(self._replay())
+            workflow = self._workflow(state, workflow_id)
+            task = state["tasks"].get(workflow_id, {}).get(task_id)
             if task is None:
                 raise HubWorkerError("unknown worker task")
             if workflow["mutation_authority"] != 1:
