@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simplicio.dev/contracts/loop/mapper-store/v1/operations-adapter.schema.json",
+  "title": "Loop MapperStore operations adapter",
+  "type": "object",
+  "required": ["schema", "operations", "writer_authority"],
+  "properties": {
+    "schema": {
+      "const": "simplicio.loop-mapper-operations-adapter/v1"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "initialize",
+          "register_slot",
+          "enqueue",
+          "claim_next",
+          "heartbeat",
+          "release",
+          "complete",
+          "cancel",
+          "reclaim_expired",
+          "checkpoint",
+          "prepare_effect",
+          "commit_effect",
+          "append_event",
+          "replay",
+          "status"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "writer_authority": {
+      "const": "mapper"
+    }
+  },
+  "additionalProperties": false
+}
