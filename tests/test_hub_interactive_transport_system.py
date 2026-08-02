@@ -2,9 +2,25 @@
 import json, os, subprocess, sys, tempfile, time
 from pathlib import Path
 import pytest
-from simplicio_loop.hub_daemon import HubSocketClient
+from simplicio_loop.hub_daemon import HubSocketClient, InteractiveStore
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_interactive_store_projects_idempotency_from_mapper_journal(tmp_path):
+    store = InteractiveStore(str(tmp_path / "interactive.db"))
+    store.attach("session", "client")
+    first = store.apply("session", "request", "submit", {"value": 1}, lambda: {"ok": True})
+    assert first["replayed"] is False
+    replay = store._operations.replay(store._journal_id)
+    assert replay["valid"] is True
+    assert replay["events"][-1]["event_type"] == "hub-interactive.request-applied"
+    events = store.replay("session", 0)["events"]
+    assert events == [{"cursor": first["cursor"], "request_id": "request",
+                      "method": "submit", "response": {"ok": True}}]
+    duplicate = store.apply("session", "request", "submit", {"value": 1}, lambda: {"ok": False})
+    assert duplicate == {"ok": True, "replayed": True, "cursor": first["cursor"]}
+    store.close()
 
 def _start(lock, endpoint):
     Path(endpoint).unlink(missing_ok=True)

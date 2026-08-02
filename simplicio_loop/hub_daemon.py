@@ -6,13 +6,12 @@ import asyncio
 import os
 import socket
 import signal
-import sqlite3
 import tempfile
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, Mapping, Optional, Set, Tuple
 import uuid
 
 from .hub_queue_retry import HubRetryQueue, QueueRetryError
@@ -26,6 +25,7 @@ from .hub_governor import RESOURCE_NAMES, ResourceGovernor, ResourceLimits, Reso
 from .hub_agent_executor import HubAgentExecutor, HubAgentError, parse_request
 from .hub_service import ClaimedJob, HubService
 from .hub_worker_store import HubWorkerError, HubWorkerStore
+from .mapper_operations import MapperOperationsAdapter
 from .map_service import MapServiceRegistry, RepositoryIdentity
 from .map_service_single_flight import SingleFlightMapStore
 from .map_service_watchers import MapWatcherManager
@@ -35,6 +35,8 @@ from .runtime_bridge import RUNTIME_CALL_SCHEMA, RuntimeBridge, RuntimeBridgeErr
 IPC_SCHEMA = "simplicio.hub-ipc/v1"
 IPC_VERSION = 1
 INTERACTIVE_SCHEMA = "simplicio.hub-interactive/v1"
+INTERACTIVE_EVENT_SCHEMA = "simplicio.loop-hub-interactive-event/v1"
+INTERACTIVE_JOURNAL_PREFIX = "simplicio.loop.hub-interactive:"
 CODE_HUB_CLIENT_SCHEMA = "simplicio.loop-hub-client/v1"
 CODE_HUB_PROTOCOL = "simplicio.loop-hub/v1"
 METHODS = frozenset(
@@ -80,67 +82,117 @@ class HubBackpressureError(HubProtocolError):
 
 
 class InteractiveStore:
-    """Durable session journal and idempotency ledger for external Hub clients."""
+    """Durable session journal projected from the Mapper operations journal."""
 
-    def __init__(self, path: str) -> None:
-        self._db = sqlite3.connect(path, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+    def __init__(self, path: str, *, operations: Any | None = None) -> None:
+        self.path = str(Path(path).expanduser().absolute())
+        self._operations = operations or MapperOperationsAdapter(self.path)
+        self._journal_id = INTERACTIVE_JOURNAL_PREFIX + self.path
         self._lock = threading.RLock()
-        with self._db:
-            self._db.executescript("""
-                CREATE TABLE IF NOT EXISTS hub_sessions (
-                    session_id TEXT PRIMARY KEY, client_id TEXT NOT NULL, created REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS hub_events (
-                    seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
-                    request_id TEXT NOT NULL, method TEXT NOT NULL, digest TEXT NOT NULL,
-                    response TEXT NOT NULL, created REAL NOT NULL,
-                    UNIQUE(session_id, request_id)
-                );
-            """)
+        self._operations.initialize()
 
     def close(self) -> None:
-        self._db.close()
+        """Retain the old lifecycle hook; Mapper owns the underlying store."""
+
+    @staticmethod
+    def _last_seq(replay: Mapping[str, Any]) -> int:
+        events = replay.get("events") or []
+        if events:
+            return int(events[-1]["seq"])
+        compaction = replay.get("compaction")
+        return int(compaction["through_seq"]) if compaction else 0
+
+    def _replay(self) -> dict[str, Any]:
+        replay = self._operations.replay(self._journal_id)
+        if not replay.get("valid", False):
+            raise HubProtocolError("interactive journal is invalid")
+        return replay
+
+    @staticmethod
+    def _state(replay: Mapping[str, Any]) -> dict[str, Any]:
+        state: dict[str, Any] = {"sessions": {}, "events": {}, "requests": {}}
+        for journal_event in replay.get("events", []):
+            payload = journal_event.get("payload")
+            if not isinstance(payload, Mapping) or payload.get("schema") != INTERACTIVE_EVENT_SCHEMA:
+                raise HubProtocolError("interactive journal contains an unknown event")
+            operation = payload.get("operation")
+            session_id = str(payload.get("session_id", ""))
+            if operation == "session_attached":
+                state["sessions"][session_id] = str(payload["client_id"])
+            elif operation == "request_applied":
+                event = dict(payload["event"])
+                event["cursor"] = int(journal_event["seq"])
+                state["events"].setdefault(session_id, []).append(event)
+                state["requests"][(session_id, str(event["request_id"]))] = event
+            else:
+                raise HubProtocolError("interactive journal contains an unknown operation")
+        return state
+
+    @staticmethod
+    def _is_conflict(error: BaseException) -> bool:
+        return "JOURNAL_CONFLICT" in str(error) or getattr(error, "reason_code", "") == "JOURNAL_CONFLICT"
+
+    def _append(self, replay: Mapping[str, Any], event_type: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            return self._operations.append_event(
+                self._journal_id,
+                event_type,
+                {"schema": INTERACTIVE_EVENT_SCHEMA, **dict(payload)},
+                expected_seq=self._last_seq(replay),
+            )
+        except Exception as error:
+            if self._is_conflict(error):
+                raise HubProtocolError("interactive journal changed concurrently") from error
+            raise HubProtocolError("interactive journal append failed: " + str(error)) from error
 
     def attach(self, session_id: str, client_id: str) -> None:
-        with self._lock, self._db:
-            row = self._db.execute("SELECT client_id FROM hub_sessions WHERE session_id=?", (session_id,)).fetchone()
-            if row is not None and row["client_id"] != client_id:
+        with self._lock:
+            replay = self._replay()
+            state = self._state(replay)
+            owner = state["sessions"].get(session_id)
+            if owner is not None and owner != client_id:
                 raise HubProtocolError("session is owned by another client")
-            self._db.execute("INSERT OR IGNORE INTO hub_sessions VALUES (?,?,?)", (session_id, client_id, time.time()))
+            if owner is None:
+                self._append(replay, "hub-interactive.session-attached", {
+                    "operation": "session_attached", "session_id": session_id,
+                    "client_id": client_id, "created": time.time(),
+                })
 
     def replay(self, session_id: str, cursor: int) -> Dict[str, Any]:
         if cursor < 0:
             raise HubProtocolError("cursor must be non-negative")
-        rows = self._db.execute(
-            "SELECT seq,request_id,method,response FROM hub_events WHERE session_id=? AND seq>? ORDER BY seq",
-            (session_id, cursor),
-        ).fetchall()
-        events = [{"cursor": r["seq"], "request_id": r["request_id"], "method": r["method"],
-                   "response": json.loads(r["response"])} for r in rows]
+        with self._lock:
+            state = self._state(self._replay())
+            events = [
+                {"cursor": event["cursor"], "request_id": event["request_id"],
+                 "method": event["method"], "response": event["response"]}
+                for event in state["events"].get(session_id, []) if event["cursor"] > cursor
+            ]
         return {"events": events, "next_cursor": events[-1]["cursor"] if events else cursor}
 
     def apply(self, session_id: str, request_id: str, method: str, payload: Dict[str, Any], operation) -> Dict[str, Any]:
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         with self._lock:
-            row = self._db.execute(
-                "SELECT method,digest,response,seq FROM hub_events WHERE session_id=? AND request_id=?",
-                (session_id, request_id),
-            ).fetchone()
-            if row is not None:
-                if row["method"] != method or row["digest"] != digest:
+            replay = self._replay()
+            state = self._state(replay)
+            existing = state["requests"].get((session_id, request_id))
+            if existing is not None:
+                if existing["method"] != method or existing["digest"] != digest:
                     raise HubProtocolError("conflicting idempotency request_id reuse")
-                response = json.loads(row["response"])
-                response.update({"replayed": True, "cursor": row["seq"]})
+                response = dict(existing["response"])
+                response.update({"replayed": True, "cursor": existing["cursor"]})
                 return response
             response = operation()
-            encoded = json.dumps(response, sort_keys=True)
-            with self._db:
-                cur = self._db.execute(
-                    "INSERT INTO hub_events(session_id,request_id,method,digest,response,created) VALUES (?,?,?,?,?,?)",
-                    (session_id, request_id, method, digest, encoded, time.time()),
-                )
-            response.update({"replayed": False, "cursor": cur.lastrowid})
+            base_response = dict(response)
+            receipt = self._append(replay, "hub-interactive.request-applied", {
+                "operation": "request_applied", "session_id": session_id,
+                "event": {
+                    "cursor": 0, "request_id": request_id, "method": method,
+                    "digest": digest, "response": base_response, "created": time.time(),
+                },
+            })
+            cursor = int(receipt["seq"])
+            response.update({"replayed": False, "cursor": cursor})
             return response
 
 
