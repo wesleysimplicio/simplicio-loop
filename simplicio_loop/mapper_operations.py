@@ -248,6 +248,39 @@ class MapperOperationsAdapter:
             dict(receipt),
         )
 
+    def mark_effect_unknown(
+        self,
+        lease: OperationLease,
+        *,
+        effect_id: str,
+    ) -> dict[str, Any]:
+        """Persist an uncertain effect without synthesizing a receipt."""
+        return self._call(
+            "mark_effect_unknown",
+            effect_id,
+            lease.attempt_id,
+            lease.fence_token,
+        )
+
+    def reconcile_effect(
+        self,
+        *,
+        effect_id: str,
+        attempt_id: str,
+        outcome: str,
+        receipt: Mapping[str, Any],
+        fence_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve an unknown effect using explicit external evidence."""
+        return self._call(
+            "reconcile_effect",
+            effect_id,
+            attempt_id,
+            fence_token,
+            outcome=outcome,
+            receipt=dict(receipt),
+        )
+
     def append_event(
         self,
         run_id: str,
