@@ -134,6 +134,43 @@ class MapperOperationsAdapter:
     def register_slot(self, slot_id: str, capacity: int) -> dict[str, Any]:
         return self._call("register_slot", slot_id, capacity)
 
+    def configure_agent_slots(self, capacity: int) -> dict[str, Any]:
+        return self._call("configure_agent_slots", capacity)
+
+    def agent_slot_status(self) -> dict[str, Any]:
+        return self._call("agent_slot_status")
+
+    def agent_slot_acquire(
+        self,
+        agent_id: str,
+        *,
+        worktree: str | None = None,
+        lease_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._call("agent_slot_acquire", agent_id, worktree=worktree, lease_id=lease_id)
+
+    def agent_slot_transition(self, agent_id: str, target: str, *, reason: str = "") -> dict[str, Any]:
+        return self._call("agent_slot_transition", agent_id, target, reason=reason)
+
+    def agent_slot_update_blockers(
+        self,
+        agent_id: str,
+        *,
+        descendants: int = 0,
+        worktree_active: bool = False,
+        lease_active: bool = False,
+    ) -> dict[str, Any]:
+        return self._call(
+            "agent_slot_update_blockers",
+            agent_id,
+            descendants=descendants,
+            worktree_active=worktree_active,
+            lease_active=lease_active,
+        )
+
+    def agent_slot_reclaim(self, agent_id: str | None = None) -> dict[str, Any]:
+        return self._call("agent_slot_reclaim", agent_id)
+
     def enqueue(
         self,
         task_id: str,

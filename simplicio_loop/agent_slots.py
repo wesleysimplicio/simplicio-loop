@@ -436,6 +436,9 @@ def cli_main(argv: Optional[Iterable[str]] = None) -> int:
 
     def common(command_parser: argparse.ArgumentParser) -> None:
         command_parser.add_argument("--db", default=".simplicio/orchestrator/agent-slots.sqlite")
+        command_parser.add_argument("--route", choices=("legacy", "mapper"), default="legacy")
+        command_parser.add_argument("--mapper-db", default=None)
+        command_parser.add_argument("--mapper-init", action="store_true")
         command_parser.add_argument("--capacity", type=int, default=6)
         command_parser.add_argument("--retry-limit", type=int, default=1)
 
@@ -465,7 +468,15 @@ def cli_main(argv: Optional[Iterable[str]] = None) -> int:
     common(blockers_parser)
 
     args = parser.parse_args(list(argv) if argv is not None else None)
-    registry = AgentSlotRegistry(Path(args.db), capacity=args.capacity, retry_limit=args.retry_limit)
+    if args.route == "mapper":
+        if not args.mapper_db:
+            parser.error("--mapper-db is required with --route mapper")
+        from .mapper_agent_slots import MapperAgentSlotRegistry
+        registry = MapperAgentSlotRegistry(args.mapper_db, capacity=args.capacity, auto_create=False)
+        if args.mapper_init:
+            registry.initialize()
+    else:
+        registry = AgentSlotRegistry(Path(args.db), capacity=args.capacity, retry_limit=args.retry_limit)
     if args.command == "status":
         result = registry.status()
     elif args.command == "acquire":
