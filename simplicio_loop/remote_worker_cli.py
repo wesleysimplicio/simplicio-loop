@@ -44,6 +44,7 @@ from .async_bounded_queue import AsyncBoundedQueue, QueueClosed
 from .remote_queue import (
     HTTPRemoteQueue, QueueConflict, QueueUnavailable, RemoteQueue, SQLiteRemoteQueue,
 )
+from .mapper_remote_queue import MapperRemoteQueue
 from .worker_daemon import RemoteWorkerDaemon, sleep_in_slices
 
 
@@ -67,17 +68,25 @@ async def _write_status_async(status_file: str, payload: dict) -> None:
 
 
 def _add_backend_args(parser: argparse.ArgumentParser) -> None:
-    """Shared transport selection: exactly one of ``--db`` (SQLite, same-host/shared-file) or
-    ``--http`` (a real network client against a ``remote_queue_server`` instance)."""
+    """Select exactly one queue authority, including the explicit MapperStore lane."""
     parser.add_argument("--db", default=None, help="shared SQLite queue file path")
     parser.add_argument("--http", default=None, help="base URL of a real remote-queue-server instance")
+    parser.add_argument("--mapper-db", default=None, help="initialized MapperStore operations.sqlite path")
+    parser.add_argument("--mapper-init", action="store_true",
+                        help="explicitly initialize --mapper-db before the command")
     parser.add_argument("--token", default=os.environ.get("SIMPLICIO_QUEUE_TOKEN"),
                         help="bearer token for --http (ignored for --db)")
 
 
 def _build_queue(args: argparse.Namespace) -> RemoteQueue:
-    if bool(args.db) == bool(args.http):
-        raise SystemExit("exactly one of --db or --http is required")
+    backends = [getattr(args, name, None) for name in ("db", "http", "mapper_db")]
+    if sum(bool(value) for value in backends) != 1:
+        raise SystemExit("exactly one of --db, --http or --mapper-db is required")
+    if getattr(args, "mapper_db", None):
+        queue = MapperRemoteQueue(args.mapper_db, auto_create=False)
+        if getattr(args, "mapper_init", False):
+            queue.initialize()
+        return queue  # type: ignore[return-value]
     if args.http:
         return HTTPRemoteQueue(args.http, token=args.token, timeout=10.0)
     return SQLiteRemoteQueue(args.db)
