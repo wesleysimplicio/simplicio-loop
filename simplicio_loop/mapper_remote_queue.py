@@ -122,6 +122,21 @@ class MapperRemoteQueue:
         tasks: list[dict[str, Any]] = []
         for item in result.get("tasks", ()):
             payload = dict(item.get("payload") or {})
+            dependencies = sorted(
+                {str(value).strip() for value in payload.get("depends_on", ()) if str(value).strip()}
+            )
+            if dependencies:
+                unmet = False
+                for dependency in dependencies:
+                    try:
+                        dependency_state = self.operations.status(dependency).get("state")
+                    except KeyError:
+                        dependency_state = None
+                    if dependency_state != "completed":
+                        unmet = True
+                        break
+                if unmet:
+                    continue
             required = sorted(
                 {str(value).strip() for value in payload.get("required_capabilities", ()) if str(value).strip()}
             )
@@ -132,9 +147,7 @@ class MapperRemoteQueue:
                     "task_id": str(item["task_id"]),
                     "status": "ready",
                     "required_capabilities": required,
-                    "depends_on": sorted(
-                        {str(value).strip() for value in payload.get("depends_on", ()) if str(value).strip()}
-                    ),
+                    "depends_on": dependencies,
                     "updated_at": item.get("updated_at"),
                 }
             )

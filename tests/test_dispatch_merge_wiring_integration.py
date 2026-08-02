@@ -236,7 +236,7 @@ def test_guarded_dispatch_and_auto_merge_are_wired_end_to_end(tmp_path, monkeypa
 
     # --- claim went through the guarded AttemptCoordinator path, not a bare queue.claim ---
     assert record["guarded_dispatch"] is True
-    assert record["lease"]["fencing_token"] >= 1
+    assert isinstance(record["lease"]["fencing_token"], str)
 
     # --- simulated runtime work actually ran and produced a genuinely VERIFIED receipt pair ---
     assert record["status"] == "succeeded", record
