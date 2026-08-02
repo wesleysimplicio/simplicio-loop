@@ -16,7 +16,11 @@ simplicio-loop doctor --storage --route legacy --json
 simplicio-loop inspect --storage --route mapper --json
 ```
 
-Both return `simplicio.loop-store-adapter/v1` and include the selected route,
+The runner freezes a `simplicio.loop-store-route-receipt/v1` in each run before
+the Mapper scan.  A later route or capability change blocks the run before a
+claim or effect intent; there is no automatic fallback.
+
+Both commands return `simplicio.loop-store-adapter/v1` and include the selected route,
 generation, run identity, writer authority, capability report and
 `effects_attempted=false`. No probe creates a directory, database, lock or
 receipt. A frozen route can be serialized as

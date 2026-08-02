@@ -15,8 +15,10 @@ import os
 import platform
 import sys
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +69,7 @@ def _mapper_version(module: Any) -> str | None:
         from importlib.metadata import version
 
         return version("simplicio-mapper")
-    except Exception:  # pragma: no cover - metadata differs across installers
+    except (ImportError, PackageNotFoundError, TypeError, ValueError):  # pragma: no cover
         return None
 
 
@@ -241,7 +243,7 @@ class StorageRouter:
     def __init__(
         self,
         *,
-        requested: StorageRoute | str = StorageRoute.MAPPER,
+        requested: StorageRoute | str = StorageRoute.LEGACY,
         mapper: MapperStoreAdapter | None = None,
         run_id: str | None = None,
         generation: str | None = None,
@@ -342,7 +344,7 @@ class StorageRouter:
 
 def storage_doctor(
     *,
-    requested: StorageRoute | str = StorageRoute.MAPPER,
+    requested: StorageRoute | str = StorageRoute.LEGACY,
     data_dir: str | os.PathLike[str] | None = None,
     required_capabilities: tuple[str, ...] = (),
 ) -> dict[str, Any]:
@@ -372,7 +374,7 @@ def storage_cli(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(prog="simplicio-loop storage")
     parser.add_argument(
-        "--route", choices=[route.value for route in StorageRoute], default="mapper"
+        "--route", choices=[route.value for route in StorageRoute], default="legacy"
     )
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--require-capability", action="append", default=[])
@@ -384,6 +386,77 @@ def storage_cli(argv: list[str]) -> int:
     )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0 if result["status"] == "READY" else 2
+
+
+def verify_route_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    requested: StorageRoute | str | None = None,
+    require_frozen: bool = True,
+    probe_capability: bool = True,
+) -> dict[str, Any]:
+    """Validate a persisted route decision without creating storage.
+
+    A receipt is an execution input, not merely a status message.  Its hash,
+    selected route and capability snapshot must remain stable between bootstrap
+    and the first claim/effect boundary.  The optional capability probe is
+    read-only and is intentionally skipped for the legacy route.
+    """
+
+    if not isinstance(receipt, Mapping):
+        raise StoreAdapterError("ROUTE_RECEIPT_INVALID")
+    if receipt.get("schema") != ROUTE_RECEIPT_SCHEMA:
+        raise StoreAdapterError("ROUTE_RECEIPT_SCHEMA_INVALID")
+    try:
+        requested_route = StorageRoute(str(receipt.get("requested")))
+    except ValueError as error:
+        raise StoreAdapterError("ROUTE_RECEIPT_INVALID") from error
+    selected_value = receipt.get("selected")
+    try:
+        selected_route = StorageRoute(str(selected_value)) if selected_value is not None else None
+    except ValueError as error:
+        raise StoreAdapterError("ROUTE_RECEIPT_INVALID") from error
+    if receipt.get("route") != selected_value:
+        raise StoreAdapterError("ROUTE_RECEIPT_ROUTE_MISMATCH")
+    if receipt.get("status") == "READY" and selected_route is None:
+        raise StoreAdapterError("ROUTE_RECEIPT_INVALID")
+    if receipt.get("status") == "BLOCKED" and selected_route is not None:
+        raise StoreAdapterError("ROUTE_RECEIPT_INVALID")
+    if receipt.get("status") not in {"READY", "BLOCKED"}:
+        raise StoreAdapterError("ROUTE_RECEIPT_INVALID")
+    if not isinstance(receipt.get("generation"), str) or not receipt["generation"].strip():
+        raise StoreAdapterError("ROUTE_RECEIPT_INVALID")
+    if not isinstance(receipt.get("run_id"), str) or not receipt["run_id"].strip():
+        raise StoreAdapterError("ROUTE_RECEIPT_INVALID")
+    supplied_hash = str(receipt.get("receipt_hash") or "")
+    if supplied_hash != _sha({key: value for key, value in receipt.items() if key != "receipt_hash"}):
+        raise StoreAdapterError("ROUTE_RECEIPT_HASH_INVALID")
+    if require_frozen and (
+        receipt.get("status") != "READY"
+        or receipt.get("frozen") is not True
+        or receipt.get("immutable") is not True
+    ):
+        raise StoreAdapterError("ROUTE_NOT_FROZEN")
+    if requested is not None:
+        try:
+            current_route = StorageRoute(requested)
+        except ValueError as error:
+            raise StoreAdapterError("STORAGE_ROUTE_INVALID") from error
+        if current_route != requested_route or (
+            selected_route is not None and current_route != selected_route
+        ):
+            raise StoreAdapterError("ROUTE_FROZEN_AFTER_FIRST_WRITE")
+    if selected_route in {StorageRoute.MAPPER, StorageRoute.SHADOW} and probe_capability:
+        capability = receipt.get("capability")
+        if not isinstance(capability, Mapping):
+            raise StoreAdapterError("ROUTE_CAPABILITY_RECEIPT_MISSING")
+        current = probe_mapper()
+        if current.status != "available":
+            raise StoreAdapterError(current.reason_code)
+        fields = ("status", "reason_code", "mapper_version", "exports", "capabilities", "missing_capabilities")
+        if any(capability.get(field) != current.as_dict().get(field) for field in fields):
+            raise StoreAdapterError("MAPPER_CAPABILITY_DRIFT")
+    return dict(receipt)
 
 
 __all__ = [
@@ -400,4 +473,5 @@ __all__ = [
     "probe_mapper",
     "storage_cli",
     "storage_doctor",
+    "verify_route_receipt",
 ]
