@@ -26,11 +26,12 @@ def fake_mapper(monkeypatch, version="0.26.9"):
     return module
 
 
-def test_legacy_route_is_default_and_has_loop_authority():
+def test_mapper_route_is_default_and_requires_capability(monkeypatch):
+    fake_mapper(monkeypatch)
     report = storage_doctor()
     assert report["status"] == "READY"
-    assert report["selected"] == "legacy"
-    assert report["writer_authority"] == "loop"
+    assert report["selected"] == "mapper"
+    assert report["writer_authority"] == "mapper-store"
     assert report["effects_attempted"] is False
 
 
