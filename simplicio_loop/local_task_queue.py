@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -39,6 +40,24 @@ def _digest(value: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+def _mapper_database(root: Path) -> Path:
+    """Resolve the repo-scoped canonical operations store without creating it."""
+
+    try:
+        from simplicio_mapper.store import resolve_store_location
+    except (ImportError, ModuleNotFoundError) as error:
+        raise QueueUnavailable("MapperStore operations API is not installed") from error
+    environ = dict(os.environ)
+    environ.pop("SIMPLICIO_DATA_DIR", None)
+    environ.pop("SIMPLICIO_HOME", None)
+    environ["SIMPLICIO_STORE_SCOPE"] = "repo"
+    try:
+        location = resolve_store_location(environ=environ, repo_root=root)
+        return Path(location.database("operations.sqlite"))
+    except (OSError, ValueError) as error:
+        raise QueueUnavailable(f"canonical MapperStore path unavailable: {error}") from error
+
+
 class LocalTaskQueue:
     """MapperStore-backed local task lifecycle facade."""
 
@@ -48,9 +67,9 @@ class LocalTaskQueue:
         root = Path(root).resolve()
         if str(root).startswith("\\\\"):
             raise QueueUnavailable("network filesystem locking is not trusted")
-        self.orchestrator = root / ".simplicio" / "orchestrator"
-        self.orchestrator.mkdir(parents=True, exist_ok=True)
-        self.path = str(self.orchestrator / "queue.sqlite3")
+        self.data_dir = root / ".simplicio" / "data"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.path = str(_mapper_database(root))
         self._queue = MapperRemoteQueue(
             self.path, auto_create=True, slot_id=LOCAL_SLOT_ID
         )
