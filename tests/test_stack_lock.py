@@ -258,3 +258,91 @@ def test_stack_diagnosis_reports_partial_upgrade_against_frozen_lock(tmp_path):
     mapper_binary.write_bytes(b"mapper-v1")
     loop = observe_component(
         "simplicio-loop", "1.0.0", loop_binary, capabilities=("orchestrator",)
+
+
+def test_stack_cli_registry_allows_standalone_without_runtime(tmp_path, capsys):
+    loop_binary = tmp_path / "simplicio-loop"
+    mapper_binary = tmp_path / "simplicio-mapper"
+    loop_binary.write_bytes(b"loop")
+    mapper_binary.write_bytes(b"mapper")
+    components = tmp_path / "components.json"
+    components.write_text(
+        json.dumps({
+            "components": [
+                {
+                    "name": "simplicio-loop",
+                    "version": "1.0.0",
+                    "executable": str(loop_binary),
+                    "capabilities": ["orchestrator"],
+                },
+                {
+                    "name": "simplicio-mapper",
+                    "version": "1.0.0",
+                    "executable": str(mapper_binary),
+                    "capabilities": ["map"],
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps(_stack_registry().to_dict()), encoding="utf-8")
+    lock_path = tmp_path / "stack-lock.json"
+
+    assert main([
+        "stack", "lock", "--components", str(components), "--route", "standalone",
+        "--registry", str(registry), "--output", str(lock_path),
+    ]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "LOCKED"
+    assert lock_path.is_file()
+
+
+def test_stack_cli_registry_blocks_duplicate_before_writing_lock(tmp_path, capsys):
+    loop_binary = tmp_path / "simplicio-loop"
+    mapper_a = tmp_path / "mapper-a"
+    mapper_b = tmp_path / "mapper-b"
+    for path, content in (
+        (loop_binary, b"loop"),
+        (mapper_a, b"mapper-a"),
+        (mapper_b, b"mapper-b"),
+    ):
+        path.write_bytes(content)
+    components = tmp_path / "components.json"
+    components.write_text(
+        json.dumps({
+            "components": [
+                {
+                    "name": "simplicio-loop",
+                    "version": "1.0.0",
+                    "executable": str(loop_binary),
+                    "capabilities": ["orchestrator"],
+                },
+                {
+                    "name": "simplicio-mapper",
+                    "version": "2.0.0",
+                    "executable": str(mapper_a),
+                    "capabilities": ["map"],
+                },
+                {
+                    "name": "simplicio-mapper",
+                    "version": "1.0.0",
+                    "executable": str(mapper_b),
+                    "capabilities": ["map"],
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps(_stack_registry().to_dict()), encoding="utf-8")
+    lock_path = tmp_path / "stack-lock.json"
+
+    assert main([
+        "stack", "lock", "--components", str(components), "--route", "standalone",
+        "--registry", str(registry), "--output", str(lock_path),
+    ]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "BLOCKED"
+    assert payload["reason_code"] == "stack_compatibility_blocked"
+    assert payload["diagnostics"]["status"] == "BLOCKED"
+    assert not lock_path.exists()
