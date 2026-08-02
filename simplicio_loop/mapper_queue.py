@@ -62,6 +62,23 @@ class MapperQueue:
             priority=int(priority),
         )
 
+    def import_task(
+        self,
+        task_id: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        idempotency_key: str,
+        state: str = "queued",
+        priority: int = 0,
+    ) -> dict[str, Any]:
+        return self.operations.import_task(
+            str(task_id).strip(),
+            dict(payload or {}),
+            idempotency_key=str(idempotency_key),
+            state=state,
+            priority=int(priority),
+        )
+
     def claim_next(
         self,
         worker_id: str,
