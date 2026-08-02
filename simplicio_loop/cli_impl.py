@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import socket
@@ -10,7 +11,7 @@ import sys
 import tempfile
 import time
 import webbrowser
-import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Optional
 try:
@@ -676,6 +677,89 @@ def retrospective_command(args) -> int:
     return 0
 
 
+def _load_stack_components(path: str) -> list:
+    from .stack_lock import StackComponent, observe_component
+
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read component observations: {exc}") from exc
+    components = payload.get("components") if isinstance(payload, Mapping) else payload
+    if not isinstance(components, list) or not components:
+        raise ValueError("component observations must be a non-empty JSON array")
+
+    result = []
+    for index, item in enumerate(components):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"component {index} must be an object")
+        missing = [field for field in ("name", "version") if not item.get(field)]
+        if missing:
+            raise ValueError(f"component {index} missing: {', '.join(missing)}")
+        observed = observe_component(
+            str(item["name"]),
+            str(item["version"]),
+            str(item.get("executable", "")),
+            build_sha=str(item.get("build_sha", "")),
+            capabilities=item.get("capabilities", ()),
+            artifact_sha256=item.get("artifact_sha256"),
+        )
+        if "available" in item:
+            observed = StackComponent(
+                name=observed.name,
+                version=observed.version,
+                executable=observed.executable,
+                build_sha=observed.build_sha,
+                artifact_sha256=observed.artifact_sha256,
+                capabilities=observed.capabilities,
+                available=bool(item["available"]),
+            )
+        result.append(observed)
+    return result
+
+
+def stack_command(args) -> int:
+    from .stack_lock import StackLock, StackLockError, load_stack_lock, write_stack_lock
+
+    try:
+        if args.stack_command == "lock":
+            lock = StackLock.create(
+                _load_stack_components(args.components), args.route, run_id=args.run_id
+            )
+            path = write_stack_lock(lock, args.output)
+            result = {
+                "schema": "simplicio.stack-lock-command/v1",
+                "status": "LOCKED",
+                "path": str(path),
+                "lock_hash": lock.lock_hash,
+                "route": lock.route,
+                "run_id": lock.run_id,
+            }
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0
+
+        lock = load_stack_lock(args.lock)
+        route = args.route or lock.route
+        lock.verify_unchanged(_load_stack_components(args.components), route)
+        result = {
+            "schema": "simplicio.stack-lock-command/v1",
+            "status": "VERIFIED",
+            "path": str(args.lock),
+            "lock_hash": lock.lock_hash,
+            "route": route,
+            "run_id": lock.run_id,
+        }
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (OSError, ValueError, StackLockError) as exc:
+        print(json.dumps({
+            "schema": "simplicio.stack-lock-command/v1",
+            "status": "BLOCKED",
+            "reason_code": "stack_lock_invalid",
+            "error": str(exc),
+        }, ensure_ascii=False, sort_keys=True))
+        return 2
+
+
 def main(argv=None) -> int:
     argv_list = list(argv) if argv is not None else list(sys.argv[1:])
     if argv_list[:1] == ["fast-v3"]:
@@ -796,6 +880,24 @@ def main(argv=None) -> int:
                           help="emit machine-readable JSON (this is also the default)")
     p_status.add_argument("--text", dest="as_text", action="store_true",
                           help="emit human-readable text instead of JSON")
+
+    p_stack = sub.add_parser("stack", help="create or verify an installed-stack lock")
+    stack_sub = p_stack.add_subparsers(dest="stack_command", required=True)
+    p_stack_lock = stack_sub.add_parser(
+        "lock", help="persist a deterministic lock from JSON component observations"
+    )
+    p_stack_lock.add_argument("--components", required=True, help="JSON component observations")
+    p_stack_lock.add_argument("--route", choices=("standalone", "runtime-backed"), required=True)
+    p_stack_lock.add_argument("--run-id", default="")
+    p_stack_lock.add_argument(
+        "--output", default=os.path.join(".simplicio", "orchestrator", "stack-lock.json")
+    )
+    p_stack_verify = stack_sub.add_parser(
+        "verify", help="verify current observations against a persisted lock"
+    )
+    p_stack_verify.add_argument("--lock", required=True, help="persisted stack lock JSON")
+    p_stack_verify.add_argument("--components", required=True, help="JSON component observations")
+    p_stack_verify.add_argument("--route", choices=("standalone", "runtime-backed"), default=None)
 
     for storage_command in ("doctor", "inspect"):
         p_storage = sub.add_parser(storage_command, help="inspect storage routing and MapperStore capabilities")
@@ -1101,6 +1203,8 @@ def main(argv=None) -> int:
                       args.write_receipt)
     if command == "status":
         return status(args.repo, args.run_id, args.json, args.as_text)
+    if command == "stack":
+        return stack_command(args)
     if command in {"doctor", "inspect"}:
         from .store_adapter import storage_cli
         forwarded = ["--route", args.route]
