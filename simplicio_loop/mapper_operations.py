@@ -298,6 +298,16 @@ class MapperOperationsAdapter:
     def cancel(self, task_id: str) -> dict[str, Any]:
         return self._call("cancel", task_id)
 
+    def update_payload(
+        self, task_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Update a canonical task payload through MapperStore."""
+        return self._call("update_payload", task_id, dict(payload))
+
+    def find_task(self, idempotency_key: str) -> dict[str, Any] | None:
+        """Read a canonical task by idempotency key without local storage."""
+        return self._call("find_task", idempotency_key)
+
     def requeue(self, task_id: str) -> dict[str, Any]:
         return self._call("requeue", task_id)
 
