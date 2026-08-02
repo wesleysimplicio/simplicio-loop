@@ -2,6 +2,7 @@ import sqlite3
 import threading
 
 import pytest
+from simplicio_mapper.store import OperationsStore
 
 from simplicio_loop.budget import (
     BudgetError,
@@ -31,6 +32,19 @@ def test_atomic_shared_reservation_and_idempotent_settlement(tmp_path):
     assert snap["reserved_tokens"] == 0
 
 
+def test_budget_receipts_are_mapper_operations_events(tmp_path):
+    path = tmp_path / "operations.sqlite"
+    ledger = BudgetLedger(path, RunBudget("run-journal", token_limit=100))
+    ledger.reserve("r1", "w1", tokens=10)
+    ledger.settle("r1", tokens=8)
+
+    replay = OperationsStore(path).replay("simplicio.loop.budget:run-journal")
+    assert replay["valid"] is True
+    assert [event["event_type"] for event in replay["events"]] == [
+        "budget.initialized", "budget.reserved", "budget.settled",
+    ]
+
+
 def test_settlement_replay_is_scoped_to_its_run(tmp_path):
     path = tmp_path / "budget.sqlite"
     first = BudgetLedger(path, RunBudget("run-one", token_limit=100))
@@ -42,7 +56,7 @@ def test_settlement_replay_is_scoped_to_its_run(tmp_path):
         second.settle("shared-id", tokens=10)
 
 
-def test_legacy_global_settlement_key_is_migrated_to_a_run_scoped_key(tmp_path):
+def test_legacy_global_settlement_key_is_not_mutated_by_mapper_budget_ledger(tmp_path):
     path = tmp_path / "legacy.sqlite"
     with sqlite3.connect(str(path)) as db:
         db.execute(
@@ -56,7 +70,8 @@ def test_legacy_global_settlement_key_is_migrated_to_a_run_scoped_key(tmp_path):
     BudgetLedger(path, RunBudget("new-run", token_limit=10))
     with sqlite3.connect(str(path)) as db:
         key_columns = [row[1] for row in sorted(db.execute("PRAGMA table_info(budget_settlements)"), key=lambda row: row[5]) if row[5]]
-        assert key_columns == ["run_id", "reservation_id"]
+        assert key_columns == ["reservation_id"]
+        assert db.execute("SELECT reservation_id,run_id FROM budget_settlements").fetchone() == ("old", "old-run")
         assert db.execute("SELECT reservation_id,run_id FROM budget_settlements").fetchone() == ("old", "old-run")
 
 
@@ -92,7 +107,7 @@ def test_concurrent_admission_cannot_oversubscribe(tmp_path):
     assert BudgetLedger(path, budget).snapshot()["reserved_tokens"] == 100
 
 
-def test_concurrent_constructors_migrate_legacy_settlements_once(tmp_path):
+def test_concurrent_constructors_leave_legacy_settlements_untouched(tmp_path):
     path = tmp_path / "legacy-race.sqlite"
     receipt = '{"reservation_id":"old","run_id":"old-run"}'
     with sqlite3.connect(str(path)) as db:
@@ -126,7 +141,7 @@ def test_concurrent_constructors_migrate_legacy_settlements_once(tmp_path):
             for row in sorted(db.execute("PRAGMA table_info(budget_settlements)"), key=lambda row: row[5])
             if row[5]
         ]
-        assert key_columns == ["run_id", "reservation_id"]
+        assert key_columns == ["reservation_id"]
         assert db.execute(
             "SELECT payload FROM budget_settlements WHERE run_id=? AND reservation_id=?",
             ("old-run", "old"),
