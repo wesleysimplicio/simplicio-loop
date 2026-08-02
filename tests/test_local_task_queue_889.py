@@ -321,6 +321,46 @@ def test_cli_rejects_non_root_repo(tmp_path):
     assert cli_main(["--repo", str(child), "status"]) == 2
 
 
+def test_mapper_cli_route_does_not_construct_legacy_queue(tmp_path, monkeypatch, capsys):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    calls = []
+
+    class FakeOperations:
+        def list_ready(self, *, limit):
+            calls.append(("top", limit))
+            return {"schema": "mapper", "tasks": []}
+
+    class FakeMapperQueue:
+        def __init__(self, database, *, auto_create):
+            calls.append(("construct", database, auto_create))
+            self.database = database
+            self.operations = FakeOperations()
+
+        def status(self, task_id=None):
+            calls.append(("status", task_id))
+            return {"schema": "mapper", "task_id": task_id}
+
+        def capabilities(self):
+            return {"schema": "mapper", "capabilities": {"fencing": True}}
+
+    monkeypatch.setattr("simplicio_loop.local_task_queue_cli.MapperQueue", FakeMapperQueue)
+    database = str(tmp_path / "operations.sqlite")
+    assert cli_main(["--repo", str(tmp_path), "--route", "mapper",
+                     "--mapper-db", database, "status"]) == 0
+    assert json.loads(capsys.readouterr().out)["schema"] == "mapper"
+    assert calls == [("construct", database, False), ("status", None)]
+    assert not (tmp_path / ".simplicio/orchestrator/queue.sqlite3").exists()
+
+
+def test_mapper_cli_rejects_legacy_only_actions(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    assert cli_main(["--repo", str(tmp_path), "--route", "mapper",
+                     "--mapper-db", str(tmp_path / "operations.sqlite"), "drain"]) == 2
+    value = json.loads(capsys.readouterr().out)
+    assert value["code"] == "unavailable"
+    assert "MAPPER_ROUTE_UNSUPPORTED" in value["reason"]
+
+
 def test_benchmark_thresholds_are_enforced(monkeypatch, capsys):
     from bench import benchmark_local_task_queue_889 as benchmark
 
