@@ -3,17 +3,105 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from .local_task_queue import LocalTaskQueue
 from .mapper_operations import MapperOperationsError
 from .mapper_queue import MapperQueue
 from .remote_queue import QueueConflict, QueueUnavailable
+
+
+MIGRATION_SCHEMA = "simplicio.loop.mapper-queue-migration/v1"
+TERMINAL_LEGACY_STATES = frozenset(("completed", "cancelled", "failed"))
+IMPORTABLE_LEGACY_STATES = frozenset(("ready", "queued", "pending"))
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _legacy_queue_path(repo: str) -> Path:
+    root = _git_root(repo)
+    path = root / ".simplicio" / "orchestrator" / "queue.sqlite3"
+    if path.is_symlink() or not path.is_file():
+        raise QueueUnavailable(f"legacy queue is missing: {path}")
+    return path
+
+
+def _migrate_legacy_queue(repo: str, destination: MapperQueue, *, apply: bool) -> dict[str, object]:
+    source = _legacy_queue_path(repo)
+    source_sha256 = _sha256_file(source)
+    backup = source.with_name(f"{source.name}.mapper-backup-{time.time_ns()}")
+    imported: list[str] = []
+    skipped: list[dict[str, str]] = []
+    mapper_results: list[dict[str, object]] = []
+    with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as db:
+        db.row_factory = sqlite3.Row
+        try:
+            rows = db.execute("SELECT task_id,status,payload,updated_at FROM tasks ORDER BY task_id").fetchall()
+        except sqlite3.Error as exc:
+            raise QueueUnavailable(f"legacy queue inventory failed: {exc}") from exc
+        inventory = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise QueueUnavailable(f"invalid legacy payload for {row['task_id']}") from exc
+            if not isinstance(payload, dict):
+                raise QueueUnavailable(f"legacy payload is not an object for {row['task_id']}")
+            item = {"task_id": str(row["task_id"]), "status": str(row["status"]),
+                    "payload": payload, "updated_at": row["updated_at"]}
+            inventory.append(item)
+
+    for item in inventory:
+        if item["status"] in TERMINAL_LEGACY_STATES:
+            skipped.append({"task_id": item["task_id"], "status": item["status"], "reason": "terminal_history_requires_receipt_import"})
+            continue
+        if item["status"] not in IMPORTABLE_LEGACY_STATES:
+            skipped.append({"task_id": item["task_id"], "status": item["status"], "reason": "active_or_unknown_state_requires_reconciliation"})
+            continue
+        if not apply:
+            imported.append(item["task_id"])
+            continue
+        result = destination.submit(
+            item["task_id"],
+            {**item["payload"], "legacy_source": str(source), "legacy_updated_at": item["updated_at"]},
+            idempotency_key=f"legacy-loop:{item['task_id']}",
+        )
+        mapper_results.append(dict(result))
+        imported.append(item["task_id"])
+
+    backup_sha256 = None
+    if apply:
+        with sqlite3.connect(source) as source_db, sqlite3.connect(backup) as backup_db:
+            source_db.backup(backup_db)
+        backup_sha256 = _sha256_file(backup)
+    return {
+        "schema": MIGRATION_SCHEMA,
+        "status": "applied" if apply else "planned",
+        "dry_run": not apply,
+        "source": str(source),
+        "source_sha256": source_sha256,
+        "backup": str(backup) if apply else None,
+        "backup_sha256": backup_sha256,
+        "destination": str(destination.database),
+        "imported_task_ids": imported,
+        "mapper_results": mapper_results,
+        "skipped": skipped,
+        "counts": {"source": len(inventory), "imported": len(imported), "skipped": len(skipped)},
+        "legacy_policy": "read-only-until-explicit-cutover",
+    }
 
 
 def _git_root(repo: str) -> Path:
@@ -66,15 +154,19 @@ def cli_main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.route == "mapper":
-            if args.action in {"drain", "resume", "migrate", "gc"}:
+            if args.action in {"drain", "resume", "gc"}:
                 raise QueueUnavailable(
                     f"MAPPER_ROUTE_UNSUPPORTED: queue {args.action} requires a legacy-only local state machine"
                 )
             if not args.mapper_db:
                 raise ValueError("--mapper-db is required with --route mapper")
             queue = MapperQueue(args.mapper_db, auto_create=False)
-            if args.mapper_init:
+            if args.mapper_init and (args.action != "migrate" or args.apply):
                 queue.initialize()
+            if args.action == "migrate":
+                value = _migrate_legacy_queue(args.repo, queue, apply=args.apply)
+                print(json.dumps(value, sort_keys=True))
+                return 0
         else:
             if args.mapper_db or args.mapper_init:
                 raise ValueError("--mapper-db/--mapper-init require --route mapper")
