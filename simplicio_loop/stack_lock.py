@@ -13,6 +13,7 @@ import importlib.metadata
 import importlib.util
 import json
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Iterable, Mapping
@@ -21,15 +22,268 @@ from pathlib import Path
 from typing import Any
 
 STACK_LOCK_SCHEMA = "simplicio.stack-lock/v1"
+STACK_REGISTRY_SCHEMA = "simplicio.stack-registry/v1"
+STACK_DIAGNOSTICS_SCHEMA = "simplicio.stack-diagnostics/v1"
 ROUTES = frozenset({"standalone", "runtime-backed"})
+_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
 
 
 class StackLockError(ValueError):
     """Raised when a stack lock is invalid or drifted after freeze."""
 
 
+@dataclass(frozen=True)
+class StackRegistryEntry:
+    """One installed component contract in the local compatibility registry."""
+
+    name: str
+    version_range: str = "*"
+    required_capabilities: tuple[str, ...] = ()
+    routes: tuple[str, ...] = tuple(sorted(ROUTES))
+    required: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "version_range": self.version_range,
+            "required_capabilities": list(self.required_capabilities),
+            "routes": list(self.routes),
+            "required": self.required,
+        }
+
+
+@dataclass(frozen=True)
+class StackCompatibilityRule:
+    """A producer/consumer row in the installed-stack compatibility matrix."""
+
+    producer: str
+    consumer: str
+    producer_range: str = "*"
+    consumer_range: str = "*"
+    required_capabilities: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "producer": self.producer,
+            "consumer": self.consumer,
+            "producer_range": self.producer_range,
+            "consumer_range": self.consumer_range,
+            "required_capabilities": list(self.required_capabilities),
+        }
+
+
+@dataclass(frozen=True)
+class StackUpgradeGroup:
+    """Components that must move together when a lock is upgraded."""
+
+    name: str
+    components: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "components": list(self.components)}
+
+
+@dataclass(frozen=True)
+class StackCompatibilityRegistry:
+    """Immutable, dependency-free registry used by stack diagnostics."""
+
+    generation: str
+    components: tuple[StackRegistryEntry, ...]
+    compatibility: tuple[StackCompatibilityRule, ...] = ()
+    upgrade_groups: tuple[StackUpgradeGroup, ...] = ()
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> StackCompatibilityRegistry:
+        if payload.get("schema") != STACK_REGISTRY_SCHEMA:
+            raise StackLockError("invalid stack registry: schema_mismatch")
+        generation = str(payload.get("generation") or "").strip()
+        if not generation:
+            raise StackLockError("invalid stack registry: generation_missing")
+
+        raw_components = payload.get("components")
+        if not isinstance(raw_components, list) or not raw_components:
+            raise StackLockError("invalid stack registry: components_missing")
+        components: list[StackRegistryEntry] = []
+        names: set[str] = set()
+        for index, raw in enumerate(raw_components):
+            if not isinstance(raw, Mapping):
+                raise StackLockError(f"invalid stack registry: component_{index}_invalid")
+            name = str(raw.get("name") or "").strip()
+            if not name or name in names:
+                raise StackLockError(f"invalid stack registry: duplicate_component_{name or index}")
+            routes = _normalize_routes(raw.get("routes", tuple(sorted(ROUTES))))
+            version_range = str(raw.get("version_range") or "*").strip()
+            _validate_version_range(version_range)
+            required_capabilities = _normalize_strings(raw.get("required_capabilities", ()))
+            components.append(StackRegistryEntry(
+                name=name,
+                version_range=version_range,
+                required_capabilities=required_capabilities,
+                routes=routes,
+                required=bool(raw.get("required", True)),
+            ))
+            names.add(name)
+
+        raw_rules = payload.get("compatibility", [])
+        if not isinstance(raw_rules, list):
+            raise StackLockError("invalid stack registry: compatibility_invalid")
+        compatibility: list[StackCompatibilityRule] = []
+        for index, raw in enumerate(raw_rules):
+            if not isinstance(raw, Mapping):
+                raise StackLockError(f"invalid stack registry: compatibility_{index}_invalid")
+            producer = str(raw.get("producer") or "").strip()
+            consumer = str(raw.get("consumer") or "").strip()
+            if producer not in names or consumer not in names or producer == consumer:
+                raise StackLockError(f"invalid stack registry: compatibility_{index}_endpoint")
+            producer_range = str(raw.get("producer_range") or "*").strip()
+            consumer_range = str(raw.get("consumer_range") or "*").strip()
+            _validate_version_range(producer_range)
+            _validate_version_range(consumer_range)
+            compatibility.append(StackCompatibilityRule(
+                producer=producer,
+                consumer=consumer,
+                producer_range=producer_range,
+                consumer_range=consumer_range,
+                required_capabilities=_normalize_strings(raw.get("required_capabilities", ())),
+            ))
+
+        raw_groups = payload.get("upgrade_groups", [])
+        if not isinstance(raw_groups, list):
+            raise StackLockError("invalid stack registry: upgrade_groups_invalid")
+        upgrade_groups: list[StackUpgradeGroup] = []
+        group_names: set[str] = set()
+        for index, raw in enumerate(raw_groups):
+            if not isinstance(raw, Mapping):
+                raise StackLockError(f"invalid stack registry: upgrade_group_{index}_invalid")
+            group_name = str(raw.get("name") or "").strip()
+            members = _normalize_strings(raw.get("components", ()))
+            if not group_name or group_name in group_names or not members or any(member not in names for member in members):
+                raise StackLockError(f"invalid stack registry: upgrade_group_{index}_members")
+            upgrade_groups.append(StackUpgradeGroup(group_name, members))
+            group_names.add(group_name)
+
+        return cls(generation, tuple(components), tuple(compatibility), tuple(upgrade_groups))
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> StackCompatibilityRegistry:
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StackLockError(f"cannot read stack registry: {exc}") from exc
+        if not isinstance(payload, Mapping):
+            raise StackLockError("invalid stack registry: root_not_object")
+        return cls.from_dict(payload)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": STACK_REGISTRY_SCHEMA,
+            "generation": self.generation,
+            "components": [entry.to_dict() for entry in self.components],
+            "compatibility": [rule.to_dict() for rule in self.compatibility],
+            "upgrade_groups": [group.to_dict() for group in self.upgrade_groups],
+        }
+
+    @property
+    def registry_hash(self) -> str:
+        return hashlib.sha256(_canonical(self.to_dict())).hexdigest()
+
+    def entry(self, name: str) -> StackRegistryEntry | None:
+        return next((entry for entry in self.components if entry.name == name), None)
+
+
+def load_stack_registry(path: str | Path) -> StackCompatibilityRegistry:
+    """Load a local JSON compatibility registry without side effects."""
+    return StackCompatibilityRegistry.from_json(path)
+
+
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _normalize_strings(values: Any) -> tuple[str, ...]:
+    if isinstance(values, str):
+        values = (values,)
+    if not isinstance(values, Iterable) or isinstance(values, (bytes, bytearray, Mapping)):
+        raise StackLockError("registry string list is invalid")
+    return tuple(sorted({str(value).strip() for value in values if str(value).strip()}))
+
+
+def _normalize_routes(values: Any) -> tuple[str, ...]:
+    routes = _normalize_strings(values)
+    if not routes or any(route not in ROUTES for route in routes):
+        raise StackLockError("registry route is invalid")
+    return routes
+
+
+def _parse_stack_version(value: str) -> tuple[int, int, int]:
+    match = _SEMVER_RE.match(str(value).strip())
+    if not match:
+        raise StackLockError(f"invalid semantic version: {value}")
+    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+
+
+def _range_tokens(expression: str) -> tuple[str, ...]:
+    return tuple(token.strip() for token in str(expression).split(",") if token.strip())
+
+
+def _validate_version_range(expression: str) -> None:
+    if expression in {"", "*"}:
+        return
+    for token in _range_tokens(expression):
+        if token in {"*", "x", "X"}:
+            continue
+        if token[0] in {"^", "~"}:
+            _parse_stack_version(token[1:])
+            continue
+        comparator = token[:2] if token[:2] in {">=", "<=", "=="} else token[:1]
+        version = token[len(comparator):] if comparator in {">", "<", ">=", "<=", "=="} else token
+        _parse_stack_version(version)
+
+
+def _version_matches(version: str, expression: str) -> bool:
+    if expression in {"", "*"}:
+        return bool(str(version).strip())
+    try:
+        actual = _parse_stack_version(version)
+    except StackLockError:
+        return False
+    for token in _range_tokens(expression):
+        if token in {"*", "x", "X"}:
+            continue
+        if token[0] == "^":
+            lower = _parse_stack_version(token[1:])
+            if lower[0] > 0:
+                upper = (lower[0] + 1, 0, 0)
+            elif lower[1] > 0:
+                upper = (0, lower[1] + 1, 0)
+            else:
+                upper = (0, 0, lower[2] + 1)
+            if not lower <= actual < upper:
+                return False
+            continue
+        if token[0] == "~":
+            lower = _parse_stack_version(token[1:])
+            upper = (lower[0], lower[1] + 1, 0)
+            if not lower <= actual < upper:
+                return False
+            continue
+        comparator = token[:2] if token[:2] in {">=", "<=", "=="} else token[:1]
+        if comparator in {">", "<", ">=", "<=", "=="}:
+            expected = _parse_stack_version(token[len(comparator):])
+        else:
+            comparator = "=="
+            expected = _parse_stack_version(token)
+        if comparator == ">" and not actual > expected:
+            return False
+        if comparator == ">=" and not actual >= expected:
+            return False
+        if comparator == "<" and not actual < expected:
+            return False
+        if comparator == "<=" and not actual <= expected:
+            return False
+        if comparator == "==" and actual != expected:
+            return False
+    return True
 
 
 def _lock_payload(route: str, run_id: str, components: Iterable[StackComponent]) -> dict[str, Any]:
@@ -290,118 +544,157 @@ class StackLock:
             )
 
 
-def validate_stack_lock(lock: Mapping[str, Any]) -> list[str]:
-    """Validate a serialized lock without probing or mutating installed state."""
-    errors: list[str] = []
-    if lock.get("schema") != STACK_LOCK_SCHEMA:
-        errors.append("schema_mismatch")
-    if lock.get("frozen") is not True:
-        errors.append("lock_not_frozen")
-    if not isinstance(lock.get("lock_hash"), str) or len(lock["lock_hash"]) != 64:
-        errors.append("lock_hash_invalid")
-    if lock.get("route") not in ROUTES:
-        errors.append("route_invalid")
-    components = lock.get("components")
-    if not isinstance(components, list) or not components:
-        errors.append("components_missing")
-        return errors
+@dataclass(frozen=True)
+class StackDiagnostic:
+    """Stable, actionable finding emitted by :func:`diagnose_stack`."""
 
-    names: list[str] = []
-    for component in components:
-        if not isinstance(component, Mapping):
-            errors.append("component_invalid")
-            continue
-        required = ("name", "version", "executable", "build_sha", "artifact_sha256", "capabilities", "available")
-        if any(field not in component for field in required):
-            errors.append("component_fields_missing")
-            continue
-        name = component.get("name")
-        if not isinstance(name, str) or not name:
-            errors.append("component_name_invalid")
-        else:
-            names.append(name)
-        if not isinstance(component.get("capabilities"), list):
-            errors.append("component_capabilities_invalid")
-        if not isinstance(component.get("available"), bool):
-            errors.append("component_availability_invalid")
-    if len(names) != len(set(names)):
-        errors.append("duplicate_component")
+    code: str
+    severity: str
+    message: str
+    action: str
+    components: tuple[str, ...] = ()
+    details: tuple[tuple[str, str], ...] = ()
 
-    if not errors and isinstance(lock.get("lock_hash"), str) and len(lock["lock_hash"]) == 64:
-        expected = _lock_hash(_lock_payload(str(lock["route"]), str(lock.get("run_id", "")), (
-            _component_from_dict(item) for item in components
-        )))
-        if lock["lock_hash"] != expected:
-            errors.append("lock_hash_mismatch")
-    return errors
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "severity": self.severity,
+            "message": self.message,
+            "action": self.action,
+            "components": list(self.components),
+            "details": dict(self.details),
+        }
 
 
-def _component_from_dict(payload: Mapping[str, Any]) -> StackComponent:
-    return StackComponent(
-        name=str(payload["name"]),
-        version=str(payload["version"]),
-        executable=str(payload["executable"]),
-        build_sha=str(payload["build_sha"]),
-        artifact_sha256=str(payload["artifact_sha256"]),
-        capabilities=tuple(str(item) for item in payload["capabilities"]),
-        available=bool(payload["available"]),
+@dataclass(frozen=True)
+class StackDiagnosis:
+    """Read-only compatibility verdict for an observed installed stack."""
+
+    route: str
+    registry_generation: str
+    registry_hash: str
+    issues: tuple[StackDiagnostic, ...] = ()
+    lock_hash: str = ""
+
+    @property
+    def ready(self) -> bool:
+        return not self.issues
+
+    @property
+    def status(self) -> str:
+        return "READY" if self.ready else "BLOCKED"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": STACK_DIAGNOSTICS_SCHEMA,
+            "status": self.status,
+            "ready": self.ready,
+            "route": self.route,
+            "registry_generation": self.registry_generation,
+            "registry_hash": self.registry_hash,
+            "lock_hash": self.lock_hash,
+            "issues": [issue.to_dict() for issue in self.issues],
+        }
+
+
+def _representative(components: Iterable[StackComponent]) -> StackComponent | None:
+    ordered = sorted(
+        components,
+        key=lambda item: (item.executable, item.version, item.build_sha, item.artifact_sha256),
+    )
+    return ordered[0] if ordered else None
+
+
+def _diagnostic(
+    code: str,
+    message: str,
+    action: str,
+    components: Iterable[str] = (),
+    details: Mapping[str, Any] | None = None,
+) -> StackDiagnostic:
+    return StackDiagnostic(
+        code=code,
+        severity="error",
+        message=message,
+        action=action,
+        components=tuple(sorted({str(component) for component in components})),
+        details=tuple(sorted((str(key), str(value)) for key, value in (details or {}).items())),
     )
 
 
-def load_stack_lock(path: str | Path) -> StackLock:
-    """Read and verify a persisted lock without changing it."""
-    lock_path = Path(path)
-    try:
-        payload = json.loads(lock_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise StackLockError(f"cannot read stack lock: {exc}") from exc
-    if not isinstance(payload, Mapping):
-        raise StackLockError("invalid stack lock: root_not_object")
-    return StackLock.from_dict(payload)
+def _lock_changes(
+    locked: StackLock,
+    current: Mapping[str, tuple[StackComponent, ...]],
+) -> tuple[set[str], set[str]]:
+    baseline = {component.name: component for component in locked.components}
+    names = set(baseline) | set(current)
+    changed: set[str] = set()
+    unchanged: set[str] = set()
+    for name in names:
+        candidate = current.get(name, ())
+        if len(candidate) == 1 and name in baseline and candidate[0] == baseline[name]:
+            unchanged.add(name)
+        else:
+            changed.add(name)
+    return changed, unchanged
 
 
-def write_stack_lock(lock: StackLock, path: str | Path) -> Path:
-    """Persist a lock atomically and never replace a different existing lock."""
-    lock_path = Path(path)
-    if lock_path.exists():
-        existing = load_stack_lock(lock_path)
-        if existing.lock_hash != lock.lock_hash:
-            raise StackLockError("stack lock already exists with a different hash")
-        return lock_path
+def diagnose_stack(
+    components: Iterable[StackComponent],
+    registry: StackCompatibilityRegistry,
+    route: str,
+    *,
+    locked: StackLock | None = None,
+) -> StackDiagnosis:
+    """Diagnose compatibility before any run/claim/effect boundary.
 
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_name = ""
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=lock_path.parent, prefix=f".{lock_path.name}.", delete=False
-        ) as handle:
-            temporary_name = handle.name
-            json.dump(lock.to_dict(), handle, ensure_ascii=False, sort_keys=True, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_name, lock_path)
-    except OSError as exc:
-        if temporary_name:
-            try:
-                Path(temporary_name).unlink()
-            except OSError:
-                pass
-        raise StackLockError(f"cannot persist stack lock: {exc}") from exc
-    return lock_path
+    The function only evaluates caller-provided observations. It never invokes
+    a binary, consults a service, installs a package, or mutates a lock.
+    Duplicate names are retained as observations so a shadowed PATH entry is
+    reported instead of being silently selected.
+    """
+    observed = tuple(components)
+    by_name: dict[str, list[StackComponent]] = {}
+    for component in observed:
+        by_name.setdefault(component.name, []).append(component)
 
+    issues: list[StackDiagnostic] = []
+    if route not in ROUTES:
+        issues.append(_diagnostic(
+            "route_invalid",
+            f"route {route!r} is not supported by the Stack Lock",
+            "select standalone or runtime-backed before creating the lock",
+        ))
 
-__all__ = [
-    "ROUTES",
-    "STACK_LOCK_SCHEMA",
-    "StackComponent",
-    "StackLock",
-    "StackLockError",
-    "discover_installed_components",
-    "load_component_observations",
-    "load_stack_lock",
-    "observe_component",
-    "observe_components",
-    "validate_stack_lock",
-    "write_stack_lock",
-]
+    registry_names = {entry.name for entry in registry.components}
+    for name in sorted(set(by_name) - registry_names):
+        paths = tuple(sorted({item.executable for item in by_name[name] if item.executable}))
+        issues.append(_diagnostic(
+            "unregistered_component",
+            f"component {name!r} is not present in registry generation {registry.generation!r}",
+            "publish a registry entry with its supported versions, capabilities, and route",
+            (name,),
+            {"paths": ",".join(paths)},
+        ))
+
+    for name in sorted(by_name):
+        matches = by_name[name]
+        if len(matches) > 1:
+            paths = tuple(sorted({item.executable or "<unknown>" for item in matches}))
+            issues.append(_diagnostic(
+                "duplicate_binary",
+                f"multiple installed observations exist for {name!r}: {', '.join(paths)}",
+                "remove the shadowed binary or select one immutable path before locking",
+                (name,),
+                {"paths": ";".join(paths)},
+            ))
+
+    for entry in registry.components:
+        matches = by_name.get(entry.name, [])
+        active = entry.required or route in entry.routes
+        if not matches:
+            if active:
+                issues.append(_diagnostic(
+                    "missing_component",
+                    f"required component {entry.name!r} is not available for route {route!r}",
+                    "install or expose the pinned component, then re-run stack diagnostics",
