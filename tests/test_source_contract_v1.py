@@ -239,3 +239,28 @@ def test_source_and_resource_doctors_are_read_only(tmp_path, capsys):
     assert main(["doctor", "resource", "--root", str(tmp_path), "--json"]) == 0
     observed = json.loads(capsys.readouterr().out)
     assert observed["status"] == "OBSERVED"
+
+
+def test_fan_in_does_not_verify_a_rejected_write():
+    source = SourceIdentity("github", "org", "repo")
+    reducer = FanInReducer()
+    item = _envelope(source, "42")
+    admitted = reducer.ingest(item)
+    reducer.freeze_delivery(admitted["demand_id"], source, "42")
+    requery_called = False
+
+    def requery(_item):
+        nonlocal requery_called
+        requery_called = True
+        return {"envelope_id": item.envelope_id}
+
+    result = reducer.deliver(
+        admitted["demand_id"],
+        provider="github",
+        write=lambda _item: {"status": "rejected", "ok": False},
+        requery=requery,
+    )
+
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "delivery_write_rejected"
+    assert requery_called is False
