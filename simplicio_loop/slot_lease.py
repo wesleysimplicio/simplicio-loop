@@ -1,22 +1,24 @@
-"""Durable slot leases with heartbeats and monotonically increasing fences.
+"""Durable resource leases projected from the MapperStore operations journal.
 
-SQLite owns process coordination.  Every state transition and protected write
-runs under ``BEGIN IMMEDIATE`` so two processes cannot both acquire the same
-resource.  Wall-clock values are persisted for restart recovery; TTL is bounded
-to prevent a skewed caller from creating an effectively infinite lease.
+Loop owns lease policy and receipt semantics; Mapper owns the durable SQLite
+authority, hash chain, and cross-process compare-and-swap boundary.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
+
+from .mapper_operations import MapperOperationsAdapter
 
 LEASE_SCHEMA = "simplicio.capability-lease/v1"
 RECEIPT_SCHEMA = "simplicio.capability-lease-receipt/v1"
+EVENT_SCHEMA = "simplicio.loop-resource-lease-event/v1"
+JOURNAL_PREFIX = "simplicio.loop.resource-fabric:"
 
 
 class LeaseError(RuntimeError):
@@ -29,6 +31,10 @@ class LeaseConflict(LeaseError):
 
 class StaleFence(LeaseError):
     """A mutation used an expired or superseded fencing token."""
+
+
+class _JournalConflict(LeaseError):
+    """The projection changed before this mutation committed."""
 
 
 @dataclass(frozen=True)
@@ -53,7 +59,7 @@ def _digest(value: dict[str, Any]) -> str:
 
 
 class LeaseStore:
-    """Persistent, process-safe source of truth for slot ownership."""
+    """Persistent, process-safe source of truth for resource ownership."""
 
     def __init__(
         self,
@@ -61,90 +67,104 @@ class LeaseStore:
         *,
         clock: Callable[[], float] = time.time,
         max_ttl_seconds: float = 3600.0,
+        operations: Any | None = None,
     ) -> None:
         self.path = str(Path(path))
         self.clock = clock
         self.max_ttl_seconds = float(max_ttl_seconds)
         if self.max_ttl_seconds <= 0:
             raise ValueError("max_ttl_seconds must be positive")
-        self._initialize()
+        self._operations = operations or MapperOperationsAdapter(self.path)
+        self._journal_id = JOURNAL_PREFIX + self.path
+        self._operations.initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout=30000")
-        return connection
+    @staticmethod
+    def _last_seq(replay: Mapping[str, Any]) -> int:
+        events = replay.get("events") or []
+        if events:
+            return int(events[-1]["seq"])
+        compaction = replay.get("compaction")
+        return int(compaction["through_seq"]) if compaction else 0
 
-    def _initialize(self) -> None:
-        with self._connect() as connection:
-            # SQLite does not consistently apply busy_timeout while changing
-            # journal_mode. Multiple first-start workers can therefore race
-            # before the database header records WAL. Read first and retry only
-            # the bounded header transition; once one worker wins, all others
-            # observe WAL without issuing another write.
-            deadline = time.monotonic() + 30.0
-            while True:
-                try:
-                    current = connection.execute("PRAGMA journal_mode").fetchone()
-                    if current is None or str(current[0]).lower() != "wal":
-                        connection.execute("PRAGMA journal_mode=WAL")
-                    break
-                except sqlite3.OperationalError as exc:
-                    detail = str(exc).lower()
-                    remaining = deadline - time.monotonic()
-                    if (
-                        ("locked" not in detail and "busy" not in detail)
-                        or remaining <= 0
-                    ):
-                        raise
-                    time.sleep(min(0.01, remaining))
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS lease_counters (
-                    resource_key TEXT PRIMARY KEY,
-                    fence INTEGER NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS leases (
-                    resource_key TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL,
-                    attempt INTEGER NOT NULL,
-                    fence INTEGER NOT NULL,
-                    issued_at REAL NOT NULL,
-                    heartbeat_at REAL NOT NULL,
-                    expires_at REAL NOT NULL,
-                    state TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS protected_values (
-                    resource_key TEXT NOT NULL,
-                    value_key TEXT NOT NULL,
-                    value_json TEXT NOT NULL,
-                    fence INTEGER NOT NULL,
-                    PRIMARY KEY(resource_key, value_key)
-                );
-                CREATE TABLE IF NOT EXISTS lease_receipts (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    resource_key TEXT NOT NULL,
-                    event TEXT NOT NULL,
-                    receipt_json TEXT NOT NULL
-                );
-                """
+    def _replay(self) -> dict[str, Any]:
+        replay = self._operations.replay(self._journal_id)
+        if not replay.get("valid", False):
+            raise LeaseError("lease journal is invalid")
+        return replay
+
+    def _state(self, replay: Mapping[str, Any]) -> dict[str, Any]:
+        state: dict[str, Any] = {
+            "leases": {},
+            "counters": {},
+            "protected": {},
+            "receipts": [],
+        }
+        for event in replay.get("events", []):
+            payload = event.get("payload")
+            if not isinstance(payload, Mapping) or payload.get("schema") != EVENT_SCHEMA:
+                raise LeaseError("lease journal contains an unknown event")
+            operation = payload.get("operation")
+            resource_key = str(payload.get("resource_key", ""))
+            if operation in {"acquired", "heartbeat", "released", "marked_stale", "invalidated"}:
+                lease = dict(payload["lease"])
+                state["leases"][resource_key] = lease
+                state["counters"][resource_key] = max(
+                    int(state["counters"].get(resource_key, 0)), int(lease["fence"])
+                )
+            elif operation == "mutation_committed":
+                values = state["protected"].setdefault(resource_key, {})
+                values[str(payload["value_key"])] = {
+                    "value": payload.get("value"),
+                    "fence": int(payload["fence"]),
+                }
+            else:
+                raise LeaseError("lease journal contains an unknown operation")
+            receipt = payload.get("receipt")
+            if isinstance(receipt, Mapping):
+                state["receipts"].append(dict(receipt))
+        return state
+
+    @staticmethod
+    def _is_conflict(error: BaseException) -> bool:
+        return "JOURNAL_CONFLICT" in str(error) or getattr(error, "reason_code", "") == "JOURNAL_CONFLICT"
+
+    def _append(
+        self,
+        replay: Mapping[str, Any],
+        operation: str,
+        resource_key: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        body = {
+            "schema": EVENT_SCHEMA,
+            "operation": operation,
+            "resource_key": resource_key,
+            **dict(payload),
+        }
+        try:
+            self._operations.append_event(
+                self._journal_id,
+                "resource_lease." + operation,
+                body,
+                expected_seq=self._last_seq(replay),
             )
+        except Exception as error:
+            if self._is_conflict(error):
+                raise _JournalConflict() from error
+            raise LeaseError("lease journal append failed: " + str(error)) from error
 
     def _ttl(self, value: float) -> float:
         ttl = float(value)
         if ttl <= 0 or ttl > self.max_ttl_seconds:
-            raise ValueError(
-                f"ttl_seconds must be in (0, {self.max_ttl_seconds:g}]"
-            )
+            raise ValueError(f"ttl_seconds must be in (0, {self.max_ttl_seconds:g}]")
         return ttl
 
     @staticmethod
-    def _lease(row: sqlite3.Row) -> CapabilityLease:
-        return CapabilityLease(**dict(row))
+    def _lease(value: Mapping[str, Any]) -> CapabilityLease:
+        return CapabilityLease(**dict(value))
 
+    @staticmethod
     def _receipt(
-        self,
-        connection: sqlite3.Connection,
         event: str,
         lease: CapabilityLease,
         *,
@@ -164,86 +184,60 @@ class LeaseStore:
             "reason": reason,
         }
         body["receipt_hash"] = _digest(body)
-        connection.execute(
-            "INSERT INTO lease_receipts(resource_key,event,receipt_json) VALUES(?,?,?)",
-            (lease.resource_key, event, json.dumps(body, sort_keys=True)),
-        )
         return body
 
-    def acquire(
-        self, resource_key: str, owner_id: str, *, ttl_seconds: float
-    ) -> dict[str, Any]:
-        resource_key, owner_id = resource_key.strip(), owner_id.strip()
-        if not resource_key or not owner_id:
-            raise ValueError("resource_key and owner_id are required")
-        ttl = self._ttl(ttl_seconds)
-        now = float(self.clock())
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM leases WHERE resource_key=?", (resource_key,)
-            ).fetchone()
-            if row is not None and row["state"] == "active" and row["expires_at"] > now:
-                connection.rollback()
-                raise LeaseConflict(
-                    f"{resource_key} held by {row['owner_id']} until {row['expires_at']}"
-                )
-            attempt = int(row["attempt"]) + 1 if row is not None else 1
-            counter = connection.execute(
-                "SELECT fence FROM lease_counters WHERE resource_key=?", (resource_key,)
-            ).fetchone()
-            fence = (int(counter["fence"]) if counter else 0) + 1
-            connection.execute(
-                """INSERT INTO lease_counters(resource_key,fence) VALUES(?,?)
-                   ON CONFLICT(resource_key) DO UPDATE SET fence=excluded.fence""",
-                (resource_key, fence),
-            )
-            lease = CapabilityLease(
-                resource_key, owner_id, attempt, fence, now, now, now + ttl
-            )
-            connection.execute(
-                """INSERT INTO leases(
-                       resource_key,owner_id,attempt,fence,issued_at,
-                       heartbeat_at,expires_at,state
-                   ) VALUES(?,?,?,?,?,?,?,?)
-                   ON CONFLICT(resource_key) DO UPDATE SET
-                       owner_id=excluded.owner_id, attempt=excluded.attempt,
-                       fence=excluded.fence, issued_at=excluded.issued_at,
-                       heartbeat_at=excluded.heartbeat_at,
-                       expires_at=excluded.expires_at, state=excluded.state""",
-                (
-                    lease.resource_key, lease.owner_id, lease.attempt, lease.fence,
-                    lease.issued_at, lease.heartbeat_at, lease.expires_at, lease.state,
-                ),
-            )
-            receipt = self._receipt(connection, "acquired", lease, observed_at=now)
-            connection.commit()
-            return {"lease": lease.to_dict(), "receipt": receipt}
+    @staticmethod
+    def _effective(lease: Mapping[str, Any], now: float) -> dict[str, Any]:
+        state = str(lease["state"])
+        if state == "active" and float(lease["expires_at"]) <= now:
+            state = "stale"
+        return {
+            **dict(lease),
+            "state": state,
+            "expires_in_seconds": max(0.0, float(lease["expires_at"]) - now),
+            "conflict": state == "active",
+        }
 
     def _require_current(
         self,
-        connection: sqlite3.Connection,
+        state: Mapping[str, Any],
         resource_key: str,
         owner_id: str,
         fence: int,
         now: float,
     ) -> CapabilityLease:
-        row = connection.execute(
-            "SELECT * FROM leases WHERE resource_key=?", (resource_key,)
-        ).fetchone()
-        if row is None:
+        raw = state["leases"].get(resource_key)
+        if raw is None:
             raise StaleFence("resource has no lease")
-        lease = self._lease(row)
+        lease = self._lease(raw)
         if lease.state != "active" or lease.expires_at <= now:
-            if lease.state == "active":
-                connection.execute(
-                    "UPDATE leases SET state='stale' WHERE resource_key=? AND fence=?",
-                    (resource_key, lease.fence),
-                )
             raise StaleFence("lease expired")
         if lease.owner_id != owner_id or lease.fence != int(fence):
             raise StaleFence("owner or fencing token is stale")
         return lease
+
+    def acquire(self, resource_key: str, owner_id: str, *, ttl_seconds: float) -> dict[str, Any]:
+        resource_key, owner_id = resource_key.strip(), owner_id.strip()
+        if not resource_key or not owner_id:
+            raise ValueError("resource_key and owner_id are required")
+        ttl = self._ttl(ttl_seconds)
+        for _ in range(32):
+            replay = self._replay()
+            state = self._state(replay)
+            current = state["leases"].get(resource_key)
+            now = float(self.clock())
+            if current is not None and current["state"] == "active" and float(current["expires_at"]) > now:
+                raise LeaseConflict(f"{resource_key} held by {current['owner_id']} until {current['expires_at']}")
+            attempt = int(current["attempt"]) + 1 if current is not None else 1
+            fence = int(state["counters"].get(resource_key, 0)) + 1
+            lease = CapabilityLease(resource_key, owner_id, attempt, fence, now, now, now + ttl)
+            receipt = self._receipt("acquired", lease, observed_at=now)
+            try:
+                self._append(replay, "acquired", resource_key, {"lease": lease.to_dict(), "receipt": receipt})
+                return {"lease": lease.to_dict(), "receipt": receipt}
+            except _JournalConflict:
+                continue
+        raise LeaseError("lease acquisition remained contended")
 
     def heartbeat(
         self,
@@ -253,26 +247,23 @@ class LeaseStore:
         *,
         ttl_seconds: float,
     ) -> dict[str, Any]:
-        ttl, now = self._ttl(ttl_seconds), float(self.clock())
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            lease = self._require_current(
-                connection, resource_key, owner_id, fence, now
-            )
+        ttl = self._ttl(ttl_seconds)
+        for _ in range(32):
+            replay = self._replay()
+            state = self._state(replay)
+            now = float(self.clock())
+            lease = self._require_current(state, resource_key, owner_id, fence, now)
             renewed = CapabilityLease(
                 lease.resource_key, lease.owner_id, lease.attempt, lease.fence,
                 lease.issued_at, now, now + ttl,
             )
-            connection.execute(
-                """UPDATE leases SET heartbeat_at=?, expires_at=?
-                   WHERE resource_key=? AND fence=?""",
-                (renewed.heartbeat_at, renewed.expires_at, resource_key, fence),
-            )
-            receipt = self._receipt(
-                connection, "heartbeat", renewed, observed_at=now
-            )
-            connection.commit()
-            return {"lease": renewed.to_dict(), "receipt": receipt}
+            receipt = self._receipt("heartbeat", renewed, observed_at=now)
+            try:
+                self._append(replay, "heartbeat", resource_key, {"lease": renewed.to_dict(), "receipt": receipt})
+                return {"lease": renewed.to_dict(), "receipt": receipt}
+            except _JournalConflict:
+                continue
+        raise LeaseError("lease heartbeat remained contended")
 
     def put(
         self,
@@ -283,196 +274,148 @@ class LeaseStore:
         value: Any,
     ) -> dict[str, Any]:
         """Atomically fence and persist a protected mutation."""
-        now = float(self.clock())
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            lease = self._require_current(
-                connection, resource_key, owner_id, fence, now
-            )
-            connection.execute(
-                """INSERT INTO protected_values(resource_key,value_key,value_json,fence)
-                   VALUES(?,?,?,?)
-                   ON CONFLICT(resource_key,value_key) DO UPDATE SET
-                       value_json=excluded.value_json,fence=excluded.fence""",
-                (resource_key, value_key, json.dumps(value, sort_keys=True), fence),
-            )
-            receipt = self._receipt(
-                connection, "mutation_committed", lease, observed_at=now
-            )
-            connection.commit()
-            return {"value_key": value_key, "fence": fence, "receipt": receipt}
+        for _ in range(32):
+            replay = self._replay()
+            state = self._state(replay)
+            now = float(self.clock())
+            lease = self._require_current(state, resource_key, owner_id, fence, now)
+            receipt = self._receipt("mutation_committed", lease, observed_at=now)
+            try:
+                self._append(
+                    replay,
+                    "mutation_committed",
+                    resource_key,
+                    {"value_key": value_key, "value": value, "fence": int(fence), "receipt": receipt},
+                )
+                return {"value_key": value_key, "fence": int(fence), "receipt": receipt}
+            except _JournalConflict:
+                continue
+        raise LeaseError("protected mutation remained contended")
 
     def read(self, resource_key: str, value_key: str) -> Any:
-        with self._connect() as connection:
-            row = connection.execute(
-                """SELECT value_json FROM protected_values
-                   WHERE resource_key=? AND value_key=?""",
-                (resource_key, value_key),
-            ).fetchone()
-        return None if row is None else json.loads(row["value_json"])
+        state = self._state(self._replay())
+        value = state["protected"].get(resource_key, {}).get(value_key)
+        return None if value is None else value["value"]
 
-    def release(
-        self, resource_key: str, owner_id: str, fence: int
-    ) -> dict[str, Any]:
-        now = float(self.clock())
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            lease = self._require_current(
-                connection, resource_key, owner_id, fence, now
-            )
+    def release(self, resource_key: str, owner_id: str, fence: int) -> dict[str, Any]:
+        for _ in range(32):
+            replay = self._replay()
+            state = self._state(replay)
+            now = float(self.clock())
+            lease = self._require_current(state, resource_key, owner_id, fence, now)
             released = CapabilityLease(
                 lease.resource_key, lease.owner_id, lease.attempt, lease.fence,
                 lease.issued_at, lease.heartbeat_at, lease.expires_at, "released",
             )
-            connection.execute(
-                "UPDATE leases SET state='released' WHERE resource_key=? AND fence=?",
-                (resource_key, fence),
-            )
-            receipt = self._receipt(
-                connection, "released", released, observed_at=now
-            )
-            connection.commit()
-            return {"lease": released.to_dict(), "receipt": receipt}
+            receipt = self._receipt("released", released, observed_at=now)
+            try:
+                self._append(replay, "released", resource_key, {"lease": released.to_dict(), "receipt": receipt})
+                return {"lease": released.to_dict(), "receipt": receipt}
+            except _JournalConflict:
+                continue
+        raise LeaseError("lease release remained contended")
 
     def mark_stale(self) -> list[dict[str, Any]]:
-        now = float(self.clock())
         receipts: list[dict[str, Any]] = []
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute(
-                "SELECT * FROM leases WHERE state='active' AND expires_at<=?",
-                (now,),
-            ).fetchall()
-            for row in rows:
-                lease = self._lease(row)
-                stale = CapabilityLease(
-                    lease.resource_key, lease.owner_id, lease.attempt, lease.fence,
-                    lease.issued_at, lease.heartbeat_at, lease.expires_at, "stale",
-                )
-                connection.execute(
-                    "UPDATE leases SET state='stale' WHERE resource_key=? AND fence=?",
-                    (lease.resource_key, lease.fence),
-                )
-                receipts.append(
-                    self._receipt(
-                        connection, "marked_stale", stale, observed_at=now,
-                        reason="heartbeat_expired",
-                    )
-                )
-            connection.commit()
-        return receipts
+        while True:
+            replay = self._replay()
+            state = self._state(replay)
+            now = float(self.clock())
+            candidate = next(
+                (lease for lease in state["leases"].values()
+                 if lease["state"] == "active" and float(lease["expires_at"]) <= now),
+                None,
+            )
+            if candidate is None:
+                return receipts
+            lease = self._lease(candidate)
+            stale = CapabilityLease(
+                lease.resource_key, lease.owner_id, lease.attempt, lease.fence,
+                lease.issued_at, lease.heartbeat_at, lease.expires_at, "stale",
+            )
+            receipt = self._receipt("marked_stale", stale, observed_at=now, reason="heartbeat_expired")
+            try:
+                self._append(replay, "marked_stale", lease.resource_key, {"lease": stale.to_dict(), "receipt": receipt})
+                receipts.append(receipt)
+            except _JournalConflict:
+                continue
 
-    def reclaim(
-        self, resource_key: str, new_owner_id: str, *, ttl_seconds: float
-    ) -> dict[str, Any]:
+    def reclaim(self, resource_key: str, new_owner_id: str, *, ttl_seconds: float) -> dict[str, Any]:
         """Reclaim only an expired/stale/released lease with a new attempt/fence."""
         self.mark_stale()
         return self.acquire(resource_key, new_owner_id, ttl_seconds=ttl_seconds)
 
-    def invalidate(
-        self, resource_key: str, *, reason: str = "invalidated"
-    ) -> dict[str, Any] | None:
-        """Fence the current owner immediately, without granting a replacement lease."""
-        now = float(self.clock())
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM leases WHERE resource_key=?", (resource_key,)
-            ).fetchone()
-            if row is None:
-                connection.commit()
+    def invalidate(self, resource_key: str, *, reason: str = "invalidated") -> dict[str, Any] | None:
+        for _ in range(32):
+            replay = self._replay()
+            state = self._state(replay)
+            raw = state["leases"].get(resource_key)
+            if raw is None:
                 return None
-            lease = self._lease(row)
-            if lease.state == "active":
-                stale = CapabilityLease(
-                    lease.resource_key, lease.owner_id, lease.attempt, lease.fence,
-                    lease.issued_at, lease.heartbeat_at, lease.expires_at, "stale",
-                )
-                connection.execute(
-                    "UPDATE leases SET state='stale' WHERE resource_key=? AND fence=?",
-                    (resource_key, lease.fence),
-                )
-            else:
-                stale = lease
-            receipt = self._receipt(
-                connection, "invalidated", stale, observed_at=now, reason=reason
+            now = float(self.clock())
+            lease = self._lease(raw)
+            stale = CapabilityLease(
+                lease.resource_key, lease.owner_id, lease.attempt, lease.fence,
+                lease.issued_at, lease.heartbeat_at, lease.expires_at,
+                "stale" if lease.state == "active" else lease.state,
             )
-            connection.commit()
-            return {"lease": stale.to_dict(), "receipt": receipt}
+            receipt = self._receipt("invalidated", stale, observed_at=now, reason=reason)
+            try:
+                self._append(replay, "invalidated", resource_key, {"lease": stale.to_dict(), "receipt": receipt})
+                return {"lease": stale.to_dict(), "receipt": receipt}
+            except _JournalConflict:
+                continue
+        raise LeaseError("lease invalidation remained contended")
 
-    def invalidate_owner(
-        self, owner_id: str, *, reason: str = "authority_takeover"
-    ) -> list[dict[str, Any]]:
-        """Invalidate every active claim owned by a supervisor being replaced."""
+    def invalidate_owner(self, owner_id: str, *, reason: str = "authority_takeover") -> list[dict[str, Any]]:
         owner_id = str(owner_id).strip()
         if not owner_id:
             raise ValueError("owner_id is required")
-        now = float(self.clock())
         receipts: list[dict[str, Any]] = []
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute(
-                "SELECT * FROM leases WHERE owner_id=? AND state='active'", (owner_id,)
-            ).fetchall()
-            for row in rows:
-                lease = self._lease(row)
-                stale = CapabilityLease(
-                    lease.resource_key, lease.owner_id, lease.attempt, lease.fence,
-                    lease.issued_at, lease.heartbeat_at, lease.expires_at, "stale",
-                )
-                connection.execute(
-                    "UPDATE leases SET state='stale' WHERE resource_key=? AND fence=?",
-                    (lease.resource_key, lease.fence),
-                )
-                receipts.append(self._receipt(
-                    connection, "invalidated", stale, observed_at=now, reason=reason
-                ))
-            connection.commit()
-        return receipts
+        while True:
+            replay = self._replay()
+            state = self._state(replay)
+            candidate = next(
+                (lease for lease in state["leases"].values()
+                 if lease["owner_id"] == owner_id and lease["state"] == "active"),
+                None,
+            )
+            if candidate is None:
+                return receipts
+            lease = self._lease(candidate)
+            stale = CapabilityLease(
+                lease.resource_key, lease.owner_id, lease.attempt, lease.fence,
+                lease.issued_at, lease.heartbeat_at, lease.expires_at, "stale",
+            )
+            receipt = self._receipt("invalidated", stale, observed_at=float(self.clock()), reason=reason)
+            try:
+                self._append(replay, "invalidated", lease.resource_key, {"lease": stale.to_dict(), "receipt": receipt})
+                receipts.append(receipt)
+            except _JournalConflict:
+                continue
 
     def list_leases(self, *, prefix: str = "") -> list[dict[str, Any]]:
         """Read observable lease state for a coordinator/doctor without writing."""
         now = float(self.clock())
-        with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM leases WHERE resource_key LIKE ? ORDER BY resource_key",
-                (prefix + "%",),
-            ).fetchall()
-        result = []
-        for row in rows:
-            lease = self._lease(row)
-            state = "stale" if lease.state == "active" and lease.expires_at <= now else lease.state
-            result.append({
-                **lease.to_dict(),
-                "state": state,
-                "expires_in_seconds": max(0.0, lease.expires_at - now),
-                "conflict": state == "active",
-            })
-        return result
+        state = self._state(self._replay())
+        return [
+            self._effective(lease, now)
+            for resource_key, lease in sorted(state["leases"].items())
+            if resource_key.startswith(prefix)
+        ]
 
     def status(self, resource_key: str) -> dict[str, Any] | None:
         now = float(self.clock())
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM leases WHERE resource_key=?", (resource_key,)
-            ).fetchone()
-        if row is None:
+        state = self._state(self._replay())
+        lease = state["leases"].get(resource_key)
+        if lease is None:
             return None
-        lease = self._lease(row)
-        effective = "stale" if lease.state == "active" and lease.expires_at <= now else lease.state
+        effective = self._effective(lease, now)
         return {
-            **lease.to_dict(),
-            "state": effective,
-            "age_seconds": max(0.0, now - lease.issued_at),
-            "expires_in_seconds": max(0.0, lease.expires_at - now),
-            "conflict": effective == "active",
+            **effective,
+            "age_seconds": max(0.0, now - float(lease["issued_at"])),
         }
 
     def receipts(self, resource_key: str) -> list[dict[str, Any]]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """SELECT receipt_json FROM lease_receipts
-                   WHERE resource_key=? ORDER BY sequence""",
-                (resource_key,),
-            ).fetchall()
-        return [json.loads(row["receipt_json"]) for row in rows]
+        state = self._state(self._replay())
+        return [receipt for receipt in state["receipts"] if receipt.get("resource_key") == resource_key]
