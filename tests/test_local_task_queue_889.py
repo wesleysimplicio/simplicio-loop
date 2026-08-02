@@ -115,15 +115,15 @@ def test_json_cli_surface(tmp_path, capsys):
     queue.submit("a")
     repo = str(tmp_path)
     for args in (
-        ["--repo", repo, "status"],
-        ["--repo", repo, "top", "--limit", "1"],
-        ["--repo", repo, "inspect", "a"],
-        ["--repo", repo, "cancel", "a"],
-        ["--repo", repo, "drain", "--timeout", "0"],
-        ["--repo", repo, "resume"],
-        ["--repo", repo, "doctor"],
-        ["--repo", repo, "reclaim"],
-        ["--repo", repo, "gc"],
+        ["--repo", repo, "--route", "legacy", "status"],
+        ["--repo", repo, "--route", "legacy", "top", "--limit", "1"],
+        ["--repo", repo, "--route", "legacy", "inspect", "a"],
+        ["--repo", repo, "--route", "legacy", "cancel", "a"],
+        ["--repo", repo, "--route", "legacy", "drain", "--timeout", "0"],
+        ["--repo", repo, "--route", "legacy", "resume"],
+        ["--repo", repo, "--route", "legacy", "doctor"],
+        ["--repo", repo, "--route", "legacy", "reclaim"],
+        ["--repo", repo, "--route", "legacy", "gc"],
     ):
         assert cli_main(args) == 0
         assert capsys.readouterr().out.strip().startswith(("{", "["))
@@ -135,7 +135,7 @@ def test_cli_terminal_conflict_is_stable_json(tmp_path, capsys):
     queue.submit("done")
     lease = queue.claim_local("done", "w", idempotency_key="done")
     queue.record_outcome(lease, "verified_success", receipt={"proof": True})
-    assert cli_main(["--repo", str(tmp_path), "cancel", "done"]) == 3
+    assert cli_main(["--repo", str(tmp_path), "--route", "legacy", "cancel", "done"]) == 3
     value = json.loads(capsys.readouterr().out)
     assert value == {"schema": "simplicio.loop.local-task-queue-error/v1",
                      "status": "error", "code": "conflict",
@@ -306,9 +306,9 @@ def test_v1_migration_is_exposed_through_json_cli(tmp_path, capsys):
         db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (LEGACY_SCHEMA,))
         db.execute("UPDATE local_outcomes SET provenance=? WHERE task_id='legacy-cli'",
                    (json.dumps({"key": "legacy"}),))
-    assert cli_main(["--repo", str(tmp_path), "migrate"]) == 0
+    assert cli_main(["--repo", str(tmp_path), "--route", "legacy", "migrate"]) == 0
     assert json.loads(capsys.readouterr().out)["dry_run"] is True
-    assert cli_main(["--repo", str(tmp_path), "migrate", "--apply"]) == 0
+    assert cli_main(["--repo", str(tmp_path), "--route", "legacy", "migrate", "--apply"]) == 0
     applied = json.loads(capsys.readouterr().out)
     assert applied["from_schema"] == LEGACY_SCHEMA
     assert applied["migrated_provenance"] == 1
@@ -349,6 +349,30 @@ def test_mapper_cli_route_does_not_construct_legacy_queue(tmp_path, monkeypatch,
                      "--mapper-db", database, "status"]) == 0
     assert json.loads(capsys.readouterr().out)["schema"] == "mapper"
     assert calls == [("construct", database, False), ("status", None)]
+    assert not (tmp_path / ".simplicio/orchestrator/queue.sqlite3").exists()
+
+
+def test_mapper_route_is_default_and_resolves_repo_scoped_store(tmp_path, monkeypatch, capsys):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    calls = []
+
+    class FakeOperations:
+        def list_ready(self, *, limit):
+            return {"schema": "mapper", "tasks": []}
+
+    class FakeMapperQueue:
+        def __init__(self, database, *, auto_create):
+            calls.append((str(database), auto_create))
+            self.database = database
+            self.operations = FakeOperations()
+
+        def status(self, task_id=None):
+            return {"schema": "mapper", "task_id": task_id}
+
+    monkeypatch.setattr("simplicio_loop.local_task_queue_cli.MapperQueue", FakeMapperQueue)
+    assert cli_main(["--repo", str(tmp_path), "status"]) == 0
+    assert json.loads(capsys.readouterr().out)["schema"] == "mapper"
+    assert calls == [(str(tmp_path / ".simplicio/data/operations.sqlite"), False)]
     assert not (tmp_path / ".simplicio/orchestrator/queue.sqlite3").exists()
 
 

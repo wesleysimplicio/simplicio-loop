@@ -958,7 +958,10 @@ def main(argv=None) -> int:
     p_generation_broker.add_argument("broker_args", nargs=argparse.REMAINDER)
     p_queue = sub.add_parser("queue", help="operate the durable local task queue")
     p_queue.add_argument("--repo", default=".")
-    p_queue.add_argument("--route", choices=("legacy", "mapper"), default="legacy")
+    p_queue.add_argument(
+        "--route", choices=("legacy", "mapper"), default="mapper",
+        help="storage route (default: mapper; use legacy only for compatibility actions)",
+    )
     p_queue.add_argument("--mapper-db", default=None)
     p_queue.add_argument("--mapper-init", action="store_true")
     queue_sub = p_queue.add_subparsers(dest="queue_action", required=True)
