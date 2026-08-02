@@ -53,17 +53,22 @@ def _emit(value: Any) -> int:
 def cli_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="simplicio-loop generation-broker")
     sub = parser.add_subparsers(dest="action", required=True)
+    action_help = {
+        "status": "show the current generation-broker state",
+        "reconcile": "reconcile candidate generations against the source identity",
+        "doctor": "check generation-broker state and checkpoint bindings",
+    }
     for action in ("status", "reconcile", "doctor"):
-        command = sub.add_parser(action)
+        command = sub.add_parser(action, help=action_help[action])
         command.add_argument("--attempt-dir", required=True)
-    inspect = sub.add_parser("inspect")
+    inspect = sub.add_parser("inspect", help="inspect one generation candidate")
     inspect.add_argument("--attempt-dir", required=True)
     inspect.add_argument("--candidate-id", required=True)
-    pin = sub.add_parser("pin")
+    pin = sub.add_parser("pin", help="pin one candidate until an expiry timestamp")
     pin.add_argument("--attempt-dir", required=True)
     pin.add_argument("--candidate-id", required=True)
     pin.add_argument("--expires-ns", required=True, type=int)
-    release = sub.add_parser("release")
+    release = sub.add_parser("release", help="release one candidate pin")
     release.add_argument("--attempt-dir", required=True)
     release.add_argument("--candidate-id", required=True)
     args = parser.parse_args(argv)

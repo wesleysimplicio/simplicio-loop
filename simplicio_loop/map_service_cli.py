@@ -159,11 +159,17 @@ def dispatch(args: argparse.Namespace) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="simplicio-loop map")
     sub = parser.add_subparsers(dest="command", required=True)
+    command_help = {
+        "status": "report map-service counters and watcher state",
+        "verify": "verify the current map receipt",
+        "gc": "garbage-collect standalone map artifacts",
+        "doctor": "check map-service readiness and fallback state",
+    }
     for command in ("status", "verify", "gc", "doctor"):
-        child = sub.add_parser(command)
+        child = sub.add_parser(command, help=command_help[command])
         child.add_argument("--repo", default=".")
         child.add_argument("--json", action="store_true")
-    build = sub.add_parser("build")
+    build = sub.add_parser("build", help="build a canonical or overlay map receipt")
     build.add_argument("--repo", default=".")
     build.add_argument("--mode", choices=("canonical", "overlay"), default="canonical")
     build.add_argument("--tree-hash", default="")

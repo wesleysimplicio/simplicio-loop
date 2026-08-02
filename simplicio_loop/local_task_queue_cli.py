@@ -169,8 +169,18 @@ def cli_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mapper-init", action="store_true",
                         help="explicitly initialize --mapper-db before the command")
     sub = parser.add_subparsers(dest="action", required=True)
+    action_help = {
+        "status": "show queue health and pending work",
+        "top": "list ready tasks ordered by priority",
+        "drain": "wait for active legacy queue work to finish",
+        "resume": "resume one legacy queue task",
+        "doctor": "check local queue storage readiness",
+        "reclaim": "reclaim abandoned legacy queue work",
+        "gc": "garbage-collect legacy queue state",
+        "migrate": "migrate legacy queue state into MapperStore",
+    }
     for action in ("status", "top", "drain", "resume", "doctor", "reclaim", "gc", "migrate"):
-        command = sub.add_parser(action)
+        command = sub.add_parser(action, help=action_help[action])
         if action in {"top"}:
             command.add_argument("--limit", type=int, default=20)
         if action == "drain":
@@ -180,7 +190,10 @@ def cli_main(argv: list[str] | None = None) -> int:
         if action == "migrate":
             command.add_argument("--apply", action="store_true")
     for action in ("inspect", "cancel"):
-        command = sub.add_parser(action)
+        command = sub.add_parser(
+            action,
+            help="inspect one task by id" if action == "inspect" else "cancel one task by id",
+        )
         command.add_argument("task_id")
     args = parser.parse_args(argv)
     try:

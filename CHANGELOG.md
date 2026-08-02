@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.38.30] - 2026-08-02
+
+- Synchronize the Loop release train with Mapper `0.26.10`, Dev CLI `0.18.6`,
+  and Fast `2.0.22`.
+- Refresh the exact submodule pins, dependency floors, operator bootstrap, and
+  ecosystem-doctor compatibility gates.
+
 ## [3.38.29] - 2026-08-02
 
 - Publish the merged MapperStore, Stack Lock, Resource Fabric, SourceAdapter,

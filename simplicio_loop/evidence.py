@@ -385,11 +385,11 @@ def cmd_selftest(_args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="evidence_receipt")
     sub = parser.add_subparsers(dest="verb", required=True)
-    p_build = sub.add_parser("build")
+    p_build = sub.add_parser("build", help="build a signed evidence receipt from a run directory")
     p_build.add_argument("--run-dir", required=True)
     p_build.add_argument("--out")
     p_build.set_defaults(func=cmd_build)
-    p_self = sub.add_parser("selftest")
+    p_self = sub.add_parser("selftest", help="run the deterministic evidence-receipt selftest")
     p_self.set_defaults(func=cmd_selftest)
     return parser
 
