@@ -4,11 +4,13 @@ import json
 
 import pytest
 
+from simplicio_loop import runner as runner_mod
 from simplicio_loop.cli_impl import main
 from simplicio_loop.stack_lock import (
     STACK_LOCK_SCHEMA,
     StackLock,
     StackLockError,
+    observe_components,
     load_stack_lock,
     observe_component,
     validate_stack_lock,
@@ -117,3 +119,48 @@ def test_stack_cli_lock_and_verify_fail_closed_on_artifact_drift(tmp_path, capsy
     blocked = json.loads(capsys.readouterr().out)
     assert blocked["status"] == "BLOCKED"
     assert "stack drift" in blocked["error"]
+
+
+def test_observation_payload_and_stack_doctor_report_routes(tmp_path, monkeypatch, capsys):
+    loop_binary = tmp_path / "simplicio-loop"
+    mapper_binary = tmp_path / "simplicio-mapper"
+    loop_binary.write_bytes(b"loop")
+    mapper_binary.write_bytes(b"mapper")
+    observations = {
+        "components": [
+            {"name": "simplicio-loop", "version": "1.0.0", "executable": str(loop_binary)},
+            {"name": "simplicio-mapper", "version": "1.0.0", "executable": str(mapper_binary)},
+        ]
+    }
+    assert len(observe_components(observations)) == 2
+    path = tmp_path / "components.json"
+    path.write_text(json.dumps(observations), encoding="utf-8")
+    monkeypatch.setenv("SIMPLICIO_STACK_COMPONENTS_FILE", str(path))
+
+    assert main(["doctor", "stack", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["schema"] == "simplicio.stack-doctor/v1"
+    assert result["status"] == "READY"
+    assert result["routes"]["standalone"]["available"] is True
+    assert result["routes"]["runtime-backed"]["available"] is False
+    assert result["routes"]["runtime-backed"]["missing"] == ["simplicio-runtime"]
+
+
+def test_runner_freezes_and_verifies_stack_lock_at_boundaries(tmp_path, monkeypatch):
+    binary = tmp_path / "simplicio-mapper"
+    binary.write_bytes(b"mapper")
+    def discover():
+        return (observe_component("simplicio-mapper", "1.0.0", binary, capabilities=("map",)),)
+
+    monkeypatch.setattr(runner_mod, "discover_installed_components", discover)
+    monkeypatch.setenv("SIMPLICIO_EXECUTION_PROFILE", "standalone")
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+
+    lock = runner_mod._freeze_stack_lock(run_root, "run-1")
+    assert (run_root / "stack-lock.json").exists()
+    assert runner_mod._verify_run_stack_lock(run_root).lock_hash == lock.lock_hash
+
+    binary.write_bytes(b"mapper-upgraded")
+    with pytest.raises(StackLockError, match="stack drift"):
+        runner_mod._verify_run_stack_lock(run_root)
