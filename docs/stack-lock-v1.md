@@ -29,3 +29,24 @@ recomputes the canonical hash and then compares the current artifact, version,
 capability and route observations. Contract Registry integration, cross-platform
 installed discovery, upgrade/rollback diagnostics, automatic runner wiring and
 Resource Fabric takeover remain residual work for #1032.
+
+
+## Optional compatibility registry
+
+For a strict, local compatibility check, pass a simplicio.stack-registry/v1
+JSON file to stack lock:
+
+~~~text
+simplicio-loop stack lock \
+  --components components.json \
+  --registry stack-registry.json \
+  --route standalone \
+  --output .simplicio/orchestrator/stack-lock.json
+~~~
+
+The registry is evaluated before StackLock.create or any lock write. A
+missing component, unsupported version/capability, compatibility mismatch, or
+duplicate binary returns BLOCKED with exit code 2 and leaves the output path
+untouched. Without --registry, the existing observation-only lock behavior is
+preserved. This explicit gate does not replace installed cross-platform,
+upgrade/rollback, or cross-repository evidence.
