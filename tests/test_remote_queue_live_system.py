@@ -86,14 +86,14 @@ def test_live_http_auth_two_process_workers_and_fencing(live_queue_server):
 
     assert sorted(item["status"] for item in observed) == ["claimed", "conflict"]
     winner = next(item for item in observed if item["status"] == "claimed")
-    assert winner["token"] == 1
+    assert isinstance(winner["token"], str) and winner["token"]
 
     client_a = HTTPRemoteQueue(url, token="live-secret")
     stale = client_a.claim("fenced-task", "codex@machine-a", idempotency_key="fence:old", ttl=0.05)
     time.sleep(0.10)
     fresh = client_a.claim("fenced-task", "claude@machine-b", idempotency_key="fence:new", ttl=5)
-    assert fresh.fencing_token == stale.fencing_token + 1
-    with pytest.raises(QueueConflict, match="stale or expired"):
+    assert fresh.fencing_token != stale.fencing_token
+    with pytest.raises(QueueConflict, match="(?i)stale|active|expired"):
         client_a.complete(stale, receipt_ref="receipts/stale.json")
     completed = client_a.complete(fresh, receipt_ref="receipts/fresh.json")
     assert completed["fencing_token"] == fresh.fencing_token
@@ -102,4 +102,3 @@ def test_live_http_auth_two_process_workers_and_fencing(live_queue_server):
     assert [event["seq"] for event in events] == list(range(1, len(events) + 1))
     assert any(event["kind"] == "completed" and event["payload"]["receipt_ref"] == "receipts/fresh.json"
                for event in events)
-

@@ -98,7 +98,9 @@ class AttemptCoordinator:
                                      source_refs=source_refs, depends_on=depends_on,
                                      allowed_paths=allowed_paths, issue_ref=issue_ref,
                                      issue_url=issue_url)
-        attempt_id = "%s-%d" % (item, lease.fencing_token)
+        # MapperStore fences are opaque strings; keep the attempt identity
+        # stable without assuming the legacy SQLite integer representation.
+        attempt_id = "%s-%s" % (item, lease.fencing_token)
         attempt = WorkItemAttempt(self.run_id, item, attempt_id, lease, context)
         self._append(attempt, "claimed", {"fencing_token": lease.fencing_token})
         return attempt

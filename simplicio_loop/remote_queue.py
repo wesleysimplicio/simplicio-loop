@@ -1,20 +1,18 @@
 """Shared queue coordination with durable leases and fencing.
 
-``SQLiteRemoteQueue`` is the development and single-host backend for the
-``simplicio.queue/v1`` contract.  A SQLite file on a shared, transactional
-volume can be used by multiple processes; deployments that need a network
-service should implement :class:`RemoteQueue` with the same atomic methods.
+``SQLiteRemoteQueue`` is the compatibility facade for the
+``simplicio.queue/v1`` contract.  Its durable task and lease state is owned by
+MapperStore; deployments that need a network service use the same atomic
+methods through :class:`RemoteQueue`.
 The module intentionally has no fail-open path: an unavailable store raises
 and callers must hand off rather than mutate a task.
 """
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import json
 import os
-import sqlite3
 import ipaddress
 import ssl
 import time
@@ -24,10 +22,10 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence
 
 from .agent_contract import validate_identity
-from .receipt_verifier import QUEUE_RECEIPT_SCHEMA, canonical_content_hash, verify_receipt
+from .receipt_verifier import canonical_content_hash
 from .secure_transport import SecureTransportError, TrustedEndpoint
 from .secure_transport import request_json as _secure_request_json
 
@@ -116,7 +114,7 @@ def _lease_json(lease: Lease) -> Dict[str, Any]:
             "attempt_id": lease.attempt_id}
 
 
-def build_completion_receipt(*, task_id: str, agent_id: str, fencing_token: int, receipt_ref: str,
+def build_completion_receipt(*, task_id: str, agent_id: str, fencing_token: int | str, receipt_ref: str,
                              extra: Optional[Mapping[str, Any]] = None,
                              now: Optional[float] = None) -> Dict[str, Any]:
     """Build the wire receipt a caller passes as ``RemoteQueue.complete(..., receipt=...)``.
@@ -132,7 +130,7 @@ def build_completion_receipt(*, task_id: str, agent_id: str, fencing_token: int,
         "schema": "simplicio.queue-receipt/v1",
         "task_id": str(task_id),
         "agent_id": str(agent_id),
-        "fencing_token": int(fencing_token),
+        "fencing_token": int(fencing_token) if isinstance(fencing_token, int) else str(fencing_token),
         "receipt_ref": str(receipt_ref),
         "measured_at": _now() if now is None else float(now),
     }
@@ -353,382 +351,230 @@ def _lease_id(task_id: str, agent_id: str, key: str) -> str:
 
 
 class SQLiteRemoteQueue:
-    """Atomic queue backend suitable for local development and shared volumes.
+    """Compatibility facade backed by MapperStore operations.
 
-    Every write is ``BEGIN IMMEDIATE`` and updates the monotonically increasing
-    fencing token before returning a lease.  A stale worker cannot heartbeat,
-    complete, or release after another worker has reclaimed the task.
+    The historical name is retained for callers that have not switched to
+    :class:`MapperRemoteQueue`. It creates no Loop-owned queue tables: task,
+    lease, fence, completion and cancellation authority all live in MapperStore.
     """
 
-    def __init__(self, path: str, *, busy_timeout: float = 10.0,
-                receipt_max_age_seconds: Optional[float] = None) -> None:
-        self.path = path
+    _SLOT_ID = "remote-queue-compat"
+    _SLOT_CAPACITY = 1024
+    _EVENT_SCHEMA = "simplicio.loop.remote-queue-event/v1"
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        busy_timeout: float = 10.0,
+        receipt_max_age_seconds: Optional[float] = None,
+    ) -> None:
+        self.path = os.path.abspath(path)
         self.busy_timeout = busy_timeout
-        # issue #286 step 9: how old a *verified* completion receipt's own ``measured_at``
-        # may be before the server itself rejects it as stale. ``None`` (the default) skips
-        # the freshness check but the schema/hash/task-agent-fence binding checks below
-        # still run whenever a caller supplies ``receipt=`` to ``complete()``.
         self.receipt_max_age_seconds = receipt_max_age_seconds
+        parent = os.path.dirname(self.path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         try:
-            parent = os.path.dirname(os.path.abspath(path))
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            self._init()
-        except sqlite3.Error as exc:
-            raise QueueUnavailable("queue unavailable: %s" % exc) from exc
+            from .mapper_remote_queue import MapperRemoteQueue
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=self.busy_timeout, isolation_level=None)
-        try:
-            conn.row_factory = sqlite3.Row
-            # Setting journal_mode is a write to the database header.  Two fresh
-            # workers may both reach this point before either has created the
-            # queue, and SQLite does not consistently apply the connection's busy
-            # handler to that PRAGMA.  Avoid the write once WAL is active and bound
-            # retries for the first-start race by the public busy_timeout.
-            deadline = time.monotonic() + max(0.0, self.busy_timeout)
-            while True:
-                try:
-                    row = conn.execute("PRAGMA journal_mode").fetchone()
-                    if row is None or str(row[0]).lower() != "wal":
-                        conn.execute("PRAGMA journal_mode=WAL")
-                    break
-                except sqlite3.OperationalError as exc:
-                    detail = str(exc).lower()
-                    remaining = deadline - time.monotonic()
-                    if ("locked" not in detail and "busy" not in detail) or remaining <= 0:
-                        raise
-                    time.sleep(min(0.01, remaining))
-            conn.execute("PRAGMA foreign_keys=ON")
-            return conn
-        except BaseException:
-            conn.close()
-            raise
-
-    def _init(self) -> None:
-        with contextlib.closing(self._connect()) as c:
-            # Schema discovery plus ALTER must be one serialized transaction.  If
-            # two first-start workers inspect table_info concurrently, both can
-            # otherwise decide that the same column is missing and one loses with
-            # ``duplicate column name``.  BEGIN IMMEDIATE waits no longer than the
-            # configured SQLite busy timeout and makes that check-and-migrate step
-            # atomic across processes.
-            c.execute("BEGIN IMMEDIATE")
-            try:
-                c.execute(
-                    "CREATE TABLE IF NOT EXISTS queue_meta "
-                    "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-                )
-                c.execute(
-                    "CREATE TABLE IF NOT EXISTS tasks ("
-                    "task_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'ready', "
-                    "payload TEXT NOT NULL DEFAULT '{}', updated_at REAL NOT NULL)"
-                )
-                c.execute(
-                    "CREATE TABLE IF NOT EXISTS leases ("
-                    "task_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, lease_id TEXT NOT NULL, "
-                    "fencing_token INTEGER NOT NULL, idempotency_key TEXT NOT NULL, "
-                    "expires_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'active', "
-                    "receipt_ref TEXT, updated_at REAL NOT NULL, identity TEXT, capabilities TEXT, "
-                    "FOREIGN KEY(task_id) REFERENCES tasks(task_id))"
-                )
-                c.execute(
-                    "CREATE TABLE IF NOT EXISTS idempotency ("
-                    "idempotency_key TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
-                    "lease_id TEXT NOT NULL, created_at REAL NOT NULL)"
-                )
-                c.execute(
-                    "CREATE TABLE IF NOT EXISTS events ("
-                    "seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, "
-                    "kind TEXT NOT NULL, agent_id TEXT NOT NULL, fencing_token INTEGER, "
-                    "payload TEXT NOT NULL, created_at REAL NOT NULL)"
-                )
-                c.execute("CREATE INDEX IF NOT EXISTS events_task_seq ON events(task_id, seq)")
-                columns = {row[1] for row in c.execute("PRAGMA table_info(leases)").fetchall()}
-                if "identity" not in columns:
-                    c.execute("ALTER TABLE leases ADD COLUMN identity TEXT")
-                if "capabilities" not in columns:
-                    c.execute("ALTER TABLE leases ADD COLUMN capabilities TEXT")
-                if "cancel_requested" not in columns:
-                    c.execute("ALTER TABLE leases ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
-                if "receipt_sha" not in columns:
-                    c.execute("ALTER TABLE leases ADD COLUMN receipt_sha TEXT")
-                if "receipt_verdict" not in columns:
-                    c.execute("ALTER TABLE leases ADD COLUMN receipt_verdict TEXT")
-                c.execute("INSERT OR IGNORE INTO queue_meta(key, value) VALUES('schema', ?)", (SCHEMA,))
-                c.commit()
-            except Exception:
-                c.rollback()
+            self._mapper = MapperRemoteQueue(
+                self.path, auto_create=True, slot_id=self._SLOT_ID
+            )
+            self._mapper.initialize()
+            self._mapper.operations.register_slot(self._SLOT_ID, self._SLOT_CAPACITY)
+        except Exception as exc:
+            if isinstance(exc, (QueueConflict, QueueUnavailable, ValueError)):
                 raise
-
-    @contextlib.contextmanager
-    def _tx(self) -> Iterator[sqlite3.Connection]:
-        try:
-            c = self._connect()
-            c.execute("BEGIN IMMEDIATE")
-            try:
-                yield c
-                c.commit()
-            except Exception:
-                c.rollback()
-                raise
-            finally:
-                c.close()
-        except sqlite3.OperationalError as exc:
-            raise QueueUnavailable("queue unavailable: %s" % exc) from exc
+            raise QueueUnavailable("MapperStore queue unavailable: %s" % exc) from exc
+        self._run_id = "simplicio.loop.remote-queue-events:" + self.path
 
     @staticmethod
-    def _event(c: sqlite3.Connection, task_id: str, kind: str, agent_id: str,
-               token: Optional[int], payload: Dict[str, Any]) -> None:
-        c.execute("INSERT INTO events(task_id,kind,agent_id,fencing_token,payload,created_at) VALUES(?,?,?,?,?,?)",
-                  (task_id, kind, agent_id, token, json.dumps(payload, sort_keys=True), _now()))
+    def _lease_from_payload(payload: Mapping[str, Any]) -> Lease:
+        value = payload["lease"]
+        return _lease_from_json(value)
+
+    def _events_raw(self) -> list[dict[str, Any]]:
+        replay = self._mapper.operations.replay(self._run_id)
+        if not replay.get("valid", False):
+            raise QueueUnavailable("remote queue event journal is invalid")
+        return list(replay.get("events") or [])
+
+    def _emit(self, kind: str, *, lease: Lease | None = None,
+              task_id: str | None = None, agent_id: str = "system",
+              payload: Mapping[str, Any] | None = None) -> None:
+        body: dict[str, Any] = {
+            "schema": self._EVENT_SCHEMA,
+            "task_id": task_id or (lease.task_id if lease else ""),
+            "agent_id": lease.agent_id if lease else agent_id,
+            "fencing_token": lease.fencing_token if lease else None,
+            "payload": dict(payload or {}),
+        }
+        if lease is not None:
+            body["lease"] = _lease_json(lease)
+        try:
+            self._mapper.operations.append_event(self._run_id, kind, body)
+        except Exception as exc:
+            raise QueueUnavailable("remote queue event append failed: %s" % exc) from exc
+
+    def _active_idempotent_claim(self, task_id: str, idempotency_key: str) -> Lease | None:
+        for event in reversed(self._events_raw()):
+            payload = event.get("payload") or {}
+            if payload.get("schema") != self._EVENT_SCHEMA:
+                continue
+            if payload.get("task_id") != task_id:
+                continue
+            lease_payload = payload.get("lease") or {}
+            if lease_payload.get("idempotency_key") != idempotency_key:
+                continue
+            if event.get("event_type") in {"released", "completed"}:
+                return None
+            if event.get("event_type") == "claimed":
+                lease = self._lease_from_payload(payload)
+                return lease if lease.expires_at > _now() else None
+        return None
+
+    def _current_lease(self, task_id: str) -> Lease | None:
+        for event in reversed(self._events_raw()):
+            payload = event.get("payload") or {}
+            if payload.get("schema") != self._EVENT_SCHEMA or payload.get("task_id") != task_id:
+                continue
+            if event.get("event_type") == "claimed":
+                lease = self._lease_from_payload(payload)
+                return lease if lease.expires_at > _now() else None
+            if event.get("event_type") in {"released", "completed"}:
+                return None
+        return None
+
+    def _cancelled_for(self, lease: Lease) -> bool:
+        for event in reversed(self._events_raw()):
+            payload = event.get("payload") or {}
+            if payload.get("schema") != self._EVENT_SCHEMA or payload.get("task_id") != lease.task_id:
+                continue
+            if str(payload.get("fencing_token")) != str(lease.fencing_token):
+                continue
+            kind = event.get("event_type")
+            if kind == "cancel_requested":
+                return True
+            if kind in {"claimed", "released", "completed"}:
+                return False
+        return False
 
     def enqueue(self, task_id: str, payload: Optional[Dict[str, Any]] = None) -> None:
         task_id = str(task_id).strip()
         if not task_id:
             raise ValueError("task_id is required")
-        with self._tx() as c:
-            c.execute("INSERT OR IGNORE INTO tasks(task_id,status,payload,updated_at) VALUES(?,?,?,?)",
-                      (task_id, "ready", json.dumps(payload or {}, sort_keys=True), _now()))
-            self._event(c, task_id, "enqueued", "system", None, payload or {})
+        self._mapper.enqueue(task_id, payload or {}, idempotency_key=f"loop:remote:{task_id}")
+        self._emit("enqueued", task_id=task_id, payload=payload or {})
 
     def pull(self, agent_id: str, *, capabilities: Optional[Sequence[str]] = None,
              limit: int = 20) -> List[Dict[str, Any]]:
-        """Return ready-to-claim task summaries eligible for ``agent_id``.
-
-        A task is eligible when it is still ``ready`` (unclaimed), every
-        ``depends_on`` entry in its payload is ``completed``, and its declared
-        ``required_capabilities`` (if any) are a subset of the caller's
-        ``capabilities``. Only a summary (task_id, required_capabilities,
-        depends_on) is returned for eligible tasks -- the full payload/context
-        of any task, including ineligible ones, is never serialized here.
-        Independent workers use this instead of ``task()``/``events()`` (which
-        would otherwise be the only way to discover work) to avoid a
-        "list everything" call that leaks unrelated task context.
-        """
-        if not str(agent_id or "").strip():
-            raise ValueError("agent_id is required")
-        limit = max(1, int(limit))
-        caps = {str(cap).strip() for cap in (capabilities or ()) if str(cap).strip()}
-        try:
-            with contextlib.closing(self._connect()) as c:
-                statuses = {row["task_id"]: row["status"]
-                           for row in c.execute("SELECT task_id, status FROM tasks").fetchall()}
-                rows = c.execute(
-                    "SELECT task_id, payload, updated_at FROM tasks WHERE status='ready' "
-                    "ORDER BY updated_at, task_id"
-                ).fetchall()
-                eligible: List[Dict[str, Any]] = []
-                for row in rows:
-                    payload = json.loads(row["payload"] or "{}")
-                    required = sorted({str(cap).strip() for cap in payload.get("required_capabilities", ())
-                                       if str(cap).strip()})
-                    depends_on = sorted({str(dep).strip() for dep in payload.get("depends_on", ())
-                                        if str(dep).strip()})
-                    if required and not set(required).issubset(caps):
-                        continue
-                    unmet = [dep for dep in depends_on if statuses.get(dep) != "completed"]
-                    if unmet:
-                        continue
-                    eligible.append({"task_id": row["task_id"], "status": "ready",
-                                     "required_capabilities": required, "depends_on": depends_on,
-                                     "updated_at": row["updated_at"]})
-                    if len(eligible) >= limit:
-                        break
-                return eligible
-        except sqlite3.Error as exc:
-            raise QueueUnavailable("queue unavailable: %s" % exc) from exc
+        return self._mapper.pull(agent_id, capabilities=capabilities, limit=limit)
 
     def claim(self, task_id: str, agent_id: str, *, idempotency_key: str,
               ttl: float = 60.0, identity: Optional[Mapping[str, Any]] = None,
               capabilities: Optional[Sequence[str]] = None) -> Lease:
         if ttl <= 0 or not agent_id or not idempotency_key:
             raise ValueError("agent_id, idempotency_key and positive ttl are required")
-        normalized_identity = validate_identity(identity, capabilities=capabilities) if identity is not None else None
-        if normalized_identity is not None and normalized_identity["agent_id"] != agent_id:
-            raise QueueConflict("agent_id does not match distributed identity")
-        normalized_caps = tuple(normalized_identity["capabilities"] if normalized_identity else ())
-        now = _now()
-        lid = _lease_id(task_id, agent_id, idempotency_key)
-        try:
-            with self._tx() as c:
-                return self._claim_in_tx(c, task_id, agent_id, idempotency_key, ttl,
-                                         normalized_identity, normalized_caps, now, lid)
-        except sqlite3.Error as exc:
-            raise QueueUnavailable("queue unavailable: %s" % exc) from exc
-
-    def _claim_in_tx(self, c: sqlite3.Connection, task_id: str, agent_id: str,
-                     idempotency_key: str, ttl: float,
-                     normalized_identity: Optional[Mapping[str, Any]],
-                     normalized_caps: Sequence[str], now: float, lid: str) -> Lease:
-                existing = c.execute("SELECT task_id,lease_id FROM idempotency WHERE idempotency_key=?",
-                                     (idempotency_key,)).fetchone()
-                if existing and existing["task_id"] != task_id:
-                    raise QueueConflict("idempotency key already belongs to another task")
-                if existing:
-                    row = c.execute("SELECT * FROM leases WHERE task_id=? AND lease_id=?",
-                                    (existing["task_id"], existing["lease_id"])).fetchone()
-                    if row and row["status"] == "active" and row["expires_at"] > now:
-                        stored_identity = json.loads(row["identity"]) if row["identity"] else None
-                        if normalized_identity is not None and stored_identity != normalized_identity:
-                            raise QueueConflict("idempotency key is bound to another agent identity")
-                        return Lease(row["task_id"], row["agent_id"], row["lease_id"], row["fencing_token"],
-                                     row["expires_at"], row["idempotency_key"], stored_identity,
-                                     tuple(json.loads(row["capabilities"] or "[]")),
-                                     bool(row["cancel_requested"]))
-                task = c.execute("SELECT status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-                if task is None:
-                    raise KeyError("unknown task: %s" % task_id)
-                if task["status"] == "completed":
-                    raise QueueConflict("task already completed")
-                current = c.execute("SELECT * FROM leases WHERE task_id=?", (task_id,)).fetchone()
-                if current and current["status"] == "active" and current["expires_at"] > now:
-                    raise QueueConflict("task already leased by %s" % current["agent_id"])
-                token = int(current["fencing_token"]) + 1 if current else 1
-                expires = now + ttl
-                c.execute(
-                    "INSERT OR REPLACE INTO leases(task_id,agent_id,lease_id,fencing_token,"
-                    "idempotency_key,expires_at,status,receipt_ref,updated_at,identity,capabilities,"
-                    "cancel_requested) VALUES(?,?,?,?,?,?,?,?,?,?,?,0)",
-                          (task_id, agent_id, lid, token, idempotency_key, expires, "active", None, now,
-                           json.dumps(normalized_identity, sort_keys=True) if normalized_identity else None,
-                           json.dumps(list(normalized_caps))))
-                c.execute(
-                    "INSERT OR REPLACE INTO idempotency(idempotency_key,task_id,lease_id,created_at) "
-                    "VALUES(?,?,?,?)",
-                          (idempotency_key, task_id, lid, now))
-                c.execute("UPDATE tasks SET status='claimed',updated_at=? WHERE task_id=?", (now, task_id))
-                self._event(c, task_id, "claimed", agent_id, token, {"lease_id": lid, "expires_at": expires})
-                return Lease(task_id, agent_id, lid, token, expires, idempotency_key,
-                             normalized_identity, normalized_caps, False)
-
-    def _owned(self, c: sqlite3.Connection, lease: Lease) -> sqlite3.Row:
-        row = c.execute("SELECT * FROM leases WHERE task_id=?", (lease.task_id,)).fetchone()
-        stored_identity = json.loads(row["identity"]) if row is not None and row["identity"] else None
-        if (row is None or row["lease_id"] != lease.lease_id or row["agent_id"] != lease.agent_id or
-                int(row["fencing_token"]) != lease.fencing_token or row["status"] != "active" or
-                row["expires_at"] <= _now() or
-                (lease.identity is not None and stored_identity != lease.identity)):
-            raise QueueConflict("stale or expired fencing token")
-        return row
+        if identity is not None:
+            normalized = validate_identity(identity, capabilities=capabilities)
+            if normalized["agent_id"] != agent_id:
+                raise QueueConflict("agent_id does not match distributed identity")
+            identity = normalized
+        for event in self._events_raw():
+            payload = event.get("payload") or {}
+            lease_payload = payload.get("lease") or {}
+            if lease_payload.get("idempotency_key") == idempotency_key and payload.get("task_id") != task_id:
+                raise QueueConflict("idempotency key already belongs to another task")
+        existing = self._active_idempotent_claim(task_id, idempotency_key)
+        if existing is not None:
+            return existing
+        self._mapper.operations.reclaim_expired()
+        lease = self._mapper.claim(
+            task_id, agent_id, idempotency_key=idempotency_key, ttl=ttl,
+            identity=identity, capabilities=capabilities,
+        )
+        self._emit("claimed", lease=lease, payload={"expires_at": lease.expires_at})
+        return lease
 
     def heartbeat(self, lease: Lease, *, ttl: float = 60.0) -> Lease:
         if ttl <= 0:
             raise ValueError("positive ttl is required")
-        with self._tx() as c:
-            row = self._owned(c, lease)
-            expires = _now() + ttl
-            c.execute("UPDATE leases SET expires_at=?,updated_at=? WHERE task_id=?", (expires, _now(), lease.task_id))
-            self._event(c, lease.task_id, "heartbeat", lease.agent_id, lease.fencing_token, {"expires_at": expires})
-            return Lease(lease.task_id, lease.agent_id, lease.lease_id, lease.fencing_token,
-                         expires, lease.idempotency_key, lease.identity, lease.capabilities,
-                         bool(row["cancel_requested"]))
+        refreshed = self._mapper.heartbeat(lease, ttl=ttl)
+        self._emit("heartbeat", lease=refreshed, payload={"expires_at": refreshed.expires_at})
+        return Lease(**{**refreshed.__dict__, "cancelled": self._cancelled_for(refreshed)})
 
     def assert_active(self, lease: Lease) -> None:
-        """Validate fencing without extending the lease or mutating queue state."""
-        with self._tx() as c:
-            self._owned(c, lease)
+        self._mapper.assert_active(lease)
 
     def request_cancel(self, task_id: str, *, reason: str = "cancelled") -> Dict[str, Any]:
-        """Ask the current claimant to stop cooperatively at its next heartbeat/assert.
-
-        This never kills the claimant's process directly -- cancellation here is
-        cooperative: the flag is durably recorded against the *current* fencing
-        token, and the claimant discovers it (and must itself release/abort) the
-        next time it heartbeats or checks ``assert_active``. A claimant that never
-        calls back in still loses the task the ordinary way, once its lease TTL
-        expires.
-        """
-        task_id = str(task_id).strip()
-        if not task_id:
-            raise ValueError("task_id is required")
-        with self._tx() as c:
-            row = c.execute("SELECT * FROM leases WHERE task_id=?", (task_id,)).fetchone()
-            if row is None or row["status"] != "active" or row["expires_at"] <= _now():
-                raise QueueConflict("no active lease to cancel for task %s" % task_id)
-            c.execute("UPDATE leases SET cancel_requested=1,updated_at=? WHERE task_id=?", (_now(), task_id))
-            self._event(c, task_id, "cancel_requested", row["agent_id"], row["fencing_token"], {"reason": reason})
-            return {"task_id": task_id, "cancel_requested": True, "fencing_token": row["fencing_token"],
-                    "reason": reason}
+        lease = self._current_lease(task_id)
+        if lease is None:
+            raise QueueConflict("no active lease to cancel for task %s" % task_id)
+        self._emit("cancel_requested", lease=lease, payload={"reason": reason})
+        return {
+            "task_id": task_id, "cancel_requested": True,
+            "fencing_token": lease.fencing_token, "reason": reason,
+        }
 
     def complete(self, lease: Lease, *, receipt_ref: str,
-                receipt: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
-        """Transition a task to ``completed`` -- the queue is the *server-side* authority.
-
-        When ``receipt`` is supplied (issue #286 step 9), it is independently verified here,
-        never merely trusted because a client asserts it:
-
-        1. schema/hash/provenance/freshness via ``receipt_verifier.verify_receipt`` against
-           :data:`~simplicio_loop.receipt_verifier.QUEUE_RECEIPT_SCHEMA` -- a mismatched
-           ``receipt_sha`` (tampering) or missing field is rejected before any state changes;
-        2. the receipt's declared ``task_id``/``agent_id``/``fencing_token`` must match the
-           *active* lease presenting it -- a genuinely-signed receipt for a different task,
-           agent, or a superseded (stale) fence is rejected exactly like a forged one.
-
-        A rejected receipt raises :class:`QueueConflict` and leaves the lease/task untouched
-        (fail closed) so a corrected receipt or a fresh claim can still follow. ``receipt=None``
-        preserves the legacy existence-only contract for callers that have not adopted the
-        wire receipt yet (e.g. tests exercising only the lease/fencing mechanics).
-        """
+                 receipt: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         if not receipt_ref:
             raise ValueError("receipt_ref is required")
-        verdict = None
-        if receipt is not None:
-            verdict = verify_receipt(receipt, schema=QUEUE_RECEIPT_SCHEMA,
-                                     max_age_seconds=self.receipt_max_age_seconds)
-            if not verdict.verified:
-                raise QueueConflict("receipt rejected: %s - %s" % (verdict.status, verdict.reason))
-            if str(receipt.get("task_id") or "") != lease.task_id:
-                raise QueueConflict("receipt task_id does not match the active lease")
-            if str(receipt.get("agent_id") or "") != lease.agent_id:
-                raise QueueConflict("receipt agent_id does not match the active lease")
-            try:
-                receipt_fence = int(receipt.get("fencing_token"))
-            except (TypeError, ValueError):
-                raise QueueConflict("receipt fencing_token is missing or not an integer")
-            if receipt_fence != lease.fencing_token:
-                raise QueueConflict("receipt fencing_token does not match the active lease (stale receipt)")
-        with self._tx() as c:
-            self._owned(c, lease)
-            now = _now()
-            receipt_sha = str(receipt.get("receipt_sha") or "") if receipt is not None else None
-            c.execute("UPDATE leases SET status='completed',receipt_ref=?,receipt_sha=?,"
-                      "receipt_verdict=?,updated_at=? WHERE task_id=?",
-                      (receipt_ref, receipt_sha, verdict.status if verdict is not None else None,
-                       now, lease.task_id))
-            c.execute("UPDATE tasks SET status='completed',updated_at=? WHERE task_id=?", (now, lease.task_id))
-            self._event(c, lease.task_id, "completed", lease.agent_id, lease.fencing_token,
-                        {"receipt_ref": receipt_ref, "receipt_verified": verdict.verified if verdict else False})
-            return {"schema": SCHEMA, "task_id": lease.task_id, "status": "completed",
-                    "fencing_token": lease.fencing_token, "receipt_ref": receipt_ref,
-                    "receipt_verified": verdict.verified if verdict is not None else False,
-                    "agent": lease.identity or {"agent_id": lease.agent_id}}
+        canonical = self._mapper.build_completion_receipt(
+            task_id=lease.task_id, agent_id=lease.agent_id,
+            fencing_token=str(lease.fencing_token), receipt_ref=receipt_ref,
+            extra=receipt,
+        )
+        result = self._mapper.complete(lease, receipt_ref=receipt_ref, receipt=canonical)
+        result = {
+            **result,
+            "fencing_token": lease.fencing_token,
+            "receipt_ref": receipt_ref,
+            "agent": lease.identity or {"agent_id": lease.agent_id},
+        }
+        self._emit("completed", lease=lease, payload={
+            "receipt_ref": receipt_ref, "receipt_verified": True,
+        })
+        return result
 
     def release(self, lease: Lease, *, reason: str = "handoff") -> Dict[str, Any]:
-        with self._tx() as c:
-            self._owned(c, lease)
-            now = _now()
-            c.execute("UPDATE leases SET status='released',updated_at=? WHERE task_id=?", (now, lease.task_id))
-            c.execute("UPDATE tasks SET status='ready',updated_at=? WHERE task_id=?", (now, lease.task_id))
-            self._event(c, lease.task_id, "released", lease.agent_id, lease.fencing_token, {"reason": reason})
-            return {"task_id": lease.task_id, "status": "ready", "handoff": True, "reason": reason}
+        result = self._mapper.release(lease, reason=reason)
+        self._emit("released", lease=lease, payload={"reason": reason})
+        return result
 
     def events(self, *, after: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
-        with contextlib.closing(self._connect()) as c:
-            rows = c.execute("SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT ?", (after, limit)).fetchall()
-            return [{"seq": r["seq"], "task_id": r["task_id"], "kind": r["kind"],
-                     "agent_id": r["agent_id"], "fencing_token": r["fencing_token"],
-                     "payload": json.loads(r["payload"]), "created_at": r["created_at"]} for r in rows]
+        values: list[dict[str, Any]] = []
+        for event in self._events_raw():
+            if int(event.get("seq", 0)) <= after:
+                continue
+            body = event.get("payload") or {}
+            if body.get("schema") != self._EVENT_SCHEMA:
+                continue
+            values.append({
+                "seq": int(event["seq"]), "task_id": body.get("task_id", ""),
+                "kind": event.get("event_type", ""), "agent_id": body.get("agent_id", "system"),
+                "fencing_token": body.get("fencing_token"),
+                "payload": body.get("payload") or {}, "created_at": event.get("created_at"),
+            })
+            if len(values) >= limit:
+                break
+        return values
 
     def task(self, task_id: str) -> Dict[str, Any]:
-        with contextlib.closing(self._connect()) as c:
-            row = c.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-            if row is None:
-                raise KeyError(task_id)
-            lease = c.execute("SELECT * FROM leases WHERE task_id=?", (task_id,)).fetchone()
-            return {"task_id": task_id, "status": row["status"], "payload": json.loads(row["payload"]),
-                    "lease": dict(lease) if lease else None}
-
+        value = self._mapper.task(task_id)
+        state = str(value.get("state", ""))
+        status = {"queued": "ready", "completed": "completed", "running": "claimed"}.get(state, state)
+        lease = None
+        for event in reversed(self._events_raw()):
+            body = event.get("payload") or {}
+            if body.get("schema") == self._EVENT_SCHEMA and body.get("task_id") == task_id:
+                if event.get("event_type") == "claimed":
+                    lease = body.get("lease")
+                elif event.get("event_type") in {"released", "completed"}:
+                    lease = None
+                    break
+        return {"task_id": task_id, "status": status, "payload": value.get("payload") or {}, "lease": lease}
 
 def _is_loopback_host(host: str) -> bool:
     value = str(host or "").strip().lower().strip("[]")
