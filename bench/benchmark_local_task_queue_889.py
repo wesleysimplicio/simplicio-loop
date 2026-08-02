@@ -15,9 +15,16 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-enqueue-us", type=float, default=30000.0)
     parser.add_argument("--max-claim-us", type=float, default=30000.0)
+    parser.add_argument(
+        "--sizes", default="1,10,100,1000",
+        help="comma-separated task counts (default: 1,10,100,1000)",
+    )
     args = parser.parse_args(argv)
+    sizes = tuple(int(value.strip()) for value in args.sizes.split(",") if value.strip())
+    if not sizes or any(value < 1 for value in sizes):
+        parser.error("--sizes must contain positive integers")
     rows = []
-    for size in (1, 10, 100, 1000):
+    for size in sizes:
         with tempfile.TemporaryDirectory() as temporary:
             queue = LocalTaskQueue(Path(temporary))
             started = time.perf_counter_ns()

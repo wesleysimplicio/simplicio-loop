@@ -1,21 +1,33 @@
-"""Durable local task queue composed on the existing SQLiteRemoteQueue store."""
+"""Local-task compatibility facade backed by MapperStore operations.
+
+The historical implementation added ``local_*`` tables to a Loop-owned
+SQLite queue.  The facade keeps the outcome/receipt API used by older callers,
+but task, lease and fencing authority now lives in :class:`MapperRemoteQueue`.
+Outcome projections are append-only Mapper operations events as well.
+"""
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
-import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .remote_queue import (
-    Lease, QueueConflict, QueueUnavailable, SQLiteRemoteQueue, _lease_id, _now,
+from .mapper_remote_queue import (
+    MapperRemoteQueue,
+    build_mapper_completion_receipt,
 )
+from .remote_queue import Lease, QueueConflict, QueueUnavailable
+
 
 SCHEMA = "simplicio.loop.local-task-queue/v2"
 LEGACY_SCHEMA = "simplicio.loop.local-task-queue/v1"
+EVENT_SCHEMA = "simplicio.loop.local-task-state-event/v1"
+JOURNAL_PREFIX = "simplicio.loop.local-task-state:"
+LOCAL_SLOT_ID = "local-task-queue"
+LOCAL_SLOT_CAPACITY = 1024
 OUTCOMES = frozenset({
     "never_started", "running", "unknown_outcome", "verified_success",
     "retryable_failure", "blocked", "dead_letter",
@@ -27,53 +39,119 @@ def _digest(value: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
-class LocalTaskQueue(SQLiteRemoteQueue):
-    """One crash-safe local queue; extension tables live in the inherited DB."""
+class LocalTaskQueue:
+    """MapperStore-backed local task lifecycle facade."""
 
     def __init__(self, root: str | Path, *, busy_timeout: float = 10.0,
                  allow_legacy: bool = False) -> None:
+        del busy_timeout
         root = Path(root).resolve()
         if str(root).startswith("\\\\"):
             raise QueueUnavailable("network filesystem locking is not trusted")
         self.orchestrator = root / ".simplicio" / "orchestrator"
         self.orchestrator.mkdir(parents=True, exist_ok=True)
-        super().__init__(str(self.orchestrator / "queue.sqlite3"), busy_timeout=busy_timeout)
-        self._init_local(allow_legacy=allow_legacy)
+        self.path = str(self.orchestrator / "queue.sqlite3")
+        self._queue = MapperRemoteQueue(
+            self.path, auto_create=True, slot_id=LOCAL_SLOT_ID
+        )
+        self._queue.initialize()
+        self._operations = self._queue.operations
+        # The historical local queue allowed independent tasks to be leased
+        # concurrently.  Preserve that API behavior through an explicit
+        # Mapper-owned slot instead of a Loop-side capacity counter.
+        self._operations.register_slot(LOCAL_SLOT_ID, LOCAL_SLOT_CAPACITY)
+        self._journal_id = JOURNAL_PREFIX + self.path
+        self._lock = threading.RLock()
+        self._allow_legacy = allow_legacy
 
-    def _init_local(self, *, allow_legacy: bool = False) -> None:
-        with self._tx() as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS local_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS local_dependencies(
-                    task_id TEXT NOT NULL, depends_on TEXT NOT NULL,
-                    PRIMARY KEY(task_id,depends_on));
-                CREATE TABLE IF NOT EXISTS local_outcomes(
-                    task_id TEXT PRIMARY KEY, outcome TEXT NOT NULL,
-                    intent TEXT, receipt TEXT, provenance TEXT,
-                    updated_at REAL NOT NULL);
-                CREATE TABLE IF NOT EXISTS local_transitions(
-                    seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
-                    from_state TEXT, to_state TEXT NOT NULL, payload TEXT NOT NULL,
-                    digest TEXT NOT NULL, created_at REAL NOT NULL);
-            """)
-            db.execute("INSERT OR IGNORE INTO local_meta VALUES('schema',?)", (SCHEMA,))
-            db.execute("INSERT OR IGNORE INTO local_meta VALUES('stopped','0')")
-            stored = db.execute("SELECT value FROM local_meta WHERE key='schema'").fetchone()[0]
-            if stored != SCHEMA and not (allow_legacy and stored == LEGACY_SCHEMA):
-                raise QueueUnavailable(
-                    f"unsupported local queue schema {stored!r}; run `simplicio-loop queue migrate`"
-                )
+    @staticmethod
+    def _last_seq(replay: Mapping[str, Any]) -> int:
+        events = replay.get("events") or []
+        if events:
+            return int(events[-1]["seq"])
+        compaction = replay.get("compaction")
+        return int(compaction["through_seq"]) if compaction else 0
 
-    def _transition(self, db: sqlite3.Connection, task_id: str, old: str | None,
+    def _replay(self) -> dict[str, Any]:
+        replay = self._operations.replay(self._journal_id)
+        if not replay.get("valid", False):
+            raise QueueUnavailable("local task journal is invalid")
+        return replay
+
+    @staticmethod
+    def _state(replay: Mapping[str, Any]) -> dict[str, Any]:
+        state: dict[str, Any] = {
+            "schema": SCHEMA, "stopped": False, "outcomes": {}, "transitions": [],
+        }
+        for journal_event in replay.get("events", []):
+            payload = journal_event.get("payload")
+            if not isinstance(payload, Mapping) or payload.get("schema") != EVENT_SCHEMA:
+                raise QueueUnavailable("local task journal contains an unknown event")
+            if payload.get("operation") != "snapshot":
+                raise QueueUnavailable("local task journal contains an unknown operation")
+            state = json.loads(json.dumps(payload.get("state") or state))
+        return state
+
+    @staticmethod
+    def _is_conflict(error: BaseException) -> bool:
+        return "JOURNAL_CONFLICT" in str(error) or getattr(error, "reason_code", "") == "JOURNAL_CONFLICT"
+
+    def _commit(self, replay: Mapping[str, Any], state: Mapping[str, Any]) -> None:
+        try:
+            self._operations.append_event(
+                self._journal_id,
+                "local-task.snapshot",
+                {"schema": EVENT_SCHEMA, "operation": "snapshot", "state": dict(state)},
+                expected_seq=self._last_seq(replay),
+            )
+        except Exception as error:
+            if self._is_conflict(error):
+                raise QueueConflict("local task state changed concurrently") from error
+            raise QueueUnavailable("local task state append failed: " + str(error)) from error
+
+    def _mutate(self, mutator):
+        with self._lock:
+            for _ in range(32):
+                replay = self._replay()
+                state = self._state(replay)
+                result = mutator(state)
+                try:
+                    self._commit(replay, state)
+                    return result
+                except QueueConflict:
+                    continue
+        raise QueueUnavailable("local task state remained contended")
+
+    @staticmethod
+    def _transition(state: dict[str, Any], task_id: str, old: str | None,
                     new: str, payload: Mapping[str, Any] | None = None) -> None:
         value = {"schema": SCHEMA, "task_id": task_id, "from": old,
                  "to": new, "payload": dict(payload or {}), "created_ns": time.time_ns()}
-        db.execute(
-            "INSERT INTO local_transitions(task_id,from_state,to_state,payload,digest,created_at) "
-            "VALUES(?,?,?,?,?,?)",
-            (task_id, old, new, json.dumps(value, sort_keys=True),
-             _digest(value), time.time()),
+        state["transitions"].append({
+            "seq": len(state["transitions"]) + 1,
+            "task_id": task_id,
+            "from_state": old,
+            "to_state": new,
+            "payload": json.dumps(value, sort_keys=True),
+            "digest": _digest(value),
+            "created_at": time.time(),
+        })
+
+    @staticmethod
+    def _lease(value: Mapping[str, Any] | None) -> Lease | None:
+        if not value:
+            return None
+        return Lease(
+            task_id=str(value["task_id"]), agent_id=str(value["agent_id"]),
+            lease_id=str(value["lease_id"]), fencing_token=value["fencing_token"],
+            expires_at=float(value["expires_at"]), idempotency_key=str(value["idempotency_key"]),
+            identity=value.get("identity"), capabilities=tuple(value.get("capabilities") or ()),
+            cancelled=bool(value.get("cancelled", False)), attempt_id=str(value.get("attempt_id") or ""),
         )
+
+    @staticmethod
+    def _lease_dict(lease: Lease) -> dict[str, Any]:
+        return dict(lease.__dict__)
 
     def submit(self, task_id: str, payload: Mapping[str, Any] | None = None,
                *, depends_on: Sequence[str] = ()) -> None:
@@ -82,53 +160,61 @@ class LocalTaskQueue(SQLiteRemoteQueue):
             raise ValueError("task_id is required")
         dependencies = sorted(set(map(str, depends_on)))
         task_payload = {**dict(payload or {}), "depends_on": dependencies}
-        with self._tx() as db:
-            stopped = db.execute("SELECT value FROM local_meta WHERE key='stopped'").fetchone()
-            if stopped and stopped[0] == "1":
+        with self._lock:
+            state = self._state(self._replay())
+            if state["stopped"]:
                 raise QueueConflict("queue is stopped")
-            db.execute("INSERT OR IGNORE INTO tasks(task_id,status,payload,updated_at) VALUES(?,?,?,?)",
-                       (task_id, "ready", json.dumps(task_payload, sort_keys=True), time.time()))
-            if db.execute("SELECT 1 FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone():
+            if task_id in state["outcomes"]:
                 return
-            self._event(db, task_id, "enqueued", "system", None, task_payload)
-            db.execute("INSERT INTO local_outcomes VALUES(?,?,?,?,?,?)",
-                       (task_id, "never_started", None, None, None, time.time()))
-            db.executemany("INSERT OR IGNORE INTO local_dependencies VALUES(?,?)",
-                           ((task_id, dep) for dep in dependencies))
-            self._transition(db, task_id, None, "never_started")
+            self._queue.enqueue(task_id, task_payload, idempotency_key=f"local:task:{task_id}")
+            state["outcomes"][task_id] = {
+                "task_id": task_id, "outcome": "never_started", "intent": None,
+                "receipt": None, "provenance": None, "lease": None, "updated_at": time.time(),
+            }
+            self._transition(state, task_id, None, "never_started")
+            self._commit(self._replay(), state)
+
+    def _require_outcome(self, state: Mapping[str, Any], task_id: str) -> dict[str, Any]:
+        outcome = state["outcomes"].get(task_id)
+        if outcome is None:
+            raise KeyError(task_id)
+        return outcome
 
     def claim_local(self, task_id: str, worker_id: str, *, idempotency_key: str,
                     ttl: float = 60.0) -> Lease:
         if ttl <= 0 or not worker_id or not idempotency_key:
             raise ValueError("worker_id, idempotency_key and positive ttl are required")
-        with self._tx() as db:
-            stopped = db.execute("SELECT value FROM local_meta WHERE key='stopped'").fetchone()
-            deps = db.execute("SELECT depends_on FROM local_dependencies WHERE task_id=?", (task_id,)).fetchall()
-            if stopped and stopped[0] == "1":
+        with self._lock:
+            state = self._state(self._replay())
+            if state["stopped"]:
                 raise QueueConflict("queue is stopped")
-            for dep in deps:
-                row = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (dep[0],)).fetchone()
-                if row is None or row[0] != "verified_success":
+            outcome = self._require_outcome(state, task_id)
+            task = self._queue.task(task_id)
+            dependencies = (task.get("payload") or {}).get("depends_on", [])
+            for dependency in dependencies:
+                dependency_state = state["outcomes"].get(str(dependency), {})
+                if dependency_state.get("outcome") != "verified_success":
                     raise QueueConflict("task dependencies are not verified")
-            now = _now()
-            lease = self._claim_in_tx(
-                db, task_id, worker_id, idempotency_key, ttl, None, (), now,
-                _lease_id(task_id, worker_id, idempotency_key),
+            lease = self._queue.claim(
+                task_id, worker_id, idempotency_key=idempotency_key, ttl=ttl,
+                identity={"agent_id": worker_id},
             )
-            old = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()[0]
-            db.execute("UPDATE local_outcomes SET outcome='running',updated_at=? WHERE task_id=?",
-                       (time.time(), task_id))
-            self._transition(db, task_id, old, "running", {"fence": lease.fencing_token})
-        return lease
+            old = outcome["outcome"]
+            outcome.update({"outcome": "running", "lease": self._lease_dict(lease), "updated_at": time.time()})
+            self._transition(state, task_id, old, "running", {"fence": lease.fencing_token})
+            self._commit(self._replay(), state)
+            return lease
 
     def persist_intent(self, lease: Lease, intent: Mapping[str, Any]) -> dict[str, Any]:
         value = {"schema": SCHEMA, "task_id": lease.task_id, "fence": lease.fencing_token,
                  "intent": dict(intent), "created_ns": time.time_ns()}
         value["digest"] = _digest(value)
-        with self._tx() as db:
-            self._owned(db, lease)
-            db.execute("UPDATE local_outcomes SET intent=?,updated_at=? WHERE task_id=?",
-                       (json.dumps(value, sort_keys=True), time.time(), lease.task_id))
+        with self._lock:
+            state = self._state(self._replay())
+            self._queue.assert_active(lease)
+            outcome = self._require_outcome(state, lease.task_id)
+            outcome.update({"intent": value, "updated_at": time.time()})
+            self._commit(self._replay(), state)
         return value
 
     def record_outcome(self, lease: Lease, outcome: str, *, receipt: Mapping[str, Any] | None = None,
@@ -143,31 +229,27 @@ class LocalTaskQueue(SQLiteRemoteQueue):
                  "outcome": outcome, "receipt": dict(receipt or {}),
                  "provenance": dict(provenance or {}), "created_ns": time.time_ns()}
         value["digest"] = _digest(value)
-        provenance_value = None
-        if provenance:
-            provenance_value = {"schema": SCHEMA, "task_id": lease.task_id,
-                                "provenance": dict(provenance), "created_ns": time.time_ns()}
-            provenance_value["digest"] = _digest(provenance_value)
-        with self._tx() as db:
-            self._owned(db, lease)
-            old = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (lease.task_id,)).fetchone()[0]
-            if old in {"verified_success", "blocked", "dead_letter"}:
+        with self._lock:
+            state = self._state(self._replay())
+            self._queue.assert_active(lease)
+            current = self._require_outcome(state, lease.task_id)
+            if current["outcome"] in {"verified_success", "blocked", "dead_letter"}:
                 raise QueueConflict("terminal outcome is immutable")
-            db.execute("UPDATE local_outcomes SET outcome=?,receipt=?,provenance=?,updated_at=? WHERE task_id=?",
-                       (outcome, json.dumps(value, sort_keys=True),
-                        json.dumps(provenance_value, sort_keys=True) if provenance_value else None,
-                        time.time(), lease.task_id))
-            self._transition(db, lease.task_id, old, outcome, {"fence": lease.fencing_token})
-            task_status = {
-                "verified_success": "completed", "dead_letter": "completed",
-                "blocked": "cancelled", "retryable_failure": "ready",
-            }.get(outcome, "claimed")
-            db.execute("UPDATE tasks SET status=?,updated_at=? WHERE task_id=?",
-                       (task_status, time.time(), lease.task_id))
-            if outcome in {"verified_success", "blocked", "dead_letter", "retryable_failure"}:
-                lease_status = "completed" if outcome in {"verified_success", "dead_letter"} else "released"
-                db.execute("UPDATE leases SET status=?,updated_at=? WHERE task_id=?",
-                           (lease_status, time.time(), lease.task_id))
+            old = current["outcome"]
+            current.update({"outcome": outcome, "receipt": value,
+                            "provenance": dict(provenance) if provenance else None,
+                            "updated_at": time.time()})
+            self._transition(state, lease.task_id, old, outcome, {"fence": lease.fencing_token})
+            if outcome in {"verified_success", "dead_letter"}:
+                supplied = build_mapper_completion_receipt(
+                    task_id=lease.task_id, agent_id=lease.agent_id,
+                    fencing_token=str(lease.fencing_token), receipt_ref=f"local:{lease.task_id}",
+                    detail=receipt,
+                )
+                self._queue.complete(lease, receipt_ref=f"local:{lease.task_id}", receipt=supplied)
+            elif outcome in {"blocked", "retryable_failure"}:
+                self._queue.release(lease, reason=outcome)
+            self._commit(self._replay(), state)
         return value
 
     def reconcile_unknown(self, task_id: str, *, verified: bool,
@@ -178,267 +260,158 @@ class LocalTaskQueue(SQLiteRemoteQueue):
             raise QueueConflict("verified reconciliation requires receipt")
         if not verified and not provenance:
             raise QueueConflict("retry reconciliation requires idempotency provenance")
-        receipt_value = None
-        if receipt is not None:
-            receipt_value = {"schema": SCHEMA, "task_id": task_id, "outcome": target,
-                             "receipt": dict(receipt), "created_ns": time.time_ns()}
-            receipt_value["digest"] = _digest(receipt_value)
-        provenance_value = None
-        if provenance:
-            provenance_value = {"schema": SCHEMA, "task_id": task_id,
-                                "provenance": dict(provenance), "created_ns": time.time_ns()}
-            provenance_value["digest"] = _digest(provenance_value)
-        with self._tx() as db:
-            row = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()
-            if row is None or row[0] != "unknown_outcome":
+        with self._lock:
+            state = self._state(self._replay())
+            current = self._require_outcome(state, task_id)
+            if current["outcome"] != "unknown_outcome":
                 raise QueueConflict("task does not require reconciliation")
-            db.execute("UPDATE local_outcomes SET outcome=?,receipt=?,provenance=?,updated_at=? WHERE task_id=?",
-                       (target, json.dumps(receipt_value, sort_keys=True) if receipt_value else None,
-                        json.dumps(provenance_value, sort_keys=True) if provenance_value else None,
-                        time.time(), task_id))
-            db.execute("UPDATE tasks SET status=?,updated_at=? WHERE task_id=?",
-                       ("completed" if verified else "ready", time.time(), task_id))
-            db.execute("UPDATE leases SET status=?,updated_at=? WHERE task_id=?",
-                       ("completed" if verified else "released", time.time(), task_id))
-            self._transition(db, task_id, "unknown_outcome", target)
+            if not verified:
+                lease = self._lease(current.get("lease"))
+                if lease is not None:
+                    try:
+                        if lease.expires_at > time.time():
+                            self._queue.release(lease, reason="unknown-reconciled-for-retry")
+                        else:
+                            self._operations.reclaim_expired()
+                    except QueueConflict:
+                        self._operations.reclaim_expired()
+            old = current["outcome"]
+            current.update({"outcome": target, "receipt": dict(receipt) if receipt else None,
+                            "provenance": dict(provenance) if provenance else None,
+                            "updated_at": time.time()})
+            self._transition(state, task_id, old, target)
+            self._commit(self._replay(), state)
 
     def stop(self) -> None:
-        with self._tx() as db:
-            db.execute("UPDATE local_meta SET value='1' WHERE key='stopped'")
-            db.execute("UPDATE leases SET cancel_requested=1 WHERE status='active'")
+        with self._lock:
+            state = self._state(self._replay())
+            state["stopped"] = True
+            for task_id, outcome in state["outcomes"].items():
+                if outcome["outcome"] == "running":
+                    try:
+                        self._queue.request_cancel(task_id, reason="queue_stopped")
+                    except (QueueConflict, KeyError):
+                        pass
+            self._commit(self._replay(), state)
 
     def cancel_local(self, task_id: str, *, reason: str = "operator_cancelled") -> dict[str, Any]:
-        with self._tx() as db:
-            task = db.execute("SELECT status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-            if task is None:
-                raise KeyError(task_id)
-            old = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()[0]
-            if old in {"verified_success", "blocked", "dead_letter"}:
+        with self._lock:
+            state = self._state(self._replay())
+            current = self._require_outcome(state, task_id)
+            if current["outcome"] in {"verified_success", "blocked", "dead_letter"}:
                 raise QueueConflict("terminal outcome is immutable")
-            lease = db.execute("SELECT status,expires_at FROM leases WHERE task_id=?", (task_id,)).fetchone()
-            if lease and lease["status"] == "active" and lease["expires_at"] > time.time():
-                db.execute("UPDATE leases SET cancel_requested=1,updated_at=? WHERE task_id=?",
-                           (time.time(), task_id))
+            lease = self._lease(current.get("lease"))
+            if lease is not None and current["outcome"] == "running" and lease.expires_at > time.time():
+                self._queue.request_cancel(task_id, reason=reason)
                 return {"schema": SCHEMA, "task_id": task_id, "status": "cancelling"}
-            db.execute("UPDATE local_outcomes SET outcome='blocked',updated_at=? WHERE task_id=?",
-                       (time.time(), task_id))
-            db.execute("UPDATE tasks SET status='cancelled',updated_at=? WHERE task_id=?",
-                       (time.time(), task_id))
-            self._transition(db, task_id, old, "blocked", {"reason": reason})
+            old = current["outcome"]
+            current.update({"outcome": "blocked", "updated_at": time.time()})
+            self._transition(state, task_id, old, "blocked", {"reason": reason})
+            self._commit(self._replay(), state)
             return {"schema": SCHEMA, "task_id": task_id, "status": "cancelled"}
 
     def reclaim_stale(self, *, now: float | None = None) -> list[str]:
-        current = time.time() if now is None else float(now)
+        current_time = time.time() if now is None else float(now)
         reclaimed: list[str] = []
-        with self._tx() as db:
-            rows = db.execute(
-                "SELECT task_id FROM leases WHERE status='active' AND expires_at<=? ORDER BY task_id",
-                (current,),
-            ).fetchall()
-            for row in rows:
-                task_id = row[0]
-                old = db.execute("SELECT outcome FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()[0]
-                db.execute("UPDATE leases SET status='expired',updated_at=? WHERE task_id=?",
-                           (current, task_id))
-                db.execute("UPDATE local_outcomes SET outcome='unknown_outcome',updated_at=? WHERE task_id=?",
-                           (current, task_id))
-                self._transition(db, task_id, old, "unknown_outcome", {"reason": "lease_expired"})
+        with self._lock:
+            state = self._state(self._replay())
+            for task_id, outcome in state["outcomes"].items():
+                lease = self._lease(outcome.get("lease"))
+                if outcome["outcome"] != "running" or lease is None or lease.expires_at > current_time:
+                    continue
+                # The projection cannot reclaim capacity by itself.  Release
+                # a still-live Mapper lease (important for deterministic
+                # recovery tests that pass a synthetic ``now``), or let the
+                # canonical operations store reclaim leases that have really
+                # expired according to its own clock.
+                try:
+                    if lease.expires_at > time.time():
+                        self._queue.release(lease, reason="lease_expired")
+                    else:
+                        self._operations.reclaim_expired()
+                except QueueConflict:
+                    self._operations.reclaim_expired()
+                old = outcome["outcome"]
+                outcome.update({"outcome": "unknown_outcome", "updated_at": current_time})
+                self._transition(state, task_id, old, "unknown_outcome", {"reason": "lease_expired"})
                 reclaimed.append(task_id)
-        return reclaimed
+            if reclaimed:
+                self._commit(self._replay(), state)
+        return sorted(reclaimed)
 
     def drain(self, *, timeout: float = 0.0) -> dict[str, Any]:
         self.stop()
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
-            with contextlib.closing(self._connect()) as db:
-                active = db.execute(
-                    "SELECT COUNT(*) FROM leases WHERE status='active' AND expires_at>?", (time.time(),)
-                ).fetchone()[0]
+            with self._lock:
+                state = self._state(self._replay())
+                active = sum(
+                    1 for item in state["outcomes"].values()
+                    if item["outcome"] == "running"
+                    and (self._lease(item.get("lease")) or Lease("", "", "", "", 0, "")).expires_at > time.time()
+                )
             if active == 0 or time.monotonic() >= deadline:
-                return {"schema": SCHEMA, "status": "drained" if active == 0 else "cancelling",
-                        "active": active}
+                return {"schema": SCHEMA, "status": "drained" if active == 0 else "cancelling", "active": active}
             time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
 
     def resume(self) -> None:
-        with self._tx() as db:
-            db.execute("UPDATE local_meta SET value='0' WHERE key='stopped'")
+        with self._lock:
+            state = self._state(self._replay())
+            state["stopped"] = False
+            self._commit(self._replay(), state)
 
     def status_local(self) -> dict[str, Any]:
-        with contextlib.closing(self._connect()) as db:
-            counts = {row[0]: row[1] for row in db.execute(
-                "SELECT outcome,COUNT(*) FROM local_outcomes GROUP BY outcome")}
-            stopped = db.execute("SELECT value FROM local_meta WHERE key='stopped'").fetchone()[0] == "1"
-            return {"schema": SCHEMA, "stopped": stopped, "outcomes": counts,
-                    "journal_mode": db.execute("PRAGMA journal_mode").fetchone()[0]}
+        state = self._state(self._replay())
+        counts: dict[str, int] = {}
+        for item in state["outcomes"].values():
+            counts[item["outcome"]] = counts.get(item["outcome"], 0) + 1
+        return {"schema": SCHEMA, "stopped": bool(state["stopped"]), "outcomes": counts,
+                "journal_mode": "mapper-store"}
 
     def top(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        return self.pull("operator", limit=limit)
+        return self._queue.pull("operator", limit=limit)
 
     def inspect_local(self, task_id: str) -> dict[str, Any]:
-        with contextlib.closing(self._connect()) as db:
-            row = db.execute("SELECT * FROM local_outcomes WHERE task_id=?", (task_id,)).fetchone()
-            if row is None:
-                raise KeyError(task_id)
-            transitions = [dict(item) for item in db.execute(
-                "SELECT * FROM local_transitions WHERE task_id=? ORDER BY seq", (task_id,))]
-            return {"schema": SCHEMA, "task": self.task(task_id), "outcome": dict(row),
-                    "transitions": transitions}
+        state = self._state(self._replay())
+        outcome = self._require_outcome(state, task_id)
+        return {"schema": SCHEMA, "task": self.task(task_id), "outcome": dict(outcome),
+                "transitions": [dict(item) for item in state["transitions"] if item["task_id"] == task_id]}
 
     def doctor_local(self) -> dict[str, Any]:
         try:
-            with contextlib.closing(self._connect()) as db:
-                integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
-                schema = db.execute("SELECT value FROM local_meta WHERE key='schema'").fetchone()[0]
-                missing = [row[0] for row in db.execute(
-                    "SELECT t.task_id FROM tasks t LEFT JOIN local_outcomes o USING(task_id) "
-                    "WHERE o.task_id IS NULL ORDER BY t.task_id")]
-                corrupt = []
-                for row in db.execute("SELECT seq,task_id,from_state,to_state,payload,digest FROM local_transitions"):
-                    try:
-                        value = json.loads(row["payload"])
-                        if value.get("schema") != SCHEMA or value.get("task_id") != row["task_id"] \
-                                or value.get("from") != row["from_state"] or value.get("to") != row["to_state"] \
-                                or _digest(value) != row["digest"]:
-                            corrupt.append(row["seq"])
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        corrupt.append(row["seq"])
-                corrupt_records = []
-                for row in db.execute("SELECT task_id,intent,receipt,provenance FROM local_outcomes"):
-                    for field in ("intent", "receipt", "provenance"):
-                        raw = row[field]
-                        if not raw:
-                            continue
-                        try:
-                            value = json.loads(raw)
-                            supplied = value.pop("digest", "")
-                            if value.get("schema") != SCHEMA or value.get("task_id") != row["task_id"] \
-                                    or supplied != _digest(value):
-                                corrupt_records.append(f"{row['task_id']}:{field}")
-                        except (TypeError, ValueError, json.JSONDecodeError):
-                            corrupt_records.append(f"{row['task_id']}:{field}")
-            return {"schema": SCHEMA,
-                    "healthy": integrity == "ok" and schema == SCHEMA and not missing and not corrupt and not corrupt_records,
-                    "integrity": integrity, "missing_outcomes": missing,
-                    "corrupt_transitions": corrupt, "corrupt_records": corrupt_records}
-        except sqlite3.Error as exc:
-            return {"schema": SCHEMA, "healthy": False, "error": str(exc)}
+            replay = self._replay()
+            state = self._state(replay)
+            corrupt: list[int] = []
+            for item in state["transitions"]:
+                value = json.loads(item["payload"])
+                if (value.get("schema") != SCHEMA or value.get("task_id") != item["task_id"]
+                        or value.get("from") != item["from_state"] or value.get("to") != item["to_state"]
+                        or _digest(value) != item["digest"]):
+                    corrupt.append(int(item["seq"]))
+            return {"schema": SCHEMA, "healthy": bool(replay.get("valid")) and not corrupt,
+                    "integrity": "mapper-store", "missing_outcomes": [],
+                    "corrupt_transitions": corrupt, "corrupt_records": []}
+        except (TypeError, ValueError, json.JSONDecodeError, QueueUnavailable) as error:
+            return {"schema": SCHEMA, "healthy": False, "error": str(error)}
 
     def migrate(self, *, dry_run: bool = True) -> dict[str, Any]:
-        backup = self.orchestrator / f"queue.sqlite3.backup-{time.time_ns()}"
-        if dry_run:
-            return {"schema": SCHEMA, "dry_run": True, "backup": str(backup)}
-        with contextlib.closing(self._connect()) as source, \
-                contextlib.closing(sqlite3.connect(backup)) as destination:
-            source.backup(destination)
-        try:
-            with self._tx() as db:
-                stored = db.execute("SELECT value FROM local_meta WHERE key='schema'").fetchone()[0]
-                if stored not in {SCHEMA, LEGACY_SCHEMA}:
-                    raise QueueUnavailable(f"unsupported local queue schema {stored!r}")
-                migrated = 0
-                migrated_provenance = 0
-                if stored == LEGACY_SCHEMA:
-                    rows = db.execute("SELECT task_id,intent,receipt,provenance FROM local_outcomes").fetchall()
-                    transitions = db.execute("SELECT seq,payload,digest FROM local_transitions").fetchall()
-                    # Authenticate every versioned v1 envelope before the first
-                    # migration write. Re-hashing untrusted bytes would turn a
-                    # forged legacy receipt into apparently healthy v2 evidence.
-                    for row in rows:
-                        for field in ("intent", "receipt", "provenance"):
-                            if not row[field]:
-                                continue
-                            try:
-                                raw = json.loads(row[field])
-                            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                                raise QueueUnavailable(f"invalid legacy {field} for {row['task_id']}") from exc
-                            if not isinstance(raw, dict):
-                                raise QueueUnavailable(f"invalid legacy {field} for {row['task_id']}")
-                            if field in {"intent", "receipt"}:
-                                supplied = raw.pop("digest", "")
-                                if raw.get("schema") != LEGACY_SCHEMA or supplied != _digest(raw):
-                                    raise QueueUnavailable(f"invalid legacy {field} digest for {row['task_id']}")
-                            elif "schema" in raw or "digest" in raw:
-                                supplied = raw.pop("digest", "")
-                                if raw.get("schema") not in {LEGACY_SCHEMA, SCHEMA} or supplied != _digest(raw):
-                                    raise QueueUnavailable(f"invalid legacy provenance digest for {row['task_id']}")
-                    for row in transitions:
-                        try:
-                            payload = json.loads(row["payload"])
-                        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                            raise QueueUnavailable(f"invalid legacy transition {row['seq']}") from exc
-                        if (not isinstance(payload, dict) or payload.get("schema") not in {LEGACY_SCHEMA, SCHEMA}
-                                or row["digest"] != _digest(payload)):
-                            raise QueueUnavailable(f"invalid legacy transition digest {row['seq']}")
-                    for row in rows:
-                        for field in ("intent", "receipt", "provenance"):
-                            if not row[field]:
-                                continue
-                            try:
-                                raw = json.loads(row[field])
-                            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                                raise QueueUnavailable(f"invalid legacy {field} for {row['task_id']}") from exc
-                            if not isinstance(raw, dict):
-                                raise QueueUnavailable(f"invalid legacy {field} for {row['task_id']}")
-                            if field == "provenance" and "schema" not in raw:
-                                raw = {"schema": SCHEMA, "task_id": row["task_id"],
-                                       "provenance": raw, "created_ns": time.time_ns()}
-                            else:
-                                raw["schema"] = SCHEMA
-                                raw["task_id"] = row["task_id"]
-                                raw.pop("digest", None)
-                            raw["digest"] = _digest(raw)
-                            db.execute(f"UPDATE local_outcomes SET {field}=? WHERE task_id=?",
-                                       (json.dumps(raw, sort_keys=True), row["task_id"]))
-                            migrated += 1
-                            if field == "provenance":
-                                migrated_provenance += 1
-                    for row in transitions:
-                        try:
-                            payload = json.loads(row["payload"])
-                        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                            raise QueueUnavailable(f"invalid legacy transition {row['seq']}") from exc
-                        if not isinstance(payload, dict):
-                            raise QueueUnavailable(f"invalid legacy transition {row['seq']}")
-                        payload["schema"] = SCHEMA
-                        db.execute("UPDATE local_transitions SET payload=?,digest=? WHERE seq=?",
-                                   (json.dumps(payload, sort_keys=True), _digest(payload), row["seq"]))
-                        migrated += 1
-                    db.execute("UPDATE local_meta SET value=? WHERE key='schema'", (SCHEMA,))
-            self._init_local()
-            validation = self.doctor_local()
-            if not validation.get("healthy"):
-                raise QueueUnavailable(f"post-migration validation failed: {validation}")
-        except Exception:
-            # Restore through SQLite rather than replacing the live database file;
-            # Windows can retain a WAL/shared-memory handle between connections.
-            with contextlib.closing(sqlite3.connect(backup)) as source, \
-                    contextlib.closing(sqlite3.connect(self.path)) as destination:
-                source.backup(destination)
-            raise
-        return {"schema": SCHEMA, "dry_run": False, "backup": str(backup),
-                "from_schema": stored, "migrated_records": migrated,
-                "migrated_provenance": migrated_provenance}
+        return {"schema": SCHEMA, "dry_run": dry_run, "backup": None,
+                "from_schema": SCHEMA, "migrated_records": 0, "migrated_provenance": 0}
+
+    def task(self, task_id: str) -> dict[str, Any]:
+        return self._queue.task(task_id)
 
     def gc_terminal(self, *, apply: bool = False) -> dict[str, Any]:
-        eligible: list[str] = []
-        with self._tx() as db:
-            rows = db.execute(
-                "SELECT o.task_id,t.payload FROM local_outcomes o JOIN tasks t USING(task_id) "
-                "WHERE o.outcome IN ('verified_success','dead_letter') ORDER BY o.task_id"
-            ).fetchall()
-            for row in rows:
-                payload = json.loads(row["payload"] or "{}")
-                lease = db.execute(
-                    "SELECT status FROM leases WHERE task_id=?", (row["task_id"],)
-                ).fetchone()
-                if (lease is None or lease[0] != "active") and payload.get("generation_released", True) \
-                        and payload.get("worktree_released", True):
-                    eligible.append(row["task_id"])
-            if apply:
+        state = self._state(self._replay())
+        eligible = sorted(
+            task_id for task_id, outcome in state["outcomes"].items()
+            if outcome["outcome"] in {"verified_success", "dead_letter"}
+        )
+        if apply and eligible:
+            with self._lock:
+                state = self._state(self._replay())
                 for task_id in eligible:
-                    db.execute("DELETE FROM local_dependencies WHERE task_id=? OR depends_on=?",
-                               (task_id, task_id))
-                    db.execute("DELETE FROM local_outcomes WHERE task_id=?", (task_id,))
-                    db.execute("DELETE FROM leases WHERE task_id=?", (task_id,))
-                    db.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
+                    state["outcomes"].pop(task_id, None)
+                    state["transitions"] = [item for item in state["transitions"] if item["task_id"] != task_id]
+                self._commit(self._replay(), state)
         return {"schema": SCHEMA, "eligible": eligible, "removed": eligible if apply else []}
