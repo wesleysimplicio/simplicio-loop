@@ -258,6 +258,24 @@ def test_stack_diagnosis_reports_partial_upgrade_against_frozen_lock(tmp_path):
     mapper_binary.write_bytes(b"mapper-v1")
     loop = observe_component(
         "simplicio-loop", "1.0.0", loop_binary, capabilities=("orchestrator",)
+    )
+    mapper = observe_component(
+        "simplicio-mapper", "1.0.0", mapper_binary, capabilities=("map",)
+    )
+    lock = StackLock.create([loop, mapper], "standalone", run_id="run-1")
+
+    mapper_binary.write_bytes(b"mapper-v2")
+    upgraded = observe_component(
+        "simplicio-mapper", "1.1.0", mapper_binary, capabilities=("map",)
+    )
+    diagnosis = diagnose_stack(
+        [loop, upgraded], registry, "standalone", locked=lock
+    )
+
+    assert diagnosis.status == "BLOCKED"
+    assert any(issue.code == "partial_upgrade" for issue in diagnosis.issues)
+
+
 
 
 def test_stack_cli_registry_allows_standalone_without_runtime(tmp_path, capsys):
