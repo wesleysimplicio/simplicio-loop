@@ -1,3 +1,4 @@
+import importlib.metadata
 import json
 import sys
 import types
@@ -189,3 +190,55 @@ def test_versioned_route_fixtures_match_the_schema():
             ).read_text()
         )
         validator.validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("version", "reason_code"),
+    (
+        (None, "MAPPER_VERSION_UNAVAILABLE"),
+        ("", "MAPPER_VERSION_UNAVAILABLE"),
+        ("not-a-version", "MAPPER_VERSION_INVALID"),
+        ("0..26.1", "MAPPER_VERSION_INVALID"),
+    ),
+)
+def test_mapper_route_fails_closed_for_missing_empty_or_invalid_version(
+    monkeypatch, version, reason_code
+):
+    fake_mapper(monkeypatch)
+    package = sys.modules["simplicio_mapper"]
+    if version is None:
+        package.__version__ = None
+    else:
+        package.__version__ = version
+
+    report = probe_mapper()
+    assert report.status == "incompatible"
+    assert report.reason_code == reason_code
+
+    result = StorageRouter(requested="mapper").select()
+    assert result["status"] == "BLOCKED"
+    assert result["selected"] is None
+    assert result["reason_code"] == reason_code
+
+
+def test_mapper_route_fails_closed_when_version_is_absent_everywhere(monkeypatch):
+    fake_mapper(monkeypatch)
+    del sys.modules["simplicio_mapper"].__version__
+
+    def missing_metadata(_):
+        raise importlib.metadata.PackageNotFoundError("simplicio-mapper")
+
+    monkeypatch.setattr(importlib.metadata, "version", missing_metadata)
+    report = probe_mapper()
+    assert report.status == "incompatible"
+    assert report.reason_code == "MAPPER_VERSION_UNAVAILABLE"
+
+
+def test_mapper_route_keeps_metadata_version_fallback(monkeypatch):
+    fake_mapper(monkeypatch)
+    del sys.modules["simplicio_mapper"].__version__
+    monkeypatch.setattr(importlib.metadata, "version", lambda _: "0.26.9")
+
+    report = probe_mapper()
+    assert report.status == "available"
+    assert report.mapper_version == "0.26.9"
