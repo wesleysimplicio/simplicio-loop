@@ -71,6 +71,9 @@ class Lease:
     identity: Optional[Dict[str, Any]] = None
     capabilities: tuple[str, ...] = ()
     cancelled: bool = False
+    # MapperStore operations use an opaque attempt id in addition to the
+    # legacy queue lease id; legacy transports leave it empty.
+    attempt_id: str = ""
 
 
 class RemoteQueue(Protocol):
@@ -96,14 +99,16 @@ def _lease_from_json(value: Mapping[str, Any]) -> Lease:
     return Lease(str(value["task_id"]), str(value["agent_id"]), str(value["lease_id"]),
                  int(value["fencing_token"]), float(value["expires_at"]),
                  str(value["idempotency_key"]), value.get("identity"),
-                 tuple(value.get("capabilities") or ()), bool(value.get("cancelled", False)))
+                 tuple(value.get("capabilities") or ()), bool(value.get("cancelled", False)),
+                 str(value.get("attempt_id") or ""))
 
 
 def _lease_json(lease: Lease) -> Dict[str, Any]:
     return {"task_id": lease.task_id, "agent_id": lease.agent_id, "lease_id": lease.lease_id,
             "fencing_token": lease.fencing_token, "expires_at": lease.expires_at,
             "idempotency_key": lease.idempotency_key, "identity": lease.identity,
-            "capabilities": list(lease.capabilities), "cancelled": lease.cancelled}
+            "capabilities": list(lease.capabilities), "cancelled": lease.cancelled,
+            "attempt_id": lease.attempt_id}
 
 
 def build_completion_receipt(*, task_id: str, agent_id: str, fencing_token: int, receipt_ref: str,

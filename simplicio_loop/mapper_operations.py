@@ -36,6 +36,7 @@ class OperationLease:
     worker_id: str
     payload: dict[str, Any]
     expires_at: float | None = None
+    cancelled: bool = False
 
 
 _CONFLICT_CODES = {
@@ -113,6 +114,18 @@ class MapperOperationsAdapter:
             ) from error
 
     def initialize(self) -> dict[str, Any]:
+        # ``auto_create=False`` is the safe read-only consumer mode.  An
+        # explicit initialize call is the one sanctioned transition into the
+        # Mapper-owned write mode, so recreate the concrete store with
+        # creation enabled instead of silently creating anything in a read.
+        if getattr(self._store, "auto_create", None) is False:
+            try:
+                from simplicio_mapper.store import OperationsStore
+            except (ImportError, ModuleNotFoundError) as error:
+                raise QueueUnavailable(
+                    "MapperStore operations API is not installed"
+                ) from error
+            self._store = OperationsStore(self.database, auto_create=True)
         return self._call("initialize")
 
     def capabilities(self) -> dict[str, Any]:
@@ -151,6 +164,7 @@ class MapperOperationsAdapter:
                 if value.get("expires_at") is not None
                 else None
             ),
+            cancelled=bool(value.get("cancelled", False)),
         )
 
     def claim_next(
@@ -165,6 +179,26 @@ class MapperOperationsAdapter:
         )
         return self._lease(value) if value is not None else None
 
+    def claim_task(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        slot_id: str = "default",
+        lease_seconds: float = 30.0,
+    ) -> OperationLease | None:
+        value = self._call(
+            "claim_task",
+            task_id,
+            worker_id,
+            slot_id=slot_id,
+            lease_seconds=lease_seconds,
+        )
+        return self._lease(value) if value is not None else None
+
+    def list_ready(self, *, limit: int = 20) -> dict[str, Any]:
+        return self._call("list_ready", limit=limit)
+
     def heartbeat(
         self, lease: OperationLease, *, lease_seconds: float = 30.0
     ) -> OperationLease:
@@ -175,8 +209,18 @@ class MapperOperationsAdapter:
             lease_seconds=lease_seconds,
         )
         return OperationLease(
-            **{**lease.__dict__, "expires_at": float(value["expires_at"])}
+            **{
+                **lease.__dict__,
+                "expires_at": float(value["expires_at"]),
+                "cancelled": bool(value.get("cancelled", lease.cancelled)),
+            }
         )
+
+    def assert_active(self, lease: OperationLease) -> dict[str, Any]:
+        return self._call("assert_active", lease.attempt_id, lease.fence_token)
+
+    def request_cancel(self, task_id: str, *, reason: str = "cancelled") -> dict[str, Any]:
+        return self._call("request_cancel", task_id, reason=reason)
 
     def release(self, lease: OperationLease) -> dict[str, Any]:
         return self._call("release", lease.attempt_id, lease.fence_token)

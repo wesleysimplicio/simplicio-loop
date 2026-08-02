@@ -28,39 +28,6 @@ merge only through the repository's approved PR path, and re-query live state be
 silently substitute another tracker or local scratchpad for GitHub; use another system only when the
 user explicitly requests it or the repository's documented workflow requires it.
 
-## Bounded delivery policy
-
-Keep delivery finite and ownership explicit; a repository may set stricter limits, never looser
-ones without a recorded human decision.
-
-- **Bounded WIP:** one implementation issue and one delivery PR per worker/session. Finish,
-  hand off, or mark the item blocked before claiming another; reviews do not transfer ownership.
-- **Live intake and frozen scope:** immediately before freezing, re-query the canonical source and
-  record its revision plus provenance in the anchor. Freeze that exact issue goal and acceptance
-  criteria before mutation. A review finding may prove an AC incomplete, but cannot add an AC
-  silently; source drift or scope changes require a fresh query, re-anchoring, and an explicit
-  owner decision.
-- **Finding categories:** classify every finding as `AC_BLOCKER` (violates a frozen AC),
-  `REGRESSION_BLOCKER` (security, correctness, compatibility, or evidence regression caused by the
-  patch), or `FOLLOW_UP` (valuable but outside the frozen scope). Only blockers hold the current
-  delivery; follow-ups become separate work and are never smuggled into its diff.
-- **Review limits:** use one implementation review and one final independent verification, with at
-  most two AC-scoped repair rounds. If a blocker remains, stop `BLOCKED` with evidence and ownership
-  instead of opening an unbounded review/fix loop.
-- **Ownership and integration:** only the active owner mutates the delivery branch. Reviewers are
-  read-only unless ownership is explicitly handed off. Before the first mutation, acquire and
-  confirm the cross-session claim/lease/fence against the live source; a stale or conflicting
-  authority blocks mutation. A handoff must update the authority record and the receiver must
-  confirm the new claim/lease/fence before continuing. Rebase once onto the current canonical base
-  immediately before final verification/merge; after any rebase, rerun the affected gates and
-  prove ancestry/patch scope.
-- **Release boundary:** merge, issue closure, packaging, and release are separate states. Do not
-  close the issue before merged evidence satisfies the frozen ACs, and do not tag/publish a release
-  unless the task or an authorized release owner explicitly includes it; re-query the canonical
-  branch and release state immediately before publication.
-
-Rationale and rollout: `docs/adr/0008-bounded-delivery-policy.md`.
-
 ## Normative contract (non-negotiable)
 
 **Design principle (issue #526): always route to the fastest path the project's structure
@@ -100,26 +67,6 @@ bare LLM) follows them mechanically — no paraphrase, no drift:
    an implementation with no regression/perf evidence) is NOT done; keep iterating.
 
 The rest of this file is the mechanism that enforces this contract.
-
-## LLM startup orientation (canonical; every Loop turn)
-
-The following marked block is the single source of truth for the short operating
-instructions that must reach every LLM turn started or re-fed by `simplicio-loop`.
-The stop hook extracts the block mechanically and prepends it to each re-feed. Keep
-the block concise, stable, and free of task-specific details; update the ADR and
-the focused hook tests when changing it.
-
-<!-- SIMPLICIO-LLM-ORIENTATION:BEGIN -->
-Orientação operacional do Loop:
-- Trabalhe somente na tarefa/ACs atuais; faça a menor alteração segura e preserve dirty work e ownership.
-- Use o menor raciocínio suficiente; não mostre raciocínio privado passo a passo; seja conciso.
-- Não faça pesquisa web genérica nem use conectores externos, agentes/subagentes ou LLM local por padrão.
-- Use GitHub/gh somente quando a tarefa exigir estado atual de issue, PR ou release, pois é a fonte de verdade do Loop.
-- Use somente ferramentas locais autorizadas: Mapper/Fast para contexto e Dev CLI/Runtime para edição e verificação.
-- Não edite com contexto stale, lock ativo, artifacts ausentes ou capacidade não verificada.
-- Rode testes focados; não declare concluído sem evidência desta rodada e gates do Loop.
-- Se houver falha ou ambiguidade, informe o bloqueio real; não invente nem repita a mesma tentativa cegamente.
-<!-- SIMPLICIO-LLM-ORIENTATION:END -->
 
 ## Definition of Done (DoD) — mandatory quality gate
 
@@ -238,19 +185,8 @@ gates, the operator dispatch table): **`references/bound-operators.md`**.
 |---|---|---|---|
 | **simplicio-mapper** | `simplicio-mapper` | `orient` / `recall` | **Survey** — maps the repo(s) into `.simplicio/*.json` (project-map, precedent-index, symbol-index, call-graph, docs). This survey, not an ad-hoc LLM read, is what feeds the goal each turn. |
 | **simplicio-dev-cli** | `simplicio-dev-cli` | `execute` / `deterministic_edit` / `validate` / `diagnostics` | **Operate** — applies a DECIDED change through its 6-layer contract (mapper context → precedent → prompt → diff → test → verify, ≤3 retries). The CLI edits and verifies; the AI does not hand-write the diff. |
-| **simplicio-runtime** (adaptive) | `simplicio` | effects / HBP / contracts | **When available and operational**, the loop binds it (`SIMPLICIO_EXECUTION_PROFILE=runtime-backed`). When absent or unavailable, the core mapper→dev-cli/local operator path continues; only `SIMPLICIO_LOOP_REQUIRE_RUNTIME=1` makes it a hard prerequisite. |
+| **simplicio-runtime** (adaptive) | `simplicio` | effects / HBP / contracts | **When available and operational**, the loop **binds and requires** it (`SIMPLICIO_EXECUTION_PROFILE=runtime-backed`). Mid-run disappearance BLOCKS. When absent, core mapper→dev-cli continues unless `SIMPLICIO_LOOP_REQUIRE_RUNTIME=1`. |
 | **simplicio-fast** (strict-adaptive) | `simplicio-fast` | understand / plan / apply | Under `SIMPLICIO_LOOP_STRICT=1`, if Fast is operational it becomes required so the session cannot silently drop it. |
-
-### Local execution is the native fallback
-
-Cloud workers and host adapters are accelerators, not prerequisites. If no cloud
-environment/queue is configured, the queue is unavailable, or Orca is absent, the Loop
-continues with isolated local worktrees and bounded parallelism based on the measured machine
-capacity. `dispatch_operator_batch` admits local tasks through the native
-`simplicio_loop.prism_scheduler.PrismScheduler` (dependencies, conflicts, leases, and worker
-budget) and then runs the admitted work concurrently; it does not require a remote worker or
-Orca client. Set `SIMPLICIO_LOOP_LOCAL_FALLBACK=0` only for deployments that explicitly require
-remote claims. A remote task that was accepted is never duplicated locally after a timeout.
 
 ### Strict mode (force every AI onto the full stack)
 

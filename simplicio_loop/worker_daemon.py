@@ -162,10 +162,20 @@ class RemoteWorkerDaemon:
         # issue #286 step 9: every real worker completion presents a wire receipt the queue
         # server itself independently verifies (schema/hash/task-agent-fence binding) --
         # not just a ``receipt_ref`` path the server has no way to open or trust.
-        completion_receipt = build_completion_receipt(
-            task_id=current_lease.task_id, agent_id=current_lease.agent_id,
-            fencing_token=current_lease.fencing_token, receipt_ref=receipt_ref, extra=result,
-        )
+        mapper_receipt = getattr(self.queue, "build_completion_receipt", None)
+        if callable(mapper_receipt):
+            completion_receipt = mapper_receipt(
+                task_id=current_lease.task_id,
+                agent_id=current_lease.agent_id,
+                fencing_token=current_lease.fencing_token,
+                receipt_ref=receipt_ref,
+                extra=result,
+            )
+        else:
+            completion_receipt = build_completion_receipt(
+                task_id=current_lease.task_id, agent_id=current_lease.agent_id,
+                fencing_token=current_lease.fencing_token, receipt_ref=receipt_ref, extra=result,
+            )
         completed = self.queue.complete(current_lease, receipt_ref=receipt_ref, receipt=completion_receipt)
         return TaskOutcome(lease.task_id, "completed", {**completed, "result": dict(result)})
 
