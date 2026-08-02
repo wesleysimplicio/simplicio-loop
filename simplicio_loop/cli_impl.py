@@ -958,6 +958,9 @@ def main(argv=None) -> int:
     p_generation_broker.add_argument("broker_args", nargs=argparse.REMAINDER)
     p_queue = sub.add_parser("queue", help="operate the durable local task queue")
     p_queue.add_argument("--repo", default=".")
+    p_queue.add_argument("--route", choices=("legacy", "mapper"), default="legacy")
+    p_queue.add_argument("--mapper-db", default=None)
+    p_queue.add_argument("--mapper-init", action="store_true")
     queue_sub = p_queue.add_subparsers(dest="queue_action", required=True)
     for queue_action in ("status", "resume", "doctor", "reclaim"):
         queue_sub.add_parser(queue_action)
@@ -1173,7 +1176,12 @@ def main(argv=None) -> int:
         return generation_broker_main(list(args.broker_args or []))
     if command == "queue":
         from .local_task_queue_cli import cli_main as local_queue_main
-        forwarded = ["--repo", args.repo, args.queue_action]
+        forwarded = ["--repo", args.repo, "--route", args.route]
+        if args.mapper_db:
+            forwarded += ["--mapper-db", args.mapper_db]
+        if args.mapper_init:
+            forwarded.append("--mapper-init")
+        forwarded.append(args.queue_action)
         if args.queue_action == "top":
             forwarded += ["--limit", str(args.limit)]
         elif args.queue_action == "drain":

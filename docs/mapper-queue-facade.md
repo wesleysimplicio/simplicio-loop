@@ -10,7 +10,16 @@ The facade has no `sqlite3` import, no local schema, and no fallback to
 explicit initialization call. A completion without a receipt and an enqueue
 without an idempotency key fail before reaching a store.
 
-This slice does not yet switch every existing Loop runner/CLI call site to the
-facade. The legacy queue remains available only for the compatibility window;
-cutover, import/rollback, standalone/runtime-backed E2E, and final DDL removal
-remain tracked by #1026/#1027.
+The queue CLI can now select this facade explicitly without creating the legacy
+database:
+
+```text
+simplicio-loop queue --route mapper --mapper-db ~/.simplicio/data/operations.sqlite status
+simplicio-loop queue --route mapper --mapper-db ~/.simplicio/data/operations.sqlite top
+```
+
+`status`, `top`, `inspect`, `cancel`, `doctor`, and `reclaim` delegate to
+MapperStore. Legacy-only local state-machine actions (`drain`, `resume`,
+`migrate`, and `gc`) fail closed on this route. Default route, import/rollback,
+standalone/runtime-backed E2E, and final DDL removal remain tracked by
+#1026/#1027.
