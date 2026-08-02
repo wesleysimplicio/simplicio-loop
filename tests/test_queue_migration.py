@@ -17,6 +17,10 @@ class FakeMapperQueue:
         self.calls.append((task_id, dict(payload), idempotency_key))
         return {"status": "queued", "task_id": task_id, "priority": priority}
 
+    def import_task(self, task_id, payload, *, idempotency_key, state="queued", priority=0):
+        self.calls.append((task_id, dict(payload), idempotency_key, state))
+        return {"status": "imported", "task_id": task_id, "state": state, "terminal_verified": state != "queued"}
+
 
 def _legacy_queue(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -40,7 +44,7 @@ def test_mapper_queue_migration_is_read_only_in_plan_and_hashes_backup_on_apply(
 
     planned = cli._migrate_legacy_queue("ignored", destination, apply=False)
     assert planned["status"] == "planned"
-    assert planned["counts"] == {"source": 3, "imported": 1, "skipped": 2}
+    assert planned["counts"] == {"source": 3, "imported": 2, "skipped": 1}
     assert planned["backup"] is None
     assert destination.calls == []
 
@@ -50,9 +54,8 @@ def test_mapper_queue_migration_is_read_only_in_plan_and_hashes_backup_on_apply(
     backup = Path(applied["backup"])
     assert backup.is_file()
     assert applied["backup_sha256"] == hashlib.sha256(backup.read_bytes()).hexdigest()
-    assert destination.calls[0][0] == "ready"
-    assert destination.calls[0][2] == "legacy-loop:ready"
-    assert {item["reason"] for item in applied["skipped"]} == {
-        "terminal_history_requires_receipt_import",
-        "active_or_unknown_state_requires_reconciliation",
-    }
+    calls = {call[0]: call for call in destination.calls}
+    assert calls["ready"][2] == "legacy-loop:ready"
+    assert calls["ready"][3] == "queued"
+    assert calls["done"][3] == "completed"
+    assert applied["skipped"][0]["reason"] == "active_or_unknown_state_requires_reconciliation"

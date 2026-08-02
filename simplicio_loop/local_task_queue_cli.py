@@ -21,6 +21,14 @@ from .remote_queue import QueueConflict, QueueUnavailable
 MIGRATION_SCHEMA = "simplicio.loop.mapper-queue-migration/v1"
 TERMINAL_LEGACY_STATES = frozenset(("completed", "cancelled", "failed"))
 IMPORTABLE_LEGACY_STATES = frozenset(("ready", "queued", "pending"))
+LEGACY_TO_MAPPER_STATES = {
+    "ready": "queued",
+    "queued": "queued",
+    "pending": "queued",
+    "completed": "completed",
+    "cancelled": "cancelled",
+    "failed": "failed",
+}
 
 
 def _sha256_file(path: Path) -> str:
@@ -65,19 +73,18 @@ def _migrate_legacy_queue(repo: str, destination: MapperQueue, *, apply: bool) -
             inventory.append(item)
 
     for item in inventory:
-        if item["status"] in TERMINAL_LEGACY_STATES:
-            skipped.append({"task_id": item["task_id"], "status": item["status"], "reason": "terminal_history_requires_receipt_import"})
-            continue
         if item["status"] not in IMPORTABLE_LEGACY_STATES:
-            skipped.append({"task_id": item["task_id"], "status": item["status"], "reason": "active_or_unknown_state_requires_reconciliation"})
-            continue
+            if item["status"] not in TERMINAL_LEGACY_STATES:
+                skipped.append({"task_id": item["task_id"], "status": item["status"], "reason": "active_or_unknown_state_requires_reconciliation"})
+                continue
         if not apply:
             imported.append(item["task_id"])
             continue
-        result = destination.submit(
+        result = destination.import_task(
             item["task_id"],
             {**item["payload"], "legacy_source": str(source), "legacy_updated_at": item["updated_at"]},
             idempotency_key=f"legacy-loop:{item['task_id']}",
+            state=LEGACY_TO_MAPPER_STATES[item["status"]],
         )
         mapper_results.append(dict(result))
         imported.append(item["task_id"])

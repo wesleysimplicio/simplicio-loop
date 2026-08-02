@@ -187,6 +187,24 @@ class MapperOperationsAdapter:
             priority=priority,
         )
 
+    def import_task(
+        self,
+        task_id: str,
+        payload: Mapping[str, Any],
+        *,
+        idempotency_key: str,
+        state: str = "queued",
+        priority: int = 0,
+    ) -> dict[str, Any]:
+        return self._call(
+            "import_task",
+            task_id,
+            dict(payload),
+            idempotency_key=idempotency_key,
+            state=state,
+            priority=priority,
+        )
+
     @staticmethod
     def _lease(value: Mapping[str, Any]) -> OperationLease:
         return OperationLease(
