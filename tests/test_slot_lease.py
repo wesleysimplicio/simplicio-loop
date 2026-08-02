@@ -4,6 +4,7 @@ import multiprocessing
 import random
 
 import pytest
+from simplicio_mapper.store import OperationsStore
 
 from simplicio_loop.slot_lease import LeaseConflict, LeaseStore, StaleFence
 
@@ -42,6 +43,18 @@ def test_two_processes_never_hold_exclusivity_simultaneously(tmp_path):
         assert process.exitcode == 0
     rows = [results.get(timeout=2) for _ in processes]
     assert sum(row[0] == "won" for row in rows) == 1
+
+
+def test_lease_state_is_projected_from_mapper_operations_journal(tmp_path):
+    path = tmp_path / "leases.db"
+    store = LeaseStore(path, clock=Clock())
+    store.acquire("slot:journal", "worker", ttl_seconds=10)
+
+    replay = OperationsStore(path).replay(
+        "simplicio.loop.resource-fabric:" + str(path)
+    )
+    assert replay["valid"] is True
+    assert replay["events"][0]["event_type"] == "resource_lease.acquired"
 
 
 def test_persistence_expiry_reclaim_and_old_writer_fenced(tmp_path):
