@@ -306,7 +306,8 @@ def test_legacy_submit_wins_daemon_race_as_one_real_scheduled_row(tmp_path, monk
         assert submit_errors == [] and len(submit_results) == 1
         assert len(admission_errors) == 1 and isinstance(admission_errors[0], HubProtocolError)
         assert daemon.queue.count() == 1
-        assert daemon.queue._db.execute("SELECT COUNT(*) FROM hub_admissions").fetchone()[0] == 0
+        with pytest.raises(QueueRetryError, match="unknown held admission"):
+            daemon.queue.admission(idempotency_key=request["idempotency_key"])
         status = daemon.scheduler.status()
         assert status["global_total"] == status["queued"] == 1
 
