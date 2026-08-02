@@ -1,0 +1,15 @@
+{
+  "schema": "simplicio.loop-store-route-receipt/v1",
+  "status": "READY",
+  "reason_code": "LEGACY_ROUTE_EXPLICIT",
+  "requested": "legacy",
+  "selected": "legacy",
+  "route": "legacy",
+  "generation": "fixture-generation",
+  "run_id": "fixture-run",
+  "writer_authority": "loop",
+  "frozen": false,
+  "freeze_reason": null,
+  "immutable": false,
+  "receipt_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

@@ -1,0 +1,15 @@
+{
+  "schema": "simplicio.loop-store-route-receipt/v1",
+  "status": "BLOCKED",
+  "reason_code": "MAPPER_NOT_INSTALLED",
+  "requested": "mapper",
+  "selected": null,
+  "route": null,
+  "generation": "fixture-generation",
+  "run_id": "fixture-run",
+  "writer_authority": null,
+  "frozen": false,
+  "freeze_reason": null,
+  "immutable": false,
+  "receipt_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
