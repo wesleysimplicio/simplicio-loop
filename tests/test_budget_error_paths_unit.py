@@ -1,7 +1,7 @@
 """Unit coverage for BudgetLedger's fail-closed error branches (reservation reuse mismatch,
 exhaustion on reserve/settle, unknown reservation, non-settleable state, cancel-of-settled).
-These are pure sqlite-on-tmp-path paths — no subprocess, no network — filling gaps left by the
-existing happy-path tests in test_budget.py.
+These are pure MapperStore-journal-on-tmp-path paths — no subprocess, no network — filling gaps
+left by the existing happy-path tests in test_budget.py.
 """
 import pytest
 

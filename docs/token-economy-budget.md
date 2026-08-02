@@ -1,9 +1,10 @@
 # Shared run budget contract
 
-`simplicio_loop.budget` is the local control-plane primitive for issue #226. A
-`BudgetLedger` stores one immutable `RunBudget` envelope in SQLite and every lane
-must reserve estimated capacity before dispatch. `BEGIN IMMEDIATE` serializes
-admission across processes, so parallel workers cannot each spend the full budget.
+`simplicio_loop.budget` is the local policy facade for issue #226. A
+`BudgetLedger` stores one immutable `RunBudget` envelope and its reservation,
+settlement, and cancellation events in the MapperStore operations journal. The
+hash-chained journal's expected-sequence compare-and-swap serializes admission
+across processes, so parallel workers cannot each spend the full budget.
 
 Reservations are keyed by `reservation_id`. Repeating the same reservation with the
 same estimate is idempotent; changing an estimate fails closed. A settlement moves a
