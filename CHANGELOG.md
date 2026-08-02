@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.38.29] - 2026-08-02
+
+- Publish the merged MapperStore, Stack Lock, Resource Fabric, SourceAdapter,
+  and fan-in delivery slices as the coordinated Loop release.
+
 ## [3.38.28] - 2026-08-01
 
 - Synchronize package, plugin, runtime, and release metadata versions.
