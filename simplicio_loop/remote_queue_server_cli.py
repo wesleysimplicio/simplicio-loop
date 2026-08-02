@@ -15,12 +15,16 @@ import os
 import signal
 from pathlib import Path
 
+from .mapper_remote_queue import MapperRemoteQueue
 from .remote_queue import SQLiteRemoteQueue, create_http_queue_server, tls_context_from_files
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default=".simplicio/orchestrator/shared-queue.db")
+    parser.add_argument("--db", default=None, help="legacy shared SQLite queue file path")
+    parser.add_argument("--mapper-db", default=None, help="canonical MapperStore operations.sqlite path")
+    parser.add_argument("--mapper-init", action="store_true",
+                        help="explicitly initialize --mapper-db before serving")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--token", default=os.environ.get("SIMPLICIO_QUEUE_TOKEN"),
@@ -37,6 +41,10 @@ def main() -> int:
     parser.add_argument("--tls-certfile", default=os.environ.get("SIMPLICIO_QUEUE_TLS_CERTFILE"))
     parser.add_argument("--tls-keyfile", default=os.environ.get("SIMPLICIO_QUEUE_TLS_KEYFILE"))
     args = parser.parse_args()
+    if args.db and args.mapper_db:
+        parser.error("--db and --mapper-db are mutually exclusive")
+    if args.mapper_init and not args.mapper_db:
+        parser.error("--mapper-init requires --mapper-db")
     if not args.token and not args.token_secret:
         parser.error("one of --token/SIMPLICIO_QUEUE_TOKEN or --token-secret/SIMPLICIO_QUEUE_TOKEN_SECRET is required")
     if args.token and args.token_secret:
@@ -46,8 +54,14 @@ def main() -> int:
     context = (tls_context_from_files(args.tls_certfile, args.tls_keyfile)
                if args.tls_certfile else None)
     try:
+        if args.mapper_db:
+            queue = MapperRemoteQueue(args.mapper_db, auto_create=False)
+            if args.mapper_init:
+                queue.initialize()
+        else:
+            queue = SQLiteRemoteQueue(args.db or ".simplicio/orchestrator/shared-queue.db")
         server = create_http_queue_server(
-            SQLiteRemoteQueue(args.db), args.host, args.port,
+            queue, args.host, args.port,
             token=args.token, token_secret=args.token_secret, token_scope=args.token_scope,
             revocation_store=Path(args.revocation_store) if args.token_secret else None,
             ssl_context=context,

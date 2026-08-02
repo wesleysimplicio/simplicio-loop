@@ -262,6 +262,11 @@ class MapperRemoteQueue:
     def task(self, task_id: str) -> Dict[str, Any]:
         return self.operations.status(str(task_id))
 
+    def events(self, *, after: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        """Reject the legacy task-event projection instead of fabricating it."""
+        del after, limit
+        raise QueueUnavailable("MAPPER_EVENTS_ENDPOINT_REQUIRES_CANONICAL_RUN_ID")
+
 
 __all__ = [
     "MAPPER_QUEUE_SCHEMA",
