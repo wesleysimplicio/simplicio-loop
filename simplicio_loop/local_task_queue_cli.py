@@ -47,6 +47,27 @@ def _legacy_queue_path(repo: str) -> Path:
     return path
 
 
+def _default_mapper_db(repo: str) -> Path:
+    """Resolve the repo-scoped canonical operations store without creating it."""
+    try:
+        from simplicio_mapper.store import resolve_store_location
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise QueueUnavailable("MapperStore operations API is not installed") from exc
+    root = _git_root(repo)
+    environ = dict(os.environ)
+    # Queue state is scoped to the Loop checkout unless the operator passes an
+    # explicit --mapper-db.  Resolution is deliberately side-effect free.
+    environ.pop("SIMPLICIO_DATA_DIR", None)
+    environ.pop("SIMPLICIO_HOME", None)
+    environ["SIMPLICIO_STORE_SCOPE"] = "repo"
+    try:
+        return resolve_store_location(environ=environ, repo_root=root).database(
+            "operations.sqlite"
+        )
+    except (OSError, ValueError) as exc:
+        raise QueueUnavailable(f"canonical MapperStore path unavailable: {exc}") from exc
+
+
 def _migrate_legacy_queue(repo: str, destination: MapperQueue, *, apply: bool) -> dict[str, object]:
     source = _legacy_queue_path(repo)
     source_sha256 = _sha256_file(source)
@@ -139,7 +160,10 @@ def _git_root(repo: str) -> Path:
 def cli_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="simplicio-loop queue")
     parser.add_argument("--repo", default=".")
-    parser.add_argument("--route", choices=("legacy", "mapper"), default="legacy")
+    parser.add_argument(
+        "--route", choices=("legacy", "mapper"), default="mapper",
+        help="storage route (default: mapper; use legacy only for compatibility actions)",
+    )
     parser.add_argument("--mapper-db", default=None,
                         help="initialized MapperStore operations.sqlite path")
     parser.add_argument("--mapper-init", action="store_true",
@@ -165,9 +189,8 @@ def cli_main(argv: list[str] | None = None) -> int:
                 raise QueueUnavailable(
                     f"MAPPER_ROUTE_UNSUPPORTED: queue {args.action} requires a legacy-only local state machine"
                 )
-            if not args.mapper_db:
-                raise ValueError("--mapper-db is required with --route mapper")
-            queue = MapperQueue(args.mapper_db, auto_create=False)
+            mapper_db = Path(args.mapper_db) if args.mapper_db else _default_mapper_db(args.repo)
+            queue = MapperQueue(str(mapper_db), auto_create=False)
             if args.mapper_init and (args.action != "migrate" or args.apply):
                 queue.initialize()
             if args.action == "migrate":
