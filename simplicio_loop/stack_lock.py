@@ -9,11 +9,14 @@ updates, or launches a component.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
+import importlib.util
 import json
 import os
+import shutil
 import tempfile
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -97,6 +100,124 @@ def observe_component(
         capabilities=tuple(sorted({str(value) for value in capabilities if str(value)})),
         available=available,
     )
+
+
+def observe_components(payload: Mapping[str, Any] | Iterable[Mapping[str, Any]]) -> tuple[StackComponent, ...]:
+    """Normalize a JSON observation payload without invoking any component."""
+    rows = payload.get("components") if isinstance(payload, Mapping) else payload
+    if not isinstance(rows, list):
+        raise StackLockError("component observations must be a JSON array")
+    result: list[StackComponent] = []
+    for index, item in enumerate(rows):
+        if not isinstance(item, Mapping):
+            raise StackLockError(f"component observation {index} is not an object")
+        name = str(item.get("name") or "").strip()
+        version = str(item.get("version") or "").strip()
+        if not name or not version:
+            raise StackLockError(f"component observation {index} has no name/version")
+        component = observe_component(
+            name,
+            version,
+            str(item.get("executable") or ""),
+            build_sha=str(item.get("build_sha") or ""),
+            capabilities=item.get("capabilities") or (),
+            artifact_sha256=item.get("artifact_sha256"),
+        )
+        if "available" in item:
+            component = replace(component, available=bool(item["available"]))
+        result.append(component)
+    return tuple(result)
+
+
+def load_component_observations(path: str | Path) -> tuple[StackComponent, ...]:
+    """Load JSON observations for a deterministic, non-executing stack lock."""
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StackLockError(f"cannot read component observations: {exc}") from exc
+    if not isinstance(payload, (Mapping, list)):
+        raise StackLockError("component observations root must be an object or array")
+    return observe_components(payload)
+
+
+def _module_artifact(module_name: str) -> str:
+    try:
+        spec = importlib.util.find_spec(module_name)
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return ""
+    if spec is None:
+        return ""
+    origin = str(spec.origin or "")
+    if origin and origin not in {"built-in", "frozen"} and Path(origin).is_file():
+        return origin
+    locations = list(spec.submodule_search_locations or ())
+    candidate = Path(locations[0]) / "__init__.py" if locations else None
+    return str(candidate) if candidate and candidate.is_file() else ""
+
+
+def _distribution_version(distribution: str, module_name: str) -> str:
+    try:
+        return str(importlib.metadata.version(distribution))
+    except importlib.metadata.PackageNotFoundError:
+        if distribution == "simplicio-loop":
+            try:
+                from . import __version__
+
+                return str(__version__)
+            except (ImportError, AttributeError):
+                pass
+        module = module_name.rsplit(".", 1)[0] if module_name else ""
+        try:
+            imported = __import__(module, fromlist=["__version__"])
+            return str(getattr(imported, "__version__", ""))
+        except (ImportError, AttributeError):
+            return ""
+
+
+def _executable_or_module(executables: Iterable[str], module_name: str) -> str:
+    for executable in executables:
+        found = shutil.which(executable)
+        if found:
+            return found
+    return _module_artifact(module_name)
+
+
+def discover_installed_components() -> tuple[StackComponent, ...]:
+    """Observe the installed Python stack and optional Runtime binary read-only."""
+    override = os.environ.get("SIMPLICIO_STACK_COMPONENTS_FILE", "").strip()
+    if override:
+        return load_component_observations(override)
+
+    specs = (
+        ("simplicio-loop", "simplicio-loop", "simplicio_loop", ("simplicio-loop",),
+         ("orchestrator", "stack-lock", "standalone")),
+        ("simplicio-mapper", "simplicio-mapper", "simplicio_mapper", ("simplicio-mapper",),
+         ("map", "context", "store")),
+        ("simplicio-fast", "simplicio-fast", "simplicio_fast", ("simplicio-fast",),
+         ("fast", "query", "mmap")),
+        ("simplicio-cli", "simplicio-cli", "simplicio", ("simplicio-dev-cli", "simplicio-cli"),
+         ("mutation", "verify", "changeset")),
+    )
+    components = []
+    for name, distribution, module_name, executables, capabilities in specs:
+        executable = _executable_or_module(executables, module_name)
+        components.append(observe_component(
+            name,
+            _distribution_version(distribution, module_name),
+            executable,
+            capabilities=capabilities,
+        ))
+
+    runtime_executable = os.environ.get("SIMPLICIO_RUNTIME_BIN", "").strip()
+    runtime_executable = runtime_executable or (shutil.which("simplicio-runtime") or "")
+    components.append(observe_component(
+        "simplicio-runtime",
+        os.environ.get("SIMPLICIO_RUNTIME_VERSION", "unknown" if runtime_executable else ""),
+        runtime_executable,
+        build_sha=os.environ.get("SIMPLICIO_RUNTIME_BUILD_SHA", ""),
+        capabilities=("runtime", "mcp"),
+    ))
+    return tuple(components)
 
 
 def _validate_route(route: str, components: tuple[StackComponent, ...]) -> None:
@@ -276,8 +397,11 @@ __all__ = [
     "StackComponent",
     "StackLock",
     "StackLockError",
+    "discover_installed_components",
+    "load_component_observations",
     "load_stack_lock",
     "observe_component",
+    "observe_components",
     "validate_stack_lock",
     "write_stack_lock",
 ]

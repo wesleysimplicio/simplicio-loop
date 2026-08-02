@@ -1,6525 +1,1965 @@
-from __future__ import annotations
-
-import json
-import hashlib
-import os
-import random
-import re
-import shutil
-import subprocess
-import time
-import string
-import sys
-from threading import RLock
-from collections import deque
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
-from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Tuple, TypedDict
-
-from .delivery import (build_delivery_receipt, normalize_delivery_target,
-                       reconcile_delivery_observation, write_delivery_receipt)
-from .evidence import build_evidence_receipt, redact_sensitive_text
-from .source_state import github_delivery_payload, infer_github_delivery_state
-from . import github_lifecycle as _github_lifecycle
-from .client_integrations import integration_enabled
-from .orca_lifecycle import sync_orca_status
-from .source_adapter import GitHubSourceAdapter
-from .task_contract import compile_many, validate_contract
-from .event_metadata import SCHEMA as EVENT_METADATA_SCHEMA, infer_scope
-from .technical_debt import record_notice as _record_technical_debt
-from .checkpoint_lifecycle import CheckpointLifecycle, LifecycleError
-from .operator_bootstrap import (
-    OperatorBootstrapError,
-    ensure_operators as _ensure_required_operators,
-)
-from .plan_contract import PLAN_SCHEMA, validate_plan
-from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable, build_completion_receipt
-from .agent_contract import bind_receipt, build_context_pack
-from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONTENT_SCHEMA,
-                               OPERATOR_RECEIPT_SCHEMA as _OPERATOR_RECEIPT_CONTENT_SCHEMA,
-                               ReceiptStatus, verify_receipt)
-from .planning_gate import content_hash as _planning_content_hash
-from .planning_gate import evaluate_mutation_authority, mutation_authority_required
-from .planning_gate import auto_planning_receipt_enabled
-from .planning_gate import build_planning_receipt as _build_planning_receipt
-from .planning_gate import publish_planning_receipt as _publish_planning_receipt
-from .work_item_claims import AttemptCoordinator, LeaseLostDuringExecution
-from .merge_executor import MergeExecutor, MergeExecutorError
-from .model_registry import ModelCapabilityRegistry, ModelRegistryError
-from .model_router import ModelRouterError, route as _model_route
-from .runtime_drivers import CLI_PROBE_HOOKS, driver_for_runtime
-from .runtime_context import ContextAuthorizationError, ContextBudgetError, RuntimeContextRequest
-from .runtime_execution_receipt import RuntimeExecutionReceiptError
-from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
-from .runtime_bridge import RuntimeBridge
-from .runtime_effect_adapter import EffectRequest, RuntimeEffectAdapter, RuntimeEffectError
-from .hookwall_gate import (
-    HookwallBlocked,
-    gate_completion,
-    validate_envelope,
-    validate_pre_decision,
-
-)
-from .hookwall_persistence import HookwallEffectLedger
-from .canonical_plan import CanonicalPlan, load_canonical_plan
-from .authority_boundary import prepare_authorization_handoff
-from .verified_delivery import VerifiedAgentDelivery, VerifiedDeliveryError
-from .execution_board import ExecutionBoard
-from .run_journal import RunJournal
-from .mapper_run_journal import MapperRunJournal
-from .mapper_hookwall import MapperHookwallEffectLedger
-
-from .execution_route import _stable_hash as _execution_route_hash
-from .execution_route import capability_fingerprint, normalize_capability_manifest, route_receipt_is_current
-from .execution_route import decide_route, verify_route_hash
-try:
-    from scripts.agent_identity import ensure_identity
-except ImportError:  # pragma: no cover - installed package without scripts namespace
-    ensure_identity = None
-
-try:
-    from scripts.distributed_trust_policy import (
-        TrustPolicyError,
-        authorize as _trust_authorize,
-        load_policy as _load_trust_policy,
-        resolve_environment as _resolve_trust_environment,
-    )
-except ImportError:  # pragma: no cover - installed package without scripts namespace
-    TrustPolicyError = RuntimeError  # type: ignore[assignment,misc]
-    _trust_authorize = None
-    _load_trust_policy = None
-    _resolve_trust_environment = None
-
-try:
-    from scripts.security_audit_log import append_event as _audit_append
-except ImportError:  # pragma: no cover - installed package without scripts namespace
-    _audit_append = None
-
-RUNNER_SCHEMA = "simplicio.run-manifest/v1"
-STATE_SCHEMA = "simplicio.run-state/v1"
-OPERATOR_RECEIPT_SCHEMA = "simplicio.operator-receipt/v0"
-# Real content/schema/hash/freshness/provenance validation, gating `receipt_status` in
-# `_operator_dispatch_attempt()` below (issue #288: presence of a file must not imply
-# VERIFIED).
-RECEIPT_MAX_AGE_SECONDS = float(os.environ.get("SIMPLICIO_RECEIPT_MAX_AGE_SECONDS", "86400"))
-MAINTENANCE_RECEIPT_SCHEMA = "simplicio.maintenance-receipt/v1"
-PHASES = [
-    "intake",
-    "awaiting_decision",
-    "mapping",
-    "planning",
-    "executing",
-    "validating",
-    "watching",
-    "delivering",
-    "done",
-    "partial",
-    "blocked",
-    "cancelled",
-]
-# Mapper >=0.19 provides the freshness/artifact receipt contract required for
-# authoritative context and plan generation. Older versions can report a stale
-# `fresh=true` inspect result and are therefore not safe as a planning source.
-MAPPER_MIN_VERSION = (0, 19, 0)
-MAPPER_REQUIRED_VERBS = ("inspect", "handoff", "ask", "sync", "drift")
-DEVCLI_REQUIRED_TOKENS = (" task", "--dry-run-task", "--json")
-# Issue #135: the operator bridge validates identity + capability + MIN_VERSION, not
-# merely `which`. A dev-cli below this tuple is blocked before any mutation.
-DEVCLI_MIN_VERSION = (0, 14, 0)
-DEVCLI_REQUIRED_CAPABILITIES = ("task", "--dry-run-task", "--json", "--bound-paths", "--target", "--task-spec", "--mode")
-DEFAULT_OPERATOR_WORKERS = 6
-BATCH_SCHEMA = "simplicio.operator-batch/v1"
-BATCH_PREFLIGHT_SCHEMA = "simplicio.operator-batch-preflight/v1"
-NATIVE_PRISM_SCHEMA = "simplicio.loop.native-prism-dispatch/v1"
-
-MaintenanceMode = Literal["active", "maintenance_deferred"]
-MaintenanceDisposition = Literal["operator", "backlog_only"]
-
-
-class OperatorDispatchItem(TypedDict, total=False):
-    """Typed input contract for :func:`dispatch_operator_batch`."""
-
-    repo: str
-    run_id: str
-    task_index: int
-    worker_id: str
-    isolation_key: str
-    task_id: str
-    task_spec: Mapping[str, Any]
-    isolation: str
-    operator_context: Mapping[str, Any]
-    distributed_queue: Any
-    agent_identity: Mapping[str, Any]
-    context_pack: Mapping[str, Any]
-
-
-class MaintenanceState(TypedDict):
-    mode: MaintenanceMode
-    disposition: MaintenanceDisposition
-    receipt: str
-    correction_summary: str
-    deferral_reason: str
-    evidence_status: str
-
-
-class MaintenanceDeferredReceipt(TypedDict):
-    schema: str
-    mode: Literal["maintenance_deferred"]
-    disposition: Literal["backlog_only"]
-    correction_summary: str
-    deferral_reason: str
-    resume_instructions: List[str]
-    evidence_status: str
-    recorded_at: str
-    completion_ready: bool
-    completion_verdict: str
-    completion_reason_code: str
-
-
-def _now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _rand_token(n: int = 10) -> str:
-    chars = string.ascii_lowercase + string.digits
-    return "".join(random.choice(chars) for _ in range(n))
-
-
-def _resolve_trusted_queue_context(url: str) -> tuple[str, Optional[str], Optional[Dict[str, Any]]]:
-    """Resolve the distributed-queue destination via the #289 trust policy.
-
-    ``.github/workflows/distributed-183-proof.yml`` -- the workflow this issue's
-    exploit scenario named -- was removed repo-wide in #311, but the same
-    exfiltration/confused-deputy risk applies to this call site: it is the real,
-    currently-used way to hand a bearer token (``SIMPLICIO_REMOTE_QUEUE_TOKEN``)
-    to a network destination. Setting ``SIMPLICIO_REMOTE_ENVIRONMENT_ID`` opts
-    into fail-closed resolution: the destination comes from the versioned,
-    CODEOWNERS-reviewed ``.github/security/distributed-trust-policy.json``, not
-    from ``SIMPLICIO_REMOTE_QUEUE_URL``. A freeform ``SIMPLICIO_REMOTE_QUEUE_URL``
-    may still be set for local corroboration, but it must match the policy's
-    origin exactly -- an attacker-chosen destination is rejected before any
-    identity/queue object (and therefore any token) is created.
-
-    Environments without ``SIMPLICIO_REMOTE_ENVIRONMENT_ID`` set fall back to the
-    legacy unmanaged path (whatever ``SIMPLICIO_REMOTE_QUEUE_URL`` names) for
-    local/dev use; production/CI callers should set the environment id so the
-    destination is policy-resolved.
-
-    Returns ``(url, environment_id, policy)``; ``environment_id``/``policy`` are
-    ``None`` on the legacy unmanaged path so callers can tell whether
-    connect-time enforcement (:mod:`simplicio_loop.secure_transport`) applies.
-    """
-    environment_id = os.environ.get("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "").strip()
-    if not environment_id:
-        return url, None, None
-    if _resolve_trust_environment is None or _load_trust_policy is None or _trust_authorize is None:
-        raise RuntimeError("distributed trust policy module unavailable")
-    policy_path = os.environ.get("SIMPLICIO_DISTRIBUTED_TRUST_POLICY", "").strip()
-    policy = _load_trust_policy(Path(policy_path)) if policy_path else _load_trust_policy()
-    env = _resolve_trust_environment(policy, environment_id)
-    repo_slug = os.environ.get("SIMPLICIO_REMOTE_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
-    ref = os.environ.get("SIMPLICIO_REMOTE_REF") or os.environ.get("GITHUB_REF", "")
-    actor = os.environ.get("SIMPLICIO_REMOTE_ACTOR") or os.environ.get("GITHUB_ACTOR", "")
-    ok, reason = _trust_authorize(policy, environment_id, repo_slug.strip(), ref.strip(), actor.strip())
-    if not ok:
-        raise RuntimeError("distributed trust policy denied: %s" % reason)
-    origin = env["origin"]
-    trusted_url = "%s://%s:%s%s" % (
-        origin["scheme"], origin["hostname"], origin["port"], origin.get("base_path", "/"),
-    )
-    if url and url.rstrip("/") != trusted_url.rstrip("/"):
-        # This is the literal #289 exploit replayed against the real call site:
-        # a caller-supplied destination must never override the reviewed
-        # policy, or an attacker who controls SIMPLICIO_REMOTE_QUEUE_URL could
-        # redirect the bearer token to infrastructure they control.
-        raise RuntimeError(
-            "distributed trust policy denied: SIMPLICIO_REMOTE_QUEUE_URL does not match the "
-            "resolved origin for environment_id '%s'" % environment_id
-        )
-    return trusted_url, environment_id, policy
-
-
-def _resolve_trusted_queue_url(url: str) -> str:
-    """Backward-compatible wrapper returning only the resolved URL."""
-    resolved, _environment_id, _policy = _resolve_trusted_queue_context(url)
-    return resolved
-
-
-def _distributed_configuration(repo: str) -> tuple[Any, Optional[Dict[str, Any]]]:
-    """Return the opt-in network coordinator and stable worker identity.
-
-    Local fan-out is the default and remains the fallback when the optional
-    distributed environment is not usable.  Trust-policy violations still fail
-    closed; a missing identity adapter is an infrastructure absence, not a
-    reason to stop independent local work.
-    """
-    url = os.environ.get("SIMPLICIO_REMOTE_QUEUE_URL", "").strip()
-    if not url and not os.environ.get("SIMPLICIO_REMOTE_ENVIRONMENT_ID", "").strip():
-        return None, None
-    url, environment_id, policy = _resolve_trusted_queue_context(url)
-    if ensure_identity is None:
-        if _local_fallback_enabled():
-            return None, None
-        raise RuntimeError("distributed identity adapter unavailable")
-    identity = ensure_identity(
-        path=os.environ.get("SIMPLICIO_IDENTITY_FILE") or str(Path(repo) / ".simplicio/orchestrator" / "agent-identity.json"),
-        runtime=os.environ.get("SIMPLICIO_RUNTIME", "unknown-runtime"),
-        capabilities=["claim", "heartbeat", "fencing", "receipts", "events", "evidence", "completion"],
-    )
-    token = _resolve_queue_token(environment_id, policy, identity)
-    queue = HTTPRemoteQueue(
-        url,
-        token=token,
-        timeout=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TIMEOUT", "5")),
-        environment_id=environment_id,
-        policy=policy,
-    )
-    return queue, identity
-
-
-def _local_fallback_enabled() -> bool:
-    """Allow local execution when optional cloud coordination is absent.
-
-    This is deliberately enabled by default: the cloud queue is an accelerator
-    and claim transport, not a prerequisite for the Loop's local worktree
-    scheduler. Set ``SIMPLICIO_LOOP_LOCAL_FALLBACK=0`` only when a deployment
-    explicitly requires remote claims.
-    """
-    raw = os.environ.get("SIMPLICIO_LOOP_LOCAL_FALLBACK", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off", "disabled"}
-
-
-STATIC_QUEUE_TOKEN_OPT_IN_VAR = "SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN"
-
-# #289: the queue operations a worker's short-lived credential is scoped to.
-# `enqueue` is deliberately excluded -- workers claim/heartbeat/complete/cancel
-# existing tasks, they do not create new ones, so a stolen worker credential
-# cannot be used to inject work into the queue.
-WORKER_QUEUE_OPERATIONS = (
-    "pull", "claim", "heartbeat", "complete", "assert-active", "cancel", "release", "events", "task",
-)
-
-
-def _resolve_queue_token(environment_id: Optional[str], policy: Optional[Dict[str, Any]],
-                          identity: Optional[Dict[str, Any]]) -> Optional[str]:
-    """Resolve the bearer credential for the distributed queue (#289).
-
-    Preferred path: ``SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET`` is a long-lived
-    HMAC *signing* secret (never sent on the wire); a fresh short-lived token
-    (:mod:`scripts.short_lived_credentials`) is minted for this process, bound
-    to the worker's agent identity as subject and the environment_id as scope,
-    with a TTL taken from the policy's ``max_ttl_seconds`` (capped by
-    ``SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS`` if set lower), and restricted
-    to :data:`WORKER_QUEUE_OPERATIONS` (operation-level scoping, so a leaked
-    token cannot be replayed against an operation this worker never needed).
-    This is not the OIDC broker exchange #289 describes -- there is no CI
-    identity provider to issue the initial trust, and that gap stays
-    permanently blocked absent one -- but it replaces an indefinitely-lived
-    static secret with one that expires on its own and carries a revocable
-    ``jti``.
-
-    The legacy static ``SIMPLICIO_REMOTE_QUEUE_TOKEN`` is no longer a silent
-    fallback: it is only honored when the caller has *also* set
-    ``SIMPLICIO_ALLOW_STATIC_QUEUE_TOKEN=1`` (explicit opt-in), and every use
-    of it appends a ``reject``-adjacent warning line to the #289 audit log
-    (:mod:`scripts.security_audit_log`) so an indefinitely-lived credential in
-    use is discoverable, not invisible. Without the opt-in flag, a missing
-    signing secret fails closed with ``RuntimeError`` rather than silently
-    downgrading to the weaker auth mode.
-    """
-    secret = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET", "").strip()
-    if not secret:
-        static_token = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN", "").strip() or None
-        opted_in = os.environ.get(STATIC_QUEUE_TOKEN_OPT_IN_VAR, "").strip().lower() in ("1", "true", "yes")
-        if static_token and not opted_in:
-            if _audit_append is not None:
-                _audit_append(
-                    None, event="runner.resolve_queue_token", decision="reject",
-                    operation=environment_id or "queue",
-                    reason="static SIMPLICIO_REMOTE_QUEUE_TOKEN present without "
-                           f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1 opt-in",
-                )
-            raise RuntimeError(
-                "SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET is not set and the legacy static "
-                "SIMPLICIO_REMOTE_QUEUE_TOKEN fallback is no longer silent (#289). Set "
-                f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1 to explicitly opt into the deprecated "
-                "static-token auth mode for local/dev use, or configure "
-                "SIMPLICIO_REMOTE_QUEUE_TOKEN_SECRET to use short-lived credentials instead."
-            )
-        if static_token and _audit_append is not None:
-            _audit_append(
-                None, event="runner.resolve_queue_token", decision="accept",
-                operation=environment_id or "queue",
-                reason="deprecated static-token auth mode explicitly opted into via "
-                       f"{STATIC_QUEUE_TOKEN_OPT_IN_VAR}=1",
-            )
-        return static_token
-    try:
-        from scripts.short_lived_credentials import issue_token
-    except ImportError as exc:  # pragma: no cover - installed package without scripts namespace
-        raise RuntimeError("short-lived credential module unavailable") from exc
-    max_ttl = float((policy or {}).get("environments", {}).get(environment_id, {}).get("max_ttl_seconds", 900)) \
-        if policy and environment_id else 900.0
-    override_ttl = os.environ.get("SIMPLICIO_REMOTE_QUEUE_TOKEN_TTL_SECONDS", "").strip()
-    ttl_seconds = min(float(override_ttl), max_ttl) if override_ttl else max_ttl
-    subject = (identity or {}).get("agent_id", "unknown-agent")
-    scope = environment_id or "queue"
-    return issue_token(secret, subject=subject, scope=scope, ttl_seconds=ttl_seconds,
-                       operations=WORKER_QUEUE_OPERATIONS)
-
-
-def _run_id() -> str:
-    return time.strftime("run-%Y%m%d-%H%M%S-", time.gmtime()) + _rand_token(8)
-
-
-def _load_json(path: Path) -> Dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _default_completion_state() -> Dict[str, Any]:
-    return {
-        "ready": False,
-        "receipt": "",
-        "verdict": "DELIVERY_PENDING",
-        "reason_code": "oracle_incomplete",
-        "tag": "UNVERIFIED",
-    }
-
-
-def _default_maintenance_state() -> MaintenanceState:
-    return {
-        "mode": "active",
-        "disposition": "operator",
-        "receipt": "",
-        "correction_summary": "",
-        "deferral_reason": "",
-        "evidence_status": "UNVERIFIED",
-    }
-
-
-def _active_maintenance_state(current: Mapping[str, Any] | None = None) -> MaintenanceState:
-    payload = dict(current or {})
-    return {
-        "mode": "active",
-        "disposition": "operator",
-        "receipt": str(payload.get("receipt") or ""),
-        "correction_summary": str(payload.get("correction_summary") or ""),
-        "deferral_reason": str(payload.get("deferral_reason") or ""),
-        "evidence_status": str(payload.get("evidence_status") or "UNVERIFIED"),
-    }
-
-
-def _completion_state(run_dir: Path, current: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    state = dict(current or _default_completion_state())
-    receipt_path = run_dir / "completion-receipt.json"
-    if not receipt_path.exists():
-        return state
-    payload = _load_json(receipt_path)
-    state.update({
-        "ready": bool(payload.get("ready", False)),
-        "receipt": str(receipt_path),
-        "verdict": payload.get("verdict", state.get("verdict", "DELIVERY_PENDING")),
-        "reason_code": payload.get("reason_code", state.get("reason_code", "oracle_incomplete")),
-        "tag": payload.get("tag", state.get("tag", "UNVERIFIED")),
-    })
-    return state
-
-
-def _write_json(path: Path, payload: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def _write_maintenance_deferred_receipt(
-    run_dir: Path,
-    *,
-    correction_summary: str,
-    deferral_reason: str,
-    resume_instructions: Sequence[str] | str,
-    evidence_status: str,
-) -> MaintenanceDeferredReceipt:
-    completion = _completion_state(run_dir)
-    instructions = [str(item).strip() for item in resume_instructions] if not isinstance(resume_instructions, str) else [resume_instructions.strip()]
-    payload: MaintenanceDeferredReceipt = {
-        "schema": MAINTENANCE_RECEIPT_SCHEMA,
-        "mode": "maintenance_deferred",
-        "disposition": "backlog_only",
-        "correction_summary": correction_summary.strip(),
-        "deferral_reason": deferral_reason.strip(),
-        "resume_instructions": [item for item in instructions if item],
-        "evidence_status": str(evidence_status or "UNVERIFIED"),
-        "recorded_at": _now(),
-        "completion_ready": False,
-        "completion_verdict": str(completion.get("verdict") or "DELIVERY_PENDING"),
-        "completion_reason_code": str(completion.get("reason_code") or "oracle_incomplete"),
-    }
-    _write_json(run_dir / "maintenance-receipt.json", payload)
-    return payload
-
-
-def _contract_path(run_dir: Path) -> Path:
-    return run_dir / "task-contract.json"
-
-
-def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-
-def _run_cmd(
-    argv: List[str], cwd: Path, *, timeout_seconds: int = 180,
-) -> subprocess.CompletedProcess:
-    if argv and argv[0] == "simplicio-mapper":
-        timeout_seconds = _mapper_timeout_seconds()
-    try:
-        return subprocess.run(
-            argv, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        def _text(value: Any) -> str:
-            if isinstance(value, bytes):
-                return value.decode(errors="replace")
-            return str(value or "")
-
-        stderr = _text(exc.stderr)
-        timeout_note = f"command timed out after {timeout_seconds}s"
-        if timeout_note not in stderr:
-            stderr = f"{stderr}\n{timeout_note}".strip()
-        return subprocess.CompletedProcess(argv, 124, _text(exc.stdout), stderr)
-
-
-def _run_repo_path(run_dir: Path) -> Optional[Path]:
-    """Best-effort recovery of a run's repo checkout path from its ``manifest.json``,
-    for the #285 lifecycle-comment identity/branch projection. Returns ``None``
-    instead of raising when the manifest is missing/malformed (e.g. a test fixture
-    that writes a bare ``state.json`` with no manifest) -- callers treat that as
-    "no repo context available", never a hard failure.
-    """
-    try:
-        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-        repo = manifest.get("repo")
-        return Path(repo).resolve() if repo else None
-    except Exception:
-        return None
-
-
-def _git_current_branch(repo_path: Path) -> str:
-    """Best-effort current branch name for the #285 lifecycle comment's
-    Branch/worktree field. Never raises -- any git failure (detached HEAD, no
-    repo, missing git binary) just yields an empty projection rather than a
-    fabricated branch name."""
-    try:
-        result = _run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo_path)
-    except Exception:
-        return ""
-    if result.returncode != 0:
-        return ""
-    branch = (result.stdout or "").strip()
-    return branch if branch and branch != "HEAD" else ""
-
-
-def _dispatch_identity_fields(repo_path: Optional[Path]) -> Dict[str, str]:
-    """Best-effort local agent identity for the #285 lifecycle comment's
-    Agente/Runtime/Device fields.
-
-    Reuses the same stable per-repo identity file ``_distributed_configuration()``
-    creates for the real distributed dispatch path, so a sequential
-    (non-distributed) run projects the same genuine ``agent_id``/``runtime``/
-    ``device_id`` instead of leaving those fields blank. Never raises -- an
-    unavailable ``scripts.agent_identity`` module (installed package without the
-    scripts namespace), a missing repo path, or any I/O failure just yields an
-    empty projection rather than fabricated identity.
-    """
-    if ensure_identity is None or repo_path is None:
-        return {}
-    try:
-        identity = ensure_identity(
-            path=os.environ.get("SIMPLICIO_IDENTITY_FILE") or str(repo_path / ".simplicio/orchestrator" / "agent-identity.json"),
-            runtime=os.environ.get("SIMPLICIO_RUNTIME", "unknown-runtime"),
-        )
-    except Exception:
-        return {}
-    return {
-        "agent_id": str(identity.get("agent_id") or ""),
-        "runtime": str(identity.get("runtime") or ""),
-        "device": str(identity.get("device_id") or ""),
-    }
-
-
-def _operator_env() -> Dict[str, str]:
-    env = dict(os.environ)
-    env.setdefault(
-        "SIMPLICIO_MODEL",
-        os.environ.get("SIMPLICIO_LOOP_OPERATOR_MODEL", "codex-cli/gpt-5.4"),
-    )
-    env.setdefault(
-        "SIMPLICIO_CODEX_EFFORT",
-        os.environ.get("SIMPLICIO_LOOP_OPERATOR_EFFORT", "medium"),
-    )
-    loop_test_cmd = os.environ.get("SIMPLICIO_LOOP_TEST_CMD", "").strip()
-    if loop_test_cmd and not env.get("SIMPLICIO_TEST_CMD", "").strip():
-        env["SIMPLICIO_TEST_CMD"] = loop_test_cmd
-    return env
-
-
-def _operator_timeout(kind: str) -> int:
-    default = 60 if kind == "dry_run" else 600
-    raw = os.environ.get("SIMPLICIO_LOOP_OPERATOR_TIMEOUT_SEC", "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return max(30, value)
-
-
-def _mapper_timeout_seconds() -> int:
-    """Return the bounded wait used by every Mapper deep-pass command.
-
-    Large repositories routinely need more than the Mapper CLI's 120-second default.
-    Keep the wait bounded, but make the production default generous and let operators
-    lower it explicitly for constrained environments.
-    """
-    default = 3600
-    raw = os.environ.get("SIMPLICIO_LOOP_MAPPER_TIMEOUT_SEC", "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return max(1, value)
-
-
-def _mapper_supports_command(preflight: Mapping[str, Any], command: str) -> bool:
-    """Detect an optional Mapper command from its measured help surface."""
-    help_stdout = str(preflight.get("help_stdout") or "")
-    return any(
-        line.strip().startswith(command + " ") or line.strip() == command
-        for line in help_stdout.splitlines()
-    )
-
-
-def _degraded_mapper_fallback_enabled() -> bool:
-    """Allow explicit-target local work to continue when deep mapping is unavailable."""
-    if _execution_profile() != "standalone":
-        return False
-    raw = os.environ.get("SIMPLICIO_LOOP_ALLOW_DEGRADED_MAPPER", "").strip().lower()
-    if raw:
-        return raw not in {"0", "false", "no", "off", "disabled"}
-    return _local_fallback_enabled()
-
-
-def _degraded_mapper_payload(
-    repo_path: Path,
-    before: Mapping[str, Any],
-    mapper_preflight: Mapping[str, Any],
-    scan: Any,
-    inspect: Any,
-    snapshot: Any,
-    handoff: Any,
-    target_hint: str,
-) -> Dict[str, Any]:
-    """Build an explicitly UNVERIFIED context for a bounded local retry.
-
-    This is not a substitute for a Mapper receipt: the original command results remain
-    persisted, the degraded marker is durable, and only targets resolved inside the
-    repository are exposed to planning. When the task has no target hint, the same
-    bounded candidate selector used by planning supplies at most eight local files.
-    """
-    had_target_hint = bool(str(target_hint or "").strip())
-    target = str(target_hint or "").strip().replace("\\", "/")
-    files: List[Dict[str, Any]] = []
-    if target:
-        candidate = (repo_path / target).resolve()
-        try:
-            candidate.relative_to(repo_path.resolve())
-        except (OSError, ValueError):
-            target = ""
-        else:
-            if candidate.is_file() or candidate.is_dir():
-                files.append({"path": target, "source": "explicit_task_target"})
-            else:
-                target = ""
-    if not files and not had_target_hint:
-        files = [
-            {"path": path, "source": "bounded_local_candidate"}
-            for path in _fallback_targets(repo_path)[:8]
-        ]
-    pack_seed = {
-        "repo_state": dict(before),
-        "target": target,
-        "files": files,
-        "reason": "mapper_deep_pass_unavailable",
-    }
-    pack_hash = hashlib.sha256(
-        json.dumps(pack_seed, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    degraded_handoff = {
-        "ready": bool(files),
-        "context_pack": {
-            "schema": "simplicio.context-pack/v1",
-            "pack_hash": pack_hash,
-            "files": files,
-            "fidelity": {"gate": "degraded_local", "status": "UNVERIFIED"},
-            "source": "simplicio-loop-local-fallback",
-        },
-        "degraded_local": True,
-    }
-    return {
-        "scan": {
-            "returncode": scan.returncode,
-            "stdout": json.loads(scan.stdout) if scan.stdout.strip() else {},
-            "stderr": (scan.stderr or "").strip(),
-        },
-        "inspect": {
-            "returncode": inspect.returncode,
-            "stdout": json.loads(inspect.stdout) if inspect.stdout.strip() else {},
-            "stderr": (inspect.stderr or "").strip(),
-        },
-        "snapshot": {
-            "returncode": snapshot.returncode,
-            "stdout": json.loads(snapshot.stdout) if snapshot.stdout.strip() else {},
-            "stderr": (snapshot.stderr or "").strip(),
-        },
-        "handoff": {
-            "returncode": 0,
-            "stdout": degraded_handoff,
-            "stderr": (handoff.stderr or "").strip(),
-        },
-        "handoff_original": {
-            "returncode": handoff.returncode,
-            "stdout": json.loads(handoff.stdout) if handoff.stdout.strip() else {},
-            "stderr": (handoff.stderr or "").strip(),
-        },
-        "generated_at": _now(),
-        "repo_state_before": dict(before),
-        "repo_state_after": _repo_fingerprint(repo_path),
-        "mapper_preflight": dict(mapper_preflight),
-        "degraded_local": True,
-        "degraded_reason_code": "mapper_deep_pass_unavailable",
-        "evidence_status": "UNVERIFIED",
-    }
-
-
-def _devcli_env(repo_path: Path, base_env: Dict[str, str] | None = None) -> Dict[str, str]:
-    env = dict(base_env or os.environ)
-    repo_str = str(repo_path)
-    current = env.get("PYTHONPATH", "").strip()
-    env["PYTHONPATH"] = repo_str if not current else f"{repo_str}{os.pathsep}{current}"
-    selected_devcli = _devcli_command_path()
-    if selected_devcli != "simplicio-dev-cli":
-        env["PATH"] = f"{Path(selected_devcli).resolve().parent}{os.pathsep}{env.get('PATH', '')}"
-    # Local LLM execution is paused globally; child Dev CLI flows must inherit
-    # the policy and must not receive a local model selector.
-    env["SIMPLICIO_LOCAL_LLM_DISABLED"] = "1"
-    if _degraded_mapper_fallback_enabled():
-        env["SIMPLICIO_ALLOW_DEGRADED_MAPPER"] = "1"
-    if _execution_profile() == "standalone":
-        # The Loop's standalone operator preflight is a context/target gate;
-        # it must not invoke the deterministic Dev CLI provider.
-        env["SIMPLICIO_STANDALONE_PREFLIGHT"] = "1"
-    model = env.get("SIMPLICIO_MODEL", "").strip().casefold()
-    if model.startswith(("local/", "llama", "ollama")):
-        env.pop("SIMPLICIO_MODEL", None)
-    return env
-
-def _devcli_has_mapper_manifest(command: str) -> bool:
-    try:
-        executable = Path(command).resolve()
-        first_line = executable.read_text(encoding="utf-8", errors="ignore").splitlines()[0]
-        interpreter = first_line[2:].strip() if first_line.startswith("#!") else ""
-        if interpreter.startswith("/usr/bin/env "):
-            interpreter = shutil.which(interpreter.rsplit(" ", 1)[-1]) or ""
-        if not interpreter:
-            return False
-        probe = subprocess.run(
-            [interpreter, "-c",
-             "import importlib.resources; print(int(importlib.resources.files('simplicio_mapper').joinpath('contracts/context-snapshot/v1/contract-manifest.json').is_file()))"],
-            capture_output=True, text=True, timeout=3, check=False,
-        )
-        return probe.returncode == 0 and probe.stdout.strip() == "1"
-    except (OSError, IndexError, subprocess.SubprocessError):
-        return False
-
-
-def _devcli_command_path() -> str:
-    explicit = os.environ.get("SIMPLICIO_DEV_CLI_BIN", "").strip()
-    if explicit:
-        return explicit
-    current = shutil.which("simplicio-dev-cli")
-    candidates = []
-    if current:
-        candidates.append(current)
-    pipx_root = Path.home() / ".local" / "pipx" / "venvs"
-    if pipx_root.is_dir():
-        candidates.extend(str(path) for path in sorted(pipx_root.glob("*/bin/simplicio-dev-cli")))
-    compatible = next((path for path in candidates if _devcli_has_mapper_manifest(path)), None)
-    return compatible or current or "simplicio-dev-cli"
-
-
-def _devcli_cmd(repo_path: Path, *args: str) -> List[str]:
-    if (repo_path / "simplicio" / "cli.py").exists():
-        base = [sys.executable, "-m", "simplicio.cli", *args]
-    else:
-        base = ["simplicio-dev-cli", *args]
-    # Runtime-backed execution is optional; local model execution is not an
-    # allowed fallback. The command remains usable in standalone mode.
-    return base
-
-_RUNTIME_EFFECT_ADAPTERS: Dict[str, RuntimeEffectAdapter] = {}
-_RUNTIME_EFFECT_BRIDGES: Dict[str, RuntimeBridge] = {}
-_RUNTIME_EFFECT_CACHE_LOCK = RLock()
-
-
-def _execution_profile() -> str:
-    """Resolve standalone vs runtime-backed.
-
-    Explicit ``SIMPLICIO_EXECUTION_PROFILE=standalone|runtime-backed`` wins.
-    Otherwise adaptive: when Runtime is operational (or required), use
-    ``runtime-backed``; else ``standalone``. Invalid values fail closed.
-    """
-    raw = os.environ.get("SIMPLICIO_EXECUTION_PROFILE", "").strip().lower()
-    if raw in {"standalone", "runtime-backed"}:
-        return raw
-    if raw in {"", "auto"}:
-        try:
-            from .strict_mode import resolve_execution_profile
-
-            return resolve_execution_profile()
-        except Exception:
-            return "standalone"
-    raise RuntimeEffectError(
-        "SIMPLICIO_EXECUTION_PROFILE must be standalone, runtime-backed, or auto"
-    )
-
-
-def _runtime_effect_adapter(repo_path: Path, profile: str) -> RuntimeEffectAdapter:
-    if profile not in {"standalone", "runtime-backed"}:
-        raise RuntimeEffectError("unsupported execution profile")
-    if profile == "standalone":
-        return RuntimeEffectAdapter(profile=profile)
-    key = str(repo_path.resolve())
-    with _RUNTIME_EFFECT_CACHE_LOCK:
-        adapter = _RUNTIME_EFFECT_ADAPTERS.get(key)
-        if adapter is None:
-            bridge = _RUNTIME_EFFECT_BRIDGES.get(key)
-            if bridge is None:
-                bridge = RuntimeBridge()
-                _RUNTIME_EFFECT_BRIDGES[key] = bridge
-            adapter = RuntimeEffectAdapter(profile="runtime-backed", bridge=bridge)
-            _RUNTIME_EFFECT_ADAPTERS[key] = adapter
-    return adapter
-
-
-def _build_effect_request(repo_path: Path, run_id: str, task_index: int,
-                          task: Mapping[str, Any], attempt: int,
-                          targets: Sequence[str], route_record: Mapping[str, Any],
-                          guarded_attempt: Any,
-                          canonical_plan: Optional[CanonicalPlan] = None) -> EffectRequest:
-    lease = getattr(guarded_attempt, "lease", None)
-    lease_id = str(getattr(lease, "lease_id", "") or f"loop-run:{run_id}")
-    raw_fence = getattr(lease, "fencing_token", 1)
-    if _mapper_journal_enabled() and str(raw_fence).strip():
-        fencing_token: int | str = str(raw_fence)
-    else:
-        try:
-            fencing_token = max(1, int(raw_fence))
-        except (TypeError, ValueError):
-            fencing_token = 1
-    transaction_id = f"{run_id}:{task.get('id') or task_index}:{attempt}"
-    return EffectRequest(
-        workspace=str(repo_path),
-        idempotency_key=transaction_id,
-        write_set=tuple(f"repo:{target}" for target in (targets or ["repo"])),
-        lease_id=lease_id,
-        fencing_token=fencing_token,
-        cwd=".",
-        timeout_ms=_operator_timeout("execute") * 1000,
-        attempt=attempt,
-        deadline=int(time.time() * 1000) + _operator_timeout("execute") * 1000,
-        cancellation_boundary="safe_boundary_only",
-        gate_id=str(route_record.get("receipt_sha") or "execution-route"),
-        runtime_generation=os.environ.get("SIMPLICIO_RUNTIME_GENERATION") or None,
-        transaction_id=transaction_id,
-        canonical_plan=canonical_plan,
-        attempt_id=str(getattr(guarded_attempt, "attempt_id", "") or lease_id),
-    )
-
-
-def _parse_effect_stdout(value: Any) -> Dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    if isinstance(value, str) and value.strip():
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            return {"raw": redact_sensitive_text(value)}
-        return dict(parsed) if isinstance(parsed, dict) else {"raw": redact_sensitive_text(value)}
-    return {}
-
-
-def _execute_operator_effect_unchecked(*, profile: str, adapter: RuntimeEffectAdapter,
-                             request: EffectRequest, argv: List[str],
-                             env: Mapping[str, str], repo_path: Path,
-                             attempt_coordinator: Optional[AttemptCoordinator],
-                             guarded_attempt: Any) -> Dict[str, Any]:
-    if profile == "runtime-backed":
-        effect_receipt = adapter.execute(request, argv, env=env)
-        result = dict(effect_receipt.get("result") or {})
-        status = str(effect_receipt.get("status") or result.get("status") or "")
-        returncode = result.get("returncode")
-        if isinstance(returncode, bool) or not isinstance(returncode, int):
-            returncode = None
-        if status in {"UNAVAILABLE", "UNCERTAIN"}:
-            returncode = None
-        return {
-            "returncode": returncode,
-            "stdout": _parse_effect_stdout(result.get("stdout")),
-            "stderr": redact_sensitive_text(str(result.get("stderr") or "")),
-            "source": "runtime_effect_adapter",
-            "effect_receipt": effect_receipt,
-            "uncertain": status == "UNCERTAIN" or result.get("status") == "UNCERTAIN",
-        }
-
-    fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON", "").strip()
-    if fake:
-        payload = json.loads(fake)
-        for rel, content in (payload.get("write_files") or {}).items():
-            path = repo_path / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(str(content), encoding="utf-8")
-        return {
-            "returncode": int(payload.get("returncode", 0)),
-            "stdout": payload.get("stdout", {}),
-            "stderr": redact_sensitive_text(str(payload.get("stderr", ""))),
-            "source": "env_override",
-            "effect_receipt": None,
-            "uncertain": False,
-        }
-
-    try:
-        if attempt_coordinator is not None and guarded_attempt is not None:
-            result = attempt_coordinator.run_guarded(
-                guarded_attempt, argv, cwd=repo_path,
-                timeout=_operator_timeout("execute"), env=env,
-            )
-        else:
-            result = subprocess.run(
-                argv, cwd=str(repo_path), capture_output=True, text=True,
-                timeout=_operator_timeout("execute"), env=env,
-            )
-        return {
-            "returncode": result.returncode,
-            "stdout": _parse_effect_stdout((result.stdout or "").strip()),
-            "stderr": redact_sensitive_text((result.stderr or "").strip()),
-            "source": "live_cli",
-            "effect_receipt": None,
-            "uncertain": False,
-        }
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "returncode": None,
-            "stdout": {},
-            "stderr": f"timed out after {exc.timeout}s",
-            "source": "live_cli",
-            "effect_receipt": None,
-            "uncertain": False,
-        }
-
-
-
-def _hookwall_digest(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _mapper_operations_database(repo_path: Path) -> str:
-    """Resolve the repo-scoped canonical operations store without creating it."""
-    explicit = os.environ.get("SIMPLICIO_MAPPER_OPERATIONS_DB", "").strip()
-    if explicit:
-        return str(Path(explicit).expanduser().absolute())
-    try:
-        from simplicio_mapper.store import resolve_store_location
-    except (ImportError, ModuleNotFoundError) as error:
-        raise RuntimeError("MAPPER_STORE_NOT_INSTALLED") from error
-    environ = dict(os.environ)
-    environ.pop("SIMPLICIO_DATA_DIR", None)
-    environ.pop("SIMPLICIO_HOME", None)
-    environ["SIMPLICIO_STORE_SCOPE"] = "repo"
-    try:
-        return str(resolve_store_location(environ=environ, repo_root=repo_path).database("operations.sqlite"))
-    except (OSError, ValueError) as error:
-        raise RuntimeError(f"MAPPER_OPERATIONS_DB_UNAVAILABLE:{error}") from error
-
-
-def _hookwall_ledger(repo_path: Path) -> Any:
-    """Select Hookwall persistence; legacy is available only by explicit opt-in."""
-    if _mapper_journal_enabled():
-        return MapperHookwallEffectLedger(_mapper_operations_database(repo_path), auto_create=False)
-    return HookwallEffectLedger(
-        repo_path / ".simplicio" / "orchestrator" / "hookwall.sqlite3"
-    )
-
-
-def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
-                             request: EffectRequest, argv: List[str],
-                             env: Mapping[str, str], repo_path: Path,
-                             attempt_coordinator: Optional[AttemptCoordinator],
-                             guarded_attempt: Any,
-                             source_hash: Optional[str] = None) -> Dict[str, Any]:
-    """Run one mutable operator only inside a lineage-bound Hookwall chain."""
-    source_hash = source_hash or str(_repo_fingerprint(repo_path).get("tree_hash") or "")
-    plan_id = request.gate_id or request.transaction_id or request.idempotency_key
-    policy_hash = _hookwall_digest({
-        "profile": profile,
-        "gate_id": request.gate_id or "",
-        "runtime_generation": request.runtime_generation or "",
-        "write_set": list(request.write_set),
-    })
-    envelope = validate_envelope({
-        "schema": "simplicio.dispatch-envelope/v1",
-        "envelope_id": request.transaction_id or request.idempotency_key,
-        "run_id": request.idempotency_key.split(":task-", 1)[0],
-        "plan_id": plan_id,
-        "source_hash": source_hash,
-        "policy_hash": policy_hash,
-        "idempotency_key": request.idempotency_key,
-        "workspace": request.workspace,
-        "fence": request.fencing_token,
-        "attempt_id": request.attempt_id or request.lease_id,
-        "effect_set": ["process", "write"],
-        "write_set": list(request.write_set),
-        "command": list(argv),
-    })
-    pre_decision = {
-        "schema": "simplicio.hookwall-decision/v1",
-        "phase": "pre",
-        "verdict": "proceed",
-        "reason_code": "policy_authorized",
-        "envelope_id": envelope["envelope_id"],
-        "envelope_hash": envelope["envelope_hash"],
-        "source_hash": source_hash,
-        "policy_hash": policy_hash,
-        "fence": request.fencing_token,
-    }
-    validate_pre_decision(envelope, pre_decision)
-    hookwall_ledger = _hookwall_ledger(repo_path)
-    reservation = hookwall_ledger.reserve(envelope, pre_decision)
-    if reservation["action"] == "REPLAY_VERIFIED":
-        return {
-            "returncode": 0, "stdout": {}, "stderr": "",
-            "source": "hookwall_verified_replay", "effect_receipt": None,
-            "uncertain": False, "hookwall_envelope": envelope,
-            "hookwall_pre_decision": pre_decision,
-            "hookwall_evidence": reservation["evidence"],
-            "hookwall_reason": "idempotent_replay",
-        }
-
-    outcome = _execute_operator_effect_unchecked(
-        profile=profile,
-        adapter=adapter,
-        request=request,
-        argv=argv,
-        env=env,
-        repo_path=repo_path,
-        attempt_coordinator=attempt_coordinator,
-        guarded_attempt=guarded_attempt,
-    )
-    outcome["hookwall_envelope"] = envelope
-    outcome["hookwall_pre_decision"] = pre_decision
-    if outcome.get("returncode") != 0 or outcome.get("uncertain"):
-        hookwall_ledger.mark_unresolved(
-            request.idempotency_key,
-            "effect_uncertain" if outcome.get("uncertain") else "effect_not_committed",
-        )
-        outcome["hookwall_evidence"] = None
-        outcome["hookwall_reason"] = (
-            "effect_uncertain" if outcome.get("uncertain") else "effect_not_committed"
-        )
-        return outcome
-
-    hookwall_ledger.effect_confirmed(
-        request.idempotency_key,
-        {"returncode": outcome.get("returncode"),
-         "stdout": outcome.get("stdout") or {},
-         "source": outcome.get("source") or ""},
-    )
-
-    mutation_receipt = {
-        "schema": "simplicio.mutation-receipt/v1",
-        "envelope_id": envelope["envelope_id"],
-        "source_hash": source_hash,
-        "policy_hash": policy_hash,
-        "idempotency_key": request.idempotency_key,
-        "fence": request.fencing_token,
-        "status": "committed",
-        "result_hash": _hookwall_digest({
-            "returncode": outcome.get("returncode"),
-            "stdout": outcome.get("stdout") or {},
-            "source": outcome.get("source") or "",
-        }),
-    }
-    mutation_receipt["receipt_hash"] = _hookwall_digest(mutation_receipt)
-    post_decision = {
-        "schema": "simplicio.hookwall-decision/v1",
-        "phase": "post",
-        "verdict": "proceed",
-        "reason_code": "effect_verified",
-        "envelope_id": envelope["envelope_id"],
-        "source_hash": source_hash,
-        "policy_hash": policy_hash,
-        "idempotency_key": request.idempotency_key,
-        "fence": request.fencing_token,
-        "receipt_hash": mutation_receipt["receipt_hash"],
-    }
-    try:
-        evidence = hookwall_ledger.verify_and_commit(
-            envelope, pre_decision, mutation_receipt, post_decision
-        )
-    except HookwallBlocked as exc:
-        hookwall_ledger.mark_unresolved(request.idempotency_key, exc.reason_code)
-        outcome["returncode"] = None
-        outcome["uncertain"] = True
-        outcome["hookwall_evidence"] = None
-        outcome["hookwall_reason"] = exc.reason_code
-        return outcome
-    verified, reason = gate_completion(evidence)
-    if not verified:
-        hookwall_ledger.mark_unresolved(request.idempotency_key, reason)
-        outcome["returncode"] = None
-        outcome["uncertain"] = True
-        outcome["hookwall_evidence"] = None
-        outcome["hookwall_reason"] = reason
-        return outcome
-    outcome["hookwall_mutation_receipt"] = mutation_receipt
-    outcome["hookwall_post_decision"] = post_decision
-    outcome["hookwall_evidence"] = evidence
-    outcome["hookwall_reason"] = "ok"
-    return outcome
-
-
-
-def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
-    """Return a deterministic content fingerprint for mapper freshness gates.
-
-    Git status alone cannot detect two edits to the same path, so the fingerprint includes
-    file bytes for the relevant working tree while excluding generated mapper/run artifacts.
-    This is intentionally local and model-free; a later mutation can therefore invalidate the
-    plan without trusting an LLM's freshness claim.
-    """
-    digest = hashlib.sha256()
-    files = []
-    for root, dirs, names in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in {".git", ".simplicio/orchestrator", ".simplicio", "__pycache__"}]
-        for name in names:
-            path = Path(root) / name
-            try:
-                rel = path.relative_to(repo_path).as_posix()
-                data = path.read_bytes()
-            except (OSError, ValueError):
-                continue
-            files.append((rel, data))
-    for rel, data in sorted(files, key=lambda item: item[0]):
-        digest.update(rel.encode("utf-8", "surrogateescape"))
-        digest.update(b"\0")
-        digest.update(hashlib.sha256(data).digest())
-    head = ""
-    status = ""
-    try:
-        head_result = _run_cmd(["git", "rev-parse", "HEAD"], repo_path)
-        head = (head_result.stdout or "").strip() if head_result.returncode == 0 else ""
-        status_result = _run_cmd(["git", "status", "--porcelain=v1", "--untracked-files=all"], repo_path)
-        if status_result.returncode == 0:
-            filtered = []
-            for raw_line in (status_result.stdout or "").splitlines():
-                line = raw_line.rstrip()
-                if len(line) <= 3:
-                    continue
-                path_text = line[3:].strip()
-                parts = [part.strip() for part in path_text.split("->")] if "->" in path_text else [path_text]
-                normalized = [part.replace("\\", "/").lstrip("./").lower() for part in parts if part.strip()]
-                if normalized and all(
-                    item.startswith(".simplicio/orchestrator/")
-                    or item.startswith(".simplicio/")
-                    or item.startswith(".claude/")
-                    for item in normalized
-                ):
-                    continue
-                filtered.append(line)
-            status = "\n".join(filtered).strip()
-    except Exception:
-        pass
-    return {
-        "head": head,
-        "dirty_status_hash": hashlib.sha256(status.encode("utf-8")).hexdigest(),
-        "tree_hash": digest.hexdigest(),
-    }
-
-
-def _repo_state_equivalent(left: Dict[str, str], right: Dict[str, str]) -> bool:
-    """Return True when repo content and base commit are unchanged.
-
-    `dirty_status_hash` is useful telemetry, but it can drift because helper-generated
-    `.simplicio/orchestrator`/`.simplicio` state or other non-material status noise changes while the
-    tracked working tree bytes remain identical. Freshness gates should therefore key on the
-    semantic repository state: commit + tree content hash.
-    """
-    return (
-        (left.get("head") or "") == (right.get("head") or "")
-        and (left.get("tree_hash") or "") == (right.get("tree_hash") or "")
-    )
-
-
-def _parse_version_tuple(text: str) -> tuple[int, int, int]:
-    m = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
-    if not m:
-        return (0, 0, 0)
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
-
-
-def _preflight_override(name: str) -> Dict[str, Any] | None:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return None
-    return json.loads(raw)
-
-
-def _resolved_identity(command: str, expected_stems: Sequence[str]) -> Dict[str, Any]:
-    """Resolve an operator once and fail closed on a PATH identity mismatch."""
-    path = shutil.which(command) or ""
-    normalized = Path(path).stem.lower() if path else ""
-    return {
-        "command": command,
-        "path": path,
-        "identity_ok": bool(path) and any(stem.lower() in normalized for stem in expected_stems),
-    }
-
-
-def _coverage(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
-    total_scenarios = 0
-    total_rules = 0
-    for task in tasks:
-        total_scenarios += len(task.get("scenarios") or [])
-        total_rules += len(task.get("rules") or [])
-    return {
-        "scenarios": {"verified": 0, "total": total_scenarios},
-        "rules": {"verified": 0, "total": total_rules},
-    }
-
-
-def _criteria_text(task: Dict[str, Any]) -> str:
-    lines = []
-    for scenario in task.get("scenarios") or []:
-        parts = []
-        if scenario.get("then"):
-            parts.extend(scenario["then"])
-        else:
-            parts.append(scenario.get("title") or scenario.get("id") or "scenario")
-        lines.append("- " + " ".join(parts))
-    return "\n".join(lines)
-
-
-def _constraints_text(task: Dict[str, Any]) -> str:
-    lines = []
-    for rule in task.get("rules") or []:
-        lines.append(f"- {rule.get('id')}: {rule.get('text')}")
-    deps = (task.get("dependencies") or {}).get("items") or []
-    for dep in deps:
-        lines.append(f"- dependency: {dep}")
-    return "\n".join(lines)
-
-
-def _task_goal(task: Dict[str, Any]) -> str:
-    identity = task.get("identity") or {}
-    story = task.get("story") or {}
-    parts = [
-        p
-        for p in [
-            identity.get("system"),
-            identity.get("feature"),
-            identity.get("type"),
-            story.get("persona"),
-            story.get("desire"),
-            story.get("value"),
-        ]
-        if p
-    ]
-    return " | ".join(parts)
-
-
-def _task_spec_payload(task: Mapping[str, Any]) -> Dict[str, Any]:
-    """Build the lossless Dev CLI TaskSpec handoff from a Loop task contract.
-
-    Loop's contract is intentionally richer than the public TaskSpec.  The full
-    contract is retained in an additive field while the canonical fields are
-    mapped explicitly, so the operator never has to reconstruct the task from
-    flattened goal/criteria/constraint strings.
-    """
-    original_text = str(task.get("original_text") or "")
-    if not original_text.strip():
-        raise RuntimeError("typed TaskSpec handoff requires task-contract original_text")
-    normalized = original_text.replace("\r\n", "\n").replace("\r", "\n").strip()
-    source_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    identity = dict(task.get("identity") or {})
-    story = dict(task.get("story") or {})
-
-    acceptance_criteria = []
-    for scenario in task.get("scenarios") or []:
-        item = dict(scenario)
-        item.setdefault("original_text", " ".join(
-            str(part).strip()
-            for part in (
-                item.get("title", ""),
-                *[str(value) for value in item.get("given") or []],
-                *[str(value) for value in item.get("when") or []],
-                *[str(value) for value in item.get("then") or []],
-            )
-            if str(part).strip()
-        ))
-        acceptance_criteria.append(item)
-
-    def stateful_items(value: Any, prefix: str) -> list[Dict[str, Any]]:
-        if not isinstance(value, Mapping):
-            return []
-        state = str(value.get("state") or "unknown")
-        items = []
-        for index, entry in enumerate(value.get("items") or [], start=1):
-            if isinstance(entry, Mapping):
-                item = dict(entry)
-                item.setdefault("id", f"{prefix}{index}")
-                item.setdefault("original_text", str(item.get("text") or item.get("summary") or ""))
-            else:
-                item = {"id": f"{prefix}{index}", "text": str(entry), "original_text": str(entry)}
-            item.setdefault("state", state)
-            items.append(item)
-        return items
-
-    questions = [dict(item) for item in task.get("questions") or [] if isinstance(item, Mapping)]
-    assumptions = [dict(item) for item in task.get("assumptions") or [] if isinstance(item, Mapping)]
-    blockers = [dict(item) for item in task.get("blockers") or [] if isinstance(item, Mapping)]
-    access_path = str(task.get("access_path") or "").strip()
-    source = task.get("source") or {}
-    task_id = str(identity.get("id") or identity.get("title") or f"TASK-{source_hash[:12].upper()}")
-    payload: Dict[str, Any] = {
-        "schema": "simplicio.task-spec/v2",
-        "task_id": task_id,
-        "source": {
-            "kind": "simplicio-loop-task-contract",
-            "locator": str(source.get("path") or "") or None,
-            "encoding": "utf-8",
-        },
-        "source_hash": source_hash,
-        "language": "unknown",
-        "system": str(identity.get("system") or "") or None,
-        "functionality": str(identity.get("feature") or "") or None,
-        "task_type": str(identity.get("type") or "") or None,
-        "narrative": {
-            "persona": str(story.get("persona") or "") or None,
-            "desire": str(story.get("desire") or "") or None,
-            "value": str(story.get("value") or "") or None,
-        },
-        "acceptance_criteria": acceptance_criteria,
-        "business_rules": [dict(item) for item in task.get("rules") or [] if isinstance(item, Mapping)],
-        "non_functional_requirements": stateful_items(task.get("nfrs"), "NFR"),
-        "prototypes": [dict(item) for item in task.get("prototypes") or [] if isinstance(item, Mapping)],
-        "attachments": [],
-        "navigation": ([{"id": "NAV1", "path": access_path, "original_text": access_path}]
-                        if access_path else []),
-        "dependencies": stateful_items(task.get("dependencies"), "DEP"),
-        "impact_signals": dict(task.get("impact_signals") or {}),
-        "additional_information": [
-            {"id": f"INFO{index}", "text": str(item), "original_text": str(item)}
-            for index, item in enumerate(task.get("additional_information") or [], start=1)
-        ],
-        "uncertainties": questions + assumptions + blockers,
-        "human_gates": [dict(item) for item in questions],
-        "verification_commands": ([{"command": test_command, "verifier": "declared"}]
-                              if (test_command := os.environ.get("SIMPLICIO_TEST_CMD", "").strip())
-                              else []),
-        "source_span": {},
-        "original_text": original_text,
-        # Additive field: preserves every Loop-only field and makes the handoff
-        # auditable without teaching the Dev CLI private Loop schema.
-        "loop_task_contract": json.loads(json.dumps(dict(task), ensure_ascii=False)),
-    }
-    return payload
-
-
-def _task_spec_hash(payload: Mapping[str, Any]) -> str:
-    """Return the Dev CLI canonical TaskSpec hash for receipt correlation."""
-    return hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-
-def _derive_context_handle(snapshot_path: Path, pack_path: Path, execution_path: Path, repo_path: Path) -> str:
-    """Derive the canonical Dev CLI handle from Mapper-owned artifacts."""
-    try:
-        from simplicio.plan_compiler.mapper_context import bind_mapper_context
-
-        binding = bind_mapper_context(
-            _load_json(snapshot_path),
-            _load_json(pack_path),
-            source_root=repo_path,
-            execution_context_payload=_load_json(execution_path),
-        )
-        return str(binding.context_handle.value)
-    except Exception:
-        # Context derivation is fail-closed; Dev CLI reports the typed gate.
-        return ""
-
-
-def _context_handoff_args(
-    repo_path: Path,
-    run_root: Path,
-    *,
-    attempt_id: str = "",
-    lease_id: str = "",
-    fencing_token: str = "",
-    require_authorization: bool = False,
-) -> Tuple[List[str], Dict[str, Any]]:
-    """Project canonical Mapper context artifacts into the Dev CLI argv.
-
-    The compact Mapper handoff is not a ContextSnapshot.  This helper only
-    forwards explicitly supplied canonical artifacts and never derives a
-    handle from a path or from ``mapper_context_hash``.  Missing artifacts are
-    recorded as a diagnostic; the integrated Dev CLI remains the fail-closed
-    owner of the final context gate.
-    """
-    authorization_args, authorization_handoff = prepare_authorization_handoff(
-        run_root, required=require_authorization,
-    )
-    mapper_path = run_root / "mapper-context.json"
-    if not mapper_path.exists():
-        return list(authorization_args), {
-            "status": "missing", "reason_code": "CONTEXT_ARTIFACTS_UNAVAILABLE",
-            "authorization": authorization_handoff,
-        }
-    try:
-        mapper = _load_json(mapper_path)
-    except (OSError, ValueError):
-        return list(authorization_args), {
-            "status": "invalid", "reason_code": "CONTEXT_ARTIFACTS_INVALID",
-            "authorization": authorization_handoff,
-        }
-    handoff = mapper.get("handoff") if isinstance(mapper.get("handoff"), Mapping) else {}
-    stdout = handoff.get("stdout") if isinstance(handoff.get("stdout"), Mapping) else handoff
-    if not isinstance(stdout, Mapping):
-        stdout = {}
-
-    def first_value(keys: Sequence[str]) -> Any:
-        for container in (mapper, stdout):
-            for key in keys:
-                value = container.get(key) if isinstance(container, Mapping) else None
-                if value not in (None, "", {}):
-                    return value
-        return None
-
-    def persist_artifact(value: Any, filename: str, fallbacks: Sequence[Path] = ()) -> Path | None:
-        if isinstance(value, Mapping):
-            path = run_root / filename
-            _write_json(path, dict(value))
-            return path
-        candidates: List[Path] = []
-        if isinstance(value, str) and value.strip():
-            candidate = Path(value)
-            candidates = ([candidate] if candidate.is_absolute()
-                          else [base / candidate for base in (repo_path, run_root)])
-        candidates.extend(fallbacks)
-        for candidate in candidates:
-            try:
-                resolved = candidate.resolve()
-                if resolved.exists():
-                    return resolved
-            except OSError:
-                continue
-        return None
-
-    snapshot_path = persist_artifact(
-        first_value(("context_snapshot", "canonical_context_snapshot", "context_snapshot_path")),
-        "context-snapshot.json",
-        (repo_path / ".simplicio" / "context-snapshot.json",),
-    )
-    pack_path = persist_artifact(
-        first_value(("context_pack", "canonical_context_pack", "context_pack_path")),
-        "context-pack.json",
-    )
-    execution_path = persist_artifact(
-        first_value(("execution_context", "canonical_execution_context", "execution_context_path")),
-        "execution-context.json",
-    )
-    if mapper.get("degraded_local") and pack_path and _degraded_mapper_fallback_enabled():
-        # Standalone Dev CLI can consume the explicit local pack without the
-        # Mapper-owned snapshot/execution artifacts that a full handoff provides.
-        args = ["--context-pack", str(pack_path)]
-        args.extend(authorization_args)
-        return args, {
-            "status": "degraded_local",
-            "context_handle": "",
-            "pack_path": str(pack_path),
-            "authorization": authorization_handoff,
-            "evidence_status": "UNVERIFIED",
-        }
-    raw_context_handle = first_value(("context_handle", "canonical_context_handle"))
-    context_handle = str(raw_context_handle).strip() if raw_context_handle not in (None, "", {}) else ""
-    if not context_handle and all((snapshot_path, pack_path, execution_path)):
-        context_handle = _derive_context_handle(snapshot_path, pack_path, execution_path, repo_path)
-    identity_values = (attempt_id.strip(), lease_id.strip(), fencing_token.strip())
-    identity_present = any(identity_values)
-    identity_complete = all(identity_values)
-    if identity_present and not identity_complete:
-        return list(authorization_args), {
-            "status": "missing",
-            "reason_code": "CONTEXT_AUTHORIZATION_INCOMPLETE",
-            "snapshot": bool(snapshot_path),
-            "pack": bool(pack_path),
-            "execution_context": bool(execution_path),
-            "context_handle": bool(context_handle),
-            "authorization": authorization_handoff,
-        }
-    if not all((snapshot_path, pack_path, execution_path)) or (identity_present and not context_handle):
-        return list(authorization_args), {
-            "status": "missing",
-            "reason_code": "CONTEXT_ARTIFACTS_INCOMPLETE",
-            "snapshot": bool(snapshot_path),
-            "pack": bool(pack_path),
-            "execution_context": bool(execution_path),
-            "context_handle": bool(context_handle),
-            "authorization": authorization_handoff,
-        }
-    args = [
-        "--context-snapshot", str(snapshot_path),
-        "--context-pack", str(pack_path),
-        "--execution-context", str(execution_path),
-    ]
-    if context_handle:
-        args.extend(["--context-handle", context_handle])
-    if identity_complete:
-        args.extend([
-            "--attempt-id", attempt_id,
-            "--lease-id", lease_id,
-            "--fencing-token", fencing_token,
-        ])
-    args.extend(authorization_args)
-    return args, {
-        "status": "propagated",
-        "context_handle": context_handle,
-        "context_handle_derived_by": "simplicio-dev-cli" if not context_handle else "mapper",
-        "snapshot_path": str(snapshot_path),
-        "pack_path": str(pack_path),
-        "execution_context_path": str(execution_path),
-        "authorization": authorization_handoff,
-    }
-
-
-def _auto_fan_out_enabled() -> bool:
-    """Return whether batch execution may provision isolated workers automatically.
-
-    Fan-out is the safe default for independent tasks.  Operators can explicitly opt out
-    with ``SIMPLICIO_LOOP_AUTO_FAN_OUT=0`` when a repository cannot create worktrees (for
-    example, a read-only checkout); the ordinary shared-run serial guard remains active in
-    either mode.
-    """
-    raw = os.environ.get("SIMPLICIO_LOOP_AUTO_FAN_OUT", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off", "disabled"}
-
-
-def _guarded_dispatch_enabled() -> bool:
-    """Opt-in gate (issue #288) for threading ``AttemptCoordinator.run_guarded`` through the
-    real operator dispatch path instead of a raw, unguarded ``subprocess.run``.
-
-    Off by default -- following the same pattern as ``SIMPLICIO_REQUIRE_MUTATION_AUTHORITY``
-    in #284's ``planning_gate.py`` wiring -- so existing callers/fixtures that pass a
-    distributed queue without the fuller identity/heartbeat contract are unaffected. Set
-    ``SIMPLICIO_GUARDED_DISPATCH=1`` to require a heartbeat-guarded, lease-fenced attempt for
-    every distributed-queue dispatch (a real worker whose lease is stolen mid-mutation is
-    killed and reported as ``lease_lost_during_execution`` instead of finishing unguarded).
-    """
-    return str(os.environ.get("SIMPLICIO_GUARDED_DISPATCH") or "").strip().lower() in ("1", "true", "yes")
-
-
-def _auto_merge_enabled() -> bool:
-    """Opt-in gate (issue #288) for calling ``MergeExecutor`` for real once a dispatch
-    attempt's receipt pair is ``VERIFIED``.
-
-    Off by default: creating/merging a real PR is a side effect with real consequences (an
-    actual GitHub API call, a real merge), so it must be explicitly requested via
-    ``SIMPLICIO_AUTO_MERGE_PR=1`` plus a resolvable repo slug
-    (``SIMPLICIO_REMOTE_REPO``/``GITHUB_REPOSITORY``) and a worktree branch on the item -- any
-    of those missing is reported as ``attempted: False`` rather than silently skipped.
-    """
-    return str(os.environ.get("SIMPLICIO_AUTO_MERGE_PR") or "").strip().lower() in ("1", "true", "yes")
-
-
-def _merge_repo_slug() -> str:
-    return str(os.environ.get("SIMPLICIO_REMOTE_REPO") or os.environ.get("GITHUB_REPOSITORY") or "").strip()
-
-
-def _dispatch_merge_pr(item: Mapping[str, Any], *, receipt: str, run_id: str) -> Dict[str, Any]:
-    """Create/poll/merge the PR for a claimed item's worktree branch and reconcile the merge
-    against the remote (issue #288).
-
-    Formalizes the ad-hoc ``gh pr create`` / ``gh pr merge --squash --delete-branch`` pattern
-    this project's own delivery workflow already performs by hand at the end of every task
-    (CLAUDE.md / AGENTS.md "Process" sections) as a real, reusable call instead of prose an
-    operator must remember. Never raises for an ordinary "cannot merge yet/here" outcome --
-    those come back as ``attempted: True, merged: False`` with a specific reason so a caller
-    can retry or escalate; only a hard `gh` transport failure surfaces as an error field.
-    """
-    context = item.get("worktree_context") or {}
-    branch = str(context.get("branch") or "").strip()
-    repo_slug = _merge_repo_slug()
-    if not branch or not repo_slug:
-        return {"attempted": False, "reason": "missing_branch_or_repo_slug", "merged": False}
-    base = str(os.environ.get("SIMPLICIO_MERGE_BASE") or "main").strip()
-    task_id = str(item.get("task_id") or "")
-    title = ("simplicio-loop: %s" % task_id) if task_id else "simplicio-loop: automated delivery"
-    body = ("Automated delivery for work item `%s` (run `%s`).\n\nOperator receipt: `%s`\n"
-            % (task_id, run_id, receipt))
-    try:
-        executor = MergeExecutor(repo=repo_slug)
-        pr = executor.ensure_pr(branch=branch, base=base, title=title, body=body)
-        pr_number = int(pr.get("number") or 0)
-        if not pr_number:
-            return {"attempted": True, "merged": False, "reason_code": "NO_PR_NUMBER",
-                    "detail": "ensure_pr did not resolve a PR number", "pr": pr}
-        result = executor.merge(pr_number)
-        return {"attempted": True, "pr": pr, **result.to_dict()}
-    except MergeExecutorError as exc:
-        return {"attempted": True, "merged": False, "reconciled": False,
-                "reason_code": exc.reason_code, "detail": str(exc)}
-
-
-def _model_routed_dispatch_enabled() -> bool:
-    """Opt-in gate (issue #287) for threading ``model_router.route()``'s selection
-    through the real dispatch path instead of a hardcoded runtime.
-
-    Off by default -- following the same pattern as ``SIMPLICIO_GUARDED_DISPATCH``
-    (#288) and ``SIMPLICIO_AUTO_MERGE_PR`` (#288) above -- so existing callers/fixtures
-    that dispatch without a model registry configured are unaffected. Set
-    ``SIMPLICIO_MODEL_ROUTED_DISPATCH=1`` to compute a real routing-decision-receipt
-    for every dispatch attempt and, when a real ``CodexRuntimeDriver``/
-    ``ClaudeRuntimeDriver`` is wired for the selected runtime, genuinely invoke it and
-    persist a ``runtime-execution-receipt`` alongside the operator's own receipts. A
-    routing block or driver failure never blocks the underlying dev-cli operator
-    mutation this repo already performs -- this is additional, real audit evidence
-    layered on top of it, not a replacement for the operator contract.
-    """
-    return str(os.environ.get("SIMPLICIO_MODEL_ROUTED_DISPATCH") or "").strip().lower() in ("1", "true", "yes")
-
-
-def _verified_delivery_gate_enabled() -> bool:
-    """Opt-in gate (issue #288) for routing a dispatch attempt's completion decision through
-    the real ``LoopRuntimeAdapter``/``VerifiedAgentDelivery``/``ExecutionBoard`` evidence +
-    watcher + delivery contract instead of the bare ``execution_state == "applied"`` check.
-
-    ``LoopRuntimeAdapter`` and ``VerifiedAgentDelivery`` are real, fully tested classes
-    (``simplicio_loop/runtime_adapter.py``, ``verified_delivery.py``) but had zero references
-    in the dispatch path -- the #288 audit named this the highest-value remaining gap: an
-    attempt could be reported ``succeeded`` on ``execution_state == "applied"`` alone, with no
-    fresh COMPLETE evidence receipt, no measured watcher pass, and no recorded delivery
-    convergence actually required. Off by default -- following the same pattern as
-    ``SIMPLICIO_GUARDED_DISPATCH``/``SIMPLICIO_AUTO_MERGE_PR`` above -- so existing
-    callers/fixtures that dispatch without a watcher run are unaffected. Set
-    ``SIMPLICIO_VERIFIED_DELIVERY_GATE=1`` to demote a dispatch attempt whose evidence pair,
-    watcher, or delivery gate is not genuinely satisfied from ``succeeded`` to ``failed``,
-    even when the underlying dev-cli operator itself applied cleanly.
-    """
-    return str(os.environ.get("SIMPLICIO_VERIFIED_DELIVERY_GATE") or "").strip().lower() in ("1", "true", "yes")
-
-
-def _run_verified_delivery_gate(
-    *, run_id: str, task_id: str, actor: str, attempt_id: str,
-    receipt_verdict: Mapping[str, Any], evidence_receipt: str, watcher_receipt: str,
-    merge: Optional[Mapping[str, Any]], worktree_context: Mapping[str, Any],
-) -> Dict[str, Any]:
-    """Drive the real evidence+watcher+delivery gated completion check (issue #288) for one
-    dispatch attempt.
-
-    Never raises: a failed gate comes back as ``verified: False`` with a ``reason`` so the
-    caller can demote ``succeeded`` to ``failed`` without crashing the scheduler. This is a
-    strict superset of the pre-existing ``execution_state == "applied"`` check -- it can only
-    turn a would-be success into a failure, never the reverse.
-    """
-    schema = "simplicio.verified-delivery-gate/v1"
-    try:
-        if receipt_verdict.get("status") != ReceiptStatus.VERIFIED:
-            return {"schema": schema, "verified": False, "status": "UNVERIFIED",
-                    "reason": "operator/evidence receipt pair is not VERIFIED"}
-        watcher_state: Dict[str, Any] = {}
-        if watcher_receipt and Path(watcher_receipt).exists():
-            try:
-                watcher_state = json.loads(Path(watcher_receipt).read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                watcher_state = {}
-        if watcher_state.get("status") != "MEASURED" or not watcher_state.get("match"):
-            return {"schema": schema, "verified": False, "status": "UNVERIFIED",
-                    "reason": "no measured watcher pass recorded for this attempt"}
-        runtime = LoopRuntimeAdapter(run_id=run_id, work_item_id=task_id, actor=actor or "loop",
-                                     standalone=True)
-        runtime.negotiate()
-        board = ExecutionBoard(run_id=run_id)
-        delivery = VerifiedAgentDelivery(runtime=runtime, board=board, attempt_id=attempt_id)
-        for phase in ("intake", "mapping", "planning", "executing", "validating", "watching", "delivering"):
-            delivery.transition(phase)
-        evidence_payload = {"schema": "simplicio.ac-evidence/v1", "status": "PASS", "ready": True,
-                            "verdict": "COMPLETE", "receipt_id": evidence_receipt or attempt_id}
-        delivery.record_evidence(evidence_payload)
-        challenge = str(watcher_state.get("challenge") or watcher_receipt)
-        delivery.record_watcher(match=True, challenge=challenge)
-        merge_info = dict(merge or {})
-        if merge_info.get("merged"):
-            delivery_payload = {
-                "target": "merge-queue", "satisfied": True,
-                "merge_queue": {
-                    "receipt_sha": str(merge_info.get("merge_commit_sha") or ""),
-                    "status": "accepted",
-                    "branch": str(worktree_context.get("branch") or ""),
-                    "worktree_path": str(worktree_context.get("worktree_path")
-                                        or worktree_context.get("path") or ""),
-                },
-            }
-        else:
-            delivery_payload = {"target": "local-fixture", "satisfied": True}
-        delivery.record_delivery(delivery_payload)
-        result = delivery.complete(evidence_payload)
-        projection = board.replay()
-        return {"schema": schema, "verified": True, "status": "VERIFIED",
-                "board_status": projection.get("status"), "delivery": result.get("delivery")}
-    except (VerifiedDeliveryError, RuntimeAdapterError) as exc:
-        return {"schema": schema, "verified": False, "status": "UNVERIFIED", "reason": str(exc)}
-
-
-_DEFAULT_MODEL_REGISTRY_ENTRIES: Tuple[Dict[str, Any], ...] = (
-    {
-        "runtime": "codex", "provider": "openai", "model_id": "codex-cli/gpt-5.6-luna",
-        "aliases": ["codex-cli"], "capabilities": ["execute", "review"],
-        "probe": {"kind": "codex-cli", "target": "codex"},
-    },
-    {
-        "runtime": "claude", "provider": "anthropic", "model_id": "claude-code/sonnet-5",
-        "aliases": ["claude-code"], "capabilities": ["execute", "review"],
-        "probe": {"kind": "claude-cli", "target": "claude"},
-    },
-)
-
-
-def _default_model_registry() -> ModelCapabilityRegistry:
-    """Build the standard two-runtime (Codex + Claude) registry, wired to the real
-    ``--version`` probes in ``runtime_drivers.py`` -- never a fabricated availability
-    check. A caller that needs a different registry shape (e.g. a config file) can
-    still build/pass its own ``ModelCapabilityRegistry``; this is only the default
-    used by the opt-in dispatch wiring below.
-    """
-    return ModelCapabilityRegistry(_DEFAULT_MODEL_REGISTRY_ENTRIES, probe_hooks=CLI_PROBE_HOOKS)
-
-
-def _route_runtime_for_item(item: Mapping[str, Any], *, role: str = "executor",
-                             registry: Optional[ModelCapabilityRegistry] = None) -> Dict[str, Any]:
-    """Compute one real ``routing-decision-receipt`` for a dispatch attempt.
-
-    Never raises for an ordinary routing block (no eligible candidate, e.g. neither
-    CLI installed) -- that comes back as a receipt with ``blocked=True`` and an
-    explicit ``block_reason`` so a caller can record/report it; only malformed input
-    surfaces as ``ModelRouterError``/``ModelRegistryError``.
-    """
-    registry = registry or _default_model_registry()
-    requirements = {"role": role, "required_capabilities": ["execute"]}
-    return _model_route(requirements, registry)
-
-
-def _execute_routed_runtime(item: Mapping[str, Any], run_dir: Path, *,
-                             registry: Optional[ModelCapabilityRegistry] = None) -> Dict[str, Any]:
-    """Route + (when a real driver is wired for the selection) genuinely execute one
-    LLM-runtime attempt for this dispatch, persisting both receipts under
-    ``run_dir/loop/`` for audit.
-
-    This never fabricates execution: when routing is blocked (no eligible
-    candidate) or no real driver exists for the selected runtime, the returned
-    summary says so explicitly (``executed: False``) rather than skipping silently
-    or pretending a result. A driver invocation failure (missing binary, auth/policy
-    block, timeout) is itself a genuine, honestly-reported outcome -- captured in the
-    persisted ``runtime-execution-receipt`` exactly as observed.
-    """
-    summary: Dict[str, Any] = {
-        "routed": False, "executed": False,
-        "routing_decision_receipt": "", "runtime_execution_receipt": "",
-    }
-    try:
-        routing_receipt = _route_runtime_for_item(item, registry=registry)
-    except (ModelRouterError, ModelRegistryError) as exc:
-        summary["error"] = f"{type(exc).__name__}: {exc}"
-        return summary
-    summary["routed"] = True
-    loop_dir = run_dir / "loop"
-    loop_dir.mkdir(parents=True, exist_ok=True)
-    routing_path = loop_dir / "routing-decision-receipt.json"
-    _write_json(routing_path, routing_receipt)
-    summary["routing_decision_receipt"] = str(routing_path)
-    summary["selected"] = routing_receipt.get("selected")
-    summary["blocked"] = bool(routing_receipt.get("blocked"))
-    if routing_receipt.get("blocked") or not routing_receipt.get("selected"):
-        summary["block_reason"] = str(routing_receipt.get("block_reason") or "")
-        return summary
-    selected = routing_receipt["selected"]
-    driver = driver_for_runtime(selected.get("runtime"))
-    if driver is None:
-        summary["reason"] = f"no real driver wired for runtime {selected.get('runtime')!r}"
-        return summary
-    context_pack = item.get("context_pack") if isinstance(item.get("context_pack"), Mapping) else {}
-    goal = str(context_pack.get("goal") or item.get("task_id") or "").strip()
-    if not goal:
-        summary["reason"] = "no task goal text available to prompt the runtime"
-        return summary
-    repo_path = Path(str(item.get("repo") or "."))
-    context_request: Optional[RuntimeContextRequest] = None
-    if all(context_pack.get(key) for key in (
-        "mapper_envelope_hash", "plan_hash", "authorized_targets", "target",
-    )):
-        try:
-            context_request = RuntimeContextRequest(
-                goal=goal,
-                acceptance_criteria=tuple(context_pack.get("acs") or context_pack.get("acceptance_criteria") or ()),
-                source_spans=tuple(context_pack.get("source_spans") or ()),
-                source_refs=tuple(context_pack.get("source_refs") or ()),
-                verification_routes=tuple(context_pack.get("verification_routes") or ()),
-                graph_evidence=tuple(context_pack.get("graph_evidence") or ()),
-                omissions=tuple(context_pack.get("omissions") or ()),
-                trusted_constraints=tuple(context_pack.get("trusted_constraints") or ()),
-                untrusted_evidence=tuple(context_pack.get("untrusted_evidence") or ()),
-                authorized_targets=tuple(context_pack.get("authorized_targets") or ()),
-                target=str(context_pack.get("target") or ""),
-                remaining_budget_tokens=int(context_pack.get("remaining_budget_tokens") or 0),
-                mapper_envelope_hash=str(context_pack.get("mapper_envelope_hash") or ""),
-                plan_hash=str(context_pack.get("plan_hash") or ""),
-            )
-            result = driver.execute_context(
-                context_request, cwd=repo_path if repo_path.exists() else None,
-                expected_mapper_envelope_hash=str(context_pack.get("mapper_envelope_hash")),
-                expected_plan_hash=str(context_pack.get("plan_hash")),
-            )
-        except (ContextAuthorizationError, ContextBudgetError, TypeError, ValueError) as exc:
-            summary["error"] = f"RuntimeContextError: {exc}"
-            return summary
-    else:
-        result = driver.execute(goal, cwd=repo_path if repo_path.exists() else None)
-    base_sha = ""
-    head_sha = ""
-    changed: List[str] = []
-    if repo_path.exists():
-        fingerprint = _repo_fingerprint(repo_path)
-        base_sha = head_sha = str(fingerprint.get("head") or "")
-        try:
-            changed = _changed_paths(repo_path)
-        except Exception:
-            changed = []
-    try:
-        execution_receipt = driver.build_receipt(
-            route_id=hashlib.sha256(json.dumps(routing_receipt, sort_keys=True).encode("utf-8")).hexdigest()[:16],
-            requested={"runtime": selected.get("runtime"), "provider": selected.get("provider"),
-                       "model_id": selected.get("model_id"), "verified": True},
-            session={
-                "worker_id": str(item.get("worker_id") or ""),
-                "device_id": os.environ.get("SIMPLICIO_DEVICE_ID", ""),
-                "attempt_id": str(item.get("task_index") or ""),
-                "lease_id": "", "fence_token": "",
-            },
-            result=result,
-            tree={"base_sha": base_sha, "head_sha": head_sha, "changed_paths": changed},
-            evidence_refs=(
-                ["runtime-context:" + context_request.request_hash,
-                 "mapper-envelope:" + context_request.mapper_envelope_hash,
-                 "plan:" + context_request.plan_hash]
-                if context_request is not None else None
-            ),
-        )
-    except RuntimeExecutionReceiptError as exc:
-        summary["error"] = f"{type(exc).__name__}: {exc}"
-        return summary
-    execution_path = loop_dir / "runtime-execution-receipt.json"
-    _write_json(execution_path, execution_receipt)
-    summary["executed"] = True
-    summary["runtime_execution_receipt"] = str(execution_path)
-    summary["execution_ok"] = bool(result.ok)
-    summary["execution_stop_reason"] = result.stop_reason
-    summary["execution_error"] = result.error
-    return summary
-
-
-def _auto_worktree_dispatch(
-    repo: str,
-    run_id: str,
-    contract: Mapping[str, Any],
-    plan: Mapping[str, Any],
-    indices: Sequence[int],
-) -> Tuple[Any, Dict[int, Dict[str, Any]], str]:
-    """Build an isolated queue for a default batch when task impact is independent.
-
-    This helper intentionally fails closed: missing plan targets, a non-git checkout, an
-    overlapping impact key, or a queue allocation error all leave the caller with the
-    existing shared-run serial path.  It never claims parallel execution without distinct
-    worktree contexts.
-    """
-    if not _auto_fan_out_enabled() or len(indices) < 2:
-        return None, {}, "auto_fan_out_disabled" if not _auto_fan_out_enabled() else "single_task"
-    root = Path(repo).resolve()
-    if not (root / ".git").exists():
-        return None, {}, "not_git_checkout"
-    try:
-        from scripts.worktree_queue import TaskSpec, WorktreeQueue
-    except ImportError:  # pragma: no cover - installed bundle without optional adapter
-        try:
-            from worktree_queue import TaskSpec, WorktreeQueue
-        except ImportError:
-            return None, {}, "worktree_adapter_unavailable"
-
-    tasks = list(contract.get("tasks") or [])
-    steps = list(plan.get("steps") or [])
-    specs = []
-    contexts: Dict[int, Dict[str, Any]] = {}
-    for index in indices:
-        if index > len(tasks) or index > len(steps):
-            return None, {}, "plan_task_mismatch"
-        step = steps[index - 1] if isinstance(steps[index - 1], Mapping) else {}
-        targets = [str(value) for value in (step.get("candidate_targets") or []) if str(value).strip()]
-        # A worktree without an authorized target cannot be executed; serial fallback gives
-        # the caller the same clear preflight failure instead of manufacturing a lane.
-        if not targets:
-            return None, {}, "missing_plan_targets"
-        task_id = f"{run_id}-task-{index}"
-        specs.append(TaskSpec(id=task_id, goal=_task_goal(tasks[index - 1]), files_affected=targets))
-    graph = WorktreeQueue.conflict_graph(specs)
-    if any(graph.values()):
-        return None, {}, "overlapping_task_impacts"
-    try:
-        queue = WorktreeQueue(
-            repo_root=str(root),
-            run_id=run_id,
-            state_path=str(root / ".simplicio" / "loop-runs" / run_id / "worktree-queue.json"),
-            worktree_root=str(root / ".simplicio" / "loop-worktrees" / run_id),
-        )
-        # Registration is an explicit preflight gate.  Allocation happens inside the
-        # dispatcher, before any worker starts, and is persisted by the queue.
-        queue.register_tasks(specs)
-    except Exception:
-        return None, {}, "worktree_preflight_failed"
-    for index, spec in zip(indices, specs):
-        contexts[index] = {
-            "task_id": spec.id,
-            "task_spec": {
-                "id": spec.id,
-                "goal": spec.goal,
-                "files_affected": list(spec.files_affected),
-            },
-            "isolation": "worktree",
-            "isolation_key": spec.id,
-        }
-    return queue, contexts, ""
-
-
-def _write_scratchpad(loop_dir: Path, goal: str, max_iterations: int, promise: str) -> None:
-    body = "\n".join(
-        [
-            "---",
-            "iteration: 1",
-            f"max_iterations: {max_iterations}",
-            f'completion_promise: "{promise}"',
-            "evidence_required: true",
-            "mode: converge",
-            f'started_at: "{_now()}"',
-            "---",
-            "",
-            goal,
-            "",
-        ]
-    )
-    (loop_dir / "scratchpad.md").write_text(body, encoding="utf-8")
-
-
-def _write_watcher_challenge(loop_dir: Path, goal_fp: str) -> None:
-    payload = {
-        "challenge": f"wch-{_rand_token(12)}",
-        "iteration": 1,
-        "goal_fp": goal_fp,
-        "written_at": _now(),
-    }
-    _write_json(loop_dir / "watcher_challenge.json", payload)
-
-
-def _transition(run_dir: Path, state: Dict[str, Any], to_phase: str, reason: str,
-                receipt: str = "", extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    if to_phase not in PHASES:
-        raise ValueError(f"invalid phase {to_phase!r}")
-    entry = {
-        "ts": _now(),
-        "from": state.get("phase"),
-        "to": to_phase,
-        "reason": reason,
-        "receipt": receipt,
-    }
-    if extra:
-        entry["extra"] = extra
-    history = state.setdefault("history", [])
-    history.append(entry)
-    state["phase"] = to_phase
-    state["updated_at"] = entry["ts"]
-    _write_json(run_dir / "state.json", state)
-    _append_jsonl(run_dir / "transitions.jsonl", entry)
-    _record_event(run_dir, state, {
-        "phase": "phase_transition",
-        "to_phase": to_phase,
-        "from_phase": entry["from"],
-        "reason": reason,
-        "receipt": receipt,
-    }, transition_extra=extra)
-    return state
-
-
-# Canonical phase-event kinds consumed by simplicio_loop.progress.build_progress (#181).
-_PHASE_EVENT_KINDS = {
-    "intake", "mapping", "planning", "executing", "validating",
-    "watching", "delivering", "done", "partial", "blocked", "cancelled",
-    "awaiting_decision", "mapper_fresh", "watcher_challenge", "operator_receipt",
-    "worker_claimed", "worktree_created", "test_gate", "completion_verdict",
-}
-
-
-def _record_event(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any],
-                  transition_extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """Append one normalized progress event to ``state['events']`` (#181).
-
-    Every loop stage emits these so external dashboards and LLMs can render
-    real per-stage progress (see ``docs/PROGRESS_PROTOCOL.md``).  ``progress.py``
-    already normalizes and renders ``state['events']``; previously the runner
-    never populated it.
-    """
-    event = dict(event)
-    event.setdefault("schema", EVENT_METADATA_SCHEMA)
-    event.setdefault("scope", infer_scope(event))
-    event.setdefault("event_id", "evt-" + hashlib.sha256(
-        (json.dumps(event, sort_keys=True, ensure_ascii=False) + _now()).encode("utf-8")
-    ).hexdigest()[:12])
-    event.setdefault("ts", _now())
-    event.setdefault("run_id", state.get("run_id", ""))
-    event.setdefault("phase", state.get("phase", ""))
-    task_ids = state.get("task_ids") or []
-    ac_ids = state.get("ac_ids") or []
-    if event.get("scope") == "collection":
-        event["task_id"] = None
-    elif not event.get("task_id") and task_ids:
-        event["task_id"] = task_ids[0]
-    if not event.get("ac_ids") and ac_ids:
-        event["ac_ids"] = list(ac_ids)
-    if not event.get("receipt") and not event.get("blocker"):
-        event["blocker"] = event.get("reason") or event.get("message") or ""
-    kind = event.get("kind") or event.get("phase")
-    if kind in _PHASE_EVENT_KINDS and "kind" not in event:
-        event["kind"] = kind
-    if transition_extra and "extra" not in event:
-        event["extra"] = transition_extra
-    events = state.setdefault("events", [])
-    events.append(event)
-    state["updated_at"] = event["ts"]
-    _write_json(run_dir / "state.json", state)
-    _append_jsonl(run_dir / "events.jsonl", event)
-    _sync_github_lifecycle(run_dir, state, event)
-    # Host integrations (Orca cards, boards, chat) are NEVER default â€” only when
-    # the client explicitly requested them via SIMPLICIO_LOOP_CLIENT_INTEGRATIONS
-    # / .simplicio/client-integrations.json (see client_integrations.py).
-    if integration_enabled("orca"):
-        _sync_orca_lifecycle(run_dir, state, event)
-    return state
-
-
-def _sync_orca_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any]) -> None:
-    """Project lifecycle onto an Orca worktree card **only** for Orca clients.
-
-    Not a core loop hook. Requires client opt-in via
-    ``integration_enabled("orca")`` (caller already gated). Missing Orca context
-    is a typed skip â€” never a delivery failure.
-    """
-    lifecycle_state = _github_lifecycle.lifecycle_state_for_phase_event(
-        str(event.get("kind") or event.get("phase") or ""))
-    if not lifecycle_state:
-        return
-    try:
-        receipt = sync_orca_status(
-            state, {**event, "lifecycle_state": lifecycle_state},
-        )
-        _append_jsonl(run_dir / "orca-sync.jsonl", {
-            "run_id": str(state.get("run_id") or ""),
-            "event": str(event.get("kind") or event.get("phase") or ""),
-            **receipt,
-        })
-    except Exception as exc:  # noqa: BLE001 -- optional host integration is fail-open
-        try:
-            _append_jsonl(run_dir / "orca-sync-errors.jsonl", {
-                "run_id": str(state.get("run_id") or ""), "error": str(exc),
-            })
-        except Exception:
-            pass
-
-
-def _github_source_adapter(owner: str, repo: str, *, publish_comment_fn: Callable,
-                           outbox_dir: Optional[str | Path] = None) -> GitHubSourceAdapter:
-    """One construction point for the #285 `GitHubSourceAdapter` binding runner.py uses,
-    so every runner call site goes through the `SourceAdapter` Protocol surface instead
-    of calling `github_lifecycle.py`'s free functions directly. Same defaults
-    (``subprocess.run``, 20s timeout) `github_lifecycle.publish_lifecycle_state()` itself
-    defaults to -- this is a binding, not a behavior change.
-    """
-    return GitHubSourceAdapter(owner, repo, publish_comment_fn=publish_comment_fn, outbox_dir=outbox_dir)
-
-
-def _sync_github_lifecycle(run_dir: Path, state: Dict[str, Any], event: Dict[str, Any]) -> None:
-    """Project one phase event onto the #285 GitHub lifecycle canonical comment.
-
-    Best-effort and fail-open, exactly like the existing `pr_evidence.py
-    progress-comment` command it complements: enabled whenever the run state
-    carries a ``source_issue`` dict (``{"owner": ..., "repo": ..., "issue": ...}``).
-    ``SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC=0`` (or another explicit falsy value)
-    is the temporary legacy opt-out; leaving it unset keeps GitHub coordination on.
-    Any
-    failure (no `gh`, no network, transport error, import error) is logged to
-    ``lifecycle-sync-errors.jsonl`` under the run directory and swallowed -- this
-    sync must never abort or fail the run. It only ever handles the intermediate
-    lifecycle projection (CLAIMED/PLANNED/IN_PROGRESS/...); the authoritative,
-    fail-closed close operation is
-    :func:`simplicio_loop.github_lifecycle.close_source_issue`, invoked explicitly at
-    completion time by the caller that owns that decision, never automatically from
-    this generic per-event hook.
-    """
-    if str(os.environ.get("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC") or "").strip().lower() in (
-        "0", "false", "no", "off", "legacy",
-    ):
-        return
-    source_issue = state.get("source_issue") or {}
-    owner, repo, issue = source_issue.get("owner"), source_issue.get("repo"), source_issue.get("issue")
-    if not (owner and repo and issue):
-        return
-    lifecycle_state = _github_lifecycle.lifecycle_state_for_phase_event(
-        str(event.get("kind") or event.get("phase") or ""))
-    if not lifecycle_state:
-        return
-    try:
-        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
-        if scripts_dir not in sys.path:
-            sys.path.insert(0, scripts_dir)
-        from pr_evidence import publish_comment as _publish_comment  # local import: optional dep
-
-        # #285 remaining gap: project the run's real identity/runtime/device/lease/
-        # branch onto the rendered comment instead of leaving those fields blank even
-        # though `render_lifecycle_comment` supports them. `event` wins over derived
-        # defaults when the emitting call site already knows its lease/branch (e.g.
-        # `execute_operator()`'s guarded dispatch, which has a real `WorkItemAttempt`
-        # lease and worktree branch on hand); otherwise fall back to a best-effort
-        # local identity/branch lookup so a plain sequential run is not blank either.
-        repo_path = _run_repo_path(run_dir)
-        identity = _dispatch_identity_fields(repo_path)
-        lease = state.get("lease") if isinstance(state.get("lease"), Mapping) else {}
-        lease_id = str(event.get("lease_id") or lease.get("lease_id") or "")
-        fencing_token = str(event.get("fencing_token") or lease.get("fencing_token") or "")
-        branch = str(
-            event.get("branch") or state.get("branch")
-            or (_git_current_branch(repo_path) if repo_path is not None else "")
-        )
-        worktree = str(event.get("worktree_path") or state.get("worktree_path") or "")
-
-        # #285 remaining gap: go through the `GitHubSourceAdapter` Protocol binding
-        # instead of calling `github_lifecycle.publish_lifecycle_state()` directly --
-        # same underlying call (no behavior change), but now expressed through the
-        # single adapter surface every source (GitHub or otherwise) is meant to plug
-        # into.
-        adapter = _github_source_adapter(str(owner), str(repo), publish_comment_fn=_publish_comment)
-        receipt = adapter.update_status(
-            str(issue), lifecycle_state,
-            run_id=str(state.get("run_id") or ""),
-            attempt_id=str(event.get("task_id") or state.get("run_id") or ""),
-            fencing_token=fencing_token,
-            progress=str(event.get("message") or ""),
-            agent_id=identity.get("agent_id", ""),
-            runtime=identity.get("runtime", ""),
-            device=identity.get("device", ""),
-            lease_id=lease_id,
-            branch=branch,
-            worktree=worktree,
-        )
-        # Persist the receipt into the run dir so the completion oracle (#285's remaining gap:
-        # "CLOSE_PENDING_RECONCILIATION" must actually gate COMPLETE, not sit inert) can see it.
-        # This hook only ever projects intermediate states; a genuine
-        # CLOSE_PENDING_RECONCILIATION comes from the explicit `close_source_issue` call, which
-        # persists its own receipt the same way -- see `simplicio_loop/oracle.py`.
-        _github_lifecycle.persist_lifecycle_receipt(receipt, run_dir)
-    except Exception as exc:  # noqa: BLE001 -- best-effort sync, never blocks the loop
-        try:
-            _append_jsonl(run_dir / "lifecycle-sync-errors.jsonl",
-                         {"ts": _now(), "kind": event.get("kind"), "error": str(exc)})
-        except Exception:
-            pass
-
-
-def _maybe_auto_build_planning_receipt(
-    run_root: Path, state: Dict[str, Any], run_id: str,
-    contract: Dict[str, Any], plan: Dict[str, Any], plan_validation: Dict[str, Any],
-    repo_path: Optional[Path] = None,
-) -> None:
-    """#284 remaining gap: wire ``planning_gate.build_planning_receipt()`` into the
-    REAL ``arm_run()`` dispatch path so the mutation-authority gate in
-    ``execute_operator()``/``execute_operator_batch()`` is self-sufficient, instead
-    of only ever being satisfiable by a caller remembering to run the separate
-    ``scripts/planning_gate.py build`` CLI first.
-
-    Mandatory-by-default via ``planning_gate.auto_planning_receipt_enabled()`` --
-    the same polarity-flip pattern ``mutation_authority_required()`` used for
-    ``SIMPLICIO_REQUIRE_MUTATION_AUTHORITY`` (#284/#360). Unset/blank now means
-    ON: every real ``arm_run()`` dispatch self-builds a matching
-    ``planning-receipt.json`` so ``execute_operator()``/``execute_operator_batch()``
-    are self-sufficient, instead of only ever being satisfiable by a caller
-    remembering to run the separate ``scripts/planning_gate.py build`` CLI first.
-    A caller that truly needs the legacy opt-in posture (or a test asserting the
-    missing-receipt fail-closed path) sets ``SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT``
-    to an explicit falsy value (``0/false/no/off/legacy``); see
-    ``tests/planning_gate_fixtures.py`` and
-    ``docs/adr/0004-planning-gate-rollout.md`` for the rollout/migration strategy.
-
-    When a GitHub ``source_issue`` is present on the run state AND
-    ``SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC`` is also enabled, this additionally
-    captures a fresh source snapshot (folding it into the mutation-authority
-    identity so a later source edit invalidates the authority) and publishes the
-    resulting receipt as PLANNED/BLOCKED on the canonical GitHub comment via
-    ``planning_gate.publish_planning_receipt()`` -- the #284-specific projection,
-    distinct from (and complementary to) the generic per-phase-event sync
-    ``_sync_github_lifecycle()`` already performs for CLAIMED/DISCOVERED/etc.
-
-    Best-effort and fail-open: any failure here (bad `gh` auth, no network, import
-    error) is logged to ``lifecycle-sync-errors.jsonl`` and swallowed, exactly like
-    ``_sync_github_lifecycle()`` -- this must never abort or fail the run.
-    """
-    if not auto_planning_receipt_enabled():
-        return
-    try:
-        attempt = int((state or {}).get("attempts", 0)) + 1
-        source_snapshot = None
-        source_issue = (state or {}).get("source_issue") or {}
-        owner, repo_name, issue = source_issue.get("owner"), source_issue.get("repo"), source_issue.get("issue")
-        lifecycle_sync_on = str(os.environ.get("SIMPLICIO_LOOP_GITHUB_LIFECYCLE_SYNC") or "").strip().lower() not in (
-            "0", "false", "no", "off", "legacy",
-        )
-        if lifecycle_sync_on and owner and repo_name and issue:
-            try:
-                from .source_snapshot import capture_github_issue_snapshot
-                source_snapshot = capture_github_issue_snapshot(f"{owner}/{repo_name}", str(issue))
-            except Exception:
-                source_snapshot = None
-        receipt = _build_planning_receipt(
-            run_id=run_id, attempt=attempt, contract=contract, plan=plan,
-            plan_validation=plan_validation, source_snapshot=source_snapshot,
-        )
-        (run_root / "planning-receipt.json").write_text(
-            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
-        )
-        if source_snapshot is not None and lifecycle_sync_on:
-            scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
-            if scripts_dir not in sys.path:
-                sys.path.insert(0, scripts_dir)
-            from pr_evidence import publish_comment as _publish_comment  # local import: optional dep
-
-            # #285 remaining gap: project real identity/runtime/device/branch/plan onto
-            # the PLANNED comment instead of leaving those fields blank, the same
-            # projection `_sync_github_lifecycle()` now performs for CLAIMED/etc. No
-            # lease/fencing token exists yet at this point in `arm_run()` (it is minted
-            # only when a distributed claim happens later), so that field is left blank
-            # here rather than fabricated.
-            identity = _dispatch_identity_fields(repo_path)
-            branch = _git_current_branch(repo_path) if repo_path is not None else ""
-            plan_steps = [
-                str(step.get("description") or step.get("goal") or step.get("id") or "").strip()
-                for step in (plan.get("steps") or [])
-                if isinstance(step, Mapping)
-                and str(step.get("description") or step.get("goal") or step.get("id") or "").strip()
-            ]
-            lifecycle_receipt = _publish_planning_receipt(
-                receipt, publish_comment_fn=_publish_comment,
-                agent_id=identity.get("agent_id", ""),
-                runtime=identity.get("runtime", ""),
-                device=identity.get("device", ""),
-                branch=branch,
-                plan_steps=plan_steps,
-            )
-            if lifecycle_receipt is not None:
-                _github_lifecycle.persist_lifecycle_receipt(lifecycle_receipt, run_root)
-    except Exception as exc:  # noqa: BLE001 -- best-effort, never blocks the run
-        try:
-            _append_jsonl(run_root / "lifecycle-sync-errors.jsonl",
-                         {"ts": _now(), "kind": "planning_receipt_auto_build", "error": str(exc)})
-        except Exception:
-            pass
-
-
-def _emit_event(run_dir: Path, state: Dict[str, Any], kind: str, *,
-                receipt: str = "", blocker: str = "", message: str = "",
-                **extra: Any) -> Dict[str, Any]:
-    """Emit one named visual event with the run's canonical provenance."""
-    event: Dict[str, Any] = {"kind": kind, "receipt": receipt, "blocker": blocker,
-                             "message": message}
-    event.update(extra)
-    return _record_event(run_dir, state, event)
-
-
-def _task_ac_ids(task: Mapping[str, Any]) -> List[str]:
-    """Return acceptance-criterion/scenario IDs from a compiled task."""
-    return [str(item.get("id") or "") for item in (task.get("scenarios") or [])
-            if isinstance(item, Mapping) and item.get("id")]
-
-
-def _recoverable_operator_error(tool: str, exc: BaseException) -> bool:
-    """Return True only for operator installation/version/capability failures."""
-    if isinstance(exc, FileNotFoundError):
-        missing = str(getattr(exc, "filename", "") or "")
-        return Path(missing).name == tool or tool.lower() in str(exc).lower()
-    message = str(exc or "").lower()
-    if tool.lower() not in message:
-        return False
-    return any(marker in message for marker in (
-        "no such file or directory",
-        "unavailable",
-        "below minimum version",
-        "missing required capabilities",
-        "version probe failed",
-    ))
-
-
-def _run_with_operator_recovery(
-    tool: str,
-    run_root: Path,
-    operation: Callable[[], Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Run one operator step, bootstrap the stack once if eligible, then retry once."""
-    try:
-        return operation()
-    except Exception as first_error:
-        if not _recoverable_operator_error(tool, first_error):
-            raise
-        try:
-            bootstrap = _ensure_required_operators(run_root, force=True)
-        except OperatorBootstrapError as bootstrap_error:
-            raise RuntimeError(
-                f"{first_error}; automatic {tool} recovery failed: {bootstrap_error}"
-            ) from bootstrap_error
-        state_path = run_root / "state.json"
-        if state_path.exists():
-            state = _load_json(state_path)
-            state["operator_bootstrap"] = {
-                "ready": bootstrap.get("status") in {"installed", "already_available"},
-                "receipt": str(run_root / "operator-bootstrap.json"),
-                "recovered_tool": tool,
-            }
-            _write_json(state_path, state)
-            _emit_event(
-                run_root,
-                state,
-                "operator_bootstrap",
-                receipt=str(run_root / "operator-bootstrap.json"),
-                message=f"{tool} repaired; retrying the blocked stage once",
-            )
-        try:
-            result = operation()
-        except Exception as retry_error:
-            raise RuntimeError(
-                f"{tool} remained unavailable after automatic recovery: {retry_error}"
-            ) from retry_error
-        receipt_path = run_root / "operator-bootstrap.json"
-        if receipt_path.exists():
-            bootstrap = _load_json(receipt_path)
-            bootstrap["retry_succeeded"] = True
-            bootstrap["recovered_tool"] = tool
-            bootstrap["recovered_at"] = _now()
-            _write_json(receipt_path, bootstrap)
-        return result
-
-
-def _preflight_mapper(repo_path: Path, run_root: Path) -> Dict[str, Any]:
-    override = _preflight_override("SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON")
-    if override is not None:
-        identity = {"command": "simplicio-mapper", "path": "", "identity_ok": True}
-        version_stdout = str(override.get("version_stdout", ""))
-        help_stdout = str(override.get("help_stdout", ""))
-        version_rc = int(override.get("version_returncode", 0))
-        help_rc = int(override.get("help_returncode", 0))
-    else:
-        identity = _resolved_identity("simplicio-mapper", ("simplicio-mapper",))
-        version = _run_cmd(["simplicio-mapper", "--version"], repo_path)
-        help_result = _run_cmd(["simplicio-mapper", "--help"], repo_path)
-        version_stdout = (version.stdout or "").strip()
-        help_stdout = (help_result.stdout or "").strip()
-        version_rc = version.returncode
-        help_rc = help_result.returncode
-    parsed_version = _parse_version_tuple(version_stdout)
-    missing_verbs = [verb for verb in MAPPER_REQUIRED_VERBS if verb not in help_stdout]
-    task_aware_flags = ("--goal", "--task-file", "--task-fingerprint")
-    supported_task_aware_flags = [flag for flag in task_aware_flags if flag in help_stdout]
-    receipt = {
-        "tool": "simplicio-mapper",
-        "returncode": version_rc,
-        "stdout": version_stdout,
-        "help_returncode": help_rc,
-        "help_stdout": help_stdout,
-        "version": ".".join(str(part) for part in parsed_version),
-        "min_version": ".".join(str(part) for part in MAPPER_MIN_VERSION),
-        "version_ok": parsed_version >= MAPPER_MIN_VERSION,
-        "required_verbs": list(MAPPER_REQUIRED_VERBS),
-        "missing_verbs": missing_verbs,
-        "task_aware_flags": list(task_aware_flags),
-        "supported_task_aware_flags": supported_task_aware_flags,
-        "task_aware_supported": len(supported_task_aware_flags) == len(task_aware_flags),
-        "repo_state": _repo_fingerprint(repo_path),
-        "path": identity["path"],
-        "identity_ok": identity["identity_ok"],
-        "checked_at": _now(),
-    }
-    _write_json(run_root / "mapper-preflight.json", receipt)
-    if version_rc != 0 or help_rc != 0:
-        raise RuntimeError("simplicio-mapper unavailable")
-    if not receipt["identity_ok"]:
-        raise RuntimeError("simplicio-mapper identity mismatch")
-    if parsed_version < MAPPER_MIN_VERSION:
-        raise RuntimeError("simplicio-mapper below minimum version")
-    if missing_verbs:
-        raise RuntimeError("simplicio-mapper missing required capabilities")
-    return receipt
-
-
-def _operator_capability_gaps(help_stdout: str, task_help_stdout: str) -> Tuple[List[str], List[str]]:
-    """Derive dev-cli capability gaps from the exact persisted help surfaces."""
-    capability_surface = " ".join(part for part in (help_stdout, task_help_stdout) if part)
-    missing_tokens = [
-        token for token in DEVCLI_REQUIRED_TOKENS
-        if token not in (" " + capability_surface)
-    ]
-    missing_capabilities = [
-        capability for capability in DEVCLI_REQUIRED_CAPABILITIES
-        if capability not in capability_surface
-    ]
-    return missing_tokens, missing_capabilities
-
-
-def _preflight_operator(repo_path: Path, run_root: Path) -> Dict[str, Any]:
-    # Issue #135: the operator bridge validates identity + capability + MIN_VERSION,
-    # not merely `which`. A wrong homonym (PATH resolves but the stem mismatches) or a
-    # version below DEVCLI_MIN_VERSION blocks before any mutation.
-    override = _preflight_override("SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON")
-    if override is not None:
-        identity = {"command": "simplicio-dev-cli", "path": str(override.get("path", "")), "identity_ok": True}
-        help_stdout = str(override.get("help_stdout", ""))
-        help_rc = int(override.get("help_returncode", 0))
-        task_help_stdout = str(override.get("task_help_stdout", help_stdout))
-        task_help_rc = int(override.get("task_help_returncode", help_rc))
-        version_stdout = str(override.get("version_stdout", "simplicio-py 0.14.0"))
-        version_rc = int(override.get("version_returncode", 0))
-    else:
-        identity = _resolved_identity("simplicio-dev-cli", ("simplicio-dev-cli", "simplicio-py"))
-        env = _devcli_env(repo_path)
-        help_result = subprocess.run(
-            _devcli_cmd(repo_path, "--help"),
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=180,
-            env=env,
-        )
-        task_help_result = subprocess.run(
-            _devcli_cmd(repo_path, "task", "--help"),
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=180,
-            env=env,
-        )
-        version_result = subprocess.run(
-            _devcli_cmd(repo_path, "--version"),
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=180,
-            env=env,
-        )
-        help_stdout = (help_result.stdout or "").strip()
-        help_rc = help_result.returncode
-        task_help_stdout = (task_help_result.stdout or "").strip()
-        task_help_rc = task_help_result.returncode
-        version_stdout = (version_result.stdout or "").strip()
-        version_rc = version_result.returncode
-    missing_tokens, missing_capabilities = _operator_capability_gaps(help_stdout, task_help_stdout)
-    parsed_version = _parse_version_tuple(version_stdout)
-    receipt = {
-        "tool": "simplicio-dev-cli",
-        "returncode": help_rc,
-        "help_stdout": help_stdout,
-        "task_help_returncode": task_help_rc,
-        "task_help_stdout": task_help_stdout,
-        "required_tokens": list(DEVCLI_REQUIRED_TOKENS),
-        "missing_tokens": missing_tokens,
-        "path": identity["path"],
-        "identity_ok": identity["identity_ok"],
-        "version_stdout": version_stdout,
-        "version_returncode": version_rc,
-        "version": ".".join(str(part) for part in parsed_version),
-        "min_version": ".".join(str(part) for part in DEVCLI_MIN_VERSION),
-        "version_ok": parsed_version >= DEVCLI_MIN_VERSION,
-        "required_capabilities": list(DEVCLI_REQUIRED_CAPABILITIES),
-        "missing_capabilities": missing_capabilities,
-        "repo_state": _repo_fingerprint(repo_path),
-        "checked_at": _now(),
-    }
-    _write_json(run_root / "operator-preflight.json", receipt)
-    if help_rc != 0 or task_help_rc != 0:
-        raise RuntimeError("simplicio-dev-cli unavailable")
-    if not receipt["identity_ok"]:
-        raise RuntimeError("simplicio-dev-cli identity mismatch")
-    if missing_tokens or missing_capabilities:
-        raise RuntimeError("simplicio-dev-cli missing required capabilities")
-    if version_rc != 0:
-        raise RuntimeError("simplicio-dev-cli version probe failed")
-    if not receipt["version_ok"]:
-        raise RuntimeError(
-            "simplicio-dev-cli below minimum version %s (found %s)"
-            % (receipt["min_version"], receipt["version"])
-        )
-    return receipt
-
-
-def _validate_mapper_receipt(payload: Mapping[str, Any], repo_path: Path) -> None:
-    """Require the mapper's own artifact receipt, not a caller-supplied freshness flag."""
-    inspect = payload.get("inspect") or {}
-    inspect_out = inspect.get("stdout") or {}
-    status = inspect_out.get("status") or {}
-    evidence = inspect_out.get("evidence") or {}
-    artifacts = evidence.get("artifacts") or {}
-    if not status.get("artifacts_present") or not status.get("fresh"):
-        raise RuntimeError("mapper artifacts are missing or stale")
-    # context_cache is an optional cache artifact the mapper does not always emit;
-    # it must not block the loop when only that one is missing.
-    required_artifacts = {
-        key: item for key, item in artifacts.items()
-        if isinstance(item, Mapping) and key != "context_cache"
-    }
-    if not required_artifacts or any(
-        not bool(item.get("exists")) for item in required_artifacts.values()
-    ):
-        raise RuntimeError("mapper artifact evidence is incomplete")
-    handoff = ((payload.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
-    for item in handoff.get("files") or []:
-        raw = item.get("path") if isinstance(item, Mapping) else ""
-        if not raw:
-            continue
-        try:
-            candidate = (repo_path / str(raw)).resolve() if not Path(str(raw)).is_absolute() else Path(str(raw)).resolve()
-            candidate.relative_to(repo_path.resolve())
-        except (OSError, ValueError) as exc:
-            raise RuntimeError(f"mapper returned path outside authorized repo: {raw}") from exc
-
-
-def _mapper_generation(repo_path: Path) -> Dict[str, str]:
-    """Read the immutable Mapper index identity for the active attempt."""
-    path = repo_path / ".simplicio" / "index-state.json"
-    try:
-        document = _load_json(path)
-    except (OSError, TypeError, ValueError):
-        return {}
-    signature = document.get("signature") if isinstance(document, Mapping) else None
-    if not isinstance(signature, Mapping):
-        return {}
-    generation = {
-        key: str(signature.get(key) or "")
-        for key in ("head", "tree_hash", "status_hash")
-        if str(signature.get(key) or "")
-    }
-    if generation:
-        generation["updated_at"] = str(document.get("updated_at") or "")
-    return generation
-
-
-def _require_json_receipt(path: Path, label: str) -> Dict[str, Any]:
-    if not path.is_file():
-        raise RuntimeError(f"missing required {label} receipt: {path.name}")
-    try:
-        payload = _load_json(path)
-    except (OSError, ValueError, TypeError) as exc:
-        raise RuntimeError(f"invalid required {label} receipt: {path.name}") from exc
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"invalid required {label} receipt: {path.name}")
-    return payload
-
-
-def _validate_run_receipts(
-    repo_path: Path,
-    run_dir: Path,
-    contract: Mapping[str, Any],
-    *,
-    state: Mapping[str, Any] | None = None,
-    manifest: Mapping[str, Any] | None = None,
-    require_dry_run: bool = True,
-) -> Dict[str, Any]:
-    """Require a current, run-bound mapper -> plan -> operator receipt chain."""
-    mapper = _require_json_receipt(run_dir / "mapper-context.json", "mapper context")
-    plan = _require_json_receipt(run_dir / "plan.json", "plan")
-    mapper_preflight = _require_json_receipt(run_dir / "mapper-preflight.json", "mapper preflight")
-    operator_preflight = _require_json_receipt(run_dir / "operator-preflight.json", "operator preflight")
-    operator = _require_json_receipt(run_dir / "operator-receipt.json", "operator")
-
-    expected_run_id = str((manifest or {}).get("run_id") or run_dir.name)
-    if run_dir.name != expected_run_id:
-        raise RuntimeError("run receipts are not bound to the current run")
-    if state is not None and str(state.get("run_id") or "") != expected_run_id:
-        raise RuntimeError("run state is not bound to the current run")
-    expected_contract_hash = str((manifest or {}).get("collection_hash") or "")
-    contract_hash = str(contract.get("collection_hash") or "")
-    if expected_contract_hash and contract_hash != expected_contract_hash:
-        raise RuntimeError("task contract is not bound to the current run")
-    if mapper.get("run_id") != expected_run_id or plan.get("run_id") != expected_run_id:
-        raise RuntimeError("mapper and plan receipts are not bound to the current run")
-    if operator.get("run_id") != expected_run_id:
-        raise RuntimeError("operator receipt is not bound to the current run")
-    if mapper.get("task_contract_hash") != contract_hash or plan.get("task_contract_hash") != contract_hash:
-        raise RuntimeError("mapper and plan receipts do not match the task contract")
-    mapper_context_hash = str(plan.get("mapper_context_hash") or "")
-    if not mapper_context_hash:
-        raise RuntimeError("plan receipt has no mapper context hash")
-    actual_mapper_context_hash = hashlib.sha256(
-        (run_dir / "mapper-context.json").read_bytes()
-    ).hexdigest()
-    if actual_mapper_context_hash != mapper_context_hash:
-        raise RuntimeError("plan receipt does not match the current mapper context bytes")
-    mapper_generation = dict(mapper.get("foreground_generation") or {})
-    plan_generation = dict(plan.get("mapper_generation") or {})
-    if mapper_generation != plan_generation:
-        raise RuntimeError("plan receipt does not match the pinned mapper generation")
-    if mapper_generation:
-        current_generation = _mapper_generation(repo_path)
-        if current_generation and current_generation != mapper_generation:
-            raise RuntimeError("active attempt mapper generation changed")
-
-    degraded_mapper = bool(mapper.get("degraded_local"))
-    if degraded_mapper:
-        if not _degraded_mapper_fallback_enabled():
-            raise RuntimeError("degraded mapper context requires standalone local fallback")
-        context_pack = ((mapper.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
-        if not context_pack.get("pack_hash"):
-            raise RuntimeError("degraded mapper context has no local context-pack hash")
-    else:
-        for name, payload in (("scan", mapper.get("scan")), ("inspect", mapper.get("inspect")),
-                              ("handoff", mapper.get("handoff"))):
-            if not isinstance(payload, Mapping) or payload.get("returncode") != 0:
-                raise RuntimeError(f"stale mapper context: {name} did not complete successfully")
-        _validate_mapper_receipt(mapper, repo_path)
-    planned_state = mapper.get("repo_state_after") or {}
-    current_state = _repo_fingerprint(repo_path)
-    mapper_before = mapper.get("repo_state_before") or {}
-    if not mapper_before.get("tree_hash") or not planned_state.get("tree_hash"):
-        raise RuntimeError("mapper context has no repository fingerprint")
-    if not _repo_state_equivalent(mapper_before, planned_state) or not _repo_state_equivalent(planned_state, current_state):
-        raise RuntimeError("stale mapper context: repository changed after planning")
-
-    if not mapper_preflight.get("identity_ok") or not mapper_preflight.get("version_ok"):
-        raise RuntimeError("mapper preflight receipt is not valid")
-    if mapper_preflight.get("missing_verbs"):
-        raise RuntimeError("mapper preflight receipt is missing required capabilities")
-    mapper_preflight_state = mapper_preflight.get("repo_state") or {}
-    if not mapper_preflight_state.get("tree_hash") or not _repo_state_equivalent(mapper_preflight_state, current_state):
-        raise RuntimeError("stale mapper preflight receipt: repository changed")
-    if not operator_preflight.get("identity_ok") or not operator_preflight.get("version_ok"):
-        raise RuntimeError("operator preflight receipt is not valid")
-    list_fields = (
-        "required_tokens", "missing_tokens", "required_capabilities", "missing_capabilities",
-    )
-    text_fields = ("help_stdout", "task_help_stdout")
-    for field in list_fields:
-        value = operator_preflight.get(field)
-        if field not in operator_preflight:
-            raise RuntimeError(f"operator preflight receipt is missing required field: {field}")
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-            raise RuntimeError(f"operator preflight receipt has invalid field type: {field}")
-    for field in text_fields:
-        if field not in operator_preflight:
-            raise RuntimeError(f"operator preflight receipt is missing required field: {field}")
-        if not isinstance(operator_preflight[field], str):
-            raise RuntimeError(f"operator preflight receipt has invalid field type: {field}")
-    if operator_preflight["required_tokens"] != list(DEVCLI_REQUIRED_TOKENS):
-        raise RuntimeError("operator preflight receipt required_tokens do not match the canonical contract")
-    if operator_preflight["required_capabilities"] != list(DEVCLI_REQUIRED_CAPABILITIES):
-        raise RuntimeError("operator preflight receipt required_capabilities do not match the canonical contract")
-    recomputed_missing_tokens, recomputed_missing_capabilities = _operator_capability_gaps(
-        operator_preflight["help_stdout"], operator_preflight["task_help_stdout"],
-    )
-    if operator_preflight["missing_tokens"] != recomputed_missing_tokens:
-        raise RuntimeError("operator preflight receipt missing_tokens do not match persisted help")
-    if operator_preflight["missing_capabilities"] != recomputed_missing_capabilities:
-        raise RuntimeError("operator preflight receipt missing_capabilities do not match persisted help")
-    if recomputed_missing_tokens or recomputed_missing_capabilities:
-        raise RuntimeError("operator preflight receipt is missing required capabilities")
-    operator_preflight_state = operator_preflight.get("repo_state") or {}
-    if not operator_preflight_state.get("tree_hash") or not _repo_state_equivalent(operator_preflight_state, current_state):
-        raise RuntimeError("stale operator preflight receipt: repository changed")
-
-    tasks = list(contract.get("tasks") or [])
-    validation = validate_plan(
-        plan, tasks, repo_path,
-        contract_hash=contract_hash,
-        current_state=current_state,
-    )
-    if not validation["valid"]:
-        raise RuntimeError("stale or invalid plan receipt: " + ", ".join(validation["errors"]))
-    if (plan.get("deterministic") or {}).get("verified") is not True:
-        raise RuntimeError("plan receipt is not deterministic")
-    context_pack = ((mapper.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
-    mapper_pack_hash = str(plan.get("mapper_pack_hash") or "")
-    context_pack_hash = str(context_pack.get("pack_hash") or "")
-    if mapper_pack_hash and context_pack_hash and mapper_pack_hash != context_pack_hash:
-        raise RuntimeError("plan receipt does not match the mapper context fingerprint")
-
-    plan_hash = hashlib.sha256((run_dir / "plan.json").read_bytes()).hexdigest()
-    if operator.get("task_contract_hash") != contract_hash:
-        raise RuntimeError("operator receipt does not match the task contract")
-    if operator.get("plan_hash") != plan_hash:
-        raise RuntimeError("operator receipt does not match the current plan")
-    if operator.get("mapper_pack_hash") != plan.get("mapper_pack_hash"):
-        raise RuntimeError("operator receipt does not match the mapper context")
-    if operator.get("mapper_context_hash") != mapper_context_hash:
-        raise RuntimeError("operator receipt does not match the mapper receipt")
-    operator_state = operator.get("repo_state_before") or {}
-    if not operator_state.get("tree_hash") or not _repo_state_equivalent(operator_state, current_state):
-        raise RuntimeError("stale operator receipt: repository changed")
-    if require_dry_run and (operator.get("execution_state") != "dry_run" or operator.get("returncode") != 0):
-        raise RuntimeError("operator receipt is not a fresh successful dry-run preflight")
-    if not operator.get("target_within_repo") or not operator.get("authorized_targets"):
-        raise RuntimeError("operator receipt has no authorized target")
-    target = str(operator.get("target") or "")
-    authorized_targets = {str(item) for item in operator.get("authorized_targets") or []}
-    planned_targets = {
-        str(item) for step in plan.get("steps") or []
-        if isinstance(step, Mapping) for item in step.get("candidate_targets") or []
-    }
-    try:
-        (repo_path / target).resolve().relative_to(repo_path.resolve())
-    except (OSError, ValueError):
-        raise RuntimeError("operator receipt target is outside the authorized repository")
-    if not target or target not in authorized_targets or target not in planned_targets:
-        raise RuntimeError("operator receipt target is not authorized by the plan")
-    if state is not None:
-        if state.get("phase") in {"blocked", "done", "cancelled"}:
-            raise RuntimeError(f"run is not runnable: {state.get('phase')}")
-        if not (state.get("mapper") or {}).get("ready") or not (state.get("operator") or {}).get("ready"):
-            raise RuntimeError("run is not runnable: mapper/operator receipts are not ready")
-    return {
-        "mapper": mapper,
-        "plan": plan,
-        "operator_preflight": operator_preflight,
-        "operator": operator,
-        "repo_state": current_state,
-        "plan_hash": plan_hash,
-    }
-
-
-def _persist_batch_preflight_block(
-    run_dir: Path,
-    state: Dict[str, Any],
-    repo_path: Path,
-    reason: str,
-    task_indices: Sequence[int] = (),
-) -> Path:
-    diagnostic_path = run_dir / "operator-batch-preflight.json"
-    blocker = {
-        "kind": "operator_batch_preflight",
-        "reason_code": "operator_batch_preflight_failed",
-        "message": reason,
-        "run_id": str(state.get("run_id") or run_dir.name),
-        "scope": "global",
-    }
-    diagnostic = {
-        "schema": BATCH_PREFLIGHT_SCHEMA,
-        "status": "BLOCKED",
-        "run_id": blocker["run_id"],
-        "task_indices": [int(index) for index in task_indices],
-        "blocker": blocker,
-        "repo_state": _repo_fingerprint(repo_path),
-        "checked_at": _now(),
-    }
-    _write_json(diagnostic_path, diagnostic)
-    state["blockers"] = [blocker]
-    state["current_action"] = "operator_batch_preflight_blocked"
-    state["next_action"] = "repair_mapper_or_repo"
-    _write_json(run_dir / "state.json", state)
-    if state.get("phase") not in {"done", "cancelled"}:
-        _transition(
-            run_dir, state, "blocked", "operator batch prerequisite validation failed",
-            receipt=str(diagnostic_path), extra={"error": reason, "scope": "global"},
-        )
-    _emit_event(
-        run_dir, state, "blocked", receipt=str(diagnostic_path),
-        blocker=blocker["reason_code"], message="operator batch blocked before dispatch", scope="global",
-    )
-    return diagnostic_path
-
-
-def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str = "",
-                task_fingerprint: str = "", target_hint: str = "") -> Dict[str, Any]:
-    before = _repo_fingerprint(repo_path)
-    mapper_preflight = _preflight_mapper(repo_path, run_root)
-    mapper_timeout = str(_mapper_timeout_seconds())
-    rollback_sync = os.environ.get("SIMPLICIO_LOOP_MAPPER_SYNC_ROLLBACK", "").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-    route_started = time.monotonic()
-    phase_timings: Dict[str, Any] = {}
-    scan_started = time.monotonic()
-    scan = _run_cmd(
-        # The foreground route must return the mapper's macro receipt without
-        # waiting for the deep index.  Deep completion is polled/reconciled by
-        # the subsequent inspect/handoff stages and is never a prerequisite
-        # for obtaining the first bounded context.
-        [
-            "simplicio-mapper", "scan", ".", "--json",
-            *( ["--sync"] if rollback_sync else [] ),
-            "--timeout", mapper_timeout,
-        ],
-        repo_path,
-    )
-    phase_timings["scan_wall_seconds"] = round(time.monotonic() - scan_started, 6)
-    inspect_started = time.monotonic()
-    inspect = _run_cmd(
-        [
-            "simplicio-mapper", "inspect", ".", "--json",
-            *( ["--await"] if rollback_sync else [] ),
-            "--timeout", mapper_timeout,
-        ],
-        repo_path,
-    )
-    phase_timings["inspect_wall_seconds"] = round(time.monotonic() - inspect_started, 6)
-    if _mapper_supports_command(mapper_preflight, "snapshot"):
-        snapshot = _run_cmd(["simplicio-mapper", "snapshot", "build", "--json", "."], repo_path)
-    else:
-        # Snapshot is an optional capability and is not present in current Mapper
-        # releases. Do not turn an otherwise usable inspect/handoff into a hard block.
-        snapshot = subprocess.CompletedProcess(
-            ["simplicio-mapper", "snapshot", "build", "--json", "."],
-            0,
-            json.dumps({"status": "skipped", "reason": "optional_command_unavailable"}),
-            "",
-        )
-    handoff_argv = ["simplicio-mapper", "handoff", ".", "--json"]
-    if rollback_sync:
-        handoff_argv.append("--await")
-    handoff_argv.extend(["--timeout", mapper_timeout, "--execution-context"])
-    task_aware_supported = bool(mapper_preflight.get("task_aware_supported"))
-    mapper_token_budget = os.environ.get("SIMPLICIO_LOOP_MAPPER_TOKEN_BUDGET", "").strip()
-    if mapper_token_budget.isdigit() and int(mapper_token_budget) > 0:
-        handoff_argv.extend(["--token-budget", mapper_token_budget])
-    if task_aware_supported and goal.strip():
-        handoff_argv.extend(["--goal", goal.strip()])
-    if task_aware_supported and task_path.strip():
-        handoff_argv.extend(["--task-file", task_path.strip()])
-    if task_aware_supported and task_fingerprint.strip():
-        handoff_argv.extend(["--task-fingerprint", task_fingerprint.strip()])
-    if task_aware_supported and target_hint.strip():
-        handoff_argv.extend(["--target", target_hint.strip()])
-    handoff_started = time.monotonic()
-    handoff = _run_cmd(handoff_argv, repo_path)
-    phase_timings["handoff_wall_seconds"] = round(time.monotonic() - handoff_started, 6)
-    handoff_recovery = None
-    try:
-        handoff_stdout = json.loads(handoff.stdout) if handoff.stdout.strip() else {}
-    except ValueError:
-        handoff_stdout = {}
-    handoff_pack = handoff_stdout.get("context_pack") if isinstance(handoff_stdout, Mapping) else {}
-    configured_budget = int(mapper_token_budget) if mapper_token_budget.isdigit() else 8_000
-    estimated_tokens = (
-        handoff_pack.get("estimated_tokens")
-        if isinstance(handoff_pack, Mapping) else None
-    )
-    over_budget = (
-        isinstance(estimated_tokens, (int, float))
-        and not isinstance(estimated_tokens, bool)
-        and estimated_tokens > configured_budget
-    )
-    if (
-        task_aware_supported
-        and task_path.strip()
-        and target_hint.strip()
-        and handoff.returncode == 0
-        and isinstance(handoff_pack, Mapping)
-        and (bool(handoff_pack.get("needs_broader_context")) or over_budget)
-    ):
-        recovery_argv = ["simplicio-mapper", "handoff", ".", "--json"]
-        if rollback_sync:
-            recovery_argv.append("--await")
-        recovery_argv.extend(["--timeout", mapper_timeout, "--execution-context"])
-        recovery_budget = min(
-            128_000,
-            max(configured_budget, int(estimated_tokens) if over_budget else configured_budget),
-        )
-        recovery_argv.extend(["--token-budget", str(recovery_budget)])
-        if goal.strip():
-            recovery_argv.extend(["--goal", goal.strip()])
-        recovery_argv.extend(["--target", target_hint.strip()])
-        limit = os.environ.get("SIMPLICIO_LOOP_MAPPER_CONTEXT_LIMIT", "8").strip()
-        if limit.isdigit() and int(limit) > 0:
-            recovery_argv.extend(["--limit", limit])
-        recovery = _run_cmd(recovery_argv, repo_path)
-        try:
-            recovery_stdout = json.loads(recovery.stdout) if recovery.stdout.strip() else {}
-        except ValueError:
-            recovery_stdout = {}
-        handoff_recovery = {
-            "strategy": "goal-target-without-task-file",
-            "returncode": recovery.returncode,
-            "stdout": recovery_stdout,
-            "stderr": (recovery.stderr or "").strip(),
-        }
-        if recovery.returncode == 0:
-            handoff = recovery
-    scan_stdout = json.loads(scan.stdout) if scan.stdout.strip() else {}
-    inspect_stdout = json.loads(inspect.stdout) if inspect.stdout.strip() else {}
-    snapshot_stdout = json.loads(snapshot.stdout) if snapshot.stdout.strip() else {}
-    handoff_stdout = json.loads(handoff.stdout) if handoff.stdout.strip() else {}
-    foreground_generation = _mapper_generation(repo_path)
-    payload = {
-        "scan": {
-            "returncode": scan.returncode,
-            "stdout": scan_stdout,
-            "stderr": (scan.stderr or "").strip(),
-        },
-        "inspect": {
-            "returncode": inspect.returncode,
-            "stdout": inspect_stdout,
-            "stderr": (inspect.stderr or "").strip(),
-        },
-        "snapshot": {
-            "returncode": snapshot.returncode,
-            "stdout": snapshot_stdout,
-            "stderr": (snapshot.stderr or "").strip(),
-        },
-        "handoff": {
-            "returncode": handoff.returncode,
-            "stdout": handoff_stdout,
-            "stderr": (handoff.stderr or "").strip(),
-        },
-        "handoff_recovery": handoff_recovery,
-        "execution_route": {
-            "mode": "synchronous_rollback" if rollback_sync else "foreground_first",
-            "rollback_flag": "SIMPLICIO_LOOP_MAPPER_SYNC_ROLLBACK" if rollback_sync else None,
-            "deep_completion_required_for_first_context": rollback_sync,
-            "scan_wait": rollback_sync,
-            "inspect_wait": rollback_sync,
-            "handoff_wait": rollback_sync,
-            "background": {
-                "status": "queued" if not rollback_sync else "consumed_by_sync_rollback",
-                "work_id": (
-                    (scan_stdout.get("deep") or {}).get("job_id")
-                    if isinstance(scan_stdout, Mapping) else None
-                ),
-                "pid": (
-                    (scan_stdout.get("deep") or {}).get("pid")
-                    if isinstance(scan_stdout, Mapping) else None
-                ),
-                "state_path": (
-                    (scan_stdout.get("deep") or {}).get("state_path")
-                    if isinstance(scan_stdout, Mapping) else None
-                ),
-            },
-            "foreground_generation": foreground_generation,
-            "phase_timings_seconds": phase_timings,
-            "route_wall_seconds": round(time.monotonic() - route_started, 6),
-        },
-        "foreground_generation": foreground_generation,
-        "generated_at": _now(),
-        "repo_state_before": before,
-        "repo_state_after": _repo_fingerprint(repo_path),
-    }
-    # Mapper may return a fresh, goal-relevant pack that omits a caller's
-    # explicit target. Preserve the target as an authorized, local hint so the
-    # downstream operator preflight does not reject an otherwise valid run.
-    if target_hint.strip() and handoff.returncode == 0:
-        target_path = target_hint.strip().replace("\\", "/")
-        try:
-            resolved_target = (repo_path / target_path).resolve()
-            resolved_target.relative_to(repo_path.resolve())
-            if resolved_target.is_file():
-                context_pack = payload["handoff"]["stdout"].get("context_pack")
-                if isinstance(context_pack, dict):
-                    files = context_pack.setdefault("files", [])
-                    known = {
-                        str(item.get("path") or "").replace("\\", "/")
-                        for item in files if isinstance(item, dict)
-                    }
-                    if target_path not in known:
-                        files.append({
-                            "path": target_path,
-                            "selection_reason": "explicit_task_target",
-                            "tests": [],
-                        })
-                        context_pack["explicit_target_added"] = target_path
-        except (OSError, ValueError):
-            pass
-    _write_json(run_root / "mapper-context.json", payload)
-    if (scan.returncode != 0 or inspect.returncode != 0 or snapshot.returncode != 0
-            or handoff.returncode != 0):
-        if _degraded_mapper_fallback_enabled():
-            degraded = _degraded_mapper_payload(
-                repo_path, before, mapper_preflight, scan, inspect, snapshot, handoff,
-                target_hint,
-            )
-            _write_json(run_root / "mapper-context.json", degraded)
-            return degraded
-        raise RuntimeError("mapper scan/inspect/snapshot/handoff failed")
-    if not _repo_state_equivalent(payload["repo_state_before"], payload["repo_state_after"]):
-        raise RuntimeError("repository changed during mapper survey; freshness cannot be proven")
-    # Test fixtures intentionally replace the operator preflight; production runs
-    # always use the mapper's own artifact/freshness receipt.
-    if _preflight_override("SIMPLICIO_LOOP_FAKE_MAPPER_PREFLIGHT_JSON") is None:
-        _validate_mapper_receipt(payload, repo_path)
-    return payload
-
-
-def _build_plan(tasks: List[Dict[str, Any]], mapper_payload: Dict[str, Any], repo_path: Path,
-                contract_hash: str = "") -> Dict[str, Any]:
-    return _build_plan_with_hints(tasks, mapper_payload, repo_path, "", contract_hash=contract_hash)
-
-
-def _extract_repo_file_hints(task_text: str, repo_path: Path) -> List[str]:
-    hints: List[str] = []
-    for match in re.finditer(r"(?P<path>[A-Za-z0-9_./\\-]+\.(?:py|ts|tsx|js))", task_text or ""):
-        raw = match.group("path").strip().replace("\\", "/")
-        candidate = Path(raw)
-        try:
-            resolved = (repo_path / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
-            rel = resolved.relative_to(repo_path.resolve()).as_posix()
-        except (OSError, ValueError):
-            continue
-        low = rel.lower()
-        if low.startswith(".simplicio/orchestrator/") or low.startswith(".claude/") or low.startswith(".github/"):
-            continue
-        if low.startswith(".venv/") or low.startswith("venv/") or "/site-packages/" in low:
-            continue
-        if "/_bundle/" in low:
-            continue
-        if rel not in hints:
-            hints.append(rel)
-    return hints
-
-
-def _task_mapper_context(mapper_payload: Mapping[str, Any], task_index: int) -> Dict[str, Any]:
-    """Return one task's Mapper envelope, with a single-task compatibility adapter."""
-    contexts = mapper_payload.get("task_contexts") or []
-    if isinstance(contexts, Sequence) and not isinstance(contexts, (str, bytes)):
-        for context in contexts:
-            if isinstance(context, Mapping) and int(context.get("task_index") or 0) == task_index:
-                return dict(context)
-    handoff = mapper_payload.get("handoff") or {}
-    return {
-        "schema": "simplicio.task-mapper-context/v1",
-        "task_index": task_index,
-        "task_fingerprint": str(mapper_payload.get("task_fingerprint") or ""),
-        "handoff": dict(handoff) if isinstance(handoff, Mapping) else {},
-        "context_hash": str(mapper_payload.get("mapper_context_hash") or ""),
-        "compatibility_adapter": "single-task-shared-handoff",
-    }
-
-
-def _task_mapper_text(task: Mapping[str, Any]) -> str:
-    parts = [_task_goal(dict(task))]
-    if task.get("original_text"):
-        parts.append(str(task["original_text"]))
-    parts.extend(str(item.get("title") or "") for item in task.get("scenarios") or []
-                 if isinstance(item, Mapping))
-    parts.extend(str(item.get("id") or "") for item in task.get("rules") or []
-                 if isinstance(item, Mapping))
-    return " ".join(part.strip() for part in parts if part and part.strip())
-
-
-def _task_context_plan_data(context: Mapping[str, Any], task: Mapping[str, Any],
-                            repo_path: Path, task_text: str = "") -> Dict[str, Any]:
-    handoff = context.get("handoff") if isinstance(context.get("handoff"), Mapping) else {}
-    stdout = handoff.get("stdout") if isinstance(handoff.get("stdout"), Mapping) else handoff
-    pack = stdout.get("context_pack") if isinstance(stdout, Mapping) else {}
-    if not isinstance(pack, Mapping):
-        pack = {}
-    files = pack.get("files") or []
-    targets = []
-    for item in files:
-        path = str(item.get("path") or "") if isinstance(item, Mapping) else ""
-        if not path:
-            continue
-        try:
-            resolved = (repo_path / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
-            path = resolved.relative_to(repo_path.resolve()).as_posix()
-        except (OSError, ValueError):
-            continue
-        low = path.lower()
-        if (low.startswith((".simplicio/orchestrator/", ".claude/", ".github/", ".venv/", "venv/"))
-                or "/site-packages/" in low or "/_bundle/" in low):
-            continue
-        if not low.endswith((".py", ".ts", ".tsx", ".js")):
-            continue
-        if path not in targets:
-            targets.append(path)
-    if not targets:
-        targets = _candidate_targets({"handoff": {"stdout": {"context_pack": dict(pack)}}}, repo_path)
-    explicit = _extract_repo_file_hints(task_text, repo_path)
-    for hint in _extract_repo_file_hints(_task_mapper_text(task), repo_path):
-        if hint not in explicit:
-            explicit.append(hint)
-    ordered = []
-    for path in explicit + targets:
-        if path not in ordered:
-            ordered.append(path)
-    tests = sorted({
-        str(test_path).replace("\\", "/")
-        for item in files
-        if isinstance(item, Mapping)
-        for test_path in item.get("tests") or []
-        if str(test_path).strip()
-    })
-    fidelity = pack.get("fidelity") if isinstance(pack.get("fidelity"), Mapping) else {}
-    selection = pack.get("selection") if isinstance(pack.get("selection"), Mapping) else {}
-    token_fit = pack.get("token_budget_fit") if isinstance(pack.get("token_budget_fit"), Mapping) else {}
-    return {
-        "targets": ordered,
-        "tests": tests,
-        "pack_hash": str(pack.get("pack_hash") or context.get("pack_hash") or ""),
-        "context_hash": str(context.get("context_hash") or ""),
-        "token_budget": int(pack.get("token_budget") or token_fit.get("token_budget") or 8000),
-        "fidelity": dict(fidelity),
-        "selection": dict(selection),
-        "abstention": str(pack.get("abstention_reason") or selection.get("abstention_reason") or ""),
-    }
-
-
-def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str, Any], repo_path: Path,
-                           task_text: str, *, contract_hash: str = "") -> Dict[str, Any]:
-    shared_handoff = ((mapper_payload.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
-    task_contexts = []
-    steps = []
-    aggregate_targets: List[str] = []
-    for index, task in enumerate(tasks, start=1):
-        context = _task_mapper_context(mapper_payload, index)
-        data = _task_context_plan_data(context, task, repo_path, task_text)
-        task_contexts.append({
-            "task_index": index,
-            "task_id": str(task.get("id") or ""),
-            "task_fingerprint": str(context.get("task_fingerprint") or ""),
-            "context_hash": data["context_hash"],
-            "pack_hash": data["pack_hash"],
-            "token_budget": data["token_budget"],
-            "fidelity": data["fidelity"],
-            "selection": data["selection"],
-            "abstention": data["abstention"],
-            "compatibility_adapter": context.get("compatibility_adapter", ""),
-        })
-        for path in data["targets"]:
-            if path not in aggregate_targets:
-                aggregate_targets.append(path)
-        task_steps = []
-        for scenario in task.get("scenarios") or []:
-            task_steps.append({
-                "kind": "scenario",
-                "id": scenario.get("id"),
-                "title": scenario.get("title"),
-                "rule_refs": scenario.get("rule_refs") or [],
-                "verification_intent": scenario.get("verification_intent"),
-                "mapper_context_hash": data["context_hash"],
-                "task_contract_hash": contract_hash,
-                "plan": {
-                    "read_paths": list(data["targets"]),
-                    "change_paths": list(data["targets"]),
-                    "test_paths": list(data["tests"]),
-                    "test_commands": ["operator validation and repository test gate"],
-                    "no_code_change": False,
-                },
-                "status": "pending",
-            })
-        rule_ids = [str(rule.get("id")) for rule in task.get("rules") or [] if rule.get("id")]
-        steps.append({
-            "task_index": index,
-            "title": (task.get("identity") or {}).get("title") or _task_goal(task),
-            "task_fingerprint": str(context.get("task_fingerprint") or ""),
-            "mapper_context_hash": data["context_hash"],
-            "context_pack_hash": data["pack_hash"],
-            "candidate_targets": list(data["targets"]),
-            "mapped_tests": list(data["tests"]),
-            "selection": {"token_budget": data["token_budget"], **data["selection"]},
-            "fidelity": data["fidelity"],
-            "abstention": data["abstention"],
-            "to_create": [],
-            "rule_ids": rule_ids,
-            "steps": task_steps,
-        })
-    shared_pack_hash = str(shared_handoff.get("pack_hash") or "") if isinstance(shared_handoff, Mapping) else ""
-    plan = {
-        "schema": PLAN_SCHEMA,
-        "task_contract_hash": contract_hash,
-        "generated_at": _now(),
-        "task_count": len(tasks),
-        "mapper_targets": aggregate_targets,
-        "mapper_pack_hash": shared_pack_hash,
-        "context_pack_hash": shared_pack_hash,
-        "mapper_generation": dict(mapper_payload.get("foreground_generation") or {}),
-        "task_contexts": task_contexts,
-        "repo_state": mapper_payload.get("repo_state_after") or {},
-        "freshness": {
-            "verified": _repo_state_equivalent(mapper_payload.get("repo_state_before") or {},
-                                               mapper_payload.get("repo_state_after") or {}),
-            "checked_at": mapper_payload.get("generated_at", ""),
-            "current_state": _repo_fingerprint(repo_path),
-        },
-        "steps": steps,
-    }
-    deterministic_input = {
-        "schema": plan["schema"],
-        "task_contract_hash": contract_hash,
-        "mapper_pack_hash": plan["mapper_pack_hash"],
-        "task_contexts": task_contexts,
-        "repo_state": plan["repo_state"],
-        "steps": plan["steps"],
-    }
-    plan["deterministic"] = {
-        "verified": True,
-        "algorithm": "mapper-derived-task-context-v1",
-        "input_hash": hashlib.sha256(
-            json.dumps(deterministic_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        ).hexdigest(),
-    }
-    return plan
-
-
-def _fallback_targets(repo_path: Path) -> List[str]:
-    out: List[str] = []
-    for root, dirs, files in os.walk(repo_path):
-        dirs[:] = [
-            d for d in dirs
-            if d not in {".git", ".simplicio/orchestrator", ".claude", ".simplicio", "__pycache__", ".venv", "venv", "site-packages"}
-        ]
-        for name in files:
-            if not name.endswith((".py", ".ts", ".tsx", ".js")):
-                continue
-            full = Path(root) / name
-            try:
-                rel = full.relative_to(repo_path).as_posix()
-            except ValueError:
-                continue
-            low = rel.lower()
-            if "/_bundle/" in low or low.startswith(".github/"):
-                continue
-            out.append(rel)
-    out.sort()
-    return out[:8]
-
-
-def _candidate_targets(mapper_payload: Dict[str, Any], repo_path: Path) -> List[str]:
-    handoff = ((mapper_payload.get("handoff") or {}).get("stdout") or {}).get("context_pack") or {}
-    files = handoff.get("files") or []
-    ranked = []
-    for item in files:
-        path = item.get("path") if isinstance(item, dict) else None
-        if not path:
-            continue
-        try:
-            resolved = (repo_path / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
-            resolved.relative_to(repo_path.resolve())
-        except (OSError, ValueError):
-            continue
-        low = path.lower()
-        if low.startswith(".simplicio/orchestrator/") or low.startswith(".claude/"):
-            continue
-        if low.startswith(".venv/") or low.startswith("venv/") or "/site-packages/" in low:
-            continue
-        if low.startswith(".github/"):
-            continue
-        if "/_bundle/" in low.replace("\\", "/"):
-            continue
-        if low.endswith((".py", ".ts", ".tsx", ".js")):
-            ranked.append(path)
-    ranked = ranked[:8]
-    return ranked or _fallback_targets(repo_path)
-
-
-def _build_anchor(tasks: List[Dict[str, Any]], contract_hash: str) -> Dict[str, Any]:
-    criteria = []
-    index = 1
-    for task_index, task in enumerate(tasks, start=1):
-        for scenario in task.get("scenarios") or []:
-            criteria.append({
-                "id": f"AC{index}",
-                "task_index": task_index,
-                "scenario_id": scenario.get("id"),
-                "title": scenario.get("title"),
-                "rule_refs": scenario.get("rule_refs") or [],
-                "status": "pending",
-            })
-            index += 1
-    return {
-        "schema": "simplicio.anchor/v1",
-        "contract_hash": contract_hash,
-        "criteria": criteria,
-        "created_at": _now(),
-    }
-
-
-def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, Any],
-                              target: str) -> Dict[str, Any]:
-    try:
-        target_path = (repo_path / target).resolve() if not Path(target).is_absolute() else Path(target).resolve()
-        target_path.relative_to(repo_path.resolve())
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"operator target outside authorized repo: {target!r}") from exc
-    _preflight_operator(repo_path, run_root)
-    task_spec_path = run_root / "task-spec.json"
-    task_spec = _task_spec_payload(task)
-    preflight_task_spec_placeholder = not task_spec.get("verification_commands")
-    if preflight_task_spec_placeholder:
-        task_spec["verification_commands"] = [{"command": "true", "verifier": "preflight-placeholder"}]
-    task_spec_hash = _task_spec_hash(task_spec)
-    _write_json(task_spec_path, task_spec)
-    preflight_identity = f"{run_root.name}:preflight"
-    context_args, context_handoff = _context_handoff_args(
-        repo_path,
-        run_root,
-        attempt_id=preflight_identity,
-        lease_id=preflight_identity,
-        fencing_token="1",
-    )
-    context_handoff["purpose"] = "read_only_preflight"
-    fake = os.environ.get("SIMPLICIO_LOOP_FAKE_OPERATOR_JSON", "").strip()
-    if fake:
-        payload = json.loads(fake)
-        receipt = {
-            "schema": OPERATOR_RECEIPT_SCHEMA,
-            "mode": "dry_run",
-            "tool": "simplicio-dev-cli",
-            "execution_state": payload.get("execution_state", "dry_run"),
-            "target": target,
-            "goal": _task_goal(task),
-            "argv": payload.get("argv", []),
-            "returncode": payload.get("returncode", 0),
-            "stdout": payload.get("stdout", {}),
-            "stderr": payload.get("stderr", ""),
-            "timed_out": False,
-            "measured_at": _now(),
-            "source": "env_override",
-            "context_handoff": context_handoff,
-            "repo_state_before": _repo_fingerprint(repo_path),
-            "task_spec_path": str(task_spec_path),
-            "task_spec_hash": task_spec_hash,
-        }
-        _write_json(run_root / "operator-receipt.json", receipt)
-        return receipt
-
-    operator_mode = "standalone" if _execution_profile() == "standalone" else "integrated"
-    task_input = (
-        [_task_goal(task) or str(task.get("id") or "execute task"),
-         "--criteria", _criteria_text(task) or "- true state",
-         "--constraints", _constraints_text(task) or "- build passes"]
-        if operator_mode == "standalone"
-        else ["--task-spec", str(task_spec_path)]
-    )
-    argv = _devcli_cmd(
-        repo_path, "task", "--root", str(repo_path), *task_input,
-        "--mode", operator_mode, "--target", target, "--dry-run-task", "--json",
-        "--bound-paths", target,
-    )
-    argv.extend(context_args)
-    try:
-        op_env = _devcli_env(repo_path, _operator_env())
-        if not op_env.get("SIMPLICIO_RUNTIME_URL", "").strip():
-            op_env.setdefault("SIMPLICIO_RUNTIME_OFFLINE", "1")
-        preflight_test_command = op_env.get("SIMPLICIO_TEST_CMD", "").strip()
-        if not preflight_test_command:
-            preflight_test_command = "true"
-            op_env["SIMPLICIO_TEST_CMD"] = preflight_test_command
-        context_handoff["preflight_verification"] = {
-            "command": preflight_test_command,
-            "placeholder": preflight_test_command == "true",
-            "scope": "dry_run_only",
-            "task_spec_placeholder": preflight_task_spec_placeholder,
-        }
-        result = subprocess.run(
-            argv,
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=_operator_timeout("dry_run"),
-            env=op_env,
-        )
-        stdout = (result.stdout or "").strip()
-        parsed = {}
-        if stdout:
-            try:
-                parsed = json.loads(stdout)
-            except ValueError:
-                parsed = {"raw": stdout}
-        receipt = {
-            "schema": OPERATOR_RECEIPT_SCHEMA,
-            "mode": "dry_run",
-            "tool": "simplicio-dev-cli",
-            "execution_state": "dry_run" if result.returncode == 0 else "blocked",
-            "target": target,
-            "goal": _task_goal(task),
-            "argv": argv,
-            "returncode": result.returncode,
-            "stdout": parsed,
-            "stderr": (result.stderr or "").strip(),
-            "timed_out": False,
-            "measured_at": _now(),
-            "source": "live_cli",
-            "context_handoff": context_handoff,
-            "provider_config": {
-                "model": op_env.get("SIMPLICIO_MODEL", ""),
-                "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
-            },
-            "repo_state_before": _repo_fingerprint(repo_path),
-            "task_spec_path": str(task_spec_path),
-            "task_spec_hash": task_spec_hash,
-        }
-    except subprocess.TimeoutExpired as exc:
-        op_env = _operator_env()
-        receipt = {
-            "schema": OPERATOR_RECEIPT_SCHEMA,
-            "mode": "dry_run",
-            "tool": "simplicio-dev-cli",
-            "execution_state": "blocked",
-            "target": target,
-            "goal": _task_goal(task),
-            "argv": argv,
-            "returncode": None,
-            "stdout": {},
-            "stderr": f"timed out after {exc.timeout}s",
-            "timed_out": True,
-            "measured_at": _now(),
-            "source": "live_cli",
-            "context_handoff": context_handoff,
-            "provider_config": {
-                "model": op_env.get("SIMPLICIO_MODEL", ""),
-                "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
-            },
-            "repo_state_before": _repo_fingerprint(repo_path),
-            "task_spec_path": str(task_spec_path),
-            "task_spec_hash": task_spec_hash,
-        }
-    _write_json(run_root / "operator-receipt.json", receipt)
-    return receipt
-
-
-def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Dict[str, Any]:
-    repo_path = Path(repo).resolve()
-    delivery = normalize_delivery_target(delivery)
-    raw = Path(task_path).read_text(encoding="utf-8")
-    compiled = compile_many(raw, source_path=str(Path(task_path).resolve()))
-    tasks = compiled.get("tasks") or []
-    validation_errors: List[str] = []
-    validation_warnings: List[str] = []
-    for idx, task in enumerate(tasks, start=1):
-        verdict = validate_contract(task)
-        validation_errors.extend([f"task[{idx}] {e}" for e in verdict["errors"]])
-        validation_warnings.extend([f"task[{idx}] {w}" for w in verdict["warnings"]])
-    if validation_errors:
-        raise ValueError("invalid task contract: " + "; ".join(validation_errors))
-
-    run_id = _run_id()
-    # Keep loop run state under .simplicio/ (which simplicio-mapper ignores for
-    # freshness) instead of .simplicio/orchestrator/ (which the mapper sees as repo churn and
-    # marks artifacts_not_fresh, blocking the loop before any implementation work).
-    run_root = repo_path / ".simplicio" / "loop-runs" / run_id
-    loop_dir = run_root / "loop"
-    loop_dir.mkdir(parents=True, exist_ok=True)
-
-    promise = f"run-{run_id}-verified"
-    manifest = {
-        "schema": RUNNER_SCHEMA,
-        "run_id": run_id,
-        "repo": str(repo_path),
-        "task_path": str(Path(task_path).resolve()),
-        "delivery_target": delivery,
-        "max_iterations": max_iterations,
-        "completion_promise": promise,
-        "created_at": _now(),
-        "task_count": compiled["task_count"],
-        "collection_hash": compiled["collection_hash"],
-    }
-    _write_json(run_root / "manifest.json", manifest)
-    _write_json(run_root / "task-contract.json", compiled)
-    _write_json(loop_dir / "anchor.json", _build_anchor(tasks, compiled["collection_hash"]))
-    goal = "\n\n".join([_task_goal(task) for task in tasks if _task_goal(task)]).strip() or raw.strip()
-    _write_scratchpad(loop_dir, goal, max_iterations, promise)
-    first_goal_fp = (tasks[0].get("source") or {}).get("hash", "") if tasks else ""
-    _write_watcher_challenge(loop_dir, first_goal_fp)
-    state = {
-        "schema": STATE_SCHEMA,
-        "run_id": run_id,
-        "phase": "intake",
-        "delivery_target": delivery,
-        "created_at": _now(),
-        "updated_at": _now(),
-        "task_count": compiled["task_count"],
-        "coverage": _coverage(tasks),
-        "validation": {"errors": validation_errors, "warnings": validation_warnings},
-        "current_action": "task_contract_compiled",
-        "next_action": "mapper_scan_required",
-        "delivery": {"target": delivery, "current_state": "planned", "ready": False, "receipt": ""},
-        "completion": _default_completion_state(),
-        "maintenance": _default_maintenance_state(),
-        "mapper": {"ready": False, "receipt": "", "targets": []},
-        "operator": {"ready": False, "receipt": "", "target": "", "execution_state": "proposed"},
-        "evidence": {"ready": False, "receipt": "", "status": "UNVERIFIED"},
-        "blockers": [],
-        "attempts": 0,
-        "history": [],
-        "events": [],
-        "task_ids": [str(task.get("id") or "") for task in tasks if task.get("id")],
-        "ac_ids": [ac_id for task in tasks for ac_id in _task_ac_ids(task)],
-    }
-    _write_json(run_root / "state.json", state)
-    _emit_event(run_root, state, "contract_frozen", receipt=str(run_root / "task-contract.json"),
-                message="task contract compiled and frozen")
-    _emit_event(run_root, state, "watcher_challenge", receipt=str(loop_dir / "watcher_challenge.json"),
-                message="watcher challenge created")
-    _append_jsonl(
-        run_root / "transitions.jsonl",
-        {
-            "ts": _now(),
-            "from": None,
-            "to": "intake",
-            "reason": "run armed from raw task",
-            "receipt": str(run_root / "task-contract.json"),
-        },
-    )
-    _transition(run_root, state, "mapping", "task contract compiled and persisted; mapper required",
-                receipt=str(run_root / "task-contract.json"))
-    try:
-        primary_goal = _task_goal(tasks[0]) if tasks else raw.strip()
-        mapper_payload = _run_with_operator_recovery(
-            "simplicio-mapper",
-            run_root,
-            lambda: _run_mapper(
-                repo_path,
-                run_root,
-                task_path=str(Path(task_path).resolve()),
-                goal=primary_goal,
-                task_fingerprint=compiled["collection_hash"],
-                target_hint=next(iter(_extract_repo_file_hints(raw, repo_path)), ""),
-            ),
-        )
-        mapper_payload["run_id"] = run_id
-        mapper_payload["task_contract_hash"] = compiled["collection_hash"]
-        _write_json(run_root / "mapper-context.json", mapper_payload)
-        state = _load_json(run_root / "state.json")
-        mapper_degraded = bool(mapper_payload.get("degraded_local"))
-        state["mapper"] = {
-            "ready": True,
-            "receipt": str(run_root / "mapper-context.json"),
-            "targets": _candidate_targets(mapper_payload, repo_path),
-            "degraded": mapper_degraded,
-            "status": "UNVERIFIED" if mapper_degraded else "MEASURED",
-        }
-        state["current_action"] = "mapper_context_degraded" if mapper_degraded else "mapper_context_persisted"
-        state["next_action"] = "plan_ready_for_decision"
-        _write_json(run_root / "state.json", state)
-        if mapper_degraded:
-            _emit_event(run_root, state, "mapper_degraded", receipt=str(run_root / "mapper-context.json"),
-                        blocker="mapper_deep_pass_unavailable",
-                        message="continuing with explicit-target local context; evidence is UNVERIFIED")
-            _transition(run_root, state, "planning", "local context fallback persisted; mapper evidence is UNVERIFIED",
-                        receipt=str(run_root / "mapper-context.json"))
-        else:
-            _emit_event(run_root, state, "mapper_fresh", receipt=str(run_root / "mapper-context.json"),
-                        message="mapper scan, inspect, and handoff are fresh")
-            _transition(run_root, state, "planning", "mapper scan/inspect/handoff persisted",
-                        receipt=str(run_root / "mapper-context.json"))
-        plan = _build_plan_with_hints(tasks, mapper_payload, repo_path, raw,
-                                      contract_hash=compiled["collection_hash"])
-        plan["run_id"] = run_id
-        plan["mapper_context_hash"] = hashlib.sha256(
-            (run_root / "mapper-context.json").read_bytes()
-        ).hexdigest()
-        plan_validation = validate_plan(
-            plan, tasks, repo_path,
-            contract_hash=compiled["collection_hash"],
-            current_state=_repo_fingerprint(repo_path),
-        )
-        plan["validation"] = plan_validation
-        if not plan_validation["valid"]:
-            if any("targets_missing" in error for error in plan_validation["errors"]):
-                raise RuntimeError("mapper-derived plan has no authorized operator target")
-            raise RuntimeError("mapper-derived plan failed validation: " + ", ".join(plan_validation["errors"]))
-        _write_json(run_root / "plan.json", plan)
-        state = _load_json(run_root / "state.json")
-        state["current_action"] = "plan_materialized"
-        _maybe_auto_build_planning_receipt(run_root, state, run_id, compiled, plan, plan_validation, repo_path)
-        candidates = ((plan.get("steps") or [{}])[0].get("candidate_targets") or [])
-        if not candidates:
-            raise RuntimeError("mapper-derived plan has no authorized operator target")
-        receipt = _run_with_operator_recovery(
-            "simplicio-dev-cli",
-            run_root,
-            lambda: _prepare_operator_receipt(
-                repo_path, run_root, tasks[0], candidates[0]
-            ),
-        )
-        plan_hash = hashlib.sha256((run_root / "plan.json").read_bytes()).hexdigest()
-        receipt["run_id"] = run_id
-        receipt["task_contract_hash"] = compiled["collection_hash"]
-        receipt["plan_hash"] = plan_hash
-        receipt["mapper_pack_hash"] = plan.get("mapper_pack_hash", "")
-        receipt["mapper_context_hash"] = plan.get("mapper_context_hash", "")
-        receipt["authorized_targets"] = [candidates[0]]
-        receipt["target_within_repo"] = True
-        _write_json(run_root / "operator-receipt.json", receipt)
-        if receipt.get("execution_state") != "dry_run" or receipt.get("returncode") != 0:
-            stdout_payload = receipt.get("stdout") if isinstance(receipt.get("stdout"), Mapping) else {}
-            blocked = stdout_payload.get("blocked_preconditions") if isinstance(stdout_payload, Mapping) else []
-            reason = ""
-            if isinstance(blocked, list) and blocked:
-                first = blocked[0] if isinstance(blocked[0], Mapping) else {}
-                reason = str(first.get("code") or first.get("message") or "")
-            if not reason and isinstance(stdout_payload.get("execution_profile"), Mapping):
-                reason = str(stdout_payload["execution_profile"].get("reason_code") or "")
-            raise RuntimeError(
-                "operator preflight blocked the run: "
-                + (reason or str(receipt.get("stderr") or receipt.get("execution_state") or "unknown failure"))
-            )
-        state["operator"] = {
-            "ready": True,
-            "receipt": str(run_root / "operator-receipt.json"),
-            "target": candidates[0],
-            "execution_state": receipt.get("execution_state", "proposed"),
-        }
-        evidence = build_evidence_receipt(str(run_root))
-        _write_json(run_root / "evidence-receipt.json", evidence)
-        state["evidence"] = {
-            "ready": False,
-            "receipt": str(run_root / "evidence-receipt.json"),
-            "status": evidence.get("status", "UNVERIFIED"),
-        }
-        delivery_receipt = build_delivery_receipt(str(run_root), delivery, current_state="implemented")
-        write_delivery_receipt(str(run_root), delivery_receipt)
-        state["delivery"] = {
-            "target": delivery,
-            "current_state": delivery_receipt["current_state"],
-            "ready": delivery_receipt["ready"],
-            "receipt": str(run_root / "delivery-receipt.json"),
-            "source_checked_at": delivery_receipt["source_checked_at"],
-        }
-        state["current_action"] = "operator_dry_run_recorded"
-        state["next_action"] = "await_operator_decision"
-        _write_json(run_root / "state.json", state)
-        _emit_event(run_root, state, "plan_ready", receipt=str(run_root / "plan.json"),
-                    message="validated plan materialized")
-        if state.get("operator", {}).get("receipt"):
-            _emit_event(run_root, state, "operator_receipt",
-                        receipt=str(run_root / "operator-receipt.json"),
-                        message="operator dry-run receipt persisted")
-        _transition(run_root, state, "awaiting_decision", "plan derived from task contract + mapper",
-                    receipt=str(run_root / "plan.json"))
-    except Exception as exc:
-        state = _load_json(run_root / "state.json")
-        message = str(exc)
-        if "no authorized operator target" in message or "operator preflight blocked" in message:
-            state["blockers"] = [{
-                "kind": "run_preflight",
-                "reason_code": "no_authorized_target" if "target" in message else "operator_dry_run_failed",
-                "message": message,
-                "run_id": run_id,
-            }]
-        else:
-            state["blockers"] = [message]
-        state["current_action"] = "mapping_failed"
-        state["next_action"] = "repair_mapper_or_repo"
-        evidence_path = run_root / "evidence-receipt.json"
-        if not evidence_path.exists():
-            mapper_path = run_root / "mapper-context.json"
-            operator_path = run_root / "operator-receipt.json"
-            plan_path = run_root / "plan.json"
-            if not plan_path.exists() and not mapper_path.exists():
-                _write_json(mapper_path, {
-                    "run_id": run_id,
-                    "task_contract_hash": compiled["collection_hash"],
-                    "status": "blocked",
-                    "error": message,
-                })
-            if not plan_path.exists() and not operator_path.exists():
-                _write_json(operator_path, {
-                    "schema": OPERATOR_RECEIPT_SCHEMA,
-                    "run_id": run_id,
-                    "task_contract_hash": compiled["collection_hash"],
-                    "execution_state": "blocked",
-                    "status": "blocked",
-                    "returncode": None,
-                    "changed_paths": [],
-                    "error": message,
-                })
-            if mapper_path.exists() and operator_path.exists():
-                evidence = build_evidence_receipt(str(run_root))
-                _write_json(evidence_path, evidence)
-                state["evidence"] = {
-                    "ready": False,
-                    "receipt": str(evidence_path),
-                    "status": evidence.get("status", "UNVERIFIED"),
-                }
-        _write_json(run_root / "state.json", state)
-        _transition(run_root, state, "blocked", "mapper integration failed",
-                    receipt=str(run_root / "mapper-context.json"), extra={"error": str(exc)})
-    return {"manifest": manifest, "state": _load_json(run_root / "state.json"), "run_dir": str(run_root)}
-
-
-def _changed_paths(repo_path: Path) -> List[str]:
-    try:
-        result = _run_cmd(["git", "diff", "--name-only", "HEAD"], repo_path)
-        paths = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
-        status = _run_cmd(["git", "status", "--porcelain=v1", "--untracked-files=all"], repo_path)
-        for line in (status.stdout or "").splitlines():
-            if len(line) > 3 and line[3:].strip() not in paths:
-                paths.append(line[3:].strip())
-        return sorted(set(paths))
-    except Exception:
-        return []
-
-
-def _capture_operator_checkpoint(run_dir: Path, repo_path: Path, targets: List[str]) -> Dict[str, Any]:
-    checkpoint_dir = run_dir / "checkpoint"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    files = []
-    for target in sorted(set(t for t in targets if t)):
-        path = repo_path / target
-        exists = path.exists()
-        content = path.read_text(encoding="utf-8") if exists else None
-        files.append({
-            "path": target,
-            "exists": exists,
-            "content": content,
-        })
-    return {
-        "kind": "file-snapshot/v1",
-        "created_at": _now(),
-        "safe_targets": sorted(set(t for t in targets if t)),
-        "files": files,
-    }
-
-
-def _restore_operator_checkpoint(checkpoint: Dict[str, Any], repo_path: Path, changed_paths: List[str]) -> Dict[str, Any]:
-    targets = sorted(set(str(path) for path in (checkpoint.get("safe_targets") or []) if str(path)))
-    changed = sorted(set(str(path) for path in (changed_paths or []) if str(path)))
-    snapshots = {item["path"]: item for item in (checkpoint.get("files") or []) if isinstance(item, dict) and item.get("path")}
-    if not changed:
-        for rel in targets:
-            snap = snapshots.get(rel)
-            if not snap:
-                continue
-            path = repo_path / rel
-            exists_now = path.exists()
-            content_now = path.read_text(encoding="utf-8") if exists_now else None
-            if bool(snap.get("exists")) != exists_now or (snap.get("exists") and snap.get("content") != content_now):
-                changed.append(rel)
-    if not changed:
-        return {"attempted": False, "restored": False, "reason": "no_changed_paths"}
-    if not targets:
-        return {"attempted": False, "restored": False, "reason": "checkpoint_targets_missing"}
-    if any(path not in targets for path in changed):
-        return {"attempted": False, "restored": False, "reason": "changed_paths_outside_checkpoint_scope"}
-    for rel in changed:
-        snap = snapshots.get(rel)
-        if not snap:
-            return {"attempted": False, "restored": False, "reason": f"missing_snapshot:{rel}"}
-        path = repo_path / rel
-        if snap.get("exists"):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(snap.get("content") or "", encoding="utf-8")
-        elif path.exists():
-            path.unlink()
-    return {"attempted": True, "restored": True, "reason": "restored_checkpoint"}
-
-
-def _operator_failure_fingerprint(returncode: int | None, stderr: str, stdout: Any) -> str:
-    parts = [f"returncode={returncode}"]
-    if stderr:
-        parts.append(f"stderr={stderr}")
-    if stdout:
-        if isinstance(stdout, dict):
-            parts.append("stdout=" + json.dumps(stdout, ensure_ascii=False, sort_keys=True))
-        else:
-            parts.append(f"stdout={stdout}")
-    blob = " | ".join(parts)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
-
-
-def _operator_receipt_hash(receipt: Mapping[str, Any]) -> str:
-    """Stable sha256 over the canonical receipt body (excluding receipt_hash itself).
-
-    Issue #135: the receipt is the durable proof a production diff was produced through the
-    bridge. The hash lets the diff-coverage gate bind a `git diff` path to exactly one receipt.
-    """
-    canonical = {k: v for k, v in receipt.items() if k != "receipt_hash"}
-    blob = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
-
-
-def _operator_run_diff_coverage(repo_path: Path, run_dir: Path) -> Dict[str, Any]:
-    """Issue #135: every production diff path must be covered by an operator receipt.
-
-    The bridge is the ONLY allowed mutation path. Any path `git diff` names that no operator
-    receipt covers (i.e. was edited outside the bridge, or by a dev-cli failure that silently
-    unlocked manual editing) makes the run non-concludable.
-    """
-    changed = _changed_paths(repo_path)
-    covered: List[str] = []
-    receipts: List[Dict[str, Any]] = []
-    # Collect every operator receipt in this run (execute + batch lanes).
-    for candidate in sorted(run_dir.glob("operator-receipt*.json")):
-        try:
-            receipts.append(_load_json(candidate))
-        except (OSError, ValueError, TypeError):
-            continue
-    for receipt in receipts:
-        status = str(receipt.get("status") or receipt.get("execution_state") or "")
-        if status not in ("applied", "no_change"):
-            continue
-        covered.extend(str(p) for p in (receipt.get("changed_paths") or []) if str(p))
-    covered_set = {str(p) for p in covered}
-    uncovered = [p for p in changed if p not in covered_set]
-    coverage_ok = not uncovered
-    return {
-        "changed_paths": changed,
-        "covered_paths": sorted(covered_set),
-        "uncovered_paths": uncovered,
-        "coverage_ok": coverage_ok,
-        "receipt_count": len(receipts),
-    }
-
-
-def conclude_run(repo: str, run_id: str, *, force: bool = False) -> Dict[str, Any]:
-    """Gate run conclusion on full operator-receipt diff coverage (issue #135).
-
-    `force=True` is the explicit human override (the safety policy's human gate) and still
-    records the violation rather than silently passing.
-    """
-    status = read_status(repo, run_id)
-    run_dir = Path(status["run_dir"])
-    repo_path = Path(status["manifest"]["repo"]).resolve()
-    coverage = _operator_run_diff_coverage(repo_path, run_dir)
-    state = status["state"]
-    if not coverage["coverage_ok"] and not force:
-        raise RuntimeError(
-            "cannot conclude run: production diff paths without an operator receipt: "
-            + ", ".join(coverage["uncovered_paths"])
-        )
-    gate = {
-        "kind": "operator_run_diff_coverage",
-        "coverage_ok": coverage["coverage_ok"],
-        "uncovered_paths": coverage["uncovered_paths"],
-        "forced": bool(force),
-        "checked_at": _now(),
-    }
-    state.setdefault("gates", []).append(gate)
-    state["operator_run_gate"] = gate
-    _write_json(run_dir / "state.json", state)
-    _transition(
-        run_dir, state, state.get("phase") or "done",
-        "operator-run diff-coverage gate evaluated",
-        receipt=str(run_dir / "state.json"),
-        extra={"coverage": coverage},
-    )
-    return read_status(repo, run_id)
-
-
-def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
-                      attempt_coordinator: Optional[AttemptCoordinator] = None,
-                      guarded_attempt: Any = None,
-                      authority_receipt: Optional[Mapping[str, Any]] = None,
-                      admission_fence: int = 1) -> Dict[str, Any]:
-    """Execute one planned task through the real dev-cli and persist an immutable receipt.
-
-    `run` intentionally arms and dry-runs only.  This explicit tick is the mutation boundary;
-    it cannot run without the mapper/plan/operator preflight artifacts created by `arm_run`.
-
-    When both ``attempt_coordinator`` and ``guarded_attempt`` (a ``WorkItemAttempt``) are
-    supplied (issue #288's guarded dispatch path, gated by ``SIMPLICIO_GUARDED_DISPATCH`` in
-    ``_operator_dispatch_attempt``), the mutating dev-cli invocation runs through
-    ``AttemptCoordinator.run_guarded`` instead of a raw ``subprocess.run`` -- a background
-    thread heartbeats the lease for the life of the subprocess and kills it the instant the
-    lease is no longer current, instead of letting a worker that lost its fence keep mutating
-    the checkout (the #183 gap). ``LeaseLostDuringExecution`` propagates to the caller, which
-    already treats any exception here as a receipted (not scheduler-crashing) failure.
-    ``guarded_attempt`` is deliberately named apart from this function's own ``attempt``
-    local (the per-task retry counter) so the two can never collide.
-    """
-    status = read_status(repo, run_id)
-    if (status["state"].get("maintenance") or {}).get("disposition") == "backlog_only":
-        raise RuntimeError("maintenance deferred: operator execution is blocked until explicit resume")
-    run_dir = Path(status["run_dir"])
-    repo_path = Path(status["manifest"]["repo"]).resolve()
-    contract = _load_json(run_dir / "task-contract.json")
-    tasks = contract.get("tasks") or []
-    if task_index < 1 or task_index > len(tasks):
-        raise ValueError(f"task index out of range: {task_index}")
-    plan_path = run_dir / "plan.json"
-    mapper_path = run_dir / "mapper-context.json"
-    operator_path = run_dir / "operator-receipt.json"
-    if not plan_path.exists() or not mapper_path.exists() or not operator_path.exists():
-        raise RuntimeError("execution requires fresh mapper, plan, and operator preflight receipts")
-    plan = _load_json(plan_path)
-    before = _repo_fingerprint(repo_path)
-    current = _repo_fingerprint(repo_path)
-    planned_state = plan.get("repo_state") or {}
-    plan_validation = validate_plan(plan, tasks, repo_path,
-                                   contract_hash=contract.get("collection_hash", ""),
-                                   current_state=current)
-    if not plan_validation["valid"]:
-        raise RuntimeError("plan validation failed before operator execution: " + ", ".join(plan_validation["errors"]))
-    if planned_state and not _repo_state_equivalent(planned_state, current):
-        raise RuntimeError("repository changed after planning; re-run mapper before execution")
-    task = tasks[task_index - 1]
-    authority_path = None
-    if authority_receipt is not None:
-        authority = dict(authority_receipt)
-        supplied = str(authority.pop("receipt_hash", ""))
-        targets = list(((plan.get("steps") or [{}])[task_index - 1].get("candidate_targets") or []))
-        source = authority.get("source") or {}
-        if (not supplied or supplied != _planning_content_hash(authority)
-                or authority.get("operator") != "simplicio-dev-cli"
-                or sorted(authority.get("targets") or []) != sorted(targets)
-                or not str(source.get("revision") or "")
-                or not str(source.get("planning_receipt") or "")):
-            raise RuntimeError("authority_receipt invalid at mutation boundary")
-        authority_path = run_dir / f"mutation-authority-{task_index}.json"
-        _write_json(authority_path, {**authority, "receipt_hash": supplied,
-                                     "admission_fence": max(1, int(admission_fence))})
-    # #694: every production item gets an authoritative route receipt before
-    # mutation authority or an execution backend is selected.  The route is a
-    # deterministic gate; Runtime remains the physical/policy owner.
-    task_text = _task_goal(task)
-    worker_capabilities = task.get("worker_capabilities") or task.get("capabilities") or ()
-    worker_available = bool(worker_capabilities) or os.environ.get("SIMPLICIO_DETERMINISTIC_WORKER", "1").lower() not in {"0", "false", "no", "off"}
-    capability_manifest = {
-        "declared": normalize_capability_manifest(worker_capabilities),
-        "deterministic_worker_available": worker_available,
-    }
-    capability_hash = capability_fingerprint(capability_manifest)
-    route_path = run_dir / "execution-route.json"
-    previous_route = None
-    if route_path.exists():
-        try:
-            candidate = _load_json(route_path)
-            if verify_route_hash(candidate):
-                previous_route = candidate
-        except (OSError, TypeError, ValueError):
-            previous_route = None
-    route_cache_status = "new"
-    route_record = None
-    if previous_route and route_receipt_is_current(previous_route, capability_manifest):
-        route_record = previous_route
-        route_cache_status = "reused"
-    else:
-        invalidation = {}
-        if previous_route:
-            route_cache_status = "invalidated"
-            invalidation = {
-                "status": "invalidated",
-                "reason_code": (
-                    "capability_manifest_changed"
-                    if previous_route.get("capability_fingerprint")
-                    else "capability_manifest_missing"
-                ),
-                "previous_receipt_sha": str(previous_route.get("receipt_sha") or ""),
-                "previous_capability_fingerprint": str(previous_route.get("capability_fingerprint") or ""),
-            }
-        route = decide_route(
-            task_text,
-            has_deterministic_worker=worker_available,
-            is_ambiguous=bool(task.get("ambiguous") or task.get("requires_semantic_review")),
-        )
-        route_record = route.to_dict()
-        route_record.update({
-            "run_id": run_id,
-            "task_index": task_index,
-            "task_id": str(task.get("id") or ""),
-            "evidence_handles": sorted({
-                str(value) for value in (
-                    (plan.get("steps") or [])[task_index - 1].get("mapper_context_hash", ""),
-                    (plan.get("steps") or [])[task_index - 1].get("context_pack_hash", ""),
-                ) if str(value)
-            }),
-            "causal_ids": [run_id, str(task.get("id") or task_index)],
-            "route_authority": "loop-runner",
-            "capability_manifest": capability_manifest,
-            "capability_fingerprint": capability_hash,
-        })
-        if invalidation:
-            route_record["invalidation"] = invalidation
-        route_record["receipt_sha"] = _execution_route_hash(
-            {key: value for key, value in route_record.items() if key != "receipt_sha"}
-        )
-    if not verify_route_hash(route_record):
-        raise RuntimeError("execution-route receipt failed deterministic hash verification")
-    _write_json(route_path, route_record)
-    operator_state = status["state"].setdefault("operator", {})
-    operator_state["execution_route"] = route_record
-    operator_state["execution_route_cache"] = {
-        "status": route_cache_status,
-        "capability_fingerprint": capability_hash,
-        "previous_receipt_sha": str((previous_route or {}).get("receipt_sha") or ""),
-    }
-    _write_json(run_dir / "state.json", status["state"])
-    attempt = int((status["state"] or {}).get("attempts", 0)) + 1
-    # #284: mutation-authority gate, mandatory by default. execute_operator()
-    # refuses to run without a valid planning-receipt.json whose mutation_authority
-    # token matches THIS run/attempt/task-contract/plan identity -- any drift (stale
-    # plan hash, rotated lease/fence, missing/invalid receipt) blocks fail-closed
-    # instead of silently proceeding. Opt out only via an explicit falsy
-    # SIMPLICIO_REQUIRE_MUTATION_AUTHORITY (see planning_gate.mutation_authority_required());
-    # see simplicio_loop/planning_gate.py and scripts/planning_gate.py.
-    if mutation_authority_required():
-        # GitHub source drift: if the caller re-captured a fresh source snapshot
-        # immediately before this tick (`scripts/planning_gate.py capture-source`,
-        # written to `source-snapshot-current.json`), compare its hash against the
-        # one the receipt/authority was minted with. Absent that file (local/
-        # non-GitHub runs, or a caller that hasn't wired re-capture yet), this is a
-        # no-op -- identical to previous behavior.
-        current_source_hash = ""
-        current_snapshot_path = run_dir / "source-snapshot-current.json"
-        if current_snapshot_path.exists():
-            try:
-                current_source_hash = str((_load_json(current_snapshot_path).get("source") or {}).get("snapshot_hash") or "")
-            except Exception:
-                current_source_hash = ""
-        authority_verdict = evaluate_mutation_authority(
-            run_dir, run_id=run_id, attempt=attempt,
-            task_contract_hash=str(contract.get("collection_hash") or _planning_content_hash(contract)),
-            plan_hash=_planning_content_hash(plan),
-            source_snapshot_hash=current_source_hash,
-        )
-        if not authority_verdict["ok"]:
-            raise RuntimeError(
-                "mutation authority required (SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) but "
-                f"{authority_verdict['reason_code']}: {authority_verdict['reason']}"
-            )
-    targets = (plan.get("steps") or [])[task_index - 1].get("candidate_targets") or []
-    target = targets[0] if targets else status["state"].get("operator", {}).get("target", "")
-    if not target:
-        raise RuntimeError("plan has no authorized operator target")
-    # Issue #135: the decided change is AC-scoped and MUST point at a plan target. Any target
-    # expansion beyond authorized_targets routes back to the planner/impact gate before continuing.
-    if target not in (targets or []):
-        raise RuntimeError(
-            "operator target '%s' is outside the plan's authorized_targets %s; "
-            "route back to planner/impact gate before continuing" % (target, targets)
-        )
-    _preflight_operator(repo_path, run_dir)
-    task_spec_path = run_dir / "task-spec.json"
-    task_spec = _task_spec_payload(task)
-    task_spec_hash = _task_spec_hash(task_spec)
-    _write_json(task_spec_path, task_spec)
-    lease = str(getattr(getattr(guarded_attempt, "lease", None), "lease_id", "") or f"loop-run:{run_id}")
-    fence = str(getattr(getattr(guarded_attempt, "lease", None), "fencing_token", "") or "1")
-    profile = _execution_profile()
-    context_args, context_handoff = _context_handoff_args(
-        repo_path,
-        run_dir,
-        attempt_id=f"{run_id}:attempt:{attempt}",
-        lease_id=lease,
-        fencing_token=fence,
-        require_authorization=profile == "runtime-backed",
-    )
-    operator_mode = "standalone" if profile == "standalone" else "integrated"
-    task_input = (
-        [_task_goal(task) or str(task.get("id") or "execute task"),
-         "--criteria", _criteria_text(task) or "- true state",
-         "--constraints", _constraints_text(task) or "- build passes"]
-        if operator_mode == "standalone"
-        else ["--task-spec", str(task_spec_path)]
-    )
-    argv = _devcli_cmd(
-        repo_path, "task", "--root", str(repo_path), *task_input,
-        "--mode", operator_mode, "--target", target, "--json", "--bound-paths", target,
-    )
-    argv.extend(context_args)
-    checkpoint = _capture_operator_checkpoint(run_dir, repo_path, targets or [target])
-    # #285 remaining gap: this dispatch has a real guarded lease (when the caller wired
-    # one) and a real repo checkout/branch on hand -- surface them on the event so
-    # `_sync_github_lifecycle()` projects the actual lease/fencing token and branch onto
-    # the CLAIMED comment instead of falling back to a blank/best-effort default.
-    _emit_event(run_dir, status["state"], "worker_claimed",
-                receipt=str(run_dir / "task-contract.json"),
-                task_id=str(task.get("id") or ""),
-                ac_ids=_task_ac_ids(task),
-                message="operator worker claimed task",
-                lease_id=str(getattr(getattr(guarded_attempt, "lease", None), "lease_id", "") or ""),
-                fencing_token=str(getattr(getattr(guarded_attempt, "lease", None), "fencing_token", "") or ""),
-                branch=_git_current_branch(repo_path))
-    if item_context := (status["state"].get("operator") or {}).get("worktree_context"):
-        _emit_event(run_dir, status["state"], "worktree_created",
-                    receipt=str(item_context.get("lock_receipt") or operator_path),
-                    message="isolated worktree context available", worktree=item_context)
-    op_env = _devcli_env(repo_path, _operator_env())
-    op_env["SIMPLICIO_ADMISSION_FENCE"] = str(max(1, int(admission_fence)))
-    if authority_path is not None:
-        op_env["SIMPLICIO_MUTATION_AUTHORITY_RECEIPT"] = str(authority_path)
-    if profile == "runtime-backed" and not op_env.get("SIMPLICIO_RUNTIME_URL", "").strip():
-        op_env.setdefault("SIMPLICIO_RUNTIME_OFFLINE", "1")
-    provider_config = {
-        "model": op_env.get("SIMPLICIO_MODEL", ""),
-        "effort": op_env.get("SIMPLICIO_CODEX_EFFORT", ""),
-    }
-    effect_adapter = _runtime_effect_adapter(repo_path, profile)
-    effect_request = _build_effect_request(
-        repo_path, run_id, task_index, task, attempt, targets, route_record, guarded_attempt,
-        canonical_plan=(
-            load_canonical_plan(plan["canonical_plan"], expected_digest=str(plan.get("canonical_plan_digest") or ""))
-            if isinstance(plan.get("canonical_plan"), Mapping) else None
-        ),
-    )
-    effect_outcome = _execute_operator_effect(
-        profile=profile,
-        adapter=effect_adapter,
-        request=effect_request,
-        argv=argv,
-        env=op_env,
-        repo_path=repo_path,
-        attempt_coordinator=attempt_coordinator,
-        guarded_attempt=guarded_attempt,
-        source_hash=str(before.get("tree_hash") or ""),
-    )
-    returncode = effect_outcome["returncode"]
-    stdout = effect_outcome["stdout"]
-    stderr = effect_outcome["stderr"]
-    source = effect_outcome["source"]
-    effect_receipt = effect_outcome.get("effect_receipt")
-    uncertain = bool(effect_outcome.get("uncertain"))
-    hookwall_evidence = effect_outcome.get("hookwall_evidence")
-    hookwall_verified, hookwall_reason = gate_completion(hookwall_evidence)
-    after = _repo_fingerprint(repo_path)
-    changed = _changed_paths(repo_path)
-    rollback = {"attempted": False, "restored": False, "reason": "not_needed"}
-    if returncode != 0 and not uncertain:
-        rollback = _restore_operator_checkpoint(checkpoint, repo_path, changed)
-        if rollback.get("restored"):
-            changed = _changed_paths(repo_path)
-            after = _repo_fingerprint(repo_path)
-    if uncertain:
-        execution_state = "uncertain"
-        no_change_proof = None
-    elif returncode == 0 and not changed:
-        execution_state = "no_change"
-        no_change_proof = {
-            "satisfying_state": "repository already satisfied the AC; no production diff produced",
-            "measured_at": _now(),
-            "evidence": str(after.get("tree_hash", "")),
-        }
-    else:
-        execution_state = "applied" if returncode == 0 else "blocked"
-        no_change_proof = None
-    receipt = {
-        "schema": OPERATOR_RECEIPT_SCHEMA,
-        "mode": "execute",
-        "tool": "simplicio-dev-cli",
-        "execution_state": execution_state,
-        "status": execution_state,
-        "attempt": attempt,
-        "retry_budget": 3,
-        "target": target,
-        "authorized_targets": targets,
-        "target_within_repo": True,
-        "goal": _task_goal(task),
-        "argv": argv,
-        "returncode": returncode,
-        "stdout": stdout,
-        "stderr": stderr,
-        "timed_out": returncode is None,
-        "started_at": _now(),
-        "finished_at": _now(),
-        # #288: receipt_verifier.OPERATOR_RECEIPT_SCHEMA requires "measured_at" for its
-        # freshness check. This receipt never carried it, so every real (non-mocked)
-        # execute_operator() dispatch was permanently INVALID_SCHEMA/MISSING_FIELD in
-        # _verify_worker_receipt_pair() -- the merge gate below could never fire for a genuine
-        # attempt. Same instant as finished_at; this is a receipt-completeness fix, not a new
-        # measurement.
-        "measured_at": _now(),
-        "source": source,
-        "context_handoff": context_handoff,
-        "provider_config": provider_config,
-        "execution_profile": profile,
-        "executor_profile": (effect_receipt or {}).get("executor_profile", profile),
-        "effect_receipt": effect_receipt,
-        "effect_transaction_id": (effect_receipt or {}).get("transaction_id", ""),
-        "effect_correlation_id": (effect_receipt or {}).get("correlation_id", ""),
-        "hookwall_envelope": effect_outcome.get("hookwall_envelope"),
-        "hookwall_pre_decision": effect_outcome.get("hookwall_pre_decision"),
-        "hookwall_mutation_receipt": effect_outcome.get("hookwall_mutation_receipt"),
-        "hookwall_post_decision": effect_outcome.get("hookwall_post_decision"),
-        "hookwall_evidence": hookwall_evidence,
-        "hookwall_verified": hookwall_verified,
-        "hookwall_reason": hookwall_reason,
-        "checkpoint": checkpoint,
-        "rollback": rollback,
-        "failure_fingerprint": "" if returncode == 0 else _operator_failure_fingerprint(returncode, stderr, stdout),
-        "task_contract_hash": contract.get("collection_hash", ""),
-        "plan_hash": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
-        "mapper_pack_hash": plan.get("mapper_pack_hash", ""),
-        "repo_state_before": before,
-        "repo_state_after": after,
-        "changed_paths": changed,
-        "diff_hash": after.get("tree_hash", ""),
-        "no_change_proof": no_change_proof,
-        "task_spec_path": str(task_spec_path),
-        "task_spec_hash": task_spec_hash,
-    }
-    receipt["receipt_hash"] = _operator_receipt_hash(receipt)
-    _write_json(operator_path, receipt)
-    state = status["state"]
-    if rollback.get("restored"):
-        _emit_event(run_dir, state, "rollback", receipt=str(operator_path),
-                    blocker=str(rollback.get("reason") or "operator execution failed"),
-                    message="operator changes rolled back")
-    state["operator"] = {
-        "ready": returncode == 0 and not uncertain and hookwall_verified,
-        "receipt": str(operator_path),
-        "target": target,
-        "execution_state": receipt["execution_state"],
-    }
-    state["current_action"] = "operator_executed" if returncode == 0 else "operator_failed"
-    state["next_action"] = "watcher_behavioral_verification" if returncode == 0 else "repair_operator_or_plan"
-    state["attempts"] = int(state.get("attempts", 0)) + 1
-    _write_json(run_dir / "state.json", state)
-    _transition(run_dir, state, "validating" if returncode == 0 else "blocked",
-                "dev-cli execution receipt persisted", receipt=str(operator_path),
-                extra={"changed_paths": changed})
-    if returncode == 0:
-        evidence = build_evidence_receipt(str(run_dir))
-        _write_json(run_dir / "evidence-receipt.json", evidence)
-        state = _load_json(run_dir / "state.json")
-        state["evidence"] = {"ready": False, "receipt": str(run_dir / "evidence-receipt.json"), "status": evidence.get("status", "UNVERIFIED")}
-        _write_json(run_dir / "state.json", state)
-        _emit_event(run_dir, state, "operator_receipt", receipt=str(operator_path),
-                    message="operator execution receipt persisted")
-        _emit_event(run_dir, state, "test_gate", receipt=str(run_dir / "evidence-receipt.json"),
-                    blocker="" if evidence.get("status") == "VERIFIED" else "evidence_unverified",
-                    message="test and evidence gate evaluated", status=evidence.get("status", "UNVERIFIED"))
-    return read_status(repo, run_id)
-
-
-def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
-    """Run the independent watcher and advance a run without a manual tick."""
-    status = read_status(repo, run_id)
-    run_dir = Path(status["run_dir"])
-    repo_path = Path(status["manifest"]["repo"]).resolve()
-    state = status["state"]
-    if state.get("phase") in {"done", "cancelled"}:
-        return status
-    watcher = repo_path / "scripts" / "watcher_verify.py"
-    if not watcher.exists():
-        state["blockers"] = ["watcher_verify.py is unavailable"]
-        state["current_action"] = "watcher_unavailable"
-        state["next_action"] = "inspect_and_recover"
-        _write_json(run_dir / "state.json", state)
-        _transition(run_dir, state, "blocked", "independent watcher is unavailable", receipt=str(run_dir / "state.json"))
-        return read_status(repo, run_id)
-    _transition(run_dir, state, "watching", "automatic conduct reached independent verification", receipt=str(run_dir / "operator-receipt.json"))
-    env = dict(os.environ)
-    env["SIMPLICIO_RUN_DIR"] = str(run_dir)
-    env["SIMPLICIO_LOOP_REPO"] = str(repo_path)
-    env["SIMPLICIO_LOOP_DIR"] = str(run_dir / "loop")
-    result = subprocess.run([sys.executable, str(watcher), "verify"], cwd=str(repo_path), capture_output=True, text=True, timeout=180, env=env)
-    output = redact_sensitive_text((result.stdout or "") + (result.stderr or "")).strip()
-    _write_json(run_dir / "watcher-receipt.json", {"schema": "simplicio.watcher-invocation/v1", "returncode": result.returncode, "output": output, "receipt": str(run_dir / "loop" / "watcher_state.json"), "checked_at": _now()})
-    watcher_path = run_dir / "loop" / "watcher_state.json"
-    watcher_state = _load_json(watcher_path) if watcher_path.exists() else {}
-    if result.returncode != 0 or watcher_state.get("status") != "MEASURED" or not watcher_state.get("match"):
-        state = read_status(repo, run_id)["state"]
-        state["blockers"] = [watcher_state.get("reported") or output or "watcher verification failed"]
-        state["current_action"] = "watcher_failed"
-        state["next_action"] = "inspect_and_recover"
-        state["evidence"] = {"ready": False, "receipt": str(watcher_path), "status": "UNVERIFIED"}
-        _write_json(run_dir / "state.json", state)
-        _transition(run_dir, state, "blocked", "independent watcher rejected the run", receipt=str(watcher_path))
-        return read_status(repo, run_id)
-    state = read_status(repo, run_id)["state"]
-    state["evidence"] = {"ready": True, "receipt": str(watcher_path), "status": "MEASURED"}
-    state["current_action"] = "watcher_verified"
-    state["next_action"] = "delivery_reconciliation"
-    _write_json(run_dir / "state.json", state)
-    _transition(run_dir, state, "delivering", "independent watcher measured all acceptance criteria", receipt=str(watcher_path))
-    delivered = reconcile_delivery(repo, run_id, "verified", source_kind="local")
-    if not delivered["state"].get("delivery", {}).get("ready"):
-        return delivered
-    state = delivered["state"]
-    state["current_action"] = "run_verified"
-    state["next_action"] = "none"
-    state["completion"] = {"ready": True, "receipt": str(watcher_path), "verdict": "VERIFIED", "reason_code": "watcher_and_delivery_verified", "tag": "MEASURED"}
-    _write_json(run_dir / "state.json", state)
-    # wi612 (#612): Quality Matrix + Completion Oracle obrigatorios antes do done (elimina bypass).
-    from . import oracle as _oracle
-    _qm_ok, _qm_gate, _qm_verdict = _oracle._quality_matrix_gate(run_dir)
-    if not _qm_ok:
-        state = read_status(repo, run_id)["state"]
-        state["blockers"] = [_qm_verdict.get("reason", "quality matrix incomplete")]
-        state["current_action"] = "quality_matrix_failed"
-        state["next_action"] = "inspect_and_recover"
-        state["evidence"] = {"ready": False, "receipt": str(run_dir / "quality-matrix.json"), "status": "UNVERIFIED"}
-        _write_json(run_dir / "state.json", state)
-        _transition(run_dir, state, "blocked", "quality matrix gate rejected the run", receipt=str(run_dir / "quality-matrix.json"))
-        return read_status(repo, run_id)
-    _oracle_matrix = _oracle.evaluate_matrix(str(run_dir / "loop"), str(run_dir))
-    if not _oracle_matrix.get("parity") or not all(a["ready"] for a in _oracle_matrix.get("adapters", [])):
-        state = read_status(repo, run_id)["state"]
-        state["blockers"] = ["completion oracle incomplete: " + str(_oracle_matrix.get("signature"))]
-        state["current_action"] = "oracle_failed"
-        state["next_action"] = "inspect_and_recover"
-        state["evidence"] = {"ready": False, "receipt": str(run_dir / "oracle-matrix.json"), "status": "UNVERIFIED"}
-        _write_json(run_dir / "state.json", state)
-        _transition(run_dir, state, "blocked", "completion oracle rejected the run", receipt=str(run_dir / "oracle-matrix.json"))
-        return read_status(repo, run_id)
-    _transition(run_dir, state, "done", "automatic task-to-verify conduct completed", receipt=str(watcher_path))
-    return read_status(repo, run_id)
-
-
-def _conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3, quality_provider: Optional[str] = None, quality_policy: str = "strict-default") -> Dict[str, Any]:
-    """Arm, execute, and independently verify one run as one durable operation.
-
-    Issue #279: this boundary must never leave a run partially armed.  Either the full
-    mapper -> plan -> operator preflight -> batch chain succeeds, or the run is left (and
-    reported) explicitly ``blocked`` with a diagnostic receipt.  ``execute_operator_batch``
-    already fails closed and persists a batch-preflight-block diagnostic before raising when
-    the receipt chain is missing or stale, but that exception must not escape uncaught here --
-    an uncaught exception is itself a partially-armed, undiagnosed state from the CLI's
-    perspective.
-    """
-    armed = arm_run(repo, task_path, delivery, max_iterations)
-    run_id = armed["manifest"]["run_id"]
-    if armed["state"].get("phase") == "blocked":
-        return armed
-    try:
-        batch = execute_operator_batch(repo, run_id, max_workers=1, retry_budget=retry_budget, auto_fan_out=False)
-    except (OSError, TypeError, ValueError, RuntimeError) as exc:
-        status = read_status(repo, run_id)
-        run_dir = Path(status["run_dir"])
-        state = status["state"]
-        if state.get("phase") != "blocked":
-            # Defensive fallback: execute_operator_batch's own preflight boundary is
-            # expected to have already persisted a blocked diagnostic before raising, but
-            # guarantee the run never surfaces as anything other than explicitly blocked.
-            _transition(run_dir, state, "blocked",
-                        "batch dispatch failed before dispatch", extra={"error": str(exc)})
-            status = read_status(repo, run_id)
-        return status
-    status = read_status(repo, run_id)
-    if batch.get("failed_task_indices") or status["state"].get("phase") == "blocked":
-        return status
-    # An explicitly selected quality provider runs after execution and before
-    # the watcher/delivery/Completion Oracle. Once selected, it remains
-    # fail-closed: there is no fallback for an unavailable or failing provider.
-    if quality_provider:
-        from .quality_provider import conduct_quality
-        run_dir = Path(status["run_dir"])
-        head = status.get("manifest", {}).get("head", "") or ""
-        diff_hash = status.get("manifest", {}).get("diff_hash", "") or ""
-        q = conduct_quality(
-            repo, run_id,
-            quality_provider=quality_provider, quality_policy=quality_policy,
-            attempt=status["state"].get("attempt", 1), head=head, diff_hash=diff_hash,
-        )
-        if q.get("status") == "BLOCKED":
-            state = read_status(repo, run_id)["state"]
-            state["blockers"] = [q.get("reason", "quality provider blocked the run")]
-            state["current_action"] = "quality_blocked"
-            state["next_action"] = "inspect_and_recover"
-            state["evidence"] = {
-                "ready": False,
-                "receipt": str(run_dir / "quality-matrix.json"),
-                "status": "UNVERIFIED",
-            }
-            _write_json(run_dir / "state.json", state)
-            _transition(run_dir, state, "blocked",
-                        "quality provider blocked the run (fail-closed)",
-                        receipt=str(run_dir / "quality-matrix.json"))
-            return read_status(repo, run_id)
-        # A FAIL provider returns to recovery/implementation per the issue spec
-        # (not a direct provider fix); surface it and stop short of verify.
-        if q.get("status") == "FAIL":
-            state = read_status(repo, run_id)["state"]
-            state["blockers"] = [q.get("detail", "quality provider reported FAIL")]
-            state["current_action"] = "quality_failed"
-            state["next_action"] = "inspect_and_recover"
-            _write_json(run_dir / "state.json", state)
-            _transition(run_dir, state, "blocked",
-                        "quality provider reported FAIL -> recovery",
-                        receipt=str(run_dir / "quality-matrix.json"))
-            return read_status(repo, run_id)
-    return verify_run(repo, run_id)
-
-
-def conduct_run(repo: str, task_path: str, delivery: str = "verified", max_iterations: int = 12, *, retry_budget: int = 3, quality_provider: Optional[str] = None, quality_policy: str = "strict-default") -> Dict[str, Any]:
-    """Conduct a run and attach its public Completion-Oracle-derived outcome."""
-    status = _conduct_run(repo, task_path, delivery, max_iterations, retry_budget=retry_budget,
-                          quality_provider=quality_provider, quality_policy=quality_policy)
-    from .run_outcome import persist_run_outcome
-    status["outcome"] = persist_run_outcome(status)
-    return status
-
-
-def _operator_worker_limit(requested: Optional[int], item_count: int) -> int:
-    """Resolve a bounded worker count without silently creating an empty pool."""
-    if item_count <= 0:
-        return 0
-    if requested is None or requested <= 0:
-        raw = os.environ.get("SIMPLICIO_LOOP_OPERATOR_WORKERS", "").strip()
-        try:
-            requested = int(raw) if raw else min(DEFAULT_OPERATOR_WORKERS, os.cpu_count() or 1)
-        except ValueError:
-            requested = min(DEFAULT_OPERATOR_WORKERS, os.cpu_count() or 1)
-    return max(1, min(int(requested), item_count))
-
-
-def _build_native_prism_scheduler(
-    items: Sequence[Mapping[str, Any]],
-    worker_limit: int,
-) -> tuple[Any, str, dict[str, Any]]:
-    """Build the native Prism admission authority for a local operator batch.
-
-    Prism is intentionally an in-process contract here: it admits independent
-    work up to the measured worker limit, preserves dependency/conflict edges,
-    and leaves the existing worktree/operator bridge as the mutation boundary.
-    This keeps the fast local path useful without requiring cloud workers or
-    an Orca client, while still emitting the same bounded Prism decisions.
-    """
-    from .prism_contracts import (
-        TASK_STATES,
-        PrismExecution,
-        SlotSupervisor,
-        TaskOwnership,
-    )
-    from .prism_budgets import AdaptiveBudgetGovernor, BudgetSample
-    from .prism_scheduler import PrismPolicy, PrismScheduler, ResourceVector, ScheduledTask
-
-    if not items or worker_limit < 1:
-        raise ValueError("native Prism requires work and a positive worker limit")
-    from .local_capacity import probe_local_capacity
-
-    capacity_root = Path(str(items[0].get("repo") or ".")).resolve()
-    # Queue/worktree adapters may hand the scheduler a path that is created only
-    # after admission. Probe the nearest existing ancestor instead of treating
-    # that normal pre-launch state as an unavailable disk signal.
-    while not capacity_root.exists() and capacity_root != capacity_root.parent:
-        capacity_root = capacity_root.parent
-    capacity_sample = probe_local_capacity(
-        str(capacity_root), requested_workers=worker_limit,
-    )
-    worker_limit = max(1, min(int(worker_limit), capacity_sample.safe_workers))
-    run_id = str(items[0].get("run_id") or "local-batch")
-    # Keep logical partitioning independent from physical workers.  A task may
-    # provide an explicit partition identity; otherwise derive one from the
-    # existing impact/dependency metadata so independent work does not collapse
-    # into the historical single supervisor.
-    def _partition_key(item: Mapping[str, Any]) -> str:
-        spec = item.get("task_spec")
-        spec = spec if isinstance(spec, Mapping) else {}
-        explicit = (
-            spec.get("slot_key") or spec.get("dependency_component")
-            or spec.get("repository") or spec.get("repo")
-        )
-        if explicit:
-            return str(explicit).strip()
-        paths = spec.get("files_affected") or spec.get("candidate_targets") or ()
-        if isinstance(paths, str):
-            paths = (paths,)
-        first = sorted(str(path).replace("\\", "/") for path in paths if str(path).strip())[:1]
-        if first:
-            return first[0].split("/", 1)[0]
-        return "default"
-
-    partitions: dict[str, list[Mapping[str, Any]]] = {}
-    for item in items:
-        partitions.setdefault(_partition_key(item), []).append(item)
-    ordered_partitions = sorted(partitions.items(), key=lambda pair: pair[0])
-    max_slots = min(20, max(1, len(items)))
-    if len(ordered_partitions) > max_slots:
-        kept = ordered_partitions[: max_slots - 1]
-        merged = [item for _, group in ordered_partitions[max_slots - 1:] for item in group]
-        ordered_partitions = kept + [("overflow", merged)]
-    recovery_reserve = min(1, max(0, worker_limit - 1))
-    validation_reserve = min(1, max(0, worker_limit - recovery_reserve - 1))
-    policy = PrismPolicy(
-        max_tasks_per_slot=10,
-        max_active_slots=max(1, len(ordered_partitions)),
-        global_worker_limit=max(1, int(worker_limit)),
-        recovery_reserve=recovery_reserve,
-        validation_reserve=validation_reserve,
-    )
-    policy_hash = hashlib.sha256(
-        json.dumps({"policy": repr(policy), "run_id": run_id}, sort_keys=True).encode()
-    ).hexdigest()
-    config_hash = hashlib.sha256(
-        json.dumps({"items": [str(item.get("task_id") or "") for item in items]}, sort_keys=True).encode()
-    ).hexdigest()
-    root = PrismExecution(
-        goal_id=run_id,
-        owner_agent="simplicio-loop",
-        policy_hash=policy_hash,
-        config_hash=config_hash,
-        source_generation=run_id,
-        reducer_ref="simplicio_loop.runner.dispatch_operator_batch",
-        budget=(("workers", max(1, int(worker_limit))),),
-    )
-    governor = AdaptiveBudgetGovernor(policy, relief_samples=2)
-
-    def _budget_sample(sample: Any) -> BudgetSample:
-        # Only worker capacity is measured by the local probe. Keep every other
-        # governor dimension explicitly unavailable instead of inferring it from
-        # an unrelated CPU, memory, or disk value.
-        null_reasons = {
-            name: "local_probe_not_supported"
-            for name in (
-                "cpu_millis", "rss_bytes", "io_units", "provider_requests",
-                "tokens", "model_slots", "network_queue", "context_tokens",
-                "evidence_bytes",
-            )
-        }
-        return BudgetSample(
-            workers=int(sample.safe_workers),
-            observed_at_ns=int(sample.observed_at_ns),
-            null_reasons=null_reasons,
-        )
-
-    observation = governor.observe(_budget_sample(capacity_sample))
-    scheduler = PrismScheduler(policy, observation=observation)
-    slots_by_partition: dict[str, SlotSupervisor] = {}
-    for partition, group in ordered_partitions:
-        slot = SlotSupervisor(
-            parent_prism_id=root.prism_id,
-            supervisor_agent=f"simplicio-loop:{partition}",
-            capacity=min(10, max(1, len(group))),
-        )
-        scheduler.register_slot(slot)
-        slots_by_partition[partition] = slot
-    for item in items:
-        task_spec = item.get("task_spec")
-        task_spec = dict(task_spec) if isinstance(task_spec, Mapping) else {}
-        raw_dependencies = task_spec.get("depends_on") or task_spec.get("dependencies") or ()
-        if isinstance(raw_dependencies, Mapping):
-            raw_dependencies = raw_dependencies.get("items") or ()
-        kind = str(task_spec.get("kind") or "implementation")
-        if kind not in {"implementation", "recovery", "validation", "review", "integration"}:
-            kind = "implementation"
-        task_id = str(item.get("task_id") or "")
-        slot = slots_by_partition[_partition_key(item)]
-        ownership = TaskOwnership(
-            task_id=task_id,
-            slot_id=slot.slot_id,
-            attempt=1,
-            owner_agent=str(item.get("worker_id") or "simplicio-local"),
-            lease_id=str(item.get("lease_id") or task_id),
-            fence=1,
-            source_generation=run_id,
-            capabilities=("operator", "local", "worktree"),
-            allowed_transitions=tuple(sorted(TASK_STATES)),
-        )
-        scheduler.submit(ScheduledTask(
-            task_id=task_id,
-            slot_id=slot.slot_id,
-            ownership=ownership,
-            depends_on=tuple(str(value) for value in raw_dependencies if str(value).strip()),
-            hard_conflicts=tuple(str(value) for value in (task_spec.get("hard_conflicts") or ())),
-            exclusive_resources=tuple(str(value) for value in (task_spec.get("exclusive_resources") or ())),
-            priority=int(task_spec.get("priority") or 0),
-            kind=kind,
-            resources=ResourceVector(workers=1),
-        ))
-    capacity_receipt = capacity_sample.to_dict()
-    capacity_receipt["budget_governor"] = governor.status()
-    capacity_receipt["policy"] = {
-        "recovery_reserve": policy.recovery_reserve,
-        "validation_reserve": policy.validation_reserve,
-        "global_worker_limit": policy.global_worker_limit,
-    }
-
-    def refresh_capacity() -> None:
-        refreshed = probe_local_capacity(
-            str(capacity_root), requested_workers=worker_limit,
-        )
-        scheduler.controller.update(governor.observe(_budget_sample(refreshed)))
-        capacity_receipt.clear()
-        capacity_receipt.update(refreshed.to_dict())
-        capacity_receipt["budget_governor"] = governor.status()
-        capacity_receipt["policy"] = {
-            "recovery_reserve": policy.recovery_reserve,
-            "validation_reserve": policy.validation_reserve,
-            "global_worker_limit": policy.global_worker_limit,
-        }
-
-    # The dispatch bridge calls this before each refill. Keeping the hook on the
-    # scheduler preserves the existing return contract while making every
-    # admission wave use a fresh, hash-addressed governor event.
-    scheduler.native_capacity_refresh = refresh_capacity
-    return scheduler, root.prism_id, capacity_receipt
-
-
-def _worktree_task_spec(item: Mapping[str, Any]) -> Any:
-    """Build the queue's impact contract without importing it at module load time.
-
-    ``runner`` is also shipped as a standalone bundle, so importing the scripts package
-    eagerly would make the existing operator API fail in installations that do not ship the
-    optional isolation adapter.  The late import keeps that adapter genuinely optional while
-    still passing the real ``TaskSpec`` to ``WorktreeQueue`` when it is available.
-    """
-    try:
-        from scripts.worktree_queue import TaskSpec
-    except ImportError:  # pragma: no cover - direct scripts/ execution fallback
-        from worktree_queue import TaskSpec
-    raw = item.get("task_spec")
-    if isinstance(raw, TaskSpec):
-        return raw
-    payload = dict(raw or {}) if isinstance(raw, Mapping) else {}
-    task_id = str(item.get("task_id") or "task-%s-%s" % (item.get("run_id"), item.get("task_index")))
-    payload.setdefault("id", task_id)
-    payload.setdefault("goal", str(item.get("goal") or ""))
-    return TaskSpec.from_mapping(payload)
-
-
-def _allocation_context(allocation: Any, item: Mapping[str, Any]) -> Dict[str, Any]:
-    """Reduce an Allocation to JSON-safe, persisted operator context."""
-    def value(name: str, default: Any = "") -> Any:
-        if isinstance(allocation, Mapping):
-            return allocation.get(name, default)
-        return getattr(allocation, name, default)
-
-    context = {
-        "schema": "simplicio.operator-worktree-context/v1",
-        "task_id": str(value("task_id", item.get("task_id") or "")),
-        "run_id": str(value("run_id", item.get("run_id") or "")),
-        "mode": str(value("mode", item.get("isolation", "worktree")) or item.get("isolation", "worktree")),
-        "path": str(value("path", "") or ""),
-        "branch": str(value("branch", "") or ""),
-        "base_sha": str(value("base_sha", "") or ""),
-        "head_sha": str(value("head_sha", "") or ""),
-        "tree_sha": str(value("tree_sha", "") or ""),
-        "lane": str(value("lane", "") or ""),
-        "reattached": bool(value("reattached", False)),
-        "lock_receipt": str(value("lock_receipt", "") or ""),
-        "source_repo": str(item.get("source_repo") or item.get("repo") or ""),
-        "source_run_id": str(item.get("source_run_id") or item.get("run_id") or ""),
-    }
-    return context
-
-
-def _persist_isolated_run_context(item: Dict[str, Any], context: Dict[str, Any]) -> None:
-    """Persist queue context and clone run receipts into an isolated checkout.
-
-    The copy is filesystem-only (no Git subprocess), making this path deterministic in unit
-    tests and safe for callers that provide a fake queue.  If the source run is unavailable,
-    the context receipt is still written; the operator then fails closed at its normal
-    preflight boundary rather than manufacturing a success.
-    """
-    path = str(context.get("path") or "")
-    source_repo = Path(str(context.get("source_repo") or item.get("repo") or "")).resolve()
-    run_id = str(item.get("run_id") or context.get("source_run_id") or "")
-    if not path:
-        return
-    target_root = Path(path).resolve()
-    target_root.mkdir(parents=True, exist_ok=True)
-    context_dir = target_root / ".simplicio/orchestrator" / "dispatch-context"
-    context_dir.mkdir(parents=True, exist_ok=True)
-    context_path = context_dir / (str(context.get("task_id") or item.get("task_index")) + ".json")
-    context["context_path"] = str(context_path)
-    _write_json(context_path, context)
-
-    source_state_path = source_repo / ".simplicio" / "loop-runs" / run_id / "state.json"
-    if source_state_path.exists():
-        try:
-            source_run = source_state_path.parent
-            source_state = _load_json(source_state_path)
-            _emit_event(source_run, source_state, "worktree_created",
-                        receipt=str(context.get("lock_receipt") or context_path),
-                        task_id=str(context.get("task_id") or item.get("task_id") or ""),
-                        message="isolated worktree context persisted", worktree=context)
-        except (OSError, ValueError, TypeError):
-            # The worker's normal receipts remain authoritative if the coordinator is gone.
-            pass
-
-    source_run = source_repo / ".simplicio" / "loop-runs" / run_id
-    target_run = target_root / ".simplicio" / "loop-runs" / run_id
-    if source_run.is_dir() and target_root != source_repo and not target_run.exists():
-        target_run.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source_run, target_run)
-    manifest_path = target_run / "manifest.json"
-    if manifest_path.exists():
-        try:
-            manifest = _load_json(manifest_path)
-            manifest["repo"] = str(target_root)
-            manifest["run_id"] = run_id
-            _write_json(manifest_path, manifest)
-        except (OSError, ValueError, TypeError):
-            # The operator's ordinary preflight will emit a durable failure receipt.
-            pass
-
-
-def _prepare_worktree_contexts(normalized: List[Dict[str, Any]], worktree_queue: Any) -> None:
-    """Allocate/persist optional worktree contexts before any worker starts."""
-    if worktree_queue is None or not normalized:
-        return
-    specs = [_worktree_task_spec(item) for item in normalized]
-    register = getattr(worktree_queue, "register_tasks", None)
-    if callable(register):
-        try:
-            register(specs)
-        except Exception as exc:
-            for item in normalized:
-                item["worktree_error"] = f"{type(exc).__name__}: {exc}"
-            return
-    for item, spec in zip(normalized, specs):
-        isolation = str(item.get("isolation") or "worktree").strip().lower()
-        if isolation not in {"worktree", "shared"}:
-            item["worktree_error"] = "ValueError: unsupported worktree isolation mode"
-            continue
-        if isolation == "shared":
-            # WorktreeQueue intentionally holds one shared-checkout lock.  Defer allocation
-            # until this item reaches the serial worker lane so the next item can acquire it
-            # only after ``_release_shared_context`` runs.
-            item["worktree_deferred"] = True
-            item["isolation_key"] = "%s:%s" % (item.get("repo"), item.get("run_id"))
-            continue
-        try:
-            allocation = worktree_queue.allocate(spec)
-        except Exception as exc:
-            item["worktree_error"] = f"{type(exc).__name__}: {exc}"
-            continue
-        context = _allocation_context(allocation, item)
-        item["worktree_context"] = context
-        item["source_repo"] = str(item.get("repo") or "")
-        item["source_run_id"] = str(item.get("run_id") or "")
-        # Worktree workers get their own run tree; shared mode intentionally retains the
-        # original path and is serialized by the isolation key below.
-        if context["mode"] == "worktree" and context["path"]:
-            try:
-                _persist_isolated_run_context(item, context)
-            except Exception as exc:
-                item["worktree_error"] = f"{type(exc).__name__}: {exc}"
-            item["repo"] = context["path"]
-            item["isolation_key"] = context["path"]
-        else:
-            item["isolation_key"] = "%s:%s" % (item.get("repo"), item.get("run_id"))
-        recorder = getattr(worktree_queue, "record_context", None)
-        if callable(recorder):
-            try:
-                recorder(context["task_id"], context)
-            except Exception as exc:
-                # Context persistence is a safety gate: do not run an unreceipted isolated
-                # worker.  This preserves fail-closed behavior without changing the API.
-                item["worktree_error"] = f"{type(exc).__name__}: {exc}"
-
-
-def _ensure_deferred_worktree_context(item: Dict[str, Any], worktree_queue: Any) -> None:
-    """Acquire one deferred shared-checkout lease immediately before execution."""
-    if not item.get("worktree_deferred") or item.get("worktree_context") or item.get("worktree_error"):
-        return
-    try:
-        spec = _worktree_task_spec(item)
-        allocation = worktree_queue.allocate(spec, isolation="shared", shared_policy=True)
-        context = _allocation_context(allocation, item)
-        item["worktree_context"] = context
-        item["source_repo"] = str(item.get("repo") or "")
-        item["source_run_id"] = str(item.get("run_id") or "")
-        _persist_isolated_run_context(item, context)
-        recorder = getattr(worktree_queue, "record_context", None)
-        if callable(recorder):
-            recorder(context["task_id"], context)
-    except Exception as exc:
-        item["worktree_error"] = f"{type(exc).__name__}: {exc}"
-
-
-def _release_shared_context(item: Mapping[str, Any], worktree_queue: Any) -> None:
-    context = item.get("worktree_context") or {}
-    if str(context.get("mode") or "") != "shared":
-        return
-    teardown = getattr(worktree_queue, "teardown", None)
-    task_id = str(context.get("task_id") or item.get("task_id") or "")
-    if callable(teardown) and task_id:
-        try:
-            teardown(task_id)
-        except Exception:
-            # Never mask the operator receipt with cleanup noise.
-            pass
-
-
-def _operator_dispatch_item(item: Mapping[str, Any]) -> Dict[str, Any]:
-    """Normalize one typed operator dispatch item.
-
-    The adapter deliberately accepts only the real ``execute_operator`` boundary.  In
-    particular, it has no command/echo fallback: callers that need a dry run must arm a
-    run first and use that run's normal preflight receipts.
-    """
-    repo = str(item.get("repo") or "").strip()
-    run_id = str(item.get("run_id") or "").strip()
-    try:
-        task_index = int(item.get("task_index"))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("operator dispatch task_index must be an integer") from exc
-    if not repo or not run_id or task_index < 1:
-        raise ValueError("operator dispatch items require repo, run_id, and a positive task_index")
-    normalized = {
-        "repo": str(Path(repo).resolve()),
-        "run_id": run_id,
-        "task_index": task_index,
-        "worker_id": str(item.get("worker_id") or f"operator-{task_index}"),
-        "task_id": str(item.get("task_id") or f"task-{run_id}-{task_index}"),
-    }
-    # An isolation key is intentionally explicit.  Two tasks in one run share state.json,
-    # operator-receipt.json, and the working tree and therefore cannot safely overlap until
-    # the worktree adapter supplies separate contexts.
-    normalized["isolation_key"] = str(item.get("isolation_key") or normalized["repo"])
-    normalized["isolation"] = str(item.get("isolation") or "worktree")
-    if isinstance(item.get("task_spec"), Mapping):
-        normalized["task_spec"] = dict(item["task_spec"])
-    normalized["admission_fence"] = max(1, int(item.get("admission_fence") or 1))
-    normalized["expected_base_ref"] = str(item.get("expected_base_ref") or "")
-    normalized["expected_base_sha"] = str(item.get("expected_base_sha") or "")
-    authority = item.get("authority_receipt")
-    if authority is not None:
-        if not isinstance(authority, Mapping):
-            raise ValueError("authority_receipt must be an object")
-        authority = dict(authority)
-        supplied = str(authority.pop("receipt_hash", ""))
-        if not supplied or supplied != _planning_content_hash(authority):
-            raise ValueError("authority_receipt hash mismatch")
-        source = authority.get("source")
-        targets = authority.get("targets")
-        task_spec = normalized.get("task_spec") or {}
-        expected_issue = normalized["task_id"].removeprefix("issue-")
-        if (authority.get("operator") != "simplicio-dev-cli"
-                or not isinstance(source, Mapping)
-                or str(source.get("issue") or "") != expected_issue
-                or not str(source.get("revision") or "")
-                or not str(source.get("planning_receipt") or "")
-                or not isinstance(targets, list) or not targets
-                or any(not isinstance(target, str) or not target.strip() for target in targets)
-                or sorted(targets) != sorted(task_spec.get("files_affected") or [])):
-            raise ValueError("authority_receipt binding mismatch")
-        authority["receipt_hash"] = supplied
-        normalized["authority_receipt"] = authority
-    if isinstance(item.get("operator_context"), Mapping):
-        normalized["operator_context"] = dict(item["operator_context"])
-    if item.get("distributed_queue") is not None:
-        normalized["distributed_queue"] = item["distributed_queue"]
-    if isinstance(item.get("agent_identity"), Mapping):
-        normalized["agent_identity"] = dict(item["agent_identity"])
-    if isinstance(item.get("context_pack"), Mapping):
-        normalized["context_pack"] = dict(item["context_pack"])
-    if item.get("source_repo"):
-        normalized["source_repo"] = str(item["source_repo"])
-    if item.get("source_run_id"):
-        normalized["source_run_id"] = str(item["source_run_id"])
-    if item.get("worktree_context"):
-        normalized["worktree_context"] = dict(item["worktree_context"])
-    if item.get("worktree_error"):
-        normalized["worktree_error"] = str(item["worktree_error"])
-    return normalized
-
-
-def _verify_worker_receipt_pair(operator_receipt_path: str, evidence_receipt_path: str) -> Dict[str, str]:
-    """Gate `receipt_status` on real content/schema/hash/freshness/provenance (issue #288).
-
-    Previously this reduced to ``Path(receipt).is_file() and Path(evidence_receipt).is_file()``
-    -- an empty ``{}`` file passed just as readily as a genuine receipt. Both receipts are now
-    parsed and run through ``receipt_verifier.verify_receipt`` against the schema each producer
-    (``_prepare_operator_receipt`` / ``evidence.py::build_evidence_receipt``) actually emits.
-    Only a fully verified pair returns ``VERIFIED``; every other case names a specific,
-    non-existence reason (``STALE``, ``TAMPERED``, ``INVALID_SCHEMA``, ``MISSING_FIELD``, or the
-    legacy ``UNVERIFIED`` when a path is simply absent).
-    """
-    if not operator_receipt_path or not evidence_receipt_path:
-        return {"status": "UNVERIFIED", "reason": "operator or evidence receipt path missing"}
-    op_path = Path(operator_receipt_path)
-    ev_path = Path(evidence_receipt_path)
-    if not op_path.is_file() or not ev_path.is_file():
-        return {"status": "UNVERIFIED", "reason": "operator or evidence receipt file missing"}
-    try:
-        operator_payload = json.loads(op_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        return {"status": ReceiptStatus.INVALID_SCHEMA, "reason": f"operator receipt unreadable: {exc}"}
-    try:
-        evidence_payload = json.loads(ev_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        return {"status": ReceiptStatus.INVALID_SCHEMA, "reason": f"evidence receipt unreadable: {exc}"}
-
-    now = time.time()
-    operator_verdict = verify_receipt(
-        operator_payload, schema=_OPERATOR_RECEIPT_CONTENT_SCHEMA,
-        max_age_seconds=RECEIPT_MAX_AGE_SECONDS, now=now,
-    )
-    if not operator_verdict.verified:
-        return {"status": operator_verdict.status, "reason": f"operator receipt: {operator_verdict.reason}"}
-    evidence_verdict = verify_receipt(
-        evidence_payload, schema=_EVIDENCE_RECEIPT_CONTENT_SCHEMA,
-        max_age_seconds=RECEIPT_MAX_AGE_SECONDS, now=now,
-    )
-    if not evidence_verdict.verified:
-        return {"status": evidence_verdict.status, "reason": f"evidence receipt: {evidence_verdict.reason}"}
-    return {
-        "status": ReceiptStatus.VERIFIED,
-        "reason": "operator and evidence receipts passed content/schema/hash/freshness/provenance checks",
-    }
-
-
-def _test_only_stall_before_dispatch(task_id: str) -> None:
-    """Test-only hook (issue #288 cross-process recovery test): block one named task for a
-    controlled number of real wall-clock seconds before it claims/executes.
-
-    This exists solely so a test can start a real orchestrator OS process, let it durably
-    journal an earlier task, and then kill the process (a genuine crash, not a simulated
-    exception) while it is deterministically stalled mid-batch on a *different* task --
-    proving a restarted orchestrator resumes/reconciles cleanly. It is a no-op unless both
-    ``SIMPLICIO_LOOP_TEST_SLOW_TASK_ID`` matches this exact task and
-    ``SIMPLICIO_LOOP_TEST_SLOW_TASK_SECONDS`` is set, mirroring the project's existing
-    ``SIMPLICIO_LOOP_FAKE_*`` opt-in test hooks -- never active in a normal run.
-    """
-    target = os.environ.get("SIMPLICIO_LOOP_TEST_SLOW_TASK_ID", "").strip()
-    if not target or target != str(task_id).strip():
-        return
-    try:
-        seconds = float(os.environ.get("SIMPLICIO_LOOP_TEST_SLOW_TASK_SECONDS", "0") or "0")
-    except ValueError:
-        seconds = 0.0
-    if seconds > 0:
-        time.sleep(seconds)
-
-
-def _remote_worker_dispatch_enabled() -> bool:
-    """#286: once the queue is a genuine network ``HTTPRemoteQueue``, the coordinator must
-    not execute the operator in its own process -- it enqueues the task envelope and waits
-    for an independent ``RemoteWorkerDaemon`` (a different device/process, reachable only
-    over the wire) to pull, claim, run, and complete it. This is the fix for the exact gap
-    issue #286 named: "execute_operator_batch() cria HTTPRemoteQueue, mas continua
-    submetendo _operator_dispatch_attempt() a um ThreadPoolExecutor local; o proprio
-    coordenador chama execute_operator()."
-
-    ``SQLiteRemoteQueue`` (issue #288's co-located, same-process guarded-dispatch path) is
-    deliberately unaffected -- that queue backend models a single-host attempt coordinator,
-    not a remote worker, so every existing #288 test using it keeps its current behavior.
-    Opt out with ``SIMPLICIO_REMOTE_WORKER_ONLY=0`` only for a deliberate same-host smoke
-    test that wants the old in-process shortcut against a real HTTP queue.
-    """
-    return str(os.environ.get("SIMPLICIO_REMOTE_WORKER_ONLY") or "1").strip().lower() not in (
-        "0", "false", "no", "off", "disabled",
-    )
-
-
-def _operator_dispatch_attempt_remote_worker(
-    item: Mapping[str, Any], common: Dict[str, Any], queue: HTTPRemoteQueue, started: float,
-) -> Dict[str, Any]:
-    """Enqueue-and-wait dispatch for a genuine remote (``HTTPRemoteQueue``) worker (#286).
-
-    The coordinator itself never claims and never calls ``execute_operator()`` here -- it
-    publishes the immutable task envelope once (idempotent: ``enqueue`` is a no-op if the
-    task_id already exists) and polls ``queue.task()`` (the same authority a remote
-    ``RemoteWorkerDaemon`` mutates) until the task reaches a terminal ``completed`` status or
-    the dispatch timeout elapses. A timeout is reported as a specific, non-fabricated failure
-    (``remote_worker_timeout``) rather than silently falling back to local execution.
-    """
-    task_id = common["task_id"]
-    context_pack = dict(item.get("context_pack") or {})
-    payload = {
-        "run_id": common["run_id"], "worker_id": common["worker_id"],
-        "task_index": common["task_index"], "goal": context_pack.get("goal", ""),
-        "acs": list(context_pack.get("acs") or ()),
-        "depends_on": list(context_pack.get("depends_on") or ()),
-        "allowed_paths": list(context_pack.get("allowed_paths") or ()),
-        "issue_ref": context_pack.get("issue_ref", ""), "issue_url": context_pack.get("issue_url", ""),
-        "context_pack": context_pack,
-        "worktree_context": dict(item.get("worktree_context") or {}),
-    }
-    common["dispatch_mode"] = "remote_worker_pull"
-    try:
-        queue.enqueue(task_id, payload)
-    except (QueueConflict, QueueUnavailable, ValueError) as exc:
-        return {**common, "status": "failed", "phase": "blocked", "execution_state": "error",
-                "receipt": "", "operator_receipt": "", "evidence_receipt": "",
-                "receipt_status": "UNVERIFIED", "attempt": 0,
-                "reason_code": "remote_enqueue_failed", "remote_error_class": type(exc).__name__,
-                "error": str(exc), "dead_letter": True,
-                "started_at": started, "finished_at": _now()}
-
-    timeout = float(os.environ.get("SIMPLICIO_REMOTE_DISPATCH_TIMEOUT_SECONDS", "3600"))
-    poll_interval = float(os.environ.get("SIMPLICIO_REMOTE_DISPATCH_POLL_INTERVAL_SECONDS", "2"))
-    deadline = time.monotonic() + max(0.0, timeout)
-    task_state: Dict[str, Any] = {}
-    while True:
-        try:
-            task_state = queue.task(task_id)
-        except (QueueUnavailable, KeyError) as exc:
-            return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
-                    "receipt": "", "operator_receipt": "", "evidence_receipt": "",
-                    "receipt_status": "UNVERIFIED", "attempt": 0,
-                    "reason_code": "network_paused", "error": str(exc), "dead_letter": True,
-                    "started_at": started, "finished_at": _now()}
-        if str(task_state.get("status") or "") == "completed":
-            break
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        time.sleep(min(poll_interval, remaining))
-
-    if str(task_state.get("status") or "") != "completed":
-        return {**common, "status": "failed", "phase": "blocked", "execution_state": "timeout",
-                "receipt": "", "operator_receipt": "", "evidence_receipt": "",
-                "receipt_status": "UNVERIFIED", "attempt": 0,
-                "reason_code": "remote_worker_timeout",
-                "error": "no remote worker completed task %s within %.0fs" % (task_id, timeout),
-                "dead_letter": True, "started_at": started, "finished_at": _now()}
-
-    lease_info = dict(task_state.get("lease") or {})
-    receipt = str(lease_info.get("receipt_ref") or "")
-    # The remote worker's evidence receipt lives on its own device; the coordinator only
-    # treats it as readable when both files genuinely exist on this filesystem (true, for
-    # instance, of the same-host loopback proxy this repo's E2E uses). A cross-device
-    # deployment without a receipt-fetch endpoint honestly reports UNVERIFIED here rather
-    # than fabricating a VERIFIED pair it cannot see.
-    evidence_receipt = str(Path(receipt).parent / "evidence-receipt.json") if receipt else ""
-    if not (evidence_receipt and Path(evidence_receipt).is_file()):
-        evidence_receipt = ""
-    receipt_verdict = _verify_worker_receipt_pair(receipt, evidence_receipt)
-    merge: Optional[Dict[str, Any]] = None
-    if receipt_verdict["status"] == ReceiptStatus.VERIFIED and _auto_merge_enabled():
-        merge = _dispatch_merge_pr(item, receipt=receipt, run_id=common["run_id"])
-    return {
-        **common,
-        "status": "succeeded",
-        "phase": "delivered",
-        "execution_state": "applied",
-        "receipt": receipt,
-        "operator_receipt": receipt,
-        "evidence_receipt": evidence_receipt,
-        "watcher_receipt": "",
-        "receipt_status": receipt_verdict["status"],
-        "receipt_verdict_reason": receipt_verdict["reason"],
-        "attempt": 1,
-        "failure_fingerprint": "",
-        "merge": merge,
-        "remote_task": {"task_id": task_id, "lease": lease_info},
-        "started_at": started,
-        "finished_at": _now(),
-    }
-
-
-def _fanout_execution_route(item: Mapping[str, Any], run_dir: Path) -> Dict[str, Any]:
-    """Persist one independently verifiable route before any fan-out LLM call."""
-    context = item.get("context_pack") if isinstance(item.get("context_pack"), Mapping) else {}
-    goal = str(context.get("goal") or item.get("task_id") or "").strip()
-    capabilities = normalize_capability_manifest(
-        context.get("worker_capabilities") or item.get("worker_capabilities") or ()
-    )
-    worker_available = bool(capabilities) or os.environ.get(
-        "SIMPLICIO_DETERMINISTIC_WORKER", "1"
-    ).lower() not in {"0", "false", "no", "off"}
-    manifest = {
-        "declared": capabilities,
-        "deterministic_worker_available": worker_available,
-    }
-    record = decide_route(
-        goal,
-        has_deterministic_worker=worker_available,
-        is_ambiguous=bool(context.get("ambiguous") or context.get("requires_semantic_review")),
-    ).to_dict()
-    record.update({
-        "run_id": str(item.get("run_id") or ""),
-        "task_index": int(item.get("task_index") or 0),
-        "task_id": str(item.get("task_id") or ""),
-        "evidence_handles": sorted({
-            str(value) for value in (
-                context.get("mapper_envelope_hash"),
-                context.get("context_pack_hash"),
-                context.get("context_graph_handle"),
-            ) if str(value or "")
-        }),
-        "causal_ids": [str(item.get("run_id") or ""), str(item.get("task_id") or "")],
-        "route_authority": "loop-runner-fanout",
-        "capability_manifest": manifest,
-        "capability_fingerprint": capability_fingerprint(manifest),
-        "token_usage": (
-            {"input_tokens": 0, "output_tokens": 0, "reason": "deterministic_worker_no_llm"}
-            if record["route"] == "worker" else
-            {"input_tokens": None, "output_tokens": None,
-             "reason": "route_decision_precedes_provider_invocation"}
-        ),
-    })
-    record["receipt_sha"] = _execution_route_hash({
-        key: value for key, value in record.items() if key != "receipt_sha"
-    })
-    if not verify_route_hash(record):
-        raise RuntimeError("fan-out execution-route receipt failed hash verification")
-    route_path = run_dir / f"execution-route-{record['task_index']}.json"
-    _write_json(route_path, record)
-    return record
-
-
-def _operator_dispatch_run_dir(item: Mapping[str, Any]) -> Path:
-    """Resolve canonical run storage, with isolated storage for synthetic dispatches."""
-    status = read_status(item["repo"], item["run_id"])
-    if status.get("run_dir"):
-        return Path(status["run_dir"])
-
-    repo_path = Path(item["repo"]).resolve()
-    run_scope = hashlib.sha256(str(item["run_id"]).encode("utf-8")).hexdigest()[:16]
-    run_dir = repo_path / ".simplicio" / "orchestrator" / "dispatch-routes" / run_scope
-    run_dir.mkdir(parents=True, exist_ok=True)
-    return run_dir
-
-
-def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
-    """Call the production operator and reduce its status to a durable worker record."""
-    started = _now()
-    context = dict(item.get("worktree_context") or item.get("operator_context") or {})
-    common = {
-        "schema": "simplicio.operator-worker/v1",
-        "worker_id": item["worker_id"],
-        "repo": item["repo"],
-        "source_repo": str(item.get("source_repo") or item["repo"]),
-        "run_id": item["run_id"],
-        "task_index": item["task_index"],
-        "task_id": str(item.get("task_id") or ""),
-        "worktree_context": context,
-        "worktree_path": str(context.get("worktree_path") or context.get("path") or item.get("repo") or ""),
-        "branch": str(context.get("branch") or item.get("branch") or ""),
-        # These are deliberately worker-scoped aliases.  A fan-out consumer must never
-        # infer a shared receipt from the coordinator's run-level state; every lane has
-        # its own operator and evidence proof (or an explicit UNVERIFIED state).
-        "operator_receipt": "",
-        "evidence_receipt": "",
-        "receipt_status": "UNVERIFIED",
-        "agent": dict(item.get("agent_identity") or {}),
-        "context_pack": dict(item.get("context_pack") or {}),
-        "authority_receipt": dict(item.get("authority_receipt") or {}),
-        "admission_fence": int(item.get("admission_fence") or 1),
-        "expected_base_ref": str(item.get("expected_base_ref") or ""),
-        "expected_base_sha": str(item.get("expected_base_sha") or ""),
-    }
-    run_dir = _operator_dispatch_run_dir(item)
-    execution_route = _fanout_execution_route(item, run_dir)
-    common["execution_route"] = execution_route
-    common["route_receipt_sha"] = execution_route["receipt_sha"]
-    if _model_routed_dispatch_enabled():
-        # #287: route this dispatch attempt through the real model registry/router
-        # instead of a hardcoded runtime, and -- when a real driver is wired for the
-        # selection -- genuinely invoke it. Additive audit evidence only: a routing
-        # block or driver failure here never blocks the dev-cli operator mutation
-        # below, which remains this repo's actual apply/verify contract.
-        try:
-            if execution_route["route"] == "worker":
-                common["model_routing"] = {
-                    "routed": False, "executed": False,
-                    "reason": "deterministic_worker_route_no_llm",
-                    "execution_route_sha": execution_route["receipt_sha"],
-                }
-            else:
-                common["model_routing"] = _execute_routed_runtime(item, run_dir)
-        except Exception as exc:  # routing/execution evidence must never crash dispatch
-            common["model_routing"] = {"routed": False, "executed": False, "error": f"{type(exc).__name__}: {exc}"}
-    queue = item.get("distributed_queue")
-    if queue is not None and isinstance(queue, HTTPRemoteQueue) and _remote_worker_dispatch_enabled():
-        # #286: a genuine network queue means genuine remote workers -- the coordinator
-        # enqueues and waits, it never claims/executes the operator itself. See
-        # `_remote_worker_dispatch_enabled` for the opt-out and rationale.
-        remote_record = _operator_dispatch_attempt_remote_worker(item, common, queue, started)
-        # Enqueue failure means the remote task was not accepted and is safe to
-        # continue locally.  A poll timeout is deliberately not downgraded: the
-        # remote task may still be executing and a local retry could duplicate an
-        # effect.
-        if not (
-            _local_fallback_enabled()
-            and remote_record.get("reason_code") == "remote_enqueue_failed"
-            and remote_record.get("remote_error_class") in {"QueueUnavailable", "OSError"}
-        ):
-            return remote_record
-        common["distributed_fallback"] = {
-            "schema": "simplicio.loop.distributed-fallback/v1",
-            "requested": "remote",
-            "selected": "local",
-            "reason_code": "remote_unavailable",
-            "error": str(remote_record.get("error") or "remote enqueue unavailable")[:512],
-        }
-        queue = None
-    lease = None
-    guarded = _guarded_dispatch_enabled()
-    attempt_coordinator: Optional[AttemptCoordinator] = None
-    attempt_obj: Any = None
-    if queue is not None:
-        identity = item.get("agent_identity")
-        try:
-            if guarded and identity:
-                # #288/#183: real dispatch attempts get a heartbeat-guarded, fenced attempt
-                # object instead of a bare lease -- the same lease/fencing contract, plus the
-                # ability to run the mutating subprocess through ``run_guarded`` below.
-                attempt_coordinator = AttemptCoordinator(queue, run_id=common["run_id"])
-                context_pack = item.get("context_pack") if isinstance(item.get("context_pack"), Mapping) else {}
-                attempt_obj = attempt_coordinator.claim(
-                    work_item_id=common["task_id"],
-                    identity=identity,
-                    goal=str(context_pack.get("goal") or common["task_id"]),
-                    acs=tuple(context_pack.get("acs") or ()),
-                    depends_on=tuple(context_pack.get("depends_on") or ()),
-                    source_refs=tuple(context_pack.get("source_refs") or ()),
-                    allowed_paths=tuple(context_pack.get("allowed_paths") or ()),
-                    issue_ref=str(context_pack.get("issue_ref") or ""),
-                    issue_url=str(context_pack.get("issue_url") or ""),
-                    ttl=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TTL", "3600")),
-                )
-                lease = attempt_obj.lease
-            else:
-                lease = queue.claim(
-                    common["task_id"], common["worker_id"],
-                    idempotency_key=f"{common['run_id']}:{common['task_id']}:{common['worker_id']}",
-                    ttl=float(os.environ.get("SIMPLICIO_REMOTE_QUEUE_TTL", "3600")),
-                    identity=identity,
-                    capabilities=(identity or {}).get("capabilities", ()),
-                )
-            common["lease"] = {
-                "lease_id": lease.lease_id,
-                "fencing_token": lease.fencing_token,
-                "expires_at": lease.expires_at,
-            }
-            common["guarded_dispatch"] = attempt_obj is not None
-        except QueueConflict as exc:
-            return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
-                    "reason_code": "claim_conflict", "error": str(exc), "dead_letter": True,
-                    "started_at": started, "finished_at": _now()}
-        except (QueueUnavailable, OSError) as exc:
-            # The remote queue is an optional accelerator.  If it is genuinely
-            # unavailable, release the unclaimed item into the isolated local
-            # lane instead of dead-lettering the whole batch.  Keep conflicts
-            # and malformed/trust-invalid configuration fail-closed below.
-            if _local_fallback_enabled() and isinstance(queue, HTTPRemoteQueue):
-                common["distributed_fallback"] = {
-                    "schema": "simplicio.loop.distributed-fallback/v1",
-                    "requested": "remote",
-                    "selected": "local",
-                    "reason_code": "remote_unavailable",
-                    "error": str(exc)[:512],
-                }
-                queue = None
-            else:
-                return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
-                        "reason_code": "network_paused", "error": str(exc), "dead_letter": True,
-                        "started_at": started, "finished_at": _now()}
-        except ValueError as exc:
-            return {**common, "status": "failed", "phase": "blocked", "execution_state": "paused",
-                    "reason_code": "network_paused", "error": str(exc), "dead_letter": True,
-                    "started_at": started, "finished_at": _now()}
-    if lease is not None:
-        # Only stall a task that is genuinely claimed/leased -- this is what lets the
-        # cross-process recovery test kill the orchestrator mid-attempt with a real,
-        # in-flight (not merely queued) lease abandoned behind it.
-        _test_only_stall_before_dispatch(str(common.get("task_id") or ""))
-    if item.get("worktree_error"):
-        return {
-            **common,
-            "status": "failed",
-            "phase": "blocked",
-            "execution_state": "error",
-            "reason_code": "worktree_context_unpersisted",
-            "receipt": "",
-            "attempt": 0,
-            "error": str(item["worktree_error"]),
-            "failure_fingerprint": hashlib.sha256(
-                str(item["worktree_error"]).encode("utf-8", "replace")
-            ).hexdigest()[:16],
-            "started_at": started,
-            "finished_at": _now(),
-        }
-    try:
-        payload = execute_operator(
-            item["repo"], item["run_id"], task_index=item["task_index"],
-            attempt_coordinator=attempt_coordinator, guarded_attempt=attempt_obj,
-            authority_receipt=item.get("authority_receipt"),
-            admission_fence=int(item.get("admission_fence") or 1),
-        )
-        state = payload.get("state") or {}
-        operator = state.get("operator") or {}
-        execution_state = str(operator.get("execution_state") or "")
-        success = execution_state == "applied"
-        receipt = str(operator.get("receipt") or "")
-        evidence = state.get("evidence") or {}
-        evidence_receipt = str(evidence.get("receipt") or "")
-        run_dir = str(payload.get("run_dir") or "")
-        watcher_receipt = str(Path(run_dir) / "loop" / "watcher_state.json") if run_dir else ""
-        failure_fingerprint = ""
-        if receipt:
-            try:
-                failure_fingerprint = str(_load_json(Path(receipt)).get("failure_fingerprint") or "")
-            except (OSError, ValueError, TypeError):
-                # The worker result remains useful even when a crashed operator did not leave
-                # a readable receipt; the scheduler will use the bounded exception path.
-                failure_fingerprint = ""
-        if lease is not None and success:
-            receipt_ref_value = receipt or f"{run_dir}/operator-receipt.json"
-            if attempt_coordinator is not None and attempt_obj is not None:
-                attempt_coordinator.complete(attempt_obj, receipt_ref=receipt_ref_value)
-            else:
-                # #286 step 9: present a wire receipt the queue server itself independently
-                # verifies (schema/hash/task-agent-fence binding), not just an opaque
-                # ``receipt_ref`` path it has no way to open or trust.
-                queue.complete(lease, receipt_ref=receipt_ref_value, receipt=build_completion_receipt(
-                    task_id=lease.task_id, agent_id=lease.agent_id, fencing_token=lease.fencing_token,
-                    receipt_ref=receipt_ref_value,
-                ))
-        if item.get("agent_identity") and receipt:
-            # Keep the worker result itself immutable and independently attributable.
-            common["receipt_binding"] = bind_receipt(
-                {"receipt_ref": receipt}, item["agent_identity"],
-                context_pack=item.get("context_pack"),
-            )
-        receipt_verdict = _verify_worker_receipt_pair(receipt, evidence_receipt)
-        merge: Optional[Dict[str, Any]] = None
-        if success and receipt_verdict["status"] == ReceiptStatus.VERIFIED and _auto_merge_enabled():
-            # #288: once the receipt pair is genuinely VERIFIED, create/poll/merge the real
-            # PR and reconcile against the remote before this dispatch attempt is reported
-            # as done -- replaces the ad-hoc, hand-run "gh pr create / gh pr merge" pattern
-            # this project's own delivery process previously left as prose only.
-            merge = _dispatch_merge_pr(item, receipt=receipt, run_id=common["run_id"])
-        verified_delivery: Optional[Dict[str, Any]] = None
-        if success and _verified_delivery_gate_enabled():
-            # #288: route the completion decision through the real LoopRuntimeAdapter ->
-            # VerifiedAgentDelivery -> ExecutionBoard chain instead of trusting
-            # execution_state == "applied" alone -- see `_verified_delivery_gate_enabled`.
-            identity = dict(item.get("agent_identity") or {})
-            verified_delivery = _run_verified_delivery_gate(
-                run_id=common["run_id"], task_id=common["task_id"],
-                actor=str(identity.get("actor") or identity.get("agent_id") or "loop"),
-                attempt_id="%s-attempt-%d" % (common["worker_id"], int(state.get("attempts") or 0) or 1),
-                receipt_verdict=receipt_verdict, evidence_receipt=evidence_receipt,
-                watcher_receipt=watcher_receipt, merge=merge, worktree_context=context,
-            )
-            if not verified_delivery.get("verified"):
-                success = False
-        return {
-            **common,
-            "status": "succeeded" if success else "failed",
-            "phase": str(state.get("phase") or "blocked"),
-            "execution_state": execution_state or "unknown",
-            "receipt": receipt,
-            "operator_receipt": receipt,
-            "evidence_receipt": evidence_receipt,
-            "watcher_receipt": watcher_receipt if Path(watcher_receipt).exists() else "",
-            "receipt_status": receipt_verdict["status"],
-            "receipt_verdict_reason": receipt_verdict["reason"],
-            "attempt": int(state.get("attempts") or 0),
-            "failure_fingerprint": failure_fingerprint,
-            "merge": merge,
-            "verified_delivery": verified_delivery,
-            "started_at": started,
-            "finished_at": _now(),
-        }
-    except LeaseLostDuringExecution as exc:
-        # #183/#288: the guarded subprocess was killed the instant the lease was no longer
-        # current -- report this distinctly from a generic operator exception so a scheduler
-        # can tell "lost the fence mid-mutation" apart from an ordinary tool crash.
-        return {
-            **common,
-            "status": "failed",
-            "phase": "blocked",
-            "execution_state": "error",
-            "receipt": "",
-            "operator_receipt": "",
-            "evidence_receipt": "",
-            "receipt_status": "UNVERIFIED",
-            "attempt": 0,
-            "error": str(exc),
-            "reason_code": "lease_lost_during_execution",
-            "dead_letter": True,
-            "failure_fingerprint": hashlib.sha256(str(exc).encode("utf-8", "replace")).hexdigest()[:16],
-            "started_at": started,
-            "finished_at": _now(),
-        }
-    except Exception as exc:  # worker failures are receipts, not scheduler crashes
-        return {
-            **common,
-            "status": "failed",
-            "phase": "blocked",
-            "execution_state": "error",
-            "receipt": "",
-            "operator_receipt": "",
-            "evidence_receipt": "",
-            "receipt_status": "UNVERIFIED",
-            "attempt": 0,
-            "error": f"{type(exc).__name__}: {exc}",
-            "reason_code": "operator_exception",
-            "failure_fingerprint": hashlib.sha256(
-                f"{type(exc).__name__}: {exc}".encode("utf-8", "replace")
-            ).hexdigest()[:16],
-            "started_at": started,
-            "finished_at": _now(),
-        }
-
-
-def _run_operator_item_process(item: Mapping[str, Any], retry_budget: int) -> List[Dict[str, Any]]:
-    """Run one complete operator lane in a supervised child process.
-
-    The input is a plain dispatch item and the returned records are compact JSON-like
-    values, so the coordinator can persist the existing journal and receipt contracts.
-    Queue/worktree release remains coordinator-owned after the child exits.
-    """
-    attempts: List[Dict[str, Any]] = []
-    previous_fingerprint = ""
-    for attempt_no in range(1, max(0, int(retry_budget)) + 2):
-        record = _operator_dispatch_attempt(item)
-        record["dispatch_attempt"] = attempt_no
-        if previous_fingerprint and record.get("failure_fingerprint") == previous_fingerprint:
-            record["retry_strategy"] = "same_fingerprint_bounded"
-        elif attempt_no > 1:
-            record["retry_strategy"] = "alternate_strategy"
-        else:
-            record["retry_strategy"] = "initial"
-        attempts.append(record)
-        if record.get("status") == "succeeded":
-            break
-        previous_fingerprint = str(record.get("failure_fingerprint") or "")
-    final = attempts[-1]
-    final["dead_letter"] = final.get("status") != "succeeded"
-    final["attempt_count"] = len(attempts)
-    final["retry_scope"] = "worker-process"
-    final["attempt_history"] = [
-        {"dispatch_attempt": int(record.get("dispatch_attempt") or index),
-         "status": record.get("status", "UNVERIFIED"),
-         "failure_fingerprint": record.get("failure_fingerprint", "")}
-        for index, record in enumerate(attempts, start=1)
-    ]
-    return attempts
-
-
-def _mapper_journal_enabled() -> bool:
-    return os.environ.get("SIMPLICIO_STORAGE_ROUTE", "mapper").strip().lower() == "mapper"
-
-
-def _dispatch_journal_backend(journal_path: Optional[Path]) -> Any:
-    """Select the journal; the canonical MapperStore route is the default."""
-    if _mapper_journal_enabled():
-        root = Path.cwd()
-        return MapperRunJournal(_mapper_operations_database(root), auto_create=False)
-    if journal_path is None:
-        raise RuntimeError("JOURNAL_PATH_REQUIRED")
-    return RunJournal(journal_path)
-
-
-def _append_dispatch_journal(
-    journal_path: Optional[Path], run_id: str, kind: str,
-    payload: Mapping[str, Any], idempotency_key: str,
-) -> None:
-    """Persist one idempotent batch lifecycle event in the existing RunJournal."""
-    if journal_path is None:
-        return
-    journal = _dispatch_journal_backend(journal_path)
-    if not journal.events(run_id):
-        journal.append(
-            run_id, "run_started", {"scope": "operator_batch"},
-            idempotency_key="run:started",
-        )
-    journal.append(
-        run_id, kind, dict(payload), idempotency_key=idempotency_key,
-    )
-
-
-def _dispatch_journal_recovery(journal_path: Optional[Path], run_id: str) -> List[int]:
-    """Return task indexes with a durable start but no terminal event."""
-    if journal_path is None or (
-        not _mapper_journal_enabled() and not journal_path.exists()
-    ):
-        return []
-    events = _dispatch_journal_backend(journal_path).events(run_id)
-    active: Dict[int, bool] = {}
-    for event in events:
-        payload = event.get("payload") or {}
-        try:
-            task_index = int(payload.get("task_index"))
-        except (TypeError, ValueError):
-            continue
-        if event.get("kind") == "dispatch_started":
-            active[task_index] = True
-        elif event.get("kind") == "dispatch_terminal":
-            active.pop(task_index, None)
-    return sorted(active)
-
-
-def dispatch_operator_batch(
-    items: Iterable[Mapping[str, Any]],
-    *,
-    max_workers: Optional[int] = None,
-    retry_budget: int = 3,
-    journal_dir: Optional[str] = None,
-    worktree_queue: Any = None,
-    stop_requested: Optional[Callable[[], bool]] = None,
-) -> Dict[str, Any]:
-    """Continuously dispatch real operator workers and refill freed slots.
-
-    ``items`` is the typed bridge between a scheduler (DAG/leases/worktrees) and the
-    existing mapper â†’ plan â†’ ``execute_operator`` boundary.  It is intentionally agnostic
-    about claiming: callers pass only ready, atomically claimed nodes.  Items with the same
-    ``isolation_key`` are forced onto one lane so a shared run state cannot be corrupted;
-    distinct worktree/run contexts overlap in the pool.  A JSONL journal records each attempt
-    before the next slot is refilled, so a process restart can safely resubmit only work that
-    has no successful receipt.
-    """
-    normalized = [_operator_dispatch_item(item) for item in items]
-    keys = {(item["repo"], item["run_id"], item["task_index"]) for item in normalized}
-    if len(keys) != len(normalized):
-        raise ValueError("operator dispatch contains duplicate repo/run/task items")
-
-    # Issue #288 cross-process recovery: load the journal *before* preflight so a resumed
-    # batch can tell "already durably succeeded" items apart from ones still needing a fresh
-    # dry-run preflight. A succeeded item's operator-receipt.json has already been
-    # overwritten by `execute_operator` with a *post-execution* receipt (no `run_id` field,
-    # a different shape than the pre-execution dry-run receipt `_validate_run_receipts`
-    # expects) -- re-validating it as if it were still a pending dry-run would always fail
-    # and permanently block every resumed batch that contains even one completed item.
-    journal_path: Optional[Path] = None
-    durable_journal_path: Optional[Path] = None
-    if journal_dir:
-        journal_path = Path(journal_dir).resolve() / "operator-batch.jsonl"
-        journal_path.parent.mkdir(parents=True, exist_ok=True)
-        durable_journal_path = journal_path.parent / "run-journal.sqlite"
-    recovery_pending_by_run: Dict[str, set[int]] = {}
-    if durable_journal_path is not None:
-        for run_id in {item["run_id"] for item in normalized}:
-            pending_indices = set(_dispatch_journal_recovery(durable_journal_path, run_id))
-            if pending_indices:
-                recovery_pending_by_run[run_id] = pending_indices
-    prior: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
-    if journal_path and journal_path.exists():
-        for line in journal_path.read_text(encoding="utf-8").splitlines():
-            try:
-                rec = json.loads(line)
-                key = (str(rec.get("repo")), str(rec.get("run_id")), int(rec.get("task_index")))
-            except (ValueError, TypeError, json.JSONDecodeError):
-                continue
-            prior[key] = rec
-
-    # A persisted run is a privileged execution boundary.  Keep synthetic scheduler
-    # contexts supported, but fail every run-backed dispatch globally before worktree
-    # preparation, journal creation, or worker submission unless its receipt chain is
-    # fresh and bound to this exact run -- except an item already durably journaled as
-    # succeeded, which is never re-dispatched and so must never be re-validated as if it
-    # still needed a fresh dry run.
-    for item in normalized:
-        key = (item["repo"], item["run_id"], item["task_index"])
-        if prior.get(key, {}).get("status") == "succeeded":
-            continue
-        repo_path = Path(item["repo"]).resolve()
-        run_dir = repo_path / ".simplicio" / "loop-runs" / item["run_id"]
-        if not run_dir.is_dir():
-            continue
-        try:
-            contract = _require_json_receipt(run_dir / "task-contract.json", "task contract")
-            _validate_run_receipts(
-                repo_path,
-                run_dir,
-                contract,
-                state=_load_json(run_dir / "state.json") if (run_dir / "state.json").is_file() else None,
-                manifest=_load_json(run_dir / "manifest.json") if (run_dir / "manifest.json").is_file() else None,
-                require_dry_run=True,
-            )
-        except (OSError, TypeError, ValueError, RuntimeError) as exc:
-            state_path = run_dir / "state.json"
-            if state_path.is_file():
-                _persist_batch_preflight_block(
-                    run_dir,
-                    _load_json(state_path),
-                    repo_path,
-                    str(exc),
-                    task_indices=[item["task_index"]],
-                )
-            raise
-    _prepare_worktree_contexts(normalized, worktree_queue)
-    requested_workers = max_workers
-    effective_workers = _operator_worker_limit(max_workers, len(normalized))
-    isolation_keys = {item["isolation_key"] for item in normalized}
-    serial_fallback_reason = ""
-    if effective_workers > 1 and len(isolation_keys) < len(normalized):
-        effective_workers = 1
-        serial_fallback_reason = "shared_run_state"
-    retry_budget = max(0, int(retry_budget))
-
-    prism_scheduler, prism_id, capacity_sample = _build_native_prism_scheduler(
-        normalized, effective_workers,
-    )
-    effective_workers = max(1, min(effective_workers, int(capacity_sample["safe_workers"])))
-    pending = deque(
-        item for item in normalized
-        if prior.get((item["repo"], item["run_id"], item["task_index"]), {}).get("status") != "succeeded"
-        and item["task_index"] not in recovery_pending_by_run.get(item["run_id"], set())
-    )
-    skipped = len(normalized) - len(pending)
-    pending_task_ids = {str(item.get("task_id") or "") for item in pending}
-    prism_admitted: deque[str] = deque()
-    # A resumed batch can have a completed item at the head of Prism's ready queue.
-    # Retire those durable successes before admitting fresh work; otherwise a full
-    # capacity sample leaves the pending item permanently invisible behind the skip.
-    while True:
-        admitted = prism_scheduler.next_batch()
-        if not admitted:
-            break
-        for task in admitted:
-            if task.task_id in pending_task_ids:
-                prism_admitted.append(task.task_id)
-                continue
-            try:
-                recovery = any(
-                    item.get("task_id") == task.task_id
-                    and int(item.get("task_index", -1))
-                    in recovery_pending_by_run.get(str(item.get("run_id") or ""), set())
-                    for item in normalized
-                )
-                prism_scheduler.complete(
-                    task.task_id, "blocked" if recovery else "accepted",
-                    owner_agent=task.ownership.owner_agent,
-                    fence=task.ownership.fence,
-                )
-            except Exception:
-                # The scheduler remains authoritative; a later normal admission or
-                # terminal path will surface any unexpected state mismatch.
-                continue
-    for item in pending:
-        _append_dispatch_journal(
-            durable_journal_path, item["run_id"], "dispatch_queued",
-            {
-                "task_id": item["task_id"], "task_index": item["task_index"],
-                "worker_id": item["worker_id"], "isolation_key": item["isolation_key"],
-            },
-            f"dispatch:{item['task_id']}:queued",
-        )
-    for run_id, task_indices in recovery_pending_by_run.items():
-        for task_index in sorted(task_indices):
-            _append_dispatch_journal(
-                durable_journal_path, run_id, "dispatch_recovery_pending",
-                {
-                    "task_index": task_index,
-                    "reason_code": "unknown_effect_reconciliation_required",
-                },
-                f"dispatch:{run_id}:{task_index}:recovery-pending",
-            )
-    started = _now()
-    records: Dict[Tuple[str, str, int], Dict[str, Any]] = dict(prior)
-    for item in normalized:
-        if item["task_index"] not in recovery_pending_by_run.get(item["run_id"], set()):
-            continue
-        records[(item["repo"], item["run_id"], item["task_index"])] = {
-            "schema": "simplicio.operator-worker/v1",
-            "worker_id": item["worker_id"], "repo": item["repo"],
-            "source_repo": item.get("source_repo", item["repo"]),
-            "run_id": item["run_id"], "task_index": item["task_index"],
-            "task_id": item.get("task_id", ""),
-            "worktree_context": item.get("worktree_context", {}),
-            "status": "blocked", "phase": "recovery",
-            "execution_state": "unknown_effect",
-            "reason_code": "unknown_effect_reconciliation_required",
-            "recovery_pending": True, "dead_letter": False,
-            "attempt": 0, "attempt_count": 0,
-            "started_at": _now(), "finished_at": _now(),
-        }
-    completed: List[Dict[str, Any]] = []
-    refill_count = 0
-    initial_admissions = 0
-    stop_reason = ""
-
-    def _drain_requested() -> bool:
-        nonlocal stop_reason
-        if stop_requested is None:
-            return False
-        try:
-            requested = bool(stop_requested())
-        except Exception as exc:
-            stop_reason = f"stop_callback_failed:{type(exc).__name__}"
-            return True
-        if requested and not stop_reason:
-            stop_reason = "operator_stop_requested"
-        return requested
-
-    def _persist_attempt(record: Dict[str, Any]) -> None:
-        if journal_path:
-            _append_jsonl(journal_path, record)
-        records[(record["repo"], record["run_id"], record["task_index"])] = record
-
-    def _run_item(item: Dict[str, Any]) -> List[Dict[str, Any]]:
-        attempts: List[Dict[str, Any]] = []
-        previous_fingerprint = ""
-        _ensure_deferred_worktree_context(item, worktree_queue)
-        try:
-            for attempt_no in range(1, retry_budget + 2):
-                record = _operator_dispatch_attempt(item)
-                record["dispatch_attempt"] = attempt_no
-                if previous_fingerprint and record.get("failure_fingerprint") == previous_fingerprint:
-                    record["retry_strategy"] = "same_fingerprint_bounded"
-                elif attempt_no > 1:
-                    record["retry_strategy"] = "alternate_strategy"
-                else:
-                    record["retry_strategy"] = "initial"
-                attempts.append(record)
-                if record["status"] == "succeeded":
-                    break
-                previous_fingerprint = str(record.get("failure_fingerprint") or "")
-        finally:
-            _release_shared_context(item, worktree_queue)
-        attempts[-1]["dead_letter"] = attempts[-1]["status"] != "succeeded"
-        # Keep compact per-lane history on the final record while the JSONL journal
-        # retains the complete receipts.  This proves a retry belongs to one worker and
-        # did not restart sibling lanes.
-        attempts[-1]["attempt_count"] = len(attempts)
-        attempts[-1]["retry_scope"] = "worker"
-        attempts[-1]["attempt_history"] = [
-            {
-                "dispatch_attempt": int(record.get("dispatch_attempt") or index),
-                "status": record.get("status", "UNVERIFIED"),
-                "failure_fingerprint": record.get("failure_fingerprint", ""),
-            }
-            for index, record in enumerate(attempts, start=1)
-        ]
-        return attempts
-
-    def _take_prism_admitted() -> Optional[Dict[str, Any]]:
-        for item in pending:
-            if item.get("task_id") not in prism_admitted:
-                continue
-            pending.remove(item)
-            prism_admitted.remove(item.get("task_id"))
-            return item
-        return None
-
-    def _refill_prism() -> None:
-        refresh = getattr(prism_scheduler, "native_capacity_refresh", None)
-        if refresh is not None:
-            refresh()
-        for task in prism_scheduler.next_batch():
-            if task.task_id not in prism_admitted:
-                prism_admitted.append(task.task_id)
-
-    dispatch_mode = os.environ.get("SIMPLICIO_LOOP_DISPATCH_MODE", "process").strip().lower()
-    if dispatch_mode not in {"process", "thread"}:
-        raise ValueError("SIMPLICIO_LOOP_DISPATCH_MODE must be process or thread")
-    # Queue clients remain coordinator-owned and are never sent to children.  The
-    # child receives only the already-persisted, JSON-safe worktree context; the
-    # coordinator releases the queue lease after the child returns.  This keeps
-    # process supervision as the default even when isolated worktrees are enabled.
-    executor_type = ProcessPoolExecutor if dispatch_mode == "process" else ThreadPoolExecutor
-    executor_kwargs = {"max_workers": effective_workers}
-    if dispatch_mode == "thread":
-        executor_kwargs["thread_name_prefix"] = "simplicio-operator"
-    if pending and effective_workers:
-        with executor_type(**executor_kwargs) as pool:
-            active = {}
-            while pending and len(active) < effective_workers and not _drain_requested():
-                item = _take_prism_admitted()
-                if item is None:
-                    break
-                if dispatch_mode == "process":
-                    _ensure_deferred_worktree_context(item, worktree_queue)
-                    _append_dispatch_journal(
-                        durable_journal_path, item["run_id"], "dispatch_started",
-                        {"task_id": item["task_id"], "task_index": item["task_index"],
-                         "worker_id": item["worker_id"], "mode": dispatch_mode},
-                        f"dispatch:{item['task_id']}:started",
-                    )
-                    active[pool.submit(_run_operator_item_process, item, retry_budget)] = item
-                    initial_admissions += 1
-                else:
-                    _append_dispatch_journal(
-                        durable_journal_path, item["run_id"], "dispatch_started",
-                        {"task_id": item["task_id"], "task_index": item["task_index"],
-                         "worker_id": item["worker_id"], "mode": dispatch_mode},
-                        f"dispatch:{item['task_id']}:started",
-                    )
-                    active[pool.submit(_run_item, item)] = item
-                    initial_admissions += 1
-            while active:
-                done, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
-                for future in done:
-                    item = active.pop(future)
-                    try:
-                        attempts = future.result()
-                    except Exception as exc:  # defensive: _run_item already receipts exceptions
-                        attempts = [{
-                            "schema": "simplicio.operator-worker/v1",
-                            "worker_id": item["worker_id"], "repo": item["repo"],
-                            "source_repo": item.get("source_repo", item["repo"]),
-                            "run_id": item["run_id"], "task_index": item["task_index"],
-                            "task_id": item.get("task_id", ""),
-                            "worktree_context": item.get("worktree_context", {}),
-                            "status": "failed", "phase": "blocked", "execution_state": "error",
-                            "error": f"{type(exc).__name__}: {exc}", "dead_letter": True,
-                            "started_at": _now(), "finished_at": _now(),
-                        }]
-                    if dispatch_mode == "process":
-                        _release_shared_context(item, worktree_queue)
-                    for record in attempts:
-                        _persist_attempt(record)
-                    final = attempts[-1]
-                    completed.append(final)
-                    _append_dispatch_journal(
-                        durable_journal_path, item["run_id"], "dispatch_terminal",
-                        {"task_id": item["task_id"], "task_index": item["task_index"],
-                         "worker_id": item["worker_id"], "status": final.get("status"),
-                         "receipt": final.get("receipt", "")},
-                        f"dispatch:{item['task_id']}:terminal:{final.get('status', 'unknown')}",
-                    )
-                    try:
-                        prism_scheduler.complete(
-                            str(item.get("task_id") or ""),
-                            "accepted" if final.get("status") == "succeeded" else "failed",
-                            owner_agent=str(item.get("worker_id") or "simplicio-local"),
-                            fence=1,
-                        )
-                        _refill_prism()
-                    except Exception as exc:
-                        final.setdefault("prism_error", f"{type(exc).__name__}: {exc}")
-                    # Refill as soon as this worker exits; there is no frozen wave barrier.
-                    if pending and not _drain_requested():
-                        next_item = _take_prism_admitted()
-                        if next_item is None:
-                            continue
-                        if dispatch_mode == "process":
-                            _ensure_deferred_worktree_context(next_item, worktree_queue)
-                            _append_dispatch_journal(
-                                durable_journal_path, next_item["run_id"], "dispatch_started",
-                                {"task_id": next_item["task_id"], "task_index": next_item["task_index"],
-                                 "worker_id": next_item["worker_id"], "mode": dispatch_mode},
-                                f"dispatch:{next_item['task_id']}:started",
-                            )
-                            active[pool.submit(_run_operator_item_process, next_item, retry_budget)] = next_item
-                        else:
-                            _append_dispatch_journal(
-                                durable_journal_path, next_item["run_id"], "dispatch_started",
-                                {"task_id": next_item["task_id"], "task_index": next_item["task_index"],
-                                 "worker_id": next_item["worker_id"], "mode": dispatch_mode},
-                                f"dispatch:{next_item['task_id']}:started",
-                            )
-                            active[pool.submit(_run_item, next_item)] = next_item
-                        refill_count += 1
-
-    final_records = []
-    for item in normalized:
-        key = (item["repo"], item["run_id"], item["task_index"])
-        final_records.append(records.get(key, {
-            "schema": "simplicio.operator-worker/v1", "worker_id": item["worker_id"],
-            "repo": item["repo"], "run_id": item["run_id"], "task_index": item["task_index"],
-            "task_id": item.get("task_id", ""),
-            "source_repo": item.get("source_repo", item["repo"]),
-            "worktree_context": item.get("worktree_context", {}),
-            "status": "pending", "phase": "queued", "execution_state": "pending",
-            "drain_status": "held" if stop_reason else "queued",
-        }))
-    result = {
-        "schema": BATCH_SCHEMA,
-        "run_id": normalized[0]["run_id"] if normalized and len({i["run_id"] for i in normalized}) == 1 else "",
-        "requested_tasks": [item["task_index"] for item in normalized],
-        "skipped_completed": skipped,
-        "recovery_blocked_count": sum(
-            len(indices) for indices in recovery_pending_by_run.values()
-        ),
-        "max_workers_requested": requested_workers,
-        "max_workers": effective_workers,
-        "active_workers": 0,
-        "worker_count": len(final_records),
-        "queue_depth": 0,
-        "refill_count": refill_count,
-        "initial_admissions": initial_admissions,
-        "serial_fallback_reason": serial_fallback_reason,
-        "dispatch_mode": dispatch_mode,
-        "drain": {
-            "status": "drained" if stop_reason else "not_requested",
-            "reason_code": stop_reason or "none",
-            "pending_task_indices": [item["task_index"] for item in pending],
-        },
-        "durable_journal": str(durable_journal_path) if durable_journal_path else "",
-        "recovery_pending_task_indices": sorted({
-            task_index
-            for run_id in {item["run_id"] for item in normalized}
-            for task_index in _dispatch_journal_recovery(durable_journal_path, run_id)
-        }),
-        "leases": [],
-        "blockers": [
-            {
-                "task_index": record["task_index"],
-                "reason_code": record.get(
-                    "reason_code",
-                    "operator_failed",
-                ),
-                "error": record.get("error", ""),
-                "failure_fingerprint": record.get("failure_fingerprint", ""),
-            }
-            for record in final_records
-            if record.get("status") in {"failed", "blocked"}
-        ],
-        "attempts": {
-            str(record["task_index"]): int(record.get("dispatch_attempt") or 0)
-            for record in final_records
-        },
-        "started_at": started,
-        "finished_at": _now(),
-        "workers": final_records,
-        "completed_task_indices": sorted(r["task_index"] for r in final_records if r.get("status") == "succeeded"),
-        "failed_task_indices": sorted(r["task_index"] for r in final_records if r.get("status") == "failed"),
-        "blocked_task_indices": sorted(r["task_index"] for r in final_records if r.get("status") == "blocked"),
-        "dead_letter_task_indices": sorted(r["task_index"] for r in final_records if r.get("dead_letter")),
-        "receipt_contract": {
-            "scope": "worker",
-            "required": ["operator_receipt", "evidence_receipt"],
-            "ready": all(
-                r.get("receipt_status") == "VERIFIED"
-                for r in final_records
-            ),
-            "missing_task_indices": sorted(
-                r["task_index"] for r in final_records
-                if r.get("receipt_status") != "VERIFIED"
-            ),
-        },
-        "retry_contract": {
-            "scope": "worker",
-            "independent": True,
-            "attempts_by_task": {
-                str(r["task_index"]): int(r.get("attempt_count") or 0)
-                for r in final_records
-            },
-        },
-        "prism": {
-            "schema": NATIVE_PRISM_SCHEMA,
-            "mode": "native-local",
-            "prism_id": prism_id,
-            "scheduler": "simplicio_loop.prism_scheduler.PrismScheduler",
-            "admission": "governed",
-            "max_workers": effective_workers,
-            "capacity": capacity_sample,
-            "snapshot": prism_scheduler.snapshot(),
-        },
-        "journal": str(journal_path) if journal_path else "",
-    }
-    if journal_path:
-        _write_json(journal_path.with_suffix(".json"), result)
-    return result
-
-
-def execute_operator_batch(
-    repo: str,
-    run_id: str,
-    task_indices: Optional[Sequence[int]] = None,
-    *,
-    max_workers: Optional[int] = None,
-    retry_budget: int = 3,
-    isolated_contexts: Optional[Mapping[int, Mapping[str, Any]]] = None,
-    worktree_queue: Any = None,
-    auto_fan_out: Optional[bool] = None,
-) -> Dict[str, Any]:
-    """Dispatch all (or selected) tasks from one run through the real operator bridge.
-
-    Independent tasks fan out into owned worktrees by default.  Set ``auto_fan_out=False`` or
-    ``SIMPLICIO_LOOP_AUTO_FAN_OUT=0`` to opt out.  If impact metadata, Git, or the worktree
-    adapter is unavailable, the shared-run serial guard remains the safe fallback.
-    """
-    status = read_status(repo, run_id)
-    if (status["state"].get("maintenance") or {}).get("disposition") == "backlog_only":
-        raise RuntimeError("maintenance deferred: operator batch is blocked until explicit resume")
-    run_dir = Path(status["run_dir"])
-    try:
-        contract = _require_json_receipt(run_dir / "task-contract.json", "task contract")
-        receipts = _validate_run_receipts(
-            Path(status["manifest"].get("repo") or repo).resolve(),
-            run_dir,
-            contract,
-            state=status["state"],
-            manifest=status["manifest"],
-            require_dry_run=True,
-        )
-    except (OSError, TypeError, ValueError, RuntimeError) as exc:
-        _persist_batch_preflight_block(
-            run_dir,
-            status["state"],
-            Path(status["manifest"].get("repo") or repo).resolve(),
-            str(exc),
-            task_indices=task_indices or (),
-        )
-        raise
-    plan = receipts["plan"]
-    # #284: mutation-authority gate, mandatory by default -- same as execute_operator()
-    # (single-task tick), extended to the batch boundary. "execute_operator() e batch
-    # recusam execuÃ§Ã£o sem mutation authority vÃ¡lida" now applies unconditionally
-    # (opt out only via an explicit falsy SIMPLICIO_REQUIRE_MUTATION_AUTHORITY; see
-    # planning_gate.mutation_authority_required()).
-    if mutation_authority_required():
-        batch_attempt = int((status["state"] or {}).get("attempts", 0)) + 1
-        current_source_hash = ""
-        current_snapshot_path = run_dir / "source-snapshot-current.json"
-        if current_snapshot_path.exists():
-            try:
-                current_source_hash = str((_load_json(current_snapshot_path).get("source") or {}).get("snapshot_hash") or "")
-            except Exception:
-                current_source_hash = ""
-        authority_verdict = evaluate_mutation_authority(
-            run_dir, run_id=run_id, attempt=batch_attempt,
-            task_contract_hash=str(contract.get("collection_hash") or _planning_content_hash(contract)),
-            plan_hash=_planning_content_hash(plan),
-            source_snapshot_hash=current_source_hash,
-        )
-        if not authority_verdict["ok"]:
-            _persist_batch_preflight_block(
-                run_dir,
-                status["state"],
-                Path(status["manifest"].get("repo") or repo).resolve(),
-                f"mutation authority required (SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) but "
-                f"{authority_verdict['reason_code']}: {authority_verdict['reason']}",
-                task_indices=task_indices or (),
-            )
-            raise RuntimeError(
-                "mutation authority required (SIMPLICIO_REQUIRE_MUTATION_AUTHORITY) but "
-                f"{authority_verdict['reason_code']}: {authority_verdict['reason']}"
-            )
-    task_count = len(contract.get("tasks") or [])
-    if task_indices is None:
-        indices = list(range(1, task_count + 1))
-    else:
-        indices = [int(index) for index in task_indices]
-    if any(index < 1 or index > task_count for index in indices):
-        raise ValueError("task index out of range")
-    contexts = dict(isolated_contexts or {})
-    distributed_queue = None
-    agent_identity = None
-    if not isolated_contexts:
-        distributed_queue, agent_identity = _distributed_configuration(repo)
-    auto_reason = "explicit_contexts" if isolated_contexts else ""
-    if not isolated_contexts and worktree_queue is None and (auto_fan_out is not False):
-        previous = os.environ.get("SIMPLICIO_LOOP_AUTO_FAN_OUT")
-        if auto_fan_out is True:
-            os.environ["SIMPLICIO_LOOP_AUTO_FAN_OUT"] = "1"
-        try:
-            worktree_queue, auto_contexts, auto_reason = _auto_worktree_dispatch(
-                repo, run_id, contract, plan, indices,
-            )
-        finally:
-            if auto_fan_out is True:
-                if previous is None:
-                    os.environ.pop("SIMPLICIO_LOOP_AUTO_FAN_OUT", None)
-                else:
-                    os.environ["SIMPLICIO_LOOP_AUTO_FAN_OUT"] = previous
-        contexts.update(auto_contexts)
-    items = []
-    for index in indices:
-        context = dict(contexts.get(index) or {})
-        item = {
-            "repo": context.get("repo", repo),
-            "run_id": context.get("run_id", run_id),
-            "task_index": index,
-            "worker_id": context.get("worker_id", f"operator-{index}"),
-            "isolation_key": context.get("isolation_key"),
-            "task_id": context.get("task_id", f"{run_id}-task-{index}"),
-            "task_spec": context.get("task_spec") or {
-                "id": context.get("task_id", f"{run_id}-task-{index}"),
-                "goal": _task_goal((contract.get("tasks") or [])[index - 1]),
-            },
-            "isolation": context.get("isolation", "worktree"),
-        }
-        if distributed_queue is not None:
-            item["distributed_queue"] = distributed_queue
-            item["agent_identity"] = agent_identity
-            task = (contract.get("tasks") or [])[index - 1]
-            target_paths = (plan.get("steps") or [])[index - 1].get("candidate_targets") or []
-            issue_ref = task.get("issue_ref") or contract.get("issue_ref") or ""
-            issue_url = task.get("issue_url") or contract.get("issue_url") or ""
-            item["context_pack"] = build_context_pack(
-                task_id=item["task_id"], goal=_task_goal(task), identity=agent_identity,
-                acs=[*[(s.get("title") or s.get("id") or "") for s in (task.get("scenarios") or [])]],
-                depends_on=list((task.get("dependencies") or {}).get("items") or []),
-                allowed_paths=target_paths, source_refs=target_paths,
-                issue_ref=issue_ref, issue_url=issue_url,
-            )
-        items.append(item)
-    def _batch_stop_requested() -> bool:
-        try:
-            current = _load_json(Path(status["run_dir"]) / "state.json")
-        except (OSError, TypeError, ValueError):
-            return False
-        return str(current.get("phase") or "") == "cancelled"
-
-    result = dispatch_operator_batch(
-        items,
-        max_workers=max_workers,
-        retry_budget=retry_budget,
-        journal_dir=str(Path(status["run_dir"])),
-        worktree_queue=worktree_queue,
-        stop_requested=_batch_stop_requested,
-    )
-    lifecycle_result: Dict[str, Any]
-    try:
-        repo_root = Path(status["manifest"].get("repo") or repo).resolve()
-        source_commit = str(status["manifest"].get("source_commit") or "")
-        if not source_commit:
-            head = subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=str(repo_root), capture_output=True,
-                text=True, timeout=15, check=False,
-            )
-            source_commit = (head.stdout or "").strip() or "unavailable"
-        fast_state = status["state"].get("fast") or {}
-        fast_generation = str(
-            fast_state.get("generation")
-            or (status["state"].get("mapper") or {}).get("generation")
-            or "mapper-fallback"
-        )
-        lifecycle = CheckpointLifecycle(
-            repo_root / ".simplicio" / "loop-runs",
-            task_id=run_id,
-            attempt_id=f"batch-{int((status['state'] or {}).get('attempts', 0)) + 1}",
-            source_commit=source_commit,
-            fast_generation=fast_generation,
-            base_path=repo_root,
-        )
-        workers = list(result.get("workers") or [])
-        candidate_ids = []
-        successful_ids = []
-        for worker in sorted(workers, key=lambda row: str(row.get("task_id") or row.get("task_index"))):
-            candidate_id = str(worker.get("task_id") or f"task-{worker.get('task_index')}")
-            succeeded = worker.get("status") == "succeeded"
-            lifecycle.checkpoint(
-                candidate_id, "operator", "READY_TO_PROMOTE" if succeeded else "HELD",
-                receipts=[value for value in (
-                    str(worker.get("operator_receipt") or ""),
-                    str(worker.get("evidence_receipt") or ""),
-                ) if value],
-                work_units=int(worker.get("attempt_count") or 1),
-            )
-            candidate_ids.append(candidate_id)
-            if succeeded:
-                successful_ids.append(candidate_id)
-        if not any(worker.get("status") == "succeeded" for worker in workers):
-            lifecycle_result = {"schema": "simplicio.loop.checkpoint-lifecycle/v1",
-                                "status": "HELD", "reason": "no_successful_candidate"}
-        else:
-            def _cancel_boundary(candidate_id: str) -> None:
-                if worktree_queue is None:
-                    return
-                for method_name in ("cancel_task", "release_task", "cancel"):
-                    method = getattr(worktree_queue, method_name, None)
-                    if callable(method):
-                        method(candidate_id)
-                        return
-            selected_winner = sorted(successful_ids)[0]
-            lifecycle_result = lifecycle.converge_selected(
-                winner_id=selected_winner,
-                candidate_ids=candidate_ids,
-                shard_id="operator",
-                cancel_callback=_cancel_boundary,
-            )
-    except (LifecycleError, OSError, ValueError, subprocess.SubprocessError) as exc:
-        lifecycle_result = {"schema": "simplicio.loop.checkpoint-lifecycle/v1",
-                            "status": "HELD", "reason": "lifecycle_integration_failed",
-                            "error": str(exc)}
-    result["checkpoint_lifecycle"] = lifecycle_result
-    technical_debts: List[Dict[str, Any]] = []
-    # Fan-out is an optimization. A safe serial lane is still useful work, so
-    # capability loss is recorded as advisory debt instead of a global blocker.
-    if auto_reason and auto_reason not in {"explicit_contexts", "single_task"} and len(items) > 1:
-        technical_debts.append(_record_technical_debt(
-            status["run_dir"],
-            run_id=run_id,
-            reason_code=auto_reason if auto_reason in {
-                "fanout_disabled", "not_git_checkout", "missing_plan_targets",
-                "overlapping_task_impacts", "worktree_adapter_unavailable",
-                "worktree_preflight_failed",
-            } else "fanout_serial_fallback",
-            stage="dispatch",
-            source="simplicio_loop.runner._auto_worktree_dispatch",
-            message="automatic fan-out was not available; continuing with the safe serial lane",
-            next_action="install/configure the worktree adapter or split overlapping targets",
-        ))
-    result["distributed"] = {
-        "enabled": distributed_queue is not None,
-        "queue": os.environ.get("SIMPLICIO_REMOTE_QUEUE_URL", "") if distributed_queue is not None else "",
-        "agent": agent_identity or {},
-        "fail_closed": distributed_queue is not None,
-    }
-    if not contexts and len(items) > 1:
-        # dispatch_operator_batch derives this from the shared isolation key; retain a clear
-        # contract-level marker for callers inspecting the convenience API.
-        result["serial_fallback_reason"] = result.get("serial_fallback_reason") or "shared_run_state"
-        if not technical_debts:
-            technical_debts.append(_record_technical_debt(
-                status["run_dir"],
-                run_id=run_id,
-                reason_code="fanout_serial_fallback",
-                stage="dispatch",
-                source="simplicio_loop.runner.dispatch_operator_batch",
-                message="tasks share run state or could not be isolated; serial execution preserved safety",
-                next_action="provide distinct worktree contexts for independent tasks",
-            ))
-    result["technical_debts"] = technical_debts
-    result["fan_out"] = {
-        "enabled": bool(worktree_queue is not None and len(contexts) > 1),
-        "default": auto_fan_out is not False,
-        "reason": auto_reason or ("isolated_contexts" if contexts else "serial_fallback"),
-        "contexts": len(contexts),
-    }
-    return result
-
-
-def defer_maintenance_backlog_only(
-    repo: str,
-    run_id: str,
-    *,
-    correction_summary: str,
-    deferral_reason: str,
-    resume_instructions: Sequence[str] | str,
-    evidence_status: str = "UNVERIFIED",
-) -> Dict[str, Any]:
-    status = read_status(repo, run_id)
-    if status["state"].get("phase") in {"done", "cancelled"}:
-        raise ValueError(f"run already terminal: {status['state'].get('phase')}")
-    run_dir = Path(status["run_dir"])
-    state = status["state"]
-    receipt = _write_maintenance_deferred_receipt(
-        run_dir,
-        correction_summary=correction_summary,
-        deferral_reason=deferral_reason,
-        resume_instructions=resume_instructions,
-        evidence_status=evidence_status,
-    )
-    state["maintenance"] = {
-        "mode": receipt["mode"],
-        "disposition": receipt["disposition"],
-        "receipt": str(run_dir / "maintenance-receipt.json"),
-        "correction_summary": receipt["correction_summary"],
-        "deferral_reason": receipt["deferral_reason"],
-        "evidence_status": receipt["evidence_status"],
-    }
-    completion = _completion_state(run_dir, state.get("completion"))
-    completion["ready"] = False
-    completion["tag"] = "UNVERIFIED"
-    completion["verdict"] = "DELIVERY_PENDING"
-    completion["reason_code"] = "maintenance_deferred"
-    if (run_dir / "completion-receipt.json").exists():
-        persisted = _load_json(run_dir / "completion-receipt.json")
-        persisted.update({"ready": False, "verdict": completion["verdict"],
-                          "reason_code": completion["reason_code"], "tag": "UNVERIFIED"})
-        _write_json(run_dir / "completion-receipt.json", persisted)
-    state["completion"] = completion
-    state["operator"] = {
-        **(state.get("operator") or {}),
-        "ready": False,
-        "execution_state": "backlog_only",
-    }
-    state["current_action"] = "maintenance_deferred_to_backlog"
-    state["next_action"] = "resume_from_maintenance_receipt"
-    state["evidence"] = {
-        **(state.get("evidence") or {}),
-        "ready": False,
-        "status": receipt["evidence_status"],
-    }
-    _write_json(run_dir / "state.json", state)
-    _transition(
-        run_dir,
-        state,
-        "partial",
-        "maintenance correction deferred to backlog-only mode",
-        receipt=str(run_dir / "maintenance-receipt.json"),
-        extra={"mode": receipt["mode"], "disposition": receipt["disposition"]},
-    )
-    return read_status(repo, run_id)
-
-
-def read_status(repo: str, run_id: str = "") -> Dict[str, Any]:
-    repo_path = Path(repo).resolve()
-    runs_root = repo_path / ".simplicio" / "loop-runs"
-    if not runs_root.exists():
-        return {
-            "run_dir": None,
-            "manifest": None,
-            "state": {
-                "phase": "no_runs",
-                "completion": {"ready": False, "verdict": "NO_RUNS", "tag": "UNVERIFIED"},
-                "operator": {"ready": False, "execution_state": "idle"},
-                "evidence": {"ready": False, "status": "NO_RUNS"},
-                "current_action": "none",
-                "next_action": "none",
-                "message": "no runs directory found; run simplicio-loop to start",
-            },
-            "execution_route": None,
-            "route_receipt_status": "UNVERIFIED",
-        }
-    chosen = None
-    if run_id:
-        chosen = runs_root / run_id
-    else:
-        candidates = sorted([p for p in runs_root.iterdir() if p.is_dir()], key=lambda p: p.name)
-        if not candidates:
-            return {
-                "run_dir": None,
-                "manifest": None,
-                "state": {
-                    "phase": "no_runs",
-                    "completion": {"ready": False, "verdict": "NO_RUNS", "tag": "UNVERIFIED"},
-                    "operator": {"ready": False, "execution_state": "idle"},
-                    "evidence": {"ready": False, "status": "NO_RUNS"},
-                    "current_action": "none",
-                    "next_action": "none",
-                    "message": "no runs found; run simplicio-loop to start",
-                },
-                "execution_route": None,
-                "route_receipt_status": "UNVERIFIED",
-            }
-        chosen = candidates[-1]
-    manifest = _load_json(chosen / "manifest.json")
-    state = _load_json(chosen / "state.json")
-    state["completion"] = _completion_state(chosen, state.get("completion"))
-    execution_route = None
-    route_path = chosen / "execution-route.json"
-    if route_path.is_file():
-        try:
-            candidate = _load_json(route_path)
-            if verify_route_hash(candidate):
-                execution_route = candidate
-                state.setdefault("operator", {})["execution_route"] = candidate
-                state["execution_route"] = candidate
-        except (OSError, ValueError, TypeError):
-            execution_route = None
-    return {
-        "run_dir": str(chosen),
-        "manifest": manifest,
-        "state": state,
-        "execution_route": execution_route,
-        "route_receipt_status": "MEASURED" if execution_route else "UNVERIFIED",
-    }
-
-
-def _cancel_mapper_background(repo_path: Path, run_dir: Path, state: Dict[str, Any]) -> Dict[str, Any]:
-    """Cancel an outstanding deep Mapper job before a run becomes terminal."""
-    mapper_state = state.get("mapper") if isinstance(state.get("mapper"), Mapping) else {}
-    route = mapper_state.get("execution_route") if isinstance(mapper_state, Mapping) else None
-    if not isinstance(route, Mapping):
-        context_path = run_dir / "mapper-context.json"
-        try:
-            context = _load_json(context_path) if context_path.is_file() else {}
-        except (OSError, TypeError, ValueError):
-            context = {}
-        candidate = context.get("execution_route") if isinstance(context, Mapping) else None
-        route = candidate if isinstance(candidate, Mapping) else {}
-    background = route.get("background") if isinstance(route, Mapping) else None
-    if not isinstance(background, Mapping) or background.get("status") != "queued":
-        return {"status": "not_active", "reason_code": "mapper_background_not_active"}
-
-    result = _run_cmd(
-        ["simplicio-mapper", "background", "cancel", ".", "--json"], repo_path,
-    )
-    try:
-        stdout = json.loads(result.stdout) if result.stdout.strip() else {}
-    except ValueError:
-        stdout = {"raw": result.stdout.strip()}
-    receipt = {
-        "schema": "simplicio.loop.mapper-background-cancellation/v1",
-        "status": "cancelled" if result.returncode == 0 else "blocked",
-        "reason_code": "mapper_background_cancelled" if result.returncode == 0 else "mapper_background_cancel_failed",
-        "returncode": result.returncode,
-        "stdout": stdout,
-        "stderr": (result.stderr or "").strip(),
-        "job_id": background.get("work_id"),
-        "pid": background.get("pid"),
-        "requested_at": _now(),
-    }
-    receipt_path = run_dir / "mapper-background-cancel.json"
-    _write_json(receipt_path, receipt)
-    state.setdefault("mapper", {})["background_cancellation"] = {
-        **receipt, "receipt": str(receipt_path),
-    }
-    state["mapper"]["execution_route"] = {
-        **dict(route),
-        "background": {**dict(background), "status": receipt["status"],
-                        "cancel_receipt": str(receipt_path)},
-    }
-    return receipt
-
-
-def change_phase(repo: str, run_id: str, to_phase: str, reason: str) -> Dict[str, Any]:
-    status = read_status(repo, run_id)
-    run_dir = Path(status["run_dir"])
-    state = status["state"]
-    if state.get("phase") in {"done", "cancelled"}:
-        raise ValueError(f"run already terminal: {state.get('phase')}")
-    if to_phase == "awaiting_decision":
-        maintenance = state.get("maintenance") or {}
-        if maintenance.get("mode") == "maintenance_deferred" or maintenance.get("disposition") == "backlog_only":
-            state["maintenance"] = _active_maintenance_state(maintenance)
-            state["operator"] = {
-                **(state.get("operator") or {}),
-                "ready": False,
-                "execution_state": "invalidated",
-            }
-            state["evidence"] = {
-                **(state.get("evidence") or {}),
-                "ready": False,
-                "status": "INVALIDATED",
-            }
-        state["next_action"] = "mapper_scan_required"
-    elif to_phase == "cancelled":
-        _cancel_mapper_background(Path(repo).resolve(), run_dir, state)
-        state["next_action"] = "none"
-    _transition(run_dir, state, to_phase, reason, receipt=str(run_dir / "state.json"))
-    return read_status(repo, run_id)
-
-
-def reconcile_delivery(repo: str, run_id: str, current_state: str, source_kind: str = "local",
-                       source_payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    status = read_status(repo, run_id)
-    run_dir = Path(status["run_dir"])
-    manifest = status["manifest"]
-    state = status["state"]
-    previous_receipt = None
-    previous_path = run_dir / "delivery-receipt.json"
-    if previous_path.exists():
-        try:
-            previous_receipt = _load_json(previous_path)
-        except (OSError, ValueError, TypeError):
-            previous_receipt = None
-    execution_route = None
-    route_path = run_dir / "execution-route.json"
-    if route_path.is_file():
-        try:
-            candidate = _load_json(route_path)
-            if verify_route_hash(candidate):
-                execution_route = candidate
-        except (OSError, ValueError, TypeError):
-            execution_route = None
-    delivery_payload = dict(source_payload or {})
-    if execution_route:
-        delivery_payload.setdefault("execution_route", execution_route)
-    receipt = build_delivery_receipt(str(run_dir), manifest.get("delivery_target") or "verified",
-                                     current_state=current_state, source_kind=source_kind,
-                                     source_payload=delivery_payload)
-    if execution_route:
-        receipt["execution_route"] = execution_route
-        receipt["route_receipt_sha"] = execution_route.get("receipt_sha", "")
-    receipt["reconciliation"] = reconcile_delivery_observation(previous_receipt, receipt)
-    write_delivery_receipt(str(run_dir), receipt)
-    state["delivery"] = {
-        "target": receipt["target"],
-        "current_state": receipt["current_state"],
-        "ready": receipt["ready"],
-        "receipt": str(run_dir / "delivery-receipt.json"),
-        "source_checked_at": receipt["source_checked_at"],
-        "source_kind": source_kind,
-        "execution_route": execution_route,
-        "route_receipt_sha": receipt.get("route_receipt_sha", ""),
-    }
-    reconciliation = receipt.get("reconciliation") or {}
-    if reconciliation.get("status") == "reopened":
-        state["current_action"] = "delivery_reopened"
-        state["next_action"] = "requery_source"
-        next_phase = "partial"
-        state.setdefault("blockers", [])
-        failed_gate = next((gate for gate in receipt.get("gates", [])
-                            if gate.get("status") == "fail"), {})
-        state["blockers"] = [
-            "delivery reopened: " + str(failed_gate.get("detail") or
-                                         reconciliation.get("reason_code") or
-                                         "delivery_target_regressed")
-        ]
-    elif receipt["ready"]:
-        state["current_action"] = "delivery_reconciled"
-        state["next_action"] = "completion_oracle"
-        next_phase = "delivering" if current_state not in {"verified", "done"} else "validating"
-    else:
-        state["current_action"] = "delivery_reconciliation_failed"
-        state["next_action"] = "collect_missing_delivery_evidence"
-        next_phase = "partial"
-        state.setdefault("blockers", [])
-        fail_gate = next((gate for gate in receipt.get("gates", []) if gate.get("status") == "fail"), None)
-        if fail_gate:
-            state["blockers"] = [fail_gate.get("detail", "delivery reconciliation failed")]
-    _write_json(run_dir / "state.json", state)
-    _emit_event(run_dir, state, "delivery_reconciled", receipt=str(run_dir / "delivery-receipt.json"),
-                blocker="" if receipt["ready"] else "delivery_reconciliation_failed",
-                message="delivery state reconciled", current_state=receipt["current_state"],
-                reconciliation=reconciliation, execution_route=execution_route,
-                route_receipt_sha=receipt.get("route_receipt_sha", ""))
-    if reconciliation.get("status") == "reopened":
-        _emit_event(run_dir, state, "rollback", receipt=str(run_dir / "delivery-receipt.json"),
-                    blocker=str(reconciliation.get("reason_code") or "delivery_reopened"),
-                    message="delivery regression reopened the run")
-    if receipt["ready"]:
-        completion = _completion_state(run_dir, state.get("completion"))
-        _emit_event(run_dir, state, "oracle_verdict", receipt=(
-            str(run_dir / "completion-receipt.json")
-            if (run_dir / "completion-receipt.json").exists()
-            else str(run_dir / "delivery-receipt.json")),
-            blocker="" if completion.get("ready") else "oracle_incomplete",
-            message=str(completion.get("verdict") or "DELIVERY_PENDING"),
-            verdict=str(completion.get("verdict") or "DELIVERY_PENDING"))
-    _transition(run_dir, state, next_phase, "delivery state reconciled", receipt=str(run_dir / "delivery-receipt.json"))
-    return read_status(repo, run_id)
-
-
-def apply_human_decision(repo: str, run_id: str, decision_id: str, answer: str,
-                         impact: str = "behavior-change") -> Dict[str, Any]:
-    status = read_status(repo, run_id)
-    run_dir = Path(status["run_dir"])
-    state = status["state"]
-    contract_payload = _load_json(_contract_path(run_dir))
-    tasks = contract_payload.get("tasks") or []
-    if not tasks:
-        raise ValueError("task contract collection is empty")
-    changed = False
-    for task in tasks:
-        ledger = task.setdefault("decision_ledger", [])
-        for item in ledger:
-            if item.get("id") == decision_id:
-                item["resolved"] = True
-                item["answer"] = answer
-                item["resolved_at"] = _now()
-                item["resolution_impact"] = impact
-                changed = True
-        for bucket_name in ("questions", "assumptions", "blockers"):
-            for item in task.get(bucket_name) or []:
-                if item.get("id") == decision_id:
-                    item["resolved"] = True
-                    item["answer"] = answer
-                    item["resolved_at"] = _now()
-                    item["resolution_impact"] = impact
-                    changed = True
-    if not changed:
-        raise ValueError(f"decision id not found: {decision_id}")
-    contract_payload["revision"] = int(contract_payload.get("revision", 1)) + 1
-    contract_payload["updated_at"] = _now()
-    _write_json(_contract_path(run_dir), contract_payload)
-    _emit_event(run_dir, state, "handoff", receipt=str(_contract_path(run_dir)),
-                task_id=str(tasks[0].get("id") or ""), ac_ids=_task_ac_ids(tasks[0]),
-                message="human decision handed off to replanning", decision_id=decision_id,
-                execution_route=state.get("execution_route") or {},
-                route_receipt_sha=str((state.get("execution_route") or {}).get("receipt_sha") or ""))
-    invalidated = []
-    for name in ("plan.json", "operator-receipt.json", "evidence-receipt.json", "delivery-receipt.json"):
-        path = run_dir / name
-        if path.exists():
-            path.unlink()
-            invalidated.append(name)
-    state["phase"] = "awaiting_decision"
-    state["updated_at"] = _now()
-    state["current_action"] = "human_decision_applied"
-    state["next_action"] = "rebuild_plan_from_updated_contract"
-    state["operator"] = {"ready": False, "receipt": "", "target": "", "execution_state": "invalidated"}
-    state["evidence"] = {"ready": False, "receipt": "", "status": "INVALIDATED"}
-    state["delivery"] = {"target": state.get("delivery_target"), "current_state": "planned", "ready": False, "receipt": ""}
-    state["completion"] = _default_completion_state()
-    state["blockers"] = []
-    _write_json(run_dir / "state.json", state)
-    _transition(run_dir, state, "awaiting_decision", "human decision applied; dependent artifacts invalidated",
-                receipt=str(_contract_path(run_dir)), extra={"decision_id": decision_id, "invalidated": invalidated})
-    return read_status(repo, run_id)
-
-
-def sync_source_state(repo: str, run_id: str, source: str, external_repo: str = "",
-                      pr: int | None = None, tag: str = "") -> Dict[str, Any]:
-    status = read_status(repo, run_id)
-    manifest = status["manifest"]
-    target = manifest.get("delivery_target") or "verified"
-    if source != "github":
-        raise ValueError(f"unsupported source: {source!r}")
-    payload = github_delivery_payload(external_repo, pr=pr, tag=tag, target_state=target)
-    current_state = infer_github_delivery_state(payload)
-    return reconcile_delivery(repo, run_id, current_state, source_kind="github", source_payload=payload)
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí×N¹óÔèµ©hºÚn¶X§zÍYœ›ÛH×Ù]\™W×È[\Ü[››Ý][ÛœÂ‚š[\ÜœÛÛ‚š[\Ü\ÚX‚š[\ÜÜÂš[\Ü˜[™ÛBš[\Ü™Bš[\ÜÚ][š[\ÜÝXœ›ØÙ\ÜÂš[\Ü[YBš[\ÜÝš[™Âš[\ÜÞ\Â™œ›ÛH™XY[™È[\Ü“ØÚÂ™œ›ÛHÛÛXÝ[ÛœÈ[\Ü\]YB™œ›ÛHÛÛ˜Ý\œ™[™]\™\È[\Ü’T”ÕÐÓÓTUQ›ØÙ\ÜÔÛÛ^XÝ]Ü‹™XYÛÛ^XÝ]Ü‹ØZ]™œ›ÛH]Xˆ[\Ü]™œ›ÛH\[™È[\Ü[žKØ[X›KXÝ]\˜X›K\Ý]\˜[X\[™ËÜ[Û˜[Ù\]Y[˜ÙK\K\YXÝ‚™œ›ÛH™[]™\žH[\Ü
+Z[Ù[]™\žWÜ™XÙZ\›Ü›X[^™WÙ[]™\žWÝ\™Ù]ˆ™XÛÛ˜Ú[WÙ[]™\žWÛØœÙ\˜][Û‹Üš]WÙ[]™\žWÜ™XÙZ\
+B™œ›ÛH™]šY[˜ÙH[\ÜZ[Ù]šY[˜ÙWÜ™XÙZ\™YXÝÜÙ[œÚ]]™WÝ^™œ›ÛHœÛÝ\˜ÙWÜÝ]H[\ÜÚ]X—Ù[]™\žWÜ^[ØY[™™\—ÙÚ]X—Ù[]™\žWÜÝ]B™œ›ÛHˆ[\ÜÚ]X—ÛY™XÞXÛH\ÈÙÚ]X—ÛY™XÞXÛB™œ›ÛH˜ÛY[Ú[YÜ˜][ÛœÈ[\Ü[YÜ˜][Û—Ù[˜X›Y™œ›ÛH›Ü˜ØWÛY™XÞXÛH[\ÜÞ[˜×ÛÜ˜ØWÜÝ]\Â™œ›ÛHœÛÝ\˜ÙWØY\\ˆ[\ÜÚ]X”ÛÝ\˜ÙPY\\‚™œ›ÛH\Ú×ØÛÛ˜XÝ[\ÜÛÛ\[WÛX[žK˜[Y]WØÛÛ˜XÝ™œ›ÛH™]™[ÛY]Y]H[\ÜÐÒSPH\ÈU‘S•ÓQUQUWÔÐÒSPK[™™\—ÜØÛÜB™œ›ÛHXÚšXØ[ÙX[\Ü™XÛÜ™Û›ÝXÙH\ÈÜ™XÛÜ™ÝXÚšXØ[ÙX™œ›ÛH˜ÚXÚÜÚ[ÛY™XÞXÛH[\ÜÚXÚÜÚ[Y™XÞXÛKY™XÞXÛQ\œ›Ü‚™œ›ÛH›Ü\˜]Ü—Ø›ÛÝÝ˜\[\Ü
+ˆÜ\˜]Ü›ÛÝÝ˜\\œ›Ü‹ˆ[œÝ\™WÛÜ\˜]ÜœÈ\ÈÙ[œÝ\™WÜ™\]Z\™YÛÜ\˜]ÜœËŠB™œ›ÛHœ[—ØÛÛ˜XÝ[\ÜS—ÔÐÒSPK˜[Y]WÜ[‚™œ›ÛHœ™[[ÝWÜ]Y]YH[\Ü™[[ÝT]Y]YK]Y]YPÛÛ™›XÝ]Y]YU[˜]˜Z[X›KZ[ØÛÛ\][Û—Ü™XÙZ\™œ›ÛH˜YÙ[ØÛÛ˜XÝ[\Üš[™Ü™XÙZ\Z[ØÛÛ^ÜXÚÂ™œ›ÛHœ™XÙZ\Ý™\šYšY\ˆ[\Ü
+U’QSÑWÔ‘PÑRTÔÐÒSPH\ÈÑU’QSÑWÔ‘PÑRTÐÓÓ•S•ÔÐÒSPKˆÔTUÔ—Ô‘PÑRTÔÐÒSPH\ÈÓÔTUÔ—Ô‘PÑRTÐÓÓ•S•ÔÐÒSPKˆ™XÙZ\Ý]\Ë™\šYžWÜ™XÙZ\
+B™œ›ÛHœ[›š[™×ÙØ]H[\ÜÛÛ[Ú\Ú\ÈÜ[›š[™×ØÛÛ[Ú\Ú™œ›ÛHœ[›š[™×ÙØ]H[\Ü]˜[X]WÛ]]][Û—Ø]]Üš]K]]][Û—Ø]]Üš]WÜ™\]Z\™Y™œ›ÛHœ[›š[™×ÙØ]H[\Ü]]×Ü[›š[™×Ü™XÙZ\Ù[˜X›Y™œ›ÛHœ[›š[™×ÙØ]H[\ÜZ[Ü[›š[™×Ü™XÙZ\\ÈØZ[Ü[›š[™×Ü™XÙZ\™œ›ÛHœ[›š[™×ÙØ]H[\ÜX›\ÚÜ[›š[™×Ü™XÙZ\\ÈÜX›\ÚÜ[›š[™×Ü™XÙZ\™œ›ÛHÛÜš×Ú][WØÛZ[\È[\Ü][\ÛÛÜ™[˜]Ü‹X\ÙSÜÝ\š[™Ñ^XÝ][Û‚™œ›ÛH›Y\™ÙWÙ^XÝ]Üˆ[\ÜY\™ÙQ^XÝ]Ü‹Y\™ÙQ^XÝ]Ü‘\œ›Ü‚™œ›ÛH›[Ù[Ü™YÚ\ÝžH[\Ü[Ù[Ø\Xš[]T™YÚ\ÝžK[Ù[™YÚ\ÝžQ\œ›Ü‚™œ›ÛH›[Ù[Ü›Ý]\ˆ[\Ü[Ù[›Ý]\‘\œ›Ü‹›Ý]H\ÈÛ[Ù[Ü›Ý]B™œ›ÛHœ[[YWÙš]™\œÈ[\ÜÓWÔ“Ð‘WÒÓÒÔËš]™\—Ù›Ü—Ü[[YB™œ›ÛHœ[[YWØÛÛ^[\ÜÛÛ^]]Üš^˜][Û‘\œ›Ü‹ÛÛ^YÙ]\œ›Ü‹[[YPÛÛ^™\]Y\Ý™œ›ÛHœ[[YWÙ^XÝ][Û—Ü™XÙZ\[\Ü[[YQ^XÝ][Û”™XÙZ\\œ›Ü‚™œ›ÛHœ[[YWØY\\ˆ[\ÜÛÜ[[YPY\\‹[[YPY\\‘\œ›Ü‚™œ›ÛHœ[[YWØœšYÙH[\Ü[[YPœšYÙB™œ›ÛHœ[[YWÙY™™XÝØY\\ˆ[\ÜY™™XÝ™\]Y\Ý[[YQY™™XÝY\\‹[[YQY™™XÝ\œ›Ü‚™œ›ÛHšÛÚÝØ[ÙØ]H[\Ü
+ˆÛÚÝØ[›ØÚÙYˆØ]WØÛÛ\][Û‹ˆ˜[Y]WÙ[™[ÜKˆ˜[Y]WÜ™WÙXÚ\Ú[Û‹‚ŠB™œ›ÛHšÛÚÝØ[Ü\œÚ\Ý[˜ÙH[\ÜÛÚÝØ[Y™™XÝYÙ\‚™œ›ÛH˜Ø[›ÛšXØ[Ü[ˆ[\ÜØ[›ÛšXØ[[‹ØYØØ[›ÛšXØ[Ü[‚™œ›ÛH˜]]Üš]WØ›Ý[™\žH[\Ü™\\™WØ]]Üš^˜][Û—Ú[™Ù™‚™œ›ÛH™\šYšYYÙ[]™\žH[\Ü™\šYšYYYÙ[[]™\žK™\šYšYY[]™\žQ\œ›Ü‚™œ›ÛH™^XÝ][Û—Ø›Ø\™[\Ü^XÝ][Û›Ø\™™œ›ÛHœ[—Ú›Ý\›˜[[\Ü[’›Ý\›˜[™œ›ÛH›X\\—Ü[—Ú›Ý\›˜[[\ÜX\\”[’›Ý\›˜[™œ›ÛH›X\\—ÚÛÚÝØ[[\ÜX\\’ÛÚÝØ[Y™™XÝYÙ\‚™œ›ÛHœÝXÚ×ÛØÚÈ[\Ü
+ˆÝXÚÓØÚËˆ\ØÛÝ™\—Ú[œÝ[YØÛÛ\Û™[ËˆØYÜÝXÚ×ÛØÚËˆÜš]WÜÝXÚ×ÛØÚËŠB‚™œ›ÛH™^XÝ][Û—Ü›Ý]H[\ÜÜÝX›WÚ\Ú\ÈÙ^XÝ][Û—Ü›Ý]WÚ\Ú™œ›ÛH™^XÝ][Û—Ü›Ý]H[\ÜØ\Xš[]WÙš[™Ù\œš[›Ü›X[^™WØØ\Xš[]WÛX[šY™\Ý›Ý]WÜ™XÙZ\Ú\×ØÝ\œ™[™œ›ÛH™^XÝ][Û—Ü›Ý]H[\ÜXÚYWÜ›Ý]K™\šYžWÜ›Ý]WÚ\ÚžN‚ˆœ›ÛHØÜš\Ë˜YÙ[ÚY[]H[\Ü[œÝ\™WÚY[]B™^Ù\[\Ü\œ›ÜŽˆÈ˜YÛXNˆ›ÈÛÝ™\ˆH[œÝ[YXÚØYÙHÚ]Ý]ØÜš\È˜[Y\ÜXÙBˆ[œÝ\™WÚY[]HH›Û™B‚žN‚ˆœ›ÛHØÜš\Ë™\ÝšX]YÝ\ÝÜÛXÞH[\Ü
+ˆ\ÝÛXÞQ\œ›Ü‹ˆ]]Üš^™H\ÈÝ\ÝØ]]Üš^™KˆØYÜÛXÞH\ÈÛØYÝ\ÝÜÛXÞKˆ™\ÛÛ™WÙ[š\›Û›Y[\ÈÜ™\ÛÛ™WÝ\ÝÙ[š\›Û›Y[ˆ
+B™^Ù\[\Ü\œ›ÜŽˆÈ˜YÛXNˆ›ÈÛÝ™\ˆH[œÝ[YXÚØYÙHÚ]Ý]ØÜš\È˜[Y\ÜXÙBˆ\ÝÛXÞQ\œ›ÜˆH[[YQ\œ›ÜˆÈ\NˆYÛ›Ü™VØ\ÜÚYÛ›Y[Z\Ø×BˆÝ\ÝØ]]Üš^™HH›Û™BˆÛØYÝ\ÝÜÛXÞHH›Û™BˆÜ™\ÛÛ™WÝ\ÝÙ[š\›Û›Y[H›Û™B‚žN‚ˆœ›ÛHØÜš\ËœÙXÝ\š]WØ]Y]ÛÙÈ[\Ü\[™Ù]™[\ÈØ]Y]Ø\[™™^Ù\[\Ü\œ›ÜŽˆÈ˜YÛXNˆ›ÈÛÝ™\ˆH[œÝ[YXÚØYÙHÚ]Ý]ØÜš\È˜[Y\ÜXÙBˆØ]Y]Ø\[™H›Û™B‚”•S“‘T—ÔÐÒSPHHœÚ[\XÚ[Ëœ[‹[X[šY™\ÝÝŒH‚”ÕUWÔÐÒSPHHœÚ[\XÚ[Ëœ[‹\Ý]KÝŒH‚“ÔTUÔ—Ô‘PÑRTÔÐÒSPHHœÚ[\XÚ[Ë›Ü\˜]Ü‹\™XÙZ\ÝŒ‚ˆÈ™X[ÛÛ[ÜØÚ[XKÚ\ÚÙœ™\Ú™\ÜËÜ›Ý™[˜[˜ÙH˜[Y][Û‹Ø][™È™XÙZ\ÜÝ]\Ø[‚ˆÈÛÜ\˜]Ü—Ù\Ü]ÚØ][\
+
+X™[ÝÈ
+\ÜÝYHÌŽˆ™\Ù[˜ÙHÙˆHš[H]\Ý›Ý[\BˆÈ‘T’Q’QQ
+K‚”‘PÑRTÓPVÐQÑWÔÑPÓÓ‘ÈH›Ø]
+ÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘PÑRTÓPVÐQÑWÔÑPÓÓ‘È‹ŽŠJB“PRS•SSÑWÔ‘PÑRTÔÐÒSPHHœÚ[\XÚ[Ë›XZ[[˜[˜ÙK\™XÙZ\ÝŒH‚”TÑTÈHÂˆš[ZÙH‹ˆ˜]ØZ][™×ÙXÚ\Ú[Ûˆ‹ˆ›X\[™È‹ˆœ[›š[™È‹ˆ™^XÝ][™È‹ˆ˜[Y][™È‹ˆØ]Ú[™È‹ˆ™[]™\š[™È‹ˆ™Û™H‹ˆœ\X[‹ˆ˜›ØÚÙY‹ˆ˜Ø[˜Ù[Y‹—BˆÈX\\ˆLŒNH›ÝšY\ÈHœ™\Ú™\ÜËØ\Y˜XÝ™XÙZ\ÛÛ˜XÝ™\]Z\™Y›Ü‚ˆÈ]]Üš]]]™HÛÛ^[™[ˆÙ[™\˜][Û‹ˆÛ\ˆ™\œÚ[ÛœÈØ[ˆ™\ÜHÝ[BˆÈœ™\Ú]YX[œÜXÝ™\Ý[[™\™H\™Y›Ü™H›ÝØY™H\ÈH[›š[™ÈÛÝ\˜ÙK‚“PTT—ÓRS—Õ‘T”ÒSÓˆH
+NK
+B“PTT—Ô‘TURT‘QÕ‘T”ÈH
+š[œÜXÝ‹š[™Ù™ˆ‹˜\ÚÈ‹œÞ[˜È‹™šYŠB‘UÓWÔ‘TURT‘QÕÒÑS”ÈH
+ˆ\ÚÈ‹‹KYžK\[‹]\ÚÈ‹‹KZœÛÛˆŠBˆÈ\ÜÝYHÌLÍNˆHÜ\˜]ÜˆœšYÙH˜[Y]\ÈY[]H
+ÈØ\Xš[]H
+ÈRS—Õ‘T”ÒSÓ‹›ÝˆÈY\™[HÚXÚˆH]‹XÛH™[ÝÈ\È\H\È›ØÚÙY™Y›Ü™H[žH]]][Û‹‚‘UÓWÓRS—Õ‘T”ÒSÓˆH
+M
+B‘UÓWÔ‘TURT‘QÐÐTP’SUQTÈH
+\ÚÈ‹‹KYžK\[‹]\ÚÈ‹‹KZœÛÛˆ‹‹KX›Ý[™\]È‹‹K]\™Ù]‹‹K]\ÚË\ÜXÈ‹‹K[[ÙHŠB‘QUSÓÔTUÔ—ÕÓÔ’ÑT”ÈH‚UÒÔÐÒSPHHœÚ[\XÚ[Ë›Ü\˜]Ü‹X˜]ÚÝŒH‚UÒÔ‘Q“QÒÔÐÒSPHHœÚ[\XÚ[Ë›Ü\˜]Ü‹X˜]Ú\™Y›YÚÝŒH‚“UU‘WÔ’TÓWÔÐÒSPHHœÚ[\XÚ[Ë›ÛÜ›˜]]™K\š\ÛKY\Ü]ÚÝŒH‚‚“XZ[[˜[˜ÙS[ÙHH]\˜[È˜XÝ]™H‹›XZ[[˜[˜ÙWÙY™\œ™Y—B“XZ[[˜[˜ÙQ\ÜÜÚ][ÛˆH]\˜[È›Ü\˜]Üˆ‹˜˜XÚÛÙ×ÛÛ›H—B‚‚˜Û\ÜÈÜ\˜]Ü‘\Ü]Ú][J\YXÝÝ[Q˜[ÙJN‚ˆˆˆ•\Y[œ]ÛÛ˜XÝ›Üˆ™[˜Î˜\Ü]ÚÛÜ\˜]Ü—Ø˜]Úˆˆˆ‚‚ˆ™\ÎˆÝ‚ˆ[—ÚYˆÝ‚ˆ\Ú×Ú[™^ˆ[ˆÛÜšÙ\—ÚYˆÝ‚ˆ\ÛÛ][Û—ÚÙ^NˆÝ‚ˆ\Ú×ÚYˆÝ‚ˆ\Ú×ÜÜXÎˆX\[™ÖÜÝ‹[žWBˆ\ÛÛ][ÛŽˆÝ‚ˆÜ\˜]Ü—ØÛÛ^ˆX\[™ÖÜÝ‹[žWBˆ\ÝšX]YÜ]Y]YNˆ[žBˆYÙ[ÚY[]NˆX\[™ÖÜÝ‹[žWBˆÛÛ^ÜXÚÎˆX\[™ÖÜÝ‹[žWB‚‚˜Û\ÜÈXZ[[˜[˜ÙTÝ]J\YXÝ
+N‚ˆ[ÙNˆXZ[[˜[˜ÙS[ÙBˆ\ÜÜÚ][ÛŽˆXZ[[˜[˜ÙQ\ÜÜÚ][Û‚ˆ™XÙZ\ˆÝ‚ˆÛÜœ™XÝ[Û—ÜÝ[[X\žNˆÝ‚ˆY™\œ˜[Ü™X\ÛÛŽˆÝ‚ˆ]šY[˜ÙWÜÝ]\ÎˆÝ‚‚‚˜Û\ÜÈXZ[[˜[˜ÙQY™\œ™Y™XÙZ\
+\YXÝ
+N‚ˆØÚ[XNˆÝ‚ˆ[ÙNˆ]\˜[È›XZ[[˜[˜ÙWÙY™\œ™Y—Bˆ\ÜÜÚ][ÛŽˆ]\˜[È˜˜XÚÛÙ×ÛÛ›H—BˆÛÜœ™XÝ[Û—ÜÝ[[X\žNˆÝ‚ˆY™\œ˜[Ü™X\ÛÛŽˆÝ‚ˆ™\Ý[YWÚ[œÝXÝ[ÛœÎˆ\ÝÜÝ—Bˆ]šY[˜ÙWÜÝ]\ÎˆÝ‚ˆ™XÛÜ™YØ]ˆÝ‚ˆÛÛ\][Û—Ü™XYNˆ›ÛÛˆÛÛ\][Û—Ý™\™XÝˆÝ‚ˆÛÛ\][Û—Ü™X\ÛÛ—ØÛÙNˆÝ‚‚‚™YˆÛ›ÝÊ
+HOˆÝŽ‚ˆ™]\›ˆ[YKœÝ™[YJ‰VKI[KIY	R‰SN‰TÖˆ‹[YK™Û][YJ
+JB‚‚™YˆÜ˜[™ÝÚÙ[ŠŽˆ[HL
+HOˆÝŽ‚ˆÚ\œÈHÝš[™Ë˜\ØÚZWÛÝÙ\˜Ø\ÙH
+ÈÝš[™Ë™YÚ]Âˆ™]\›ˆˆ‹š›Ú[Š˜[™ÛK˜ÚÚXÙJÚ\œÊH›ÜˆÈ[ˆ˜[™ÙJŠJB‚‚™YˆÜ™\ÛÛ™WÝ\ÝYÜ]Y]YWØÛÛ^
+\›ˆÝŠHOˆ\VÜÝ‹Ü[Û˜[ÜÝ—KÜ[Û˜[ÑXÝÜÝ‹[žWWWN‚ˆˆˆ”™\ÛÛ™HH\ÝšX]Y\]Y]YH\Ý[˜][ÛˆšXHHÌŽH\ÝÛXÞK‚‚ˆ™Ú]X‹ÝÛÜšÙ›ÝÜËÙ\ÝšX]YLNË\›ÛÙ‹ž[[KHHÛÜšÙ›ÝÈ\È\ÜÝYIÜÂˆ^Ú]ØÙ[˜\š[È˜[YYKHØ\È™[[Ý™Y™\Ë]ÚYH[ˆÌÌLK]HØ[YBˆ^š[˜][Û‹ØÛÛ™\ÙYY\]Hš\ÚÈ\Y\ÈÈ\ÈØ[Ú]Nˆ]\ÈH™X[ˆÝ\œ™[K]\ÙYØ^HÈ[™H™X\™\ˆÚÙ[ˆ
+ÒSTPÒS×Ô‘SSÕWÔUQUQWÕÒÑS˜
+BˆÈH™]ÛÜšÈ\Ý[˜][Û‹ˆÙ][™ÈÒSTPÒS×Ô‘SSÕWÑS•’T“Ó“QS•ÒQÜÂˆ[È˜Z[XÛÜÙY™\ÛÛ][ÛŽˆH\Ý[˜][ÛˆÛÛY\Èœ›ÛHH™\œÚ[Û™YˆÓÑSÕÓ‘T”Ë\™]šY]ÙY™Ú]X‹ÜÙXÝ\š]KÙ\ÝšX]Y]\Ý\ÛXÞKšœÛÛ˜›Ýˆœ›ÛHÒSTPÒS×Ô‘SSÕWÔUQUQWÕT“ˆHœ™YY›Ü›HÒSTPÒS×Ô‘SSÕWÔUQUQWÕT“ˆX^HÝ[™HÙ]›ÜˆØØ[ÛÜœ›Ø›Ü˜][Û‹]]]\ÝX]ÚHÛXÞIÜÂˆÜšYÚ[ˆ^XÝHKH[ˆ]XÚÙ\‹XÚÜÙ[ˆ\Ý[˜][Ûˆ\È™Z™XÝY™Y›Ü™H[žBˆY[]KÜ]Y]YHØš™XÝ
+[™\™Y›Ü™H[žHÚÙ[ŠH\ÈÜ™X]Y‚‚ˆ[š\›Û›Y[ÈÚ]Ý]ÒSTPÒS×Ô‘SSÕWÑS•’T“Ó“QS•ÒQÙ]˜[˜XÚÈÈBˆYØXÞH[›X[˜YÙY]
+Ú]]™\ˆÒSTPÒS×Ô‘SSÕWÔUQUQWÕT“˜[Y\ÊH›Ü‚ˆØØ[Ù]ˆ\ÙNÈ›ÙXÝ[Û‹ÐÒHØ[\œÈÚÝ[Ù]H[š\›Û›Y[YÛÈBˆ\Ý[˜][Ûˆ\ÈÛXÞK\™\ÛÛ™Y‚‚ˆ™]\›œÈ
+\›[š\›Û›Y[ÚYÛXÞJXÈ[š\›Û›Y[ÚYØÛXÞX\™Bˆ›Û™XÛˆHYØXÞH[›X[˜YÙY]ÛÈØ[\œÈØ[ˆ[Ú]\‚ˆÛÛ›™XÝ][YH[™›Ü˜Ù[Y[
+›[Ù˜Ú[\XÚ[×ÛÛÜœÙXÝ\™WÝ˜[œÜÜ
+H\Y\Ë‚ˆˆˆ‚ˆ[š\›Û›Y[ÚYHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘SSÕWÑS•’T“Ó“QS•ÒQ‹ˆŠKœÝš\
+
+BˆYˆ›Ý[š\›Û›Y[ÚY‚ˆ™]\›ˆ\››Û™K›Û™BˆYˆÜ™\ÛÛ™WÝ\ÝÙ[š\›Û›Y[\È›Û™HÜˆÛØYÝ\ÝÜÛXÞH\È›Û™HÜˆÝ\ÝØ]]Üš^™H\È›Û™N‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ™\ÝšX]Y\ÝÛXÞH[Ù[H[˜]˜Z[X›HŠBˆÛXÞWÜ]HÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÑTÕ’P•UQÕ•TÕÔÓPÖH‹ˆŠKœÝš\
+
+BˆÛXÞHHÛØYÝ\ÝÜÛXÞJ]
+ÛXÞWÜ]
+JHYˆÛXÞWÜ][ÙHÛØYÝ\ÝÜÛXÞJ
+Bˆ[ˆHÜ™\ÛÛ™WÝ\ÝÙ[š\›Û›Y[
+ÛXÞK[š\›Û›Y[ÚY
+Bˆ™\×ÜÛYÈHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘SSÕWÔ‘TÈŠHÜˆÜË™[š\›Û‹™Ù]
+‘ÒUP—Ô‘TÔÒUÔ–H‹ˆŠBˆ™YˆHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘SSÕWÔ‘QˆŠHÜˆÜË™[š\›Û‹™Ù]
+‘ÒUP—Ô‘Qˆ‹ˆŠBˆXÝÜˆHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘SSÕWÐPÕÔˆŠHÜˆÜË™[š\›Û‹™Ù]
+‘ÒUP—ÐPÕÔˆ‹ˆŠBˆÚË™X\ÛÛˆHÝ\ÝØ]]Üš^™JÛXÞK[š\›Û›Y[ÚY™\×ÜÛYËœÝš\
+
+K™Y‹œÝš\
+
+KXÝÜ‹œÝš\
+
+JBˆYˆ›ÝÚÎ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ™\ÝšX]Y\ÝÛXÞH[šYYˆ	\Èˆ	H™X\ÛÛŠBˆÜšYÚ[ˆH[–È›ÜšYÚ[ˆ—Bˆ\ÝYÝ\›H‰\Î‹ËÉ\Î‰\É\Èˆ	H
+ˆÜšYÚ[–ÈœØÚ[YH—KÜšYÚ[–ÈšÜÝ˜[YH—KÜšYÚ[–ÈœÜ—KÜšYÚ[‹™Ù]
+˜˜\ÙWÜ]‹‹ÈŠKˆ
+BˆYˆ\›[™\›œœÝš\
+‹ÈŠHOH\ÝYÝ\›œœÝš\
+‹ÈŠN‚ˆÈ\È\ÈH]\˜[ÌŽH^Ú]™\^YYYØZ[œÝH™X[Ø[Ú]N‚ˆÈHØ[\‹\Ý\YY\Ý[˜][Ûˆ]\Ý™]™\ˆÝ™\œšYHH™]šY]ÙYˆÈÛXÞKÜˆ[ˆ]XÚÙ\ˆÚÈÛÛ›ÛÈÒSTPÒS×Ô‘SSÕWÔUQUQWÕT“ÛÝ[ˆÈ™Y\™XÝH™X\™\ˆÚÙ[ˆÈ[™œ˜\ÝXÝ\™H^HÛÛ›Û‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆ™\ÝšX]Y\ÝÛXÞH[šYYˆÒSTPÒS×Ô‘SSÕWÔUQUQWÕT“Ù\È›ÝX]ÚH‚ˆœ™\ÛÛ™YÜšYÚ[ˆ›Üˆ[š\›Û›Y[ÚY	É\ÉÈˆ	H[š\›Û›Y[ÚYˆ
+Bˆ™]\›ˆ\ÝYÝ\›[š\›Û›Y[ÚYÛXÞB‚‚™YˆÜ™\ÛÛ™WÝ\ÝYÜ]Y]YWÝ\›
+\›ˆÝŠHOˆÝŽ‚ˆˆˆ˜XÚÝØ\™XÛÛ\]X›HÜ˜\\ˆ™]\›š[™ÈÛ›HH™\ÛÛ™YT“ˆˆˆ‚ˆ™\ÛÛ™YÙ[š\›Û›Y[ÚYÜÛXÞHHÜ™\ÛÛ™WÝ\ÝYÜ]Y]YWØÛÛ^
+\›
+Bˆ™]\›ˆ™\ÛÛ™Y‚‚™YˆÙ\ÝšX]YØÛÛ™šYÝ\˜][ÛŠ™\ÎˆÝŠHOˆ\VÐ[žKÜ[Û˜[ÑXÝÜÝ‹[žWWWN‚ˆˆˆ”™]\›ˆHÜZ[ˆ™]ÛÜšÈÛÛÜ™[˜]Üˆ[™ÝX›HÛÜšÙ\ˆY[]K‚‚ˆØØ[˜[‹[Ý]\ÈHY˜][[™™[XZ[œÈH˜[˜XÚÈÚ[ˆHÜ[Û˜[ˆ\ÝšX]Y[š\›Û›Y[\È›Ý\ØX›Kˆ\Ý\ÛXÞHš[Û][ÛœÈÝ[˜Z[ˆÛÜÙYÈHZ\ÜÚ[™ÈY[]HY\\ˆ\È[ˆ[™œ˜\ÝXÝ\™HXœÙ[˜ÙK›ÝBˆ™X\ÛÛˆÈÝÜ[™\[™[ØØ[ÛÜšË‚ˆˆˆ‚ˆ\›HÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘SSÕWÔUQUQWÕT“‹ˆŠKœÝš\
+
+BˆYˆ›Ý\›[™›ÝÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘SSÕWÑS•’T“Ó“QS•ÒQ‹ˆŠKœÝš\
+
+N‚ˆ™]\›ˆ›Û™K›Û™Bˆ\›[š\›Û›Y[ÚYÛXÞHHÜ™\ÛÛ™WÝ\ÝYÜ]Y]YWØÛÛ^
+\›
+BˆYˆ[œÝ\™WÚY[]H\È›Û™N‚ˆYˆÛØØ[Ù˜[˜XÚ×Ù[˜X›Y
+
+N‚ˆ™]\›ˆ›Û™K›Û™Bˆ˜Z\ÙH[[YQ\œ›ÜŠ™\ÝšX]YY[]HY\\ˆ[˜]˜Z[X›HŠBˆY[]HH[œÝ\™WÚY[]Jˆ][ÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÒQS•UWÑ’SHŠHÜˆÝŠ]
+™\ÊHÈ‹œÚ[\XÚ[ËÛÜ˜Ú\Ý˜]ÜˆˆÈ˜YÙ[ZY[]KšœÛÛˆŠKˆ[[YO[ÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô•S•SQH‹[šÛ›ÝÛ‹\[[YHŠKˆØ\Xš[]Y\ÏVÈ˜ÛZ[H‹šX\™X]‹™™[˜Ú[™È‹œ™XÙZ\È‹™]™[È‹™]šY[˜ÙH‹˜ÛÛ\][Ûˆ—Kˆ
+BˆÚÙ[ˆHÜ™\ÛÛ™WÜ]Y]YWÝÚÙ[Š[š\›Û›Y[ÚYÛXÞKY[]JBˆ]Y]YHH™[[ÝT]Y]YJˆ\›ˆÚÙ[]ÚÙ[‹ˆ[Y[Ý]Y›Ø]
+ÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘SSÕWÔUQUQWÕSQSÕU‹HŠJKˆ[š\›Û›Y[ÚYY[š\›Û›Y[ÚYˆÛXÞO\ÛXÞKˆ
+Bˆ™]\›ˆ]Y]YKY[]B‚‚™YˆÛØØ[Ù˜[˜XÚ×Ù[˜X›Y
+
+HOˆ›ÛÛ‚ˆˆˆ[ÝÈØØ[^XÝ][ÛˆÚ[ˆÜ[Û˜[ÛÝYÛÛÜ™[˜][Ûˆ\ÈXœÙ[‚‚ˆ\È\È[X™\˜][H[˜X›YžHY˜][ˆHÛÝY]Y]YH\È[ˆXØÙ[\˜]Ü‚ˆ[™ÛZ[H˜[œÜÜ›ÝH™\™\]Z\Ú]H›ÜˆHÛÜ	ÜÈØØ[ÛÜšÝ™YBˆØÚY[\‹ˆÙ]ÒSTPÒS×ÓÓÔÓÐÐSÑSPÒÏLÛ›HÚ[ˆH\Þ[Y[ˆ^XÚ]H™\]Z\™\È™[[ÝHÛZ[\Ë‚ˆˆˆ‚ˆ˜]ÈHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÓÐÐSÑSPÒÈ‹ŒHŠKœÝš\
+
+K›ÝÙ\Š
+Bˆ™]\›ˆ˜]È›Ý[ˆÈŒ‹™˜[ÙH‹››È‹›Ù™ˆ‹™\ØX›YŸB‚‚”ÕUP×ÔUQUQWÕÒÑS—ÓÔÒS—ÕTˆH”ÒSTPÒS×ÐSÕ×ÔÕUP×ÔUQUQWÕÒÑSˆ‚‚ˆÈÌŽNˆH]Y]YHÜ\˜][ÛœÈHÛÜšÙ\‰ÜÈÚÜ[]™YÜ™Y[X[\ÈØÛÜYË‚ˆÈ[œ]Y]YX\È[X™\˜][H^ÛYYKHÛÜšÙ\œÈÛZ[KÚX\™X]ØÛÛ\]KØØ[˜Ù[ˆÈ^\Ý[™È\ÚÜË^HÈ›ÝÜ™X]H™]ÈÛ™\ËÛÈHÝÛ[ˆÛÜšÙ\ˆÜ™Y[X[ˆÈØ[››Ý™H\ÙYÈ[š™XÝÛÜšÈ[ÈH]Y]YK‚•ÓÔ’ÑT—ÔUQUQWÓÔTUSÓ”ÈH
+ˆœ[‹˜ÛZ[H‹šX\™X]‹˜ÛÛ\]H‹˜\ÜÙ\XXÝ]™H‹˜Ø[˜Ù[‹œ™[X\ÙH‹™]™[È‹\ÚÈ‹ŠB‚‚™YˆÜ™\ÛÛ™WÜ]Y]YWÝÚÙ[Š[š\›Û›Y[ÚYˆÜ[Û˜[ÜÝ—KÛXÞNˆÜ[Û˜[ÑXÝÜÝ‹[žWWKˆY[]NˆÜ[Û˜[ÑXÝÜÝ‹[žWWJHOˆÜ[Û˜[ÜÝ—N‚ˆˆˆ”™\ÛÛ™HH™X\™\ˆÜ™Y[X[›ÜˆH\ÝšX]Y]Y]YH
+ÌŽJK‚‚ˆ™Y™\œ™Y]ˆÒSTPÒS×Ô‘SSÕWÔUQUQWÕÒÑS—ÔÑPÔ‘U\ÈHÛ™Ë[]™YˆPPÈ
+œÚYÛš[™ÊˆÙXÜ™]
+™]™\ˆÙ[ÛˆHÚ\™JNÈHœ™\ÚÚÜ[]™YÚÙ[‚ˆ
+›[Ù˜ØÜš\ËœÚÜÛ]™YØÜ™Y[X[Ø
+H\ÈZ[Y›Üˆ\È›ØÙ\ÜË›Ý[™ˆÈHÛÜšÙ\‰ÜÈYÙ[Y[]H\ÈÝXš™XÝ[™H[š\›Û›Y[ÚY\ÈØÛÜKˆÚ]HZÙ[ˆœ›ÛHHÛXÞIÜÈX^ÝÜÙXÛÛ™Ø
+Ø\YžBˆÒSTPÒS×Ô‘SSÕWÔUQUQWÕÒÑS—ÕÔÑPÓÓ‘ØYˆÙ]ÝÙ\ŠK[™™\ÝšXÝYˆÈ™]N˜ÓÔ’ÑT—ÔUQUQWÓÔTUSÓ”Ø
+Ü\˜][Û‹[]™[ØÛÜ[™ËÛÈHXZÙYˆÚÙ[ˆØ[››Ý™H™\^YYYØZ[œÝ[ˆÜ\˜][Ûˆ\ÈÛÜšÙ\ˆ™]™\ˆ™YYY
+K‚ˆ\È\È›ÝHÒQÈœ›ÚÙ\ˆ^Ú[™ÙHÌŽH\ØÜšX™\ÈKH\™H\È›ÈÒBˆY[]H›ÝšY\ˆÈ\ÜÝYHH[š]X[\Ý[™]Ø\Ý^\Âˆ\›X[™[H›ØÚÙYXœÙ[Û™HKH]]™\XÙ\È[ˆ[™Yš[š][K[]™YˆÝ]XÈÙXÜ™]Ú]Û™H]^\™\ÈÛˆ]ÈÝÛˆ[™Ø\œšY\ÈH™]›ØØX›BˆX‚‚ˆHYØXÞHÝ]XÈÒSTPÒS×Ô‘SSÕWÔUQUQWÕÒÑS˜\È›ÈÛ™Ù\ˆHÚ[[ˆ˜[˜XÚÎˆ]\ÈÛ›HÛ›Ü™YÚ[ˆHØ[\ˆ\È
+˜[ÛÊˆÙ]ˆÒSTPÒS×ÐSÕ×ÔÕUP×ÔUQUQWÕÒÑSLX
+^XÚ]ÜZ[ŠK[™]™\žH\ÙBˆÙˆ]\[™ÈH™Z™XÝXY˜XÙ[Ø\›š[™È[™HÈHÌŽH]Y]ÙÂˆ
+›[Ù˜ØÜš\ËœÙXÝ\š]WØ]Y]ÛÙØ
+HÛÈ[ˆ[™Yš[š][K[]™YÜ™Y[X[[‚ˆ\ÙH\È\ØÛÝ™\˜X›K›Ý[š\ÚX›KˆÚ]Ý]HÜZ[ˆ›YËHZ\ÜÚ[™ÂˆÚYÛš[™ÈÙXÜ™]˜Z[ÈÛÜÙYÚ][[YQ\œ›Ü˜˜]\ˆ[ˆÚ[[BˆÝÛ™Ü˜Y[™ÈÈHÙXZÙ\ˆ]][ÙK‚ˆˆˆ‚ˆÙXÜ™]HÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘SSÕWÔUQUQWÕÒÑS—ÔÑPÔ‘U‹ˆŠKœÝš\
+
+BˆYˆ›ÝÙXÜ™]‚ˆÝ]X×ÝÚÙ[ˆHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘SSÕWÔUQUQWÕÒÑSˆ‹ˆŠKœÝš\
+
+HÜˆ›Û™BˆÜYÚ[ˆHÜË™[š\›Û‹™Ù]
+ÕUP×ÔUQUQWÕÒÑS—ÓÔÒS—ÕT‹ˆŠKœÝš\
+
+K›ÝÙ\Š
+H[ˆ
+ŒH‹YH‹žY\ÈŠBˆYˆÝ]X×ÝÚÙ[ˆ[™›ÝÜYÚ[Ž‚ˆYˆØ]Y]Ø\[™\È›Ý›Û™N‚ˆØ]Y]Ø\[™
+ˆ›Û™K]™[Hœ[›™\‹œ™\ÛÛ™WÜ]Y]YWÝÚÙ[ˆ‹XÚ\Ú[ÛHœ™Z™XÝ‹ˆÜ\˜][ÛY[š\›Û›Y[ÚYÜˆœ]Y]YH‹ˆ™X\ÛÛHœÝ]XÈÒSTPÒS×Ô‘SSÕWÔUQUQWÕÒÑSˆ™\Ù[Ú]Ý]‚ˆˆžÔÕUP×ÔUQUQWÕÒÑS—ÓÔÒS—ÕTŸOLHÜZ[ˆ‹ˆ
+Bˆ˜Z\ÙH[[YQ\œ›ÜŠˆ”ÒSTPÒS×Ô‘SSÕWÔUQUQWÕÒÑS—ÔÑPÔ‘U\È›ÝÙ][™HYØXÞHÝ]XÈ‚ˆ”ÒSTPÒS×Ô‘SSÕWÔUQUQWÕÒÑSˆ˜[˜XÚÈ\È›ÈÛ™Ù\ˆÚ[[
+ÌŽJKˆÙ]‚ˆˆžÔÕUP×ÔUQUQWÕÒÑS—ÓÔÒS—ÕTŸOLHÈ^XÚ]HÜ[ÈH\™XØ]Y‚ˆœÝ]XË]ÚÙ[ˆ]][ÙH›ÜˆØØ[Ù]ˆ\ÙKÜˆÛÛ™šYÝ\™H‚ˆ”ÒSTPÒS×Ô‘SSÕWÔUQUQWÕÒÑS—ÔÑPÔ‘UÈ\ÙHÚÜ[]™YÜ™Y[X[È[œÝXYˆ‚ˆ
+BˆYˆÝ]X×ÝÚÙ[ˆ[™Ø]Y]Ø\[™\È›Ý›Û™N‚ˆØ]Y]Ø\[™
+ˆ›Û™K]™[Hœ[›™\‹œ™\ÛÛ™WÜ]Y]YWÝÚÙ[ˆ‹XÚ\Ú[ÛH˜XØÙ\‹ˆÜ\˜][ÛY[š\›Û›Y[ÚYÜˆœ]Y]YH‹ˆ™X\ÛÛH™\™XØ]YÝ]XË]ÚÙ[ˆ]][ÙH^XÚ]HÜY[ÈšXH‚ˆˆžÔÕUP×ÔUQUQWÕÒÑS—ÓÔÒS—ÕTŸOLH‹ˆ
+Bˆ™]\›ˆÝ]X×ÝÚÙ[‚ˆžN‚ˆœ›ÛHØÜš\ËœÚÜÛ]™YØÜ™Y[X[È[\Ü\ÜÝYWÝÚÙ[‚ˆ^Ù\[\Ü\œ›Üˆ\È^ÎˆÈ˜YÛXNˆ›ÈÛÝ™\ˆH[œÝ[YXÚØYÙHÚ]Ý]ØÜš\È˜[Y\ÜXÙBˆ˜Z\ÙH[[YQ\œ›ÜŠœÚÜ[]™YÜ™Y[X[[Ù[H[˜]˜Z[X›HŠHœ›ÛH^ÂˆX^ÝH›Ø]
+
+ÛXÞHÜˆßJK™Ù]
+™[š\›Û›Y[È‹ßJK™Ù]
+[š\›Û›Y[ÚYßJK™Ù]
+›X^ÝÜÙXÛÛ™È‹L
+JHˆYˆÛXÞH[™[š\›Û›Y[ÚY[ÙHLŒˆÝ™\œšYWÝHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘SSÕWÔUQUQWÕÒÑS—ÕÔÑPÓÓ‘È‹ˆŠKœÝš\
+
+BˆÜÙXÛÛ™ÈHZ[Š›Ø]
+Ý™\œšYWÝ
+KX^Ý
+HYˆÝ™\œšYWÝ[ÙHX^ÝˆÝXš™XÝH
+Y[]HÜˆßJK™Ù]
+˜YÙ[ÚY‹[šÛ›ÝÛ‹XYÙ[ŠBˆØÛÜHH[š\›Û›Y[ÚYÜˆœ]Y]YH‚ˆ™]\›ˆ\ÜÝYWÝÚÙ[ŠÙXÜ™]ÝXš™XÝ\ÝXš™XÝØÛÜO\ØÛÜKÜÙXÛÛ™Ï]ÜÙXÛÛ™ËˆÜ\˜][ÛœÏUÓÔ’ÑT—ÔUQUQWÓÔTUSÓ”ÊB‚‚™YˆÜ[—ÚY
+
+HOˆÝŽ‚ˆ™]\›ˆ[YKœÝ™[YJœ[‹IVI[IYIR	SITËH‹[YK™Û][YJ
+JH
+ÈÜ˜[™ÝÚÙ[Š
+B‚‚™YˆÛØYÚœÛÛŠ]ˆ]
+HOˆXÝÜÝ‹[žWN‚ˆ™]\›ˆœÛÛ‹›ØYÊ]œ™XYÝ^
+[˜ÛÙ[™ÏH]‹NŠJB‚‚™YˆÙY˜][ØÛÛ\][Û—ÜÝ]J
+HOˆXÝÜÝ‹[žWN‚ˆ™]\›ˆÂˆœ™XYHŽˆ˜[ÙKˆœ™XÙZ\Žˆˆ‹ˆ™\™XÝŽˆ‘SU‘T–WÔS‘S‘È‹ˆœ™X\ÛÛ—ØÛÙHŽˆ›Ü˜XÛWÚ[˜ÛÛ\]H‹ˆYÈŽˆ•S•‘T’Q’QQ‹ˆB‚‚™YˆÙY˜][ÛXZ[[˜[˜ÙWÜÝ]J
+HOˆXZ[[˜[˜ÙTÝ]N‚ˆ™]\›ˆÂˆ›[ÙHŽˆ˜XÝ]™H‹ˆ™\ÜÜÚ][ÛˆŽˆ›Ü\˜]Üˆ‹ˆœ™XÙZ\Žˆˆ‹ˆ˜ÛÜœ™XÝ[Û—ÜÝ[[X\žHŽˆˆ‹ˆ™Y™\œ˜[Ü™X\ÛÛˆŽˆˆ‹ˆ™]šY[˜ÙWÜÝ]\ÈŽˆ•S•‘T’Q’QQ‹ˆB‚‚™YˆØXÝ]™WÛXZ[[˜[˜ÙWÜÝ]JÝ\œ™[ˆX\[™ÖÜÝ‹[žWH›Û™HH›Û™JHOˆXZ[[˜[˜ÙTÝ]N‚ˆ^[ØYHXÝ
+Ý\œ™[ÜˆßJBˆ™]\›ˆÂˆ›[ÙHŽˆ˜XÝ]™H‹ˆ™\ÜÜÚ][ÛˆŽˆ›Ü\˜]Üˆ‹ˆœ™XÙZ\ŽˆÝŠ^[ØY™Ù]
+œ™XÙZ\ŠHÜˆˆŠKˆ˜ÛÜœ™XÝ[Û—ÜÝ[[X\žHŽˆÝŠ^[ØY™Ù]
+˜ÛÜœ™XÝ[Û—ÜÝ[[X\žHŠHÜˆˆŠKˆ™Y™\œ˜[Ü™X\ÛÛˆŽˆÝŠ^[ØY™Ù]
+™Y™\œ˜[Ü™X\ÛÛˆŠHÜˆˆŠKˆ™]šY[˜ÙWÜÝ]\ÈŽˆÝŠ^[ØY™Ù]
+™]šY[˜ÙWÜÝ]\ÈŠHÜˆ•S•‘T’Q’QQŠKˆB‚‚™YˆØÛÛ\][Û—ÜÝ]J[—Ù\Žˆ]Ý\œ™[ˆXÝÜÝ‹[žWH›Û™HH›Û™JHOˆXÝÜÝ‹[žWN‚ˆÝ]HHXÝ
+Ý\œ™[ÜˆÙY˜][ØÛÛ\][Û—ÜÝ]J
+JBˆ™XÙZ\Ü]H[—Ù\ˆÈ˜ÛÛ\][Û‹\™XÙZ\šœÛÛˆ‚ˆYˆ›Ý™XÙZ\Ü]™^\ÝÊ
+N‚ˆ™]\›ˆÝ]Bˆ^[ØYHÛØYÚœÛÛŠ™XÙZ\Ü]
+BˆÝ]K\]JÂˆœ™XYHŽˆ›ÛÛ
+^[ØY™Ù]
+œ™XYH‹˜[ÙJJKˆœ™XÙZ\ŽˆÝŠ™XÙZ\Ü]
+Kˆ™\™XÝŽˆ^[ØY™Ù]
+™\™XÝ‹Ý]K™Ù]
+™\™XÝ‹‘SU‘T–WÔS‘S‘ÈŠJKˆœ™X\ÛÛ—ØÛÙHŽˆ^[ØY™Ù]
+œ™X\ÛÛ—ØÛÙH‹Ý]K™Ù]
+œ™X\ÛÛ—ØÛÙH‹›Ü˜XÛWÚ[˜ÛÛ\]HŠJKˆYÈŽˆ^[ØY™Ù]
+YÈ‹Ý]K™Ù]
+YÈ‹•S•‘T’Q’QQŠJKˆJBˆ™]\›ˆÝ]B‚‚™YˆÝÜš]WÚœÛÛŠ]ˆ]^[ØYˆXÝÜÝ‹[žWJHOˆ›Û™N‚ˆ]œ\™[›ZÙ\Š\™[ÏUYK^\ÝÛÚÏUYJBˆ]Üš]WÝ^
+œÛÛ‹™[\Ê^[ØY[œÝ\™WØ\ØÚZOQ˜[ÙK[™[LŠH
+È—ˆ‹[˜ÛÙ[™ÏH]‹NŠB‚‚™YˆÙœ™Y^™WÜÝXÚ×ÛØÚÊ[—Ü›ÛÝˆ][—ÚYˆÝŠHOˆÝXÚÓØÚÎ‚ˆˆˆ‘œ™Y^™H[œÝ[YÛÛ\Û™[Y[]H™Y›Ü™HX\\ˆØØ[ˆÜˆ]]][Ûˆ]]Üš]Kˆˆˆ‚ˆ›Ý]HHÙ^XÝ][Û—Ü›Ùš[J
+BˆØÚÈHÝXÚÓØÚË˜Ü™X]Jˆ\ØÛÝ™\—Ú[œÝ[YØÛÛ\Û™[Ê
+Kˆ›Ý]Kˆ[—ÚY\[—ÚYˆ
+BˆÜš]WÜÝXÚ×ÛØÚÊØÚË[—Ü›ÛÝÈœÝXÚË[ØÚËšœÛÛˆŠBˆ™]\›ˆØÚÂ‚‚™YˆÝ™\šYžWÜ[—ÜÝXÚ×ÛØÚÊ[—Ü›ÛÝˆ]
+HOˆÝXÚÓØÚÎ‚ˆˆˆ”™Z™XÝÛÛ\Û™[Üˆ›Ý]HšY]H]]][Ûˆ›Ý[™\žKˆˆˆ‚ˆØÚÈHØYÜÝXÚ×ÛØÚÊ[—Ü›ÛÝÈœÝXÚË[ØÚËšœÛÛˆŠBˆ›Ý]HHÙ^XÝ][Û—Ü›Ùš[J
+BˆØÚË™\šYžWÝ[˜Ú[™ÙY
+\ØÛÝ™\—Ú[œÝ[YØÛÛ\Û™[Ê
+K›Ý]JBˆ™]\›ˆØÚÂ‚‚™YˆÝÜš]WÛXZ[[˜[˜ÙWÙY™\œ™YÜ™XÙZ\
+ˆ[—Ù\Žˆ]ˆ
+‹ˆÛÜœ™XÝ[Û—ÜÝ[[X\žNˆÝ‹ˆY™\œ˜[Ü™X\ÛÛŽˆÝ‹ˆ™\Ý[YWÚ[œÝXÝ[ÛœÎˆÙ\]Y[˜ÙVÜÝ—HÝ‹ˆ]šY[˜ÙWÜÝ]\ÎˆÝ‹ŠHOˆXZ[[˜[˜ÙQY™\œ™Y™XÙZ\‚ˆÛÛ\][ÛˆHØÛÛ\][Û—ÜÝ]J[—Ù\ŠBˆ[œÝXÝ[ÛœÈHÜÝŠ][JKœÝš\
+
+H›Üˆ][H[ˆ™\Ý[YWÚ[œÝXÝ[Ûœ×HYˆ›Ý\Ú[œÝ[˜ÙJ™\Ý[YWÚ[œÝXÝ[ÛœËÝŠH[ÙHÜ™\Ý[YWÚ[œÝXÝ[ÛœËœÝš\
+
+WBˆ^[ØYˆXZ[[˜[˜ÙQY™\œ™Y™XÙZ\HÂˆœØÚ[XHŽˆPRS•SSÑWÔ‘PÑRTÔÐÒSPKˆ›[ÙHŽˆ›XZ[[˜[˜ÙWÙY™\œ™Y‹ˆ™\ÜÜÚ][ÛˆŽˆ˜˜XÚÛÙ×ÛÛ›H‹ˆ˜ÛÜœ™XÝ[Û—ÜÝ[[X\žHŽˆÛÜœ™XÝ[Û—ÜÝ[[X\žKœÝš\
+
+Kˆ™Y™\œ˜[Ü™X\ÛÛˆŽˆY™\œ˜[Ü™X\ÛÛ‹œÝš\
+
+Kˆœ™\Ý[YWÚ[œÝXÝ[ÛœÈŽˆÚ][H›Üˆ][H[ˆ[œÝXÝ[ÛœÈYˆ][WKˆ™]šY[˜ÙWÜÝ]\ÈŽˆÝŠ]šY[˜ÙWÜÝ]\ÈÜˆ•S•‘T’Q’QQŠKˆœ™XÛÜ™YØ]ŽˆÛ›ÝÊ
+Kˆ˜ÛÛ\][Û—Ü™XYHŽˆ˜[ÙKˆ˜ÛÛ\][Û—Ý™\™XÝŽˆÝŠÛÛ\][Û‹™Ù]
+™\™XÝŠHÜˆ‘SU‘T–WÔS‘S‘ÈŠKˆ˜ÛÛ\][Û—Ü™X\ÛÛ—ØÛÙHŽˆÝŠÛÛ\][Û‹™Ù]
+œ™X\ÛÛ—ØÛÙHŠHÜˆ›Ü˜XÛWÚ[˜ÛÛ\]HŠKˆBˆÝÜš]WÚœÛÛŠ[—Ù\ˆÈ›XZ[[˜[˜ÙK\™XÙZ\šœÛÛˆ‹^[ØY
+Bˆ™]\›ˆ^[ØY‚‚™YˆØÛÛ˜XÝÜ]
+[—Ù\Žˆ]
+HOˆ]‚ˆ™]\›ˆ[—Ù\ˆÈ\ÚËXÛÛ˜XÝšœÛÛˆ‚‚‚™YˆØ\[™ÚœÛÛ›
+]ˆ]^[ØYˆXÝÜÝ‹[žWJHOˆ›Û™N‚ˆ]œ\™[›ZÙ\Š\™[ÏUYK^\ÝÛÚÏUYJBˆÚ]]›Ü[Š˜H‹[˜ÛÙ[™ÏH]‹NŠH\Èš‚ˆšÜš]JœÛÛ‹™[\Ê^[ØY[œÝ\™WØ\ØÚZOQ˜[ÙJH
+È—ˆŠB‚‚™YˆÜ[—ØÛY
+ˆ\™ÝŽˆ\ÝÜÝ—KÝÙˆ]
+‹[Y[Ý]ÜÙXÛÛ™Îˆ[HNŠHOˆÝXœ›ØÙ\ÜËÛÛ\]Y›ØÙ\ÜÎ‚ˆYˆ\™Ýˆ[™\™Ý–ÌHOHœÚ[\XÚ[Ë[X\\ˆŽ‚ˆ[Y[Ý]ÜÙXÛÛ™ÈHÛX\\—Ý[Y[Ý]ÜÙXÛÛ™Ê
+BˆžN‚ˆ™]\›ˆÝXœ›ØÙ\ÜËœ[Šˆ\™Ý‹ÝÙ\ÝŠÝÙ
+KØ\\™WÛÝ]]UYK^UYK[Y[Ý]][Y[Ý]ÜÙXÛÛ™Ëˆ
+Bˆ^Ù\ÝXœ›ØÙ\ÜË•[Y[Ý]^\™Y\È^Î‚ˆYˆÝ^
+˜[YNˆ[žJHOˆÝŽ‚ˆYˆ\Ú[œÝ[˜ÙJ˜[YKž]\ÊN‚ˆ™]\›ˆ˜[YK™XÛÙJ\œ›ÜœÏHœ™\XÙHŠBˆ™]\›ˆÝŠ˜[YHÜˆˆŠB‚ˆÝ\œˆHÝ^
+^ËœÝ\œŠBˆ[Y[Ý]Û›ÝHHˆ˜ÛÛ[X[™[YYÝ]Y\ˆÝ[Y[Ý]ÜÙXÛÛ™ß\È‚ˆYˆ[Y[Ý]Û›ÝH›Ý[ˆÝ\œŽ‚ˆÝ\œˆHˆžÜÝ\œŸWžÝ[Y[Ý]Û›Ý_H‹œÝš\
+
+Bˆ™]\›ˆÝXœ›ØÙ\ÜËÛÛ\]Y›ØÙ\ÜÊ\™Ý‹LÝ^
+^ËœÝÝ]
+KÝ\œŠB‚‚™YˆÜ[—Ü™\×Ü]
+[—Ù\Žˆ]
+HOˆÜ[Û˜[Ô]N‚ˆˆˆ™\ÝYY™›Ü™XÛÝ™\žHÙˆH[‰ÜÈ™\ÈÚXÚÛÝ]]œ›ÛH]ÈX[šY™\ÝšœÛÛ˜ˆ›ÜˆHÌŽHY™XÞXÛKXÛÛ[Y[Y[]KØœ˜[˜Ú›Ú™XÝ[Û‹ˆ™]\›œÈ›Û™Xˆ[œÝXYÙˆ˜Z\Ú[™ÈÚ[ˆHX[šY™\Ý\ÈZ\ÜÚ[™ËÛX[›Ü›YY
+K™ËˆH\Ýš^\™Bˆ]Üš]\ÈH˜\™HÝ]KšœÛÛ˜Ú]›ÈX[šY™\Ý
+HKHØ[\œÈ™X]]\Âˆ››È™\ÈÛÛ^]˜Z[X›H‹™]™\ˆH\™˜Z[\™K‚ˆˆˆ‚ˆžN‚ˆX[šY™\ÝHœÛÛ‹›ØYÊ
+[—Ù\ˆÈ›X[šY™\ÝšœÛÛˆŠKœ™XYÝ^
+[˜ÛÙ[™ÏH]‹NŠJBˆ™\ÈHX[šY™\Ý™Ù]
+œ™\ÈŠBˆ™]\›ˆ]
+™\ÊKœ™\ÛÛ™J
+HYˆ™\È[ÙH›Û™Bˆ^Ù\^Ù\[ÛŽ‚ˆ™]\›ˆ›Û™B‚‚™YˆÙÚ]ØÝ\œ™[Øœ˜[˜Ú
+™\×Ü]ˆ]
+HOˆÝŽ‚ˆˆˆ™\ÝYY™›ÜÝ\œ™[œ˜[˜Ú˜[YH›ÜˆHÌŽHY™XÞXÛHÛÛ[Y[	ÜÂˆœ˜[˜ÚÝÛÜšÝ™YHšY[ˆ™]™\ˆ˜Z\Ù\ÈKH[žHÚ]˜Z[\™H
+]XÚYPQ›Âˆ™\ËZ\ÜÚ[™ÈÚ]š[˜\žJH\ÝZY[È[ˆ[\H›Ú™XÝ[Ûˆ˜]\ˆ[ˆBˆ˜XœšXØ]Yœ˜[˜Ú˜[YKˆˆˆ‚ˆžN‚ˆ™\Ý[HÜ[—ØÛY
+È™Ú]‹œ™]‹\\œÙH‹‹KXX˜œ™]‹\™Yˆ‹’PQ—K™\×Ü]
+Bˆ^Ù\^Ù\[ÛŽ‚ˆ™]\›ˆˆ‚ˆYˆ™\Ý[œ™]\›˜ÛÙHOH‚ˆ™]\›ˆˆ‚ˆœ˜[˜ÚH
+™\Ý[œÝÝ]ÜˆˆŠKœÝš\
+
+Bˆ™]\›ˆœ˜[˜ÚYˆœ˜[˜Ú[™œ˜[˜ÚOH’PQˆ[ÙHˆ‚‚‚™YˆÙ\Ü]ÚÚY[]WÙšY[Ê™\×Ü]ˆÜ[Û˜[Ô]JHOˆXÝÜÝ‹Ý—N‚ˆˆˆ™\ÝYY™›ÜØØ[YÙ[Y[]H›ÜˆHÌŽHY™XÞXÛHÛÛ[Y[	ÜÂˆYÙ[KÔ[[YKÑ]šXÙHšY[Ë‚‚ˆ™]\Ù\ÈHØ[YHÝX›H\‹\™\ÈY[]Hš[HÙ\ÝšX]YØÛÛ™šYÝ\˜][ÛŠ
+XˆÜ™X]\È›ÜˆH™X[\ÝšX]Y\Ü]Ú]ÛÈHÙ\]Y[X[ˆ
+›Û‹Y\ÝšX]Y
+H[ˆ›Ú™XÝÈHØ[YHÙ[Z[™HYÙ[ÚYØ[[YXÂˆ]šXÙWÚY[œÝXYÙˆX]š[™ÈÜÙHšY[È›[šËˆ™]™\ˆ˜Z\Ù\ÈKH[‚ˆ[˜]˜Z[X›HØÜš\Ë˜YÙ[ÚY[]X[Ù[H
+[œÝ[YXÚØYÙHÚ]Ý]BˆØÜš\È˜[Y\ÜXÙJKHZ\ÜÚ[™È™\È]Üˆ[žHKÓÈ˜Z[\™H\ÝZY[È[‚ˆ[\H›Ú™XÝ[Ûˆ˜]\ˆ[ˆ˜XœšXØ]YY[]K‚ˆˆˆ‚ˆYˆ[œÝ\™WÚY[]H\È›Û™HÜˆ™\×Ü]\È›Û™N‚ˆ™]\›ˆßBˆžN‚ˆY[]HH[œÝ\™WÚY[]Jˆ][ÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÒQS•UWÑ’SHŠHÜˆÝŠ™\×Ü]È‹œÚ[\XÚ[ËÛÜ˜Ú\Ý˜]ÜˆˆÈ˜YÙ[ZY[]KšœÛÛˆŠKˆ[[YO[ÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô•S•SQH‹[šÛ›ÝÛ‹\[[YHŠKˆ
+Bˆ^Ù\^Ù\[ÛŽ‚ˆ™]\›ˆßBˆ™]\›ˆÂˆ˜YÙ[ÚYŽˆÝŠY[]K™Ù]
+˜YÙ[ÚYŠHÜˆˆŠKˆœ[[YHŽˆÝŠY[]K™Ù]
+œ[[YHŠHÜˆˆŠKˆ™]šXÙHŽˆÝŠY[]K™Ù]
+™]šXÙWÚYŠHÜˆˆŠKˆB‚‚™YˆÛÜ\˜]Ü—Ù[Š
+HOˆXÝÜÝ‹Ý—N‚ˆ[ˆHXÝ
+ÜË™[š\›ÛŠBˆ[‹œÙ]Y˜][
+ˆ”ÒSTPÒS×ÓSÑS‹ˆÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÓÔTUÔ—ÓSÑS‹˜ÛÙ^XÛKÙÜMKŠKˆ
+Bˆ[‹œÙ]Y˜][
+ˆ”ÒSTPÒS×ÐÓÑVÑQ‘“Ô•‹ˆÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÓÔTUÔ—ÑQ‘“Ô•‹›YY][HŠKˆ
+BˆÛÜÝ\ÝØÛYHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÕTÕÐÓQ‹ˆŠKœÝš\
+
+BˆYˆÛÜÝ\ÝØÛY[™›Ý[‹™Ù]
+”ÒSTPÒS×ÕTÕÐÓQ‹ˆŠKœÝš\
+
+N‚ˆ[–È”ÒSTPÒS×ÕTÕÐÓQ—HHÛÜÝ\ÝØÛYˆ™]\›ˆ[‚‚‚™YˆÛÜ\˜]Ü—Ý[Y[Ý]
+Ú[™ˆÝŠHOˆ[‚ˆY˜][HŒYˆÚ[™OH™žWÜ[ˆˆ[ÙHŒˆ˜]ÈHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÓÔTUÔ—ÕSQSÕUÔÑPÈ‹ˆŠKœÝš\
+
+BˆYˆ›Ý˜]Î‚ˆ™]\›ˆY˜][ˆžN‚ˆ˜[YHH[
+˜]ÊBˆ^Ù\˜[YQ\œ›ÜŽ‚ˆ™]\›ˆY˜][ˆ™]\›ˆX^
+Ì˜[YJB‚‚™YˆÛX\\—Ý[Y[Ý]ÜÙXÛÛ™Ê
+HOˆ[‚ˆˆˆ”™]\›ˆH›Ý[™YØZ]\ÙYžH]™\žHX\\ˆY\\\ÜÈÛÛ[X[™‚‚ˆ\™ÙH™\ÜÚ]ÜšY\È›Ý][™[H™YY[Ü™H[ˆHX\\ˆÓIÜÈLŒ\ÙXÛÛ™Y˜][‚ˆÙY\HØZ]›Ý[™Y]XZÙHH›ÙXÝ[ÛˆY˜][Ù[™\›Ý\È[™]Ü\˜]ÜœÂˆÝÙ\ˆ]^XÚ]H›ÜˆÛÛœÝ˜Z[™Y[š\›Û›Y[Ë‚ˆˆˆ‚ˆY˜][HÍŒˆ˜]ÈHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÓPTT—ÕSQSÕUÔÑPÈ‹ˆŠKœÝš\
+
+BˆYˆ›Ý˜]Î‚ˆ™]\›ˆY˜][ˆžN‚ˆ˜[YHH[
+˜]ÊBˆ^Ù\˜[YQ\œ›ÜŽ‚ˆ™]\›ˆY˜][ˆ™]\›ˆX^
+K˜[YJB‚‚™YˆÛX\\—ÜÝ\Ü×ØÛÛ[X[™
+™Y›YÚˆX\[™ÖÜÝ‹[žWKÛÛ[X[™ˆÝŠHOˆ›ÛÛ‚ˆˆˆ‘]XÝ[ˆÜ[Û˜[X\\ˆÛÛ[X[™œ›ÛH]ÈYX\Ý\™Y[Ý\™˜XÙKˆˆˆ‚ˆ[ÜÝÝ]HÝŠ™Y›YÚ™Ù]
+š[ÜÝÝ]ŠHÜˆˆŠBˆ™]\›ˆ[žJˆ[™KœÝš\
+
+KœÝ\ÝÚ]
+ÛÛ[X[™
+ÈˆŠHÜˆ[™KœÝš\
+
+HOHÛÛ[X[™ˆ›Üˆ[™H[ˆ[ÜÝÝ]œÜ][™\Ê
+Bˆ
+B‚‚™YˆÙYÜ˜YYÛX\\—Ù˜[˜XÚ×Ù[˜X›Y
+
+HOˆ›ÛÛ‚ˆˆˆ[ÝÈ^XÚ]]\™Ù]ØØ[ÛÜšÈÈÛÛ[YHÚ[ˆY\X\[™È\È[˜]˜Z[X›Kˆˆˆ‚ˆYˆÙ^XÝ][Û—Ü›Ùš[J
+HOHœÝ[™[Û™HŽ‚ˆ™]\›ˆ˜[ÙBˆ˜]ÈHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÐSÕ×ÑQÔQQÓPTTˆ‹ˆŠKœÝš\
+
+K›ÝÙ\Š
+BˆYˆ˜]Î‚ˆ™]\›ˆ˜]È›Ý[ˆÈŒ‹™˜[ÙH‹››È‹›Ù™ˆ‹™\ØX›YŸBˆ™]\›ˆÛØØ[Ù˜[˜XÚ×Ù[˜X›Y
+
+B‚‚™YˆÙYÜ˜YYÛX\\—Ü^[ØY
+ˆ™\×Ü]ˆ]ˆ™Y›Ü™NˆX\[™ÖÜÝ‹[žWKˆX\\—Ü™Y›YÚˆX\[™ÖÜÝ‹[žWKˆØØ[Žˆ[žKˆ[œÜXÝˆ[žKˆÛ˜\ÚÝˆ[žKˆ[™Ù™Žˆ[žKˆ\™Ù]Ú[ˆÝ‹ŠHOˆXÝÜÝ‹[žWN‚ˆˆˆZ[[ˆ^XÚ]HS•‘T’Q’QQÛÛ^›ÜˆH›Ý[™YØØ[™]žK‚‚ˆ\È\È›ÝHÝXœÝ]]H›ÜˆHX\\ˆ™XÙZ\ˆHÜšYÚ[˜[ÛÛ[X[™™\Ý[È™[XZ[‚ˆ\œÚ\ÝYHYÜ˜YYX\šÙ\ˆ\È\˜X›K[™Û›H\™Ù]È™\ÛÛ™Y[œÚYHBˆ™\ÜÚ]ÜžH\™H^ÜÙYÈ[›š[™ËˆÚ[ˆH\ÚÈ\È›È\™Ù][HØ[YBˆ›Ý[™YØ[™Y]HÙ[XÝÜˆ\ÙYžH[›š[™ÈÝ\Y\È][ÜÝZYÚØØ[š[\Ë‚ˆˆˆ‚ˆYÝ\™Ù]Ú[H›ÛÛ
+ÝŠ\™Ù]Ú[ÜˆˆŠKœÝš\
+
+JBˆ\™Ù]HÝŠ\™Ù]Ú[ÜˆˆŠKœÝš\
+
+Kœ™\XÙJ—‹‹ÈŠBˆš[\Îˆ\ÝÑXÝÜÝ‹[žWWHH×BˆYˆ\™Ù]‚ˆØ[™Y]HH
+™\×Ü]È\™Ù]
+Kœ™\ÛÛ™J
+BˆžN‚ˆØ[™Y]Kœ™[]]™WÝÊ™\×Ü]œ™\ÛÛ™J
+JBˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›ÜŠN‚ˆ\™Ù]Hˆ‚ˆ[ÙN‚ˆYˆØ[™Y]Kš\×Ùš[J
+HÜˆØ[™Y]Kš\×Ù\Š
+N‚ˆš[\Ë˜\[™
+Èœ]Žˆ\™Ù]œÛÝ\˜ÙHŽˆ™^XÚ]Ý\Ú×Ý\™Ù]ŸJBˆ[ÙN‚ˆ\™Ù]Hˆ‚ˆYˆ›Ýš[\È[™›ÝYÝ\™Ù]Ú[‚ˆš[\ÈHÂˆÈœ]Žˆ]œÛÝ\˜ÙHŽˆ˜›Ý[™YÛØØ[ØØ[™Y]HŸBˆ›Üˆ][ˆÙ˜[˜XÚ×Ý\™Ù]Ê™\×Ü]
+VÎŽBˆBˆXÚ×ÜÙYYHÂˆœ™\×ÜÝ]HŽˆXÝ
+™Y›Ü™JKˆ\™Ù]Žˆ\™Ù]ˆ™š[\ÈŽˆš[\Ëˆœ™X\ÛÛˆŽˆ›X\\—ÙY\Ü\Ü×Ý[˜]˜Z[X›H‹ˆBˆXÚ×Ú\ÚH\ÚX‹œÚLMŠˆœÛÛ‹™[\ÊXÚ×ÜÙYYÛÜÚÙ^\ÏUYKÙ\\˜]ÜœÏJ‹‹ŽˆŠJK™[˜ÛÙJ]‹NŠBˆ
+Kš^YÙ\Ý
+
+BˆYÜ˜YYÚ[™Ù™ˆHÂˆœ™XYHŽˆ›ÛÛ
+š[\ÊKˆ˜ÛÛ^ÜXÚÈŽˆÂˆœØÚ[XHŽˆœÚ[\XÚ[Ë˜ÛÛ^\XÚËÝŒH‹ˆœXÚ×Ú\ÚŽˆXÚ×Ú\Úˆ™š[\ÈŽˆš[\Ëˆ™šY[]HŽˆÈ™Ø]HŽˆ™YÜ˜YYÛØØ[‹œÝ]\ÈŽˆ•S•‘T’Q’QQŸKˆœÛÝ\˜ÙHŽˆœÚ[\XÚ[Ë[ÛÜ[ØØ[Y˜[˜XÚÈ‹ˆKˆ™YÜ˜YYÛØØ[ŽˆYKˆBˆ™]\›ˆÂˆœØØ[ˆŽˆÂˆœ™]\›˜ÛÙHŽˆØØ[‹œ™]\›˜ÛÙKˆœÝÝ]ŽˆœÛÛ‹›ØYÊØØ[‹œÝÝ]
+HYˆØØ[‹œÝÝ]œÝš\
+
+H[ÙHßKˆœÝ\œˆŽˆ
+ØØ[‹œÝ\œˆÜˆˆŠKœÝš\
+
+KˆKˆš[œÜXÝŽˆÂˆœ™]\›˜ÛÙHŽˆ[œÜXÝœ™]\›˜ÛÙKˆœÝÝ]ŽˆœÛÛ‹›ØYÊ[œÜXÝœÝÝ]
+HYˆ[œÜXÝœÝÝ]œÝš\
+
+H[ÙHßKˆœÝ\œˆŽˆ
+[œÜXÝœÝ\œˆÜˆˆŠKœÝš\
+
+KˆKˆœÛ˜\ÚÝŽˆÂˆœ™]\›˜ÛÙHŽˆÛ˜\ÚÝœ™]\›˜ÛÙKˆœÝÝ]ŽˆœÛÛ‹›ØYÊÛ˜\ÚÝœÝÝ]
+HYˆÛ˜\ÚÝœÝÝ]œÝš\
+
+H[ÙHßKˆœÝ\œˆŽˆ
+Û˜\ÚÝœÝ\œˆÜˆˆŠKœÝš\
+
+KˆKˆš[™Ù™ˆŽˆÂˆœ™]\›˜ÛÙHŽˆˆœÝÝ]ŽˆYÜ˜YYÚ[™Ù™‹ˆœÝ\œˆŽˆ
+[™Ù™‹œÝ\œˆÜˆˆŠKœÝš\
+
+KˆKˆš[™Ù™—ÛÜšYÚ[˜[ŽˆÂˆœ™]\›˜ÛÙHŽˆ[™Ù™‹œ™]\›˜ÛÙKˆœÝÝ]ŽˆœÛÛ‹›ØYÊ[™Ù™‹œÝÝ]
+HYˆ[™Ù™‹œÝÝ]œÝš\
+
+H[ÙHßKˆœÝ\œˆŽˆ
+[™Ù™‹œÝ\œˆÜˆˆŠKœÝš\
+
+KˆKˆ™Ù[™\˜]YØ]ŽˆÛ›ÝÊ
+Kˆœ™\×ÜÝ]WØ™Y›Ü™HŽˆXÝ
+™Y›Ü™JKˆœ™\×ÜÝ]WØY\ˆŽˆÜ™\×Ùš[™Ù\œš[
+™\×Ü]
+Kˆ›X\\—Ü™Y›YÚŽˆXÝ
+X\\—Ü™Y›YÚ
+Kˆ™YÜ˜YYÛØØ[ŽˆYKˆ™YÜ˜YYÜ™X\ÛÛ—ØÛÙHŽˆ›X\\—ÙY\Ü\Ü×Ý[˜]˜Z[X›H‹ˆ™]šY[˜ÙWÜÝ]\ÈŽˆ•S•‘T’Q’QQ‹ˆB‚‚™YˆÙ]˜ÛWÙ[Š™\×Ü]ˆ]˜\ÙWÙ[ŽˆXÝÜÝ‹Ý—H›Û™HH›Û™JHOˆXÝÜÝ‹Ý—N‚ˆ[ˆHXÝ
+˜\ÙWÙ[ˆÜˆÜË™[š\›ÛŠBˆ™\×ÜÝˆHÝŠ™\×Ü]
+BˆÝ\œ™[H[‹™Ù]
+”UÓ”U‹ˆŠKœÝš\
+
+Bˆ[–È”UÓ”U—HH™\×ÜÝˆYˆ›ÝÝ\œ™[[ÙHˆžÜ™\×ÜÝŸ^ÛÜËœ]Ù\^ØÝ\œ™[H‚ˆÙ[XÝYÙ]˜ÛHHÙ]˜ÛWØÛÛ[X[™Ü]
+
+BˆYˆÙ[XÝYÙ]˜ÛHOHœÚ[\XÚ[ËY]‹XÛHŽ‚ˆ[–È”U—HHˆžÔ]
+Ù[XÝYÙ]˜ÛJKœ™\ÛÛ™J
+Kœ\™[^ÛÜËœ]Ù\^Ù[‹™Ù]
+	ÔU	Ë	ÉÊ_H‚ˆÈØØ[H^XÝ][Ûˆ\È]\ÙYÛØ˜[NÈÚ[]ˆÓH›ÝÜÈ]\Ý[š\š]ˆÈHÛXÞH[™]\Ý›Ý™XÙZ]™HHØØ[[Ù[Ù[XÝÜ‹‚ˆ[–È”ÒSTPÒS×ÓÐÐSÓWÑTÐP“Q—HHŒH‚ˆYˆÙYÜ˜YYÛX\\—Ù˜[˜XÚ×Ù[˜X›Y
+
+N‚ˆ[–È”ÒSTPÒS×ÐSÕ×ÑQÔQQÓPTTˆ—HHŒH‚ˆYˆÙ^XÝ][Û—Ü›Ùš[J
+HOHœÝ[™[Û™HŽ‚ˆÈHÛÜ	ÜÈÝ[™[Û™HÜ\˜]Üˆ™Y›YÚ\ÈHÛÛ^Ý\™Ù]Ø]NÂˆÈ]]\Ý›Ý[›ÚÙHH]\›Z[š\ÝXÈ]ˆÓH›ÝšY\‹‚ˆ[–È”ÒSTPÒS×ÔÕS‘SÓ‘WÔ‘Q“QÒ—HHŒH‚ˆ[Ù[H[‹™Ù]
+”ÒSTPÒS×ÓSÑS‹ˆŠKœÝš\
+
+K˜Ø\ÙY›Û
+
+BˆYˆ[Ù[œÝ\ÝÚ]
+
+›ØØ[È‹›[XH‹›Û[XHŠJN‚ˆ[‹œÜ
+”ÒSTPÒS×ÓSÑS‹›Û™JBˆ™]\›ˆ[‚‚™YˆÙ]˜ÛWÚ\×ÛX\\—ÛX[šY™\Ý
+ÛÛ[X[™ˆÝŠHOˆ›ÛÛ‚ˆžN‚ˆ^XÝ]X›HH]
+ÛÛ[X[™
+Kœ™\ÛÛ™J
+Bˆš\œÝÛ[™HH^XÝ]X›Kœ™XYÝ^
+[˜ÛÙ[™ÏH]‹N‹\œ›ÜœÏHšYÛ›Ü™HŠKœÜ][™\Ê
+VÌBˆ[\œ™]\ˆHš\œÝÛ[™VÌŽ—KœÝš\
+
+HYˆš\œÝÛ[™KœÝ\ÝÚ]
+ˆÈHŠH[ÙHˆ‚ˆYˆ[\œ™]\‹œÝ\ÝÚ]
+‹Ý\Ü‹Øš[‹Ù[ˆŠN‚ˆ[\œ™]\ˆHÚ][ÚXÚ
+[\œ™]\‹œœÜ]
+ˆ‹JVËLWJHÜˆˆ‚ˆYˆ›Ý[\œ™]\Ž‚ˆ™]\›ˆ˜[ÙBˆ›Ø™HHÝXœ›ØÙ\ÜËœ[ŠˆÚ[\œ™]\‹‹XÈ‹ˆš[\Ü[\ÜX‹œ™\ÛÝ\˜Ù\ÎÈš[
+[
+[\ÜX‹œ™\ÛÝ\˜Ù\Ë™š[\Ê	ÜÚ[\XÚ[×ÛX\\‰ÊKš›Ú[œ]
+	ØÛÛ˜XÝËØÛÛ^\Û˜\ÚÝÝŒKØÛÛ˜XÝ[X[šY™\ÝšœÛÛ‰ÊKš\×Ùš[J
+JJH—KˆØ\\™WÛÝ]]UYK^UYK[Y[Ý]LËÚXÚÏQ˜[ÙKˆ
+Bˆ™]\›ˆ›Ø™Kœ™]\›˜ÛÙHOH[™›Ø™KœÝÝ]œÝš\
+
+HOHŒH‚ˆ^Ù\
+ÔÑ\œ›Ü‹[™^\œ›Ü‹ÝXœ›ØÙ\ÜË”ÝXœ›ØÙ\ÜÑ\œ›ÜŠN‚ˆ™]\›ˆ˜[ÙB‚‚™YˆÙ]˜ÛWØÛÛ[X[™Ü]
+
+HOˆÝŽ‚ˆ^XÚ]HÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÑU—ÐÓWÐ’Sˆ‹ˆŠKœÝš\
+
+BˆYˆ^XÚ]‚ˆ™]\›ˆ^XÚ]ˆÝ\œ™[HÚ][ÚXÚ
+œÚ[\XÚ[ËY]‹XÛHŠBˆØ[™Y]\ÈH×BˆYˆÝ\œ™[‚ˆØ[™Y]\Ë˜\[™
+Ý\œ™[
+Bˆ\Ü›ÛÝH]šÛYJ
+HÈ‹›ØØ[ˆÈœ\ˆÈ™[œÈ‚ˆYˆ\Ü›ÛÝš\×Ù\Š
+N‚ˆØ[™Y]\Ë™^[™
+ÝŠ]
+H›Üˆ][ˆÛÜY
+\Ü›ÛÝ™ÛØŠŠ‹Øš[‹ÜÚ[\XÚ[ËY]‹XÛHŠJJBˆÛÛ\]X›HH™^
+
+]›Üˆ][ˆØ[™Y]\ÈYˆÙ]˜ÛWÚ\×ÛX\\—ÛX[šY™\Ý
+]
+JK›Û™JBˆ™]\›ˆÛÛ\]X›HÜˆÝ\œ™[ÜˆœÚ[\XÚ[ËY]‹XÛH‚‚‚™YˆÙ]˜ÛWØÛY
+™\×Ü]ˆ]
+˜\™ÜÎˆÝŠHOˆ\ÝÜÝ—N‚ˆYˆ
+™\×Ü]ÈœÚ[\XÚ[ÈˆÈ˜ÛKœHŠK™^\ÝÊ
+N‚ˆ˜\ÙHHÜÞ\Ë™^XÝ]X›K‹[H‹œÚ[\XÚ[Ë˜ÛH‹
+˜\™Ü×Bˆ[ÙN‚ˆ˜\ÙHHÈœÚ[\XÚ[ËY]‹XÛH‹
+˜\™Ü×BˆÈ[[YKX˜XÚÙY^XÝ][Ûˆ\ÈÜ[Û˜[ÈØØ[[Ù[^XÝ][Ûˆ\È›Ý[‚ˆÈ[ÝÙY˜[˜XÚËˆHÛÛ[X[™™[XZ[œÈ\ØX›H[ˆÝ[™[Û™H[ÙK‚ˆ™]\›ˆ˜\ÙB‚—Ô•S•SQWÑQ‘‘PÕÐQTT”ÎˆXÝÜÝ‹[[YQY™™XÝY\\—HHßB—Ô•S•SQWÑQ‘‘PÕÐ”’QÑTÎˆXÝÜÝ‹[[YPœšYÙWHHßB—Ô•S•SQWÑQ‘‘PÕÐÐPÒWÓÐÒÈH“ØÚÊ
+B‚‚™YˆÙ^XÝ][Û—Ü›Ùš[J
+HOˆÝŽ‚ˆˆˆ”™\ÛÛ™HÝ[™[Û™HœÈ[[YKX˜XÚÙY‚‚ˆ^XÚ]ÒSTPÒS×ÑVPÕUSÓ—Ô“Ñ’SO\Ý[™[Û™_[[YKX˜XÚÙYÚ[œË‚ˆÝ\Ú\ÙHY\]™NˆÚ[ˆ[[YH\ÈÜ\˜][Û˜[
+Üˆ™\]Z\™Y
+K\ÙBˆ[[YKX˜XÚÙYÈ[ÙHÝ[™[Û™Xˆ[˜[Y˜[Y\È˜Z[ÛÜÙY‚ˆˆˆ‚ˆ˜]ÈHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÑVPÕUSÓ—Ô“Ñ’SH‹ˆŠKœÝš\
+
+K›ÝÙ\Š
+BˆYˆ˜]È[ˆÈœÝ[™[Û™H‹œ[[YKX˜XÚÙYŸN‚ˆ™]\›ˆ˜]ÂˆYˆ˜]È[ˆÈˆ‹˜]]ÈŸN‚ˆžN‚ˆœ›ÛHœÝšXÝÛ[ÙH[\Ü™\ÛÛ™WÙ^XÝ][Û—Ü›Ùš[B‚ˆ™]\›ˆ™\ÛÛ™WÙ^XÝ][Û—Ü›Ùš[J
+Bˆ^Ù\^Ù\[ÛŽ‚ˆ™]\›ˆœÝ[™[Û™H‚ˆ˜Z\ÙH[[YQY™™XÝ\œ›ÜŠˆ”ÒSTPÒS×ÑVPÕUSÓ—Ô“Ñ’SH]\Ý™HÝ[™[Û™K[[YKX˜XÚÙYÜˆ]]È‚ˆ
+B‚‚™YˆÜ[[YWÙY™™XÝØY\\Š™\×Ü]ˆ]›Ùš[NˆÝŠHOˆ[[YQY™™XÝY\\Ž‚ˆYˆ›Ùš[H›Ý[ˆÈœÝ[™[Û™H‹œ[[YKX˜XÚÙYŸN‚ˆ˜Z\ÙH[[YQY™™XÝ\œ›ÜŠ[œÝ\ÜY^XÝ][Ûˆ›Ùš[HŠBˆYˆ›Ùš[HOHœÝ[™[Û™HŽ‚ˆ™]\›ˆ[[YQY™™XÝY\\Š›Ùš[O\›Ùš[JBˆÙ^HHÝŠ™\×Ü]œ™\ÛÛ™J
+JBˆÚ]Ô•S•SQWÑQ‘‘PÕÐÐPÒWÓÐÒÎ‚ˆY\\ˆHÔ•S•SQWÑQ‘‘PÕÐQTT”Ë™Ù]
+Ù^JBˆYˆY\\ˆ\È›Û™N‚ˆœšYÙHHÔ•S•SQWÑQ‘‘PÕÐ”’QÑTË™Ù]
+Ù^JBˆYˆœšYÙH\È›Û™N‚ˆœšYÙHH[[YPœšYÙJ
+BˆÔ•S•SQWÑQ‘‘PÕÐ”’QÑTÖÚÙ^WHHœšYÙBˆY\\ˆH[[YQY™™XÝY\\Š›Ùš[OHœ[[YKX˜XÚÙY‹œšYÙOXœšYÙJBˆÔ•S•SQWÑQ‘‘PÕÐQTT”ÖÚÙ^WHHY\\‚ˆ™]\›ˆY\\‚‚‚™YˆØZ[ÙY™™XÝÜ™\]Y\Ý
+™\×Ü]ˆ][—ÚYˆÝ‹\Ú×Ú[™^ˆ[ˆ\ÚÎˆX\[™ÖÜÝ‹[žWK][\ˆ[ˆ\™Ù]ÎˆÙ\]Y[˜ÙVÜÝ—K›Ý]WÜ™XÛÜ™ˆX\[™ÖÜÝ‹[žWKˆÝX\™YØ][\ˆ[žKˆØ[›ÛšXØ[Ü[ŽˆÜ[Û˜[ÐØ[›ÛšXØ[[—HH›Û™JHOˆY™™XÝ™\]Y\Ý‚ˆX\ÙHHÙ]]ŠÝX\™YØ][\›X\ÙH‹›Û™JBˆX\ÙWÚYHÝŠÙ]]ŠX\ÙK›X\ÙWÚY‹ˆŠHÜˆˆ›ÛÜ\[ŽžÜ[—ÚYHŠBˆ˜]×Ù™[˜ÙHHÙ]]ŠX\ÙK™™[˜Ú[™×ÝÚÙ[ˆ‹JBˆYˆÛX\\—Ú›Ý\›˜[Ù[˜X›Y
+
+H[™ÝŠ˜]×Ù™[˜ÙJKœÝš\
+
+N‚ˆ™[˜Ú[™×ÝÚÙ[Žˆ[ÝˆHÝŠ˜]×Ù™[˜ÙJBˆ[ÙN‚ˆžN‚ˆ™[˜Ú[™×ÝÚÙ[ˆHX^
+K[
+˜]×Ù™[˜ÙJJBˆ^Ù\
+\Q\œ›Ü‹˜[YQ\œ›ÜŠN‚ˆ™[˜Ú[™×ÝÚÙ[ˆHBˆ˜[œØXÝ[Û—ÚYHˆžÜ[—ÚYNžÝ\ÚË™Ù]
+	ÚY	ÊHÜˆ\Ú×Ú[™^NžØ][\H‚ˆ™]\›ˆY™™XÝ™\]Y\Ý
+ˆÛÜšÜÜXÙO\ÝŠ™\×Ü]
+KˆY[\Ý[˜ÞWÚÙ^O]˜[œØXÝ[Û—ÚYˆÜš]WÜÙ]]\Jˆœ™\ÎžÝ\™Ù]Hˆ›Üˆ\™Ù][ˆ
+\™Ù]ÈÜˆÈœ™\È—JJKˆX\ÙWÚY[X\ÙWÚYˆ™[˜Ú[™×ÝÚÙ[Y™[˜Ú[™×ÝÚÙ[‹ˆÝÙH‹ˆ‹ˆ[Y[Ý]Û\ÏWÛÜ\˜]Ü—Ý[Y[Ý]
+™^XÝ]HŠH
+ˆLˆ][\X][\ˆXY[™OZ[
+[YK[YJ
+H
+ˆL
+H
+ÈÛÜ\˜]Ü—Ý[Y[Ý]
+™^XÝ]HŠH
+ˆLˆØ[˜Ù[][Û—Ø›Ý[™\žOHœØY™WØ›Ý[™\žWÛÛ›H‹ˆØ]WÚY\ÝŠ›Ý]WÜ™XÛÜ™™Ù]
+œ™XÙZ\ÜÚHŠHÜˆ™^XÝ][Û‹\›Ý]HŠKˆ[[YWÙÙ[™\˜][Û[ÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô•S•SQWÑÑS‘TUSÓˆŠHÜˆ›Û™Kˆ˜[œØXÝ[Û—ÚY]˜[œØXÝ[Û—ÚYˆØ[›ÛšXØ[Ü[XØ[›ÛšXØ[Ü[‹ˆ][\ÚY\ÝŠÙ]]ŠÝX\™YØ][\˜][\ÚY‹ˆŠHÜˆX\ÙWÚY
+Kˆ
+B‚‚™YˆÜ\œÙWÙY™™XÝÜÝÝ]
+˜[YNˆ[žJHOˆXÝÜÝ‹[žWN‚ˆYˆ\Ú[œÝ[˜ÙJ˜[YKXÝ
+N‚ˆ™]\›ˆXÝ
+˜[YJBˆYˆ\Ú[œÝ[˜ÙJ˜[YKÝŠH[™˜[YKœÝš\
+
+N‚ˆžN‚ˆ\œÙYHœÛÛ‹›ØYÊ˜[YJBˆ^Ù\˜[YQ\œ›ÜŽ‚ˆ™]\›ˆÈœ˜]ÈŽˆ™YXÝÜÙ[œÚ]]™WÝ^
+˜[YJ_Bˆ™]\›ˆXÝ
+\œÙY
+HYˆ\Ú[œÝ[˜ÙJ\œÙYXÝ
+H[ÙHÈœ˜]ÈŽˆ™YXÝÜÙ[œÚ]]™WÝ^
+˜[YJ_Bˆ™]\›ˆßB‚‚™YˆÙ^XÝ]WÛÜ\˜]Ü—ÙY™™XÝÝ[˜ÚXÚÙY
+
+‹›Ùš[NˆÝ‹Y\\Žˆ[[YQY™™XÝY\\‹ˆ™\]Y\ÝˆY™™XÝ™\]Y\Ý\™ÝŽˆ\ÝÜÝ—Kˆ[ŽˆX\[™ÖÜÝ‹Ý—K™\×Ü]ˆ]ˆ][\ØÛÛÜ™[˜]ÜŽˆÜ[Û˜[Ð][\ÛÛÜ™[˜]Ü—KˆÝX\™YØ][\ˆ[žJHOˆXÝÜÝ‹[žWN‚ˆYˆ›Ùš[HOHœ[[YKX˜XÚÙYŽ‚ˆY™™XÝÜ™XÙZ\HY\\‹™^XÝ]J™\]Y\Ý\™Ý‹[Y[ŠBˆ™\Ý[HXÝ
+Y™™XÝÜ™XÙZ\™Ù]
+œ™\Ý[ŠHÜˆßJBˆÝ]\ÈHÝŠY™™XÝÜ™XÙZ\™Ù]
+œÝ]\ÈŠHÜˆ™\Ý[™Ù]
+œÝ]\ÈŠHÜˆˆŠBˆ™]\›˜ÛÙHH™\Ý[™Ù]
+œ™]\›˜ÛÙHŠBˆYˆ\Ú[œÝ[˜ÙJ™]\›˜ÛÙK›ÛÛ
+HÜˆ›Ý\Ú[œÝ[˜ÙJ™]\›˜ÛÙK[
+N‚ˆ™]\›˜ÛÙHH›Û™BˆYˆÝ]\È[ˆÈ•SURSP“H‹•SÑT•RSˆŸN‚ˆ™]\›˜ÛÙHH›Û™Bˆ™]\›ˆÂˆœ™]\›˜ÛÙHŽˆ™]\›˜ÛÙKˆœÝÝ]ŽˆÜ\œÙWÙY™™XÝÜÝÝ]
+™\Ý[™Ù]
+œÝÝ]ŠJKˆœÝ\œˆŽˆ™YXÝÜÙ[œÚ]]™WÝ^
+ÝŠ™\Ý[™Ù]
+œÝ\œˆŠHÜˆˆŠJKˆœÛÝ\˜ÙHŽˆœ[[YWÙY™™XÝØY\\ˆ‹ˆ™Y™™XÝÜ™XÙZ\ŽˆY™™XÝÜ™XÙZ\ˆ[˜Ù\Z[ˆŽˆÝ]\ÈOH•SÑT•RSˆˆÜˆ™\Ý[™Ù]
+œÝ]\ÈŠHOH•SÑT•RSˆ‹ˆB‚ˆ˜ZÙHHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÑRÑWÓÔTUÔ—ÑVP×Ò”ÓÓˆ‹ˆŠKœÝš\
+
+BˆYˆ˜ZÙN‚ˆ^[ØYHœÛÛ‹›ØYÊ˜ZÙJBˆ›Üˆ™[ÛÛ[[ˆ
+^[ØY™Ù]
+Üš]WÙš[\ÈŠHÜˆßJKš][\Ê
+N‚ˆ]H™\×Ü]È™[ˆ]œ\™[›ZÙ\Š\™[ÏUYK^\ÝÛÚÏUYJBˆ]Üš]WÝ^
+ÝŠÛÛ[
+K[˜ÛÙ[™ÏH]‹NŠBˆ™]\›ˆÂˆœ™]\›˜ÛÙHŽˆ[
+^[ØY™Ù]
+œ™]\›˜ÛÙH‹
+JKˆœÝÝ]Žˆ^[ØY™Ù]
+œÝÝ]‹ßJKˆœÝ\œˆŽˆ™YXÝÜÙ[œÚ]]™WÝ^
+ÝŠ^[ØY™Ù]
+œÝ\œˆ‹ˆŠJJKˆœÛÝ\˜ÙHŽˆ™[—ÛÝ™\œšYH‹ˆ™Y™™XÝÜ™XÙZ\Žˆ›Û™Kˆ[˜Ù\Z[ˆŽˆ˜[ÙKˆB‚ˆžN‚ˆYˆ][\ØÛÛÜ™[˜]Üˆ\È›Ý›Û™H[™ÝX\™YØ][\\È›Ý›Û™N‚ˆ™\Ý[H][\ØÛÛÜ™[˜]Ü‹œ[—ÙÝX\™Y
+ˆÝX\™YØ][\\™Ý‹ÝÙ\™\×Ü]ˆ[Y[Ý]WÛÜ\˜]Ü—Ý[Y[Ý]
+™^XÝ]HŠK[Y[‹ˆ
+Bˆ[ÙN‚ˆ™\Ý[HÝXœ›ØÙ\ÜËœ[Šˆ\™Ý‹ÝÙ\ÝŠ™\×Ü]
+KØ\\™WÛÝ]]UYK^UYKˆ[Y[Ý]WÛÜ\˜]Ü—Ý[Y[Ý]
+™^XÝ]HŠK[Y[‹ˆ
+Bˆ™]\›ˆÂˆœ™]\›˜ÛÙHŽˆ™\Ý[œ™]\›˜ÛÙKˆœÝÝ]ŽˆÜ\œÙWÙY™™XÝÜÝÝ]
+
+™\Ý[œÝÝ]ÜˆˆŠKœÝš\
+
+JKˆœÝ\œˆŽˆ™YXÝÜÙ[œÚ]]™WÝ^
+
+™\Ý[œÝ\œˆÜˆˆŠKœÝš\
+
+JKˆœÛÝ\˜ÙHŽˆ›]™WØÛH‹ˆ™Y™™XÝÜ™XÙZ\Žˆ›Û™Kˆ[˜Ù\Z[ˆŽˆ˜[ÙKˆBˆ^Ù\ÝXœ›ØÙ\ÜË•[Y[Ý]^\™Y\È^Î‚ˆ™]\›ˆÂˆœ™]\›˜ÛÙHŽˆ›Û™KˆœÝÝ]ŽˆßKˆœÝ\œˆŽˆˆ[YYÝ]Y\ˆÙ^Ë[Y[Ý]\È‹ˆœÛÝ\˜ÙHŽˆ›]™WØÛH‹ˆ™Y™™XÝÜ™XÙZ\Žˆ›Û™Kˆ[˜Ù\Z[ˆŽˆ˜[ÙKˆB‚‚‚™YˆÚÛÚÝØ[ÙYÙ\Ý
+^[ØYˆX\[™ÖÜÝ‹[žWJHOˆÝŽ‚ˆ[˜ÛÙYHœÛÛ‹™[\Êˆ^[ØYÛÜÚÙ^\ÏUYKÙ\\˜]ÜœÏJ‹‹ŽˆŠK[œÝ\™WØ\ØÚZOQ˜[ÙBˆ
+K™[˜ÛÙJ]‹NŠBˆ™]\›ˆ\ÚX‹œÚLMŠ[˜ÛÙY
+Kš^YÙ\Ý
+
+B‚‚™YˆÛX\\—ÛÜ\˜][Ûœ×Ù]X˜\ÙJ™\×Ü]ˆ]
+HOˆÝŽ‚ˆˆˆ”™\ÛÛ™HH™\Ë\ØÛÜYØ[›ÛšXØ[Ü\˜][ÛœÈÝÜ™HÚ]Ý]Ü™X][™È]ˆˆˆ‚ˆ^XÚ]HÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓPTT—ÓÔTUSÓ”×Ñˆ‹ˆŠKœÝš\
+
+BˆYˆ^XÚ]‚ˆ™]\›ˆÝŠ]
+^XÚ]
+K™^[™\Ù\Š
+K˜XœÛÛ]J
+JBˆžN‚ˆœ›ÛHÚ[\XÚ[×ÛX\\‹œÝÜ™H[\Ü™\ÛÛ™WÜÝÜ™WÛØØ][Û‚ˆ^Ù\
+[\Ü\œ›Ü‹[Ù[S›Ý›Ý[™\œ›ÜŠH\È\œ›ÜŽ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ“PTT—ÔÕÔ‘WÓ“ÕÒS”ÕSQŠHœ›ÛH\œ›Ü‚ˆ[š\›ÛˆHXÝ
+ÜË™[š\›ÛŠBˆ[š\›Û‹œÜ
+”ÒSTPÒS×ÑUWÑTˆ‹›Û™JBˆ[š\›Û‹œÜ
+”ÒSTPÒS×ÒÓQH‹›Û™JBˆ[š\›Û–È”ÒSTPÒS×ÔÕÔ‘WÔÐÓÔH—HHœ™\È‚ˆžN‚ˆ™]\›ˆÝŠ™\ÛÛ™WÜÝÜ™WÛØØ][ÛŠ[š\›ÛY[š\›Û‹™\×Ü›ÛÝ\™\×Ü]
+K™]X˜\ÙJ›Ü\˜][ÛœËœÜ[]HŠJBˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›ÜŠH\È\œ›ÜŽ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆ“PTT—ÓÔTUSÓ”×Ñ—ÕSURSP“NžÙ\œ›ÜŸHŠHœ›ÛH\œ›Ü‚‚‚™YˆÚÛÚÝØ[ÛYÙ\Š™\×Ü]ˆ]
+HOˆ[žN‚ˆˆˆ”Ù[XÝÛÚÝØ[\œÚ\Ý[˜ÙNÈYØXÞH\È]˜Z[X›HÛ›HžH^XÚ]ÜZ[‹ˆˆˆ‚ˆYˆÛX\\—Ú›Ý\›˜[Ù[˜X›Y
+
+N‚ˆ™]\›ˆX\\’ÛÚÝØ[Y™™XÝYÙ\ŠÛX\\—ÛÜ\˜][Ûœ×Ù]X˜\ÙJ™\×Ü]
+K]]×ØÜ™X]OQ˜[ÙJBˆ™]\›ˆÛÚÝØ[Y™™XÝYÙ\Šˆ™\×Ü]È‹œÚ[\XÚ[ÈˆÈ›Ü˜Ú\Ý˜]ÜˆˆÈšÛÚÝØ[œÜ[]LÈ‚ˆ
+B‚‚™YˆÙ^XÝ]WÛÜ\˜]Ü—ÙY™™XÝ
+
+‹›Ùš[NˆÝ‹Y\\Žˆ[[YQY™™XÝY\\‹ˆ™\]Y\ÝˆY™™XÝ™\]Y\Ý\™ÝŽˆ\ÝÜÝ—Kˆ[ŽˆX\[™ÖÜÝ‹Ý—K™\×Ü]ˆ]ˆ][\ØÛÛÜ™[˜]ÜŽˆÜ[Û˜[Ð][\ÛÛÜ™[˜]Ü—KˆÝX\™YØ][\ˆ[žKˆÛÝ\˜ÙWÚ\ÚˆÜ[Û˜[ÜÝ—HH›Û™JHOˆXÝÜÝ‹[žWN‚ˆˆˆ”[ˆÛ™H]]X›HÜ\˜]ÜˆÛ›H[œÚYHH[™XYÙKX›Ý[™ÛÚÝØ[ÚZ[‹ˆˆˆ‚ˆÛÝ\˜ÙWÚ\ÚHÛÝ\˜ÙWÚ\ÚÜˆÝŠÜ™\×Ùš[™Ù\œš[
+™\×Ü]
+K™Ù]
+™YWÚ\ÚŠHÜˆˆŠBˆ[—ÚYH™\]Y\Ý™Ø]WÚYÜˆ™\]Y\Ý˜[œØXÝ[Û—ÚYÜˆ™\]Y\ÝšY[\Ý[˜ÞWÚÙ^BˆÛXÞWÚ\ÚHÚÛÚÝØ[ÙYÙ\Ý
+Âˆœ›Ùš[HŽˆ›Ùš[Kˆ™Ø]WÚYŽˆ™\]Y\Ý™Ø]WÚYÜˆˆ‹ˆœ[[YWÙÙ[™\˜][ÛˆŽˆ™\]Y\Ýœ[[YWÙÙ[™\˜][ÛˆÜˆˆ‹ˆÜš]WÜÙ]Žˆ\Ý
+™\]Y\ÝÜš]WÜÙ]
+KˆJBˆ[™[ÜHH˜[Y]WÙ[™[ÜJÂˆœØÚ[XHŽˆœÚ[\XÚ[Ë™\Ü]ÚY[™[ÜKÝŒH‹ˆ™[™[ÜWÚYŽˆ™\]Y\Ý˜[œØXÝ[Û—ÚYÜˆ™\]Y\ÝšY[\Ý[˜ÞWÚÙ^Kˆœ[—ÚYŽˆ™\]Y\ÝšY[\Ý[˜ÞWÚÙ^KœÜ]
+Ž\ÚËH‹JVÌKˆœ[—ÚYŽˆ[—ÚYˆœÛÝ\˜ÙWÚ\ÚŽˆÛÝ\˜ÙWÚ\ÚˆœÛXÞWÚ\ÚŽˆÛXÞWÚ\ÚˆšY[\Ý[˜ÞWÚÙ^HŽˆ™\]Y\ÝšY[\Ý[˜ÞWÚÙ^KˆÛÜšÜÜXÙHŽˆ™\]Y\ÝÛÜšÜÜXÙKˆ™™[˜ÙHŽˆ™\]Y\Ý™™[˜Ú[™×ÝÚÙ[‹ˆ˜][\ÚYŽˆ™\]Y\Ý˜][\ÚYÜˆ™\]Y\Ý›X\ÙWÚYˆ™Y™™XÝÜÙ]ŽˆÈœ›ØÙ\ÜÈ‹Üš]H—KˆÜš]WÜÙ]Žˆ\Ý
+™\]Y\ÝÜš]WÜÙ]
+Kˆ˜ÛÛ[X[™Žˆ\Ý
+\™ÝŠKˆJBˆ™WÙXÚ\Ú[ÛˆHÂˆœØÚ[XHŽˆœÚ[\XÚ[ËšÛÚÝØ[YXÚ\Ú[Û‹ÝŒH‹ˆœ\ÙHŽˆœ™H‹ˆ™\™XÝŽˆœ›ØÙYY‹ˆœ™X\ÛÛ—ØÛÙHŽˆœÛXÞWØ]]Üš^™Y‹ˆ™[™[ÜWÚYŽˆ[™[ÜVÈ™[™[ÜWÚY—Kˆ™[™[ÜWÚ\ÚŽˆ[™[ÜVÈ™[™[ÜWÚ\Ú—KˆœÛÝ\˜ÙWÚ\ÚŽˆÛÝ\˜ÙWÚ\ÚˆœÛXÞWÚ\ÚŽˆÛXÞWÚ\Úˆ™™[˜ÙHŽˆ™\]Y\Ý™™[˜Ú[™×ÝÚÙ[‹ˆBˆ˜[Y]WÜ™WÙXÚ\Ú[ÛŠ[™[ÜK™WÙXÚ\Ú[ÛŠBˆÛÚÝØ[ÛYÙ\ˆHÚÛÚÝØ[ÛYÙ\Š™\×Ü]
+Bˆ™\Ù\˜][ÛˆHÛÚÝØ[ÛYÙ\‹œ™\Ù\™J[™[ÜK™WÙXÚ\Ú[ÛŠBˆYˆ™\Ù\˜][Û–È˜XÝ[Ûˆ—HOH”‘TVWÕ‘T’Q’QQŽ‚ˆ™]\›ˆÂˆœ™]\›˜ÛÙHŽˆœÝÝ]ŽˆßKœÝ\œˆŽˆˆ‹ˆœÛÝ\˜ÙHŽˆšÛÚÝØ[Ý™\šYšYYÜ™\^H‹™Y™™XÝÜ™XÙZ\Žˆ›Û™Kˆ[˜Ù\Z[ˆŽˆ˜[ÙKšÛÚÝØ[Ù[™[ÜHŽˆ[™[ÜKˆšÛÚÝØ[Ü™WÙXÚ\Ú[ÛˆŽˆ™WÙXÚ\Ú[Û‹ˆšÛÚÝØ[Ù]šY[˜ÙHŽˆ™\Ù\˜][Û–È™]šY[˜ÙH—KˆšÛÚÝØ[Ü™X\ÛÛˆŽˆšY[\Ý[Ü™\^H‹ˆB‚ˆÝ]ÛÛYHHÙ^XÝ]WÛÜ\˜]Ü—ÙY™™XÝÝ[˜ÚXÚÙY
+ˆ›Ùš[O\›Ùš[KˆY\\XY\\‹ˆ™\]Y\Ý\™\]Y\Ýˆ\™ÝX\™Ý‹ˆ[Y[‹ˆ™\×Ü]\™\×Ü]ˆ][\ØÛÛÜ™[˜]ÜX][\ØÛÛÜ™[˜]Ü‹ˆÝX\™YØ][\YÝX\™YØ][\ˆ
+BˆÝ]ÛÛYVÈšÛÚÝØ[Ù[™[ÜH—HH[™[ÜBˆÝ]ÛÛYVÈšÛÚÝØ[Ü™WÙXÚ\Ú[Ûˆ—HH™WÙXÚ\Ú[Û‚ˆYˆÝ]ÛÛYK™Ù]
+œ™]\›˜ÛÙHŠHOHÜˆÝ]ÛÛYK™Ù]
+[˜Ù\Z[ˆŠN‚ˆÛÚÝØ[ÛYÙ\‹›X\š×Ý[œ™\ÛÛ™Y
+ˆ™\]Y\ÝšY[\Ý[˜ÞWÚÙ^Kˆ™Y™™XÝÝ[˜Ù\Z[ˆˆYˆÝ]ÛÛYK™Ù]
+[˜Ù\Z[ˆŠH[ÙH™Y™™XÝÛ›ÝØÛÛ[Z]Y‹ˆ
+BˆÝ]ÛÛYVÈšÛÚÝØ[Ù]šY[˜ÙH—HH›Û™BˆÝ]ÛÛYVÈšÛÚÝØ[Ü™X\ÛÛˆ—HH
+ˆ™Y™™XÝÝ[˜Ù\Z[ˆˆYˆÝ]ÛÛYK™Ù]
+[˜Ù\Z[ˆŠH[ÙH™Y™™XÝÛ›ÝØÛÛ[Z]Y‚ˆ
+Bˆ™]\›ˆÝ]ÛÛYB‚ˆÛÚÝØ[ÛYÙ\‹™Y™™XÝØÛÛ™š\›YY
+ˆ™\]Y\ÝšY[\Ý[˜ÞWÚÙ^KˆÈœ™]\›˜ÛÙHŽˆÝ]ÛÛYK™Ù]
+œ™]\›˜ÛÙHŠKˆœÝÝ]ŽˆÝ]ÛÛYK™Ù]
+œÝÝ]ŠHÜˆßKˆœÛÝ\˜ÙHŽˆÝ]ÛÛYK™Ù]
+œÛÝ\˜ÙHŠHÜˆˆŸKˆ
+B‚ˆ]]][Û—Ü™XÙZ\HÂˆœØÚ[XHŽˆœÚ[\XÚ[Ë›]]][Û‹\™XÙZ\ÝŒH‹ˆ™[™[ÜWÚYŽˆ[™[ÜVÈ™[™[ÜWÚY—KˆœÛÝ\˜ÙWÚ\ÚŽˆÛÝ\˜ÙWÚ\ÚˆœÛXÞWÚ\ÚŽˆÛXÞWÚ\ÚˆšY[\Ý[˜ÞWÚÙ^HŽˆ™\]Y\ÝšY[\Ý[˜ÞWÚÙ^Kˆ™™[˜ÙHŽˆ™\]Y\Ý™™[˜Ú[™×ÝÚÙ[‹ˆœÝ]\ÈŽˆ˜ÛÛ[Z]Y‹ˆœ™\Ý[Ú\ÚŽˆÚÛÚÝØ[ÙYÙ\Ý
+Âˆœ™]\›˜ÛÙHŽˆÝ]ÛÛYK™Ù]
+œ™]\›˜ÛÙHŠKˆœÝÝ]ŽˆÝ]ÛÛYK™Ù]
+œÝÝ]ŠHÜˆßKˆœÛÝ\˜ÙHŽˆÝ]ÛÛYK™Ù]
+œÛÝ\˜ÙHŠHÜˆˆ‹ˆJKˆBˆ]]][Û—Ü™XÙZ\Èœ™XÙZ\Ú\Ú—HHÚÛÚÝØ[ÙYÙ\Ý
+]]][Û—Ü™XÙZ\
+BˆÜÝÙXÚ\Ú[ÛˆHÂˆœØÚ[XHŽˆœÚ[\XÚ[ËšÛÚÝØ[YXÚ\Ú[Û‹ÝŒH‹ˆœ\ÙHŽˆœÜÝ‹ˆ™\™XÝŽˆœ›ØÙYY‹ˆœ™X\ÛÛ—ØÛÙHŽˆ™Y™™XÝÝ™\šYšYY‹ˆ™[™[ÜWÚYŽˆ[™[ÜVÈ™[™[ÜWÚY—KˆœÛÝ\˜ÙWÚ\ÚŽˆÛÝ\˜ÙWÚ\ÚˆœÛXÞWÚ\ÚŽˆÛXÞWÚ\ÚˆšY[\Ý[˜ÞWÚÙ^HŽˆ™\]Y\ÝšY[\Ý[˜ÞWÚÙ^Kˆ™™[˜ÙHŽˆ™\]Y\Ý™™[˜Ú[™×ÝÚÙ[‹ˆœ™XÙZ\Ú\ÚŽˆ]]][Û—Ü™XÙZ\Èœ™XÙZ\Ú\Ú—KˆBˆžN‚ˆ]šY[˜ÙHHÛÚÝØ[ÛYÙ\‹™\šYžWØ[™ØÛÛ[Z]
+ˆ[™[ÜK™WÙXÚ\Ú[Û‹]]][Û—Ü™XÙZ\ÜÝÙXÚ\Ú[Û‚ˆ
+Bˆ^Ù\ÛÚÝØ[›ØÚÙY\È^Î‚ˆÛÚÝØ[ÛYÙ\‹›X\š×Ý[œ™\ÛÛ™Y
+™\]Y\ÝšY[\Ý[˜ÞWÚÙ^K^Ëœ™X\ÛÛ—ØÛÙJBˆÝ]ÛÛYVÈœ™]\›˜ÛÙH—HH›Û™BˆÝ]ÛÛYVÈ[˜Ù\Z[ˆ—HHYBˆÝ]ÛÛYVÈšÛÚÝØ[Ù]šY[˜ÙH—HH›Û™BˆÝ]ÛÛYVÈšÛÚÝØ[Ü™X\ÛÛˆ—HH^Ëœ™X\ÛÛ—ØÛÙBˆ™]\›ˆÝ]ÛÛYBˆ™\šYšYY™X\ÛÛˆHØ]WØÛÛ\][ÛŠ]šY[˜ÙJBˆYˆ›Ý™\šYšYY‚ˆÛÚÝØ[ÛYÙ\‹›X\š×Ý[œ™\ÛÛ™Y
+™\]Y\ÝšY[\Ý[˜ÞWÚÙ^K™X\ÛÛŠBˆÝ]ÛÛYVÈœ™]\›˜ÛÙH—HH›Û™BˆÝ]ÛÛYVÈ[˜Ù\Z[ˆ—HHYBˆÝ]ÛÛYVÈšÛÚÝØ[Ù]šY[˜ÙH—HH›Û™BˆÝ]ÛÛYVÈšÛÚÝØ[Ü™X\ÛÛˆ—HH™X\ÛÛ‚ˆ™]\›ˆÝ]ÛÛYBˆÝ]ÛÛYVÈšÛÚÝØ[Û]]][Û—Ü™XÙZ\—HH]]][Û—Ü™XÙZ\ˆÝ]ÛÛYVÈšÛÚÝØ[ÜÜÝÙXÚ\Ú[Ûˆ—HHÜÝÙXÚ\Ú[Û‚ˆÝ]ÛÛYVÈšÛÚÝØ[Ù]šY[˜ÙH—HH]šY[˜ÙBˆÝ]ÛÛYVÈšÛÚÝØ[Ü™X\ÛÛˆ—HH›ÚÈ‚ˆ™]\›ˆÝ]ÛÛYB‚‚‚™YˆÜ™\×Ùš[™Ù\œš[
+™\×Ü]ˆ]
+HOˆXÝÜÝ‹Ý—N‚ˆˆˆ”™]\›ˆH]\›Z[š\ÝXÈÛÛ[š[™Ù\œš[›ÜˆX\\ˆœ™\Ú™\ÜÈØ]\Ë‚‚ˆÚ]Ý]\È[Û™HØ[››Ý]XÝÛÈY]ÈÈHØ[YH]ÛÈHš[™Ù\œš[[˜ÛY\Âˆš[Hž]\È›ÜˆH™[]˜[ÛÜšÚ[™È™YHÚ[H^ÛY[™ÈÙ[™\˜]YX\\‹Ü[ˆ\Y˜XÝË‚ˆ\È\È[[[Û˜[HØØ[[™[Ù[Yœ™YNÈH]\ˆ]]][ÛˆØ[ˆ\™Y›Ü™H[˜[Y]HBˆ[ˆÚ]Ý]\Ý[™È[ˆIÜÈœ™\Ú™\ÜÈÛZ[K‚ˆˆˆ‚ˆYÙ\ÝH\ÚX‹œÚLMŠ
+Bˆš[\ÈH×Bˆ›Üˆ›ÛÝ\œË˜[Y\È[ˆÜËØ[Ê™\×Ü]
+N‚ˆ\œÖÎ—HHÙ›Üˆ[ˆ\œÈYˆ›Ý[ˆÈ‹™Ú]‹‹œÚ[\XÚ[ËÛÜ˜Ú\Ý˜]Üˆ‹‹œÚ[\XÚ[È‹—×ÜXØXÚW×ÈŸWBˆ›Üˆ˜[YH[ˆ˜[Y\Î‚ˆ]H]
+›ÛÝ
+HÈ˜[YBˆžN‚ˆ™[H]œ™[]]™WÝÊ™\×Ü]
+K˜\×ÜÜÚ^
+
+Bˆ]HH]œ™XYØž]\Ê
+Bˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›ÜŠN‚ˆÛÛ[YBˆš[\Ë˜\[™
+
+™[]JJBˆ›Üˆ™[]H[ˆÛÜY
+š[\ËÙ^O[[X™H][Nˆ][VÌJN‚ˆYÙ\Ý\]J™[™[˜ÛÙJ]‹N‹œÝ\œ›ÙØ]Y\ØØ\HŠJBˆYÙ\Ý\]Jˆ—ŠBˆYÙ\Ý\]J\ÚX‹œÚLMŠ]JK™YÙ\Ý
+
+JBˆXYHˆ‚ˆÝ]\ÈHˆ‚ˆžN‚ˆXYÜ™\Ý[HÜ[—ØÛY
+È™Ú]‹œ™]‹\\œÙH‹’PQ—K™\×Ü]
+BˆXYH
+XYÜ™\Ý[œÝÝ]ÜˆˆŠKœÝš\
+
+HYˆXYÜ™\Ý[œ™]\›˜ÛÙHOH[ÙHˆ‚ˆÝ]\×Ü™\Ý[HÜ[—ØÛY
+È™Ú]‹œÝ]\È‹‹K\Ü˜Ù[Z[]ŒH‹‹K][˜XÚÙYYš[\ÏX[—K™\×Ü]
+BˆYˆÝ]\×Ü™\Ý[œ™]\›˜ÛÙHOH‚ˆš[\™YH×Bˆ›Üˆ˜]×Û[™H[ˆ
+Ý]\×Ü™\Ý[œÝÝ]ÜˆˆŠKœÜ][™\Ê
+N‚ˆ[™HH˜]×Û[™KœœÝš\
+
+BˆYˆ[Š[™JHHÎ‚ˆÛÛ[YBˆ]Ý^H[™VÌÎ—KœÝš\
+
+Bˆ\ÈHÜ\œÝš\
+
+H›Üˆ\[ˆ]Ý^œÜ]
+‹OˆŠWHYˆ‹Oˆˆ[ˆ]Ý^[ÙHÜ]Ý^Bˆ›Ü›X[^™YHÜ\œ™\XÙJ—‹‹ÈŠK›Ýš\
+‹‹ÈŠK›ÝÙ\Š
+H›Üˆ\[ˆ\ÈYˆ\œÝš\
+
+WBˆYˆ›Ü›X[^™Y[™[
+ˆ][KœÝ\ÝÚ]
+‹œÚ[\XÚ[ËÛÜ˜Ú\Ý˜]Ü‹ÈŠBˆÜˆ][KœÝ\ÝÚ]
+‹œÚ[\XÚ[ËÈŠBˆÜˆ][KœÝ\ÝÚ]
+‹˜Û]YKÈŠBˆ›Üˆ][H[ˆ›Ü›X[^™Yˆ
+N‚ˆÛÛ[YBˆš[\™Y˜\[™
+[™JBˆÝ]\ÈH—ˆ‹š›Ú[Šš[\™Y
+KœÝš\
+
+Bˆ^Ù\^Ù\[ÛŽ‚ˆ\ÜÂˆ™]\›ˆÂˆšXYŽˆXYˆ™\WÜÝ]\×Ú\ÚŽˆ\ÚX‹œÚLMŠÝ]\Ë™[˜ÛÙJ]‹NŠJKš^YÙ\Ý
+
+Kˆ™YWÚ\ÚŽˆYÙ\Ýš^YÙ\Ý
+
+KˆB‚‚™YˆÜ™\×ÜÝ]WÙ\]Z]˜[[
+YˆXÝÜÝ‹Ý—KšYÚˆXÝÜÝ‹Ý—JHOˆ›ÛÛ‚ˆˆˆ”™]\›ˆYHÚ[ˆ™\ÈÛÛ[[™˜\ÙHÛÛ[Z]\™H[˜Ú[™ÙY‚‚ˆ\WÜÝ]\×Ú\Ú\È\ÙY[[[Y]žK]]Ø[ˆšY™XØ]\ÙH[\‹YÙ[™\˜]YˆœÚ[\XÚ[ËÛÜ˜Ú\Ý˜]Ü˜ØœÚ[\XÚ[ØÝ]HÜˆÝ\ˆ›Û‹[X]\šX[Ý]\È›Ú\ÙHÚ[™Ù\ÈÚ[HBˆ˜XÚÙYÛÜšÚ[™È™YHž]\È™[XZ[ˆY[XØ[ˆœ™\Ú™\ÜÈØ]\ÈÚÝ[\™Y›Ü™HÙ^HÛˆBˆÙ[X[XÈ™\ÜÚ]ÜžHÝ]NˆÛÛ[Z]
+È™YHÛÛ[\Ú‚ˆˆˆ‚ˆ™]\›ˆ
+ˆ
+Y™Ù]
+šXYŠHÜˆˆŠHOH
+šYÚ™Ù]
+šXYŠHÜˆˆŠBˆ[™
+Y™Ù]
+™YWÚ\ÚŠHÜˆˆŠHOH
+šYÚ™Ù]
+™YWÚ\ÚŠHÜˆˆŠBˆ
+B‚‚™YˆÜ\œÙWÝ™\œÚ[Û—Ý\J^ˆÝŠHOˆ\VÚ[[[N‚ˆHH™KœÙX\˜Ú
+ˆŠ
+ÊWŠ
+ÊWŠ
+ÊH‹^ÜˆˆŠBˆYˆ›ÝN‚ˆ™]\›ˆ
+
+Bˆ™]\›ˆ
+[
+K™Ü›Ý\
+JJK[
+K™Ü›Ý\
+ŠJK[
+K™Ü›Ý\
+ÊJJB‚‚™YˆÜ™Y›YÚÛÝ™\œšYJ˜[YNˆÝŠHOˆXÝÜÝ‹[žWH›Û™N‚ˆ˜]ÈHÜË™[š\›Û‹™Ù]
+˜[YKˆŠKœÝš\
+
+BˆYˆ›Ý˜]Î‚ˆ™]\›ˆ›Û™Bˆ™]\›ˆœÛÛ‹›ØYÊ˜]ÊB‚‚™YˆÜ™\ÛÛ™YÚY[]JÛÛ[X[™ˆÝ‹^XÝYÜÝ[\ÎˆÙ\]Y[˜ÙVÜÝ—JHOˆXÝÜÝ‹[žWN‚ˆˆˆ”™\ÛÛ™H[ˆÜ\˜]ÜˆÛ˜ÙH[™˜Z[ÛÜÙYÛˆHUY[]HZ\ÛX]Úˆˆˆ‚ˆ]HÚ][ÚXÚ
+ÛÛ[X[™
+HÜˆˆ‚ˆ›Ü›X[^™YH]
+]
+KœÝ[K›ÝÙ\Š
+HYˆ][ÙHˆ‚ˆ™]\›ˆÂˆ˜ÛÛ[X[™ŽˆÛÛ[X[™ˆœ]Žˆ]ˆšY[]WÛÚÈŽˆ›ÛÛ
+]
+H[™[žJÝ[K›ÝÙ\Š
+H[ˆ›Ü›X[^™Y›ÜˆÝ[H[ˆ^XÝYÜÝ[\ÊKˆB‚‚™YˆØÛÝ™\˜YÙJ\ÚÜÎˆ\ÝÑXÝÜÝ‹[žWWJHOˆXÝÜÝ‹[žWN‚ˆÝ[ÜØÙ[˜\š[ÜÈHˆÝ[Ü[\ÈHˆ›Üˆ\ÚÈ[ˆ\ÚÜÎ‚ˆÝ[ÜØÙ[˜\š[ÜÈ
+ÏH[Š\ÚË™Ù]
+œØÙ[˜\š[ÜÈŠHÜˆ×JBˆÝ[Ü[\È
+ÏH[Š\ÚË™Ù]
+œ[\ÈŠHÜˆ×JBˆ™]\›ˆÂˆœØÙ[˜\š[ÜÈŽˆÈ™\šYšYYŽˆÝ[ŽˆÝ[ÜØÙ[˜\š[ÜßKˆœ[\ÈŽˆÈ™\šYšYYŽˆÝ[ŽˆÝ[Ü[\ßKˆB‚‚™YˆØÜš]\šXWÝ^
+\ÚÎˆXÝÜÝ‹[žWJHOˆÝŽ‚ˆ[™\ÈH×Bˆ›ÜˆØÙ[˜\š[È[ˆ\ÚË™Ù]
+œØÙ[˜\š[ÜÈŠHÜˆ×N‚ˆ\ÈH×BˆYˆØÙ[˜\š[Ë™Ù]
+[ˆŠN‚ˆ\Ë™^[™
+ØÙ[˜\š[ÖÈ[ˆ—JBˆ[ÙN‚ˆ\Ë˜\[™
+ØÙ[˜\š[Ë™Ù]
+]HŠHÜˆØÙ[˜\š[Ë™Ù]
+šYŠHÜˆœØÙ[˜\š[ÈŠBˆ[™\Ë˜\[™
+‹Hˆ
+Èˆ‹š›Ú[Š\ÊJBˆ™]\›ˆ—ˆ‹š›Ú[Š[™\ÊB‚‚™YˆØÛÛœÝ˜Z[×Ý^
+\ÚÎˆXÝÜÝ‹[žWJHOˆÝŽ‚ˆ[™\ÈH×Bˆ›Üˆ[H[ˆ\ÚË™Ù]
+œ[\ÈŠHÜˆ×N‚ˆ[™\Ë˜\[™
+ˆ‹HÜ[K™Ù]
+	ÚY	Ê_NˆÜ[K™Ù]
+	Ý^	Ê_HŠBˆ\ÈH
+\ÚË™Ù]
+™\[™[˜ÚY\ÈŠHÜˆßJK™Ù]
+š][\ÈŠHÜˆ×Bˆ›Üˆ\[ˆ\Î‚ˆ[™\Ë˜\[™
+ˆ‹H\[™[˜ÞNˆÙ\HŠBˆ™]\›ˆ—ˆ‹š›Ú[Š[™\ÊB‚‚™YˆÝ\Ú×ÙÛØ[
+\ÚÎˆXÝÜÝ‹[žWJHOˆÝŽ‚ˆY[]HH\ÚË™Ù]
+šY[]HŠHÜˆßBˆÝÜžHH\ÚË™Ù]
+œÝÜžHŠHÜˆßBˆ\ÈHÂˆˆ›Üˆ[ˆÂˆY[]K™Ù]
+œÞ\Ý[HŠKˆY[]K™Ù]
+™™X]\™HŠKˆY[]K™Ù]
+\HŠKˆÝÜžK™Ù]
+œ\œÛÛ˜HŠKˆÝÜžK™Ù]
+™\Ú\™HŠKˆÝÜžK™Ù]
+˜[YHŠKˆBˆYˆˆBˆ™]\›ˆˆ‹š›Ú[Š\ÊB‚‚™YˆÝ\Ú×ÜÜX×Ü^[ØY
+\ÚÎˆX\[™ÖÜÝ‹[žWJHOˆXÝÜÝ‹[žWN‚ˆˆˆZ[HÜÜÛ\ÜÈ]ˆÓH\ÚÔÜXÈ[™Ù™ˆœ›ÛHHÛÜ\ÚÈÛÛ˜XÝ‚‚ˆÛÜ	ÜÈÛÛ˜XÝ\È[[[Û˜[HšXÚ\ˆ[ˆHX›XÈ\ÚÔÜXËˆH[ˆÛÛ˜XÝ\È™]Z[™Y[ˆ[ˆY]]™HšY[Ú[HHØ[›ÛšXØ[šY[È\™BˆX\Y^XÚ]KÛÈHÜ\˜]Üˆ™]™\ˆ\ÈÈ™XÛÛœÝXÝH\ÚÈœ›ÛBˆ›][™YÛØ[ØÜš]\šXKØÛÛœÝ˜Z[Ýš[™ÜË‚ˆˆˆ‚ˆÜšYÚ[˜[Ý^HÝŠ\ÚË™Ù]
+›ÜšYÚ[˜[Ý^ŠHÜˆˆŠBˆYˆ›ÝÜšYÚ[˜[Ý^œÝš\
+
+N‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ\Y\ÚÔÜXÈ[™Ù™ˆ™\]Z\™\È\ÚËXÛÛ˜XÝÜšYÚ[˜[Ý^ŠBˆ›Ü›X[^™YHÜšYÚ[˜[Ý^œ™\XÙJ——ˆ‹—ˆŠKœ™\XÙJ—ˆ‹—ˆŠKœÝš\
+
+BˆÛÝ\˜ÙWÚ\ÚH\ÚX‹œÚLMŠ›Ü›X[^™Y™[˜ÛÙJ]‹NŠJKš^YÙ\Ý
+
+BˆY[]HHXÝ
+\ÚË™Ù]
+šY[]HŠHÜˆßJBˆÝÜžHHXÝ
+\ÚË™Ù]
+œÝÜžHŠHÜˆßJB‚ˆXØÙ\[˜ÙWØÜš]\šXHH×Bˆ›ÜˆØÙ[˜\š[È[ˆ\ÚË™Ù]
+œØÙ[˜\š[ÜÈŠHÜˆ×N‚ˆ][HHXÝ
+ØÙ[˜\š[ÊBˆ][KœÙ]Y˜][
+›ÜšYÚ[˜[Ý^‹ˆ‹š›Ú[ŠˆÝŠ\
+KœÝš\
+
+Bˆ›Üˆ\[ˆ
+ˆ][K™Ù]
+]H‹ˆŠKˆ
+–ÜÝŠ˜[YJH›Üˆ˜[YH[ˆ][K™Ù]
+™Ú]™[ˆŠHÜˆ×WKˆ
+–ÜÝŠ˜[YJH›Üˆ˜[YH[ˆ][K™Ù]
+Ú[ˆŠHÜˆ×WKˆ
+–ÜÝŠ˜[YJH›Üˆ˜[YH[ˆ][K™Ù]
+[ˆŠHÜˆ×WKˆ
+BˆYˆÝŠ\
+KœÝš\
+
+Bˆ
+JBˆXØÙ\[˜ÙWØÜš]\šXK˜\[™
+][JB‚ˆYˆÝ]Y[Ú][\Ê˜[YNˆ[žK™Yš^ˆÝŠHOˆ\ÝÑXÝÜÝ‹[žWWN‚ˆYˆ›Ý\Ú[œÝ[˜ÙJ˜[YKX\[™ÊN‚ˆ™]\›ˆ×BˆÝ]HHÝŠ˜[YK™Ù]
+œÝ]HŠHÜˆ[šÛ›ÝÛˆŠBˆ][\ÈH×Bˆ›Üˆ[™^[žH[ˆ[[Y\˜]J˜[YK™Ù]
+š][\ÈŠHÜˆ×KÝ\LJN‚ˆYˆ\Ú[œÝ[˜ÙJ[žKX\[™ÊN‚ˆ][HHXÝ
+[žJBˆ][KœÙ]Y˜][
+šY‹ˆžÜ™Yš^^Ú[™^HŠBˆ][KœÙ]Y˜][
+›ÜšYÚ[˜[Ý^‹ÝŠ][K™Ù]
+^ŠHÜˆ][K™Ù]
+œÝ[[X\žHŠHÜˆˆŠJBˆ[ÙN‚ˆ][HHÈšYŽˆˆžÜ™Yš^^Ú[™^H‹^ŽˆÝŠ[žJK›ÜšYÚ[˜[Ý^ŽˆÝŠ[žJ_Bˆ][KœÙ]Y˜][
+œÝ]H‹Ý]JBˆ][\Ë˜\[™
+][JBˆ™]\›ˆ][\Â‚ˆ]Y\Ý[ÛœÈHÙXÝ
+][JH›Üˆ][H[ˆ\ÚË™Ù]
+œ]Y\Ý[ÛœÈŠHÜˆ×HYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊWBˆ\ÜÝ[\[ÛœÈHÙXÝ
+][JH›Üˆ][H[ˆ\ÚË™Ù]
+˜\ÜÝ[\[ÛœÈŠHÜˆ×HYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊWBˆ›ØÚÙ\œÈHÙXÝ
+][JH›Üˆ][H[ˆ\ÚË™Ù]
+˜›ØÚÙ\œÈŠHÜˆ×HYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊWBˆXØÙ\Ü×Ü]HÝŠ\ÚË™Ù]
+˜XØÙ\Ü×Ü]ŠHÜˆˆŠKœÝš\
+
+BˆÛÝ\˜ÙHH\ÚË™Ù]
+œÛÝ\˜ÙHŠHÜˆßBˆ\Ú×ÚYHÝŠY[]K™Ù]
+šYŠHÜˆY[]K™Ù]
+]HŠHÜˆˆ•TÒË^ÜÛÝ\˜ÙWÚ\ÚÎŒL—K\\Š
+_HŠBˆ^[ØYˆXÝÜÝ‹[žWHHÂˆœØÚ[XHŽˆœÚ[\XÚ[Ë\ÚË\ÜXËÝŒˆ‹ˆ\Ú×ÚYŽˆ\Ú×ÚYˆœÛÝ\˜ÙHŽˆÂˆšÚ[™ŽˆœÚ[\XÚ[Ë[ÛÜ]\ÚËXÛÛ˜XÝ‹ˆ›ØØ]ÜˆŽˆÝŠÛÝ\˜ÙK™Ù]
+œ]ŠHÜˆˆŠHÜˆ›Û™Kˆ™[˜ÛÙ[™ÈŽˆ]‹N‹ˆKˆœÛÝ\˜ÙWÚ\ÚŽˆÛÝ\˜ÙWÚ\Úˆ›[™ÝXYÙHŽˆ[šÛ›ÝÛˆ‹ˆœÞ\Ý[HŽˆÝŠY[]K™Ù]
+œÞ\Ý[HŠHÜˆˆŠHÜˆ›Û™Kˆ™[˜Ý[Û˜[]HŽˆÝŠY[]K™Ù]
+™™X]\™HŠHÜˆˆŠHÜˆ›Û™Kˆ\Ú×Ý\HŽˆÝŠY[]K™Ù]
+\HŠHÜˆˆŠHÜˆ›Û™Kˆ›˜\œ˜]]™HŽˆÂˆœ\œÛÛ˜HŽˆÝŠÝÜžK™Ù]
+œ\œÛÛ˜HŠHÜˆˆŠHÜˆ›Û™Kˆ™\Ú\™HŽˆÝŠÝÜžK™Ù]
+™\Ú\™HŠHÜˆˆŠHÜˆ›Û™Kˆ˜[YHŽˆÝŠÝÜžK™Ù]
+˜[YHŠHÜˆˆŠHÜˆ›Û™KˆKˆ˜XØÙ\[˜ÙWØÜš]\šXHŽˆXØÙ\[˜ÙWØÜš]\šXKˆ˜\Ú[™\Ü×Ü[\ÈŽˆÙXÝ
+][JH›Üˆ][H[ˆ\ÚË™Ù]
+œ[\ÈŠHÜˆ×HYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊWKˆ››Û—Ù[˜Ý[Û˜[Ü™\]Z\™[Y[ÈŽˆÝ]Y[Ú][\Ê\ÚË™Ù]
+›™œœÈŠK“‘”ˆŠKˆœ›ÝÝ\\ÈŽˆÙXÝ
+][JH›Üˆ][H[ˆ\ÚË™Ù]
+œ›ÝÝ\\ÈŠHÜˆ×HYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊWKˆ˜]XÚY[ÈŽˆ×Kˆ›˜]šYØ][ÛˆŽˆ
+ÞÈšYŽˆ“UŒH‹œ]ŽˆXØÙ\Ü×Ü]›ÜšYÚ[˜[Ý^ŽˆXØÙ\Ü×Ü]WBˆYˆXØÙ\Ü×Ü][ÙH×JKˆ™\[™[˜ÚY\ÈŽˆÝ]Y[Ú][\Ê\ÚË™Ù]
+™\[™[˜ÚY\ÈŠK‘TŠKˆš[\XÝÜÚYÛ˜[ÈŽˆXÝ
+\ÚË™Ù]
+š[\XÝÜÚYÛ˜[ÈŠHÜˆßJKˆ˜Y][Û˜[Ú[™›Ü›X][ÛˆŽˆÂˆÈšYŽˆˆ’S‘“ÞÚ[™^H‹^ŽˆÝŠ][JK›ÜšYÚ[˜[Ý^ŽˆÝŠ][J_Bˆ›Üˆ[™^][H[ˆ[[Y\˜]J\ÚË™Ù]
+˜Y][Û˜[Ú[™›Ü›X][ÛˆŠHÜˆ×KÝ\LJBˆKˆ[˜Ù\Z[Y\ÈŽˆ]Y\Ý[ÛœÈ
+È\ÜÝ[\[ÛœÈ
+È›ØÚÙ\œËˆš[X[—ÙØ]\ÈŽˆÙXÝ
+][JH›Üˆ][H[ˆ]Y\Ý[Ûœ×Kˆ™\šYšXØ][Û—ØÛÛ[X[™ÈŽˆ
+ÞÈ˜ÛÛ[X[™Žˆ\ÝØÛÛ[X[™™\šYšY\ˆŽˆ™XÛ\™YŸWBˆYˆ
+\ÝØÛÛ[X[™HÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÕTÕÐÓQ‹ˆŠKœÝš\
+
+JBˆ[ÙH×JKˆœÛÝ\˜ÙWÜÜ[ˆŽˆßKˆ›ÜšYÚ[˜[Ý^ŽˆÜšYÚ[˜[Ý^ˆÈY]]™HšY[ˆ™\Ù\™\È]™\žHÛÜ[Û›HšY[[™XZÙ\ÈH[™Ù™‚ˆÈ]Y]X›HÚ]Ý]XXÚ[™ÈH]ˆÓHš]˜]HÛÜØÚ[XK‚ˆ›ÛÜÝ\Ú×ØÛÛ˜XÝŽˆœÛÛ‹›ØYÊœÛÛ‹™[\ÊXÝ
+\ÚÊK[œÝ\™WØ\ØÚZOQ˜[ÙJJKˆBˆ™]\›ˆ^[ØY‚‚™YˆÝ\Ú×ÜÜX×Ú\Ú
+^[ØYˆX\[™ÖÜÝ‹[žWJHOˆÝŽ‚ˆˆˆ”™]\›ˆH]ˆÓHØ[›ÛšXØ[\ÚÔÜXÈ\Ú›Üˆ™XÙZ\ÛÜœ™[][Û‹ˆˆˆ‚ˆ™]\›ˆ\ÚX‹œÚLMŠˆœÛÛ‹™[\Ê^[ØY[œÝ\™WØ\ØÚZOQ˜[ÙKÛÜÚÙ^\ÏUYKÙ\\˜]ÜœÏJ‹‹ŽˆŠJK™[˜ÛÙJ]‹NŠBˆ
+Kš^YÙ\Ý
+
+B‚‚™YˆÙ\š]™WØÛÛ^Ú[™JÛ˜\ÚÝÜ]ˆ]XÚ×Ü]ˆ]^XÝ][Û—Ü]ˆ]™\×Ü]ˆ]
+HOˆÝŽ‚ˆˆˆ‘\š]™HHØ[›ÛšXØ[]ˆÓH[™Hœ›ÛHX\\‹[ÝÛ™Y\Y˜XÝËˆˆˆ‚ˆžN‚ˆœ›ÛHÚ[\XÚ[Ëœ[—ØÛÛ\[\‹›X\\—ØÛÛ^[\Üš[™ÛX\\—ØÛÛ^‚ˆš[™[™ÈHš[™ÛX\\—ØÛÛ^
+ˆÛØYÚœÛÛŠÛ˜\ÚÝÜ]
+KˆÛØYÚœÛÛŠXÚ×Ü]
+KˆÛÝ\˜ÙWÜ›ÛÝ\™\×Ü]ˆ^XÝ][Û—ØÛÛ^Ü^[ØYWÛØYÚœÛÛŠ^XÝ][Û—Ü]
+Kˆ
+Bˆ™]\›ˆÝŠš[™[™Ë˜ÛÛ^Ú[™K˜[YJBˆ^Ù\^Ù\[ÛŽ‚ˆÈÛÛ^\š]˜][Ûˆ\È˜Z[XÛÜÙYÈ]ˆÓH™\ÜÈH\YØ]K‚ˆ™]\›ˆˆ‚‚‚™YˆØÛÛ^Ú[™Ù™—Ø\™ÜÊˆ™\×Ü]ˆ]ˆ[—Ü›ÛÝˆ]ˆ
+‹ˆ][\ÚYˆÝˆHˆ‹ˆX\ÙWÚYˆÝˆHˆ‹ˆ™[˜Ú[™×ÝÚÙ[ŽˆÝˆHˆ‹ˆ™\]Z\™WØ]]Üš^˜][ÛŽˆ›ÛÛH˜[ÙKŠHOˆ\VÓ\ÝÜÝ—KXÝÜÝ‹[žWWN‚ˆˆˆ”›Ú™XÝØ[›ÛšXØ[X\\ˆÛÛ^\Y˜XÝÈ[ÈH]ˆÓH\™Ý‹‚‚ˆHÛÛ\XÝX\\ˆ[™Ù™ˆ\È›ÝHÛÛ^Û˜\ÚÝˆ\È[\ˆÛ›Bˆ›ÜØ\™È^XÚ]HÝ\YYØ[›ÛšXØ[\Y˜XÝÈ[™™]™\ˆ\š]™\ÈBˆ[™Hœ›ÛHH]Üˆœ›ÛHX\\—ØÛÛ^Ú\ÚˆZ\ÜÚ[™È\Y˜XÝÈ\™Bˆ™XÛÜ™Y\ÈHXYÛ›ÜÝXÎÈH[YÜ˜]Y]ˆÓH™[XZ[œÈH˜Z[XÛÜÙYˆÝÛ™\ˆÙˆHš[˜[ÛÛ^Ø]K‚ˆˆˆ‚ˆ]]Üš^˜][Û—Ø\™ÜË]]Üš^˜][Û—Ú[™Ù™ˆH™\\™WØ]]Üš^˜][Û—Ú[™Ù™Šˆ[—Ü›ÛÝ™\]Z\™Y\™\]Z\™WØ]]Üš^˜][Û‹ˆ
+BˆX\\—Ü]H[—Ü›ÛÝÈ›X\\‹XÛÛ^šœÛÛˆ‚ˆYˆ›ÝX\\—Ü]™^\ÝÊ
+N‚ˆ™]\›ˆ\Ý
+]]Üš^˜][Û—Ø\™ÜÊKÂˆœÝ]\ÈŽˆ›Z\ÜÚ[™È‹œ™X\ÛÛ—ØÛÙHŽˆÓÓ•VÐT•QPÕ×ÕSURSP“H‹ˆ˜]]Üš^˜][ÛˆŽˆ]]Üš^˜][Û—Ú[™Ù™‹ˆBˆžN‚ˆX\\ˆHÛØYÚœÛÛŠX\\—Ü]
+Bˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›ÜŠN‚ˆ™]\›ˆ\Ý
+]]Üš^˜][Û—Ø\™ÜÊKÂˆœÝ]\ÈŽˆš[˜[Y‹œ™X\ÛÛ—ØÛÙHŽˆÓÓ•VÐT•QPÕ×ÒS•SQ‹ˆ˜]]Üš^˜][ÛˆŽˆ]]Üš^˜][Û—Ú[™Ù™‹ˆBˆ[™Ù™ˆHX\\‹™Ù]
+š[™Ù™ˆŠHYˆ\Ú[œÝ[˜ÙJX\\‹™Ù]
+š[™Ù™ˆŠKX\[™ÊH[ÙHßBˆÝÝ]H[™Ù™‹™Ù]
+œÝÝ]ŠHYˆ\Ú[œÝ[˜ÙJ[™Ù™‹™Ù]
+œÝÝ]ŠKX\[™ÊH[ÙH[™Ù™‚ˆYˆ›Ý\Ú[œÝ[˜ÙJÝÝ]X\[™ÊN‚ˆÝÝ]HßB‚ˆYˆš\œÝÝ˜[YJÙ^\ÎˆÙ\]Y[˜ÙVÜÝ—JHOˆ[žN‚ˆ›ÜˆÛÛZ[™\ˆ[ˆ
+X\\‹ÝÝ]
+N‚ˆ›ÜˆÙ^H[ˆÙ^\Î‚ˆ˜[YHHÛÛZ[™\‹™Ù]
+Ù^JHYˆ\Ú[œÝ[˜ÙJÛÛZ[™\‹X\[™ÊH[ÙH›Û™BˆYˆ˜[YH›Ý[ˆ
+›Û™Kˆ‹ßJN‚ˆ™]\›ˆ˜[YBˆ™]\›ˆ›Û™B‚ˆYˆ\œÚ\ÝØ\Y˜XÝ
+˜[YNˆ[žKš[[˜[YNˆÝ‹˜[˜XÚÜÎˆÙ\]Y[˜ÙVÔ]HH
+
+JHOˆ]›Û™N‚ˆYˆ\Ú[œÝ[˜ÙJ˜[YKX\[™ÊN‚ˆ]H[—Ü›ÛÝÈš[[˜[YBˆÝÜš]WÚœÛÛŠ]XÝ
+˜[YJJBˆ™]\›ˆ]ˆØ[™Y]\Îˆ\ÝÔ]HH×BˆYˆ\Ú[œÝ[˜ÙJ˜[YKÝŠH[™˜[YKœÝš\
+
+N‚ˆØ[™Y]HH]
+˜[YJBˆØ[™Y]\ÈH
+ØØ[™Y]WHYˆØ[™Y]Kš\×ØXœÛÛ]J
+Bˆ[ÙHØ˜\ÙHÈØ[™Y]H›Üˆ˜\ÙH[ˆ
+™\×Ü][—Ü›ÛÝ
+WJBˆØ[™Y]\Ë™^[™
+˜[˜XÚÜÊBˆ›ÜˆØ[™Y]H[ˆØ[™Y]\Î‚ˆžN‚ˆ™\ÛÛ™YHØ[™Y]Kœ™\ÛÛ™J
+BˆYˆ™\ÛÛ™Y™^\ÝÊ
+N‚ˆ™]\›ˆ™\ÛÛ™Yˆ^Ù\ÔÑ\œ›ÜŽ‚ˆÛÛ[YBˆ™]\›ˆ›Û™B‚ˆÛ˜\ÚÝÜ]H\œÚ\ÝØ\Y˜XÝ
+ˆš\œÝÝ˜[YJ
+˜ÛÛ^ÜÛ˜\ÚÝ‹˜Ø[›ÛšXØ[ØÛÛ^ÜÛ˜\ÚÝ‹˜ÛÛ^ÜÛ˜\ÚÝÜ]ŠJKˆ˜ÛÛ^\Û˜\ÚÝšœÛÛˆ‹ˆ
+™\×Ü]È‹œÚ[\XÚ[ÈˆÈ˜ÛÛ^\Û˜\ÚÝšœÛÛˆ‹
+Kˆ
+BˆXÚ×Ü]H\œÚ\ÝØ\Y˜XÝ
+ˆš\œÝÝ˜[YJ
+˜ÛÛ^ÜXÚÈ‹˜Ø[›ÛšXØ[ØÛÛ^ÜXÚÈ‹˜ÛÛ^ÜXÚ×Ü]ŠJKˆ˜ÛÛ^\XÚËšœÛÛˆ‹ˆ
+Bˆ^XÝ][Û—Ü]H\œÚ\ÝØ\Y˜XÝ
+ˆš\œÝÝ˜[YJ
+™^XÝ][Û—ØÛÛ^‹˜Ø[›ÛšXØ[Ù^XÝ][Û—ØÛÛ^‹™^XÝ][Û—ØÛÛ^Ü]ŠJKˆ™^XÝ][Û‹XÛÛ^šœÛÛˆ‹ˆ
+BˆYˆX\\‹™Ù]
+™YÜ˜YYÛØØ[ŠH[™XÚ×Ü][™ÙYÜ˜YYÛX\\—Ù˜[˜XÚ×Ù[˜X›Y
+
+N‚ˆÈÝ[™[Û™H]ˆÓHØ[ˆÛÛœÝ[YHH^XÚ]ØØ[XÚÈÚ]Ý]BˆÈX\\‹[ÝÛ™YÛ˜\ÚÝÙ^XÝ][Ûˆ\Y˜XÝÈ]H[[™Ù™ˆ›ÝšY\Ë‚ˆ\™ÜÈHÈ‹KXÛÛ^\XÚÈ‹ÝŠXÚ×Ü]
+WBˆ\™ÜË™^[™
+]]Üš^˜][Û—Ø\™ÜÊBˆ™]\›ˆ\™ÜËÂˆœÝ]\ÈŽˆ™YÜ˜YYÛØØ[‹ˆ˜ÛÛ^Ú[™HŽˆˆ‹ˆœXÚ×Ü]ŽˆÝŠXÚ×Ü]
+Kˆ˜]]Üš^˜][ÛˆŽˆ]]Üš^˜][Û—Ú[™Ù™‹ˆ™]šY[˜ÙWÜÝ]\ÈŽˆ•S•‘T’Q’QQ‹ˆBˆ˜]×ØÛÛ^Ú[™HHš\œÝÝ˜[YJ
+˜ÛÛ^Ú[™H‹˜Ø[›ÛšXØ[ØÛÛ^Ú[™HŠJBˆÛÛ^Ú[™HHÝŠ˜]×ØÛÛ^Ú[™JKœÝš\
+
+HYˆ˜]×ØÛÛ^Ú[™H›Ý[ˆ
+›Û™Kˆ‹ßJH[ÙHˆ‚ˆYˆ›ÝÛÛ^Ú[™H[™[
+
+Û˜\ÚÝÜ]XÚ×Ü]^XÝ][Û—Ü]
+JN‚ˆÛÛ^Ú[™HHÙ\š]™WØÛÛ^Ú[™JÛ˜\ÚÝÜ]XÚ×Ü]^XÝ][Û—Ü]™\×Ü]
+BˆY[]WÝ˜[Y\ÈH
+][\ÚYœÝš\
+
+KX\ÙWÚYœÝš\
+
+K™[˜Ú[™×ÝÚÙ[‹œÝš\
+
+JBˆY[]WÜ™\Ù[H[žJY[]WÝ˜[Y\ÊBˆY[]WØÛÛ\]HH[
+Y[]WÝ˜[Y\ÊBˆYˆY[]WÜ™\Ù[[™›ÝY[]WØÛÛ\]N‚ˆ™]\›ˆ\Ý
+]]Üš^˜][Û—Ø\™ÜÊKÂˆœÝ]\ÈŽˆ›Z\ÜÚ[™È‹ˆœ™X\ÛÛ—ØÛÙHŽˆÓÓ•VÐUUÔ’VUSÓ—ÒSÓÓTUH‹ˆœÛ˜\ÚÝŽˆ›ÛÛ
+Û˜\ÚÝÜ]
+KˆœXÚÈŽˆ›ÛÛ
+XÚ×Ü]
+Kˆ™^XÝ][Û—ØÛÛ^Žˆ›ÛÛ
+^XÝ][Û—Ü]
+Kˆ˜ÛÛ^Ú[™HŽˆ›ÛÛ
+ÛÛ^Ú[™JKˆ˜]]Üš^˜][ÛˆŽˆ]]Üš^˜][Û—Ú[™Ù™‹ˆBˆYˆ›Ý[
+
+Û˜\ÚÝÜ]XÚ×Ü]^XÝ][Û—Ü]
+JHÜˆ
+Y[]WÜ™\Ù[[™›ÝÛÛ^Ú[™JN‚ˆ™]\›ˆ\Ý
+]]Üš^˜][Û—Ø\™ÜÊKÂˆœÝ]\ÈŽˆ›Z\ÜÚ[™È‹ˆœ™X\ÛÛ—ØÛÙHŽˆÓÓ•VÐT•QPÕ×ÒSÓÓTUH‹ˆœÛ˜\ÚÝŽˆ›ÛÛ
+Û˜\ÚÝÜ]
+KˆœXÚÈŽˆ›ÛÛ
+XÚ×Ü]
+Kˆ™^XÝ][Û—ØÛÛ^Žˆ›ÛÛ
+^XÝ][Û—Ü]
+Kˆ˜ÛÛ^Ú[™HŽˆ›ÛÛ
+ÛÛ^Ú[™JKˆ˜]]Üš^˜][ÛˆŽˆ]]Üš^˜][Û—Ú[™Ù™‹ˆBˆ\™ÜÈHÂˆ‹KXÛÛ^\Û˜\ÚÝ‹ÝŠÛ˜\ÚÝÜ]
+Kˆ‹KXÛÛ^\XÚÈ‹ÝŠXÚ×Ü]
+Kˆ‹KY^XÝ][Û‹XÛÛ^‹ÝŠ^XÝ][Û—Ü]
+KˆBˆYˆÛÛ^Ú[™N‚ˆ\™ÜË™^[™
+È‹KXÛÛ^Z[™H‹ÛÛ^Ú[™WJBˆYˆY[]WØÛÛ\]N‚ˆ\™ÜË™^[™
+Âˆ‹KX][\ZY‹][\ÚYˆ‹K[X\ÙKZY‹X\ÙWÚYˆ‹KY™[˜Ú[™Ë]ÚÙ[ˆ‹™[˜Ú[™×ÝÚÙ[‹ˆJBˆ\™ÜË™^[™
+]]Üš^˜][Û—Ø\™ÜÊBˆ™]\›ˆ\™ÜËÂˆœÝ]\ÈŽˆœ›ÜYØ]Y‹ˆ˜ÛÛ^Ú[™HŽˆÛÛ^Ú[™Kˆ˜ÛÛ^Ú[™WÙ\š]™YØžHŽˆœÚ[\XÚ[ËY]‹XÛHˆYˆ›ÝÛÛ^Ú[™H[ÙH›X\\ˆ‹ˆœÛ˜\ÚÝÜ]ŽˆÝŠÛ˜\ÚÝÜ]
+KˆœXÚ×Ü]ŽˆÝŠXÚ×Ü]
+Kˆ™^XÝ][Û—ØÛÛ^Ü]ŽˆÝŠ^XÝ][Û—Ü]
+Kˆ˜]]Üš^˜][ÛˆŽˆ]]Üš^˜][Û—Ú[™Ù™‹ˆB‚‚™YˆØ]]×Ù˜[—ÛÝ]Ù[˜X›Y
+
+HOˆ›ÛÛ‚ˆˆˆ”™]\›ˆÚ]\ˆ˜]Ú^XÝ][ÛˆX^H›Ýš\Ú[Ûˆ\ÛÛ]YÛÜšÙ\œÈ]]ÛX]XØ[K‚‚ˆ˜[‹[Ý]\ÈHØY™HY˜][›Üˆ[™\[™[\ÚÜËˆÜ\˜]ÜœÈØ[ˆ^XÚ]HÜÝ]ˆÚ]ÒSTPÒS×ÓÓÔÐUU×ÑS—ÓÕULÚ[ˆH™\ÜÚ]ÜžHØ[››ÝÜ™X]HÛÜšÝ™Y\È
+›Ü‚ˆ^[\KH™XY[Û›HÚXÚÛÝ]
+NÈHÜ™[˜\žHÚ\™Y\[ˆÙ\šX[ÝX\™™[XZ[œÈXÝ]™H[‚ˆZ]\ˆ[ÙK‚ˆˆˆ‚ˆ˜]ÈHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÐUU×ÑS—ÓÕU‹ŒHŠKœÝš\
+
+K›ÝÙ\Š
+Bˆ™]\›ˆ˜]È›Ý[ˆÈŒ‹™˜[ÙH‹››È‹›Ù™ˆ‹™\ØX›YŸB‚‚™YˆÙÝX\™YÙ\Ü]ÚÙ[˜X›Y
+
+HOˆ›ÛÛ‚ˆˆˆ“ÜZ[ˆØ]H
+\ÜÝYHÌŽ
+H›Üˆ™XY[™È][\ÛÛÜ™[˜]Ü‹œ[—ÙÝX\™Y›ÝYÚBˆ™X[Ü\˜]Üˆ\Ü]Ú][œÝXYÙˆH˜]Ë[™ÝX\™YÝXœ›ØÙ\ÜËœ[˜‚‚ˆÙ™ˆžHY˜][KH›ÛÝÚ[™ÈHØ[YH]\›ˆ\ÈÒSTPÒS×Ô‘TURT‘WÓUUUSÓ—ÐUUÔ’UXˆ[ˆÌŽ	ÜÈ[›š[™×ÙØ]KœXÚ\š[™ÈKHÛÈ^\Ý[™ÈØ[\œËÙš^\™\È]\ÜÈBˆ\ÝšX]Y]Y]YHÚ]Ý]H[\ˆY[]KÚX\™X]ÛÛ˜XÝ\™H[˜Y™™XÝYˆÙ]ˆÒSTPÒS×ÑÕPT‘QÑTÔUÒLXÈ™\]Z\™HHX\™X]YÝX\™YX\ÙKY™[˜ÙY][\›Ü‚ˆ]™\žH\ÝšX]Y\]Y]YH\Ü]Ú
+H™X[ÛÜšÙ\ˆÚÜÙHX\ÙH\ÈÝÛ[ˆZY[]]][Ûˆ\ÂˆÚ[Y[™™\ÜY\ÈX\ÙWÛÜÝÙ\š[™×Ù^XÝ][Û˜[œÝXYÙˆš[š\Ú[™È[™ÝX\™Y
+K‚ˆˆˆ‚ˆ™]\›ˆÝŠÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÑÕPT‘QÑTÔUÒŠHÜˆˆŠKœÝš\
+
+K›ÝÙ\Š
+H[ˆ
+ŒH‹YH‹žY\ÈŠB‚‚™YˆØ]]×ÛY\™ÙWÙ[˜X›Y
+
+HOˆ›ÛÛ‚ˆˆˆ“ÜZ[ˆØ]H
+\ÜÝYHÌŽ
+H›ÜˆØ[[™ÈY\™ÙQ^XÝ]Ü˜›Üˆ™X[Û˜ÙHH\Ü]Úˆ][\	ÜÈ™XÙZ\Z\ˆ\È‘T’Q’QQ‚‚ˆÙ™ˆžHY˜][ˆÜ™X][™ËÛY\™Ú[™ÈH™X[ˆ\ÈHÚYHY™™XÝÚ]™X[ÛÛœÙ\]Y[˜Ù\È
+[‚ˆXÝX[Ú]XˆTHØ[H™X[Y\™ÙJKÛÈ]]\Ý™H^XÚ]H™\]Y\ÝYšXBˆÒSTPÒS×ÐUU×ÓQT‘ÑWÔLX\ÈH™\ÛÛ˜X›H™\ÈÛYÂˆ
+ÒSTPÒS×Ô‘SSÕWÔ‘TØØÒUP—Ô‘TÔÒUÔ–X
+H[™HÛÜšÝ™YHœ˜[˜ÚÛˆH][HKH[žBˆÙˆÜÙHZ\ÜÚ[™È\È™\ÜY\È][\Yˆ˜[ÙX˜]\ˆ[ˆÚ[[HÚÚ\Y‚ˆˆˆ‚ˆ™]\›ˆÝŠÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÐUU×ÓQT‘ÑWÔˆŠHÜˆˆŠKœÝš\
+
+K›ÝÙ\Š
+H[ˆ
+ŒH‹YH‹žY\ÈŠB‚‚™YˆÛY\™ÙWÜ™\×ÜÛYÊ
+HOˆÝŽ‚ˆ™]\›ˆÝŠÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Ô‘SSÕWÔ‘TÈŠHÜˆÜË™[š\›Û‹™Ù]
+‘ÒUP—Ô‘TÔÒUÔ–HŠHÜˆˆŠKœÝš\
+
+B‚‚™YˆÙ\Ü]ÚÛY\™ÙWÜŠ][NˆX\[™ÖÜÝ‹[žWK
+‹™XÙZ\ˆÝ‹[—ÚYˆÝŠHOˆXÝÜÝ‹[žWN‚ˆˆˆÜ™X]KÜÛÛY\™ÙHHˆ›ÜˆHÛZ[YY][IÜÈÛÜšÝ™YHœ˜[˜Ú[™™XÛÛ˜Ú[HHY\™ÙBˆYØZ[œÝH™[[ÝH
+\ÜÝYHÌŽ
+K‚‚ˆ›Ü›X[^™\ÈHYZØÈÚˆÜ™X]XÈÚˆY\™ÙHK\Ü]X\ÚKY[]KXœ˜[˜Ú]\›‚ˆ\È›Ú™XÝ	ÜÈÝÛˆ[]™\žHÛÜšÙ›ÝÈ[™XYH\™›Ü›\ÈžH[™]H[™Ùˆ]™\žH\ÚÂˆ
+ÓUQK›YÈQÑS•Ë›Y”›ØÙ\ÜÈˆÙXÝ[ÛœÊH\ÈH™X[™]\ØX›HØ[[œÝXYÙˆ›ÜÙH[‚ˆÜ\˜]Üˆ]\Ý™[Y[X™\‹ˆ™]™\ˆ˜Z\Ù\È›Üˆ[ˆÜ™[˜\žH˜Ø[››ÝY\™ÙHY]Ú\™HˆÝ]ÛÛYHKBˆÜÙHÛÛYH˜XÚÈ\È][\YˆYKY\™ÙYˆ˜[ÙXÚ]HÜXÚYšXÈ™X\ÛÛˆÛÈHØ[\‚ˆØ[ˆ™]žHÜˆ\ØØ[]NÈÛ›HH\™Ú˜[œÜÜ˜Z[\™HÝ\™˜XÙ\È\È[ˆ\œ›ÜˆšY[‚ˆˆˆ‚ˆÛÛ^H][K™Ù]
+ÛÜšÝ™YWØÛÛ^ŠHÜˆßBˆœ˜[˜ÚHÝŠÛÛ^™Ù]
+˜œ˜[˜ÚŠHÜˆˆŠKœÝš\
+
+Bˆ™\×ÜÛYÈHÛY\™ÙWÜ™\×ÜÛYÊ
+BˆYˆ›Ýœ˜[˜ÚÜˆ›Ý™\×ÜÛYÎ‚ˆ™]\›ˆÈ˜][\YŽˆ˜[ÙKœ™X\ÛÛˆŽˆ›Z\ÜÚ[™×Øœ˜[˜ÚÛÜ—Ü™\×ÜÛYÈ‹›Y\™ÙYŽˆ˜[Ù_Bˆ˜\ÙHHÝŠÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓQT‘ÑWÐTÑHŠHÜˆ›XZ[ˆŠKœÝš\
+
+Bˆ\Ú×ÚYHÝŠ][K™Ù]
+\Ú×ÚYŠHÜˆˆŠBˆ]HH
+œÚ[\XÚ[Ë[ÛÜˆ	\Èˆ	H\Ú×ÚY
+HYˆ\Ú×ÚY[ÙHœÚ[\XÚ[Ë[ÛÜˆ]]ÛX]Y[]™\žH‚ˆ›ÙHH
+]]ÛX]Y[]™\žH›ÜˆÛÜšÈ][H	\Ø
+[ˆ	\Ø
+K——“Ü\˜]Üˆ™XÙZ\ˆ	\Øˆ‚ˆ	H
+\Ú×ÚY[—ÚY™XÙZ\
+JBˆžN‚ˆ^XÝ]ÜˆHY\™ÙQ^XÝ]ÜŠ™\Ï\™\×ÜÛYÊBˆˆH^XÝ]Ü‹™[œÝ\™WÜŠœ˜[˜ÚXœ˜[˜Ú˜\ÙOX˜\ÙK]O]]K›ÙOX›ÙJBˆ—Û[X™\ˆH[
+‹™Ù]
+›[X™\ˆŠHÜˆ
+BˆYˆ›Ý—Û[X™\Ž‚ˆ™]\›ˆÈ˜][\YŽˆYK›Y\™ÙYŽˆ˜[ÙKœ™X\ÛÛ—ØÛÙHŽˆ““×Ô—Ó•SP‘Tˆ‹ˆ™]Z[Žˆ™[œÝ\™WÜˆY›Ý™\ÛÛ™HHˆ[X™\ˆ‹œˆŽˆŸBˆ™\Ý[H^XÝ]Ü‹›Y\™ÙJ—Û[X™\ŠBˆ™]\›ˆÈ˜][\YŽˆYKœˆŽˆ‹
+Šœ™\Ý[×ÙXÝ
+
+_Bˆ^Ù\Y\™ÙQ^XÝ]Ü‘\œ›Üˆ\È^Î‚ˆ™]\›ˆÈ˜][\YŽˆYK›Y\™ÙYŽˆ˜[ÙKœ™XÛÛ˜Ú[YŽˆ˜[ÙKˆœ™X\ÛÛ—ØÛÙHŽˆ^Ëœ™X\ÛÛ—ØÛÙK™]Z[ŽˆÝŠ^Ê_B‚‚™YˆÛ[Ù[Ü›Ý]YÙ\Ü]ÚÙ[˜X›Y
+
+HOˆ›ÛÛ‚ˆˆˆ“ÜZ[ˆØ]H
+\ÜÝYHÌŽÊH›Üˆ™XY[™È[Ù[Ü›Ý]\‹œ›Ý]J
+X	ÜÈÙ[XÝ[Û‚ˆ›ÝYÚH™X[\Ü]Ú][œÝXYÙˆH\™ÛÙY[[YK‚‚ˆÙ™ˆžHY˜][KH›ÛÝÚ[™ÈHØ[YH]\›ˆ\ÈÒSTPÒS×ÑÕPT‘QÑTÔUÒˆ
+ÌŽ
+H[™ÒSTPÒS×ÐUU×ÓQT‘ÑWÔ˜
+ÌŽ
+HX›Ý™HKHÛÈ^\Ý[™ÈØ[\œËÙš^\™\Âˆ]\Ü]ÚÚ]Ý]H[Ù[™YÚ\ÝžHÛÛ™šYÝ\™Y\™H[˜Y™™XÝYˆÙ]ˆÒSTPÒS×ÓSÑSÔ“ÕUQÑTÔUÒLXÈÛÛ\]HH™X[›Ý][™ËYXÚ\Ú[Û‹\™XÙZ\ˆ›Üˆ]™\žH\Ü]Ú][\[™Ú[ˆH™X[ÛÙ^[[YQš]™\˜ÂˆÛ]YT[[YQš]™\˜\ÈÚ\™Y›ÜˆHÙ[XÝY[[YKÙ[Z[™[H[›ÚÙH][™ˆ\œÚ\ÝH[[YKY^XÝ][Û‹\™XÙZ\[Û™ÜÚYHHÜ\˜]Ü‰ÜÈÝÛˆ™XÙZ\ËˆBˆ›Ý][™È›ØÚÈÜˆš]™\ˆ˜Z[\™H™]™\ˆ›ØÚÜÈH[™\›Z[™È]‹XÛHÜ\˜]Ü‚ˆ]]][Ûˆ\È™\È[™XYH\™›Ü›\ÈKH\È\ÈY][Û˜[™X[]Y]]šY[˜ÙBˆ^Y\™YÛˆÜÙˆ]›ÝH™\XÙ[Y[›ÜˆHÜ\˜]ÜˆÛÛ˜XÝ‚ˆˆˆ‚ˆ™]\›ˆÝŠÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓSÑSÔ“ÕUQÑTÔUÒŠHÜˆˆŠKœÝš\
+
+K›ÝÙ\Š
+H[ˆ
+ŒH‹YH‹žY\ÈŠB‚‚™YˆÝ™\šYšYYÙ[]™\žWÙØ]WÙ[˜X›Y
+
+HOˆ›ÛÛ‚ˆˆˆ“ÜZ[ˆØ]H
+\ÜÝYHÌŽ
+H›Üˆ›Ý][™ÈH\Ü]Ú][\	ÜÈÛÛ\][ÛˆXÚ\Ú[Ûˆ›ÝYÚˆH™X[ÛÜ[[YPY\\˜Ø™\šYšYYYÙ[[]™\žXØ^XÝ][Û›Ø\™]šY[˜ÙH
+ÂˆØ]Ú\ˆ
+È[]™\žHÛÛ˜XÝ[œÝXYÙˆH˜\™H^XÝ][Û—ÜÝ]HOH˜\YY˜ÚXÚË‚‚ˆÛÜ[[YPY\\˜[™™\šYšYYYÙ[[]™\žX\™H™X[[H\ÝYÛ\ÜÙ\Âˆ
+Ú[\XÚ[×ÛÛÜÜ[[YWØY\\‹œX™\šYšYYÙ[]™\žKœX
+H]Y™\›È™Y™\™[˜Ù\Âˆ[ˆH\Ü]Ú]KHHÌŽ]Y]˜[YY\ÈHYÚ\Ý]˜[YH™[XZ[š[™ÈØ\ˆ[‚ˆ][\ÛÝ[™H™\ÜYÝXØÙYYYÛˆ^XÝ][Û—ÜÝ]HOH˜\YY˜[Û™KÚ]›Âˆœ™\ÚÓÓTUH]šY[˜ÙH™XÙZ\›ÈYX\Ý\™YØ]Ú\ˆ\ÜË[™›È™XÛÜ™Y[]™\žBˆÛÛ™\™Ù[˜ÙHXÝX[H™\]Z\™YˆÙ™ˆžHY˜][KH›ÛÝÚ[™ÈHØ[YH]\›ˆ\ÂˆÒSTPÒS×ÑÕPT‘QÑTÔUÒØÒSTPÒS×ÐUU×ÓQT‘ÑWÔ˜X›Ý™HKHÛÈ^\Ý[™ÂˆØ[\œËÙš^\™\È]\Ü]ÚÚ]Ý]HØ]Ú\ˆ[ˆ\™H[˜Y™™XÝYˆÙ]ˆÒSTPÒS×Õ‘T’Q’QQÑSU‘T–WÑÐUOLXÈ[[ÝHH\Ü]Ú][\ÚÜÙH]šY[˜ÙHZ\‹ˆØ]Ú\‹Üˆ[]™\žHØ]H\È›ÝÙ[Z[™[HØ]\ÙšYYœ›ÛHÝXØÙYYYÈ˜Z[Yˆ]™[ˆÚ[ˆH[™\›Z[™È]‹XÛHÜ\˜]Üˆ]Ù[ˆ\YYÛX[›K‚ˆˆˆ‚ˆ™]\›ˆÝŠÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×Õ‘T’Q’QQÑSU‘T–WÑÐUHŠHÜˆˆŠKœÝš\
+
+K›ÝÙ\Š
+H[ˆ
+ŒH‹YH‹žY\ÈŠB‚‚™YˆÜ[—Ý™\šYšYYÙ[]™\žWÙØ]Jˆ
+‹[—ÚYˆÝ‹\Ú×ÚYˆÝ‹XÝÜŽˆÝ‹][\ÚYˆÝ‹ˆ™XÙZ\Ý™\™XÝˆX\[™ÖÜÝ‹[žWK]šY[˜ÙWÜ™XÙZ\ˆÝ‹Ø]Ú\—Ü™XÙZ\ˆÝ‹ˆY\™ÙNˆÜ[Û˜[ÓX\[™ÖÜÝ‹[žWWKÛÜšÝ™YWØÛÛ^ˆX\[™ÖÜÝ‹[žWKŠHOˆXÝÜÝ‹[žWN‚ˆˆˆ‘š]™HH™X[]šY[˜ÙJÝØ]Ú\ŠÙ[]™\žHØ]YÛÛ\][ÛˆÚXÚÈ
+\ÜÝYHÌŽ
+H›ÜˆÛ™Bˆ\Ü]Ú][\‚‚ˆ™]™\ˆ˜Z\Ù\ÎˆH˜Z[YØ]HÛÛY\È˜XÚÈ\È™\šYšYYˆ˜[ÙXÚ]H™X\ÛÛ˜ÛÈBˆØ[\ˆØ[ˆ[[ÝHÝXØÙYYYÈ˜Z[YÚ]Ý]Ü˜\Ú[™ÈHØÚY[\‹ˆ\È\ÈBˆÝšXÝÝ\\œÙ]ÙˆH™KY^\Ý[™È^XÝ][Û—ÜÝ]HOH˜\YY˜ÚXÚÈKH]Ø[ˆÛ›Bˆ\›ˆHÛÝ[X™HÝXØÙ\ÜÈ[ÈH˜Z[\™K™]™\ˆH™]™\œÙK‚ˆˆˆ‚ˆØÚ[XHHœÚ[\XÚ[Ë™\šYšYYY[]™\žKYØ]KÝŒH‚ˆžN‚ˆYˆ™XÙZ\Ý™\™XÝ™Ù]
+œÝ]\ÈŠHOH™XÙZ\Ý]\Ë•‘T’Q’QQ‚ˆ™]\›ˆÈœØÚ[XHŽˆØÚ[XK™\šYšYYŽˆ˜[ÙKœÝ]\ÈŽˆ•S•‘T’Q’QQ‹ˆœ™X\ÛÛˆŽˆ›Ü\˜]Ü‹Ù]šY[˜ÙH™XÙZ\Z\ˆ\È›Ý‘T’Q’QQŸBˆØ]Ú\—ÜÝ]NˆXÝÜÝ‹[žWHHßBˆYˆØ]Ú\—Ü™XÙZ\[™]
+Ø]Ú\—Ü™XÙZ\
+K™^\ÝÊ
+N‚ˆžN‚ˆØ]Ú\—ÜÝ]HHœÛÛ‹›ØYÊ]
+Ø]Ú\—Ü™XÙZ\
+Kœ™XYÝ^
+[˜ÛÙ[™ÏH]‹NŠJBˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›ÜŠN‚ˆØ]Ú\—ÜÝ]HHßBˆYˆØ]Ú\—ÜÝ]K™Ù]
+œÝ]\ÈŠHOH“QPTÕT‘QˆÜˆ›ÝØ]Ú\—ÜÝ]K™Ù]
+›X]ÚŠN‚ˆ™]\›ˆÈœØÚ[XHŽˆØÚ[XK™\šYšYYŽˆ˜[ÙKœÝ]\ÈŽˆ•S•‘T’Q’QQ‹ˆœ™X\ÛÛˆŽˆ››ÈYX\Ý\™YØ]Ú\ˆ\ÜÈ™XÛÜ™Y›Üˆ\È][\ŸBˆ[[YHHÛÜ[[YPY\\Š[—ÚY\[—ÚYÛÜš×Ú][WÚY]\Ú×ÚYXÝÜXXÝÜˆÜˆ›ÛÜ‹ˆÝ[™[Û™OUYJBˆ[[YK›™YÛÝX]J
+Bˆ›Ø\™H^XÝ][Û›Ø\™
+[—ÚY\[—ÚY
+Bˆ[]™\žHH™\šYšYYYÙ[[]™\žJ[[YO\[[YK›Ø\™X›Ø\™][\ÚYX][\ÚY
+Bˆ›Üˆ\ÙH[ˆ
+š[ZÙH‹›X\[™È‹œ[›š[™È‹™^XÝ][™È‹˜[Y][™È‹Ø]Ú[™È‹™[]™\š[™ÈŠN‚ˆ[]™\žK˜[œÚ][ÛŠ\ÙJBˆ]šY[˜ÙWÜ^[ØYHÈœØÚ[XHŽˆœÚ[\XÚ[Ë˜XËY]šY[˜ÙKÝŒH‹œÝ]\ÈŽˆ”TÔÈ‹œ™XYHŽˆYKˆ™\™XÝŽˆÓÓTUH‹œ™XÙZ\ÚYŽˆ]šY[˜ÙWÜ™XÙZ\Üˆ][\ÚYBˆ[]™\žKœ™XÛÜ™Ù]šY[˜ÙJ]šY[˜ÙWÜ^[ØY
+BˆÚ[[™ÙHHÝŠØ]Ú\—ÜÝ]K™Ù]
+˜Ú[[™ÙHŠHÜˆØ]Ú\—Ü™XÙZ\
+Bˆ[]™\žKœ™XÛÜ™ÝØ]Ú\ŠX]ÚUYKÚ[[™ÙOXÚ[[™ÙJBˆY\™ÙWÚ[™›ÈHXÝ
+Y\™ÙHÜˆßJBˆYˆY\™ÙWÚ[™›Ë™Ù]
+›Y\™ÙYŠN‚ˆ[]™\žWÜ^[ØYHÂˆ\™Ù]Žˆ›Y\™ÙK\]Y]YH‹œØ]\ÙšYYŽˆYKˆ›Y\™ÙWÜ]Y]YHŽˆÂˆœ™XÙZ\ÜÚHŽˆÝŠY\™ÙWÚ[™›Ë™Ù]
+›Y\™ÙWØÛÛ[Z]ÜÚHŠHÜˆˆŠKˆœÝ]\ÈŽˆ˜XØÙ\Y‹ˆ˜œ˜[˜ÚŽˆÝŠÛÜšÝ™YWØÛÛ^™Ù]
+˜œ˜[˜ÚŠHÜˆˆŠKˆÛÜšÝ™YWÜ]ŽˆÝŠÛÜšÝ™YWØÛÛ^™Ù]
+ÛÜšÝ™YWÜ]ŠBˆÜˆÛÜšÝ™YWØÛÛ^™Ù]
+œ]ŠHÜˆˆŠKˆKˆBˆ[ÙN‚ˆ[]™\žWÜ^[ØYHÈ\™Ù]Žˆ›ØØ[Yš^\™H‹œØ]\ÙšYYŽˆY_Bˆ[]™\žKœ™XÛÜ™Ù[]™\žJ[]™\žWÜ^[ØY
+Bˆ™\Ý[H[]™\žK˜ÛÛ\]J]šY[˜ÙWÜ^[ØY
+Bˆ›Ú™XÝ[ÛˆH›Ø\™œ™\^J
+Bˆ™]\›ˆÈœØÚ[XHŽˆØÚ[XK™\šYšYYŽˆYKœÝ]\ÈŽˆ•‘T’Q’QQ‹ˆ˜›Ø\™ÜÝ]\ÈŽˆ›Ú™XÝ[Û‹™Ù]
+œÝ]\ÈŠK™[]™\žHŽˆ™\Ý[™Ù]
+™[]™\žHŠ_Bˆ^Ù\
+™\šYšYY[]™\žQ\œ›Ü‹[[YPY\\‘\œ›ÜŠH\È^Î‚ˆ™]\›ˆÈœØÚ[XHŽˆØÚ[XK™\šYšYYŽˆ˜[ÙKœÝ]\ÈŽˆ•S•‘T’Q’QQ‹œ™X\ÛÛˆŽˆÝŠ^Ê_B‚‚—ÑQUSÓSÑSÔ‘QÒTÕ–WÑS•’QTÎˆ\VÑXÝÜÝ‹[žWK‹‹—HH
+ˆÂˆœ[[YHŽˆ˜ÛÙ^‹œ›ÝšY\ˆŽˆ›Ü[˜ZH‹›[Ù[ÚYŽˆ˜ÛÙ^XÛKÙÜMK‹[[˜H‹ˆ˜[X\Ù\ÈŽˆÈ˜ÛÙ^XÛH—K˜Ø\Xš[]Y\ÈŽˆÈ™^XÝ]H‹œ™]šY]È—Kˆœ›Ø™HŽˆÈšÚ[™Žˆ˜ÛÙ^XÛH‹\™Ù]Žˆ˜ÛÙ^ŸKˆKˆÂˆœ[[YHŽˆ˜Û]YH‹œ›ÝšY\ˆŽˆ˜[›ÜXÈ‹›[Ù[ÚYŽˆ˜Û]YKXÛÙKÜÛÛ›™]MH‹ˆ˜[X\Ù\ÈŽˆÈ˜Û]YKXÛÙH—K˜Ø\Xš[]Y\ÈŽˆÈ™^XÝ]H‹œ™]šY]È—Kˆœ›Ø™HŽˆÈšÚ[™Žˆ˜Û]YKXÛH‹\™Ù]Žˆ˜Û]YHŸKˆKŠB‚‚™YˆÙY˜][Û[Ù[Ü™YÚ\ÝžJ
+HOˆ[Ù[Ø\Xš[]T™YÚ\ÝžN‚ˆˆˆZ[HÝ[™\™ÛË\[[YH
+ÛÙ^
+ÈÛ]YJH™YÚ\ÝžKÚ\™YÈH™X[ˆK]™\œÚ[Û˜›Ø™\È[ˆ[[YWÙš]™\œËœXKH™]™\ˆH˜XœšXØ]Y]˜Z[Xš[]BˆÚXÚËˆHØ[\ˆ]™YYÈHY™™\™[™YÚ\ÝžHÚ\H
+K™ËˆHÛÛ™šYÈš[JHØ[‚ˆÝ[Z[Ü\ÜÈ]ÈÝÛˆ[Ù[Ø\Xš[]T™YÚ\ÝžXÈ\È\ÈÛ›HHY˜][ˆ\ÙYžHHÜZ[ˆ\Ü]ÚÚ\š[™È™[ÝË‚ˆˆˆ‚ˆ™]\›ˆ[Ù[Ø\Xš[]T™YÚ\ÝžJÑQUSÓSÑSÔ‘QÒTÕ–WÑS•’QTË›Ø™WÚÛÚÜÏPÓWÔ“Ð‘WÒÓÒÔÊB‚‚™YˆÜ›Ý]WÜ[[YWÙ›Ü—Ú][J][NˆX\[™ÖÜÝ‹[žWK
+‹›ÛNˆÝˆH™^XÝ]Üˆ‹ˆ™YÚ\ÝžNˆÜ[Û˜[Ó[Ù[Ø\Xš[]T™YÚ\ÝžWHH›Û™JHOˆXÝÜÝ‹[žWN‚ˆˆˆÛÛ\]HÛ™H™X[›Ý][™ËYXÚ\Ú[Û‹\™XÙZ\›ÜˆH\Ü]Ú][\‚‚ˆ™]™\ˆ˜Z\Ù\È›Üˆ[ˆÜ™[˜\žH›Ý][™È›ØÚÈ
+›È[YÚX›HØ[™Y]KK™Ëˆ™Z]\‚ˆÓH[œÝ[Y
+HKH]ÛÛY\È˜XÚÈ\ÈH™XÙZ\Ú]›ØÚÙYUYX[™[‚ˆ^XÚ]›ØÚ×Ü™X\ÛÛ˜ÛÈHØ[\ˆØ[ˆ™XÛÜ™Ü™\Ü]ÈÛ›HX[›Ü›YY[œ]ˆÝ\™˜XÙ\È\È[Ù[›Ý]\‘\œ›Ü˜Ø[Ù[™YÚ\ÝžQ\œ›Ü˜‚ˆˆˆ‚ˆ™YÚ\ÝžHH™YÚ\ÝžHÜˆÙY˜][Û[Ù[Ü™YÚ\ÝžJ
+Bˆ™\]Z\™[Y[ÈHÈœ›ÛHŽˆ›ÛKœ™\]Z\™YØØ\Xš[]Y\ÈŽˆÈ™^XÝ]H—_Bˆ™]\›ˆÛ[Ù[Ü›Ý]J™\]Z\™[Y[Ë™YÚ\ÝžJB‚‚™YˆÙ^XÝ]WÜ›Ý]YÜ[[YJ][NˆX\[™ÖÜÝ‹[žWK[—Ù\Žˆ]
+‹ˆ™YÚ\ÝžNˆÜ[Û˜[Ó[Ù[Ø\Xš[]T™YÚ\ÝžWHH›Û™JHOˆXÝÜÝ‹[žWN‚ˆˆˆ”›Ý]H
+È
+Ú[ˆH™X[š]™\ˆ\ÈÚ\™Y›ÜˆHÙ[XÝ[ÛŠHÙ[Z[™[H^XÝ]HÛ™BˆK\[[YH][\›Üˆ\È\Ü]Ú\œÚ\Ý[™È›Ý™XÙZ\È[™\‚ˆ[—Ù\‹ÛÛÜØ›Üˆ]Y]‚‚ˆ\È™]™\ˆ˜XœšXØ]\È^XÝ][ÛŽˆÚ[ˆ›Ý][™È\È›ØÚÙY
+›È[YÚX›BˆØ[™Y]JHÜˆ›È™X[š]™\ˆ^\ÝÈ›ÜˆHÙ[XÝY[[YKH™]\›™YˆÝ[[X\žHØ^\ÈÛÈ^XÚ]H
+^XÝ]Yˆ˜[ÙX
+H˜]\ˆ[ˆÚÚ\[™ÈÚ[[BˆÜˆ™][™[™ÈH™\Ý[ˆHš]™\ˆ[›ØØ][Ûˆ˜Z[\™H
+Z\ÜÚ[™Èš[˜\žK]]ÜÛXÞBˆ›ØÚË[Y[Ý]
+H\È]Ù[ˆHÙ[Z[™KÛ™\ÝK\™\ÜYÝ]ÛÛYHKHØ\\™Y[ˆBˆ\œÚ\ÝY[[YKY^XÝ][Û‹\™XÙZ\^XÝH\ÈØœÙ\™Y‚ˆˆˆ‚ˆÝ[[X\žNˆXÝÜÝ‹[žWHHÂˆœ›Ý]YŽˆ˜[ÙK™^XÝ]YŽˆ˜[ÙKˆœ›Ý][™×ÙXÚ\Ú[Û—Ü™XÙZ\Žˆˆ‹œ[[YWÙ^XÝ][Û—Ü™XÙZ\Žˆˆ‹ˆBˆžN‚ˆ›Ý][™×Ü™XÙZ\HÜ›Ý]WÜ[[YWÙ›Ü—Ú][J][K™YÚ\ÝžO\™YÚ\ÝžJBˆ^Ù\
+[Ù[›Ý]\‘\œ›Ü‹[Ù[™YÚ\ÝžQ\œ›ÜŠH\È^Î‚ˆÝ[[X\žVÈ™\œ›Üˆ—HHˆžÝ\J^ÊK—×Û˜[YW×ßNˆÙ^ßH‚ˆ™]\›ˆÝ[[X\žBˆÝ[[X\žVÈœ›Ý]Y—HHYBˆÛÜÙ\ˆH[—Ù\ˆÈ›ÛÜ‚ˆÛÜÙ\‹›ZÙ\Š\™[ÏUYK^\ÝÛÚÏUYJBˆ›Ý][™×Ü]HÛÜÙ\ˆÈœ›Ý][™ËYXÚ\Ú[Û‹\™XÙZ\šœÛÛˆ‚ˆÝÜš]WÚœÛÛŠ›Ý][™×Ü]›Ý][™×Ü™XÙZ\
+BˆÝ[[X\žVÈœ›Ý][™×ÙXÚ\Ú[Û—Ü™XÙZ\—HHÝŠ›Ý][™×Ü]
+BˆÝ[[X\žVÈœÙ[XÝY—HH›Ý][™×Ü™XÙZ\™Ù]
+œÙ[XÝYŠBˆÝ[[X\žVÈ˜›ØÚÙY—HH›ÛÛ
+›Ý][™×Ü™XÙZ\™Ù]
+˜›ØÚÙYŠJBˆYˆ›Ý][™×Ü™XÙZ\™Ù]
+˜›ØÚÙYŠHÜˆ›Ý›Ý][™×Ü™XÙZ\™Ù]
+œÙ[XÝYŠN‚ˆÝ[[X\žVÈ˜›ØÚ×Ü™X\ÛÛˆ—HHÝŠ›Ý][™×Ü™XÙZ\™Ù]
+˜›ØÚ×Ü™X\ÛÛˆŠHÜˆˆŠBˆ™]\›ˆÝ[[X\žBˆÙ[XÝYH›Ý][™×Ü™XÙZ\ÈœÙ[XÝY—Bˆš]™\ˆHš]™\—Ù›Ü—Ü[[YJÙ[XÝY™Ù]
+œ[[YHŠJBˆYˆš]™\ˆ\È›Û™N‚ˆÝ[[X\žVÈœ™X\ÛÛˆ—HHˆ››È™X[š]™\ˆÚ\™Y›Üˆ[[YHÜÙ[XÝY™Ù]
+	Ü[[YIÊH\ŸH‚ˆ™]\›ˆÝ[[X\žBˆÛÛ^ÜXÚÈH][K™Ù]
+˜ÛÛ^ÜXÚÈŠHYˆ\Ú[œÝ[˜ÙJ][K™Ù]
+˜ÛÛ^ÜXÚÈŠKX\[™ÊH[ÙHßBˆÛØ[HÝŠÛÛ^ÜXÚË™Ù]
+™ÛØ[ŠHÜˆ][K™Ù]
+\Ú×ÚYŠHÜˆˆŠKœÝš\
+
+BˆYˆ›ÝÛØ[‚ˆÝ[[X\žVÈœ™X\ÛÛˆ—HH››È\ÚÈÛØ[^]˜Z[X›HÈ›Û\H[[YH‚ˆ™]\›ˆÝ[[X\žBˆ™\×Ü]H]
+ÝŠ][K™Ù]
+œ™\ÈŠHÜˆ‹ˆŠJBˆÛÛ^Ü™\]Y\ÝˆÜ[Û˜[Ô[[YPÛÛ^™\]Y\ÝHH›Û™BˆYˆ[
+ÛÛ^ÜXÚË™Ù]
+Ù^JH›ÜˆÙ^H[ˆ
+ˆ›X\\—Ù[™[ÜWÚ\Ú‹œ[—Ú\Ú‹˜]]Üš^™YÝ\™Ù]È‹\™Ù]‹ˆ
+JN‚ˆžN‚ˆÛÛ^Ü™\]Y\ÝH[[YPÛÛ^™\]Y\Ý
+ˆÛØ[YÛØ[ˆXØÙ\[˜ÙWØÜš]\šXO]\JÛÛ^ÜXÚË™Ù]
+˜XÜÈŠHÜˆÛÛ^ÜXÚË™Ù]
+˜XØÙ\[˜ÙWØÜš]\šXHŠHÜˆ
+
+JKˆÛÝ\˜ÙWÜÜ[œÏ]\JÛÛ^ÜXÚË™Ù]
+œÛÝ\˜ÙWÜÜ[œÈŠHÜˆ
+
+JKˆÛÝ\˜ÙWÜ™YœÏ]\JÛÛ^ÜXÚË™Ù]
+œÛÝ\˜ÙWÜ™YœÈŠHÜˆ
+
+JKˆ™\šYšXØ][Û—Ü›Ý]\Ï]\JÛÛ^ÜXÚË™Ù]
+™\šYšXØ][Û—Ü›Ý]\ÈŠHÜˆ
+
+JKˆÜ˜\Ù]šY[˜ÙO]\JÛÛ^ÜXÚË™Ù]
+™Ü˜\Ù]šY[˜ÙHŠHÜˆ
+
+JKˆÛZ\ÜÚ[ÛœÏ]\JÛÛ^ÜXÚË™Ù]
+›ÛZ\ÜÚ[ÛœÈŠHÜˆ
+
+JKˆ\ÝYØÛÛœÝ˜Z[Ï]\JÛÛ^ÜXÚË™Ù]
+\ÝYØÛÛœÝ˜Z[ÈŠHÜˆ
+
+JKˆ[\ÝYÙ]šY[˜ÙO]\JÛÛ^ÜXÚË™Ù]
+[\ÝYÙ]šY[˜ÙHŠHÜˆ
+
+JKˆ]]Üš^™YÝ\™Ù]Ï]\JÛÛ^ÜXÚË™Ù]
+˜]]Üš^™YÝ\™Ù]ÈŠHÜˆ
+
+JKˆ\™Ù]\ÝŠÛÛ^ÜXÚË™Ù]
+\™Ù]ŠHÜˆˆŠKˆ™[XZ[š[™×ØYÙ]ÝÚÙ[œÏZ[
+ÛÛ^ÜXÚË™Ù]
+œ™[XZ[š[™×ØYÙ]ÝÚÙ[œÈŠHÜˆ
+KˆX\\—Ù[™[ÜWÚ\Ú\ÝŠÛÛ^ÜXÚË™Ù]
+›X\\—Ù[™[ÜWÚ\ÚŠHÜˆˆŠKˆ[—Ú\Ú\ÝŠÛÛ^ÜXÚË™Ù]
+œ[—Ú\ÚŠHÜˆˆŠKˆ
+Bˆ™\Ý[Hš]™\‹™^XÝ]WØÛÛ^
+ˆÛÛ^Ü™\]Y\ÝÝÙ\™\×Ü]Yˆ™\×Ü]™^\ÝÊ
+H[ÙH›Û™Kˆ^XÝYÛX\\—Ù[™[ÜWÚ\Ú\ÝŠÛÛ^ÜXÚË™Ù]
+›X\\—Ù[™[ÜWÚ\ÚŠJKˆ^XÝYÜ[—Ú\Ú\ÝŠÛÛ^ÜXÚË™Ù]
+œ[—Ú\ÚŠJKˆ
+Bˆ^Ù\
+ÛÛ^]]Üš^˜][Û‘\œ›Ü‹ÛÛ^YÙ]\œ›Ü‹\Q\œ›Ü‹˜[YQ\œ›ÜŠH\È^Î‚ˆÝ[[X\žVÈ™\œ›Üˆ—HHˆ”[[YPÛÛ^\œ›ÜŽˆÙ^ßH‚ˆ™]\›ˆÝ[[X\žBˆ[ÙN‚ˆ™\Ý[Hš]™\‹™^XÝ]JÛØ[ÝÙ\™\×Ü]Yˆ™\×Ü]™^\ÝÊ
+H[ÙH›Û™JBˆ˜\ÙWÜÚHHˆ‚ˆXYÜÚHHˆ‚ˆÚ[™ÙYˆ\ÝÜÝ—HH×BˆYˆ™\×Ü]™^\ÝÊ
+N‚ˆš[™Ù\œš[HÜ™\×Ùš[™Ù\œš[
+™\×Ü]
+Bˆ˜\ÙWÜÚHHXYÜÚHHÝŠš[™Ù\œš[™Ù]
+šXYŠHÜˆˆŠBˆžN‚ˆÚ[™ÙYHØÚ[™ÙYÜ]Ê™\×Ü]
+Bˆ^Ù\^Ù\[ÛŽ‚ˆÚ[™ÙYH×BˆžN‚ˆ^XÝ][Û—Ü™XÙZ\Hš]™\‹˜Z[Ü™XÙZ\
+ˆ›Ý]WÚYZ\ÚX‹œÚLMŠœÛÛ‹™[\Ê›Ý][™×Ü™XÙZ\ÛÜÚÙ^\ÏUYJK™[˜ÛÙJ]‹NŠJKš^YÙ\Ý
+
+VÎŒM—Kˆ™\]Y\ÝY^Èœ[[YHŽˆÙ[XÝY™Ù]
+œ[[YHŠKœ›ÝšY\ˆŽˆÙ[XÝY™Ù]
+œ›ÝšY\ˆŠKˆ›[Ù[ÚYŽˆÙ[XÝY™Ù]
+›[Ù[ÚYŠK™\šYšYYŽˆY_KˆÙ\ÜÚ[Û^ÂˆÛÜšÙ\—ÚYŽˆÝŠ][K™Ù]
+ÛÜšÙ\—ÚYŠHÜˆˆŠKˆ™]šXÙWÚYŽˆÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÑU’PÑWÒQ‹ˆŠKˆ˜][\ÚYŽˆÝŠ][K™Ù]
+\Ú×Ú[™^ŠHÜˆˆŠKˆ›X\ÙWÚYŽˆˆ‹™™[˜ÙWÝÚÙ[ˆŽˆˆ‹ˆKˆ™\Ý[\™\Ý[ˆ™YO^È˜˜\ÙWÜÚHŽˆ˜\ÙWÜÚKšXYÜÚHŽˆXYÜÚK˜Ú[™ÙYÜ]ÈŽˆÚ[™ÙYKˆ]šY[˜ÙWÜ™YœÏJˆÈœ[[YKXÛÛ^ˆˆ
+ÈÛÛ^Ü™\]Y\Ýœ™\]Y\ÝÚ\Úˆ›X\\‹Y[™[ÜNˆˆ
+ÈÛÛ^Ü™\]Y\Ý›X\\—Ù[™[ÜWÚ\Úˆœ[Žˆˆ
+ÈÛÛ^Ü™\]Y\Ýœ[—Ú\ÚBˆYˆÛÛ^Ü™\]Y\Ý\È›Ý›Û™H[ÙH›Û™Bˆ
+Kˆ
+Bˆ^Ù\[[YQ^XÝ][Û”™XÙZ\\œ›Üˆ\È^Î‚ˆÝ[[X\žVÈ™\œ›Üˆ—HHˆžÝ\J^ÊK—×Û˜[YW×ßNˆÙ^ßH‚ˆ™]\›ˆÝ[[X\žBˆ^XÝ][Û—Ü]HÛÜÙ\ˆÈœ[[YKY^XÝ][Û‹\™XÙZ\šœÛÛˆ‚ˆÝÜš]WÚœÛÛŠ^XÝ][Û—Ü]^XÝ][Û—Ü™XÙZ\
+BˆÝ[[X\žVÈ™^XÝ]Y—HHYBˆÝ[[X\žVÈœ[[YWÙ^XÝ][Û—Ü™XÙZ\—HHÝŠ^XÝ][Û—Ü]
+BˆÝ[[X\žVÈ™^XÝ][Û—ÛÚÈ—HH›ÛÛ
+™\Ý[›ÚÊBˆÝ[[X\žVÈ™^XÝ][Û—ÜÝÜÜ™X\ÛÛˆ—HH™\Ý[œÝÜÜ™X\ÛÛ‚ˆÝ[[X\žVÈ™^XÝ][Û—Ù\œ›Üˆ—HH™\Ý[™\œ›Ü‚ˆ™]\›ˆÝ[[X\žB‚‚™YˆØ]]×ÝÛÜšÝ™YWÙ\Ü]Ú
+ˆ™\ÎˆÝ‹ˆ[—ÚYˆÝ‹ˆÛÛ˜XÝˆX\[™ÖÜÝ‹[žWKˆ[ŽˆX\[™ÖÜÝ‹[žWKˆ[™XÙ\ÎˆÙ\]Y[˜ÙVÚ[KŠHOˆ\VÐ[žKXÝÚ[XÝÜÝ‹[žWWKÝ—N‚ˆˆˆZ[[ˆ\ÛÛ]Y]Y]YH›ÜˆHY˜][˜]ÚÚ[ˆ\ÚÈ[\XÝ\È[™\[™[‚‚ˆ\È[\ˆ[[[Û˜[H˜Z[ÈÛÜÙYˆZ\ÜÚ[™È[ˆ\™Ù]ËH›Û‹YÚ]ÚXÚÛÝ][‚ˆÝ™\›\[™È[\XÝÙ^KÜˆH]Y]YH[ØØ][Ûˆ\œ›Üˆ[X]™HHØ[\ˆÚ]Bˆ^\Ý[™ÈÚ\™Y\[ˆÙ\šX[]ˆ]™]™\ˆÛZ[\È\˜[[^XÝ][ÛˆÚ]Ý]\Ý[˜ÝˆÛÜšÝ™YHÛÛ^Ë‚ˆˆˆ‚ˆYˆ›ÝØ]]×Ù˜[—ÛÝ]Ù[˜X›Y
+
+HÜˆ[Š[™XÙ\ÊHŽ‚ˆ™]\›ˆ›Û™KßK˜]]×Ù˜[—ÛÝ]Ù\ØX›YˆYˆ›ÝØ]]×Ù˜[—ÛÝ]Ù[˜X›Y
+
+H[ÙHœÚ[™ÛWÝ\ÚÈ‚ˆ›ÛÝH]
+™\ÊKœ™\ÛÛ™J
+BˆYˆ›Ý
+›ÛÝÈ‹™Ú]ŠK™^\ÝÊ
+N‚ˆ™]\›ˆ›Û™KßK››ÝÙÚ]ØÚXÚÛÝ]‚ˆžN‚ˆœ›ÛHØÜš\ËÛÜšÝ™YWÜ]Y]YH[\Ü\ÚÔÜXËÛÜšÝ™YT]Y]YBˆ^Ù\[\Ü\œ›ÜŽˆÈ˜YÛXNˆ›ÈÛÝ™\ˆH[œÝ[Y[™HÚ]Ý]Ü[Û˜[Y\\‚ˆžN‚ˆœ›ÛHÛÜšÝ™YWÜ]Y]YH[\Ü\ÚÔÜXËÛÜšÝ™YT]Y]YBˆ^Ù\[\Ü\œ›ÜŽ‚ˆ™]\›ˆ›Û™KßKÛÜšÝ™YWØY\\—Ý[˜]˜Z[X›H‚‚ˆ\ÚÜÈH\Ý
+ÛÛ˜XÝ™Ù]
+\ÚÜÈŠHÜˆ×JBˆÝ\ÈH\Ý
+[‹™Ù]
+œÝ\ÈŠHÜˆ×JBˆÜXÜÈH×BˆÛÛ^ÎˆXÝÚ[XÝÜÝ‹[žWWHHßBˆ›Üˆ[™^[ˆ[™XÙ\Î‚ˆYˆ[™^ˆ[Š\ÚÜÊHÜˆ[™^ˆ[ŠÝ\ÊN‚ˆ™]\›ˆ›Û™KßKœ[—Ý\Ú×ÛZ\ÛX]Ú‚ˆÝ\HÝ\ÖÚ[™^HWHYˆ\Ú[œÝ[˜ÙJÝ\ÖÚ[™^HWKX\[™ÊH[ÙHßBˆ\™Ù]ÈHÜÝŠ˜[YJH›Üˆ˜[YH[ˆ
+Ý\™Ù]
+˜Ø[™Y]WÝ\™Ù]ÈŠHÜˆ×JHYˆÝŠ˜[YJKœÝš\
+
+WBˆÈHÛÜšÝ™YHÚ]Ý][ˆ]]Üš^™Y\™Ù]Ø[››Ý™H^XÝ]YÈÙ\šX[˜[˜XÚÈÚ]™\ÂˆÈHØ[\ˆHØ[YHÛX\ˆ™Y›YÚ˜Z[\™H[œÝXYÙˆX[Y˜XÝ\š[™ÈH[™K‚ˆYˆ›Ý\™Ù]Î‚ˆ™]\›ˆ›Û™KßK›Z\ÜÚ[™×Ü[—Ý\™Ù]È‚ˆ\Ú×ÚYHˆžÜ[—ÚYK]\ÚË^Ú[™^H‚ˆÜXÜË˜\[™
+\ÚÔÜXÊY]\Ú×ÚYÛØ[WÝ\Ú×ÙÛØ[
+\ÚÜÖÚ[™^HWJKš[\×ØY™™XÝY]\™Ù]ÊJBˆÜ˜\HÛÜšÝ™YT]Y]YK˜ÛÛ™›XÝÙÜ˜\
+ÜXÜÊBˆYˆ[žJÜ˜\˜[Y\Ê
+JN‚ˆ™]\›ˆ›Û™KßK›Ý™\›\[™×Ý\Ú×Ú[\XÝÈ‚ˆžN‚ˆ]Y]YHHÛÜšÝ™YT]Y]YJˆ™\×Ü›ÛÝ\ÝŠ›ÛÝ
+Kˆ[—ÚY\[—ÚYˆÝ]WÜ]\ÝŠ›ÛÝÈ‹œÚ[\XÚ[ÈˆÈ›ÛÜ\[œÈˆÈ[—ÚYÈÛÜšÝ™YK\]Y]YKšœÛÛˆŠKˆÛÜšÝ™YWÜ›ÛÝ\ÝŠ›ÛÝÈ‹œÚ[\XÚ[ÈˆÈ›ÛÜ]ÛÜšÝ™Y\ÈˆÈ[—ÚY
+Kˆ
+BˆÈ™YÚ\Ý˜][Ûˆ\È[ˆ^XÚ]™Y›YÚØ]Kˆ[ØØ][Ûˆ\[œÈ[œÚYHBˆÈ\Ü]Ú\‹™Y›Ü™H[žHÛÜšÙ\ˆÝ\Ë[™\È\œÚ\ÝYžHH]Y]YK‚ˆ]Y]YKœ™YÚ\Ý\—Ý\ÚÜÊÜXÜÊBˆ^Ù\^Ù\[ÛŽ‚ˆ™]\›ˆ›Û™KßKÛÜšÝ™YWÜ™Y›YÚÙ˜Z[Y‚ˆ›Üˆ[™^ÜXÈ[ˆš\
+[™XÙ\ËÜXÜÊN‚ˆÛÛ^ÖÚ[™^HHÂˆ\Ú×ÚYŽˆÜXËšYˆ\Ú×ÜÜXÈŽˆÂˆšYŽˆÜXËšYˆ™ÛØ[ŽˆÜXË™ÛØ[ˆ™š[\×ØY™™XÝYŽˆ\Ý
+ÜXË™š[\×ØY™™XÝY
+KˆKˆš\ÛÛ][ÛˆŽˆÛÜšÝ™YH‹ˆš\ÛÛ][Û—ÚÙ^HŽˆÜXËšYˆBˆ™]\›ˆ]Y]YKÛÛ^Ëˆ‚‚‚™YˆÝÜš]WÜØÜ˜]ÚY
+ÛÜÙ\Žˆ]ÛØ[ˆÝ‹X^Ú]\˜][ÛœÎˆ[›ÛZ\ÙNˆÝŠHOˆ›Û™N‚ˆ›ÙHH—ˆ‹š›Ú[ŠˆÂˆ‹KKH‹ˆš]\˜][ÛŽˆH‹ˆˆ›X^Ú]\˜][ÛœÎˆÛX^Ú]\˜][ÛœßH‹ˆ‰ØÛÛ\][Û—Ü›ÛZ\ÙNˆžÜ›ÛZ\Ù_H‰Ëˆ™]šY[˜ÙWÜ™\]Z\™YˆYH‹ˆ›[ÙNˆÛÛ™\™ÙH‹ˆ‰ÜÝ\YØ]ˆž×Û›ÝÊ
+_H‰Ëˆ‹KKH‹ˆˆ‹ˆÛØ[ˆˆ‹ˆBˆ
+Bˆ
+ÛÜÙ\ˆÈœØÜ˜]ÚY›YŠKÜš]WÝ^
+›ÙK[˜ÛÙ[™ÏH]‹NŠB‚‚™YˆÝÜš]WÝØ]Ú\—ØÚ[[™ÙJÛÜÙ\Žˆ]ÛØ[ÙœˆÝŠHOˆ›Û™N‚ˆ^[ØYHÂˆ˜Ú[[™ÙHŽˆˆØÚ^×Ü˜[™ÝÚÙ[ŠLŠ_H‹ˆš]\˜][ÛˆŽˆKˆ™ÛØ[ÙœŽˆÛØ[ÙœˆÜš][—Ø]ŽˆÛ›ÝÊ
+KˆBˆÝÜš]WÚœÛÛŠÛÜÙ\ˆÈØ]Ú\—ØÚ[[™ÙKšœÛÛˆ‹^[ØY
+B‚‚™YˆÝ˜[œÚ][ÛŠ[—Ù\Žˆ]Ý]NˆXÝÜÝ‹[žWK×Ü\ÙNˆÝ‹™X\ÛÛŽˆÝ‹ˆ™XÙZ\ˆÝˆHˆ‹^˜NˆXÝÜÝ‹[žWH›Û™HH›Û™JHOˆXÝÜÝ‹[žWN‚ˆYˆ×Ü\ÙH›Ý[ˆTÑTÎ‚ˆ˜Z\ÙH˜[YQ\œ›ÜŠˆš[˜[Y\ÙHÝ×Ü\ÙH\ŸHŠBˆ[žHHÂˆÈŽˆÛ›ÝÊ
+Kˆ™œ›ÛHŽˆÝ]K™Ù]
+œ\ÙHŠKˆÈŽˆ×Ü\ÙKˆœ™X\ÛÛˆŽˆ™X\ÛÛ‹ˆœ™XÙZ\Žˆ™XÙZ\ˆBˆYˆ^˜N‚ˆ[žVÈ™^˜H—HH^˜Bˆ\ÝÜžHHÝ]KœÙ]Y˜][
+š\ÝÜžH‹×JBˆ\ÝÜžK˜\[™
+[žJBˆÝ]VÈœ\ÙH—HH×Ü\ÙBˆÝ]VÈ\]YØ]—HH[žVÈÈ—BˆÝÜš]WÚœÛÛŠ[—Ù\ˆÈœÝ]KšœÛÛˆ‹Ý]JBˆØ\[™ÚœÛÛ›
+[—Ù\ˆÈ˜[œÚ][ÛœËšœÛÛ›‹[žJBˆÜ™XÛÜ™Ù]™[
+[—Ù\‹Ý]KÂˆœ\ÙHŽˆœ\ÙWÝ˜[œÚ][Ûˆ‹ˆ×Ü\ÙHŽˆ×Ü\ÙKˆ™œ›ÛWÜ\ÙHŽˆ[žVÈ™œ›ÛH—Kˆœ™X\ÛÛˆŽˆ™X\ÛÛ‹ˆœ™XÙZ\Žˆ™XÙZ\ˆK˜[œÚ][Û—Ù^˜OY^˜JBˆ™]\›ˆÝ]B‚‚ˆÈØ[›ÛšXØ[\ÙKY]™[Ú[™ÈÛÛœÝ[YYžHÚ[\XÚ[×ÛÛÜœ›ÙÜ™\ÜË˜Z[Ü›ÙÜ™\ÜÈ
+ÌNJK‚—ÔTÑWÑU‘S•ÒÒS‘ÈHÂˆš[ZÙH‹›X\[™È‹œ[›š[™È‹™^XÝ][™È‹˜[Y][™È‹ˆØ]Ú[™È‹™[]™\š[™È‹™Û™H‹œ\X[‹˜›ØÚÙY‹˜Ø[˜Ù[Y‹ˆ˜]ØZ][™×ÙXÚ\Ú[Ûˆ‹›X\\—Ùœ™\Ú‹Ø]Ú\—ØÚ[[™ÙH‹›Ü\˜]Ü—Ü™XÙZ\‹ˆÛÜšÙ\—ØÛZ[YY‹ÛÜšÝ™YWØÜ™X]Y‹\ÝÙØ]H‹˜ÛÛ\][Û—Ý™\™XÝ‹ŸB‚‚™YˆÜ™XÛÜ™Ù]™[
+[—Ù\Žˆ]Ý]NˆXÝÜÝ‹[žWK]™[ˆXÝÜÝ‹[žWKˆ˜[œÚ][Û—Ù^˜NˆXÝÜÝ‹[žWH›Û™HH›Û™JHOˆXÝÜÝ‹[žWN‚ˆˆˆ\[™Û™H›Ü›X[^™Y›ÙÜ™\ÜÈ]™[ÈÝ]VÉÙ]™[É×X
+ÌNJK‚‚ˆ]™\žHÛÜÝYÙH[Z]È\ÙHÛÈ^\›˜[\Ú›Ø\™È[™\ÈØ[ˆ™[™\‚ˆ™X[\‹\ÝYÙH›ÙÜ™\ÜÈ
+ÙYHØÜËÔ“ÑÔ‘TÔ×Ô“ÕÐÓÓ›Y
+Kˆ›ÙÜ™\ÜËœXˆ[™XYH›Ü›X[^™\È[™™[™\œÈÝ]VÉÙ]™[É×XÈ™]š[Ý\ÛHH[›™\‚ˆ™]™\ˆÜ[]Y]‚ˆˆˆ‚ˆ]™[HXÝ
+]™[
+Bˆ]™[œÙ]Y˜][
+œØÚ[XH‹U‘S•ÓQUQUWÔÐÒSPJBˆ]™[œÙ]Y˜][
+œØÛÜH‹[™™\—ÜØÛÜJ]™[
+JBˆ]™[œÙ]Y˜][
+™]™[ÚY‹™]Hˆ
+È\ÚX‹œÚLMŠˆ
+œÛÛ‹™[\Ê]™[ÛÜÚÙ^\ÏUYK[œÝ\™WØ\ØÚZOQ˜[ÙJH
+ÈÛ›ÝÊ
+JK™[˜ÛÙJ]‹NŠBˆ
+Kš^YÙ\Ý
+
+VÎŒL—JBˆ]™[œÙ]Y˜][
+È‹Û›ÝÊ
+JBˆ]™[œÙ]Y˜][
+œ[—ÚY‹Ý]K™Ù]
+œ[—ÚY‹ˆŠJBˆ]™[œÙ]Y˜][
+œ\ÙH‹Ý]K™Ù]
+œ\ÙH‹ˆŠJBˆ\Ú×ÚYÈHÝ]K™Ù]
+\Ú×ÚYÈŠHÜˆ×BˆX×ÚYÈHÝ]K™Ù]
+˜X×ÚYÈŠHÜˆ×BˆYˆ]™[™Ù]
+œØÛÜHŠHOH˜ÛÛXÝ[ÛˆŽ‚ˆ]™[È\Ú×ÚY—HH›Û™Bˆ[Yˆ›Ý]™[™Ù]
+\Ú×ÚYŠH[™\Ú×ÚYÎ‚ˆ]™[È\Ú×ÚY—HH\Ú×ÚYÖÌBˆYˆ›Ý]™[™Ù]
+˜X×ÚYÈŠH[™X×ÚYÎ‚ˆ]™[È˜X×ÚYÈ—HH\Ý
+X×ÚYÊBˆYˆ›Ý]™[™Ù]
+œ™XÙZ\ŠH[™›Ý]™[™Ù]
+˜›ØÚÙ\ˆŠN‚ˆ]™[È˜›ØÚÙ\ˆ—HH]™[™Ù]
+œ™X\ÛÛˆŠHÜˆ]™[™Ù]
+›Y\ÜØYÙHŠHÜˆˆ‚ˆÚ[™H]™[™Ù]
+šÚ[™ŠHÜˆ]™[™Ù]
+œ\ÙHŠBˆYˆÚ[™[ˆÔTÑWÑU‘S•ÒÒS‘È[™šÚ[™ˆ›Ý[ˆ]™[‚ˆ]™[ÈšÚ[™—HHÚ[™ˆYˆ˜[œÚ][Û—Ù^˜H[™™^˜Hˆ›Ý[ˆ]™[‚ˆ]™[È™^˜H—HH˜[œÚ][Û—Ù^˜Bˆ]™[ÈHÝ]KœÙ]Y˜][
+™]™[È‹×JBˆ]™[Ë˜\[™
+]™[
+BˆÝ]VÈ\]YØ]—HH]™[ÈÈ—BˆÝÜš]WÚœÛÛŠ[—Ù\ˆÈœÝ]KšœÛÛˆ‹Ý]JBˆØ\[™ÚœÛÛ›
+[—Ù\ˆÈ™]™[ËšœÛÛ›‹]™[
+BˆÜÞ[˜×ÙÚ]X—ÛY™XÞXÛJ[—Ù\‹Ý]K]™[
+BˆÈÜÝ[YÜ˜][ÛœÈ
+Ü˜ØHØ\™Ë›Ø\™ËÚ]
+H\™H‘U‘TˆY˜][8 %Û›HÚ[‚ˆÈHÛY[^XÚ]H™\]Y\ÝY[HšXHÒSTPÒS×ÓÓÔÐÓQS•ÒS•QÔUSÓ”ÂˆÈÈœÚ[\XÚ[ËØÛY[Z[YÜ˜][ÛœËšœÛÛˆ
+ÙYHÛY[Ú[YÜ˜][ÛœËœJK‚ˆYˆ[YÜ˜][Û—Ù[˜X›Y
+›Ü˜ØHŠN‚ˆÜÞ[˜×ÛÜ˜ØWÛY™XÞXÛJ[—Ù\‹Ý]K]™[
+Bˆ™]\›ˆÝ]B‚‚™YˆÜÞ[˜×ÛÜ˜ØWÛY™XÞXÛJ[—Ù\Žˆ]Ý]NˆXÝÜÝ‹[žWK]™[ˆXÝÜÝ‹[žWJHOˆ›Û™N‚ˆˆˆ”›Ú™XÝY™XÞXÛHÛÈ[ˆÜ˜ØHÛÜšÝ™YHØ\™
+Š›Û›JŠˆ›ÜˆÜ˜ØHÛY[Ë‚‚ˆ›ÝHÛÜ™HÛÜÛÚËˆ™\]Z\™\ÈÛY[ÜZ[ˆšXBˆ[YÜ˜][Û—Ù[˜X›Y
+›Ü˜ØHŠX
+Ø[\ˆ[™XYHØ]Y
+KˆZ\ÜÚ[™ÈÜ˜ØHÛÛ^ˆ\ÈH\YÚÚ\8 %™]™\ˆH[]™\žH˜Z[\™K‚ˆˆˆ‚ˆY™XÞXÛWÜÝ]HHÙÚ]X—ÛY™XÞXÛK›Y™XÞXÛWÜÝ]WÙ›Ü—Ü\ÙWÙ]™[
+ˆÝŠ]™[™Ù]
+šÚ[™ŠHÜˆ]™[™Ù]
+œ\ÙHŠHÜˆˆŠJBˆYˆ›ÝY™XÞXÛWÜÝ]N‚ˆ™]\›‚ˆžN‚ˆ™XÙZ\HÞ[˜×ÛÜ˜ØWÜÝ]\ÊˆÝ]KÊŠ™]™[›Y™XÞXÛWÜÝ]HŽˆY™XÞXÛWÜÝ]_Kˆ
+BˆØ\[™ÚœÛÛ›
+[—Ù\ˆÈ›Ü˜ØK\Þ[˜ËšœÛÛ›‹Âˆœ[—ÚYŽˆÝŠÝ]K™Ù]
+œ[—ÚYŠHÜˆˆŠKˆ™]™[ŽˆÝŠ]™[™Ù]
+šÚ[™ŠHÜˆ]™[™Ù]
+œ\ÙHŠHÜˆˆŠKˆ
+Šœ™XÙZ\ˆJBˆ^Ù\^Ù\[Ûˆ\È^ÎˆÈ›ÜXNˆ“LHKHÜ[Û˜[ÜÝ[YÜ˜][Ûˆ\È˜Z[[Ü[‚ˆžN‚ˆØ\[™ÚœÛÛ›
+[—Ù\ˆÈ›Ü˜ØK\Þ[˜ËY\œ›ÜœËšœÛÛ›‹Âˆœ[—ÚYŽˆÝŠÝ]K™Ù]
+œ[—ÚYŠHÜˆˆŠK™\œ›ÜˆŽˆÝŠ^ÊKˆJBˆ^Ù\^Ù\[ÛŽ‚ˆ\ÜÂ‚‚™YˆÙÚ]X—ÜÛÝ\˜ÙWØY\\ŠÝÛ™\ŽˆÝ‹™\ÎˆÝ‹
+‹X›\ÚØÛÛ[Y[Ù›ŽˆØ[X›KˆÝ]›ÞÙ\ŽˆÜ[Û˜[ÜÝˆ]HH›Û™JHOˆÚ]X”ÛÝ\˜ÙPY\\Ž‚ˆˆˆ“Û™HÛÛœÝXÝ[ÛˆÚ[›ÜˆHÌŽHÚ]X”ÛÝ\˜ÙPY\\˜š[™[™È[›™\‹œH\Ù\ËˆÛÈ]™\žH[›™\ˆØ[Ú]HÛÙ\È›ÝYÚHÛÝ\˜ÙPY\\˜›ÝØÛÛÝ\™˜XÙH[œÝXYˆÙˆØ[[™ÈÚ]X—ÛY™XÞXÛKœX	ÜÈœ™YH[˜Ý[ÛœÈ\™XÝKˆØ[YHY˜][Âˆ
+ÝXœ›ØÙ\ÜËœ[˜ŒÈ[Y[Ý]
+HÚ]X—ÛY™XÞXÛKœX›\ÚÛY™XÞXÛWÜÝ]J
+X]Ù[‚ˆY˜][ÈÈKH\È\ÈHš[™[™Ë›ÝH™Z]š[ÜˆÚ[™ÙK‚ˆˆˆ‚ˆ™]\›ˆÚ]X”ÛÝ\˜ÙPY\\ŠÝÛ™\‹™\ËX›\ÚØÛÛ[Y[Ù›\X›\ÚØÛÛ[Y[Ù›‹Ý]›ÞÙ\[Ý]›ÞÙ\ŠB‚‚™YˆÜÞ[˜×ÙÚ]X—ÛY™XÞXÛJ[—Ù\Žˆ]Ý]NˆXÝÜÝ‹[žWK]™[ˆXÝÜÝ‹[žWJHOˆ›Û™N‚ˆˆˆ”›Ú™XÝÛ™H\ÙH]™[ÛÈHÌŽHÚ]XˆY™XÞXÛHØ[›ÛšXØ[ÛÛ[Y[‚‚ˆ™\ÝYY™›Ü[™˜Z[[Ü[‹^XÝHZÙHH^\Ý[™È—Ù]šY[˜ÙKœBˆ›ÙÜ™\ÜËXÛÛ[Y[ÛÛ[X[™]ÛÛ\[Y[Îˆ[˜X›YÚ[™]™\ˆH[ˆÝ]BˆØ\œšY\ÈHÛÝ\˜ÙWÚ\ÜÝYXXÝ
+È›ÝÛ™\ˆŽˆ‹‹‹œ™\ÈŽˆ‹‹‹š\ÜÝYHŽˆ‹‹ŸX
+K‚ˆÒSTPÒS×ÓÓÔÑÒUP—ÓQ‘PÖPÓWÔÖSÏL
+Üˆ[›Ý\ˆ^XÚ]˜[ÞH˜[YJBˆ\ÈH[\Ü˜\žHYØXÞHÜ[Ý]ÈX]š[™È][œÙ]ÙY\ÈÚ]XˆÛÛÜ™[˜][ÛˆÛ‹‚ˆ[žBˆ˜Z[\™H
+›ÈÚ›È™]ÛÜšË˜[œÜÜ\œ›Ü‹[\Ü\œ›ÜŠH\ÈÙÙÙYÂˆY™XÞXÛK\Þ[˜ËY\œ›ÜœËšœÛÛ›[™\ˆH[ˆ\™XÝÜžH[™ÝØ[ÝÙYKH\ÂˆÞ[˜È]\Ý™]™\ˆX›ÜÜˆ˜Z[H[‹ˆ]Û›H]™\ˆ[™\ÈH[\›YYX]BˆY™XÞXÛH›Ú™XÝ[Ûˆ
+ÓRSQQÔS“‘QÒS—Ô“ÑÔ‘TÔËË‹‹ŠNÈH]]Üš]]]™Kˆ˜Z[XÛÜÙYÛÜÙHÜ\˜][Ûˆ\Âˆ™[˜Î˜Ú[\XÚ[×ÛÛÜ™Ú]X—ÛY™XÞXÛK˜ÛÜÙWÜÛÝ\˜ÙWÚ\ÜÝYX[›ÚÙY^XÚ]H]ˆÛÛ\][Ûˆ[YHžHHØ[\ˆ]ÝÛœÈ]XÚ\Ú[Û‹™]™\ˆ]]ÛX]XØ[Hœ›ÛBˆ\ÈÙ[™\šXÈ\‹Y]™[ÛÚË‚ˆˆˆ‚ˆYˆÝŠÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÑÒUP—ÓQ‘PÖPÓWÔÖSÈŠHÜˆˆŠKœÝš\
+
+K›ÝÙ\Š
+H[ˆ
+ˆŒ‹™˜[ÙH‹››È‹›Ù™ˆ‹›YØXÞH‹ˆ
+N‚ˆ™]\›‚ˆÛÝ\˜ÙWÚ\ÜÝYHHÝ]K™Ù]
+œÛÝ\˜ÙWÚ\ÜÝYHŠHÜˆßBˆÝÛ™\‹™\Ë\ÜÝYHHÛÝ\˜ÙWÚ\ÜÝYK™Ù]
+›ÝÛ™\ˆŠKÛÝ\˜ÙWÚ\ÜÝYK™Ù]
+œ™\ÈŠKÛÝ\˜ÙWÚ\ÜÝYK™Ù]
+š\ÜÝYHŠBˆYˆ›Ý
+ÝÛ™\ˆ[™™\È[™\ÜÝYJN‚ˆ™]\›‚ˆY™XÞXÛWÜÝ]HHÙÚ]X—ÛY™XÞXÛK›Y™XÞXÛWÜÝ]WÙ›Ü—Ü\ÙWÙ]™[
+ˆÝŠ]™[™Ù]
+šÚ[™ŠHÜˆ]™[™Ù]
+œ\ÙHŠHÜˆˆŠJBˆYˆ›ÝY™XÞXÛWÜÝ]N‚ˆ™]\›‚ˆžN‚ˆØÜš\×Ù\ˆHÝŠ]
+×Ùš[W×ÊKœ™\ÛÛ™J
+Kœ\™[œ\™[ÈœØÜš\ÈŠBˆYˆØÜš\×Ù\ˆ›Ý[ˆÞ\Ëœ]‚ˆÞ\Ëœ]š[œÙ\
+ØÜš\×Ù\ŠBˆœ›ÛH—Ù]šY[˜ÙH[\ÜX›\ÚØÛÛ[Y[\ÈÜX›\ÚØÛÛ[Y[ÈØØ[[\ÜˆÜ[Û˜[\‚ˆÈÌŽH™[XZ[š[™ÈØ\ˆ›Ú™XÝH[‰ÜÈ™X[Y[]KÜ[[YKÙ]šXÙKÛX\ÙKÂˆÈœ˜[˜ÚÛÈH™[™\™YÛÛ[Y[[œÝXYÙˆX]š[™ÈÜÙHšY[È›[šÈ]™[‚ˆÈÝYÚ™[™\—ÛY™XÞXÛWØÛÛ[Y[Ý\ÜÈ[Kˆ]™[Ú[œÈÝ™\ˆ\š]™YˆÈY˜][ÈÚ[ˆH[Z][™ÈØ[Ú]H[™XYHÛ›ÝÜÈ]ÈX\ÙKØœ˜[˜Ú
+K™Ë‚ˆÈ^XÝ]WÛÜ\˜]ÜŠ
+X	ÜÈÝX\™Y\Ü]ÚÚXÚ\ÈH™X[ÛÜšÒ][P][\ˆÈX\ÙH[™ÛÜšÝ™YHœ˜[˜ÚÛˆ[™
+NÈÝ\Ú\ÙH˜[˜XÚÈÈH™\ÝYY™›ÜˆÈØØ[Y[]KØœ˜[˜ÚÛÚÝ\ÛÈHZ[ˆÙ\]Y[X[[ˆ\È›Ý›[šÈZ]\‹‚ˆ™\×Ü]HÜ[—Ü™\×Ü]
+[—Ù\ŠBˆY[]HHÙ\Ü]ÚÚY[]WÙšY[Ê™\×Ü]
+BˆX\ÙHHÝ]K™Ù]
+›X\ÙHŠHYˆ\Ú[œÝ[˜ÙJÝ]K™Ù]
+›X\ÙHŠKX\[™ÊH[ÙHßBˆX\ÙWÚYHÝŠ]™[™Ù]
+›X\ÙWÚYŠHÜˆX\ÙK™Ù]
+›X\ÙWÚYŠHÜˆˆŠBˆ™[˜Ú[™×ÝÚÙ[ˆHÝŠ]™[™Ù]
+™™[˜Ú[™×ÝÚÙ[ˆŠHÜˆX\ÙK™Ù]
+™™[˜Ú[™×ÝÚÙ[ˆŠHÜˆˆŠBˆœ˜[˜ÚHÝŠˆ]™[™Ù]
+˜œ˜[˜ÚŠHÜˆÝ]K™Ù]
+˜œ˜[˜ÚŠBˆÜˆ
+ÙÚ]ØÝ\œ™[Øœ˜[˜Ú
+™\×Ü]
+HYˆ™\×Ü]\È›Ý›Û™H[ÙHˆŠBˆ
+BˆÛÜšÝ™YHHÝŠ]™[™Ù]
+ÛÜšÝ™YWÜ]ŠHÜˆÝ]K™Ù]
+ÛÜšÝ™YWÜ]ŠHÜˆˆŠB‚ˆÈÌŽH™[XZ[š[™ÈØ\ˆÛÈ›ÝYÚHÚ]X”ÛÝ\˜ÙPY\\˜›ÝØÛÛš[™[™ÂˆÈ[œÝXYÙˆØ[[™ÈÚ]X—ÛY™XÞXÛKœX›\ÚÛY™XÞXÛWÜÝ]J
+X\™XÝHKBˆÈØ[YH[™\›Z[™ÈØ[
+›È™Z]š[ÜˆÚ[™ÙJK]›ÝÈ^™\ÜÙY›ÝYÚBˆÈÚ[™ÛHY\\ˆÝ\™˜XÙH]™\žHÛÝ\˜ÙH
+Ú]XˆÜˆÝ\Ú\ÙJH\ÈYX[ÈYÂˆÈ[Ë‚ˆY\\ˆHÙÚ]X—ÜÛÝ\˜ÙWØY\\ŠÝŠÝÛ™\ŠKÝŠ™\ÊKX›\ÚØÛÛ[Y[Ù›WÜX›\ÚØÛÛ[Y[
+Bˆ™XÙZ\HY\\‹\]WÜÝ]\ÊˆÝŠ\ÜÝYJKY™XÞXÛWÜÝ]Kˆ[—ÚY\ÝŠÝ]K™Ù]
+œ[—ÚYŠHÜˆˆŠKˆ][\ÚY\ÝŠ]™[™Ù]
+\Ú×ÚYŠHÜˆÝ]K™Ù]
+œ[—ÚYŠHÜˆˆŠKˆ™[˜Ú[™×ÝÚÙ[Y™[˜Ú[™×ÝÚÙ[‹ˆ›ÙÜ™\ÜÏ\ÝŠ]™[™Ù]
+›Y\ÜØYÙHŠHÜˆˆŠKˆYÙ[ÚYZY[]K™Ù]
+˜YÙ[ÚY‹ˆŠKˆ[[YOZY[]K™Ù]
+œ[[YH‹ˆŠKˆ]šXÙOZY[]K™Ù]
+™]šXÙH‹ˆŠKˆX\ÙWÚY[X\ÙWÚYˆœ˜[˜ÚXœ˜[˜ÚˆÛÜšÝ™YO]ÛÜšÝ™YKˆ
+BˆÈ\œÚ\ÝH™XÙZ\[ÈH[ˆ\ˆÛÈHÛÛ\][ÛˆÜ˜XÛH
+ÌŽIÜÈ™[XZ[š[™ÈØ\‚ˆÈÓÔÑWÔS‘S‘×Ô‘PÓÓÒSPUSÓˆˆ]\ÝXÝX[HØ]HÓÓTUK›ÝÚ][™\
+HØ[ˆÙYH]‚ˆÈ\ÈÛÚÈÛ›H]™\ˆ›Ú™XÝÈ[\›YYX]HÝ]\ÎÈHÙ[Z[™BˆÈÓÔÑWÔS‘S‘×Ô‘PÓÓÒSPUSÓˆÛÛY\Èœ›ÛHH^XÚ]ÛÜÙWÜÛÝ\˜ÙWÚ\ÜÝYXØ[ÚXÚˆÈ\œÚ\ÝÈ]ÈÝÛˆ™XÙZ\HØ[YHØ^HKHÙYHÚ[\XÚ[×ÛÛÜÛÜ˜XÛKœX‚ˆÙÚ]X—ÛY™XÞXÛKœ\œÚ\ÝÛY™XÞXÛWÜ™XÙZ\
+™XÙZ\[—Ù\ŠBˆ^Ù\^Ù\[Ûˆ\È^ÎˆÈ›ÜXNˆ“LHKH™\ÝYY™›ÜÞ[˜Ë™]™\ˆ›ØÚÜÈHÛÜˆžN‚ˆØ\[™ÚœÛÛ›
+[—Ù\ˆÈ›Y™XÞXÛK\Þ[˜ËY\œ›ÜœËšœÛÛ›‹ˆÈÈŽˆÛ›ÝÊ
+KšÚ[™Žˆ]™[™Ù]
+šÚ[™ŠK™\œ›ÜˆŽˆÝŠ^Ê_JBˆ^Ù\^Ù\[ÛŽ‚ˆ\ÜÂ‚‚™YˆÛX^X™WØ]]×ØZ[Ü[›š[™×Ü™XÙZ\
+ˆ[—Ü›ÛÝˆ]Ý]NˆXÝÜÝ‹[žWK[—ÚYˆÝ‹ˆÛÛ˜XÝˆXÝÜÝ‹[žWK[ŽˆXÝÜÝ‹[žWK[—Ý˜[Y][ÛŽˆXÝÜÝ‹[žWKˆ™\×Ü]ˆÜ[Û˜[Ô]HH›Û™KŠHOˆ›Û™N‚ˆˆˆˆÌŽ™[XZ[š[™ÈØ\ˆÚ\™H[›š[™×ÙØ]K˜Z[Ü[›š[™×Ü™XÙZ\
+
+X[ÈBˆ‘PS\›WÜ[Š
+X\Ü]Ú]ÛÈH]]][Û‹X]]Üš]HØ]H[‚ˆ^XÝ]WÛÜ\˜]ÜŠ
+XØ^XÝ]WÛÜ\˜]Ü—Ø˜]Ú
+
+X\ÈÙ[‹\ÝY™šXÚY[[œÝXYˆÙˆÛ›H]™\ˆ™Z[™ÈØ]\ÙšXX›HžHHØ[\ˆ™[Y[X™\š[™ÈÈ[ˆHÙ\\˜]BˆØÜš\ËÜ[›š[™×ÙØ]KœHZ[ÓHš\œÝ‚‚ˆX[™]ÜžKXžKYY˜][šXH[›š[™×ÙØ]K˜]]×Ü[›š[™×Ü™XÙZ\Ù[˜X›Y
+
+XKBˆHØ[YHÛ\š]KY›\]\›ˆ]]][Û—Ø]]Üš]WÜ™\]Z\™Y
+
+X\ÙY›Ü‚ˆÒSTPÒS×Ô‘TURT‘WÓUUUSÓ—ÐUUÔ’UX
+ÌŽÈÌÍŒ
+Kˆ[œÙ]Ø›[šÈ›ÝÈYX[œÂˆÓŽˆ]™\žH™X[\›WÜ[Š
+X\Ü]ÚÙ[‹XZ[ÈHX]Ú[™Âˆ[›š[™Ë\™XÙZ\šœÛÛ˜ÛÈ^XÝ]WÛÜ\˜]ÜŠ
+XØ^XÝ]WÛÜ\˜]Ü—Ø˜]Ú
+
+Xˆ\™HÙ[‹\ÝY™šXÚY[[œÝXYÙˆÛ›H]™\ˆ™Z[™ÈØ]\ÙšXX›HžHHØ[\‚ˆ™[Y[X™\š[™ÈÈ[ˆHÙ\\˜]HØÜš\ËÜ[›š[™×ÙØ]KœHZ[ÓHš\œÝ‚ˆHØ[\ˆ][H™YYÈHYØXÞHÜZ[ˆÜÝ\™H
+ÜˆH\Ý\ÜÙ\[™ÈBˆZ\ÜÚ[™Ë\™XÙZ\˜Z[XÛÜÙY]
+HÙ]ÈÒSTPÒS×ÓÓÔÐUU×ÔS“’S‘×Ô‘PÑRTˆÈ[ˆ^XÚ]˜[ÞH˜[YH
+Ù˜[ÙKÛ›ËÛÙ™‹ÛYØXÞX
+NÈÙYBˆ\ÝËÜ[›š[™×ÙØ]WÙš^\™\ËœX[™ˆØÜËØY‹Ì\[›š[™ËYØ]K\›ÛÝ]›Y›ÜˆH›ÛÝ]ÛZYÜ˜][ÛˆÝ˜]YÞK‚‚ˆÚ[ˆHÚ]XˆÛÝ\˜ÙWÚ\ÜÝYX\È™\Ù[ÛˆH[ˆÝ]HS‘ˆÒSTPÒS×ÓÓÔÑÒUP—ÓQ‘PÖPÓWÔÖSØ\È[ÛÈ[˜X›Y\ÈY][Û˜[BˆØ\\™\ÈHœ™\ÚÛÝ\˜ÙHÛ˜\ÚÝ
+›Û[™È][ÈH]]][Û‹X]]Üš]BˆY[]HÛÈH]\ˆÛÝ\˜ÙHY][˜[Y]\ÈH]]Üš]JH[™X›\Ú\ÈBˆ™\Ý[[™È™XÙZ\\ÈS“‘QÐ“ÐÒÑQÛˆHØ[›ÛšXØ[Ú]XˆÛÛ[Y[šXBˆ[›š[™×ÙØ]KœX›\ÚÜ[›š[™×Ü™XÙZ\
+
+XKHHÌŽ\ÜXÚYšXÈ›Ú™XÝ[Û‹ˆ\Ý[˜Ýœ›ÛH
+[™ÛÛ\[Y[\žHÊHHÙ[™\šXÈ\‹\\ÙKY]™[Þ[˜ÂˆÜÞ[˜×ÙÚ]X—ÛY™XÞXÛJ
+X[™XYH\™›Ü›\È›ÜˆÓRSQQÑTÐÓÕ‘T‘QÙ]Ë‚‚ˆ™\ÝYY™›Ü[™˜Z[[Ü[Žˆ[žH˜Z[\™H\™H
+˜YÚ]]›È™]ÛÜšË[\Üˆ\œ›ÜŠH\ÈÙÙÙYÈY™XÞXÛK\Þ[˜ËY\œ›ÜœËšœÛÛ›[™ÝØ[ÝÙY^XÝHZÙBˆÜÞ[˜×ÙÚ]X—ÛY™XÞXÛJ
+XKH\È]\Ý™]™\ˆX›ÜÜˆ˜Z[H[‹‚ˆˆˆ‚ˆYˆ›Ý]]×Ü[›š[™×Ü™XÙZ\Ù[˜X›Y
+
+N‚ˆ™]\›‚ˆžN‚ˆ][\H[
+
+Ý]HÜˆßJK™Ù]
+˜][\È‹
+JH
+ÈBˆÛÝ\˜ÙWÜÛ˜\ÚÝH›Û™BˆÛÝ\˜ÙWÚ\ÜÝYHH
+Ý]HÜˆßJK™Ù]
+œÛÝ\˜ÙWÚ\ÜÝYHŠHÜˆßBˆÝÛ™\‹™\×Û˜[YK\ÜÝYHHÛÝ\˜ÙWÚ\ÜÝYK™Ù]
+›ÝÛ™\ˆŠKÛÝ\˜ÙWÚ\ÜÝYK™Ù]
+œ™\ÈŠKÛÝ\˜ÙWÚ\ÜÝYK™Ù]
+š\ÜÝYHŠBˆY™XÞXÛWÜÞ[˜×ÛÛˆHÝŠÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÑÒUP—ÓQ‘PÖPÓWÔÖSÈŠHÜˆˆŠKœÝš\
+
+K›ÝÙ\Š
+H›Ý[ˆ
+ˆŒ‹™˜[ÙH‹››È‹›Ù™ˆ‹›YØXÞH‹ˆ
+BˆYˆY™XÞXÛWÜÞ[˜×ÛÛˆ[™ÝÛ™\ˆ[™™\×Û˜[YH[™\ÜÝYN‚ˆžN‚ˆœ›ÛHœÛÝ\˜ÙWÜÛ˜\ÚÝ[\ÜØ\\™WÙÚ]X—Ú\ÜÝYWÜÛ˜\ÚÝˆÛÝ\˜ÙWÜÛ˜\ÚÝHØ\\™WÙÚ]X—Ú\ÜÝYWÜÛ˜\ÚÝ
+ˆžÛÝÛ™\ŸKÞÜ™\×Û˜[Y_H‹ÝŠ\ÜÝYJJBˆ^Ù\^Ù\[ÛŽ‚ˆÛÝ\˜ÙWÜÛ˜\ÚÝH›Û™Bˆ™XÙZ\HØZ[Ü[›š[™×Ü™XÙZ\
+ˆ[—ÚY\[—ÚY][\X][\ÛÛ˜XÝXÛÛ˜XÝ[\[‹ˆ[—Ý˜[Y][Û\[—Ý˜[Y][Û‹ÛÝ\˜ÙWÜÛ˜\ÚÝ\ÛÝ\˜ÙWÜÛ˜\ÚÝˆ
+Bˆ
+[—Ü›ÛÝÈœ[›š[™Ë\™XÙZ\šœÛÛˆŠKÜš]WÝ^
+ˆœÛÛ‹™[\Ê™XÙZ\[œÝ\™WØ\ØÚZOQ˜[ÙK[™[LŠH
+È—ˆ‹[˜ÛÙ[™ÏH]‹N‹ˆ
+BˆYˆÛÝ\˜ÙWÜÛ˜\ÚÝ\È›Ý›Û™H[™Y™XÞXÛWÜÞ[˜×ÛÛŽ‚ˆØÜš\×Ù\ˆHÝŠ]
+×Ùš[W×ÊKœ™\ÛÛ™J
+Kœ\™[œ\™[ÈœØÜš\ÈŠBˆYˆØÜš\×Ù\ˆ›Ý[ˆÞ\Ëœ]‚ˆÞ\Ëœ]š[œÙ\
+ØÜš\×Ù\ŠBˆœ›ÛH—Ù]šY[˜ÙH[\ÜX›\ÚØÛÛ[Y[\ÈÜX›\ÚØÛÛ[Y[ÈØØ[[\ÜˆÜ[Û˜[\‚ˆÈÌŽH™[XZ[š[™ÈØ\ˆ›Ú™XÝ™X[Y[]KÜ[[YKÙ]šXÙKØœ˜[˜ÚÜ[ˆÛÂˆÈHS“‘QÛÛ[Y[[œÝXYÙˆX]š[™ÈÜÙHšY[È›[šËHØ[YBˆÈ›Ú™XÝ[ÛˆÜÞ[˜×ÙÚ]X—ÛY™XÞXÛJ
+X›ÝÈ\™›Ü›\È›ÜˆÓRSQQÙ]Ëˆ›ÂˆÈX\ÙKÙ™[˜Ú[™ÈÚÙ[ˆ^\ÝÈY]]\ÈÚ[[ˆ\›WÜ[Š
+X
+]\ÈZ[YˆÈÛ›HÚ[ˆH\ÝšX]YÛZ[H\[œÈ]\ŠKÛÈ]šY[\ÈY›[šÂˆÈ\™H˜]\ˆ[ˆ˜XœšXØ]Y‚ˆY[]HHÙ\Ü]ÚÚY[]WÙšY[Ê™\×Ü]
+Bˆœ˜[˜ÚHÙÚ]ØÝ\œ™[Øœ˜[˜Ú
+™\×Ü]
+HYˆ™\×Ü]\È›Ý›Û™H[ÙHˆ‚ˆ[—ÜÝ\ÈHÂˆÝŠÝ\™Ù]
+™\ØÜš\[ÛˆŠHÜˆÝ\™Ù]
+™ÛØ[ŠHÜˆÝ\™Ù]
+šYŠHÜˆˆŠKœÝš\
+
+Bˆ›ÜˆÝ\[ˆ
+[‹™Ù]
+œÝ\ÈŠHÜˆ×JBˆYˆ\Ú[œÝ[˜ÙJÝ\X\[™ÊBˆ[™ÝŠÝ\™Ù]
+™\ØÜš\[ÛˆŠHÜˆÝ\™Ù]
+™ÛØ[ŠHÜˆÝ\™Ù]
+šYŠHÜˆˆŠKœÝš\
+
+BˆBˆY™XÞXÛWÜ™XÙZ\HÜX›\ÚÜ[›š[™×Ü™XÙZ\
+ˆ™XÙZ\X›\ÚØÛÛ[Y[Ù›WÜX›\ÚØÛÛ[Y[ˆYÙ[ÚYZY[]K™Ù]
+˜YÙ[ÚY‹ˆŠKˆ[[YOZY[]K™Ù]
+œ[[YH‹ˆŠKˆ]šXÙOZY[]K™Ù]
+™]šXÙH‹ˆŠKˆœ˜[˜ÚXœ˜[˜Úˆ[—ÜÝ\Ï\[—ÜÝ\Ëˆ
+BˆYˆY™XÞXÛWÜ™XÙZ\\È›Ý›Û™N‚ˆÙÚ]X—ÛY™XÞXÛKœ\œÚ\ÝÛY™XÞXÛWÜ™XÙZ\
+Y™XÞXÛWÜ™XÙZ\[—Ü›ÛÝ
+Bˆ^Ù\^Ù\[Ûˆ\È^ÎˆÈ›ÜXNˆ“LHKH™\ÝYY™›Ü™]™\ˆ›ØÚÜÈH[‚ˆžN‚ˆØ\[™ÚœÛÛ›
+[—Ü›ÛÝÈ›Y™XÞXÛK\Þ[˜ËY\œ›ÜœËšœÛÛ›‹ˆÈÈŽˆÛ›ÝÊ
+KšÚ[™Žˆœ[›š[™×Ü™XÙZ\Ø]]×ØZ[‹™\œ›ÜˆŽˆÝŠ^Ê_JBˆ^Ù\^Ù\[ÛŽ‚ˆ\ÜÂ‚‚™YˆÙ[Z]Ù]™[
+[—Ù\Žˆ]Ý]NˆXÝÜÝ‹[žWKÚ[™ˆÝ‹
+‹ˆ™XÙZ\ˆÝˆHˆ‹›ØÚÙ\ŽˆÝˆHˆ‹Y\ÜØYÙNˆÝˆHˆ‹ˆ
+Š™^˜Nˆ[žJHOˆXÝÜÝ‹[žWN‚ˆˆˆ‘[Z]Û™H˜[YYš\ÝX[]™[Ú]H[‰ÜÈØ[›ÛšXØ[›Ý™[˜[˜ÙKˆˆˆ‚ˆ]™[ˆXÝÜÝ‹[žWHHÈšÚ[™ŽˆÚ[™œ™XÙZ\Žˆ™XÙZ\˜›ØÚÙ\ˆŽˆ›ØÚÙ\‹ˆ›Y\ÜØYÙHŽˆY\ÜØYÙ_Bˆ]™[\]J^˜JBˆ™]\›ˆÜ™XÛÜ™Ù]™[
+[—Ù\‹Ý]K]™[
+B‚‚™YˆÝ\Ú×ØX×ÚYÊ\ÚÎˆX\[™ÖÜÝ‹[žWJHOˆ\ÝÜÝ—N‚ˆˆˆ”™]\›ˆXØÙ\[˜ÙKXÜš]\š[Û‹ÜØÙ[˜\š[ÈQÈœ›ÛHHÛÛ\[Y\ÚËˆˆˆ‚ˆ™]\›ˆÜÝŠ][K™Ù]
+šYŠHÜˆˆŠH›Üˆ][H[ˆ
+\ÚË™Ù]
+œØÙ[˜\š[ÜÈŠHÜˆ×JBˆYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊH[™][K™Ù]
+šYŠWB‚‚™YˆÜ™XÛÝ™\˜X›WÛÜ\˜]Ü—Ù\œ›ÜŠÛÛˆÝ‹^Îˆ˜\ÙQ^Ù\[ÛŠHOˆ›ÛÛ‚ˆˆˆ”™]\›ˆYHÛ›H›ÜˆÜ\˜]Üˆ[œÝ[][Û‹Ý™\œÚ[Û‹ØØ\Xš[]H˜Z[\™\Ëˆˆˆ‚ˆYˆ\Ú[œÝ[˜ÙJ^Ëš[S›Ý›Ý[™\œ›ÜŠN‚ˆZ\ÜÚ[™ÈHÝŠÙ]]Š^Ë™š[[˜[YH‹ˆŠHÜˆˆŠBˆ™]\›ˆ]
+Z\ÜÚ[™ÊK›˜[YHOHÛÛÜˆÛÛ›ÝÙ\Š
+H[ˆÝŠ^ÊK›ÝÙ\Š
+BˆY\ÜØYÙHHÝŠ^ÈÜˆˆŠK›ÝÙ\Š
+BˆYˆÛÛ›ÝÙ\Š
+H›Ý[ˆY\ÜØYÙN‚ˆ™]\›ˆ˜[ÙBˆ™]\›ˆ[žJX\šÙ\ˆ[ˆY\ÜØYÙH›ÜˆX\šÙ\ˆ[ˆ
+ˆ››ÈÝXÚš[HÜˆ\™XÝÜžH‹ˆ[˜]˜Z[X›H‹ˆ˜™[ÝÈZ[š[][H™\œÚ[Ûˆ‹ˆ›Z\ÜÚ[™È™\]Z\™YØ\Xš[]Y\È‹ˆ™\œÚ[Ûˆ›Ø™H˜Z[Y‹ˆ
+JB‚‚™YˆÜ[—ÝÚ]ÛÜ\˜]Ü—Ü™XÛÝ™\žJˆÛÛˆÝ‹ˆ[—Ü›ÛÝˆ]ˆÜ\˜][ÛŽˆØ[X›VÖ×KXÝÜÝ‹[žWWKŠHOˆXÝÜÝ‹[žWN‚ˆˆˆ”[ˆÛ™HÜ\˜]ÜˆÝ\›ÛÝÝ˜\HÝXÚÈÛ˜ÙHYˆ[YÚX›K[ˆ™]žHÛ˜ÙKˆˆˆ‚ˆžN‚ˆ™]\›ˆÜ\˜][ÛŠ
+Bˆ^Ù\^Ù\[Ûˆ\Èš\œÝÙ\œ›ÜŽ‚ˆYˆ›ÝÜ™XÛÝ™\˜X›WÛÜ\˜]Ü—Ù\œ›ÜŠÛÛš\œÝÙ\œ›ÜŠN‚ˆ˜Z\ÙBˆžN‚ˆ›ÛÝÝ˜\HÙ[œÝ\™WÜ™\]Z\™YÛÜ\˜]ÜœÊ[—Ü›ÛÝ›Ü˜ÙOUYJBˆ^Ù\Ü\˜]Ü›ÛÝÝ˜\\œ›Üˆ\È›ÛÝÝ˜\Ù\œ›ÜŽ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆˆžÙš\œÝÙ\œ›ÜŸNÈ]]ÛX]XÈÝÛÛH™XÛÝ™\žH˜Z[YˆØ›ÛÝÝ˜\Ù\œ›ÜŸH‚ˆ
+Hœ›ÛH›ÛÝÝ˜\Ù\œ›Ü‚ˆÝ]WÜ]H[—Ü›ÛÝÈœÝ]KšœÛÛˆ‚ˆYˆÝ]WÜ]™^\ÝÊ
+N‚ˆÝ]HHÛØYÚœÛÛŠÝ]WÜ]
+BˆÝ]VÈ›Ü\˜]Ü—Ø›ÛÝÝ˜\—HHÂˆœ™XYHŽˆ›ÛÝÝ˜\™Ù]
+œÝ]\ÈŠH[ˆÈš[œÝ[Y‹˜[™XYWØ]˜Z[X›HŸKˆœ™XÙZ\ŽˆÝŠ[—Ü›ÛÝÈ›Ü\˜]Ü‹X›ÛÝÝ˜\šœÛÛˆŠKˆœ™XÛÝ™\™YÝÛÛŽˆÛÛˆBˆÝÜš]WÚœÛÛŠÝ]WÜ]Ý]JBˆÙ[Z]Ù]™[
+ˆ[—Ü›ÛÝˆÝ]Kˆ›Ü\˜]Ü—Ø›ÛÝÝ˜\‹ˆ™XÙZ\\ÝŠ[—Ü›ÛÝÈ›Ü\˜]Ü‹X›ÛÝÝ˜\šœÛÛˆŠKˆY\ÜØYÙOYˆžÝÛÛH™\Z\™YÈ™]žZ[™ÈH›ØÚÙYÝYÙHÛ˜ÙH‹ˆ
+BˆžN‚ˆ™\Ý[HÜ\˜][ÛŠ
+Bˆ^Ù\^Ù\[Ûˆ\È™]žWÙ\œ›ÜŽ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆˆžÝÛÛH™[XZ[™Y[˜]˜Z[X›HY\ˆ]]ÛX]XÈ™XÛÝ™\žNˆÜ™]žWÙ\œ›ÜŸH‚ˆ
+Hœ›ÛH™]žWÙ\œ›Ü‚ˆ™XÙZ\Ü]H[—Ü›ÛÝÈ›Ü\˜]Ü‹X›ÛÝÝ˜\šœÛÛˆ‚ˆYˆ™XÙZ\Ü]™^\ÝÊ
+N‚ˆ›ÛÝÝ˜\HÛØYÚœÛÛŠ™XÙZ\Ü]
+Bˆ›ÛÝÝ˜\Èœ™]žWÜÝXØÙYYY—HHYBˆ›ÛÝÝ˜\Èœ™XÛÝ™\™YÝÛÛ—HHÛÛˆ›ÛÝÝ˜\Èœ™XÛÝ™\™YØ]—HHÛ›ÝÊ
+BˆÝÜš]WÚœÛÛŠ™XÙZ\Ü]›ÛÝÝ˜\
+Bˆ™]\›ˆ™\Ý[‚‚™YˆÜ™Y›YÚÛX\\Š™\×Ü]ˆ][—Ü›ÛÝˆ]
+HOˆXÝÜÝ‹[žWN‚ˆÝ™\œšYHHÜ™Y›YÚÛÝ™\œšYJ”ÒSTPÒS×ÓÓÔÑRÑWÓPTT—Ô‘Q“QÒÒ”ÓÓˆŠBˆYˆÝ™\œšYH\È›Ý›Û™N‚ˆY[]HHÈ˜ÛÛ[X[™ŽˆœÚ[\XÚ[Ë[X\\ˆ‹œ]Žˆˆ‹šY[]WÛÚÈŽˆY_Bˆ™\œÚ[Û—ÜÝÝ]HÝŠÝ™\œšYK™Ù]
+™\œÚ[Û—ÜÝÝ]‹ˆŠJBˆ[ÜÝÝ]HÝŠÝ™\œšYK™Ù]
+š[ÜÝÝ]‹ˆŠJBˆ™\œÚ[Û—Ü˜ÈH[
+Ý™\œšYK™Ù]
+™\œÚ[Û—Ü™]\›˜ÛÙH‹
+JBˆ[Ü˜ÈH[
+Ý™\œšYK™Ù]
+š[Ü™]\›˜ÛÙH‹
+JBˆ[ÙN‚ˆY[]HHÜ™\ÛÛ™YÚY[]JœÚ[\XÚ[Ë[X\\ˆ‹
+œÚ[\XÚ[Ë[X\\ˆ‹
+JBˆ™\œÚ[ÛˆHÜ[—ØÛY
+ÈœÚ[\XÚ[Ë[X\\ˆ‹‹K]™\œÚ[Ûˆ—K™\×Ü]
+Bˆ[Ü™\Ý[HÜ[—ØÛY
+ÈœÚ[\XÚ[Ë[X\\ˆ‹‹KZ[—K™\×Ü]
+Bˆ™\œÚ[Û—ÜÝÝ]H
+™\œÚ[Û‹œÝÝ]ÜˆˆŠKœÝš\
+
+Bˆ[ÜÝÝ]H
+[Ü™\Ý[œÝÝ]ÜˆˆŠKœÝš\
+
+Bˆ™\œÚ[Û—Ü˜ÈH™\œÚ[Û‹œ™]\›˜ÛÙBˆ[Ü˜ÈH[Ü™\Ý[œ™]\›˜ÛÙBˆ\œÙYÝ™\œÚ[ÛˆHÜ\œÙWÝ™\œÚ[Û—Ý\J™\œÚ[Û—ÜÝÝ]
+BˆZ\ÜÚ[™×Ý™\˜œÈHÝ™\˜ˆ›Üˆ™\˜ˆ[ˆPTT—Ô‘TURT‘QÕ‘T”ÈYˆ™\˜ˆ›Ý[ˆ[ÜÝÝ]Bˆ\Ú×Ø]Ø\™WÙ›YÜÈH
+‹KYÛØ[‹‹K]\ÚËYš[H‹‹K]\ÚËYš[™Ù\œš[ŠBˆÝ\ÜYÝ\Ú×Ø]Ø\™WÙ›YÜÈHÙ›YÈ›Üˆ›YÈ[ˆ\Ú×Ø]Ø\™WÙ›YÜÈYˆ›YÈ[ˆ[ÜÝÝ]Bˆ™XÙZ\HÂˆÛÛŽˆœÚ[\XÚ[Ë[X\\ˆ‹ˆœ™]\›˜ÛÙHŽˆ™\œÚ[Û—Ü˜ËˆœÝÝ]Žˆ™\œÚ[Û—ÜÝÝ]ˆš[Ü™]\›˜ÛÙHŽˆ[Ü˜Ëˆš[ÜÝÝ]Žˆ[ÜÝÝ]ˆ™\œÚ[ÛˆŽˆ‹ˆ‹š›Ú[ŠÝŠ\
+H›Üˆ\[ˆ\œÙYÝ™\œÚ[ÛŠKˆ›Z[—Ý™\œÚ[ÛˆŽˆ‹ˆ‹š›Ú[ŠÝŠ\
+H›Üˆ\[ˆPTT—ÓRS—Õ‘T”ÒSÓŠKˆ™\œÚ[Û—ÛÚÈŽˆ\œÙYÝ™\œÚ[ÛˆHPTT—ÓRS—Õ‘T”ÒSÓ‹ˆœ™\]Z\™YÝ™\˜œÈŽˆ\Ý
+PTT—Ô‘TURT‘QÕ‘T”ÊKˆ›Z\ÜÚ[™×Ý™\˜œÈŽˆZ\ÜÚ[™×Ý™\˜œËˆ\Ú×Ø]Ø\™WÙ›YÜÈŽˆ\Ý
+\Ú×Ø]Ø\™WÙ›YÜÊKˆœÝ\ÜYÝ\Ú×Ø]Ø\™WÙ›YÜÈŽˆÝ\ÜYÝ\Ú×Ø]Ø\™WÙ›YÜËˆ\Ú×Ø]Ø\™WÜÝ\ÜYŽˆ[ŠÝ\ÜYÝ\Ú×Ø]Ø\™WÙ›YÜÊHOH[Š\Ú×Ø]Ø\™WÙ›YÜÊKˆœ™\×ÜÝ]HŽˆÜ™\×Ùš[™Ù\œš[
+™\×Ü]
+Kˆœ]ŽˆY[]VÈœ]—KˆšY[]WÛÚÈŽˆY[]VÈšY[]WÛÚÈ—Kˆ˜ÚXÚÙYØ]ŽˆÛ›ÝÊ
+KˆBˆÝÜš]WÚœÛÛŠ[—Ü›ÛÝÈ›X\\‹\™Y›YÚšœÛÛˆ‹™XÙZ\
+BˆYˆ™\œÚ[Û—Ü˜ÈOHÜˆ[Ü˜ÈOH‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÚ[\XÚ[Ë[X\\ˆ[˜]˜Z[X›HŠBˆYˆ›Ý™XÙZ\ÈšY[]WÛÚÈ—N‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÚ[\XÚ[Ë[X\\ˆY[]HZ\ÛX]ÚŠBˆYˆ\œÙYÝ™\œÚ[ÛˆPTT—ÓRS—Õ‘T”ÒSÓŽ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÚ[\XÚ[Ë[X\\ˆ™[ÝÈZ[š[][H™\œÚ[ÛˆŠBˆYˆZ\ÜÚ[™×Ý™\˜œÎ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÚ[\XÚ[Ë[X\\ˆZ\ÜÚ[™È™\]Z\™YØ\Xš[]Y\ÈŠBˆ™]\›ˆ™XÙZ\‚‚™YˆÛÜ\˜]Ü—ØØ\Xš[]WÙØ\Ê[ÜÝÝ]ˆÝ‹\Ú×Ú[ÜÝÝ]ˆÝŠHOˆ\VÓ\ÝÜÝ—K\ÝÜÝ—WN‚ˆˆˆ‘\š]™H]‹XÛHØ\Xš[]HØ\Èœ›ÛHH^XÝ\œÚ\ÝY[Ý\™˜XÙ\Ëˆˆˆ‚ˆØ\Xš[]WÜÝ\™˜XÙHHˆ‹š›Ú[Š\›Üˆ\[ˆ
+[ÜÝÝ]\Ú×Ú[ÜÝÝ]
+HYˆ\
+BˆZ\ÜÚ[™×ÝÚÙ[œÈHÂˆÚÙ[ˆ›ÜˆÚÙ[ˆ[ˆUÓWÔ‘TURT‘QÕÒÑS”ÂˆYˆÚÙ[ˆ›Ý[ˆ
+ˆˆ
+ÈØ\Xš[]WÜÝ\™˜XÙJBˆBˆZ\ÜÚ[™×ØØ\Xš[]Y\ÈHÂˆØ\Xš[]H›ÜˆØ\Xš[]H[ˆUÓWÔ‘TURT‘QÐÐTP’SUQTÂˆYˆØ\Xš[]H›Ý[ˆØ\Xš[]WÜÝ\™˜XÙBˆBˆ™]\›ˆZ\ÜÚ[™×ÝÚÙ[œËZ\ÜÚ[™×ØØ\Xš[]Y\Â‚‚™YˆÜ™Y›YÚÛÜ\˜]ÜŠ™\×Ü]ˆ][—Ü›ÛÝˆ]
+HOˆXÝÜÝ‹[žWN‚ˆÈ\ÜÝYHÌLÍNˆHÜ\˜]ÜˆœšYÙH˜[Y]\ÈY[]H
+ÈØ\Xš[]H
+ÈRS—Õ‘T”ÒSÓ‹ˆÈ›ÝY\™[HÚXÚˆHÜ›Û™ÈÛ[Ûž[H
+U™\ÛÛ™\È]HÝ[HZ\ÛX]Ú\ÊHÜˆBˆÈ™\œÚ[Ûˆ™[ÝÈUÓWÓRS—Õ‘T”ÒSÓˆ›ØÚÜÈ™Y›Ü™H[žH]]][Û‹‚ˆÝ™\œšYHHÜ™Y›YÚÛÝ™\œšYJ”ÒSTPÒS×ÓÓÔÑRÑWÑUÓWÔ‘Q“QÒÒ”ÓÓˆŠBˆYˆÝ™\œšYH\È›Ý›Û™N‚ˆY[]HHÈ˜ÛÛ[X[™ŽˆœÚ[\XÚ[ËY]‹XÛH‹œ]ŽˆÝŠÝ™\œšYK™Ù]
+œ]‹ˆŠJKšY[]WÛÚÈŽˆY_Bˆ[ÜÝÝ]HÝŠÝ™\œšYK™Ù]
+š[ÜÝÝ]‹ˆŠJBˆ[Ü˜ÈH[
+Ý™\œšYK™Ù]
+š[Ü™]\›˜ÛÙH‹
+JBˆ\Ú×Ú[ÜÝÝ]HÝŠÝ™\œšYK™Ù]
+\Ú×Ú[ÜÝÝ]‹[ÜÝÝ]
+JBˆ\Ú×Ú[Ü˜ÈH[
+Ý™\œšYK™Ù]
+\Ú×Ú[Ü™]\›˜ÛÙH‹[Ü˜ÊJBˆ™\œÚ[Û—ÜÝÝ]HÝŠÝ™\œšYK™Ù]
+™\œÚ[Û—ÜÝÝ]‹œÚ[\XÚ[Ë\HŒMŒŠJBˆ™\œÚ[Û—Ü˜ÈH[
+Ý™\œšYK™Ù]
+™\œÚ[Û—Ü™]\›˜ÛÙH‹
+JBˆ[ÙN‚ˆY[]HHÜ™\ÛÛ™YÚY[]JœÚ[\XÚ[ËY]‹XÛH‹
+œÚ[\XÚ[ËY]‹XÛH‹œÚ[\XÚ[Ë\HŠJBˆ[ˆHÙ]˜ÛWÙ[Š™\×Ü]
+Bˆ[Ü™\Ý[HÝXœ›ØÙ\ÜËœ[ŠˆÙ]˜ÛWØÛY
+™\×Ü]‹KZ[ŠKˆÝÙ\ÝŠ™\×Ü]
+KˆØ\\™WÛÝ]]UYKˆ^UYKˆ[Y[Ý]LNˆ[Y[‹ˆ
+Bˆ\Ú×Ú[Ü™\Ý[HÝXœ›ØÙ\ÜËœ[ŠˆÙ]˜ÛWØÛY
+™\×Ü]\ÚÈ‹‹KZ[ŠKˆÝÙ\ÝŠ™\×Ü]
+KˆØ\\™WÛÝ]]UYKˆ^UYKˆ[Y[Ý]LNˆ[Y[‹ˆ
+Bˆ™\œÚ[Û—Ü™\Ý[HÝXœ›ØÙ\ÜËœ[ŠˆÙ]˜ÛWØÛY
+™\×Ü]‹K]™\œÚ[ÛˆŠKˆÝÙ\ÝŠ™\×Ü]
+KˆØ\\™WÛÝ]]UYKˆ^UYKˆ[Y[Ý]LNˆ[Y[‹ˆ
+Bˆ[ÜÝÝ]H
+[Ü™\Ý[œÝÝ]ÜˆˆŠKœÝš\
+
+Bˆ[Ü˜ÈH[Ü™\Ý[œ™]\›˜ÛÙBˆ\Ú×Ú[ÜÝÝ]H
+\Ú×Ú[Ü™\Ý[œÝÝ]ÜˆˆŠKœÝš\
+
+Bˆ\Ú×Ú[Ü˜ÈH\Ú×Ú[Ü™\Ý[œ™]\›˜ÛÙBˆ™\œÚ[Û—ÜÝÝ]H
+™\œÚ[Û—Ü™\Ý[œÝÝ]ÜˆˆŠKœÝš\
+
+Bˆ™\œÚ[Û—Ü˜ÈH™\œÚ[Û—Ü™\Ý[œ™]\›˜ÛÙBˆZ\ÜÚ[™×ÝÚÙ[œËZ\ÜÚ[™×ØØ\Xš[]Y\ÈHÛÜ\˜]Ü—ØØ\Xš[]WÙØ\Ê[ÜÝÝ]\Ú×Ú[ÜÝÝ]
+Bˆ\œÙYÝ™\œÚ[ÛˆHÜ\œÙWÝ™\œÚ[Û—Ý\J™\œÚ[Û—ÜÝÝ]
+Bˆ™XÙZ\HÂˆÛÛŽˆœÚ[\XÚ[ËY]‹XÛH‹ˆœ™]\›˜ÛÙHŽˆ[Ü˜Ëˆš[ÜÝÝ]Žˆ[ÜÝÝ]ˆ\Ú×Ú[Ü™]\›˜ÛÙHŽˆ\Ú×Ú[Ü˜Ëˆ\Ú×Ú[ÜÝÝ]Žˆ\Ú×Ú[ÜÝÝ]ˆœ™\]Z\™YÝÚÙ[œÈŽˆ\Ý
+UÓWÔ‘TURT‘QÕÒÑS”ÊKˆ›Z\ÜÚ[™×ÝÚÙ[œÈŽˆZ\ÜÚ[™×ÝÚÙ[œËˆœ]ŽˆY[]VÈœ]—KˆšY[]WÛÚÈŽˆY[]VÈšY[]WÛÚÈ—Kˆ™\œÚ[Û—ÜÝÝ]Žˆ™\œÚ[Û—ÜÝÝ]ˆ™\œÚ[Û—Ü™]\›˜ÛÙHŽˆ™\œÚ[Û—Ü˜Ëˆ™\œÚ[ÛˆŽˆ‹ˆ‹š›Ú[ŠÝŠ\
+H›Üˆ\[ˆ\œÙYÝ™\œÚ[ÛŠKˆ›Z[—Ý™\œÚ[ÛˆŽˆ‹ˆ‹š›Ú[ŠÝŠ\
+H›Üˆ\[ˆUÓWÓRS—Õ‘T”ÒSÓŠKˆ™\œÚ[Û—ÛÚÈŽˆ\œÙYÝ™\œÚ[ÛˆHUÓWÓRS—Õ‘T”ÒSÓ‹ˆœ™\]Z\™YØØ\Xš[]Y\ÈŽˆ\Ý
+UÓWÔ‘TURT‘QÐÐTP’SUQTÊKˆ›Z\ÜÚ[™×ØØ\Xš[]Y\ÈŽˆZ\ÜÚ[™×ØØ\Xš[]Y\Ëˆœ™\×ÜÝ]HŽˆÜ™\×Ùš[™Ù\œš[
+™\×Ü]
+Kˆ˜ÚXÚÙYØ]ŽˆÛ›ÝÊ
+KˆBˆÝÜš]WÚœÛÛŠ[—Ü›ÛÝÈ›Ü\˜]Ü‹\™Y›YÚšœÛÛˆ‹™XÙZ\
+BˆYˆ[Ü˜ÈOHÜˆ\Ú×Ú[Ü˜ÈOH‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÚ[\XÚ[ËY]‹XÛH[˜]˜Z[X›HŠBˆYˆ›Ý™XÙZ\ÈšY[]WÛÚÈ—N‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÚ[\XÚ[ËY]‹XÛHY[]HZ\ÛX]ÚŠBˆYˆZ\ÜÚ[™×ÝÚÙ[œÈÜˆZ\ÜÚ[™×ØØ\Xš[]Y\Î‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÚ[\XÚ[ËY]‹XÛHZ\ÜÚ[™È™\]Z\™YØ\Xš[]Y\ÈŠBˆYˆ™\œÚ[Û—Ü˜ÈOH‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÚ[\XÚ[ËY]‹XÛH™\œÚ[Ûˆ›Ø™H˜Z[YŠBˆYˆ›Ý™XÙZ\È™\œÚ[Û—ÛÚÈ—N‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆœÚ[\XÚ[ËY]‹XÛH™[ÝÈZ[š[][H™\œÚ[Ûˆ	\È
+›Ý[™	\ÊH‚ˆ	H
+™XÙZ\È›Z[—Ý™\œÚ[Ûˆ—K™XÙZ\È™\œÚ[Ûˆ—JBˆ
+Bˆ™]\›ˆ™XÙZ\‚‚™YˆÝ˜[Y]WÛX\\—Ü™XÙZ\
+^[ØYˆX\[™ÖÜÝ‹[žWK™\×Ü]ˆ]
+HOˆ›Û™N‚ˆˆˆ”™\]Z\™HHX\\‰ÜÈÝÛˆ\Y˜XÝ™XÙZ\›ÝHØ[\‹\Ý\YYœ™\Ú™\ÜÈ›YËˆˆˆ‚ˆ[œÜXÝH^[ØY™Ù]
+š[œÜXÝŠHÜˆßBˆ[œÜXÝÛÝ]H[œÜXÝ™Ù]
+œÝÝ]ŠHÜˆßBˆÝ]\ÈH[œÜXÝÛÝ]™Ù]
+œÝ]\ÈŠHÜˆßBˆ]šY[˜ÙHH[œÜXÝÛÝ]™Ù]
+™]šY[˜ÙHŠHÜˆßBˆ\Y˜XÝÈH]šY[˜ÙK™Ù]
+˜\Y˜XÝÈŠHÜˆßBˆYˆ›ÝÝ]\Ë™Ù]
+˜\Y˜XÝ×Ü™\Ù[ŠHÜˆ›ÝÝ]\Ë™Ù]
+™œ™\ÚŠN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›X\\ˆ\Y˜XÝÈ\™HZ\ÜÚ[™ÈÜˆÝ[HŠBˆÈÛÛ^ØØXÚH\È[ˆÜ[Û˜[ØXÚH\Y˜XÝHX\\ˆÙ\È›Ý[Ø^\È[Z]ÂˆÈ]]\Ý›Ý›ØÚÈHÛÜÚ[ˆÛ›H]Û™H\ÈZ\ÜÚ[™Ë‚ˆ™\]Z\™YØ\Y˜XÝÈHÂˆÙ^Nˆ][H›ÜˆÙ^K][H[ˆ\Y˜XÝËš][\Ê
+BˆYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊH[™Ù^HOH˜ÛÛ^ØØXÚH‚ˆBˆYˆ›Ý™\]Z\™YØ\Y˜XÝÈÜˆ[žJˆ›Ý›ÛÛ
+][K™Ù]
+™^\ÝÈŠJH›Üˆ][H[ˆ™\]Z\™YØ\Y˜XÝË˜[Y\Ê
+Bˆ
+N‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›X\\ˆ\Y˜XÝ]šY[˜ÙH\È[˜ÛÛ\]HŠBˆ[™Ù™ˆH
+
+^[ØY™Ù]
+š[™Ù™ˆŠHÜˆßJK™Ù]
+œÝÝ]ŠHÜˆßJK™Ù]
+˜ÛÛ^ÜXÚÈŠHÜˆßBˆ›Üˆ][H[ˆ[™Ù™‹™Ù]
+™š[\ÈŠHÜˆ×N‚ˆ˜]ÈH][K™Ù]
+œ]ŠHYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊH[ÙHˆ‚ˆYˆ›Ý˜]Î‚ˆÛÛ[YBˆžN‚ˆØ[™Y]HH
+™\×Ü]ÈÝŠ˜]ÊJKœ™\ÛÛ™J
+HYˆ›Ý]
+ÝŠ˜]ÊJKš\×ØXœÛÛ]J
+H[ÙH]
+ÝŠ˜]ÊJKœ™\ÛÛ™J
+BˆØ[™Y]Kœ™[]]™WÝÊ™\×Ü]œ™\ÛÛ™J
+JBˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›ÜŠH\È^Î‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆ›X\\ˆ™]\›™Y]Ý]ÚYH]]Üš^™Y™\ÎˆÜ˜]ßHŠHœ›ÛH^Â‚‚™YˆÛX\\—ÙÙ[™\˜][ÛŠ™\×Ü]ˆ]
+HOˆXÝÜÝ‹Ý—N‚ˆˆˆ”™XYH[[]]X›HX\\ˆ[™^Y[]H›ÜˆHXÝ]™H][\ˆˆˆ‚ˆ]H™\×Ü]È‹œÚ[\XÚ[ÈˆÈš[™^\Ý]KšœÛÛˆ‚ˆžN‚ˆØÝ[Y[HÛØYÚœÛÛŠ]
+Bˆ^Ù\
+ÔÑ\œ›Ü‹\Q\œ›Ü‹˜[YQ\œ›ÜŠN‚ˆ™]\›ˆßBˆÚYÛ˜]\™HHØÝ[Y[™Ù]
+œÚYÛ˜]\™HŠHYˆ\Ú[œÝ[˜ÙJØÝ[Y[X\[™ÊH[ÙH›Û™BˆYˆ›Ý\Ú[œÝ[˜ÙJÚYÛ˜]\™KX\[™ÊN‚ˆ™]\›ˆßBˆÙ[™\˜][ÛˆHÂˆÙ^NˆÝŠÚYÛ˜]\™K™Ù]
+Ù^JHÜˆˆŠBˆ›ÜˆÙ^H[ˆ
+šXY‹™YWÚ\Ú‹œÝ]\×Ú\ÚŠBˆYˆÝŠÚYÛ˜]\™K™Ù]
+Ù^JHÜˆˆŠBˆBˆYˆÙ[™\˜][ÛŽ‚ˆÙ[™\˜][Û–È\]YØ]—HHÝŠØÝ[Y[™Ù]
+\]YØ]ŠHÜˆˆŠBˆ™]\›ˆÙ[™\˜][Û‚‚‚™YˆÜ™\]Z\™WÚœÛÛ—Ü™XÙZ\
+]ˆ]X™[ˆÝŠHOˆXÝÜÝ‹[žWN‚ˆYˆ›Ý]š\×Ùš[J
+N‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆ›Z\ÜÚ[™È™\]Z\™YÛX™[H™XÙZ\ˆÜ]›˜[Y_HŠBˆžN‚ˆ^[ØYHÛØYÚœÛÛŠ]
+Bˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›Ü‹\Q\œ›ÜŠH\È^Î‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆš[˜[Y™\]Z\™YÛX™[H™XÙZ\ˆÜ]›˜[Y_HŠHœ›ÛH^ÂˆYˆ›Ý\Ú[œÝ[˜ÙJ^[ØYXÝ
+N‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆš[˜[Y™\]Z\™YÛX™[H™XÙZ\ˆÜ]›˜[Y_HŠBˆ™]\›ˆ^[ØY‚‚™YˆÝ˜[Y]WÜ[—Ü™XÙZ\Êˆ™\×Ü]ˆ]ˆ[—Ù\Žˆ]ˆÛÛ˜XÝˆX\[™ÖÜÝ‹[žWKˆ
+‹ˆÝ]NˆX\[™ÖÜÝ‹[žWH›Û™HH›Û™KˆX[šY™\ÝˆX\[™ÖÜÝ‹[žWH›Û™HH›Û™Kˆ™\]Z\™WÙžWÜ[Žˆ›ÛÛHYKŠHOˆXÝÜÝ‹[žWN‚ˆˆˆ”™\]Z\™HHÝ\œ™[[‹X›Ý[™X\\ˆOˆ[ˆOˆÜ\˜]Üˆ™XÙZ\ÚZ[‹ˆˆˆ‚ˆX\\ˆHÜ™\]Z\™WÚœÛÛ—Ü™XÙZ\
+[—Ù\ˆÈ›X\\‹XÛÛ^šœÛÛˆ‹›X\\ˆÛÛ^ŠBˆ[ˆHÜ™\]Z\™WÚœÛÛ—Ü™XÙZ\
+[—Ù\ˆÈœ[‹šœÛÛˆ‹œ[ˆŠBˆX\\—Ü™Y›YÚHÜ™\]Z\™WÚœÛÛ—Ü™XÙZ\
+[—Ù\ˆÈ›X\\‹\™Y›YÚšœÛÛˆ‹›X\\ˆ™Y›YÚŠBˆÜ\˜]Ü—Ü™Y›YÚHÜ™\]Z\™WÚœÛÛ—Ü™XÙZ\
+[—Ù\ˆÈ›Ü\˜]Ü‹\™Y›YÚšœÛÛˆ‹›Ü\˜]Üˆ™Y›YÚŠBˆÜ\˜]ÜˆHÜ™\]Z\™WÚœÛÛ—Ü™XÙZ\
+[—Ù\ˆÈ›Ü\˜]Ü‹\™XÙZ\šœÛÛˆ‹›Ü\˜]ÜˆŠB‚ˆ^XÝYÜ[—ÚYHÝŠ
+X[šY™\ÝÜˆßJK™Ù]
+œ[—ÚYŠHÜˆ[—Ù\‹›˜[YJBˆYˆ[—Ù\‹›˜[YHOH^XÝYÜ[—ÚY‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœ[ˆ™XÙZ\È\™H›Ý›Ý[™ÈHÝ\œ™[[ˆŠBˆYˆÝ]H\È›Ý›Û™H[™ÝŠÝ]K™Ù]
+œ[—ÚYŠHÜˆˆŠHOH^XÝYÜ[—ÚY‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœ[ˆÝ]H\È›Ý›Ý[™ÈHÝ\œ™[[ˆŠBˆ^XÝYØÛÛ˜XÝÚ\ÚHÝŠ
+X[šY™\ÝÜˆßJK™Ù]
+˜ÛÛXÝ[Û—Ú\ÚŠHÜˆˆŠBˆÛÛ˜XÝÚ\ÚHÝŠÛÛ˜XÝ™Ù]
+˜ÛÛXÝ[Û—Ú\ÚŠHÜˆˆŠBˆYˆ^XÝYØÛÛ˜XÝÚ\Ú[™ÛÛ˜XÝÚ\ÚOH^XÝYØÛÛ˜XÝÚ\Ú‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ\ÚÈÛÛ˜XÝ\È›Ý›Ý[™ÈHÝ\œ™[[ˆŠBˆYˆX\\‹™Ù]
+œ[—ÚYŠHOH^XÝYÜ[—ÚYÜˆ[‹™Ù]
+œ[—ÚYŠHOH^XÝYÜ[—ÚY‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›X\\ˆ[™[ˆ™XÙZ\È\™H›Ý›Ý[™ÈHÝ\œ™[[ˆŠBˆYˆÜ\˜]Ü‹™Ù]
+œ[—ÚYŠHOH^XÝYÜ[—ÚY‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™XÙZ\\È›Ý›Ý[™ÈHÝ\œ™[[ˆŠBˆYˆX\\‹™Ù]
+\Ú×ØÛÛ˜XÝÚ\ÚŠHOHÛÛ˜XÝÚ\ÚÜˆ[‹™Ù]
+\Ú×ØÛÛ˜XÝÚ\ÚŠHOHÛÛ˜XÝÚ\Ú‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›X\\ˆ[™[ˆ™XÙZ\ÈÈ›ÝX]ÚH\ÚÈÛÛ˜XÝŠBˆX\\—ØÛÛ^Ú\ÚHÝŠ[‹™Ù]
+›X\\—ØÛÛ^Ú\ÚŠHÜˆˆŠBˆYˆ›ÝX\\—ØÛÛ^Ú\Ú‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœ[ˆ™XÙZ\\È›ÈX\\ˆÛÛ^\ÚŠBˆXÝX[ÛX\\—ØÛÛ^Ú\ÚH\ÚX‹œÚLMŠˆ
+[—Ù\ˆÈ›X\\‹XÛÛ^šœÛÛˆŠKœ™XYØž]\Ê
+Bˆ
+Kš^YÙ\Ý
+
+BˆYˆXÝX[ÛX\\—ØÛÛ^Ú\ÚOHX\\—ØÛÛ^Ú\Ú‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœ[ˆ™XÙZ\Ù\È›ÝX]ÚHÝ\œ™[X\\ˆÛÛ^ž]\ÈŠBˆX\\—ÙÙ[™\˜][ÛˆHXÝ
+X\\‹™Ù]
+™›Ü™YÜ›Ý[™ÙÙ[™\˜][ÛˆŠHÜˆßJBˆ[—ÙÙ[™\˜][ÛˆHXÝ
+[‹™Ù]
+›X\\—ÙÙ[™\˜][ÛˆŠHÜˆßJBˆYˆX\\—ÙÙ[™\˜][ÛˆOH[—ÙÙ[™\˜][ÛŽ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœ[ˆ™XÙZ\Ù\È›ÝX]ÚH[›™YX\\ˆÙ[™\˜][ÛˆŠBˆYˆX\\—ÙÙ[™\˜][ÛŽ‚ˆÝ\œ™[ÙÙ[™\˜][ÛˆHÛX\\—ÙÙ[™\˜][ÛŠ™\×Ü]
+BˆYˆÝ\œ™[ÙÙ[™\˜][Ûˆ[™Ý\œ™[ÙÙ[™\˜][ÛˆOHX\\—ÙÙ[™\˜][ÛŽ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ˜XÝ]™H][\X\\ˆÙ[™\˜][ÛˆÚ[™ÙYŠB‚ˆYÜ˜YYÛX\\ˆH›ÛÛ
+X\\‹™Ù]
+™YÜ˜YYÛØØ[ŠJBˆYˆYÜ˜YYÛX\\Ž‚ˆYˆ›ÝÙYÜ˜YYÛX\\—Ù˜[˜XÚ×Ù[˜X›Y
+
+N‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ™YÜ˜YYX\\ˆÛÛ^™\]Z\™\ÈÝ[™[Û™HØØ[˜[˜XÚÈŠBˆÛÛ^ÜXÚÈH
+
+X\\‹™Ù]
+š[™Ù™ˆŠHÜˆßJK™Ù]
+œÝÝ]ŠHÜˆßJK™Ù]
+˜ÛÛ^ÜXÚÈŠHÜˆßBˆYˆ›ÝÛÛ^ÜXÚË™Ù]
+œXÚ×Ú\ÚŠN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ™YÜ˜YYX\\ˆÛÛ^\È›ÈØØ[ÛÛ^\XÚÈ\ÚŠBˆ[ÙN‚ˆ›Üˆ˜[YK^[ØY[ˆ
+
+œØØ[ˆ‹X\\‹™Ù]
+œØØ[ˆŠJK
+š[œÜXÝ‹X\\‹™Ù]
+š[œÜXÝŠJKˆ
+š[™Ù™ˆ‹X\\‹™Ù]
+š[™Ù™ˆŠJJN‚ˆYˆ›Ý\Ú[œÝ[˜ÙJ^[ØYX\[™ÊHÜˆ^[ØY™Ù]
+œ™]\›˜ÛÙHŠHOH‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆœÝ[HX\\ˆÛÛ^ˆÛ˜[Y_HY›ÝÛÛ\]HÝXØÙ\ÜÙ[HŠBˆÝ˜[Y]WÛX\\—Ü™XÙZ\
+X\\‹™\×Ü]
+Bˆ[›™YÜÝ]HHX\\‹™Ù]
+œ™\×ÜÝ]WØY\ˆŠHÜˆßBˆÝ\œ™[ÜÝ]HHÜ™\×Ùš[™Ù\œš[
+™\×Ü]
+BˆX\\—Ø™Y›Ü™HHX\\‹™Ù]
+œ™\×ÜÝ]WØ™Y›Ü™HŠHÜˆßBˆYˆ›ÝX\\—Ø™Y›Ü™K™Ù]
+™YWÚ\ÚŠHÜˆ›Ý[›™YÜÝ]K™Ù]
+™YWÚ\ÚŠN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›X\\ˆÛÛ^\È›È™\ÜÚ]ÜžHš[™Ù\œš[ŠBˆYˆ›ÝÜ™\×ÜÝ]WÙ\]Z]˜[[
+X\\—Ø™Y›Ü™K[›™YÜÝ]JHÜˆ›ÝÜ™\×ÜÝ]WÙ\]Z]˜[[
+[›™YÜÝ]KÝ\œ™[ÜÝ]JN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÝ[HX\\ˆÛÛ^ˆ™\ÜÚ]ÜžHÚ[™ÙYY\ˆ[›š[™ÈŠB‚ˆYˆ›ÝX\\—Ü™Y›YÚ™Ù]
+šY[]WÛÚÈŠHÜˆ›ÝX\\—Ü™Y›YÚ™Ù]
+™\œÚ[Û—ÛÚÈŠN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›X\\ˆ™Y›YÚ™XÙZ\\È›Ý˜[YŠBˆYˆX\\—Ü™Y›YÚ™Ù]
+›Z\ÜÚ[™×Ý™\˜œÈŠN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›X\\ˆ™Y›YÚ™XÙZ\\ÈZ\ÜÚ[™È™\]Z\™YØ\Xš[]Y\ÈŠBˆX\\—Ü™Y›YÚÜÝ]HHX\\—Ü™Y›YÚ™Ù]
+œ™\×ÜÝ]HŠHÜˆßBˆYˆ›ÝX\\—Ü™Y›YÚÜÝ]K™Ù]
+™YWÚ\ÚŠHÜˆ›ÝÜ™\×ÜÝ]WÙ\]Z]˜[[
+X\\—Ü™Y›YÚÜÝ]KÝ\œ™[ÜÝ]JN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÝ[HX\\ˆ™Y›YÚ™XÙZ\ˆ™\ÜÚ]ÜžHÚ[™ÙYŠBˆYˆ›ÝÜ\˜]Ü—Ü™Y›YÚ™Ù]
+šY[]WÛÚÈŠHÜˆ›ÝÜ\˜]Ü—Ü™Y›YÚ™Ù]
+™\œÚ[Û—ÛÚÈŠN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™Y›YÚ™XÙZ\\È›Ý˜[YŠBˆ\ÝÙšY[ÈH
+ˆœ™\]Z\™YÝÚÙ[œÈ‹›Z\ÜÚ[™×ÝÚÙ[œÈ‹œ™\]Z\™YØØ\Xš[]Y\È‹›Z\ÜÚ[™×ØØ\Xš[]Y\È‹ˆ
+Bˆ^ÙšY[ÈH
+š[ÜÝÝ]‹\Ú×Ú[ÜÝÝ]ŠBˆ›ÜˆšY[[ˆ\ÝÙšY[Î‚ˆ˜[YHHÜ\˜]Ü—Ü™Y›YÚ™Ù]
+šY[
+BˆYˆšY[›Ý[ˆÜ\˜]Ü—Ü™Y›YÚ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆ›Ü\˜]Üˆ™Y›YÚ™XÙZ\\ÈZ\ÜÚ[™È™\]Z\™YšY[ˆÙšY[HŠBˆYˆ›Ý\Ú[œÝ[˜ÙJ˜[YK\Ý
+HÜˆ[žJ›Ý\Ú[œÝ[˜ÙJ][KÝŠH›Üˆ][H[ˆ˜[YJN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆ›Ü\˜]Üˆ™Y›YÚ™XÙZ\\È[˜[YšY[\NˆÙšY[HŠBˆ›ÜˆšY[[ˆ^ÙšY[Î‚ˆYˆšY[›Ý[ˆÜ\˜]Ü—Ü™Y›YÚ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆ›Ü\˜]Üˆ™Y›YÚ™XÙZ\\ÈZ\ÜÚ[™È™\]Z\™YšY[ˆÙšY[HŠBˆYˆ›Ý\Ú[œÝ[˜ÙJÜ\˜]Ü—Ü™Y›YÚÙšY[KÝŠN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆ›Ü\˜]Üˆ™Y›YÚ™XÙZ\\È[˜[YšY[\NˆÙšY[HŠBˆYˆÜ\˜]Ü—Ü™Y›YÚÈœ™\]Z\™YÝÚÙ[œÈ—HOH\Ý
+UÓWÔ‘TURT‘QÕÒÑS”ÊN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™Y›YÚ™XÙZ\™\]Z\™YÝÚÙ[œÈÈ›ÝX]ÚHØ[›ÛšXØ[ÛÛ˜XÝŠBˆYˆÜ\˜]Ü—Ü™Y›YÚÈœ™\]Z\™YØØ\Xš[]Y\È—HOH\Ý
+UÓWÔ‘TURT‘QÐÐTP’SUQTÊN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™Y›YÚ™XÙZ\™\]Z\™YØØ\Xš[]Y\ÈÈ›ÝX]ÚHØ[›ÛšXØ[ÛÛ˜XÝŠBˆ™XÛÛ\]YÛZ\ÜÚ[™×ÝÚÙ[œË™XÛÛ\]YÛZ\ÜÚ[™×ØØ\Xš[]Y\ÈHÛÜ\˜]Ü—ØØ\Xš[]WÙØ\ÊˆÜ\˜]Ü—Ü™Y›YÚÈš[ÜÝÝ]—KÜ\˜]Ü—Ü™Y›YÚÈ\Ú×Ú[ÜÝÝ]—Kˆ
+BˆYˆÜ\˜]Ü—Ü™Y›YÚÈ›Z\ÜÚ[™×ÝÚÙ[œÈ—HOH™XÛÛ\]YÛZ\ÜÚ[™×ÝÚÙ[œÎ‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™Y›YÚ™XÙZ\Z\ÜÚ[™×ÝÚÙ[œÈÈ›ÝX]Ú\œÚ\ÝY[ŠBˆYˆÜ\˜]Ü—Ü™Y›YÚÈ›Z\ÜÚ[™×ØØ\Xš[]Y\È—HOH™XÛÛ\]YÛZ\ÜÚ[™×ØØ\Xš[]Y\Î‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™Y›YÚ™XÙZ\Z\ÜÚ[™×ØØ\Xš[]Y\ÈÈ›ÝX]Ú\œÚ\ÝY[ŠBˆYˆ™XÛÛ\]YÛZ\ÜÚ[™×ÝÚÙ[œÈÜˆ™XÛÛ\]YÛZ\ÜÚ[™×ØØ\Xš[]Y\Î‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™Y›YÚ™XÙZ\\ÈZ\ÜÚ[™È™\]Z\™YØ\Xš[]Y\ÈŠBˆÜ\˜]Ü—Ü™Y›YÚÜÝ]HHÜ\˜]Ü—Ü™Y›YÚ™Ù]
+œ™\×ÜÝ]HŠHÜˆßBˆYˆ›ÝÜ\˜]Ü—Ü™Y›YÚÜÝ]K™Ù]
+™YWÚ\ÚŠHÜˆ›ÝÜ™\×ÜÝ]WÙ\]Z]˜[[
+Ü\˜]Ü—Ü™Y›YÚÜÝ]KÝ\œ™[ÜÝ]JN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÝ[HÜ\˜]Üˆ™Y›YÚ™XÙZ\ˆ™\ÜÚ]ÜžHÚ[™ÙYŠB‚ˆ\ÚÜÈH\Ý
+ÛÛ˜XÝ™Ù]
+\ÚÜÈŠHÜˆ×JBˆ˜[Y][ÛˆH˜[Y]WÜ[Šˆ[‹\ÚÜË™\×Ü]ˆÛÛ˜XÝÚ\ÚXÛÛ˜XÝÚ\ÚˆÝ\œ™[ÜÝ]OXÝ\œ™[ÜÝ]Kˆ
+BˆYˆ›Ý˜[Y][Û–È˜[Y—N‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÝ[HÜˆ[˜[Y[ˆ™XÙZ\ˆˆ
+È‹‹š›Ú[Š˜[Y][Û–È™\œ›ÜœÈ—JJBˆYˆ
+[‹™Ù]
+™]\›Z[š\ÝXÈŠHÜˆßJK™Ù]
+™\šYšYYŠH\È›ÝYN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœ[ˆ™XÙZ\\È›Ý]\›Z[š\ÝXÈŠBˆÛÛ^ÜXÚÈH
+
+X\\‹™Ù]
+š[™Ù™ˆŠHÜˆßJK™Ù]
+œÝÝ]ŠHÜˆßJK™Ù]
+˜ÛÛ^ÜXÚÈŠHÜˆßBˆX\\—ÜXÚ×Ú\ÚHÝŠ[‹™Ù]
+›X\\—ÜXÚ×Ú\ÚŠHÜˆˆŠBˆÛÛ^ÜXÚ×Ú\ÚHÝŠÛÛ^ÜXÚË™Ù]
+œXÚ×Ú\ÚŠHÜˆˆŠBˆYˆX\\—ÜXÚ×Ú\Ú[™ÛÛ^ÜXÚ×Ú\Ú[™X\\—ÜXÚ×Ú\ÚOHÛÛ^ÜXÚ×Ú\Ú‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœ[ˆ™XÙZ\Ù\È›ÝX]ÚHX\\ˆÛÛ^š[™Ù\œš[ŠB‚ˆ[—Ú\ÚH\ÚX‹œÚLMŠ
+[—Ù\ˆÈœ[‹šœÛÛˆŠKœ™XYØž]\Ê
+JKš^YÙ\Ý
+
+BˆYˆÜ\˜]Ü‹™Ù]
+\Ú×ØÛÛ˜XÝÚ\ÚŠHOHÛÛ˜XÝÚ\Ú‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™XÙZ\Ù\È›ÝX]ÚH\ÚÈÛÛ˜XÝŠBˆYˆÜ\˜]Ü‹™Ù]
+œ[—Ú\ÚŠHOH[—Ú\Ú‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™XÙZ\Ù\È›ÝX]ÚHÝ\œ™[[ˆŠBˆYˆÜ\˜]Ü‹™Ù]
+›X\\—ÜXÚ×Ú\ÚŠHOH[‹™Ù]
+›X\\—ÜXÚ×Ú\ÚŠN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™XÙZ\Ù\È›ÝX]ÚHX\\ˆÛÛ^ŠBˆYˆÜ\˜]Ü‹™Ù]
+›X\\—ØÛÛ^Ú\ÚŠHOHX\\—ØÛÛ^Ú\Ú‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™XÙZ\Ù\È›ÝX]ÚHX\\ˆ™XÙZ\ŠBˆÜ\˜]Ü—ÜÝ]HHÜ\˜]Ü‹™Ù]
+œ™\×ÜÝ]WØ™Y›Ü™HŠHÜˆßBˆYˆ›ÝÜ\˜]Ü—ÜÝ]K™Ù]
+™YWÚ\ÚŠHÜˆ›ÝÜ™\×ÜÝ]WÙ\]Z]˜[[
+Ü\˜]Ü—ÜÝ]KÝ\œ™[ÜÝ]JN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœÝ[HÜ\˜]Üˆ™XÙZ\ˆ™\ÜÚ]ÜžHÚ[™ÙYŠBˆYˆ™\]Z\™WÙžWÜ[ˆ[™
+Ü\˜]Ü‹™Ù]
+™^XÝ][Û—ÜÝ]HŠHOH™žWÜ[ˆˆÜˆÜ\˜]Ü‹™Ù]
+œ™]\›˜ÛÙHŠHOH
+N‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™XÙZ\\È›ÝHœ™\ÚÝXØÙ\ÜÙ[žK\[ˆ™Y›YÚŠBˆYˆ›ÝÜ\˜]Ü‹™Ù]
+\™Ù]ÝÚ][—Ü™\ÈŠHÜˆ›ÝÜ\˜]Ü‹™Ù]
+˜]]Üš^™YÝ\™Ù]ÈŠN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™XÙZ\\È›È]]Üš^™Y\™Ù]ŠBˆ\™Ù]HÝŠÜ\˜]Ü‹™Ù]
+\™Ù]ŠHÜˆˆŠBˆ]]Üš^™YÝ\™Ù]ÈHÜÝŠ][JH›Üˆ][H[ˆÜ\˜]Ü‹™Ù]
+˜]]Üš^™YÝ\™Ù]ÈŠHÜˆ×_Bˆ[›™YÝ\™Ù]ÈHÂˆÝŠ][JH›ÜˆÝ\[ˆ[‹™Ù]
+œÝ\ÈŠHÜˆ×BˆYˆ\Ú[œÝ[˜ÙJÝ\X\[™ÊH›Üˆ][H[ˆÝ\™Ù]
+˜Ø[™Y]WÝ\™Ù]ÈŠHÜˆ×BˆBˆžN‚ˆ
+™\×Ü]È\™Ù]
+Kœ™\ÛÛ™J
+Kœ™[]]™WÝÊ™\×Ü]œ™\ÛÛ™J
+JBˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›ÜŠN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™XÙZ\\™Ù]\ÈÝ]ÚYHH]]Üš^™Y™\ÜÚ]ÜžHŠBˆYˆ›Ý\™Ù]Üˆ\™Ù]›Ý[ˆ]]Üš^™YÝ\™Ù]ÈÜˆ\™Ù]›Ý[ˆ[›™YÝ\™Ù]Î‚ˆ˜Z\ÙH[[YQ\œ›ÜŠ›Ü\˜]Üˆ™XÙZ\\™Ù]\È›Ý]]Üš^™YžHH[ˆŠBˆYˆÝ]H\È›Ý›Û™N‚ˆYˆÝ]K™Ù]
+œ\ÙHŠH[ˆÈ˜›ØÚÙY‹™Û™H‹˜Ø[˜Ù[YŸN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠˆœ[ˆ\È›Ý[›˜X›NˆÜÝ]K™Ù]
+	Ü\ÙIÊ_HŠBˆYˆ›Ý
+Ý]K™Ù]
+›X\\ˆŠHÜˆßJK™Ù]
+œ™XYHŠHÜˆ›Ý
+Ý]K™Ù]
+›Ü\˜]ÜˆŠHÜˆßJK™Ù]
+œ™XYHŠN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœ[ˆ\È›Ý[›˜X›NˆX\\‹ÛÜ\˜]Üˆ™XÙZ\È\™H›Ý™XYHŠBˆ™]\›ˆÂˆ›X\\ˆŽˆX\\‹ˆœ[ˆŽˆ[‹ˆ›Ü\˜]Ü—Ü™Y›YÚŽˆÜ\˜]Ü—Ü™Y›YÚˆ›Ü\˜]ÜˆŽˆÜ\˜]Ü‹ˆœ™\×ÜÝ]HŽˆÝ\œ™[ÜÝ]Kˆœ[—Ú\ÚŽˆ[—Ú\ÚˆB‚‚™YˆÜ\œÚ\ÝØ˜]ÚÜ™Y›YÚØ›ØÚÊˆ[—Ù\Žˆ]ˆÝ]NˆXÝÜÝ‹[žWKˆ™\×Ü]ˆ]ˆ™X\ÛÛŽˆÝ‹ˆ\Ú×Ú[™XÙ\ÎˆÙ\]Y[˜ÙVÚ[HH
+
+KŠHOˆ]‚ˆXYÛ›ÜÝX×Ü]H[—Ù\ˆÈ›Ü\˜]Ü‹X˜]Ú\™Y›YÚšœÛÛˆ‚ˆ›ØÚÙ\ˆHÂˆšÚ[™Žˆ›Ü\˜]Ü—Ø˜]ÚÜ™Y›YÚ‹ˆœ™X\ÛÛ—ØÛÙHŽˆ›Ü\˜]Ü—Ø˜]ÚÜ™Y›YÚÙ˜Z[Y‹ˆ›Y\ÜØYÙHŽˆ™X\ÛÛ‹ˆœ[—ÚYŽˆÝŠÝ]K™Ù]
+œ[—ÚYŠHÜˆ[—Ù\‹›˜[YJKˆœØÛÜHŽˆ™ÛØ˜[‹ˆBˆXYÛ›ÜÝXÈHÂˆœØÚ[XHŽˆUÒÔ‘Q“QÒÔÐÒSPKˆœÝ]\ÈŽˆ“ÐÒÑQ‹ˆœ[—ÚYŽˆ›ØÚÙ\–Èœ[—ÚY—Kˆ\Ú×Ú[™XÙ\ÈŽˆÚ[
+[™^
+H›Üˆ[™^[ˆ\Ú×Ú[™XÙ\×Kˆ˜›ØÚÙ\ˆŽˆ›ØÚÙ\‹ˆœ™\×ÜÝ]HŽˆÜ™\×Ùš[™Ù\œš[
+™\×Ü]
+Kˆ˜ÚXÚÙYØ]ŽˆÛ›ÝÊ
+KˆBˆÝÜš]WÚœÛÛŠXYÛ›ÜÝX×Ü]XYÛ›ÜÝXÊBˆÝ]VÈ˜›ØÚÙ\œÈ—HHØ›ØÚÙ\—BˆÝ]VÈ˜Ý\œ™[ØXÝ[Ûˆ—HH›Ü\˜]Ü—Ø˜]ÚÜ™Y›YÚØ›ØÚÙY‚ˆÝ]VÈ›™^ØXÝ[Ûˆ—HHœ™\Z\—ÛX\\—ÛÜ—Ü™\È‚ˆÝÜš]WÚœÛÛŠ[—Ù\ˆÈœÝ]KšœÛÛˆ‹Ý]JBˆYˆÝ]K™Ù]
+œ\ÙHŠH›Ý[ˆÈ™Û™H‹˜Ø[˜Ù[YŸN‚ˆÝ˜[œÚ][ÛŠˆ[—Ù\‹Ý]K˜›ØÚÙY‹›Ü\˜]Üˆ˜]Ú™\™\]Z\Ú]H˜[Y][Ûˆ˜Z[Y‹ˆ™XÙZ\\ÝŠXYÛ›ÜÝX×Ü]
+K^˜O^È™\œ›ÜˆŽˆ™X\ÛÛ‹œØÛÜHŽˆ™ÛØ˜[ŸKˆ
+BˆÙ[Z]Ù]™[
+ˆ[—Ù\‹Ý]K˜›ØÚÙY‹™XÙZ\\ÝŠXYÛ›ÜÝX×Ü]
+Kˆ›ØÚÙ\X›ØÚÙ\–Èœ™X\ÛÛ—ØÛÙH—KY\ÜØYÙOH›Ü\˜]Üˆ˜]Ú›ØÚÙY™Y›Ü™H\Ü]Ú‹ØÛÜOH™ÛØ˜[‹ˆ
+Bˆ™]\›ˆXYÛ›ÜÝX×Ü]‚‚™YˆÜ[—ÛX\\Š™\×Ü]ˆ][—Ü›ÛÝˆ]\Ú×Ü]ˆÝˆHˆ‹ÛØ[ˆÝˆHˆ‹ˆ\Ú×Ùš[™Ù\œš[ˆÝˆHˆ‹\™Ù]Ú[ˆÝˆHˆŠHOˆXÝÜÝ‹[žWN‚ˆ™Y›Ü™HHÜ™\×Ùš[™Ù\œš[
+™\×Ü]
+BˆX\\—Ü™Y›YÚHÜ™Y›YÚÛX\\Š™\×Ü][—Ü›ÛÝ
+BˆX\\—Ý[Y[Ý]HÝŠÛX\\—Ý[Y[Ý]ÜÙXÛÛ™Ê
+JBˆ›Û˜XÚ×ÜÞ[˜ÈHÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÓPTT—ÔÖS×Ô“ÓPÒÈ‹ˆŠKœÝš\
+
+K›ÝÙ\Š
+H[ˆÂˆŒH‹YH‹žY\È‹›Ûˆ‹ˆBˆ›Ý]WÜÝ\YH[YK›[Û›ÝÛšXÊ
+Bˆ\ÙWÝ[Z[™ÜÎˆXÝÜÝ‹[žWHHßBˆØØ[—ÜÝ\YH[YK›[Û›ÝÛšXÊ
+BˆØØ[ˆHÜ[—ØÛY
+ˆÈH›Ü™YÜ›Ý[™›Ý]H]\Ý™]\›ˆHX\\‰ÜÈXXÜ›È™XÙZ\Ú]Ý]ˆÈØZ][™È›ÜˆHY\[™^ˆY\ÛÛ\][Ûˆ\ÈÛYÜ™XÛÛ˜Ú[YžBˆÈHÝXœÙ\]Y[[œÜXÝÚ[™Ù™ˆÝYÙ\È[™\È™]™\ˆH™\™\]Z\Ú]BˆÈ›ÜˆØZ[š[™ÈHš\œÝ›Ý[™YÛÛ^‚ˆÂˆœÚ[\XÚ[Ë[X\\ˆ‹œØØ[ˆ‹‹ˆ‹‹KZœÛÛˆ‹ˆ
+ŠÈ‹K\Þ[˜È—HYˆ›Û˜XÚ×ÜÞ[˜È[ÙH×H
+Kˆ‹K][Y[Ý]‹X\\—Ý[Y[Ý]ˆKˆ™\×Ü]ˆ
+Bˆ\ÙWÝ[Z[™ÜÖÈœØØ[—ÝØ[ÜÙXÛÛ™È—HH›Ý[™
+[YK›[Û›ÝÛšXÊ
+HHØØ[—ÜÝ\YŠBˆ[œÜXÝÜÝ\YH[YK›[Û›ÝÛšXÊ
+Bˆ[œÜXÝHÜ[—ØÛY
+ˆÂˆœÚ[\XÚ[Ë[X\\ˆ‹š[œÜXÝ‹‹ˆ‹‹KZœÛÛˆ‹ˆ
+ŠÈ‹KX]ØZ]—HYˆ›Û˜XÚ×ÜÞ[˜È[ÙH×H
+Kˆ‹K][Y[Ý]‹X\\—Ý[Y[Ý]ˆKˆ™\×Ü]ˆ
+Bˆ\ÙWÝ[Z[™ÜÖÈš[œÜXÝÝØ[ÜÙXÛÛ™È—HH›Ý[™
+[YK›[Û›ÝÛšXÊ
+HH[œÜXÝÜÝ\YŠBˆYˆÛX\\—ÜÝ\Ü×ØÛÛ[X[™
+X\\—Ü™Y›YÚœÛ˜\ÚÝŠN‚ˆÛ˜\ÚÝHÜ[—ØÛY
+ÈœÚ[\XÚ[Ë[X\\ˆ‹œÛ˜\ÚÝ‹˜Z[‹‹KZœÛÛˆ‹‹ˆ—K™\×Ü]
+Bˆ[ÙN‚ˆÈÛ˜\ÚÝ\È[ˆÜ[Û˜[Ø\Xš[]H[™\È›Ý™\Ù[[ˆÝ\œ™[X\\‚ˆÈ™[X\Ù\ËˆÈ›Ý\›ˆ[ˆÝ\Ú\ÙH\ØX›H[œÜXÝÚ[™Ù™ˆ[ÈH\™›ØÚË‚ˆÛ˜\ÚÝHÝXœ›ØÙ\ÜËÛÛ\]Y›ØÙ\ÜÊˆÈœÚ[\XÚ[Ë[X\\ˆ‹œÛ˜\ÚÝ‹˜Z[‹‹KZœÛÛˆ‹‹ˆ—KˆˆœÛÛ‹™[\ÊÈœÝ]\ÈŽˆœÚÚ\Y‹œ™X\ÛÛˆŽˆ›Ü[Û˜[ØÛÛ[X[™Ý[˜]˜Z[X›HŸJKˆˆ‹ˆ
+Bˆ[™Ù™—Ø\™ÝˆHÈœÚ[\XÚ[Ë[X\\ˆ‹š[™Ù™ˆ‹‹ˆ‹‹KZœÛÛˆ—BˆYˆ›Û˜XÚ×ÜÞ[˜Î‚ˆ[™Ù™—Ø\™Ý‹˜\[™
+‹KX]ØZ]ŠBˆ[™Ù™—Ø\™Ý‹™^[™
+È‹K][Y[Ý]‹X\\—Ý[Y[Ý]‹KY^XÝ][Û‹XÛÛ^—JBˆ\Ú×Ø]Ø\™WÜÝ\ÜYH›ÛÛ
+X\\—Ü™Y›YÚ™Ù]
+\Ú×Ø]Ø\™WÜÝ\ÜYŠJBˆX\\—ÝÚÙ[—ØYÙ]HÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÓPTT—ÕÒÑS—Ð•QÑU‹ˆŠKœÝš\
+
+BˆYˆX\\—ÝÚÙ[—ØYÙ]š\ÙYÚ]
+
+H[™[
+X\\—ÝÚÙ[—ØYÙ]
+Hˆ‚ˆ[™Ù™—Ø\™Ý‹™^[™
+È‹K]ÚÙ[‹XYÙ]‹X\\—ÝÚÙ[—ØYÙ]JBˆYˆ\Ú×Ø]Ø\™WÜÝ\ÜY[™ÛØ[œÝš\
+
+N‚ˆ[™Ù™—Ø\™Ý‹™^[™
+È‹KYÛØ[‹ÛØ[œÝš\
+
+WJBˆYˆ\Ú×Ø]Ø\™WÜÝ\ÜY[™\Ú×Ü]œÝš\
+
+N‚ˆ[™Ù™—Ø\™Ý‹™^[™
+È‹K]\ÚËYš[H‹\Ú×Ü]œÝš\
+
+WJBˆYˆ\Ú×Ø]Ø\™WÜÝ\ÜY[™\Ú×Ùš[™Ù\œš[œÝš\
+
+N‚ˆ[™Ù™—Ø\™Ý‹™^[™
+È‹K]\ÚËYš[™Ù\œš[‹\Ú×Ùš[™Ù\œš[œÝš\
+
+WJBˆYˆ\Ú×Ø]Ø\™WÜÝ\ÜY[™\™Ù]Ú[œÝš\
+
+N‚ˆ[™Ù™—Ø\™Ý‹™^[™
+È‹K]\™Ù]‹\™Ù]Ú[œÝš\
+
+WJBˆ[™Ù™—ÜÝ\YH[YK›[Û›ÝÛšXÊ
+Bˆ[™Ù™ˆHÜ[—ØÛY
+[™Ù™—Ø\™Ý‹™\×Ü]
+Bˆ\ÙWÝ[Z[™ÜÖÈš[™Ù™—ÝØ[ÜÙXÛÛ™È—HH›Ý[™
+[YK›[Û›ÝÛšXÊ
+HH[™Ù™—ÜÝ\YŠBˆ[™Ù™—Ü™XÛÝ™\žHH›Û™BˆžN‚ˆ[™Ù™—ÜÝÝ]HœÛÛ‹›ØYÊ[™Ù™‹œÝÝ]
+HYˆ[™Ù™‹œÝÝ]œÝš\
+
+H[ÙHßBˆ^Ù\˜[YQ\œ›ÜŽ‚ˆ[™Ù™—ÜÝÝ]HßBˆ[™Ù™—ÜXÚÈH[™Ù™—ÜÝÝ]™Ù]
+˜ÛÛ^ÜXÚÈŠHYˆ\Ú[œÝ[˜ÙJ[™Ù™—ÜÝÝ]X\[™ÊH[ÙHßBˆÛÛ™šYÝ\™YØYÙ]H[
+X\\—ÝÚÙ[—ØYÙ]
+HYˆX\\—ÝÚÙ[—ØYÙ]š\ÙYÚ]
+
+H[ÙHÌˆ\Ý[X]YÝÚÙ[œÈH
+ˆ[™Ù™—ÜXÚË™Ù]
+™\Ý[X]YÝÚÙ[œÈŠBˆYˆ\Ú[œÝ[˜ÙJ[™Ù™—ÜXÚËX\[™ÊH[ÙH›Û™Bˆ
+BˆÝ™\—ØYÙ]H
+ˆ\Ú[œÝ[˜ÙJ\Ý[X]YÝÚÙ[œË
+[›Ø]
+JBˆ[™›Ý\Ú[œÝ[˜ÙJ\Ý[X]YÝÚÙ[œË›ÛÛ
+Bˆ[™\Ý[X]YÝÚÙ[œÈˆÛÛ™šYÝ\™YØYÙ]ˆ
+BˆYˆ
+ˆ\Ú×Ø]Ø\™WÜÝ\ÜYˆ[™\Ú×Ü]œÝš\
+
+Bˆ[™\™Ù]Ú[œÝš\
+
+Bˆ[™[™Ù™‹œ™]\›˜ÛÙHOHˆ[™\Ú[œÝ[˜ÙJ[™Ù™—ÜXÚËX\[™ÊBˆ[™
+›ÛÛ
+[™Ù™—ÜXÚË™Ù]
+›™YY×Øœ›ØY\—ØÛÛ^ŠJHÜˆÝ™\—ØYÙ]
+Bˆ
+N‚ˆ™XÛÝ™\žWØ\™ÝˆHÈœÚ[\XÚ[Ë[X\\ˆ‹š[™Ù™ˆ‹‹ˆ‹‹KZœÛÛˆ—BˆYˆ›Û˜XÚ×ÜÞ[˜Î‚ˆ™XÛÝ™\žWØ\™Ý‹˜\[™
+‹KX]ØZ]ŠBˆ™XÛÝ™\žWØ\™Ý‹™^[™
+È‹K][Y[Ý]‹X\\—Ý[Y[Ý]‹KY^XÝ][Û‹XÛÛ^—JBˆ™XÛÝ™\žWØYÙ]HZ[ŠˆLŽÌˆX^
+ÛÛ™šYÝ\™YØYÙ][
+\Ý[X]YÝÚÙ[œÊHYˆÝ™\—ØYÙ][ÙHÛÛ™šYÝ\™YØYÙ]
+Kˆ
+Bˆ™XÛÝ™\žWØ\™Ý‹™^[™
+È‹K]ÚÙ[‹XYÙ]‹ÝŠ™XÛÝ™\žWØYÙ]
+WJBˆYˆÛØ[œÝš\
+
+N‚ˆ™XÛÝ™\žWØ\™Ý‹™^[™
+È‹KYÛØ[‹ÛØ[œÝš\
+
+WJBˆ™XÛÝ™\žWØ\™Ý‹™^[™
+È‹K]\™Ù]‹\™Ù]Ú[œÝš\
+
+WJBˆ[Z]HÜË™[š\›Û‹™Ù]
+”ÒSTPÒS×ÓÓÔÓPTT—ÐÓÓ•VÓSRU‹ŽŠKœÝš\
+
+BˆYˆ[Z]š\ÙYÚ]
+
+H[™[
+[Z]
+Hˆ‚ˆ™XÛÝ™\žWØ\™Ý‹™^[™
+È‹K[[Z]‹[Z]JBˆ™XÛÝ™\žHHÜ[—ØÛY
+™XÛÝ™\žWØ\™Ý‹™\×Ü]
+BˆžN‚ˆ™XÛÝ™\žWÜÝÝ]HœÛÛ‹›ØYÊ™XÛÝ™\žKœÝÝ]
+HYˆ™XÛÝ™\žKœÝÝ]œÝš\
+
+H[ÙHßBˆ^Ù\˜[YQ\œ›ÜŽ‚ˆ™XÛÝ™\žWÜÝÝ]HßBˆ[™Ù™—Ü™XÛÝ™\žHHÂˆœÝ˜]YÞHŽˆ™ÛØ[]\™Ù]]Ú]Ý]]\ÚËYš[H‹ˆœ™]\›˜ÛÙHŽˆ™XÛÝ™\žKœ™]\›˜ÛÙKˆœÝÝ]Žˆ™XÛÝ™\žWÜÝÝ]ˆœÝ\œˆŽˆ
+™XÛÝ™\žKœÝ\œˆÜˆˆŠKœÝš\
+
+KˆBˆYˆ™XÛÝ™\žKœ™]\›˜ÛÙHOH‚ˆ[™Ù™ˆH™XÛÝ™\žBˆØØ[—ÜÝÝ]HœÛÛ‹›ØYÊØØ[‹œÝÝ]
+HYˆØØ[‹œÝÝ]œÝš\
+
+H[ÙHßBˆ[œÜXÝÜÝÝ]HœÛÛ‹›ØYÊ[œÜXÝœÝÝ]
+HYˆ[œÜXÝœÝÝ]œÝš\
+
+H[ÙHßBˆÛ˜\ÚÝÜÝÝ]HœÛÛ‹›ØYÊÛ˜\ÚÝœÝÝ]
+HYˆÛ˜\ÚÝœÝÝ]œÝš\
+
+H[ÙHßBˆ[™Ù™—ÜÝÝ]HœÛÛ‹›ØYÊ[™Ù™‹œÝÝ]
+HYˆ[™Ù™‹œÝÝ]œÝš\
+
+H[ÙHßBˆ›Ü™YÜ›Ý[™ÙÙ[™\˜][ÛˆHÛX\\—ÙÙ[™\˜][ÛŠ™\×Ü]
+Bˆ^[ØYHÂˆœØØ[ˆŽˆÂˆœ™]\›˜ÛÙHŽˆØØ[‹œ™]\›˜ÛÙKˆœÝÝ]ŽˆØØ[—ÜÝÝ]ˆœÝ\œˆŽˆ
+ØØ[‹œÝ\œˆÜˆˆŠKœÝš\
+
+KˆKˆš[œÜXÝŽˆÂˆœ™]\›˜ÛÙHŽˆ[œÜXÝœ™]\›˜ÛÙKˆœÝÝ]Žˆ[œÜXÝÜÝÝ]ˆœÝ\œˆŽˆ
+[œÜXÝœÝ\œˆÜˆˆŠKœÝš\
+
+KˆKˆœÛ˜\ÚÝŽˆÂˆœ™]\›˜ÛÙHŽˆÛ˜\ÚÝœ™]\›˜ÛÙKˆœÝÝ]ŽˆÛ˜\ÚÝÜÝÝ]ˆœÝ\œˆŽˆ
+Û˜\ÚÝœÝ\œˆÜˆˆŠKœÝš\
+
+KˆKˆš[™Ù™ˆŽˆÂˆœ™]\›˜ÛÙHŽˆ[™Ù™‹œ™]\›˜ÛÙKˆœÝÝ]Žˆ[™Ù™—ÜÝÝ]ˆœÝ\œˆŽˆ
+[™Ù™‹œÝ\œˆÜˆˆŠKœÝš\
+
+KˆKˆš[™Ù™—Ü™XÛÝ™\žHŽˆ[™Ù™—Ü™XÛÝ™\žKˆ™^XÝ][Û—Ü›Ý]HŽˆÂˆ›[ÙHŽˆœÞ[˜Ú›Û›Ý\×Ü›Û˜XÚÈˆYˆ›Û˜XÚ×ÜÞ[˜È[ÙH™›Ü™YÜ›Ý[™Ùš\œÝ‹ˆœ›Û˜XÚ×Ù›YÈŽˆ”ÒSTPÒS×ÓÓÔÓPTT—ÔÖS×Ô“ÓPÒÈˆYˆ›Û˜XÚ×ÜÞ[˜È[ÙH›Û™Kˆ™Y\ØÛÛ\][Û—Ü™\]Z\™YÙ›Ü—Ùš\œÝØÛÛ^Žˆ›Û˜XÚ×ÜÞ[˜ËˆœØØ[—ÝØZ]Žˆ›Û˜XÚ×ÜÞ[˜Ëˆš[œÜXÝÝØZ]Žˆ›Û˜XÚ×ÜÞ[˜Ëˆš[™Ù™—ÝØZ]Žˆ›Û˜XÚ×ÜÞ[˜Ëˆ˜˜XÚÙÜ›Ý[™ŽˆÂˆœÝ]\ÈŽˆœ]Y]YYˆYˆ›Ý›Û˜XÚ×ÜÞ[˜È[ÙH˜ÛÛœÝ[YYØžWÜÞ[˜×Ü›Û˜XÚÈ‹ˆÛÜš×ÚYŽˆ
+ˆ
+ØØ[—ÜÝÝ]™Ù]
+™Y\ŠHÜˆßJK™Ù]
+š›Ø—ÚYŠBˆYˆ\Ú[œÝ[˜ÙJØØ[—ÜÝÝ]X\[™ÊH[ÙH›Û™Bˆ
+KˆœYŽˆ
+ˆ
+ØØ[—ÜÝÝ]™Ù]
+™Y\ŠHÜˆßJK™Ù]
+œYŠBˆYˆ\Ú[œÝ[˜ÙJØØ[—ÜÝÝ]X\[™ÊH[ÙH›Û™Bˆ
+KˆœÝ]WÜ]Žˆ
+ˆ
+ØØ[—ÜÝÝ]™Ù]
+™Y\ŠHÜˆßJK™Ù]
+œÝ]WÜ]ŠBˆYˆ\Ú[œÝ[˜ÙJØØ[—ÜÝÝ]X\[™ÊH[ÙH›Û™Bˆ
+KˆKˆ™›Ü™YÜ›Ý[™ÙÙ[™\˜][ÛˆŽˆ›Ü™YÜ›Ý[™ÙÙ[™\˜][Û‹ˆœ\ÙWÝ[Z[™Ü×ÜÙXÛÛ™ÈŽˆ\ÙWÝ[Z[™ÜËˆœ›Ý]WÝØ[ÜÙXÛÛ™ÈŽˆ›Ý[™
+[YK›[Û›ÝÛšXÊ
+HH›Ý]WÜÝ\YŠKˆKˆ™›Ü™YÜ›Ý[™ÙÙ[™\˜][ÛˆŽˆ›Ü™YÜ›Ý[™ÙÙ[™\˜][Û‹ˆ™Ù[™\˜]YØ]ŽˆÛ›ÝÊ
+Kˆœ™\×ÜÝ]WØ™Y›Ü™HŽˆ™Y›Ü™Kˆœ™\×ÜÝ]WØY\ˆŽˆÜ™\×Ùš[™Ù\œš[
+™\×Ü]
+KˆBˆÈX\\ˆX^H™]\›ˆHœ™\ÚÛØ[\™[]˜[XÚÈ]ÛZ]ÈHØ[\‰ÜÂˆÈ^XÚ]\™Ù]ˆ™\Ù\™HH\™Ù]\È[ˆ]]Üš^™YØØ[[ÛÈBˆÈÝÛœÝ™X[HÜ\˜]Üˆ™Y›YÚÙ\È›Ý™Z™XÝ[ˆÝ\Ú\ÙH˜[Y[‹‚ˆYˆ\™Ù]Ú[œÝš\
+
+H[™[™Ù™‹œ™]\›˜ÛÙHOH‚ˆ\™Ù]Ü]H\™Ù]Ú[œÝš\
+
+Kœ™\XÙJ—‹‹ÈŠBˆžN‚ˆ™\ÛÛ™YÝ\™Ù]H
+™\×Ü]È\™Ù]Ü]
+Kœ™\ÛÛ™J
+Bˆ™\ÛÛ™YÝ\™Ù]œ™[]]™WÝÊ™\×Ü]œ™\ÛÛ™J
+JBˆYˆ™\ÛÛ™YÝ\™Ù]š\×Ùš[J
+N‚ˆÛÛ^ÜXÚÈH^[ØYÈš[™Ù™ˆ—VÈœÝÝ]—K™Ù]
+˜ÛÛ^ÜXÚÈŠBˆYˆ\Ú[œÝ[˜ÙJÛÛ^ÜXÚËXÝ
+N‚ˆš[\ÈHÛÛ^ÜXÚËœÙ]Y˜][
+™š[\È‹×JBˆÛ›ÝÛˆHÂˆÝŠ][K™Ù]
+œ]ŠHÜˆˆŠKœ™\XÙJ—‹‹ÈŠBˆ›Üˆ][H[ˆš[\ÈYˆ\Ú[œÝ[˜ÙJ][KXÝ
+BˆBˆYˆ\™Ù]Ü]›Ý[ˆÛ›ÝÛŽ‚ˆš[\Ë˜\[™
+Âˆœ]Žˆ\™Ù]Ü]ˆœÙ[XÝ[Û—Ü™X\ÛÛˆŽˆ™^XÚ]Ý\Ú×Ý\™Ù]‹ˆ\ÝÈŽˆ×KˆJBˆÛÛ^ÜXÚÖÈ™^XÚ]Ý\™Ù]ØYY—HH\™Ù]Ü]ˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›ÜŠN‚ˆ\ÜÂˆÝÜš]WÚœÛÛŠ[—Ü›ÛÝÈ›X\\‹XÛÛ^šœÛÛˆ‹^[ØY
+BˆYˆ
+ØØ[‹œ™]\›˜ÛÙHOHÜˆ[œÜXÝœ™]\›˜ÛÙHOHÜˆÛ˜\ÚÝœ™]\›˜ÛÙHOHˆÜˆ[™Ù™‹œ™]\›˜ÛÙHOH
+N‚ˆYˆÙYÜ˜YYÛX\\—Ù˜[˜XÚ×Ù[˜X›Y
+
+N‚ˆYÜ˜YYHÙYÜ˜YYÛX\\—Ü^[ØY
+ˆ™\×Ü]™Y›Ü™KX\\—Ü™Y›YÚØØ[‹[œÜXÝÛ˜\ÚÝ[™Ù™‹ˆ\™Ù]Ú[ˆ
+BˆÝÜš]WÚœÛÛŠ[—Ü›ÛÝÈ›X\\‹XÛÛ^šœÛÛˆ‹YÜ˜YY
+Bˆ™]\›ˆYÜ˜YYˆ˜Z\ÙH[[YQ\œ›ÜŠ›X\\ˆØØ[‹Ú[œÜXÝÜÛ˜\ÚÝÚ[™Ù™ˆ˜Z[YŠBˆYˆ›ÝÜ™\×ÜÝ]WÙ\]Z]˜[[
+^[ØYÈœ™\×ÜÝ]WØ™Y›Ü™H—K^[ØYÈœ™\×ÜÝ]WØY\ˆ—JN‚ˆ˜Z\ÙH[[YQ\œ›ÜŠœ™\ÜÚ]ÜžHÚ[™ÙY\š[™ÈX\\ˆÝ\™^NÈœ™\Ú™\ÜÈØ[››Ý™H›Ý™[ˆŠBˆÈ\Ýš^\™\È[[[Û˜[H™\XÙHHÜ\˜]Üˆ™Y›YÚÈ›ÙXÝ[Ûˆ[œÂˆÈ[Ø^\È\ÙHHX\\‰ÜÈÝÛˆ\Y˜XÝÙœ™\Ú™\ÜÈ™XÙZ\‚ˆYˆÜ™Y›YÚÛÝ™\œšYJ”ÒSTPÒS×ÓÓÔÑRÑWÓPTT—Ô‘Q“QÒÒ”ÓÓˆŠH\È›Û™N‚ˆÝ˜[Y]WÛX\\—Ü™XÙZ\
+^[ØY™\×Ü]
+Bˆ™]\›ˆ^[ØY‚‚™YˆØZ[Ü[Š\ÚÜÎˆ\ÝÑXÝÜÝ‹[žWWKX\\—Ü^[ØYˆXÝÜÝ‹[žWK™\×Ü]ˆ]ˆÛÛ˜XÝÚ\ÚˆÝˆHˆŠHOˆXÝÜÝ‹[žWN‚ˆ™]\›ˆØZ[Ü[—ÝÚ]Ú[Ê\ÚÜËX\\—Ü^[ØY™\×Ü]ˆ‹ÛÛ˜XÝÚ\ÚXÛÛ˜XÝÚ\Ú
+B‚‚™YˆÙ^˜XÝÜ™\×Ùš[WÚ[Ê\Ú×Ý^ˆÝ‹™\×Ü]ˆ]
+HOˆ\ÝÜÝ—N‚ˆ[Îˆ\ÝÜÝ—HH×Bˆ›ÜˆX]Ú[ˆ™K™š[™]\ŠˆŠÔ]–ÐKV˜K^ŒNWË‹×WJ×ŠÎœ_ßÞœÊJH‹\Ú×Ý^ÜˆˆŠN‚ˆ˜]ÈHX]Ú™Ü›Ý\
+œ]ŠKœÝš\
+
+Kœ™\XÙJ—‹‹ÈŠBˆØ[™Y]HH]
+˜]ÊBˆžN‚ˆ™\ÛÛ™YH
+™\×Ü]ÈØ[™Y]JKœ™\ÛÛ™J
+HYˆ›ÝØ[™Y]Kš\×ØXœÛÛ]J
+H[ÙHØ[™Y]Kœ™\ÛÛ™J
+Bˆ™[H™\ÛÛ™Yœ™[]]™WÝÊ™\×Ü]œ™\ÛÛ™J
+JK˜\×ÜÜÚ^
+
+Bˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›ÜŠN‚ˆÛÛ[YBˆÝÈH™[›ÝÙ\Š
+BˆYˆÝËœÝ\ÝÚ]
+‹œÚ[\XÚ[ËÛÜ˜Ú\Ý˜]Ü‹ÈŠHÜˆÝËœÝ\ÝÚ]
+‹˜Û]YKÈŠHÜˆÝËœÝ\ÝÚ]
+‹™Ú]X‹ÈŠN‚ˆÛÛ[YBˆYˆÝËœÝ\ÝÚ]
+‹™[‹ÈŠHÜˆÝËœÝ\ÝÚ]
+™[‹ÈŠHÜˆ‹ÜÚ]K\XÚØYÙ\ËÈˆ[ˆÝÎ‚ˆÛÛ[YBˆYˆ‹×Ø[™KÈˆ[ˆÝÎ‚ˆÛÛ[YBˆYˆ™[›Ý[ˆ[Î‚ˆ[Ë˜\[™
+™[
+Bˆ™]\›ˆ[Â‚‚™YˆÝ\Ú×ÛX\\—ØÛÛ^
+X\\—Ü^[ØYˆX\[™ÖÜÝ‹[žWK\Ú×Ú[™^ˆ[
+HOˆXÝÜÝ‹[žWN‚ˆˆˆ”™]\›ˆÛ™H\ÚÉÜÈX\\ˆ[™[ÜKÚ]HÚ[™ÛK]\ÚÈÛÛ\]Xš[]HY\\‹ˆˆˆ‚ˆÛÛ^ÈHX\\—Ü^[ØY™Ù]
+\Ú×ØÛÛ^ÈŠHÜˆ×BˆYˆ\Ú[œÝ[˜ÙJÛÛ^ËÙ\]Y[˜ÙJH[™›Ý\Ú[œÝ[˜ÙJÛÛ^Ë
+Ý‹ž]\ÊJN‚ˆ›ÜˆÛÛ^[ˆÛÛ^Î‚ˆYˆ\Ú[œÝ[˜ÙJÛÛ^X\[™ÊH[™[
+ÛÛ^™Ù]
+\Ú×Ú[™^ŠHÜˆ
+HOH\Ú×Ú[™^‚ˆ™]\›ˆXÝ
+ÛÛ^
+Bˆ[™Ù™ˆHX\\—Ü^[ØY™Ù]
+š[™Ù™ˆŠHÜˆßBˆ™]\›ˆÂˆœØÚ[XHŽˆœÚ[\XÚ[Ë\ÚË[X\\‹XÛÛ^ÝŒH‹ˆ\Ú×Ú[™^Žˆ\Ú×Ú[™^ˆ\Ú×Ùš[™Ù\œš[ŽˆÝŠX\\—Ü^[ØY™Ù]
+\Ú×Ùš[™Ù\œš[ŠHÜˆˆŠKˆš[™Ù™ˆŽˆXÝ
+[™Ù™ŠHYˆ\Ú[œÝ[˜ÙJ[™Ù™‹X\[™ÊH[ÙHßKˆ˜ÛÛ^Ú\ÚŽˆÝŠX\\—Ü^[ØY™Ù]
+›X\\—ØÛÛ^Ú\ÚŠHÜˆˆŠKˆ˜ÛÛ\]Xš[]WØY\\ˆŽˆœÚ[™ÛK]\ÚË\Ú\™YZ[™Ù™ˆ‹ˆB‚‚™YˆÝ\Ú×ÛX\\—Ý^
+\ÚÎˆX\[™ÖÜÝ‹[žWJHOˆÝŽ‚ˆ\ÈH×Ý\Ú×ÙÛØ[
+XÝ
+\ÚÊJWBˆYˆ\ÚË™Ù]
+›ÜšYÚ[˜[Ý^ŠN‚ˆ\Ë˜\[™
+ÝŠ\ÚÖÈ›ÜšYÚ[˜[Ý^—JJBˆ\Ë™^[™
+ÝŠ][K™Ù]
+]HŠHÜˆˆŠH›Üˆ][H[ˆ\ÚË™Ù]
+œØÙ[˜\š[ÜÈŠHÜˆ×BˆYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊJBˆ\Ë™^[™
+ÝŠ][K™Ù]
+šYŠHÜˆˆŠH›Üˆ][H[ˆ\ÚË™Ù]
+œ[\ÈŠHÜˆ×BˆYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊJBˆ™]\›ˆˆ‹š›Ú[Š\œÝš\
+
+H›Üˆ\[ˆ\ÈYˆ\[™\œÝš\
+
+JB‚‚™YˆÝ\Ú×ØÛÛ^Ü[—Ù]JÛÛ^ˆX\[™ÖÜÝ‹[žWK\ÚÎˆX\[™ÖÜÝ‹[žWKˆ™\×Ü]ˆ]\Ú×Ý^ˆÝˆHˆŠHOˆXÝÜÝ‹[žWN‚ˆ[™Ù™ˆHÛÛ^™Ù]
+š[™Ù™ˆŠHYˆ\Ú[œÝ[˜ÙJÛÛ^™Ù]
+š[™Ù™ˆŠKX\[™ÊH[ÙHßBˆÝÝ]H[™Ù™‹™Ù]
+œÝÝ]ŠHYˆ\Ú[œÝ[˜ÙJ[™Ù™‹™Ù]
+œÝÝ]ŠKX\[™ÊH[ÙH[™Ù™‚ˆXÚÈHÝÝ]™Ù]
+˜ÛÛ^ÜXÚÈŠHYˆ\Ú[œÝ[˜ÙJÝÝ]X\[™ÊH[ÙHßBˆYˆ›Ý\Ú[œÝ[˜ÙJXÚËX\[™ÊN‚ˆXÚÈHßBˆš[\ÈHXÚË™Ù]
+™š[\ÈŠHÜˆ×Bˆ\™Ù]ÈH×Bˆ›Üˆ][H[ˆš[\Î‚ˆ]HÝŠ][K™Ù]
+œ]ŠHÜˆˆŠHYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊH[ÙHˆ‚ˆYˆ›Ý]‚ˆÛÛ[YBˆžN‚ˆ™\ÛÛ™YH
+™\×Ü]È]
+Kœ™\ÛÛ™J
+HYˆ›Ý]
+]
+Kš\×ØXœÛÛ]J
+H[ÙH]
+]
+Kœ™\ÛÛ™J
+Bˆ]H™\ÛÛ™Yœ™[]]™WÝÊ™\×Ü]œ™\ÛÛ™J
+JK˜\×ÜÜÚ^
+
+Bˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›ÜŠN‚ˆÛÛ[YBˆÝÈH]›ÝÙ\Š
+BˆYˆ
+ÝËœÝ\ÝÚ]
+
+‹œÚ[\XÚ[ËÛÜ˜Ú\Ý˜]Ü‹È‹‹˜Û]YKÈ‹‹™Ú]X‹È‹‹™[‹È‹™[‹ÈŠJBˆÜˆ‹ÜÚ]K\XÚØYÙ\ËÈˆ[ˆÝÈÜˆ‹×Ø[™KÈˆ[ˆÝÊN‚ˆÛÛ[YBˆYˆ›ÝÝË™[™ÝÚ]
+
+‹œH‹‹È‹‹Þ‹‹šœÈŠJN‚ˆÛÛ[YBˆYˆ]›Ý[ˆ\™Ù]Î‚ˆ\™Ù]Ë˜\[™
+]
+BˆYˆ›Ý\™Ù]Î‚ˆ\™Ù]ÈHØØ[™Y]WÝ\™Ù]ÊÈš[™Ù™ˆŽˆÈœÝÝ]ŽˆÈ˜ÛÛ^ÜXÚÈŽˆXÝ
+XÚÊ___K™\×Ü]
+Bˆ^XÚ]HÙ^˜XÝÜ™\×Ùš[WÚ[Ê\Ú×Ý^™\×Ü]
+Bˆ›Üˆ[[ˆÙ^˜XÝÜ™\×Ùš[WÚ[ÊÝ\Ú×ÛX\\—Ý^
+\ÚÊK™\×Ü]
+N‚ˆYˆ[›Ý[ˆ^XÚ]‚ˆ^XÚ]˜\[™
+[
+BˆÜ™\™YH×Bˆ›Üˆ][ˆ^XÚ]
+È\™Ù]Î‚ˆYˆ]›Ý[ˆÜ™\™Y‚ˆÜ™\™Y˜\[™
+]
+Bˆ\ÝÈHÛÜY
+ÂˆÝŠ\ÝÜ]
+Kœ™\XÙJ—‹‹ÈŠBˆ›Üˆ][H[ˆš[\ÂˆYˆ\Ú[œÝ[˜ÙJ][KX\[™ÊBˆ›Üˆ\ÝÜ][ˆ][K™Ù]
+\ÝÈŠHÜˆ×BˆYˆÝŠ\ÝÜ]
+KœÝš\
+
+BˆJBˆšY[]HHXÚË™Ù]
+™šY[]HŠHYˆ\Ú[œÝ[˜ÙJXÚË™Ù]
+™šY[]HŠKX\[™ÊH[ÙHßBˆÙ[XÝ[ÛˆHXÚË™Ù]
+œÙ[XÝ[ÛˆŠHYˆ\Ú[œÝ[˜ÙJXÚË™Ù]
+œÙ[XÝ[ÛˆŠKX\[™ÊH[ÙHßBˆÚÙ[—Ùš]HXÚË™Ù]
+ÚÙ[—ØYÙ]Ùš]ŠHYˆ\Ú[œÝ[˜ÙJXÚË™Ù]
+ÚÙ[—ØYÙ]Ùš]ŠKX\[™ÊH[ÙHßBˆ™]\›ˆÂˆ\™Ù]ÈŽˆÜ™\™Yˆ\ÝÈŽˆ\ÝËˆœXÚ×Ú\ÚŽˆÝŠXÚË™Ù]
+œXÚ×Ú\ÚŠHÜˆÛÛ^™Ù]
+œXÚ×Ú\ÚŠHÜˆˆŠKˆ˜ÛÛ^Ú\ÚŽˆÝŠÛÛ^™Ù]
+˜ÛÛ^Ú\ÚŠHÜˆˆŠKˆÚÙ[—ØYÙ]Žˆ[
+XÚË™Ù]
+ÚÙ[—ØYÙ]ŠHÜˆÚÙ[—Ùš]™Ù]
+ÚÙ[—ØYÙ]ŠHÜˆ
+Kˆ™šY[]HŽˆXÝ
+šY[]JKˆœÙ[XÝ[ÛˆŽˆXÝ
+Ù[XÝ[ÛŠKˆ˜XœÝ[[ÛˆŽˆÝŠXÚË™Ù]
+˜XœÝ[[Û—Ü™X\ÛÛˆŠHÜˆÙ[XÝ[Û‹™Ù]
+˜XœÝ[[Û—Ü™X\ÛÛˆŠHÜˆˆŠKˆB‚‚™YˆØZ[Ü[—ÝÚ]Ú[Ê\ÚÜÎˆ\ÝÑXÝÜÝ‹[žWWKX\\—Ü^[ØYˆXÝÜÝ‹[žWK™\×Ü]ˆ]ˆ\Ú×Ý^ˆÝ‹
+‹ÛÛ˜XÝÚ\ÚˆÝˆHˆŠHOˆXÝÜÝ‹[žWN‚ˆÚ\™YÚ[™Ù™ˆH
+
+X\\—Ü^[ØY™Ù]
+š[™Ù™ˆŠHÜˆßJK™Ù]
+œÝÝ]ŠHÜˆßJK™Ù]
+˜ÛÛ^ÜXÚÈŠHÜˆßBˆ\Ú×ØÛÛ^ÈH×BˆÝ\ÈH×BˆYÙÜ™YØ]WÝ\™Ù]Îˆ\ÝÜÝ—HH×Bˆ›Üˆ[™^\ÚÈ[ˆ[[Y\˜]J\ÚÜËÝ\LJN‚ˆÛÛ^HÝ\Ú×ÛX\\—ØÛÛ^
+X\\—Ü^[ØY[™^
+Bˆ]HHÝ\Ú×ØÛÛ^Ü[—Ù]JÛÛ^\ÚË™\×Ü]\Ú×Ý^
+Bˆ\Ú×ØÛÛ^Ë˜\[™
+Âˆ\Ú×Ú[™^Žˆ[™^ˆ\Ú×ÚYŽˆÝŠ\ÚË™Ù]
+šYŠHÜˆˆŠKˆ\Ú×Ùš[™Ù\œš[ŽˆÝŠÛÛ^™Ù]
+\Ú×Ùš[™Ù\œš[ŠHÜˆˆŠKˆ˜ÛÛ^Ú\ÚŽˆ]VÈ˜ÛÛ^Ú\Ú—KˆœXÚ×Ú\ÚŽˆ]VÈœXÚ×Ú\Ú—KˆÚÙ[—ØYÙ]Žˆ]VÈÚÙ[—ØYÙ]—Kˆ™šY[]HŽˆ]VÈ™šY[]H—KˆœÙ[XÝ[ÛˆŽˆ]VÈœÙ[XÝ[Ûˆ—Kˆ˜XœÝ[[ÛˆŽˆ]VÈ˜XœÝ[[Ûˆ—Kˆ˜ÛÛ\]Xš[]WØY\\ˆŽˆÛÛ^™Ù]
+˜ÛÛ\]Xš[]WØY\\ˆ‹ˆŠKˆJBˆ›Üˆ][ˆ]VÈ\™Ù]È—N‚ˆYˆ]›Ý[ˆYÙÜ™YØ]WÝ\™Ù]Î‚ˆYÙÜ™YØ]WÝ\™Ù]Ë˜\[™
+]
+Bˆ\Ú×ÜÝ\ÈH×Bˆ›ÜˆØÙ[˜\š[È[ˆ\ÚË™Ù]
+œØÙ[˜\š[ÜÈŠHÜˆ×N‚ˆ\Ú×ÜÝ\Ë˜\[™
+ÂˆšÚ[™ŽˆœØÙ[˜\š[È‹ˆšYŽˆØÙ[˜\š[Ë™Ù]
+šYŠKˆ]HŽˆØÙ[˜\š[Ë™Ù]
+]HŠKˆœ[WÜ™YœÈŽˆØÙ[˜\š[Ë™Ù]
+œ[WÜ™YœÈŠHÜˆ×Kˆ™\šYšXØ][Û—Ú[[ŽˆØÙ[˜\š[Ë™Ù]
+™\šYšXØ][Û—Ú[[ŠKˆ›X\\—ØÛÛ^Ú\ÚŽˆ]VÈ˜ÛÛ^Ú\Ú—Kˆ\Ú×ØÛÛ˜XÝÚ\ÚŽˆÛÛ˜XÝÚ\Úˆœ[ˆŽˆÂˆœ™XYÜ]ÈŽˆ\Ý
+]VÈ\™Ù]È—JKˆ˜Ú[™ÙWÜ]ÈŽˆ\Ý
+]VÈ\™Ù]È—JKˆ\ÝÜ]ÈŽˆ\Ý
+]VÈ\ÝÈ—JKˆ\ÝØÛÛ[X[™ÈŽˆÈ›Ü\˜]Üˆ˜[Y][Ûˆ[™™\ÜÚ]ÜžH\ÝØ]H—Kˆ››×ØÛÙWØÚ[™ÙHŽˆ˜[ÙKˆKˆœÝ]\ÈŽˆœ[™[™È‹ˆJBˆ[WÚYÈHÜÝŠ[K™Ù]
+šYŠJH›Üˆ[H[ˆ\ÚË™Ù]
+œ[\ÈŠHÜˆ×HYˆ[K™Ù]
+šYŠWBˆÝ\Ë˜\[™
+Âˆ\Ú×Ú[™^Žˆ[™^ˆ]HŽˆ
+\ÚË™Ù]
+šY[]HŠHÜˆßJK™Ù]
+]HŠHÜˆÝ\Ú×ÙÛØ[
+\ÚÊKˆ\Ú×Ùš[™Ù\œš[ŽˆÝŠÛÛ^™Ù]
+\Ú×Ùš[™Ù\œš[ŠHÜˆˆŠKˆ›X\\—ØÛÛ^Ú\ÚŽˆ]VÈ˜ÛÛ^Ú\Ú—Kˆ˜ÛÛ^ÜXÚ×Ú\ÚŽˆ]VÈœXÚ×Ú\Ú—Kˆ˜Ø[™Y]WÝ\™Ù]ÈŽˆ\Ý
+]VÈ\™Ù]È—JKˆ›X\YÝ\ÝÈŽˆ\Ý
+]VÈ\ÝÈ—JKˆœÙ[XÝ[ÛˆŽˆÈÚÙ[—ØYÙ]Žˆ]VÈÚÙ[—ØYÙ]—K
+Š™]VÈœÙ[XÝ[Ûˆ—_Kˆ™šY[]HŽˆ]VÈ™šY[]H—Kˆ˜XœÝ[[ÛˆŽˆ]VÈ˜XœÝ[[Ûˆ—Kˆ×ØÜ™X]HŽˆ×Kˆœ[WÚYÈŽˆ[WÚYËˆœÝ\ÈŽˆ\Ú×ÜÝ\ËˆJBˆÚ\™YÜXÚ×Ú\ÚHÝŠÚ\™YÚ[™Ù™‹™Ù]
+œXÚ×Ú\ÚŠHÜˆˆŠHYˆ\Ú[œÝ[˜ÙJÚ\™YÚ[™Ù™‹X\[™ÊH[ÙHˆ‚ˆ[ˆHÂˆœØÚ[XHŽˆS—ÔÐÒSPKˆ\Ú×ØÛÛ˜XÝÚ\ÚŽˆÛÛ˜XÝÚ\Úˆ™Ù[™\˜]YØ]ŽˆÛ›ÝÊ
+Kˆ\Ú×ØÛÝ[Žˆ[Š\ÚÜÊKˆ›X\\—Ý\™Ù]ÈŽˆYÙÜ™YØ]WÝ\™Ù]Ëˆ›X\\—ÜXÚ×Ú\ÚŽˆÚ\™YÜXÚ×Ú\Úˆ˜ÛÛ^ÜXÚ×Ú\ÚŽˆÚ\™YÜXÚ×Ú\Úˆ›X\\—ÙÙ[™\˜][ÛˆŽˆXÝ
+X\\—Ü^[ØY™Ù]
+™›Ü™YÜ›Ý[™ÙÙ[™\˜][ÛˆŠHÜˆßJKˆ\Ú×ØÛÛ^ÈŽˆ\Ú×ØÛÛ^Ëˆœ™\×ÜÝ]HŽˆX\\—Ü^[ØY™Ù]
+œ™\×ÜÝ]WØY\ˆŠHÜˆßKˆ™œ™\Ú™\ÜÈŽˆÂˆ™\šYšYYŽˆÜ™\×ÜÝ]WÙ\]Z]˜[[
+X\\—Ü^[ØY™Ù]
+œ™\×ÜÝ]WØ™Y›Ü™HŠHÜˆßKˆX\\—Ü^[ØY™Ù]
+œ™\×ÜÝ]WØY\ˆŠHÜˆßJKˆ˜ÚXÚÙYØ]ŽˆX\\—Ü^[ØY™Ù]
+™Ù[™\˜]YØ]‹ˆŠKˆ˜Ý\œ™[ÜÝ]HŽˆÜ™\×Ùš[™Ù\œš[
+™\×Ü]
+KˆKˆœÝ\ÈŽˆÝ\ËˆBˆ]\›Z[š\ÝX×Ú[œ]HÂˆœØÚ[XHŽˆ[–ÈœØÚ[XH—Kˆ\Ú×ØÛÛ˜XÝÚ\ÚŽˆÛÛ˜XÝÚ\Úˆ›X\\—ÜXÚ×Ú\ÚŽˆ[–È›X\\—ÜXÚ×Ú\Ú—Kˆ\Ú×ØÛÛ^ÈŽˆ\Ú×ØÛÛ^Ëˆœ™\×ÜÝ]HŽˆ[–Èœ™\×ÜÝ]H—KˆœúçÏm¢G§²ÚîÆ­yÖV—BævWB‚&W†V7WF–öå÷7FFR"Â'&÷÷6VB"’À¢Ð¢Wf–FVæ6RÒ'V–ÆEöWf–FVæ6U÷&V6V—B‡7G"‡'Vå÷&ö÷B’¢÷w&—FUö§6öâ‡'Vå÷&ö÷Bò&Wf–FVæ6R×&V6V—Bæ§6öâ"ÂWf–FVæ6R¢7FFU²&Wf–FVæ6R%ÒÒ°¢'&VG’#¢fÇ6RÀ¢'&V6V—B#¢7G"‡'Vå÷&ö÷Bò&Wf–FVæ6R×&V6V—Bæ§6öâ"’À¢'7FGW2#¢Wf–FVæ6RævWB‚'7FGW2"Â%TådU$”d”TB"’À¢Ð¢FVÆ—fW'•÷&V6V—BÒ'V–ÆEöFVÆ—fW'•÷&V6V—B‡7G"‡'Vå÷&ö÷B’ÂFVÆ—fW'’Â7W'&VçE÷7FFSÒ&–×ÆVÖVçFVB"¢w&—FUöFVÆ—fW'•÷&V6V—B‡7G"‡'Vå÷&ö÷B’ÂFVÆ—fW'•÷&V6V—B¢7FFU²&FVÆ—fW'’%ÒÒ°¢'F&vWB#¢FVÆ—fW'’À¢&7W'&VçE÷7FFR#¢FVÆ—fW'•÷&V6V—E²&7W'&VçE÷7FFR%ÒÀ¢'&VG’#¢FVÆ—fW'•÷&V6V—E²'&VG’%ÒÀ¢'&V6V—B#¢7G"‡'Vå÷&ö÷Bò&FVÆ—fW'’×&V6V—Bæ§6öâ"’À¢'6÷W&6Uö6†V6¶VEöB#¢FVÆ—fW'•÷&V6V—E²'6÷W&6Uö6†V6¶VEöB%ÒÀ¢Ð¢7FFU²&7W'&VçEö7F–öâ%ÒÒ&÷W&F÷%öG'•÷'Vå÷&V6÷&FVB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ&v—Eö÷W&F÷%öFV6—6–öâ ¢÷w&—FUö§6öâ‡'Vå÷&ö÷Bò'7FFRæ§6öâ"Â7FFR¢öVÖ—EöWfVçB‡'Vå÷&ö÷BÂ7FFRÂ'Æå÷&VG’"Â&V6V—C×7G"‡'Vå÷&ö÷Bò'Æâæ§6öâ"’À¢ÖW76vSÒ'fÆ–FFVBÆâÖFW&–Æ—¦VB"¢–b7FFRævWB‚&÷W&F÷""Â·Ò’ævWB‚'&V6V—B"“ ¢öVÖ—EöWfVçB‡'Vå÷&ö÷BÂ7FFRÂ&÷W&F÷%÷&V6V—B"À¢&V6V—C×7G"‡'Vå÷&ö÷Bò&÷W&F÷"×&V6V—Bæ§6öâ"’À¢ÖW76vSÒ&÷W&F÷"G'’×'Vâ&V6V—BW'6—7FVB"¢÷G&ç6—F–öâ‡'Vå÷&ö÷BÂ7FFRÂ&v—F–æuöFV6—6–öâ"Â'ÆâFW&—fVBg&öÒF6²6öçG&7B²ÖW""À¢&V6V—C×7G"‡'Vå÷&ö÷Bò'Æâæ§6öâ"’¢W†6WBW†6WF–öâ2W†3 ¢7FFRÒöÆöEö§6öâ‡'Vå÷&ö÷Bò'7FFRæ§6öâ"¢ÖW76vRÒ7G"†W†2¢–b&æòWF†÷&—¦VB÷W&F÷"F&vWB"–âÖW76vR÷"&÷W&F÷"&VfÆ–v‡B&Æö6¶VB"–âÖW76vS ¢7FFU²&&Æö6¶W'2%ÒÒ·°¢&¶–æB#¢''Vå÷&VfÆ–v‡B"À¢'&V6öåö6öFR#¢&æõöWF†÷&—¦VE÷F&vWB"–b'F&vWB"–âÖW76vRVÇ6R&÷W&F÷%öG'•÷'Våöf–ÆVB"À¢&ÖW76vR#¢ÖW76vRÀ¢''Våö–B#¢'Våö–BÀ¢ÕÐ¢VÇ6S ¢7FFU²&&Æö6¶W'2%ÒÒ¶ÖW76vUÐ¢7FFU²&7W'&VçEö7F–öâ%ÒÒ&Ö–æuöf–ÆVB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ'&W—%öÖW%ö÷%÷&Wò ¢Wf–FVæ6U÷F‚Ò'Vå÷&ö÷Bò&Wf–FVæ6R×&V6V—Bæ§6öâ ¢–bæ÷BWf–FVæ6U÷F‚æW†—7G2‚“ ¢ÖW%÷F‚Ò'Vå÷&ö÷Bò&ÖW"Ö6öçFW‡Bæ§6öâ ¢÷W&F÷%÷F‚Ò'Vå÷&ö÷Bò&÷W&F÷"×&V6V—Bæ§6öâ ¢Æå÷F‚Ò'Vå÷&ö÷Bò'Æâæ§6öâ ¢–bæ÷BÆå÷F‚æW†—7G2‚’æBæ÷BÖW%÷F‚æW†—7G2‚“ ¢÷w&—FUö§6öâ†ÖW%÷F‚Â°¢''Våö–B#¢'Våö–BÀ¢'F6µö6öçG&7Eö†6‚#¢6ö×–ÆVE²&6öÆÆV7F–öåö†6‚%ÒÀ¢'7FGW2#¢&&Æö6¶VB"À¢&W'&÷"#¢ÖW76vRÀ¢Ò¢–bæ÷BÆå÷F‚æW†—7G2‚’æBæ÷B÷W&F÷%÷F‚æW†—7G2‚“ ¢÷w&—FUö§6öâ†÷W&F÷%÷F‚Â°¢'66†VÖ#¢õU$Dõ%õ$T4T•Eõ44„TÔÀ¢''Våö–B#¢'Våö–BÀ¢'F6µö6öçG&7Eö†6‚#¢6ö×–ÆVE²&6öÆÆV7F–öåö†6‚%ÒÀ¢&W†V7WF–öå÷7FFR#¢&&Æö6¶VB"À¢'7FGW2#¢&&Æö6¶VB"À¢'&WGW&æ6öFR#¢æöæRÀ¢&6†ævVE÷F‡2#¢µÒÀ¢&W'&÷"#¢ÖW76vRÀ¢Ò¢–bÖW%÷F‚æW†—7G2‚’æB÷W&F÷%÷F‚æW†—7G2‚“ ¢Wf–FVæ6RÒ'V–ÆEöWf–FVæ6U÷&V6V—B‡7G"‡'Vå÷&ö÷B’¢÷w&—FUö§6öâ†Wf–FVæ6U÷F‚ÂWf–FVæ6R¢7FFU²&Wf–FVæ6R%ÒÒ°¢'&VG’#¢fÇ6RÀ¢'&V6V—B#¢7G"†Wf–FVæ6U÷F‚’À¢'7FGW2#¢Wf–FVæ6RævWB‚'7FGW2"Â%TådU$”d”TB"’À¢Ð¢÷w&—FUö§6öâ‡'Vå÷&ö÷Bò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ‡'Vå÷&ö÷BÂ7FFRÂ&&Æö6¶VB"Â&ÖW"–çFVw&F–öâf–ÆVB"À¢&V6V—C×7G"‡'Vå÷&ö÷Bò&ÖW"Ö6öçFW‡Bæ§6öâ"’ÂW‡G&×²&W'&÷"#¢7G"†W†2—Ò¢&WGW&â²&Öæ–fW7B#¢Öæ–fW7BÂ'7FFR#¢öÆöEö§6öâ‡'Vå÷&ö÷Bò'7FFRæ§6öâ"’Â''VåöF—"#¢7G"‡'Vå÷&ö÷B—Ð  ¦FVbö6†ævVE÷F‡2‡&Wõ÷Fƒ¢F‚’ÓâÆ—7E·7G%Ó ¢G'“ ¢&W7VÇBÒ÷'Våö6ÖB…²&v—B"Â&F–fb"Â"ÒÖæÖRÖöæÇ’"Â$„TB%ÒÂ&Wõ÷F‚¢F‡2Ò¶Æ–æRç7G&—‚’f÷"Æ–æR–â‡&W7VÇBç7FF÷WB÷"""’ç7Æ—FÆ–æW2‚’–bÆ–æRç7G&—‚•Ð¢7FGW2Ò÷'Våö6ÖB…²&v—B"Â'7FGW2"Â"Ò×÷&6VÆ–ã×c"Â"Ò×VçG&6¶VBÖf–ÆW3ÖÆÂ%ÒÂ&Wõ÷F‚¢f÷"Æ–æR–â‡7FGW2ç7FF÷WB÷"""’ç7Æ—FÆ–æW2‚“ ¢–bÆVâ†Æ–æR’â2æBÆ–æU³3¥Òç7G&—‚’æ÷B–âF‡3 ¢F‡2æVæB†Æ–æU³3¥Òç7G&—‚’¢&WGW&â6÷'FVB‡6WB‡F‡2’¢W†6WBW†6WF–öã ¢&WGW&âµÐ  ¦FVbö6GW&Uö÷W&F÷%ö6†V6·ö–çB‡'VåöF—#¢F‚Â&Wõ÷Fƒ¢F‚ÂF&vWG3¢Æ—7E·7G%Ò’ÓâF–7E·7G"Âç•Ó ¢6†V6·ö–çEöF—"Ò'VåöF—"ò&6†V6·ö–çB ¢6†V6·ö–çEöF—"æÖ¶F—"‡&VçG3ÕG'VRÂW†—7Eöö³ÕG'VR¢f–ÆW2ÒµÐ¢f÷"F&vWB–â6÷'FVB‡6WB‡Bf÷"B–âF&vWG2–bB’“ ¢F‚Ò&Wõ÷F‚òF&vW@¢W†—7G2ÒF‚æW†—7G2‚¢6öçFVçBÒF‚ç&VE÷FW‡B†Væ6öF–æsÒ'WFbÓ‚"’–bW†—7G2VÇ6RæöæP¢f–ÆW2æVæB‡°¢'F‚#¢F&vWBÀ¢&W†—7G2#¢W†—7G2À¢&6öçFVçB#¢6öçFVçBÀ¢Ò¢&WGW&â°¢&¶–æB#¢&f–ÆR×6æ6†÷B÷c"À¢&7&VFVEöB#¢öæ÷r‚’À¢'6fU÷F&vWG2#¢6÷'FVB‡6WB‡Bf÷"B–âF&vWG2–bB’’À¢&f–ÆW2#¢f–ÆW2À¢Ð  ¦FVb÷&W7F÷&Uö÷W&F÷%ö6†V6·ö–çB†6†V6·ö–çC¢F–7E·7G"Âç•ÒÂ&Wõ÷Fƒ¢F‚Â6†ævVE÷F‡3¢Æ—7E·7G%Ò’ÓâF–7E·7G"Âç•Ó ¢F&vWG2Ò6÷'FVB‡6WB‡7G"‡F‚’f÷"F‚–â†6†V6·ö–çBævWB‚'6fU÷F&vWG2"’÷"µÒ’–b7G"‡F‚’’¢6†ævVBÒ6÷'FVB‡6WB‡7G"‡F‚’f÷"F‚–â†6†ævVE÷F‡2÷"µÒ’–b7G"‡F‚’’¢6æ6†÷G2Ò¶—FVÕ²'F‚%Ó¢—FVÒf÷"—FVÒ–â†6†V6·ö–çBævWB‚&f–ÆW2"’÷"µÒ’–b—6–ç7Fæ6R†—FVÒÂF–7B’æB—FVÒævWB‚'F‚"—Ð¢–bæ÷B6†ævVC ¢f÷"&VÂ–âF&vWG3 ¢6æÒ6æ6†÷G2ævWB‡&VÂ¢–bæ÷B6æ ¢6öçF–çVP¢F‚Ò&Wõ÷F‚ò&VÀ¢W†—7G5öæ÷rÒF‚æW†—7G2‚¢6öçFVçEöæ÷rÒF‚ç&VE÷FW‡B†Væ6öF–æsÒ'WFbÓ‚"’–bW†—7G5öæ÷rVÇ6RæöæP¢–b&ööÂ‡6æævWB‚&W†—7G2"’’ÒW†—7G5öæ÷r÷"‡6æævWB‚&W†—7G2"’æB6æævWB‚&6öçFVçB"’Ò6öçFVçEöæ÷r“ ¢6†ævVBæVæB‡&VÂ¢–bæ÷B6†ævVC ¢&WGW&â²&GFV×FVB#¢fÇ6RÂ'&W7F÷&VB#¢fÇ6RÂ'&V6öâ#¢&æõö6†ævVE÷F‡2'Ð¢–bæ÷BF&vWG3 ¢&WGW&â²&GFV×FVB#¢fÇ6RÂ'&W7F÷&VB#¢fÇ6RÂ'&V6öâ#¢&6†V6·ö–çE÷F&vWG5öÖ—76–ær'Ð¢–bç’‡F‚æ÷B–âF&vWG2f÷"F‚–â6†ævVB“ ¢&WGW&â²&GFV×FVB#¢fÇ6RÂ'&W7F÷&VB#¢fÇ6RÂ'&V6öâ#¢&6†ævVE÷F‡5ö÷WG6–FUö6†V6·ö–çE÷66÷R'Ð¢f÷"&VÂ–â6†ævVC ¢6æÒ6æ6†÷G2ævWB‡&VÂ¢–bæ÷B6æ ¢&WGW&â²&GFV×FVB#¢fÇ6RÂ'&W7F÷&VB#¢fÇ6RÂ'&V6öâ#¢b&Ö—76–æu÷6æ6†÷C§·&VÇÒ'Ð¢F‚Ò&Wõ÷F‚ò&VÀ¢–b6æævWB‚&W†—7G2"“ ¢F‚ç&VçBæÖ¶F—"‡&VçG3ÕG'VRÂW†—7Eöö³ÕG'VR¢F‚çw&—FU÷FW‡B‡6æævWB‚&6öçFVçB"’÷"""ÂVæ6öF–æsÒ'WFbÓ‚"¢VÆ–bF‚æW†—7G2‚“ ¢F‚çVæÆ–æ²‚¢&WGW&â²&GFV×FVB#¢G'VRÂ'&W7F÷&VB#¢G'VRÂ'&V6öâ#¢'&W7F÷&VEö6†V6·ö–çB'Ð  ¦FVbö÷W&F÷%öf–ÇW&Uöf–ævW'&–çB‡&WGW&æ6öFS¢–çBÂæöæRÂ7FFW'#¢7G"Â7FF÷WC¢ç’’Óâ7G# ¢'G2Ò¶b'&WGW&æ6öFS×·&WGW&æ6öFWÒ%Ð¢–b7FFW'# ¢'G2æVæB†b'7FFW'#×·7FFW''Ò"¢–b7FF÷WC ¢–b—6–ç7Fæ6R‡7FF÷WBÂF–7B“ ¢'G2æVæB‚'7FF÷WCÒ"²§6öâæGV×2‡7FF÷WBÂVç7W&Uö66–“ÔfÇ6RÂ6÷'Eö¶W—3ÕG'VR’¢VÇ6S ¢'G2æVæB†b'7FF÷WC×·7FF÷WGÒ"¢&Æö"Ò"Â"æ¦ö–â‡'G2¢&WGW&â†6†Æ–"ç6†#Sb†&Æö"æVæ6öFR‚'WFbÓ‚"’’æ†W†F–vW7B‚•³£eÐ  ¦FVbö÷W&F÷%÷&V6V—Eö†6‚‡&V6V—C¢Ö–æu·7G"Âç•Ò’Óâ7G# ¢""%7F&ÆR6†#Sb÷fW"F†R6æöæ–6Â&V6V—B&öG’†W†6ÇVF–ær&V6V—Eö†6‚—G6VÆb’à ¢—77VR33S¢F†R&V6V—B—2F†RGW&&ÆR&ööb&öGV7F–öâF–fbv2&öGV6VBF‡&÷Vv‚F†P¢'&–FvRâF†R†6‚ÆWG2F†RF–fbÖ6÷fW&vRvFR&–æBv—BF–ffF‚FòW†7FÇ’öæR&V6V—Bà¢"" ¢6æöæ–6ÂÒ¶³¢bf÷"²Âb–â&V6V—Bæ—FV×2‚’–b²Ò'&V6V—Eö†6‚'Ð¢&Æö"Ò§6öâæGV×2†6æöæ–6ÂÂVç7W&Uö66–“ÔfÇ6RÂ6÷'Eö¶W—3ÕG'VRÂ6W&F÷'3Ò‚"Â"Â#¢"’¢&WGW&â†6†Æ–"ç6†#Sb†&Æö"æVæ6öFR‚'WFbÓ‚"’’æ†W†F–vW7B‚  ¦FVbö÷W&F÷%÷'VåöF–feö6÷fW&vR‡&Wõ÷Fƒ¢F‚Â'VåöF—#¢F‚’ÓâF–7E·7G"Âç•Ó ¢""$—77VR33S¢WfW'’&öGV7F–öâF–fbF‚×W7B&R6÷fW&VB'’â÷W&F÷"&V6V—Bà ¢F†R'&–FvR—2F†RôäÅ’ÆÆ÷vVB×WFF–öâF‚âç’F‚v—BF–ffæÖW2F†Bæò÷W&F÷ ¢&V6V—B6÷fW'2†’æRâv2VF—FVB÷WG6–FRF†R'&–FvRÂ÷"'’FWbÖ6Æ’f–ÇW&RF†B6–ÆVçFÇ¢VæÆö6¶VBÖçVÂVF—F–ær’Ö¶W2F†R'VâæöâÖ6öæ6ÇVF&ÆRà¢"" ¢6†ævVBÒö6†ævVE÷F‡2‡&Wõ÷F‚¢6÷fW&VC¢Æ—7E·7G%ÒÒµÐ¢&V6V—G3¢Æ—7E´F–7E·7G"Âç•ÕÒÒµÐ¢26öÆÆV7BWfW'’÷W&F÷"&V6V—B–âF†—2'Vâ†W†V7WFR²&F6‚ÆæW2’à¢f÷"6æF–FFR–â6÷'FVB‡'VåöF—"ævÆö"‚&÷W&F÷"×&V6V—B¢æ§6öâ"’“ ¢G'“ ¢&V6V—G2æVæB…öÆöEö§6öâ†6æF–FFR’¢W†6WB„õ4W'&÷"ÂfÇVTW'&÷"ÂG—TW'&÷"“ ¢6öçF–çVP¢f÷"&V6V—B–â&V6V—G3 ¢7FGW2Ò7G"‡&V6V—BævWB‚'7FGW2"’÷"&V6V—BævWB‚&W†V7WF–öå÷7FFR"’÷"""¢–b7FGW2æ÷B–â‚&Æ–VB"Â&æõö6†ævR"“ ¢6öçF–çVP¢6÷fW&VBæW‡FVæB‡7G"‡’f÷"–â‡&V6V—BævWB‚&6†ævVE÷F‡2"’÷"µÒ’–b7G"‡’¢6÷fW&VE÷6WBÒ·7G"‡’f÷"–â6÷fW&VGÐ¢Væ6÷fW&VBÒ·f÷"–â6†ævVB–bæ÷B–â6÷fW&VE÷6WEÐ¢6÷fW&vUöö²Òæ÷BVæ6÷fW&V@¢&WGW&â°¢&6†ævVE÷F‡2#¢6†ævVBÀ¢&6÷fW&VE÷F‡2#¢6÷'FVB†6÷fW&VE÷6WB’À¢'Væ6÷fW&VE÷F‡2#¢Væ6÷fW&VBÀ¢&6÷fW&vUöö²#¢6÷fW&vUöö²À¢'&V6V—Eö6÷VçB#¢ÆVâ‡&V6V—G2’À¢Ð  ¦FVb6öæ6ÇVFU÷'Vâ‡&Wó¢7G"Â'Våö–C¢7G"Â¢Âf÷&6S¢&ööÂÒfÇ6R’ÓâF–7E·7G"Âç•Ó ¢""$vFR'Vâ6öæ6ÇW6–öâöâgVÆÂ÷W&F÷"×&V6V—BF–fb6÷fW&vR†—77VR33R’à ¢f÷&6SÕG'VV—2F†RW‡Æ–6—B‡VÖâ÷fW'&–FR‡F†R6fWG’öÆ–7’w2‡VÖâvFR’æB7F–ÆÀ¢&V6÷&G2F†Rf–öÆF–öâ&F†W"F†â6–ÆVçFÇ’76–ærà¢"" ¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢'VåöF—"ÒF‚‡7FGW5²''VåöF—"%Ò¢&Wõ÷F‚ÒF‚‡7FGW5²&Öæ–fW7B%Õ²'&Wò%Ò’ç&W6öÇfR‚¢6÷fW&vRÒö÷W&F÷%÷'VåöF–feö6÷fW&vR‡&Wõ÷F‚Â'VåöF—"¢7FFRÒ7FGW5²'7FFR%Ð¢–bæ÷B6÷fW&vU²&6÷fW&vUöö²%ÒæBæ÷Bf÷&6S ¢&—6R'VçF–ÖTW'&÷"€¢&6ææ÷B6öæ6ÇVFR'Vã¢&öGV7F–öâF–fbF‡2v—F†÷WBâ÷W&F÷"&V6V—C¢ ¢²"Â"æ¦ö–â†6÷fW&vU²'Væ6÷fW&VE÷F‡2%Ò¢¢vFRÒ°¢&¶–æB#¢&÷W&F÷%÷'VåöF–feö6÷fW&vR"À¢&6÷fW&vUöö²#¢6÷fW&vU²&6÷fW&vUöö²%ÒÀ¢'Væ6÷fW&VE÷F‡2#¢6÷fW&vU²'Væ6÷fW&VE÷F‡2%ÒÀ¢&f÷&6VB#¢&ööÂ†f÷&6R’À¢&6†V6¶VEöB#¢öæ÷r‚’À¢Ð¢7FFRç6WFFVfVÇB‚&vFW2"ÂµÒ’æVæB†vFR¢7FFU²&÷W&F÷%÷'VåövFR%ÒÒvFP¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ€¢'VåöF—"Â7FFRÂ7FFRævWB‚'†6R"’÷"&FöæR"À¢&÷W&F÷"×'VâF–fbÖ6÷fW&vRvFRWfÇVFVB"À¢&V6V—C×7G"‡'VåöF—"ò'7FFRæ§6öâ"’À¢W‡G&×²&6÷fW&vR#¢6÷fW&vWÒÀ¢¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B  ¦FVbW†V7WFUö÷W&F÷"‡&Wó¢7G"Â'Våö–C¢7G"ÂF6µö–æFWƒ¢–çBÒÂ¢À¢GFV×Eö6ö÷&F–æF÷#¢÷F–öæÅ´GFV×D6ö÷&F–æF÷%ÒÒæöæRÀ¢wV&FVEöGFV×C¢ç’ÒæöæRÀ¢WF†÷&—G•÷&V6V—C¢÷F–öæÅ´Ö–æu·7G"Âç•ÕÒÒæöæRÀ¢FÖ—76–öåöfVæ6S¢–çBÒ’ÓâF–7E·7G"Âç•Ó ¢""$W†V7WFRöæRÆææVBF6²F‡&÷Vv‚F†R&VÂFWbÖ6Æ’æBW'6—7Bâ–Ö×WF&ÆR&V6V—Bà ¢'Væ–çFVçF–öæÆÇ’&×2æBG'’×'Vç2öæÇ’âF†—2W‡Æ–6—BF–6²—2F†R×WFF–öâ&÷VæF'“°¢—B6ææ÷B'Vâv—F†÷WBF†RÖW"÷Æâö÷W&F÷"&VfÆ–v‡B'F–f7G27&VFVB'’&Õ÷'Væà ¢v†Vâ&÷F‚GFV×Eö6ö÷&F–æF÷&æBwV&FVEöGFV×F†v÷&´—FVÔGFV×F’&P¢7WÆ–VB†—77VR3#ƒ‚w2wV&FVBF—7F6‚F‚ÂvFVB'’4”ÕÄ”4”õôuT$DTEôD•5D4†–à¢ö÷W&F÷%öF—7F6…öGFV×F’ÂF†R×WFF–ærFWbÖ6Æ’–çfö6F–öâ'Vç2F‡&÷Vv€¢GFV×D6ö÷&F–æF÷"ç'VåöwV&FVF–ç7FVBöb&r7V'&ö6W72ç'VæÒÒ&6¶w&÷Væ@¢F‡&VB†V'F&VG2F†RÆV6Rf÷"F†RÆ–fRöbF†R7V'&ö6W72æB¶–ÆÇ2—BF†R–ç7FçBF†P¢ÆV6R—2æòÆöævW"7W'&VçBÂ–ç7FVBöbÆWGF–ærv÷&¶W"F†BÆ÷7B—G2fVæ6R¶VW×WFF–æp¢F†R6†V6¶÷WB‡F†R3ƒ2v’âÆV6TÆ÷7DGW&–ætW†V7WF–öæ&÷vFW2FòF†R6ÆÆW"Âv†–6€¢Ç&VG’G&VG2ç’W†6WF–öâ†W&R2&V6V—FVB†æ÷B66†VGVÆW"Ö7&6†–ær’f–ÇW&Rà¢wV&FVEöGFV×F—2FVÆ–&W&FVÇ’æÖVB'Bg&öÒF†—2gVæ7F–öâw2÷vâGFV×F ¢Æö6Â‡F†RW"×F6²&WG'’6÷VçFW"’6òF†RGvò6âæWfW"6öÆÆ–FRà¢"" ¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢–b‡7FGW5²'7FFR%ÒævWB‚&Ö–çFVææ6R"’÷"·Ò’ævWB‚&F—7÷6—F–öâ"’ÓÒ&&6¶ÆöuööæÇ’# ¢&—6R'VçF–ÖTW'&÷"‚&Ö–çFVææ6RFVfW'&VC¢÷W&F÷"W†V7WF–öâ—2&Æö6¶VBVçF–ÂW‡Æ–6—B&W7VÖR"¢'VåöF—"ÒF‚‡7FGW5²''VåöF—"%Ò¢&Wõ÷F‚ÒF‚‡7FGW5²&Öæ–fW7B%Õ²'&Wò%Ò’ç&W6öÇfR‚¢7F6µöÆö6²Ò÷fW&–g•÷'Vå÷7F6µöÆö6²‡'VåöF—"¢7FGW5²'7FFR%Õ²'7F6µöÆö6²%ÒÒ°¢¢¦F–7B‡7FGW5²'7FFR%ÒævWB‚'7F6µöÆö6²"’÷"·Ò’À¢'&VG’#¢G'VRÀ¢'F‚#¢7G"‡'VåöF—"ò'7F6²ÖÆö6²æ§6öâ"’À¢'&÷WFR#¢7F6µöÆö6²ç&÷WFRÀ¢&Æö6µö†6‚#¢7F6µöÆö6²æÆö6µö†6‚À¢'7FGW2#¢%dU$”d”TB"À¢'fW&–f–VEöB#¢öæ÷r‚’À¢Ð¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FGW5²'7FFR%Ò¢6öçG&7BÒöÆöEö§6öâ‡'VåöF—"ò'F6²Ö6öçG&7Bæ§6öâ"¢F6·2Ò6öçG&7BævWB‚'F6·2"’÷"µÐ¢–bF6µö–æFW‚Â÷"F6µö–æFW‚âÆVâ‡F6·2“ ¢&—6RfÇVTW'&÷"†b'F6²–æFW‚÷WBöb&ævS¢·F6µö–æFW‡Ò"¢Æå÷F‚Ò'VåöF—"ò'Æâæ§6öâ ¢ÖW%÷F‚Ò'VåöF—"ò&ÖW"Ö6öçFW‡Bæ§6öâ ¢÷W&F÷%÷F‚Ò'VåöF—"ò&÷W&F÷"×&V6V—Bæ§6öâ ¢–bæ÷BÆå÷F‚æW†—7G2‚’÷"æ÷BÖW%÷F‚æW†—7G2‚’÷"æ÷B÷W&F÷%÷F‚æW†—7G2‚“ ¢&—6R'VçF–ÖTW'&÷"‚&W†V7WF–öâ&WV—&W2g&W6‚ÖW"ÂÆâÂæB÷W&F÷"&VfÆ–v‡B&V6V—G2"¢ÆâÒöÆöEö§6öâ‡Æå÷F‚¢&Vf÷&RÒ÷&Wõöf–ævW'&–çB‡&Wõ÷F‚¢7W'&VçBÒ÷&Wõöf–ævW'&–çB‡&Wõ÷F‚¢ÆææVE÷7FFRÒÆâævWB‚'&Wõ÷7FFR"’÷"·Ð¢Æå÷fÆ–FF–öâÒfÆ–FFU÷Æâ‡ÆâÂF6·2Â&Wõ÷F‚À¢6öçG&7Eö†6ƒÖ6öçG&7BævWB‚&6öÆÆV7F–öåö†6‚"Â""’À¢7W'&VçE÷7FFSÖ7W'&VçB¢–bæ÷BÆå÷fÆ–FF–öå²'fÆ–B%Ó ¢&—6R'VçF–ÖTW'&÷"‚'ÆâfÆ–FF–öâf–ÆVB&Vf÷&R÷W&F÷"W†V7WF–öã¢"²"Â"æ¦ö–â‡Æå÷fÆ–FF–öå²&W'&÷'2%Ò’¢–bÆææVE÷7FFRæBæ÷B÷&Wõ÷7FFUöWV—fÆVçB‡ÆææVE÷7FFRÂ7W'&VçB“ ¢&—6R'VçF–ÖTW'&÷"‚'&W÷6—F÷'’6†ævVBgFW"Æææ–æs²&R×'VâÖW"&Vf÷&RW†V7WF–öâ"¢F6²ÒF6·5·F6µö–æFW‚ÒÐ¢WF†÷&—G•÷F‚ÒæöæP¢–bWF†÷&—G•÷&V6V—B—2æ÷BæöæS ¢WF†÷&—G’ÒF–7B†WF†÷&—G•÷&V6V—B¢7WÆ–VBÒ7G"†WF†÷&—G’ç÷‚'&V6V—Eö†6‚"Â""’¢F&vWG2ÒÆ—7B‚‚‡ÆâævWB‚'7FW2"’÷"··ÕÒ•·F6µö–æFW‚ÒÒævWB‚&6æF–FFU÷F&vWG2"’÷"µÒ’¢6÷W&6RÒWF†÷&—G’ævWB‚'6÷W&6R"’÷"·Ð¢–b†æ÷B7WÆ–VB÷"7WÆ–VBÒ÷Æææ–æuö6öçFVçEö†6‚†WF†÷&—G’¢÷"WF†÷&—G’ævWB‚&÷W&F÷""’Ò'6–×Æ–6–òÖFWbÖ6Æ’ ¢÷"6÷'FVB†WF†÷&—G’ævWB‚'F&vWG2"’÷"µÒ’Ò6÷'FVB‡F&vWG2¢÷"æ÷B7G"‡6÷W&6RævWB‚'&Wf—6–öâ"’÷"""¢÷"æ÷B7G"‡6÷W&6RævWB‚'Æææ–æu÷&V6V—B"’÷"""’“ ¢&—6R'VçF–ÖTW'&÷"‚&WF†÷&—G•÷&V6V—B–çfÆ–BB×WFF–öâ&÷VæF'’"¢WF†÷&—G•÷F‚Ò'VåöF—"òb&×WFF–öâÖWF†÷&—G’×·F6µö–æFW‡Òæ§6öâ ¢÷w&—FUö§6öâ†WF†÷&—G•÷F‚Â²¢¦WF†÷&—G’Â'&V6V—Eö†6‚#¢7WÆ–VBÀ¢&FÖ—76–öåöfVæ6R#¢Ö‚ƒÂ–çB†FÖ—76–öåöfVæ6R’—Ò¢23c“C¢WfW'’&öGV7F–öâ—FVÒvWG2âWF†÷&—FF—fR&÷WFR&V6V—B&Vf÷&P¢2×WFF–öâWF†÷&—G’÷"âW†V7WF–öâ&6¶VæB—26VÆV7FVBâF†R&÷WFR—2¢2FWFW&Ö–æ—7F–2vFS²'VçF–ÖR&VÖ–ç2F†R‡—6–6Â÷öÆ–7’÷væW"à¢F6µ÷FW‡BÒ÷F6µövöÂ‡F6²¢v÷&¶W%ö6&–Æ—F–W2ÒF6²ævWB‚'v÷&¶W%ö6&–Æ—F–W2"’÷"F6²ævWB‚&6&–Æ—F–W2"’÷"‚¢v÷&¶W%öf–Æ&ÆRÒ&ööÂ‡v÷&¶W%ö6&–Æ—F–W2’÷"÷2æVçf—&öâævWB‚%4”ÕÄ”4”õôDUDU$Ô”ä•5D”5õtõ$´U""Â#"’æÆ÷vW"‚’æ÷B–â²#"Â&fÇ6R"Â&æò"Â&öfb'Ð¢6&–Æ—G•öÖæ–fW7BÒ°¢&FV6Æ&VB#¢æ÷&ÖÆ—¦Uö6&–Æ—G•öÖæ–fW7B‡v÷&¶W%ö6&–Æ—F–W2’À¢&FWFW&Ö–æ—7F–5÷v÷&¶W%öf–Æ&ÆR#¢v÷&¶W%öf–Æ&ÆRÀ¢Ð¢6&–Æ—G•ö†6‚Ò6&–Æ—G•öf–ævW'&–çB†6&–Æ—G•öÖæ–fW7B¢&÷WFU÷F‚Ò'VåöF—"ò&W†V7WF–öâ×&÷WFRæ§6öâ ¢&Wf–÷W5÷&÷WFRÒæöæP¢–b&÷WFU÷F‚æW†—7G2‚“ ¢G'“ ¢6æF–FFRÒöÆöEö§6öâ‡&÷WFU÷F‚¢–bfW&–g•÷&÷WFUö†6‚†6æF–FFR“ ¢&Wf–÷W5÷&÷WFRÒ6æF–FFP¢W†6WB„õ4W'&÷"ÂG—TW'&÷"ÂfÇVTW'&÷"“ ¢&Wf–÷W5÷&÷WFRÒæöæP¢&÷WFUö66†U÷7FGW2Ò&æWr ¢&÷WFU÷&V6÷&BÒæöæP¢–b&Wf–÷W5÷&÷WFRæB&÷WFU÷&V6V—Eö—5ö7W'&VçB‡&Wf–÷W5÷&÷WFRÂ6&–Æ—G•öÖæ–fW7B“ ¢&÷WFU÷&V6÷&BÒ&Wf–÷W5÷&÷WFP¢&÷WFUö66†U÷7FGW2Ò'&WW6VB ¢VÇ6S ¢–çfÆ–FF–öâÒ·Ð¢–b&Wf–÷W5÷&÷WFS ¢&÷WFUö66†U÷7FGW2Ò&–çfÆ–FFVB ¢–çfÆ–FF–öâÒ°¢'7FGW2#¢&–çfÆ–FFVB"À¢'&V6öåö6öFR#¢€¢&6&–Æ—G•öÖæ–fW7Eö6†ævVB ¢–b&Wf–÷W5÷&÷WFRævWB‚&6&–Æ—G•öf–ævW'&–çB"¢VÇ6R&6&–Æ—G•öÖæ–fW7EöÖ—76–ær ¢’À¢'&Wf–÷W5÷&V6V—E÷6†#¢7G"‡&Wf–÷W5÷&÷WFRævWB‚'&V6V—E÷6†"’÷"""’À¢'&Wf–÷W5ö6&–Æ—G•öf–ævW'&–çB#¢7G"‡&Wf–÷W5÷&÷WFRævWB‚&6&–Æ—G•öf–ævW'&–çB"’÷"""’À¢Ð¢&÷WFRÒFV6–FU÷&÷WFR€¢F6µ÷FW‡BÀ¢†5öFWFW&Ö–æ—7F–5÷v÷&¶W#×v÷&¶W%öf–Æ&ÆRÀ¢—5öÖ&–wV÷W3Ö&ööÂ‡F6²ævWB‚&Ö&–wV÷W2"’÷"F6²ævWB‚'&WV—&W5÷6VÖçF–5÷&Wf–Wr"’’À¢¢&÷WFU÷&V6÷&BÒ&÷WFRçFõöF–7B‚¢&÷WFU÷&V6÷&BçWFFR‡°¢''Våö–B#¢'Våö–BÀ¢'F6µö–æFW‚#¢F6µö–æFW‚À¢'F6µö–B#¢7G"‡F6²ævWB‚&–B"’÷"""’À¢&Wf–FVæ6Uö†æFÆW2#¢6÷'FVB‡°¢7G"‡fÇVR’f÷"fÇVR–â€¢‡ÆâævWB‚'7FW2"’÷"µÒ•·F6µö–æFW‚ÒÒævWB‚&ÖW%ö6öçFW‡Eö†6‚"Â""’À¢‡ÆâævWB‚'7FW2"’÷"µÒ•·F6µö–æFW‚ÒÒævWB‚&6öçFW‡E÷6µö†6‚"Â""’À¢’–b7G"‡fÇVR¢Ò’À¢&6W6Åö–G2#¢·'Våö–BÂ7G"‡F6²ævWB‚&–B"’÷"F6µö–æFW‚•ÒÀ¢'&÷WFUöWF†÷&—G’#¢&Æö÷×'VææW""À¢&6&–Æ—G•öÖæ–fW7B#¢6&–Æ—G•öÖæ–fW7BÀ¢&6&–Æ—G•öf–ævW'&–çB#¢6&–Æ—G•ö†6‚À¢Ò¢–b–çfÆ–FF–öã ¢&÷WFU÷&V6÷&E²&–çfÆ–FF–öâ%ÒÒ–çfÆ–FF–öà¢&÷WFU÷&V6÷&E²'&V6V—E÷6†%ÒÒöW†V7WF–öå÷&÷WFUö†6‚€¢¶¶W“¢fÇVRf÷"¶W’ÂfÇVR–â&÷WFU÷&V6÷&Bæ—FV×2‚’–b¶W’Ò'&V6V—E÷6†'Ð¢¢–bæ÷BfW&–g•÷&÷WFUö†6‚‡&÷WFU÷&V6÷&B“ ¢&—6R'VçF–ÖTW'&÷"‚&W†V7WF–öâ×&÷WFR&V6V—Bf–ÆVBFWFW&Ö–æ—7F–2†6‚fW&–f–6F–öâ"¢÷w&—FUö§6öâ‡&÷WFU÷F‚Â&÷WFU÷&V6÷&B¢÷W&F÷%÷7FFRÒ7FGW5²'7FFR%Òç6WFFVfVÇB‚&÷W&F÷""Â·Ò¢÷W&F÷%÷7FFU²&W†V7WF–öå÷&÷WFR%ÒÒ&÷WFU÷&V6÷&@¢÷W&F÷%÷7FFU²&W†V7WF–öå÷&÷WFUö66†R%ÒÒ°¢'7FGW2#¢&÷WFUö66†U÷7FGW2À¢&6&–Æ—G•öf–ævW'&–çB#¢6&–Æ—G•ö†6‚À¢'&Wf–÷W5÷&V6V—E÷6†#¢7G"‚‡&Wf–÷W5÷&÷WFR÷"·Ò’ævWB‚'&V6V—E÷6†"’÷"""’À¢Ð¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FGW5²'7FFR%Ò¢GFV×BÒ–çB‚‡7FGW5²'7FFR%Ò÷"·Ò’ævWB‚&GFV×G2"Â’’²¢23#ƒC¢×WFF–öâÖWF†÷&—G’vFRÂÖæFF÷'’'’FVfVÇBâW†V7WFUö÷W&F÷"‚¢2&VgW6W2Fò'Vâv—F†÷WBfÆ–BÆææ–ær×&V6V—Bæ§6öâv†÷6R×WFF–öåöWF†÷&—G¢2Fö¶VâÖF6†W2D„•2'VâöGFV×B÷F6²Ö6öçG&7B÷Æâ–FVçF—G’ÒÒç’G&–gB‡7FÆP¢2Æâ†6‚Â&÷FFVBÆV6RöfVæ6RÂÖ—76–ærö–çfÆ–B&V6V—B’&Æö6·2f–ÂÖ6Æ÷6V@¢2–ç7FVBöb6–ÆVçFÇ’&ö6VVF–ærâ÷B÷WBöæÇ’f–âW‡Æ–6—BfÇ7¢24”ÕÄ”4”õõ$UT•$UôÕUDD”ôåôUD„õ$•E’‡6VRÆææ–æuövFRæ×WFF–öåöWF†÷&—G•÷&WV—&VB‚’“°¢26VR6–×Æ–6–õöÆö÷÷Æææ–æuövFRç’æB67&—G2÷Æææ–æuövFRç’à¢–b×WFF–öåöWF†÷&—G•÷&WV—&VB‚“ ¢2v—D‡V"6÷W&6RG&–gC¢–bF†R6ÆÆW"&RÖ6GW&VBg&W6‚6÷W&6R6æ6†÷@¢2–ÖÖVF–FVÇ’&Vf÷&RF†—2F–6²†67&—G2÷Æææ–æuövFRç’6GW&R×6÷W&6VÀ¢2w&—GFVâFò6÷W&6R×6æ6†÷BÖ7W'&VçBæ§6öæ’Â6ö×&R—G2†6‚v–ç7BF†P¢2öæRF†R&V6V—BöWF†÷&—G’v2Ö–çFVBv—F‚â'6VçBF†Bf–ÆR†Æö6Âð¢2æöâÔv—D‡V"'Vç2Â÷"6ÆÆW"F†B†6âwBv—&VB&RÖ6GW&R–WB’ÂF†—2—2¢2æòÖ÷ÒÒ–FVçF–6ÂFò&Wf–÷W2&V†f–÷"à¢7W'&VçE÷6÷W&6Uö†6‚Ò" ¢7W'&VçE÷6æ6†÷E÷F‚Ò'VåöF—"ò'6÷W&6R×6æ6†÷BÖ7W'&VçBæ§6öâ ¢–b7W'&VçE÷6æ6†÷E÷F‚æW†—7G2‚“ ¢G'“ ¢7W'&VçE÷6÷W&6Uö†6‚Ò7G"‚…öÆöEö§6öâ†7W'&VçE÷6æ6†÷E÷F‚’ævWB‚'6÷W&6R"’÷"·Ò’ævWB‚'6æ6†÷Eö†6‚"’÷"""¢W†6WBW†6WF–öã ¢7W'&VçE÷6÷W&6Uö†6‚Ò" ¢WF†÷&—G•÷fW&F–7BÒWfÇVFUö×WFF–öåöWF†÷&—G’€¢'VåöF—"Â'Våö–C×'Våö–BÂGFV×CÖGFV×BÀ¢F6µö6öçG&7Eö†6ƒ×7G"†6öçG&7BævWB‚&6öÆÆV7F–öåö†6‚"’÷"÷Æææ–æuö6öçFVçEö†6‚†6öçG&7B’’À¢Æåö†6ƒÕ÷Æææ–æuö6öçFVçEö†6‚‡Æâ’À¢6÷W&6U÷6æ6†÷Eö†6ƒÖ7W'&VçE÷6÷W&6Uö†6‚À¢¢–bæ÷BWF†÷&—G•÷fW&F–7E²&ö²%Ó ¢&—6R'VçF–ÖTW'&÷"€¢&×WFF–öâWF†÷&—G’&WV—&VB…4”ÕÄ”4”õõ$UT•$UôÕUDD”ôåôUD„õ$•E’’'WB ¢b'¶WF†÷&—G•÷fW&F–7E²w&V6öåö6öFRu×Ó¢¶WF†÷&—G•÷fW&F–7E²w&V6öâu×Ò ¢¢F&vWG2Ò‡ÆâævWB‚'7FW2"’÷"µÒ•·F6µö–æFW‚ÒÒævWB‚&6æF–FFU÷F&vWG2"’÷"µÐ¢F&vWBÒF&vWG5³Ò–bF&vWG2VÇ6R7FGW5²'7FFR%ÒævWB‚&÷W&F÷""Â·Ò’ævWB‚'F&vWB"Â""¢–bæ÷BF&vWC ¢&—6R'VçF–ÖTW'&÷"‚'Æâ†2æòWF†÷&—¦VB÷W&F÷"F&vWB"¢2—77VR33S¢F†RFV6–FVB6†ævR—22×66÷VBæBÕU5Bö–çBBÆâF&vWBâç’F&vW@¢2W‡ç6–öâ&W–öæBWF†÷&—¦VE÷F&vWG2&÷WFW2&6²FòF†RÆææW"ö–×7BvFR&Vf÷&R6öçF–çV–ærà¢–bF&vWBæ÷B–â‡F&vWG2÷"µÒ“ ¢&—6R'VçF–ÖTW'&÷"€¢&÷W&F÷"F&vWBrW2r—2÷WG6–FRF†RÆâw2WF†÷&—¦VE÷F&vWG2W3² ¢'&÷WFR&6²FòÆææW"ö–×7BvFR&Vf÷&R6öçF–çV–ær"R‡F&vWBÂF&vWG2¢¢÷&VfÆ–v‡Eö÷W&F÷"‡&Wõ÷F‚Â'VåöF—"¢F6µ÷7V5÷F‚Ò'VåöF—"ò'F6²×7V2æ§6öâ ¢F6µ÷7V2Ò÷F6µ÷7V5÷–ÆöB‡F6²¢F6µ÷7V5ö†6‚Ò÷F6µ÷7V5ö†6‚‡F6µ÷7V2¢÷w&—FUö§6öâ‡F6µ÷7V5÷F‚ÂF6µ÷7V2¢ÆV6RÒ7G"†vWFGG"†vWFGG"†wV&FVEöGFV×BÂ&ÆV6R"ÂæöæR’Â&ÆV6Uö–B"Â""’÷"b&Æö÷×'Vã§·'Våö–GÒ"¢fVæ6RÒ7G"†vWFGG"†vWFGG"†wV&FVEöGFV×BÂ&ÆV6R"ÂæöæR’Â&fVæ6–æu÷Fö¶Vâ"Â""’÷"#"¢&öf–ÆRÒöW†V7WF–öå÷&öf–ÆR‚¢6öçFW‡Eö&w2Â6öçFW‡Eö†æFöfbÒö6öçFW‡Eö†æFöfeö&w2€¢&Wõ÷F‚À¢'VåöF—"À¢GFV×Eö–CÖb'·'Våö–GÓ¦GFV×C§¶GFV×GÒ"À¢ÆV6Uö–CÖÆV6RÀ¢fVæ6–æu÷Fö¶VãÖfVæ6RÀ¢&WV—&UöWF†÷&—¦F–öã×&öf–ÆRÓÒ''VçF–ÖRÖ&6¶VB"À¢¢÷W&F÷%öÖöFRÒ'7FæFÆöæR"–b&öf–ÆRÓÒ'7FæFÆöæR"VÇ6R&–çFVw&FVB ¢F6µö–çWBÒ€¢µ÷F6µövöÂ‡F6²’÷"7G"‡F6²ævWB‚&–B"’÷"&W†V7WFRF6²"’À¢"ÒÖ7&—FW&–"Âö7&—FW&–÷FW‡B‡F6²’÷""ÒG'VR7FFR"À¢"ÒÖ6öç7G&–çG2"Âö6öç7G&–çG5÷FW‡B‡F6²’÷""Ò'V–ÆB76W2%Ð¢–b÷W&F÷%öÖöFRÓÒ'7FæFÆöæR ¢VÇ6R²"Ò×F6²×7V2"Â7G"‡F6µ÷7V5÷F‚•Ð¢¢&wbÒöFWf6Æ•ö6ÖB€¢&Wõ÷F‚Â'F6²"Â"Ò×&ö÷B"Â7G"‡&Wõ÷F‚’Â§F6µö–çWBÀ¢"ÒÖÖöFR"Â÷W&F÷%öÖöFRÂ"Ò×F&vWB"ÂF&vWBÂ"ÒÖ§6öâ"Â"ÒÖ&÷VæB×F‡2"ÂF&vWBÀ¢¢&wbæW‡FVæB†6öçFW‡Eö&w2¢6†V6·ö–çBÒö6GW&Uö÷W&F÷%ö6†V6·ö–çB‡'VåöF—"Â&Wõ÷F‚ÂF&vWG2÷"·F&vWEÒ¢23#ƒR&VÖ–æ–ærv¢F†—2F—7F6‚†2&VÂwV&FVBÆV6R‡v†VâF†R6ÆÆW"v—&V@¢2öæR’æB&VÂ&Wò6†V6¶÷WBö'&æ6‚öâ†æBÒÒ7W&f6RF†VÒöâF†RWfVçB6ð¢2÷7–æ5öv—F‡V%öÆ–fV7–6ÆR‚–&ö¦V7G2F†R7GVÂÆV6RöfVæ6–ærFö¶VâæB'&æ6‚öçFð¢2F†R4Ä”ÔTB6öÖÖVçB–ç7FVBöbfÆÆ–ær&6²Fò&Ææ²ö&W7BÖVff÷'BFVfVÇBà¢öVÖ—EöWfVçB‡'VåöF—"Â7FGW5²'7FFR%ÒÂ'v÷&¶W%ö6Æ–ÖVB"À¢&V6V—C×7G"‡'VåöF—"ò'F6²Ö6öçG&7Bæ§6öâ"’À¢F6µö–C×7G"‡F6²ævWB‚&–B"’÷"""’À¢5ö–G3Õ÷F6µö5ö–G2‡F6²’À¢ÖW76vSÒ&÷W&F÷"v÷&¶W"6Æ–ÖVBF6²"À¢ÆV6Uö–C×7G"†vWFGG"†vWFGG"†wV&FVEöGFV×BÂ&ÆV6R"ÂæöæR’Â&ÆV6Uö–B"Â""’÷"""’À¢fVæ6–æu÷Fö¶Vã×7G"†vWFGG"†vWFGG"†wV&FVEöGFV×BÂ&ÆV6R"ÂæöæR’Â&fVæ6–æu÷Fö¶Vâ"Â""’÷"""’À¢'&æ6ƒÕöv—Eö7W'&VçEö'&æ6‚‡&Wõ÷F‚’¢–b—FVÕö6öçFW‡B£Ò‡7FGW5²'7FFR%ÒævWB‚&÷W&F÷""’÷"·Ò’ævWB‚'v÷&·G&VUö6öçFW‡B"“ ¢öVÖ—EöWfVçB‡'VåöF—"Â7FGW5²'7FFR%ÒÂ'v÷&·G&VUö7&VFVB"À¢&V6V—C×7G"†—FVÕö6öçFW‡BævWB‚&Æö6µ÷&V6V—B"’÷"÷W&F÷%÷F‚’À¢ÖW76vSÒ&—6öÆFVBv÷&·G&VR6öçFW‡Bf–Æ&ÆR"Âv÷&·G&VSÖ—FVÕö6öçFW‡B¢÷öVçbÒöFWf6Æ•öVçb‡&Wõ÷F‚Âö÷W&F÷%öVçb‚’¢÷öVçe²%4”ÕÄ”4”õôDÔ•54”ôåôdTä4R%ÒÒ7G"†Ö‚ƒÂ–çB†FÖ—76–öåöfVæ6R’’¢–bWF†÷&—G•÷F‚—2æ÷BæöæS ¢÷öVçe²%4”ÕÄ”4”õôÕUDD”ôåôUD„õ$•E•õ$T4T•B%ÒÒ7G"†WF†÷&—G•÷F‚¢–b&öf–ÆRÓÒ''VçF–ÖRÖ&6¶VB"æBæ÷B÷öVçbævWB‚%4”ÕÄ”4”õõ%TåD”ÔUõU$Â"Â""’ç7G&—‚“ ¢÷öVçbç6WFFVfVÇB‚%4”ÕÄ”4”õõ%TåD”ÔUôôddÄ”äR"Â#"¢&÷f–FW%ö6öæf–rÒ°¢&ÖöFVÂ#¢÷öVçbævWB‚%4”ÕÄ”4”õôÔôDTÂ"Â""’À¢&Vff÷'B#¢÷öVçbævWB‚%4”ÕÄ”4”õô4ôDU…ôTddõ%B"Â""’À¢Ð¢VffV7EöFFW"Ò÷'VçF–ÖUöVffV7EöFFW"‡&Wõ÷F‚Â&öf–ÆR¢VffV7E÷&WVW7BÒö'V–ÆEöVffV7E÷&WVW7B€¢&Wõ÷F‚Â'Våö–BÂF6µö–æFW‚ÂF6²ÂGFV×BÂF&vWG2Â&÷WFU÷&V6÷&BÂwV&FVEöGFV×BÀ¢6æöæ–6Å÷ÆãÒ€¢ÆöEö6æöæ–6Å÷Æâ‡Æå²&6æöæ–6Å÷Æâ%ÒÂW‡V7FVEöF–vW7C×7G"‡ÆâævWB‚&6æöæ–6Å÷ÆåöF–vW7B"’÷"""’¢–b—6–ç7Fæ6R‡ÆâævWB‚&6æöæ–6Å÷Æâ"’ÂÖ–ær’VÇ6RæöæP¢’À¢¢VffV7Eö÷WF6öÖRÒöW†V7WFUö÷W&F÷%öVffV7B€¢&öf–ÆS×&öf–ÆRÀ¢FFW#ÖVffV7EöFFW"À¢&WVW7CÖVffV7E÷&WVW7BÀ¢&wcÖ&wbÀ¢VçcÖ÷öVçbÀ¢&Wõ÷Fƒ×&Wõ÷F‚À¢GFV×Eö6ö÷&F–æF÷#ÖGFV×Eö6ö÷&F–æF÷"À¢wV&FVEöGFV×CÖwV&FVEöGFV×BÀ¢6÷W&6Uö†6ƒ×7G"†&Vf÷&RævWB‚'G&VUö†6‚"’÷"""’À¢¢&WGW&æ6öFRÒVffV7Eö÷WF6öÖU²'&WGW&æ6öFR%Ð¢7FF÷WBÒVffV7Eö÷WF6öÖU²'7FF÷WB%Ð¢7FFW'"ÒVffV7Eö÷WF6öÖU²'7FFW'"%Ð¢6÷W&6RÒVffV7Eö÷WF6öÖU²'6÷W&6R%Ð¢VffV7E÷&V6V—BÒVffV7Eö÷WF6öÖRævWB‚&VffV7E÷&V6V—B"¢Væ6W'F–âÒ&ööÂ†VffV7Eö÷WF6öÖRævWB‚'Væ6W'F–â"’¢†öö·vÆÅöWf–FVæ6RÒVffV7Eö÷WF6öÖRævWB‚&†öö·vÆÅöWf–FVæ6R"¢†öö·vÆÅ÷fW&–f–VBÂ†öö·vÆÅ÷&V6öâÒvFUö6ö×ÆWF–öâ††öö·vÆÅöWf–FVæ6R¢gFW"Ò÷&Wõöf–ævW'&–çB‡&Wõ÷F‚¢6†ævVBÒö6†ævVE÷F‡2‡&Wõ÷F‚¢&öÆÆ&6²Ò²&GFV×FVB#¢fÇ6RÂ'&W7F÷&VB#¢fÇ6RÂ'&V6öâ#¢&æ÷EöæVVFVB'Ð¢–b&WGW&æ6öFRÒæBæ÷BVæ6W'F–ã ¢&öÆÆ&6²Ò÷&W7F÷&Uö÷W&F÷%ö6†V6·ö–çB†6†V6·ö–çBÂ&Wõ÷F‚Â6†ævVB¢–b&öÆÆ&6²ævWB‚'&W7F÷&VB"“ ¢6†ævVBÒö6†ævVE÷F‡2‡&Wõ÷F‚¢gFW"Ò÷&Wõöf–ævW'&–çB‡&Wõ÷F‚¢–bVæ6W'F–ã ¢W†V7WF–öå÷7FFRÒ'Væ6W'F–â ¢æõö6†ævU÷&ööbÒæöæP¢VÆ–b&WGW&æ6öFRÓÒæBæ÷B6†ævVC ¢W†V7WF–öå÷7FFRÒ&æõö6†ævR ¢æõö6†ævU÷&ööbÒ°¢'6F—6g––æu÷7FFR#¢'&W÷6—F÷'’Ç&VG’6F—6f–VBF†R3²æò&öGV7F–öâF–fb&öGV6VB"À¢&ÖV7W&VEöB#¢öæ÷r‚’À¢&Wf–FVæ6R#¢7G"†gFW"ævWB‚'G&VUö†6‚"Â""’’À¢Ð¢VÇ6S ¢W†V7WF–öå÷7FFRÒ&Æ–VB"–b&WGW&æ6öFRÓÒVÇ6R&&Æö6¶VB ¢æõö6†ævU÷&ööbÒæöæP¢&V6V—BÒ°¢'66†VÖ#¢õU$Dõ%õ$T4T•Eõ44„TÔÀ¢&ÖöFR#¢&W†V7WFR"À¢'FööÂ#¢'6–×Æ–6–òÖFWbÖ6Æ’"À¢&W†V7WF–öå÷7FFR#¢W†V7WF–öå÷7FFRÀ¢'7FGW2#¢W†V7WF–öå÷7FFRÀ¢&GFV×B#¢GFV×BÀ¢'&WG'•ö'VFvWB#¢2À¢'F&vWB#¢F&vWBÀ¢&WF†÷&—¦VE÷F&vWG2#¢F&vWG2À¢'F&vWE÷v—F†–å÷&Wò#¢G'VRÀ¢&vöÂ#¢÷F6µövöÂ‡F6²’À¢&&wb#¢&wbÀ¢'&WGW&æ6öFR#¢&WGW&æ6öFRÀ¢'7FF÷WB#¢7FF÷WBÀ¢'7FFW'"#¢7FFW'"À¢'F–ÖVEö÷WB#¢&WGW&æ6öFR—2æöæRÀ¢'7F'FVEöB#¢öæ÷r‚’À¢&f–æ—6†VEöB#¢öæ÷r‚’À¢23#ƒƒ¢&V6V—E÷fW&–f–W"äõU$Dõ%õ$T4T•Eõ44„TÔ&WV—&W2&ÖV7W&VEöB"f÷"—G0¢2g&W6†æW726†V6²âF†—2&V6V—BæWfW"6'&–VB—BÂ6òWfW'’&VÂ†æöâÖÖö6¶VB¢2W†V7WFUö÷W&F÷"‚’F—7F6‚v2W&ÖæVçFÇ’”ådÄ”Eõ44„TÔôÔ•54”äuôd”TÄB–à¢2÷fW&–g•÷v÷&¶W%÷&V6V—E÷—"‚’ÒÒF†RÖW&vRvFR&VÆ÷r6÷VÆBæWfW"f—&Rf÷"vVçV–æP¢2GFV×Bâ6ÖR–ç7FçB2f–æ—6†VEöC²F†—2—2&V6V—BÖ6ö×ÆWFVæW72f—‚Âæ÷BæWp¢2ÖV7W&VÖVçBà¢&ÖV7W&VEöB#¢öæ÷r‚’À¢'6÷W&6R#¢6÷W&6RÀ¢&6öçFW‡Eö†æFöfb#¢6öçFW‡Eö†æFöfbÀ¢'&÷f–FW%ö6öæf–r#¢&÷f–FW%ö6öæf–rÀ¢&W†V7WF–öå÷&öf–ÆR#¢&öf–ÆRÀ¢&W†V7WF÷%÷&öf–ÆR#¢†VffV7E÷&V6V—B÷"·Ò’ævWB‚&W†V7WF÷%÷&öf–ÆR"Â&öf–ÆR’À¢&VffV7E÷&V6V—B#¢VffV7E÷&V6V—BÀ¢&VffV7E÷G&ç67F–öåö–B#¢†VffV7E÷&V6V—B÷"·Ò’ævWB‚'G&ç67F–öåö–B"Â""’À¢&VffV7Eö6÷'&VÆF–öåö–B#¢†VffV7E÷&V6V—B÷"·Ò’ævWB‚&6÷'&VÆF–öåö–B"Â""’À¢&†öö·vÆÅöVçfVÆ÷R#¢VffV7Eö÷WF6öÖRævWB‚&†öö·vÆÅöVçfVÆ÷R"’À¢&†öö·vÆÅ÷&UöFV6—6–öâ#¢VffV7Eö÷WF6öÖRævWB‚&†öö·vÆÅ÷&UöFV6—6–öâ"’À¢&†öö·vÆÅö×WFF–öå÷&V6V—B#¢VffV7Eö÷WF6öÖRævWB‚&†öö·vÆÅö×WFF–öå÷&V6V—B"’À¢&†öö·vÆÅ÷÷7EöFV6—6–öâ#¢VffV7Eö÷WF6öÖRævWB‚&†öö·vÆÅ÷÷7EöFV6—6–öâ"’À¢&†öö·vÆÅöWf–FVæ6R#¢†öö·vÆÅöWf–FVæ6RÀ¢&†öö·vÆÅ÷fW&–f–VB#¢†öö·vÆÅ÷fW&–f–VBÀ¢&†öö·vÆÅ÷&V6öâ#¢†öö·vÆÅ÷&V6öâÀ¢&6†V6·ö–çB#¢6†V6·ö–çBÀ¢'&öÆÆ&6²#¢&öÆÆ&6²À¢&f–ÇW&Uöf–ævW'&–çB#¢""–b&WGW&æ6öFRÓÒVÇ6Rö÷W&F÷%öf–ÇW&Uöf–ævW'&–çB‡&WGW&æ6öFRÂ7FFW'"Â7FF÷WB’À¢'F6µö6öçG&7Eö†6‚#¢6öçG&7BævWB‚&6öÆÆV7F–öåö†6‚"Â""’À¢'Æåö†6‚#¢†6†Æ–"ç6†#Sb‡Æå÷F‚ç&VEö'—FW2‚’’æ†W†F–vW7B‚’À¢&ÖW%÷6µö†6‚#¢ÆâævWB‚&ÖW%÷6µö†6‚"Â""’À¢'&Wõ÷7FFUö&Vf÷&R#¢&Vf÷&RÀ¢'&Wõ÷7FFUögFW"#¢gFW"À¢&6†ævVE÷F‡2#¢6†ævVBÀ¢&F–feö†6‚#¢gFW"ævWB‚'G&VUö†6‚"Â""’À¢&æõö6†ævU÷&ööb#¢æõö6†ævU÷&ööbÀ¢'F6µ÷7V5÷F‚#¢7G"‡F6µ÷7V5÷F‚’À¢'F6µ÷7V5ö†6‚#¢F6µ÷7V5ö†6‚À¢Ð¢&V6V—E²'&V6V—Eö†6‚%ÒÒö÷W&F÷%÷&V6V—Eö†6‚‡&V6V—B¢÷w&—FUö§6öâ†÷W&F÷%÷F‚Â&V6V—B¢7FFRÒ7FGW5²'7FFR%Ð¢–b&öÆÆ&6²ævWB‚'&W7F÷&VB"“ ¢öVÖ—EöWfVçB‡'VåöF—"Â7FFRÂ'&öÆÆ&6²"Â&V6V—C×7G"†÷W&F÷%÷F‚’À¢&Æö6¶W#×7G"‡&öÆÆ&6²ævWB‚'&V6öâ"’÷"&÷W&F÷"W†V7WF–öâf–ÆVB"’À¢ÖW76vSÒ&÷W&F÷"6†ævW2&öÆÆVB&6²"¢7FFU²&÷W&F÷"%ÒÒ°¢'&VG’#¢&WGW&æ6öFRÓÒæBæ÷BVæ6W'F–âæB†öö·vÆÅ÷fW&–f–VBÀ¢'&V6V—B#¢7G"†÷W&F÷%÷F‚’À¢'F&vWB#¢F&vWBÀ¢&W†V7WF–öå÷7FFR#¢&V6V—E²&W†V7WF–öå÷7FFR%ÒÀ¢Ð¢7FFU²&7W'&VçEö7F–öâ%ÒÒ&÷W&F÷%öW†V7WFVB"–b&WGW&æ6öFRÓÒVÇ6R&÷W&F÷%öf–ÆVB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ'vF6†W%ö&V†f–÷&Å÷fW&–f–6F–öâ"–b&WGW&æ6öFRÓÒVÇ6R'&W—%ö÷W&F÷%ö÷%÷Æâ ¢7FFU²&GFV×G2%ÒÒ–çB‡7FFRævWB‚&GFV×G2"Â’’²¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ'fÆ–FF–ær"–b&WGW&æ6öFRÓÒVÇ6R&&Æö6¶VB"À¢&FWbÖ6Æ’W†V7WF–öâ&V6V—BW'6—7FVB"Â&V6V—C×7G"†÷W&F÷%÷F‚’À¢W‡G&×²&6†ævVE÷F‡2#¢6†ævVGÒ¢–b&WGW&æ6öFRÓÒ ¢Wf–FVæ6RÒ'V–ÆEöWf–FVæ6U÷&V6V—B‡7G"‡'VåöF—"’¢÷w&—FUö§6öâ‡'VåöF—"ò&Wf–FVæ6R×&V6V—Bæ§6öâ"ÂWf–FVæ6R¢7FFRÒöÆöEö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"¢7FFU²&Wf–FVæ6R%ÒÒ²'&VG’#¢fÇ6RÂ'&V6V—B#¢7G"‡'VåöF—"ò&Wf–FVæ6R×&V6V—Bæ§6öâ"’Â'7FGW2#¢Wf–FVæ6RævWB‚'7FGW2"Â%TådU$”d”TB"—Ð¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢öVÖ—EöWfVçB‡'VåöF—"Â7FFRÂ&÷W&F÷%÷&V6V—B"Â&V6V—C×7G"†÷W&F÷%÷F‚’À¢ÖW76vSÒ&÷W&F÷"W†V7WF–öâ&V6V—BW'6—7FVB"¢öVÖ—EöWfVçB‡'VåöF—"Â7FFRÂ'FW7EövFR"Â&V6V—C×7G"‡'VåöF—"ò&Wf–FVæ6R×&V6V—Bæ§6öâ"’À¢&Æö6¶W#Ò""–bWf–FVæ6RævWB‚'7FGW2"’ÓÒ%dU$”d”TB"VÇ6R&Wf–FVæ6U÷VçfW&–f–VB"À¢ÖW76vSÒ'FW7BæBWf–FVæ6RvFRWfÇVFVB"Â7FGW3ÖWf–FVæ6RævWB‚'7FGW2"Â%TådU$”d”TB"’¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B  ¦FVbfW&–g•÷'Vâ‡&Wó¢7G"Â'Våö–C¢7G"’ÓâF–7E·7G"Âç•Ó ¢""%'VâF†R–æFWVæFVçBvF6†W"æBGfæ6R'Vâv—F†÷WBÖçVÂF–6²â"" ¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢'VåöF—"ÒF‚‡7FGW5²''VåöF—"%Ò¢&Wõ÷F‚ÒF‚‡7FGW5²&Öæ–fW7B%Õ²'&Wò%Ò’ç&W6öÇfR‚¢7FFRÒ7FGW5²'7FFR%Ð¢–b7FFRævWB‚'†6R"’–â²&FöæR"Â&6æ6VÆÆVB'Ó ¢&WGW&â7FGW0¢vF6†W"Ò&Wõ÷F‚ò'67&—G2"ò'vF6†W%÷fW&–g’ç’ ¢–bæ÷BvF6†W"æW†—7G2‚“ ¢7FFU²&&Æö6¶W'2%ÒÒ²'vF6†W%÷fW&–g’ç’—2Væf–Æ&ÆR%Ð¢7FFU²&7W'&VçEö7F–öâ%ÒÒ'vF6†W%÷Væf–Æ&ÆR ¢7FFU²&æW‡Eö7F–öâ%ÒÒ&–ç7V7EöæE÷&V6÷fW" ¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ&&Æö6¶VB"Â&–æFWVæFVçBvF6†W"—2Væf–Æ&ÆR"Â&V6V—C×7G"‡'VåöF—"ò'7FFRæ§6öâ"’¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ'vF6†–ær"Â&WFöÖF–26öæGV7B&V6†VB–æFWVæFVçBfW&–f–6F–öâ"Â&V6V—C×7G"‡'VåöF—"ò&÷W&F÷"×&V6V—Bæ§6öâ"’¢VçbÒF–7B†÷2æVçf—&öâ¢Vçe²%4”ÕÄ”4”õõ%TåôD•"%ÒÒ7G"‡'VåöF—"¢Vçe²%4”ÕÄ”4”õôÄôõõ$Uò%ÒÒ7G"‡&Wõ÷F‚¢Vçe²%4”ÕÄ”4”õôÄôõôD•"%ÒÒ7G"‡'VåöF—"ò&Æö÷"¢&W7VÇBÒ7V'&ö6W72ç'Vâ…·7—2æW†V7WF&ÆRÂ7G"‡vF6†W"’Â'fW&–g’%ÒÂ7vC×7G"‡&Wõ÷F‚’Â6GW&Uö÷WGWCÕG'VRÂFW‡CÕG'VRÂF–ÖV÷WCÓƒÂVçcÖVçb¢÷WGWBÒ&VF7E÷6Vç6—F—fU÷FW‡B‚‡&W7VÇBç7FF÷WB÷"""’²‡&W7VÇBç7FFW'"÷"""’’ç7G&—‚¢÷w&—FUö§6öâ‡'VåöF—"ò'vF6†W"×&V6V—Bæ§6öâ"Â²'66†VÖ#¢'6–×Æ–6–òçvF6†W"Ö–çfö6F–öâ÷c"Â'&WGW&æ6öFR#¢&W7VÇBç&WGW&æ6öFRÂ&÷WGWB#¢÷WGWBÂ'&V6V—B#¢7G"‡'VåöF—"ò&Æö÷"ò'vF6†W%÷7FFRæ§6öâ"’Â&6†V6¶VEöB#¢öæ÷r‚—Ò¢vF6†W%÷F‚Ò'VåöF—"ò&Æö÷"ò'vF6†W%÷7FFRæ§6öâ ¢vF6†W%÷7FFRÒöÆöEö§6öâ‡vF6†W%÷F‚’–bvF6†W%÷F‚æW†—7G2‚’VÇ6R·Ð¢–b&W7VÇBç&WGW&æ6öFRÒ÷"vF6†W%÷7FFRævWB‚'7FGW2"’Ò$ÔT5U$TB"÷"æ÷BvF6†W%÷7FFRævWB‚&ÖF6‚"“ ¢7FFRÒ&VE÷7FGW2‡&WòÂ'Våö–B•²'7FFR%Ð¢7FFU²&&Æö6¶W'2%ÒÒ·vF6†W%÷7FFRævWB‚'&W÷'FVB"’÷"÷WGWB÷"'vF6†W"fW&–f–6F–öâf–ÆVB%Ð¢7FFU²&7W'&VçEö7F–öâ%ÒÒ'vF6†W%öf–ÆVB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ&–ç7V7EöæE÷&V6÷fW" ¢7FFU²&Wf–FVæ6R%ÒÒ²'&VG’#¢fÇ6RÂ'&V6V—B#¢7G"‡vF6†W%÷F‚’Â'7FGW2#¢%TådU$”d”TB'Ð¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ&&Æö6¶VB"Â&–æFWVæFVçBvF6†W"&V¦V7FVBF†R'Vâ"Â&V6V—C×7G"‡vF6†W%÷F‚’¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B¢7FFRÒ&VE÷7FGW2‡&WòÂ'Våö–B•²'7FFR%Ð¢7FFU²&Wf–FVæ6R%ÒÒ²'&VG’#¢G'VRÂ'&V6V—B#¢7G"‡vF6†W%÷F‚’Â'7FGW2#¢$ÔT5U$TB'Ð¢7FFU²&7W'&VçEö7F–öâ%ÒÒ'vF6†W%÷fW&–f–VB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ&FVÆ—fW'•÷&V6öæ6–Æ–F–öâ ¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ&FVÆ—fW&–ær"Â&–æFWVæFVçBvF6†W"ÖV7W&VBÆÂ66WFæ6R7&—FW&–"Â&V6V—C×7G"‡vF6†W%÷F‚’¢FVÆ—fW&VBÒ&V6öæ6–ÆUöFVÆ—fW'’‡&WòÂ'Våö–BÂ'fW&–f–VB"Â6÷W&6Uö¶–æCÒ&Æö6Â"¢–bæ÷BFVÆ—fW&VE²'7FFR%ÒævWB‚&FVÆ—fW'’"Â·Ò’ævWB‚'&VG’"“ ¢&WGW&âFVÆ—fW&V@¢7FFRÒFVÆ—fW&VE²'7FFR%Ð¢7FFU²&7W'&VçEö7F–öâ%ÒÒ''Vå÷fW&–f–VB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ&æöæR ¢7FFU²&6ö×ÆWF–öâ%ÒÒ²'&VG’#¢G'VRÂ'&V6V—B#¢7G"‡vF6†W%÷F‚’Â'fW&F–7B#¢%dU$”d”TB"Â'&V6öåö6öFR#¢'vF6†W%öæEöFVÆ—fW'•÷fW&–f–VB"Â'Fr#¢$ÔT5U$TB'Ð¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢2v“c"‚3c"“¢VÆ—G’ÖG&—‚²6ö×ÆWF–öâ÷&6ÆRö'&–vF÷&–÷2çFW2FòFöæR†VÆ–Ö–æ'—72’à¢g&öÒâ–×÷'B÷&6ÆR2ö÷&6ÆP¢÷Õöö²Â÷ÕövFRÂ÷Õ÷fW&F–7BÒö÷&6ÆRå÷VÆ—G•öÖG&—…övFR‡'VåöF—"¢–bæ÷B÷Õöö³ ¢7FFRÒ&VE÷7FGW2‡&WòÂ'Våö–B•²'7FFR%Ð¢7FFU²&&Æö6¶W'2%ÒÒµ÷Õ÷fW&F–7BævWB‚'&V6öâ"Â'VÆ—G’ÖG&—‚–æ6ö×ÆWFR"•Ð¢7FFU²&7W'&VçEö7F–öâ%ÒÒ'VÆ—G•öÖG&—…öf–ÆVB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ&–ç7V7EöæE÷&V6÷fW" ¢7FFU²&Wf–FVæ6R%ÒÒ²'&VG’#¢fÇ6RÂ'&V6V—B#¢7G"‡'VåöF—"ò'VÆ—G’ÖÖG&—‚æ§6öâ"’Â'7FGW2#¢%TådU$”d”TB'Ð¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ&&Æö6¶VB"Â'VÆ—G’ÖG&—‚vFR&V¦V7FVBF†R'Vâ"Â&V6V—C×7G"‡'VåöF—"ò'VÆ—G’ÖÖG&—‚æ§6öâ"’¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B¢ö÷&6ÆUöÖG&—‚Òö÷&6ÆRæWfÇVFUöÖG&—‚‡7G"‡'VåöF—"ò&Æö÷"’Â7G"‡'VåöF—"’¢–bæ÷Bö÷&6ÆUöÖG&—‚ævWB‚'&—G’"’÷"æ÷BÆÂ†²'&VG’%Òf÷"–âö÷&6ÆUöÖG&—‚ævWB‚&FFW'2"ÂµÒ’“ ¢7FFRÒ&VE÷7FGW2‡&WòÂ'Våö–B•²'7FFR%Ð¢7FFU²&&Æö6¶W'2%ÒÒ²&6ö×ÆWF–öâ÷&6ÆR–æ6ö×ÆWFS¢"²7G"…ö÷&6ÆUöÖG&—‚ævWB‚'6–væGW&R"’•Ð¢7FFU²&7W'&VçEö7F–öâ%ÒÒ&÷&6ÆUöf–ÆVB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ&–ç7V7EöæE÷&V6÷fW" ¢7FFU²&Wf–FVæ6R%ÒÒ²'&VG’#¢fÇ6RÂ'&V6V—B#¢7G"‡'VåöF—"ò&÷&6ÆRÖÖG&—‚æ§6öâ"’Â'7FGW2#¢%TådU$”d”TB'Ð¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ&&Æö6¶VB"Â&6ö×ÆWF–öâ÷&6ÆR&V¦V7FVBF†R'Vâ"Â&V6V—C×7G"‡'VåöF—"ò&÷&6ÆRÖÖG&—‚æ§6öâ"’¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ&FöæR"Â&WFöÖF–2F6²×Fò×fW&–g’6öæGV7B6ö×ÆWFVB"Â&V6V—C×7G"‡vF6†W%÷F‚’¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B  ¦FVbö6öæGV7E÷'Vâ‡&Wó¢7G"ÂF6µ÷Fƒ¢7G"ÂFVÆ—fW'“¢7G"Ò'fW&–f–VB"ÂÖ…ö—FW&F–öç3¢–çBÒ"Â¢Â&WG'•ö'VFvWC¢–çBÒ2ÂVÆ—G•÷&÷f–FW#¢÷F–öæÅ·7G%ÒÒæöæRÂVÆ—G•÷öÆ–7“¢7G"Ò'7G&–7BÖFVfVÇB"’ÓâF–7E·7G"Âç•Ó ¢""$&ÒÂW†V7WFRÂæB–æFWVæFVçFÇ’fW&–g’öæR'Vâ2öæRGW&&ÆR÷W&F–öâà ¢—77VR3#s“¢F†—2&÷VæF'’×W7BæWfW"ÆVfR'Vâ'F–ÆÇ’&ÖVBâV—F†W"F†RgVÆÀ¢ÖW"ÓâÆâÓâ÷W&F÷"&VfÆ–v‡BÓâ&F6‚6†–â7V66VVG2Â÷"F†R'Vâ—2ÆVgB†æ@¢&W÷'FVB’W‡Æ–6—FÇ’&Æö6¶VFv—F‚F–væ÷7F–2&V6V—BâW†V7WFUö÷W&F÷%ö&F6† ¢Ç&VG’f–Ç26Æ÷6VBæBW'6—7G2&F6‚×&VfÆ–v‡BÖ&Æö6²F–væ÷7F–2&Vf÷&R&—6–ærv†Và¢F†R&V6V—B6†–â—2Ö—76–ær÷"7FÆRÂ'WBF†BW†6WF–öâ×W7Bæ÷BW66RVæ6Vv‡B†W&RÒÐ¢âVæ6Vv‡BW†6WF–öâ—2—G6VÆb'F–ÆÇ’Ö&ÖVBÂVæF–væ÷6VB7FFRg&öÒF†R4Ä’w0¢W'7V7F—fRà¢"" ¢&ÖVBÒ&Õ÷'Vâ‡&WòÂF6µ÷F‚ÂFVÆ—fW'’ÂÖ…ö—FW&F–öç2¢'Våö–BÒ&ÖVE²&Öæ–fW7B%Õ²''Våö–B%Ð¢–b&ÖVE²'7FFR%ÒævWB‚'†6R"’ÓÒ&&Æö6¶VB# ¢&WGW&â&ÖV@¢G'“ ¢&F6‚ÒW†V7WFUö÷W&F÷%ö&F6‚‡&WòÂ'Våö–BÂÖ…÷v÷&¶W'3ÓÂ&WG'•ö'VFvWC×&WG'•ö'VFvWBÂWFõöfåö÷WCÔfÇ6R¢W†6WB„õ4W'&÷"ÂG—TW'&÷"ÂfÇVTW'&÷"Â'VçF–ÖTW'&÷"’2W†3 ¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢'VåöF—"ÒF‚‡7FGW5²''VåöF—"%Ò¢7FFRÒ7FGW5²'7FFR%Ð¢–b7FFRævWB‚'†6R"’Ò&&Æö6¶VB# ¢2FVfVç6—fRfÆÆ&6³¢W†V7WFUö÷W&F÷%ö&F6‚w2÷vâ&VfÆ–v‡B&÷VæF'’—0¢2W‡V7FVBFò†fRÇ&VG’W'6—7FVB&Æö6¶VBF–væ÷7F–2&Vf÷&R&—6–ærÂ'W@¢2wV&çFVRF†R'VâæWfW"7W&f6W22ç—F†–ær÷F†W"F†âW‡Æ–6—FÇ’&Æö6¶VBà¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ&&Æö6¶VB"À¢&&F6‚F—7F6‚f–ÆVB&Vf÷&RF—7F6‚"ÂW‡G&×²&W'&÷"#¢7G"†W†2—Ò¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢&WGW&â7FGW0¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢–b&F6‚ævWB‚&f–ÆVE÷F6µö–æF–6W2"’÷"7FGW5²'7FFR%ÒævWB‚'†6R"’ÓÒ&&Æö6¶VB# ¢&WGW&â7FGW0¢2âW‡Æ–6—FÇ’6VÆV7FVBVÆ—G’&÷f–FW"'Vç2gFW"W†V7WF–öâæB&Vf÷&P¢2F†RvF6†W"öFVÆ—fW'’ô6ö×ÆWF–öâ÷&6ÆRâöæ6R6VÆV7FVBÂ—B&VÖ–ç0¢2f–ÂÖ6Æ÷6VC¢F†W&R—2æòfÆÆ&6²f÷"âVæf–Æ&ÆR÷"f–Æ–ær&÷f–FW"à¢–bVÆ—G•÷&÷f–FW# ¢g&öÒçVÆ—G•÷&÷f–FW"–×÷'B6öæGV7E÷VÆ—G¢'VåöF—"ÒF‚‡7FGW5²''VåöF—"%Ò¢†VBÒ7FGW2ævWB‚&Öæ–fW7B"Â·Ò’ævWB‚&†VB"Â""’÷"" ¢F–feö†6‚Ò7FGW2ævWB‚&Öæ–fW7B"Â·Ò’ævWB‚&F–feö†6‚"Â""’÷"" ¢Ò6öæGV7E÷VÆ—G’€¢&WòÂ'Våö–BÀ¢VÆ—G•÷&÷f–FW#×VÆ—G•÷&÷f–FW"ÂVÆ—G•÷öÆ–7“×VÆ—G•÷öÆ–7’À¢GFV×C×7FGW5²'7FFR%ÒævWB‚&GFV×B"Â’Â†VCÖ†VBÂF–feö†6ƒÖF–feö†6‚À¢¢–bævWB‚'7FGW2"’ÓÒ$$Äô4´TB# ¢7FFRÒ&VE÷7FGW2‡&WòÂ'Våö–B•²'7FFR%Ð¢7FFU²&&Æö6¶W'2%ÒÒ·ævWB‚'&V6öâ"Â'VÆ—G’&÷f–FW"&Æö6¶VBF†R'Vâ"•Ð¢7FFU²&7W'&VçEö7F–öâ%ÒÒ'VÆ—G•ö&Æö6¶VB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ&–ç7V7EöæE÷&V6÷fW" ¢7FFU²&Wf–FVæ6R%ÒÒ°¢'&VG’#¢fÇ6RÀ¢'&V6V—B#¢7G"‡'VåöF—"ò'VÆ—G’ÖÖG&—‚æ§6öâ"’À¢'7FGW2#¢%TådU$”d”TB"À¢Ð¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ&&Æö6¶VB"À¢'VÆ—G’&÷f–FW"&Æö6¶VBF†R'Vâ†f–ÂÖ6Æ÷6VB’"À¢&V6V—C×7G"‡'VåöF—"ò'VÆ—G’ÖÖG&—‚æ§6öâ"’¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B¢2d”Â&÷f–FW"&WGW&ç2Fò&V6÷fW'’ö–×ÆVÖVçFF–öâW"F†R—77VR7V0¢2†æ÷BF—&V7B&÷f–FW"f—‚“²7W&f6R—BæB7F÷6†÷'BöbfW&–g’à¢–bævWB‚'7FGW2"’ÓÒ$d”Â# ¢7FFRÒ&VE÷7FGW2‡&WòÂ'Våö–B•²'7FFR%Ð¢7FFU²&&Æö6¶W'2%ÒÒ·ævWB‚&FWF–Â"Â'VÆ—G’&÷f–FW"&W÷'FVBd”Â"•Ð¢7FFU²&7W'&VçEö7F–öâ%ÒÒ'VÆ—G•öf–ÆVB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ&–ç7V7EöæE÷&V6÷fW" ¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ&&Æö6¶VB"À¢'VÆ—G’&÷f–FW"&W÷'FVBd”ÂÓâ&V6÷fW'’"À¢&V6V—C×7G"‡'VåöF—"ò'VÆ—G’ÖÖG&—‚æ§6öâ"’¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B¢&WGW&âfW&–g•÷'Vâ‡&WòÂ'Våö–B  ¦FVb6öæGV7E÷'Vâ‡&Wó¢7G"ÂF6µ÷Fƒ¢7G"ÂFVÆ—fW'“¢7G"Ò'fW&–f–VB"ÂÖ…ö—FW&F–öç3¢–çBÒ"Â¢Â&WG'•ö'VFvWC¢–çBÒ2ÂVÆ—G•÷&÷f–FW#¢÷F–öæÅ·7G%ÒÒæöæRÂVÆ—G•÷öÆ–7“¢7G"Ò'7G&–7BÖFVfVÇB"’ÓâF–7E·7G"Âç•Ó ¢""$6öæGV7B'VâæBGF6‚—G2V&Æ–26ö×ÆWF–öâÔ÷&6ÆRÖFW&—fVB÷WF6öÖRâ"" ¢7FGW2Òö6öæGV7E÷'Vâ‡&WòÂF6µ÷F‚ÂFVÆ—fW'’ÂÖ…ö—FW&F–öç2Â&WG'•ö'VFvWC×&WG'•ö'VFvWBÀ¢VÆ—G•÷&÷f–FW#×VÆ—G•÷&÷f–FW"ÂVÆ—G•÷öÆ–7“×VÆ—G•÷öÆ–7’¢g&öÒç'Våö÷WF6öÖR–×÷'BW'6—7E÷'Våö÷WF6öÖP¢7FGW5²&÷WF6öÖR%ÒÒW'6—7E÷'Våö÷WF6öÖR‡7FGW2¢&WGW&â7FGW0  ¦FVbö÷W&F÷%÷v÷&¶W%öÆ–Ö—B‡&WVW7FVC¢÷F–öæÅ¶–çEÒÂ—FVÕö6÷VçC¢–çB’Óâ–çC ¢""%&W6öÇfR&÷VæFVBv÷&¶W"6÷VçBv—F†÷WB6–ÆVçFÇ’7&VF–ærâV×G’ööÂâ"" ¢–b—FVÕö6÷VçBÃÒ ¢&WGW&â ¢–b&WVW7FVB—2æöæR÷"&WVW7FVBÃÒ ¢&rÒ÷2æVçf—&öâævWB‚%4”ÕÄ”4”õôÄôõôõU$Dõ%õtõ$´U%2"Â""’ç7G&—‚¢G'“ ¢&WVW7FVBÒ–çB‡&r’–b&rVÇ6RÖ–â„DTdTÅEôõU$Dõ%õtõ$´U%2Â÷2æ7Uö6÷VçB‚’÷"¢W†6WBfÇVTW'&÷# ¢&WVW7FVBÒÖ–â„DTdTÅEôõU$Dõ%õtõ$´U%2Â÷2æ7Uö6÷VçB‚’÷"¢&WGW&âÖ‚ƒÂÖ–â†–çB‡&WVW7FVB’Â—FVÕö6÷VçB’  ¦FVbö'V–ÆEöæF—fU÷&—6Õ÷66†VGVÆW"€¢—FV×3¢6WVVæ6U´Ö–æu·7G"Âç•ÕÒÀ¢v÷&¶W%öÆ–Ö—C¢–çBÀ¢’ÓâGWÆU´ç’Â7G"ÂF–7E·7G"Âç•ÕÓ ¢""$'V–ÆBF†RæF—fR&—6ÒFÖ—76–öâWF†÷&—G’f÷"Æö6Â÷W&F÷"&F6‚à ¢&—6Ò—2–çFVçF–öæÆÇ’â–â×&ö6W726öçG&7B†W&S¢—BFÖ—G2–æFWVæFVç@¢v÷&²WFòF†RÖV7W&VBv÷&¶W"Æ–Ö—BÂ&W6W'fW2FWVæFVæ7’ö6öæfÆ–7BVFvW2À¢æBÆVfW2F†RW†—7F–ærv÷&·G&VRö÷W&F÷"'&–FvR2F†R×WFF–öâ&÷VæF'’à¢F†—2¶VW2F†Rf7BÆö6ÂF‚W6VgVÂv—F†÷WB&WV—&–ær6Æ÷VBv÷&¶W'2÷ ¢â÷&66Æ–VçBÂv†–ÆR7F–ÆÂVÖ—GF–ærF†R6ÖR&÷VæFVB&—6ÒFV6—6–öç2à¢"" ¢g&öÒç&—6Õö6öçG&7G2–×÷'B€¢D4µõ5DDU2À¢&—6ÔW†V7WF–öâÀ¢6Æ÷E7WW'f—6÷"À¢F6´÷væW'6†—À¢¢g&öÒç&—6Õö'VFvWG2–×÷'BFF—fT'VFvWDv÷fW&æ÷"Â'VFvWE6×ÆP¢g&öÒç&—6Õ÷66†VGVÆW"–×÷'B&—6ÕöÆ–7’Â&—6Õ66†VGVÆW"Â&W6÷W&6UfV7F÷"Â66†VGVÆVEF6° ¢–bæ÷B—FV×2÷"v÷&¶W%öÆ–Ö—BÂ ¢&—6RfÇVTW'&÷"‚&æF—fR&—6Ò&WV—&W2v÷&²æB÷6—F—fRv÷&¶W"Æ–Ö—B"¢g&öÒæÆö6Åö66—G’–×÷'B&ö&UöÆö6Åö66—G ¢66—G•÷&ö÷BÒF‚‡7G"†—FV×5³ÒævWB‚'&Wò"’÷""â"’’ç&W6öÇfR‚¢2VWVR÷v÷&·G&VRFFW'2Ö’†æBF†R66†VGVÆW"F‚F†B—27&VFVBöæÇ¢2gFW"FÖ—76–öââ&ö&RF†RæV&W7BW†—7F–æræ6W7F÷"–ç7FVBöbG&VF–æp¢2F†Bæ÷&ÖÂ&RÖÆVæ6‚7FFR2âVæf–Æ&ÆRF—6²6–væÂà¢v†–ÆRæ÷B66—G•÷&ö÷BæW†—7G2‚’æB66—G•÷&ö÷BÒ66—G•÷&ö÷Bç&VçC ¢66—G•÷&ö÷BÒ66—G•÷&ö÷Bç&Vç@¢66—G•÷6×ÆRÒ&ö&UöÆö6Åö66—G’€¢7G"†66—G•÷&ö÷B’Â&WVW7FVE÷v÷&¶W'3×v÷&¶W%öÆ–Ö—BÀ¢¢v÷&¶W%öÆ–Ö—BÒÖ‚ƒÂÖ–â†–çB‡v÷&¶W%öÆ–Ö—B’Â66—G•÷6×ÆRç6fU÷v÷&¶W'2’¢'Våö–BÒ7G"†—FV×5³ÒævWB‚''Våö–B"’÷"&Æö6ÂÖ&F6‚"¢2¶VWÆöv–6Â'F—F–öæ–ær–æFWVæFVçBg&öÒ‡—6–6Âv÷&¶W'2âF6²Ö¢2&÷f–FRâW‡Æ–6—B'F—F–öâ–FVçF—G“²÷F†W'v—6RFW&—fRöæRg&öÒF†P¢2W†—7F–ær–×7BöFWVæFVæ7’ÖWFFF6ò–æFWVæFVçBv÷&²FöW2æ÷B6öÆÆ6P¢2–çFòF†R†—7F÷&–6Â6–ævÆR7WW'f—6÷"à¢FVb÷'F—F–öåö¶W’†—FVÓ¢Ö–æu·7G"Âç•Ò’Óâ7G# ¢7V2Ò—FVÒævWB‚'F6µ÷7V2"¢7V2Ò7V2–b—6–ç7Fæ6R‡7V2ÂÖ–ær’VÇ6R·Ð¢W‡Æ–6—BÒ€¢7V2ævWB‚'6Æ÷Eö¶W’"’÷"7V2ævWB‚&FWVæFVæ7•ö6ö×öæVçB"¢÷"7V2ævWB‚'&W÷6—F÷'’"’÷"7V2ævWB‚'&Wò"¢¢–bW‡Æ–6—C ¢&WGW&â7G"†W‡Æ–6—B’ç7G&—‚¢F‡2Ò7V2ævWB‚&f–ÆW5öffV7FVB"’÷"7V2ævWB‚&6æF–FFU÷F&vWG2"’÷"‚¢–b—6–ç7Fæ6R‡F‡2Â7G"“ ¢F‡2Ò‡F‡2Â¢f—'7BÒ6÷'FVB‡7G"‡F‚’ç&WÆ6R‚%ÅÂ"Â"ò"’f÷"F‚–âF‡2–b7G"‡F‚’ç7G&—‚’•³£Ð¢–bf—'7C ¢&WGW&âf—'7E³Òç7Æ—B‚"ò"Â•³Ð¢&WGW&â&FVfVÇB  ¢'F—F–öç3¢F–7E·7G"ÂÆ—7E´Ö–æu·7G"Âç•ÕÕÒÒ·Ð¢f÷"—FVÒ–â—FV×3 ¢'F—F–öç2ç6WFFVfVÇB…÷'F—F–öåö¶W’†—FVÒ’ÂµÒ’æVæB†—FVÒ¢÷&FW&VE÷'F—F–öç2Ò6÷'FVB‡'F—F–öç2æ—FV×2‚’Â¶W“ÖÆÖ&F—#¢—%³Ò¢Ö…÷6Æ÷G2ÒÖ–âƒ#ÂÖ‚ƒÂÆVâ†—FV×2’’¢–bÆVâ†÷&FW&VE÷'F—F–öç2’âÖ…÷6Æ÷G3 ¢¶WBÒ÷&FW&VE÷'F—F–öç5³¢Ö…÷6Æ÷G2ÒÐ¢ÖW&vVBÒ¶—FVÒf÷"òÂw&÷W–â÷&FW&VE÷'F—F–öç5¶Ö…÷6Æ÷G2Ò¥Òf÷"—FVÒ–âw&÷WÐ¢÷&FW&VE÷'F—F–öç2Ò¶WB²²‚&÷fW&fÆ÷r"ÂÖW&vVB•Ð¢&V6÷fW'•÷&W6W'fRÒÖ–âƒÂÖ‚ƒÂv÷&¶W%öÆ–Ö—BÒ’¢fÆ–FF–öå÷&W6W'fRÒÖ–âƒÂÖ‚ƒÂv÷&¶W%öÆ–Ö—BÒ&V6÷fW'•÷&W6W'fRÒ’¢öÆ–7’Ò&—6ÕöÆ–7’€¢Ö…÷F6·5÷W%÷6Æ÷CÓÀ¢Ö…ö7F—fU÷6Æ÷G3ÖÖ‚ƒÂÆVâ†÷&FW&VE÷'F—F–öç2’’À¢vÆö&Å÷v÷&¶W%öÆ–Ö—CÖÖ‚ƒÂ–çB‡v÷&¶W%öÆ–Ö—B’’À¢&V6÷fW'•÷&W6W'fS×&V6÷fW'•÷&W6W'fRÀ¢fÆ–FF–öå÷&W6W'fS×fÆ–FF–öå÷&W6W'fRÀ¢¢öÆ–7•ö†6‚Ò†6†Æ–"ç6†#Sb€¢§6öâæGV×2‡²'öÆ–7’#¢&W"‡öÆ–7’’Â''Våö–B#¢'Våö–GÒÂ6÷'Eö¶W—3ÕG'VR’æVæ6öFR‚¢’æ†W†F–vW7B‚¢6öæf–uö†6‚Ò†6†Æ–"ç6†#Sb€¢§6öâæGV×2‡²&—FV×2#¢·7G"†—FVÒævWB‚'F6µö–B"’÷"""’f÷"—FVÒ–â—FV×5×ÒÂ6÷'Eö¶W—3ÕG'VR’æVæ6öFR‚¢’æ†W†F–vW7B‚¢&ö÷BÒ&—6ÔW†V7WF–öâ€¢vöÅö–C×'Våö–BÀ¢÷væW%övVçCÒ'6–×Æ–6–òÖÆö÷"À¢öÆ–7•ö†6ƒ×öÆ–7•ö†6‚À¢6öæf–uö†6ƒÖ6öæf–uö†6‚À¢6÷W&6UövVæW&F–öã×'Våö–BÀ¢&VGV6W%÷&VcÒ'6–×Æ–6–õöÆö÷ç'VææW"æF—7F6…ö÷W&F÷%ö&F6‚"À¢'VFvWCÒ‚‚'v÷&¶W'2"ÂÖ‚ƒÂ–çB‡v÷&¶W%öÆ–Ö—B’’’Â’À¢¢v÷fW&æ÷"ÒFF—fT'VFvWDv÷fW&æ÷"‡öÆ–7’Â&VÆ–Ve÷6×ÆW3Ó" ¢FVbö'VFvWE÷6×ÆR‡6×ÆS¢ç’’Óâ'VFvWE6×ÆS ¢2öæÇ’v÷&¶W"66—G’—2ÖV7W&VB'’F†RÆö6Â&ö&Râ¶VWWfW'’÷F†W ¢2v÷fW&æ÷"F–ÖVç6–öâW‡Æ–6—FÇ’Væf–Æ&ÆR–ç7FVBöb–æfW'&–ær—Bg&öÐ¢2âVç&VÆFVB5RÂÖVÖ÷'’Â÷"F—6²fÇVRà¢çVÆÅ÷&V6öç2Ò°¢æÖS¢&Æö6Å÷&ö&Uöæ÷E÷7W÷'FVB ¢f÷"æÖR–â€¢&7UöÖ–ÆÆ—2"Â''75ö'—FW2"Â&–õ÷Væ—G2"Â'&÷f–FW%÷&WVW7G2"À¢'Fö¶Vç2"Â&ÖöFVÅ÷6Æ÷G2"Â&æWGv÷&µ÷VWVR"Â&6öçFW‡E÷Fö¶Vç2"À¢&Wf–FVæ6Uö'—FW2"À¢¢Ð¢&WGW&â'VFvWE6×ÆR€¢v÷&¶W'3Ö–çB‡6×ÆRç6fU÷v÷&¶W'2’À¢ö'6W'fVEöEöç3Ö–çB‡6×ÆRæö'6W'fVEöEöç2’À¢çVÆÅ÷&V6öç3ÖçVÆÅ÷&V6öç2À¢ ¢ö'6W'fF–öâÒv÷fW&æ÷"æö'6W'fR…ö'VFvWE÷6×ÆR†66—G•÷6×ÆR’¢66†VGVÆW"Ò&—6Õ66†VGVÆW"‡öÆ–7’Âö'6W'fF–öãÖö'6W'fF–öâ¢6Æ÷G5ö'•÷'F—F–öã¢F–7E·7G"Â6Æ÷E7WW'f—6÷%ÒÒ·Ð¢f÷"'F—F–öâÂw&÷W–â÷&FW&VE÷'F—F–öç3 ¢6Æ÷BÒ6Æ÷E7WW'f—6÷"€¢&VçE÷&—6Õö–C×&ö÷Bç&—6Õö–BÀ¢7WW'f—6÷%övVçCÖb'6–×Æ–6–òÖÆö÷§·'F—F–öçÒ"À¢66—G“ÖÖ–âƒÂÖ‚ƒÂÆVâ†w&÷W’’’À¢¢66†VGVÆW"ç&Vv—7FW%÷6Æ÷B‡6Æ÷B¢6Æ÷G5ö'•÷'F—F–öå·'F—F–öåÒÒ6Æ÷@¢f÷"—FVÒ–â—FV×3 ¢F6µ÷7V2Ò—FVÒævWB‚'F6µ÷7V2"¢F6µ÷7V2ÒF–7B‡F6µ÷7V2’–b—6–ç7Fæ6R‡F6µ÷7V2ÂÖ–ær’VÇ6R·Ð¢&uöFWVæFVæ6–W2ÒF6µ÷7V2ævWB‚&FWVæG5ööâ"’÷"F6µ÷7V2ævWB‚&FWVæFVæ6–W2"’÷"‚¢–b—6–ç7Fæ6R‡&uöFWVæFVæ6–W2ÂÖ–ær“ ¢&uöFWVæFVæ6–W2Ò&uöFWVæFVæ6–W2ævWB‚&—FV×2"’÷"‚¢¶–æBÒ7G"‡F6µ÷7V2ævWB‚&¶–æB"’÷"&–×ÆVÖVçFF–öâ"¢–b¶–æBæ÷B–â²&–×ÆVÖVçFF–öâ"Â'&V6÷fW'’"Â'fÆ–FF–öâ"Â'&Wf–Wr"Â&–çFVw&F–öâ'Ó ¢¶–æBÒ&–×ÆVÖVçFF–öâ ¢F6µö–BÒ7G"†—FVÒævWB‚'F6µö–B"’÷"""¢6Æ÷BÒ6Æ÷G5ö'•÷'F—F–öåµ÷'F—F–öåö¶W’†—FVÒ•Ð¢÷væW'6†—ÒF6´÷væW'6†—€¢F6µö–C×F6µö–BÀ¢6Æ÷Eö–C×6Æ÷Bç6Æ÷Eö–BÀ¢GFV×CÓÀ¢÷væW%övVçC×7G"†—FVÒævWB‚'v÷&¶W%ö–B"’÷"'6–×Æ–6–òÖÆö6Â"’À¢ÆV6Uö–C×7G"†—FVÒævWB‚&ÆV6Uö–B"’÷"F6µö–B’À¢fVæ6SÓÀ¢6÷W&6UövVæW&F–öã×'Våö–BÀ¢6&–Æ—F–W3Ò‚&÷W&F÷""Â&Æö6Â"Â'v÷&·G&VR"’À¢ÆÆ÷vVE÷G&ç6—F–öç3×GWÆR‡6÷'FVB…D4µõ5DDU2’’À¢¢66†VGVÆW"ç7V&Ö—B…66†VGVÆVEF6²€¢F6µö–C×F6µö–BÀ¢6Æ÷Eö–C×6Æ÷Bç6Æ÷Eö–BÀ¢÷væW'6†—Ö÷væW'6†—À¢FWVæG5ööã×GWÆR‡7G"‡fÇVR’f÷"fÇVR–â&uöFWVæFVæ6–W2–b7G"‡fÇVR’ç7G&—‚’’À¢†&Eö6öæfÆ–7G3×GWÆR‡7G"‡fÇVR’f÷"fÇVR–â‡F6µ÷7V2ævWB‚&†&Eö6öæfÆ–7G2"’÷"‚’’’À¢W†6ÇW6—fU÷&W6÷W&6W3×GWÆR‡7G"‡fÇVR’f÷"fÇVR–â‡F6µ÷7V2ævWB‚&W†6ÇW6—fU÷&W6÷W&6W2"’÷"‚’’’À¢&–÷&—G“Ö–çB‡F6µ÷7V2ævWB‚'&–÷&—G’"’÷"’À¢¶–æCÖ¶–æBÀ¢&W6÷W&6W3Õ&W6÷W&6UfV7F÷"‡v÷&¶W'3Ó’À¢’¢66—G•÷&V6V—BÒ66—G•÷6×ÆRçFõöF–7B‚¢66—G•÷&V6V—E²&'VFvWEöv÷fW&æ÷"%ÒÒv÷fW&æ÷"ç7FGW2‚¢66—G•÷&V6V—E²'öÆ–7’%ÒÒ°¢'&V6÷fW'•÷&W6W'fR#¢öÆ–7’ç&V6÷fW'•÷&W6W'fRÀ¢'fÆ–FF–öå÷&W6W'fR#¢öÆ–7’çfÆ–FF–öå÷&W6W'fRÀ¢&vÆö&Å÷v÷&¶W%öÆ–Ö—B#¢öÆ–7’ævÆö&Å÷v÷&¶W%öÆ–Ö—BÀ¢Ð ¢FVb&Vg&W6…ö66—G’‚’ÓâæöæS ¢&Vg&W6†VBÒ&ö&UöÆö6Åö66—G’€¢7G"†66—G•÷&ö÷B’Â&WVW7FVE÷v÷&¶W'3×v÷&¶W%öÆ–Ö—BÀ¢¢66†VGVÆW"æ6öçG&öÆÆW"çWFFR†v÷fW&æ÷"æö'6W'fR…ö'VFvWE÷6×ÆR‡&Vg&W6†VB’’¢66—G•÷&V6V—Bæ6ÆV"‚¢66—G•÷&V6V—BçWFFR‡&Vg&W6†VBçFõöF–7B‚’¢66—G•÷&V6V—E²&'VFvWEöv÷fW&æ÷"%ÒÒv÷fW&æ÷"ç7FGW2‚¢66—G•÷&V6V—E²'öÆ–7’%ÒÒ°¢'&V6÷fW'•÷&W6W'fR#¢öÆ–7’ç&V6÷fW'•÷&W6W'fRÀ¢'fÆ–FF–öå÷&W6W'fR#¢öÆ–7’çfÆ–FF–öå÷&W6W'fRÀ¢&vÆö&Å÷v÷&¶W%öÆ–Ö—B#¢öÆ–7’ævÆö&Å÷v÷&¶W%öÆ–Ö—BÀ¢Ð ¢2F†RF—7F6‚'&–FvR6ÆÇ2F†—2&Vf÷&RV6‚&Vf–ÆÂâ¶VW–ærF†R†öö²öâF†P¢266†VGVÆW"&W6W'fW2F†RW†—7F–ær&WGW&â6öçG&7Bv†–ÆRÖ¶–ærWfW'¢2FÖ—76–öâvfRW6Rg&W6‚Â†6‚ÖFG&W76VBv÷fW&æ÷"WfVçBà¢66†VGVÆW"ææF—fUö66—G•÷&Vg&W6‚Ò&Vg&W6…ö66—G¢&WGW&â66†VGVÆW"Â&ö÷Bç&—6Õö–BÂ66—G•÷&V6V—@  ¦FVb÷v÷&·G&VU÷F6µ÷7V2†—FVÓ¢Ö–æu·7G"Âç•Ò’Óâç“ ¢""$'V–ÆBF†RVWVRw2–×7B6öçG&7Bv—F†÷WB–×÷'F–ær—BBÖöGVÆRÆöBF–ÖRà ¢'VææW&—2Ç6ò6†—VB27FæFÆöæR'VæFÆRÂ6ò–×÷'F–ærF†R67&—G26¶vP¢VvW&Ç’v÷VÆBÖ¶RF†RW†—7F–ær÷W&F÷"’f–Â–â–ç7FÆÆF–öç2F†BFòæ÷B6†—F†P¢÷F–öæÂ—6öÆF–öâFFW"âF†RÆFR–×÷'B¶VW2F†BFFW"vVçV–æVÇ’÷F–öæÂv†–ÆP¢7F–ÆÂ76–ærF†R&VÂF6µ7V6Fòv÷&·G&VUVWVVv†Vâ—B—2f–Æ&ÆRà¢"" ¢G'“ ¢g&öÒ67&—G2çv÷&·G&VU÷VWVR–×÷'BF6µ7V0¢W†6WB–×÷'DW'&÷#¢2&vÖ¢æò6÷fW"ÒF—&V7B67&—G2òW†V7WF–öâfÆÆ&6°¢g&öÒv÷&·G&VU÷VWVR–×÷'BF6µ7V0¢&rÒ—FVÒævWB‚'F6µ÷7V2"¢–b—6–ç7Fæ6R‡&rÂF6µ7V2“ ¢&WGW&â&p¢–ÆöBÒF–7B‡&r÷"·Ò’–b—6–ç7Fæ6R‡&rÂÖ–ær’VÇ6R·Ð¢F6µö–BÒ7G"†—FVÒævWB‚'F6µö–B"’÷"'F6²ÒW2ÒW2"R†—FVÒævWB‚''Våö–B"’Â—FVÒævWB‚'F6µö–æFW‚"’’¢–ÆöBç6WFFVfVÇB‚&–B"ÂF6µö–B¢–ÆöBç6WFFVfVÇB‚&vöÂ"Â7G"†—FVÒævWB‚&vöÂ"’÷"""’¢&WGW&âF6µ7V2æg&öÕöÖ–ær‡–ÆöB  ¦FVböÆÆö6F–öåö6öçFW‡B†ÆÆö6F–öã¢ç’Â—FVÓ¢Ö–æu·7G"Âç•Ò’ÓâF–7E·7G"Âç•Ó ¢""%&VGV6RâÆÆö6F–öâFò¥4ôâ×6fRÂW'6—7FVB÷W&F÷"6öçFW‡Bâ"" ¢FVbfÇVR†æÖS¢7G"ÂFVfVÇC¢ç’Ò""’Óâç“ ¢–b—6–ç7Fæ6R†ÆÆö6F–öâÂÖ–ær“ ¢&WGW&âÆÆö6F–öâævWB†æÖRÂFVfVÇB¢&WGW&âvWFGG"†ÆÆö6F–öâÂæÖRÂFVfVÇB ¢6öçFW‡BÒ°¢'66†VÖ#¢'6–×Æ–6–òæ÷W&F÷"×v÷&·G&VRÖ6öçFW‡B÷c"À¢'F6µö–B#¢7G"‡fÇVR‚'F6µö–B"Â—FVÒævWB‚'F6µö–B"’÷"""’’À¢''Våö–B#¢7G"‡fÇVR‚''Våö–B"Â—FVÒævWB‚''Våö–B"’÷"""’’À¢&ÖöFR#¢7G"‡fÇVR‚&ÖöFR"Â—FVÒævWB‚&—6öÆF–öâ"Â'v÷&·G&VR"’’÷"—FVÒævWB‚&—6öÆF–öâ"Â'v÷&·G&VR"’’À¢'F‚#¢7G"‡fÇVR‚'F‚"Â""’÷"""’À¢&'&æ6‚#¢7G"‡fÇVR‚&'&æ6‚"Â""’÷"""’À¢&&6U÷6†#¢7G"‡fÇVR‚&&6U÷6†"Â""’÷"""’À¢&†VE÷6†#¢7G"‡fÇVR‚&†VE÷6†"Â""’÷"""’À¢'G&VU÷6†#¢7G"‡fÇVR‚'G&VU÷6†"Â""’÷"""’À¢&ÆæR#¢7G"‡fÇVR‚&ÆæR"Â""’÷"""’À¢'&VGF6†VB#¢&ööÂ‡fÇVR‚'&VGF6†VB"ÂfÇ6R’’À¢&Æö6µ÷&V6V—B#¢7G"‡fÇVR‚&Æö6µ÷&V6V—B"Â""’÷"""’À¢'6÷W&6U÷&Wò#¢7G"†—FVÒævWB‚'6÷W&6U÷&Wò"’÷"—FVÒævWB‚'&Wò"’÷"""’À¢'6÷W&6U÷'Våö–B#¢7G"†—FVÒævWB‚'6÷W&6U÷'Våö–B"’÷"—FVÒævWB‚''Våö–B"’÷"""’À¢Ð¢&WGW&â6öçFW‡@  ¦FVb÷W'6—7Eö—6öÆFVE÷'Våö6öçFW‡B†—FVÓ¢F–7E·7G"Âç•ÒÂ6öçFW‡C¢F–7E·7G"Âç•Ò’ÓâæöæS ¢""%W'6—7BVWVR6öçFW‡BæB6ÆöæR'Vâ&V6V—G2–çFòâ—6öÆFVB6†V6¶÷WBà ¢F†R6÷’—2f–ÆW7—7FVÒÖöæÇ’†æòv—B7V'&ö6W72’ÂÖ¶–ærF†—2F‚FWFW&Ö–æ—7F–2–âVæ—@¢FW7G2æB6fRf÷"6ÆÆW'2F†B&÷f–FRf¶RVWVRâ–bF†R6÷W&6R'Vâ—2Væf–Æ&ÆRÀ¢F†R6öçFW‡B&V6V—B—27F–ÆÂw&—GFVã²F†R÷W&F÷"F†Vâf–Ç26Æ÷6VBB—G2æ÷&ÖÀ¢&VfÆ–v‡B&÷VæF'’&F†W"F†âÖçVf7GW&–ær7V66W72à¢"" ¢F‚Ò7G"†6öçFW‡BævWB‚'F‚"’÷"""¢6÷W&6U÷&WòÒF‚‡7G"†6öçFW‡BævWB‚'6÷W&6U÷&Wò"’÷"—FVÒævWB‚'&Wò"’÷"""’’ç&W6öÇfR‚¢'Våö–BÒ7G"†—FVÒævWB‚''Våö–B"’÷"6öçFW‡BævWB‚'6÷W&6U÷'Våö–B"’÷"""¢–bæ÷BFƒ ¢&WGW&à¢F&vWE÷&ö÷BÒF‚‡F‚’ç&W6öÇfR‚¢F&vWE÷&ö÷BæÖ¶F—"‡&VçG3ÕG'VRÂW†—7Eöö³ÕG'VR¢6öçFW‡EöF—"ÒF&vWE÷&ö÷Bò"ç6–×Æ–6–òö÷&6†W7G&F÷""ò&F—7F6‚Ö6öçFW‡B ¢6öçFW‡EöF—"æÖ¶F—"‡&VçG3ÕG'VRÂW†—7Eöö³ÕG'VR¢6öçFW‡E÷F‚Ò6öçFW‡EöF—"ò‡7G"†6öçFW‡BævWB‚'F6µö–B"’÷"—FVÒævWB‚'F6µö–æFW‚"’’²"æ§6öâ"¢6öçFW‡E²&6öçFW‡E÷F‚%ÒÒ7G"†6öçFW‡E÷F‚¢÷w&—FUö§6öâ†6öçFW‡E÷F‚Â6öçFW‡B ¢6÷W&6U÷7FFU÷F‚Ò6÷W&6U÷&Wòò"ç6–×Æ–6–ò"ò&Æö÷×'Vç2"ò'Våö–Bò'7FFRæ§6öâ ¢–b6÷W&6U÷7FFU÷F‚æW†—7G2‚“ ¢G'“ ¢6÷W&6U÷'VâÒ6÷W&6U÷7FFU÷F‚ç&Vç@¢6÷W&6U÷7FFRÒöÆöEö§6öâ‡6÷W&6U÷7FFU÷F‚¢öVÖ—EöWfVçB‡6÷W&6U÷'VâÂ6÷W&6U÷7FFRÂ'v÷&·G&VUö7&VFVB"À¢&V6V—C×7G"†6öçFW‡BævWB‚&Æö6µ÷&V6V—B"’÷"6öçFW‡E÷F‚’À¢F6µö–C×7G"†6öçFW‡BævWB‚'F6µö–B"’÷"—FVÒævWB‚'F6µö–B"’÷"""’À¢ÖW76vSÒ&—6öÆFVBv÷&·G&VR6öçFW‡BW'6—7FVB"Âv÷&·G&VSÖ6öçFW‡B¢W†6WB„õ4W'&÷"ÂfÇVTW'&÷"ÂG—TW'&÷"“ ¢2F†Rv÷&¶W"w2æ÷&ÖÂ&V6V—G2&VÖ–âWF†÷&—FF—fR–bF†R6ö÷&F–æF÷"—2vöæRà¢70 ¢6÷W&6U÷'VâÒ6÷W&6U÷&Wòò"ç6–×Æ–6–ò"ò&Æö÷×'Vç2"ò'Våö–@¢F&vWE÷'VâÒF&vWE÷&ö÷Bò"ç6–×Æ–6–ò"ò&Æö÷×'Vç2"ò'Våö–@¢–b6÷W&6U÷'Vâæ—5öF—"‚’æBF&vWE÷&ö÷BÒ6÷W&6U÷&WòæBæ÷BF&vWE÷'VâæW†—7G2‚“ ¢F&vWE÷'Vâç&VçBæÖ¶F—"‡&VçG3ÕG'VRÂW†—7Eöö³ÕG'VR¢6‡WF–Âæ6÷—G&VR‡6÷W&6U÷'VâÂF&vWE÷'Vâ¢Öæ–fW7E÷F‚ÒF&vWE÷'Vâò&Öæ–fW7Bæ§6öâ ¢–bÖæ–fW7E÷F‚æW†—7G2‚“ ¢G'“ ¢Öæ–fW7BÒöÆöEö§6öâ†Öæ–fW7E÷F‚¢Öæ–fW7E²'&Wò%ÒÒ7G"‡F&vWE÷&ö÷B¢Öæ–fW7E²''Våö–B%ÒÒ'Våö–@¢÷w&—FUö§6öâ†Öæ–fW7E÷F‚ÂÖæ–fW7B¢W†6WB„õ4W'&÷"ÂfÇVTW'&÷"ÂG—TW'&÷"“ ¢2F†R÷W&F÷"w2÷&F–æ'’&VfÆ–v‡Bv–ÆÂVÖ—BGW&&ÆRf–ÇW&R&V6V—Bà¢70  ¦FVb÷&W&U÷v÷&·G&VUö6öçFW‡G2†æ÷&ÖÆ—¦VC¢Æ—7E´F–7E·7G"Âç•ÕÒÂv÷&·G&VU÷VWVS¢ç’’ÓâæöæS ¢""$ÆÆö6FR÷W'6—7B÷F–öæÂv÷&·G&VR6öçFW‡G2&Vf÷&Rç’v÷&¶W"7F'G2â"" ¢–bv÷&·G&VU÷VWVR—2æöæR÷"æ÷Bæ÷&ÖÆ—¦VC ¢&WGW&à¢7V72Òµ÷v÷&·G&VU÷F6µ÷7V2†—FVÒ’f÷"—FVÒ–âæ÷&ÖÆ—¦VEÐ¢&Vv—7FW"ÒvWFGG"‡v÷&·G&VU÷VWVRÂ'&Vv—7FW%÷F6·2"ÂæöæR¢–b6ÆÆ&ÆR‡&Vv—7FW"“ ¢G'“ ¢&Vv—7FW"‡7V72¢W†6WBW†6WF–öâ2W†3 ¢f÷"—FVÒ–âæ÷&ÖÆ—¦VC ¢—FVÕ²'v÷&·G&VUöW'&÷"%ÒÒb'·G—R†W†2’åõöæÖUõ÷Ó¢¶W†7Ò ¢&WGW&à¢f÷"—FVÒÂ7V2–â¦—†æ÷&ÖÆ—¦VBÂ7V72“ ¢—6öÆF–öâÒ7G"†—FVÒævWB‚&—6öÆF–öâ"’÷"'v÷&·G&VR"’ç7G&—‚’æÆ÷vW"‚¢–b—6öÆF–öâæ÷B–â²'v÷&·G&VR"Â'6†&VB'Ó ¢—FVÕ²'v÷&·G&VUöW'&÷"%ÒÒ%fÇVTW'&÷#¢Vç7W÷'FVBv÷&·G&VR—6öÆF–öâÖöFR ¢6öçF–çVP¢–b—6öÆF–öâÓÒ'6†&VB# ¢2v÷&·G&VUVWVR–çFVçF–öæÆÇ’†öÆG2öæR6†&VBÖ6†V6¶÷WBÆö6²âFVfW"ÆÆö6F–öà¢2VçF–ÂF†—2—FVÒ&V6†W2F†R6W&–Âv÷&¶W"ÆæR6òF†RæW‡B—FVÒ6â7V—&R—@¢2öæÇ’gFW"÷&VÆV6U÷6†&VEö6öçFW‡F'Vç2à¢—FVÕ²'v÷&·G&VUöFVfW'&VB%ÒÒG'VP¢—FVÕ²&—6öÆF–öåö¶W’%ÒÒ"W3¢W2"R†—FVÒævWB‚'&Wò"’Â—FVÒævWB‚''Våö–B"’¢6öçF–çVP¢G'“ ¢ÆÆö6F–öâÒv÷&·G&VU÷VWVRæÆÆö6FR‡7V2¢W†6WBW†6WF–öâ2W†3 ¢—FVÕ²'v÷&·G&VUöW'&÷"%ÒÒb'·G—R†W†2’åõöæÖUõ÷Ó¢¶W†7Ò ¢6öçF–çVP¢6öçFW‡BÒöÆÆö6F–öåö6öçFW‡B†ÆÆö6F–öâÂ—FVÒ¢—FVÕ²'v÷&·G&VUö6öçFW‡B%ÒÒ6öçFW‡@¢—FVÕ²'6÷W&6U÷&Wò%ÒÒ7G"†—FVÒævWB‚'&Wò"’÷"""¢—FVÕ²'6÷W&6U÷'Våö–B%ÒÒ7G"†—FVÒævWB‚''Våö–B"’÷"""¢2v÷&·G&VRv÷&¶W'2vWBF†V—"÷vâ'VâG&VS²6†&VBÖöFR–çFVçF–öæÆÇ’&WF–ç2F†P¢2÷&–v–æÂF‚æB—26W&–Æ—¦VB'’F†R—6öÆF–öâ¶W’&VÆ÷rà¢–b6öçFW‡E²&ÖöFR%ÒÓÒ'v÷&·G&VR"æB6öçFW‡E²'F‚%Ó ¢G'“ ¢÷W'6—7Eö—6öÆFVE÷'Våö6öçFW‡B†—FVÒÂ6öçFW‡B¢W†6WBW†6WF–öâ2W†3 ¢—FVÕ²'v÷&·G&VUöW'&÷"%ÒÒb'·G—R†W†2’åõöæÖUõ÷Ó¢¶W†7Ò ¢—FVÕ²'&Wò%ÒÒ6öçFW‡E²'F‚%Ð¢—FVÕ²&—6öÆF–öåö¶W’%ÒÒ6öçFW‡E²'F‚%Ð¢VÇ6S ¢—FVÕ²&—6öÆF–öåö¶W’%ÒÒ"W3¢W2"R†—FVÒævWB‚'&Wò"’Â—FVÒævWB‚''Våö–B"’¢&V6÷&FW"ÒvWFGG"‡v÷&·G&VU÷VWVRÂ'&V6÷&Eö6öçFW‡B"ÂæöæR¢–b6ÆÆ&ÆR‡&V6÷&FW"“ ¢G'“ ¢&V6÷&FW"†6öçFW‡E²'F6µö–B%ÒÂ6öçFW‡B¢W†6WBW†6WF–öâ2W†3 ¢26öçFW‡BW'6—7FVæ6R—26fWG’vFS¢Fòæ÷B'VââVç&V6V—FVB—6öÆFV@¢2v÷&¶W"âF†—2&W6W'fW2f–ÂÖ6Æ÷6VB&V†f–÷"v—F†÷WB6†æv–ærF†R’à¢—FVÕ²'v÷&·G&VUöW'&÷"%ÒÒb'·G—R†W†2’åõöæÖUõ÷Ó¢¶W†7Ò   ¦FVböVç7W&UöFVfW'&VE÷v÷&·G&VUö6öçFW‡B†—FVÓ¢F–7E·7G"Âç•ÒÂv÷&·G&VU÷VWVS¢ç’’ÓâæöæS ¢""$7V—&RöæRFVfW'&VB6†&VBÖ6†V6¶÷WBÆV6R–ÖÖVF–FVÇ’&Vf÷&RW†V7WF–öââ"" ¢–bæ÷B—FVÒævWB‚'v÷&·G&VUöFVfW'&VB"’÷"—FVÒævWB‚'v÷&·G&VUö6öçFW‡B"’÷"—FVÒævWB‚'v÷&·G&VUöW'&÷""“ ¢&WGW&à¢G'“ ¢7V2Ò÷v÷&·G&VU÷F6µ÷7V2†—FVÒ¢ÆÆö6F–öâÒv÷&·G&VU÷VWVRæÆÆö6FR‡7V2Â—6öÆF–öãÒ'6†&VB"Â6†&VE÷öÆ–7“ÕG'VR¢6öçFW‡BÒöÆÆö6F–öåö6öçFW‡B†ÆÆö6F–öâÂ—FVÒ¢—FVÕ²'v÷&·G&VUö6öçFW‡B%ÒÒ6öçFW‡@¢—FVÕ²'6÷W&6U÷&Wò%ÒÒ7G"†—FVÒævWB‚'&Wò"’÷"""¢—FVÕ²'6÷W&6U÷'Våö–B%ÒÒ7G"†—FVÒævWB‚''Våö–B"’÷"""¢÷W'6—7Eö—6öÆFVE÷'Våö6öçFW‡B†—FVÒÂ6öçFW‡B¢&V6÷&FW"ÒvWFGG"‡v÷&·G&VU÷VWVRÂ'&V6÷&Eö6öçFW‡B"ÂæöæR¢–b6ÆÆ&ÆR‡&V6÷&FW"“ ¢&V6÷&FW"†6öçFW‡E²'F6µö–B%ÒÂ6öçFW‡B¢W†6WBW†6WF–öâ2W†3 ¢—FVÕ²'v÷&·G&VUöW'&÷"%ÒÒb'·G—R†W†2’åõöæÖUõ÷Ó¢¶W†7Ò   ¦FVb÷&VÆV6U÷6†&VEö6öçFW‡B†—FVÓ¢Ö–æu·7G"Âç•ÒÂv÷&·G&VU÷VWVS¢ç’’ÓâæöæS ¢6öçFW‡BÒ—FVÒævWB‚'v÷&·G&VUö6öçFW‡B"’÷"·Ð¢–b7G"†6öçFW‡BævWB‚&ÖöFR"’÷"""’Ò'6†&VB# ¢&WGW&à¢FV&F÷vâÒvWFGG"‡v÷&·G&VU÷VWVRÂ'FV&F÷vâ"ÂæöæR¢F6µö–BÒ7G"†6öçFW‡BævWB‚'F6µö–B"’÷"—FVÒævWB‚'F6µö–B"’÷"""¢–b6ÆÆ&ÆR‡FV&F÷vâ’æBF6µö–C ¢G'“ ¢FV&F÷vâ‡F6µö–B¢W†6WBW†6WF–öã ¢2æWfW"Ö6²F†R÷W&F÷"&V6V—Bv—F‚6ÆVçWæö—6Rà¢70  ¦FVbö÷W&F÷%öF—7F6…ö—FVÒ†—FVÓ¢Ö–æu·7G"Âç•Ò’ÓâF–7E·7G"Âç•Ó ¢""$æ÷&ÖÆ—¦RöæRG—VB÷W&F÷"F—7F6‚—FVÒà ¢F†RFFW"FVÆ–&W&FVÇ’66WG2öæÇ’F†R&VÂW†V7WFUö÷W&F÷&&÷VæF'’â–à¢'F–7VÆ"Â—B†2æò6öÖÖæBöV6†òfÆÆ&6³¢6ÆÆW'2F†BæVVBG'’'Vâ×W7B&Ò¢'Vâf—'7BæBW6RF†B'Vâw2æ÷&ÖÂ&VfÆ–v‡B&V6V—G2à¢"" ¢&WòÒ7G"†—FVÒævWB‚'&Wò"’÷"""’ç7G&—‚¢'Våö–BÒ7G"†—FVÒævWB‚''Våö–B"’÷"""’ç7G&—‚¢G'“ ¢F6µö–æFW‚Ò–çB†—FVÒævWB‚'F6µö–æFW‚"’¢W†6WB…G—TW'&÷"ÂfÇVTW'&÷"’2W†3 ¢&—6RfÇVTW'&÷"‚&÷W&F÷"F—7F6‚F6µö–æFW‚×W7B&Râ–çFVvW""’g&öÒW†0¢–bæ÷B&Wò÷"æ÷B'Våö–B÷"F6µö–æFW‚Â ¢&—6RfÇVTW'&÷"‚&÷W&F÷"F—7F6‚—FV×2&WV—&R&WòÂ'Våö–BÂæB÷6—F—fRF6µö–æFW‚"¢æ÷&ÖÆ—¦VBÒ°¢'&Wò#¢7G"…F‚‡&Wò’ç&W6öÇfR‚’’À¢''Våö–B#¢'Våö–BÀ¢'F6µö–æFW‚#¢F6µö–æFW‚À¢'v÷&¶W%ö–B#¢7G"†—FVÒævWB‚'v÷&¶W%ö–B"’÷"b&÷W&F÷"×·F6µö–æFW‡Ò"’À¢'F6µö–B#¢7G"†—FVÒævWB‚'F6µö–B"’÷"b'F6²×·'Våö–GÒ×·F6µö–æFW‡Ò"’À¢Ð¢2â—6öÆF–öâ¶W’—2–çFVçF–öæÆÇ’W‡Æ–6—BâGvòF6·2–âöæR'Vâ6†&R7FFRæ§6öâÀ¢2÷W&F÷"×&V6V—Bæ§6öâÂæBF†Rv÷&¶–ærG&VRæBF†W&Vf÷&R6ææ÷B6fVÇ’÷fW&ÆVçF–À¢2F†Rv÷&·G&VRFFW"7WÆ–W26W&FR6öçFW‡G2à¢æ÷&ÖÆ—¦VE²&—6öÆF–öåö¶W’%ÒÒ7G"†—FVÒævWB‚&—6öÆF–öåö¶W’"’÷"æ÷&ÖÆ—¦VE²'&Wò%Ò¢æ÷&ÖÆ—¦VE²&—6öÆF–öâ%ÒÒ7G"†—FVÒævWB‚&—6öÆF–öâ"’÷"'v÷&·G&VR"¢–b—6–ç7Fæ6R†—FVÒævWB‚'F6µ÷7V2"’ÂÖ–ær“ ¢æ÷&ÖÆ—¦VE²'F6µ÷7V2%ÒÒF–7B†—FVÕ²'F6µ÷7V2%Ò¢æ÷&ÖÆ—¦VE²&FÖ—76–öåöfVæ6R%ÒÒÖ‚ƒÂ–çB†—FVÒævWB‚&FÖ—76–öåöfVæ6R"’÷"’¢æ÷&ÖÆ—¦VE²&W‡V7FVEö&6U÷&Vb%ÒÒ7G"†—FVÒævWB‚&W‡V7FVEö&6U÷&Vb"’÷"""¢æ÷&ÖÆ—¦VE²&W‡V7FVEö&6U÷6†%ÒÒ7G"†—FVÒævWB‚&W‡V7FVEö&6U÷6†"’÷"""¢WF†÷&—G’Ò—FVÒævWB‚&WF†÷&—G•÷&V6V—B"¢–bWF†÷&—G’—2æ÷BæöæS ¢–bæ÷B—6–ç7Fæ6R†WF†÷&—G’ÂÖ–ær“ ¢&—6RfÇVTW'&÷"‚&WF†÷&—G•÷&V6V—B×W7B&Râö&¦V7B"¢WF†÷&—G’ÒF–7B†WF†÷&—G’¢7WÆ–VBÒ7G"†WF†÷&—G’ç÷‚'&V6V—Eö†6‚"Â""’¢–bæ÷B7WÆ–VB÷"7WÆ–VBÒ÷Æææ–æuö6öçFVçEö†6‚†WF†÷&—G’“ ¢&—6RfÇVTW'&÷"‚&WF†÷&—G•÷&V6V—B†6‚Ö—6ÖF6‚"¢6÷W&6RÒWF†÷&—G’ævWB‚'6÷W&6R"¢F&vWG2ÒWF†÷&—G’ævWB‚'F&vWG2"¢F6µ÷7V2Òæ÷&ÖÆ—¦VBævWB‚'F6µ÷7V2"’÷"·Ð¢W‡V7FVEö—77VRÒæ÷&ÖÆ—¦VE²'F6µö–B%Òç&VÖ÷fW&Vf—‚‚&—77VRÒ"¢–b†WF†÷&—G’ævWB‚&÷W&F÷""’Ò'6–×Æ–6–òÖFWbÖ6Æ’ ¢÷"æ÷B—6–ç7Fæ6R‡6÷W&6RÂÖ–ær¢÷"7G"‡6÷W&6RævWB‚&—77VR"’÷"""’ÒW‡V7FVEö—77VP¢÷"æ÷B7G"‡6÷W&6RævWB‚'&Wf—6–öâ"’÷"""¢÷"æ÷B7G"‡6÷W&6RævWB‚'Æææ–æu÷&V6V—B"’÷"""¢÷"æ÷B—6–ç7Fæ6R‡F&vWG2ÂÆ—7B’÷"æ÷BF&vWG0¢÷"ç’†æ÷B—6–ç7Fæ6R‡F&vWBÂ7G"’÷"æ÷BF&vWBç7G&—‚’f÷"F&vWB–âF&vWG2¢÷"6÷'FVB‡F&vWG2’Ò6÷'FVB‡F6µ÷7V2ævWB‚&f–ÆW5öffV7FVB"’÷"µÒ’“ ¢&—6RfÇVTW'&÷"‚&WF†÷&—G•÷&V6V—B&–æF–ærÖ—6ÖF6‚"¢WF†÷&—G•²'&V6V—Eö†6‚%ÒÒ7WÆ–V@¢æ÷&ÖÆ—¦VE²&WF†÷&—G•÷&V6V—B%ÒÒWF†÷&—G¢–b—6–ç7Fæ6R†—FVÒævWB‚&÷W&F÷%ö6öçFW‡B"’ÂÖ–ær“ ¢æ÷&ÖÆ—¦VE²&÷W&F÷%ö6öçFW‡B%ÒÒF–7B†—FVÕ²&÷W&F÷%ö6öçFW‡B%Ò¢–b—FVÒævWB‚&F—7G&–'WFVE÷VWVR"’—2æ÷BæöæS ¢æ÷&ÖÆ—¦VE²&F—7G&–'WFVE÷VWVR%ÒÒ—FVÕ²&F—7G&–'WFVE÷VWVR%Ð¢–b—6–ç7Fæ6R†—FVÒævWB‚&vVçEö–FVçF—G’"’ÂÖ–ær“ ¢æ÷&ÖÆ—¦VE²&vVçEö–FVçF—G’%ÒÒF–7B†—FVÕ²&vVçEö–FVçF—G’%Ò¢–b—6–ç7Fæ6R†—FVÒævWB‚&6öçFW‡E÷6²"’ÂÖ–ær“ ¢æ÷&ÖÆ—¦VE²&6öçFW‡E÷6²%ÒÒF–7B†—FVÕ²&6öçFW‡E÷6²%Ò¢–b—FVÒævWB‚'6÷W&6U÷&Wò"“ ¢æ÷&ÖÆ—¦VE²'6÷W&6U÷&Wò%ÒÒ7G"†—FVÕ²'6÷W&6U÷&Wò%Ò¢–b—FVÒævWB‚'6÷W&6U÷'Våö–B"“ ¢æ÷&ÖÆ—¦VE²'6÷W&6U÷'Våö–B%ÒÒ7G"†—FVÕ²'6÷W&6U÷'Våö–B%Ò¢–b—FVÒævWB‚'v÷&·G&VUö6öçFW‡B"“ ¢æ÷&ÖÆ—¦VE²'v÷&·G&VUö6öçFW‡B%ÒÒF–7B†—FVÕ²'v÷&·G&VUö6öçFW‡B%Ò¢–b—FVÒævWB‚'v÷&·G&VUöW'&÷""“ ¢æ÷&ÖÆ—¦VE²'v÷&·G&VUöW'&÷"%ÒÒ7G"†—FVÕ²'v÷&·G&VUöW'&÷"%Ò¢&WGW&âæ÷&ÖÆ—¦V@  ¦FVb÷fW&–g•÷v÷&¶W%÷&V6V—E÷—"†÷W&F÷%÷&V6V—E÷Fƒ¢7G"ÂWf–FVæ6U÷&V6V—E÷Fƒ¢7G"’ÓâF–7E·7G"Â7G%Ó ¢""$vFR&V6V—E÷7FGW6öâ&VÂ6öçFVçB÷66†VÖö†6‚ög&W6†æW72÷&÷fVææ6R†—77VR3#ƒ‚’à ¢&Wf–÷W6Ç’F†—2&VGV6VBFòF‚‡&V6V—B’æ—5öf–ÆR‚’æBF‚†Wf–FVæ6U÷&V6V—B’æ—5öf–ÆR‚– ¢ÒÒâV×G’·Öf–ÆR76VB§W7B2&VF–Ç’2vVçV–æR&V6V—Bâ&÷F‚&V6V—G2&Ræ÷p¢'6VBæB'VâF‡&÷Vv‚&V6V—E÷fW&–f–W"çfW&–g•÷&V6V—Fv–ç7BF†R66†VÖV6‚&öGV6W ¢†÷&W&Uö÷W&F÷%÷&V6V—FòWf–FVæ6Rç“£¦'V–ÆEöWf–FVæ6U÷&V6V—F’7GVÆÇ’VÖ—G2à¢öæÇ’gVÆÇ’fW&–f–VB—"&WGW&ç2dU$”d”TF²WfW'’÷F†W"66RæÖW27V6–f–2À¢æöâÖW†—7FVæ6R&V6öâ†5DÄVÂDÕU$TFÂ”ådÄ”Eõ44„TÔÂÔ•54”äuôd”TÄFÂ÷"F†P¢ÆVv7’TådU$”d”TFv†VâF‚—26–×Ç’'6VçB’à¢"" ¢–bæ÷B÷W&F÷%÷&V6V—E÷F‚÷"æ÷BWf–FVæ6U÷&V6V—E÷Fƒ ¢&WGW&â²'7FGW2#¢%TådU$”d”TB"Â'&V6öâ#¢&÷W&F÷"÷"Wf–FVæ6R&V6V—BF‚Ö—76–ær'Ð¢÷÷F‚ÒF‚†÷W&F÷%÷&V6V—E÷F‚¢We÷F‚ÒF‚†Wf–FVæ6U÷&V6V—E÷F‚¢–bæ÷B÷÷F‚æ—5öf–ÆR‚’÷"æ÷BWe÷F‚æ—5öf–ÆR‚“ ¢&WGW&â²'7FGW2#¢%TådU$”d”TB"Â'&V6öâ#¢&÷W&F÷"÷"Wf–FVæ6R&V6V—Bf–ÆRÖ—76–ær'Ð¢G'“ ¢÷W&F÷%÷–ÆöBÒ§6öâæÆöG2†÷÷F‚ç&VE÷FW‡B†Væ6öF–æsÒ'WFbÓ‚"’¢W†6WB„õ4W'&÷"ÂfÇVTW'&÷"’2W†3 ¢&WGW&â²'7FGW2#¢&V6V—E7FGW2ä”ådÄ”Eõ44„TÔÂ'&V6öâ#¢b&÷W&F÷"&V6V—BVç&VF&ÆS¢¶W†7Ò'Ð¢G'“ ¢Wf–FVæ6U÷–ÆöBÒ§6öâæÆöG2†We÷F‚ç&VE÷FW‡B†Væ6öF–æsÒ'WFbÓ‚"’¢W†6WB„õ4W'&÷"ÂfÇVTW'&÷"’2W†3 ¢&WGW&â²'7FGW2#¢&V6V—E7FGW2ä”ådÄ”Eõ44„TÔÂ'&V6öâ#¢b&Wf–FVæ6R&V6V—BVç&VF&ÆS¢¶W†7Ò'Ð ¢æ÷rÒF–ÖRçF–ÖR‚¢÷W&F÷%÷fW&F–7BÒfW&–g•÷&V6V—B€¢÷W&F÷%÷–ÆöBÂ66†VÖÕôõU$Dõ%õ$T4T•Eô4ôåDTåEõ44„TÔÀ¢Ö…övU÷6V6öæG3Õ$T4T•EôÔ…ôtUõ4T4ôäE2Âæ÷sÖæ÷rÀ¢¢–bæ÷B÷W&F÷%÷fW&F–7BçfW&–f–VC ¢&WGW&â²'7FGW2#¢÷W&F÷%÷fW&F–7Bç7FGW2Â'&V6öâ#¢b&÷W&F÷"&V6V—C¢¶÷W&F÷%÷fW&F–7Bç&V6öçÒ'Ð¢Wf–FVæ6U÷fW&F–7BÒfW&–g•÷&V6V—B€¢Wf–FVæ6U÷–ÆöBÂ66†VÖÕôUd”DTä4Uõ$T4T•Eô4ôåDTåEõ44„TÔÀ¢Ö…övU÷6V6öæG3Õ$T4T•EôÔ…ôtUõ4T4ôäE2Âæ÷sÖæ÷rÀ¢¢–bæ÷BWf–FVæ6U÷fW&F–7BçfW&–f–VC ¢&WGW&â²'7FGW2#¢Wf–FVæ6U÷fW&F–7Bç7FGW2Â'&V6öâ#¢b&Wf–FVæ6R&V6V—C¢¶Wf–FVæ6U÷fW&F–7Bç&V6öçÒ'Ð¢&WGW&â°¢'7FGW2#¢&V6V—E7FGW2ådU$”d”TBÀ¢'&V6öâ#¢&÷W&F÷"æBWf–FVæ6R&V6V—G276VB6öçFVçB÷66†VÖö†6‚ög&W6†æW72÷&÷fVææ6R6†V6·2"À¢Ð  ¦FVb÷FW7EööæÇ•÷7FÆÅö&Vf÷&UöF—7F6‚‡F6µö–C¢7G"’ÓâæöæS ¢""%FW7BÖöæÇ’†öö²†—77VR3#ƒ‚7&÷72×&ö6W72&V6÷fW'’FW7B“¢&Æö6²öæRæÖVBF6²f÷"¢6öçG&öÆÆVBçVÖ&W"öb&VÂvÆÂÖ6Æö6²6V6öæG2&Vf÷&R—B6Æ–×2öW†V7WFW2à ¢F†—2W†—7G26öÆVÇ’6òFW7B6â7F'B&VÂ÷&6†W7G&F÷"õ2&ö6W72ÂÆWB—BGW&&Ç¢¦÷W&æÂâV&Æ–W"F6²ÂæBF†Vâ¶–ÆÂF†R&ö6W72†vVçV–æR7&6‚Âæ÷B6–×VÆFV@¢W†6WF–öâ’v†–ÆR—B—2FWFW&Ö–æ—7F–6ÆÇ’7FÆÆVBÖ–BÖ&F6‚öâ¦F–ffW&VçB¢F6²ÒÐ¢&÷f–ær&W7F'FVB÷&6†W7G&F÷"&W7VÖW2÷&V6öæ6–ÆW26ÆVæÇ’â—B—2æòÖ÷VæÆW72&÷F€¢4”ÕÄ”4”õôÄôõõDU5Eõ4ÄõuõD4µô”FÖF6†W2F†—2W†7BF6²æ@¢4”ÕÄ”4”õôÄôõõDU5Eõ4ÄõuõD4µõ4T4ôäE6—26WBÂÖ—'&÷&–ærF†R&ö¦V7Bw2W†—7F–æp¢4”ÕÄ”4”õôÄôõôd´Uò¦÷BÖ–âFW7B†öö·2ÒÒæWfW"7F—fR–âæ÷&ÖÂ'Vâà¢"" ¢F&vWBÒ÷2æVçf—&öâævWB‚%4”ÕÄ”4”õôÄôõõDU5Eõ4ÄõuõD4µô”B"Â""’ç7G&—‚¢–bæ÷BF&vWB÷"F&vWBÒ7G"‡F6µö–B’ç7G&—‚“ ¢&WGW&à¢G'“ ¢6V6öæG2ÒfÆöB†÷2æVçf—&öâævWB‚%4”ÕÄ”4”õôÄôõõDU5Eõ4ÄõuõD4µõ4T4ôäE2"Â#"’÷"#"¢W†6WBfÇVTW'&÷# ¢6V6öæG2Òã ¢–b6V6öæG2â ¢F–ÖRç6ÆVW‡6V6öæG2  ¦FVb÷&VÖ÷FU÷v÷&¶W%öF—7F6…öVæ&ÆVB‚’Óâ&ööÃ ¢"""3#ƒc¢öæ6RF†RVWVR—2vVçV–æRæWGv÷&²…EE&VÖ÷FUVWVVÂF†R6ö÷&F–æF÷"×W7@¢æ÷BW†V7WFRF†R÷W&F÷"–â—G2÷vâ&ö6W72ÒÒ—BVçVWVW2F†RF6²VçfVÆ÷RæBv—G0¢f÷"â–æFWVæFVçB&VÖ÷FUv÷&¶W$FVÖöæ†F–ffW&VçBFWf–6R÷&ö6W72Â&V6†&ÆRöæÇ¢÷fW"F†Rv—&R’FòVÆÂÂ6Æ–ÒÂ'VâÂæB6ö×ÆWFR—BâF†—2—2F†Rf—‚f÷"F†RW†7Bv ¢—77VR3#ƒbæÖVC¢&W†V7WFUö÷W&F÷%ö&F6‚‚’7&–…EE&VÖ÷FUVWVRÂÖ26öçF–çV¢7V&ÖWFVæFòö÷W&F÷%öF—7F6…öGFV×B‚’VÒF‡&VEööÄW†V7WF÷"Æö6Ã²ò&÷&–ð¢6ö÷&FVæF÷"6†ÖW†V7WFUö÷W&F÷"‚’â  ¢5Æ—FU&VÖ÷FUVWVV†—77VR3#ƒ‚w26òÖÆö6FVBÂ6ÖR×&ö6W72wV&FVBÖF—7F6‚F‚’—0¢FVÆ–&W&FVÇ’VæffV7FVBÒÒF†BVWVR&6¶VæBÖöFVÇ26–ævÆRÖ†÷7BGFV×B6ö÷&F–æF÷"À¢æ÷B&VÖ÷FRv÷&¶W"Â6òWfW'’W†—7F–ær3#ƒ‚FW7BW6–ær—B¶VW2—G27W'&VçB&V†f–÷"à¢÷B÷WBv—F‚4”ÕÄ”4”õõ$TÔõDUõtõ$´U%ôôäÅ“ÓöæÇ’f÷"FVÆ–&W&FR6ÖRÖ†÷7B6Öö¶P¢FW7BF†BvçG2F†RöÆB–â×&ö6W726†÷'F7WBv–ç7B&VÂ…EEVWVRà¢"" ¢&WGW&â7G"†÷2æVçf—&öâævWB‚%4”ÕÄ”4”õõ$TÔõDUõtõ$´U%ôôäÅ’"’÷"#"’ç7G&—‚’æÆ÷vW"‚’æ÷B–â€¢#"Â&fÇ6R"Â&æò"Â&öfb"Â&F—6&ÆVB"À¢  ¦FVbö÷W&F÷%öF—7F6…öGFV×E÷&VÖ÷FU÷v÷&¶W"€¢—FVÓ¢Ö–æu·7G"Âç•ÒÂ6öÖÖöã¢F–7E·7G"Âç•ÒÂVWVS¢…EE&VÖ÷FUVWVRÂ7F'FVC¢fÆöBÀ¢’ÓâF–7E·7G"Âç•Ó ¢""$VçVWVRÖæB×v—BF—7F6‚f÷"vVçV–æR&VÖ÷FR†…EE&VÖ÷FUVWVV’v÷&¶W"‚3#ƒb’à ¢F†R6ö÷&F–æF÷"—G6VÆbæWfW"6Æ–×2æBæWfW"6ÆÇ2W†V7WFUö÷W&F÷"‚–†W&RÒÒ—@¢V&Æ—6†W2F†R–Ö×WF&ÆRF6²VçfVÆ÷Röæ6R†–FV×÷FVçC¢VçVWVV—2æòÖ÷–bF†P¢F6µö–BÇ&VG’W†—7G2’æBöÆÇ2VWVRçF6²‚–‡F†R6ÖRWF†÷&—G’&VÖ÷FP¢&VÖ÷FUv÷&¶W$FVÖöæ×WFFW2’VçF–ÂF†RF6²&V6†W2FW&Ö–æÂ6ö×ÆWFVF7FGW2÷ ¢F†RF—7F6‚F–ÖV÷WBVÆ6W2âF–ÖV÷WB—2&W÷'FVB27V6–f–2ÂæöâÖf'&–6FVBf–ÇW&P¢†&VÖ÷FU÷v÷&¶W%÷F–ÖV÷WF’&F†W"F†â6–ÆVçFÇ’fÆÆ–ær&6²FòÆö6ÂW†V7WF–öâà¢"" ¢F6µö–BÒ6öÖÖöå²'F6µö–B%Ð¢6öçFW‡E÷6²ÒF–7B†—FVÒævWB‚&6öçFW‡E÷6²"’÷"·Ò¢–ÆöBÒ°¢''Våö–B#¢6öÖÖöå²''Våö–B%ÒÂ'v÷&¶W%ö–B#¢6öÖÖöå²'v÷&¶W%ö–B%ÒÀ¢'F6µö–æFW‚#¢6öÖÖöå²'F6µö–æFW‚%ÒÂ&vöÂ#¢6öçFW‡E÷6²ævWB‚&vöÂ"Â""’À¢&72#¢Æ—7B†6öçFW‡E÷6²ævWB‚&72"’÷"‚’’À¢&FWVæG5ööâ#¢Æ—7B†6öçFW‡E÷6²ævWB‚&FWVæG5ööâ"’÷"‚’’À¢&ÆÆ÷vVE÷F‡2#¢Æ—7B†6öçFW‡E÷6²ævWB‚&ÆÆ÷vVE÷F‡2"’÷"‚’’À¢&—77VU÷&Vb#¢6öçFW‡E÷6²ævWB‚&—77VU÷&Vb"Â""’Â&—77VU÷W&Â#¢6öçFW‡E÷6²ævWB‚&—77VU÷W&Â"Â""’À¢&6öçFW‡E÷6²#¢6öçFW‡E÷6²À¢'v÷&·G&VUö6öçFW‡B#¢F–7B†—FVÒævWB‚'v÷&·G&VUö6öçFW‡B"’÷"·Ò’À¢Ð¢6öÖÖöå²&F—7F6…öÖöFR%ÒÒ'&VÖ÷FU÷v÷&¶W%÷VÆÂ ¢G'“ ¢VWVRæVçVWVR‡F6µö–BÂ–ÆöB¢W†6WB…VWVT6öæfÆ–7BÂVWVUVæf–Æ&ÆRÂfÇVTW'&÷"’2W†3 ¢&WGW&â²¢¦6öÖÖöâÂ'7FGW2#¢&f–ÆVB"Â'†6R#¢&&Æö6¶VB"Â&W†V7WF–öå÷7FFR#¢&W'&÷""À¢'&V6V—B#¢""Â&÷W&F÷%÷&V6V—B#¢""Â&Wf–FVæ6U÷&V6V—B#¢""À¢'&V6V—E÷7FGW2#¢%TådU$”d”TB"Â&GFV×B#¢À¢'&V6öåö6öFR#¢'&VÖ÷FUöVçVWVUöf–ÆVB"Â'&VÖ÷FUöW'&÷%ö6Æ72#¢G—R†W†2’åõöæÖUõòÀ¢&W'&÷"#¢7G"†W†2’Â&FVEöÆWGFW"#¢G'VRÀ¢'7F'FVEöB#¢7F'FVBÂ&f–æ—6†VEöB#¢öæ÷r‚—Ð ¢F–ÖV÷WBÒfÆöB†÷2æVçf—&öâævWB‚%4”ÕÄ”4”õõ$TÔõDUôD•5D4…õD”ÔTõUEõ4T4ôäE2"Â#3c"’¢öÆÅö–çFW'fÂÒfÆöB†÷2æVçf—&öâævWB‚%4”ÕÄ”4”õõ$TÔõDUôD•5D4…õôÄÅô”åDU%dÅõ4T4ôäE2"Â#""’¢FVFÆ–æRÒF–ÖRæÖöæ÷Föæ–2‚’²Ö‚ƒãÂF–ÖV÷WB¢F6µ÷7FFS¢F–7E·7G"Âç•ÒÒ·Ð¢v†–ÆRG'VS ¢G'“ ¢F6µ÷7FFRÒVWVRçF6²‡F6µö–B¢W†6WB…VWVUVæf–Æ&ÆRÂ¶W”W'&÷"’2W†3 ¢&WGW&â²¢¦6öÖÖöâÂ'7FGW2#¢&f–ÆVB"Â'†6R#¢&&Æö6¶VB"Â&W†V7WF–öå÷7FFR#¢'W6VB"À¢'&V6V—B#¢""Â&÷W&F÷%÷&V6V—B#¢""Â&Wf–FVæ6U÷&V6V—B#¢""À¢'&V6V—E÷7FGW2#¢%TådU$”d”TB"Â&GFV×B#¢À¢'&V6öåö6öFR#¢&æWGv÷&µ÷W6VB"Â&W'&÷"#¢7G"†W†2’Â&FVEöÆWGFW"#¢G'VRÀ¢'7F'FVEöB#¢7F'FVBÂ&f–æ—6†VEöB#¢öæ÷r‚—Ð¢–b7G"‡F6µ÷7FFRævWB‚'7FGW2"’÷"""’ÓÒ&6ö×ÆWFVB# ¢'&V°¢&VÖ–æ–ærÒFVFÆ–æRÒF–ÖRæÖöæ÷Föæ–2‚¢–b&VÖ–æ–ærÃÒ ¢'&V°¢F–ÖRç6ÆVW†Ö–â‡öÆÅö–çFW'fÂÂ&VÖ–æ–ær’ ¢–b7G"‡F6µ÷7FFRævWB‚'7FGW2"’÷"""’Ò&6ö×ÆWFVB# ¢&WGW&â²¢¦6öÖÖöâÂ'7FGW2#¢&f–ÆVB"Â'†6R#¢&&Æö6¶VB"Â&W†V7WF–öå÷7FFR#¢'F–ÖV÷WB"À¢'&V6V—B#¢""Â&÷W&F÷%÷&V6V—B#¢""Â&Wf–FVæ6U÷&V6V—B#¢""À¢'&V6V—E÷7FGW2#¢%TådU$”d”TB"Â&GFV×B#¢À¢'&V6öåö6öFR#¢'&VÖ÷FU÷v÷&¶W%÷F–ÖV÷WB"À¢&W'&÷"#¢&æò&VÖ÷FRv÷&¶W"6ö×ÆWFVBF6²W2v—F†–âRãg2"R‡F6µö–BÂF–ÖV÷WB’À¢&FVEöÆWGFW"#¢G'VRÂ'7F'FVEöB#¢7F'FVBÂ&f–æ—6†VEöB#¢öæ÷r‚—Ð ¢ÆV6Uö–æfòÒF–7B‡F6µ÷7FFRævWB‚&ÆV6R"’÷"·Ò¢&V6V—BÒ7G"†ÆV6Uö–æfòævWB‚'&V6V—E÷&Vb"’÷"""¢2F†R&VÖ÷FRv÷&¶W"w2Wf–FVæ6R&V6V—BÆ—fW2öâ—G2÷vâFWf–6S²F†R6ö÷&F–æF÷"öæÇ¢2G&VG2—B2&VF&ÆRv†Vâ&÷F‚f–ÆW2vVçV–æVÇ’W†—7BöâF†—2f–ÆW7—7FVÒ‡G'VRÂf÷ ¢2–ç7Fæ6RÂöbF†R6ÖRÖ†÷7BÆö÷&6²&÷‡’F†—2&Wòw2S$RW6W2’â7&÷72ÖFWf–6P¢2FWÆ÷–ÖVçBv—F†÷WB&V6V—BÖfWF6‚VæGö–çB†öæW7FÇ’&W÷'G2TådU$”d”TB†W&R&F†W ¢2F†âf'&–6F–ærdU$”d”TB—"—B6ææ÷B6VRà¢Wf–FVæ6U÷&V6V—BÒ7G"…F‚‡&V6V—B’ç&VçBò&Wf–FVæ6R×&V6V—Bæ§6öâ"’–b&V6V—BVÇ6R" ¢–bæ÷B†Wf–FVæ6U÷&V6V—BæBF‚†Wf–FVæ6U÷&V6V—B’æ—5öf–ÆR‚’“ ¢Wf–FVæ6U÷&V6V—BÒ" ¢&V6V—E÷fW&F–7BÒ÷fW&–g•÷v÷&¶W%÷&V6V—E÷—"‡&V6V—BÂWf–FVæ6U÷&V6V—B¢ÖW&vS¢÷F–öæÅ´F–7E·7G"Âç•ÕÒÒæöæP¢–b&V6V—E÷fW&F–7E²'7FGW2%ÒÓÒ&V6V—E7FGW2ådU$”d”TBæBöWFõöÖW&vUöVæ&ÆVB‚“ ¢ÖW&vRÒöF—7F6…öÖW&vU÷"†—FVÒÂ&V6V—C×&V6V—BÂ'Våö–CÖ6öÖÖöå²''Våö–B%Ò¢&WGW&â°¢¢¦6öÖÖöâÀ¢'7FGW2#¢'7V66VVFVB"À¢'†6R#¢&FVÆ—fW&VB"À¢&W†V7WF–öå÷7FFR#¢&Æ–VB"À¢'&V6V—B#¢&V6V—BÀ¢&÷W&F÷%÷&V6V—B#¢&V6V—BÀ¢&Wf–FVæ6U÷&V6V—B#¢Wf–FVæ6U÷&V6V—BÀ¢'vF6†W%÷&V6V—B#¢""À¢'&V6V—E÷7FGW2#¢&V6V—E÷fW&F–7E²'7FGW2%ÒÀ¢'&V6V—E÷fW&F–7E÷&V6öâ#¢&V6V—E÷fW&F–7E²'&V6öâ%ÒÀ¢&GFV×B#¢À¢&f–ÇW&Uöf–ævW'&–çB#¢""À¢&ÖW&vR#¢ÖW&vRÀ¢'&VÖ÷FU÷F6²#¢²'F6µö–B#¢F6µö–BÂ&ÆV6R#¢ÆV6Uö–æf÷ÒÀ¢'7F'FVEöB#¢7F'FVBÀ¢&f–æ—6†VEöB#¢öæ÷r‚’À¢Ð  ¦FVböfæ÷WEöW†V7WF–öå÷&÷WFR†—FVÓ¢Ö–æu·7G"Âç•ÒÂ'VåöF—#¢F‚’ÓâF–7E·7G"Âç•Ó ¢""%W'6—7BöæR–æFWVæFVçFÇ’fW&–f–&ÆR&÷WFR&Vf÷&Rç’fâÖ÷WBÄÄÒ6ÆÂâ"" ¢6öçFW‡BÒ—FVÒævWB‚&6öçFW‡E÷6²"’–b—6–ç7Fæ6R†—FVÒævWB‚&6öçFW‡E÷6²"’ÂÖ–ær’VÇ6R·Ð¢vöÂÒ7G"†6öçFW‡BævWB‚&vöÂ"’÷"—FVÒævWB‚'F6µö–B"’÷"""’ç7G&—‚¢6&–Æ—F–W2Òæ÷&ÖÆ—¦Uö6&–Æ—G•öÖæ–fW7B€¢6öçFW‡BævWB‚'v÷&¶W%ö6&–Æ—F–W2"’÷"—FVÒævWB‚'v÷&¶W%ö6&–Æ—F–W2"’÷"‚¢¢v÷&¶W%öf–Æ&ÆRÒ&ööÂ†6&–Æ—F–W2’÷"÷2æVçf—&öâævWB€¢%4”ÕÄ”4”õôDUDU$Ô”ä•5D”5õtõ$´U""Â# ¢’æÆ÷vW"‚’æ÷B–â²#"Â&fÇ6R"Â&æò"Â&öfb'Ð¢Öæ–fW7BÒ°¢&FV6Æ&VB#¢6&–Æ—F–W2À¢&FWFW&Ö–æ—7F–5÷v÷&¶W%öf–Æ&ÆR#¢v÷&¶W%öf–Æ&ÆRÀ¢Ð¢&V6÷&BÒFV6–FU÷&÷WFR€¢vöÂÀ¢†5öFWFW&Ö–æ—7F–5÷v÷&¶W#×v÷&¶W%öf–Æ&ÆRÀ¢—5öÖ&–wV÷W3Ö&ööÂ†6öçFW‡BævWB‚&Ö&–wV÷W2"’÷"6öçFW‡BævWB‚'&WV—&W5÷6VÖçF–5÷&Wf–Wr"’’À¢’çFõöF–7B‚¢&V6÷&BçWFFR‡°¢''Våö–B#¢7G"†—FVÒævWB‚''Våö–B"’÷"""’À¢'F6µö–æFW‚#¢–çB†—FVÒævWB‚'F6µö–æFW‚"’÷"’À¢'F6µö–B#¢7G"†—FVÒævWB‚'F6µö–B"’÷"""’À¢&Wf–FVæ6Uö†æFÆW2#¢6÷'FVB‡°¢7G"‡fÇVR’f÷"fÇVR–â€¢6öçFW‡BævWB‚&ÖW%öVçfVÆ÷Uö†6‚"’À¢6öçFW‡BævWB‚&6öçFW‡E÷6µö†6‚"’À¢6öçFW‡BævWB‚&6öçFW‡Eöw&…ö†æFÆR"’À¢’–b7G"‡fÇVR÷"""¢Ò’À¢&6W6Åö–G2#¢·7G"†—FVÒævWB‚''Våö–B"’÷"""’Â7G"†—FVÒævWB‚'F6µö–B"’÷"""•ÒÀ¢'&÷WFUöWF†÷&—G’#¢&Æö÷×'VææW"Öfæ÷WB"À¢&6&–Æ—G•öÖæ–fW7B#¢Öæ–fW7BÀ¢&6&–Æ—G•öf–ævW'&–çB#¢6&–Æ—G•öf–ævW'&–çB†Öæ–fW7B’À¢'Fö¶Vå÷W6vR#¢€¢²&–çWE÷Fö¶Vç2#¢Â&÷WGWE÷Fö¶Vç2#¢Â'&V6öâ#¢&FWFW&Ö–æ—7F–5÷v÷&¶W%öæõöÆÆÒ'Ð¢–b&V6÷&E²'&÷WFR%ÒÓÒ'v÷&¶W""VÇ6P¢²&–çWE÷Fö¶Vç2#¢æöæRÂ&÷WGWE÷Fö¶Vç2#¢æöæRÀ¢'&V6öâ#¢'&÷WFUöFV6—6–öå÷&V6VFW5÷&÷f–FW%ö–çfö6F–öâ'Ð¢’À¢Ò¢&V6÷&E²'&V6V—E÷6†%ÒÒöW†V7WF–öå÷&÷WFUö†6‚‡°¢¶W“¢fÇVRf÷"¶W’ÂfÇVR–â&V6÷&Bæ—FV×2‚’–b¶W’Ò'&V6V—E÷6† ¢Ò¢–bæ÷BfW&–g•÷&÷WFUö†6‚‡&V6÷&B“ ¢&—6R'VçF–ÖTW'&÷"‚&fâÖ÷WBW†V7WF–öâ×&÷WFR&V6V—Bf–ÆVB†6‚fW&–f–6F–öâ"¢&÷WFU÷F‚Ò'VåöF—"òb&W†V7WF–öâ×&÷WFR×·&V6÷&E²wF6µö–æFW‚u×Òæ§6öâ ¢÷w&—FUö§6öâ‡&÷WFU÷F‚Â&V6÷&B¢&WGW&â&V6÷&@  ¦FVbö÷W&F÷%öF—7F6…÷'VåöF—"†—FVÓ¢Ö–æu·7G"Âç•Ò’ÓâFƒ ¢""%&W6öÇfR6æöæ–6Â'Vâ7F÷&vRÂv—F‚—6öÆFVB7F÷&vRf÷"7–çF†WF–2F—7F6†W2â"" ¢7FGW2Ò&VE÷7FGW2†—FVÕ²'&Wò%ÒÂ—FVÕ²''Våö–B%Ò¢–b7FGW2ævWB‚''VåöF—""“ ¢&WGW&âF‚‡7FGW5²''VåöF—"%Ò ¢&Wõ÷F‚ÒF‚†—FVÕ²'&Wò%Ò’ç&W6öÇfR‚¢'Vå÷66÷RÒ†6†Æ–"ç6†#Sb‡7G"†—FVÕ²''Våö–B%Ò’æVæ6öFR‚'WFbÓ‚"’’æ†W†F–vW7B‚•³£eÐ¢'VåöF—"Ò&Wõ÷F‚ò"ç6–×Æ–6–ò"ò&÷&6†W7G&F÷""ò&F—7F6‚×&÷WFW2"ò'Vå÷66÷P¢'VåöF—"æÖ¶F—"‡&VçG3ÕG'VRÂW†—7Eöö³ÕG'VR¢&WGW&â'VåöF—   ¦FVbö÷W&F÷%öF—7F6…öGFV×B†—FVÓ¢Ö–æu·7G"Âç•Ò’ÓâF–7E·7G"Âç•Ó ¢""$6ÆÂF†R&öGV7F–öâ÷W&F÷"æB&VGV6R—G27FGW2FòGW&&ÆRv÷&¶W"&V6÷&Bâ"" ¢7F'FVBÒöæ÷r‚¢6öçFW‡BÒF–7B†—FVÒævWB‚'v÷&·G&VUö6öçFW‡B"’÷"—FVÒævWB‚&÷W&F÷%ö6öçFW‡B"’÷"·Ò¢6öÖÖöâÒ°¢'66†VÖ#¢'6–×Æ–6–òæ÷W&F÷"×v÷&¶W"÷c"À¢'v÷&¶W%ö–B#¢—FVÕ²'v÷&¶W%ö–B%ÒÀ¢'&Wò#¢—FVÕ²'&Wò%ÒÀ¢'6÷W&6U÷&Wò#¢7G"†—FVÒævWB‚'6÷W&6U÷&Wò"’÷"—FVÕ²'&Wò%Ò’À¢''Våö–B#¢—FVÕ²''Våö–B%ÒÀ¢'F6µö–æFW‚#¢—FVÕ²'F6µö–æFW‚%ÒÀ¢'F6µö–B#¢7G"†—FVÒævWB‚'F6µö–B"’÷"""’À¢'v÷&·G&VUö6öçFW‡B#¢6öçFW‡BÀ¢'v÷&·G&VU÷F‚#¢7G"†6öçFW‡BævWB‚'v÷&·G&VU÷F‚"’÷"6öçFW‡BævWB‚'F‚"’÷"—FVÒævWB‚'&Wò"’÷"""’À¢&'&æ6‚#¢7G"†6öçFW‡BævWB‚&'&æ6‚"’÷"—FVÒævWB‚&'&æ6‚"’÷"""’À¢2F†W6R&RFVÆ–&W&FVÇ’v÷&¶W"×66÷VBÆ–6W2âfâÖ÷WB6öç7VÖW"×W7BæWfW ¢2–æfW"6†&VB&V6V—Bg&öÒF†R6ö÷&F–æF÷"w2'VâÖÆWfVÂ7FFS²WfW'’ÆæR†0¢2—G2÷vâ÷W&F÷"æBWf–FVæ6R&ööb†÷"âW‡Æ–6—BTådU$”d”TB7FFR’à¢&÷W&F÷%÷&V6V—B#¢""À¢&Wf–FVæ6U÷&V6V—B#¢""À¢'&V6V—E÷7FGW2#¢%TådU$”d”TB"À¢&vVçB#¢F–7B†—FVÒævWB‚&vVçEö–FVçF—G’"’÷"·Ò’À¢&6öçFW‡E÷6²#¢F–7B†—FVÒævWB‚&6öçFW‡E÷6²"’÷"·Ò’À¢&WF†÷&—G•÷&V6V—B#¢F–7B†—FVÒævWB‚&WF†÷&—G•÷&V6V—B"’÷"·Ò’À¢&FÖ—76–öåöfVæ6R#¢–çB†—FVÒævWB‚&FÖ—76–öåöfVæ6R"’÷"’À¢&W‡V7FVEö&6U÷&Vb#¢7G"†—FVÒævWB‚&W‡V7FVEö&6U÷&Vb"’÷"""’À¢&W‡V7FVEö&6U÷6†#¢7G"†—FVÒævWB‚&W‡V7FVEö&6U÷6†"’÷"""’À¢Ð¢'VåöF—"Òö÷W&F÷%öF—7F6…÷'VåöF—"†—FVÒ¢W†V7WF–öå÷&÷WFRÒöfæ÷WEöW†V7WF–öå÷&÷WFR†—FVÒÂ'VåöF—"¢6öÖÖöå²&W†V7WF–öå÷&÷WFR%ÒÒW†V7WF–öå÷&÷WFP¢6öÖÖöå²'&÷WFU÷&V6V—E÷6†%ÒÒW†V7WF–öå÷&÷WFU²'&V6V—E÷6†%Ð¢–böÖöFVÅ÷&÷WFVEöF—7F6…öVæ&ÆVB‚“ ¢23#ƒs¢&÷WFRF†—2F—7F6‚GFV×BF‡&÷Vv‚F†R&VÂÖöFVÂ&Vv—7G'’÷&÷WFW ¢2–ç7FVBöb†&F6öFVB'VçF–ÖRÂæBÒÒv†Vâ&VÂG&—fW"—2v—&VBf÷"F†P¢26VÆV7F–öâÒÒvVçV–æVÇ’–çfö¶R—BâFF—F—fRVF—BWf–FVæ6RöæÇ“¢&÷WF–æp¢2&Æö6²÷"G&—fW"f–ÇW&R†W&RæWfW"&Æö6·2F†RFWbÖ6Æ’÷W&F÷"×WFF–öà¢2&VÆ÷rÂv†–6‚&VÖ–ç2F†—2&Wòw27GVÂÇ’÷fW&–g’6öçG&7Bà¢G'“ ¢–bW†V7WF–öå÷&÷WFU²'&÷WFR%ÒÓÒ'v÷&¶W"# ¢6öÖÖöå²&ÖöFVÅ÷&÷WF–ær%ÒÒ°¢'&÷WFVB#¢fÇ6RÂ&W†V7WFVB#¢fÇ6RÀ¢'&V6öâ#¢&FWFW&Ö–æ—7F–5÷v÷&¶W%÷&÷WFUöæõöÆÆÒ"À¢&W†V7WF–öå÷&÷WFU÷6†#¢W†V7WF–öå÷&÷WFU²'&V6V—E÷6†%ÒÀ¢Ð¢VÇ6S ¢6öÖÖöå²&ÖöFVÅ÷&÷WF–ær%ÒÒöW†V7WFU÷&÷WFVE÷'VçF–ÖR†—FVÒÂ'VåöF—"¢W†6WBW†6WF–öâ2W†3¢2&÷WF–æröW†V7WF–öâWf–FVæ6R×W7BæWfW"7&6‚F—7F6€¢6öÖÖöå²&ÖöFVÅ÷&÷WF–ær%ÒÒ²'&÷WFVB#¢fÇ6RÂ&W†V7WFVB#¢fÇ6RÂ&W'&÷"#¢b'·G—R†W†2’åõöæÖUõ÷Ó¢¶W†7Ò'Ð¢VWVRÒ—FVÒævWB‚&F—7G&–'WFVE÷VWVR"¢–bVWVR—2æ÷BæöæRæB—6–ç7Fæ6R‡VWVRÂ…EE&VÖ÷FUVWVR’æB÷&VÖ÷FU÷v÷&¶W%öF—7F6…öVæ&ÆVB‚“ ¢23#ƒc¢vVçV–æRæWGv÷&²VWVRÖVç2vVçV–æR&VÖ÷FRv÷&¶W'2ÒÒF†R6ö÷&F–æF÷ ¢2VçVWVW2æBv—G2Â—BæWfW"6Æ–×2öW†V7WFW2F†R÷W&F÷"—G6VÆbâ6VP¢2÷&VÖ÷FU÷v÷&¶W%öF—7F6…öVæ&ÆVFf÷"F†R÷BÖ÷WBæB&F–öæÆRà¢&VÖ÷FU÷&V6÷&BÒö÷W&F÷%öF—7F6…öGFV×E÷&VÖ÷FU÷v÷&¶W"†—FVÒÂ6öÖÖöâÂVWVRÂ7F'FVB¢2VçVWVRf–ÇW&RÖVç2F†R&VÖ÷FRF6²v2æ÷B66WFVBæB—26fRFð¢26öçF–çVRÆö6ÆÇ’âöÆÂF–ÖV÷WB—2FVÆ–&W&FVÇ’æ÷BF÷væw&FVC¢F†P¢2&VÖ÷FRF6²Ö’7F–ÆÂ&RW†V7WF–æræBÆö6Â&WG'’6÷VÆBGWÆ–6FRà¢2VffV7Bà¢–bæ÷B€¢öÆö6ÅöfÆÆ&6µöVæ&ÆVB‚¢æB&VÖ÷FU÷&V6÷&BævWB‚'&V6öåö6öFR"’ÓÒ'&VÖ÷FUöVçVWVUöf–ÆVB ¢æB&VÖ÷FU÷&V6÷&BævWB‚'&VÖ÷FUöW'&÷%ö6Æ72"’–â²%VWVUVæf–Æ&ÆR"Â$õ4W'&÷"'Ð¢“ ¢&WGW&â&VÖ÷FU÷&V6÷&@¢6öÖÖöå²&F—7G&–'WFVEöfÆÆ&6²%ÒÒ°¢'66†VÖ#¢'6–×Æ–6–òæÆö÷æF—7G&–'WFVBÖfÆÆ&6²÷c"À¢'&WVW7FVB#¢'&VÖ÷FR"À¢'6VÆV7FVB#¢&Æö6Â"À¢'&V6öåö6öFR#¢'&VÖ÷FU÷Væf–Æ&ÆR"À¢&W'&÷"#¢7G"‡&VÖ÷FU÷&V6÷&BævWB‚&W'&÷""’÷"'&VÖ÷FRVçVWVRVæf–Æ&ÆR"•³£S%ÒÀ¢Ð¢VWVRÒæöæP¢ÆV6RÒæöæP¢wV&FVBÒöwV&FVEöF—7F6…öVæ&ÆVB‚¢GFV×Eö6ö÷&F–æF÷#¢÷F–öæÅ´GFV×D6ö÷&F–æF÷%ÒÒæöæP¢GFV×Eöö&£¢ç’ÒæöæP¢–bVWVR—2æ÷BæöæS ¢–FVçF—G’Ò—FVÒævWB‚&vVçEö–FVçF—G’"¢G'“ ¢–bwV&FVBæB–FVçF—G“ ¢23#ƒ‚ò3ƒ3¢&VÂF—7F6‚GFV×G2vWB†V'F&VBÖwV&FVBÂfVæ6VBGFV×@¢2ö&¦V7B–ç7FVBöb&&RÆV6RÒÒF†R6ÖRÆV6RöfVæ6–ær6öçG&7BÂÇW2F†P¢2&–Æ—G’Fò'VâF†R×WFF–ær7V'&ö6W72F‡&÷Vv‚'VåöwV&FVF&VÆ÷rà¢GFV×Eö6ö÷&F–æF÷"ÒGFV×D6ö÷&F–æF÷"‡VWVRÂ'Våö–CÖ6öÖÖöå²''Våö–B%Ò¢6öçFW‡E÷6²Ò—FVÒævWB‚&6öçFW‡E÷6²"’–b—6–ç7Fæ6R†—FVÒævWB‚&6öçFW‡E÷6²"’ÂÖ–ær’VÇ6R·Ð¢GFV×Eöö&¢ÒGFV×Eö6ö÷&F–æF÷"æ6Æ–Ò€¢v÷&µö—FVÕö–CÖ6öÖÖöå²'F6µö–B%ÒÀ¢–FVçF—G“Ö–FVçF—G’À¢vöÃ×7G"†6öçFW‡E÷6²ævWB‚&vöÂ"’÷"6öÖÖöå²'F6µö–B%Ò’À¢73×GWÆR†6öçFW‡E÷6²ævWB‚&72"’÷"‚’’À¢FWVæG5ööã×GWÆR†6öçFW‡E÷6²ævWB‚&FWVæG5ööâ"’÷"‚’’À¢6÷W&6U÷&Vg3×GWÆR†6öçFW‡E÷6²ævWB‚'6÷W&6U÷&Vg2"’÷"‚’’À¢ÆÆ÷vVE÷F‡3×GWÆR†6öçFW‡E÷6²ævWB‚&ÆÆ÷vVE÷F‡2"’÷"‚’’À¢—77VU÷&Vc×7G"†6öçFW‡E÷6²ævWB‚&—77VU÷&Vb"’÷"""’À¢—77VU÷W&Ã×7G"†6öçFW‡E÷6²ævWB‚&—77VU÷W&Â"’÷"""’À¢GFÃÖfÆöB†÷2æVçf—&öâævWB‚%4”ÕÄ”4”õõ$TÔõDUõTUTUõEDÂ"Â#3c"’’À¢¢ÆV6RÒGFV×Eöö&¢æÆV6P¢VÇ6S ¢ÆV6RÒVWVRæ6Æ–Ò€¢6öÖÖöå²'F6µö–B%ÒÂ6öÖÖöå²'v÷&¶W%ö–B%ÒÀ¢–FV×÷FVæ7•ö¶W“Öb'¶6öÖÖöå²w'Våö–Bu×Ó§¶6öÖÖöå²wF6µö–Bu×Ó§¶6öÖÖöå²wv÷&¶W%ö–Bu×Ò"À¢GFÃÖfÆöB†÷2æVçf—&öâævWB‚%4”ÕÄ”4”õõ$TÔõDUõTUTUõEDÂ"Â#3c"’’À¢–FVçF—G“Ö–FVçF—G’À¢6&–Æ—F–W3Ò†–FVçF—G’÷"·Ò’ævWB‚&6&–Æ—F–W2"Â‚’’À¢¢6öÖÖöå²&ÆV6R%ÒÒ°¢&ÆV6Uö–B#¢ÆV6RæÆV6Uö–BÀ¢&fVæ6–æu÷Fö¶Vâ#¢ÆV6RæfVæ6–æu÷Fö¶VâÀ¢&W‡—&W5öB#¢ÆV6RæW‡—&W5öBÀ¢Ð¢6öÖÖöå²&wV&FVEöF—7F6‚%ÒÒGFV×Eöö&¢—2æ÷BæöæP¢W†6WBVWVT6öæfÆ–7B2W†3 ¢&WGW&â²¢¦6öÖÖöâÂ'7FGW2#¢&f–ÆVB"Â'†6R#¢&&Æö6¶VB"Â&W†V7WF–öå÷7FFR#¢'W6VB"À¢'&V6öåö6öFR#¢&6Æ–Õö6öæfÆ–7B"Â&W'&÷"#¢7G"†W†2’Â&FVEöÆWGFW"#¢G'VRÀ¢'7F'FVEöB#¢7F'FVBÂ&f–æ—6†VEöB#¢öæ÷r‚—Ð¢W†6WB…VWVUVæf–Æ&ÆRÂõ4W'&÷"’2W†3 ¢2F†R&VÖ÷FRVWVR—2â÷F–öæÂ66VÆW&F÷"â–b—B—2vVçV–æVÇ¢2Væf–Æ&ÆRÂ&VÆV6RF†RVæ6Æ–ÖVB—FVÒ–çFòF†R—6öÆFVBÆö6À¢2ÆæR–ç7FVBöbFVBÖÆWGFW&–ærF†Rv†öÆR&F6‚â¶VW6öæfÆ–7G0¢2æBÖÆf÷&ÖVB÷G'W7BÖ–çfÆ–B6öæf–wW&F–öâf–ÂÖ6Æ÷6VB&VÆ÷rà¢–böÆö6ÅöfÆÆ&6µöVæ&ÆVB‚’æB—6–ç7Fæ6R‡VWVRÂ…EE&VÖ÷FUVWVR“ ¢6öÖÖöå²&F—7G&–'WFVEöfÆÆ&6²%ÒÒ°¢'66†VÖ#¢'6–×Æ–6–òæÆö÷æF—7G&–'WFVBÖfÆÆ&6²÷c"À¢'&WVW7FVB#¢'&VÖ÷FR"À¢'6VÆV7FVB#¢&Æö6Â"À¢'&V6öåö6öFR#¢'&VÖ÷FU÷Væf–Æ&ÆR"À¢&W'&÷"#¢7G"†W†2•³£S%ÒÀ¢Ð¢VWVRÒæöæP¢VÇ6S ¢&WGW&â²¢¦6öÖÖöâÂ'7FGW2#¢&f–ÆVB"Â'†6R#¢&&Æö6¶VB"Â&W†V7WF–öå÷7FFR#¢'W6VB"À¢'&V6öåö6öFR#¢&æWGv÷&µ÷W6VB"Â&W'&÷"#¢7G"†W†2’Â&FVEöÆWGFW"#¢G'VRÀ¢'7F'FVEöB#¢7F'FVBÂ&f–æ—6†VEöB#¢öæ÷r‚—Ð¢W†6WBfÇVTW'&÷"2W†3 ¢&WGW&â²¢¦6öÖÖöâÂ'7FGW2#¢&f–ÆVB"Â'†6R#¢&&Æö6¶VB"Â&W†V7WF–öå÷7FFR#¢'W6VB"À¢'&V6öåö6öFR#¢&æWGv÷&µ÷W6VB"Â&W'&÷"#¢7G"†W†2’Â&FVEöÆWGFW"#¢G'VRÀ¢'7F'FVEöB#¢7F'FVBÂ&f–æ—6†VEöB#¢öæ÷r‚—Ð¢–bÆV6R—2æ÷BæöæS ¢2öæÇ’7FÆÂF6²F†B—2vVçV–æVÇ’6Æ–ÖVBöÆV6VBÒÒF†—2—2v†BÆWG2F†P¢27&÷72×&ö6W72&V6÷fW'’FW7B¶–ÆÂF†R÷&6†W7G&F÷"Ö–BÖGFV×Bv—F‚&VÂÀ¢2–âÖfÆ–v‡B†æ÷BÖW&VÇ’VWVVB’ÆV6R&æFöæVB&V†–æB—Bà¢÷FW7EööæÇ•÷7FÆÅö&Vf÷&UöF—7F6‚‡7G"†6öÖÖöâævWB‚'F6µö–B"’÷"""’¢–b—FVÒævWB‚'v÷&·G&VUöW'&÷""“ ¢&WGW&â°¢¢¦6öÖÖöâÀ¢'7FGW2#¢&f–ÆVB"À¢'†6R#¢&&Æö6¶VB"À¢&W†V7WF–öå÷7FFR#¢&W'&÷""À¢'&V6öåö6öFR#¢'v÷&·G&VUö6öçFW‡E÷VçW'6—7FVB"À¢'&V6V—B#¢""À¢&GFV×B#¢À¢&W'&÷"#¢7G"†—FVÕ²'v÷&·G&VUöW'&÷"%Ò’À¢&f–ÇW&Uöf–ævW'&–çB#¢†6†Æ–"ç6†#Sb€¢7G"†—FVÕ²'v÷&·G&VUöW'&÷"%Ò’æVæ6öFR‚'WFbÓ‚"Â'&WÆ6R"¢’æ†W†F–vW7B‚•³£eÒÀ¢'7F'FVEöB#¢7F'FVBÀ¢&f–æ—6†VEöB#¢öæ÷r‚’À¢Ð¢G'“ ¢–ÆöBÒW†V7WFUö÷W&F÷"€¢—FVÕ²'&Wò%ÒÂ—FVÕ²''Våö–B%ÒÂF6µö–æFWƒÖ—FVÕ²'F6µö–æFW‚%ÒÀ¢GFV×Eö6ö÷&F–æF÷#ÖGFV×Eö6ö÷&F–æF÷"ÂwV&FVEöGFV×CÖGFV×Eöö&¢À¢WF†÷&—G•÷&V6V—CÖ—FVÒævWB‚&WF†÷&—G•÷&V6V—B"’À¢FÖ—76–öåöfVæ6SÖ–çB†—FVÒævWB‚&FÖ—76–öåöfVæ6R"’÷"’À¢¢7FFRÒ–ÆöBævWB‚'7FFR"’÷"·Ð¢÷W&F÷"Ò7FFRævWB‚&÷W&F÷""’÷"·Ð¢W†V7WF–öå÷7FFRÒ7G"†÷W&F÷"ævWB‚&W†V7WF–öå÷7FFR"’÷"""¢7V66W72ÒW†V7WF–öå÷7FFRÓÒ&Æ–VB ¢&V6V—BÒ7G"†÷W&F÷"ævWB‚'&V6V—B"’÷"""¢Wf–FVæ6RÒ7FFRævWB‚&Wf–FVæ6R"’÷"·Ð¢Wf–FVæ6U÷&V6V—BÒ7G"†Wf–FVæ6RævWB‚'&V6V—B"’÷"""¢'VåöF—"Ò7G"‡–ÆöBævWB‚''VåöF—""’÷"""¢vF6†W%÷&V6V—BÒ7G"…F‚‡'VåöF—"’ò&Æö÷"ò'vF6†W%÷7FFRæ§6öâ"’–b'VåöF—"VÇ6R" ¢f–ÇW&Uöf–ævW'&–çBÒ" ¢–b&V6V—C ¢G'“ ¢f–ÇW&Uöf–ævW'&–çBÒ7G"…öÆöEö§6öâ…F‚‡&V6V—B’’ævWB‚&f–ÇW&Uöf–ævW'&–çB"’÷"""¢W†6WB„õ4W'&÷"ÂfÇVTW'&÷"ÂG—TW'&÷"“ ¢2F†Rv÷&¶W"&W7VÇB&VÖ–ç2W6VgVÂWfVâv†Vâ7&6†VB÷W&F÷"F–Bæ÷BÆVfP¢2&VF&ÆR&V6V—C²F†R66†VGVÆW"v–ÆÂW6RF†R&÷VæFVBW†6WF–öâF‚à¢f–ÇW&Uöf–ævW'&–çBÒ" ¢–bÆV6R—2æ÷BæöæRæB7V66W73 ¢&V6V—E÷&Ve÷fÇVRÒ&V6V—B÷"b'·'VåöF—'Òö÷W&F÷"×&V6V—Bæ§6öâ ¢–bGFV×Eö6ö÷&F–æF÷"—2æ÷BæöæRæBGFV×Eöö&¢—2æ÷BæöæS ¢GFV×Eö6ö÷&F–æF÷"æ6ö×ÆWFR†GFV×Eöö&¢Â&V6V—E÷&Vc×&V6V—E÷&Ve÷fÇVR¢VÇ6S ¢23#ƒb7FW“¢&W6VçBv—&R&V6V—BF†RVWVR6W'fW"—G6VÆb–æFWVæFVçFÇ¢2fW&–f–W2‡66†VÖö†6‚÷F6²ÖvVçBÖfVæ6R&–æF–ær’Âæ÷B§W7Bâ÷VP¢2&V6V—E÷&VfF‚—B†2æòv’Fò÷Vâ÷"G'W7Bà¢VWVRæ6ö×ÆWFR†ÆV6RÂ&V6V—E÷&Vc×&V6V—E÷&Ve÷fÇVRÂ&V6V—CÖ'V–ÆEö6ö×ÆWF–öå÷&V6V—B€¢F6µö–CÖÆV6RçF6µö–BÂvVçEö–CÖÆV6RævVçEö–BÂfVæ6–æu÷Fö¶VãÖÆV6RæfVæ6–æu÷Fö¶VâÀ¢&V6V—E÷&Vc×&V6V—E÷&Ve÷fÇVRÀ¢’¢–b—FVÒævWB‚&vVçEö–FVçF—G’"’æB&V6V—C ¢2¶VWF†Rv÷&¶W"&W7VÇB—G6VÆb–Ö×WF&ÆRæB–æFWVæFVçFÇ’GG&–'WF&ÆRà¢6öÖÖöå²'&V6V—Eö&–æF–ær%ÒÒ&–æE÷&V6V—B€¢²'&V6V—E÷&Vb#¢&V6V—GÒÂ—FVÕ²&vVçEö–FVçF—G’%ÒÀ¢6öçFW‡E÷6³Ö—FVÒævWB‚&6öçFW‡E÷6²"’À¢¢&V6V—E÷fW&F–7BÒ÷fW&–g•÷v÷&¶W%÷&V6V—E÷—"‡&V6V—BÂWf–FVæ6U÷&V6V—B¢ÖW&vS¢÷F–öæÅ´F–7E·7G"Âç•ÕÒÒæöæP¢–b7V66W72æB&V6V—E÷fW&F–7E²'7FGW2%ÒÓÒ&V6V—E7FGW2ådU$”d”TBæBöWFõöÖW&vUöVæ&ÆVB‚“ ¢23#ƒƒ¢öæ6RF†R&V6V—B—"—2vVçV–æVÇ’dU$”d”TBÂ7&VFR÷öÆÂöÖW&vRF†R&VÀ¢2"æB&V6öæ6–ÆRv–ç7BF†R&VÖ÷FR&Vf÷&RF†—2F—7F6‚GFV×B—2&W÷'FV@¢22FöæRÒÒ&WÆ6W2F†RBÖ†ö2Â†æB×'Vâ&v‚"7&VFRòv‚"ÖW&vR"GFW&à¢2F†—2&ö¦V7Bw2÷vâFVÆ—fW'’&ö6W72&Wf–÷W6Ç’ÆVgB2&÷6RöæÇ’à¢ÖW&vRÒöF—7F6…öÖW&vU÷"†—FVÒÂ&V6V—C×&V6V—BÂ'Våö–CÖ6öÖÖöå²''Våö–B%Ò¢fW&–f–VEöFVÆ—fW'“¢÷F–öæÅ´F–7E·7G"Âç•ÕÒÒæöæP¢–b7V66W72æB÷fW&–f–VEöFVÆ—fW'•övFUöVæ&ÆVB‚“ ¢23#ƒƒ¢&÷WFRF†R6ö×ÆWF–öâFV6—6–öâF‡&÷Vv‚F†R&VÂÆö÷'VçF–ÖTFFW"Óà¢2fW&–f–VDvVçDFVÆ—fW'’ÓâW†V7WF–öä&ö&B6†–â–ç7FVBöbG'W7F–æp¢2W†V7WF–öå÷7FFRÓÒ&Æ–VB"ÆöæRÒÒ6VR÷fW&–f–VEöFVÆ—fW'•övFUöVæ&ÆVFà¢–FVçF—G’ÒF–7B†—FVÒævWB‚&vVçEö–FVçF—G’"’÷"·Ò¢fW&–f–VEöFVÆ—fW'’Ò÷'Vå÷fW&–f–VEöFVÆ—fW'•övFR€¢'Våö–CÖ6öÖÖöå²''Våö–B%ÒÂF6µö–CÖ6öÖÖöå²'F6µö–B%ÒÀ¢7F÷#×7G"†–FVçF—G’ævWB‚&7F÷""’÷"–FVçF—G’ævWB‚&vVçEö–B"’÷"&Æö÷"’À¢GFV×Eö–CÒ"W2ÖGFV×BÒVB"R†6öÖÖöå²'v÷&¶W%ö–B%ÒÂ–çB‡7FFRævWB‚&GFV×G2"’÷"’÷"’À¢&V6V—E÷fW&F–7C×&V6V—E÷fW&F–7BÂWf–FVæ6U÷&V6V—CÖWf–FVæ6U÷&V6V—BÀ¢vF6†W%÷&V6V—C×vF6†W%÷&V6V—BÂÖW&vSÖÖW&vRÂv÷&·G&VUö6öçFW‡CÖ6öçFW‡BÀ¢¢–bæ÷BfW&–f–VEöFVÆ—fW'’ævWB‚'fW&–f–VB"“ ¢7V66W72ÒfÇ6P¢&WGW&â°¢¢¦6öÖÖöâÀ¢'7FGW2#¢'7V66VVFVB"–b7V66W72VÇ6R&f–ÆVB"À¢'†6R#¢7G"‡7FFRævWB‚'†6R"’÷"&&Æö6¶VB"’À¢&W†V7WF–öå÷7FFR#¢W†V7WF–öå÷7FFR÷"'Væ¶æ÷vâ"À¢'&V6V—B#¢&V6V—BÀ¢&÷W&F÷%÷&V6V—B#¢&V6V—BÀ¢&Wf–FVæ6U÷&V6V—B#¢Wf–FVæ6U÷&V6V—BÀ¢'vF6†W%÷&V6V—B#¢vF6†W%÷&V6V—B–bF‚‡vF6†W%÷&V6V—B’æW†—7G2‚’VÇ6R""À¢'&V6V—E÷7FGW2#¢&V6V—E÷fW&F–7E²'7FGW2%ÒÀ¢'&V6V—E÷fW&F–7E÷&V6öâ#¢&V6V—E÷fW&F–7E²'&V6öâ%ÒÀ¢&GFV×B#¢–çB‡7FFRævWB‚&GFV×G2"’÷"’À¢&f–ÇW&Uöf–ævW'&–çB#¢f–ÇW&Uöf–ævW'&–çBÀ¢&ÖW&vR#¢ÖW&vRÀ¢'fW&–f–VEöFVÆ—fW'’#¢fW&–f–VEöFVÆ—fW'’À¢'7F'FVEöB#¢7F'FVBÀ¢&f–æ—6†VEöB#¢öæ÷r‚’À¢Ð¢W†6WBÆV6TÆ÷7DGW&–ætW†V7WF–öâ2W†3 ¢23ƒ2ò3#ƒƒ¢F†RwV&FVB7V'&ö6W72v2¶–ÆÆVBF†R–ç7FçBF†RÆV6Rv2æòÆöævW ¢27W'&VçBÒÒ&W÷'BF†—2F—7F–æ7FÇ’g&öÒvVæW&–2÷W&F÷"W†6WF–öâ6ò66†VGVÆW ¢26âFVÆÂ&Æ÷7BF†RfVæ6RÖ–BÖ×WFF–öâ"'Bg&öÒâ÷&F–æ'’FööÂ7&6‚à¢&WGW&â°¢¢¦6öÖÖöâÀ¢'7FGW2#¢&f–ÆVB"À¢'†6R#¢&&Æö6¶VB"À¢&W†V7WF–öå÷7FFR#¢&W'&÷""À¢'&V6V—B#¢""À¢&÷W&F÷%÷&V6V—B#¢""À¢&Wf–FVæ6U÷&V6V—B#¢""À¢'&V6V—E÷7FGW2#¢%TådU$”d”TB"À¢&GFV×B#¢À¢&W'&÷"#¢7G"†W†2’À¢'&V6öåö6öFR#¢&ÆV6UöÆ÷7EöGW&–æuöW†V7WF–öâ"À¢&FVEöÆWGFW"#¢G'VRÀ¢&f–ÇW&Uöf–ævW'&–çB#¢†6†Æ–"ç6†#Sb‡7G"†W†2’æVæ6öFR‚'WFbÓ‚"Â'&WÆ6R"’’æ†W†F–vW7B‚•³£eÒÀ¢'7F'FVEöB#¢7F'FVBÀ¢&f–æ—6†VEöB#¢öæ÷r‚’À¢Ð¢W†6WBW†6WF–öâ2W†3¢2v÷&¶W"f–ÇW&W2&R&V6V—G2Âæ÷B66†VGVÆW"7&6†W0¢&WGW&â°¢¢¦6öÖÖöâÀ¢'7FGW2#¢&f–ÆVB"À¢'†6R#¢&&Æö6¶VB"À¢&W†V7WF–öå÷7FFR#¢&W'&÷""À¢'&V6V—B#¢""À¢&÷W&F÷%÷&V6V—B#¢""À¢&Wf–FVæ6U÷&V6V—B#¢""À¢'&V6V—E÷7FGW2#¢%TådU$”d”TB"À¢&GFV×B#¢À¢&W'&÷"#¢b'·G—R†W†2’åõöæÖUõ÷Ó¢¶W†7Ò"À¢'&V6öåö6öFR#¢&÷W&F÷%öW†6WF–öâ"À¢&f–ÇW&Uöf–ævW'&–çB#¢†6†Æ–"ç6†#Sb€¢b'·G—R†W†2’åõöæÖUõ÷Ó¢¶W†7Ò"æVæ6öFR‚'WFbÓ‚"Â'&WÆ6R"¢’æ†W†F–vW7B‚•³£eÒÀ¢'7F'FVEöB#¢7F'FVBÀ¢&f–æ—6†VEöB#¢öæ÷r‚’À¢Ð  ¦FVb÷'Våö÷W&F÷%ö—FVÕ÷&ö6W72†—FVÓ¢Ö–æu·7G"Âç•ÒÂ&WG'•ö'VFvWC¢–çB’ÓâÆ—7E´F–7E·7G"Âç•ÕÓ ¢""%'VâöæR6ö×ÆWFR÷W&F÷"ÆæR–â7WW'f—6VB6†–ÆB&ö6W72à ¢F†R–çWB—2Æ–âF—7F6‚—FVÒæBF†R&WGW&æVB&V6÷&G2&R6ö×7B¥4ôâÖÆ–¶P¢fÇVW2Â6òF†R6ö÷&F–æF÷"6âW'6—7BF†RW†—7F–ær¦÷W&æÂæB&V6V—B6öçG&7G2à¢VWVR÷v÷&·G&VR&VÆV6R&VÖ–ç26ö÷&F–æF÷"Ö÷væVBgFW"F†R6†–ÆBW†—G2à¢"" ¢GFV×G3¢Æ—7E´F–7E·7G"Âç•ÕÒÒµÐ¢&Wf–÷W5öf–ævW'&–çBÒ" ¢f÷"GFV×Eöæò–â&ævRƒÂÖ‚ƒÂ–çB‡&WG'•ö'VFvWB’’²"“ ¢&V6÷&BÒö÷W&F÷%öF—7F6…öGFV×B†—FVÒ¢&V6÷&E²&F—7F6…öGFV×B%ÒÒGFV×Eöæð¢–b&Wf–÷W5öf–ævW'&–çBæB&V6÷&BævWB‚&f–ÇW&Uöf–ævW'&–çB"’ÓÒ&Wf–÷W5öf–ævW'&–çC ¢&V6÷&E²'&WG'•÷7G&FVw’%ÒÒ'6ÖUöf–ævW'&–çEö&÷VæFVB ¢VÆ–bGFV×Eöæòâ ¢&V6÷&E²'&WG'•÷7G&FVw’%ÒÒ&ÇFW&æFU÷7G&FVw’ ¢VÇ6S ¢&V6÷&E²'&WG'•÷7G&FVw’%ÒÒ&–æ—F–Â ¢GFV×G2æVæB‡&V6÷&B¢–b&V6÷&BævWB‚'7FGW2"’ÓÒ'7V66VVFVB# ¢'&V°¢&Wf–÷W5öf–ævW'&–çBÒ7G"‡&V6÷&BævWB‚&f–ÇW&Uöf–ævW'&–çB"’÷"""¢f–æÂÒGFV×G5²ÓÐ¢f–æÅ²&FVEöÆWGFW"%ÒÒf–æÂævWB‚'7FGW2"’Ò'7V66VVFVB ¢f–æÅ²&GFV×Eö6÷VçB%ÒÒÆVâ†GFV×G2¢f–æÅ²'&WG'•÷66÷R%ÒÒ'v÷&¶W"×&ö6W72 ¢f–æÅ²&GFV×Eö†—7F÷'’%ÒÒ°¢²&F—7F6…öGFV×B#¢–çB‡&V6÷&BævWB‚&F—7F6…öGFV×B"’÷"–æFW‚’À¢'7FGW2#¢&V6÷&BævWB‚'7FGW2"Â%TådU$”d”TB"’À¢&f–ÇW&Uöf–ævW'&–çB#¢&V6÷&BævWB‚&f–ÇW&Uöf–ævW'&–çB"Â""—Ð¢f÷"–æFW‚Â&V6÷&B–âVçVÖW&FR†GFV×G2Â7F'CÓ¢Ð¢&WGW&âGFV×G0  ¦FVböÖW%ö¦÷W&æÅöVæ&ÆVB‚’Óâ&ööÃ ¢&WGW&â÷2æVçf—&öâævWB‚%4”ÕÄ”4”õõ5Dõ$tUõ$õUDR"Â&ÖW""’ç7G&—‚’æÆ÷vW"‚’ÓÒ&ÖW"   ¦FVböF—7F6…ö¦÷W&æÅö&6¶VæB†¦÷W&æÅ÷Fƒ¢÷F–öæÅµF…Ò’Óâç“ ¢""%6VÆV7BF†R¦÷W&æÃ²F†R6æöæ–6ÂÖW%7F÷&R&÷WFR—2F†RFVfVÇBâ"" ¢–böÖW%ö¦÷W&æÅöVæ&ÆVB‚“ ¢&ö÷BÒF‚æ7vB‚¢&WGW&âÖW%'Vä¦÷W&æÂ…öÖW%ö÷W&F–öç5öFF&6R‡&ö÷B’ÂWFõö7&VFSÔfÇ6R¢–b¦÷W&æÅ÷F‚—2æöæS ¢&—6R'VçF–ÖTW'&÷"‚$¤õU$äÅõD…õ$UT•$TB"¢&WGW&â'Vä¦÷W&æÂ†¦÷W&æÅ÷F‚  ¦FVböVæEöF—7F6…ö¦÷W&æÂ€¢¦÷W&æÅ÷Fƒ¢÷F–öæÅµF…ÒÂ'Våö–C¢7G"Â¶–æC¢7G"À¢–ÆöC¢Ö–æu·7G"Âç•ÒÂ–FV×÷FVæ7•ö¶W“¢7G"À¢’ÓâæöæS ¢""%W'6—7BöæR–FV×÷FVçB&F6‚Æ–fV7–6ÆRWfVçB–âF†RW†—7F–ær'Vä¦÷W&æÂâ"" ¢–b¦÷W&æÅ÷F‚—2æöæS ¢&WGW&à¢¦÷W&æÂÒöF—7F6…ö¦÷W&æÅö&6¶VæB†¦÷W&æÅ÷F‚¢–bæ÷B¦÷W&æÂæWfVçG2‡'Våö–B“ ¢¦÷W&æÂæVæB€¢'Våö–BÂ''Vå÷7F'FVB"Â²'66÷R#¢&÷W&F÷%ö&F6‚'ÒÀ¢–FV×÷FVæ7•ö¶W“Ò''Vã§7F'FVB"À¢¢¦÷W&æÂæVæB€¢'Våö–BÂ¶–æBÂF–7B‡–ÆöB’Â–FV×÷FVæ7•ö¶W“Ö–FV×÷FVæ7•ö¶W’À¢  ¦FVböF—7F6…ö¦÷W&æÅ÷&V6÷fW'’†¦÷W&æÅ÷Fƒ¢÷F–öæÅµF…ÒÂ'Våö–C¢7G"’ÓâÆ—7E¶–çEÓ ¢""%&WGW&âF6²–æFW†W2v—F‚GW&&ÆR7F'B'WBæòFW&Ö–æÂWfVçBâ"" ¢–b¦÷W&æÅ÷F‚—2æöæR÷"€¢æ÷BöÖW%ö¦÷W&æÅöVæ&ÆVB‚’æBæ÷B¦÷W&æÅ÷F‚æW†—7G2‚¢“ ¢&WGW&âµÐ¢WfVçG2ÒöF—7F6…ö¦÷W&æÅö&6¶VæB†¦÷W&æÅ÷F‚’æWfVçG2‡'Våö–B¢7F—fS¢F–7E¶–çBÂ&ööÅÒÒ·Ð¢f÷"WfVçB–âWfVçG3 ¢–ÆöBÒWfVçBævWB‚'–ÆöB"’÷"·Ð¢G'“ ¢F6µö–æFW‚Ò–çB‡–ÆöBævWB‚'F6µö–æFW‚"’¢W†6WB…G—TW'&÷"ÂfÇVTW'&÷"“ ¢6öçF–çVP¢–bWfVçBævWB‚&¶–æB"’ÓÒ&F—7F6…÷7F'FVB# ¢7F—fU·F6µö–æFW…ÒÒG'VP¢VÆ–bWfVçBævWB‚&¶–æB"’ÓÒ&F—7F6…÷FW&Ö–æÂ# ¢7F—fRç÷‡F6µö–æFW‚ÂæöæR¢&WGW&â6÷'FVB†7F—fR  ¦FVbF—7F6…ö÷W&F÷%ö&F6‚€¢—FV×3¢—FW&&ÆU´Ö–æu·7G"Âç•ÕÒÀ¢¢À¢Ö…÷v÷&¶W'3¢÷F–öæÅ¶–çEÒÒæöæRÀ¢&WG'•ö'VFvWC¢–çBÒ2À¢¦÷W&æÅöF—#¢÷F–öæÅ·7G%ÒÒæöæRÀ¢v÷&·G&VU÷VWVS¢ç’ÒæöæRÀ¢7F÷÷&WVW7FVC¢÷F–öæÅ´6ÆÆ&ÆUµµÒÂ&ööÅÕÒÒæöæRÀ¢’ÓâF–7E·7G"Âç•Ó ¢""$6öçF–çV÷W6Ç’F—7F6‚&VÂ÷W&F÷"v÷&¶W'2æB&Vf–ÆÂg&VVB6Æ÷G2à ¢—FV×6—2F†RG—VB'&–FvR&WGvVVâ66†VGVÆW"„DröÆV6W2÷v÷&·G&VW2’æBF†P¢W†—7F–ærÖW"(i"Æâ(i"W†V7WFUö÷W&F÷&&÷VæF'’â—B—2–çFVçF–öæÆÇ’væ÷7F–0¢&÷WB6Æ–Ö–æs¢6ÆÆW'272öæÇ’&VG’ÂFöÖ–6ÆÇ’6Æ–ÖVBæöFW2â—FV×2v—F‚F†R6ÖP¢—6öÆF–öåö¶W–&Rf÷&6VBöçFòöæRÆæR6ò6†&VB'Vâ7FFR6ææ÷B&R6÷''WFVC°¢F—7F–æ7Bv÷&·G&VR÷'Vâ6öçFW‡G2÷fW&Æ–âF†RööÂâ¥4ôäÂ¦÷W&æÂ&V6÷&G2V6‚GFV×@¢&Vf÷&RF†RæW‡B6Æ÷B—2&Vf–ÆÆVBÂ6ò&ö6W72&W7F'B6â6fVÇ’&W7V&Ö—BöæÇ’v÷&²F†@¢†2æò7V66W76gVÂ&V6V—Bà¢"" ¢æ÷&ÖÆ—¦VBÒµö÷W&F÷%öF—7F6…ö—FVÒ†—FVÒ’f÷"—FVÒ–â—FV×5Ð¢¶W—2Ò²†—FVÕ²'&Wò%ÒÂ—FVÕ²''Våö–B%ÒÂ—FVÕ²'F6µö–æFW‚%Ò’f÷"—FVÒ–âæ÷&ÖÆ—¦VGÐ¢–bÆVâ†¶W—2’ÒÆVâ†æ÷&ÖÆ—¦VB“ ¢&—6RfÇVTW'&÷"‚&÷W&F÷"F—7F6‚6öçF–ç2GWÆ–6FR&Wò÷'Vâ÷F6²—FV×2" ¢2—77VR3#ƒ‚7&÷72×&ö6W72&V6÷fW'“¢ÆöBF†R¦÷W&æÂ¦&Vf÷&R¢&VfÆ–v‡B6ò&W7VÖV@¢2&F6‚6âFVÆÂ&Ç&VG’GW&&Ç’7V66VVFVB"—FV×2'Bg&öÒöæW27F–ÆÂæVVF–ærg&W6€¢2G'’×'Vâ&VfÆ–v‡Bâ7V66VVFVB—FVÒw2÷W&F÷"×&V6V—Bæ§6öâ†2Ç&VG’&VVà¢2÷fW'w&—GFVâ'’W†V7WFUö÷W&F÷&v—F‚§÷7BÖW†V7WF–öâ¢&V6V—B†æò'Våö–Ff–VÆBÀ¢2F–ffW&VçB6†RF†âF†R&RÖW†V7WF–öâG'’×'Vâ&V6V—B÷fÆ–FFU÷'Vå÷&V6V—G6 ¢2W‡V7G2’ÒÒ&R×fÆ–FF–ær—B2–b—BvW&R7F–ÆÂVæF–ærG'’×'Vâv÷VÆBÇv—2f–À¢2æBW&ÖæVçFÇ’&Æö6²WfW'’&W7VÖVB&F6‚F†B6öçF–ç2WfVâöæR6ö×ÆWFVB—FVÒà¢¦÷W&æÅ÷Fƒ¢÷F–öæÅµF…ÒÒæöæP¢GW&&ÆUö¦÷W&æÅ÷Fƒ¢÷F–öæÅµF…ÒÒæöæP¢–b¦÷W&æÅöF—# ¢¦÷W&æÅ÷F‚ÒF‚†¦÷W&æÅöF—"’ç&W6öÇfR‚’ò&÷W&F÷"Ö&F6‚æ§6öæÂ ¢¦÷W&æÅ÷F‚ç&VçBæÖ¶F—"‡&VçG3ÕG'VRÂW†—7Eöö³ÕG'VR¢GW&&ÆUö¦÷W&æÅ÷F‚Ò¦÷W&æÅ÷F‚ç&VçBò''VâÖ¦÷W&æÂç7Æ—FR ¢&V6÷fW'•÷VæF–æuö'•÷'Vã¢F–7E·7G"Â6WE¶–çEÕÒÒ·Ð¢–bGW&&ÆUö¦÷W&æÅ÷F‚—2æ÷BæöæS ¢f÷"'Våö–B–â¶—FVÕ²''Våö–B%Òf÷"—FVÒ–âæ÷&ÖÆ—¦VGÓ ¢VæF–æuö–æF–6W2Ò6WB…öF—7F6…ö¦÷W&æÅ÷&V6÷fW'’†GW&&ÆUö¦÷W&æÅ÷F‚Â'Våö–B’¢–bVæF–æuö–æF–6W3 ¢&V6÷fW'•÷VæF–æuö'•÷'Vå·'Våö–EÒÒVæF–æuö–æF–6W0¢&–÷#¢F–7EµGWÆU·7G"Â7G"Â–çEÒÂF–7E·7G"Âç•ÕÒÒ·Ð¢–b¦÷W&æÅ÷F‚æB¦÷W&æÅ÷F‚æW†—7G2‚“ ¢f÷"Æ–æR–â¦÷W&æÅ÷F‚ç&VE÷FW‡B†Væ6öF–æsÒ'WFbÓ‚"’ç7Æ—FÆ–æW2‚“ ¢G'“ ¢&V2Ò§6öâæÆöG2†Æ–æR¢¶W’Ò‡7G"‡&V2ævWB‚'&Wò"’’Â7G"‡&V2ævWB‚''Våö–B"’’Â–çB‡&V2ævWB‚'F6µö–æFW‚"’’¢W†6WB…fÇVTW'&÷"ÂG—TW'&÷"Â§6öâä¥4ôäFV6öFTW'&÷"“ ¢6öçF–çVP¢&–÷%¶¶W•ÒÒ&V0 ¢2W'6—7FVB'Vâ—2&—f–ÆVvVBW†V7WF–öâ&÷VæF'’â¶VW7–çF†WF–266†VGVÆW ¢26öçFW‡G27W÷'FVBÂ'WBf–ÂWfW'’'VâÖ&6¶VBF—7F6‚vÆö&ÆÇ’&Vf÷&Rv÷&·G&VP¢2&W&F–öâÂ¦÷W&æÂ7&VF–öâÂ÷"v÷&¶W"7V&Ö—76–öâVæÆW72—G2&V6V—B6†–â—0¢2g&W6‚æB&÷VæBFòF†—2W†7B'VâÒÒW†6WBâ—FVÒÇ&VG’GW&&Ç’¦÷W&æÆVB0¢27V66VVFVBÂv†–6‚—2æWfW"&RÖF—7F6†VBæB6ò×W7BæWfW"&R&R×fÆ–FFVB2–b—@¢27F–ÆÂæVVFVBg&W6‚G'’'Vâà¢f÷"—FVÒ–âæ÷&ÖÆ—¦VC ¢¶W’Ò†—FVÕ²'&Wò%ÒÂ—FVÕ²''Våö–B%ÒÂ—FVÕ²'F6µö–æFW‚%Ò¢–b&–÷"ævWB†¶W’Â·Ò’ævWB‚'7FGW2"’ÓÒ'7V66VVFVB# ¢6öçF–çVP¢&Wõ÷F‚ÒF‚†—FVÕ²'&Wò%Ò’ç&W6öÇfR‚¢'VåöF—"Ò&Wõ÷F‚ò"ç6–×Æ–6–ò"ò&Æö÷×'Vç2"ò—FVÕ²''Våö–B%Ð¢–bæ÷B'VåöF—"æ—5öF—"‚“ ¢6öçF–çVP¢G'“ ¢6öçG&7BÒ÷&WV—&Uö§6öå÷&V6V—B‡'VåöF—"ò'F6²Ö6öçG&7Bæ§6öâ"Â'F6²6öçG&7B"¢÷fÆ–FFU÷'Vå÷&V6V—G2€¢&Wõ÷F‚À¢'VåöF—"À¢6öçG&7BÀ¢7FFSÕöÆöEö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"’–b‡'VåöF—"ò'7FFRæ§6öâ"’æ—5öf–ÆR‚’VÇ6RæöæRÀ¢Öæ–fW7CÕöÆöEö§6öâ‡'VåöF—"ò&Öæ–fW7Bæ§6öâ"’–b‡'VåöF—"ò&Öæ–fW7Bæ§6öâ"’æ—5öf–ÆR‚’VÇ6RæöæRÀ¢&WV—&UöG'•÷'VãÕG'VRÀ¢¢W†6WB„õ4W'&÷"ÂG—TW'&÷"ÂfÇVTW'&÷"Â'VçF–ÖTW'&÷"’2W†3 ¢7FFU÷F‚Ò'VåöF—"ò'7FFRæ§6öâ ¢–b7FFU÷F‚æ—5öf–ÆR‚“ ¢÷W'6—7Eö&F6…÷&VfÆ–v‡Eö&Æö6²€¢'VåöF—"À¢öÆöEö§6öâ‡7FFU÷F‚’À¢&Wõ÷F‚À¢7G"†W†2’À¢F6µö–æF–6W3Õ¶—FVÕ²'F6µö–æFW‚%ÕÒÀ¢¢&—6P¢÷&W&U÷v÷&·G&VUö6öçFW‡G2†æ÷&ÖÆ—¦VBÂv÷&·G&VU÷VWVR¢&WVW7FVE÷v÷&¶W'2ÒÖ…÷v÷&¶W'0¢VffV7F—fU÷v÷&¶W'2Òö÷W&F÷%÷v÷&¶W%öÆ–Ö—B†Ö…÷v÷&¶W'2ÂÆVâ†æ÷&ÖÆ—¦VB’¢—6öÆF–öåö¶W—2Ò¶—FVÕ²&—6öÆF–öåö¶W’%Òf÷"—FVÒ–âæ÷&ÖÆ—¦VGÐ¢6W&–ÅöfÆÆ&6µ÷&V6öâÒ" ¢–bVffV7F—fU÷v÷&¶W'2âæBÆVâ†—6öÆF–öåö¶W—2’ÂÆVâ†æ÷&ÖÆ—¦VB“ ¢VffV7F—fU÷v÷&¶W'2Ò¢6W&–ÅöfÆÆ&6µ÷&V6öâÒ'6†&VE÷'Vå÷7FFR ¢&WG'•ö'VFvWBÒÖ‚ƒÂ–çB‡&WG'•ö'VFvWB’ ¢&—6Õ÷66†VGVÆW"Â&—6Õö–BÂ66—G•÷6×ÆRÒö'V–ÆEöæF—fU÷&—6Õ÷66†VGVÆW"€¢æ÷&ÖÆ—¦VBÂVffV7F—fU÷v÷&¶W'2À¢¢VffV7F—fU÷v÷&¶W'2ÒÖ‚ƒÂÖ–â†VffV7F—fU÷v÷&¶W'2Â–çB†66—G•÷6×ÆU²'6fU÷v÷&¶W'2%Ò’’¢VæF–ærÒFWVR€¢—FVÒf÷"—FVÒ–âæ÷&ÖÆ—¦V@¢–b&–÷"ævWB‚†—FVÕ²'&Wò%ÒÂ—FVÕ²''Våö–B%ÒÂ—FVÕ²'F6µö–æFW‚%Ò’Â·Ò’ævWB‚'7FGW2"’Ò'7V66VVFVB ¢æB—FVÕ²'F6µö–æFW‚%Òæ÷B–â&V6÷fW'•÷VæF–æuö'•÷'VâævWB†—FVÕ²''Våö–B%ÒÂ6WB‚’¢¢6¶—VBÒÆVâ†æ÷&ÖÆ—¦VB’ÒÆVâ‡VæF–ær¢VæF–æu÷F6µö–G2Ò·7G"†—FVÒævWB‚'F6µö–B"’÷"""’f÷"—FVÒ–âVæF–æwÐ¢&—6ÕöFÖ—GFVC¢FWVU·7G%ÒÒFWVR‚¢2&W7VÖVB&F6‚6â†fR6ö×ÆWFVB—FVÒBF†R†VBöb&—6Òw2&VG’VWVRà¢2&WF—&RF†÷6RGW&&ÆR7V66W76W2&Vf÷&RFÖ—GF–ærg&W6‚v÷&³²÷F†W'v—6RgVÆÀ¢266—G’6×ÆRÆVfW2F†RVæF–ær—FVÒW&ÖæVçFÇ’–çf—6–&ÆR&V†–æBF†R6¶—à¢v†–ÆRG'VS ¢FÖ—GFVBÒ&—6Õ÷66†VGVÆW"ææW‡Eö&F6‚‚¢–bæ÷BFÖ—GFVC ¢'&V°¢f÷"F6²–âFÖ—GFVC ¢–bF6²çF6µö–B–âVæF–æu÷F6µö–G3 ¢&—6ÕöFÖ—GFVBæVæB‡F6²çF6µö–B¢6öçF–çVP¢G'“ ¢&V6÷fW'’Òç’€¢—FVÒævWB‚'F6µö–B"’ÓÒF6²çF6µö–@¢æB–çB†—FVÒævWB‚'F6µö–æFW‚"ÂÓ’¢–â&V6÷fW'•÷VæF–æuö'•÷'VâævWB‡7G"†—FVÒævWB‚''Våö–B"’÷"""’Â6WB‚’¢f÷"—FVÒ–âæ÷&ÖÆ—¦V@¢¢&—6Õ÷66†VGVÆW"æ6ö×ÆWFR€¢F6²çF6µö–BÂ&&Æö6¶VB"–b&V6÷fW'’VÇ6R&66WFVB"À¢÷væW%övVçC×F6²æ÷væW'6†—æ÷væW%övVçBÀ¢fVæ6S×F6²æ÷væW'6†—æfVæ6RÀ¢¢W†6WBW†6WF–öã ¢2F†R66†VGVÆW"&VÖ–ç2WF†÷&—FF—fS²ÆFW"æ÷&ÖÂFÖ—76–öâ÷ ¢2FW&Ö–æÂF‚v–ÆÂ7W&f6Rç’VæW‡V7FVB7FFRÖ—6ÖF6‚à¢6öçF–çVP¢f÷"—FVÒ–âVæF–æs ¢öVæEöF—7F6…ö¦÷W&æÂ€¢GW&&ÆUö¦÷W&æÅ÷F‚Â—FVÕ²''Våö–B%ÒÂ&F—7F6…÷VWVVB"À¢°¢'F6µö–B#¢—FVÕ²'F6µö–B%ÒÂ'F6µö–æFW‚#¢—FVÕ²'F6µö–æFW‚%ÒÀ¢'v÷&¶W%ö–B#¢—FVÕ²'v÷&¶W%ö–B%ÒÂ&—6öÆF–öåö¶W’#¢—FVÕ²&—6öÆF–öåö¶W’%ÒÀ¢ÒÀ¢b&F—7F6ƒ§¶—FVÕ²wF6µö–Bu×Ó§VWVVB"À¢¢f÷"'Våö–BÂF6µö–æF–6W2–â&V6÷fW'•÷VæF–æuö'•÷'Vâæ—FV×2‚“ ¢f÷"F6µö–æFW‚–â6÷'FVB‡F6µö–æF–6W2“ ¢öVæEöF—7F6…ö¦÷W&æÂ€¢GW&&ÆUö¦÷W&æÅ÷F‚Â'Våö–BÂ&F—7F6…÷&V6÷fW'•÷VæF–ær"À¢°¢'F6µö–æFW‚#¢F6µö–æFW‚À¢'&V6öåö6öFR#¢'Væ¶æ÷våöVffV7E÷&V6öæ6–Æ–F–öå÷&WV—&VB"À¢ÒÀ¢b&F—7F6ƒ§·'Våö–GÓ§·F6µö–æFW‡Ó§&V6÷fW'’×VæF–ær"À¢¢7F'FVBÒöæ÷r‚¢&V6÷&G3¢F–7EµGWÆU·7G"Â7G"Â–çEÒÂF–7E·7G"Âç•ÕÒÒF–7B‡&–÷"¢f÷"—FVÒ–âæ÷&ÖÆ—¦VC ¢–b—FVÕ²'F6µö–æFW‚%Òæ÷B–â&V6÷fW'•÷VæF–æuö'•÷'VâævWB†—FVÕ²''Våö–B%ÒÂ6WB‚’“ ¢6öçF–çVP¢&V6÷&G5²†—FVÕ²'&Wò%ÒÂ—FVÕ²''Våö–B%ÒÂ—FVÕ²'F6µö–æFW‚%Ò•ÒÒ°¢'66†VÖ#¢'6–×Æ–6–òæ÷W&F÷"×v÷&¶W"÷c"À¢'v÷&¶W%ö–B#¢—FVÕ²'v÷&¶W%ö–B%ÒÂ'&Wò#¢—FVÕ²'&Wò%ÒÀ¢'6÷W&6U÷&Wò#¢—FVÒævWB‚'6÷W&6U÷&Wò"Â—FVÕ²'&Wò%Ò’À¢''Våö–B#¢—FVÕ²''Våö–B%ÒÂ'F6µö–æFW‚#¢—FVÕ²'F6µö–æFW‚%ÒÀ¢'F6µö–B#¢—FVÒævWB‚'F6µö–B"Â""’À¢'v÷&·G&VUö6öçFW‡B#¢—FVÒævWB‚'v÷&·G&VUö6öçFW‡B"Â·Ò’À¢'7FGW2#¢&&Æö6¶VB"Â'†6R#¢'&V6÷fW'’"À¢&W†V7WF–öå÷7FFR#¢'Væ¶æ÷våöVffV7B"À¢'&V6öåö6öFR#¢'Væ¶æ÷våöVffV7E÷&V6öæ6–Æ–F–öå÷&WV—&VB"À¢'&V6÷fW'•÷VæF–ær#¢G'VRÂ&FVEöÆWGFW"#¢fÇ6RÀ¢&GFV×B#¢Â&GFV×Eö6÷VçB#¢À¢'7F'FVEöB#¢öæ÷r‚’Â&f–æ—6†VEöB#¢öæ÷r‚’À¢Ð¢6ö×ÆWFVC¢Æ—7E´F–7E·7G"Âç•ÕÒÒµÐ¢&Vf–ÆÅö6÷VçBÒ ¢–æ—F–ÅöFÖ—76–öç2Ò ¢7F÷÷&V6öâÒ"  ¢FVböG&–å÷&WVW7FVB‚’Óâ&ööÃ ¢æöæÆö6Â7F÷÷&V6öà¢–b7F÷÷&WVW7FVB—2æöæS ¢&WGW&âfÇ6P¢G'“ ¢&WVW7FVBÒ&ööÂ‡7F÷÷&WVW7FVB‚’¢W†6WBW†6WF–öâ2W†3 ¢7F÷÷&V6öâÒb'7F÷ö6ÆÆ&6µöf–ÆVC§·G—R†W†2’åõöæÖUõ÷Ò ¢&WGW&âG'VP¢–b&WVW7FVBæBæ÷B7F÷÷&V6öã ¢7F÷÷&V6öâÒ&÷W&F÷%÷7F÷÷&WVW7FVB ¢&WGW&â&WVW7FV@ ¢FVb÷W'6—7EöGFV×B‡&V6÷&C¢F–7E·7G"Âç•Ò’ÓâæöæS ¢–b¦÷W&æÅ÷Fƒ ¢öVæEö§6öæÂ†¦÷W&æÅ÷F‚Â&V6÷&B¢&V6÷&G5²‡&V6÷&E²'&Wò%ÒÂ&V6÷&E²''Våö–B%ÒÂ&V6÷&E²'F6µö–æFW‚%Ò•ÒÒ&V6÷&@ ¢FVb÷'Våö—FVÒ†—FVÓ¢F–7E·7G"Âç•Ò’ÓâÆ—7E´F–7E·7G"Âç•ÕÓ ¢GFV×G3¢Æ—7E´F–7E·7G"Âç•ÕÒÒµÐ¢&Wf–÷W5öf–ævW'&–çBÒ" ¢öVç7W&UöFVfW'&VE÷v÷&·G&VUö6öçFW‡B†—FVÒÂv÷&·G&VU÷VWVR¢G'“ ¢f÷"GFV×Eöæò–â&ævRƒÂ&WG'•ö'VFvWB²"“ ¢&V6÷&BÒö÷W&F÷%öF—7F6…öGFV×B†—FVÒ¢&V6÷&E²&F—7F6…öGFV×B%ÒÒGFV×Eöæð¢–b&Wf–÷W5öf–ævW'&–çBæB&V6÷&BævWB‚&f–ÇW&Uöf–ævW'&–çB"’ÓÒ&Wf–÷W5öf–ævW'&–çC ¢&V6÷&E²'&WG'•÷7G&FVw’%ÒÒ'6ÖUöf–ævW'&–çEö&÷VæFVB ¢VÆ–bGFV×Eöæòâ ¢&V6÷&E²'&WG'•÷7G&FVw’%ÒÒ&ÇFW&æFU÷7G&FVw’ ¢VÇ6S ¢&V6÷&E²'&WG'•÷7G&FVw’%ÒÒ&–æ—F–Â ¢GFV×G2æVæB‡&V6÷&B¢–b&V6÷&E²'7FGW2%ÒÓÒ'7V66VVFVB# ¢'&V°¢&Wf–÷W5öf–ævW'&–çBÒ7G"‡&V6÷&BævWB‚&f–ÇW&Uöf–ævW'&–çB"’÷"""¢f–æÆÇ“ ¢÷&VÆV6U÷6†&VEö6öçFW‡B†—FVÒÂv÷&·G&VU÷VWVR¢GFV×G5²ÓÕ²&FVEöÆWGFW"%ÒÒGFV×G5²ÓÕ²'7FGW2%ÒÒ'7V66VVFVB ¢2¶VW6ö×7BW"ÖÆæR†—7F÷'’öâF†Rf–æÂ&V6÷&Bv†–ÆRF†R¥4ôäÂ¦÷W&æÀ¢2&WF–ç2F†R6ö×ÆWFR&V6V—G2âF†—2&÷fW2&WG'’&VÆöæw2FòöæRv÷&¶W"æ@¢2F–Bæ÷B&W7F'B6–&Æ–ærÆæW2à¢GFV×G5²ÓÕ²&GFV×Eö6÷VçB%ÒÒÆVâ†GFV×G2¢GFV×G5²ÓÕ²'&WG'•÷66÷R%ÒÒ'v÷&¶W" ¢GFV×G5²ÓÕ²&GFV×Eö†—7F÷'’%ÒÒ°¢°¢&F—7F6…öGFV×B#¢–çB‡&V6÷&BævWB‚&F—7F6…öGFV×B"’÷"–æFW‚’À¢'7FGW2#¢&V6÷&BævWB‚'7FGW2"Â%TådU$”d”TB"’À¢&f–ÇW&Uöf–ævW'&–çB#¢&V6÷&BævWB‚&f–ÇW&Uöf–ævW'&–çB"Â""’À¢Ð¢f÷"–æFW‚Â&V6÷&B–âVçVÖW&FR†GFV×G2Â7F'CÓ¢Ð¢&WGW&âGFV×G0 ¢FVb÷F¶U÷&—6ÕöFÖ—GFVB‚’Óâ÷F–öæÅ´F–7E·7G"Âç•ÕÓ ¢f÷"—FVÒ–âVæF–æs ¢–b—FVÒævWB‚'F6µö–B"’æ÷B–â&—6ÕöFÖ—GFVC ¢6öçF–çVP¢VæF–ærç&VÖ÷fR†—FVÒ¢&—6ÕöFÖ—GFVBç&VÖ÷fR†—FVÒævWB‚'F6µö–B"’¢&WGW&â—FVÐ¢&WGW&âæöæP ¢FVb÷&Vf–ÆÅ÷&—6Ò‚’ÓâæöæS ¢&Vg&W6‚ÒvWFGG"‡&—6Õ÷66†VGVÆW"Â&æF—fUö66—G•÷&Vg&W6‚"ÂæöæR¢–b&Vg&W6‚—2æ÷BæöæS ¢&Vg&W6‚‚¢f÷"F6²–â&—6Õ÷66†VGVÆW"ææW‡Eö&F6‚‚“ ¢–bF6²çF6µö–Bæ÷B–â&—6ÕöFÖ—GFVC ¢&—6ÕöFÖ—GFVBæVæB‡F6²çF6µö–B ¢F—7F6…öÖöFRÒ÷2æVçf—&öâævWB‚%4”ÕÄ”4”õôÄôõôD•5D4…ôÔôDR"Â'&ö6W72"’ç7G&—‚’æÆ÷vW"‚¢–bF—7F6…öÖöFRæ÷B–â²'&ö6W72"Â'F‡&VB'Ó ¢&—6RfÇVTW'&÷"‚%4”ÕÄ”4”õôÄôõôD•5D4…ôÔôDR×W7B&R&ö6W72÷"F‡&VB"¢2VWVR6Æ–VçG2&VÖ–â6ö÷&F–æF÷"Ö÷væVBæB&RæWfW"6VçBFò6†–ÆG&VââF†P¢26†–ÆB&V6V—fW2öæÇ’F†RÇ&VG’×W'6—7FVBÂ¥4ôâ×6fRv÷&·G&VR6öçFW‡C²F†P¢26ö÷&F–æF÷"&VÆV6W2F†RVWVRÆV6RgFW"F†R6†–ÆB&WGW&ç2âF†—2¶VW0¢2&ö6W727WW'f—6–öâ2F†RFVfVÇBWfVâv†Vâ—6öÆFVBv÷&·G&VW2&RVæ&ÆVBà¢W†V7WF÷%÷G—RÒ&ö6W75ööÄW†V7WF÷"–bF—7F6…öÖöFRÓÒ'&ö6W72"VÇ6RF‡&VEööÄW†V7WF÷ ¢W†V7WF÷%ö·v&w2Ò²&Ö…÷v÷&¶W'2#¢VffV7F—fU÷v÷&¶W'7Ð¢–bF—7F6…öÖöFRÓÒ'F‡&VB# ¢W†V7WF÷%ö·v&w5²'F‡&VEöæÖU÷&Vf—‚%ÒÒ'6–×Æ–6–òÖ÷W&F÷" ¢–bVæF–æræBVffV7F—fU÷v÷&¶W'3 ¢v—F‚W†V7WF÷%÷G—R‚¢¦W†V7WF÷%ö·v&w2’2ööÃ ¢7F—fRÒ·Ð¢v†–ÆRVæF–æræBÆVâ†7F—fR’ÂVffV7F—fU÷v÷&¶W'2æBæ÷BöG&–å÷&WVW7FVB‚“ ¢—FVÒÒ÷F¶U÷&—6ÕöFÖ—GFVB‚¢–b—FVÒ—2æöæS ¢'&V°¢–bF—7F6…öÖöFRÓÒ'&ö6W72# ¢öVç7W&UöFVfW'&VE÷v÷&·G&VUö6öçFW‡B†—FVÒÂv÷&·G&VU÷VWVR¢öVæEöF—7F6…ö¦÷W&æÂ€¢GW&&ÆUö¦÷W&æÅ÷F‚Â—FVÕ²''Våö–B%ÒÂ&F—7F6…÷7F'FVB"À¢²'F6µö–B#¢—FVÕ²'F6µö–B%ÒÂ'F6µö–æFW‚#¢—FVÕ²'F6µö–æFW‚%ÒÀ¢'v÷&¶W%ö–B#¢—FVÕ²'v÷&¶W%ö–B%ÒÂ&ÖöFR#¢F—7F6…öÖöFWÒÀ¢b&F—7F6ƒ§¶—FVÕ²wF6µö–Bu×Ó§7F'FVB"À¢¢7F—fU·ööÂç7V&Ö—B…÷'Våö÷W&F÷%ö—FVÕ÷&ö6W72Â—FVÒÂ&WG'•ö'VFvWB•ÒÒ—FVÐ¢–æ—F–ÅöFÖ—76–öç2³Ò¢VÇ6S ¢öVæEöF—7F6…ö¦÷W&æÂ€¢GW&&ÆUö¦÷W&æÅ÷F‚Â—FVÕ²''Våö–B%ÒÂ&F—7F6…÷7F'FVB"À¢²'F6µö–B#¢—FVÕ²'F6µö–B%ÒÂ'F6µö–æFW‚#¢—FVÕ²'F6µö–æFW‚%ÒÀ¢'v÷&¶W%ö–B#¢—FVÕ²'v÷&¶W%ö–B%ÒÂ&ÖöFR#¢F—7F6…öÖöFWÒÀ¢b&F—7F6ƒ§¶—FVÕ²wF6µö–Bu×Ó§7F'FVB"À¢¢7F—fU·ööÂç7V&Ö—B…÷'Våö—FVÒÂ—FVÒ•ÒÒ—FVÐ¢–æ—F–ÅöFÖ—76–öç2³Ò¢v†–ÆR7F—fS ¢FöæRÂòÒv—B‡GWÆR†7F—fR’Â&WGW&å÷v†VãÔd•%5Eô4ôÕÄUDTB¢f÷"gWGW&R–âFöæS ¢—FVÒÒ7F—fRç÷†gWGW&R¢G'“ ¢GFV×G2ÒgWGW&Rç&W7VÇB‚¢W†6WBW†6WF–öâ2W†3¢2FVfVç6—fS¢÷'Våö—FVÒÇ&VG’&V6V—G2W†6WF–öç0¢GFV×G2Ò·°¢'66†VÖ#¢'6–×Æ–6–òæ÷W&F÷"×v÷&¶W"÷c"À¢'v÷&¶W%ö–B#¢—FVÕ²'v÷&¶W%ö–B%ÒÂ'&Wò#¢—FVÕ²'&Wò%ÒÀ¢'6÷W&6U÷&Wò#¢—FVÒævWB‚'6÷W&6U÷&Wò"Â—FVÕ²'&Wò%Ò’À¢''Våö–B#¢—FVÕ²''Våö–B%ÒÂ'F6µö–æFW‚#¢—FVÕ²'F6µö–æFW‚%ÒÀ¢'F6µö–B#¢—FVÒævWB‚'F6µö–B"Â""’À¢'v÷&·G&VUö6öçFW‡B#¢—FVÒævWB‚'v÷&·G&VUö6öçFW‡B"Â·Ò’À¢'7FGW2#¢&f–ÆVB"Â'†6R#¢&&Æö6¶VB"Â&W†V7WF–öå÷7FFR#¢&W'&÷""À¢&W'&÷"#¢b'·G—R†W†2’åõöæÖUõ÷Ó¢¶W†7Ò"Â&FVEöÆWGFW"#¢G'VRÀ¢'7F'FVEöB#¢öæ÷r‚’Â&f–æ—6†VEöB#¢öæ÷r‚’À¢ÕÐ¢–bF—7F6…öÖöFRÓÒ'&ö6W72# ¢÷&VÆV6U÷6†&VEö6öçFW‡B†—FVÒÂv÷&·G&VU÷VWVR¢f÷"&V6÷&B–âGFV×G3 ¢÷W'6—7EöGFV×B‡&V6÷&B¢f–æÂÒGFV×G5²ÓÐ¢6ö×ÆWFVBæVæB†f–æÂ¢öVæEöF—7F6…ö¦÷W&æÂ€¢GW&&ÆUö¦÷W&æÅ÷F‚Â—FVÕ²''Våö–B%ÒÂ&F—7F6…÷FW&Ö–æÂ"À¢²'F6µö–B#¢—FVÕ²'F6µö–B%ÒÂ'F6µö–æFW‚#¢—FVÕ²'F6µö–æFW‚%ÒÀ¢'v÷&¶W%ö–B#¢—FVÕ²'v÷&¶W%ö–B%ÒÂ'7FGW2#¢f–æÂævWB‚'7FGW2"’À¢'&V6V—B#¢f–æÂævWB‚'&V6V—B"Â""—ÒÀ¢b&F—7F6ƒ§¶—FVÕ²wF6µö–Bu×Ó§FW&Ö–æÃ§¶f–æÂævWB‚w7FGW2rÂwVæ¶æ÷vâr—Ò"À¢¢G'“ ¢&—6Õ÷66†VGVÆW"æ6ö×ÆWFR€¢7G"†—FVÒævWB‚'F6µö–B"’÷"""’À¢&66WFVB"–bf–æÂævWB‚'7FGW2"’ÓÒ'7V66VVFVB"VÇ6R&f–ÆVB"À¢÷væW%övVçC×7G"†—FVÒævWB‚'v÷&¶W%ö–B"’÷"'6–×Æ–6–òÖÆö6Â"’À¢fVæ6SÓÀ¢¢÷&Vf–ÆÅ÷&—6Ò‚¢W†6WBW†6WF–öâ2W†3 ¢f–æÂç6WFFVfVÇB‚'&—6ÕöW'&÷""Âb'·G—R†W†2’åõöæÖUõ÷Ó¢¶W†7Ò"¢2&Vf–ÆÂ26ööâ2F†—2v÷&¶W"W†—G3²F†W&R—2æòg&÷¦VâvfR&'&–W"à¢–bVæF–æræBæ÷BöG&–å÷&WVW7FVB‚“ ¢æW‡Eö—FVÒÒ÷F¶U÷&—6ÕöFÖ—GFVB‚¢–bæW‡Eö—FVÒ—2æöæS ¢6öçF–çVP¢–bF—7F6…öÖöFRÓÒ'&ö6W72# ¢öVç7W&UöFVfW'&VE÷v÷&·G&VUö6öçFW‡B†æW‡Eö—FVÒÂv÷&·G&VU÷VWVR¢öVæEöF—7F6…ö¦÷W&æÂ€¢GW&&ÆUö¦÷W&æÅ÷F‚ÂæW‡Eö—FVÕ²''Våö–B%ÒÂ&F—7F6…÷7F'FVB"À¢²'F6µö–B#¢æW‡Eö—FVÕ²'F6µö–B%ÒÂ'F6µö–æFW‚#¢æW‡Eö—FVÕ²'F6µö–æFW‚%ÒÀ¢'v÷&¶W%ö–B#¢æW‡Eö—FVÕ²'v÷&¶W%ö–B%ÒÂ&ÖöFR#¢F—7F6…öÖöFWÒÀ¢b&F—7F6ƒ§¶æW‡Eö—FVÕ²wF6µö–Bu×Ó§7F'FVB"À¢¢7F—fU·ööÂç7V&Ö—B…÷'Våö÷W&F÷%ö—FVÕ÷&ö6W72ÂæW‡Eö—FVÒÂ&WG'•ö'VFvWB•ÒÒæW‡Eö—FVÐ¢VÇ6S ¢öVæEöF—7F6…ö¦÷W&æÂ€¢GW&&ÆUö¦÷W&æÅ÷F‚ÂæW‡Eö—FVÕ²''Våö–B%ÒÂ&F—7F6…÷7F'FVB"À¢²'F6µö–B#¢æW‡Eö—FVÕ²'F6µö–B%ÒÂ'F6µö–æFW‚#¢æW‡Eö—FVÕ²'F6µö–æFW‚%ÒÀ¢'v÷&¶W%ö–B#¢æW‡Eö—FVÕ²'v÷&¶W%ö–B%ÒÂ&ÖöFR#¢F—7F6…öÖöFWÒÀ¢b&F—7F6ƒ§¶æW‡Eö—FVÕ²wF6µö–Bu×Ó§7F'FVB"À¢¢7F—fU·ööÂç7V&Ö—B…÷'Våö—FVÒÂæW‡Eö—FVÒ•ÒÒæW‡Eö—FVÐ¢&Vf–ÆÅö6÷VçB³Ò ¢f–æÅ÷&V6÷&G2ÒµÐ¢f÷"—FVÒ–âæ÷&ÖÆ—¦VC ¢¶W’Ò†—FVÕ²'&Wò%ÒÂ—FVÕ²''Våö–B%ÒÂ—FVÕ²'F6µö–æFW‚%Ò¢f–æÅ÷&V6÷&G2æVæB‡&V6÷&G2ævWB†¶W’Â°¢'66†VÖ#¢'6–×Æ–6–òæ÷W&F÷"×v÷&¶W"÷c"Â'v÷&¶W%ö–B#¢—FVÕ²'v÷&¶W%ö–B%ÒÀ¢'&Wò#¢—FVÕ²'&Wò%ÒÂ''Våö–B#¢—FVÕ²''Våö–B%ÒÂ'F6µö–æFW‚#¢—FVÕ²'F6µö–æFW‚%ÒÀ¢'F6µö–B#¢—FVÒævWB‚'F6µö–B"Â""’À¢'6÷W&6U÷&Wò#¢—FVÒævWB‚'6÷W&6U÷&Wò"Â—FVÕ²'&Wò%Ò’À¢'v÷&·G&VUö6öçFW‡B#¢—FVÒævWB‚'v÷&·G&VUö6öçFW‡B"Â·Ò’À¢'7FGW2#¢'VæF–ær"Â'†6R#¢'VWVVB"Â&W†V7WF–öå÷7FFR#¢'VæF–ær"À¢&G&–å÷7FGW2#¢&†VÆB"–b7F÷÷&V6öâVÇ6R'VWVVB"À¢Ò’¢&W7VÇBÒ°¢'66†VÖ#¢$D4…õ44„TÔÀ¢''Våö–B#¢æ÷&ÖÆ—¦VE³Õ²''Våö–B%Ò–bæ÷&ÖÆ—¦VBæBÆVâ‡¶•²''Våö–B%Òf÷"’–âæ÷&ÖÆ—¦VGÒ’ÓÒVÇ6R""À¢'&WVW7FVE÷F6·2#¢¶—FVÕ²'F6µö–æFW‚%Òf÷"—FVÒ–âæ÷&ÖÆ—¦VEÒÀ¢'6¶—VEö6ö×ÆWFVB#¢6¶—VBÀ¢'&V6÷fW'•ö&Æö6¶VEö6÷VçB#¢7VÒ€¢ÆVâ†–æF–6W2’f÷"–æF–6W2–â&V6÷fW'•÷VæF–æuö'•÷'VâçfÇVW2‚¢’À¢&Ö…÷v÷&¶W'5÷&WVW7FVB#¢&WVW7FVE÷v÷&¶W'2À¢&Ö…÷v÷&¶W'2#¢VffV7F—fU÷v÷&¶W'2À¢&7F—fU÷v÷&¶W'2#¢À¢'v÷&¶W%ö6÷VçB#¢ÆVâ†f–æÅ÷&V6÷&G2’À¢'VWVUöFWF‚#¢À¢'&Vf–ÆÅö6÷VçB#¢&Vf–ÆÅö6÷VçBÀ¢&–æ—F–ÅöFÖ—76–öç2#¢–æ—F–ÅöFÖ—76–öç2À¢'6W&–ÅöfÆÆ&6µ÷&V6öâ#¢6W&–ÅöfÆÆ&6µ÷&V6öâÀ¢&F—7F6…öÖöFR#¢F—7F6…öÖöFRÀ¢&G&–â#¢°¢'7FGW2#¢&G&–æVB"–b7F÷÷&V6öâVÇ6R&æ÷E÷&WVW7FVB"À¢'&V6öåö6öFR#¢7F÷÷&V6öâ÷"&æöæR"À¢'VæF–æu÷F6µö–æF–6W2#¢¶—FVÕ²'F6µö–æFW‚%Òf÷"—FVÒ–âVæF–æuÒÀ¢ÒÀ¢&GW&&ÆUö¦÷W&æÂ#¢7G"†GW&&ÆUö¦÷W&æÅ÷F‚’–bGW&&ÆUö¦÷W&æÅ÷F‚VÇ6R""À¢'&V6÷fW'•÷VæF–æu÷F6µö–æF–6W2#¢6÷'FVB‡°¢F6µö–æFW€¢f÷"'Våö–B–â¶—FVÕ²''Våö–B%Òf÷"—FVÒ–âæ÷&ÖÆ—¦VGÐ¢f÷"F6µö–æFW‚–âöF—7F6…ö¦÷W&æÅ÷&V6÷fW'’†GW&&ÆUö¦÷W&æÅ÷F‚Â'Våö–B¢Ò’À¢&ÆV6W2#¢µÒÀ¢&&Æö6¶W'2#¢°¢°¢'F6µö–æFW‚#¢&V6÷&E²'F6µö–æFW‚%ÒÀ¢'&V6öåö6öFR#¢&V6÷&BævWB€¢'&V6öåö6öFR"À¢&÷W&F÷%öf–ÆVB"À¢’À¢&W'&÷"#¢&V6÷&BævWB‚&W'&÷""Â""’À¢&f–ÇW&Uöf–ævW'&–çB#¢&V6÷&BævWB‚&f–ÇW&Uöf–ævW'&–çB"Â""’À¢Ð¢f÷"&V6÷&B–âf–æÅ÷&V6÷&G0¢–b&V6÷&BævWB‚'7FGW2"’–â²&f–ÆVB"Â&&Æö6¶VB'Ð¢ÒÀ¢&GFV×G2#¢°¢7G"‡&V6÷&E²'F6µö–æFW‚%Ò“¢–çB‡&V6÷&BævWB‚&F—7F6…öGFV×B"’÷"¢f÷"&V6÷&B–âf–æÅ÷&V6÷&G0¢ÒÀ¢'7F'FVEöB#¢7F'FVBÀ¢&f–æ—6†VEöB#¢öæ÷r‚’À¢'v÷&¶W'2#¢f–æÅ÷&V6÷&G2À¢&6ö×ÆWFVE÷F6µö–æF–6W2#¢6÷'FVB‡%²'F6µö–æFW‚%Òf÷""–âf–æÅ÷&V6÷&G2–b"ævWB‚'7FGW2"’ÓÒ'7V66VVFVB"’À¢&f–ÆVE÷F6µö–æF–6W2#¢6÷'FVB‡%²'F6µö–æFW‚%Òf÷""–âf–æÅ÷&V6÷&G2–b"ævWB‚'7FGW2"’ÓÒ&f–ÆVB"’À¢&&Æö6¶VE÷F6µö–æF–6W2#¢6÷'FVB‡%²'F6µö–æFW‚%Òf÷""–âf–æÅ÷&V6÷&G2–b"ævWB‚'7FGW2"’ÓÒ&&Æö6¶VB"’À¢&FVEöÆWGFW%÷F6µö–æF–6W2#¢6÷'FVB‡%²'F6µö–æFW‚%Òf÷""–âf–æÅ÷&V6÷&G2–b"ævWB‚&FVEöÆWGFW""’’À¢'&V6V—Eö6öçG&7B#¢°¢'66÷R#¢'v÷&¶W""À¢'&WV—&VB#¢²&÷W&F÷%÷&V6V—B"Â&Wf–FVæ6U÷&V6V—B%ÒÀ¢'&VG’#¢ÆÂ€¢"ævWB‚'&V6V—E÷7FGW2"’ÓÒ%dU$”d”TB ¢f÷""–âf–æÅ÷&V6÷&G0¢’À¢&Ö—76–æu÷F6µö–æF–6W2#¢6÷'FVB€¢%²'F6µö–æFW‚%Òf÷""–âf–æÅ÷&V6÷&G0¢–b"ævWB‚'&V6V—E÷7FGW2"’Ò%dU$”d”TB ¢’À¢ÒÀ¢'&WG'•ö6öçG&7B#¢°¢'66÷R#¢'v÷&¶W""À¢&–æFWVæFVçB#¢G'VRÀ¢&GFV×G5ö'•÷F6²#¢°¢7G"‡%²'F6µö–æFW‚%Ò“¢–çB‡"ævWB‚&GFV×Eö6÷VçB"’÷"¢f÷""–âf–æÅ÷&V6÷&G0¢ÒÀ¢ÒÀ¢'&—6Ò#¢°¢'66†VÖ#¢äD•dUõ$•4Õõ44„TÔÀ¢&ÖöFR#¢&æF—fRÖÆö6Â"À¢'&—6Õö–B#¢&—6Õö–BÀ¢'66†VGVÆW"#¢'6–×Æ–6–õöÆö÷ç&—6Õ÷66†VGVÆW"å&—6Õ66†VGVÆW""À¢&FÖ—76–öâ#¢&v÷fW&æVB"À¢&Ö…÷v÷&¶W'2#¢VffV7F—fU÷v÷&¶W'2À¢&66—G’#¢66—G•÷6×ÆRÀ¢'6æ6†÷B#¢&—6Õ÷66†VGVÆW"ç6æ6†÷B‚’À¢ÒÀ¢&¦÷W&æÂ#¢7G"†¦÷W&æÅ÷F‚’–b¦÷W&æÅ÷F‚VÇ6R""À¢Ð¢–b¦÷W&æÅ÷Fƒ ¢÷w&—FUö§6öâ†¦÷W&æÅ÷F‚çv—F…÷7Vff—‚‚"æ§6öâ"’Â&W7VÇB¢&WGW&â&W7VÇ@  ¦FVbW†V7WFUö÷W&F÷%ö&F6‚€¢&Wó¢7G"À¢'Våö–C¢7G"À¢F6µö–æF–6W3¢÷F–öæÅµ6WVVæ6U¶–çEÕÒÒæöæRÀ¢¢À¢Ö…÷v÷&¶W'3¢÷F–öæÅ¶–çEÒÒæöæRÀ¢&WG'•ö'VFvWC¢–çBÒ2À¢—6öÆFVEö6öçFW‡G3¢÷F–öæÅ´Ö–æu¶–çBÂÖ–æu·7G"Âç•ÕÕÒÒæöæRÀ¢v÷&·G&VU÷VWVS¢ç’ÒæöæRÀ¢WFõöfåö÷WC¢÷F–öæÅ¶&ööÅÒÒæöæRÀ¢’ÓâF–7E·7G"Âç•Ó ¢""$F—7F6‚ÆÂ†÷"6VÆV7FVB’F6·2g&öÒöæR'VâF‡&÷Vv‚F†R&VÂ÷W&F÷"'&–FvRà ¢–æFWVæFVçBF6·2fâ÷WB–çFò÷væVBv÷&·G&VW2'’FVfVÇBâ6WBWFõöfåö÷WCÔfÇ6V÷ ¢4”ÕÄ”4”õôÄôõôUDõôdåôõUCÓFò÷B÷WBâ–b–×7BÖWFFFÂv—BÂ÷"F†Rv÷&·G&VP¢FFW"—2Væf–Æ&ÆRÂF†R6†&VB×'Vâ6W&–ÂwV&B&VÖ–ç2F†R6fRfÆÆ&6²à¢"" ¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢–b‡7FGW5²'7FFR%ÒævWB‚&Ö–çFVææ6R"’÷"·Ò’ævWB‚&F—7÷6—F–öâ"’ÓÒ&&6¶ÆöuööæÇ’# ¢&—6R'VçF–ÖTW'&÷"‚&Ö–çFVææ6RFVfW'&VC¢÷W&F÷"&F6‚—2&Æö6¶VBVçF–ÂW‡Æ–6—B&W7VÖR"¢'VåöF—"ÒF‚‡7FGW5²''VåöF—"%Ò¢G'“ ¢6öçG&7BÒ÷&WV—&Uö§6öå÷&V6V—B‡'VåöF—"ò'F6²Ö6öçG&7Bæ§6öâ"Â'F6²6öçG&7B"¢&V6V—G2Ò÷fÆ–FFU÷'Vå÷&V6V—G2€¢F‚‡7FGW5²&Öæ–fW7B%ÒævWB‚'&Wò"’÷"&Wò’ç&W6öÇfR‚’À¢'VåöF—"À¢6öçG&7BÀ¢7FFS×7FGW5²'7FFR%ÒÀ¢Öæ–fW7C×7FGW5²&Öæ–fW7B%ÒÀ¢&WV—&UöG'•÷'VãÕG'VRÀ¢¢W†6WB„õ4W'&÷"ÂG—TW'&÷"ÂfÇVTW'&÷"Â'VçF–ÖTW'&÷"’2W†3 ¢÷W'6—7Eö&F6…÷&VfÆ–v‡Eö&Æö6²€¢'VåöF—"À¢7FGW5²'7FFR%ÒÀ¢F‚‡7FGW5²&Öæ–fW7B%ÒævWB‚'&Wò"’÷"&Wò’ç&W6öÇfR‚’À¢7G"†W†2’À¢F6µö–æF–6W3×F6µö–æF–6W2÷"‚’À¢¢&—6P¢ÆâÒ&V6V—G5²'Æâ%Ð¢23#ƒC¢×WFF–öâÖWF†÷&—G’vFRÂÖæFF÷'’'’FVfVÇBÒÒ6ÖR2W†V7WFUö÷W&F÷"‚¢2‡6–ævÆR×F6²F–6²’ÂW‡FVæFVBFòF†R&F6‚&÷VæF'’â&W†V7WFUö÷W&F÷"‚’R&F6€¢2&V7W6ÒW†V7\:|:6ò6VÒ×WFF–öâWF†÷&—G’l:Æ–F"æ÷rÆ–W2Væ6öæF—F–öæÆÇ¢2†÷B÷WBöæÇ’f–âW‡Æ–6—BfÇ7’4”ÕÄ”4”õõ$UT•$UôÕUDD”ôåôUD„õ$•E“²6VP¢2Æææ–æuövFRæ×WFF–öåöWF†÷&—G•÷&WV—&VB‚’’à¢–b×WFF–öåöWF†÷&—G•÷&WV—&VB‚“ ¢&F6…öGFV×BÒ–çB‚‡7FGW5²'7FFR%Ò÷"·Ò’ævWB‚&GFV×G2"Â’’²¢7W'&VçE÷6÷W&6Uö†6‚Ò" ¢7W'&VçE÷6æ6†÷E÷F‚Ò'VåöF—"ò'6÷W&6R×6æ6†÷BÖ7W'&VçBæ§6öâ ¢–b7W'&VçE÷6æ6†÷E÷F‚æW†—7G2‚“ ¢G'“ ¢7W'&VçE÷6÷W&6Uö†6‚Ò7G"‚…öÆöEö§6öâ†7W'&VçE÷6æ6†÷E÷F‚’ævWB‚'6÷W&6R"’÷"·Ò’ævWB‚'6æ6†÷Eö†6‚"’÷"""¢W†6WBW†6WF–öã ¢7W'&VçE÷6÷W&6Uö†6‚Ò" ¢WF†÷&—G•÷fW&F–7BÒWfÇVFUö×WFF–öåöWF†÷&—G’€¢'VåöF—"Â'Våö–C×'Våö–BÂGFV×CÖ&F6…öGFV×BÀ¢F6µö6öçG&7Eö†6ƒ×7G"†6öçG&7BævWB‚&6öÆÆV7F–öåö†6‚"’÷"÷Æææ–æuö6öçFVçEö†6‚†6öçG&7B’’À¢Æåö†6ƒÕ÷Æææ–æuö6öçFVçEö†6‚‡Æâ’À¢6÷W&6U÷6æ6†÷Eö†6ƒÖ7W'&VçE÷6÷W&6Uö†6‚À¢¢–bæ÷BWF†÷&—G•÷fW&F–7E²&ö²%Ó ¢÷W'6—7Eö&F6…÷&VfÆ–v‡Eö&Æö6²€¢'VåöF—"À¢7FGW5²'7FFR%ÒÀ¢F‚‡7FGW5²&Öæ–fW7B%ÒævWB‚'&Wò"’÷"&Wò’ç&W6öÇfR‚’À¢b&×WFF–öâWF†÷&—G’&WV—&VB…4”ÕÄ”4”õõ$UT•$UôÕUDD”ôåôUD„õ$•E’’'WB ¢b'¶WF†÷&—G•÷fW&F–7E²w&V6öåö6öFRu×Ó¢¶WF†÷&—G•÷fW&F–7E²w&V6öâu×Ò"À¢F6µö–æF–6W3×F6µö–æF–6W2÷"‚’À¢¢&—6R'VçF–ÖTW'&÷"€¢&×WFF–öâWF†÷&—G’&WV—&VB…4”ÕÄ”4”õõ$UT•$UôÕUDD”ôåôUD„õ$•E’’'WB ¢b'¶WF†÷&—G•÷fW&F–7E²w&V6öåö6öFRu×Ó¢¶WF†÷&—G•÷fW&F–7E²w&V6öâu×Ò ¢¢F6µö6÷VçBÒÆVâ†6öçG&7BævWB‚'F6·2"’÷"µÒ¢–bF6µö–æF–6W2—2æöæS ¢–æF–6W2ÒÆ—7B‡&ævRƒÂF6µö6÷VçB²’¢VÇ6S ¢–æF–6W2Ò¶–çB†–æFW‚’f÷"–æFW‚–âF6µö–æF–6W5Ð¢–bç’†–æFW‚Â÷"–æFW‚âF6µö6÷VçBf÷"–æFW‚–â–æF–6W2“ ¢&—6RfÇVTW'&÷"‚'F6²–æFW‚÷WBöb&ævR"¢6öçFW‡G2ÒF–7B†—6öÆFVEö6öçFW‡G2÷"·Ò¢F—7G&–'WFVE÷VWVRÒæöæP¢vVçEö–FVçF—G’ÒæöæP¢–bæ÷B—6öÆFVEö6öçFW‡G3 ¢F—7G&–'WFVE÷VWVRÂvVçEö–FVçF—G’ÒöF—7G&–'WFVEö6öæf–wW&F–öâ‡&Wò¢WFõ÷&V6öâÒ&W‡Æ–6—Eö6öçFW‡G2"–b—6öÆFVEö6öçFW‡G2VÇ6R" ¢–bæ÷B—6öÆFVEö6öçFW‡G2æBv÷&·G&VU÷VWVR—2æöæRæB†WFõöfåö÷WB—2æ÷BfÇ6R“ ¢&Wf–÷W2Ò÷2æVçf—&öâævWB‚%4”ÕÄ”4”õôÄôõôUDõôdåôõUB"¢–bWFõöfåö÷WB—2G'VS ¢÷2æVçf—&öå²%4”ÕÄ”4”õôÄôõôUDõôdåôõUB%ÒÒ# ¢G'“ ¢v÷&·G&VU÷VWVRÂWFõö6öçFW‡G2ÂWFõ÷&V6öâÒöWFõ÷v÷&·G&VUöF—7F6‚€¢&WòÂ'Våö–BÂ6öçG&7BÂÆâÂ–æF–6W2À¢¢f–æÆÇ“ ¢–bWFõöfåö÷WB—2G'VS ¢–b&Wf–÷W2—2æöæS ¢÷2æVçf—&öâç÷‚%4”ÕÄ”4”õôÄôõôUDõôdåôõUB"ÂæöæR¢VÇ6S ¢÷2æVçf—&öå²%4”ÕÄ”4”õôÄôõôUDõôdåôõUB%ÒÒ&Wf–÷W0¢6öçFW‡G2çWFFR†WFõö6öçFW‡G2¢—FV×2ÒµÐ¢f÷"–æFW‚–â–æF–6W3 ¢6öçFW‡BÒF–7B†6öçFW‡G2ævWB†–æFW‚’÷"·Ò¢—FVÒÒ°¢'&Wò#¢6öçFW‡BævWB‚'&Wò"Â&Wò’À¢''Våö–B#¢6öçFW‡BævWB‚''Våö–B"Â'Våö–B’À¢'F6µö–æFW‚#¢–æFW‚À¢'v÷&¶W%ö–B#¢6öçFW‡BævWB‚'v÷&¶W%ö–B"Âb&÷W&F÷"×¶–æFW‡Ò"’À¢&—6öÆF–öåö¶W’#¢6öçFW‡BævWB‚&—6öÆF–öåö¶W’"’À¢'F6µö–B#¢6öçFW‡BævWB‚'F6µö–B"Âb'·'Våö–GÒ×F6²×¶–æFW‡Ò"’À¢'F6µ÷7V2#¢6öçFW‡BævWB‚'F6µ÷7V2"’÷"°¢&–B#¢6öçFW‡BævWB‚'F6µö–B"Âb'·'Våö–GÒ×F6²×¶–æFW‡Ò"’À¢&vöÂ#¢÷F6µövöÂ‚†6öçG&7BævWB‚'F6·2"’÷"µÒ•¶–æFW‚ÒÒ’À¢ÒÀ¢&—6öÆF–öâ#¢6öçFW‡BævWB‚&—6öÆF–öâ"Â'v÷&·G&VR"’À¢Ð¢–bF—7G&–'WFVE÷VWVR—2æ÷BæöæS ¢—FVÕ²&F—7G&–'WFVE÷VWVR%ÒÒF—7G&–'WFVE÷VWVP¢—FVÕ²&vVçEö–FVçF—G’%ÒÒvVçEö–FVçF—G¢F6²Ò†6öçG&7BævWB‚'F6·2"’÷"µÒ•¶–æFW‚ÒÐ¢F&vWE÷F‡2Ò‡ÆâævWB‚'7FW2"’÷"µÒ•¶–æFW‚ÒÒævWB‚&6æF–FFU÷F&vWG2"’÷"µÐ¢—77VU÷&VbÒF6²ævWB‚&—77VU÷&Vb"’÷"6öçG&7BævWB‚&—77VU÷&Vb"’÷"" ¢—77VU÷W&ÂÒF6²ævWB‚&—77VU÷W&Â"’÷"6öçG&7BævWB‚&—77VU÷W&Â"’÷"" ¢—FVÕ²&6öçFW‡E÷6²%ÒÒ'V–ÆEö6öçFW‡E÷6²€¢F6µö–CÖ—FVÕ²'F6µö–B%ÒÂvöÃÕ÷F6µövöÂ‡F6²’Â–FVçF—G“ÖvVçEö–FVçF—G’À¢73Õ²¥²‡2ævWB‚'F—FÆR"’÷"2ævWB‚&–B"’÷"""’f÷"2–â‡F6²ævWB‚'66Væ&–÷2"’÷"µÒ•ÕÒÀ¢FWVæG5ööãÖÆ—7B‚‡F6²ævWB‚&FWVæFVæ6–W2"’÷"·Ò’ævWB‚&—FV×2"’÷"µÒ’À¢ÆÆ÷vVE÷F‡3×F&vWE÷F‡2Â6÷W&6U÷&Vg3×F&vWE÷F‡2À¢—77VU÷&VcÖ—77VU÷&VbÂ—77VU÷W&ÃÖ—77VU÷W&ÂÀ¢¢—FV×2æVæB†—FVÒ¢FVbö&F6…÷7F÷÷&WVW7FVB‚’Óâ&ööÃ ¢G'“ ¢7W'&VçBÒöÆöEö§6öâ…F‚‡7FGW5²''VåöF—"%Ò’ò'7FFRæ§6öâ"¢W†6WB„õ4W'&÷"ÂG—TW'&÷"ÂfÇVTW'&÷"“ ¢&WGW&âfÇ6P¢&WGW&â7G"†7W'&VçBævWB‚'†6R"’÷"""’ÓÒ&6æ6VÆÆVB  ¢&W7VÇBÒF—7F6…ö÷W&F÷%ö&F6‚€¢—FV×2À¢Ö…÷v÷&¶W'3ÖÖ…÷v÷&¶W'2À¢&WG'•ö'VFvWC×&WG'•ö'VFvWBÀ¢¦÷W&æÅöF—#×7G"…F‚‡7FGW5²''VåöF—"%Ò’’À¢v÷&·G&VU÷VWVS×v÷&·G&VU÷VWVRÀ¢7F÷÷&WVW7FVCÕö&F6…÷7F÷÷&WVW7FVBÀ¢¢Æ–fV7–6ÆU÷&W7VÇC¢F–7E·7G"Âç•Ð¢G'“ ¢&Wõ÷&ö÷BÒF‚‡7FGW5²&Öæ–fW7B%ÒævWB‚'&Wò"’÷"&Wò’ç&W6öÇfR‚¢6÷W&6Uö6öÖÖ—BÒ7G"‡7FGW5²&Öæ–fW7B%ÒævWB‚'6÷W&6Uö6öÖÖ—B"’÷"""¢–bæ÷B6÷W&6Uö6öÖÖ—C ¢†VBÒ7V'&ö6W72ç'Vâ€¢²&v—B"Â'&Wb×'6R"Â$„TB%ÒÂ7vC×7G"‡&Wõ÷&ö÷B’Â6GW&Uö÷WGWCÕG'VRÀ¢FW‡CÕG'VRÂF–ÖV÷WCÓRÂ6†V6³ÔfÇ6RÀ¢¢6÷W&6Uö6öÖÖ—BÒ††VBç7FF÷WB÷"""’ç7G&—‚’÷"'Væf–Æ&ÆR ¢f7E÷7FFRÒ7FGW5²'7FFR%ÒævWB‚&f7B"’÷"·Ð¢f7EövVæW&F–öâÒ7G"€¢f7E÷7FFRævWB‚&vVæW&F–öâ"¢÷"‡7FGW5²'7FFR%ÒævWB‚&ÖW""’÷"·Ò’ævWB‚&vVæW&F–öâ"¢÷"&ÖW"ÖfÆÆ&6² ¢¢Æ–fV7–6ÆRÒ6†V6·ö–çDÆ–fV7–6ÆR€¢&Wõ÷&ö÷Bò"ç6–×Æ–6–ò"ò&Æö÷×'Vç2"À¢F6µö–C×'Våö–BÀ¢GFV×Eö–CÖb&&F6‚×¶–çB‚‡7FGW5²w7FFRuÒ÷"·Ò’ævWB‚vGFV×G2rÂ’’²Ò"À¢6÷W&6Uö6öÖÖ—C×6÷W&6Uö6öÖÖ—BÀ¢f7EövVæW&F–öãÖf7EövVæW&F–öâÀ¢&6U÷Fƒ×&Wõ÷&ö÷BÀ¢¢v÷&¶W'2ÒÆ—7B‡&W7VÇBævWB‚'v÷&¶W'2"’÷"µÒ¢6æF–FFUö–G2ÒµÐ¢7V66W76gVÅö–G2ÒµÐ¢f÷"v÷&¶W"–â6÷'FVB‡v÷&¶W'2Â¶W“ÖÆÖ&F&÷s¢7G"‡&÷rævWB‚'F6µö–B"’÷"&÷rævWB‚'F6µö–æFW‚"’’“ ¢6æF–FFUö–BÒ7G"‡v÷&¶W"ævWB‚'F6µö–B"’÷"b'F6²×·v÷&¶W"ævWB‚wF6µö–æFW‚r—Ò"¢7V66VVFVBÒv÷&¶W"ævWB‚'7FGW2"’ÓÒ'7V66VVFVB ¢Æ–fV7–6ÆRæ6†V6·ö–çB€¢6æF–FFUö–BÂ&÷W&F÷""Â%$TE•õDõõ$ôÔõDR"–b7V66VVFVBVÇ6R$„TÄB"À¢&V6V—G3Õ·fÇVRf÷"fÇVR–â€¢7G"‡v÷&¶W"ævWB‚&÷W&F÷%÷&V6V—B"’÷"""’À¢7G"‡v÷&¶W"ævWB‚&Wf–FVæ6U÷&V6V—B"’÷"""’À¢’–bfÇVUÒÀ¢v÷&µ÷Væ—G3Ö–çB‡v÷&¶W"ævWB‚&GFV×Eö6÷VçB"’÷"’À¢¢6æF–FFUö–G2æVæB†6æF–FFUö–B¢–b7V66VVFVC ¢7V66W76gVÅö–G2æVæB†6æF–FFUö–B¢–bæ÷Bç’‡v÷&¶W"ævWB‚'7FGW2"’ÓÒ'7V66VVFVB"f÷"v÷&¶W"–âv÷&¶W'2“ ¢Æ–fV7–6ÆU÷&W7VÇBÒ²'66†VÖ#¢'6–×Æ–6–òæÆö÷æ6†V6·ö–çBÖÆ–fV7–6ÆR÷c"À¢'7FGW2#¢$„TÄB"Â'&V6öâ#¢&æõ÷7V66W76gVÅö6æF–FFR'Ð¢VÇ6S ¢FVbö6æ6VÅö&÷VæF'’†6æF–FFUö–C¢7G"’ÓâæöæS ¢–bv÷&·G&VU÷VWVR—2æöæS ¢&WGW&à¢f÷"ÖWF†öEöæÖR–â‚&6æ6VÅ÷F6²"Â'&VÆV6U÷F6²"Â&6æ6VÂ"“ ¢ÖWF†öBÒvWFGG"‡v÷&·G&VU÷VWVRÂÖWF†öEöæÖRÂæöæR¢–b6ÆÆ&ÆR†ÖWF†öB“ ¢ÖWF†öB†6æF–FFUö–B¢&WGW&à¢6VÆV7FVE÷v–ææW"Ò6÷'FVB‡7V66W76gVÅö–G2•³Ð¢Æ–fV7–6ÆU÷&W7VÇBÒÆ–fV7–6ÆRæ6öçfW&vU÷6VÆV7FVB€¢v–ææW%ö–C×6VÆV7FVE÷v–ææW"À¢6æF–FFUö–G3Ö6æF–FFUö–G2À¢6†&Eö–CÒ&÷W&F÷""À¢6æ6VÅö6ÆÆ&6³Õö6æ6VÅö&÷VæF'’À¢¢W†6WB„Æ–fV7–6ÆTW'&÷"Âõ4W'&÷"ÂfÇVTW'&÷"Â7V'&ö6W72å7V'&ö6W74W'&÷"’2W†3 ¢Æ–fV7–6ÆU÷&W7VÇBÒ²'66†VÖ#¢'6–×Æ–6–òæÆö÷æ6†V6·ö–çBÖÆ–fV7–6ÆR÷c"À¢'7FGW2#¢$„TÄB"Â'&V6öâ#¢&Æ–fV7–6ÆUö–çFVw&F–öåöf–ÆVB"À¢&W'&÷"#¢7G"†W†2—Ð¢&W7VÇE²&6†V6·ö–çEöÆ–fV7–6ÆR%ÒÒÆ–fV7–6ÆU÷&W7VÇ@¢FV6†æ–6ÅöFV'G3¢Æ—7E´F–7E·7G"Âç•ÕÒÒµÐ¢2fâÖ÷WB—2â÷F–Ö—¦F–öââ6fR6W&–ÂÆæR—27F–ÆÂW6VgVÂv÷&²Â6ð¢26&–Æ—G’Æ÷72—2&V6÷&FVB2Gf—6÷'’FV'B–ç7FVBöbvÆö&Â&Æö6¶W"à¢–bWFõ÷&V6öâæBWFõ÷&V6öâæ÷B–â²&W‡Æ–6—Eö6öçFW‡G2"Â'6–ævÆU÷F6²'ÒæBÆVâ†—FV×2’â ¢FV6†æ–6ÅöFV'G2æVæB…÷&V6÷&E÷FV6†æ–6ÅöFV'B€¢7FGW5²''VåöF—"%ÒÀ¢'Våö–C×'Våö–BÀ¢&V6öåö6öFSÖWFõ÷&V6öâ–bWFõ÷&V6öâ–â°¢&fæ÷WEöF—6&ÆVB"Â&æ÷Eöv—Eö6†V6¶÷WB"Â&Ö—76–æu÷Æå÷F&vWG2"À¢&÷fW&Æ–æu÷F6µö–×7G2"Â'v÷&·G&VUöFFW%÷Væf–Æ&ÆR"À¢'v÷&·G&VU÷&VfÆ–v‡Eöf–ÆVB"À¢ÒVÇ6R&fæ÷WE÷6W&–ÅöfÆÆ&6²"À¢7FvSÒ&F—7F6‚"À¢6÷W&6SÒ'6–×Æ–6–õöÆö÷ç'VææW"åöWFõ÷v÷&·G&VUöF—7F6‚"À¢ÖW76vSÒ&WFöÖF–2fâÖ÷WBv2æ÷Bf–Æ&ÆS²6öçF–çV–ærv—F‚F†R6fR6W&–ÂÆæR"À¢æW‡Eö7F–öãÒ&–ç7FÆÂö6öæf–wW&RF†Rv÷&·G&VRFFW"÷"7Æ—B÷fW&Æ–ærF&vWG2"À¢’¢&W7VÇE²&F—7G&–'WFVB%ÒÒ°¢&Væ&ÆVB#¢F—7G&–'WFVE÷VWVR—2æ÷BæöæRÀ¢'VWVR#¢÷2æVçf—&öâævWB‚%4”ÕÄ”4”õõ$TÔõDUõTUTUõU$Â"Â""’–bF—7G&–'WFVE÷VWVR—2æ÷BæöæRVÇ6R""À¢&vVçB#¢vVçEö–FVçF—G’÷"·ÒÀ¢&f–Åö6Æ÷6VB#¢F—7G&–'WFVE÷VWVR—2æ÷BæöæRÀ¢Ð¢–bæ÷B6öçFW‡G2æBÆVâ†—FV×2’â ¢2F—7F6…ö÷W&F÷%ö&F6‚FW&—fW2F†—2g&öÒF†R6†&VB—6öÆF–öâ¶W“²&WF–â6ÆV ¢26öçG&7BÖÆWfVÂÖ&¶W"f÷"6ÆÆW'2–ç7V7F–ærF†R6öçfVæ–Væ6R’à¢&W7VÇE²'6W&–ÅöfÆÆ&6µ÷&V6öâ%ÒÒ&W7VÇBævWB‚'6W&–ÅöfÆÆ&6µ÷&V6öâ"’÷"'6†&VE÷'Vå÷7FFR ¢–bæ÷BFV6†æ–6ÅöFV'G3 ¢FV6†æ–6ÅöFV'G2æVæB…÷&V6÷&E÷FV6†æ–6ÅöFV'B€¢7FGW5²''VåöF—"%ÒÀ¢'Våö–C×'Våö–BÀ¢&V6öåö6öFSÒ&fæ÷WE÷6W&–ÅöfÆÆ&6²"À¢7FvSÒ&F—7F6‚"À¢6÷W&6SÒ'6–×Æ–6–õöÆö÷ç'VææW"æF—7F6…ö÷W&F÷%ö&F6‚"À¢ÖW76vSÒ'F6·26†&R'Vâ7FFR÷"6÷VÆBæ÷B&R—6öÆFVC²6W&–ÂW†V7WF–öâ&W6W'fVB6fWG’"À¢æW‡Eö7F–öãÒ'&÷f–FRF—7F–æ7Bv÷&·G&VR6öçFW‡G2f÷"–æFWVæFVçBF6·2"À¢’¢&W7VÇE²'FV6†æ–6ÅöFV'G2%ÒÒFV6†æ–6ÅöFV'G0¢&W7VÇE²&fåö÷WB%ÒÒ°¢&Væ&ÆVB#¢&ööÂ‡v÷&·G&VU÷VWVR—2æ÷BæöæRæBÆVâ†6öçFW‡G2’â’À¢&FVfVÇB#¢WFõöfåö÷WB—2æ÷BfÇ6RÀ¢'&V6öâ#¢WFõ÷&V6öâ÷"‚&—6öÆFVEö6öçFW‡G2"–b6öçFW‡G2VÇ6R'6W&–ÅöfÆÆ&6²"’À¢&6öçFW‡G2#¢ÆVâ†6öçFW‡G2’À¢Ð¢&WGW&â&W7VÇ@  ¦FVbFVfW%öÖ–çFVææ6Uö&6¶ÆöuööæÇ’€¢&Wó¢7G"À¢'Våö–C¢7G"À¢¢À¢6÷'&V7F–öå÷7VÖÖ'“¢7G"À¢FVfW'&Å÷&V6öã¢7G"À¢&W7VÖUö–ç7G'V7F–öç3¢6WVVæ6U·7G%ÒÂ7G"À¢Wf–FVæ6U÷7FGW3¢7G"Ò%TådU$”d”TB"À¢’ÓâF–7E·7G"Âç•Ó ¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢–b7FGW5²'7FFR%ÒævWB‚'†6R"’–â²&FöæR"Â&6æ6VÆÆVB'Ó ¢&—6RfÇVTW'&÷"†b''VâÇ&VG’FW&Ö–æÃ¢·7FGW5²w7FFRuÒævWB‚w†6Rr—Ò"¢'VåöF—"ÒF‚‡7FGW5²''VåöF—"%Ò¢7FFRÒ7FGW5²'7FFR%Ð¢&V6V—BÒ÷w&—FUöÖ–çFVææ6UöFVfW'&VE÷&V6V—B€¢'VåöF—"À¢6÷'&V7F–öå÷7VÖÖ'“Ö6÷'&V7F–öå÷7VÖÖ'’À¢FVfW'&Å÷&V6öãÖFVfW'&Å÷&V6öâÀ¢&W7VÖUö–ç7G'V7F–öç3×&W7VÖUö–ç7G'V7F–öç2À¢Wf–FVæ6U÷7FGW3ÖWf–FVæ6U÷7FGW2À¢¢7FFU²&Ö–çFVææ6R%ÒÒ°¢&ÖöFR#¢&V6V—E²&ÖöFR%ÒÀ¢&F—7÷6—F–öâ#¢&V6V—E²&F—7÷6—F–öâ%ÒÀ¢'&V6V—B#¢7G"‡'VåöF—"ò&Ö–çFVææ6R×&V6V—Bæ§6öâ"’À¢&6÷'&V7F–öå÷7VÖÖ'’#¢&V6V—E²&6÷'&V7F–öå÷7VÖÖ'’%ÒÀ¢&FVfW'&Å÷&V6öâ#¢&V6V—E²&FVfW'&Å÷&V6öâ%ÒÀ¢&Wf–FVæ6U÷7FGW2#¢&V6V—E²&Wf–FVæ6U÷7FGW2%ÒÀ¢Ð¢6ö×ÆWF–öâÒö6ö×ÆWF–öå÷7FFR‡'VåöF—"Â7FFRævWB‚&6ö×ÆWF–öâ"’¢6ö×ÆWF–öå²'&VG’%ÒÒfÇ6P¢6ö×ÆWF–öå²'Fr%ÒÒ%TådU$”d”TB ¢6ö×ÆWF–öå²'fW&F–7B%ÒÒ$DTÄ•dU%•õTäD”är ¢6ö×ÆWF–öå²'&V6öåö6öFR%ÒÒ&Ö–çFVææ6UöFVfW'&VB ¢–b‡'VåöF—"ò&6ö×ÆWF–öâ×&V6V—Bæ§6öâ"’æW†—7G2‚“ ¢W'6—7FVBÒöÆöEö§6öâ‡'VåöF—"ò&6ö×ÆWF–öâ×&V6V—Bæ§6öâ"¢W'6—7FVBçWFFR‡²'&VG’#¢fÇ6RÂ'fW&F–7B#¢6ö×ÆWF–öå²'fW&F–7B%ÒÀ¢'&V6öåö6öFR#¢6ö×ÆWF–öå²'&V6öåö6öFR%ÒÂ'Fr#¢%TådU$”d”TB'Ò¢÷w&—FUö§6öâ‡'VåöF—"ò&6ö×ÆWF–öâ×&V6V—Bæ§6öâ"ÂW'6—7FVB¢7FFU²&6ö×ÆWF–öâ%ÒÒ6ö×ÆWF–öà¢7FFU²&÷W&F÷"%ÒÒ°¢¢¢‡7FFRævWB‚&÷W&F÷""’÷"·Ò’À¢'&VG’#¢fÇ6RÀ¢&W†V7WF–öå÷7FFR#¢&&6¶ÆöuööæÇ’"À¢Ð¢7FFU²&7W'&VçEö7F–öâ%ÒÒ&Ö–çFVææ6UöFVfW'&VE÷Fõö&6¶Æör ¢7FFU²&æW‡Eö7F–öâ%ÒÒ'&W7VÖUög&öÕöÖ–çFVææ6U÷&V6V—B ¢7FFU²&Wf–FVæ6R%ÒÒ°¢¢¢‡7FFRævWB‚&Wf–FVæ6R"’÷"·Ò’À¢'&VG’#¢fÇ6RÀ¢'7FGW2#¢&V6V—E²&Wf–FVæ6U÷7FGW2%ÒÀ¢Ð¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ€¢'VåöF—"À¢7FFRÀ¢''F–Â"À¢&Ö–çFVææ6R6÷'&V7F–öâFVfW'&VBFò&6¶ÆörÖöæÇ’ÖöFR"À¢&V6V—C×7G"‡'VåöF—"ò&Ö–çFVææ6R×&V6V—Bæ§6öâ"’À¢W‡G&×²&ÖöFR#¢&V6V—E²&ÖöFR%ÒÂ&F—7÷6—F–öâ#¢&V6V—E²&F—7÷6—F–öâ%×ÒÀ¢¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B  ¦FVb&VE÷7FGW2‡&Wó¢7G"Â'Våö–C¢7G"Ò""’ÓâF–7E·7G"Âç•Ó ¢&Wõ÷F‚ÒF‚‡&Wò’ç&W6öÇfR‚¢'Vç5÷&ö÷BÒ&Wõ÷F‚ò"ç6–×Æ–6–ò"ò&Æö÷×'Vç2 ¢–bæ÷B'Vç5÷&ö÷BæW†—7G2‚“ ¢&WGW&â°¢''VåöF—"#¢æöæRÀ¢&Öæ–fW7B#¢æöæRÀ¢'7FFR#¢°¢'†6R#¢&æõ÷'Vç2"À¢&6ö×ÆWF–öâ#¢²'&VG’#¢fÇ6RÂ'fW&F–7B#¢$äõõ%Tå2"Â'Fr#¢%TådU$”d”TB'ÒÀ¢&÷W&F÷"#¢²'&VG’#¢fÇ6RÂ&W†V7WF–öå÷7FFR#¢&–FÆR'ÒÀ¢&Wf–FVæ6R#¢²'&VG’#¢fÇ6RÂ'7FGW2#¢$äõõ%Tå2'ÒÀ¢&7W'&VçEö7F–öâ#¢&æöæR"À¢&æW‡Eö7F–öâ#¢&æöæR"À¢&ÖW76vR#¢&æò'Vç2F—&V7F÷'’f÷VæC²'Vâ6–×Æ–6–òÖÆö÷Fò7F'B"À¢ÒÀ¢&W†V7WF–öå÷&÷WFR#¢æöæRÀ¢'&÷WFU÷&V6V—E÷7FGW2#¢%TådU$”d”TB"À¢Ð¢6†÷6VâÒæöæP¢–b'Våö–C ¢6†÷6VâÒ'Vç5÷&ö÷Bò'Våö–@¢VÇ6S ¢6æF–FFW2Ò6÷'FVB…·f÷"–â'Vç5÷&ö÷Bæ—FW&F—"‚’–bæ—5öF—"‚•ÒÂ¶W“ÖÆÖ&F¢ææÖR¢–bæ÷B6æF–FFW3 ¢&WGW&â°¢''VåöF—"#¢æöæRÀ¢&Öæ–fW7B#¢æöæRÀ¢'7FFR#¢°¢'†6R#¢&æõ÷'Vç2"À¢&6ö×ÆWF–öâ#¢²'&VG’#¢fÇ6RÂ'fW&F–7B#¢$äõõ%Tå2"Â'Fr#¢%TådU$”d”TB'ÒÀ¢&÷W&F÷"#¢²'&VG’#¢fÇ6RÂ&W†V7WF–öå÷7FFR#¢&–FÆR'ÒÀ¢&Wf–FVæ6R#¢²'&VG’#¢fÇ6RÂ'7FGW2#¢$äõõ%Tå2'ÒÀ¢&7W'&VçEö7F–öâ#¢&æöæR"À¢&æW‡Eö7F–öâ#¢&æöæR"À¢&ÖW76vR#¢&æò'Vç2f÷VæC²'Vâ6–×Æ–6–òÖÆö÷Fò7F'B"À¢ÒÀ¢&W†V7WF–öå÷&÷WFR#¢æöæRÀ¢'&÷WFU÷&V6V—E÷7FGW2#¢%TådU$”d”TB"À¢Ð¢6†÷6VâÒ6æF–FFW5²ÓÐ¢Öæ–fW7BÒöÆöEö§6öâ†6†÷6Vâò&Öæ–fW7Bæ§6öâ"¢7FFRÒöÆöEö§6öâ†6†÷6Vâò'7FFRæ§6öâ"¢7FFU²&6ö×ÆWF–öâ%ÒÒö6ö×ÆWF–öå÷7FFR†6†÷6VâÂ7FFRævWB‚&6ö×ÆWF–öâ"’¢W†V7WF–öå÷&÷WFRÒæöæP¢&÷WFU÷F‚Ò6†÷6Vâò&W†V7WF–öâ×&÷WFRæ§6öâ ¢–b&÷WFU÷F‚æ—5öf–ÆR‚“ ¢G'“ ¢6æF–FFRÒöÆöEö§6öâ‡&÷WFU÷F‚¢–bfW&–g•÷&÷WFUö†6‚†6æF–FFR“ ¢W†V7WF–öå÷&÷WFRÒ6æF–FFP¢7FFRç6WFFVfVÇB‚&÷W&F÷""Â·Ò•²&W†V7WF–öå÷&÷WFR%ÒÒ6æF–FFP¢7FFU²&W†V7WF–öå÷&÷WFR%ÒÒ6æF–FFP¢W†6WB„õ4W'&÷"ÂfÇVTW'&÷"ÂG—TW'&÷"“ ¢W†V7WF–öå÷&÷WFRÒæöæP¢&WGW&â°¢''VåöF—"#¢7G"†6†÷6Vâ’À¢&Öæ–fW7B#¢Öæ–fW7BÀ¢'7FFR#¢7FFRÀ¢&W†V7WF–öå÷&÷WFR#¢W†V7WF–öå÷&÷WFRÀ¢'&÷WFU÷&V6V—E÷7FGW2#¢$ÔT5U$TB"–bW†V7WF–öå÷&÷WFRVÇ6R%TådU$”d”TB"À¢Ð  ¦FVbö6æ6VÅöÖW%ö&6¶w&÷VæB‡&Wõ÷Fƒ¢F‚Â'VåöF—#¢F‚Â7FFS¢F–7E·7G"Âç•Ò’ÓâF–7E·7G"Âç•Ó ¢""$6æ6VÂâ÷WG7FæF–ærFVWÖW"¦ö"&Vf÷&R'Vâ&V6öÖW2FW&Ö–æÂâ"" ¢ÖW%÷7FFRÒ7FFRævWB‚&ÖW""’–b—6–ç7Fæ6R‡7FFRævWB‚&ÖW""’ÂÖ–ær’VÇ6R·Ð¢&÷WFRÒÖW%÷7FFRævWB‚&W†V7WF–öå÷&÷WFR"’–b—6–ç7Fæ6R†ÖW%÷7FFRÂÖ–ær’VÇ6RæöæP¢–bæ÷B—6–ç7Fæ6R‡&÷WFRÂÖ–ær“ ¢6öçFW‡E÷F‚Ò'VåöF—"ò&ÖW"Ö6öçFW‡Bæ§6öâ ¢G'“ ¢6öçFW‡BÒöÆöEö§6öâ†6öçFW‡E÷F‚’–b6öçFW‡E÷F‚æ—5öf–ÆR‚’VÇ6R·Ð¢W†6WB„õ4W'&÷"ÂG—TW'&÷"ÂfÇVTW'&÷"“ ¢6öçFW‡BÒ·Ð¢6æF–FFRÒ6öçFW‡BævWB‚&W†V7WF–öå÷&÷WFR"’–b—6–ç7Fæ6R†6öçFW‡BÂÖ–ær’VÇ6RæöæP¢&÷WFRÒ6æF–FFR–b—6–ç7Fæ6R†6æF–FFRÂÖ–ær’VÇ6R·Ð¢&6¶w&÷VæBÒ&÷WFRævWB‚&&6¶w&÷VæB"’–b—6–ç7Fæ6R‡&÷WFRÂÖ–ær’VÇ6RæöæP¢–bæ÷B—6–ç7Fæ6R†&6¶w&÷VæBÂÖ–ær’÷"&6¶w&÷VæBævWB‚'7FGW2"’Ò'VWVVB# ¢&WGW&â²'7FGW2#¢&æ÷Eö7F—fR"Â'&V6öåö6öFR#¢&ÖW%ö&6¶w&÷VæEöæ÷Eö7F—fR'Ð ¢&W7VÇBÒ÷'Våö6ÖB€¢²'6–×Æ–6–òÖÖW""Â&&6¶w&÷VæB"Â&6æ6VÂ"Â"â"Â"ÒÖ§6öâ%ÒÂ&Wõ÷F‚À¢¢G'“ ¢7FF÷WBÒ§6öâæÆöG2‡&W7VÇBç7FF÷WB’–b&W7VÇBç7FF÷WBç7G&—‚’VÇ6R·Ð¢W†6WBfÇVTW'&÷# ¢7FF÷WBÒ²'&r#¢&W7VÇBç7FF÷WBç7G&—‚—Ð¢&V6V—BÒ°¢'66†VÖ#¢'6–×Æ–6–òæÆö÷æÖW"Ö&6¶w&÷VæBÖ6æ6VÆÆF–öâ÷c"À¢'7FGW2#¢&6æ6VÆÆVB"–b&W7VÇBç&WGW&æ6öFRÓÒVÇ6R&&Æö6¶VB"À¢'&V6öåö6öFR#¢&ÖW%ö&6¶w&÷VæEö6æ6VÆÆVB"–b&W7VÇBç&WGW&æ6öFRÓÒVÇ6R&ÖW%ö&6¶w&÷VæEö6æ6VÅöf–ÆVB"À¢'&WGW&æ6öFR#¢&W7VÇBç&WGW&æ6öFRÀ¢'7FF÷WB#¢7FF÷WBÀ¢'7FFW'"#¢‡&W7VÇBç7FFW'"÷"""’ç7G&—‚’À¢&¦ö%ö–B#¢&6¶w&÷VæBævWB‚'v÷&µö–B"’À¢'–B#¢&6¶w&÷VæBævWB‚'–B"’À¢'&WVW7FVEöB#¢öæ÷r‚’À¢Ð¢&V6V—E÷F‚Ò'VåöF—"ò&ÖW"Ö&6¶w&÷VæBÖ6æ6VÂæ§6öâ ¢÷w&—FUö§6öâ‡&V6V—E÷F‚Â&V6V—B¢7FFRç6WFFVfVÇB‚&ÖW""Â·Ò•²&&6¶w&÷VæEö6æ6VÆÆF–öâ%ÒÒ°¢¢§&V6V—BÂ'&V6V—B#¢7G"‡&V6V—E÷F‚’À¢Ð¢7FFU²&ÖW"%Õ²&W†V7WF–öå÷&÷WFR%ÒÒ°¢¢¦F–7B‡&÷WFR’À¢&&6¶w&÷VæB#¢²¢¦F–7B†&6¶w&÷VæB’Â'7FGW2#¢&V6V—E²'7FGW2%ÒÀ¢&6æ6VÅ÷&V6V—B#¢7G"‡&V6V—E÷F‚—ÒÀ¢Ð¢&WGW&â&V6V—@  ¦FVb6†ævU÷†6R‡&Wó¢7G"Â'Våö–C¢7G"ÂFõ÷†6S¢7G"Â&V6öã¢7G"’ÓâF–7E·7G"Âç•Ó ¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢'VåöF—"ÒF‚‡7FGW5²''VåöF—"%Ò¢7FFRÒ7FGW5²'7FFR%Ð¢–b7FFRævWB‚'†6R"’–â²&FöæR"Â&6æ6VÆÆVB'Ó ¢&—6RfÇVTW'&÷"†b''VâÇ&VG’FW&Ö–æÃ¢·7FFRævWB‚w†6Rr—Ò"¢–bFõ÷†6RÓÒ&v—F–æuöFV6—6–öâ# ¢Ö–çFVææ6RÒ7FFRævWB‚&Ö–çFVææ6R"’÷"·Ð¢–bÖ–çFVææ6RævWB‚&ÖöFR"’ÓÒ&Ö–çFVææ6UöFVfW'&VB"÷"Ö–çFVææ6RævWB‚&F—7÷6—F–öâ"’ÓÒ&&6¶ÆöuööæÇ’# ¢7FFU²&Ö–çFVææ6R%ÒÒö7F—fUöÖ–çFVææ6U÷7FFR†Ö–çFVææ6R¢7FFU²&÷W&F÷"%ÒÒ°¢¢¢‡7FFRævWB‚&÷W&F÷""’÷"·Ò’À¢'&VG’#¢fÇ6RÀ¢&W†V7WF–öå÷7FFR#¢&–çfÆ–FFVB"À¢Ð¢7FFU²&Wf–FVæ6R%ÒÒ°¢¢¢‡7FFRævWB‚&Wf–FVæ6R"’÷"·Ò’À¢'&VG’#¢fÇ6RÀ¢'7FGW2#¢$”ådÄ”DDTB"À¢Ð¢7FFU²&æW‡Eö7F–öâ%ÒÒ&ÖW%÷66å÷&WV—&VB ¢VÆ–bFõ÷†6RÓÒ&6æ6VÆÆVB# ¢ö6æ6VÅöÖW%ö&6¶w&÷VæB…F‚‡&Wò’ç&W6öÇfR‚’Â'VåöF—"Â7FFR¢7FFU²&æW‡Eö7F–öâ%ÒÒ&æöæR ¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂFõ÷†6RÂ&V6öâÂ&V6V—C×7G"‡'VåöF—"ò'7FFRæ§6öâ"’¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B  ¦FVb&V6öæ6–ÆUöFVÆ—fW'’‡&Wó¢7G"Â'Våö–C¢7G"Â7W'&VçE÷7FFS¢7G"Â6÷W&6Uö¶–æC¢7G"Ò&Æö6Â"À¢6÷W&6U÷–ÆöC¢F–7E·7G"Âç•ÒÂæöæRÒæöæR’ÓâF–7E·7G"Âç•Ó ¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢'VåöF—"ÒF‚‡7FGW5²''VåöF—"%Ò¢Öæ–fW7BÒ7FGW5²&Öæ–fW7B%Ð¢7FFRÒ7FGW5²'7FFR%Ð¢&Wf–÷W5÷&V6V—BÒæöæP¢&Wf–÷W5÷F‚Ò'VåöF—"ò&FVÆ—fW'’×&V6V—Bæ§6öâ ¢–b&Wf–÷W5÷F‚æW†—7G2‚“ ¢G'“ ¢&Wf–÷W5÷&V6V—BÒöÆöEö§6öâ‡&Wf–÷W5÷F‚¢W†6WB„õ4W'&÷"ÂfÇVTW'&÷"ÂG—TW'&÷"“ ¢&Wf–÷W5÷&V6V—BÒæöæP¢W†V7WF–öå÷&÷WFRÒæöæP¢&÷WFU÷F‚Ò'VåöF—"ò&W†V7WF–öâ×&÷WFRæ§6öâ ¢–b&÷WFU÷F‚æ—5öf–ÆR‚“ ¢G'“ ¢6æF–FFRÒöÆöEö§6öâ‡&÷WFU÷F‚¢–bfW&–g•÷&÷WFUö†6‚†6æF–FFR“ ¢W†V7WF–öå÷&÷WFRÒ6æF–FFP¢W†6WB„õ4W'&÷"ÂfÇVTW'&÷"ÂG—TW'&÷"“ ¢W†V7WF–öå÷&÷WFRÒæöæP¢FVÆ—fW'•÷–ÆöBÒF–7B‡6÷W&6U÷–ÆöB÷"·Ò¢–bW†V7WF–öå÷&÷WFS ¢FVÆ—fW'•÷–ÆöBç6WFFVfVÇB‚&W†V7WF–öå÷&÷WFR"ÂW†V7WF–öå÷&÷WFR¢&V6V—BÒ'V–ÆEöFVÆ—fW'•÷&V6V—B‡7G"‡'VåöF—"’ÂÖæ–fW7BævWB‚&FVÆ—fW'•÷F&vWB"’÷"'fW&–f–VB"À¢7W'&VçE÷7FFSÖ7W'&VçE÷7FFRÂ6÷W&6Uö¶–æC×6÷W&6Uö¶–æBÀ¢6÷W&6U÷–ÆöCÖFVÆ—fW'•÷–ÆöB¢–bW†V7WF–öå÷&÷WFS ¢&V6V—E²&W†V7WF–öå÷&÷WFR%ÒÒW†V7WF–öå÷&÷WFP¢&V6V—E²'&÷WFU÷&V6V—E÷6†%ÒÒW†V7WF–öå÷&÷WFRævWB‚'&V6V—E÷6†"Â""¢&V6V—E²'&V6öæ6–Æ–F–öâ%ÒÒ&V6öæ6–ÆUöFVÆ—fW'•öö'6W'fF–öâ‡&Wf–÷W5÷&V6V—BÂ&V6V—B¢w&—FUöFVÆ—fW'•÷&V6V—B‡7G"‡'VåöF—"’Â&V6V—B¢7FFU²&FVÆ—fW'’%ÒÒ°¢'F&vWB#¢&V6V—E²'F&vWB%ÒÀ¢&7W'&VçE÷7FFR#¢&V6V—E²&7W'&VçE÷7FFR%ÒÀ¢'&VG’#¢&V6V—E²'&VG’%ÒÀ¢'&V6V—B#¢7G"‡'VåöF—"ò&FVÆ—fW'’×&V6V—Bæ§6öâ"’À¢'6÷W&6Uö6†V6¶VEöB#¢&V6V—E²'6÷W&6Uö6†V6¶VEöB%ÒÀ¢'6÷W&6Uö¶–æB#¢6÷W&6Uö¶–æBÀ¢&W†V7WF–öå÷&÷WFR#¢W†V7WF–öå÷&÷WFRÀ¢'&÷WFU÷&V6V—E÷6†#¢&V6V—BævWB‚'&÷WFU÷&V6V—E÷6†"Â""’À¢Ð¢&V6öæ6–Æ–F–öâÒ&V6V—BævWB‚'&V6öæ6–Æ–F–öâ"’÷"·Ð¢–b&V6öæ6–Æ–F–öâævWB‚'7FGW2"’ÓÒ'&V÷VæVB# ¢7FFU²&7W'&VçEö7F–öâ%ÒÒ&FVÆ—fW'•÷&V÷VæVB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ'&WVW'•÷6÷W&6R ¢æW‡E÷†6RÒ''F–Â ¢7FFRç6WFFVfVÇB‚&&Æö6¶W'2"ÂµÒ¢f–ÆVEövFRÒæW‡B‚†vFRf÷"vFR–â&V6V—BævWB‚&vFW2"ÂµÒ¢–bvFRævWB‚'7FGW2"’ÓÒ&f–Â"’Â·Ò¢7FFU²&&Æö6¶W'2%ÒÒ°¢&FVÆ—fW'’&V÷VæVC¢"²7G"†f–ÆVEövFRævWB‚&FWF–Â"’÷ ¢&V6öæ6–Æ–F–öâævWB‚'&V6öåö6öFR"’÷ ¢&FVÆ—fW'•÷F&vWE÷&Vw&W76VB"¢Ð¢VÆ–b&V6V—E²'&VG’%Ó ¢7FFU²&7W'&VçEö7F–öâ%ÒÒ&FVÆ—fW'•÷&V6öæ6–ÆVB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ&6ö×ÆWF–öåö÷&6ÆR ¢æW‡E÷†6RÒ&FVÆ—fW&–ær"–b7W'&VçE÷7FFRæ÷B–â²'fW&–f–VB"Â&FöæR'ÒVÇ6R'fÆ–FF–ær ¢VÇ6S ¢7FFU²&7W'&VçEö7F–öâ%ÒÒ&FVÆ—fW'•÷&V6öæ6–Æ–F–öåöf–ÆVB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ&6öÆÆV7EöÖ—76–æuöFVÆ—fW'•öWf–FVæ6R ¢æW‡E÷†6RÒ''F–Â ¢7FFRç6WFFVfVÇB‚&&Æö6¶W'2"ÂµÒ¢f–ÅövFRÒæW‡B‚†vFRf÷"vFR–â&V6V—BævWB‚&vFW2"ÂµÒ’–bvFRævWB‚'7FGW2"’ÓÒ&f–Â"’ÂæöæR¢–bf–ÅövFS ¢7FFU²&&Æö6¶W'2%ÒÒ¶f–ÅövFRævWB‚&FWF–Â"Â&FVÆ—fW'’&V6öæ6–Æ–F–öâf–ÆVB"•Ð¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢öVÖ—EöWfVçB‡'VåöF—"Â7FFRÂ&FVÆ—fW'•÷&V6öæ6–ÆVB"Â&V6V—C×7G"‡'VåöF—"ò&FVÆ—fW'’×&V6V—Bæ§6öâ"’À¢&Æö6¶W#Ò""–b&V6V—E²'&VG’%ÒVÇ6R&FVÆ—fW'•÷&V6öæ6–Æ–F–öåöf–ÆVB"À¢ÖW76vSÒ&FVÆ—fW'’7FFR&V6öæ6–ÆVB"Â7W'&VçE÷7FFS×&V6V—E²&7W'&VçE÷7FFR%ÒÀ¢&V6öæ6–Æ–F–öã×&V6öæ6–Æ–F–öâÂW†V7WF–öå÷&÷WFSÖW†V7WF–öå÷&÷WFRÀ¢&÷WFU÷&V6V—E÷6†×&V6V—BævWB‚'&÷WFU÷&V6V—E÷6†"Â""’¢–b&V6öæ6–Æ–F–öâævWB‚'7FGW2"’ÓÒ'&V÷VæVB# ¢öVÖ—EöWfVçB‡'VåöF—"Â7FFRÂ'&öÆÆ&6²"Â&V6V—C×7G"‡'VåöF—"ò&FVÆ—fW'’×&V6V—Bæ§6öâ"’À¢&Æö6¶W#×7G"‡&V6öæ6–Æ–F–öâævWB‚'&V6öåö6öFR"’÷"&FVÆ—fW'•÷&V÷VæVB"’À¢ÖW76vSÒ&FVÆ—fW'’&Vw&W76–öâ&V÷VæVBF†R'Vâ"¢–b&V6V—E²'&VG’%Ó ¢6ö×ÆWF–öâÒö6ö×ÆWF–öå÷7FFR‡'VåöF—"Â7FFRævWB‚&6ö×ÆWF–öâ"’¢öVÖ—EöWfVçB‡'VåöF—"Â7FFRÂ&÷&6ÆU÷fW&F–7B"Â&V6V—CÒ€¢7G"‡'VåöF—"ò&6ö×ÆWF–öâ×&V6V—Bæ§6öâ"¢–b‡'VåöF—"ò&6ö×ÆWF–öâ×&V6V—Bæ§6öâ"’æW†—7G2‚¢VÇ6R7G"‡'VåöF—"ò&FVÆ—fW'’×&V6V—Bæ§6öâ"’’À¢&Æö6¶W#Ò""–b6ö×ÆWF–öâævWB‚'&VG’"’VÇ6R&÷&6ÆUö–æ6ö×ÆWFR"À¢ÖW76vS×7G"†6ö×ÆWF–öâævWB‚'fW&F–7B"’÷"$DTÄ•dU%•õTäD”är"’À¢fW&F–7C×7G"†6ö×ÆWF–öâævWB‚'fW&F–7B"’÷"$DTÄ•dU%•õTäD”är"’¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂæW‡E÷†6RÂ&FVÆ—fW'’7FFR&V6öæ6–ÆVB"Â&V6V—C×7G"‡'VåöF—"ò&FVÆ—fW'’×&V6V—Bæ§6öâ"’¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B  ¦FVbÇ•ö‡VÖåöFV6—6–öâ‡&Wó¢7G"Â'Våö–C¢7G"ÂFV6—6–öåö–C¢7G"Âç7vW#¢7G"À¢–×7C¢7G"Ò&&V†f–÷"Ö6†ævR"’ÓâF–7E·7G"Âç•Ó ¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢'VåöF—"ÒF‚‡7FGW5²''VåöF—"%Ò¢7FFRÒ7FGW5²'7FFR%Ð¢6öçG&7E÷–ÆöBÒöÆöEö§6öâ…ö6öçG&7E÷F‚‡'VåöF—"’¢F6·2Ò6öçG&7E÷–ÆöBævWB‚'F6·2"’÷"µÐ¢–bæ÷BF6·3 ¢&—6RfÇVTW'&÷"‚'F6²6öçG&7B6öÆÆV7F–öâ—2V×G’"¢6†ævVBÒfÇ6P¢f÷"F6²–âF6·3 ¢ÆVFvW"ÒF6²ç6WFFVfVÇB‚&FV6—6–öåöÆVFvW""ÂµÒ¢f÷"—FVÒ–âÆVFvW# ¢–b—FVÒævWB‚&–B"’ÓÒFV6—6–öåö–C ¢—FVÕ²'&W6öÇfVB%ÒÒG'VP¢—FVÕ²&ç7vW"%ÒÒç7vW ¢—FVÕ²'&W6öÇfVEöB%ÒÒöæ÷r‚¢—FVÕ²'&W6öÇWF–öåö–×7B%ÒÒ–×7@¢6†ævVBÒG'VP¢f÷"'V6¶WEöæÖR–â‚'VW7F–öç2"Â&77V×F–öç2"Â&&Æö6¶W'2"“ ¢f÷"—FVÒ–âF6²ævWB†'V6¶WEöæÖR’÷"µÓ ¢–b—FVÒævWB‚&–B"’ÓÒFV6—6–öåö–C ¢—FVÕ²'&W6öÇfVB%ÒÒG'VP¢—FVÕ²&ç7vW"%ÒÒç7vW ¢—FVÕ²'&W6öÇfVEöB%ÒÒöæ÷r‚¢—FVÕ²'&W6öÇWF–öåö–×7B%ÒÒ–×7@¢6†ævVBÒG'VP¢–bæ÷B6†ævVC ¢&—6RfÇVTW'&÷"†b&FV6—6–öâ–Bæ÷Bf÷VæC¢¶FV6—6–öåö–GÒ"¢6öçG&7E÷–ÆöE²'&Wf—6–öâ%ÒÒ–çB†6öçG&7E÷–ÆöBævWB‚'&Wf—6–öâ"Â’’²¢6öçG&7E÷–ÆöE²'WFFVEöB%ÒÒöæ÷r‚¢÷w&—FUö§6öâ…ö6öçG&7E÷F‚‡'VåöF—"’Â6öçG&7E÷–ÆöB¢öVÖ—EöWfVçB‡'VåöF—"Â7FFRÂ&†æFöfb"Â&V6V—C×7G"…ö6öçG&7E÷F‚‡'VåöF—"’’À¢F6µö–C×7G"‡F6·5³ÒævWB‚&–B"’÷"""’Â5ö–G3Õ÷F6µö5ö–G2‡F6·5³Ò’À¢ÖW76vSÒ&‡VÖâFV6—6–öâ†æFVBöfbFò&WÆææ–ær"ÂFV6—6–öåö–CÖFV6—6–öåö–BÀ¢W†V7WF–öå÷&÷WFS×7FFRævWB‚&W†V7WF–öå÷&÷WFR"’÷"·ÒÀ¢&÷WFU÷&V6V—E÷6†×7G"‚‡7FFRævWB‚&W†V7WF–öå÷&÷WFR"’÷"·Ò’ævWB‚'&V6V—E÷6†"’÷"""’¢–çfÆ–FFVBÒµÐ¢f÷"æÖR–â‚'Æâæ§6öâ"Â&÷W&F÷"×&V6V—Bæ§6öâ"Â&Wf–FVæ6R×&V6V—Bæ§6öâ"Â&FVÆ—fW'’×&V6V—Bæ§6öâ"“ ¢F‚Ò'VåöF—"òæÖP¢–bF‚æW†—7G2‚“ ¢F‚çVæÆ–æ²‚¢–çfÆ–FFVBæVæB†æÖR¢7FFU²'†6R%ÒÒ&v—F–æuöFV6—6–öâ ¢7FFU²'WFFVEöB%ÒÒöæ÷r‚¢7FFU²&7W'&VçEö7F–öâ%ÒÒ&‡VÖåöFV6—6–öåöÆ–VB ¢7FFU²&æW‡Eö7F–öâ%ÒÒ'&V'V–ÆE÷Æåög&öÕ÷WFFVEö6öçG&7B ¢7FFU²&÷W&F÷"%ÒÒ²'&VG’#¢fÇ6RÂ'&V6V—B#¢""Â'F&vWB#¢""Â&W†V7WF–öå÷7FFR#¢&–çfÆ–FFVB'Ð¢7FFU²&Wf–FVæ6R%ÒÒ²'&VG’#¢fÇ6RÂ'&V6V—B#¢""Â'7FGW2#¢$”ådÄ”DDTB'Ð¢7FFU²&FVÆ—fW'’%ÒÒ²'F&vWB#¢7FFRævWB‚&FVÆ—fW'•÷F&vWB"’Â&7W'&VçE÷7FFR#¢'ÆææVB"Â'&VG’#¢fÇ6RÂ'&V6V—B#¢"'Ð¢7FFU²&6ö×ÆWF–öâ%ÒÒöFVfVÇEö6ö×ÆWF–öå÷7FFR‚¢7FFU²&&Æö6¶W'2%ÒÒµÐ¢÷w&—FUö§6öâ‡'VåöF—"ò'7FFRæ§6öâ"Â7FFR¢÷G&ç6—F–öâ‡'VåöF—"Â7FFRÂ&v—F–æuöFV6—6–öâ"Â&‡VÖâFV6—6–öâÆ–VC²FWVæFVçB'F–f7G2–çfÆ–FFVB"À¢&V6V—C×7G"…ö6öçG&7E÷F‚‡'VåöF—"’’ÂW‡G&×²&FV6—6–öåö–B#¢FV6—6–öåö–BÂ&–çfÆ–FFVB#¢–çfÆ–FFVGÒ¢&WGW&â&VE÷7FGW2‡&WòÂ'Våö–B  ¦FVb7–æ5÷6÷W&6U÷7FFR‡&Wó¢7G"Â'Våö–C¢7G"Â6÷W&6S¢7G"ÂW‡FW&æÅ÷&Wó¢7G"Ò""À¢#¢–çBÂæöæRÒæöæRÂFs¢7G"Ò""’ÓâF–7E·7G"Âç•Ó ¢7FGW2Ò&VE÷7FGW2‡&WòÂ'Våö–B¢Öæ–fW7BÒ7FGW5²&Öæ–fW7B%Ð¢F&vWBÒÖæ–fW7BævWB‚&FVÆ—fW'•÷F&vWB"’÷"'fW&–f–VB ¢–b6÷W&6RÒ&v—F‡V"# ¢&—6RfÇVTW'&÷"†b'Vç7W÷'FVB6÷W&6S¢·6÷W&6R'Ò"¢–ÆöBÒv—F‡V%öFVÆ—fW'•÷–ÆöB†W‡FW&æÅ÷&WòÂ#×"ÂFs×FrÂF&vWE÷7FFS×F&vWB¢7W'&VçE÷7FFRÒ–æfW%öv—F‡V%öFVÆ—fW'•÷7FFR‡–ÆöB¢&WGW&â&V6öæ6–ÆUöFVÆ—fW'’‡&WòÂ'Våö–BÂ7W'&VçE÷7FFRÂ6÷W&6Uö¶–æCÒ&v—F‡V""Â6÷W&6U÷–ÆöC×–ÆöB

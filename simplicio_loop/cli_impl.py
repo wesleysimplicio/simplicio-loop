@@ -11,7 +11,6 @@ import sys
 import tempfile
 import time
 import webbrowser
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Optional
 try:
@@ -677,44 +676,13 @@ def retrospective_command(args) -> int:
     return 0
 
 
-def _load_stack_components(path: str) -> list:
-    from .stack_lock import StackComponent, observe_component
+def _load_stack_components(path: str):
+    from .stack_lock import load_component_observations
 
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        return load_component_observations(path)
+    except (OSError, ValueError) as exc:
         raise ValueError(f"cannot read component observations: {exc}") from exc
-    components = payload.get("components") if isinstance(payload, Mapping) else payload
-    if not isinstance(components, list) or not components:
-        raise ValueError("component observations must be a non-empty JSON array")
-
-    result = []
-    for index, item in enumerate(components):
-        if not isinstance(item, Mapping):
-            raise ValueError(f"component {index} must be an object")
-        missing = [field for field in ("name", "version") if not item.get(field)]
-        if missing:
-            raise ValueError(f"component {index} missing: {', '.join(missing)}")
-        observed = observe_component(
-            str(item["name"]),
-            str(item["version"]),
-            str(item.get("executable", "")),
-            build_sha=str(item.get("build_sha", "")),
-            capabilities=item.get("capabilities", ()),
-            artifact_sha256=item.get("artifact_sha256"),
-        )
-        if "available" in item:
-            observed = StackComponent(
-                name=observed.name,
-                version=observed.version,
-                executable=observed.executable,
-                build_sha=observed.build_sha,
-                artifact_sha256=observed.artifact_sha256,
-                capabilities=observed.capabilities,
-                available=bool(item["available"]),
-            )
-        result.append(observed)
-    return result
 
 
 def stack_command(args) -> int:
@@ -755,6 +723,45 @@ def stack_command(args) -> int:
             "schema": "simplicio.stack-lock-command/v1",
             "status": "BLOCKED",
             "reason_code": "stack_lock_invalid",
+            "error": str(exc),
+        }, ensure_ascii=False, sort_keys=True))
+        return 2
+
+
+def stack_doctor_command(args) -> int:
+    """Report installed stack identity and route readiness without side effects."""
+    from .stack_lock import discover_installed_components
+
+    try:
+        components = discover_installed_components()
+        by_name = {component.name: component for component in components}
+        required = ("simplicio-loop", "simplicio-mapper")
+        missing = [name for name in required if not by_name.get(name, None) or not by_name[name].available]
+        runtime = by_name.get("simplicio-runtime")
+        routes = {
+            "standalone": {
+                "available": not missing,
+                "missing": missing,
+            },
+            "runtime-backed": {
+                "available": not missing and bool(runtime and runtime.available),
+                "missing": missing + ([] if runtime and runtime.available else ["simplicio-runtime"]),
+            },
+        }
+        status = "READY" if routes["standalone"]["available"] else "BLOCKED"
+        result = {
+            "schema": "simplicio.stack-doctor/v1",
+            "status": status,
+            "components": [component.to_dict() for component in components],
+            "routes": routes,
+        }
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0 if status == "READY" else 2
+    except (OSError, ValueError) as exc:
+        print(json.dumps({
+            "schema": "simplicio.stack-doctor/v1",
+            "status": "BLOCKED",
+            "reason_code": "stack_observation_invalid",
             "error": str(exc),
         }, ensure_ascii=False, sort_keys=True))
         return 2
@@ -899,14 +906,28 @@ def main(argv=None) -> int:
     p_stack_verify.add_argument("--components", required=True, help="JSON component observations")
     p_stack_verify.add_argument("--route", choices=("standalone", "runtime-backed"), default=None)
 
-    for storage_command in ("doctor", "inspect"):
-        p_storage = sub.add_parser(storage_command, help="inspect storage routing and MapperStore capabilities")
-        p_storage.add_argument("--storage", action="store_true", required=True,
-                               help="inspect the Loop storage adapter boundary")
-        p_storage.add_argument("--route", choices=("legacy", "shadow", "mapper"), default="mapper")
-        p_storage.add_argument("--data-dir", default=None)
-        p_storage.add_argument("--require-capability", action="append", default=[])
-        p_storage.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    p_doctor = sub.add_parser("doctor", help="inspect the installed stack or storage routing")
+    p_doctor.set_defaults(doctor_command=None, stack_json=False)
+    p_doctor.add_argument("--storage", action="store_true",
+                          help="inspect the Loop storage adapter boundary")
+    p_doctor.add_argument("--route", choices=("legacy", "shadow", "mapper"), default="mapper")
+    p_doctor.add_argument("--data-dir", default=None)
+    p_doctor.add_argument("--require-capability", action="append", default=[])
+    p_doctor.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    doctor_sub = p_doctor.add_subparsers(dest="doctor_command")
+    p_doctor_stack = doctor_sub.add_parser(
+        "stack", help="report installed component identity and route readiness"
+    )
+    p_doctor_stack.add_argument("--json", dest="stack_json", action="store_true",
+                                help="emit machine-readable JSON")
+
+    p_inspect = sub.add_parser("inspect", help="inspect storage routing and MapperStore capabilities")
+    p_inspect.add_argument("--storage", action="store_true", required=True,
+                           help="inspect the Loop storage adapter boundary")
+    p_inspect.add_argument("--route", choices=("legacy", "shadow", "mapper"), default="mapper")
+    p_inspect.add_argument("--data-dir", default=None)
+    p_inspect.add_argument("--require-capability", action="append", default=[])
+    p_inspect.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
     p_map = sub.add_parser("map", help="map-service cross-module status")
     map_sub = p_map.add_subparsers(dest="map_command", required=True)
@@ -1205,7 +1226,11 @@ def main(argv=None) -> int:
         return status(args.repo, args.run_id, args.json, args.as_text)
     if command == "stack":
         return stack_command(args)
+    if command == "doctor" and getattr(args, "doctor_command", None) == "stack":
+        return stack_doctor_command(args)
     if command in {"doctor", "inspect"}:
+        if command == "doctor" and not args.storage:
+            parser.error("doctor requires --storage or the stack subcommand")
         from .store_adapter import storage_cli
         forwarded = ["--route", args.route]
         if args.data_dir:
