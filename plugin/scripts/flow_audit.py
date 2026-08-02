@@ -207,12 +207,7 @@ def relpath(path: Path, root: Path) -> str:
 
 def iter_files(root: Path) -> Iterable[Path]:
     for current, dirs, names in os.walk(root):
-        dirs[:] = [
-            d for d in dirs
-            if d not in EXCLUDED_DIRS
-            and not d.startswith(".cache")
-            and not d.startswith(".pytest-")
-        ]
+        dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS and not d.startswith(".cache")]
         cur = Path(current)
         for name in names:
             path = cur / name

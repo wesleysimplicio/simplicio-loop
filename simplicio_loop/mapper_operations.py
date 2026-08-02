@@ -277,6 +277,25 @@ class MapperOperationsAdapter:
             dict(payload),
         )
 
+    def prepare_effect_for_attempt(
+        self,
+        attempt_id: str,
+        fence_token: str,
+        *,
+        effect_id: str,
+        idempotency_key: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Prepare an effect when the caller owns only attempt identity."""
+        return self._call(
+            "prepare_effect",
+            attempt_id,
+            fence_token,
+            effect_id,
+            idempotency_key,
+            dict(payload),
+        )
+
     def commit_effect(
         self,
         lease: OperationLease,
@@ -292,6 +311,17 @@ class MapperOperationsAdapter:
             dict(receipt),
         )
 
+    def commit_effect_for_attempt(
+        self,
+        effect_id: str,
+        attempt_id: str,
+        fence_token: str,
+        receipt: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return self._call(
+            "commit_effect", effect_id, attempt_id, fence_token, dict(receipt)
+        )
+
     def mark_effect_unknown(
         self,
         lease: OperationLease,
@@ -304,6 +334,13 @@ class MapperOperationsAdapter:
             effect_id,
             lease.attempt_id,
             lease.fence_token,
+        )
+
+    def mark_effect_unknown_for_attempt(
+        self, effect_id: str, attempt_id: str, fence_token: str
+    ) -> dict[str, Any]:
+        return self._call(
+            "mark_effect_unknown", effect_id, attempt_id, fence_token
         )
 
     def reconcile_effect(

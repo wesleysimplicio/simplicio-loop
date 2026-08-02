@@ -10,7 +10,6 @@ from typing import Any, Dict, Mapping, Optional
 
 from .runtime_bridge import (
     RuntimeBridge,
-    RuntimeBridgeError,
     RuntimeBridgeRecoveryUnknown,
 )
 from .canonical_plan import CanonicalPlan, canonical_plan_metadata
@@ -40,7 +39,7 @@ class EffectRequest:
     idempotency_key: str
     write_set: tuple[str, ...]
     lease_id: str
-    fencing_token: int
+    fencing_token: int | str
     cwd: str = "."
     timeout_ms: int = 120_000
     attempt: int = 1
@@ -51,9 +50,21 @@ class EffectRequest:
     transaction_id: Optional[str] = None
     authorization_digest: Optional[str] = None
     canonical_plan: Optional[CanonicalPlan] = None
+    attempt_id: Optional[str] = None
 
     def __post_init__(self) -> None:
-        if not self.workspace or not self.idempotency_key or not self.write_set or not self.lease_id or self.fencing_token < 1:
+        if (
+            not self.workspace
+            or not self.idempotency_key
+            or not self.write_set
+            or not self.lease_id
+            or (
+                isinstance(self.fencing_token, int)
+                and (isinstance(self.fencing_token, bool) or self.fencing_token < 1)
+            )
+            or (isinstance(self.fencing_token, str) and not self.fencing_token.strip())
+            or not isinstance(self.fencing_token, (int, str))
+        ):
             raise RuntimeEffectError("workspace, idempotency, write set and lease/fence are required")
         if any(not isinstance(item, str) or not item.strip() for item in self.write_set):
             raise RuntimeEffectError("write_set must contain non-empty strings")
