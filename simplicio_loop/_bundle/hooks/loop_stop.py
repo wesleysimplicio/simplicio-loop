@@ -52,6 +52,9 @@ SPINDLE_STATE = os.path.join(LOOP_DIR, "spindle_state.json")
 PHASE_FILE = os.path.join(LOOP_DIR, "phase.json")
 FLOW_AUDIT_RECEIPT = os.path.join(".simplicio/orchestrator", "flow-audit.json")
 SIMPLICIO_LOOP_SKILL_MARKER = os.path.join(".claude", "skills", "simplicio-loop", "SKILL.md")
+ORIENTATION_BEGIN = "<!-- SIMPLICIO-LLM-ORIENTATION:BEGIN -->"
+ORIENTATION_END = "<!-- SIMPLICIO-LLM-ORIENTATION:END -->"
+ORIENTATION_LABEL = "[simplicio-loop startup orientation]"
 # Core operate/survey pair — always required when the simplicio-loop skill is present.
 BOUND_OPERATORS = ("simplicio-mapper", "simplicio-dev-cli")
 # Adaptive: Runtime (simplicio) and Fast are required only when operational (or forced).
@@ -126,6 +129,67 @@ def _progress_header_prefix(nxt, max_iter):
         return " · " + rest if rest else ""
     except Exception:
         return ""
+
+
+def _orientation_skill_paths():
+    """Return likely canonical/mirrored skill paths for startup orientation lookup."""
+    paths = []
+    configured = os.environ.get("SIMPLICIO_LOOP_ORIENTATION_FILE", "").strip()
+    if configured:
+        paths.append(Path(configured))
+
+    cwd = Path.cwd()
+    paths.extend((
+        cwd / ".claude/skills/simplicio-loop/SKILL.md",
+        cwd / "plugin/skills/simplicio-loop/SKILL.md",
+        cwd / "simplicio_loop/_bundle/skills/simplicio-loop/SKILL.md",
+    ))
+
+    hook_dir = Path(__file__).resolve().parent
+    for root in (hook_dir.parent, hook_dir):
+        paths.extend((
+            root / ".claude/skills/simplicio-loop/SKILL.md",
+            root / "plugin/skills/simplicio-loop/SKILL.md",
+            root / "skills/simplicio-loop/SKILL.md",
+            root / "_bundle/skills/simplicio-loop/SKILL.md",
+        ))
+
+    seen = set()
+    unique = []
+    for path in paths:
+        key = os.path.normcase(os.path.abspath(str(path)))
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def _llm_startup_orientation():
+    """Extract the marked canonical orientation; missing/corrupt files fail open."""
+    for path in _orientation_skill_paths():
+        try:
+            text = path.read_text(encoding="utf-8")
+            start = text.find(ORIENTATION_BEGIN)
+            if start < 0:
+                continue
+            end = text.find(ORIENTATION_END, start + len(ORIENTATION_BEGIN))
+            if end < 0:
+                continue
+            block = text[start:end + len(ORIENTATION_END)].strip()
+            if block:
+                return block
+        except (OSError, UnicodeError):
+            continue
+    return ""
+
+
+def _refeed_message(header, body):
+    """Prepend startup orientation once, without growing the task body each turn."""
+    orientation = _llm_startup_orientation()
+    existing = body or ""
+    if not orientation or (ORIENTATION_BEGIN in existing and ORIENTATION_END in existing):
+        return header + "\n\n" + existing
+    return ORIENTATION_LABEL + "\n" + orientation + "\n\n" + header + "\n\n" + existing
 
 
 def cleanup_and_stop(reason=None, outcome=None):
@@ -503,13 +567,13 @@ def required_bound_operators():
     Fast: under strict mode, if currently operational it becomes required.
     """
     required = list(BOUND_OPERATORS)
-    rt_mode = _env_flag("SIMPLICIO_LOOP_REQUIRE_RUNTIME", "auto") or "auto"
+    rt_mode = _env_flag("SIMPLICIO_LOOP_REQUIRE_RUNTIME", "off") or "off"
     if rt_mode in _FALSE:
         rt_mode = "off"
     elif rt_mode in _TRUE:
         rt_mode = "required"
     elif rt_mode not in {"auto", "off", "required"}:
-        rt_mode = "auto"
+        rt_mode = "off"
     runtime_ok = _binary_operational(RUNTIME_BINARY, ("--version",))
     if rt_mode == "required" or (rt_mode == "auto" and runtime_ok):
         required.append(RUNTIME_BINARY)
@@ -1362,7 +1426,7 @@ def main():
         # echo it.
         write_watcher_challenge(nxt)
         refresh_cross_agent_wiki(include_handoff=False)
-        emit_refeed(header + "\n\n" + (body or ""))
+        emit_refeed(_refeed_message(header, body))
     except Exception:
         allow_stop()  # fail-open, always
 
