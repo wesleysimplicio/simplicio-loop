@@ -698,3 +698,233 @@ def diagnose_stack(
                     "missing_component",
                     f"required component {entry.name!r} is not available for route {route!r}",
                     "install or expose the pinned component, then re-run stack diagnostics",
+                    (entry.name,),
+                ))
+            continue
+
+        if not matches:
+            continue
+        for component in matches:
+            if not component.available:
+                issues.append(_diagnostic(
+                    "component_unavailable",
+                    f"component {entry.name!r} is not available for route {route!r}",
+                    "install a readable executable and re-run stack diagnostics",
+                    (entry.name,),
+                ))
+            if not _version_matches(component.version, entry.version_range):
+                issues.append(_diagnostic(
+                    "version_incompatible",
+                    f"component {entry.name!r} version {component.version!r} does not match {entry.version_range!r}",
+                    "install a version inside the registry range before locking",
+                    (entry.name,),
+                    {"actual": component.version, "expected": entry.version_range},
+                ))
+            missing_capabilities = sorted(
+                set(entry.required_capabilities) - set(component.capabilities)
+            )
+            if missing_capabilities:
+                issues.append(_diagnostic(
+                    "capability_missing",
+                    f"component {entry.name!r} lacks required capabilities: {', '.join(missing_capabilities)}",
+                    "publish or install the declared capabilities before locking",
+                    (entry.name,),
+                    {"missing": ",".join(missing_capabilities)},
+                ))
+        if active and route not in entry.routes:
+            issues.append(_diagnostic(
+                "route_incompatible",
+                f"component {entry.name!r} is not declared for route {route!r}",
+                "select a supported route or update the compatibility registry",
+                (entry.name,),
+                {"routes": ",".join(entry.routes)},
+            ))
+
+    for rule in registry.compatibility:
+        producers = by_name.get(rule.producer, [])
+        consumers = by_name.get(rule.consumer, [])
+        if not producers or not consumers:
+            continue
+        if len(producers) != 1 or len(consumers) != 1:
+            issues.append(_diagnostic(
+                "compatibility_mismatch",
+                f"compatibility rule {rule.producer!r} -> {rule.consumer!r} is ambiguous",
+                "remove duplicate observations before locking",
+                (rule.producer, rule.consumer),
+            ))
+            continue
+        producer = producers[0]
+        consumer = consumers[0]
+        if (
+            not _version_matches(producer.version, rule.producer_range)
+            or not _version_matches(consumer.version, rule.consumer_range)
+            or not set(rule.required_capabilities).issubset(set(producer.capabilities))
+        ):
+            issues.append(_diagnostic(
+                "compatibility_mismatch",
+                f"compatibility rule {rule.producer!r} -> {rule.consumer!r} does not match observed versions/capabilities",
+                "install compatible producer/consumer artifacts before locking",
+                (rule.producer, rule.consumer),
+                {
+                    "producer_version": producer.version,
+                    "consumer_version": consumer.version,
+                    "producer_range": rule.producer_range,
+                    "consumer_range": rule.consumer_range,
+                },
+            ))
+
+    if locked is not None:
+        current = {name: tuple(items) for name, items in by_name.items()}
+        changed, unchanged = _lock_changes(locked, current)
+        for group in registry.upgrade_groups:
+            members = set(group.components)
+            changed_members = sorted(members & changed)
+            unchanged_members = sorted(members & unchanged)
+            if changed_members and unchanged_members:
+                issues.append(_diagnostic(
+                    "partial_upgrade",
+                    f"upgrade group {group.name!r} is only partially upgraded",
+                    "upgrade or roll back the complete group before resuming effects",
+                    tuple(members),
+                    {
+                        "changed": ",".join(changed_members),
+                        "unchanged": ",".join(unchanged_members),
+                    },
+                ))
+
+    return StackDiagnosis(
+        route=route,
+        registry_generation=registry.generation,
+        registry_hash=registry.registry_hash,
+        issues=tuple(issues),
+        lock_hash=locked.lock_hash if locked is not None else "",
+    )
+
+
+
+def _component_from_dict(payload: Mapping[str, Any]) -> StackComponent:
+    if not isinstance(payload, Mapping):
+        raise StackLockError("component observation must be an object")
+    required = ("name", "version", "executable", "build_sha", "artifact_sha256")
+    missing = [field for field in required if field not in payload]
+    if missing:
+        raise StackLockError("component fields missing: " + ", ".join(missing))
+    capabilities = payload.get("capabilities", ())
+    if not isinstance(capabilities, (list, tuple)):
+        raise StackLockError("component capabilities must be a list")
+    available = payload.get("available", True)
+    if not isinstance(available, bool):
+        raise StackLockError("component available must be boolean")
+    return StackComponent(
+        name=str(payload["name"]),
+        version=str(payload["version"]),
+        executable=str(payload["executable"]),
+        build_sha=str(payload["build_sha"]),
+        artifact_sha256=str(payload["artifact_sha256"]),
+        capabilities=tuple(sorted({str(value) for value in capabilities if str(value)})),
+        available=available,
+    )
+
+
+def validate_stack_lock(payload: Any) -> list[str]:
+    """Return stable validation codes for a persisted immutable stack lock."""
+    if not isinstance(payload, Mapping):
+        return ["root_not_object"]
+    errors: list[str] = []
+    if payload.get("schema") != STACK_LOCK_SCHEMA:
+        errors.append("schema_mismatch")
+    route = payload.get("route")
+    if route not in ROUTES:
+        errors.append("route_invalid")
+    run_id = payload.get("run_id", "")
+    if not isinstance(run_id, str):
+        errors.append("run_id_invalid")
+        run_id = str(run_id)
+    if payload.get("frozen") is not True:
+        errors.append("lock_not_frozen")
+    raw_components = payload.get("components")
+    components: list[StackComponent] = []
+    if not isinstance(raw_components, list):
+        errors.append("components_invalid")
+    else:
+        names: set[str] = set()
+        for index, raw in enumerate(raw_components):
+            try:
+                component = _component_from_dict(raw)
+            except (TypeError, ValueError, StackLockError) as error:
+                errors.append(f"component_{index}_invalid")
+                continue
+            if not component.name:
+                errors.append(f"component_{index}_name_missing")
+            if component.name in names:
+                errors.append("duplicate_component")
+            names.add(component.name)
+            components.append(component)
+    lock_hash = payload.get("lock_hash")
+    if not isinstance(lock_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", lock_hash):
+        errors.append("lock_hash_invalid")
+    elif not errors and route in ROUTES:
+        normalized = tuple(sorted(components, key=lambda item: item.name))
+        expected = _lock_hash(_lock_payload(str(route), run_id, normalized))
+        if lock_hash != expected:
+            errors.append("lock_hash_mismatch")
+    return errors
+
+
+def load_stack_lock(path: str | Path) -> StackLock:
+    """Load and validate an immutable stack lock without changing it."""
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise StackLockError(f"cannot read stack lock: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise StackLockError("invalid stack lock: root_not_object")
+    return StackLock.from_dict(payload)
+
+
+def write_stack_lock(lock: StackLock, path: str | Path) -> Path:
+    """Persist a lock atomically and reject replacement with a different hash."""
+    target = Path(path)
+    if target.exists():
+        try:
+            current = load_stack_lock(target)
+        except (OSError, UnicodeError, json.JSONDecodeError, StackLockError) as exc:
+            raise StackLockError(f"cannot replace invalid stack lock: {exc}") from exc
+        if current.lock_hash != lock.lock_hash:
+            raise StackLockError("stack lock already exists with a different hash")
+        return target
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".tmp")
+    temporary.write_text(
+        json.dumps(lock.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(target)
+    return target
+
+
+__all__ = [
+    "ROUTES",
+    "STACK_DIAGNOSTICS_SCHEMA",
+    "STACK_LOCK_SCHEMA",
+    "STACK_REGISTRY_SCHEMA",
+    "StackCompatibilityRegistry",
+    "StackCompatibilityRule",
+    "StackComponent",
+    "StackDiagnostic",
+    "StackDiagnosis",
+    "StackLock",
+    "StackLockError",
+    "StackRegistryEntry",
+    "StackUpgradeGroup",
+    "diagnose_stack",
+    "discover_installed_components",
+    "load_component_observations",
+    "load_stack_lock",
+    "load_stack_registry",
+    "observe_component",
+    "observe_components",
+    "validate_stack_lock",
+    "write_stack_lock",
+]
