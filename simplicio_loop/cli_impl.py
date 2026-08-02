@@ -801,7 +801,7 @@ def main(argv=None) -> int:
         p_storage = sub.add_parser(storage_command, help="inspect storage routing and MapperStore capabilities")
         p_storage.add_argument("--storage", action="store_true", required=True,
                                help="inspect the Loop storage adapter boundary")
-        p_storage.add_argument("--route", choices=("legacy", "shadow", "mapper"), default="legacy")
+        p_storage.add_argument("--route", choices=("legacy", "shadow", "mapper"), default="mapper")
         p_storage.add_argument("--data-dir", default=None)
         p_storage.add_argument("--require-capability", action="append", default=[])
         p_storage.add_argument("--json", action="store_true", help="emit machine-readable JSON")

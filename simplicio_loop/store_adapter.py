@@ -241,7 +241,7 @@ class StorageRouter:
     def __init__(
         self,
         *,
-        requested: StorageRoute | str = StorageRoute.LEGACY,
+        requested: StorageRoute | str = StorageRoute.MAPPER,
         mapper: MapperStoreAdapter | None = None,
         run_id: str | None = None,
         generation: str | None = None,
@@ -342,7 +342,7 @@ class StorageRouter:
 
 def storage_doctor(
     *,
-    requested: StorageRoute | str = StorageRoute.LEGACY,
+    requested: StorageRoute | str = StorageRoute.MAPPER,
     data_dir: str | os.PathLike[str] | None = None,
     required_capabilities: tuple[str, ...] = (),
 ) -> dict[str, Any]:
@@ -372,7 +372,7 @@ def storage_cli(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(prog="simplicio-loop storage")
     parser.add_argument(
-        "--route", choices=[route.value for route in StorageRoute], default="legacy"
+        "--route", choices=[route.value for route in StorageRoute], default="mapper"
     )
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--require-capability", action="append", default=[])
