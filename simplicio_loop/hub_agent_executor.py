@@ -3,21 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import sqlite3
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from .hub_governor import RESOURCE_NAMES, ResourceGovernor, ResourceRequest, ResourceThrottled
+from .mapper_operations import MapperOperationsAdapter
 from .process_supervisor import ProcessLease, ProcessResult, ProcessSpec, PythonProcessAdapter
 
 
 NAMESPACE = "hub-agent/v1"
 CAPABILITY = "hub-agent-process/v1"
 TERMINAL = frozenset({"completed", "failed", "cancelled", "timed_out", "recovery_unknown"})
+EVENT_SCHEMA = "simplicio.loop-hub-agent-execution-event/v1"
+JOURNAL_PREFIX = "simplicio.loop.hub-agent-executor:"
 
 
 class HubAgentError(RuntimeError):
@@ -28,37 +29,28 @@ class StaleFence(HubAgentError):
     pass
 
 
+class _JournalConflict(HubAgentError):
+    """The projected execution changed before this mutation committed."""
+
+
 class HubAgentExecutor:
-    """A single background event loop with a durable, fenced lifecycle store."""
+    """A single background event loop with a durable, fenced lifecycle journal."""
 
     def __init__(
         self, path: str, governor: ResourceGovernor, *, max_concurrency: int = 4,
         adapter: Optional[PythonProcessAdapter] = None,
+        operations: Any | None = None,
     ) -> None:
-        self.path = str(Path(path))
-        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self.path = str(Path(path).expanduser().absolute())
         self.governor = governor
         self.max_concurrency = max_concurrency
         self.adapter = adapter or PythonProcessAdapter()
         self.epoch = uuid.uuid4().hex
         self._lock = threading.RLock()
-        self._db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=FULL")
-        self._db.execute("""
-            CREATE TABLE IF NOT EXISTS hub_agent_executions(
-              handle TEXT PRIMARY KEY, namespace TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
-              spec TEXT NOT NULL, request TEXT NOT NULL, priority INTEGER NOT NULL, state TEXT NOT NULL,
-              fence INTEGER NOT NULL, epoch TEXT NOT NULL, result TEXT, receipt TEXT,
-              created_at REAL NOT NULL, updated_at REAL NOT NULL, heartbeat_at REAL NOT NULL)
-        """)
-        now = time.time()
-        self._db.execute(
-            "UPDATE hub_agent_executions SET state='recovery_unknown',updated_at=?,receipt=? "
-            "WHERE namespace=? AND state IN ('claimed','running','cancelling')",
-            (now, json.dumps(self._receipt("recovery_unknown", now, reason="previous_epoch")), NAMESPACE),
-        )
+        self._operations = operations or MapperOperationsAdapter(self.path)
+        self._journal_id = JOURNAL_PREFIX + self.path
+        self._operations.initialize()
+        self._recover_previous_epoch()
         self._loop = asyncio.new_event_loop()
         self._ready = threading.Event()
         self._tasks: Dict[str, asyncio.Task[None]] = {}
@@ -67,6 +59,82 @@ class HubAgentExecutor:
         self._thread = threading.Thread(target=self._run_loop, name="hub-agent-executor", daemon=True)
         self._thread.start()
         self._ready.wait(5)
+
+    @staticmethod
+    def _last_seq(replay: Mapping[str, Any]) -> int:
+        events = replay.get("events") or []
+        if events:
+            return int(events[-1]["seq"])
+        compaction = replay.get("compaction")
+        return int(compaction["through_seq"]) if compaction else 0
+
+    def _replay(self) -> dict[str, Any]:
+        replay = self._operations.replay(self._journal_id)
+        if not replay.get("valid", False):
+            raise HubAgentError("hub agent journal is invalid")
+        return replay
+
+    @staticmethod
+    def _state(replay: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+        state: dict[str, dict[str, Any]] = {}
+        for journal_event in replay.get("events", []):
+            payload = journal_event.get("payload")
+            if not isinstance(payload, Mapping) or payload.get("schema") != EVENT_SCHEMA:
+                raise HubAgentError("hub agent journal contains an unknown event")
+            if payload.get("operation") != "execution":
+                raise HubAgentError("hub agent journal contains an unknown operation")
+            execution = dict(payload.get("execution") or {})
+            handle = str(execution.get("handle") or "")
+            if not handle:
+                raise HubAgentError("hub agent journal contains an execution without a handle")
+            state[handle] = execution
+        return state
+
+    @staticmethod
+    def _is_conflict(error: BaseException) -> bool:
+        return "JOURNAL_CONFLICT" in str(error) or getattr(error, "reason_code", "") == "JOURNAL_CONFLICT"
+
+    def _append(self, replay: Mapping[str, Any], event_type: str, execution: Mapping[str, Any]) -> None:
+        try:
+            self._operations.append_event(
+                self._journal_id,
+                event_type,
+                {"schema": EVENT_SCHEMA, "operation": "execution", "execution": dict(execution)},
+                expected_seq=self._last_seq(replay),
+            )
+        except Exception as error:
+            if self._is_conflict(error):
+                raise _JournalConflict("hub agent journal changed concurrently") from error
+            raise HubAgentError("hub agent journal append failed: " + str(error)) from error
+
+    def _recover_previous_epoch(self) -> None:
+        with self._lock:
+            for _ in range(32):
+                replay = self._replay()
+                state = self._state(replay)
+                candidates = [
+                    execution for execution in state.values()
+                    if execution.get("namespace") == NAMESPACE
+                    and execution.get("state") in {"claimed", "running", "cancelling"}
+                ]
+                if not candidates:
+                    return
+                try:
+                    for execution in candidates:
+                        now = time.time()
+                        recovered = {
+                            **execution,
+                            "state": "recovery_unknown",
+                            "updated_at": now,
+                            "heartbeat_at": now,
+                            "receipt": self._receipt("recovery_unknown", now, reason="previous_epoch"),
+                        }
+                        self._append(replay, "hub-agent.recovery-unknown", recovered)
+                        replay = self._replay()
+                    return
+                except _JournalConflict:
+                    continue
+        raise HubAgentError("hub agent recovery remained contended")
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -87,28 +155,52 @@ class HubAgentExecutor:
     def claim(self, spec: ProcessSpec, request: ResourceRequest, *, idempotency_key: str) -> Dict[str, Any]:
         if not idempotency_key:
             raise HubAgentError("idempotency_key is required")
-        now = time.time()
         with self._lock:
-            existing = self._db.execute(
-                "SELECT * FROM hub_agent_executions WHERE idempotency_key=?", (idempotency_key,)
-            ).fetchone()
-            if existing:
-                if json.loads(existing["spec"])["spec_hash"] != spec.spec_hash:
-                    raise HubAgentError("idempotency key conflicts with ProcessSpec")
-                return self._view(existing)
-            handle = "ha-" + uuid.uuid4().hex
-            try:
-                lease = self.governor.admit(NAMESPACE, handle, request, queue=NAMESPACE)
-            except ResourceThrottled as exc:
-                raise HubAgentError("backpressure: " + str(exc)) from exc
-            self._leases[handle] = lease
-            self._db.execute(
-                "INSERT INTO hub_agent_executions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (handle, NAMESPACE, idempotency_key, json.dumps(spec.to_dict(), sort_keys=True),
-                 json.dumps(request.as_dict(), sort_keys=True), spec.priority, "claimed", 1,
-                 self.epoch, None, None, now, now, now),
-            )
-            return self.status(handle)
+            for _ in range(32):
+                replay = self._replay()
+                state = self._state(replay)
+                existing = next(
+                    (execution for execution in state.values()
+                     if execution.get("idempotency_key") == idempotency_key),
+                    None,
+                )
+                if existing is not None:
+                    if existing["spec"]["spec_hash"] != spec.spec_hash:
+                        raise HubAgentError("idempotency key conflicts with ProcessSpec")
+                    return self._view(existing)
+                now = time.time()
+                handle = "ha-" + uuid.uuid4().hex
+                try:
+                    lease = self.governor.admit(NAMESPACE, handle, request, queue=NAMESPACE)
+                except ResourceThrottled as exc:
+                    raise HubAgentError("backpressure: " + str(exc)) from exc
+                execution = {
+                    "handle": handle,
+                    "namespace": NAMESPACE,
+                    "idempotency_key": idempotency_key,
+                    "spec": spec.to_dict(),
+                    "request": request.as_dict(),
+                    "priority": spec.priority,
+                    "state": "claimed",
+                    "fence": 1,
+                    "epoch": self.epoch,
+                    "result": None,
+                    "receipt": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "heartbeat_at": now,
+                }
+                try:
+                    self._append(replay, "hub-agent.claimed", execution)
+                    self._leases[handle] = lease
+                    return self._view(execution)
+                except _JournalConflict:
+                    self.governor.release(lease)
+                    continue
+                except BaseException:
+                    self.governor.release(lease)
+                    raise
+        raise HubAgentError("hub agent claim remained contended")
 
     def send(self, handle: str, fence: int) -> Dict[str, Any]:
         with self._lock:
@@ -117,13 +209,12 @@ class HubAgentExecutor:
                 return self._view(row)
             if row["state"] != "claimed":
                 raise HubAgentError("execution is not sendable")
-            next_fence = fence + 1
-            self._db.execute(
-                "UPDATE hub_agent_executions SET state='running',fence=?,updated_at=?,heartbeat_at=? WHERE handle=?",
-                (next_fence, time.time(), time.time(), handle),
-            )
-            self._loop.call_soon_threadsafe(self._spawn_task, handle, next_fence)
-            return self.status(handle)
+            now = time.time()
+            updated = {**row, "state": "running", "fence": int(fence) + 1,
+                       "updated_at": now, "heartbeat_at": now}
+            self._append(self._replay(), "hub-agent.started", updated)
+            self._loop.call_soon_threadsafe(self._spawn_task, handle, int(fence) + 1)
+            return self._view(updated)
 
     def _spawn_task(self, handle: str, fence: int) -> None:
         task = self._loop.create_task(self._execute(handle, fence))
@@ -131,7 +222,7 @@ class HubAgentExecutor:
 
     async def _execute(self, handle: str, fence: int) -> None:
         row = self._row(handle)
-        raw = json.loads(row["spec"])
+        raw = row["spec"]
         spec = ProcessSpec(
             tuple(raw["argv"]), cwd=raw.get("cwd"), cwd_allowlist=tuple(raw.get("cwd_allowlist", ())),
             env=raw.get("env", {}), env_allowlist=tuple(raw.get("env_allowlist", ())),
@@ -161,18 +252,12 @@ class HubAgentExecutor:
             self._processes.pop(handle, None)
             self._tasks.pop(handle, None)
         now = time.time()
-        receipt = self._receipt(state, now, epoch=self.epoch, handle=handle, fence=fence)
         with self._lock:
-            current_fence = int(self._row(handle)["fence"])
-            receipt["fence"] = current_fence
-            self._db.execute("BEGIN IMMEDIATE")
-            self._db.execute(
-                "UPDATE hub_agent_executions SET state=?,result=?,receipt=?,updated_at=?,heartbeat_at=? "
-                "WHERE handle=? AND fence=?",
-                (state, json.dumps(result.to_dict(), sort_keys=True), json.dumps(receipt, sort_keys=True),
-                 now, now, handle, current_fence),
-            )
-            self._db.execute("COMMIT")
+            current = self._row(handle)
+            receipt = self._receipt(state, now, epoch=self.epoch, handle=handle, fence=current["fence"])
+            updated = {**current, "state": state, "result": result.to_dict(), "receipt": receipt,
+                       "updated_at": now, "heartbeat_at": now}
+            self._append(self._replay(), "hub-agent.terminal", updated)
             resource_lease = self._leases.pop(handle, None)
             if resource_lease is not None:
                 self.governor.release(resource_lease)
@@ -181,34 +266,39 @@ class HubAgentExecutor:
         while True:
             await asyncio.sleep(0.1)
             with self._lock:
-                self._db.execute(
-                    "UPDATE hub_agent_executions SET heartbeat_at=? WHERE handle=? AND fence=? AND state='running'",
-                    (time.time(), handle, fence),
-                )
+                replay = self._replay()
+                current = self._state(replay).get(handle)
+                if current is None or current["fence"] != fence or current["state"] != "running":
+                    return
+                now = time.time()
+                try:
+                    self._append(replay, "hub-agent.heartbeat", {
+                        **current, "updated_at": now, "heartbeat_at": now,
+                    })
+                except _JournalConflict:
+                    continue
 
     def cancel(self, handle: str, fence: int) -> Dict[str, Any]:
         with self._lock:
             row = self._checked(handle, fence)
             if row["state"] in TERMINAL:
                 return self._view(row)
-            next_fence = fence + 1
-            self._db.execute(
-                "UPDATE hub_agent_executions SET state='cancelling',fence=?,updated_at=? WHERE handle=?",
-                (next_fence, time.time(), handle),
-            )
+            now = time.time()
+            updated = {**row, "state": "cancelling", "fence": int(fence) + 1, "updated_at": now}
+            self._append(self._replay(), "hub-agent.cancelling", updated)
             task = self._tasks.get(handle)
             if task:
                 self._loop.call_soon_threadsafe(task.cancel)
-            return self.status(handle)
+            return self._view(updated)
 
-    def _row(self, handle: str) -> sqlite3.Row:
+    def _row(self, handle: str) -> dict[str, Any]:
         with self._lock:
-            row = self._db.execute("SELECT * FROM hub_agent_executions WHERE handle=?", (handle,)).fetchone()
+            row = self._state(self._replay()).get(handle)
         if row is None:
             raise HubAgentError("unknown handle")
         return row
 
-    def _checked(self, handle: str, fence: int) -> sqlite3.Row:
+    def _checked(self, handle: str, fence: int) -> dict[str, Any]:
         row = self._row(handle)
         if int(row["fence"]) != int(fence):
             raise StaleFence("stale fence")
@@ -224,14 +314,13 @@ class HubAgentExecutor:
         return value
 
     @staticmethod
-    def _view(row: sqlite3.Row) -> Dict[str, Any]:
+    def _view(row: Mapping[str, Any]) -> Dict[str, Any]:
         return {
             "schema": "simplicio.hub-agent-execution/v1", "capability": CAPABILITY,
             "namespace": row["namespace"], "handle": row["handle"], "state": row["state"],
             "fence": row["fence"], "epoch": row["epoch"], "priority": row["priority"],
             "heartbeat_at": row["heartbeat_at"],
-            "result": json.loads(row["result"]) if row["result"] else None,
-            "receipt": json.loads(row["receipt"]) if row["receipt"] else None,
+            "result": row.get("result"), "receipt": row.get("receipt"),
         }
 
     def close(self) -> None:
@@ -245,17 +334,20 @@ class HubAgentExecutor:
         now = time.time()
         with self._lock:
             for handle in abandoned:
-                self._db.execute(
-                    "UPDATE hub_agent_executions SET state='recovery_unknown',updated_at=?,receipt=? "
-                    "WHERE handle=?",
-                    (now, json.dumps(self._receipt("recovery_unknown", now, reason="shutdown")), handle),
-                )
+                current = self._row(handle)
+                recovered = {
+                    **current,
+                    "state": "recovery_unknown",
+                    "updated_at": now,
+                    "heartbeat_at": now,
+                    "receipt": self._receipt("recovery_unknown", now, reason="shutdown"),
+                }
+                self._append(self._replay(), "hub-agent.recovery-unknown", recovered)
             for lease in self._leases.values():
                 self.governor.release(lease)
             self._leases.clear()
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(2)
-        self._db.close()
 
 
 def parse_request(raw: Any) -> ResourceRequest:

@@ -171,6 +171,10 @@ def test_simulated_oom_backpressure_validation_and_resource_release():
                 ProcessSpec((sys.executable, "-c", "pass")), ResourceRequest(processes=1),
                 idempotency_key="oom",
             )
+            replay = executor._operations.replay(executor._journal_id)
+            assert replay["valid"] is True
+            assert replay["events"][0]["event_type"] == "hub-agent.claimed"
+            assert replay["events"][0]["payload"]["schema"] == "simplicio.loop-hub-agent-execution-event/v1"
             with pytest.raises(HubAgentError, match="backpressure"):
                 executor.claim(ProcessSpec(("echo", "x")), ResourceRequest(processes=1),
                                idempotency_key="blocked")
