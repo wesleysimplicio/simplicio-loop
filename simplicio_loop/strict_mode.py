@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 TRUE_VALUES = frozenset({"1", "true", "yes", "on", "strict", "full-stack", "required"})
@@ -28,6 +29,20 @@ RUNTIME_BINARY = "simplicio"
 FAST_BINARY = "simplicio-fast"
 # Accept either action binary name for the operate role.
 ACTION_ALIASES: tuple[str, ...] = ("simplicio-dev-cli", "simplicio-py")
+# Env overrides that pin the native Runtime binary (never the pip `simplicio-py` alias).
+RUNTIME_BIN_ENV_KEYS: tuple[str, ...] = (
+    "SIMPLICIO_RUNTIME_BIN",
+    "SIMPLICIO_BIN",
+    "SIMPLICIO_RUNTIME_PATH",
+)
+# Version banners that identify the *Python dev-cli* console script also named
+# ``simplicio`` on some installs (entry point collision with Runtime).
+_DEVCLI_ALIAS_MARKERS: tuple[str, ...] = (
+    "simplicio-py",
+    "simplicio-dev-cli",
+    "simplicio-cli",
+    "usage: simplicio-py",
+)
 
 
 def _env(env: Optional[Mapping[str, str]] = None) -> Mapping[str, str]:
@@ -62,13 +77,19 @@ def strict_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
     return False
 
 
-def _probe_version(binary: str, args: Sequence[str] = ("--version",), timeout: float = 8.0) -> dict[str, Any]:
-    path = shutil.which(binary)
-    if not path:
+def _probe_version(
+    binary: str,
+    args: Sequence[str] = ("--version",),
+    timeout: float = 8.0,
+    *,
+    path: Optional[str] = None,
+) -> dict[str, Any]:
+    resolved = path or shutil.which(binary)
+    if not resolved:
         return {"binary": binary, "present": False, "operational": False, "version": "", "error": "not on PATH"}
     try:
         completed = subprocess.run(
-            [path, *args],
+            [resolved, *args],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -85,7 +106,7 @@ def _probe_version(binary: str, args: Sequence[str] = ("--version",), timeout: f
             "operational": ok,
             "version": version,
             "error": "" if ok else (completed.stderr or completed.stdout or "probe failed")[:200],
-            "path": path,
+            "path": resolved,
         }
     except (OSError, subprocess.SubprocessError) as exc:
         return {
@@ -94,14 +115,149 @@ def _probe_version(binary: str, args: Sequence[str] = ("--version",), timeout: f
             "operational": False,
             "version": "",
             "error": str(exc)[:200],
-            "path": path,
+            "path": resolved,
         }
 
 
+def _looks_like_native_runtime(version: str, path: str = "") -> bool:
+    """True when a ``simplicio`` binary is the Rust Runtime, not the pip CLI alias.
+
+    On Windows, ``pip install simplicio-cli`` also installs a ``simplicio.exe``
+    console script that prints ``simplicio-py X.Y.Z``. That must never be treated
+    as ``simplicio-runtime`` for preflight / STRICT binding.
+    """
+    text = (version or "").strip().lower()
+    path_l = (path or "").replace("\\", "/").lower()
+    if not text and not path_l:
+        return False
+    if any(marker in text for marker in _DEVCLI_ALIAS_MARKERS):
+        return False
+    if "simplicio-py" in path_l or "simplicio_cli" in path_l:
+        # Heuristic only; path names are not authoritative alone.
+        pass
+    if "runtime" in text:
+        return True
+    if "simplicio-runtime" in path_l or "/.local/simplicio-runtime/" in path_l:
+        return True
+    # Bare cargo-style "3.5.7" or "simplicio 3.5.7" without the py marker.
+    if text.startswith("simplicio ") and "py" not in text.split()[0:2]:
+        return True
+    # "Simplicio Runtime 3.5.7" already matched via "runtime".
+    # Accept version-only lines when the path is under a runtime install root.
+    if path_l and ("simplicio-runtime" in path_l or path_l.endswith("/simplicio") or path_l.endswith("/simplicio.exe")):
+        if text and not any(marker in text for marker in _DEVCLI_ALIAS_MARKERS):
+            # Prefer explicit Runtime marker when present; version-only is weak.
+            if "runtime" in path_l or "/.local/bin/" in path_l:
+                return not text.startswith("simplicio-py")
+    return False
+
+
+def _which_all(binary: str) -> list[str]:
+    """Return every matching executable on PATH (first match first), de-duplicated."""
+    found: list[str] = []
+    seen: set[str] = set()
+    names = [binary]
+    if os.name == "nt":
+        names = [binary, f"{binary}.exe", f"{binary}.cmd", f"{binary}.bat"]
+    path_env = os.environ.get("PATH") or ""
+    for directory in path_env.split(os.pathsep):
+        if not directory:
+            continue
+        base = Path(directory)
+        for name in names:
+            candidate = base / name
+            try:
+                if candidate.is_file():
+                    key = str(candidate.resolve()).lower()
+                    if key not in seen:
+                        seen.add(key)
+                        found.append(str(candidate.resolve()))
+            except OSError:
+                continue
+    return found
+
+
+def _runtime_candidate_paths(env: Optional[Mapping[str, str]] = None) -> list[str]:
+    """Ordered candidates for the native Runtime binary."""
+    source = _env(env)
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        text = (raw or "").strip().strip('"')
+        if not text:
+            return
+        try:
+            path = str(Path(text).expanduser().resolve())
+        except OSError:
+            path = text
+        key = path.lower()
+        if key in seen:
+            return
+        if Path(path).is_file() or (os.name == "nt" and Path(path + ".exe").is_file()):
+            if not Path(path).is_file() and Path(path + ".exe").is_file():
+                path = path + ".exe"
+            seen.add(key)
+            ordered.append(path)
+
+    for key in RUNTIME_BIN_ENV_KEYS:
+        _add(str(source.get(key, "") or ""))
+
+    home = Path.home()
+    for hint in (
+        home / ".local" / "simplicio-runtime" / "bin" / "simplicio",
+        home / ".local" / "bin" / "simplicio",
+    ):
+        _add(str(hint))
+        if os.name == "nt":
+            _add(str(hint) + ".exe")
+
+    for path in _which_all(RUNTIME_BINARY):
+        _add(path)
+
+    return ordered
+
+
 def runtime_status(env: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
-    """Probe the native Runtime CLI (``simplicio``)."""
-    del env  # probe is process-global PATH
-    return _probe_version(RUNTIME_BINARY, ("--version",))
+    """Probe the native Runtime CLI (``simplicio``).
+
+    Prefer ``SIMPLICIO_RUNTIME_BIN`` / known install roots, then every ``simplicio``
+    on PATH. Reject the pip ``simplicio-cli`` alias that also ships as
+    ``simplicio.exe`` and prints ``simplicio-py …``.
+    """
+    candidates = _runtime_candidate_paths(env)
+    rejected: list[str] = []
+    last: dict[str, Any] = {
+        "binary": RUNTIME_BINARY,
+        "present": False,
+        "operational": False,
+        "version": "",
+        "error": "not on PATH",
+    }
+    for path in candidates:
+        status = _probe_version(RUNTIME_BINARY, ("--version",), path=path)
+        last = status
+        if not status["operational"]:
+            rejected.append(f"{path}: {status.get('error') or 'not operational'}")
+            continue
+        version = _sanitize_version_banner(status.get("version", "")) or status.get("version", "")
+        status["version"] = version
+        if _looks_like_native_runtime(version, path):
+            status["resolved_as"] = "simplicio-runtime"
+            return status
+        rejected.append(f"{path}: rejected alias banner {version!r}")
+    if rejected:
+        last = dict(last)
+        last["operational"] = False
+        last["error"] = (
+            "no native simplicio-runtime binary found; "
+            "pip simplicio-cli also installs a 'simplicio' alias — "
+            "set SIMPLICIO_RUNTIME_BIN to the Runtime 3.x binary. "
+            + "; ".join(rejected[:4])
+        )[:400]
+        last["present"] = bool(candidates)
+        last["rejected_candidates"] = rejected[:8]
+    return last
 
 
 def fast_status(env: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
