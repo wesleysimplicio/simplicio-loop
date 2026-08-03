@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.38.34] - 2026-08-03
+
+- **Economy-parallel profile (default):** `simplicio-loop economy status|print|apply`
+  arms the fastest token path (mapper/Fast/Runtime MCP) with bounded CPU/RAM workers,
+  Prism slots, asyncio concurrency, and `SIMPLICIO_LOOP_AUTO_FAN_OUT=1`.
+- `recommended_env` / `arm_drain_prism` share the same profile (Runtime Tokio when
+  bound; Python asyncio for batch/supervisor; Prism for drain waves).
+- Opt out: `SIMPLICIO_ECONOMY_PARALLEL=0`.
+
 ## [3.38.33] - 2026-08-03
 
 - **Always-latest operators (default):** `operator_check` TTL default is `0` and

@@ -1,0 +1,283 @@
+"""Fastest + cheapest operational profile for the Simplicio stack.
+
+Goals (operator contract):
+- **Tokens:** mapper handoff / Runtime MCP first; no host bulk-read; Fast hot path.
+- **CPU/RAM:** bounded workers from host CPU count; leave headroom for OS + Runtime Tokio.
+- **Parallel:** Prism slots + ``SIMPLICIO_LOOP_AUTO_FAN_OUT`` (worktree lanes) + asyncio
+  supervisor concurrency. Runtime uses Tokio natively when ``simplicio`` is bound.
+
+This module only *recommends and applies env*. Parallel execution still requires
+lease/claim isolation (no double-writers).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import platform
+import sys
+from pathlib import Path
+from typing import Any, Mapping, MutableMapping, Optional
+
+SCHEMA = "simplicio.economy-parallel-profile/v1"
+PROFILE_NAME = "economy-parallel"
+
+# Opt-out of always-on economy defaults (legacy serial / heavy ceremony).
+DISABLE_ENV = "SIMPLICIO_ECONOMY_PARALLEL"
+_FALSE = frozenset({"0", "false", "no", "off", "disabled", "legacy", "serial"})
+
+
+def economy_parallel_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
+    source = os.environ if env is None else env
+    raw = str(source.get(DISABLE_ENV, "1")).strip().lower()
+    return raw not in _FALSE
+
+
+def _cpu_count() -> int:
+    return max(1, int(os.cpu_count() or 4))
+
+
+def recommend_operator_workers(cpu: Optional[int] = None) -> int:
+    """Bounded operator pool: ~75% of CPUs, clamp 2..12 (RAM/CPU economy)."""
+    n = _cpu_count() if cpu is None else max(1, int(cpu))
+    return max(2, min(12, max(2, (n * 3) // 4)))
+
+
+def recommend_prism_slots(cpu: Optional[int] = None) -> int:
+    """Prism wave width: half of workers, clamp 2..8."""
+    workers = recommend_operator_workers(cpu)
+    return max(2, min(8, max(2, workers // 2)))
+
+
+def recommend_async_concurrency(cpu: Optional[int] = None) -> int:
+    """asyncio IO supervisor concurrency (Python "Tokio")."""
+    workers = recommend_operator_workers(cpu)
+    return max(4, min(16, workers + 2))
+
+
+def economy_parallel_env(
+    *,
+    env: Optional[Mapping[str, str]] = None,
+    runtime_operational: Optional[bool] = None,
+    prism_slots: Optional[int] = None,
+    operator_workers: Optional[int] = None,
+) -> dict[str, str]:
+    """Return env map for fastest token path + parallel drain/batch.
+
+    When ``runtime_operational`` is None, probes PATH for the native Runtime binary.
+    """
+    if runtime_operational is None:
+        try:
+            from .strict_mode import runtime_status
+
+            runtime_operational = bool(runtime_status(env).get("operational"))
+        except Exception:
+            runtime_operational = False
+
+    workers = (
+        int(operator_workers)
+        if operator_workers is not None
+        else recommend_operator_workers()
+    )
+    slots = int(prism_slots) if prism_slots is not None else recommend_prism_slots()
+    async_n = recommend_async_concurrency()
+
+    out: dict[str, str] = {
+        # Core loop + safety floor (unchanged)
+        "SIMPLICIO_LOOP": "1",
+        "SIMPLICIO_LOOP_STRICT": "1",
+        "SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": "1",
+        "SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT": "1",
+        "SIMPLICIO_LOOP_FORBID_HAND_EDIT": "1",
+        # Adaptive Runtime (Tokio control plane when present)
+        "SIMPLICIO_LOOP_REQUIRE_RUNTIME": "auto",
+        "SIMPLICIO_EXECUTION_PROFILE": "auto" if runtime_operational else "standalone",
+        # Fast hot path (mmap / understand-plan-apply)
+        "SIMPLICIO_FAST_MODE": "required",
+        # Always latest packages on preflight
+        "SIMPLICIO_OPERATOR_ALWAYS_LATEST": "1",
+        # Parallel: worktree fan-out + worker pool + Prism width
+        "SIMPLICIO_LOOP_AUTO_FAN_OUT": "1",
+        "SIMPLICIO_LOOP_OPERATOR_WORKERS": str(workers),
+        "SIMPLICIO_PRISM_SLOTS": str(slots),
+        "SIMPLICIO_ASYNC_IO_MAX_CONCURRENCY": str(async_n),
+        # Profile marker
+        "SIMPLICIO_ECONOMY_PARALLEL": "1",
+        "SIMPLICIO_ECONOMY_PROFILE": PROFILE_NAME,
+    }
+    # Token economy MCP layer only when Runtime binary is the real one
+    if runtime_operational:
+        out["SIMPLICIO_REQUIRE_MCP"] = "1"
+        out["SIMPLICIO_MCP_FORCE"] = "1"
+    else:
+        out["SIMPLICIO_REQUIRE_MCP"] = "0"
+        out["SIMPLICIO_MCP_FORCE"] = "0"
+    return out
+
+
+def profile_status(
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    runtime_operational: Optional[bool] = None,
+) -> dict[str, Any]:
+    recommended = economy_parallel_env(
+        env=env, runtime_operational=runtime_operational
+    )
+    source = os.environ if env is None else env
+    applied = {
+        key: str(source.get(key, ""))
+        for key in recommended
+        if str(source.get(key, "")).strip() != ""
+    }
+    missing = [k for k, v in recommended.items() if str(source.get(k, "")).strip() != v]
+    return {
+        "schema": SCHEMA,
+        "profile": PROFILE_NAME,
+        "enabled": economy_parallel_enabled(env),
+        "cpu_count": _cpu_count(),
+        "recommended": recommended,
+        "applied": applied,
+        "drift_keys": missing,
+        "aligned": len(missing) == 0,
+        "backends": {
+            "runtime_tokio": "native when simplicio-runtime bound",
+            "python_asyncio": "async_io_supervisor + async_bounded_queue + batch fan-out",
+            "prism": "arm_drain_prism + SIMPLICIO_PRISM_SLOTS + lease isolation",
+        },
+        "hot_path": [
+            "simplicio-loop preflight --strict --json",
+            "simplicio-mapper scan . --await --json",
+            "simplicio-mapper handoff . --for-llm toon --await",
+            "simplicio-fast understand|plan|apply (when operational)",
+            "simplicio-loop batch (AUTO_FAN_OUT worktrees) or arm_drain_prism --slots N",
+            "mutate: simplicio-dev-cli task (STRICT)",
+        ],
+    }
+
+
+def apply_to_environ(
+    target: MutableMapping[str, str],
+    *,
+    env: Optional[Mapping[str, str]] = None,
+    runtime_operational: Optional[bool] = None,
+) -> dict[str, str]:
+    """Mutate a mapping (e.g. os.environ) with the profile; return applied pairs."""
+    recommended = economy_parallel_env(
+        env=env, runtime_operational=runtime_operational
+    )
+    for key, value in recommended.items():
+        target[key] = value
+    return recommended
+
+
+def user_env_paths() -> dict[str, Path]:
+    home = Path.home()
+    root = home / ".simplicio"
+    return {
+        "dir": root,
+        "json": root / "economy-parallel-env.json",
+        "ps1": root / "economy-parallel-env.ps1",
+        "sh": root / "economy-parallel-env.sh",
+    }
+
+
+def persist_user_profile(
+    *,
+    runtime_operational: Optional[bool] = None,
+    set_windows_user_env: bool = True,
+) -> dict[str, Any]:
+    """Write ~/.simplicio/economy-parallel-env.* and optionally Windows User env."""
+    recommended = economy_parallel_env(runtime_operational=runtime_operational)
+    paths = user_env_paths()
+    paths["dir"].mkdir(parents=True, exist_ok=True)
+    paths["json"].write_text(
+        json.dumps(
+            {
+                "schema": SCHEMA,
+                "profile": PROFILE_NAME,
+                "env": recommended,
+                "platform": platform.system(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    # PowerShell
+    ps_lines = [
+        "# Simplicio economy-parallel profile — dot-source: . $HOME\\.simplicio\\economy-parallel-env.ps1",
+        "$ErrorActionPreference = 'SilentlyContinue'",
+    ]
+    for key, value in sorted(recommended.items()):
+        ps_lines.append(f"$env:{key} = '{value}'")
+    paths["ps1"].write_text("\n".join(ps_lines) + "\n", encoding="utf-8", newline="\n")
+    # POSIX
+    sh_lines = [
+        "# Simplicio economy-parallel profile — source ~/.simplicio/economy-parallel-env.sh",
+    ]
+    for key, value in sorted(recommended.items()):
+        sh_lines.append(f'export {key}="{value}"')
+    paths["sh"].write_text("\n".join(sh_lines) + "\n", encoding="utf-8", newline="\n")
+
+    windows_set: list[str] = []
+    if set_windows_user_env and sys.platform == "win32":
+        try:
+            import winreg  # type: ignore
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Environment",
+                0,
+                winreg.KEY_SET_VALUE,
+            ) as key:
+                for name, value in recommended.items():
+                    winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+                    windows_set.append(name)
+                    os.environ[name] = value
+        except OSError as exc:
+            return {
+                "schema": SCHEMA,
+                "ok": False,
+                "error": f"windows_user_env_failed: {exc}",
+                "paths": {k: str(v) for k, v in paths.items()},
+                "env": recommended,
+            }
+    else:
+        # still apply to this process
+        for name, value in recommended.items():
+            os.environ[name] = value
+
+    return {
+        "schema": SCHEMA,
+        "ok": True,
+        "profile": PROFILE_NAME,
+        "paths": {k: str(v) for k, v in paths.items()},
+        "env": recommended,
+        "windows_user_env_keys": windows_set,
+        "note": "New shells pick up User env after restart; this process is updated in-place.",
+    }
+
+
+def render_shell_exports(env_map: Mapping[str, str], *, shell: str = "auto") -> str:
+    kind = shell
+    if kind == "auto":
+        kind = "ps1" if sys.platform == "win32" else "sh"
+    if kind in {"ps1", "powershell", "pwsh"}:
+        return "\n".join(f"$env:{k} = '{v}'" for k, v in sorted(env_map.items())) + "\n"
+    return "\n".join(f'export {k}="{v}"' for k, v in sorted(env_map.items())) + "\n"
+
+
+__all__ = [
+    "SCHEMA",
+    "PROFILE_NAME",
+    "economy_parallel_enabled",
+    "economy_parallel_env",
+    "profile_status",
+    "apply_to_environ",
+    "persist_user_profile",
+    "render_shell_exports",
+    "recommend_operator_workers",
+    "recommend_prism_slots",
+    "recommend_async_concurrency",
+]

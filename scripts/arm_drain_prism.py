@@ -115,16 +115,24 @@ Open issues at arm: {open_n if open_n is not None else "unknown (gh unavailable)
 """
     scratch = loop_dir / "scratchpad.md"
     scratch.write_text(body, encoding="utf-8", newline="\n")
-    env_hint = {
-        "SIMPLICIO_LOOP": "1",
-        "SIMPLICIO_LOOP_STRICT": "1",
-        "SIMPLICIO_LOOP_REQUIRE_RUNTIME": "off",
-        "SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": "1",
-        "SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT": "1",
-        "SIMPLICIO_LOOP_FORBID_HAND_EDIT": "1",
-        "SIMPLICIO_EXECUTION_PROFILE": "standalone",
-        "SIMPLICIO_FAST_MODE": "required",
-    }
+    try:
+        from simplicio_loop.economy_profile import economy_parallel_env
+
+        env_hint = economy_parallel_env(prism_slots=slots)
+    except Exception:
+        env_hint = {
+            "SIMPLICIO_LOOP": "1",
+            "SIMPLICIO_LOOP_STRICT": "1",
+            "SIMPLICIO_LOOP_REQUIRE_RUNTIME": "auto",
+            "SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": "1",
+            "SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT": "1",
+            "SIMPLICIO_LOOP_FORBID_HAND_EDIT": "1",
+            "SIMPLICIO_EXECUTION_PROFILE": "auto",
+            "SIMPLICIO_FAST_MODE": "required",
+            "SIMPLICIO_LOOP_AUTO_FAN_OUT": "1",
+            "SIMPLICIO_PRISM_SLOTS": str(slots),
+            "SIMPLICIO_OPERATOR_ALWAYS_LATEST": "1",
+        }
     return {
         "schema": "simplicio.arm-drain-prism/v1",
         "ok": True,
