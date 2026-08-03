@@ -7,6 +7,12 @@ import pytest
 from simplicio_loop import runner
 
 
+@pytest.fixture(autouse=True)
+def _use_thread_dispatch_for_in_process_fakes(monkeypatch):
+    """Keep monkeypatched worker calls in this in-process integration harness."""
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "thread")
+
+
 class MemoryJournal:
     def __init__(self):
         self.rows = {}
@@ -154,6 +160,7 @@ def test_dispatch_operator_batch_resumes_successful_journal_entries(monkeypatch,
 
 def test_dispatch_operator_batch_blocks_unknown_effect_after_restart(monkeypatch, tmp_path, memory_dispatch_journal):
     calls = []
+    monkeypatch.setenv("SIMPLICIO_STORAGE_ROUTE", "mapper")
 
     def fake_execute(repo, run_id, task_index, **_kwargs):
         calls.append(task_index)
@@ -167,6 +174,7 @@ def test_dispatch_operator_batch_blocks_unknown_effect_after_restart(monkeypatch
         {"task_id": "task-crashed-1", "task_index": 1, "worker_id": "worker-1", "mode": "process"},
         idempotency_key="dispatch:task-crashed-1:started",
     )
+    (tmp_path / "run-journal.sqlite").touch()
 
     result = runner.dispatch_operator_batch(
         [{"repo": str(tmp_path / "tree"), "run_id": "crashed", "task_index": 1}],

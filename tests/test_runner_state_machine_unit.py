@@ -23,6 +23,12 @@ import pytest
 from simplicio_loop import runner as runner_mod
 from scripts.distributed_trust_policy import TrustPolicyError
 
+
+@pytest.fixture(autouse=True)
+def _use_thread_dispatch_for_in_process_fakes(monkeypatch):
+    """Keep monkeypatched worker calls in this in-process state-machine harness."""
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "thread")
+
 TASK = """Sistema: PLANES
 Funcionalidade: Tela de Modelagem — Ordenacao de linhas
 Tipo: Evolucao
