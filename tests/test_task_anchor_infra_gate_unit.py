@@ -30,7 +30,7 @@ def _cli(anchor_path, *args):
     env["SIMPLICIO_ANCHOR_FILE"] = str(anchor_path)
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
-        cwd=REPO, text=True, capture_output=True, env=env,
+        cwd=REPO, text=True, capture_output=True, stdin=subprocess.DEVNULL, env=env,
     )
 
 
@@ -220,7 +220,7 @@ def test_dotnet_no_test_project_fixture_reaches_ready_via_harness_and_waivers(tm
     (harness_scratch / "run.log").write_text(
         "case_add_positive PASS\ncase_add_zero_sum PASS\n", encoding="utf-8")
     (harness_scratch / "snippet.sha256").write_text(
-        hashlib.sha256(calc_source.encode("utf-8")).hexdigest(), encoding="utf-8")
+        hashlib.sha256(calc_path.read_bytes()).hexdigest(), encoding="utf-8")
 
     hr = _cli(anchor, "verify_harness", "--harness-dir", str(harness_scratch),
              "--snippet", str(calc_path), "--exit-code")
