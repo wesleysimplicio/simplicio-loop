@@ -6,8 +6,6 @@ Runtime is optional for simplicio-loop: REQUIRE_MCP only gates when Runtime is p
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 
 import mcp_force_sync
 
@@ -75,3 +73,18 @@ def test_mcp_force_sync_idempotent_codex_toml(tmp_path, monkeypatch):
     assert r1["ok"] and r2["ok"]
     toml = (home / ".codex" / "config.toml").read_text(encoding="utf-8")
     assert toml.count("[mcp_servers.simplicio]") == 1
+
+
+def test_mcp_force_sync_project_scope_does_not_touch_user_appdata(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    monkeypatch.setenv("SIMPLICIO_HOME", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+
+    receipt = mcp_force_sync.sync(do_global=False, target=project, register=False)
+
+    assert receipt["ok"] is True
+    assert project.joinpath(".mcp.json").is_file()
+    assert not home.joinpath("AppData").exists()
+    assert not home.joinpath(".codex").exists()
