@@ -91,7 +91,19 @@ def validate_candidate_id(value: Any) -> str:
 
 
 class CheckpointLifecycle:
-    """Owns immutable base + isolated candidate overlays for one resumable attempt."""
+    """Owns immutable base + isolated candidate overlays for one resumable attempt.
+
+    LangGraph-aligned durable-execution practices (without depending on LangGraph):
+
+    - **thread_id** — one resumable conversation/work lineage (``task_id/attempt_id``).
+    - **checkpoint per superstep** — each ``checkpoint()`` is an immutable snapshot
+      with digest lineage via ``previous_digest`` (replay-safe identity).
+    - **no concurrent writers on the same thread** — overlays + leases + promotion fence.
+    - **side effects are receipt-gated** — callers must attach idempotent receipt digests;
+      replaying a checkpoint must not re-apply un-receipted mutations.
+    - **HITL / interrupt** — terminal states HELD/CANCELLED and Action Gate outside this
+      module map to LangGraph ``interrupt`` before dangerous promote/apply steps.
+    """
 
     def __init__(
         self,
@@ -115,6 +127,11 @@ class CheckpointLifecycle:
         self.cancellations = self.attempt / "cancellations"
         self.leases = self.attempt / "leases"
         self.fence_path = self.attempt / "promotion-fence.json"
+
+    @property
+    def thread_id(self) -> str:
+        """LangGraph-compatible thread key for durable resume (task/attempt lineage)."""
+        return f"{self.task_id}/{self.attempt_id}"
 
     def create_overlay(self, candidate_id: str) -> Path:
         candidate = validate_candidate_id(candidate_id)
@@ -164,10 +181,19 @@ class CheckpointLifecycle:
         if normalized_state not in ACTIVE_STATES | TERMINAL_STATES:
             raise LifecycleError(f"unsafe checkpoint state: {normalized_state}")
         overlay = self.create_overlay(candidate)
+        receipt_list = sorted(set(map(str, receipts)))
+        # LangGraph practice: side-effect supersteps must carry receipts so resume
+        # does not re-fire non-idempotent work. APPLIED without receipts is rejected.
+        if normalized_state == "APPLIED" and not receipt_list:
+            raise LifecycleError(
+                "APPLIED checkpoints require non-empty receipts (idempotent side-effect evidence)"
+            )
         value: dict[str, Any] = {
             "schema": SCHEMA,
             "task_id": self.task_id,
             "attempt_id": self.attempt_id,
+            # Interop with LangGraph-style durable runners / external tracers.
+            "thread_id": self.thread_id,
             "candidate_id": candidate,
             "shard_id": shard,
             "state": normalized_state,
@@ -175,13 +201,31 @@ class CheckpointLifecycle:
             "fast_generation": self.fast_generation,
             "base_path": str(self.base_path),
             "overlay_path": str(overlay.resolve()),
-            "receipts": sorted(set(map(str, receipts))),
+            "receipts": receipt_list,
             "work_units": max(0, int(work_units)),
             "previous_digest": previous_digest,
             "created_ns": time.time_ns(),
+            "durable_execution": {
+                "model": "checkpoint-per-superstep",
+                "side_effects": "receipt-gated",
+                "resume_key": self.thread_id,
+                "langgraph_alignment": "practices-only-no-runtime-dependency",
+            },
         }
         value["checkpoint_id"] = _digest(
-            {key: value[key] for key in ("task_id", "attempt_id", "candidate_id", "shard_id", "state", "previous_digest")}
+            {
+                key: value[key]
+                for key in (
+                    "task_id",
+                    "attempt_id",
+                    "thread_id",
+                    "candidate_id",
+                    "shard_id",
+                    "state",
+                    "previous_digest",
+                    "receipts",
+                )
+            }
         )
         value["digest"] = _digest(value)
         _write_json(self.checkpoints / candidate / f"{shard}.json", value)
