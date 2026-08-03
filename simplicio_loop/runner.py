@@ -56,6 +56,10 @@ from .model_router import ModelRouterError, route as _model_route
 from .runtime_drivers import CLI_PROBE_HOOKS, driver_for_runtime
 from .runtime_context import ContextAuthorizationError, ContextBudgetError, RuntimeContextRequest
 from .runtime_execution_receipt import RuntimeExecutionReceiptError
+from .loop_execution_receipt import (
+    LoopExecutionReceiptError,
+    publish_loop_execution_receipt,
+)
 from .runtime_adapter import LoopRuntimeAdapter, RuntimeAdapterError
 from .runtime_bridge import RuntimeBridge
 from .runtime_effect_adapter import EffectRequest, RuntimeEffectAdapter, RuntimeEffectError
@@ -4465,6 +4469,33 @@ def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
         _write_json(run_dir / "state.json", state)
         _transition(run_dir, state, "blocked", "completion oracle rejected the run", receipt=str(run_dir / "oracle-matrix.json"))
         return read_status(repo, run_id)
+    try:
+        loop_execution = publish_loop_execution_receipt(
+            repo=repo_path,
+            run_dir=run_dir,
+            manifest=status["manifest"],
+        )
+    except LoopExecutionReceiptError as exc:
+        state = read_status(repo, run_id)["state"]
+        state["blockers"] = [f"loop-execution receipt publication failed: {exc}"]
+        state["current_action"] = "loop_execution_receipt_failed"
+        state["next_action"] = "inspect_and_recover"
+        state["evidence"] = {
+            "ready": False,
+            "receipt": str(repo_path / ".simplicio" / "loop-execution.json"),
+            "status": "UNVERIFIED",
+        }
+        _write_json(run_dir / "state.json", state)
+        _transition(
+            run_dir,
+            state,
+            "blocked",
+            "runtime handoff receipt could not be published",
+            receipt=str(run_dir / "state.json"),
+        )
+        return read_status(repo, run_id)
+    state = read_status(repo, run_id)["state"]
+    state["loop_execution"] = loop_execution
     _transition(run_dir, state, "done", "automatic task-to-verify conduct completed", receipt=str(watcher_path))
     return read_status(repo, run_id)
 

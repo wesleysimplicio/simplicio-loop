@@ -235,6 +235,16 @@ def test_verify_run_converges_to_done_when_watcher_and_delivery_pass(tmp_path, m
             "signature": [True, "VERIFIED", "oracle_complete", "MEASURED"],
         },
     )
+    # This state-machine fixture intentionally models only the pre-existing
+    # watcher/delivery/oracle seam; the runtime handoff has its own integration
+    # coverage in test_loop_execution_receipt.py.
+    published = []
+
+    def fake_publish(**kwargs):
+        published.append(kwargs)
+        return {"status": "SKIPPED", "reason": "unit_fixture"}
+
+    monkeypatch.setattr(runner_mod, "publish_loop_execution_receipt", fake_publish)
 
     result = runner_mod.verify_run(str(repo), run_id)
 
@@ -242,6 +252,11 @@ def test_verify_run_converges_to_done_when_watcher_and_delivery_pass(tmp_path, m
     assert result["state"]["completion"]["verdict"] == "VERIFIED"
     assert result["state"]["completion"]["reason_code"] == "watcher_and_delivery_verified"
     assert result["state"]["completion"]["tag"] == "MEASURED"
+    assert published == [{
+        "repo": repo,
+        "run_dir": run_dir,
+        "manifest": result["manifest"],
+    }]
 
 
 def test_verify_run_blocks_when_quality_matrix_missing(tmp_path, monkeypatch):

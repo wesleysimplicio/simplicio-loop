@@ -125,11 +125,28 @@ what `scripts/check_loop_contract.py` asserts and why.
 5. **Never invent a second promise/evidence/anchor/watcher gate.** Reuse the four-condition rule
    above verbatim; it is what `fixtures/evidence-gated-done/` exists to pin down byte-for-byte.
 
+## Published Runtime handoff receipt
+
+When a real run reaches `done`, `simplicio_loop.runner.verify_run` publishes the envelope described
+by [`receipt.schema.json`](receipt.schema.json) at `.simplicio/loop-execution.json`. The envelope is
+written only after the watcher, delivery, quality-matrix, and completion-oracle gates pass.
+
+The envelope points to a run-owned `runtime-loop-execution/` bundle containing copies of the five
+state artifacts plus the final Mapper and Dev CLI receipts. Each copied artifact carries a SHA-256
+digest and a bundle-relative path only; source paths are intentionally omitted so the receipt is
+portable and cannot direct the consumer outside the run. The bundle is complete before the root
+envelope is atomically replaced, so `simplicio-runtime` can validate one coherent snapshot without
+following parent-directory paths or reading files that are still changing.
+
+`fast` is recorded as an additional component observation from the frozen stack lock. The stable
+Runtime chain remains `simplicio-loop → simplicio-mapper → simplicio-dev-cli → simplicio-runtime`
+for v1 compatibility; Fast evidence is additive and does not alter that chain's field order.
+
 ## Out of scope (see issue #115)
 
 - Changing the public behavior of `/simplicio-loop`.
 - Migrating the loop to Rust.
-- Implementing the runtime side (`simplicio-runtime`) — this repo only publishes the contract and
-  fixtures for that repo (or any other consumer) to import/reproduce.
+- Changing the Runtime consumer's implementation — the Loop publishes the v1 handoff, while
+  `simplicio-runtime` remains responsible for its independent read-only validation.
 - A `drain` executor implementation — only its target shape/rule is published here (see status
   note above).
