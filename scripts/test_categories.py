@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -128,6 +129,58 @@ def _has_external_selection(args: list) -> bool:
                for arg in args)
 
 
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    """Stop a timed-out pytest process and every child it spawned."""
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def _run_pytest_with_timeout(cmd: list[str], repo: str, timeout: int) -> tuple[int | None, str, str]:
+    """Run pytest with a timeout that cannot leave descendant processes behind."""
+    popen_kwargs = {
+        "cwd": repo,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+    process = subprocess.Popen(cmd, **popen_kwargs)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return process.returncode, stdout or "", stderr or ""
+    except subprocess.TimeoutExpired:
+        _terminate_process_tree(process)
+        try:
+            stdout, stderr = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+        return None, stdout or "", stderr or ""
+
+
 def run_category(category: str, extra_pytest_args: "list | None" = None,
                   repo: "str | None" = None, timeout: int = 300,
                   allow_deselection: bool = False) -> dict:
@@ -155,17 +208,12 @@ def run_category(category: str, extra_pytest_args: "list | None" = None,
         }
     started = time.time()
     cmd = [sys.executable, "-m", "pytest", "-q"] + files + extra_pytest_args
-    try:
-        proc = subprocess.run(
-            cmd, cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=timeout,
-        )
-        returncode = proc.returncode
-        tail = (proc.stdout or proc.stderr or "").strip()[-2000:]
-    except subprocess.TimeoutExpired:
-        returncode = None
+    returncode, stdout, stderr = _run_pytest_with_timeout(cmd, repo, timeout)
+    tail = (stdout or stderr or "").strip()[-2000:]
+    if returncode is None and not tail:
         tail = f"timed out after {timeout}s"
     duration = time.time() - started
-    summary = _pytest_summary(proc.stdout if returncode is not None else "")
+    summary = _pytest_summary(stdout if returncode is not None else "")
     external_selection = _has_external_selection(extra_pytest_args)
     no_tests_executed = returncode == 0 and summary["executed"] == 0
     unapproved_deselection = (external_selection or summary["deselected"] > 0) and not allow_deselection
