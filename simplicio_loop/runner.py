@@ -531,9 +531,15 @@ def _run_cmd(
 ) -> subprocess.CompletedProcess:
     if argv and argv[0] == "simplicio-mapper":
         timeout_seconds = _mapper_timeout_seconds()
+    # Windows console-script shims can be published as ``.cmd`` files.  The
+    # shell-free subprocess API does not reliably append PATHEXT entries when
+    # only the bare command name is supplied, so resolve the executable first
+    # while retaining the shell-free invocation boundary.
+    resolved = shutil.which(argv[0]) if argv else None
+    command = [resolved, *argv[1:]] if resolved else argv
     try:
         return subprocess.run(
-            argv, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_seconds,
+            command, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
         def _text(value: Any) -> str:
@@ -5644,7 +5650,13 @@ def dispatch_operator_batch(
     if journal_dir:
         journal_path = Path(journal_dir).resolve() / "operator-batch.jsonl"
         journal_path.parent.mkdir(parents=True, exist_ok=True)
-        durable_journal_path = journal_path.parent / "run-journal.sqlite"
+        # The retired legacy route is intentionally read-only.  Keep its
+        # append-only JSONL attempt records, but do not instantiate the old
+        # RunJournal facade (which must fail closed) or pretend it can provide
+        # MapperStore recovery semantics.  The Mapper route gets the durable
+        # operations journal as before.
+        if _mapper_journal_enabled():
+            durable_journal_path = journal_path.parent / "run-journal.sqlite"
     recovery_pending_by_run: Dict[str, set[int]] = {}
     if durable_journal_path is not None:
         for run_id in {item["run_id"] for item in normalized}:

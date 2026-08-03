@@ -51,8 +51,8 @@ def test_evidence_receipt_built_from_run_and_watcher_reads_it(tmp_path):
     task.write_text(TASK, encoding="utf-8")
     operator_bin = tmp_path / "bin"
     operator_bin.mkdir()
-    mapper = operator_bin / "simplicio-mapper"
-    mapper.write_text(
+    mapper_script = operator_bin / "simplicio-mapper.py"
+    mapper_script.write_text(
         """#!/usr/bin/env python3
 import json
 import sys
@@ -74,7 +74,16 @@ else:
 """,
         encoding="utf-8",
     )
-    mapper.chmod(0o755)
+    if os.name == "nt":
+        mapper = operator_bin / "simplicio-mapper.cmd"
+        mapper.write_text(
+            f'@echo off\n"{sys.executable}" "{mapper_script}" %*\n',
+            encoding="utf-8",
+        )
+    else:
+        mapper = operator_bin / "simplicio-mapper"
+        mapper_script.replace(mapper)
+        mapper.chmod(0o755)
     fake_operator = json.dumps({
         "execution_state": "dry_run",
         "returncode": 0,
