@@ -84,3 +84,34 @@ def test_runtime_status_reports_clear_error_when_only_alias(monkeypatch, tmp_pat
     assert status["operational"] is False
     assert status["present"] is True
     assert "SIMPLICIO_RUNTIME_BIN" in status["error"]
+
+def test_runtime_status_prefers_newest_native_when_multiple(monkeypatch, tmp_path):
+    """Stale install root must not shadow a newer binary elsewhere."""
+    old = tmp_path / "old-runtime.exe"
+    new = tmp_path / "new-runtime.exe"
+    old.write_text("old", encoding="utf-8")
+    new.write_text("new", encoding="utf-8")
+
+    def fake_run(command, **_kwargs):
+        path = str(command[0])
+        if path == str(old):
+            return SimpleNamespace(returncode=0, stdout="Simplicio Runtime 3.5.7\n", stderr="")
+        if path == str(new):
+            return SimpleNamespace(returncode=0, stdout="Simplicio Runtime 3.5.8\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="missing")
+
+    monkeypatch.setattr(strict_mode.subprocess, "run", fake_run)
+    # Old install appears first (historical hint order / PATH).
+    monkeypatch.setattr(strict_mode, "_runtime_candidate_paths", lambda env=None: [str(old), str(new)])
+
+    status = strict_mode.runtime_status({})
+    assert status["operational"] is True
+    assert "3.5.8" in status["version"]
+    assert status["path"] == str(new)
+
+
+def test_version_sort_key_orders_semver():
+    assert strict_mode._version_sort_key("Simplicio Runtime 3.5.8") > strict_mode._version_sort_key(
+        "Simplicio Runtime 3.5.7"
+    )
+    assert strict_mode._version_sort_key("nope") == (0, 0, 0)

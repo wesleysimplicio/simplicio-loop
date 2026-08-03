@@ -15,6 +15,8 @@ is on PATH, strict treats it as required so the session cannot silently drop it.
 
 from __future__ import annotations
 
+import re
+
 import os
 import shutil
 import subprocess
@@ -205,8 +207,8 @@ def _runtime_candidate_paths(env: Optional[Mapping[str, str]] = None) -> list[st
 
     home = Path.home()
     for hint in (
-        home / ".local" / "simplicio-runtime" / "bin" / "simplicio",
         home / ".local" / "bin" / "simplicio",
+        home / ".local" / "simplicio-runtime" / "bin" / "simplicio",
     ):
         _add(str(hint))
         if os.name == "nt":
@@ -218,13 +220,37 @@ def _runtime_candidate_paths(env: Optional[Mapping[str, str]] = None) -> list[st
     return ordered
 
 
+def _version_sort_key(version: str) -> tuple[int, int, int]:
+    """Parse a version banner into a sortable triple; unknown sorts as 0.0.0."""
+    match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)", version or "")
+    if not match:
+        return (0, 0, 0)
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
 def runtime_status(env: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
     """Probe the native Runtime CLI (``simplicio``).
 
-    Prefer ``SIMPLICIO_RUNTIME_BIN`` / known install roots, then every ``simplicio``
-    on PATH. Reject the pip ``simplicio-cli`` alias that also ships as
-    ``simplicio.exe`` and prints ``simplicio-py …``.
+    Prefer ``SIMPLICIO_RUNTIME_BIN`` when set. Otherwise scan known install roots
+    and every ``simplicio`` on PATH, reject the pip ``simplicio-cli`` alias that
+    also ships as ``simplicio.exe`` (``simplicio-py …``), and when multiple native
+    Runtime binaries are present pick the **newest** reported version so a stale
+    install root cannot shadow a fresher binary (or vice versa).
     """
+    source = _env(env)
+    # Explicit pin is authoritative — never silently replace with a newer PATH hit.
+    for key in RUNTIME_BIN_ENV_KEYS:
+        pinned = str(source.get(key, "") or "").strip().strip('"')
+        if not pinned:
+            continue
+        status = _probe_version(RUNTIME_BINARY, ("--version",), path=pinned)
+        if status.get("operational"):
+            version = _sanitize_version_banner(status.get("version", "")) or status.get("version", "")
+            status["version"] = version
+            if _looks_like_native_runtime(version, status.get("path", pinned)):
+                status["resolved_as"] = "simplicio-runtime"
+                return status
+
     candidates = _runtime_candidate_paths(env)
     rejected: list[str] = []
     last: dict[str, Any] = {
@@ -234,6 +260,7 @@ def runtime_status(env: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
         "version": "",
         "error": "not on PATH",
     }
+    native_hits: list[dict[str, Any]] = []
     for path in candidates:
         status = _probe_version(RUNTIME_BINARY, ("--version",), path=path)
         last = status
@@ -244,8 +271,15 @@ def runtime_status(env: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
         status["version"] = version
         if _looks_like_native_runtime(version, path):
             status["resolved_as"] = "simplicio-runtime"
-            return status
+            native_hits.append(status)
+            continue
         rejected.append(f"{path}: rejected alias banner {version!r}")
+    if native_hits:
+        native_hits.sort(
+            key=lambda item: _version_sort_key(str(item.get("version") or "")),
+            reverse=True,
+        )
+        return native_hits[0]
     if rejected:
         last = dict(last)
         last["operational"] = False

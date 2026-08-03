@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.38.35] - 2026-08-03
+
+### Fixed
+- Prefer the **newest** native Runtime binary when multiple `simplicio` installs
+  are on PATH (stale `~/.local/simplicio-runtime/bin` no longer shadows a fresher
+  `~/.local/bin/simplicio`). Explicit `SIMPLICIO_RUNTIME_BIN` remains authoritative.
+
 ## [3.38.34] - 2026-08-03
 
 - **Economy-parallel profile (default):** `simplicio-loop economy status|print|apply`
