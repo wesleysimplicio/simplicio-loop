@@ -1,6 +1,7 @@
 """Bounded subprocess and reason-summary primitives for :mod:`scripts.check`."""
 
 import os
+import json
 import re
 import selectors
 import shutil
@@ -219,6 +220,46 @@ def _close_windows_job(proc: subprocess.Popen) -> bool:
     except (OSError, RuntimeError):
         return False
     return True
+
+
+_WINDOWS_BOOTSTRAP = (
+    "import json, os, subprocess, sys, time\n"
+    "ready = os.environ.pop('SIMPLICIO_CHECK_JOB_READY')\n"
+    "argv = json.loads(os.environ.pop('SIMPLICIO_CHECK_ARGV'))\n"
+    "while not os.path.exists(ready):\n"
+    "    time.sleep(0.001)\n"
+    "child = subprocess.Popen(argv, close_fds=False)\n"
+    "started = os.environ.pop('SIMPLICIO_CHECK_CHILD_STARTED')\n"
+    "open(started, 'w').close()\n"
+    "sys.exit(child.wait())\n"
+)
+
+
+def _windows_bootstrap_argv(
+    argv: Sequence[str], env: Dict[str, str], ready_path: str, started_path: str,
+):
+    bootstrap_env = dict(env)
+    bootstrap_env["SIMPLICIO_CHECK_ARGV"] = json.dumps([str(part) for part in argv])
+    bootstrap_env["SIMPLICIO_CHECK_JOB_READY"] = ready_path
+    bootstrap_env["SIMPLICIO_CHECK_CHILD_STARTED"] = started_path
+    return [sys.executable, "-c", _WINDOWS_BOOTSTRAP], bootstrap_env
+
+
+def _signal_windows_bootstrap(ready_path: Optional[str]) -> None:
+    if not ready_path:
+        return
+    with open(ready_path, "w", encoding="ascii"):
+        pass
+
+
+def _wait_windows_bootstrap_child(
+    proc: subprocess.Popen, started_path: str, timeout: float,
+) -> None:
+    deadline = time.monotonic() + max(1.0, min(5.0, timeout * 4.0))
+    while not os.path.exists(started_path) and proc.poll() is None:
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.001)
 
 
 def _repo_env(base: Optional[Dict[str, str]] = None, home: Optional[str] = None) -> Dict[str, str]:
@@ -896,6 +937,8 @@ def run_bounded(
     timeout = PHASE_TIMEOUT_SECONDS[phase] if timeout_seconds is None else timeout_seconds
     isolated_home = tempfile.mkdtemp(prefix="simplicio-check-")
     proc = None
+    windows_bootstrap_ready = None
+    windows_bootstrap_started = None
     try:
         # Linux receives the strongest contract: procfs plus a subreaper can
         # discover escaped double-forks.  Other supported hosts still run in
@@ -935,9 +978,18 @@ def run_bounded(
             # deterministic without weakening the timeout contract.
             kwargs.update({"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
         kwargs["start_new_session"] = True
-        proc = subprocess.Popen(list(argv), **kwargs)
+        spawn_argv = list(argv)
+        if os.name == "nt":
+            windows_bootstrap_ready = os.path.join(isolated_home, "job-ready")
+            windows_bootstrap_started = os.path.join(isolated_home, "child-started")
+            spawn_argv, kwargs["env"] = _windows_bootstrap_argv(
+                spawn_argv, kwargs["env"], windows_bootstrap_ready, windows_bootstrap_started,
+            )
+        proc = subprocess.Popen(spawn_argv, **kwargs)
         if os.name == "nt":
             proc._simplicio_windows_job = _attach_windows_job(proc)
+            _signal_windows_bootstrap(windows_bootstrap_ready)
+            _wait_windows_bootstrap_child(proc, windows_bootstrap_started, timeout)
         if capture_output:
             try:
                 stdout, stderr, timed_out, leaked_descendant = _bounded_capture(
@@ -1014,6 +1066,11 @@ def run_bounded(
                 reason=CommandReason.TIMEOUT,
             )
     finally:
+        if proc is not None and windows_bootstrap_ready and not os.path.exists(windows_bootstrap_ready):
+            try:
+                _signal_windows_bootstrap(windows_bootstrap_ready)
+            except OSError:
+                pass
         if proc is not None:
             _close_windows_job(proc)
         shutil.rmtree(isolated_home, ignore_errors=True)
