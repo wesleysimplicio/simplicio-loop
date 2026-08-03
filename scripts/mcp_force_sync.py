@@ -138,21 +138,25 @@ export SIMPLICIO_MCP_FORCE=1
     return _write(path, text)
 
 
-def rule_destinations(home: Path, target: Path | None) -> list[tuple[str, Path]]:
-    appdata = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
-    dests = [
-        ("claude_rules", home / ".claude" / "rules" / RULE_NAME),
-        ("grok", home / ".grok" / "rules" / RULE_NAME),
-        ("codex", home / ".codex" / "rules" / RULE_NAME),
-        ("agents", home / ".agents" / "rules" / RULE_NAME),
-        ("cursor_user", home / ".cursor" / "rules" / RULE_NAME),
-        ("vscode_skills", home / ".vscode" / "simplicio-skills" / "rules" / RULE_NAME),
-        ("vscode_user", appdata / "Code" / "User" / "simplicio-rules" / RULE_NAME),
-        ("kiro_user", home / ".kiro" / "steering" / RULE_NAME),
-        ("hermes", home / ".hermes" / "rules" / RULE_NAME),
-        ("simplicio_agent", home / ".simplicio" / "rules" / RULE_NAME),
-        ("antigravity", home / ".antigravity" / "rules" / RULE_NAME),
-    ]
+def rule_destinations(
+    home: Path, target: Path | None, *, do_global: bool = True,
+) -> list[tuple[str, Path]]:
+    dests: list[tuple[str, Path]] = []
+    if do_global:
+        appdata = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
+        dests.extend([
+            ("claude_rules", home / ".claude" / "rules" / RULE_NAME),
+            ("grok", home / ".grok" / "rules" / RULE_NAME),
+            ("codex", home / ".codex" / "rules" / RULE_NAME),
+            ("agents", home / ".agents" / "rules" / RULE_NAME),
+            ("cursor_user", home / ".cursor" / "rules" / RULE_NAME),
+            ("vscode_skills", home / ".vscode" / "simplicio-skills" / "rules" / RULE_NAME),
+            ("vscode_user", appdata / "Code" / "User" / "simplicio-rules" / RULE_NAME),
+            ("kiro_user", home / ".kiro" / "steering" / RULE_NAME),
+            ("hermes", home / ".hermes" / "rules" / RULE_NAME),
+            ("simplicio_agent", home / ".simplicio" / "rules" / RULE_NAME),
+            ("antigravity", home / ".antigravity" / "rules" / RULE_NAME),
+        ])
     if target is not None:
         root = target.resolve()
         dests.extend(
@@ -248,7 +252,7 @@ def sync(*, do_global: bool, target: Path | None, register: bool) -> dict:
         except OSError as exc:
             written.append({"surface": "codex_toml", "error": str(exc), "kind": "error"})
 
-    for name, path in rule_destinations(home if do_global else _home(), target):
+    for name, path in rule_destinations(home if do_global else _home(), target, do_global=do_global):
         if path.name in {"mcp.json", ".mcp.json"}:
             key = "servers" if ".vscode" in str(path) else "mcpServers"
             try:
