@@ -41,11 +41,12 @@ def probe_af_unix(
     so an inaccessible caller-supplied/external path is never hidden.
     """
     current_platform = platform_name or os.name
-    if current_platform == "nt" or not hasattr(socket, "AF_UNIX"):
+    af_unix = getattr(socket, "AF_UNIX", None)
+    if current_platform == "nt" or (af_unix is None and socket_factory is None):
         return Capability(False, "af_unix_unsupported", "AF_UNIX is not available on this OS")
     factory = socket_factory or socket.socket
     try:
-        probe = factory(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe = factory(af_unix, socket.SOCK_STREAM)
     except OSError as exc:
         if exc.errno == errno.EPERM:
             return Capability(False, "af_unix_eperm", "kernel denied AF_UNIX socket creation (EPERM)")
