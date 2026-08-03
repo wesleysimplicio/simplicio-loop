@@ -10,16 +10,20 @@ Installers copy this file into each host's always-on surface via
 
 ## MUST
 
-1. **Strict env** before autonomous work:
-   - `SIMPLICIO_LOOP=1`
-   - `SIMPLICIO_LOOP_STRICT=1`
-   - `SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto` (**Runtime is optional** — not a loop dependency)
-   - `SIMPLICIO_EXECUTION_PROFILE=auto` (becomes `runtime-backed` only if Runtime is up)
-   - `SIMPLICIO_REQUIRE_MUTATION_AUTHORITY=1`
-   - `SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT=1`
-   - `SIMPLICIO_LOOP_FORBID_HAND_EDIT=1`
+1. **Economy-parallel env** before autonomous work (fastest tokens + parallel):
+   ```bash
+   simplicio-loop economy apply --json   # or: source ~/.simplicio/economy-parallel-env.sh
+   ```
+   - `SIMPLICIO_LOOP=1` · `SIMPLICIO_LOOP_STRICT=1`
+   - `SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto` (**Runtime optional**; Tokio when up)
+   - `SIMPLICIO_EXECUTION_PROFILE=auto` → `runtime-backed` only if Runtime up
    - `SIMPLICIO_FAST_MODE=required` (when Fast operational)
-   - `SIMPLICIO_REQUIRE_MCP=1` / `SIMPLICIO_MCP_FORCE=1` (MCP-first **only when** Runtime present)
+   - `SIMPLICIO_LOOP_AUTO_FAN_OUT=1` (parallel worktrees on `batch`)
+   - `SIMPLICIO_LOOP_OPERATOR_WORKERS` / `SIMPLICIO_PRISM_SLOTS` / `SIMPLICIO_ASYNC_IO_MAX_CONCURRENCY` (CPU-bounded)
+   - `SIMPLICIO_OPERATOR_ALWAYS_LATEST=1`
+   - `SIMPLICIO_REQUIRE_MCP=1` / `SIMPLICIO_MCP_FORCE=1` (**only when** Runtime present)
+   - Safety: mutation authority + planning receipt + forbid hand-edit
+   - Opt out of economy defaults: `SIMPLICIO_ECONOMY_PARALLEL=0`
 
 2. **Preflight (blocking):** `simplicio-loop preflight --strict --json`  
    Core operators = **mapper + dev-cli** (+ Fast when up). Runtime/MCP is optional economy layer.

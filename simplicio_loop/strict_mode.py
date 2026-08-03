@@ -429,16 +429,37 @@ def evidence_required_locked(env: Optional[Mapping[str, str]] = None) -> bool:
 
 
 def recommended_env(env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
-    """Env vars to export for a strict, runtime-aware armada."""
-    profile = resolve_execution_profile(env)
+    """Env vars for a strict, **economy-parallel** armada (default).
+
+    Prefers the fastest token path (mapper handoff / Fast / Runtime MCP) and
+    bounded parallel workers (Prism slots + AUTO_FAN_OUT + asyncio). Opt out
+    with ``SIMPLICIO_ECONOMY_PARALLEL=0`` for a minimal strict envelope only.
+    """
+    try:
+        from .economy_profile import economy_parallel_enabled, economy_parallel_env
+
+        if economy_parallel_enabled(env):
+            rt = runtime_status(env)
+            out = economy_parallel_env(
+                env=env, runtime_operational=bool(rt.get("operational"))
+            )
+            # Fast only marked required when the binary is actually up
+            if not fast_status(env)["operational"]:
+                out.pop("SIMPLICIO_FAST_MODE", None)
+            return out
+    except Exception:
+        pass
+    # Minimal strict fallback
     out = {
         "SIMPLICIO_LOOP": "1",
         "SIMPLICIO_LOOP_STRICT": "1",
         "SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": "1",
         "SIMPLICIO_LOOP_AUTO_PLANNING_RECEIPT": "1",
-        "SIMPLICIO_LOOP_REQUIRE_RUNTIME": "off",
-        "SIMPLICIO_EXECUTION_PROFILE": "standalone",
+        "SIMPLICIO_LOOP_REQUIRE_RUNTIME": "auto",
+        "SIMPLICIO_EXECUTION_PROFILE": resolve_execution_profile(env),
         "SIMPLICIO_LOOP_FORBID_HAND_EDIT": "1",
+        "SIMPLICIO_OPERATOR_ALWAYS_LATEST": "1",
+        "SIMPLICIO_LOOP_AUTO_FAN_OUT": "1",
     }
     if fast_status(env)["operational"]:
         out["SIMPLICIO_FAST_MODE"] = "required"
