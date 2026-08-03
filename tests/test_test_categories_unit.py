@@ -98,6 +98,20 @@ def test_run_category_system_lane_passes_for_real(tmp_path):
     assert [os.path.basename(path) for path in payload["files"]] == ["test_probe_system.py"]
 
 
+def test_run_category_timeout_returns_without_waiting_for_pytest_child(tmp_path):
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_slow_unit.py").write_text(
+        "import time\n\ndef test_slow():\n    time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    payload = tc.run_category("unit", repo=str(tmp_path), timeout=1)
+    assert payload["status"] == "fail"
+    assert payload["ok"] is False
+    assert payload["returncode"] is None
+    assert "timed out" in payload["detail"]
+
+
 def test_run_category_blocks_a_zero_exit_when_every_test_is_skipped(tmp_path):
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
