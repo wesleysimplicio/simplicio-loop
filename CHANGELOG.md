@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.38.32] - 2026-08-03
+
+- Preflight / STRICT runtime probe: prefer `SIMPLICIO_RUNTIME_BIN` and known
+  Runtime install roots; scan every `simplicio` on PATH and **reject** the pip
+  `simplicio-cli` console-script alias that prints `simplicio-py …` so Windows
+  hosts with `Scripts` before `.local` no longer bind the wrong binary.
+
 ## [3.38.31] - 2026-08-03
 
 - Ecosystem doctor: prove conceptual mapper role `recall` via real CLI surface
