@@ -4475,6 +4475,10 @@ def verify_run(repo: str, run_id: str) -> Dict[str, Any]:
             run_dir=run_dir,
             manifest=status["manifest"],
         )
+        if loop_execution.get("status") != "VERIFIED":
+            raise LoopExecutionReceiptError(
+                "runtime handoff receipt did not reach VERIFIED status"
+            )
     except LoopExecutionReceiptError as exc:
         state = read_status(repo, run_id)["state"]
         state["blockers"] = [f"loop-execution receipt publication failed: {exc}"]

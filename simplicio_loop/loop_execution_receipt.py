@@ -58,13 +58,16 @@ def _sha256(path: Path) -> str:
 
 
 def _git_commit(repo: Path) -> str:
-    process = subprocess.Popen(
-        ["git", "rev-parse", "HEAD"],
-        cwd=str(repo),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    try:
+        process = subprocess.Popen(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as exc:
+        raise LoopExecutionReceiptError(f"repository commit probe unavailable: {exc}") from exc
     try:
         stdout, _stderr = process.communicate(timeout=30)
     except subprocess.TimeoutExpired:
@@ -149,7 +152,12 @@ def _copy_entry(source: Path, bundle: Path, name: str, run_dir: Path) -> dict[st
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
+    if path.parent.is_symlink():
+        raise LoopExecutionReceiptError(f"receipt directory must not be a symlink: {path.parent}")
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.is_symlink():
+        raise LoopExecutionReceiptError(f"receipt directory must not be a symlink: {path.parent}")
+    _contained_path(path.parent.parent, path, "published receipt")
     fd, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
     )
@@ -184,6 +192,17 @@ def build_receipt(
     dev_cli = _stack_component(stack_lock, "simplicio-cli")
     fast = _stack_component(stack_lock, "simplicio-fast")
     runtime = _stack_component(stack_lock, "simplicio-runtime")
+
+    if any(
+        bool(component.get("fallback") or component.get("fallback_used") or component.get("fallback_declared"))
+        for component in (mapper, dev_cli, fast, runtime)
+    ):
+        raise LoopExecutionReceiptError("fallback execution cannot publish a verified receipt")
+    if any(
+        bool(preflight.get("fallback") or preflight.get("fallback_used") or preflight.get("fallback_declared"))
+        for preflight in (mapper_preflight, operator_preflight)
+    ):
+        raise LoopExecutionReceiptError("preflight fallback cannot publish a verified receipt")
 
     mapper_version = str(mapper_preflight.get("version") or mapper.get("version") or "")
     dev_version = str(operator_preflight.get("version") or dev_cli.get("version") or "")
@@ -260,7 +279,11 @@ def publish_loop_execution_receipt(
     repo = repo.resolve()
     run_dir = _contained_path(repo, run_dir, "run directory")
     _contained_path(run_dir, run_dir / "loop", "loop state directory")
-    bundle = _contained_path(run_dir, run_dir / "runtime-loop-execution", "runtime bundle")
+    final_bundle = _contained_path(run_dir, run_dir / "runtime-loop-execution", "runtime bundle")
+    if final_bundle.exists() or final_bundle.is_symlink():
+        raise LoopExecutionReceiptError(
+            f"runtime bundle already exists; refusing to overwrite: {final_bundle}"
+        )
     supplied_run_id = _validated_run_id(manifest, run_dir)
 
     try:
@@ -271,44 +294,64 @@ def publish_loop_execution_receipt(
         raise
 
     loop_dir = run_dir / "loop"
-    bundle.mkdir(parents=True, exist_ok=True)
+    try:
+        staging_bundle = Path(tempfile.mkdtemp(prefix=".runtime-loop-execution-", dir=str(run_dir)))
+        _contained_path(run_dir, staging_bundle, "staging runtime bundle")
+    except (OSError, LoopExecutionReceiptError) as exc:
+        raise LoopExecutionReceiptError(f"runtime bundle staging failed: {exc}") from exc
+    published = False
+    bundle_published = False
     source_paths = {
         **{name: loop_dir / source for name, source in _STATE_FILES.items()},
         "mapper": run_dir / "mapper-context.json",
         "dev_cli": run_dir / "operator-receipt.json",
     }
-    artifacts: dict[str, dict[str, Any]] = {}
-    for name, filename in _STATE_FILES.items():
-        artifacts[name] = _copy_entry(source_paths[name], bundle, filename, run_dir)
-    _copy_entry(source_paths["mapper"], bundle, "mapper.json", run_dir)
-    _copy_entry(source_paths["dev_cli"], bundle, "dev-cli.json", run_dir)
+    try:
+        artifacts: dict[str, dict[str, Any]] = {}
+        for name, filename in _STATE_FILES.items():
+            artifacts[name] = _copy_entry(source_paths[name], staging_bundle, filename, run_dir)
+        _copy_entry(source_paths["mapper"], staging_bundle, "mapper.json", run_dir)
+        _copy_entry(source_paths["dev_cli"], staging_bundle, "dev-cli.json", run_dir)
 
-    manifest_payload = _read_json(run_dir / "manifest.json", "manifest")
-    file_run_id = _validated_run_id(manifest_payload, run_dir)
-    if file_run_id != supplied_run_id:
-        raise LoopExecutionReceiptError("provided and persisted manifest run_id values differ")
-    stack_lock = _read_json(run_dir / "stack-lock.json", "stack lock")
-    mapper_preflight = _read_json(run_dir / "mapper-preflight.json", "Mapper preflight")
-    operator_preflight = _read_json(run_dir / "operator-preflight.json", "Dev CLI preflight")
-    receipt = build_receipt(
-        repo=repo,
-        run_dir=bundle,
-        manifest=manifest_payload,
-        stack_lock=stack_lock,
-        mapper_preflight=mapper_preflight,
-        operator_preflight=operator_preflight,
-        commit=commit,
-        artifacts={
-            name: {**entry, "path": entry["path"]}
-            for name, entry in artifacts.items()
-        },
-    )
-    receipt_path = repo / ".simplicio" / "loop-execution.json"
-    _atomic_json(receipt_path, receipt)
+        manifest_payload = _read_json(run_dir / "manifest.json", "manifest")
+        file_run_id = _validated_run_id(manifest_payload, run_dir)
+        if file_run_id != supplied_run_id:
+            raise LoopExecutionReceiptError("provided and persisted manifest run_id values differ")
+        stack_lock = _read_json(run_dir / "stack-lock.json", "stack lock")
+        mapper_preflight = _read_json(run_dir / "mapper-preflight.json", "Mapper preflight")
+        operator_preflight = _read_json(run_dir / "operator-preflight.json", "Dev CLI preflight")
+        receipt = build_receipt(
+            repo=repo,
+            run_dir=final_bundle,
+            manifest=manifest_payload,
+            stack_lock=stack_lock,
+            mapper_preflight=mapper_preflight,
+            operator_preflight=operator_preflight,
+            commit=commit,
+            artifacts={
+                name: {**entry, "path": entry["path"]}
+                for name, entry in artifacts.items()
+            },
+        )
+        os.replace(staging_bundle, final_bundle)
+        bundle_published = True
+        receipt_path = repo / ".simplicio" / "loop-execution.json"
+        _contained_path(repo, receipt_path.parent, "receipt directory")
+        _atomic_json(receipt_path, receipt)
+        published = True
+    except LoopExecutionReceiptError:
+        raise
+    except (OSError, ValueError, TypeError) as exc:
+        raise LoopExecutionReceiptError(f"runtime receipt publication failed: {exc}") from exc
+    finally:
+        if not published and staging_bundle.exists():
+            shutil.rmtree(staging_bundle, ignore_errors=True)
+        if not published and bundle_published and final_bundle.exists():
+            shutil.rmtree(final_bundle, ignore_errors=True)
     return {
         "status": "VERIFIED",
         "receipt": str(receipt_path),
-        "bundle": str(bundle),
+        "bundle": str(final_bundle),
         "run_id": receipt["run_id"],
         "commit": commit,
     }

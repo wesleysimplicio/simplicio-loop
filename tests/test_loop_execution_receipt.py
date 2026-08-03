@@ -149,6 +149,50 @@ def test_publish_rejects_symlinked_source_artifact(tmp_path, monkeypatch):
         )
 
 
+def test_publish_rejects_fallback_component(tmp_path, monkeypatch):
+    repo, run = _fixture(tmp_path)
+    stack_lock = json.loads((run / "stack-lock.json").read_text(encoding="utf-8"))
+    stack_lock["components"][0]["fallback"] = True
+    _write_json(run / "stack-lock.json", stack_lock)
+    monkeypatch.setattr(receipt_mod, "_git_commit", lambda _repo: "a" * 40)
+
+    with pytest.raises(receipt_mod.LoopExecutionReceiptError, match="fallback"):
+        receipt_mod.publish_loop_execution_receipt(
+            repo=repo, run_dir=run, manifest={"run_id": "run-1"}
+        )
+
+
+def test_publish_rejects_existing_bundle_without_overwrite(tmp_path, monkeypatch):
+    repo, run = _fixture(tmp_path)
+    (run / "runtime-loop-execution").mkdir()
+    (run / "runtime-loop-execution" / "sentinel").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(receipt_mod, "_git_commit", lambda _repo: "a" * 40)
+
+    with pytest.raises(receipt_mod.LoopExecutionReceiptError, match="already exists"):
+        receipt_mod.publish_loop_execution_receipt(
+            repo=repo, run_dir=run, manifest={"run_id": "run-1"}
+        )
+    assert (run / "runtime-loop-execution" / "sentinel").read_text(encoding="utf-8") == "keep"
+
+
+def test_publish_removes_partial_bundle_when_root_write_fails(tmp_path, monkeypatch):
+    repo, run = _fixture(tmp_path)
+    monkeypatch.setattr(receipt_mod, "_git_commit", lambda _repo: "a" * 40)
+    monkeypatch.setattr(
+        receipt_mod,
+        "_atomic_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            receipt_mod.LoopExecutionReceiptError("root write failed")
+        ),
+    )
+
+    with pytest.raises(receipt_mod.LoopExecutionReceiptError, match="root write failed"):
+        receipt_mod.publish_loop_execution_receipt(
+            repo=repo, run_dir=run, manifest={"run_id": "run-1"}
+        )
+    assert not (run / "runtime-loop-execution").exists()
+
+
 def test_receipt_schema_declares_stable_runtime_chain():
     schema_path = Path(__file__).parents[1] / "contracts" / "loop-execution" / "v1" / "receipt.schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
