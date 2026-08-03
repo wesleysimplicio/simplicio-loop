@@ -27,7 +27,8 @@ def _git_commit(path):
     try:
         out = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=str(path), capture_output=True, text=True, timeout=15,
+            cwd=str(path), stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=15,
         )
         return out.stdout.strip() if out.returncode == 0 else ""
     except Exception:
