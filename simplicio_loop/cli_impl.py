@@ -1050,6 +1050,12 @@ def main(argv=None) -> int:
              "forbid hand-edit, lock evidence/mutation authority",
     )
 
+    p_ecc = sub.add_parser("ecc", help="inspect the opt-in ECC advisory integration")
+    ecc_sub = p_ecc.add_subparsers(dest="ecc_command", required=True)
+    p_ecc_doctor = ecc_sub.add_parser("doctor", help="verify ECC provenance and safety policy")
+    p_ecc_doctor.add_argument("--repo", default=".", help="repository root")
+    p_ecc_doctor.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
     p_deploy = sub.add_parser(
         "deploy", help="plan a gated serverless deployment (dry-run unless --apply is explicit)"
     )
@@ -1363,6 +1369,9 @@ def main(argv=None) -> int:
         return dispatch_map(args)
     if command == "preflight":
         return preflight(args.repo, args.json, strict=bool(getattr(args, "strict", False)))
+    if command == "ecc":
+        from .ecc_guidance import doctor_command
+        return doctor_command(args.repo, as_json=bool(args.json))
     if command == "deploy":
         try:
             deploy_plan = build_serverless_plan(args.repo, backend=args.backend,
