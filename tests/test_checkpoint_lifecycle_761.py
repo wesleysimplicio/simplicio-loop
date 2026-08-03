@@ -32,7 +32,18 @@ def test_overlays_are_isolated_and_idempotent(tmp_path):
 def test_checkpoint_resume_revalidates_generation_and_overlay(tmp_path):
     run = lifecycle(tmp_path)
     value = run.checkpoint("a", "s1", "READY_TO_PROMOTE", receipts=["tests"], work_units=5)
+    assert value["thread_id"] == "task-761/attempt-1"
+    assert value["durable_execution"]["side_effects"] == "receipt-gated"
     assert run.load("a", "s1")["digest"] == value["digest"]
+
+
+def test_applied_requires_receipts_langgraph_side_effect_practice(tmp_path):
+    run = lifecycle(tmp_path)
+    with pytest.raises(LifecycleError, match="receipts"):
+        run.checkpoint("a", "s1", "APPLIED", receipts=[])
+    ok = run.checkpoint("a", "s1", "APPLIED", receipts=["effect:abc"])
+    assert ok["state"] == "APPLIED"
+    assert ok["receipts"] == ["effect:abc"]
     stale = CheckpointLifecycle(
         run.root,
         task_id=run.task_id,
