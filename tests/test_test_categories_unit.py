@@ -98,6 +98,25 @@ def test_run_category_system_lane_passes_for_real(tmp_path):
     assert [os.path.basename(path) for path in payload["files"]] == ["test_probe_system.py"]
 
 
+def test_run_category_keeps_stderr_failure_summary(monkeypatch, tmp_path):
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_probe_unit.py").write_text(
+        "def test_probe():\n    assert True\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        tc,
+        "_run_pytest_with_timeout",
+        lambda *args, **kwargs: (1, "progress output\n", "2 failed, 1 passed in 0.01s\n"),
+    )
+    payload = tc.run_category("unit", repo=str(tmp_path), timeout=10)
+    assert payload["status"] == "fail"
+    assert payload["pytest_summary"]["failed"] == 2
+    assert payload["pytest_summary"]["passed"] == 1
+    assert "2 failed" in payload["detail"]
+    assert "2 failed" in payload["stdout_tail"]
+
+
 def test_run_category_timeout_returns_without_waiting_for_pytest_child(tmp_path):
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
