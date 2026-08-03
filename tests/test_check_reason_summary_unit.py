@@ -534,7 +534,7 @@ def test_bounded_capture_invalid_utf8_keeps_marker_within_public_byte_limit() ->
 def test_windows_thread_capture_does_not_register_pipes_with_selector(monkeypatch) -> None:
     proc = subprocess.Popen(
         [sys.executable, "-c", "print('portable-capture')"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
     )
     monkeypatch.setattr(check_runtime.os, "name", "nt")
     monkeypatch.setattr(
@@ -553,7 +553,7 @@ def test_windows_thread_capture_does_not_register_pipes_with_selector(monkeypatc
 def test_windows_thread_capture_timeout_is_bounded_when_taskkill_fails(monkeypatch) -> None:
     proc = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
     )
 
     class FailedTaskkill:
