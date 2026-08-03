@@ -209,11 +209,12 @@ def run_category(category: str, extra_pytest_args: "list | None" = None,
     started = time.time()
     cmd = [sys.executable, "-m", "pytest", "-q"] + files + extra_pytest_args
     returncode, stdout, stderr = _run_pytest_with_timeout(cmd, repo, timeout)
-    tail = (stdout or stderr or "").strip()[-2000:]
+    combined_output = "\n".join(part for part in (stdout, stderr) if part)
+    tail = combined_output.strip()[-2000:]
     if returncode is None and not tail:
         tail = f"timed out after {timeout}s"
     duration = time.time() - started
-    summary = _pytest_summary(stdout if returncode is not None else "")
+    summary = _pytest_summary(combined_output if returncode is not None else "")
     external_selection = _has_external_selection(extra_pytest_args)
     no_tests_executed = returncode == 0 and summary["executed"] == 0
     unapproved_deselection = (external_selection or summary["deselected"] > 0) and not allow_deselection
