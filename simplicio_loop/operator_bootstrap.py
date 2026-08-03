@@ -20,7 +20,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 SCHEMA = "simplicio.operator-bootstrap/v1"
-PACKAGE_SPECS = ("simplicio-cli>=0.18.6", "simplicio-mapper>=0.26.10,<0.27")
+# Unpinned + --upgrade in _pip_commands → always the latest published release.
+# Floors live only in pyproject for install-time resolution; bootstrap upgrades freely.
+PACKAGE_SPECS = (
+    "simplicio-cli",
+    "simplicio-mapper",
+    "simplicio-fast",
+    "simplicio-loop",
+)
 REQUIRED_BINARIES = ("simplicio-mapper", "simplicio-dev-cli")
 RECEIPT_NAME = "operator-bootstrap.json"
 AUTO_BOOTSTRAP_ENV = "SIMPLICIO_LOOP_AUTO_BOOTSTRAP_OPERATORS"

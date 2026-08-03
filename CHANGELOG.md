@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.38.33] - 2026-08-03
+
+- **Always-latest operators (default):** `operator_check` TTL default is `0` and
+  `SIMPLICIO_OPERATOR_ALWAYS_LATEST=1` (opt out with `=0` + `--ttl-days N`).
+  Preflight `maybe-upgrade` runs `pip install -U` for unpinned
+  `simplicio-loop`, `simplicio-cli`, `simplicio-mapper`, `simplicio-fast`.
+- Drop the `simplicio-mapper<0.27` ceiling in `pyproject.toml` and bootstrap
+  package specs so upgrades are never blocked by an upper pin.
+
 ## [3.38.32] - 2026-08-03
 
 - Preflight / STRICT runtime probe: prefer `SIMPLICIO_RUNTIME_BIN` and known

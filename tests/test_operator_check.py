@@ -12,7 +12,8 @@ from scripts import operator_check
 # should_upgrade — pure TTL decision
 # --------------------------------------------------------------------------
 
-def test_no_prior_check_recommends_upgrade(tmp_path):
+def test_no_prior_check_recommends_upgrade(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_OPERATOR_ALWAYS_LATEST", "0")
     cache = tmp_path / "operator-check.json"
     decision = operator_check.should_upgrade(cache, binaries=())
     assert decision["should_upgrade"] is True
@@ -56,7 +57,8 @@ def test_configurable_ttl_changes_the_boundary(tmp_path):
     assert operator_check.should_upgrade(cache, ttl_days=1, binaries=(), now=now)["should_upgrade"] is True
 
 
-def test_corrupt_cache_is_treated_as_no_prior_check(tmp_path):
+def test_corrupt_cache_is_treated_as_no_prior_check(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_OPERATOR_ALWAYS_LATEST", "0")
     cache = tmp_path / "operator-check.json"
     cache.write_text("{not json", encoding="utf-8")
     decision = operator_check.should_upgrade(cache, binaries=())
@@ -113,6 +115,8 @@ def test_default_upgrade_requests_both_direct_operator_packages(monkeypatch):
     operator_check.run_pip_upgrade()
     assert "simplicio-cli" in captured["argv"]
     assert "simplicio-mapper" in captured["argv"]
+    assert "simplicio-fast" in captured["argv"]
+    assert "simplicio-loop" in captured["argv"]
 
 
 def test_maybe_upgrade_past_ttl_does_invoke_upgrade_fn(tmp_path):
@@ -271,6 +275,7 @@ def test_cli_record_then_should_upgrade(tmp_path, capsys):
     capsys.readouterr()
     assert operator_check.main([
         "should-upgrade", "--cache", str(cache), "--json", "--binary", "python3",
+        "--ttl-days", "7",
     ]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["should_upgrade"] is False
