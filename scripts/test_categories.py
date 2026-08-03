@@ -37,6 +37,7 @@ import os
 import signal
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import time
 from pathlib import Path
 
@@ -208,7 +209,20 @@ def run_category(category: str, extra_pytest_args: "list | None" = None,
         }
     started = time.time()
     cmd = [sys.executable, "-m", "pytest", "-q"] + files + extra_pytest_args
-    returncode, stdout, stderr = _run_pytest_with_timeout(cmd, repo, timeout)
+    has_basetemp = any(
+        arg == "--basetemp" or arg.startswith("--basetemp=") for arg in extra_pytest_args
+    )
+    if has_basetemp:
+        returncode, stdout, stderr = _run_pytest_with_timeout(cmd, repo, timeout)
+    else:
+        # Avoid pytest's shared per-user temp-root cleanup, which can race with
+        # another Windows pytest process and fail the category after tests pass.
+        with TemporaryDirectory(
+            prefix=f"simplicio-loop-{category}-", ignore_cleanup_errors=True
+        ) as basetemp:
+            returncode, stdout, stderr = _run_pytest_with_timeout(
+                cmd + ["--basetemp", basetemp], repo, timeout
+            )
     combined_output = "\n".join(part for part in (stdout, stderr) if part)
     tail = combined_output.strip()[-2000:]
     if returncode is None and not tail:
