@@ -93,6 +93,134 @@ class _ContainmentUnavailable(RuntimeError):
         self.baseline = set(baseline)
 
 
+class _WindowsJob:
+    """Own a Windows Job Object that terminates the whole spawned tree on close."""
+
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+    _PROCESS_TERMINATE = 0x0001
+    _PROCESS_SET_QUOTA = 0x0100
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+    def __init__(self, pid: int):
+        import ctypes
+        from ctypes import wintypes
+
+        class _BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class _ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimitInformation),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_job = kernel32.CreateJobObjectW
+        create_job.restype = wintypes.HANDLE
+        set_info = kernel32.SetInformationJobObject
+        set_info.argtypes = [wintypes.HANDLE, wintypes.INT, wintypes.LPVOID, wintypes.DWORD]
+        set_info.restype = wintypes.BOOL
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        open_process.restype = wintypes.HANDLE
+        assign = kernel32.AssignProcessToJobObject
+        assign.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        assign.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+
+        job = create_job(None, None)
+        if not job:
+            raise ctypes.WinError(ctypes.get_last_error())
+        process = None
+        try:
+            info = _ExtendedLimitInformation()
+            info.BasicLimitInformation.LimitFlags = self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not set_info(
+                job,
+                self._JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            process = open_process(
+                self._PROCESS_TERMINATE
+                | self._PROCESS_SET_QUOTA
+                | self._PROCESS_QUERY_LIMITED_INFORMATION,
+                False,
+                pid,
+            )
+            if not process:
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not assign(job, process):
+                raise ctypes.WinError(ctypes.get_last_error())
+        except BaseException:
+            close_handle(job)
+            raise
+        finally:
+            if process:
+                close_handle(process)
+        self._close_handle = close_handle
+        self._handle = job
+
+    def close(self) -> None:
+        handle = self._handle
+        self._handle = None
+        if handle:
+            self._close_handle(handle)
+
+
+def _attach_windows_job(proc: subprocess.Popen) -> Optional[_WindowsJob]:
+    """Attach a spawned process to a kill-on-close Job Object when available."""
+    if os.name != "nt":
+        return None
+    try:
+        return _WindowsJob(proc.pid)
+    except (OSError, RuntimeError):
+        # Nested jobs can be unavailable on older Windows or under a CI job.
+        # The caller retains the taskkill fallback rather than weakening the
+        # bounded phase contract or failing an otherwise runnable check.
+        return None
+
+
+def _close_windows_job(proc: subprocess.Popen) -> bool:
+    job = getattr(proc, "_simplicio_windows_job", None)
+    if job is None:
+        return False
+    setattr(proc, "_simplicio_windows_job", None)
+    try:
+        job.close()
+    except (OSError, RuntimeError):
+        return False
+    return True
+
+
 def _repo_env(base: Optional[Dict[str, str]] = None, home: Optional[str] = None) -> Dict[str, str]:
     """Return the deliberately small environment used by gate subprocesses."""
     source = os.environ if base is None else base
@@ -244,17 +372,20 @@ def _terminate_and_reap(
             discovery_available = False
 
     if os.name == "nt":
-        try:
-            killed = subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                check=False,
-            )
-            if killed.returncode != 0 and proc.poll() is None:
-                proc.kill()
-        except (OSError, subprocess.SubprocessError):
+        killed = _close_windows_job(proc)
+        if not killed:
+            try:
+                taskkill = subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                    check=False,
+                )
+                killed = taskkill.returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                killed = False
+        if not killed and proc.poll() is None:
             proc.kill()
     else:
         # A descendant can escape the process group with setsid().  PIDs seen
@@ -764,6 +895,7 @@ def run_bounded(
     """Run a phase in its own process group and classify a bounded timeout."""
     timeout = PHASE_TIMEOUT_SECONDS[phase] if timeout_seconds is None else timeout_seconds
     isolated_home = tempfile.mkdtemp(prefix="simplicio-check-")
+    proc = None
     try:
         # Linux receives the strongest contract: procfs plus a subreaper can
         # discover escaped double-forks.  Other supported hosts still run in
@@ -797,6 +929,8 @@ def run_bounded(
             kwargs.update({"stdout": subprocess.PIPE, "stderr": subprocess.PIPE})
         kwargs["start_new_session"] = True
         proc = subprocess.Popen(list(argv), **kwargs)
+        if os.name == "nt":
+            proc._simplicio_windows_job = _attach_windows_job(proc)
         if capture_output:
             try:
                 stdout, stderr, timed_out, leaked_descendant = _bounded_capture(
@@ -873,6 +1007,8 @@ def run_bounded(
                 reason=CommandReason.TIMEOUT,
             )
     finally:
+        if proc is not None:
+            _close_windows_job(proc)
         shutil.rmtree(isolated_home, ignore_errors=True)
 
 
