@@ -33,6 +33,12 @@ from .operator_bootstrap import (
     ensure_operators as _ensure_required_operators,
 )
 from .plan_contract import PLAN_SCHEMA, validate_plan
+from .ecc_guidance import (
+    ecc_required,
+    ensure_ecc_ready,
+    extract_guidance_reference,
+    inspect_ecc,
+)
 from .remote_queue import HTTPRemoteQueue, QueueConflict, QueueUnavailable, build_completion_receipt
 from .agent_contract import bind_receipt, build_context_pack
 from .receipt_verifier import (EVIDENCE_RECEIPT_SCHEMA as _EVIDENCE_RECEIPT_CONTENT_SCHEMA,
@@ -686,6 +692,7 @@ def _degraded_mapper_payload(
     snapshot: Any,
     handoff: Any,
     target_hint: str,
+    ecc_admission: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Build an explicitly UNVERIFIED context for a bounded local retry.
 
@@ -763,6 +770,7 @@ def _degraded_mapper_payload(
         "repo_state_before": dict(before),
         "repo_state_after": _repo_fingerprint(repo_path),
         "mapper_preflight": dict(mapper_preflight),
+        "ecc_admission": dict(ecc_admission or {}),
         "degraded_local": True,
         "degraded_reason_code": "mapper_deep_pass_unavailable",
         "evidence_status": "UNVERIFIED",
@@ -2649,6 +2657,8 @@ def _validate_run_receipts(
     mapper_preflight = _require_json_receipt(run_dir / "mapper-preflight.json", "mapper preflight")
     operator_preflight = _require_json_receipt(run_dir / "operator-preflight.json", "operator preflight")
     operator = _require_json_receipt(run_dir / "operator-receipt.json", "operator")
+    if ecc_required() and extract_guidance_reference(operator) is None:
+        raise RuntimeError("required ECC guidance reference is missing from operator receipt")
 
     expected_run_id = str((manifest or {}).get("run_id") or run_dir.name)
     if run_dir.name != expected_run_id:
@@ -2849,6 +2859,8 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
                 task_fingerprint: str = "", target_hint: str = "") -> Dict[str, Any]:
     before = _repo_fingerprint(repo_path)
     mapper_preflight = _preflight_mapper(repo_path, run_root)
+    ecc_admission = inspect_ecc(repo_path, run_root)
+    ensure_ecc_ready(ecc_admission)
     mapper_timeout = str(_mapper_timeout_seconds())
     rollback_sync = os.environ.get("SIMPLICIO_LOOP_MAPPER_SYNC_ROLLBACK", "").strip().lower() in {
         "1", "true", "yes", "on",
@@ -2988,6 +3000,7 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
             "stderr": (handoff.stderr or "").strip(),
         },
         "handoff_recovery": handoff_recovery,
+        "ecc_admission": dict(ecc_admission),
         "execution_route": {
             "mode": "synchronous_rollback" if rollback_sync else "foreground_first",
             "rollback_flag": "SIMPLICIO_LOOP_MAPPER_SYNC_ROLLBACK" if rollback_sync else None,
@@ -3051,6 +3064,7 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
             degraded = _degraded_mapper_payload(
                 repo_path, before, mapper_preflight, scan, inspect, snapshot, handoff,
                 target_hint,
+                ecc_admission=ecc_admission,
             )
             _write_json(run_root / "mapper-context.json", degraded)
             return degraded
@@ -3394,6 +3408,9 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
             "task_spec_path": str(task_spec_path),
             "task_spec_hash": task_spec_hash,
         }
+        ecc_reference = extract_guidance_reference(receipt)
+        if ecc_reference is not None:
+            receipt["ecc_guidance_ref"] = ecc_reference
         _write_json(run_root / "operator-receipt.json", receipt)
         return receipt
 
@@ -3488,6 +3505,9 @@ def _prepare_operator_receipt(repo_path: Path, run_root: Path, task: Dict[str, A
             "task_spec_path": str(task_spec_path),
             "task_spec_hash": task_spec_hash,
         }
+    ecc_reference = extract_guidance_reference(receipt)
+    if ecc_reference is not None:
+        receipt["ecc_guidance_ref"] = ecc_reference
     _write_json(run_root / "operator-receipt.json", receipt)
     return receipt
 
@@ -3662,6 +3682,7 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
             "targets": _candidate_targets(mapper_payload, repo_path),
             "degraded": mapper_degraded,
             "status": "UNVERIFIED" if mapper_degraded else "MEASURED",
+            "ecc_admission": dict(mapper_payload.get("ecc_admission") or {}),
         }
         state["current_action"] = "mapper_context_degraded" if mapper_degraded else "mapper_context_persisted"
         state["next_action"] = "plan_ready_for_decision"
@@ -3734,6 +3755,7 @@ def arm_run(repo: str, task_path: str, delivery: str, max_iterations: int) -> Di
             "receipt": str(run_root / "operator-receipt.json"),
             "target": candidates[0],
             "execution_state": receipt.get("execution_state", "proposed"),
+            "ecc_guidance_ref": receipt.get("ecc_guidance_ref"),
         }
         evidence = build_evidence_receipt(str(run_root))
         _write_json(run_root / "evidence-receipt.json", evidence)
