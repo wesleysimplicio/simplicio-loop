@@ -166,7 +166,8 @@ def _load_run_artifacts(run_dir):
 def _git_meta(worktree=None):
     def _run(*args):
         try:
-            done = subprocess.run(["git", *args], cwd=worktree or REPO, capture_output=True, text=True, timeout=15)
+            done = subprocess.run(["git", *args], cwd=worktree or REPO,
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
             return (done.stdout or "").strip() if done.returncode == 0 else ""
         except Exception:
             return ""
@@ -181,17 +182,18 @@ def _git_meta(worktree=None):
     staged = False
     try:
         st = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"],
-                            cwd=worktree or REPO, capture_output=True, text=True, timeout=15)
+                            cwd=worktree or REPO, stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=15)
         if st.returncode == 0 and any(line[:2] in ("??", " A", "M ", "M ") or line.startswith("??")
                                for line in st.stdout.splitlines()):
             subprocess.run(["git", "add", "-A"], cwd=worktree or REPO,
-                           capture_output=True, text=True, timeout=15)
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
             staged = True
         diff = _run("diff", "--no-ext-diff", "--cached", "HEAD")
     finally:
         if staged:
             subprocess.run(["git", "reset", "-q"], cwd=worktree or REPO,
-                           capture_output=True, text=True, timeout=15)
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
     return {
         "commit_sha": _run("rev-parse", "HEAD"),
         "diff_hash": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
@@ -342,7 +344,7 @@ def _wi_diff_empty_between(expected_commit, head_commit, wi_files):
     try:
         done = subprocess.run(
             ["git", "diff", "--name-only", expected_commit, head_commit, "--", *wi_files],
-            cwd=REPO, capture_output=True, text=True, timeout=15,
+            cwd=REPO, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15,
         )
         return done.returncode == 0 and not done.stdout.strip()
     except Exception:
