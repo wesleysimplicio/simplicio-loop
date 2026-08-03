@@ -6,6 +6,8 @@ import os
 import sys
 import time
 
+import pytest
+
 from scripts import check, check_runtime
 from scripts.check_runtime import CommandReason, _visible_namespace_pid
 
@@ -56,6 +58,7 @@ def test_descendant_scanner_fails_closed_for_live_unmapped_root(monkeypatch) -> 
     assert result.descendants == set()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Linux NSpid descendant-discovery contract")
 def test_descendant_scanner_retains_safe_sibling_before_unmapped_child(monkeypatch) -> None:
     monkeypatch.setattr(check_runtime, "_caller_namespace_depth", lambda: 0)
     monkeypatch.setattr(check_runtime.os, "listdir", lambda _path: ["100", "101", "102"])
@@ -95,6 +98,7 @@ def test_core_network_guard_reaches_python_subprocess() -> None:
     assert result.stdout.strip() == "blocked"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="CAPABILITY_UNAVAILABLE[raw_socket]: Windows runner")
 def test_core_network_guard_blocks_raw_socket_and_public_bind() -> None:
     program = (
         "import _socket, errno; "
@@ -116,6 +120,7 @@ def test_core_network_guard_blocks_raw_socket_and_public_bind() -> None:
     assert result.stdout.strip() == "blocked"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="CAPABILITY_UNAVAILABLE[raw_socket]: Windows runner")
 def test_core_network_guard_covers_socket_type_aliases_raw_dns_and_sendmsg() -> None:
     program = (
         "import _socket,errno,socket; "
@@ -140,6 +145,7 @@ def test_core_network_guard_covers_socket_type_aliases_raw_dns_and_sendmsg() -> 
     assert result.stdout.strip() == "blocked"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="CAPABILITY_UNAVAILABLE[raw_socket]: Windows runner")
 def test_core_network_guard_covers_public_mros_and_keeps_popen_contract() -> None:
     program = (
         "import _socket,errno,inspect,subprocess,socket; "
@@ -215,6 +221,7 @@ def test_core_network_guard_parses_split_python_option_arguments() -> None:
     assert result.stdout.strip() == "blocked"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="CAPABILITY_UNAVAILABLE[symlink]: Windows privilege")
 def test_core_network_guard_rejects_all_python_child_delivery_bypasses(tmp_path) -> None:
     alias = tmp_path / "not-python-name"
     alias.symlink_to(sys.executable)
@@ -243,6 +250,7 @@ def test_core_network_guard_rejects_all_python_child_delivery_bypasses(tmp_path)
     assert result.stdout.strip() == "blocked"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="CAPABILITY_UNAVAILABLE[windows_sockets]: Windows runner")
 def test_core_network_guard_injects_delivery_for_minimal_python_child_envs() -> None:
     child = (
         "import errno,socket; "
@@ -311,6 +319,7 @@ if __name__ == '__main__':
     assert result.stdout.strip() == "blocked"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX setsid process-tree contract")
 def test_successful_leader_with_closed_pipes_and_setsid_child_fails_and_reaps(tmp_path) -> None:
     child_pid = tmp_path / "closed-pipes-child.pid"
     child = (
@@ -335,6 +344,7 @@ def test_successful_leader_with_closed_pipes_and_setsid_child_fails_and_reaps(tm
     _assert_pid_gone(int(child_pid.read_text()))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Linux subreaper process-tree contract")
 def test_noncapturing_timeout_rescans_and_reaps_double_fork(tmp_path) -> None:
     child_pid = tmp_path / "noncapture-double-fork.pid"
     program = """import os, pathlib, sys, time
@@ -358,6 +368,7 @@ time.sleep(30)
     _assert_pid_gone(int(child_pid.read_text()))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX setsid process-tree contract")
 def test_timeout_rescans_sigterm_handler_setsids_grandchild(tmp_path) -> None:
     child_pid = tmp_path / "late-sigterm-grandchild.pid"
     program = """import os, pathlib, signal, sys, time
