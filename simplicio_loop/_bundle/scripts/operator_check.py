@@ -39,15 +39,45 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 SCHEMA = "simplicio.operator-check/v1"
-DEFAULT_TTL_DAYS = 7.0
+# Explicit --ttl-days always wins. When omitted: always-latest (default) → 0;
+# SIMPLICIO_OPERATOR_ALWAYS_LATEST=0 restores the classic 7-day window.
+DEFAULT_TTL_DAYS = 0.0
+LEGACY_TTL_DAYS = 7.0
 DEFAULT_BINARIES = ("simplicio-mapper", "simplicio-dev-cli")
 DEFAULT_PACKAGE = "simplicio-cli"
-DEFAULT_PACKAGES = ("simplicio-cli", "simplicio-mapper")
+# Unpinned names: with `pip install -U` these always resolve to the latest PyPI release.
+DEFAULT_PACKAGES = (
+    "simplicio-loop",
+    "simplicio-cli",
+    "simplicio-mapper",
+    "simplicio-fast",
+)
+ALWAYS_LATEST_ENV = "SIMPLICIO_OPERATOR_ALWAYS_LATEST"
+_FALSE = frozenset({"0", "false", "no", "off", "disabled", "legacy"})
 
 # Same override convention as scripts/install_lib.py: an explicit override keeps isolated
 # tests (and portable profiles) honest; normal runs use the platform's real user home.
 HOME = (os.environ.get("SIMPLICIO_HOME") or os.environ.get("HOME")
         or os.path.expanduser("~"))
+
+
+def always_latest_enabled() -> bool:
+    """When true (default), every preflight may run ``pip install -U`` for operators."""
+    raw = str(os.environ.get(ALWAYS_LATEST_ENV, "1")).strip().lower()
+    return raw not in _FALSE
+
+
+def resolve_ttl_days(ttl_days: float | None = None) -> float:
+    """Return effective TTL.
+
+    - Explicit ``ttl_days`` (CLI/tests) always wins — including 7 for legacy tests.
+    - Otherwise always-latest (default) → 0; opt-out → LEGACY_TTL_DAYS (7).
+    """
+    if ttl_days is not None:
+        return float(ttl_days)
+    if always_latest_enabled():
+        return 0.0
+    return float(LEGACY_TTL_DAYS)
 
 
 def default_cache_path() -> Path:
@@ -89,15 +119,18 @@ def missing_binaries(binaries: Sequence[str]) -> list[str]:
     return [name for name in binaries if shutil.which(name) is None]
 
 
-def should_upgrade(cache_path: str | Path, *, ttl_days: float = DEFAULT_TTL_DAYS,
+def should_upgrade(cache_path: str | Path, *, ttl_days: float | None = None,
                    binaries: Sequence[str] = DEFAULT_BINARIES,
                    now: float | None = None) -> dict[str, Any]:
     """Pure decision: does THIS preflight warrant an upgrade attempt?
 
     Never touches the network itself — callers gate the actual upgrade command on the
     ``should_upgrade`` field so a fresh cache never triggers a subprocess.
+
+    ``ttl_days <= 0`` (default under always-latest) means always upgrade.
     """
     now = _now() if now is None else now
+    effective_ttl = resolve_ttl_days(ttl_days)
     absent = missing_binaries(binaries)
     if absent:
         return {
@@ -107,7 +140,19 @@ def should_upgrade(cache_path: str | Path, *, ttl_days: float = DEFAULT_TTL_DAYS
             "missing_binaries": absent,
             "last_checked_at": None,
             "age_days": None,
-            "ttl_days": ttl_days,
+            "ttl_days": effective_ttl,
+            "always_latest": always_latest_enabled(),
+        }
+    if effective_ttl <= 0:
+        return {
+            "schema": SCHEMA,
+            "should_upgrade": True,
+            "reason": "always-latest (ttl_days<=0): pull latest PyPI packages",
+            "missing_binaries": [],
+            "last_checked_at": None,
+            "age_days": None,
+            "ttl_days": effective_ttl,
+            "always_latest": True,
         }
     cache = read_cache(cache_path)
     last_checked_at = cache.get("last_checked_at")
@@ -120,19 +165,21 @@ def should_upgrade(cache_path: str | Path, *, ttl_days: float = DEFAULT_TTL_DAYS
             "missing_binaries": [],
             "last_checked_at": last_checked_at if isinstance(last_checked_at, str) else None,
             "age_days": None,
-            "ttl_days": ttl_days,
+            "ttl_days": effective_ttl,
+            "always_latest": always_latest_enabled(),
         }
     age_days = max(0.0, (now - float(last_checked_ts)) / 86400.0)
-    expired = age_days > ttl_days
+    expired = age_days > effective_ttl
     return {
         "schema": SCHEMA,
         "should_upgrade": expired,
-        "reason": ("ttl expired (%.2fd > %sd)" % (age_days, ttl_days)) if expired
-                  else ("within TTL (%.2fd <= %sd)" % (age_days, ttl_days)),
+        "reason": ("ttl expired (%.2fd > %sd)" % (age_days, effective_ttl)) if expired
+                  else ("within TTL (%.2fd <= %sd)" % (age_days, effective_ttl)),
         "missing_binaries": [],
         "last_checked_at": last_checked_at,
         "age_days": age_days,
-        "ttl_days": ttl_days,
+        "ttl_days": effective_ttl,
+        "always_latest": always_latest_enabled(),
     }
 
 
@@ -163,13 +210,13 @@ def run_pip_upgrade(
     )
 
 
-def maybe_upgrade(cache_path: str | Path, *, ttl_days: float = DEFAULT_TTL_DAYS,
+def maybe_upgrade(cache_path: str | Path, *, ttl_days: float | None = None,
                   binaries: Sequence[str] = DEFAULT_BINARIES,
                   versions: Mapping[str, str] | None = None,
                   upgrade_fn=run_pip_upgrade, now: float | None = None) -> dict[str, Any]:
     """Fail-open, best-effort upgrade — but ONLY when ``should_upgrade`` says the TTL
-    expired or a binary is absent. A within-TTL call is a pure cache read: zero subprocess,
-    zero network, by construction (the AC this exists to satisfy)."""
+    expired, always-latest is on, or a binary is absent. A within-TTL call is a pure
+    cache read: zero subprocess, zero network, by construction."""
     decision = should_upgrade(cache_path, ttl_days=ttl_days, binaries=binaries, now=now)
     if not decision["should_upgrade"]:
         decision["upgraded"] = False
@@ -284,13 +331,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     p_should = sub.add_parser("should-upgrade")
     p_should.add_argument("--cache", default=None)
-    p_should.add_argument("--ttl-days", type=float, default=DEFAULT_TTL_DAYS)
+    p_should.add_argument(
+        "--ttl-days",
+        type=float,
+        default=None,
+        help="override TTL (default: 0 always-latest; use 7 for classic weekly gate)",
+    )
     p_should.add_argument("--binary", action="append", dest="binaries", default=None)
     p_should.add_argument("--json", action="store_true")
 
     p_maybe = sub.add_parser("maybe-upgrade")
     p_maybe.add_argument("--cache", default=None)
-    p_maybe.add_argument("--ttl-days", type=float, default=DEFAULT_TTL_DAYS)
+    p_maybe.add_argument(
+        "--ttl-days",
+        type=float,
+        default=None,
+        help="override TTL (default: 0 always-latest; use 7 for classic weekly gate)",
+    )
     p_maybe.add_argument("--binary", action="append", dest="binaries", default=None)
     p_maybe.add_argument("--package", action="append", dest="packages", default=None)
     p_maybe.add_argument("--json", action="store_true")
@@ -374,7 +431,9 @@ def _selftest() -> int:
         decision = should_upgrade(cache, binaries=())
         ok = ok and decision["should_upgrade"] is True
         record_check(cache, {"simplicio-mapper": "0.23.1"})
-        decision2 = should_upgrade(cache, binaries=())
+        # Explicit legacy TTL: within-window must NOT upgrade (always-latest default
+        # would otherwise force True; TTL tests pin the classic gate).
+        decision2 = should_upgrade(cache, ttl_days=7, binaries=())
         ok = ok and decision2["should_upgrade"] is False
 
         scratchpad = Path(tmp) / "scratchpad.md"
