@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+for _local_module_root in (_REPO_ROOT / "scripts", _REPO_ROOT / "hooks"):
+    _local_module_root = str(_local_module_root)
+    if _local_module_root not in sys.path:
+        sys.path.insert(0, _local_module_root)
 
 from simplicio_loop.hub_daemon import default_transport
 from simplicio_loop.platform_capabilities import probe_af_unix, probe_hub_transport
