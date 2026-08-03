@@ -117,6 +117,26 @@ def test_run_category_keeps_stderr_failure_summary(monkeypatch, tmp_path):
     assert "2 failed" in payload["stdout_tail"]
 
 
+def test_run_category_uses_private_basetemp(monkeypatch, tmp_path):
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_probe_unit.py").write_text(
+        "def test_probe():\n    assert True\n", encoding="utf-8"
+    )
+    observed = {}
+
+    def fake_run(command, repo, timeout):
+        observed["command"] = command
+        return 0, "1 passed in 0.01s\n", ""
+
+    monkeypatch.setattr(tc, "_run_pytest_with_timeout", fake_run)
+    payload = tc.run_category("unit", repo=str(tmp_path), timeout=10)
+    assert payload["status"] == "pass"
+    assert "--basetemp" in observed["command"]
+    basetemp = observed["command"][observed["command"].index("--basetemp") + 1]
+    assert not os.path.exists(basetemp)
+
+
 def test_run_category_timeout_returns_without_waiting_for_pytest_child(tmp_path):
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
