@@ -109,16 +109,51 @@ def fast_status(env: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
     return _probe_version(FAST_BINARY, ("--version",))
 
 
+def _sanitize_version_banner(version: str) -> str:
+    """Drop argparse usage banners accidentally captured as version strings."""
+    text = (version or "").strip()
+    if not text:
+        return ""
+    first = text.splitlines()[0].strip()
+    lowered = first.lower()
+    if lowered.startswith("usage:") or lowered.startswith("options:") or lowered.startswith("positional arguments"):
+        return ""
+    return first
+
+
 def action_operator_status(env: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
+    """Probe the operate binary (``simplicio-dev-cli`` or ``simplicio-py``).
+
+    Prefer ``--version`` so preflight reports a real package version (e.g.
+    ``simplicio-dev-cli 0.18.6``). Fall back to ``--help`` only for older
+    builds that lack ``--version``; never surface a ``usage:`` banner as the
+    version field.
+    """
     del env
     for name in ACTION_ALIASES:
-        status = _probe_version(name, ("--help",) if name == "simplicio-dev-cli" else ("--version",))
+        status = _probe_version(name, ("--version",))
+        if not status["operational"]:
+            help_status = _probe_version(name, ("--help",))
+            if help_status["operational"]:
+                status = help_status
+                status["version"] = _sanitize_version_banner(status.get("version", ""))
+        else:
+            status["version"] = _sanitize_version_banner(status.get("version", "")) or status.get(
+                "version", ""
+            )
         if status["operational"]:
             status["role"] = "operate"
             status["resolved_as"] = name
             return status
     # Prefer reporting the primary name.
-    status = _probe_version("simplicio-dev-cli", ("--help",))
+    status = _probe_version("simplicio-dev-cli", ("--version",))
+    if not status["operational"]:
+        status = _probe_version("simplicio-dev-cli", ("--help",))
+        status["version"] = _sanitize_version_banner(status.get("version", ""))
+    else:
+        status["version"] = _sanitize_version_banner(status.get("version", "")) or status.get(
+            "version", ""
+        )
     status["role"] = "operate"
     status["resolved_as"] = "simplicio-dev-cli"
     return status
@@ -263,6 +298,16 @@ def preflight_payload(repo: str, *, strict: bool = False, env: Optional[Mapping[
     action = action_operator_status(source)
     runtime = runtime_status(source)
     fast = fast_status(source)
+    # Report simplicio-py independently when on PATH so operators can see both
+    # aliases even when the probe resolved simplicio-dev-cli first.
+    py_alias = _probe_version("simplicio-py", ("--version",))
+    if not py_alias["operational"]:
+        py_alias = _probe_version("simplicio-py", ("--help",))
+        py_alias["version"] = _sanitize_version_banner(py_alias.get("version", ""))
+    else:
+        py_alias["version"] = _sanitize_version_banner(py_alias.get("version", "")) or py_alias.get(
+            "version", ""
+        )
     operators = [
         {
             "name": "simplicio-mapper",
@@ -279,9 +324,9 @@ def preflight_payload(repo: str, *, strict: bool = False, env: Optional[Mapping[
         },
         {
             "name": "simplicio-py",
-            "present": action.get("resolved_as") == "simplicio-py" and action["operational"],
-            "version": action.get("version", "") if action.get("resolved_as") == "simplicio-py" else "",
-            "error": "",
+            "present": bool(py_alias["operational"]),
+            "version": py_alias.get("version", "") if py_alias["operational"] else "",
+            "error": py_alias.get("error", "") if not py_alias["operational"] else "",
         },
         {
             "name": "simplicio-runtime",
