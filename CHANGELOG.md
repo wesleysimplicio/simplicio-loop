@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.38.31] - 2026-08-03
+
+- Ecosystem doctor: prove conceptual mapper role `recall` via real CLI surface
+  (`handoff` / `ask` / `inspect`) so standalone/full-stack handshakes no longer
+  false-block on installed mapper 0.26.x.
+- Preflight: probe `simplicio-dev-cli` with `--version` (not `--help`) and report
+  independent `simplicio-py` presence; never surface argparse `usage:` as version.
+
 ## [3.38.30] - 2026-08-02
 
 - Synchronize the Loop release train with Mapper `0.26.10`, Dev CLI `0.18.6`,

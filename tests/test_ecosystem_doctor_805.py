@@ -9,7 +9,7 @@ def _fake_dist(version="1.0.0", installed=True):
             "path": "/tmp/site-packages", "entrypoints": ["fake-entry"]}
 
 
-def _probe(monkeypatch, *, component="simplicio-mapper", version="0.26.0",
+def _probe(monkeypatch, *, component="simplicio-mapper", version="0.26.11",
            help_text="orient recall", executable="/usr/local/bin/simplicio-mapper",
            installed=True):
     monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist(version, installed))
@@ -23,13 +23,68 @@ def _probe(monkeypatch, *, component="simplicio-mapper", version="0.26.0",
 
 
 def test_probe_reports_available_with_identity_version_capabilities_and_shas(monkeypatch):
-    row = _probe(monkeypatch, help_text="simplicio-mapper 0.26.0 orient recall")
+    row = _probe(monkeypatch, help_text="simplicio-mapper 0.26.11 orient recall")
     assert row["status"] == doctor.STATUS_AVAILABLE
     assert row["git_sha"] is None
     assert row["sha_source"] == "unavailable"
     assert row["submodule_shas"]["vendor/fast"] == "b" * 40
     assert row["entrypoints"] == ["fake-entry"]
     assert "simplicio.context-snapshot/v1" in row["supported_schemas"]
+
+
+def test_mapper_recall_role_proven_by_handoff_ask_cli_surface(monkeypatch):
+    """Real mapper --help exposes orient/handoff/ask, not the word 'recall'."""
+    help_text = (
+        "simplicio-mapper 0.26.11\n"
+        "  simplicio-mapper orient <path>\n"
+        "  simplicio-mapper handoff <path>\n"
+        "  simplicio-mapper ask <path> <verb>\n"
+        "  simplicio-mapper inspect <path>\n"
+        "  simplicio-mapper scan <path>\n"
+    )
+    row = _probe(monkeypatch, version="0.26.11", help_text=help_text)
+    assert row["status"] == doctor.STATUS_AVAILABLE
+    assert "orient" in row["capabilities"]
+    assert "recall" in row["capabilities"]
+    assert row["missing_capabilities"] == []
+
+
+def test_capability_evidence_aliases_are_documented():
+    assert "handoff" in doctor.CAPABILITY_EVIDENCE["recall"]
+    assert "ask" in doctor.CAPABILITY_EVIDENCE["recall"]
+    assert doctor._capability_proven("recall", "handoff . --json")
+    assert not doctor._capability_proven("recall", "scan only")
+
+
+def test_version_probe_ignores_stderr_traceback_python_path(monkeypatch):
+    """Windows Python install paths contain 3.14; must not become package version."""
+    def fake_run(cmd, *args, **kwargs):
+        if "--version" in cmd:
+            return type("Result", (), {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": r"File \"C:\Python\pythoncore-3.14-64\lib\runpy.py\"",
+            })()
+        return type("Result", (), {
+            "returncode": 0,
+            "stdout": "orient handoff ask inspect scan",
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist("0.26.11", True))
+    monkeypatch.setattr(doctor.shutil, "which", lambda _: "/bin/simplicio-mapper")
+    monkeypatch.setattr(doctor, "_git_sha", lambda _: None)
+    monkeypatch.setattr(doctor, "_submodule_shas", lambda _: {})
+    monkeypatch.setattr(doctor, "_run", fake_run)
+    row = doctor._probe_component(
+        "simplicio-mapper",
+        doctor.COMPONENTS["simplicio-mapper"],
+        Path("."),
+        doctor.PROFILES["standalone"]["simplicio-mapper"],
+    )
+    assert row["status"] == doctor.STATUS_AVAILABLE
+    assert row["parsed_version"] == "0.26.11"
+    assert row["parsed_version"] != "3.14.0"
 
 
 def test_loop_sha_is_only_reported_for_the_loop_checkout(monkeypatch, tmp_path):
@@ -62,7 +117,9 @@ def test_probe_distinguishes_missing_incompatible_disabled_and_degraded(monkeypa
     assert disabled["status"] == doctor.STATUS_DISABLED
     assert disabled["reason_code"] == "disabled"
 
-    monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist("2.0.16", installed=True))
+    # Metadata meets the floor, but the console entrypoint is missing → degraded.
+    min_fast = doctor.PROFILES["standalone"]["simplicio-fast"]["min_version"]
+    monkeypatch.setattr(doctor, "_distribution", lambda _: _fake_dist(min_fast, installed=True))
     monkeypatch.setattr(doctor.shutil, "which", lambda _: None)
     degraded = doctor._probe_component("simplicio-fast", doctor.COMPONENTS["simplicio-fast"],
                                        tmp_path, doctor.PROFILES["standalone"]["simplicio-fast"])

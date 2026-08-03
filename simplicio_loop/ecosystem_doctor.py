@@ -46,6 +46,37 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _SECRET = re.compile(r"(?i)(api[_-]?key|token|secret|password)(\s*[=:]\s*)[^\s,;]+")
 
+# Conceptual operator roles (SIMPLICIO_ECOSYSTEM.md / bound-operators skill) are
+# not always spelled as literal CLI tokens.  Evidence tokens below prove the
+# role from real --help surface without requiring the conceptual label.
+CAPABILITY_EVIDENCE: dict[str, tuple[str, ...]] = {
+    # Mapper: orient/recall roles vs scan/handoff/ask/inspect verbs.
+    "orient": ("orient", "scan", "macro", "map "),
+    "recall": ("recall", "handoff", "ask", "inspect"),
+    # Dev-cli: execute/validate vs task/edit/claims surface.
+    "execute": ("execute", "task", "run", "edit", "mechanical-edit"),
+    "deterministic_edit": (
+        "deterministic_edit",
+        "mechanical-edit",
+        "changeset",
+        "edit",
+    ),
+    "validate": ("validate", "verify", "claims", "test"),
+    "diagnostics": ("diagnostics", "doctor", "smoke", "status", "inspect"),
+    # Runtime control plane.
+    "contracts": ("contracts", "schema", "doctor"),
+    "events": ("events", "journal", "hbp", "checkpoint"),
+}
+
+
+def _capability_proven(capability: str, help_text: str) -> bool:
+    """True when help_text proves a conceptual capability via aliases or the name itself."""
+    if not help_text:
+        return False
+    tokens = CAPABILITY_EVIDENCE.get(capability, (capability,))
+    return any(token in help_text for token in tokens)
+
+
 # These are the ecosystem's public operator identities.  Capability names are
 # deliberately the same names documented in SIMPLICIO_ECOSYSTEM.md and are not
 # inferred from an arbitrary command's prose.
@@ -254,23 +285,55 @@ def _probe_component(component: str, spec: Mapping[str, Any], root: Path,
                 "remediation": "unset %s or remove it from --disable" %
                 ("SIMPLICIO_%s_DISABLED" % re.sub(r"[^A-Z0-9]", "_", component.upper()))}
 
-    version_text = str(distribution.get("version") or "")
+    metadata_version = str(distribution.get("version") or "")
+    version_text = metadata_version
     help_text = ""
     returncode = 0
     probe_error = ""
     if executable:
         version_result = _run((executable, *spec["version_args"]), root, timeout=60)
         help_result = _run((executable, *spec["help_args"]), root, timeout=60)
-        version_text = version_result.stdout.strip() or version_result.stderr.strip() or version_text
-        help_text = (version_result.stdout or "") + "\n" + (help_result.stdout or "") + "\n" + (help_result.stderr or "")
-        returncode = 0 if version_result.returncode == 0 and help_result.returncode == 0 else 1
+        # Prefer clean stdout from a successful --version. Never parse stderr
+        # tracebacks as versions (they contain host Python paths like 3.14).
+        stdout_version = (version_result.stdout or "").strip()
+        if version_result.returncode == 0 and stdout_version:
+            version_text = stdout_version
+        elif metadata_version:
+            version_text = metadata_version
+        else:
+            version_text = stdout_version or (version_result.stderr or "").strip() or version_text
+        help_text = (
+            (version_result.stdout or "")
+            + "\n"
+            + (help_result.stdout or "")
+            + "\n"
+            + (help_result.stderr or "")
+        )
+        # Help is the capability surface; version may come from package metadata
+        # when the launcher is temporarily broken under mixed installs.
+        help_ok = help_result.returncode == 0
+        version_ok_probe = version_result.returncode == 0 or bool(metadata_version)
+        returncode = 0 if help_ok and version_ok_probe else 1
         probe_error = _redact((version_result.stderr or help_result.stderr or "").strip())
 
     parsed = _version(version_text)
+    # If CLI stdout was a non-version banner but package metadata is present,
+    # trust metadata for the floor check (still expose CLI text when useful).
+    if metadata_version and parsed < _version(metadata_version):
+        meta_parsed = _version(metadata_version)
+        if meta_parsed != (0, 0, 0):
+            parsed = meta_parsed
+            version_text = metadata_version
     provided_caps = set(spec.get("capabilities", ()))
     # A real operator can advertise a subset in --help; static package contracts
     # remain the lower-bound source of truth for checkout/wheel parity.
-    advertised = {cap for cap in provided_caps if cap in help_text or not help_text}
+    # Conceptual roles (e.g. mapper ``recall``) may be proven by CLI synonyms
+    # (handoff/ask/inspect) — see CAPABILITY_EVIDENCE.
+    advertised = {
+        cap
+        for cap in provided_caps
+        if (not help_text) or _capability_proven(cap, help_text)
+    }
     # The installed Loop wheel exposes these capabilities through its Python
     # API; its launcher intentionally has no ``--version``/capability command.
     # Use package metadata for that one component, while external operators must
@@ -280,7 +343,7 @@ def _probe_component(component: str, spec: Mapping[str, Any], root: Path,
         if returncode != 0:
             returncode = 0
     if help_text and component != "simplicio-loop":
-        advertised |= {cap for cap in provided_caps if cap in help_text}
+        advertised |= {cap for cap in provided_caps if _capability_proven(cap, help_text)}
     if help_text:
         schemas = sorted(set(spec.get("schemas", ())) | set(_SCHEMA.findall(help_text)))
     else:
