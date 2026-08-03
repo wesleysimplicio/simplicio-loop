@@ -927,6 +927,13 @@ def run_bounded(
         }
         if capture_output:
             kwargs.update({"stdout": subprocess.PIPE, "stderr": subprocess.PIPE})
+        else:
+            # Gate phases that do not request evidence capture must not inherit
+            # an embedding process's possibly-invalid Windows console handles
+            # (notably pytest's captured stderr).  The phase is intentionally
+            # silent on this path, and DEVNULL keeps subprocess creation
+            # deterministic without weakening the timeout contract.
+            kwargs.update({"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
         kwargs["start_new_session"] = True
         proc = subprocess.Popen(list(argv), **kwargs)
         if os.name == "nt":
