@@ -40,6 +40,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -103,16 +104,17 @@ def main() -> int:
     data_file = os.path.join(diagnostics_dir, ".coverage")
 
     tests_path = args.tests_path or ["tests/"]
-    run = subprocess.run(
-        [
-            sys.executable, "-m", "coverage", "run",
-            f"--data-file={data_file}",
-            "--source=simplicio_loop,engine,scripts",
-            "-m", "pytest", "-q", *tests_path,
-        ],
-        cwd=REPO,
-        stdin=subprocess.DEVNULL,
-    )
+    with tempfile.TemporaryDirectory(prefix="simplicio-loop-coverage-") as pytest_basetemp:
+        run = subprocess.run(
+            [
+                sys.executable, "-m", "coverage", "run",
+                f"--data-file={data_file}",
+                "--source=simplicio_loop,engine,scripts",
+                "-m", "pytest", "-q", "--basetemp", pytest_basetemp, *tests_path,
+            ],
+            cwd=REPO,
+            stdin=subprocess.DEVNULL,
+        )
     if run.returncode != 0:
         print("[coverage-gate] FAILED: test suite did not pass under coverage instrumentation.", file=sys.stderr)
         # Still emit a report for whatever coverage data exists, for diagnosis.
