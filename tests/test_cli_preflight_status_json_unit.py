@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -22,11 +23,23 @@ REPO = Path(__file__).resolve().parents[1]
 
 def _run_cli(args: list[str], *, env: dict[str, str] | None = None) -> tuple[int, str, str]:
     """Invoke the CLI module as a subprocess; return (rc, stdout, stderr)."""
-    proc = subprocess.run(
-        [sys.executable, "-m", "simplicio_loop.cli", *args],
-        cwd=str(REPO), capture_output=True, text=True, timeout=60, env=env,
-    )
-    return proc.returncode, proc.stdout, proc.stderr
+    # Python 3.14 on Windows can reject pytest's captured pipe handles while
+    # creating another child. Regular temporary files avoid inheriting those
+    # host capture handles while preserving the CLI output assertions.
+    with tempfile.TemporaryDirectory() as scratch:
+        stdout_path = Path(scratch) / "stdout.txt"
+        stderr_path = Path(scratch) / "stderr.txt"
+        with stdout_path.open("w+", encoding="utf-8") as stdout, stderr_path.open(
+            "w+", encoding="utf-8"
+        ) as stderr:
+            proc = subprocess.run(
+                [sys.executable, "-m", "simplicio_loop.cli", *args],
+                cwd=str(REPO), stdout=stdout, stderr=stderr, stdin=subprocess.DEVNULL,
+                text=True, timeout=60, env=env,
+            )
+            stdout.seek(0)
+            stderr.seek(0)
+            return proc.returncode, stdout.read(), stderr.read()
 
 
 class _CliShimTestCase(TestCase):
@@ -42,11 +55,16 @@ class _CliShimTestCase(TestCase):
             "simplicio": "simplicio-runtime 1.0.0",
         }
         for name, version in versions.items():
-            shim = bin_dir / name
-            shim.write_text(f"#!/bin/sh\nprintf '%s\\n' '{version}'\n", encoding="utf-8")
-            shim.chmod(0o755)
-        # Deliberately exclude the host (and any virtualenv) PATH entries.
-        self.cli_env = {"PATH": str(bin_dir)}
+            if os.name == "nt":
+                shim = bin_dir / f"{name}.cmd"
+                shim.write_text(f"@echo off\necho {version}\n", encoding="utf-8")
+            else:
+                shim = bin_dir / name
+                shim.write_text(f"#!/bin/sh\nprintf '%s\\n' '{version}'\n", encoding="utf-8")
+                shim.chmod(0o755)
+        # Keep Windows runtime variables (SystemRoot/TEMP/etc.) required by
+        # asyncio and subprocess, while excluding host operators from PATH.
+        self.cli_env = {**os.environ, "PATH": str(bin_dir)}
 
     def tearDown(self) -> None:
         self._shim_dir.cleanup()
