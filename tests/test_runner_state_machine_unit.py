@@ -242,7 +242,7 @@ def test_verify_run_converges_to_done_when_watcher_and_delivery_pass(tmp_path, m
 
     def fake_publish(**kwargs):
         published.append(kwargs)
-        return {"status": "SKIPPED", "reason": "unit_fixture"}
+        return {"status": "VERIFIED", "reason": "unit_fixture"}
 
     monkeypatch.setattr(runner_mod, "publish_loop_execution_receipt", fake_publish)
 

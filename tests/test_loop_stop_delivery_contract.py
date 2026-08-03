@@ -18,7 +18,13 @@ def load_hook():
 
 
 def git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        stdin=subprocess.DEVNULL,
+        check=True,
+        capture_output=True,
+    )
 
 
 def make_repo(tmp_path: Path) -> Path:
