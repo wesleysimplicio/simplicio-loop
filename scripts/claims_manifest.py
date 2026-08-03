@@ -29,7 +29,7 @@ REPO = os.path.dirname(HERE)
 #   - badge counts (skills-7, runtimes-11) — those are structural, not quantitative outcomes
 #   - URL-encoded %XX sequences (e.g. %20, %2B) — those are encoding, not percentages
 QUANT_RE = re.compile(
-    r"\b(\d{1,3}%|up\s+to\s+\d{1,3}%\b|"
+    r"(?<!%)\b(\d{1,3}%(?![0-9A-Fa-f]{2})|up\s+to\s+\d{1,3}%\b|"
     r"\d{1,4}%\s+fewer|\d{1,3}–\d{1,3}%\b|"
     r"\d{1,3}x\b(?!\s*more|\s*fewer))",
     re.I,
@@ -177,6 +177,90 @@ CLAIMS = [
             "'ge85% coverage' for touched files on any anchored task — a project POLICY threshold, "
             "not a measured global coverage outcome for this release. No receipt; marked unverified."
         ),
+    },
+    {
+        "id": "loop-stack-economy-table-percentages",
+        "doc": "README.md",
+        "text_glob": "39%",
+        "status": "unverified",
+        "receipt": None,
+        "note": (
+            "The loop-stack economy table reports measured-looking lane percentages, "
+            "but the linked raw metrics are not yet bound to a commit and timestamp. "
+            "Keep the table values explicitly unverified until that receipt is complete."
+        ),
+    },
+    {
+        "id": "loop-stack-economy-table-34pct",
+        "doc": "README.md",
+        "text_glob": "34%",
+        "status": "unverified",
+        "receipt": None,
+        "note": "Loop-stack economy table value; no commit-bound receipt yet.",
+    },
+    {
+        "id": "loop-stack-economy-table-31pct",
+        "doc": "README.md",
+        "text_glob": "31%",
+        "status": "unverified",
+        "receipt": None,
+        "note": "Loop-stack economy table value; no commit-bound receipt yet.",
+    },
+    {
+        "id": "loop-stack-economy-table-83pct",
+        "doc": "README.md",
+        "text_glob": "83%",
+        "status": "unverified",
+        "receipt": None,
+        "note": "Loop-stack economy table value; no commit-bound receipt yet.",
+    },
+    {
+        "id": "loop-stack-economy-table-38pct",
+        "doc": "README.md",
+        "text_glob": "38%",
+        "status": "unverified",
+        "receipt": None,
+        "note": "Loop-stack economy table value; no commit-bound receipt yet.",
+    },
+    {
+        "id": "loop-stack-economy-table-32pct",
+        "doc": "README.md",
+        "text_glob": "32%",
+        "status": "unverified",
+        "receipt": None,
+        "note": "Loop-stack economy table value; no commit-bound receipt yet.",
+    },
+    {
+        "id": "loop-stack-economy-table-64pct",
+        "doc": "README.md",
+        "text_glob": "64%",
+        "status": "unverified",
+        "receipt": None,
+        "note": "Loop-stack economy table value; no commit-bound receipt yet.",
+    },
+    {
+        "id": "loop-stack-economy-table-61pct",
+        "doc": "README.md",
+        "text_glob": "61%",
+        "status": "unverified",
+        "receipt": None,
+        "note": "Loop-stack economy table value; no commit-bound receipt yet.",
+    },
+    {
+        "id": "loop-stack-economy-table-22pct",
+        "doc": "README.md",
+        "text_glob": "22%",
+        "status": "unverified",
+        "receipt": None,
+        "note": "Loop-stack economy table value; no commit-bound receipt yet.",
+    },
+    {
+        "id": "loop-stack-economy-table-99pct",
+        "doc": "README.md",
+        "text_glob": "99%",
+        "status": "unverified",
+        "receipt": None,
+        "note": "Loop-stack economy table value; no commit-bound receipt yet.",
     },
 ]
 

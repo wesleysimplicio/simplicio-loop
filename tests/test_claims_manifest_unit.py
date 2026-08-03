@@ -39,6 +39,7 @@ def test_quant_re_matches_percentages():
 
 def test_quant_re_does_not_match_url_encoding():
     assert not claims_manifest.QUANT_RE.search("path%20with%20spaces")
+    assert not claims_manifest.QUANT_RE.search("bench%20%25%20encoded")
 
 
 def test_extract_claims_runs_against_real_repo_without_crashing():
