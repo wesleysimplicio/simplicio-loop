@@ -2,8 +2,9 @@
 
 Start here, in order:
 1. `AGENTS.md`
-2. `.claude/skills/simplicio-loop/SKILL.md`
-3. `README.md`
+2. `docs/LLM_MAX_SPEED_ORIENTATION.md`  # always-on max-speed law for every host LLM
+3. `.claude/skills/simplicio-loop/SKILL.md`  # includes SIMPLICIO-LLM-ORIENTATION re-feed block
+4. `README.md`
 
 What this repo is:
 - Runtime-agnostic autonomous looping orchestrator (`/simplicio-loop`)

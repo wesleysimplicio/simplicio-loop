@@ -1,6 +1,7 @@
 # AGENTS.md — simplicio-loop
 
-> **Full map + step-by-step:** [docs/ECOSYSTEM_LLM_GUIDE.md](docs/ECOSYSTEM_LLM_GUIDE.md) · ADR [0009](docs/adr/0009-loop-inside-runtime-operators-standalone.md) · [0010](docs/adr/0010-execution-metrics-report-standard.md)
+> **Full map + step-by-step:** [docs/ECOSYSTEM_LLM_GUIDE.md](docs/ECOSYSTEM_LLM_GUIDE.md) · ADR [0009](docs/adr/0009-loop-inside-runtime-operators-standalone.md) · [0010](docs/adr/0010-execution-metrics-report-standard.md)  
+> **Max-speed LLM orientation (always):** [docs/LLM_MAX_SPEED_ORIENTATION.md](docs/LLM_MAX_SPEED_ORIENTATION.md) — also re-fed every loop turn via `SIMPLICIO-LLM-ORIENTATION` in the loop skill.
 
 ## Simplicio Ecosystem Contract (canonical)
 

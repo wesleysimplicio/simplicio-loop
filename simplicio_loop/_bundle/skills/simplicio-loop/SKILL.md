@@ -110,15 +110,19 @@ the block concise, stable, and free of task-specific details; update the ADR and
 the focused hook tests when changing it.
 
 <!-- SIMPLICIO-LLM-ORIENTATION:BEGIN -->
-Orientação operacional do Loop:
-- Trabalhe somente na tarefa/ACs atuais; faça a menor alteração segura e preserve dirty work e ownership.
-- Use o menor raciocínio suficiente; não mostre raciocínio privado passo a passo; seja conciso.
-- Não faça pesquisa web genérica nem use conectores externos, agentes/subagentes ou LLM local por padrão.
-- Use GitHub/gh somente quando a tarefa exigir estado atual de issue, PR ou release, pois é a fonte de verdade do Loop.
-- Use somente ferramentas locais autorizadas: Mapper/Fast para contexto e Dev CLI/Runtime para edição e verificação.
+Orientação operacional do Loop (MAX SPEED — detail: docs/LLM_MAX_SPEED_ORIENTATION.md):
+- Runtime first: `simplicio loop decide --json`; honor `.simplicio/runtime/loop-decision.json` (não bypass Runtime).
+- Economy-parallel: `simplicio-loop economy apply --json` + `preflight --strict` antes de trabalho autônomo.
+- Hot path: Mapper (scan/handoff) → Fast (understand|plan|apply se up) → dev-cli/edit --plan (STRICT; sem hand-edit).
+- Trabalhe só na tarefa/ACs atuais; menor alteração segura; preserve dirty work, lease e ownership.
+- Paralelismo: 1–3 tasks = direct; >3 = Prism (`arm_drain_prism --slots 0 --batch-size N`, default/min 10); writes serializados; governor físico admite capacity.
+- Gates mínimos que provam o AC; proibido full-repo fmt/test residual, review-panel×3 em metadata, reinstall operators.
+- GitHub/gh só quando a tarefa exigir issue/PR/release (SoT do drain).
+- Use o menor raciocínio suficiente; sem web genérica/subagentes/LLM local por padrão; seja conciso.
 - Não edite com contexto stale, lock ativo, artifacts ausentes ou capacidade não verificada.
-- Rode testes focados; não declare concluído sem evidência desta rodada e gates do Loop.
-- Se houver falha ou ambiguidade, informe o bloqueio real; não invente nem repita a mesma tentativa cegamente.
+- Testes focados; saída com evidência da rodada + tags MEASURED| / UNVERIFIED| (nunca inventar métricas).
+- Fim de mensagem: DONE | NEXT(<1 passo>) | BLOCKED(<código>) — act > narrate.
+- Falha/ambiguidade: bloqueio real; não invente nem repita a mesma tentativa cegamente.
 <!-- SIMPLICIO-LLM-ORIENTATION:END -->
 
 ## Definition of Done (DoD) — mandatory quality gate

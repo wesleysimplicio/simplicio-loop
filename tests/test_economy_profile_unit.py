@@ -44,6 +44,16 @@ def test_economy_env_enables_fan_out_and_latest():
     assert env["SIMPLICIO_EXECUTION_PROFILE"] == "auto"
 
 
+def test_profile_status_exposes_llm_max_speed_orientation():
+    status = ep.profile_status(runtime_operational=True)
+    orient = status["llm_orientation"]
+    assert orient["schema"] == "simplicio.llm-max-speed-orientation/v1"
+    assert orient["canonical_doc"] == "docs/LLM_MAX_SPEED_ORIENTATION.md"
+    assert "DONE" in orient["message_cadence"]
+    assert any("hand-edit" in f for f in orient["forbid"])
+    assert status["hot_path"][0].startswith("simplicio loop decide")
+
+
 def test_prism_batch_defaults_to_ten_and_supports_explicit_thirty():
     assert ep.resolve_prism_batch_size() == 10
     assert ep.resolve_prism_batch_size(30) == 30

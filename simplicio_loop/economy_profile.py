@@ -255,13 +255,30 @@ def profile_status(
             "prism": "arm_drain_prism + SIMPLICIO_PRISM_SLOTS + lease isolation",
         },
         "hot_path": [
+            "simplicio loop decide --task \"…\" --repo . --json",
             "simplicio-loop preflight --strict --json",
             "simplicio-mapper scan . --await --json",
             "simplicio-mapper handoff . --for-llm toon --await",
             "simplicio-fast understand|plan|apply (when operational)",
-            "simplicio-loop batch (AUTO_FAN_OUT worktrees) or arm_drain_prism --slots N",
+            "simplicio-loop batch (AUTO_FAN_OUT worktrees) or arm_drain_prism --slots 0 --batch-size N",
             "mutate: simplicio-dev-cli task (STRICT)",
         ],
+        # Always-on LLM orientation for hosts (max safe speed)
+        "llm_orientation": {
+            "schema": "simplicio.llm-max-speed-orientation/v1",
+            "canonical_doc": "docs/LLM_MAX_SPEED_ORIENTATION.md",
+            "runtime_twin": "simplicio-runtime/docs/LLM_MAX_SPEED_ORIENTATION.md",
+            "skill_block": "plugin/skills/simplicio-loop/SKILL.md <!-- SIMPLICIO-LLM-ORIENTATION -->",
+            "law": "act>narrate; Runtime loop decide; Mapper→Fast→dev-cli; 1-3 direct / Prism>3; lease isolation; smallest AC gate; MEASURED only",
+            "message_cadence": ["DONE", "NEXT", "BLOCKED"],
+            "forbid": [
+                "full-repo fmt/test residual thrash",
+                "3-reviewer panels on metadata-only",
+                "hand-edit under STRICT",
+                "peer /simplicio-loop bypass when Runtime owns activation",
+                "N full agents on one dirty tree without worktrees",
+            ],
+        },
     }
 
 
