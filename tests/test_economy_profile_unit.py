@@ -1,6 +1,8 @@
 """Economy-parallel profile: token path + bounded parallel defaults."""
 from __future__ import annotations
 
+import pytest
+
 from simplicio_loop import economy_profile as ep
 from simplicio_loop import strict_mode
 
@@ -34,11 +36,24 @@ def test_economy_env_enables_fan_out_and_latest():
     assert env["SIMPLICIO_LOOP_AUTO_FAN_OUT"] == "1"
     assert env["SIMPLICIO_OPERATOR_ALWAYS_LATEST"] == "1"
     assert env["SIMPLICIO_PRISM_SLOTS"] == "4"
+    assert env["SIMPLICIO_PRISM_BATCH_SIZE"] == "10"
     assert env["SIMPLICIO_LOOP_OPERATOR_WORKERS"] == "6"
     assert env["SIMPLICIO_FAST_MODE"] == "required"
     assert env["SIMPLICIO_REQUIRE_MCP"] == "1"
     assert env["SIMPLICIO_MCP_FORCE"] == "1"
     assert env["SIMPLICIO_EXECUTION_PROFILE"] == "auto"
+
+
+def test_prism_batch_defaults_to_ten_and_supports_explicit_thirty():
+    assert ep.resolve_prism_batch_size() == 10
+    assert ep.resolve_prism_batch_size(30) == 30
+    assert ep.prism_batches(range(1, 26), 10) == [
+        list(range(1, 11)), list(range(11, 21)), list(range(21, 26))
+    ]
+    assert ep.prism_is_eligible(10)["eligible"] is True
+    assert ep.prism_is_eligible(1)["reason_code"] == "single_item"
+    with pytest.raises(ValueError):
+        ep.resolve_prism_batch_size(65)
 
 
 def test_economy_env_without_runtime_disables_mcp_force():
