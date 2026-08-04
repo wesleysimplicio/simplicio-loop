@@ -46,6 +46,7 @@ SYSTEM_TEST_NESTED_GUARD = "SIMPLICIO_SYSTEM_TEST_NESTED"
 # deadline must exceed the core-test allowance so audit/parity work does not
 # consume part of the suite's legitimate runtime on a cold machine.
 CORE_GATE_TIMEOUT_SECONDS = 900.0
+TEST_FILE_SHARD_SIZE = 8
 _core_deadline = None
 
 
@@ -119,6 +120,21 @@ def _core_test_files(tests_dir):
         if os.path.splitext(os.path.basename(tf))[0] not in SATELLITE_TEST_STEMS)
 
 
+def _test_file_shards(test_files, shard_size=TEST_FILE_SHARD_SIZE):
+    """Split pytest file targets so Windows never receives a command-line-sized test list."""
+    if shard_size <= 0:
+        raise ValueError("shard_size must be positive")
+    files = list(test_files)
+    return [files[start:start + shard_size] for start in range(0, len(files), shard_size)]
+
+
+def _merge_pytest_reasons(target, source):
+    for category, codes in source.items():
+        bucket = target.setdefault(category, {})
+        for code, count in codes.items():
+            bucket[code] = bucket.get(code, 0) + count
+
+
 def _pytest_args(test_files, only_core=False):
     args = [sys.executable, "-m", "pytest", "-q", "-ra"]
     # Installed/live lanes are explicit and never local-gate proof.
@@ -185,57 +201,76 @@ def run_tests(only_core=False):
     if have_pytest == "containment_unavailable":
         return GateResult(False, "pytest_probe_containment_unavailable")
     if have_pytest:
-        excluded, collect_error, collect_output = _collect_marker_exclusions(
-            test_files, env, "external_integration", "pytest_external_collect_unparseable",
-        )
-        if collect_error:
-            if collect_output:
-                print(collect_output, end="" if collect_output.endswith("\n") else "\n")
-            return GateResult(False, collect_error)
-        satellite_excluded = 0
-        expected_deselected = excluded
-        if only_core:
-            satellite_excluded, collect_error, collect_output = _collect_marker_exclusions(
-                test_files, env, "satellite", "pytest_satellite_collect_unparseable",
-            )
-            if collect_error:
-                if collect_output:
-                    print(collect_output, end="" if collect_output.endswith("\n") else "\n")
-                return GateResult(False, collect_error)
-            expected_deselected, collect_error, collect_output = _collect_marker_exclusions(
-                test_files, env, "external_integration or satellite",
-                "pytest_core_marker_collect_unparseable",
-            )
-            if collect_error:
-                if collect_output:
-                    print(collect_output, end="" if collect_output.endswith("\n") else "\n")
-                return GateResult(False, collect_error)
-        _hr("pytest %s" % label)
         phase = "core_tests" if only_core else "tests"
-        command = _run_bounded(
-            _pytest_args(test_files, only_core=only_core),
-            phase=phase,
-            env=env,
-            capture_output=True,
-        )
-        if command.stdout:
-            print(command.stdout, end="" if command.stdout.endswith("\n") else "\n")
-        if command.stderr:
-            print(command.stderr, end="" if command.stderr.endswith("\n") else "\n", file=sys.stderr)
-        exclusion_reason = _external_exclusion_reason(excluded)
-        print(exclusion_reason)
+        shards = _test_file_shards(test_files)
+        merged_reasons = {}
+        passed_total = 0
+        excluded_total = 0
+        satellite_excluded_total = 0
+        for index, shard in enumerate(shards, start=1):
+            shard_label = "%s shard %d/%d" % (label, index, len(shards))
+            excluded, collect_error, collect_output = _collect_marker_exclusions(
+                shard, env, "external_integration", "pytest_external_collect_unparseable",
+            )
+            if collect_error:
+                if collect_output:
+                    print(collect_output, end="" if collect_output.endswith("\n") else "\n")
+                return GateResult(False, collect_error, merged_reasons)
+            satellite_excluded = 0
+            expected_deselected = excluded
+            if only_core:
+                satellite_excluded, collect_error, collect_output = _collect_marker_exclusions(
+                    shard, env, "satellite", "pytest_satellite_collect_unparseable",
+                )
+                if collect_error:
+                    if collect_output:
+                        print(collect_output, end="" if collect_output.endswith("\n") else "\n")
+                    return GateResult(False, collect_error, merged_reasons)
+                expected_deselected, collect_error, collect_output = _collect_marker_exclusions(
+                    shard, env, "external_integration or satellite",
+                    "pytest_core_marker_collect_unparseable",
+                )
+                if collect_error:
+                    if collect_output:
+                        print(collect_output, end="" if collect_output.endswith("\n") else "\n")
+                    return GateResult(False, collect_error, merged_reasons)
+            _hr("pytest %s" % shard_label)
+            command = _run_bounded(
+                _pytest_args(shard, only_core=only_core),
+                phase=phase,
+                env=env,
+                capture_output=True,
+            )
+            if command.stdout:
+                print(command.stdout, end="" if command.stdout.endswith("\n") else "\n")
+            if command.stderr:
+                print(command.stderr, end="" if command.stderr.endswith("\n") else "\n", file=sys.stderr)
+            exclusion_reason = _external_exclusion_reason(excluded)
+            print(exclusion_reason)
+            if only_core:
+                print("SATELLITE_EXCLUDED[core_marker_selection]=%d" % satellite_excluded)
+            output = command.stdout + "\n" + command.stderr
+            reasons = classify_pytest_reasons(output + "\n" + exclusion_reason)
+            _merge_pytest_reasons(merged_reasons, reasons)
+            excluded_total += excluded
+            satellite_excluded_total += satellite_excluded
+            base = _gate_result(phase, command)
+            # A shard containing only excluded marker tests is valid; the overall lane
+            # still requires at least one executed test below.
+            if base.reason_code == "pytest_no_tests_collected" and expected_deselected:
+                base = GateResult(True)
+            if not base.ok:
+                return GateResult(False, base.reason_code, merged_reasons)
+            actual_deselected = _deselected_test_count(output)
+            if actual_deselected != expected_deselected:
+                return GateResult(False, "pytest_marker_selection_mismatch", merged_reasons)
+            passed_total += _passed_test_count(output)
+        print("EXTERNAL_INTEGRATION_EXCLUDED[marker_selection]=%d" % excluded_total)
         if only_core:
-            print("SATELLITE_EXCLUDED[core_marker_selection]=%d" % satellite_excluded)
-        base = _gate_result(phase, command)
-        reasons = classify_pytest_reasons(
-            command.stdout + "\n" + command.stderr + "\n" + exclusion_reason
-        )
-        if base.ok:
-            if _deselected_test_count(command.stdout + "\n" + command.stderr) != expected_deselected:
-                return GateResult(False, "pytest_marker_selection_mismatch", reasons)
-            if _passed_test_count(command.stdout + "\n" + command.stderr) == 0:
-                return GateResult(False, "pytest_all_tests_skipped", reasons)
-        return GateResult(base.ok, base.reason_code, reasons)
+            print("SATELLITE_EXCLUDED[core_marker_selection]=%d" % satellite_excluded_total)
+        if passed_total == 0:
+            return GateResult(False, "pytest_all_tests_skipped", merged_reasons)
+        return GateResult(True, reasons=merged_reasons)
     print("pytest is unavailable or cannot import")
     return GateResult(False, "pytest_unavailable")
 

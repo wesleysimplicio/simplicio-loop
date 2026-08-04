@@ -102,7 +102,7 @@ def _skills_tree(root, names):
 
 def test_skill_count_matches_tree():
     with tempfile.TemporaryDirectory() as tmp:
-        _skills_tree(tmp, ["a", "b", "c"])
+        _skills_tree(tmp, ["simplicio-loop", "simplicio-tasks", "simplicio-orient"])
         _write(os.path.join(tmp, "README.md"), "badge: skills-3-blue")
         restore = _patched(tmp)
         try:
@@ -115,7 +115,7 @@ def test_skill_count_matches_tree():
 def test_skill_count_flags_stale_claim():
     # #76: "11 skills" badge vs an actual 6-directory tree — the drift class this check exists for.
     with tempfile.TemporaryDirectory() as tmp:
-        _skills_tree(tmp, ["a", "b", "c"])
+        _skills_tree(tmp, ["simplicio-loop", "simplicio-tasks", "simplicio-orient"])
         _write(os.path.join(tmp, "README.md"), "badge: skills-11-blue")
         restore = _patched(tmp)
         try:

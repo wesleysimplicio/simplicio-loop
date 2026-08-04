@@ -92,6 +92,13 @@ def test_default_and_core_pytest_selectors_exclude_the_marked_external_lane() ->
     ]
 
 
+def test_pytest_file_shards_preserve_order_and_bound_targets() -> None:
+    files = ["C:/repo/tests/test_%03d.py" % index for index in range(65)]
+    shards = check._test_file_shards(files, shard_size=32)
+    assert [len(shard) for shard in shards] == [32, 32, 1]
+    assert [item for shard in shards for item in shard] == files
+
+
 def test_pytest_probe_reports_containment_failure_separately(monkeypatch) -> None:
     unavailable = check.CommandResult(
         126, reason=check.CommandReason.CONTAINMENT_UNAVAILABLE,

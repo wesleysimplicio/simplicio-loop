@@ -50,8 +50,20 @@ MATRIX_PATH = os.path.join(ADAPTERS_DIR, "MATRIX.md")
 
 # `hermes` is the deliberately-kept legacy shim for `simplicio_agent` (#262 rename) — both
 # directories exist under adapters/ for the compat window, but they are ONE canonical runtime,
-# not two, for the supported-runtime count the README/MATRIX badges advertise.
+# not two, for the supported-runtime count the README/MATRIX badges advertise. `grok` is a host
+# rule shim, not a separate supported runtime entry in that matrix.
 ADAPTER_ALIASES = {"hermes": "simplicio_agent"}
+ADAPTER_NON_CANONICAL = {"grok"}
+
+CORE_SKILL_NAMES = frozenset({
+    "simplicio-loop",
+    "simplicio-tasks",
+    "simplicio-orient",
+    "simplicio-review",
+    "simplicio-compress",
+    "simplicio-learn",
+    "simplicio-autoresearch",
+})
 
 RUNTIME_COUNT_RES = [
     re.compile(r"\b(\d{1,2})\s+distinct runtimes", re.I),
@@ -73,7 +85,8 @@ def count_skills():
     if not os.path.isdir(SKILLS_DIR):
         return 0
     return len([n for n in os.listdir(SKILLS_DIR)
-                if os.path.isfile(os.path.join(SKILLS_DIR, n, "SKILL.md"))])
+                if n in CORE_SKILL_NAMES
+                and os.path.isfile(os.path.join(SKILLS_DIR, n, "SKILL.md"))])
 
 
 def count_runtimes():
@@ -82,7 +95,9 @@ def count_runtimes():
     double-counts a runtime."""
     if not os.path.isdir(ADAPTERS_DIR):
         return 0, []
-    dirs = [n for n in os.listdir(ADAPTERS_DIR) if os.path.isdir(os.path.join(ADAPTERS_DIR, n))]
+    dirs = [n for n in os.listdir(ADAPTERS_DIR)
+            if n not in ADAPTER_NON_CANONICAL
+            and os.path.isdir(os.path.join(ADAPTERS_DIR, n))]
     canonical = sorted({ADAPTER_ALIASES.get(n, n) for n in dirs})
     return len(canonical), canonical
 
@@ -136,6 +151,7 @@ def build_manifest():
         "runtime_count": runtime_count,
         "runtime_names": runtime_names,
         "adapter_aliases": ADAPTER_ALIASES,
+        "adapter_non_canonical": sorted(ADAPTER_NON_CANONICAL),
         "changelog_latest_version": changelog_version,
         "quantitative_claims": claim_statuses,
         "lean_mirror": {
