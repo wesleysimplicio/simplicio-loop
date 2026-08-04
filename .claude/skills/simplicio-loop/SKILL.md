@@ -794,7 +794,7 @@ iteration 1 immediately.
 ## Regras arquiteturais globais (obrigatórias)
 
 - Delete diretamente o que está obsoleto; não preserve compatibilidade retroativa,
-  não crie migrações e não deixe fallbacks legados.
+  não crie migrações e não deixe fallbacks.
 - Escolha a implementação mais simples para a necessidade atual; sem abstrações
   preventivas ou configuração desnecessária.
 - Entregue primeiro o mínimo end-to-end e evolua por camadas longas, sem desmontar
