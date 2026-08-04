@@ -6,8 +6,9 @@ Goals (operator contract):
 - **Parallel:** Prism slots + ``SIMPLICIO_LOOP_AUTO_FAN_OUT`` (worktree lanes) + asyncio
   supervisor concurrency. Runtime uses Tokio natively when ``simplicio`` is bound.
 
-This module only *recommends and applies env*. Parallel execution still requires
-lease/claim isolation (no double-writers).
+This module only *recommends and applies env*. Logical parallelism is unbounded;
+physical execution still requires measured capacity and lease/claim isolation
+(no double-writers).
 """
 
 from __future__ import annotations
@@ -22,30 +23,38 @@ from typing import Any, Mapping, MutableMapping, Optional
 SCHEMA = "simplicio.economy-parallel-profile/v1"
 PROFILE_NAME = "economy-parallel"
 DEFAULT_PRISM_BATCH_SIZE = 10
-MAX_PRISM_BATCH_SIZE = 64
+MIN_PRISM_BATCH_SIZE = 10
 
 
 def resolve_prism_batch_size(requested: Optional[int] = None, *, env: Optional[Mapping[str, str]] = None) -> int:
-    """Resolve the bounded Prism wave width (default 10, explicit user override allowed)."""
+    """Resolve Prism wave width (default/minimum 10, with no logical upper bound)."""
     source = os.environ if env is None else env
     raw = requested if requested is not None else source.get("SIMPLICIO_PRISM_BATCH_SIZE", DEFAULT_PRISM_BATCH_SIZE)
     try:
         value = int(raw)
     except (TypeError, ValueError) as exc:
         raise ValueError("SIMPLICIO_PRISM_BATCH_SIZE must be an integer") from exc
-    if not 1 <= value <= MAX_PRISM_BATCH_SIZE:
-        raise ValueError(f"Prism batch size must be between 1 and {MAX_PRISM_BATCH_SIZE}")
+    if value < MIN_PRISM_BATCH_SIZE:
+        raise ValueError(f"Prism batch size must be at least {MIN_PRISM_BATCH_SIZE}")
     return value
 
 
 def prism_is_eligible(item_count: int, *, explicit_serial: bool = False) -> dict[str, object]:
-    """Decide whether a multi-item request may use Prism fan-out."""
+    """Route 1-3 tasks to direct parallelism and larger work to Prism."""
     count = int(item_count)
     if explicit_serial:
         return {"eligible": False, "reason_code": "explicit_serial"}
-    if count < 2:
-        return {"eligible": False, "reason_code": "single_item"}
-    return {"eligible": True, "reason_code": "independent_multi_item"}
+    if count <= 3:
+        return {
+            "eligible": False,
+            "reason_code": "direct_parallelism" if count > 1 else "single_item",
+            "parallelism": "direct",
+        }
+    return {
+        "eligible": True,
+        "reason_code": "prism_above_three_tasks",
+        "parallelism": "prism",
+    }
 
 
 def prism_batches(items, batch_size: Optional[int] = None):
@@ -115,7 +124,7 @@ def recommend_operator_workers(cpu: Optional[int] = None) -> int:
 
 
 def recommend_prism_slots(cpu: Optional[int] = None) -> int:
-    """Prism wave width = **maximum the machine can sustain**.
+    """Recommend a physical Prism worker width for this machine.
 
     Policy:
     - Start from logical CPU count (leave 1 core for OS + Runtime Tokio when
@@ -127,7 +136,7 @@ def recommend_prism_slots(cpu: Optional[int] = None) -> int:
       explicit override pass ``prism_slots=`` into ``economy_parallel_env``.
     """
     n = _cpu_count() if cpu is None else max(1, int(cpu))
-    # Max parallel slots from CPU: leave one core free when possible
+    # Physical worker recommendation from CPU: leave one core free when possible.
     cpu_slots = max(2, n - 1) if n >= 3 else max(2, n)
 
     total_gb, avail_gb = _ram_gb()

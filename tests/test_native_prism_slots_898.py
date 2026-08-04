@@ -31,3 +31,27 @@ def test_native_prism_persists_governor_receipt_and_refreshes_capacity() -> None
     scheduler.native_capacity_refresh()
     assert len(capacity["budget_governor"]["events"]) == 2
     assert capacity["budget_governor"]["events"][1]["reason_code"] == "STABLE"
+
+
+def test_native_prism_has_no_logical_slot_overflow_or_capacity_ceiling() -> None:
+    items = [
+        {
+            "run_id": "run",
+            "task_id": f"task-{index}",
+            "repo": ".",
+            "task_spec": {"slot_key": f"partition-{index}"},
+        }
+        for index in range(25)
+    ]
+    scheduler, _, _ = _build_native_prism_scheduler(items, worker_limit=25)
+    snapshot = scheduler.snapshot()
+    assert snapshot["metrics"]["logical_slots"] == 25
+    assert "overflow" not in {slot["supervisor_agent"] for slot in snapshot["slots"]}
+
+    same_slot_items = [
+        {"run_id": "run", "task_id": f"task-{index}", "repo": ".",
+         "task_spec": {"slot_key": "shared"}}
+        for index in range(25)
+    ]
+    scheduler, _, _ = _build_native_prism_scheduler(same_slot_items, worker_limit=25)
+    assert scheduler.slots[next(iter(scheduler.slots))].capacity == 25

@@ -4611,7 +4611,7 @@ def _build_native_prism_scheduler(
     work up to the measured worker limit, preserves dependency/conflict edges,
     and leaves the existing worktree/operator bridge as the mutation boundary.
     This keeps the fast local path useful without requiring cloud workers or
-    an Orca client, while still emitting the same bounded Prism decisions.
+    an Orca client, while physical admission remains separately governed.
     """
     from .prism_contracts import (
         TASK_STATES,
@@ -4661,17 +4661,14 @@ def _build_native_prism_scheduler(
     partitions: dict[str, list[Mapping[str, Any]]] = {}
     for item in items:
         partitions.setdefault(_partition_key(item), []).append(item)
+    # Logical slots are unbounded.  The measured worker/resource governor below
+    # controls physical execution; it must not collapse independent partitions
+    # into an artificial overflow slot.
     ordered_partitions = sorted(partitions.items(), key=lambda pair: pair[0])
-    max_slots = min(20, max(1, len(items)))
-    if len(ordered_partitions) > max_slots:
-        kept = ordered_partitions[: max_slots - 1]
-        merged = [item for _, group in ordered_partitions[max_slots - 1:] for item in group]
-        ordered_partitions = kept + [("overflow", merged)]
     recovery_reserve = min(1, max(0, worker_limit - 1))
     validation_reserve = min(1, max(0, worker_limit - recovery_reserve - 1))
     policy = PrismPolicy(
         max_tasks_per_slot=10,
-        max_active_slots=max(1, len(ordered_partitions)),
         global_worker_limit=max(1, int(worker_limit)),
         recovery_reserve=recovery_reserve,
         validation_reserve=validation_reserve,
@@ -4718,7 +4715,7 @@ def _build_native_prism_scheduler(
         slot = SlotSupervisor(
             parent_prism_id=root.prism_id,
             supervisor_agent=f"simplicio-loop:{partition}",
-            capacity=min(10, max(1, len(group))),
+            capacity=max(10, len(group)),
         )
         scheduler.register_slot(slot)
         slots_by_partition[partition] = slot
@@ -5691,6 +5688,7 @@ def dispatch_operator_batch(
     has no successful receipt.
     """
     normalized = [_operator_dispatch_item(item) for item in items]
+    prism_enabled = len(normalized) > 3
     keys = {(item["repo"], item["run_id"], item["task_index"]) for item in normalized}
     if len(keys) != len(normalized):
         raise ValueError("operator dispatch contains duplicate repo/run/task items")
@@ -5775,10 +5773,21 @@ def dispatch_operator_batch(
         serial_fallback_reason = "shared_run_state"
     retry_budget = max(0, int(retry_budget))
 
-    prism_scheduler, prism_id, capacity_sample = _build_native_prism_scheduler(
-        normalized, effective_workers,
-    )
-    effective_workers = max(1, min(effective_workers, int(capacity_sample["safe_workers"])))
+    if prism_enabled:
+        prism_scheduler, prism_id, capacity_sample = _build_native_prism_scheduler(
+            normalized, effective_workers,
+        )
+        effective_workers = max(1, min(effective_workers, int(capacity_sample["safe_workers"])))
+    else:
+        # One to three tasks use the direct executor path.  Keep the same
+        # receipt/journal/lease machinery, but do not create a Prism graph.
+        prism_scheduler = None
+        prism_id = ""
+        capacity_sample = {
+            "schema": "simplicio.direct-parallelism-capacity/v1",
+            "safe_workers": effective_workers,
+            "source": "operator_worker_limit",
+        }
     pending = deque(
         item for item in normalized
         if prior.get((item["repo"], item["run_id"], item["task_index"]), {}).get("status") != "succeeded"
@@ -5790,30 +5799,33 @@ def dispatch_operator_batch(
     # A resumed batch can have a completed item at the head of Prism's ready queue.
     # Retire those durable successes before admitting fresh work; otherwise a full
     # capacity sample leaves the pending item permanently invisible behind the skip.
-    while True:
-        admitted = prism_scheduler.next_batch()
-        if not admitted:
-            break
-        for task in admitted:
-            if task.task_id in pending_task_ids:
-                prism_admitted.append(task.task_id)
-                continue
-            try:
-                recovery = any(
-                    item.get("task_id") == task.task_id
-                    and int(item.get("task_index", -1))
-                    in recovery_pending_by_run.get(str(item.get("run_id") or ""), set())
-                    for item in normalized
-                )
-                prism_scheduler.complete(
-                    task.task_id, "blocked" if recovery else "accepted",
-                    owner_agent=task.ownership.owner_agent,
-                    fence=task.ownership.fence,
-                )
-            except Exception:
-                # The scheduler remains authoritative; a later normal admission or
-                # terminal path will surface any unexpected state mismatch.
-                continue
+    if prism_enabled:
+        while True:
+            admitted = prism_scheduler.next_batch()
+            if not admitted:
+                break
+            for task in admitted:
+                if task.task_id in pending_task_ids:
+                    prism_admitted.append(task.task_id)
+                    continue
+                try:
+                    recovery = any(
+                        item.get("task_id") == task.task_id
+                        and int(item.get("task_index", -1))
+                        in recovery_pending_by_run.get(str(item.get("run_id") or ""), set())
+                        for item in normalized
+                    )
+                    prism_scheduler.complete(
+                        task.task_id, "blocked" if recovery else "accepted",
+                        owner_agent=task.ownership.owner_agent,
+                        fence=task.ownership.fence,
+                    )
+                except Exception:
+                    # The scheduler remains authoritative; a later normal admission or
+                    # terminal path will surface any unexpected state mismatch.
+                    continue
+    else:
+        prism_admitted.extend(str(item.get("task_id") or "") for item in pending)
     for item in pending:
         _append_dispatch_journal(
             durable_journal_path, item["run_id"], "dispatch_queued",
@@ -5921,6 +5933,8 @@ def dispatch_operator_batch(
         return None
 
     def _refill_prism() -> None:
+        if not prism_enabled:
+            return
         refresh = getattr(prism_scheduler, "native_capacity_refresh", None)
         if refresh is not None:
             refresh()
@@ -5997,13 +6011,14 @@ def dispatch_operator_batch(
                         f"dispatch:{item['task_id']}:terminal:{final.get('status', 'unknown')}",
                     )
                     try:
-                        prism_scheduler.complete(
-                            str(item.get("task_id") or ""),
-                            "accepted" if final.get("status") == "succeeded" else "failed",
-                            owner_agent=str(item.get("worker_id") or "simplicio-local"),
-                            fence=1,
-                        )
-                        _refill_prism()
+                        if prism_enabled:
+                            prism_scheduler.complete(
+                                str(item.get("task_id") or ""),
+                                "accepted" if final.get("status") == "succeeded" else "failed",
+                                owner_agent=str(item.get("worker_id") or "simplicio-local"),
+                                fence=1,
+                            )
+                            _refill_prism()
                     except Exception as exc:
                         final.setdefault("prism_error", f"{type(exc).__name__}: {exc}")
                     # Refill as soon as this worker exits; there is no frozen wave barrier.
@@ -6117,13 +6132,16 @@ def dispatch_operator_batch(
         },
         "prism": {
             "schema": NATIVE_PRISM_SCHEMA,
-            "mode": "native-local",
+            "mode": "native-local" if prism_enabled else "direct-parallelism",
             "prism_id": prism_id,
-            "scheduler": "simplicio_loop.prism_scheduler.PrismScheduler",
-            "admission": "governed",
+            "scheduler": (
+                "simplicio_loop.prism_scheduler.PrismScheduler"
+                if prism_enabled else "concurrent.futures.direct"
+            ),
+            "admission": "governed" if prism_enabled else "direct-executor",
             "max_workers": effective_workers,
             "capacity": capacity_sample,
-            "snapshot": prism_scheduler.snapshot(),
+            "snapshot": prism_scheduler.snapshot() if prism_enabled else None,
         },
         "journal": str(journal_path) if journal_path else "",
     }

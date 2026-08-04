@@ -258,7 +258,7 @@ def test_batch_dispatches_reconciled_prism_waves(monkeypatch):
     monkeypatch.setattr(cli, "execute_operator_batch", fake_batch)
     rc = cli.batch("/r", "run-1", "1,2,3", max_workers=5, retry_budget=0, batch_size=2)
     assert rc == 0
-    assert calls == [([1, 2], 2), ([3], 2)]
+    assert calls == [([1, 2, 3], 5)]
 
 
 def test_oracle_write_receipt_persists_and_reflects_status(monkeypatch, capsys):

@@ -11,7 +11,7 @@ import pytest
 
 from simplicio_loop.hbp_ledger import canonical_sha256
 from simplicio_loop.prism_contracts import (
-    MAX_TASKS_PER_SLOT,
+    MIN_TASKS_PER_SLOT,
     PrismContractError,
     PrismExecution,
     SlotSupervisor,
@@ -106,10 +106,10 @@ def test_contract_ids_are_permutation_invariant_and_hashed():
     assert left.digest == canonical_sha256(left.to_dict())
 
 
-def test_slot_admits_ten_and_queues_eleventh_with_reason():
+def test_slot_has_minimum_ten_and_no_logical_upper_capacity():
     root = prism()
-    current = slot(root.prism_id)
-    for index in range(MAX_TASKS_PER_SLOT):
+    current = slot(root.prism_id, capacity=100)
+    for index in range(MIN_TASKS_PER_SLOT + 5):
         item = ownership(f"t-{index}", current.slot_id)
         prior_id = current.slot_id
         current, receipt = admit_task(current, item)
@@ -117,11 +117,7 @@ def test_slot_admits_ten_and_queues_eleventh_with_reason():
         assert receipt.admitted is True
         assert receipt.reason_code == "ADMITTED"
         assert len(receipt.to_dict()["receipt_hash"]) == 64
-    unchanged, receipt = admit_task(current, ownership("t-10", current.slot_id))
-    assert unchanged == current
-    assert receipt.admitted is False
-    assert receipt.reason_code == "SLOT_LOGICAL_CAPACITY"
-    assert receipt.position == 11
+    assert len(current.task_ids) == MIN_TASKS_PER_SLOT + 5
 
 
 def test_hierarchy_validates_nested_slots_and_exactly_one_owner():
@@ -231,7 +227,7 @@ def test_contract_schemas_and_adversarial_cases_are_packaged():
     assert len(cases["cases"]) >= 4
     assert all(
         case.get("authorized") is False or case.get("admitted") is False
-        or case.get("authoritative") is False
+        or case.get("authoritative") is False or case.get("policy_only") is True
         for case in cases["cases"]
     )
 
@@ -269,7 +265,7 @@ def test_invalid_contract_inputs_fail_closed():
         with pytest.raises(PrismContractError):
             TaskOwnership(**{**base, field: value})
     with pytest.raises(PrismContractError):
-        slot(prism().prism_id, capacity=11)
+        slot(prism().prism_id, capacity=9)
 
 
 def test_all_contract_validation_boundaries_fail_closed():
@@ -301,7 +297,7 @@ def test_all_contract_validation_boundaries_fail_closed():
     for patch in (
         {"schema": "future/v9"},
         {"state": "invented"},
-        {"task_ids": tuple(f"t-{i}" for i in range(11))},
+        {"capacity": 9},
         {"slot_id": "slot:self", "child_slot_ids": ("slot:self",)},
         {"slot_id": "slot:wrong"},
     ):
@@ -390,8 +386,7 @@ def test_hierarchy_reference_and_size_boundaries():
         )
         for index in range(81)
     ]
-    with pytest.raises(PrismContractError, match="bounded size"):
-        validate_hierarchy(many, [], [])
+    assert validate_hierarchy(many, [], []) ["valid"] is True
 
 
 def _raw_frame(payload):

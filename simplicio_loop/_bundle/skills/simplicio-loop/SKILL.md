@@ -245,12 +245,22 @@ gates, the operator dispatch table): **`references/bound-operators.md`**.
 
 Cloud workers and host adapters are accelerators, not prerequisites. If no cloud
 environment/queue is configured, the queue is unavailable, or Orca is absent, the Loop
-continues with isolated local worktrees and bounded parallelism based on the measured machine
-capacity. `dispatch_operator_batch` admits local tasks through the native
+continues with isolated local worktrees and logically unbounded fan-out; physical workers remain
+governed by measured machine capacity. `dispatch_operator_batch` admits local tasks through the native
 `simplicio_loop.prism_scheduler.PrismScheduler` (dependencies, conflicts, leases, and worker
 budget) and then runs the admitted work concurrently; it does not require a remote worker or
 Orca client. Set `SIMPLICIO_LOOP_LOCAL_FALLBACK=0` only for deployments that explicitly require
 remote claims. A remote task that was accepted is never duplicated locally after a timeout.
+
+### Prism routing and slot policy
+
+The deterministic router uses direct parallelism for one to three tasks. A request with more than
+three tasks activates Prism. When the request does not specify a quantity, the default and minimum
+logical batch is ten tasks per slot; an explicit larger batch is valid and there is no logical upper
+limit on slot count, slot capacity, or Prism waves. This does not disable the physical governor:
+CPU, memory, disk, provider, lease, worktree, and observed worker capacity can delay admission
+without changing the logical plan. Fast is queried from the fresh Mapper snapshot before selecting
+the route, and Runtime is added for native execution, gates, checkpoints, or receipts.
 
 ### Strict mode (force every AI onto the full stack)
 

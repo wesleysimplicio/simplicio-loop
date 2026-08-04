@@ -8,11 +8,11 @@
       "authoritative": false
     },
     {
-      "name": "eleventh-task-is-not-admitted",
-      "logical_capacity": 10,
-      "attempted_position": 11,
-      "expected_reason_code": "SLOT_LOGICAL_CAPACITY",
-      "admitted": false
+      "name": "slot-capacity-has-a-minimum-not-a-maximum",
+      "minimum_capacity": 10,
+      "capacity": 100,
+      "admitted": true,
+      "policy_only": true
     },
     {
       "name": "stale-fence-cannot-transition",

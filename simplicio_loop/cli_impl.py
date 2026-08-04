@@ -561,7 +561,7 @@ def tick(repo: str, run_id: str, task_index: int) -> int:
 
 def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_budget: int,
           serial: bool = False, batch_size: Optional[int] = None) -> int:
-    """Dispatch eligible multi-task work in reconciled Prism waves."""
+    """Route up to three tasks directly; dispatch larger work in Prism waves."""
     indices = None
     if task_indices.strip():
         try:
@@ -1259,7 +1259,7 @@ def main(argv=None) -> int:
     p_batch.add_argument("--retry-budget", type=int, default=3, help="retries after the first attempt")
     p_batch.add_argument(
         "--batch-size", type=int, default=None,
-        help="Prism wave width (default: 10; explicit user override, e.g. 30)",
+        help="Prism wave width (default/minimum: 10; no logical upper bound, e.g. 30)",
     )
     p_batch.add_argument(
         "--serial", action="store_true",
