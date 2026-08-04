@@ -57,6 +57,7 @@ from . import inspection_cli as _inspection_cli
 from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
 from .delivery import DELIVERY_ORDER
+from .economy_profile import prism_batches, prism_is_eligible, resolve_prism_batch_size
 from .map_service_cli import configure_commands as configure_map_commands, dispatch as dispatch_map
 from .serverless_deploy import build_plan as build_serverless_plan, execute_plan as execute_serverless_plan
 
@@ -559,22 +560,69 @@ def tick(repo: str, run_id: str, task_index: int) -> int:
 
 
 def batch(repo: str, run_id: str, task_indices: str, max_workers: int, retry_budget: int,
-          serial: bool = False) -> int:
-    """Run selected ready tasks through the durable real-operator pool."""
+          serial: bool = False, batch_size: Optional[int] = None) -> int:
+    """Dispatch eligible multi-task work in reconciled Prism waves."""
     indices = None
     if task_indices.strip():
         try:
             indices = [int(value.strip()) for value in task_indices.split(",") if value.strip()]
         except ValueError as exc:
             raise ValueError("--task-indices must be a comma-separated list of integers") from exc
-    payload = execute_operator_batch(
-        repo,
-        run_id,
-        indices,
-        max_workers=max_workers or None,
-        retry_budget=retry_budget,
-        auto_fan_out=not serial,
-    )
+
+    if indices is None:
+        try:
+            status = read_status(repo, run_id)
+            contract_path = Path(status["run_dir"]) / "task-contract.json"
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            indices = list(range(1, len(contract.get("tasks") or []) + 1))
+        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            indices = None
+
+    eligibility = prism_is_eligible(len(indices or []), explicit_serial=serial)
+    if not eligibility["eligible"]:
+        payload = execute_operator_batch(
+            repo,
+            run_id,
+            indices,
+            max_workers=max_workers or None,
+            retry_budget=retry_budget,
+            auto_fan_out=not serial,
+        )
+        payload["prism"] = {**eligibility, "batch_size": None, "waves": 1}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    width = resolve_prism_batch_size(batch_size)
+    waves = prism_batches(indices, width)
+    worker_limit = min(max_workers or width, width)
+    wave_results = []
+    for wave_number, wave in enumerate(waves, start=1):
+        result = execute_operator_batch(
+            repo,
+            run_id,
+            wave,
+            max_workers=worker_limit,
+            retry_budget=retry_budget,
+            auto_fan_out=True,
+        )
+        wave_results.append({"wave": wave_number, "task_indices": wave, "result": result})
+
+    workers = [worker for wave in wave_results for worker in (wave["result"].get("workers") or [])]
+    payload = {
+        "schema": "simplicio.prism-wave-dispatch/v1",
+        "status": "completed" if all(
+            worker.get("status") == "succeeded" for worker in workers
+        ) else "held",
+        "prism": {
+            **eligibility,
+            "batch_size": width,
+            "wave_barrier": "reconcile-before-next",
+            "waves": len(waves),
+            "requested_tasks": indices,
+        },
+        "waves": wave_results,
+        "workers": workers,
+    }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -1210,6 +1258,10 @@ def main(argv=None) -> int:
     )
     p_batch.add_argument("--retry-budget", type=int, default=3, help="retries after the first attempt")
     p_batch.add_argument(
+        "--batch-size", type=int, default=None,
+        help="Prism wave width (default: 10; explicit user override, e.g. 30)",
+    )
+    p_batch.add_argument(
         "--serial", action="store_true",
         help="disable the default isolated fan-out and force the shared-run serial lane",
     )
@@ -1506,7 +1558,7 @@ def main(argv=None) -> int:
     if command == "tick":
         return tick(args.repo, args.run_id, args.task_index)
     if command == "batch":
-        return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget, args.serial)
+        return batch(args.repo, args.run_id, args.task_indices, args.max_workers, args.retry_budget, args.serial, args.batch_size)
     if command == "cancel":
         return cancel(args.repo, args.run_id)
     if command == "checkpoint":

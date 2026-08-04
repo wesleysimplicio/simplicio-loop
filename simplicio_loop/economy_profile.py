@@ -21,6 +21,39 @@ from typing import Any, Mapping, MutableMapping, Optional
 
 SCHEMA = "simplicio.economy-parallel-profile/v1"
 PROFILE_NAME = "economy-parallel"
+DEFAULT_PRISM_BATCH_SIZE = 10
+MAX_PRISM_BATCH_SIZE = 64
+
+
+def resolve_prism_batch_size(requested: Optional[int] = None, *, env: Optional[Mapping[str, str]] = None) -> int:
+    """Resolve the bounded Prism wave width (default 10, explicit user override allowed)."""
+    source = os.environ if env is None else env
+    raw = requested if requested is not None else source.get("SIMPLICIO_PRISM_BATCH_SIZE", DEFAULT_PRISM_BATCH_SIZE)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SIMPLICIO_PRISM_BATCH_SIZE must be an integer") from exc
+    if not 1 <= value <= MAX_PRISM_BATCH_SIZE:
+        raise ValueError(f"Prism batch size must be between 1 and {MAX_PRISM_BATCH_SIZE}")
+    return value
+
+
+def prism_is_eligible(item_count: int, *, explicit_serial: bool = False) -> dict[str, object]:
+    """Decide whether a multi-item request may use Prism fan-out."""
+    count = int(item_count)
+    if explicit_serial:
+        return {"eligible": False, "reason_code": "explicit_serial"}
+    if count < 2:
+        return {"eligible": False, "reason_code": "single_item"}
+    return {"eligible": True, "reason_code": "independent_multi_item"}
+
+
+def prism_batches(items, batch_size: Optional[int] = None):
+    """Yield frozen waves; the next wave starts only after the prior one reconciles."""
+    values = list(items)
+    width = resolve_prism_batch_size(batch_size)
+    return [values[offset:offset + width] for offset in range(0, len(values), width)]
+
 
 # Opt-out of always-on economy defaults (legacy serial / heavy ceremony).
 DISABLE_ENV = "SIMPLICIO_ECONOMY_PARALLEL"
@@ -126,6 +159,7 @@ def economy_parallel_env(
     runtime_operational: Optional[bool] = None,
     prism_slots: Optional[int] = None,
     operator_workers: Optional[int] = None,
+    prism_batch_size: Optional[int] = None,
 ) -> dict[str, str]:
     """Return env map for fastest token path + parallel drain/batch.
 
@@ -145,6 +179,7 @@ def economy_parallel_env(
         else recommend_operator_workers()
     )
     slots = int(prism_slots) if prism_slots is not None else recommend_prism_slots()
+    batch_size = resolve_prism_batch_size(prism_batch_size, env=env)
     async_n = recommend_async_concurrency()
 
     out: dict[str, str] = {
@@ -165,6 +200,7 @@ def economy_parallel_env(
         "SIMPLICIO_LOOP_AUTO_FAN_OUT": "1",
         "SIMPLICIO_LOOP_OPERATOR_WORKERS": str(workers),
         "SIMPLICIO_PRISM_SLOTS": str(slots),
+        "SIMPLICIO_PRISM_BATCH_SIZE": str(batch_size),
         "SIMPLICIO_ASYNC_IO_MAX_CONCURRENCY": str(async_n),
         # Profile marker
         "SIMPLICIO_ECONOMY_PARALLEL": "1",
@@ -345,4 +381,9 @@ __all__ = [
     "recommend_operator_workers",
     "recommend_prism_slots",
     "recommend_async_concurrency",
+    "DEFAULT_PRISM_BATCH_SIZE",
+    "MAX_PRISM_BATCH_SIZE",
+    "resolve_prism_batch_size",
+    "prism_is_eligible",
+    "prism_batches",
 ]

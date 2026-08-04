@@ -237,14 +237,28 @@ def test_batch_invalid_task_indices_raises_value_error():
 
 def test_main_batch_dispatches_all_args(monkeypatch):
     captured = {}
-    monkeypatch.setattr(cli, "batch", lambda repo, run_id, indices, max_workers, retry_budget, serial: captured.update(
+    monkeypatch.setattr(cli, "batch", lambda repo, run_id, indices, max_workers, retry_budget, serial, batch_size: captured.update(
         repo=repo, run_id=run_id, indices=indices, max_workers=max_workers,
-        retry_budget=retry_budget, serial=serial) or 0)
+        retry_budget=retry_budget, serial=serial, batch_size=batch_size) or 0)
     rc = cli.main(["batch", "--repo", "/r", "run-1", "--task-indices", "1,2",
-                  "--max-workers", "4", "--retry-budget", "2", "--serial"])
+                  "--max-workers", "4", "--retry-budget", "2", "--batch-size", "30", "--serial"])
     assert rc == 0
     assert captured["serial"] is True
     assert captured["indices"] == "1,2"
+    assert captured["batch_size"] == 30
+
+
+def test_batch_dispatches_reconciled_prism_waves(monkeypatch):
+    calls = []
+
+    def fake_batch(repo, run_id, indices, **kwargs):
+        calls.append((indices, kwargs["max_workers"]))
+        return {"workers": [{"status": "succeeded", "task_index": index} for index in indices]}
+
+    monkeypatch.setattr(cli, "execute_operator_batch", fake_batch)
+    rc = cli.batch("/r", "run-1", "1,2,3", max_workers=5, retry_budget=0, batch_size=2)
+    assert rc == 0
+    assert calls == [([1, 2], 2), ([3], 2)]
 
 
 def test_oracle_write_receipt_persists_and_reflects_status(monkeypatch, capsys):

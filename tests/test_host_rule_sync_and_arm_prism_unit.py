@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 
 import host_rule_sync
@@ -52,6 +50,8 @@ def test_arm_drain_prism_writes_scratchpad(tmp_path, monkeypatch):
     assert receipt["ok"] is True
     assert receipt["prism_slots"] == 3
     assert receipt["prism_logical_capacity"] == 30
+    assert receipt["prism_batch_size"] == 10
+    assert receipt["prism_wave_barrier"] == "reconcile-before-next"
     scratch = Path(receipt["scratchpad"])
     assert scratch.is_file()
     body = scratch.read_text(encoding="utf-8")
@@ -59,3 +59,14 @@ def test_arm_drain_prism_writes_scratchpad(tmp_path, monkeypatch):
     assert "prism_slots: 3" in body
     assert "forbid_hand_edit: true" in body
     assert "done-when-empty" in body
+
+
+def test_arm_drain_prism_honors_explicit_batch_size(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    monkeypatch.setattr(arm_drain_prism, "_open_issue_count", lambda _repo: None)
+    receipt = arm_drain_prism.arm(repo, slots=3, batch_size=30, max_iterations=50, promise="done")
+    assert receipt["prism_batch_size"] == 30
+    assert receipt["prism_eligibility"]["reason_code"] == "source_unavailable"

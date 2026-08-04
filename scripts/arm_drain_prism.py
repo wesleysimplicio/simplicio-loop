@@ -70,15 +70,24 @@ def arm(
     repo: Path,
     *,
     slots: int,
-    max_iterations: int,
-    promise: str,
+    batch_size: int = 10,
+    max_iterations: int = 200,
+    promise: str = PROMISE,
 ) -> dict:
     repo = repo.resolve()
+    from simplicio_loop.economy_profile import (
+        prism_is_eligible,
+        resolve_prism_batch_size,
+    )
     loop_dir = repo / ".simplicio" / "orchestrator" / "loop"
     loop_dir.mkdir(parents=True, exist_ok=True)
     open_n = _open_issue_count(repo)
     versions = _versions()
     slots = max(1, min(20, int(slots)))
+    batch_size = resolve_prism_batch_size(batch_size)
+    eligibility = prism_is_eligible(open_n or 0)
+    if open_n is None:
+        eligibility = {"eligible": False, "reason_code": "source_unavailable"}
     capacity = slots * 10
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     body = f"""---
@@ -89,6 +98,8 @@ evidence_required: true
 mode: drain
 route_mode: drain
 prism_slots: {slots}
+prism_batch_size: {batch_size}
+prism_wave_barrier: reconcile-before-next
 prism_max_tasks_per_slot: 10
 prism_logical_capacity: {capacity}
 started_at: "{now}"
@@ -105,8 +116,9 @@ Hard rules (all LLMs / all hosts):
 1. `simplicio-loop preflight --strict --json` before work.
 2. Survey via `simplicio-mapper`; hot path via `simplicio-fast` when operational.
 3. Mutate via `simplicio-dev-cli` / `simplicio-py task` (STRICT forbids host hand-edit primary path).
-4. Parallelism: up to **{slots}** slots × **10** tasks (capacity {capacity});
-   lease/fence claims; one agent ownership per transition; reducer before merge pile-up.
+4. Prism eligibility: {eligibility["eligible"]} ({eligibility["reason_code"]});
+   wave width **{batch_size}**; the next wave starts only after lease/result reconciliation.
+   Capacity is **{slots}** slots; one agent ownership per transition; reducer before merge pile-up.
 5. PR to main with honest `Closes #N`; no theater AC stubs.
 6. Host integrations (Orca, etc.) only if client requested (`CLIENT_INTEGRATIONS`).
 7. When open stays empty across dry≥2 re-queries → promise only with MEASURED evidence.
@@ -140,6 +152,9 @@ Open issues at arm: {open_n if open_n is not None else "unknown (gh unavailable)
         "scratchpad": str(scratch),
         "open_issues_at_arm": open_n,
         "prism_slots": slots,
+        "prism_batch_size": batch_size,
+        "prism_wave_barrier": "reconcile-before-next",
+        "prism_eligibility": eligibility,
         "prism_max_tasks_per_slot": 10,
         "prism_logical_capacity": capacity,
         "max_iterations": max_iterations,
@@ -150,7 +165,7 @@ Open issues at arm: {open_n if open_n is not None else "unknown (gh unavailable)
             "source ~/.simplicio/loop-env.sh (or set recommended_env)",
             "simplicio-loop preflight --strict --json",
             "simplicio-mapper scan . --json",
-            "claim issues into slots (≤10/slot); operate via dev-cli/fast; PR+merge",
+            "claim the next Prism wave (default 10; --batch-size N); reconcile leases/results; PR+merge",
         ],
     }
 
@@ -165,6 +180,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Prism slots (0 = auto: maximum this machine can sustain from CPU+RAM)",
     )
     p.add_argument("--max-iterations", type=int, default=200)
+    p.add_argument(
+        "--batch-size", type=int, default=10,
+        help="independent issues/tasks per Prism wave (default: 10; explicit user override allowed)",
+    )
     p.add_argument("--promise", default=PROMISE)
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
@@ -181,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     receipt = arm(
         Path(args.repo),
         slots=slots,
+        batch_size=args.batch_size,
         max_iterations=args.max_iterations,
         promise=args.promise,
     )
