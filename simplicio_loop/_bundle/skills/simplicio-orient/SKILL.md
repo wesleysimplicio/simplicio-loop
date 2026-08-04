@@ -5,6 +5,11 @@ description: Terminal-first execution — answer facts with the shell, never wit
 
 # simplicio-orient — terminal-first, token-frugal execution
 
+For **max-speed delivery law** (Runtime decide, Mapper→Fast→dev-cli, Prism waves,
+economy-parallel, DONE|NEXT|BLOCKED), see `docs/LLM_MAX_SPEED_ORIENTATION.md` and the loop
+re-feed block `SIMPLICIO-LLM-ORIENTATION` in `simplicio-loop/SKILL.md`. This skill owns
+**terminal token clamps**; that doc owns **how the stack orients the LLM for speed**.
+
 The cheapest token is the one not spent. The terminal KNOWS facts exactly; the LLM
 APPROXIMATES them expensively. This skill routes every step to the leanest substrate that
 still completes it correctly, and clamps command output before it ever reaches context.

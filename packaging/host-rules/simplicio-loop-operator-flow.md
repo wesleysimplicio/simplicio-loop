@@ -55,14 +55,22 @@ Installers copy this file into each host's always-on surface via
 6. **GitHub** = default coordination SoT for Issues/PRs when the remote is GitHub.
 
 7. **Drain:** claim → real ACs → PR to main with `Closes #N` → merge. Prefer Prism waves
-   (`python3 scripts/arm_drain_prism.py --repo . --slots 4`) when draining a queue.
+   (`python3 scripts/arm_drain_prism.py --repo . --slots 0 --batch-size N --json`;
+   `slots 0` = machine physical max; batch default/min 10, larger explicit OK).
 
 8. **Evidence-gated exit:** MEASURED tags; no theater AC stubs; no false completion.
 
 9. **Parallelism** only with lease/claim + isolation + reducer — no double-writers without coordination.
+   1–3 tasks = direct parallelism; >3 = Prism. Layers: Runtime Tokio · Prism · operator workers ·
+   asyncio I/O · **writes serialized**. See `docs/LLM_MAX_SPEED_ORIENTATION.md`.
 
 10. **Integrations** (Orca, Linear, …) only if the **client requested** them
     (`SIMPLICIO_LOOP_CLIENT_INTEGRATIONS` or `.simplicio/client-integrations.json`).
+
+11. **Max-speed orientation (always):** act > narrate; Mapper→Fast→dev-cli hot path;
+    smallest gate that proves the AC; no full-repo residual thrash; no 3-reviewer panels on
+    metadata-only diffs; end each message with `DONE | NEXT | BLOCKED`.
+    Canonical: `docs/LLM_MAX_SPEED_ORIENTATION.md` (Runtime twin + LLM re-feed block in SKILL.md).
 
 ## MUST NOT
 
@@ -71,6 +79,7 @@ Installers copy this file into each host's always-on surface via
 - Reinstall operators every turn (TTL pin + `operator_check maybe-upgrade`)
 - Hand-edit under STRICT to "go faster"
 - Auto-enable Orca or other host side-channels
+- Force physical Prism thrash above machine auto (`--slots 0` / economy recommend)
 
 ## Loop drive by host
 
