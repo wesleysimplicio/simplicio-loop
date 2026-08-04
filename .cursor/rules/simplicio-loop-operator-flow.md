@@ -77,7 +77,7 @@ Contract: `docs/MULTI_LLM_CONTRACT.md`
 ## Regras arquiteturais globais (obrigatórias)
 
 - Delete diretamente o obsoleto; não preserve compatibilidade retroativa, não crie
-  migrações e não deixe fallbacks legados.
+  migrações e não deixe fallbacks.
 - Escolha a solução mais simples para a necessidade atual, sem abstrações
   preventivas ou configuração desnecessária.
 - Faça o mínimo end-to-end funcionar primeiro e evolua por camadas longas, sem
