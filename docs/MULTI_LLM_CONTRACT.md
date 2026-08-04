@@ -19,11 +19,14 @@ contract + `host_rule_sync` + STRICT env make that a **contract violation**, not
 1. **Operators do; models decide.**
 2. **STRICT forbids host hand-edit** as primary mutation path.
 3. **Fast required when operational** at preflight.
-4. **Runtime is disabled by default** for simplicio-loop (`SIMPLICIO_LOOP_REQUIRE_RUNTIME=off`,
-   `SIMPLICIO_EXECUTION_PROFILE=standalone`). Runtime/MCP use requires explicit opt-in.
+4. **Loop lives inside Runtime.** Runtime owns activation (`simplicio loop decide`).
+   Preferred profile is `runtime-backed` when `simplicio` is on PATH.
+   `SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto` (or `1` for hard require). Hosts **must not**
+   start loop as a peer product path outside Runtime; they honor Runtime's decision receipt.
 5. **When Runtime is present, force MCP tools for economy** — `SIMPLICIO_REQUIRE_MCP=1`
    prefers `simplicio_map` / `search` / `memory` / `gate` / `edit` over host bulk reads;
-   action_gate only enforces this if `simplicio` is on PATH. Without Runtime: standalone continues.
+   action_gate only enforces this if `simplicio` is on PATH. Without Runtime: report
+   `UNVERIFIED|runtime_unavailable` and degraded mode — not preferred architecture.
 6. **Prism parallelism** for queue drain when armed (`arm_drain_prism.py`).
 7. **Self-paced hosts are first-class** — no hooks ≠ optional protocol.
 8. **Client integrations opt-in only** — Orca is never default (`docs/CLIENT_INTEGRATIONS.md`).

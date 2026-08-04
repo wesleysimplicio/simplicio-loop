@@ -10,26 +10,33 @@ Installers copy this file into each host's always-on surface via
 
 ## MUST
 
+0. **Loop lives inside Runtime. Runtime decides when to use it.**
+   - Entry: `simplicio loop decide --task "..." --json` (or action-bridge / run spine).
+   - Honor `.simplicio/runtime/loop-decision.json` (`use_loop`, `verdict`, `host_may_override=false`).
+   - Do **not** start `/simplicio-loop` as a peer path that bypasses Runtime activation.
+   - ADR: `simplicio-runtime` `docs/ADR-2026-08-04-RUNTIME-OWNED-LOOP.md`.
+
 1. **Economy-parallel env** before autonomous work (fastest tokens + parallel):
    ```bash
    simplicio-loop economy apply --json   # or: source ~/.simplicio/economy-parallel-env.sh
    ```
    - `SIMPLICIO_LOOP=1` · `SIMPLICIO_LOOP_STRICT=1`
-   - `SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto` (**Runtime optional**; Tokio when up)
-   - `SIMPLICIO_EXECUTION_PROFILE=auto` → `runtime-backed` only if Runtime up
+   - `SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto` (**preferred: Runtime present**; degraded only if missing)
+   - `SIMPLICIO_EXECUTION_PROFILE=auto` → **`runtime-backed` when Runtime is up** (canonical)
    - `SIMPLICIO_FAST_MODE=required` (when Fast operational)
    - `SIMPLICIO_LOOP_AUTO_FAN_OUT=1` (parallel worktrees on `batch`)
    - `SIMPLICIO_LOOP_OPERATOR_WORKERS` / `SIMPLICIO_PRISM_SLOTS` / `SIMPLICIO_ASYNC_IO_MAX_CONCURRENCY` (CPU-bounded)
    - `SIMPLICIO_OPERATOR_ALWAYS_LATEST=1`
-   - `SIMPLICIO_REQUIRE_MCP=1` / `SIMPLICIO_MCP_FORCE=1` (**only when** Runtime present)
+   - `SIMPLICIO_REQUIRE_MCP=1` / `SIMPLICIO_MCP_FORCE=1` (**when** Runtime present)
    - Safety: mutation authority + planning receipt + forbid hand-edit
    - Opt out of economy defaults: `SIMPLICIO_ECONOMY_PARALLEL=0`
 
 2. **Preflight (blocking):** `simplicio-loop preflight --strict --json`  
-   Core operators = **mapper + dev-cli** (+ Fast when up). Runtime/MCP is optional economy layer.
+   Core operators = **Runtime (owns loop) + mapper + dev-cli** (+ Fast when up).
    When Runtime MCP is registered: prefer `simplicio_map` / `search` / `memory` / `gate` / `edit`
-   over host bulk Read/Grep/cat. Without Runtime: continue standalone — report degraded.
-   Wire MCP (optional): `python3 scripts/mcp_force_sync.py --global` · `simplicio mcp register`.
+   and **`simplicio loop decide`** over host bulk Read/Grep/cat.
+   Without Runtime: report `UNVERIFIED|runtime_unavailable` — degraded, not preferred.
+   Wire MCP: `python3 scripts/mcp_force_sync.py --global` · `simplicio mcp register`.
 
 3. **Survey:** `simplicio-mapper` (scan / inspect / handoff) — not ad-hoc full-tree LLM walks.
 
