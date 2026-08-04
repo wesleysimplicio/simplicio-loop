@@ -406,13 +406,11 @@ def test_agent_mailboxes_and_expired_or_missing_capability_fail_closed():
 def test_policy_resource_task_and_observation_validation_boundaries():
     for kwargs in (
         {"max_tasks_per_slot": 0},
-        {"max_tasks_per_slot": 11},
-        {"max_active_slots": 21},
-        {"global_worker_limit": 201},
         {"recovery_reserve": -1},
     ):
         with pytest.raises(PrismSchedulerError):
             PrismPolicy(**kwargs)
+    assert PrismPolicy(max_tasks_per_slot=100, max_active_slots=None, global_worker_limit=1000)
     with pytest.raises(PrismSchedulerError):
         ResourceVector(workers=True)
     assert ResourceVector(workers=2, cpu_millis=3).plus(
@@ -491,7 +489,7 @@ def test_slot_and_submission_validation_boundaries():
     with pytest.raises(PrismSchedulerError, match="parent slot"):
         PrismScheduler().register_slot(parent_missing)
 
-    strict = PrismScheduler(PrismPolicy(max_tasks_per_slot=1, global_worker_limit=3))
+    strict = PrismScheduler(PrismPolicy(max_tasks_per_slot=11, global_worker_limit=3))
     with pytest.raises(PrismSchedulerError, match="capacity"):
         strict.register_slot(slots[0])
 

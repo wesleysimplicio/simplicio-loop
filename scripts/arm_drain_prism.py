@@ -83,7 +83,7 @@ def arm(
     loop_dir.mkdir(parents=True, exist_ok=True)
     open_n = _open_issue_count(repo)
     versions = _versions()
-    slots = max(1, min(20, int(slots)))
+    slots = max(1, int(slots))
     batch_size = resolve_prism_batch_size(batch_size)
     eligibility = prism_is_eligible(open_n or 0)
     if open_n is None:
@@ -100,7 +100,7 @@ route_mode: drain
 prism_slots: {slots}
 prism_batch_size: {batch_size}
 prism_wave_barrier: reconcile-before-next
-prism_max_tasks_per_slot: 10
+prism_min_tasks_per_slot: 10
 prism_logical_capacity: {capacity}
 started_at: "{now}"
 operator_versions: {json.dumps(versions, sort_keys=True)}
@@ -118,7 +118,8 @@ Hard rules (all LLMs / all hosts):
 3. Mutate via `simplicio-dev-cli` / `simplicio-py task` (STRICT forbids host hand-edit primary path).
 4. Prism eligibility: {eligibility["eligible"]} ({eligibility["reason_code"]});
    wave width **{batch_size}**; the next wave starts only after lease/result reconciliation.
-   Capacity is **{slots}** slots; one agent ownership per transition; reducer before merge pile-up.
+   Capacity is **{slots}** logical slots with no upper slot ceiling; each slot has a minimum of 10 tasks;
+   one agent ownership per transition; reducer before merge pile-up. Physical overlap remains resource-governed.
 5. PR to main with honest `Closes #N`; no theater AC stubs.
 6. Host integrations (Orca, etc.) only if client requested (`CLIENT_INTEGRATIONS`).
 7. When open stays empty across dry≥2 re-queries → promise only with MEASURED evidence.
@@ -155,7 +156,7 @@ Open issues at arm: {open_n if open_n is not None else "unknown (gh unavailable)
         "prism_batch_size": batch_size,
         "prism_wave_barrier": "reconcile-before-next",
         "prism_eligibility": eligibility,
-        "prism_max_tasks_per_slot": 10,
+        "prism_min_tasks_per_slot": 10,
         "prism_logical_capacity": capacity,
         "max_iterations": max_iterations,
         "completion_promise": promise,

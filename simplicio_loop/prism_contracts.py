@@ -23,8 +23,11 @@ OWNERSHIP_SCHEMA = "simplicio.task-ownership/v1"
 ADMISSION_SCHEMA = "simplicio.prism-admission/v1"
 HBP_MAGIC = b"SPH1"
 HBP_MAX_FRAME_BYTES = 8 * 1024 * 1024
-MAX_TASKS_PER_SLOT = 10
-MAX_ACTIVE_SLOTS = 20
+MIN_TASKS_PER_SLOT = 10
+# Compatibility markers only.  ``None`` makes the removed ceilings explicit
+# and prevents callers from treating the old names as active limits.
+MAX_TASKS_PER_SLOT = None
+MAX_ACTIVE_SLOTS = None
 MAX_PRISM_DEPTH = 4
 PRISM_STATES = frozenset(
     {"declared", "running", "reducing", "completed", "partial", "blocked", "cancelled"}
@@ -161,7 +164,7 @@ class PrismExecution:
 class SlotSupervisor:
     parent_prism_id: str
     supervisor_agent: str
-    capacity: int = MAX_TASKS_PER_SLOT
+    capacity: int = MIN_TASKS_PER_SLOT
     task_ids: tuple[str, ...] = ()
     child_slot_ids: tuple[str, ...] = ()
     parent_slot_id: str | None = None
@@ -187,9 +190,11 @@ class SlotSupervisor:
             raise PrismContractError("unknown SlotSupervisor schema")
         if self.state not in SLOT_STATES:
             raise PrismContractError("unsupported slot state")
-        if not 1 <= int(self.capacity) <= MAX_TASKS_PER_SLOT:
+        if isinstance(self.capacity, bool) or not isinstance(self.capacity, int):
+            raise PrismContractError("slot capacity must be an integer")
+        if int(self.capacity) < MIN_TASKS_PER_SLOT:
             raise PrismContractError(
-                f"slot capacity must be in [1, {MAX_TASKS_PER_SLOT}]"
+                f"slot capacity must be at least {MIN_TASKS_PER_SLOT}"
             )
         if len(self.task_ids) > self.capacity:
             raise PrismContractError("slot exceeds declared task capacity")
@@ -346,9 +351,6 @@ def validate_hierarchy(
     slot_by_id = {item.slot_id: item for item in slots}
     if len(prism_by_id) != len(prisms) or len(slot_by_id) != len(slots):
         raise PrismContractError("duplicate prism or slot identity")
-    if len(prism_by_id) > MAX_ACTIVE_SLOTS * MAX_PRISM_DEPTH:
-        raise PrismContractError("prism hierarchy exceeds bounded size")
-
     for prism in prisms:
         if prism.parent_prism_id and prism.parent_prism_id not in prism_by_id:
             raise PrismContractError("unknown parent prism")
@@ -465,6 +467,7 @@ __all__ = [
     "MAX_ACTIVE_SLOTS",
     "MAX_PRISM_DEPTH",
     "MAX_TASKS_PER_SLOT",
+    "MIN_TASKS_PER_SLOT",
     "OWNERSHIP_SCHEMA",
     "PRISM_SCHEMA",
     "SLOT_SCHEMA",

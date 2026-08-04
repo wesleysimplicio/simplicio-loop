@@ -150,10 +150,9 @@ def test_dispatch_allocates_and_persists_isolated_context_without_git(monkeypatc
     assert set(queue.contexts) == {"A", "B"}
     assert all(row["worktree_context"]["context_path"] for row in result["workers"])
     assert result["prism"]["schema"] == "simplicio.loop.native-prism-dispatch/v1"
-    assert result["prism"]["mode"] == "native-local"
+    assert result["prism"]["mode"] == "direct-parallelism"
     assert result["prism"]["max_workers"] == 2
-    assert result["prism"]["snapshot"]["metrics"]["logical_tasks"] == 2
-    assert result["prism"]["snapshot"]["metrics"]["logical_slots"] == 2
+    assert result["prism"]["snapshot"] is None
 
 
 def test_dispatch_partitions_independent_impacts_into_multiple_prism_slots(monkeypatch, tmp_path):
@@ -166,19 +165,19 @@ def test_dispatch_partitions_independent_impacts_into_multiple_prism_slots(monke
     monkeypatch.setattr(runner, "execute_operator", fake_execute)
     result = runner.dispatch_operator_batch(
         [
-            {"repo": str(tmp_path), "run_id": "run-1", "task_index": 1, "task_id": "A",
-             "task_spec": {"id": "A", "files_affected": ["alpha/a.py"]}},
-            {"repo": str(tmp_path), "run_id": "run-1", "task_index": 2, "task_id": "B",
-             "task_spec": {"id": "B", "files_affected": ["beta/b.py"]}},
+            {"repo": str(tmp_path), "run_id": "run-1", "task_index": index,
+             "task_id": chr(64 + index),
+             "task_spec": {"id": chr(64 + index), "files_affected": [f"{name}/file.py"]}}
+            for index, name in enumerate(("alpha", "beta", "gamma", "delta"), start=1)
         ],
-        max_workers=2,
+        max_workers=4,
         retry_budget=0,
         worktree_queue=queue,
     )
 
     snapshot = result["prism"]["snapshot"]
-    assert snapshot["metrics"]["logical_slots"] == 2
-    assert len(snapshot["slots"]) == 2
+    assert snapshot["metrics"]["logical_slots"] == 4
+    assert len(snapshot["slots"]) == 4
 
 
 def test_process_mode_keeps_queue_lease_coordinator_owned(monkeypatch, tmp_path):

@@ -19,6 +19,15 @@ Use the generated Prism inventory for the installed Runtime release. Record CLI/
 - Support old and new MCP tool shapes through the compatibility capability.
 - Fall back to Loop without Runtime when governance/native execution is not required and the Loop path is available.
 
+## Prism concurrency policy
+
+The Runtime boundary preserves Loop's routing contract: one to three tasks use direct
+parallelism; more than three tasks activate Prism. An omitted quantity uses a minimum logical
+batch of ten tasks per slot. Logical slot count, slot capacity, and Prism wave width are
+unbounded; Runtime must apply only measured physical worker/resource, lease, backpressure, and
+effect-authority limits. Runtime receipts must record the logical route separately from the
+physical admission decision.
+
 ## Required workflow
 
 1. Validate capability, policy, inputs, and preconditions.

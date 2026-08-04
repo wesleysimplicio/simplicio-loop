@@ -31,6 +31,12 @@ The inventory covers CLI entry points and subcommands, MCP registrations, public
 7. Add Runtime only for MCP, native execution, gates, receipts, checkpoints, backpressure, or governed subagents.
 8. Emit a routing decision with reasons, fallbacks, and expected evidence.
 
+For task-count routing, one to three tasks use direct parallelism; more than three tasks activate
+Prism. An omitted quantity defaults to a minimum logical batch of ten tasks per slot. Slot count,
+slot capacity, and Prism wave width have no logical upper bound; physical resource/lease governors
+may still defer execution. Always query Fast from the fresh Mapper snapshot before selecting the
+route when the repository already provides that integration.
+
 ## Non-negotiable boundaries
 
 - Prism never edits files and never fabricates a capability.

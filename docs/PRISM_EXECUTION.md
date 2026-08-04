@@ -1,20 +1,21 @@
 # Prism execution
 
-Prism introduces a bounded hierarchy:
+Prism introduces a causally validated hierarchy with unbounded logical fan-out:
 
 ```text
 Goal
-└── PrismExecution (up to 20 active slots)
-    ├── SlotSupervisor (up to 10 logical tasks)
+└── PrismExecution (no logical slot ceiling)
+    ├── SlotSupervisor (minimum 10 logical tasks; no upper ceiling)
     │   ├── TaskOwnership (one owner, lease, attempt, fence)
     │   └── child SlotSupervisor
     └── deterministic reducer → independent completion oracle
 ```
 
-Logical capacity is not process count. A slot can hold ten tasks while adaptive
-budgets admit fewer physical workers. The global logical ceiling is 200 tasks;
-CPU, memory, disk, I/O, provider, model, network, device, context, evidence and
-exclusive-resource limits determine actual overlap.
+Logical capacity is not process count. A slot defaults to ten tasks and can
+declare more; adaptive budgets admit only the physically safe overlap observed
+on the host. CPU, memory, disk, I/O, provider, model, network, device, context,
+evidence and exclusive-resource measurements govern physical execution, never
+the logical number of slots.
 
 ## Valid construction
 
@@ -40,9 +41,8 @@ slot, receipt = admit_task(slot, owner)
 assert receipt.reason_code == "ADMITTED"
 ```
 
-The eleventh `admit_task` returns `admitted=False`,
-`reason_code=SLOT_LOGICAL_CAPACITY`, and position 11. It never silently widens
-the slot. A transition from a different owner or stale fence raises
+Capacity below ten is rejected; capacity above ten is valid and there is no
+logical overflow slot. A transition from a different owner or stale fence raises
 `PrismContractError`.
 
 ## Failure semantics

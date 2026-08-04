@@ -50,10 +50,14 @@ def test_prism_batch_defaults_to_ten_and_supports_explicit_thirty():
     assert ep.prism_batches(range(1, 26), 10) == [
         list(range(1, 11)), list(range(11, 21)), list(range(21, 26))
     ]
-    assert ep.prism_is_eligible(10)["eligible"] is True
+    assert ep.prism_is_eligible(3)["eligible"] is False
+    assert ep.prism_is_eligible(3)["parallelism"] == "direct"
+    assert ep.prism_is_eligible(4)["eligible"] is True
+    assert ep.prism_is_eligible(4)["reason_code"] == "prism_above_three_tasks"
     assert ep.prism_is_eligible(1)["reason_code"] == "single_item"
+    assert ep.resolve_prism_batch_size(65) == 65
     with pytest.raises(ValueError):
-        ep.resolve_prism_batch_size(65)
+        ep.resolve_prism_batch_size(9)
 
 
 def test_economy_env_without_runtime_disables_mcp_force():

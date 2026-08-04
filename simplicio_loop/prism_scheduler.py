@@ -1,7 +1,8 @@
 """Hierarchical Prism scheduler and adaptive admission controller.
 
-Logical capacity (ten tasks per slot) is independent from physical worker
-capacity.  This module plans and coordinates external workers; it never mutates
+Logical capacity is independent from physical worker capacity.  A slot has a
+minimum of ten tasks and no logical upper bound; physical admission remains
+governed by observed worker/resource capacity.  This module never mutates
 source, creates commits, or applies delivery effects itself.
 """
 
@@ -16,9 +17,8 @@ from typing import Any
 
 from .hbp_ledger import canonical_sha256
 from .prism_contracts import (
-    MAX_ACTIVE_SLOTS,
     MAX_PRISM_DEPTH,
-    MAX_TASKS_PER_SLOT,
+    MIN_TASKS_PER_SLOT,
     AdmissionReceipt,
     SlotSupervisor,
     TaskOwnership,
@@ -50,8 +50,10 @@ def _positive(value: int, name: str, maximum: int | None = None) -> int:
 
 @dataclass(frozen=True)
 class PrismPolicy:
-    max_tasks_per_slot: int = MAX_TASKS_PER_SLOT
-    max_active_slots: int = MAX_ACTIVE_SLOTS
+    # Historical field names remain wire-compatible; the first is now the
+    # minimum slot capacity and the second is an optional operator override.
+    max_tasks_per_slot: int = MIN_TASKS_PER_SLOT
+    max_active_slots: int | None = None
     global_worker_limit: int = 20
     max_depth: int = MAX_PRISM_DEPTH
     adaptive_concurrency: bool = True
@@ -59,9 +61,14 @@ class PrismPolicy:
     validation_reserve: int = 1
 
     def __post_init__(self) -> None:
-        _positive(self.max_tasks_per_slot, "max_tasks_per_slot", MAX_TASKS_PER_SLOT)
-        _positive(self.max_active_slots, "max_active_slots", MAX_ACTIVE_SLOTS)
-        _positive(self.global_worker_limit, "global_worker_limit", 200)
+        _positive(self.max_tasks_per_slot, "max_tasks_per_slot")
+        if self.max_tasks_per_slot < MIN_TASKS_PER_SLOT:
+            raise PrismSchedulerError(
+                f"max_tasks_per_slot must be at least {MIN_TASKS_PER_SLOT}"
+            )
+        if self.max_active_slots is not None:
+            _positive(self.max_active_slots, "max_active_slots")
+        _positive(self.global_worker_limit, "global_worker_limit")
         _positive(self.max_depth, "max_depth", MAX_PRISM_DEPTH)
         if min(self.recovery_reserve, self.validation_reserve) < 0:
             raise PrismSchedulerError("reserved capacity cannot be negative")
@@ -366,10 +373,13 @@ class PrismScheduler:
     def register_slot(self, slot: SlotSupervisor) -> None:
         if slot.slot_id in self.slots:
             raise PrismSchedulerError("duplicate slot")
-        if len(self.slots) >= self.policy.max_active_slots:
+        if (
+            self.policy.max_active_slots is not None
+            and len(self.slots) >= self.policy.max_active_slots
+        ):
             raise PrismSchedulerError("max_active_slots exceeded")
-        if slot.capacity > self.policy.max_tasks_per_slot:
-            raise PrismSchedulerError("slot capacity exceeds scheduler policy")
+        if slot.capacity < self.policy.max_tasks_per_slot:
+            raise PrismSchedulerError("slot capacity is below scheduler minimum")
         if slot.parent_slot_id and slot.parent_slot_id not in self.slots:
             raise PrismSchedulerError("parent slot must be registered first")
         self.slots[slot.slot_id] = slot

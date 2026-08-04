@@ -18,7 +18,9 @@ Use `dev-cli.reconcile` or Runtime reconciliation when effect status is ambiguou
 
 `mapper.project-survey → loop.plan → loop.slot-dispatch → loop.stage`
 
-Add `loop.fanout`, `loop.retry`, `loop.review`, and `loop.complete` according to the plan. Keep one issue/task per slot by default.
+Add `loop.fanout`, `loop.retry`, `loop.review`, and `loop.complete` according to the plan. Route 1–3
+tasks through direct parallelism; for more than 3 tasks, activate Prism. If quantity is omitted,
+use a minimum of 10 tasks per logical slot with no logical upper bound on slots or wave width.
 
 ## Governed or native execution
 
