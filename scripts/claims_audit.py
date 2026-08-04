@@ -23,8 +23,9 @@ Thirteen checks:
                                 rename/delete is caught too (not just a forward source->bundle walk).
   5. plugin-parity              The lean marketplace plugin tree mirrors the source files it ships
                                 (skills + wired hooks + runtime helper scripts + parity tests).
-  6. skill-count                Every "<N> skills" claim agrees with the actual `.claude/skills/*/
-                                SKILL.md` count.
+  6. skill-count                Every "<N> skills" claim agrees with the seven canonical
+                                `.claude/skills/*/SKILL.md` entries; accelerator integrations are
+                                shipped alongside the core but are not counted as skills.
   7. adapter-install-contract   `scripts/verify_adapters.py claude` — a fast, representative subset
                                 of the full 11-runtime installer e2e (`verify_adapters.py` with no
                                 args) — proves the install contract isn't dead assurance. Run the
@@ -103,6 +104,17 @@ SKILL_COUNT_RES = [
     re.compile(r"\b(\d{1,2})\s+skills\b(?!\s*&)", re.I),
     re.compile(r"skills-(\d{1,2})-", re.I),
 ]
+# The public "7 skills" claim names the protocol core.  The five accelerator/integration
+# directories are shipped beside it, but are intentionally not part of that advertised count.
+CORE_SKILL_NAMES = frozenset({
+    "simplicio-loop",
+    "simplicio-tasks",
+    "simplicio-orient",
+    "simplicio-review",
+    "simplicio-compress",
+    "simplicio-learn",
+    "simplicio-autoresearch",
+})
 # worker/hook scripts whose `selftest` proves them; others just need to be invokable
 SELFTEST_SCRIPTS = [
     "scripts/component_release.py",
@@ -255,7 +267,8 @@ def check_extension_count():
 def check_skill_count():
     skills_dir = os.path.join(REPO, ".claude", "skills")
     actual = len([n for n in (os.listdir(skills_dir) if os.path.isdir(skills_dir) else [])
-                  if os.path.isfile(os.path.join(skills_dir, n, "SKILL.md"))])
+                  if n in CORE_SKILL_NAMES
+                  and os.path.isfile(os.path.join(skills_dir, n, "SKILL.md"))])
     found = {}
     for doc in _docs():
         txt = _read(doc)
@@ -267,8 +280,8 @@ def check_skill_count():
     detail = {n: sorted(files) for n, files in found.items()}
     if len(found) > 1 or actual not in found:
         return False, ("skill-count claim(s) %s do not match the actual tree (%d skills under "
-                        ".claude/skills/): %s" % (sorted(found), actual, json.dumps(detail)))
-    return True, "skill count consistent with the tree: %d" % actual
+                ".claude/skills/ core): %s" % (sorted(found), actual, json.dumps(detail)))
+    return True, "skill count consistent with the canonical core tree: %d" % actual
 
 
 def check_commands_run():

@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.39.2] - 2026-08-04
+
+### Fixed
+- Keep the Windows pytest invocation bounded by running small file shards,
+  preventing `WinError 206` without dropping any selected test file.
+- Extend the bounded full-suite phase to 900 seconds for cold or slower Windows
+  filesystems while retaining fail-closed timeout behavior.
+- Align claims/canonical-manifest skill and runtime counts with the seven core
+  skills, the legacy Hermes alias, and the Grok host-rule shim.
+- Restore the documented root entrypoint for `generate_capability_inventory.py`.
+
+### Changed
+- Refresh the reviewed token and repository-size baselines after the prior
+  release's documented growth.
+
 ## [3.39.1] - 2026-08-04
 
 ### Added

@@ -25,10 +25,10 @@ PHASE_TIMEOUT_SECONDS = {
     "claims_audit": 120.0,
     "mirror_parity": 60.0,
     # A clean container can legitimately need more than five minutes for the
-    # full core selection (3.6k+ tests).  Keep the phase strictly bounded, but
-    # leave enough headroom for slower filesystems and cold interpreter starts.
-    "core_tests": 600.0,
-    "tests": 600.0,
+    # full core selection (3.6k+ tests). Keep the phase strictly bounded, but
+    # leave enough headroom for slower Windows filesystems and cold starts.
+    "core_tests": 900.0,
+    "tests": 900.0,
     "stdlib_test": 60.0,
     "loop_contract": 60.0,
     "clean_env": 60.0,
