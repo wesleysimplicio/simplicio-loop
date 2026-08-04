@@ -23,10 +23,14 @@ contract + `host_rule_sync` + STRICT env make that a **contract violation**, not
    Preferred profile is `runtime-backed` when `simplicio` is on PATH.
    `SIMPLICIO_LOOP_REQUIRE_RUNTIME=auto` (or `1` for hard require). Hosts **must not**
    start loop as a peer product path outside Runtime; they honor Runtime's decision receipt.
+   **Operators (mapper, dev-cli, fast) work alone** without Runtime (ADR 0009).
 5. **When Runtime is present, force MCP tools for economy** — `SIMPLICIO_REQUIRE_MCP=1`
    prefers `simplicio_map` / `search` / `memory` / `gate` / `edit` over host bulk reads;
    action_gate only enforces this if `simplicio` is on PATH. Without Runtime: report
    `UNVERIFIED|runtime_unavailable` and degraded mode — not preferred architecture.
+5b. **Execution metrics report is standard** on every loop/runtime run:
+    `simplicio.execution-report/v1` with per-task/issue rows and consolidated
+    speed/latency/CPU/RAM/tokens (MEASURED only; never invent). ADR 0010.
 6. **Prism parallelism** for queue drain when armed (`arm_drain_prism.py`).
 7. **Self-paced hosts are first-class** — no hooks ≠ optional protocol.
 8. **Client integrations opt-in only** — Orca is never default (`docs/CLIENT_INTEGRATIONS.md`).

@@ -14,7 +14,12 @@ Installers copy this file into each host's always-on surface via
    - Entry: `simplicio loop decide --task "..." --json` (or action-bridge / run spine).
    - Honor `.simplicio/runtime/loop-decision.json` (`use_loop`, `verdict`, `host_may_override=false`).
    - Do **not** start `/simplicio-loop` as a peer path that bypasses Runtime activation.
-   - ADR: `simplicio-runtime` `docs/ADR-2026-08-04-RUNTIME-OWNED-LOOP.md`.
+   - **Operators alone OK:** mapper, dev-cli, fast work without Runtime (ADR 0009 / 04b).
+   - **Metrics mandatory:** every run writes `simplicio.execution-report/v1`
+     (per task/issue + consolidated: speed, latency, CPU/RAM when MEASURED, tokens in/out).
+     CLI: `simplicio execution-report …` or `python -m simplicio_loop.execution_report …`.
+     Never invent numbers (ADR 0010 / ADR-2026-08-05).
+   - ADRs: runtime `ADR-2026-08-04`, `04b`, `05`; loop `docs/adr/0009`, `0010`.
 
 1. **Economy-parallel env** before autonomous work (fastest tokens + parallel):
    ```bash
