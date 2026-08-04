@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from simplicio_loop.telemetry import (
-    TelemetryError, TelemetryWriter, benchmark_overhead, load_events,
-    metric, reconcile, usage_metrics,
+    TelemetryError, TelemetryWriter, benchmark_overhead, bounded_labels,
+    default_observability_path, load_events, metric, reconcile, usage_metrics,
+    validate_event,
 )
 
 
@@ -30,6 +31,66 @@ def test_schema_requires_unit_origin_and_null_reason(tmp_path):
 def test_unavailable_usage_is_null_with_reason():
     values = usage_metrics()
     assert all(row["value"] is None and row["reason"] for row in values.values())
+
+
+def test_project_component_operation_labels_are_bounded():
+    labels = bounded_labels(
+        {
+            "project": "simplicio-loop",
+            "component": "telemetry",
+            "operation": "emit",
+            **{f"custom_{index}": index for index in range(20)},
+        },
+        max_labels=5,
+    )
+    assert len(labels) <= 5
+    assert labels["project"] == "simplicio-loop"
+    assert labels["component"] == "telemetry"
+    assert labels["operation"] == "emit"
+    assert labels["_dropped_label_count"] == "20"
+
+
+@pytest.mark.parametrize(
+    "component",
+    ["", ".", "..", "../escape", r"..\escape", "C:drive", "CON", "Lpt1", "trailing."],
+)
+def test_default_observability_path_rejects_unsafe_windows_components(tmp_path, component):
+    with pytest.raises(TelemetryError, match="observability_component_invalid"):
+        default_observability_path(component, root=tmp_path)
+
+
+def test_component_writer_uses_opt_in_default_path_and_labels(tmp_path):
+    path = default_observability_path("telemetry", root=tmp_path)
+    writer = TelemetryWriter.for_component(
+        "telemetry",
+        root=tmp_path,
+        project="simplicio-loop",
+        operation="emit",
+        clock_ns=lambda: 100,
+    )
+    event = writer.emit(
+        correlation={"run_id": "run-1"},
+        metrics={"count": metric(1, "count", "test")},
+        labels={"stage": "plan"},
+    )
+    assert writer.path == path
+    assert path == tmp_path / ".simplicio" / "observability" / "telemetry" / "events.jsonl"
+    assert event["labels"]["project"] == "simplicio-loop"
+    assert event["labels"]["component"] == "telemetry"
+    assert event["labels"]["operation"] == "emit"
+
+
+def test_transaction_correlation_is_opaque_and_v1_compatible(tmp_path):
+    path = tmp_path / "events.jsonl"
+    writer = TelemetryWriter(path, clock_ns=lambda: 100)
+    event = writer.emit(
+        correlation={"transaction_id": "transaction-secret", "run_id": "run-1"},
+        metrics={"count": metric(1, "count", "test")},
+        labels={"operation": "emit"},
+    )
+    assert "transaction-secret" not in path.read_text()
+    assert event["correlation"]["transaction_id"].startswith("id:")
+    validate_event(event)
 
 
 def test_redaction_and_cardinality_never_store_raw_prompt_secret_or_pii(tmp_path):
@@ -56,6 +117,56 @@ def test_redaction_and_cardinality_never_store_raw_prompt_secret_or_pii(tmp_path
     event = load_events(path)[0]
     assert event["labels"]["_dropped_label_count"] == "102"
     assert event["payload"]["prompt"] == "[REDACTED]"
+
+
+def test_redaction_fails_closed_for_email_and_unknown_values(tmp_path):
+    path = tmp_path / "events.jsonl"
+    writer = TelemetryWriter(path, clock_ns=lambda: 100)
+    writer.emit(
+        correlation={"run_id": "r"},
+        metrics={"count": metric(1, "count", "test")},
+        labels={"operation": "send"},
+        payload={
+            "note": "contact customer@example.com",
+            "nested": {"session_id": "session-value"},
+            "unknown_object": object(),
+        },
+    )
+    raw = path.read_text()
+    assert "customer@example.com" not in raw
+    assert "session-value" not in raw
+    assert "object at 0x" not in raw
+    event = load_events(path)[0]
+    assert event["payload"]["nested"]["session_id"] == "[REDACTED]"
+    assert event["payload"]["unknown_object"] == "[REDACTED]"
+
+
+def test_stage_records_duration_cpu_rss_and_bytes_with_reasons(tmp_path):
+    path = tmp_path / "events.jsonl"
+    writer = TelemetryWriter(path)
+    with writer.stage("execute", correlation={"run_id": "r"}):
+        pass
+    metrics = load_events(path)[0]["metrics"]
+    for name in (
+        "execution_ns", "cpu_stage_ns", "cpu_process_ns",
+        "rss_peak_bytes", "io_read_bytes", "io_write_bytes",
+    ):
+        assert name in metrics
+        assert metrics[name]["value"] is not None or metrics[name]["reason"]
+
+
+def test_emission_is_fail_open_and_does_not_raise(tmp_path):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("occupied", encoding="utf-8")
+    writer = TelemetryWriter(blocker / "events.jsonl")
+    event = writer.emit(
+        correlation={"run_id": "r"},
+        metrics={"count": metric(1, "count", "test")},
+        labels={"operation": "emit"},
+    )
+    assert event is None
+    assert writer.emission_failures >= 1
+    assert writer.last_error in {"OSError", "FileNotFoundError", "NotADirectoryError"}
 
 
 def test_stage_tracing_preserves_return_and_exception_semantics(tmp_path):
@@ -153,3 +264,10 @@ def test_event_fixture_is_reproducible(tmp_path):
         (Path(__file__).parent / "fixtures" / "telemetry_event.json").read_text()
     )
     assert event == fixture
+
+
+def test_existing_fixture_remains_v1_compatible():
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "telemetry_event.json").read_text()
+    )
+    validate_event(fixture)
