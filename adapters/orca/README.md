@@ -108,3 +108,28 @@ No GitHub, o workflow de lifecycle mantém o comentário canônico, a label e o 
 Project pertencente ao próprio repositório; se a issue ainda não estiver no Project, ela é
 adicionada antes da movimentação. `SIMPLICIO_PROJECT_NUMBER` continua sendo aceito para
 selecionar explicitamente um Project quando houver mais de um.
+
+## Ecosystem law (2026-08) — read on every host
+
+Canonical guide (what each project is, install, step-by-step):
+
+- In **simplicio-runtime**: `docs/ECOSYSTEM_LLM_GUIDE.md`
+- In **simplicio-loop**: `docs/ECOSYSTEM_LLM_GUIDE.md` (same content)
+
+| Project | Role |
+|---------|------|
+| **runtime** | Kernel: gates, MCP, **owns loop**, **owns execution-report**, decides `use_loop` |
+| **loop** | Protocol + hooks + Prism under Runtime authority |
+| **mapper / dev-cli / fast** | Operators — **work alone** without Runtime |
+| **agent** | Optional coordinator/desktop — not mandatory gateway |
+
+**Commands every host must know:**
+
+```bash
+simplicio loop decide --task "<work>" --json
+simplicio execution-report start|record-task|finish|show|consolidate --json
+simplicio-loop preflight --strict --json
+```
+
+After Runtime install on Windows: `packaging/windows/install.ps1` then pip-install loop/mapper/dev-cli and re-run preflight until operational.
+

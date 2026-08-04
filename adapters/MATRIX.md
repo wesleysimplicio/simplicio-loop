@@ -1,3 +1,4 @@
+> **2026-08:** Loop is Runtime-owned; operators (mapper/dev-cli/fast) work alone; every run needs `simplicio.execution-report/v1`. Full map: [docs/ECOSYSTEM_LLM_GUIDE.md](../docs/ECOSYSTEM_LLM_GUIDE.md).
 # Runtime adapter matrix — simplicio-loop super-plugin
 
 One universal skill core (`.claude/skills/`, 7 skills) + one set of hooks (`hooks/`) drives
@@ -168,3 +169,4 @@ assurance — it does NOT run the full 14-runtime sweep above; run that manually
 That covers everything up to launching the runtime itself. The final manual smoke — open the
 runtime, run `/simplicio-loop <small task>`, confirm the loop drives and the gates fire — is the
 one step a file-level harness can't do; do it once per runtime per the adapter's README.
+
