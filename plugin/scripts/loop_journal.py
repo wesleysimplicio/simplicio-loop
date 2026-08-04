@@ -437,8 +437,45 @@ def _lineage_summary(rec):
     return " | ".join(bits)
 
 
+def _emit_loop_observability(rec, wrote, duration_ms):
+    """Record bounded journal-write metrics without affecting loop semantics."""
+    try:
+        from simplicio_loop.telemetry import TelemetryWriter, metric
+
+        writer = TelemetryWriter.for_component(
+            "loop",
+            root=REPO,
+            project="simplicio-loop",
+            operation="journal_record",
+        )
+        writer.emit(
+            correlation={"run_id": "iteration:%s" % rec.get("iteration", 0)},
+            metrics={
+                "duration_ms": metric(
+                    round(float(duration_ms), 4),
+                    "milliseconds",
+                    "time.perf_counter",
+                ),
+                "journal_written": metric(
+                    1 if wrote else 0,
+                    "count",
+                    "loop_journal.locked_append",
+                ),
+            },
+            labels={
+                "stage": "journal",
+                "status": "passed" if wrote else "failed",
+                "reason_code": "ok" if wrote else "journal_lock_unavailable",
+            },
+        )
+    except Exception:
+        # Observability is explicitly fail-open and never changes the loop verdict.
+        pass
+
+
 def cmd_record(opts):
     os.makedirs(LOOP_DIR, exist_ok=True)
+    started = time.perf_counter()
     rec = _build_record(
         opts,
         _read_source(opts.get("gate-output")),
@@ -450,6 +487,11 @@ def cmd_record(opts):
     # concurrent reader never observes a half-written line. FAIL-OPEN on a lock timeout — the
     # write is SKIPPED (never partial, never unlocked), never silently pretended to have happened.
     wrote = locked_append_line(JOURNAL, json.dumps(rec, ensure_ascii=False))
+    _emit_loop_observability(
+        rec,
+        wrote,
+        (time.perf_counter() - started) * 1000,
+    )
     if not wrote:
         log("UNVERIFIED|record: SKIPPED — could not acquire the journal lock in time")
     log("%srecorded iter=%d gate=%s fp=%s action=%r" % (

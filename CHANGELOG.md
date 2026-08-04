@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.39.1] - 2026-08-04
+
+### Added
+- Sectorized `.simplicio/observability/<component>/events.jsonl` telemetry for
+  Loop journal transactions, with hash chaining, bounded labels, opaque
+  correlation identifiers, and secret/PII redaction.
+- Stage metrics for duration, CPU time, peak RSS, and I/O bytes, including
+  explicit unavailable reasons when a platform cannot provide a metric.
+
+### Changed
+- Loop journal writes now emit fail-open observability events without changing
+  journal locking, progress, stall detection, or failure semantics.
+
 ## [3.39.0] - 2026-08-04
 
 ### Added
@@ -1884,4 +1897,3 @@ require ML models, not stdlib code) — and are not faked.
 - LMCache inference accelerator, agentsview session-observability source adapter.
 - 11 runtime adapters + universal installer; hardened Ralph loop with bound operators
   (`simplicio-mapper` + `simplicio-cli`).
-

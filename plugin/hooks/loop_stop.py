@@ -330,7 +330,13 @@ def _delivery_stop_guard(cwd, iteration):
                 baseline = json.load(handle)
 
         def git(*args):
-            result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+            result = subprocess.run(
+                ["git", *args],
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+            )
             return result.stdout if result.returncode == 0 else ""
 
         current_head = git("rev-parse", "HEAD").strip()

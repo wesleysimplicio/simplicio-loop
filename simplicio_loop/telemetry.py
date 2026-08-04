@@ -6,23 +6,40 @@ import json
 import os
 import re
 import statistics
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping
 
 SCHEMA = "simplicio.telemetry-event/v1"
 REPORT_SCHEMA = "simplicio.telemetry-report/v1"
 ALLOWED_LABELS = frozenset(
-    {"stage", "status", "executor", "cache_state", "reason_code"}
+    {
+        "stage", "status", "executor", "cache_state", "reason_code",
+        "project", "component", "operation",
+    }
+)
+LABEL_PRIORITY = (
+    "project", "component", "operation", "stage", "status",
+    "executor", "cache_state", "reason_code",
 )
 SENSITIVE_KEY = re.compile(
-    r"(secret|token|password|api[_-]?key|authorization|prompt|content|email|pii)",
+    r"(secret|token|password|api[_-]?key|authorization|prompt|content|email|pii|"
+    r"cookie|credential|private[_-]?key|session|user[_-]?id)",
     re.IGNORECASE,
 )
 SENSITIVE_VALUE = re.compile(
-    r"(Bearer\s+\S+|gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{12,})",
+    r"(Bearer\s+\S+|gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{12,}|"
+    r"AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|"
+    r"(?:https?|wss?)://[^/\s:@]+:[^@\s]+@|"
+    r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})",
     re.IGNORECASE,
+)
+SAFE_COMPONENT = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,63})\Z")
+WINDOWS_RESERVED_COMPONENTS = frozenset(
+    {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+     *(f"LPT{i}" for i in range(1, 10))}
 )
 
 
@@ -45,30 +62,70 @@ def _opaque_id(value: Any) -> str:
 def redact(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {
-            str(key): (
-                "[REDACTED]" if SENSITIVE_KEY.search(str(key)) else redact(item)
-            )
+            str(key):
+            ("[REDACTED]" if SENSITIVE_KEY.search(str(key)) else redact(item))
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
         return [redact(item) for item in value]
     if isinstance(value, str):
         return SENSITIVE_VALUE.sub("[REDACTED]", value)
-    return value
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    # Unknown objects are not serialized or repr()-ed: fail closed rather than
+    # risk leaking a secret through a custom object's string representation.
+    return "[REDACTED]"
+
+
+def validate_component(component: Any) -> str:
+    """Validate one component/path segment for the default observability path."""
+    if not isinstance(component, str) or not SAFE_COMPONENT.fullmatch(component):
+        raise TelemetryError("observability_component_invalid")
+    if component in {".", ".."} or component[-1] in ". ":
+        raise TelemetryError("observability_component_invalid")
+    if component.split(".", 1)[0].upper() in WINDOWS_RESERVED_COMPONENTS:
+        raise TelemetryError("observability_component_invalid")
+    return component
+
+
+def default_observability_path(
+    component: str, *, root: str | Path | None = None
+) -> Path:
+    """Return the opt-in, repository-relative component event path."""
+    base = Path(root) if root is not None else Path(".")
+    return (
+        base / ".simplicio" / "observability" / validate_component(component)
+        / "events.jsonl"
+    )
 
 
 def bounded_labels(labels: Mapping[str, Any], *, max_labels: int = 8) -> dict[str, str]:
-    accepted: dict[str, str] = {}
+    if max_labels < 1:
+        raise TelemetryError("max_labels_must_be_positive")
+    accepted: list[tuple[str, str]] = []
     dropped = 0
-    for key in sorted(labels):
+    priority = {key: index for index, key in enumerate(LABEL_PRIORITY)}
+    for raw_key, raw_value in sorted(
+        labels.items(),
+        key=lambda item: (priority.get(str(item[0]), len(priority)), str(item[0])),
+    ):
+        key = str(raw_key)
         if key not in ALLOWED_LABELS or len(accepted) >= max_labels:
             dropped += 1
             continue
-        value = str(redact(labels[key]))
-        accepted[key] = value[:64] if len(value) <= 64 else _opaque_id(value)
+        value = str(redact(raw_value))
+        accepted.append((key, value[:64] if len(value) <= 64 else _opaque_id(value)))
+    if len(accepted) > max_labels:
+        dropped += len(accepted) - max_labels
+        accepted = accepted[:max_labels]
     if dropped:
-        accepted["_dropped_label_count"] = str(dropped)
-    return accepted
+        # Keep the cardinality marker inside the same bound. If all slots were
+        # used by accepted labels, deterministically reserve one for the count.
+        if len(accepted) >= max_labels:
+            dropped += len(accepted) - (max_labels - 1)
+            accepted = accepted[: max_labels - 1]
+        accepted.append(("_dropped_label_count", str(dropped)))
+    return dict(accepted)
 
 
 def metric(
@@ -93,7 +150,15 @@ def _rss_metric() -> dict[str, Any]:
 
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         # Linux reports KiB; macOS reports bytes.
-        value = int(rss if os.uname().sysname == "Darwin" else rss * 1024)
+        if sys.platform == "darwin":
+            value = int(rss)
+        elif sys.platform.startswith("linux"):
+            value = int(rss) * 1024
+        else:
+            return metric(
+                None, "bytes", "resource.getrusage.ru_maxrss",
+                reason="rss_unit_unavailable",
+            )
         return metric(value, "bytes", "resource.getrusage.ru_maxrss")
     except (ImportError, AttributeError, OSError):
         return metric(None, "bytes", "resource.getrusage", reason="rss_unavailable")
@@ -168,18 +233,72 @@ class TelemetryWriter:
     """Hash-chained JSONL writer; every emit is crash-durable."""
 
     def __init__(
-        self, path: str | Path, *, clock_ns: Callable[[], int] = time.time_ns
+        self,
+        path: str | Path | None = None,
+        *,
+        component: str | None = None,
+        root: str | Path | None = None,
+        default_labels: Mapping[str, Any] | None = None,
+        clock_ns: Callable[[], int] = time.time_ns,
+        fail_open: bool = True,
     ) -> None:
+        if path is None:
+            if component is None:
+                raise TelemetryError("telemetry_path_required")
+            path = default_observability_path(component, root=root)
         self.path = Path(path)
         self.clock_ns = clock_ns
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.fail_open = fail_open
+        self.default_labels = dict(default_labels or {})
+        if component is not None:
+            self.default_labels.setdefault("component", component)
+        self.last_error: str | None = None
+        self.emission_failures = 0
         self._previous_hash = "sha256:" + "0" * 64
         self._sequence = 0
-        if self.path.exists():
-            events = load_events(self.path)
-            if events:
-                self._previous_hash = events[-1]["event_hash"]
-                self._sequence = len(events)
+        self._ready = True
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.path.exists():
+                events = load_events(self.path)
+                if events:
+                    self._previous_hash = events[-1]["event_hash"]
+                    self._sequence = len(events)
+        except Exception as exc:
+            self._ready = False
+            self._record_failure(exc)
+
+    @classmethod
+    def for_component(
+        cls,
+        component: str,
+        *,
+        root: str | Path | None = None,
+        project: str | None = None,
+        operation: str | None = None,
+        default_labels: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> "TelemetryWriter":
+        labels = dict(default_labels or {})
+        labels["component"] = component
+        if project is not None:
+            labels["project"] = project
+        if operation is not None:
+            labels["operation"] = operation
+        return cls(
+            default_observability_path(component, root=root),
+            default_labels=labels,
+            **kwargs,
+        )
+
+    def _record_failure(self, exc: Exception) -> None:
+        self.last_error = type(exc).__name__
+        self.emission_failures += 1
+
+    def _emit_failure(self, exc: Exception) -> None:
+        if not self.fail_open:
+            raise exc
+        self._record_failure(exc)
 
     def emit(
         self,
@@ -188,31 +307,49 @@ class TelemetryWriter:
         metrics: Mapping[str, Mapping[str, Any]],
         labels: Mapping[str, Any],
         payload: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        self._sequence += 1
-        event: dict[str, Any] = {
-            "schema": SCHEMA,
-            "event_id": f"telemetry:{self._sequence}",
-            "recorded_at_ns": int(self.clock_ns()),
-            "correlation": {
-                key: _opaque_id(value)
-                for key, value in sorted(correlation.items())
-                if key in {"run_id", "task_id", "attempt_id", "stage_id", "parent_event_id"}
-                and value is not None
-            },
-            "labels": bounded_labels(labels),
-            "metrics": {str(key): dict(value) for key, value in sorted(metrics.items())},
-            "payload": redact(dict(payload or {})),
-            "previous_hash": self._previous_hash,
-        }
-        event["event_hash"] = _hash(event)
-        validate_event(event)
-        with self.path.open("a", encoding="utf-8") as stream:
-            stream.write(_canonical(event) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        self._previous_hash = event["event_hash"]
-        return event
+    ) -> dict[str, Any] | None:
+        try:
+            if not self._ready:
+                raise OSError("telemetry_writer_unavailable")
+            sequence = self._sequence + 1
+            event: dict[str, Any] = {
+                "schema": SCHEMA,
+                "event_id": f"telemetry:{sequence}",
+                "recorded_at_ns": int(self.clock_ns()),
+                "correlation": {
+                    key: _opaque_id(value)
+                    for key, value in sorted(correlation.items())
+                    if key in {
+                        "run_id", "task_id", "attempt_id", "transaction_id",
+                        "stage_id", "parent_event_id",
+                    }
+                    and value is not None
+                },
+                "labels": bounded_labels(
+                    {**self.default_labels, **dict(labels)}
+                ),
+                "metrics": {str(key): dict(value) for key, value in sorted(metrics.items())},
+                "payload": redact(dict(payload or {})),
+                "previous_hash": self._previous_hash,
+            }
+            event["event_hash"] = _hash(event)
+            validate_event(event)
+            write_started = False
+            with self.path.open("a", encoding="utf-8") as stream:
+                write_started = True
+                stream.write(_canonical(event) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            self._sequence = sequence
+            self._previous_hash = event["event_hash"]
+            return event
+        except Exception as exc:
+            if "write_started" in locals() and write_started:
+                # A failed flush/fsync may have left a valid or partial line on
+                # disk; do not append another event against ambiguous state.
+                self._ready = False
+            self._emit_failure(exc)
+            return None
 
     @contextmanager
     def stage(
