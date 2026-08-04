@@ -37,22 +37,87 @@ def _cpu_count() -> int:
     return max(1, int(os.cpu_count() or 4))
 
 
+def _ram_gb() -> tuple[Optional[float], Optional[float]]:
+    """Best-effort (total_gb, available_gb) from psutil or /proc/meminfo."""
+    try:
+        import psutil  # type: ignore
+
+        vm = psutil.virtual_memory()
+        return (
+            float(vm.total) / (1024.0**3),
+            float(vm.available) / (1024.0**3),
+        )
+    except Exception:
+        pass
+    try:
+        path = Path("/proc/meminfo")
+        if path.is_file():
+            total_kb = avail_kb = None
+            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("MemTotal:"):
+                    total_kb = float(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    avail_kb = float(line.split()[1])
+            total = (total_kb / (1024.0 * 1024.0)) if total_kb else None
+            avail = (avail_kb / (1024.0 * 1024.0)) if avail_kb else None
+            return total, avail
+    except Exception:
+        pass
+    return None, None
+
+
+def _available_ram_gb() -> Optional[float]:
+    """Backward-compatible helper (available only)."""
+    _total, avail = _ram_gb()
+    return avail
+
+
 def recommend_operator_workers(cpu: Optional[int] = None) -> int:
-    """Bounded operator pool: ~75% of CPUs, clamp 2..12 (RAM/CPU economy)."""
+    """Operator pool sized to the host: use all logical CPUs (min 2).
+
+    Big machines are no longer clamped at 12 — maximise what the box can run.
+    """
     n = _cpu_count() if cpu is None else max(1, int(cpu))
-    return max(2, min(12, max(2, (n * 3) // 4)))
+    return max(2, n)
 
 
 def recommend_prism_slots(cpu: Optional[int] = None) -> int:
-    """Prism wave width: half of workers, clamp 2..8."""
-    workers = recommend_operator_workers(cpu)
-    return max(2, min(8, max(2, workers // 2)))
+    """Prism wave width = **maximum the machine can sustain**.
+
+    Policy:
+    - Start from logical CPU count (leave 1 core for OS + Runtime Tokio when
+      cpu >= 3; otherwise use all cores, floor 2).
+    - Cap by available RAM (~1.25 GiB per isolated Prism slot/worktree) when
+      measurable — never oversubscribe memory into thrash.
+    - No artificial 6/8 ceiling on large hosts.
+    - Env ``SIMPLICIO_PRISM_SLOTS`` is *not* read here; callers that want an
+      explicit override pass ``prism_slots=`` into ``economy_parallel_env``.
+    """
+    n = _cpu_count() if cpu is None else max(1, int(cpu))
+    # Max parallel slots from CPU: leave one core free when possible
+    cpu_slots = max(2, n - 1) if n >= 3 else max(2, n)
+
+    total_gb, avail_gb = _ram_gb()
+    if total_gb is not None:
+        # Machine capacity from total RAM: reserve 4 GiB for OS+Runtime+Fast;
+        # ~1.0 GiB per Prism worktree/agent (isolated).
+        capacity = max(0.0, float(total_gb) - 4.0)
+        ram_slots = max(2, int(capacity / 1.0))
+        slots = min(cpu_slots, ram_slots)
+        # Emergency tighten only if free RAM is critically low (avoid thrash)
+        if avail_gb is not None and float(avail_gb) < 2.5:
+            slots = max(2, min(slots, int(float(avail_gb) / 1.25)))
+    else:
+        slots = cpu_slots
+
+    return max(2, int(slots))
 
 
 def recommend_async_concurrency(cpu: Optional[int] = None) -> int:
     """asyncio IO supervisor concurrency (Python "Tokio")."""
     workers = recommend_operator_workers(cpu)
-    return max(4, min(16, workers + 2))
+    # Match host width; soft ceiling only for pathological cpu_count reports
+    return max(4, min(max(16, workers + 4), workers + 8))
 
 
 def economy_parallel_env(

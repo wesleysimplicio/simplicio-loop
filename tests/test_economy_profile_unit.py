@@ -6,9 +6,27 @@ from simplicio_loop import strict_mode
 
 
 def test_worker_bounds_scale_with_cpu():
+    # Maximum the machine can use: all logical CPUs (floor 2)
     assert ep.recommend_operator_workers(1) == 2
-    assert ep.recommend_operator_workers(4) == 3  # 75% of 4 = 3
-    assert ep.recommend_operator_workers(32) == 12  # clamp
+    assert ep.recommend_operator_workers(4) == 4
+    assert ep.recommend_operator_workers(32) == 32  # no artificial 12 clamp
+
+
+def test_prism_slots_machine_max_scales_with_cpu(monkeypatch):
+    # Isolate from RAM so CPU formula is deterministic
+    monkeypatch.setattr(ep, "_ram_gb", lambda: (None, None))
+    assert ep.recommend_prism_slots(1) == 2
+    assert ep.recommend_prism_slots(2) == 2
+    assert ep.recommend_prism_slots(4) == 3  # leave 1 core for OS/Runtime
+    assert ep.recommend_prism_slots(16) == 15  # no 8-slot ceiling
+    # Total RAM capacity caps slots (32 GiB → 28 usable → up to 28; min with cpu)
+    monkeypatch.setattr(ep, "_ram_gb", lambda: (32.0, 20.0))
+    assert ep.recommend_prism_slots(16) == 15  # cpu still binds
+    monkeypatch.setattr(ep, "_ram_gb", lambda: (8.0, 6.0))  # 8-4=4 slots
+    assert ep.recommend_prism_slots(16) == 4
+    # Critical free RAM tightens further
+    monkeypatch.setattr(ep, "_ram_gb", lambda: (32.0, 2.0))
+    assert ep.recommend_prism_slots(16) == 2
 
 
 def test_economy_env_enables_fan_out_and_latest():

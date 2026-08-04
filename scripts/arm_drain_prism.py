@@ -158,14 +158,29 @@ Open issues at arm: {open_n if open_n is not None else "unknown (gh unavailable)
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", default=".")
-    p.add_argument("--slots", type=int, default=4)
+    p.add_argument(
+        "--slots",
+        type=int,
+        default=0,
+        help="Prism slots (0 = auto: maximum this machine can sustain from CPU+RAM)",
+    )
     p.add_argument("--max-iterations", type=int, default=200)
     p.add_argument("--promise", default=PROMISE)
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
+    slots = int(args.slots)
+    if slots <= 0:
+        try:
+            from simplicio_loop.economy_profile import recommend_prism_slots
+
+            slots = int(recommend_prism_slots())
+        except Exception:
+            import os
+
+            slots = max(2, int(os.cpu_count() or 4) - 1)
     receipt = arm(
         Path(args.repo),
-        slots=args.slots,
+        slots=slots,
         max_iterations=args.max_iterations,
         promise=args.promise,
     )
