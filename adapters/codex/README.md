@@ -72,3 +72,28 @@ codex exec "/simplicio-tasks finish all the open issues"
 Self-paced (N2): the tick echoes `python3 scripts/loop_progress.py render --turn-header` at the
 start of every turn — the % is right there in the transcript. For a live panel outside the
 transcript (N3, universal): `watch -n5 cat .simplicio/orchestrator/loop/PROGRESS.md`.
+
+## Ecosystem law (2026-08) — read on every host
+
+Canonical guide (what each project is, install, step-by-step):
+
+- In **simplicio-runtime**: `docs/ECOSYSTEM_LLM_GUIDE.md`
+- In **simplicio-loop**: `docs/ECOSYSTEM_LLM_GUIDE.md` (same content)
+
+| Project | Role |
+|---------|------|
+| **runtime** | Kernel: gates, MCP, **owns loop**, **owns execution-report**, decides `use_loop` |
+| **loop** | Protocol + hooks + Prism under Runtime authority |
+| **mapper / dev-cli / fast** | Operators — **work alone** without Runtime |
+| **agent** | Optional coordinator/desktop — not mandatory gateway |
+
+**Commands every host must know:**
+
+```bash
+simplicio loop decide --task "<work>" --json
+simplicio execution-report start|record-task|finish|show|consolidate --json
+simplicio-loop preflight --strict --json
+```
+
+After Runtime install on Windows: `packaging/windows/install.ps1` then pip-install loop/mapper/dev-cli and re-run preflight until operational.
+

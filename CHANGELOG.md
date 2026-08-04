@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.39.0] - 2026-08-04
+
+### Added
+- ADR 0009: loop complete inside Runtime; mapper/dev-cli/fast work alone
+- ADR 0010 + `simplicio_loop/execution_report.py` — mandatory metrics schema
+- `docs/ECOSYSTEM_LLM_GUIDE.md` + adapter README law blocks for all hosts
+
+### Changed
+- Host rules / MULTI_LLM_CONTRACT: Runtime owns loop activation; metrics standard
+
 ## [3.38.35] - 2026-08-03
 
 ### Fixed
@@ -1874,3 +1884,4 @@ require ML models, not stdlib code) — and are not faked.
 - LMCache inference accelerator, agentsview session-observability source adapter.
 - 11 runtime adapters + universal installer; hardened Ralph loop with bound operators
   (`simplicio-mapper` + `simplicio-cli`).
+

@@ -70,3 +70,28 @@ Whatever prompt surface your DeepSeek wrapper/CLI exposes: paste or reference th
 
 Self-paced (N2): the tick should echo `python3 scripts/loop_progress.py render --turn-header`.
 Universal fallback (N3): open `.simplicio/orchestrator/loop/PROGRESS.md` (auto-regenerated every turn).
+
+## Ecosystem law (2026-08) — read on every host
+
+Canonical guide (what each project is, install, step-by-step):
+
+- In **simplicio-runtime**: `docs/ECOSYSTEM_LLM_GUIDE.md`
+- In **simplicio-loop**: `docs/ECOSYSTEM_LLM_GUIDE.md` (same content)
+
+| Project | Role |
+|---------|------|
+| **runtime** | Kernel: gates, MCP, **owns loop**, **owns execution-report**, decides `use_loop` |
+| **loop** | Protocol + hooks + Prism under Runtime authority |
+| **mapper / dev-cli / fast** | Operators — **work alone** without Runtime |
+| **agent** | Optional coordinator/desktop — not mandatory gateway |
+
+**Commands every host must know:**
+
+```bash
+simplicio loop decide --task "<work>" --json
+simplicio execution-report start|record-task|finish|show|consolidate --json
+simplicio-loop preflight --strict --json
+```
+
+After Runtime install on Windows: `packaging/windows/install.ps1` then pip-install loop/mapper/dev-cli and re-run preflight until operational.
+

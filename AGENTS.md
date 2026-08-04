@@ -1,5 +1,7 @@
 # AGENTS.md — simplicio-loop
 
+> **Full map + step-by-step:** [docs/ECOSYSTEM_LLM_GUIDE.md](docs/ECOSYSTEM_LLM_GUIDE.md) · ADR [0009](docs/adr/0009-loop-inside-runtime-operators-standalone.md) · [0010](docs/adr/0010-execution-metrics-report-standard.md)
+
 ## Simplicio Ecosystem Contract (canonical)
 
 This loop is the convergence layer of one Simplicio ecosystem. For every non-trivial task: run `simplicio runtime map --repo . --for-llm markdown`, then `simplicio memory "<task>"`, rank/load relevant skills, execute through the native `simplicio` CLI, validate, and record evidence. MCP is fallback transport only.
@@ -147,3 +149,4 @@ Loop 3.38.30.
 For GitHub work items, keep the body focused on objective, implementation,
 deployment, and tests. Do not add an Acceptance Criteria section to new or
 updated issues; report incomplete implementation or failed tests as such.
+
