@@ -1204,7 +1204,9 @@ def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
     digest = hashlib.sha256()
     files = []
     for root, dirs, names in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in {".git", ".simplicio/orchestrator", ".simplicio", "__pycache__"}]
+        dirs[:] = [d for d in dirs if d not in {
+            ".git", ".simplicio/orchestrator", ".simplicio", ".simplicio-fast", "__pycache__"
+        }]
         for name in names:
             path = Path(root) / name
             try:
@@ -1235,6 +1237,8 @@ def _repo_fingerprint(repo_path: Path) -> Dict[str, str]:
                 if normalized and all(
                     item.startswith(".simplicio/orchestrator/")
                     or item.startswith(".simplicio/")
+                    or item == ".simplicio-fast"
+                    or item.startswith(".simplicio-fast/")
                     or item.startswith(".claude/")
                     for item in normalized
                 ):
