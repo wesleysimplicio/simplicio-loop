@@ -134,9 +134,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     state = json.load(handle)
             except (OSError, ValueError):
                 continue
+            gate = pg.gate_status(str(state.get("work_item_id") or name[:-5]), repo=args.repo)
             tracked.append({
                 "work_item_id": state.get("work_item_id"), "status": state.get("status"),
                 "current_level": state.get("current_level"), "revise_count": state.get("revise_count"),
+                "ready": gate.get("ready"), "reason": gate.get("reason"),
+                "recorded_source_sha": gate.get("recorded_source_sha"),
+                "current_source_sha": gate.get("current_source_sha"),
+                "source_drift": gate.get("source_drift"),
+                "source_drift_evidence": gate.get("source_drift_evidence"),
             })
     report = {
         "schemas": [pg.PLAN_SCHEMA, pg.CANDIDATE_SCHEMA, pg.DECISION_SCHEMA, pg.RECEIPT_SCHEMA,
