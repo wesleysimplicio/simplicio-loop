@@ -702,10 +702,9 @@ def _degraded_mapper_payload(
 
     This is not a substitute for a Mapper receipt: the original command results remain
     persisted, the degraded marker is durable, and only targets resolved inside the
-    repository are exposed to planning. When the task has no target hint, the same
-    bounded candidate selector used by planning supplies at most eight local files.
+    repository are exposed to planning. Without a target hint, the context remains
+    empty and planning fails closed.
     """
-    had_target_hint = bool(str(target_hint or "").strip())
     target = str(target_hint or "").strip().replace("\\", "/")
     files: List[Dict[str, Any]] = []
     if target:
@@ -719,11 +718,8 @@ def _degraded_mapper_payload(
                 files.append({"path": target, "source": "explicit_task_target"})
             else:
                 target = ""
-    if not files and not had_target_hint:
-        files = [
-            {"path": path, "source": "bounded_local_candidate"}
-            for path in _fallback_targets(repo_path)[:8]
-        ]
+    # Without an explicit target, keep the context empty and fail closed;
+    # repository-wide inference can authorize an unrelated file.
     pack_seed = {
         "repo_state": dict(before),
         "target": target,
@@ -3089,7 +3085,7 @@ def _build_plan(tasks: List[Dict[str, Any]], mapper_payload: Dict[str, Any], rep
 
 def _extract_repo_file_hints(task_text: str, repo_path: Path) -> List[str]:
     hints: List[str] = []
-    for match in re.finditer(r"(?P<path>[A-Za-z0-9_./\\-]+\.(?:py|ts|tsx|js))", task_text or ""):
+    for match in re.finditer(r"(?P<path>[A-Za-z0-9_./\\-]+\.(?:py|tsx?|js|rs))", task_text or ""):
         raw = match.group("path").strip().replace("\\", "/")
         candidate = Path(raw)
         try:
@@ -3160,7 +3156,7 @@ def _task_context_plan_data(context: Mapping[str, Any], task: Mapping[str, Any],
         if (low.startswith((".simplicio/orchestrator/", ".claude/", ".github/", ".venv/", "venv/"))
                 or "/site-packages/" in low or "/_bundle/" in low):
             continue
-        if not low.endswith((".py", ".ts", ".tsx", ".js")):
+        if not low.endswith(_CODE_TARGET_SUFFIXES):
             continue
         if path not in targets:
             targets.append(path)
@@ -3293,27 +3289,12 @@ def _build_plan_with_hints(tasks: List[Dict[str, Any]], mapper_payload: Dict[str
     return plan
 
 
+_CODE_TARGET_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".rs")
+
+
 def _fallback_targets(repo_path: Path) -> List[str]:
-    out: List[str] = []
-    for root, dirs, files in os.walk(repo_path):
-        dirs[:] = [
-            d for d in dirs
-            if d not in {".git", ".simplicio/orchestrator", ".claude", ".simplicio", "__pycache__", ".venv", "venv", "site-packages"}
-        ]
-        for name in files:
-            if not name.endswith((".py", ".ts", ".tsx", ".js")):
-                continue
-            full = Path(root) / name
-            try:
-                rel = full.relative_to(repo_path).as_posix()
-            except ValueError:
-                continue
-            low = rel.lower()
-            if "/_bundle/" in low or low.startswith(".github/"):
-                continue
-            out.append(rel)
-    out.sort()
-    return out[:8]
+    """Refuse repository-wide target inference when Mapper has no targets."""
+    return []
 
 
 def _candidate_targets(mapper_payload: Dict[str, Any], repo_path: Path) -> List[str]:
@@ -3338,7 +3319,7 @@ def _candidate_targets(mapper_payload: Dict[str, Any], repo_path: Path) -> List[
             continue
         if "/_bundle/" in low.replace("\\", "/"):
             continue
-        if low.endswith((".py", ".ts", ".tsx", ".js")):
+        if low.endswith(_CODE_TARGET_SUFFIXES):
             ranked.append(path)
     ranked = ranked[:8]
     return ranked or _fallback_targets(repo_path)
