@@ -16,7 +16,7 @@ If your change touches versioned packaging metadata, also re-check:
 
 ```bash
 python3 scripts/release_manifest.py --json
-python3 -m pytest -q tests/test_release_manifest.py
+python3 -m pytest -q tests/test_release_manifest_unit.py
 ```
 
 ## Definition of Done (DoD) — mandatory quality gate
