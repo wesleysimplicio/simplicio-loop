@@ -31,12 +31,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, MutableMapping, Optional, Protocol, Sequence
 
 DELIVERY_STAGE_RECEIPT_SCHEMA = "simplicio.delivery-stage-receipt/v1"
 DELIVERY_AGENT_ROLE_ID = "delivery_agent"
+PR_BODY_INTEGRITY_SCHEMA = "simplicio.pr-body-integrity/v1"
 
 VERDICT_PASS = "pass"
 VERDICT_BLOCKED = "blocked"
@@ -76,6 +80,98 @@ FORBIDDEN_RECEIPT_SCHEMAS = frozenset((
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _canonical_pr_body(body: str) -> str:
+    return str(body).replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _markdown_body_shape(body: str) -> Dict[str, Any]:
+    lines = _canonical_pr_body(body).splitlines()
+    fence_lines = sum(1 for line in lines if line.lstrip().startswith(("```", "~~~")))
+    table_lines = [line for line in lines if line.strip().startswith("|") and line.strip().endswith("|")]
+    table_separators = sum(
+        1 for line in table_lines
+        if re.fullmatch(r"\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?", line.strip())
+    )
+    return {
+        "line_count": len(lines),
+        "nonblank_line_count": sum(1 for line in lines if line.strip()),
+        "heading_count": sum(1 for line in lines if re.match(r"^\s{0,3}#{1,6}\s+", line)),
+        "list_item_count": sum(1 for line in lines if re.match(r"^\s{0,3}(?:[-*+]\s+|\d+[.)]\s+)", line)),
+        "table_row_count": len(table_lines),
+        "table_separator_count": table_separators,
+        "fenced_block_count": fence_lines // 2,
+        "fences_balanced": fence_lines % 2 == 0,
+        "link_count": len(re.findall(r"\[[^\]]+\]\([^)]*\)", _canonical_pr_body(body))),
+    }
+
+
+def _rendered_body_shape(body_html: str) -> Dict[str, int]:
+    html = str(body_html or "")
+    return {
+        "heading_count": len(re.findall(r"<h[1-6]\b", html, flags=re.IGNORECASE)),
+        "list_item_count": len(re.findall(r"<li\b", html, flags=re.IGNORECASE)),
+        "table_row_count": len(re.findall(r"<tr\b", html, flags=re.IGNORECASE)),
+        "fenced_block_count": len(re.findall(r"<pre\b[^>]*>\s*<code\b", html, flags=re.IGNORECASE)),
+        "link_count": len(re.findall(r"<a\b", html, flags=re.IGNORECASE)),
+    }
+
+
+def build_pr_body_integrity(body: str) -> Dict[str, Any]:
+    """Build the source-side contract used before PR publication.
+
+    Line endings are canonicalized for the comparison hash, while the exact UTF-8
+    source hash remains available for audit. Encoding errors and NUL bytes fail closed.
+    """
+    if not isinstance(body, str):
+        raise DeliveryAgentError("PR body must be text", reason_code="pr_body_integrity")
+    if "\x00" in body:
+        raise DeliveryAgentError("PR body contains NUL", reason_code="pr_body_integrity")
+    try:
+        source_bytes = body.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise DeliveryAgentError("PR body is not valid UTF-8", reason_code="pr_body_integrity") from exc
+    canonical = _canonical_pr_body(body)
+    return {
+        "schema": PR_BODY_INTEGRITY_SCHEMA,
+        "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "canonical_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "markdown": _markdown_body_shape(canonical),
+    }
+
+
+def verify_pr_body_integrity(expected: Mapping[str, Any], observed_body: str,
+                             observed_html: str) -> Dict[str, Any]:
+    """Compare the raw post-publication body and its rendered HTML shape."""
+    observed = build_pr_body_integrity(observed_body)
+    errors: List[str] = []
+    if expected.get("canonical_sha256") != observed["canonical_sha256"]:
+        errors.append("canonical_body_hash_mismatch")
+    if expected.get("markdown") != observed["markdown"]:
+        errors.append("markdown_structure_mismatch")
+    rendered = _rendered_body_shape(observed_html)
+    if not str(observed_html or "").strip():
+        errors.append("rendered_body_missing")
+    else:
+        markdown = observed["markdown"]
+        expected_rendered = {
+            "heading_count": markdown["heading_count"],
+            "list_item_count": markdown["list_item_count"],
+            "table_row_count": max(0, markdown["table_row_count"] - markdown["table_separator_count"]),
+            "fenced_block_count": markdown["fenced_block_count"],
+            "link_count": markdown["link_count"],
+        }
+        if rendered != expected_rendered:
+            errors.append("rendered_structure_mismatch")
+    return {
+        "schema": PR_BODY_INTEGRITY_SCHEMA,
+        "ok": not errors,
+        "errors": errors,
+        "expected": dict(expected),
+        "observed": observed,
+        "rendered": rendered,
+    }
 
 
 def _canonical(obj: Any) -> str:
@@ -411,23 +507,79 @@ class GitHubDeliveryAdapter:
         remote_sha = out.split()[0] if out else ""
         return {"branch": branch, "remote_head_sha": remote_sha}
 
+    def _gh_with_body_file(self, args: Sequence[str], body: str) -> Any:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="", delete=False, suffix=".md"
+        ) as body_file:
+            body_file.write(body)
+            body_path = body_file.name
+        try:
+            return self._gh([*args, "--body-file", body_path])
+        finally:
+            try:
+                os.unlink(body_path)
+            except FileNotFoundError:
+                pass
+
+    def _validated_pr(self, *, pr_id: str, expected: Mapping[str, Any]) -> Dict[str, Any]:
+        observed = self.query_pr(pr_id=pr_id)
+        verification = verify_pr_body_integrity(
+            expected,
+            str(observed.get("body") or ""),
+            str(observed.get("bodyHTML") or ""),
+        )
+        if not verification["ok"]:
+            raise DeliveryAgentError(
+                f"PR #{pr_id} body integrity failed: {','.join(verification['errors'])}",
+                reason_code="pr_body_integrity",
+            )
+        return {**observed, "body_integrity": verification}
+
     def create_or_update_pr(self, *, branch: str, base: str, title: str, body: str) -> Dict[str, Any]:
+        expected = build_pr_body_integrity(body)
         existing = self.find_existing_pr(branch=branch)
         if existing is not None and existing.get("state") == "OPEN":
-            return {"number": existing["number"], "url": existing.get("url", ""), "state": "OPEN"}
-        completed = self._gh(["pr", "create", "--repo", self.repo, "--head", branch, "--base", base,
-                               "--title", title, "--body", body])
+            pr_id = str(existing["number"])
+            observed = self.query_pr(pr_id=pr_id)
+            observed_contract = build_pr_body_integrity(str(observed.get("body") or ""))
+            if observed_contract["canonical_sha256"] != expected["canonical_sha256"]:
+                self._gh_with_body_file(
+                    ["pr", "edit", pr_id, "--repo", self.repo],
+                    body,
+                )
+            validated = self._validated_pr(pr_id=pr_id, expected=expected)
+            return {
+                "number": int(pr_id),
+                "url": validated.get("url", existing.get("url", "")),
+                "state": "OPEN",
+                "body_integrity": validated["body_integrity"],
+            }
+        completed = self._gh_with_body_file(
+            ["pr", "create", "--repo", self.repo, "--head", branch, "--base", base, "--title", title],
+            body,
+        )
         lines = [ln for ln in completed.stdout.strip().splitlines() if ln.strip()]
         url = lines[-1] if lines else ""
         try:
             number = int(url.rstrip("/").rsplit("/", 1)[-1])
         except ValueError:
             number = 0
-        return {"number": number, "url": url, "state": "OPEN"}
+        if not number:
+            raise DeliveryAgentError(
+                "gh pr create returned no PR number",
+                reason_code="adapter_transport",
+            )
+        validated = self._validated_pr(pr_id=str(number), expected=expected)
+        return {
+            "number": number,
+            "url": validated.get("url", url),
+            "state": "OPEN",
+            "body_integrity": validated["body_integrity"],
+        }
 
     def query_pr(self, *, pr_id: str) -> Dict[str, Any]:
         completed = self._gh(["pr", "view", str(pr_id), "--repo", self.repo,
-                               "--json", "number,url,state,mergeable,mergeStateStatus,headRefOid"])
+                               "--json", "number,url,state,mergeable,mergeStateStatus,headRefOid,body,bodyHTML"])
         return json.loads(completed.stdout or "{}")
 
     def query_checks(self, *, pr_id: str) -> List[Dict[str, Any]]:
