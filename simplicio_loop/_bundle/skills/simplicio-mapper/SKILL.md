@@ -36,3 +36,11 @@ Return `snapshot_id`, `repo`, `revision`, `scope`, `artifacts`, `selected_contex
 - `references/capabilities.yaml`: machine-readable capability map.
 - `references/interfaces.md`: inputs, outputs, freshness, and fallbacks.
 - `scripts/probe-capabilities.py`: validate the capability manifest and detect duplicate IDs.
+
+## Runtime integration boundary (normative, 2026-08-05)
+
+Mapper is a peer route for project-scoped context and remains read-only. Runtime
+may select it for a project edit before the direct `simplicio edit` mutation.
+Standalone Mapper use remains valid without Runtime, Loop, or a cross-component
+contract. Handoffs used by Fast or Loop must be fresh, complete, unlocked, and
+revision-compatible.

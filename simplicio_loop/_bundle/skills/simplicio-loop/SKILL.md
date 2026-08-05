@@ -812,3 +812,14 @@ iteration 1 immediately.
 
 <!-- simplicio-global-llm-architecture-rules:end -->
 
+
+## Runtime integration boundary (normative, 2026-08-05)
+
+Runtime decides whether Loop is active. Mapper and Fast remain separate peer
+decisions, while Dev CLI is nested only under `loop.dev_cli`. A typical active
+implementation path may be `mapper -> fast (when anchored) -> loop.dev_cli ->
+simplicio edit -> validate`; the actual hops remain evidence-driven.
+
+The Loop package remains standalone-capable when Runtime is absent, but that path
+must report degraded Runtime-backed completion rather than claiming Runtime
+activation or consolidated Runtime evidence.

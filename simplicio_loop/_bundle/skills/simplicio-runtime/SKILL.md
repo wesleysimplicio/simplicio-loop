@@ -46,3 +46,15 @@ Return `run_id`, `execution_id`, `capability_id`, `policy`, `checkpoint`, `recei
 - `references/capabilities.yaml`: machine-readable capability map.
 - `references/interfaces.md`: MCP, gates, receipts, reconciliation, pools, and fallback rules.
 - `scripts/probe-capabilities.py`: validate the capability manifest and detect duplicate IDs.
+
+## Runtime-selected operator route (normative, 2026-08-05)
+
+When this skill is loaded with Runtime available, Runtime decides the route. The
+only peer operator decisions are `mapper`, `fast`, and `loop`. Dev CLI is not
+a peer Runtime route: it appears only as `loop.dev_cli` after Loop activation and
+only when implementation or validation is required.
+
+Direct file mutations default to Runtime's deterministic `simplicio edit` writer.
+The component packages remain independently callable without Runtime, a Loop flow,
+or a cross-component contract; missing optional context is reported degraded or
+`UNVERIFIED`, never invented.

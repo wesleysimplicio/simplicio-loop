@@ -37,3 +37,11 @@ Return `operation_id`, `snapshot_id`, `pre_effect`, `effect`, `post_effect`, `di
 - `references/capabilities.yaml`: machine-readable capability map.
 - `references/interfaces.md`: mutation, validation, diagnostics, lock, retry, and evidence rules.
 - `scripts/probe-capabilities.py`: validate the capability manifest and detect duplicate IDs.
+
+## Runtime integration boundary (normative, 2026-08-05)
+
+Dev CLI remains independently executable as a package, but Runtime exposes it only
+inside an active Loop route as `loop.dev_cli`. It is never a fourth peer Runtime
+route. A direct Runtime edit uses `simplicio edit` by default; an active Loop may
+use Dev CLI for bounded implementation and validation and delegate the mechanical
+write to that Runtime writer.

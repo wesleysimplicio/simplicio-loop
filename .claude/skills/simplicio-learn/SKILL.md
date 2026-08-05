@@ -96,4 +96,3 @@ correct; padding memory with one-offs makes every future load more expensive.
 - Reutilize padrões validados por produtos maduros; não reinvente a roda.
 
 <!-- simplicio-global-llm-architecture-rules:end -->
-
