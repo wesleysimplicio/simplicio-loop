@@ -61,6 +61,7 @@ def test_prepare_ingests_once_and_pins_receipts(tmp_path: Path) -> None:
     second = integration.prepare("change app")
     assert first["status"] == "READY"
     assert first["generation"] == "g1"
+    assert first["ingest"]["source_commit"] == "abc123"
     assert first["context_hash"].startswith("sha256:")
     assert first["plan"]["loop_receipt"]["plan_hash"].startswith("sha256:")
     assert second["generation"] == first["generation"]
