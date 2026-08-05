@@ -36,3 +36,10 @@ Return `snapshot_id`, `index_id`, `query`, `results`, `freshness`, `ranking_basi
 - `references/capabilities.yaml`: machine-readable capability map.
 - `references/interfaces.md`: index, cache, ranking, and fallback rules.
 - `scripts/probe-capabilities.py`: validate the capability manifest and detect duplicate IDs.
+
+## Runtime integration boundary (normative, 2026-08-05)
+
+Runtime selects Fast only when a fresh compatible Mapper artifact/handoff exists or
+when client output is explicitly being transformed into a Mapper/Fast artifact.
+Fast is not the default for an unanchored edit or read, never writes source files,
+and falls back to Mapper when its artifact is stale, missing, corrupt, or incomplete.

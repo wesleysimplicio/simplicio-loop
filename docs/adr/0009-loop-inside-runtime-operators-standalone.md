@@ -30,3 +30,11 @@ point of failure for ordinary survey/edit work.
 
 Host rules MUST #0 (Runtime owns loop) and MUST operator survey/mutate paths
 remain valid without Runtime. See also ADR 0010 (execution metrics standard).
+
+## Amendment 2026-08-05
+
+The standalone operator rule is package-level and does not create four peer Runtime
+hops. Runtime selects Mapper, Fast, and Loop separately; Dev CLI is nested only as
+`loop.dev_cli` after Loop activation. Direct file edits default to
+`simplicio edit`. See the mirrored Runtime decision in
+[ADR 0011](./0011-runtime-operator-routing.md).

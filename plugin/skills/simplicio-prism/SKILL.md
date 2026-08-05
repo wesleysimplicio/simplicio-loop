@@ -54,3 +54,10 @@ Return `route_id`, `intent`, `selected_capabilities`, `order`, `preconditions`, 
 - `references/capabilities.yaml`: cross-component registry and decision matrix.
 - `references/recipes.md`: tested compositions for common workflows.
 - `scripts/probe-capabilities.py`: validate the registry and detect duplicate IDs.
+
+## Runtime precedence (normative, 2026-08-05)
+
+Consult Runtime before composing a cross-component route. Runtime has peer routes
+for Mapper, Fast, and Loop only; Dev CLI is selected only as `loop.dev_cli` after
+Loop activation. Direct file edits default to `simplicio edit`. Standalone
+component packages remain callable when Runtime or a flow is absent.
