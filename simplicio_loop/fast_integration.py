@@ -321,13 +321,16 @@ class FastLoopIntegration:
         payload["receipt_hash"] = _hash(payload)
         return payload
 
-    def _key(self) -> str:
+    def _source_commit(self) -> str:
         try:
             completed = self._runner(["git", "rev-parse", "HEAD"], cwd=str(self.root), capture_output=True,
                                     text=True, timeout=15, check=False)
-            commit = (completed.stdout or "").strip() if completed.returncode == 0 else ""
+            return (completed.stdout or "").strip() if completed.returncode == 0 else ""
         except (OSError, subprocess.SubprocessError):
-            commit = ""
+            return ""
+
+    def _key(self, source_commit: str | None = None) -> str:
+        commit = self._source_commit() if source_commit is None else source_commit
         return _hash({"root": str(self.root), "commit": commit, "config": self.config.digest()})
 
     def ingest(self) -> dict[str, Any]:
@@ -340,9 +343,11 @@ class FastLoopIntegration:
             state = json.loads(state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             state = {}
-        key = self._key()
+        source_commit = self._source_commit()
+        key = self._key(source_commit)
         if (state.get("schema") == RECEIPT_SCHEMA and state.get("cache_key") == key
-                and self.snapshot_path.exists() and state.get("generation")):
+                and self.snapshot_path.exists() and state.get("generation")
+                and state.get("source_commit") == source_commit):
             self._generation = str(state["generation"])
             self._ingest_receipt = dict(state)
             return dict(state)
@@ -361,7 +366,7 @@ class FastLoopIntegration:
             "fallback": False,
             "cache_key": key,
             "snapshot": _relative(self.snapshot_path, self.root),
-            "source_commit": str(state.get("source_commit") or ""),
+            "source_commit": source_commit,
             "generation": generation,
             "fast_receipt": payload,
             "config_hash": self.config.digest(),
