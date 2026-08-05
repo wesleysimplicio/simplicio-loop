@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -559,6 +560,25 @@ def load_state(work_item_id: str, repo: str = ".") -> dict[str, Any] | None:
         return None
 
 
+def _current_source_sha(repo: str) -> str | None:
+    """Read the repository revision without changing prototype state."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
 def save_state(state: Mapping[str, Any], repo: str = ".") -> str:
     path = state_path(state["work_item_id"], repo)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -581,15 +601,24 @@ def gate_status(work_item_id: str, repo: str = ".") -> dict[str, Any]:
     if state is None:
         return {"tracked": False, "ready": True, "reason": "no prototype flow tracked for this item"}
     status = state.get("status")
+    current_source_sha = _current_source_sha(repo)
+    recorded_source_sha = str(state.get("source_sha") or "")
+    source_drift = None if current_source_sha is None else current_source_sha != recorded_source_sha
     ready = status in {"resolved", "rejected", "blocked"}
     if ready:
         reason = "prototype flow %s at level %s" % (status, state.get("current_level"))
+    elif source_drift is True:
+        reason = "prototype flow source drift detected at level %s" % state.get("current_level")
+    elif source_drift is None:
+        reason = "prototype flow still in_progress; source drift unverified at level %s" % state.get("current_level")
     else:
-        reason = "prototype flow still in_progress at level %s" % state.get("current_level")
+        reason = "prototype flow still in_progress with source unchanged at level %s" % state.get("current_level")
     return {
         "tracked": True, "ready": ready, "status": status,
         "current_level": state.get("current_level"), "revise_count": state.get("revise_count", 0),
-        "reason": reason,
+        "reason": reason, "recorded_source_sha": recorded_source_sha,
+        "current_source_sha": current_source_sha, "source_drift": source_drift,
+        "source_drift_evidence": "git-head" if current_source_sha is not None else "unavailable",
     }
 
 

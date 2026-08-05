@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from simplicio_loop import prototype_gate as pg
 from simplicio_loop.prototype_gate import (
     DEFAULT_MAX_REVISE,
     LEVELS,
@@ -359,3 +360,31 @@ def test_gate_status_blocks_while_in_progress_and_unblocks_when_resolved(tmp_pat
     save_state(resolved, repo=str(tmp_path))
     status = gate_status("wi-gate", repo=str(tmp_path))
     assert status["ready"] is True
+
+
+def test_gate_status_reports_source_drift_evidence_without_mutating_state(tmp_path, monkeypatch):
+    plan = _plan(level="FULL", source_sha="recorded")
+    state = init_state(work_item_id="wi-drift", plan=plan)
+    save_state(state, repo=str(tmp_path))
+    monkeypatch.setattr(pg, "_current_source_sha", lambda repo: "current")
+
+    status = gate_status("wi-drift", repo=str(tmp_path))
+
+    assert status["status"] == "in_progress"
+    assert status["ready"] is False
+    assert status["source_drift"] is True
+    assert status["source_drift_evidence"] == "git-head"
+    assert "source drift detected" in status["reason"]
+    assert load_state("wi-drift", repo=str(tmp_path)) == state
+
+
+def test_gate_status_keeps_source_drift_unverified_when_revision_unavailable(tmp_path, monkeypatch):
+    plan = _plan(level="FULL", source_sha="recorded")
+    save_state(init_state(work_item_id="wi-unknown", plan=plan), repo=str(tmp_path))
+    monkeypatch.setattr(pg, "_current_source_sha", lambda repo: None)
+
+    status = gate_status("wi-unknown", repo=str(tmp_path))
+
+    assert status["source_drift"] is None
+    assert status["source_drift_evidence"] == "unavailable"
+    assert "unverified" in status["reason"]

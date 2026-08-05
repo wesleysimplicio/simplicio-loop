@@ -112,3 +112,21 @@ def test_doctor_reports_schemas_and_tracked_items(tmp_path, capsys):
     assert pg.PLAN_SCHEMA in out["schemas"]
     assert out["stall_detector_available"] is True
     assert any(item["work_item_id"] == "wi-doc" for item in out["tracked_items"])
+
+
+def test_doctor_reports_source_drift_evidence_for_in_progress_state(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(pg, "_current_source_sha", lambda repo: "current")
+    pcli.main([
+        "plan", "--work-item", "wi-drift", "--goal", "g", "--type", "schema",
+        "--source-sha", "recorded", "--repo", str(tmp_path),
+    ])
+    capsys.readouterr()
+
+    rc, out = _run(["doctor", "--repo", str(tmp_path)], capsys)
+
+    assert rc == 0
+    item = next(row for row in out["tracked_items"] if row["work_item_id"] == "wi-drift")
+    assert item["status"] == "in_progress"
+    assert item["source_drift"] is True
+    assert item["source_drift_evidence"] == "git-head"
+    assert "source drift detected" in item["reason"]
