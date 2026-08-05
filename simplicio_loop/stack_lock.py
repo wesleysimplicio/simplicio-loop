@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -26,6 +27,29 @@ STACK_REGISTRY_SCHEMA = "simplicio.stack-registry/v1"
 STACK_DIAGNOSTICS_SCHEMA = "simplicio.stack-diagnostics/v1"
 ROUTES = frozenset({"standalone", "runtime-backed"})
 _SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
+_RUNTIME_VERSION_RE = re.compile(r"(?<!\d)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?!\d)")
+_RUNTIME_VERSION_TIMEOUT_S = 5.0
+
+
+def _runtime_version(executable: str) -> str:
+    override = os.environ.get("SIMPLICIO_RUNTIME_VERSION", "").strip()
+    if override:
+        return override
+    try:
+        completed = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=_RUNTIME_VERSION_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    if completed.returncode != 0:
+        return "unknown"
+    match = _RUNTIME_VERSION_RE.search(f"{completed.stdout}\n{completed.stderr}")
+    return match.group(1) if match else "unknown"
+
 
 
 class StackLockError(ValueError):
@@ -464,9 +488,10 @@ def discover_installed_components() -> tuple[StackComponent, ...]:
 
     runtime_executable = os.environ.get("SIMPLICIO_RUNTIME_BIN", "").strip()
     runtime_executable = runtime_executable or (shutil.which("simplicio-runtime") or "")
+    runtime_version = _runtime_version(runtime_executable) if runtime_executable else ""
     components.append(observe_component(
         "simplicio-runtime",
-        os.environ.get("SIMPLICIO_RUNTIME_VERSION", "unknown" if runtime_executable else ""),
+        runtime_version,
         runtime_executable,
         build_sha=os.environ.get("SIMPLICIO_RUNTIME_BUILD_SHA", ""),
         capabilities=("runtime", "mcp"),
@@ -481,6 +506,10 @@ def _validate_route(route: str, components: tuple[StackComponent, ...]) -> None:
         runtime = next((item for item in components if item.name == "simplicio-runtime"), None)
         if runtime is None or not runtime.available:
             raise StackLockError("runtime-backed route requires an available simplicio-runtime")
+        if runtime.version.strip().lower() == "unknown":
+            raise StackLockError(
+                "runtime-backed route requires a verified simplicio-runtime version"
+            )
 
 
 @dataclass(frozen=True)

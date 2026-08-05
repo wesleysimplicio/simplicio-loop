@@ -5,6 +5,7 @@ import json
 import pytest
 
 from simplicio_loop import runner as runner_mod
+from simplicio_loop import stack_lock as stack_lock_mod
 from simplicio_loop.cli_impl import main
 from simplicio_loop.stack_lock import (
     STACK_LOCK_SCHEMA,
@@ -66,6 +67,46 @@ def _stack_registry():
     })
 
 
+def test_runtime_discovery_probes_binary_version(monkeypatch, tmp_path):
+    runtime_binary = tmp_path / "simplicio-runtime"
+    runtime_binary.write_bytes(b"runtime")
+    monkeypatch.delenv("SIMPLICIO_RUNTIME_VERSION", raising=False)
+    monkeypatch.delenv("SIMPLICIO_RUNTIME_BIN", raising=False)
+    monkeypatch.setattr(
+        stack_lock_mod.shutil,
+        "which",
+        lambda name: str(runtime_binary) if name == "simplicio-runtime" else "",
+    )
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = "Simplicio Runtime 3.6.0\n"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Completed()
+
+    monkeypatch.setattr(stack_lock_mod.subprocess, "run", fake_run)
+    runtime = next(
+        item for item in stack_lock_mod.discover_installed_components()
+        if item.name == "simplicio-runtime"
+    )
+
+    assert runtime.version == "3.6.0"
+    assert runtime.available is True
+    assert calls == [(
+        [str(runtime_binary), "--version"],
+        {
+            "capture_output": True,
+            "text": True,
+            "timeout": 5.0,
+            "check": False,
+        },
+    )]
+
+
 def test_lock_hash_is_canonical_and_route_is_frozen(tmp_path):
     mapper = _component(tmp_path)
     fast = _component(tmp_path, "simplicio-fast", b"fast")
@@ -77,6 +118,21 @@ def test_lock_hash_is_canonical_and_route_is_frozen(tmp_path):
     first.verify_unchanged([mapper, fast, runtime], "standalone")
     with pytest.raises(StackLockError, match="stack drift"):
         first.verify_unchanged([mapper, fast, runtime], "runtime-backed")
+
+
+def test_runtime_backed_rejects_unknown_version(tmp_path):
+    runtime_binary = tmp_path / "simplicio-runtime"
+    runtime_binary.write_bytes(b"runtime")
+    runtime = observe_component(
+        "simplicio-runtime",
+        "unknown",
+        runtime_binary,
+        build_sha="build",
+        capabilities=("runtime", "mcp"),
+    )
+
+    with pytest.raises(StackLockError, match="verified simplicio-runtime version"):
+        StackLock.create([runtime], "runtime-backed")
 
 
 def test_runtime_backed_requires_runtime_and_artifact_drift_blocks(tmp_path):
