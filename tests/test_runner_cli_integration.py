@@ -601,7 +601,7 @@ def test_run_mapper_degrades_to_explicit_local_target_on_scan_timeout(tmp_path, 
     assert any(argv[:2] == ["simplicio-mapper", "scan"] for argv in calls)
 
 
-def test_run_mapper_degraded_pack_uses_bounded_candidates_without_target_hint(tmp_path, monkeypatch):
+def test_run_mapper_degraded_pack_refuses_unbounded_candidates_without_target_hint(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "src").mkdir()
@@ -623,7 +623,8 @@ def test_run_mapper_degraded_pack_uses_bounded_candidates_without_target_hint(tm
     result = runner_mod._run_mapper(repo, run_root)
 
     files = result["handoff"]["stdout"]["context_pack"]["files"]
-    assert files == [{"path": "src/candidate.py", "source": "bounded_local_candidate"}]
+    assert files == []
+    assert result["handoff"]["stdout"]["ready"] is False
     assert result["evidence_status"] == "UNVERIFIED"
 
 
@@ -650,11 +651,22 @@ def test_run_mapper_does_not_degrade_runtime_backed_profile(tmp_path, monkeypatc
         runner_mod._run_mapper(repo, run_root, target_hint="src/app.py")
 
 
+def test_extract_repo_file_hints_accepts_rust_targets(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "rust").mkdir(parents=True)
+    (repo / "rust" / "supervisor.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+    assert runner_mod._extract_repo_file_hints(
+        "Arquivos alvo: rust/supervisor.rs", repo
+    ) == ["rust/supervisor.rs"]
+
+
 def test_build_plan_uses_filtered_candidate_targets(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "src").mkdir()
     (repo / "src" / "worker.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    (repo / "src" / "worker.rs").write_text("fn run() {}\n", encoding="utf-8")
     task_payload = runner_mod.compile_many(TASK, source_path="task.md")
     tasks = task_payload["tasks"]
     mapper_payload = {
@@ -666,6 +678,7 @@ def test_build_plan_uses_filtered_candidate_targets(tmp_path):
                         {"path": ".simplicio/orchestrator/loop/runtime_run_task.md"},
                         {"path": "docs/README.md"},
                         {"path": "src/worker.py"},
+                        {"path": "src/worker.rs"},
                     ],
                 }
             }
@@ -676,8 +689,8 @@ def test_build_plan_uses_filtered_candidate_targets(tmp_path):
     }
 
     plan = runner_mod._build_plan(tasks, mapper_payload, repo)
-    assert plan["mapper_targets"] == ["src/worker.py"], plan["mapper_targets"]
-    assert plan["steps"][0]["candidate_targets"] == ["src/worker.py"]
+    assert plan["mapper_targets"] == ["src/worker.py", "src/worker.rs"], plan["mapper_targets"]
+    assert plan["steps"][0]["candidate_targets"] == ["src/worker.py", "src/worker.rs"]
 
 
 def test_build_plan_promotes_explicit_task_file_hints(tmp_path):
