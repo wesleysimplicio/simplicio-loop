@@ -87,3 +87,37 @@ def test_orient_on_fails_closed_when_fast_is_unavailable(tmp_path, monkeypatch, 
 @pytest.mark.parametrize("mode", ["auto", "on", "off"])
 def test_orient_help_exposes_fast_modes(mode):
     assert mode in {"auto", "on", "off"}
+
+def test_orient_cli_fails_closed_without_mutable_authority(
+    tmp_path, monkeypatch, capsys
+):
+    class _BlockedFast:
+        def __init__(self, root, *, config):
+            self.root = root
+            self.config = config
+
+        def prepare(self, task):
+            return {
+                "schema": "simplicio.loop-fast-integration/v1",
+                "status": "BLOCKED",
+                "reason": "READ_ONLY_MUTATION_AUTHORITY",
+                "blocked_preconditions": [
+                    {
+                        "reason": "READ_ONLY_MUTATION_AUTHORITY",
+                        "next_surface": "orient",
+                    }
+                ],
+                "plan": {
+                    "schema": "simplicio.fast.plandag/v2",
+                    "status": "BLOCKED",
+                    "nodes": [{"id": "orient", "kind": "context"}],
+                },
+            }
+
+    monkeypatch.setattr(cli, "FastLoopIntegration", _BlockedFast)
+    assert cli.orient(str(tmp_path), "read-only qdot_i8 inspection", "on", 2000) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "BLOCKED"
+    assert payload["provider"] == "simplicio-fast"
+    assert payload["fast"]["reason"] == "READ_ONLY_MUTATION_AUTHORITY"
+    assert "structured_patch" not in json.dumps(payload)

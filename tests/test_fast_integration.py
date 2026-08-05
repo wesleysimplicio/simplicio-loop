@@ -173,3 +173,126 @@ def test_rollout_transition_is_delegated_to_fast(tmp_path: Path) -> None:
     assert receipt["schema"] == "simplicio.fast.rollout-receipt/v1"
     assert receipt["mode"] == "canary"
     assert [call[1] for call in fake.calls].count("rollout") == 1
+
+def test_read_only_qdot_i8_orientation_blocks_mutable_plan_and_redacts_nodes(
+    tmp_path: Path,
+) -> None:
+    class PolicyFast(FakeFast):
+        def __call__(self, command, **kwargs):
+            args = list(command[1:])
+            if args and args[0] == "understand":
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    json.dumps(
+                        {
+                            "schema": "simplicio.fast.understanding/v2",
+                            "context": [{"file": "runtime/src/other.rs"}],
+                            "files": ["runtime/src/other.rs"],
+                        }
+                    ),
+                    "",
+                )
+            if args and args[0] == "plan":
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    json.dumps(
+                        {
+                            "schema": "simplicio.fast.plandag/v2",
+                            "nodes": [
+                                {"id": "orient", "kind": "context"},
+                                {
+                                    "id": "modify",
+                                    "kind": "structured_patch",
+                                    "inputs": {
+                                        "format": FAST_CHANGESET_SCHEMA,
+                                        "allowed_files": ["runtime/src/other.rs"],
+                                    },
+                                },
+                            ],
+                        }
+                    ),
+                    "",
+                )
+            return super().__call__(command, **kwargs)
+
+    (tmp_path / "benchmarks").mkdir()
+    target = tmp_path / "crates" / "tesser_std" / "src" / "test" / "bench.rs"
+    target.parent.mkdir(parents=True)
+    target.write_text("fn QuantizedI8() {}\n", encoding="utf-8")
+    task = (
+        "Read-only orientation, sem editar arquivos: qdot_i8 is missing while QuantizedI8 is positive. "
+        "Use explicit targets benchmarks/ and crates/tesser_std/src/test/bench.rs; do not modify source files."
+    )
+    result = FastLoopIntegration(
+        tmp_path,
+        config=FastConfig(command=("fast",), mode="required"),
+        runner=PolicyFast(tmp_path),
+    ).prepare(task)
+
+    reasons = {item["reason"] for item in result["blocked_preconditions"]}
+    assert result["status"] == "BLOCKED"
+    assert result["reason"] == "READ_ONLY_MUTATION_AUTHORITY"
+    assert {"READ_ONLY_MUTATION_AUTHORITY", "TARGET_CORRIDOR_MISMATCH"} <= reasons
+    assert result["intent_policy"]["schema"] == "simplicio.loop-fast-intent-policy/v1"
+    assert result["intent_policy"]["mutable_authority"] is False
+    assert result["plan"]["status"] == "BLOCKED"
+    assert all(
+        node.get("kind") != "structured_patch" for node in result["plan"]["nodes"]
+    )
+
+
+def test_plan_policy_rejects_unresolved_targets_and_missing_mutation_policy(tmp_path):
+    from simplicio_loop.fast_integration import FAST_PLAN_SCHEMA, _validate_plan_policy
+
+    policy, blockers = _validate_plan_policy(
+        tmp_path,
+        "update missing/path.py",
+        {"context": [], "files": []},
+        {
+            "schema": FAST_PLAN_SCHEMA,
+            "nodes": [{"id": "modify", "kind": "structured_patch", "inputs": {}}],
+        },
+    )
+
+    reasons = {item["reason"] for item in blockers}
+    assert policy["validated"] is False
+    assert {
+        "MUTATION_POLICY_MISSING",
+        "TARGET_PATH_UNRESOLVED",
+        "TARGET_CORRIDOR_MISSING",
+    } <= reasons
+
+
+def test_plan_policy_rejects_wrong_format_and_zero_context(tmp_path):
+    from simplicio_loop.fast_integration import (
+        FAST_CHANGESET_SCHEMA,
+        FAST_PLAN_SCHEMA,
+        _validate_plan_policy,
+    )
+
+    policy, blockers = _validate_plan_policy(
+        tmp_path,
+        "update app",
+        {"context": [], "files": []},
+        {
+            "schema": FAST_PLAN_SCHEMA,
+            "nodes": [
+                {
+                    "id": "modify",
+                    "kind": "structured_patch",
+                    "inputs": {
+                        "format": "wrong",
+                        "allowed_files": ["app.py"],
+                    },
+                }
+            ],
+        },
+    )
+
+    reasons = {item["reason"] for item in blockers}
+    assert policy["validated"] is False
+    assert "MUTATION_POLICY_MISSING" in reasons
+    assert "CONTEXT_RELEVANCE_INSUFFICIENT" in reasons
+    assert FAST_CHANGESET_SCHEMA != "wrong"
