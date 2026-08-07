@@ -7,6 +7,13 @@
 
 This loop is the convergence layer of one Simplicio ecosystem. For every non-trivial task: run `simplicio runtime map --repo . --for-llm markdown`, then `simplicio memory "<task>"`, rank/load relevant skills, execute through the native `simplicio` CLI, validate, and record evidence. MCP is fallback transport only.
 
+## Worker startup and centralized artifacts (mandatory)
+
+Every subagent, worker, and provider session MUST read `AGENTS.md`, `CLAUDE.md`, and every relevant local skill before operating. For Loop work, the baseline skills are `.claude/skills/simplicio-loop/SKILL.md`, `.claude/skills/simplicio-prism/SKILL.md`, and `.claude/skills/simplicio-runtime/SKILL.md`; load additional satellite skills selected by the task before mutation.
+
+The canonical default branch owns one centrally built binary/artifact set. Workers consume that binary read-only; they MUST NOT rebuild binaries or regenerate canonical Mapper/Fast artifacts. Worktrees isolate source edits and receipts only. Every receipt/handoff MUST record repository and revision, binary digest/version, Mapper generation and artifact digest. Missing, stale, incompatible, or mismatched central artifacts fail closed and route to the central rebuild path only; a worker may not repair them locally or fall back to fabricated/uncertified context.
+
+
 ### Full-stack boundaries
 `simplicio-mapper` / `simplicio-dev-cli` / `simplicio-fast` observe, plan, and edit — **they work alone** without Runtime. `simplicio-runtime` owns contracts, gates, validation, receipts, **the full loop subsystem** (activation + convergence authority), and **mandatory execution-report metrics** (per task + consolidated). **Runtime alone decides when to activate the loop** (`simplicio loop decide`). This package is the protocol + host-hook implementation under Runtime authority. Coordinators own cognition, not loop activation. See `docs/adr/0009` and `docs/adr/0010`. Providers are workers, never authorities.
 

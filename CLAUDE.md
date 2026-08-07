@@ -33,6 +33,12 @@ runtime binary is absent:
 The AI decides; the operators act. See `.claude/skills/simplicio-loop/SKILL.md` § Bound operators
 and `.claude/skills/simplicio-loop/references/extension-points.md` § bound operators.
 
+## Worker preflight and central artifact rule
+
+Before any operation, every subagent/worker reads `AGENTS.md`, this `CLAUDE.md`, and all relevant local skills. The minimum Loop set is `.claude/skills/simplicio-loop/SKILL.md`, `.claude/skills/simplicio-prism/SKILL.md`, and `.claude/skills/simplicio-runtime/SKILL.md`; task-specific satellites are loaded before mutation.
+
+Workers use one read-only binary/artifact set built from the canonical default branch. They do not rebuild binaries or regenerate canonical Mapper/Fast artifacts. Worktrees isolate source edits and receipts only. Receipts include repository/revision, binary digest/version, Mapper generation, and artifact digest. Missing, stale, or mismatched central artifacts fail closed and invoke the central rebuild path only.
+
 ## Video evidence (Playwright by default · hyperframes on request)
 
 The loop produces **demo videos** as proof a change works — two engines, one `video_evidence`

@@ -23,7 +23,11 @@ that this project already uses directly and extensively.
 
 ## Decision
 
-Keep stdlib `asyncio` as the sole async runtime for `simplicio-loop`. Do not add `anyio` as a
+Keep stdlib `asyncio` as the sole async runtime for `simplicio-loop`.
+
+This async decision does not grant workers build authority. Loop/Prism `asyncio` scheduling, leases, and I/O consume the centrally built, read-only binary/artifact set from the canonical default branch. Runtime/Tokio remains the authority for gates, effects, receipts, and reconciliation. Workers never rebuild binaries or regenerate canonical Mapper/Fast artifacts; worktrees isolate source edits and receipts only. Receipts record repository/revision, binary digest/version, Mapper generation, and artifact digest. Missing, stale, incompatible, or mismatched central artifacts fail closed and route to central rebuild only.
+
+Do not add `anyio` as a
 dependency. This is a ratification of the status quo, not a migration:
 
 - `AsyncBoundedQueue` (`async_bounded_queue.py`) is built directly on `asyncio.Condition`/
