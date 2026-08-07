@@ -3,6 +3,7 @@
 import os
 import sys
 import glob
+import shutil
 import time
 
 try:
@@ -66,6 +67,18 @@ def _run_bounded(*args, **kwargs):
         kwargs["timeout_seconds"] = min(remaining, requested)
     return _runtime_run_bounded(*args, **kwargs)
 
+
+def _pytest_command():
+    """Use the pytest executable selected by the active environment.
+
+    ``uv run pytest`` may intentionally expose a standalone pytest executable
+    while ``uv run python -m pytest`` uses a project interpreter without the
+    pytest module installed.  The local gate must follow the former so its
+    result matches the documented source-checkout command.
+    """
+    executable = shutil.which("pytest")
+    return [executable] if executable else [sys.executable, "-m", "pytest"]
+
 # #118 — opt-in satellite files excluded from the mandatory core; see the scripts inventory.
 SATELLITE_TEST_STEMS = frozenset([
     "test_agentsview_adapter_integration",
@@ -103,7 +116,7 @@ def run_audit():
 
 def _have_pytest():
     command = _run_bounded(
-        [sys.executable, "-c", "import pytest"],
+        _pytest_command() + ["--version"],
         phase="pytest_probe",
         capture_output=True,
     )
@@ -136,7 +149,7 @@ def _merge_pytest_reasons(target, source):
 
 
 def _pytest_args(test_files, only_core=False):
-    args = [sys.executable, "-m", "pytest", "-q", "-ra"]
+    args = _pytest_command() + ["-q", "-ra"]
     # Installed/live lanes are explicit and never local-gate proof.
     marker_expression = "not external_integration"
     if only_core:
@@ -148,7 +161,7 @@ def _pytest_args(test_files, only_core=False):
 def _collect_marker_exclusions(test_files, env, marker_expression, unparseable_reason):
     """Collect one marker expression and return its exact selected-node count."""
     command = _run_bounded(
-        [sys.executable, "-m", "pytest", "-q", "--collect-only", "-m",
+        _pytest_command() + ["-q", "--collect-only", "-m",
          marker_expression] + list(test_files),
         phase="pytest_collect",
         env=env,
