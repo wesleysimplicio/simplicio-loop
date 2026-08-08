@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -12,7 +13,7 @@ import tempfile
 import time
 import webbrowser
 from pathlib import Path
-from typing import Optional
+from typing import Any, Mapping, Optional
 try:
     from scripts import release_manifest as _release_manifest
 except Exception:  # pragma: no cover - import shim for bundled scripts
@@ -57,7 +58,12 @@ from . import inspection_cli as _inspection_cli
 from .progress import stream as stream_progress
 from .oracle import evaluate_matrix, persist_completion_receipt
 from .delivery import DELIVERY_ORDER
-from .economy_profile import prism_batches, prism_is_eligible, resolve_prism_batch_size
+from .economy_profile import (
+    llm_max_speed_orientation_contract,
+    prism_batches,
+    prism_is_eligible,
+    resolve_prism_batch_size,
+)
 from .map_service_cli import configure_commands as configure_map_commands, dispatch as dispatch_map
 from .serverless_deploy import build_plan as build_serverless_plan, execute_plan as execute_serverless_plan
 
@@ -249,6 +255,80 @@ def run(repo: str, task_path: str, delivery_arg: str, max_iterations: int,
     return int(outcome["exit_code"])
 
 ORIENT_SCHEMA = "simplicio.loop-orient/v1"
+ORIENT_RECEIPT_SCHEMA = "simplicio.loop-orient-receipt/v1"
+
+
+def _orient_hash(value: Any) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _orient_revision(root: Path) -> str | None:
+    if not (root / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(root), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            close_fds=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    revision = (result.stdout or "").strip()
+    return revision if result.returncode == 0 and revision else None
+
+
+def _orient_provider_provenance(payload: Mapping[str, Any]) -> dict[str, Any]:
+    provider = str(payload.get("provider") or "")
+    provider_payload = payload.get("fast") if provider == "simplicio-fast" else payload.get("mapper")
+    provider_payload = provider_payload if isinstance(provider_payload, Mapping) else {}
+    ingest = provider_payload.get("ingest") if isinstance(provider_payload.get("ingest"), Mapping) else {}
+    mapper_result = provider_payload.get("result") if isinstance(provider_payload.get("result"), Mapping) else {}
+    snapshot = mapper_result.get("source_snapshot") if isinstance(mapper_result.get("source_snapshot"), Mapping) else {}
+    context_pack = mapper_result.get("context_pack") if isinstance(mapper_result.get("context_pack"), Mapping) else {}
+    probe = ingest.get("probe") if isinstance(ingest.get("probe"), Mapping) else {}
+    return {
+        "operator": provider or None,
+        "operator_version": probe.get("version"),
+        "generation": provider_payload.get("generation") or ingest.get("generation") or snapshot.get("snapshot_id"),
+        "context_hash": provider_payload.get("context_hash") or context_pack.get("pack_hash") or snapshot.get("root_hash"),
+        "plan_hash": provider_payload.get("plan_hash"),
+        "source_revision": ingest.get("source_commit") or snapshot.get("revision"),
+        "provider_payload_hash": _orient_hash(provider_payload),
+    }
+
+
+def _seal_orient_payload(
+    payload: dict[str, Any], *, root: Path, task: str, fast_mode: str,
+    fast_engine: str, fast_context_budget: int,
+) -> dict[str, Any]:
+    contract = llm_max_speed_orientation_contract()
+    contract["request_policy"] = {
+        "fast_mode": fast_mode,
+        "fast_engine": fast_engine,
+        "context_budget_bytes": int(fast_context_budget),
+        "fallback_allowed": fast_mode != "on" and fast_engine != "rust",
+    }
+    payload["llm_orientation"] = contract
+    provenance = _orient_provider_provenance(payload)
+    receipt = {
+        "schema": ORIENT_RECEIPT_SCHEMA,
+        "orient_schema": ORIENT_SCHEMA,
+        "status": payload.get("status"),
+        "provider": payload.get("provider"),
+        "fallback": bool(payload.get("fallback")),
+        "fallback_reason": payload.get("fallback_reason"),
+        "repo": str(root),
+        "source_revision": provenance.get("source_revision") or _orient_revision(root),
+        "task_hash": _orient_hash(str(task).strip()),
+        "contract_hash": _orient_hash(contract),
+        "provenance": provenance,
+    }
+    receipt["receipt_hash"] = _orient_hash(receipt)
+    payload["receipt"] = receipt
+    return payload
 
 def _mapper_orient_fallback(root: Path, task: str) -> dict:
     """Use Mapper's read-only orient surface when Fast is unavailable."""
@@ -287,12 +367,22 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
     """Run bounded Fast orient with an explicit Mapper fallback receipt."""
     root = Path(repo).resolve()
     if not root.is_dir() or not str(task).strip():
-        print(json.dumps({"schema": ORIENT_SCHEMA, "status": "BLOCKED",
-                          "reason": "repo_or_task_invalid", "local_llm": False}))
+        payload = {"schema": ORIENT_SCHEMA, "status": "BLOCKED",
+                   "provider": None, "fallback": False,
+                   "reason": "repo_or_task_invalid", "local_llm": False}
+        _seal_orient_payload(payload, root=root, task=str(task), fast_mode=fast_mode,
+                             fast_engine=fast_engine,
+                             fast_context_budget=fast_context_budget)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 2
     if fast_context_budget < 1:
-        print(json.dumps({"schema": ORIENT_SCHEMA, "status": "BLOCKED",
-                          "reason": "fast_context_budget_invalid", "local_llm": False}))
+        payload = {"schema": ORIENT_SCHEMA, "status": "BLOCKED",
+                   "provider": None, "fallback": False,
+                   "reason": "fast_context_budget_invalid", "local_llm": False}
+        _seal_orient_payload(payload, root=root, task=str(task), fast_mode=fast_mode,
+                             fast_engine=fast_engine,
+                             fast_context_budget=fast_context_budget)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 2
     if fast_engine not in {"auto", "rust", "python", "off"}:
         raise ValueError("fast_engine must be auto, rust, python, or off")
@@ -321,6 +411,9 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
         payload = {"schema": ORIENT_SCHEMA, "status": "READY",
                           "provider": "simplicio-fast", "fallback": False,
                           "fast_engine": fast_engine, "fast": fast_payload, "local_llm": False}
+        _seal_orient_payload(payload, root=root, task=str(task), fast_mode=fast_mode,
+                             fast_engine=fast_engine,
+                             fast_context_budget=fast_context_budget)
         if tee:
             from .tee_cache import write
             path = write(root, json.dumps(payload, ensure_ascii=False, indent=2))
@@ -333,6 +426,9 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
                           "fast_engine": fast_engine,
                           "fallback_reason": fallback_reason or "fast_not_ready",
                           "fast": fast_payload, "local_llm": False}
+        _seal_orient_payload(payload, root=root, task=str(task), fast_mode=fast_mode,
+                             fast_engine=fast_engine,
+                             fast_context_budget=fast_context_budget)
         if tee:
             from .tee_cache import write
             path = write(root, json.dumps(payload, ensure_ascii=False, indent=2))
@@ -347,6 +443,9 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
                       "fallback_reason": fallback_reason, "fast_engine": fast_engine,
                       "fast": fast_payload,
                       "mapper": mapper, "local_llm": False}
+    _seal_orient_payload(payload, root=root, task=str(task), fast_mode=fast_mode,
+                         fast_engine=fast_engine,
+                         fast_context_budget=fast_context_budget)
     if tee:
         from .tee_cache import write
         path = write(root, json.dumps(payload, ensure_ascii=False, indent=2))

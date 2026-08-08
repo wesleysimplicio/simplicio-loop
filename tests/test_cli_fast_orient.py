@@ -28,6 +28,16 @@ def test_orient_prefers_fast_and_emits_bounded_receipt(tmp_path, monkeypatch, ca
     assert payload["status"] == "READY"
     assert payload["provider"] == "simplicio-fast"
     assert payload["local_llm"] is False
+    assert payload["llm_orientation"]["schema"] == "simplicio.llm-max-speed-orientation/v1"
+    assert payload["llm_orientation"]["context_route"]["bounded"] is True
+    assert payload["llm_orientation"]["mutation_boundary"]["authorized"] is False
+    assert payload["receipt"]["schema"] == "simplicio.loop-orient-receipt/v1"
+    assert payload["receipt"]["provenance"]["generation"] == "g1"
+    assert payload["receipt"]["provenance"]["context_hash"] == "ctx"
+    assert payload["receipt"]["provenance"]["provider_payload_hash"].startswith("sha256:")
+    expected_receipt = dict(payload["receipt"])
+    receipt_hash = expected_receipt.pop("receipt_hash")
+    assert receipt_hash == cli._orient_hash(expected_receipt)
     assert _ReadyFast.last_config.mode == "required"
     assert _ReadyFast.last_config.max_bytes == 1234
     assert _ReadyFast.last_config.engine == "auto"
@@ -69,6 +79,11 @@ def test_orient_auto_uses_mapper_fallback_with_reason(tmp_path, monkeypatch, cap
     assert payload["provider"] == "simplicio-mapper"
     assert payload["fallback_reason"] == "doctor_failed"
     assert payload["local_llm"] is False
+    assert payload["llm_orientation"]["fallback_policy"]["auto"] == "mapper_read_only"
+    assert payload["llm_orientation"]["request_policy"]["fallback_allowed"] is True
+    assert payload["receipt"]["fallback"] is True
+    assert payload["receipt"]["fallback_reason"] == "doctor_failed"
+    assert payload["receipt"]["provenance"]["operator"] == "simplicio-mapper"
 
 
 def test_orient_on_fails_closed_when_fast_is_unavailable(tmp_path, monkeypatch, capsys):
@@ -82,6 +97,37 @@ def test_orient_on_fails_closed_when_fast_is_unavailable(tmp_path, monkeypatch, 
     assert payload["status"] == "BLOCKED"
     assert payload["fallback"] is False
     assert payload["fallback_reason"] == "missing_operator"
+    assert payload["llm_orientation"]["request_policy"]["fallback_allowed"] is False
+    assert payload["receipt"]["status"] == "BLOCKED"
+    assert payload["receipt"]["fallback"] is False
+
+
+def test_orient_receipt_is_deterministic_for_same_request(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "FastLoopIntegration", _ReadyFast)
+    assert cli.orient(str(tmp_path), "change app", "on", 1234) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert cli.orient(str(tmp_path), "change app", "on", 1234) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert first["receipt"] == second["receipt"]
+
+
+def test_orient_invalid_repo_still_emits_contract_and_receipt(tmp_path, capsys):
+    missing = tmp_path / "missing"
+    assert cli.orient(str(missing), "change app") == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "BLOCKED"
+    assert payload["reason"] == "repo_or_task_invalid"
+    assert payload["llm_orientation"]["schema"] == "simplicio.llm-max-speed-orientation/v1"
+    assert payload["receipt"]["schema"] == "simplicio.loop-orient-receipt/v1"
+
+
+def test_orient_invalid_budget_still_emits_contract_and_receipt(tmp_path, capsys):
+    assert cli.orient(str(tmp_path), "change app", fast_context_budget=0) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "BLOCKED"
+    assert payload["reason"] == "fast_context_budget_invalid"
+    assert payload["llm_orientation"]["request_policy"]["context_budget_bytes"] == 0
+    assert payload["receipt"]["status"] == "BLOCKED"
 
 
 @pytest.mark.parametrize("mode", ["auto", "on", "off"])

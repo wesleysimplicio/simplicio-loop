@@ -225,6 +225,46 @@ def economy_parallel_env(
     return out
 
 
+def llm_max_speed_orientation_contract() -> dict[str, Any]:
+    """Return the native, machine-readable host orientation contract."""
+    return {
+        "schema": "simplicio.llm-max-speed-orientation/v1",
+        "canonical_doc": "docs/LLM_MAX_SPEED_ORIENTATION.md",
+        "runtime_twin": "simplicio-runtime/docs/LLM_MAX_SPEED_ORIENTATION.md",
+        "skill_block": "plugin/skills/simplicio-loop/SKILL.md <!-- SIMPLICIO-LLM-ORIENTATION -->",
+        "law": "act>narrate; Runtime loop decide; Mapper→Fast→dev-cli; 1-3 direct / Prism>3; lease isolation; smallest AC gate; MEASURED only",
+        "control_plane": {
+            "authority": "simplicio-runtime",
+            "command": "simplicio loop decide --task … --repo . --json",
+            "host_may_override": False,
+        },
+        "context_route": {
+            "primary": "simplicio-fast",
+            "fallback": "simplicio-mapper",
+            "bounded": True,
+            "local_llm": False,
+        },
+        "fallback_policy": {
+            "auto": "mapper_read_only",
+            "required_fast": "blocked",
+            "explicit_rust": "blocked",
+        },
+        "mutation_boundary": {
+            "authorized": False,
+            "next_surfaces": ["simplicio-dev-cli task", "simplicio edit --plan"],
+        },
+        "receipt_schema": "simplicio.loop-orient-receipt/v1",
+        "message_cadence": ["DONE", "NEXT", "BLOCKED"],
+        "forbid": [
+            "full-repo fmt/test residual thrash",
+            "3-reviewer panels on metadata-only",
+            "hand-edit under STRICT",
+            "peer /simplicio-loop bypass when Runtime owns activation",
+            "N full agents on one dirty tree without worktrees",
+        ],
+    }
+
+
 def profile_status(
     env: Optional[Mapping[str, str]] = None,
     *,
@@ -264,21 +304,7 @@ def profile_status(
             "mutate: simplicio-dev-cli task (STRICT)",
         ],
         # Always-on LLM orientation for hosts (max safe speed)
-        "llm_orientation": {
-            "schema": "simplicio.llm-max-speed-orientation/v1",
-            "canonical_doc": "docs/LLM_MAX_SPEED_ORIENTATION.md",
-            "runtime_twin": "simplicio-runtime/docs/LLM_MAX_SPEED_ORIENTATION.md",
-            "skill_block": "plugin/skills/simplicio-loop/SKILL.md <!-- SIMPLICIO-LLM-ORIENTATION -->",
-            "law": "act>narrate; Runtime loop decide; Mapper→Fast→dev-cli; 1-3 direct / Prism>3; lease isolation; smallest AC gate; MEASURED only",
-            "message_cadence": ["DONE", "NEXT", "BLOCKED"],
-            "forbid": [
-                "full-repo fmt/test residual thrash",
-                "3-reviewer panels on metadata-only",
-                "hand-edit under STRICT",
-                "peer /simplicio-loop bypass when Runtime owns activation",
-                "N full agents on one dirty tree without worktrees",
-            ],
-        },
+        "llm_orientation": llm_max_speed_orientation_contract(),
     }
 
 
@@ -400,6 +426,7 @@ __all__ = [
     "PROFILE_NAME",
     "economy_parallel_enabled",
     "economy_parallel_env",
+    "llm_max_speed_orientation_contract",
     "profile_status",
     "apply_to_environ",
     "persist_user_profile",

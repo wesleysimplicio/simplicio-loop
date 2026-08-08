@@ -28,7 +28,7 @@ Use the most specific form, such as `simplicio-loop queue top --help` or
 | `prototype` | Route prototype planning and validation commands. |
 | `plan` | Compile a raw task into a frozen contract. |
 | `run` | Arm, execute, and independently verify a task. |
-| `orient` | Build bounded context through Fast with Mapper fallback. |
+| `orient` | Build bounded context through Fast and emit `simplicio.llm-max-speed-orientation/v1` plus a hash-bound `simplicio.loop-orient-receipt/v1`; auto may fall back read-only to Mapper, while required Fast/Rust fails closed. |
 | `retrieve` | Retrieve and verify a tee-cache result. |
 | `extensions doctor` | Inspect an exact extension-provider/runtime handshake. |
 | `oracle` | Evaluate completion and cross-runtime parity. |
