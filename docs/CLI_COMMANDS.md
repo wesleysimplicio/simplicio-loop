@@ -70,6 +70,21 @@ modules without network access. It emits a canonical
 `simplicio.journal-replay-receipt/v1` JSON receipt and exits non-zero when an observed
 outcome differs from `expected_outcome`.
 
+## Convergence parity protocol
+
+Run one versioned fixture through the Runtime-backed and standalone semantic
+controllers with:
+
+```text
+python -m simplicio_loop.convergence_parity FIXTURE.json [--runtime-decision DECISION.json]
+```
+
+The command emits `simplicio.convergence-parity/v1`. Exit `0` means both paths
+reached equivalent verified acceptance and evidence receipts. Exit `2` means an
+invalid fixture or an unsupported environment; the receipt names the unsupported
+path and reason, and no path may silently substitute standalone behavior for a
+missing, incompatible, or non-activating Runtime decision.
+
 ## Operator order for LLMs
 
 1. `simplicio-mapper --help` → `scan` → `inspect` → `handoff`.
