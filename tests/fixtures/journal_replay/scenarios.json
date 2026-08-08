@@ -1,0 +1,102 @@
+{
+  "schema": "simplicio.journal-replay-suite/v1",
+  "identity": {
+    "run_id": "issue-1139-fixture",
+    "work_item_id": "WI-1139",
+    "attempt_id": "attempt-1",
+    "actor": "fixture@offline",
+    "environment_id": "fixture/python"
+  },
+  "scenarios": [
+    {
+      "id": "stall",
+      "journal": [
+        {"iteration": 1, "action": "retry", "hypothesis": "transient", "gate": "fail", "fingerprint": "same-failure", "note": "first", "ts": "2026-08-08T00:00:00Z"},
+        {"iteration": 2, "action": "retry", "hypothesis": "transient", "gate": "fail", "fingerprint": "same-failure", "note": "second", "ts": "2026-08-08T00:00:01Z"},
+        {"iteration": 3, "action": "retry", "hypothesis": "transient", "gate": "fail", "fingerprint": "same-failure", "note": "third", "ts": "2026-08-08T00:00:02Z"}
+      ],
+      "loop": {"iteration": 3, "max_iterations": 8, "completion_promise": "DONE", "assistant_response": "", "stop": false},
+      "anchor": {"criteria": [{"id": "AC1", "status": "pending"}]},
+      "recovery": {"events": [], "cursor": {"last_sequence": 0}, "source_state": {"status": "open"}, "lease": {"state": "held", "owner": "fixture@offline"}},
+      "expected_outcome": "STALLED"
+    },
+    {
+      "id": "blocked",
+      "journal": [{"iteration": 1, "action": "resume", "hypothesis": "cursor can advance", "gate": "blocked", "fingerprint": "sequence-gap", "note": "gap", "ts": "2026-08-08T00:01:00Z"}],
+      "loop": {"iteration": 1, "max_iterations": 8, "completion_promise": "DONE", "assistant_response": "", "stop": false},
+      "anchor": {"criteria": [{"id": "AC1", "status": "pending"}]},
+      "recovery": {
+        "events": [{"schema": "simplicio.loop-event/v1", "contract_version": "1", "event_id": "e-2", "sequence": 2, "run_id": "issue-1139-fixture", "work_item_id": "WI-1139", "attempt_id": "attempt-1", "actor": "fixture@offline", "cause": "worker", "causation_id": "e-2", "reason_code": "phase_transition", "from_phase": "intake", "to_phase": "mapping", "board_state": "mapped", "payload": {}}],
+        "cursor": {"last_sequence": 0}, "source_state": {"status": "open"}, "lease": {"state": "held", "owner": "fixture@offline"}
+      },
+      "expected_outcome": "BLOCKED"
+    },
+    {
+      "id": "stop",
+      "journal": [{"iteration": 1, "action": "operator stop", "hypothesis": "human cancellation wins", "gate": "blocked", "fingerprint": "manual-stop", "note": "STOP", "ts": "2026-08-08T00:02:00Z"}],
+      "loop": {"iteration": 1, "max_iterations": 8, "completion_promise": "DONE", "assistant_response": "", "stop": true},
+      "anchor": {"criteria": [{"id": "AC1", "status": "pending"}]},
+      "recovery": {"events": [], "cursor": {"last_sequence": 0}, "source_state": {"status": "open"}, "lease": {"state": "held", "owner": "fixture@offline"}},
+      "expected_outcome": "STOP"
+    },
+    {
+      "id": "max_iterations",
+      "journal": [{"iteration": 3, "action": "cap", "hypothesis": "bounded loop stops", "gate": "blocked", "fingerprint": "cap", "note": "cap", "ts": "2026-08-08T00:03:00Z"}],
+      "loop": {"iteration": 3, "max_iterations": 3, "completion_promise": "DONE", "assistant_response": "", "stop": false},
+      "anchor": {"criteria": [{"id": "AC1", "status": "pending"}]},
+      "recovery": {"events": [], "cursor": {"last_sequence": 0}, "source_state": {"status": "open"}, "lease": {"state": "held", "owner": "fixture@offline"}},
+      "expected_outcome": "MAX_ITERATIONS"
+    },
+    {
+      "id": "invalid_promise",
+      "journal": [{"iteration": 1, "action": "promise", "hypothesis": "text is sufficient", "gate": "fail", "fingerprint": "invalid-promise", "note": "mismatch", "ts": "2026-08-08T00:04:00Z"}],
+      "loop": {"iteration": 1, "max_iterations": 8, "completion_promise": "DONE", "assistant_response": "MEASURED| <promise>NOT DONE</promise>", "stop": false},
+      "anchor": {"criteria": [{"id": "AC1", "status": "verified"}]},
+      "recovery": {"events": [], "cursor": {"last_sequence": 0}, "source_state": {"status": "open"}, "lease": {"state": "held", "owner": "fixture@offline"}},
+      "expected_outcome": "INVALID_PROMISE"
+    },
+    {
+      "id": "crash_recovered",
+      "journal": [{"iteration": 1, "action": "resume cursor", "hypothesis": "replay resumes once", "gate": "pass", "fingerprint": "", "note": "resume", "ts": "2026-08-08T00:05:00Z"}],
+      "loop": {"iteration": 1, "max_iterations": 8, "completion_promise": "DONE", "assistant_response": "", "stop": false},
+      "anchor": {"criteria": [{"id": "AC1", "status": "pending"}]},
+      "recovery": {
+        "events": [{"schema": "simplicio.loop-event/v1", "contract_version": "1", "event_id": "e-1", "sequence": 1, "run_id": "issue-1139-fixture", "work_item_id": "WI-1139", "attempt_id": "attempt-1", "actor": "fixture@offline", "cause": "worker", "causation_id": "e-1", "reason_code": "phase_transition", "from_phase": null, "to_phase": "intake", "board_state": "queued", "payload": {}}],
+        "cursor": {"last_sequence": 0}, "source_state": {"status": "open"}, "lease": {"state": "held", "owner": "fixture@offline"}
+      },
+      "expected_outcome": "CRASH_RECOVERED"
+    },
+    {
+      "id": "lease_recovery",
+      "journal": [{"iteration": 1, "action": "resume lease", "hypothesis": "expired lease is reusable", "gate": "blocked", "fingerprint": "expired-lease", "note": "reclaim", "ts": "2026-08-08T00:06:00Z"}],
+      "loop": {"iteration": 1, "max_iterations": 8, "completion_promise": "DONE", "assistant_response": "", "stop": false},
+      "anchor": {"criteria": [{"id": "AC1", "status": "pending"}]},
+      "recovery": {"events": [], "cursor": {"last_sequence": 0}, "source_state": {"status": "open"}, "lease": {"state": "expired"}},
+      "expected_outcome": "LEASE_RECOVERY_REQUIRED"
+    },
+    {
+      "id": "converged",
+      "journal": [{"iteration": 1, "action": "replay terminal", "hypothesis": "receipt-gated terminal state converges", "gate": "pass", "fingerprint": "", "note": "done", "ts": "2026-08-08T00:07:00Z"}],
+      "loop": {"iteration": 1, "max_iterations": 8, "completion_promise": "DONE", "assistant_response": "MEASURED| <promise>DONE</promise>", "stop": false},
+      "anchor": {"criteria": [{"id": "AC1", "status": "verified"}]},
+      "evidence_receipt": {
+        "observed_at": "2026-08-08T00:07:00Z",
+        "criteria": [{"id": "AC1", "status": "verified", "evidence": [{"command": "python scripts/journal_replay.py --check", "exit_code": 0, "artifact_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "provenance": "fixture:converged", "claim_type": "replayed"}]}]
+      },
+      "recovery": {
+        "events": [
+          {"schema": "simplicio.loop-event/v1", "contract_version": "1", "event_id": "e-1", "sequence": 1, "run_id": "issue-1139-fixture", "work_item_id": "WI-1139", "attempt_id": "attempt-1", "actor": "fixture@offline", "cause": "worker", "causation_id": "e-1", "reason_code": "phase_transition", "from_phase": null, "to_phase": "intake", "board_state": "queued", "payload": {}},
+          {"schema": "simplicio.loop-event/v1", "contract_version": "1", "event_id": "e-2", "sequence": 2, "run_id": "issue-1139-fixture", "work_item_id": "WI-1139", "attempt_id": "attempt-1", "actor": "fixture@offline", "cause": "worker", "causation_id": "e-2", "reason_code": "phase_transition", "from_phase": "intake", "to_phase": "mapping", "board_state": "mapped", "payload": {}},
+          {"schema": "simplicio.loop-event/v1", "contract_version": "1", "event_id": "e-3", "sequence": 3, "run_id": "issue-1139-fixture", "work_item_id": "WI-1139", "attempt_id": "attempt-1", "actor": "fixture@offline", "cause": "worker", "causation_id": "e-3", "reason_code": "phase_transition", "from_phase": "mapping", "to_phase": "planning", "board_state": "planned", "payload": {}},
+          {"schema": "simplicio.loop-event/v1", "contract_version": "1", "event_id": "e-4", "sequence": 4, "run_id": "issue-1139-fixture", "work_item_id": "WI-1139", "attempt_id": "attempt-1", "actor": "fixture@offline", "cause": "worker", "causation_id": "e-4", "reason_code": "phase_transition", "from_phase": "planning", "to_phase": "executing", "board_state": "in_progress", "payload": {}},
+          {"schema": "simplicio.loop-event/v1", "contract_version": "1", "event_id": "e-5", "sequence": 5, "run_id": "issue-1139-fixture", "work_item_id": "WI-1139", "attempt_id": "attempt-1", "actor": "fixture@offline", "cause": "worker", "causation_id": "e-5", "reason_code": "phase_transition", "from_phase": "executing", "to_phase": "validating", "board_state": "verifying", "payload": {}},
+          {"schema": "simplicio.loop-event/v1", "contract_version": "1", "event_id": "e-6", "sequence": 6, "run_id": "issue-1139-fixture", "work_item_id": "WI-1139", "attempt_id": "attempt-1", "actor": "fixture@offline", "cause": "worker", "causation_id": "e-6", "reason_code": "phase_transition", "from_phase": "validating", "to_phase": "watching", "board_state": "observing", "payload": {}},
+          {"schema": "simplicio.loop-event/v1", "contract_version": "1", "event_id": "e-7", "sequence": 7, "run_id": "issue-1139-fixture", "work_item_id": "WI-1139", "attempt_id": "attempt-1", "actor": "fixture@offline", "cause": "worker", "causation_id": "e-7", "reason_code": "phase_transition", "from_phase": "watching", "to_phase": "delivering", "board_state": "delivering", "payload": {}},
+          {"schema": "simplicio.loop-event/v1", "contract_version": "1", "event_id": "e-8", "sequence": 8, "run_id": "issue-1139-fixture", "work_item_id": "WI-1139", "attempt_id": "attempt-1", "actor": "fixture@offline", "cause": "worker", "causation_id": "e-8", "reason_code": "phase_transition", "from_phase": "delivering", "to_phase": "done", "board_state": "completed", "payload": {}}
+        ],
+        "cursor": {"last_sequence": 0}, "source_state": {"status": "closed"}, "lease": {"state": "owned", "owner": "fixture@offline"}
+      },
+      "expected_outcome": "CONVERGED"
+    }
+  ]
+}

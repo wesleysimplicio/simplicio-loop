@@ -62,6 +62,14 @@ Use the most specific form, such as `simplicio-loop queue top --help` or
 | `hub-drain-plan` | Read-only GitHub drain intake. |
 | `hub-drain-admit` | Admit a held final checkpoint without dispatching it. |
 
+## Offline journal replay
+
+`python scripts/journal_replay.py <suite.json> --check` replays committed
+`simplicio.journal-replay-suite/v1` fixtures through the production journal and recovery
+modules without network access. It emits a canonical
+`simplicio.journal-replay-receipt/v1` JSON receipt and exits non-zero when an observed
+outcome differs from `expected_outcome`.
+
 ## Operator order for LLMs
 
 1. `simplicio-mapper --help` → `scan` → `inspect` → `handoff`.
