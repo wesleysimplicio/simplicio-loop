@@ -665,3 +665,21 @@ def test_single_task_fast_adversarial_fail_closed_gates():
     operations["fast_context"] = lambda contract, foreground, engine: {"generation": "F0", "bytes": 4097, "tokens": 10}
     receipt = run_single_task_fast(_fast_task(), operations)
     assert receipt["status"] == "ESCALATED" and receipt["reason_code"] == "context_budget_exceeded"
+
+
+def test_local_mapper_index_receipt_is_normalized_for_single_task_fast(tmp_path, monkeypatch):
+    from simplicio_loop.intake_planner import build_local_single_task_operations, freeze_single_task_contract
+    import subprocess
+    task = _fast_task(repo=str(tmp_path), target_hints=["main.py"])
+    (tmp_path / "main.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr("simplicio_loop.intake_planner.shutil.which", lambda name: name)
+    def process(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, json.dumps({
+            "schema": "simplicio.mapper-index/v1", "status": "updated",
+            "result": {"paths": {"project_map": "project-map.json"}},
+        }), "")
+    monkeypatch.setattr("simplicio_loop.intake_planner.subprocess.run", process)
+    receipt = build_local_single_task_operations(task, root=str(tmp_path))["mapper_foreground"](freeze_single_task_contract(task))
+    assert receipt["verified"] is True
+    assert receipt["receipt"]["schema"] == "simplicio.mapper-receipt/v1"
+    assert receipt["receipt"]["artifact_digest"]
