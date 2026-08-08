@@ -51,6 +51,10 @@ def test_profile_status_exposes_llm_max_speed_orientation():
     assert orient["canonical_doc"] == "docs/LLM_MAX_SPEED_ORIENTATION.md"
     assert "DONE" in orient["message_cadence"]
     assert any("hand-edit" in f for f in orient["forbid"])
+    assert orient["context_route"]["primary"] == "simplicio-fast"
+    assert orient["fallback_policy"]["auto"] == "mapper_read_only"
+    assert orient["mutation_boundary"]["authorized"] is False
+    assert orient["receipt_schema"] == "simplicio.loop-orient-receipt/v1"
     assert status["hot_path"][0].startswith("simplicio loop decide")
 
 

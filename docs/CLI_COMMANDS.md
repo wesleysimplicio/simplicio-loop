@@ -28,7 +28,7 @@ Use the most specific form, such as `simplicio-loop queue top --help` or
 | `prototype` | Route prototype planning and validation commands. |
 | `plan` | Compile a raw task into a frozen contract. |
 | `run` | Arm, execute, and independently verify a task. |
-| `orient` | Build bounded context through Fast with Mapper fallback. |
+| `orient` | Build bounded context through Fast and emit `simplicio.llm-max-speed-orientation/v1` plus a hash-bound `simplicio.loop-orient-receipt/v1`; auto may fall back read-only to Mapper, while required Fast/Rust fails closed. |
 | `retrieve` | Retrieve and verify a tee-cache result. |
 | `extensions doctor` | Inspect an exact extension-provider/runtime handshake. |
 | `oracle` | Evaluate completion and cross-runtime parity. |
@@ -61,6 +61,29 @@ Use the most specific form, such as `simplicio-loop queue top --help` or
 | `release-train check` | Validate ecosystem release schemas and local drift. |
 | `hub-drain-plan` | Read-only GitHub drain intake. |
 | `hub-drain-admit` | Admit a held final checkpoint without dispatching it. |
+
+## Offline journal replay
+
+`python scripts/journal_replay.py <suite.json> --check` replays committed
+`simplicio.journal-replay-suite/v1` fixtures through the production journal and recovery
+modules without network access. It emits a canonical
+`simplicio.journal-replay-receipt/v1` JSON receipt and exits non-zero when an observed
+outcome differs from `expected_outcome`.
+
+## Convergence parity protocol
+
+Run one versioned fixture through the Runtime-backed and standalone semantic
+controllers with:
+
+```text
+python -m simplicio_loop.convergence_parity FIXTURE.json [--runtime-decision DECISION.json]
+```
+
+The command emits `simplicio.convergence-parity/v1`. Exit `0` means both paths
+reached equivalent verified acceptance and evidence receipts. Exit `2` means an
+invalid fixture or an unsupported environment; the receipt names the unsupported
+path and reason, and no path may silently substitute standalone behavior for a
+missing, incompatible, or non-activating Runtime decision.
 
 ## Operator order for LLMs
 
