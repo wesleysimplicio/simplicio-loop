@@ -55,9 +55,12 @@ def new_report(
     *,
     execution_profile: str = "operator-standalone",
     loop_decision: Optional[dict[str, Any]] = None,
+    provenance: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     run_id = f"run-{_unix()}-{_fp(str(repo))[:8]}"
     measured = ["run_id", "started_at_unix", "execution_profile"]
+    if provenance:
+        measured.append("provenance")
     unverified = ["cpu_percent", "tokens_*"]
     unavailable: dict[str, str] = {
         "cpu_percent": "continuous CPU sampler not wired this slice",
@@ -83,6 +86,7 @@ def new_report(
         "wall_ms": 0,
         "execution_profile": execution_profile,
         "loop_decision": loop_decision,
+        "provenance": dict(provenance or {}),
         "operators_used": [],
         "tasks": [],
         "consolidated": {},
