@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -95,8 +95,16 @@ _READ_ONLY_MARKERS = (
     "do not modify",
     "without editing",
 )
-_MUTATION_NODE_KINDS = {"structured_patch", "source_edit", "source-edit"}
-_PATH_TOKEN = re.compile(r"(?<![\\w.-])(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]*[\\/]?")
+_MUTATION_NODE_KINDS = {
+    "structured_patch",
+    "structured-patch",
+    "source_edit",
+    "source-edit",
+}
+_PATH_TOKEN = re.compile(
+    r"(?<![\w.-])(?:[A-Za-z]:)?[\\/]?(?:[A-Za-z0-9_.-]+[\\/])+"
+    r"[A-Za-z0-9_.-]*[\\/]?"
+)
 INTENT_POLICY_SCHEMA = "simplicio.loop-fast-intent-policy/v1"
 
 
@@ -105,29 +113,52 @@ def _read_only_intent(task: str) -> bool:
     return any(marker in normalized for marker in _READ_ONLY_MARKERS)
 
 
-def _explicit_targets(task: str) -> list[tuple[str, bool]]:
+def _normalize_repo_path(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip().replace("\\", "/")
+    if not raw or raw.startswith("/") or re.match(r"^[A-Za-z]:/", raw):
+        return None
+    parts = [part for part in raw.split("/") if part not in {"", "."}]
+    if not parts or any(part == ".." for part in parts):
+        return None
+    return "/".join(parts)
+
+
+def _path_within_root(root: Path, relative: str) -> bool:
+    try:
+        (root / Path(relative)).resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _explicit_targets(task: str) -> tuple[list[tuple[str, bool]], list[str]]:
     targets: dict[str, bool] = {}
-    for match in _PATH_TOKEN.findall(str(task)):
+    invalid: list[str] = []
+    without_urls = re.sub(r"\b[A-Za-z][A-Za-z0-9+.-]*://\S+", "", str(task))
+    for match in _PATH_TOKEN.findall(without_urls):
         raw = match.strip("`'\".,;:()[]{}")
-        if "://" in raw:
-            continue
         is_dir = raw.endswith("/") or raw.endswith("\\")
-        normalized = raw.replace("\\", "/").lstrip("./").strip("/")
-        if normalized:
-            targets[normalized] = targets.get(normalized, False) or is_dir
-    return sorted(targets.items())
+        normalized = _normalize_repo_path(raw.rstrip("/\\"))
+        if normalized is None:
+            invalid.append(raw)
+            continue
+        targets[normalized] = targets.get(normalized, False) or is_dir
+    return sorted(targets.items()), sorted(set(invalid))
 
 
 def _context_paths(value: Any) -> list[str]:
     if isinstance(value, Mapping):
         found: list[str] = []
         for key in ("file", "path", "relative_path"):
-            item = value.get(key)
-            if isinstance(item, str) and item.strip():
-                found.append(item.replace("\\", "/").lstrip("./").strip("/"))
+            normalized = _normalize_repo_path(value.get(key))
+            if normalized:
+                found.append(normalized)
         return found
     if isinstance(value, str) and ("/" in value or "\\" in value):
-        return [value.replace("\\", "/").lstrip("./").strip("/")]
+        normalized = _normalize_repo_path(value)
+        return [normalized] if normalized else []
     if isinstance(value, (list, tuple)):
         found: list[str] = []
         for item in value:
@@ -140,6 +171,22 @@ def _corridor_contains(candidate: str, target: tuple[str, bool]) -> bool:
     path, is_dir = target
     return candidate == path or (
         is_dir and candidate.startswith(path.rstrip("/") + "/")
+    )
+
+
+def _is_mutation_node(node: Mapping[str, Any]) -> bool:
+    kind = str(node.get("kind") or node.get("capability") or "").strip().lower()
+    inputs = node.get("inputs") if isinstance(node.get("inputs"), Mapping) else {}
+    return kind in _MUTATION_NODE_KINDS or inputs.get("format") == FAST_CHANGESET_SCHEMA
+
+
+def _plan_hash(plan: Mapping[str, Any]) -> str:
+    return _hash(
+        {
+            key: value
+            for key, value in plan.items()
+            if key not in {"plan_hash", "loop_receipt"}
+        }
     )
 
 
@@ -157,7 +204,7 @@ def _validate_plan_policy(
     root: Path, task: str, understanding: Mapping[str, Any], plan: Mapping[str, Any]
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     read_only = _read_only_intent(task)
-    targets = _explicit_targets(task)
+    targets, invalid_targets = _explicit_targets(task)
     target_names = [path + ("/" if is_dir else "") for path, is_dir in targets]
     policy = {
         "schema": INTENT_POLICY_SCHEMA,
@@ -169,11 +216,7 @@ def _validate_plan_policy(
     }
     blockers: list[dict[str, Any]] = []
     nodes = [node for node in plan.get("nodes", []) if isinstance(node, Mapping)]
-    mutation_nodes = [
-        node
-        for node in nodes
-        if str(node.get("kind") or node.get("capability") or "") in _MUTATION_NODE_KINDS
-    ]
+    mutation_nodes = [node for node in nodes if _is_mutation_node(node)]
     if plan.get("schema") != FAST_PLAN_SCHEMA:
         blockers.append(
             _blocker(
@@ -190,12 +233,21 @@ def _validate_plan_policy(
                 "orient",
             )
         )
+    if invalid_targets:
+        blockers.append(
+            _blocker(
+                "TARGET_PATH_INVALID",
+                "explicit targets must be repository-relative paths: "
+                + ", ".join(invalid_targets),
+                "target",
+            )
+        )
+
     allowed_files: list[str] = []
+    invalid_allowed: list[str] = []
     for node in mutation_nodes:
         inputs = node.get("inputs") if isinstance(node.get("inputs"), Mapping) else {}
-        raw_allowed = (
-            inputs.get("allowed_files") if isinstance(inputs, Mapping) else None
-        )
+        raw_allowed = inputs.get("allowed_files")
         if not isinstance(raw_allowed, list) or not raw_allowed:
             blockers.append(
                 _blocker(
@@ -213,13 +265,49 @@ def _validate_plan_policy(
                     "plan-policy",
                 )
             )
-        allowed_files.extend(
-            str(path).replace("\\", "/").lstrip("./").strip("/")
-            for path in raw_allowed
-            if isinstance(path, str) and path.strip()
+        for item in raw_allowed:
+            normalized = _normalize_repo_path(item)
+            if normalized is None or not _path_within_root(root, normalized):
+                invalid_allowed.append(str(item))
+            else:
+                allowed_files.append(normalized)
+    allowed_files = sorted(set(allowed_files))
+    policy["allowed_files"] = allowed_files
+    if invalid_allowed:
+        blockers.append(
+            _blocker(
+                "MUTATION_TARGET_INVALID",
+                "mutable allowed_files must stay repository-relative: "
+                + ", ".join(sorted(set(invalid_allowed))),
+                "plan-policy",
+            )
         )
+
+    observed = sorted(
+        set(
+            _context_paths(understanding.get("context"))
+            + _context_paths(understanding.get("files"))
+        )
+    )
+    policy["context_path_count"] = len(observed)
     if targets:
-        unresolved = [path for path, _ in targets if not (root / Path(path)).exists()]
+        escaped = [path for path, _ in targets if not _path_within_root(root, path)]
+        if escaped:
+            blockers.append(
+                _blocker(
+                    "TARGET_PATH_INVALID",
+                    "explicit targets resolve outside the orientation repository: "
+                    + ", ".join(escaped),
+                    "target",
+                )
+            )
+        unresolved = []
+        for path, is_dir in targets:
+            if path in escaped:
+                continue
+            candidate = root / Path(path)
+            if not (candidate.is_dir() if is_dir else candidate.is_file()):
+                unresolved.append(path + ("/" if is_dir else ""))
         if unresolved:
             blockers.append(
                 _blocker(
@@ -253,17 +341,10 @@ def _validate_plan_policy(
                     "target",
                 )
             )
-        observed = _context_paths(understanding.get("context")) + _context_paths(
-            understanding.get("files")
-        )
-        if (
-            mutation_nodes
-            and observed
-            and not any(
-                _corridor_contains(path, target) or path == target[0]
-                for path in observed
-                for target in targets
-            )
+        if mutation_nodes and not any(
+            _corridor_contains(path, target)
+            for path in observed
+            for target in targets
         ):
             blockers.append(
                 _blocker(
@@ -272,10 +353,7 @@ def _validate_plan_policy(
                     "fast-understand",
                 )
             )
-    elif mutation_nodes and not (
-        _context_paths(understanding.get("context"))
-        + _context_paths(understanding.get("files"))
-    ):
+    elif mutation_nodes and not observed:
         blockers.append(
             _blocker(
                 "CONTEXT_RELEVANCE_INSUFFICIENT",
@@ -283,6 +361,23 @@ def _validate_plan_policy(
                 "fast-understand",
             )
         )
+
+    unobserved_allowed = sorted(path for path in allowed_files if path not in observed)
+    if mutation_nodes and unobserved_allowed:
+        reason = (
+            "TARGET_RELEVANCE_INSUFFICIENT"
+            if targets
+            else "CONTEXT_RELEVANCE_INSUFFICIENT"
+        )
+        blockers.append(
+            _blocker(
+                reason,
+                "mutable allowed_files lack bounded Fast context spans: "
+                + ", ".join(unobserved_allowed),
+                "fast-understand",
+            )
+        )
+
     unique: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in blockers:
@@ -298,24 +393,38 @@ def _redact_blocked_plan(
     policy: Mapping[str, Any],
     blockers: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    nodes = [node for node in plan.get("nodes", []) if isinstance(node, Mapping)]
+    redacted_ids = {
+        str(node.get("id"))
+        for node in nodes
+        if _is_mutation_node(node) and node.get("id") is not None
+    }
+    changed = True
+    while changed:
+        changed = False
+        for node in nodes:
+            node_id = str(node.get("id")) if node.get("id") is not None else ""
+            depends_on = node.get("depends_on")
+            dependencies = depends_on if isinstance(depends_on, list) else []
+            if node_id and node_id not in redacted_ids and any(
+                str(dependency) in redacted_ids for dependency in dependencies
+            ):
+                redacted_ids.add(node_id)
+                changed = True
+
     safe = dict(plan)
+    safe.pop("loop_receipt", None)
+    safe.pop("plan_hash", None)
     safe["nodes"] = [
         dict(node)
-        for node in plan.get("nodes", [])
-        if isinstance(node, Mapping)
-        and str(node.get("kind") or node.get("capability") or "")
-        not in _MUTATION_NODE_KINDS
+        for node in nodes
+        if not _is_mutation_node(node)
+        and str(node.get("id") or "") not in redacted_ids
     ]
     safe["status"] = "BLOCKED"
     safe["intent_policy"] = dict(policy)
     safe["blocked_preconditions"] = [dict(item) for item in blockers]
-    safe["plan_hash"] = _hash(
-        {
-            key: value
-            for key, value in safe.items()
-            if key not in {"plan_hash", "loop_receipt"}
-        }
-    )
+    safe["redacted_node_ids"] = sorted(redacted_ids)
     return safe
 
 
@@ -644,13 +753,21 @@ class FastLoopIntegration:
         policy, blockers = _validate_plan_policy(self.root, task, understanding, payload)
         if blockers:
             payload = _redact_blocked_plan(payload, policy, blockers)
-        plan_hash = _hash(payload)
         result = dict(payload)
         result["intent_policy"] = policy
+        result["plan_hash"] = _plan_hash(result)
         result["loop_receipt"] = {
-            "schema": RECEIPT_SCHEMA, "status": "BLOCKED" if blockers else "MEASURED", "stage": "plan", "fallback": False,
-            "generation": self._generation, "context_hash": self._context_hash,
-            "plan_hash": plan_hash, "understanding_receipt_hash": understanding.get("loop_receipt", {}).get("receipt_hash", ""),
+            "schema": RECEIPT_SCHEMA,
+            "status": "BLOCKED" if blockers else "MEASURED",
+            "stage": "plan",
+            "fallback": False,
+            "generation": self._generation,
+            "context_hash": self._context_hash,
+            "plan_hash": result["plan_hash"],
+            "intent_policy_hash": _hash(policy),
+            "understanding_receipt_hash": understanding.get("loop_receipt", {}).get(
+                "receipt_hash", ""
+            ),
         }
         result["loop_receipt"]["receipt_hash"] = _hash(result["loop_receipt"])
         return result
@@ -659,25 +776,57 @@ class FastLoopIntegration:
         """Run ingest -> understand -> plan once and return bounded agent context."""
         ingest = self.ingest()
         if ingest.get("fallback"):
-            return {"schema": SCHEMA, "status": "FALLBACK", "ingest": ingest,
-                    "understanding": self._fallback("understand", str(ingest.get("reason") or "Fast unavailable"))}
+            return {
+                "schema": SCHEMA,
+                "status": "FALLBACK",
+                "ingest": ingest,
+                "understanding": self._fallback(
+                    "understand", str(ingest.get("reason") or "Fast unavailable")
+                ),
+            }
         understanding = self.understand(task)
         if understanding.get("fallback"):
-            return {"schema": SCHEMA, "status": "FALLBACK", "ingest": ingest, "understanding": understanding}
+            return {
+                "schema": SCHEMA,
+                "status": "FALLBACK",
+                "ingest": ingest,
+                "understanding": understanding,
+            }
         plan = self.plan(task)
-        if plan.get("status") == "BLOCKED":
-            blockers = list(plan.get("blocked_preconditions") or [])
-            return {"schema": SCHEMA, "status": "BLOCKED", "ingest": ingest,
-                    "understanding": understanding, "plan": plan,
-                    "blocked_preconditions": blockers,
-                    "reason": blockers[0].get("reason") if blockers else "plan_policy_blocked",
-                    "intent_policy": plan.get("intent_policy"),
-                    "generation": self._generation, "context_hash": self._context_hash,
-                    "plan_hash": plan["loop_receipt"]["plan_hash"]}
-        return {"schema": SCHEMA, "status": "READY", "ingest": ingest,
-                "understanding": understanding, "plan": plan,
-                "intent_policy": plan.get("intent_policy"), "generation": self._generation,
-                "context_hash": self._context_hash, "plan_hash": plan["loop_receipt"]["plan_hash"]}
+        blockers = list(plan.get("blocked_preconditions") or [])
+        status = "BLOCKED" if plan.get("status") == "BLOCKED" else "READY"
+        result = {
+            "schema": SCHEMA,
+            "status": status,
+            "ingest": ingest,
+            "understanding": understanding,
+            "plan": plan,
+            "intent_policy": plan.get("intent_policy"),
+            "generation": self._generation,
+            "context_hash": self._context_hash,
+            "plan_hash": plan["plan_hash"],
+        }
+        if blockers:
+            result["blocked_preconditions"] = blockers
+            result["reason"] = blockers[0].get("reason") or "plan_policy_blocked"
+        result["loop_receipt"] = {
+            "schema": RECEIPT_SCHEMA,
+            "status": "BLOCKED" if blockers else "MEASURED",
+            "stage": "prepare",
+            "fallback": False,
+            "generation": self._generation,
+            "context_hash": self._context_hash,
+            "plan_hash": plan["plan_hash"],
+            "task_hash": _hash({"task": task}),
+            "intent_policy_hash": _hash(plan.get("intent_policy") or {}),
+            "ingest_receipt_hash": ingest.get("receipt_hash", ""),
+            "understanding_receipt_hash": understanding.get("loop_receipt", {}).get(
+                "receipt_hash", ""
+            ),
+            "plan_receipt_hash": plan.get("loop_receipt", {}).get("receipt_hash", ""),
+        }
+        result["loop_receipt"]["receipt_hash"] = _hash(result["loop_receipt"])
+        return result
 
     def apply(self, changeset: Mapping[str, Any], *, winner: bool = True,
               generation: str | None = None, context_hash: str | None = None) -> dict[str, Any]:

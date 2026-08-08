@@ -17,7 +17,8 @@ class _ReadyFast:
 
     def prepare(self, task):
         return {"status": "READY", "generation": "g1", "context_hash": "ctx",
-                "task": task}
+                "task": task,
+                "loop_receipt": {"stage": "prepare", "receipt_hash": "sha256:ready"}}
 
 
 def test_orient_prefers_fast_and_emits_bounded_receipt(tmp_path, monkeypatch, capsys):
@@ -28,6 +29,7 @@ def test_orient_prefers_fast_and_emits_bounded_receipt(tmp_path, monkeypatch, ca
     assert payload["status"] == "READY"
     assert payload["provider"] == "simplicio-fast"
     assert payload["local_llm"] is False
+    assert payload["orient_receipt"] == payload["fast"]["loop_receipt"]
     assert _ReadyFast.last_config.mode == "required"
     assert _ReadyFast.last_config.max_bytes == 1234
     assert _ReadyFast.last_config.engine == "auto"
@@ -111,6 +113,12 @@ def test_orient_cli_fails_closed_without_mutable_authority(
                     "schema": "simplicio.fast.plandag/v2",
                     "status": "BLOCKED",
                     "nodes": [{"id": "orient", "kind": "context"}],
+                    "redacted_node_ids": ["modify", "refresh", "validate"],
+                },
+                "loop_receipt": {
+                    "stage": "prepare",
+                    "status": "BLOCKED",
+                    "receipt_hash": "sha256:blocked",
                 },
             }
 
@@ -120,4 +128,8 @@ def test_orient_cli_fails_closed_without_mutable_authority(
     assert payload["status"] == "BLOCKED"
     assert payload["provider"] == "simplicio-fast"
     assert payload["fast"]["reason"] == "READ_ONLY_MUTATION_AUTHORITY"
+    assert payload["orient_receipt"] == payload["fast"]["loop_receipt"]
+    assert payload["fast"]["plan"]["redacted_node_ids"] == [
+        "modify", "refresh", "validate"
+    ]
     assert "structured_patch" not in json.dumps(payload)
