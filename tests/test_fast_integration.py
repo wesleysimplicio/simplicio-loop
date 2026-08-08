@@ -64,7 +64,13 @@ def test_prepare_ingests_once_and_pins_receipts(tmp_path: Path) -> None:
     assert first["ingest"]["source_commit"] == "abc123"
     assert first["context_hash"].startswith("sha256:")
     assert first["plan"]["loop_receipt"]["plan_hash"].startswith("sha256:")
+    assert first["plan_hash"] == first["plan"]["plan_hash"]
+    assert first["plan_hash"] == first["loop_receipt"]["plan_hash"]
+    assert first["loop_receipt"]["stage"] == "prepare"
+    assert first["loop_receipt"]["receipt_hash"].startswith("sha256:")
     assert second["generation"] == first["generation"]
+    assert second["plan_hash"] == first["plan_hash"]
+    assert second["loop_receipt"] == first["loop_receipt"]
     assert sum(call[1] == "ingest" for call in fake.calls) == 1
     assert [call[1] for call in fake.calls].count("understand") == 4
     assert [call[1] for call in fake.calls].count("plan") == 2
@@ -211,6 +217,16 @@ def test_read_only_qdot_i8_orientation_blocks_mutable_plan_and_redacts_nodes(
                                         "allowed_files": ["runtime/src/other.rs"],
                                     },
                                 },
+                                {
+                                    "id": "validate",
+                                    "kind": "command",
+                                    "depends_on": ["modify"],
+                                },
+                                {
+                                    "id": "refresh",
+                                    "kind": "refresh",
+                                    "depends_on": ["validate"],
+                                },
                             ],
                         }
                     ),
@@ -226,11 +242,13 @@ def test_read_only_qdot_i8_orientation_blocks_mutable_plan_and_redacts_nodes(
         "Read-only orientation, sem editar arquivos: qdot_i8 is missing while QuantizedI8 is positive. "
         "Use explicit targets benchmarks/ and crates/tesser_std/src/test/bench.rs; do not modify source files."
     )
-    result = FastLoopIntegration(
+    integration = FastLoopIntegration(
         tmp_path,
         config=FastConfig(command=("fast",), mode="required"),
         runner=PolicyFast(tmp_path),
-    ).prepare(task)
+    )
+    result = integration.prepare(task)
+    repeated = integration.prepare(task)
 
     reasons = {item["reason"] for item in result["blocked_preconditions"]}
     assert result["status"] == "BLOCKED"
@@ -239,9 +257,14 @@ def test_read_only_qdot_i8_orientation_blocks_mutable_plan_and_redacts_nodes(
     assert result["intent_policy"]["schema"] == "simplicio.loop-fast-intent-policy/v1"
     assert result["intent_policy"]["mutable_authority"] is False
     assert result["plan"]["status"] == "BLOCKED"
-    assert all(
-        node.get("kind") != "structured_patch" for node in result["plan"]["nodes"]
-    )
+    assert [node["id"] for node in result["plan"]["nodes"]] == ["orient"]
+    assert result["plan"]["redacted_node_ids"] == ["modify", "refresh", "validate"]
+    assert result["plan_hash"] == result["plan"]["plan_hash"]
+    assert result["plan_hash"] == result["plan"]["loop_receipt"]["plan_hash"]
+    assert result["loop_receipt"]["stage"] == "prepare"
+    assert repeated["plan_hash"] == result["plan_hash"]
+    assert repeated["loop_receipt"] == result["loop_receipt"]
+    assert "structured_patch" not in json.dumps(result["plan"])
 
 
 def test_plan_policy_rejects_unresolved_targets_and_missing_mutation_policy(tmp_path):
@@ -297,3 +320,63 @@ def test_plan_policy_rejects_wrong_format_and_zero_context(tmp_path):
     assert "MUTATION_POLICY_MISSING" in reasons
     assert "CONTEXT_RELEVANCE_INSUFFICIENT" in reasons
     assert FAST_CHANGESET_SCHEMA != "wrong"
+
+
+def test_explicit_target_with_zero_context_cannot_authorize_mutation(tmp_path):
+    from simplicio_loop.fast_integration import FAST_PLAN_SCHEMA, _validate_plan_policy
+
+    target = tmp_path / "src" / "app.py"
+    target.parent.mkdir()
+    target.write_text("pass\n", encoding="utf-8")
+    policy, blockers = _validate_plan_policy(
+        tmp_path,
+        "update src/app.py",
+        {"context": [], "files": []},
+        {
+            "schema": FAST_PLAN_SCHEMA,
+            "nodes": [
+                {
+                    "id": "modify",
+                    "kind": "structured_patch",
+                    "inputs": {
+                        "format": FAST_CHANGESET_SCHEMA,
+                        "allowed_files": ["src/app.py"],
+                    },
+                }
+            ],
+        },
+    )
+
+    assert policy["validated"] is False
+    assert policy["context_path_count"] == 0
+    assert "TARGET_RELEVANCE_INSUFFICIENT" in {
+        item["reason"] for item in blockers
+    }
+
+
+def test_plan_policy_rejects_paths_outside_repository(tmp_path):
+    from simplicio_loop.fast_integration import FAST_PLAN_SCHEMA, _validate_plan_policy
+
+    policy, blockers = _validate_plan_policy(
+        tmp_path,
+        "update ../outside.py",
+        {"context": [{"file": "src/app.py"}]},
+        {
+            "schema": FAST_PLAN_SCHEMA,
+            "nodes": [
+                {
+                    "id": "modify",
+                    "kind": "structured_patch",
+                    "inputs": {
+                        "format": FAST_CHANGESET_SCHEMA,
+                        "allowed_files": ["../outside.py"],
+                    },
+                }
+            ],
+        },
+    )
+
+    reasons = {item["reason"] for item in blockers}
+    assert policy["validated"] is False
+    assert "TARGET_PATH_INVALID" in reasons
+    assert "MUTATION_TARGET_INVALID" in reasons

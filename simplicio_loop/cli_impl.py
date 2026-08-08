@@ -410,7 +410,9 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
     if fast_payload and fast_payload.get("status") == "READY":
         payload = {"schema": ORIENT_SCHEMA, "status": "READY",
                           "provider": "simplicio-fast", "fallback": False,
-                          "fast_engine": fast_engine, "fast": fast_payload, "local_llm": False}
+                          "fast_engine": fast_engine, "fast": fast_payload,
+                          "orient_receipt": fast_payload.get("loop_receipt"),
+                          "local_llm": False}
         _seal_orient_payload(payload, root=root, task=str(task), fast_mode=fast_mode,
                              fast_engine=fast_engine,
                              fast_context_budget=fast_context_budget)
@@ -425,7 +427,9 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
                           "provider": "simplicio-fast", "fallback": False,
                           "fast_engine": fast_engine,
                           "fallback_reason": fallback_reason or "fast_not_ready",
-                          "fast": fast_payload, "local_llm": False}
+                           "fast": fast_payload,
+                           "orient_receipt": (fast_payload or {}).get("loop_receipt"),
+                           "local_llm": False}
         _seal_orient_payload(payload, root=root, task=str(task), fast_mode=fast_mode,
                              fast_engine=fast_engine,
                              fast_context_budget=fast_context_budget)
