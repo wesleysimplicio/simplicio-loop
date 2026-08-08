@@ -16,7 +16,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -32,9 +31,8 @@ _RUNTIME_VERSION_TIMEOUT_S = 5.0
 
 
 def _runtime_version(executable: str) -> str:
+    """Probe the exact binary and accept an override only when it agrees."""
     override = os.environ.get("SIMPLICIO_RUNTIME_VERSION", "").strip()
-    if override:
-        return override
     try:
         completed = subprocess.run(
             [executable, "--version"],
@@ -48,7 +46,14 @@ def _runtime_version(executable: str) -> str:
     if completed.returncode != 0:
         return "unknown"
     match = _RUNTIME_VERSION_RE.search(f"{completed.stdout}\n{completed.stderr}")
-    return match.group(1) if match else "unknown"
+    observed = match.group(1) if match else "unknown"
+    if not override:
+        return observed
+    # An environment value is only an assertion about the same executable; it
+    # must never replace an unverified banner or mask a version mismatch.
+    override_match = _RUNTIME_VERSION_RE.search(override)
+    normalized_override = override_match.group(1) if override_match else "unknown"
+    return observed if observed != "unknown" and normalized_override == observed else "unknown"
 
 
 
@@ -880,7 +885,7 @@ def validate_stack_lock(payload: Any) -> list[str]:
         for index, raw in enumerate(raw_components):
             try:
                 component = _component_from_dict(raw)
-            except (TypeError, ValueError, StackLockError) as error:
+            except (TypeError, ValueError, StackLockError):
                 errors.append(f"component_{index}_invalid")
                 continue
             if not component.name:

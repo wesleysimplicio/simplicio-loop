@@ -107,7 +107,28 @@ def test_runtime_discovery_probes_binary_version(monkeypatch, tmp_path):
     )]
 
 
-def test_lock_hash_is_canonical_and_route_is_frozen(tmp_path):
+def test_runtime_version_override_must_match_probed_binary(monkeypatch, tmp_path):
+    runtime_binary = tmp_path / "simplicio-runtime"
+    runtime_binary.write_bytes(b"runtime")
+    monkeypatch.setenv("SIMPLICIO_RUNTIME_VERSION", "9.9.9")
+    monkeypatch.setenv("SIMPLICIO_RUNTIME_BIN", str(runtime_binary))
+
+    class Completed:
+        returncode = 0
+        stdout = "Simplicio Runtime 3.6.1\\n"
+        stderr = ""
+
+    monkeypatch.setattr(stack_lock_mod.subprocess, "run", lambda *_a, **_k: Completed())
+    runtime = next(
+        item for item in stack_lock_mod.discover_installed_components()
+        if item.name == "simplicio-runtime"
+    )
+
+    assert runtime.version == "unknown"
+    assert runtime.available is True
+    with pytest.raises(StackLockError, match="verified simplicio-runtime version"):
+        StackLock.create([runtime], "runtime-backed")
+
     mapper = _component(tmp_path)
     fast = _component(tmp_path, "simplicio-fast", b"fast")
     runtime = _component(tmp_path, "simplicio-runtime", b"runtime")
