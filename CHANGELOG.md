@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.39.3] - 2026-08-09
+
+### Added
+- Add governed native LLM max-speed orientation and Runtime operator-routing documentation.
+- Add packaging/environment guidance and the ADR for Runtime-owned operator routing.
+
+### Fixed
+- Probe Runtime version before freezing stack locks and block mutable plans for read-only intents.
+- Verify PR body integrity, report prototype source drift, bind Fast ingest to the source commit, and exclude generated Fast state from fingerprints.
+- Preserve Rust targets and fail closed on fallback; restore the release manifest test path.
+
 ## [3.39.2] - 2026-08-04
 
 ### Fixed
