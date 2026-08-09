@@ -1094,6 +1094,10 @@ def main(argv=None) -> int:
     p_context.add_argument("--timeout", type=float, default=60.0, help="Fast request timeout in seconds")
     p_context.add_argument("--json", action="store_true", help="emit machine-readable JSON (the default)")
 
+    p_single_fast = sub.add_parser(
+        "single-task-fast", help="select the bounded single-task local-first route")
+    p_single_fast.add_argument("--task-file", required=True, help="JSON task or task array")
+
     p_map = sub.add_parser("map", help="map-service cross-module status")
     map_sub = p_map.add_subparsers(dest="map_command", required=True)
     p_map_status = map_sub.add_parser(
@@ -1393,6 +1397,17 @@ def main(argv=None) -> int:
             args.handshake_file,
             args.ledger_command,
         )
+    if command == "single-task-fast":
+        from .intake_planner import dispatch_single_task_fast
+        try:
+            payload = json.loads(Path(args.task_file).read_text(encoding="utf-8"))
+            tasks = payload if isinstance(payload, list) else [payload]
+            result = dispatch_single_task_fast(tasks)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            print(json.dumps({"status": "BLOCKED", "reason_code": "invalid_task_file", "error": str(exc)}, sort_keys=True))
+            return 2
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result["status"] != "BLOCKED" else 2
     if command == "release-train":
         if _release_manifest is None:
             parser.error("release_manifest script not importable")
