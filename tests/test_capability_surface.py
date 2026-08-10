@@ -7,6 +7,8 @@ from simplicio_loop.route import route
 def test_catalog_exposes_stable_skills_and_schema() -> None:
     catalog = load_catalog()
     assert catalog["schema"] == "simplicio.capability-catalog/v1"
+    assert catalog["language"] == "en"
+    assert catalog["instruction_language"] == "en"
     assert len(catalog["capabilities"]) == 18
     assert catalog["skills"] == sorted(catalog["skills"])
     assert catalog["load_policy"] == "index-first, skill-on-demand"
@@ -18,6 +20,8 @@ def test_prism_routes_portuguese_sprint_issue_to_full_stack() -> None:
         "validar Mapper, Fast, Dev CLI e abrir PR"
     )
     assert result["schema"] == "simplicio.route/v1"
+    assert result["language"] == "en"
+    assert result["instruction_language"] == "en"
     assert result["intent"] == "orchestrate"
     assert result["unresolved"] == []
     assert result["skills_to_load"] == [
@@ -35,4 +39,3 @@ def test_prism_closes_dependency_gaps_for_validation() -> None:
     selected = result["selected_capabilities"]
     assert selected.index("dev-cli.preflight") < selected.index("dev-cli.tests")
     assert selected.index("dev-cli.tests") < selected.index("dev-cli.evidence")
-
