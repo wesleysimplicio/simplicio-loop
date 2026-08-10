@@ -63,6 +63,7 @@ def route(task: str) -> dict[str, Any]:
         x in headline for x in (
             "parallel", "paralel", "concurr", "fan-out", "fanout", "lifecycle",
             "completion", "delegat", "orchestrat", "loop hub", "generation", "geração",
+            "all issues", "todas as issues", "batch", "multiple", "review all",
         )
     )
     headline_validation = any(

@@ -48,3 +48,48 @@ def test_real_sprint_issue_shapes_route_to_expected_intent(
     assert result["language"] == "en"
     assert result["instruction_language"] == "en"
     assert result["unresolved"] == []
+
+
+@pytest.mark.parametrize(
+    ("issue_number", "task", "expected_intent"),
+    [
+        (
+            317,
+            "[META-AUDIT] Revisar todas as issues — objetivos, fluxo de testes e critérios de aceite\n"
+            "Review every issue, group work, control parallelism, and record evidence.",
+            "orchestrate",
+        ),
+        (
+            312,
+            "plan: expandir Hypothesis pros 3 adapters completos + fixtures reais + contract tests de schema\n"
+            "Add property tests, real fixtures, and schema contract tests.",
+            "validate",
+        ),
+        (
+            311,
+            "proposta: teste por propriedade/fuzzing + fixtures com dados reais + revisão por invariante\n"
+            "Exercise normalization invariants with fuzzing and integration fixtures.",
+            "validate",
+        ),
+        (
+            309,
+            "feat(token-reflection): estender ledger do sprint com estimativa tiktoken e decisão de fan-out\n"
+            "Use the ledger to recommend bounded fan-out across future attempts.",
+            "orchestrate",
+        ),
+        (
+            307,
+            "[Integration] Compartilhar mapa canônico com overlays isolados nas execuções multi-worktree\n"
+            "Share one canonical map across parallel worktrees and coalesce builds.",
+            "orchestrate",
+        ),
+    ],
+)
+def test_second_real_sprint_batch_routes_to_expected_intent(
+    issue_number: int, task: str, expected_intent: str
+) -> None:
+    result = route(task)
+    assert result["intent"] == expected_intent, issue_number
+    assert result["language"] == "en"
+    assert result["instruction_language"] == "en"
+    assert result["unresolved"] == []
