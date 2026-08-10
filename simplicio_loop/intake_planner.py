@@ -45,6 +45,7 @@ one, and never marks delivery as done (that is `delivery_agent`'s job, a
 distinct role in the manifesto with a disjoint ``independent_of_roles`` set).
 """
 from __future__ import annotations
+from simplicio_loop.mapper_receipt import normalize_mapper_index_receipt
 
 import hashlib
 import json
@@ -794,23 +795,9 @@ def build_local_single_task_operations(task: Mapping[str, Any], *, root: str = "
 
     def mapper_foreground(contract):
         receipt = run_json([mapper, "index", str(repo), "--json"])
-        if valid_receipt(receipt, "simplicio.mapper-receipt/v1") and receipt.get("verified") is True:
-            generation = str(receipt.get("generation") or "")
-            if not generation or receipt.get("repo") != str(repo):
-                raise RuntimeError("Mapper receipt is not bound to repo/generation")
-            return {"verified": True, "generation": generation, "receipt": receipt}
-        result = receipt.get("result")
-        if (receipt.get("schema") != "simplicio.mapper-index/v1"
-                or receipt.get("status") not in {"updated", "unchanged"}
-                or not isinstance(result, Mapping)
-                or not isinstance(result.get("paths"), Mapping)):
-            raise RuntimeError("Mapper does not support a verifiable standalone receipt")
-        generation = str(receipt.get("generation") or result.get("generation")
-                         or content_hash({"repo": str(repo), "result": result}))
-        normalized = {"schema": "simplicio.mapper-receipt/v1", "verified": True,
-                      "repo": str(repo), "generation": generation,
-                      "artifact_digest": content_hash(result), "source_receipt": receipt}
-        return {"verified": True, "generation": generation, "receipt": normalized}
+        return normalize_mapper_index_receipt(
+            receipt, repo=str(repo), content_hash=content_hash, valid_receipt=valid_receipt
+        )
 
     def fast_context(contract, foreground, engine):
         ingest = run_json([fast, "--fast-engine", engine, "ingest", str(repo), "--json"])
