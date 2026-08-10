@@ -1,5 +1,7 @@
 {
   "schema": "simplicio.capability-catalog/v1",
+  "language": "en",
+  "instruction_language": "en",
   "version": 1,
   "load_policy": "index-first, skill-on-demand",
   "sources": ["simplicio_loop/stack_manifest.py", "scripts/preflight.py", "scripts/route_mode.py", ".simplicio/skills"],
@@ -24,4 +26,3 @@
     {"id":"runtime.reconcile","intent":["govern","reconcile"],"component":"runtime","skill":"simplicio-runtime","effects":"read-only","requires":["runtime.receipt"],"summary":"Recompute ambiguous effects independently."}
   ]
 }
-
