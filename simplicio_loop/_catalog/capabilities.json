@@ -12,7 +12,7 @@
     {"id":"fast.rank","intent":["retrieve","rank"],"component":"fast","skill":"simplicio-fast","effects":"read-only","requires":["fast.search"],"summary":"Rank retrieved context for the task."},
     {"id":"dev-cli.preflight","intent":["mutate","validate"],"component":"dev-cli","skill":"simplicio-dev-cli","effects":"read-only","requires":["mapper.context-select"],"summary":"Validate mutation scope and preconditions."},
     {"id":"dev-cli.edit","intent":["mutate"],"component":"dev-cli","skill":"simplicio-dev-cli","effects":"write","requires":["dev-cli.preflight"],"summary":"Apply a deterministic edit."},
-    {"id":"dev-cli.tests","intent":["validate"],"component":"dev-cli","skill":"simplicio-dev-cli","effects":"read-only","requires":["dev-cli.edit"],"summary":"Run bounded tests and checks."},
+    {"id":"dev-cli.tests","intent":["validate"],"component":"dev-cli","skill":"simplicio-dev-cli","effects":"read-only","requires":["dev-cli.preflight"],"summary":"Run bounded tests and checks."},
     {"id":"dev-cli.evidence","intent":["validate","evidence"],"component":"dev-cli","skill":"simplicio-dev-cli","effects":"write-evidence","requires":["dev-cli.tests"],"summary":"Persist post-effect evidence."},
     {"id":"loop.plan","intent":["orchestrate"],"component":"loop","skill":"simplicio-loop","effects":"read-only","requires":["mapper.context-select"],"summary":"Build a bounded execution plan."},
     {"id":"loop.slot-dispatch","intent":["orchestrate","parallel"],"component":"loop","skill":"simplicio-loop","effects":"coordination","requires":["loop.plan"],"summary":"Dispatch one task per slot."},
