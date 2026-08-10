@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simplicio-loop"
-version = "3.39.4"
+version = "3.40.0"
 description = "The Universal Looping AI Orchestrator — a runtime-agnostic super-plugin (7 skills) that drains any queue of work end-to-end on any LLM/runtime."
 readme = "PYPI.md"
 requires-python = ">=3.11"
@@ -28,10 +28,10 @@ classifiers = [
 # simplicio-cli's transitive dependency alone: partial/no-deps installations must be diagnosed
 # explicitly and the normal `pip install simplicio-loop` closure must request both distributions.
 dependencies = [
-  # Lower floors only — no upper pins. Prefer latest with `pip install -U`.
-  "simplicio-cli>=0.18.6",
-  "simplicio-mapper>=0.26.10",
-  "simplicio-fast>=2.0.22",
+  # Loop is the aggregate distribution. Keep one tested component train.
+  "simplicio-cli>=0.18.8,<0.19",
+  "simplicio-mapper>=0.26.17,<0.27",
+  "simplicio-fast>=2.0.26,<3",
   "tiktoken>=0.12.0,<1",
 ]
 
@@ -63,6 +63,7 @@ simplicio-remote-worker-supervisor = "simplicio_loop.remote_worker_supervisor_cl
 # issue #516: observability/enforcement CLI for the #498 process-supervisor contract
 # (status/top/queue/cancel/drain/reports over the #514 ProcessSpec/Lease/Result adapter).
 simplicio-process-supervisor = "simplicio_loop.process_enforcement_cli:main"
+simplicio-loop-stack = "simplicio_loop.stack_manifest:main"
 
 [tool.setuptools]
 packages = ["simplicio_loop"]
