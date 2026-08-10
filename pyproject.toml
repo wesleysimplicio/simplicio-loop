@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simplicio-loop"
-version = "3.40.0"
+version = "3.41.0"
 description = "The Universal Looping AI Orchestrator — a runtime-agnostic super-plugin (7 skills) that drains any queue of work end-to-end on any LLM/runtime."
 readme = "PYPI.md"
 requires-python = ">=3.11"
@@ -64,13 +64,15 @@ simplicio-remote-worker-supervisor = "simplicio_loop.remote_worker_supervisor_cl
 # (status/top/queue/cancel/drain/reports over the #514 ProcessSpec/Lease/Result adapter).
 simplicio-process-supervisor = "simplicio_loop.process_enforcement_cli:main"
 simplicio-loop-stack = "simplicio_loop.stack_manifest:main"
+simplicio-capabilities = "simplicio_loop.capability_catalog:main"
+simplicio-route = "simplicio_loop.route:main"
 
 [tool.setuptools]
 packages = ["simplicio_loop"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-simplicio_loop = ["_bundle/**/*", "_contracts/**/*.json"]
+simplicio_loop = ["_bundle/**/*", "_contracts/**/*.json", "_catalog/*.json"]
 
 [tool.coverage.run]
 source = ["simplicio_loop"]
