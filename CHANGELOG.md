@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.41.0] - 2026-08-10
+
+- Add the LLM-facing capability catalog and deterministic Prism route command.
+- Expose simplicio-capabilities and simplicio-route as the compact discovery surface.
+
 ## [3.40.0] - 2026-08-10
 
 - Make Loop the aggregate distribution for Mapper, Fast and Dev CLI.
