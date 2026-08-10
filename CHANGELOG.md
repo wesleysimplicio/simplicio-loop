@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.42.0] - 2026-08-10
+
+- Improve Prism recognition for Portuguese and mixed orchestration/validation requests.
+- Expand capability dependencies before emitting a route so prerequisites are never omitted.
+- Add regression coverage for the real Sprint Portfolio Intake routing shape.
+
 ## [3.41.0] - 2026-08-10
 
 - Add the LLM-facing capability catalog and deterministic Prism route command.
