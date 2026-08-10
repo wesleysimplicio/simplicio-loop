@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.40.0] - 2026-08-10
+
+- Make Loop the aggregate distribution for Mapper, Fast and Dev CLI.
+- Add `simplicio-loop-stack --json|--check` for deterministic external Runtime probing.
+
 ## [3.39.4] - 2026-08-10
 
 - Add the shared `simplicio.io/v1` envelope and document Loop's coordinator-only
