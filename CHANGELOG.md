@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.39.4] - 2026-08-10
+
+- Add the shared `simplicio.io/v1` envelope and document Loop's coordinator-only
+  responsibility.
+
 ## [3.39.3] - 2026-08-09
 
 ### Added
@@ -1923,3 +1928,4 @@ require ML models, not stdlib code) — and are not faked.
 - LMCache inference accelerator, agentsview session-observability source adapter.
 - 11 runtime adapters + universal installer; hardened Ralph loop with bound operators
   (`simplicio-mapper` + `simplicio-cli`).
+
