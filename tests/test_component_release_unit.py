@@ -132,9 +132,29 @@ def test_parse_dependency_spec():
     ("1.2.4", "==", "1.2.3", False),
     ("1.4.9", "~=", "1.4.2", True),
     ("1.5.0", "~=", "1.4.2", False),
+    # Partial upper bounds used in real pyproject pins must be evaluable (#558).
+    ("0.18.9", "<", "0.19", True),
+    ("0.19.0", "<", "0.19", False),
+    ("2.0.27", "<", "3", True),
+    ("3.0.0", "<", "3", False),
+    ("0.13.0", "<", "1", True),
 ])
 def test_constraint_satisfied(installed, op, target, expected):
     assert cr.constraint_satisfied(installed, op, target) is expected
+
+
+def test_semver_tuple_pads_short_versions():
+    assert cr._semver_tuple("0.19") == (0, 19, 0)
+    assert cr._semver_tuple("3") == (3, 0, 0)
+    assert cr._semver_tuple("2.0.27") == (2, 0, 27)
+
+
+def test_compound_range_satisfied_against_real_style_pins():
+    row = cr.check_dependency_drift(
+        "simplicio-cli>=0.18.9,<0.19", resolver=lambda _n: "0.18.9"
+    )
+    assert row["satisfied"] is True
+    assert row["drift"] is None
 
 
 def test_check_dependency_drift_satisfied():
@@ -200,7 +220,59 @@ def test_doctor_report_against_real_repo():
     assert report["schema"] == cr.DOCTOR_SCHEMA
     assert report["declared_version"]
     assert any(row["name"] == "simplicio-cli" for row in report["dependencies"])
+    # Compound pins must be verifiable now (not all-null satisfied).
+    assert "graph_hash" in report and report["graph_hash"].startswith("sha256:")
     json.dumps(report)
+
+
+def test_ecosystem_graph_from_real_pyproject():
+    graph = cr.build_ecosystem_graph(cr.REPO, resolver=lambda _n: "0.0.0")
+    assert graph["schema"] == cr.GRAPH_SCHEMA
+    assert graph["graph_hash"].startswith("sha256:")
+    assert graph["edge_count"] >= 3
+    train_names = {e["to"] for e in graph["train_edges"]}
+    assert "simplicio-mapper" in train_names
+    assert "simplicio-cli" in train_names
+    assert "simplicio-fast" in train_names
+    # Hash is independent of installed versions (only edges/specs).
+    graph2 = cr.build_ecosystem_graph(cr.REPO, resolver=lambda _n: "9.9.9")
+    assert graph["graph_hash"] == graph2["graph_hash"]
+
+
+def test_ecosystem_graph_deterministic_for_fixture_repo(tmp_path):
+    repo = _write_fixture_repo(
+        tmp_path,
+        "1.2.3",
+        '  "simplicio-cli>=0.18.9,<0.19",\n  "simplicio-mapper>=0.26.18,<0.27",',
+    )
+    g1 = cr.build_ecosystem_graph(repo, resolver=lambda _n: "0.18.9")
+    g2 = cr.build_ecosystem_graph(repo, resolver=lambda _n: "0.18.9")
+    assert g1["graph_hash"] == g2["graph_hash"]
+    assert g1["train_edge_count"] == 2
+
+
+def test_inventory_report_lists_train_floors(tmp_path):
+    repo = _write_fixture_repo(
+        tmp_path,
+        "3.43.0",
+        '  "simplicio-cli>=0.18.9,<0.19",\n  "simplicio-mapper>=0.26.18,<0.27",\n'
+        '  "simplicio-fast>=2.0.27,<3",',
+    )
+
+    def _resolver(name: str) -> str:
+        return {
+            "simplicio-cli": "0.18.9",
+            "simplicio-mapper": "0.26.18",
+            "simplicio-fast": "2.0.27",
+        }[name]
+
+    inv = cr.build_inventory_report(repo, resolver=_resolver)
+    assert inv["schema"] == cr.INVENTORY_SCHEMA
+    assert inv["declared_version"] == "3.43.0"
+    by_name = {row["name"]: row for row in inv["train"]}
+    assert by_name["simplicio-cli"]["pin_status"] == "at_floor"
+    assert by_name["simplicio-mapper"]["declared_floor"] == "0.26.18"
+    assert inv["doctor_clean"] is True
 
 
 def test_selftest_passes():
