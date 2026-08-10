@@ -31,18 +31,55 @@ def _expand_dependencies(requested: list[str], known: dict[str, dict[str, Any]])
 
 def route(task: str) -> dict[str, Any]:
     text = task.casefold()
-    governance = any(x in text for x in ("gate", "checkpoint", "receipt", "mcp", "govern", "evidence"))
+    headline = text.splitlines()[0] if text.splitlines() else text
+    # Evidence and checkpoints are often outputs of ordinary Loop work. Only an explicit
+    # governance request should switch the route to Runtime; a mention of Runtime as an
+    # integration target must not steal an orchestration/mutation/validation route.
+    governance = any(
+        x in text
+        for x in (
+            "govern", "governed", "authorize", "authorization", "policy gate",
+            "runtime gate", "mcp server", "mcp tool", "reconcile execution",
+        )
+    )
     orchestration = any(
         x in text
         for x in (
             "all issues", "todas as issues", "batch", "parallel", "paralel", "multiple",
             "retry", "until done", "orquestr", "deleg", "lifecycle", "completion",
             "abrir pr", "pull request", "fan-out", "fanout",
+            "generation", "geração", "loop hub", "dag", "concurrency", "concorrência",
+            "structured concurrency", "fan-out", "fanout",
         )
     )
-    validation = any(x in text for x in ("test", "tests", "validate", "validar", "verify", "verificar", "lint", "check"))
-    mutation = any(x in text for x in ("fix", "implement", "add", "edit", "change", "refactor", "corrigir", "implementar", "alterar"))
+    validation = any(x in text for x in ("test", "tests", "validate", "validar", "verify", "verificar", "lint", "check", "quality", "e2e", "prove", "scanner", "audit", "auditar", "review", "revisar", "benchmark", "performance", "release-blocking"))
+    mutation = any(x in text for x in ("fix", "implement", "add", "edit", "change", "refactor", "migrate", "migration", "remove", "corrigir", "implementar", "alterar", "migrar", "migração", "remover"))
     retrieval = any(x in text for x in ("search", "find", "where", "similar", "precedent", "buscar", "localizar", "procurar"))
+
+    # Issue bodies list every required test and receipt, so the headline is the
+    # strongest signal for a single-issue route. Prevent validation requirements
+    # from turning a migration into orchestration, and vice versa.
+    headline_orchestration = any(
+        x in headline for x in (
+            "parallel", "paralel", "concurr", "fan-out", "fanout", "lifecycle",
+            "completion", "delegat", "orchestrat", "loop hub", "generation", "geração",
+        )
+    )
+    headline_validation = any(
+        x in headline for x in ("quality", "test", "validate", "verify", "prove", "e2e", "audit", "benchmark", "scanner")
+    )
+    headline_mutation = any(
+        x in headline for x in ("migrate", "migration", "remove", "fix", "implement", "refactor", "migrar", "remover", "corrigir")
+    )
+    if headline_orchestration:
+        orchestration = True
+    elif headline_validation:
+        orchestration = False
+        validation = True
+    elif headline_mutation:
+        orchestration = False
+        validation = False
+        mutation = True
 
     if governance:
         intent = "govern"
@@ -95,6 +132,8 @@ def route(task: str) -> dict[str, Any]:
     digest = hashlib.sha256(task.encode()).hexdigest()[:16]
     return {
         "schema": "simplicio.route/v1",
+        "language": "en",
+        "instruction_language": "en",
         "catalog_schema": catalog["schema"],
         "route_id": "simplicio.route/" + digest,
         "intent": intent,
@@ -120,4 +159,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
