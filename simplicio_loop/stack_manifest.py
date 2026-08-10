@@ -13,7 +13,7 @@ COMPONENTS = (
     ("simplicio-mapper", "understand", "0.26.18"),
     ("simplicio-fast", "search", "2.0.27"),
     ("simplicio-cli", "change,verify", "0.18.9"),
-    ("simplicio-loop", "run", "3.40.0"),
+    ("simplicio-loop", "run", "3.41.0"),
 )
 
 
