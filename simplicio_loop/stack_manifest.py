@@ -10,9 +10,9 @@ from typing import Any
 
 STACK_SCHEMA = "simplicio.loop-stack/v1"
 COMPONENTS = (
-    ("simplicio-mapper", "understand", "0.26.17"),
-    ("simplicio-fast", "search", "2.0.26"),
-    ("simplicio-cli", "change,verify", "0.18.8"),
+    ("simplicio-mapper", "understand", "0.26.18"),
+    ("simplicio-fast", "search", "2.0.27"),
+    ("simplicio-cli", "change,verify", "0.18.9"),
     ("simplicio-loop", "run", "3.40.0"),
 )
 
