@@ -37,6 +37,13 @@ def test_release_train_check_prints_structured_json():
     assert "ready" in payload
     assert "schema_errors" in payload
     assert "manifest" in payload
+    # #558 slice: ecosystem graph from real pyproject edges is attached.
+    assert "ecosystem_graph" in payload
+    graph = payload["ecosystem_graph"]
+    assert graph.get("graph_hash") or graph.get("error")
+    if graph.get("graph_hash"):
+        assert graph["graph_hash"].startswith("sha256:")
+        assert graph.get("train_edge_count", 0) >= 1
 
 
 def test_release_train_check_exits_zero_on_consistent_repo(tmp_path: Path):

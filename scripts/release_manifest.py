@@ -150,6 +150,10 @@ def validate_ecosystem_release(schema: Dict[str, Any]) -> "tuple[bool, List[str]
 def release_train_check(repo: str = ".") -> int:
     """Validate component/ecosystem release schemas + local manifest drift.
 
+    Also attaches the ecosystem dependency graph derived from this package's
+    pyproject.toml (graph_hash) when ``scripts.component_release`` is importable
+    (#558 slice: real-source graph, not a manual permanent list).
+
     Returns 0 when every fixture validates and the local manifest is ready,
     non-zero otherwise (fail-closed).
     """
@@ -173,6 +177,19 @@ def release_train_check(repo: str = ".") -> int:
         if not ok:
             schema_errors.extend(f"{path.name}: {e}" for e in errs)
     manifest = build_manifest(root)
+    graph: Dict[str, Any] = {}
+    try:
+        # Prefer in-repo scripts.component_release graph builder (real pyproject edges).
+        from component_release import build_ecosystem_graph  # type: ignore
+
+        graph = build_ecosystem_graph(root)
+    except Exception:
+        try:
+            from scripts.component_release import build_ecosystem_graph  # type: ignore
+
+            graph = build_ecosystem_graph(root)
+        except Exception as exc:
+            graph = {"error": f"graph_unavailable: {exc}"}
     ready = (not schema_errors) and bool(manifest.get("ready"))
     summary = {
         "ready": ready,
@@ -182,6 +199,13 @@ def release_train_check(repo: str = ".") -> int:
             "ready": manifest.get("ready"),
             "mismatches": manifest.get("mismatches"),
             "errors": manifest.get("errors"),
+        },
+        "ecosystem_graph": {
+            "schema": graph.get("schema"),
+            "graph_hash": graph.get("graph_hash"),
+            "edge_count": graph.get("edge_count"),
+            "train_edge_count": graph.get("train_edge_count"),
+            "error": graph.get("error"),
         },
     }
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
