@@ -1,0 +1,27 @@
+{
+  "schema": "simplicio.capability-catalog/v1",
+  "version": 1,
+  "load_policy": "index-first, skill-on-demand",
+  "sources": ["simplicio_loop/stack_manifest.py", "scripts/preflight.py", "scripts/route_mode.py", ".simplicio/skills"],
+  "capabilities": [
+    {"id":"mapper.project-survey","intent":["survey","understand"],"component":"mapper","skill":"simplicio-mapper","effects":"read-only","requires":[],"summary":"Map repository structure and architecture."},
+    {"id":"mapper.snapshot-create","intent":["snapshot","handoff"],"component":"mapper","skill":"simplicio-mapper","effects":"read-only","requires":["mapper.project-survey"],"summary":"Create an immutable context snapshot."},
+    {"id":"mapper.context-select","intent":["context","prompt"],"component":"mapper","skill":"simplicio-mapper","effects":"read-only","requires":["mapper.snapshot-create"],"summary":"Select the smallest context for a task."},
+    {"id":"mapper.symbol-lookup","intent":["locate","symbol"],"component":"mapper","skill":"simplicio-mapper","effects":"read-only","requires":["mapper.snapshot-create"],"summary":"Locate definitions and references."},
+    {"id":"fast.search","intent":["retrieve","search"],"component":"fast","skill":"simplicio-fast","effects":"read-only","requires":["mapper.snapshot-create"],"summary":"Search indexed project context."},
+    {"id":"fast.rank","intent":["retrieve","rank"],"component":"fast","skill":"simplicio-fast","effects":"read-only","requires":["fast.search"],"summary":"Rank retrieved context for the task."},
+    {"id":"dev-cli.preflight","intent":["mutate","validate"],"component":"dev-cli","skill":"simplicio-dev-cli","effects":"read-only","requires":["mapper.context-select"],"summary":"Validate mutation scope and preconditions."},
+    {"id":"dev-cli.edit","intent":["mutate"],"component":"dev-cli","skill":"simplicio-dev-cli","effects":"write","requires":["dev-cli.preflight"],"summary":"Apply a deterministic edit."},
+    {"id":"dev-cli.tests","intent":["validate"],"component":"dev-cli","skill":"simplicio-dev-cli","effects":"read-only","requires":["dev-cli.edit"],"summary":"Run bounded tests and checks."},
+    {"id":"dev-cli.evidence","intent":["validate","evidence"],"component":"dev-cli","skill":"simplicio-dev-cli","effects":"write-evidence","requires":["dev-cli.tests"],"summary":"Persist post-effect evidence."},
+    {"id":"loop.plan","intent":["orchestrate"],"component":"loop","skill":"simplicio-loop","effects":"read-only","requires":["mapper.context-select"],"summary":"Build a bounded execution plan."},
+    {"id":"loop.slot-dispatch","intent":["orchestrate","parallel"],"component":"loop","skill":"simplicio-loop","effects":"coordination","requires":["loop.plan"],"summary":"Dispatch one task per slot."},
+    {"id":"loop.retry","intent":["retry","recover"],"component":"loop","skill":"simplicio-loop","effects":"coordination","requires":["loop.slot-dispatch"],"summary":"Retry only according to the task contract."},
+    {"id":"loop.complete","intent":["orchestrate","completion"],"component":"loop","skill":"simplicio-loop","effects":"write-evidence","requires":["dev-cli.evidence"],"summary":"Close only when the completion oracle is proven."},
+    {"id":"runtime.gate","intent":["govern"],"component":"runtime","skill":"simplicio-runtime","effects":"governance","requires":[],"summary":"Authorize a governed effect."},
+    {"id":"runtime.checkpoint","intent":["govern"],"component":"runtime","skill":"simplicio-runtime","effects":"write-evidence","requires":["runtime.gate"],"summary":"Persist a checkpoint before execution."},
+    {"id":"runtime.receipt","intent":["govern","evidence"],"component":"runtime","skill":"simplicio-runtime","effects":"write-evidence","requires":["runtime.checkpoint"],"summary":"Persist a durable execution receipt."},
+    {"id":"runtime.reconcile","intent":["govern","reconcile"],"component":"runtime","skill":"simplicio-runtime","effects":"read-only","requires":["runtime.receipt"],"summary":"Recompute ambiguous effects independently."}
+  ]
+}
+
