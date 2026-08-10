@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,13 +8,12 @@ version = "3.43.0"
 description = "The Universal Looping AI Orchestrator — a runtime-agnostic super-plugin (7 skills) that drains any queue of work end-to-end on any LLM/runtime."
 readme = "PYPI.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Wesley Simplicio", email = "wesleybob4@gmail.com" }]
 keywords = ["ai", "agent", "orchestrator", "llm", "claude", "cursor", "automation", "ralph-loop", "token-economy", "cli"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.11",
@@ -68,11 +67,21 @@ simplicio-capabilities = "simplicio_loop.capability_catalog:main"
 simplicio-route = "simplicio_loop.route:main"
 
 [tool.setuptools]
-packages = ["simplicio_loop"]
 include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["simplicio_loop*"]
+namespaces = true
 
 [tool.setuptools.package-data]
 simplicio_loop = ["_bundle/**/*", "_contracts/**/*.json", "_catalog/*.json"]
+"simplicio_loop._bundle" = ["**/*"]
+"simplicio_loop._contracts" = ["**/*.json", "*.json"]
+"simplicio_loop._catalog" = ["*.json"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["**/__pycache__/*", "**/*.py[cod]"]
 
 [tool.coverage.run]
 source = ["simplicio_loop"]
