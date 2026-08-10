@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.43.0] - 2026-08-10
+
+- Declare English as the machine-readable instruction language for Prism routes and the capability catalog.
+- Recognize common audit, migration, integration, benchmark, and review requests when routing Sprint issues.
+
 ## [3.42.0] - 2026-08-10
 
 - Improve Prism recognition for Portuguese and mixed orchestration/validation requests.
@@ -1944,4 +1949,3 @@ require ML models, not stdlib code) — and are not faked.
 - LMCache inference accelerator, agentsview session-observability source adapter.
 - 11 runtime adapters + universal installer; hardened Ralph loop with bound operators
   (`simplicio-mapper` + `simplicio-cli`).
-
