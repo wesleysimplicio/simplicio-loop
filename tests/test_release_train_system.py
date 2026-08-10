@@ -17,11 +17,15 @@ CLI = REPO / "simplicio_loop" / "cli.py"
 
 
 def _run_check(repo: Path):
+    # stdin=DEVNULL: on Windows, inheriting an invalid/closed stdin handle
+    # raises OSError WinError 6 (DuplicateHandle) before the child starts
+    # (Python 3.14 + non-interactive/pytest hosts). CLI does not read stdin.
     return subprocess.run(
         [sys.executable, "-m", "simplicio_loop.cli", "release-train", "check", "--repo", str(repo)],
         capture_output=True,
         text=True,
         cwd=str(REPO),
+        stdin=subprocess.DEVNULL,
     )
 
 
@@ -35,10 +39,21 @@ def test_release_train_check_prints_structured_json():
     assert "manifest" in payload
 
 
-def test_release_train_check_exits_zero_on_consistent_repo():
-    # AC5: this repo's own manifests are consistent (pyproject/npm/plugin match)
-    proc = _run_check(REPO)
+def test_release_train_check_exits_zero_on_consistent_repo(tmp_path: Path):
+    # AC5: matching pyproject/npm/plugin/source versions exit 0.
+    # Isolated fixture avoids ambient main-branch version drift (#1151).
+    (tmp_path / "packaging" / "npm").mkdir(parents=True)
+    (tmp_path / ".cursor-plugin").mkdir()
+    (tmp_path / "simplicio_loop").mkdir()
+    (tmp_path / "pyproject.toml").write_text('version = "1.2.3"\n')
+    (tmp_path / "packaging" / "npm" / "package.json").write_text('{"version":"1.2.3"}')
+    (tmp_path / ".cursor-plugin" / "plugin.json").write_text('{"version":"1.2.3"}')
+    (tmp_path / "simplicio_loop" / "__init__.py").write_text('__version__ = "1.2.3"\n')
+    proc = _run_check(tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["ready"] is True
+    assert payload["manifest"]["ready"] is True
 
 
 def test_release_train_check_latency_within_bound():
@@ -58,12 +73,7 @@ def test_release_train_check_fails_on_bad_component_fixture(tmp_path: Path):
         json.dumps({"component": "x", "version": "not-semver"})
     )
     # ecosystem fixture absent is fine; repo manifest may be consistent
-    proc = subprocess.run(
-        [sys.executable, "-m", "simplicio_loop.cli", "release-train", "check", "--repo", str(tmp_path)],
-        capture_output=True,
-        text=True,
-        cwd=str(REPO),
-    )
+    proc = _run_check(tmp_path)
     assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["ready"] is False
@@ -79,12 +89,7 @@ def test_release_train_check_fails_on_repo_drift(tmp_path: Path):
     (tmp_path / "packaging" / "npm" / "package.json").write_text('{"version":"1.2.4"}')
     (tmp_path / ".cursor-plugin" / "plugin.json").write_text('{"version":"1.2.3"}')
     (tmp_path / "simplicio_loop" / "__init__.py").write_text('__version__ = "1.2.3"\n')
-    proc = subprocess.run(
-        [sys.executable, "-m", "simplicio_loop.cli", "release-train", "check", "--repo", str(tmp_path)],
-        capture_output=True,
-        text=True,
-        cwd=str(REPO),
-    )
+    proc = _run_check(tmp_path)
     assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["ready"] is False
