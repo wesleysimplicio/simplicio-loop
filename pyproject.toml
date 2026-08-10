@@ -29,9 +29,9 @@ classifiers = [
 # explicitly and the normal `pip install simplicio-loop` closure must request both distributions.
 dependencies = [
   # Loop is the aggregate distribution. Keep one tested component train.
-  "simplicio-cli>=0.18.8,<0.19",
-  "simplicio-mapper>=0.26.17,<0.27",
-  "simplicio-fast>=2.0.26,<3",
+  "simplicio-cli>=0.18.9,<0.19",
+  "simplicio-mapper>=0.26.18,<0.27",
+  "simplicio-fast>=2.0.27,<3",
   "tiktoken>=0.12.0,<1",
 ]
 
