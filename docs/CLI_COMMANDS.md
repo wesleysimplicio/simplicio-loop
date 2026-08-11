@@ -59,6 +59,9 @@ Use the most specific form, such as `simplicio-loop queue top --help` or
 | `findings` | List, report, reconcile, diagnose, or import routed findings. |
 | `learn retrospective` | Derive durable lessons from completed runs. |
 | `release-train check` | Validate ecosystem release schemas and local drift. |
+| `release-train compose` | Compose a signed, compatible canary/stable ecosystem release from component manifests. |
+| `release-train promote` | Atomically promote a composition through canary or stable state. |
+| `release-train rollback` | Atomically restore a previous stable composition. |
 | `hub-drain-plan` | Read-only GitHub drain intake. |
 | `hub-drain-admit` | Admit a held final checkpoint without dispatching it. |
 

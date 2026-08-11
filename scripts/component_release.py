@@ -97,7 +97,7 @@ ECOSYSTEM_REQUIRED = {
     "release_id", "components", "graph_hash", "contract_hashes",
     "status", "evidence", "rollout", "signature",
 }
-ECOSYSTEM_OPTIONAL = {"provenance"}
+ECOSYSTEM_OPTIONAL = {"provenance", "schema"}
 ECOSYSTEM_ALLOWED = ECOSYSTEM_REQUIRED | ECOSYSTEM_OPTIONAL
 
 COMPONENT_VERSION_REQUIRED = {"version", "commit", "digest"}
@@ -219,6 +219,10 @@ def validate_ecosystem_release(data: Any) -> List[str]:
         return ["manifest must be a JSON object"]
     _check_unknown(data, ECOSYSTEM_ALLOWED, "manifest", errors)
     _check_missing(data, ECOSYSTEM_REQUIRED, "manifest", errors)
+
+    schema = data.get("schema")
+    if schema is not None and schema != ECOSYSTEM_SCHEMA:
+        errors.append(f"schema must be {ECOSYSTEM_SCHEMA!r}")
 
     release_id = data.get("release_id")
     if "release_id" in data and not isinstance(release_id, (int, str)):
