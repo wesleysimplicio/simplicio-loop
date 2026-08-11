@@ -19,6 +19,10 @@ try:
 except Exception:  # pragma: no cover - import shim for bundled scripts
     _release_manifest = None
 try:
+    from scripts import release_train as _release_train
+except Exception:  # pragma: no cover - import shim for bundled scripts
+    _release_train = None
+try:
     from . import prototype_cli as _prototype_cli
 except Exception:  # pragma: no cover - keeps `simplicio-loop` importable if this is missing
     _prototype_cli = None
@@ -1549,6 +1553,10 @@ def main(argv=None) -> int:
         "check", help="validate component/ecosystem release schemas + local drift"
     )
     p_rt_check.add_argument("--repo", default=".", help="repository root")
+    if _release_train is not None:
+        # The check command remains owned by release_manifest for backwards compatibility;
+        # composition/promotion/rollback are the effect-gated #558 release-train operations.
+        _release_train.configure_subparsers(rt_sub)
 
     if argv_list:
         from .github_drain_intake_cli import looks_like_natural_request, main as drain_intake_main
@@ -1731,9 +1739,13 @@ def main(argv=None) -> int:
             args.ledger_command,
         )
     if command == "release-train":
-        if _release_manifest is None:
-            parser.error("release_manifest script not importable")
-        return _release_manifest.release_train_check(args.repo)
+        if args.release_train_command == "check":
+            if _release_manifest is None:
+                parser.error("release_manifest script not importable")
+            return _release_manifest.release_train_check(args.repo)
+        if _release_train is None:
+            parser.error("release_train script not importable")
+        return _release_train.run_namespace(args)
     return install(Path(args.target).resolve(), args.globally)
 
 
