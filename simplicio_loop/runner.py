@@ -549,7 +549,13 @@ def _run_cmd(
     command = [resolved, *argv[1:]] if resolved else argv
     try:
         return subprocess.run(
-            command, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_seconds,
+            command,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
         def _text(value: Any) -> str:
@@ -1511,6 +1517,21 @@ def _context_handoff_args(
 
     def persist_artifact(value: Any, filename: str, fallbacks: Sequence[Path] = ()) -> Path | None:
         if isinstance(value, Mapping):
+            reference_schema = str(value.get("schema") or "")
+            handle = value.get("expansion_handle")
+            handle_path = handle.get("path") if isinstance(handle, Mapping) else None
+            if reference_schema == "simplicio.context-reference/v1" and isinstance(handle_path, str) and handle_path.strip():
+                candidates = [Path(handle_path)]
+                if not Path(handle_path).is_absolute():
+                    candidates = [repo_path / handle_path, run_root / handle_path]
+                for candidate in candidates:
+                    try:
+                        resolved = candidate.resolve()
+                        if resolved.exists():
+                            return resolved
+                    except OSError:
+                        continue
+                return None
             path = run_root / filename
             _write_json(path, dict(value))
             return path
@@ -1571,7 +1592,7 @@ def _context_handoff_args(
             "context_handle": bool(context_handle),
             "authorization": authorization_handoff,
         }
-    if not all((snapshot_path, pack_path, execution_path)) or (identity_present and not context_handle):
+    if not all((snapshot_path, pack_path, execution_path)) or (require_authorization and identity_present and not context_handle):
         return list(authorization_args), {
             "status": "missing",
             "reason_code": "CONTEXT_ARTIFACTS_INCOMPLETE",
@@ -2861,6 +2882,12 @@ def _persist_batch_preflight_block(
 
 def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str = "",
                 task_fingerprint: str = "", target_hint: str = "") -> Dict[str, Any]:
+    # Task metadata is assembled from optional contract fields. Normalize it
+    # before the task-aware path calls ``.strip()``.
+    task_path = str(task_path or "")
+    goal = str(goal or "")
+    task_fingerprint = str(task_fingerprint or "")
+    target_hint = str(target_hint or "")
     before = _repo_fingerprint(repo_path)
     mapper_preflight = _preflight_mapper(repo_path, run_root)
     ecc_admission = inspect_ecc(repo_path, run_root)
@@ -2941,13 +2968,29 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         and not isinstance(estimated_tokens, bool)
         and estimated_tokens > configured_budget
     )
+    serialization_budget = (
+        handoff_pack.get("serialization_budget")
+        if isinstance(handoff_pack, Mapping) and isinstance(handoff_pack.get("serialization_budget"), Mapping)
+        else {}
+    )
+    budget_compacted_over_limit = (
+        bool(serialization_budget.get("compacted"))
+        and isinstance(serialization_budget.get("estimated_tokens"), int)
+        and isinstance(serialization_budget.get("token_budget"), int)
+        and serialization_budget["estimated_tokens"] > serialization_budget["token_budget"]
+    )
     if (
         task_aware_supported
         and task_path.strip()
         and target_hint.strip()
         and handoff.returncode == 0
         and isinstance(handoff_pack, Mapping)
-        and (bool(handoff_pack.get("needs_broader_context")) or over_budget)
+        and (
+            bool(handoff_pack.get("needs_broader_context"))
+            or over_budget
+            or not str(handoff_pack.get("pack_hash") or "").strip()
+            or budget_compacted_over_limit
+        )
     ):
         recovery_argv = ["simplicio-mapper", "handoff", ".", "--json"]
         if rollback_sync:
@@ -2955,7 +2998,12 @@ def _run_mapper(repo_path: Path, run_root: Path, task_path: str = "", goal: str 
         recovery_argv.extend(["--timeout", mapper_timeout, "--execution-context"])
         recovery_budget = min(
             128_000,
-            max(configured_budget, int(estimated_tokens) if over_budget else configured_budget),
+            max(
+                configured_budget,
+                128_000 if budget_compacted_over_limit else (
+                    int(estimated_tokens) if over_budget else configured_budget
+                ),
+            ),
         )
         recovery_argv.extend(["--token-budget", str(recovery_budget)])
         if goal.strip():
