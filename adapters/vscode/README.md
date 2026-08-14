@@ -1,7 +1,9 @@
 # VS Code (Copilot) adapter
 
 GitHub Copilot in VS Code reads `.github/copilot-instructions.md` as repo-wide custom
-instructions, supports **MCP servers**, and can run **tasks**. We use all three.
+instructions, supports **MCP servers**, and can run **tasks**. There is **no PreToolUse**.
+`adapters/vscode/adapter.py` reports residual unmanaged editor mutations honestly and
+requires MCP for Plugin-initiated writes.
 
 ## Install
 
