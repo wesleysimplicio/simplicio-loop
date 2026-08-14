@@ -4,7 +4,6 @@
 The packaged command is `python -m simplicio_loop.install` /
 `simplicio-loop install --host ...` (simplicio_loop/install/planner.py).
 This script remains the repo-checkout helper and must not diverge on hosts.
-"""
 
 Copies the 7 skills + hooks into a target, wires the loop where the runtime supports it,
 ensures the runtime's entry/instructions file references the skill, and prints the MCP-bind
