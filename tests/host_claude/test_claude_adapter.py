@@ -45,7 +45,7 @@ def test_shipped_hooks_fail_closed_when_missing(tmp_path: Path):
 def test_descriptor_parity_with_plugin_package():
     desc = descriptor(ADAPTER)
     packaged = json.loads(PLUGIN.read_text(encoding="utf-8"))
-    assert desc["version"] == ADAPTER_VERSION == packaged["version"] == "3.43.0"
+    assert desc["version"] == ADAPTER_VERSION == packaged["version"] == "3.43.1"
     assert desc["digest"] == packaged["digest"]
     assert desc["entrypoint"] == "simplicio-loop=simplicio_loop.cli:main"
 

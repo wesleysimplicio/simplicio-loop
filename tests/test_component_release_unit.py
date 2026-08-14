@@ -254,24 +254,24 @@ def test_ecosystem_graph_deterministic_for_fixture_repo(tmp_path):
 def test_inventory_report_lists_train_floors(tmp_path):
     repo = _write_fixture_repo(
         tmp_path,
-        "3.43.0",
-        '  "simplicio-cli>=0.18.9,<0.19",\n  "simplicio-mapper>=0.26.18,<0.27",\n'
-        '  "simplicio-fast>=2.0.27,<3",',
+        "3.43.1",
+        '  "simplicio-cli>=0.18.10,<0.19",\n  "simplicio-mapper>=0.26.20,<0.27",\n'
+        '  "simplicio-fast>=2.0.28,<3",',
     )
 
     def _resolver(name: str) -> str:
         return {
-            "simplicio-cli": "0.18.9",
-            "simplicio-mapper": "0.26.18",
-            "simplicio-fast": "2.0.27",
+            "simplicio-cli": "0.18.10",
+            "simplicio-mapper": "0.26.20",
+            "simplicio-fast": "2.0.28",
         }[name]
 
     inv = cr.build_inventory_report(repo, resolver=_resolver)
     assert inv["schema"] == cr.INVENTORY_SCHEMA
-    assert inv["declared_version"] == "3.43.0"
+    assert inv["declared_version"] == "3.43.1"
     by_name = {row["name"]: row for row in inv["train"]}
     assert by_name["simplicio-cli"]["pin_status"] == "at_floor"
-    assert by_name["simplicio-mapper"]["declared_floor"] == "0.26.18"
+    assert by_name["simplicio-mapper"]["declared_floor"] == "0.26.20"
     assert inv["doctor_clean"] is True
 
 

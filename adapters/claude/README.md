@@ -3,7 +3,7 @@
 First-class: native skills, plugin manifest, and a five-stage Plugin v1 lifecycle
 (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`) implemented by
 `adapters/claude/adapter.py`. Missing claimed hooks fail closed. Runtime absence is
-degraded, never silent fail-open. Descriptor version/digest must stay at `3.43.0` with
+degraded, never silent fail-open. Descriptor version/digest must stay at `3.43.1` with
 `plugin/.claude-plugin/plugin.json`.
 
 ## Install
@@ -120,4 +120,3 @@ simplicio-loop preflight --strict --json
 ```
 
 After Runtime install on Windows: `packaging/windows/install.ps1` then pip-install loop/mapper/dev-cli and re-run preflight until operational.
-
