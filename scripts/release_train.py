@@ -600,8 +600,88 @@ def _load_object_file(path_text: str) -> Any:
     return read_json(Path(path_text))
 
 
+CHILD_BLOCKERS = (
+    {
+        "component": "simplicio-mapper",
+        "issue": "wesleysimplicio/simplicio-mapper#280",
+        "status": "UNVERIFIED",
+        "reason": "producer manifest/release lives in the mapper repo",
+    },
+    {
+        "component": "simplicio-dev-cli",
+        "issue": "wesleysimplicio/simplicio-dev-cli#232",
+        "status": "UNVERIFIED",
+        "reason": "Mapper consumer bump and Dev CLI publish are external",
+    },
+    {
+        "component": "simplicio-runtime",
+        "issue": "wesleysimplicio/simplicio-runtime#3334",
+        "status": "UNVERIFIED",
+        "reason": "protocol/version alignment and live registry publish are external",
+    },
+    {
+        "component": "simplicio-agent",
+        "issue": "wesleysimplicio/simplicio-agent#483",
+        "status": "UNVERIFIED",
+        "reason": "runtime.lock regeneration is owned by the agent repo",
+    },
+    {
+        "component": "simplicio-code",
+        "issue": "wesleysimplicio/simplicio-code#57",
+        "status": "UNVERIFIED",
+        "reason": "client/bundle regeneration is owned by the code repo",
+    },
+    {
+        "component": "simplicio-loop-marketing",
+        "issue": "wesleysimplicio/simplicio-loop-marketing#95",
+        "status": "UNVERIFIED",
+        "reason": "marketing extension conformance is external",
+    },
+    {
+        "component": "simplicio-loop-oss",
+        "issue": "wesleysimplicio/simplicio-loop-oss#10",
+        "status": "UNVERIFIED",
+        "reason": "OSS extension conformance is external",
+    },
+)
+
+
+def doctor_release_train(state_path: str | Path | None = None) -> Dict[str, Any]:
+    """Honest Loop-owned vs child-repo status. Never claims eight-repo green."""
+    state = empty_state()
+    if state_path is not None and Path(state_path).is_file():
+        state = load_state(Path(state_path))
+    loop_engine = {
+        "compose": True,
+        "promote": True,
+        "rollback": True,
+        "component_schema": "simplicio.component-release/v1",
+        "ecosystem_schema": "simplicio.ecosystem-release/v1",
+        "status": "MEASURED",
+    }
+    return {
+        "schema": "simplicio.release-train-doctor/v1",
+        "loop_engine": loop_engine,
+        "installed_channel": {
+            "canary": (state.get("canary") or {}).get("release_id") if isinstance(state.get("canary"), Mapping) else None,
+            "stable": (state.get("stable") or {}).get("release_id") if isinstance(state.get("stable"), Mapping) else None,
+        },
+        "children": list(CHILD_BLOCKERS),
+        "eight_repo_conformance": "UNVERIFIED",
+        "auto_bump_across_repos": "UNVERIFIED",
+        "live_registry_publish": "UNVERIFIED",
+        "next_action": "keep #558 open until child-repo hops publish verified artifacts",
+        "closes_loop_owned_engine": True,
+        "closes_eight_repo_ac": False,
+    }
+
+
 def run_namespace(args: argparse.Namespace) -> int:
     try:
+        if args.release_train_command == "doctor":
+            payload = doctor_release_train(args.state or None)
+            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            return 0
         if args.release_train_command == "compose":
             contracts = _load_object_file(args.contract_hashes)
             evidence = _load_object_file(args.evidence)
@@ -659,6 +739,8 @@ def configure_subparsers(sub: Any) -> None:
     rollback = sub.add_parser("rollback", help="restore a previous stable composition atomically")
     rollback.add_argument("--state", required=True)
     rollback.add_argument("--release-id", default=None)
+    doctor = sub.add_parser("doctor", help="report Loop-owned train status and child-repo blockers")
+    doctor.add_argument("--state", default="", help="optional release-train state JSON")
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
