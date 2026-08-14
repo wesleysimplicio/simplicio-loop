@@ -3135,15 +3135,41 @@ def _build_plan(tasks: List[Dict[str, Any]], mapper_payload: Dict[str, Any], rep
     return _build_plan_with_hints(tasks, mapper_payload, repo_path, "", contract_hash=contract_hash)
 
 
+_FILE_HINT_RE = re.compile(r"(?P<path>[A-Za-z0-9_./\\-]+\.(?:py|tsx?|js|rs))")
+_TECH_FILE_HINTS = frozenset({
+    "node.js", "next.js", "vue.js", "react.js", "express.js", "deno.js",
+    "bun.js", "alpine.js", "ember.js", "gatsby.js", "nuxt.js", "svelte.js",
+    "backbone.js", "jquery.js",
+})
+_DEPENDENCY_BLOCK_RE = re.compile(
+    r"(?ims)^(?:#{1,6}\s*)?(?:\d+\.\s*)?(?:dependencies|depend[êe]ncias)\b.*?"
+    r"(?=^(?:#{1,6}\s*)?(?:\d+\.\s+)\S|\Z)",
+)
+
+
+def _strip_dependency_prose(task_text: str) -> str:
+    """Drop the Dependencies section so runtime names cannot become targets."""
+    return _DEPENDENCY_BLOCK_RE.sub("", task_text or "")
+
+
 def _extract_repo_file_hints(task_text: str, repo_path: Path) -> List[str]:
     hints: List[str] = []
-    for match in re.finditer(r"(?P<path>[A-Za-z0-9_./\\-]+\.(?:py|tsx?|js|rs))", task_text or ""):
+    scanned = _strip_dependency_prose(task_text)
+    repo_root = repo_path.resolve()
+    for match in _FILE_HINT_RE.finditer(scanned):
         raw = match.group("path").strip().replace("\\", "/")
+        if raw.lower() in _TECH_FILE_HINTS or Path(raw).name.lower() in _TECH_FILE_HINTS:
+            continue
         candidate = Path(raw)
         try:
-            resolved = (repo_path / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
-            rel = resolved.relative_to(repo_path.resolve()).as_posix()
+            resolved = (repo_root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+            rel = resolved.relative_to(repo_root).as_posix()
         except (OSError, ValueError):
+            continue
+        # Bare names (Node.js, plugin.js) are targets only when they exist as
+        # a real repository file. Path-shaped hints (src/app.py) stay hints
+        # even if the file is still to_create.
+        if "/" not in rel and not (repo_root / rel).is_file():
             continue
         low = rel.lower()
         if low.startswith(".simplicio/orchestrator/") or low.startswith(".claude/") or low.startswith(".github/"):
