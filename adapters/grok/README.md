@@ -1,5 +1,10 @@
 # Grok adapter (self-paced)
 
+Grok Build / Grok CLI has **no stop-hook** in this matrix. The loop is **self-paced**.
+`adapters/grok/adapter.py` normalizes tool calls against a bounded Simplicio catalog.
+Unknown tools never fall back to shell. Live xAI API stays UNVERIFIED unless
+`SIMPLICIO_GROK_LIVE=1`. This adapter stores no credentials.
+
 Grok Build / Grok CLI has **no stop-hook** in this matrix. The loop is **self-paced**:
 same scratchpad, journal, promise, and operator stack as Claude — the host re-invokes
 each turn (or the operator ticks manually).
