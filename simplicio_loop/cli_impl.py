@@ -99,21 +99,36 @@ def _copy_tree(src: Path, dst: Path) -> int:
     return count
 
 
-def install(target: Path, globally: bool) -> int:
-    base = (Path.home() / ".claude") if globally else (target / ".claude")
-    skills_dst = base / "skills"
-    hooks_dst = (base / "hooks") if globally else (target / "hooks")
+def install(target: Path, globally: bool, host: str = "claude",
+            dry_run: bool = False, uninstall: bool = False, verify: bool = False) -> int:
+    from .install.planner import InstallError, apply_plan, plan_install
+    from .install.planner import uninstall as remove_owned
+    from .install.planner import verify_plan
 
-    if not (BUNDLE / "skills").is_dir():
-        print("error: bundled skills not found in the installed package.", flush=True)
+    root = Path.home() if globally else target
+    if uninstall:
+        try:
+            payload = remove_owned(root)
+        except InstallError as exc:
+            print(f"error: {exc}", flush=True)
+            return 1
+        print(f"simplicio-loop uninstalled {len(payload.get('removed') or [])} owned paths")
+        return 0
+    try:
+        plan = plan_install(root, host=host, globally=globally)
+        if verify:
+            verify_plan(plan)
+            print(f"simplicio-loop install plan ok host={host} digest={plan['digest']}")
+            return 0
+        result = apply_plan(plan, dry_run=dry_run, bundle=BUNDLE)
+    except InstallError as exc:
+        print(f"error: {exc}", flush=True)
         return 1
-
-    n_skills = _copy_tree(BUNDLE / "skills", skills_dst)
-    n_hooks = _copy_tree(BUNDLE / "hooks", hooks_dst)
-
-    print(f"simplicio-loop {__version__} installed:")
-    print(f"  skills -> {skills_dst}  ({n_skills} files)")
-    print(f"  hooks  -> {hooks_dst}  ({n_hooks} files)")
+    status = "installed" if result["status"] == "applied" else result["status"]
+    print(f"simplicio-loop {__version__} {status}:")
+    print(f"  host   -> {host}")
+    print(f"  owned  -> {', '.join(result['owned'])}")
+    print(f"  files  -> {result['written']}")
     print("")
     print("Use it in your agent runtime (Claude Code, Cursor, ...):")
     print("  /simplicio-loop finish all the open issues")
@@ -1101,6 +1116,10 @@ def main(argv=None) -> int:
     p_install.add_argument("--target", default=".", help="project directory to install into")
     p_install.add_argument("--global", dest="globally", action="store_true",
                            help="install into ~/.claude instead of the project")
+    p_install.add_argument("--host", default="claude", help="host id or 'all'")
+    p_install.add_argument("--dry-run", action="store_true", help="plan only; write nothing")
+    p_install.add_argument("--verify", action="store_true", help="validate plan version/digest")
+    p_install.add_argument("--uninstall", action="store_true", help="remove Loop-owned files only")
 
     p_dashboard = sub.add_parser("dashboard", help="open or stop the Token Monitor dashboard")
     p_dashboard.add_argument("--port", type=int, default=DEFAULT_DASH_PORT,
@@ -1752,7 +1771,14 @@ def main(argv=None) -> int:
         if _release_train is None:
             parser.error("release_train script not importable")
         return _release_train.run_namespace(args)
-    return install(Path(args.target).resolve(), args.globally)
+    return install(
+        Path(args.target).resolve(),
+        args.globally,
+        getattr(args, "host", "claude"),
+        getattr(args, "dry_run", False),
+        getattr(args, "uninstall", False),
+        getattr(args, "verify", False),
+    )
 
 
 if __name__ == "__main__":
