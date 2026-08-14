@@ -15,6 +15,10 @@ and registers the MCP server in `.kiro/settings/mcp.json`.
 
 ## Loop drive — self-paced via specs
 
+No stop-hook is claimed. Specs are not the Simplicio source of truth: a spec
+task cannot close while the Runtime receipt is ambiguous. Missing hooks use
+the governed self-paced fallback (`adapters/kiro/adapter.py`).
+
 No stop-hook. Use a Kiro **spec** as the durable goal, and let `simplicio-loop` self-pace each
 execution against the spec's acceptance criteria (which map directly onto the skill's AC gate).
 Exit conditions unchanged (evidence-gated promise, cap, STOP).
