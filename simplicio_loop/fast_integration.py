@@ -105,6 +105,15 @@ _PATH_TOKEN = re.compile(
     r"(?<![\w.-])(?:[A-Za-z]:)?[\\/]?(?:[A-Za-z0-9_.-]+[\\/])+"
     r"[A-Za-z0-9_.-]*[\\/]?"
 )
+_BARE_CODE_TOKEN = re.compile(
+    r"(?<![\w/\\])(?P<name>[A-Za-z0-9_-]+\.(?:py|tsx?|js|rs))(?![A-Za-z0-9_/\\-])"
+)
+_TECH_FILE_HINTS = frozenset({
+    "node.js", "next.js", "vue.js", "react.js", "express.js", "deno.js",
+    "bun.js", "alpine.js", "ember.js", "gatsby.js", "nuxt.js", "svelte.js",
+    "backbone.js", "jquery.js",
+})
+_CODE_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".rs")
 INTENT_POLICY_SCHEMA = "simplicio.loop-fast-intent-policy/v1"
 
 
@@ -133,7 +142,155 @@ def _path_within_root(root: Path, relative: str) -> bool:
     return True
 
 
-def _explicit_targets(task: str) -> tuple[list[tuple[str, bool]], list[str]]:
+def _is_code_target(path: str) -> bool:
+    return path.lower().endswith(_CODE_SUFFIXES)
+
+
+def _existing_repo_file(root: Path, relative: str) -> bool:
+    candidate = root / Path(relative)
+    return candidate.is_file() and _path_within_root(root, relative)
+
+
+def _bare_existing_targets(task: str, root: Path) -> list[str]:
+    found: list[str] = []
+    without_urls = re.sub(r"\b[A-Za-z][A-Za-z0-9+.-]*://\S+", "", str(task))
+    for match in _BARE_CODE_TOKEN.finditer(without_urls):
+        raw = match.group("name").strip()
+        if raw.lower() in _TECH_FILE_HINTS:
+            continue
+        normalized = _normalize_repo_path(raw)
+        if normalized is None or not _is_code_target(normalized):
+            continue
+        if _existing_repo_file(root, normalized) and normalized not in found:
+            found.append(normalized)
+    return found
+
+
+def _load_json_object(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _pack_selected_targets(payload: Mapping[str, Any], root: Path) -> list[str]:
+    found: list[str] = []
+
+    def add(raw: Any) -> None:
+        if not isinstance(raw, str):
+            return
+        normalized = _normalize_repo_path(raw.replace("\\", "/"))
+        if (
+            normalized
+            and _is_code_target(normalized)
+            and normalized.lower() not in _TECH_FILE_HINTS
+            and _existing_repo_file(root, normalized)
+            and normalized not in found
+        ):
+            found.append(normalized)
+
+    add(payload.get("explicit_target_added"))
+    add(payload.get("target"))
+    for key in ("targets", "selected_targets"):
+        values = payload.get(key)
+        if isinstance(values, str):
+            add(values)
+        elif isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+            for item in values:
+                add(item if isinstance(item, str) else (item.get("path") if isinstance(item, Mapping) else None))
+
+    files = payload.get("files")
+    if isinstance(files, Sequence) and not isinstance(files, (str, bytes)):
+        explicit_files: list[str] = []
+        code_files: list[str] = []
+        for item in files:
+            path = ""
+            reason = ""
+            if isinstance(item, Mapping):
+                path = str(item.get("path") or "")
+                reason = str(item.get("selection_reason") or "")
+            elif isinstance(item, str):
+                path = item
+            if reason == "explicit_task_target":
+                explicit_files.append(path)
+            if _is_code_target(path.replace("\\", "/")):
+                code_files.append(path)
+        for path in explicit_files:
+            add(path)
+        if not found and 1 <= len(code_files) <= 3:
+            for path in code_files:
+                add(path)
+    return found
+
+
+def _unwrap_context_pack(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    handoff = payload.get("handoff") if isinstance(payload.get("handoff"), Mapping) else {}
+    stdout = handoff.get("stdout") if isinstance(handoff.get("stdout"), Mapping) else payload
+    pack = stdout.get("context_pack") if isinstance(stdout, Mapping) and isinstance(stdout.get("context_pack"), Mapping) else payload
+    return pack if isinstance(pack, Mapping) else payload
+
+
+def mapper_selected_targets(root: Path) -> list[str]:
+    """Read the newest Mapper handoff / run context for an existing code target."""
+    found: list[str] = []
+    simplicio = root / ".simplicio"
+    if not simplicio.is_dir():
+        return found
+
+    def absorb(payload: Mapping[str, Any]) -> None:
+        for path in _pack_selected_targets(_unwrap_context_pack(payload), root):
+            if path not in found:
+                found.append(path)
+        for path in _pack_selected_targets(payload, root):
+            if path not in found:
+                found.append(path)
+
+    objects = simplicio / "handoff-objects"
+    if objects.is_dir():
+        packs = sorted(
+            objects.glob("context_pack-*.json"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        for pack_path in packs[:4]:
+            absorb(_load_json_object(pack_path))
+            if found:
+                return found
+
+    runs = simplicio / "loop-runs"
+    if runs.is_dir():
+        run_dirs = sorted(
+            (item for item in runs.iterdir() if item.is_dir()),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        for run_dir in run_dirs[:4]:
+            for name in ("mapper-context.json", "context-pack.json"):
+                candidate = run_dir / name
+                if candidate.is_file():
+                    absorb(_load_json_object(candidate))
+                    if found:
+                        return found
+
+    anchor = simplicio / "orchestrator" / "loop" / "anchor.json"
+    if anchor.is_file():
+        payload = _load_json_object(anchor)
+        blob = " ".join(
+            [
+                str(payload.get("goal") or ""),
+                *(str(item.get("text") or item.get("title") or "")
+                  for item in (payload.get("criteria") or [])
+                  if isinstance(item, Mapping)),
+            ]
+        )
+        for path in _bare_existing_targets(blob, root):
+            if path not in found:
+                found.append(path)
+    return found
+
+
+def _explicit_targets(task: str, root: Path | None = None) -> tuple[list[tuple[str, bool]], list[str]]:
     targets: dict[str, bool] = {}
     invalid: list[str] = []
     without_urls = re.sub(r"\b[A-Za-z][A-Za-z0-9+.-]*://\S+", "", str(task))
@@ -145,7 +302,32 @@ def _explicit_targets(task: str) -> tuple[list[tuple[str, bool]], list[str]]:
             invalid.append(raw)
             continue
         targets[normalized] = targets.get(normalized, False) or is_dir
+    if root is not None:
+        for path in _bare_existing_targets(task, root):
+            targets.setdefault(path, False)
     return sorted(targets.items()), sorted(set(invalid))
+
+
+def _merge_targets(
+    targets: dict[str, bool], extras: Sequence[str],
+) -> dict[str, bool]:
+    merged = dict(targets)
+    for raw in extras:
+        normalized = _normalize_repo_path(str(raw).replace("\\", "/"))
+        if normalized:
+            merged.setdefault(normalized, False)
+    return merged
+
+
+def _next_orient_command(root: Path, task: str, suggested: str) -> str:
+    return (
+        "simplicio-loop orient --repo "
+        + str(root)
+        + " --task "
+        + json.dumps(task)
+        + " --fast auto --target "
+        + suggested
+    )
 
 
 def _context_paths(value: Any) -> list[str]:
@@ -201,10 +383,16 @@ def _blocker(reason: str, message: str, next_surface: str) -> dict[str, Any]:
 
 
 def _validate_plan_policy(
-    root: Path, task: str, understanding: Mapping[str, Any], plan: Mapping[str, Any]
+    root: Path, task: str, understanding: Mapping[str, Any], plan: Mapping[str, Any],
+    extra_targets: Sequence[str] = (),
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     read_only = _read_only_intent(task)
-    targets, invalid_targets = _explicit_targets(task)
+    extracted, invalid_targets = _explicit_targets(task, root)
+    selected = mapper_selected_targets(root)
+    merged = _merge_targets({path: is_dir for path, is_dir in extracted}, extra_targets)
+    if not merged:
+        merged = _merge_targets(merged, selected)
+    targets = sorted(merged.items())
     target_names = [path + ("/" if is_dir else "") for path, is_dir in targets]
     policy = {
         "schema": INTENT_POLICY_SCHEMA,
@@ -309,14 +497,20 @@ def _validate_plan_policy(
             if not (candidate.is_dir() if is_dir else candidate.is_file()):
                 unresolved.append(path + ("/" if is_dir else ""))
         if unresolved:
-            blockers.append(
-                _blocker(
-                    "TARGET_PATH_UNRESOLVED",
-                    "explicit target paths must resolve under the orientation repository: "
-                    + ", ".join(unresolved),
-                    "target",
-                )
+            suggested = next((path for path in (*extra_targets, *selected) if _existing_repo_file(root, path)), "")
+            if not suggested:
+                suggested = next(iter(_bare_existing_targets(task, root)), "plugin.js")
+            blocker = _blocker(
+                "TARGET_PATH_UNRESOLVED",
+                "explicit target paths must resolve under the orientation repository: "
+                + ", ".join(unresolved)
+                + ". Use a repo-relative file that exists, e.g. --target "
+                + suggested,
+                "target",
             )
+            blocker["next_command"] = _next_orient_command(root, task, suggested)
+            blocker["accepted_target_form"] = "repo-relative existing file, e.g. plugin.js"
+            blockers.append(blocker)
         if mutation_nodes and not allowed_files:
             blockers.append(
                 _blocker(
@@ -535,13 +729,15 @@ class FastLoopIntegration:
     def __init__(self, root: str | Path, *, config: FastConfig | None = None,
                  runtime_apply: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
                  fallback_apply: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
-                 runner: Callable[..., subprocess.CompletedProcess[str]] | None = None) -> None:
+                 runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+                 extra_targets: Sequence[str] = ()) -> None:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ValueError("Fast root must be a directory")
         self.config = config or FastConfig.from_env()
         self.runtime_apply = runtime_apply
         self.fallback_apply = fallback_apply
+        self.extra_targets = tuple(str(item).strip() for item in extra_targets if str(item).strip())
         self._runner = runner or subprocess.run
         self._probe_cache: FastProbe | None = None
         self._ingest_receipt: dict[str, Any] | None = None
@@ -750,7 +946,9 @@ class FastLoopIntegration:
                              "--max-bytes", str(self.config.max_bytes)])
         if payload.get("schema") != FAST_PLAN_SCHEMA:
             raise FastIntegrationError("Fast plan schema is not v2")
-        policy, blockers = _validate_plan_policy(self.root, task, understanding, payload)
+        policy, blockers = _validate_plan_policy(
+            self.root, task, understanding, payload, extra_targets=self.extra_targets
+        )
         if blockers:
             payload = _redact_blocked_plan(payload, policy, blockers)
         result = dict(payload)
@@ -918,4 +1116,4 @@ class FastLoopIntegration:
 
 __all__ = ["APPLY_RECEIPT_SCHEMA", "FAST_CHANGESET_SCHEMA", "FAST_PLAN_SCHEMA", "FastConfig",
            "FastIntegrationError", "FastLoopIntegration", "FastProbe", "FastStaleChangeset",
-           "FastUnavailable", "SCHEMA", "validate_changeset"]
+           "FastUnavailable", "SCHEMA", "mapper_selected_targets", "validate_changeset"]

@@ -367,7 +367,7 @@ def _mapper_orient_fallback(root: Path, task: str) -> dict:
 
 def orient(repo: str, task: str, fast_mode: str = "auto",
            fast_context_budget: int = 48000, fast_engine: str = "auto",
-           tee: bool = False) -> int:
+           tee: bool = False, targets: list[str] | None = None) -> int:
     """Run bounded Fast orient with an explicit Mapper fallback receipt."""
     root = Path(repo).resolve()
     if not root.is_dir() or not str(task).strip():
@@ -404,6 +404,7 @@ def orient(repo: str, task: str, fast_mode: str = "auto",
             root,
             config=FastConfig(mode=effective_mode, engine=fast_engine,
                               max_bytes=int(fast_context_budget)),
+            extra_targets=list(targets or []),
         )
         fast_payload = integration.prepare(str(task))
         if fast_mode == "on" and fast_payload.get("status") != "READY":
@@ -1160,6 +1161,10 @@ def main(argv=None) -> int:
     p_orient.add_argument("--fast-engine", choices=("auto", "rust", "python", "off"), default="auto",
                           help="Fast engine: Rust-first auto, explicit rust/python, or off")
     p_orient.add_argument("--tee", action="store_true", help="persist full JSON output in the reversible tee cache")
+    p_orient.add_argument(
+        "--target", dest="targets", action="append", default=[],
+        help="repo-relative source file selected by Mapper or the task (repeatable)",
+    )
 
     p_retrieve = sub.add_parser("retrieve", help="retrieve and verify a tee-cache output")
     p_retrieve.add_argument("path")
@@ -1592,7 +1597,8 @@ def main(argv=None) -> int:
                    args.quality_provider, args.quality_policy, args.result_file,
                    args.require_handshake_fingerprint)
     if command == "orient":
-        return orient(args.repo, args.task, args.fast, args.fast_context_budget, args.fast_engine, args.tee)
+        return orient(args.repo, args.task, args.fast, args.fast_context_budget, args.fast_engine, args.tee,
+                      args.targets)
     if command == "retrieve":
         from .tee_cache import retrieve
         try:
