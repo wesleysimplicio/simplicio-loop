@@ -27,5 +27,11 @@
     "loop"
   ],
   "skills": "./.claude/skills/",
-  "hooks": "./hooks/hooks.json"
+  "hooks": "./hooks/hooks.json",
+  "host": "cursor",
+  "lifecycle": {
+    "native": ["Stop", "PostToolUse", "PreToolUse.shell"],
+    "self_paced": ["SessionStart", "UserPromptSubmit", "PreToolUse.edit"],
+    "unsupported_native": ["PreToolUse.edit"]
+  }
 }

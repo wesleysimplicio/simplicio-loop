@@ -1,7 +1,9 @@
 # Cursor adapter
 
 First-class: native plugin manifest (`.cursor-plugin/`), `stop` + `afterAgentResponse` hooks,
-rules, and MCP. This repo IS a valid Cursor plugin.
+T4 `beforeShellExecution`, rules, and MCP. T3 before-edit is **not** a native Cursor hook
+in this adapter — it is declared `self_paced` / `unsupported_native`, never as green
+Claude-parity enforcement. See `adapters/cursor/adapter.py`.
 
 ## Install
 
