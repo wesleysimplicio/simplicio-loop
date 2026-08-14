@@ -12,25 +12,38 @@ from typing import Any, Dict, Iterable, List, Mapping, Tuple
 SCHEMA = "simplicio.task-contract/v1"
 
 SECTION_PATTERNS = {
-    "acceptance_criteria": re.compile(r"^\s*1\.\s*Crit[ée]rios de Aceite\b", re.I),
-    "business_rules": re.compile(r"^\s*2\.\s*Regras de Neg[óo]cio\b", re.I),
-    "nfrs": re.compile(r"^\s*3\.\s*Requisitos N[ãa]o Funcionais\b", re.I),
-    "prototypes": re.compile(r"^\s*4\.\s*Prot[óo]tipos\b", re.I),
-    "access": re.compile(r"^\s*5\.\s*Acesso\b", re.I),
-    "dependencies": re.compile(r"^\s*6\.\s*Depend[êe]ncias\b", re.I),
-    "impact_signals": re.compile(r"^\s*7\.\s*Sinais de Impacto\b", re.I),
-    "additional_information": re.compile(r"^\s*8\.\s*Informa[çc][õo]es Adicionais\b", re.I),
-    "routing": re.compile(r"^\s*9\.\s*Roteamento\b", re.I),
+    "acceptance_criteria": re.compile(
+        r"^\s*1\.\s*(?:Crit[ée]rios de Aceite|Acceptance Criteria)\b", re.I
+    ),
+    "business_rules": re.compile(
+        r"^\s*2\.\s*(?:Regras de Neg[óo]cio|Business Rules)\b", re.I
+    ),
+    "nfrs": re.compile(
+        r"^\s*3\.\s*(?:Requisitos N[ãa]o Funcionais|Non[- ]Functional Requirements)\b", re.I
+    ),
+    "prototypes": re.compile(r"^\s*4\.\s*(?:Prot[óo]tipos|Prototypes)\b", re.I),
+    "access": re.compile(r"^\s*5\.\s*(?:Acesso|Access)\b", re.I),
+    "dependencies": re.compile(r"^\s*6\.\s*(?:Depend[êe]ncias|Dependencies)\b", re.I),
+    "impact_signals": re.compile(r"^\s*7\.\s*(?:Sinais de Impacto|Impact Signals)\b", re.I),
+    "additional_information": re.compile(
+        r"^\s*8\.\s*(?:Informa[çc][õo]es Adicionais|Additional Information)\b", re.I
+    ),
+    "routing": re.compile(r"^\s*9\.\s*(?:Roteamento|Routing)\b", re.I),
 }
-SCENARIO_RE = re.compile(r"^\s*Cen[áa]rio\s+(?P<num>\d+)\s*:\s*(?P<title>.+?)\s*$", re.I)
+SCENARIO_RE = re.compile(
+    r"^\s*(?:Cen[áa]rio|Scenario)\s+(?P<num>\d+)\s*:\s*(?P<title>.+?)\s*$", re.I
+)
 RULE_RE = re.compile(r"^\s*(?P<id>RN\d+)\s*[–-]\s*(?P<text>.+?)\s*$", re.I)
 RULE_REF_RE = re.compile(r"\[(RN\d+)\]", re.I)
-IDENTITY_RE = re.compile(r"^\s*(Sistema|Funcionalidade|Tipo)\s*:\s*(.+?)\s*$", re.I)
-STORY_RE = re.compile(r"^\s*(COMO|QUERO|PARA)\s+(.+?)\s*$", re.I)
+IDENTITY_RE = re.compile(
+    r"^\s*(Sistema|System|Funcionalidade|Feature|Tipo|Type)\s*:\s*(.+?)\s*$", re.I
+)
+STORY_RE = re.compile(r"^\s*(COMO|QUERO|PARA|AS|I WANT|SO THAT)\s+(.+?)\s*$", re.I)
 GIVEN_RE = re.compile(r"^\s*(?:Dado(?: que)?|Given)\s+(.+?)\s*$", re.I)
 WHEN_RE = re.compile(r"^\s*(?:Quando|When)\s+(.+?)\s*$", re.I)
 THEN_RE = re.compile(r"^\s*(?:Ent[aã]o|Then)\s+(.+?)\s*$", re.I)
-MULTI_TASK_SPLIT_RE = re.compile(r"(?=^\s*Sistema\s*:)", re.I | re.M)
+MULTI_TASK_SPLIT_RE = re.compile(r"(?=^\s*(?:Sistema|System)\s*:)", re.I | re.M)
+_TASK_START_PREFIXES = ("sistema:", "system:")
 WS_RE = re.compile(r"\s+")
 URL_RE = re.compile(r"https?://\S+", re.I)
 
@@ -92,7 +105,7 @@ def split_tasks(text: str) -> List[str]:
         return chunks
     merged: List[str] = []
     for chunk in chunks:
-        if chunk.lower().startswith("sistema:"):
+        if chunk.lower().startswith(_TASK_START_PREFIXES):
             merged.append(chunk)
         elif merged:
             merged[-1] = merged[-1].rstrip() + "\n\n" + chunk
@@ -120,11 +133,24 @@ def _collect_sections(lines: List[str]) -> Tuple[Dict[str, List[str]], List[str]
                 "regras de negócio": "business_rules",
                 "regras de negocio": "business_rules",
                 "non-functional requirements": "nfrs",
+                "non functional requirements": "nfrs",
                 "requisitos não funcionais": "nfrs",
                 "requisitos nao funcionais": "nfrs",
+                "prototypes": "prototypes",
+                "protótipos": "prototypes",
+                "prototipos": "prototypes",
+                "access": "access",
+                "acesso": "access",
                 "dependencies": "dependencies",
                 "dependências": "dependencies",
                 "dependencias": "dependencies",
+                "impact signals": "impact_signals",
+                "sinais de impacto": "impact_signals",
+                "additional information": "additional_information",
+                "informações adicionais": "additional_information",
+                "informacoes adicionais": "additional_information",
+                "routing": "routing",
+                "roteamento": "routing",
             }
             mapped = heading_map.get(label)
             if mapped:
@@ -161,11 +187,11 @@ def _parse_identity(lines: Iterable[str]) -> Dict[str, str]:
             continue
         key = m.group(1).strip().lower()
         value = _norm(m.group(2))
-        if key == "sistema":
+        if key in {"sistema", "system"}:
             out["system"] = value
-        elif key == "funcionalidade":
+        elif key in {"funcionalidade", "feature"}:
             out["feature"] = value
-        elif key == "tipo":
+        elif key in {"tipo", "type"}:
             out["type"] = value
     title_parts = [p for p in (out["feature"], out["type"]) if p]
     out["title"] = " — ".join(title_parts) if title_parts else out["feature"] or out["system"]
@@ -180,11 +206,11 @@ def _parse_story(lines: Iterable[str]) -> Dict[str, str]:
             continue
         key = m.group(1).upper()
         value = _norm(m.group(2)).rstrip(",")
-        if key == "COMO":
+        if key in {"COMO", "AS"}:
             story["persona"] = value
-        elif key == "QUERO":
+        elif key in {"QUERO", "I WANT"}:
             story["desire"] = value
-        elif key == "PARA":
+        elif key in {"PARA", "SO THAT"}:
             story["value"] = value
     return story
 
@@ -683,7 +709,11 @@ def validate_contract(contract: Dict[str, Any]) -> Dict[str, List[str]]:
     if len(set(scenario_ids)) != len(scenario_ids):
         errors.append("duplicate scenario id")
     if not scenarios:
-        errors.append("no scenarios parsed")
+        errors.append(
+            "no scenarios parsed; use 'Scenario N:' / 'Given' / 'When' / 'Then' "
+            "or 'Cenário N:' / 'Dado' / 'Quando' / 'Então' under "
+            "'1. Acceptance Criteria' / '1. Critérios de Aceite'"
+        )
     for scenario in scenarios:
         sid = scenario.get("id", "?")
         if not scenario.get("then"):
