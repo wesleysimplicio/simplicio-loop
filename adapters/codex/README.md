@@ -15,6 +15,10 @@ that on every run.
 
 ## Loop drive — self-paced
 
+Codex `.codex/hooks.json` is empty. This adapter reports
+`native_interception=false` and `governed_effect_path=true`. Raw shell/write
+tools without MCP are blocked or marked unenforceable — never green.
+
 Codex has no stop-hook, so `simplicio-loop` self-paces: each run does one iteration, checks the
 evidence-gated promise, and reschedules itself via the host scheduler until the promise is true,
 the cap is hit, spindle handoff is latched, or STOP is signaled. Drive ticks with `codex exec`
