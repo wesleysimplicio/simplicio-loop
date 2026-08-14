@@ -7,7 +7,6 @@ reported as native enforcement.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import time
@@ -17,7 +16,7 @@ from typing import Any, Mapping
 
 SCHEMA = "simplicio.host-adapter/v1"
 HOST = "cursor"
-ADAPTER_VERSION = "3.43.0"
+ADAPTER_VERSION = "3.43.1"
 
 NATIVE_HOOKS = {
     "Stop": "hooks/stop.py",

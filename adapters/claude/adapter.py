@@ -18,7 +18,7 @@ from typing import Any, Mapping
 
 SCHEMA = "simplicio.host-adapter/v1"
 HOST = "claude"
-ADAPTER_VERSION = "3.43.0"
+ADAPTER_VERSION = "3.43.1"
 PLUGIN_NAME = "simplicio-loop"
 
 LIFECYCLE_STAGES = (

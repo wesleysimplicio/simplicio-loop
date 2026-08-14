@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.43.1] - 2026-08-14
+
+- Require the released Simplicio toolchain: Dev CLI 0.18.10, Mapper 0.26.20,
+  and Fast 2.0.28.
+
 ## [3.43.0] - 2026-08-10
 
 - Declare English as the machine-readable instruction language for Prism routes and the capability catalog.
