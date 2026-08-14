@@ -10,7 +10,7 @@ from simplicio_loop import cli
 class _ReadyFast:
     last_config = None
 
-    def __init__(self, root, *, config):
+    def __init__(self, root, *, config, **_kwargs):
         self.root = root
         self.config = config
         type(self).last_config = config
@@ -140,7 +140,7 @@ def test_orient_cli_fails_closed_without_mutable_authority(
     tmp_path, monkeypatch, capsys
 ):
     class _BlockedFast:
-        def __init__(self, root, *, config):
+        def __init__(self, root, *, config, **_kwargs):
             self.root = root
             self.config = config
 
