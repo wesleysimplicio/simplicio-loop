@@ -83,3 +83,44 @@ def plan_event(event_id: str, manifests: Iterable[Mapping[str, Any]], *, seen_ev
     result = {"schema": SCHEMA, "event_id": event_id, "status": "planned", "hops": hops, "graph_digest": _digest(list(edges))}
     result["plan_digest"] = _digest(result)
     return result
+
+
+REQUIRED_COMPONENTS = (
+    "simplicio-mapper", "simplicio-dev-cli", "simplicio-loop", "simplicio-runtime",
+    "simplicio-agent", "simplicio-code", "simplicio-loop-oss", "simplicio-loop-marketing",
+)
+
+
+def release_train_receipt(manifests: Iterable[Mapping[str, Any]], *, release_id: str,
+                          graph_hash: str, evidence_refs: Iterable[str] = ()) -> dict[str, Any]:
+    """Create a fail-closed eight-repository composition receipt."""
+    rows = list(manifests)
+    errors = validate_manifests(rows)
+    components = {str(item.get("component")) for item in rows}
+    errors.extend(f"missing_component:{name}" for name in REQUIRED_COMPONENTS if name not in components)
+    duplicate = len(components) != len(rows)
+    if duplicate:
+        errors.append("duplicate_component")
+    receipt = {
+        "schema": "simplicio.ecosystem-release/v1",
+        "release_id": release_id,
+        "graph_hash": graph_hash,
+        "components": sorted(components),
+        "errors": sorted(set(errors)),
+        "evidence_refs": sorted(set(evidence_refs)),
+    }
+    receipt["status"] = "blocked" if receipt["errors"] else "ready"
+    receipt["release_blocked"] = bool(receipt["errors"])
+    receipt["receipt_digest"] = _digest(receipt)
+    return receipt
+
+
+def rollback_receipt(*, release_id: str, previous_release_id: str | None) -> dict[str, Any]:
+    return {
+        "schema": "simplicio.ecosystem-rollback/v1",
+        "release_id": release_id,
+        "previous_release_id": previous_release_id,
+        "status": "ready" if previous_release_id else "blocked",
+        "atomic": True,
+        "reason_code": "previous_composition_required" if not previous_release_id else "rollback_prepared",
+    }
