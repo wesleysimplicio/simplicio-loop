@@ -31,9 +31,11 @@ def validate_manifests(manifests: Iterable[Mapping[str, Any]]) -> list[str]:
         if not component or component in seen:
             errors.append(f"duplicate_or_missing_component:{component}")
         seen.add(component)
-        for key in ("version", "commit", "artifacts", "compatibility"):
+        for key in ("version", "commit", "artifacts"):
             if not manifest.get(key):
                 errors.append(f"{component}:missing:{key}")
+        if "compatibility" not in manifest:
+            errors.append(f"{component}:missing:compatibility")
         for artifact in manifest.get("artifacts", []):
             if not artifact.get("digest") or not artifact.get("signature"):
                 errors.append(f"{component}:artifact_unverified")
