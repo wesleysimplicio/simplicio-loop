@@ -1,0 +1,27 @@
+{
+  "schema": "simplicio.release-train.compatibility/v1",
+  "release_train_version": "v3.43.1",
+  "components": [
+    "runtime",
+    "local",
+    "fast",
+    "loop",
+    "sprint",
+    "prompt",
+    "mapper",
+    "dev-cli"
+  ],
+  "required_manifest_fields": [
+    "component",
+    "version",
+    "commit",
+    "compatibility",
+    "channel"
+  ],
+  "evidence_policy": "measured manifests only; missing or invalid is blocked/unverified",
+  "allowed_states": [
+    "MEASURED",
+    "BLOCKED",
+    "UNVERIFIED"
+  ]
+}
