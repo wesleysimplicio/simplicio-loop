@@ -646,11 +646,83 @@ CHILD_BLOCKERS = (
 )
 
 
-def doctor_release_train(state_path: str | Path | None = None) -> Dict[str, Any]:
-    """Honest Loop-owned vs child-repo status. Never claims eight-repo green."""
+def _child_manifest_path(repo_path: Path) -> Optional[Path]:
+    """Return the first supported component manifest in a child checkout."""
+    for relative in (
+        Path(".simplicio/component-release.json"),
+        Path("component-release.json"),
+        Path("dist/component-release.json"),
+        Path("release-manifest.json"),
+    ):
+        candidate = repo_path / relative
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _scan_child_repositories(workspace_root: str | Path) -> List[Dict[str, Any]]:
+    """Measure local child manifests without claiming cross-repo automation."""
+    root = Path(workspace_root).expanduser()
+    rows: List[Dict[str, Any]] = []
+    if not root.is_dir():
+        for item in CHILD_BLOCKERS:
+            row = dict(item)
+            row.update({"status": "UNVERIFIED", "reason": "workspace_root_missing",
+                        "workspace_root": str(root)})
+            rows.append(row)
+        return rows
+
+    for item in CHILD_BLOCKERS:
+        row = dict(item)
+        repo_path = root / str(item["component"])
+        row["workspace_path"] = str(repo_path)
+        if not repo_path.is_dir():
+            row.update({"status": "UNVERIFIED", "reason": "checkout_missing"})
+            rows.append(row)
+            continue
+        manifest_path = _child_manifest_path(repo_path)
+        if manifest_path is None:
+            row.update({"status": "UNVERIFIED", "reason": "component_manifest_missing"})
+            rows.append(row)
+            continue
+        row["manifest_path"] = str(manifest_path)
+        try:
+            manifest = read_json(manifest_path)
+        except ReleaseTrainError as exc:
+            row.update({"status": "BLOCKED", "reason": "manifest_unreadable",
+                        "errors": [str(exc)]})
+            rows.append(row)
+            continue
+        errors = validate_component_release(manifest)
+        if errors:
+            row.update({"status": "BLOCKED", "reason": "invalid_component_manifest",
+                        "errors": errors})
+        elif manifest.get("component") != item["component"]:
+            row.update({"status": "BLOCKED", "reason": "component_identity_mismatch",
+                        "declared_component": manifest.get("component")})
+        else:
+            row.update({"status": "MEASURED", "reason": "component_manifest_valid",
+                        "version": manifest.get("version"), "commit": manifest.get("commit")})
+        rows.append(row)
+    return rows
+
+
+def doctor_release_train(
+    state_path: str | Path | None = None,
+    *,
+    workspace_root: str | Path | None = None,
+) -> Dict[str, Any]:
+    """Report Loop-owned status and measured child manifests, never greenwashing AC."""
     state = empty_state()
     if state_path is not None and Path(state_path).is_file():
         state = load_state(Path(state_path))
+    children = (
+        _scan_child_repositories(workspace_root)
+        if workspace_root is not None
+        else [dict(item) for item in CHILD_BLOCKERS]
+    )
+    measured = sum(item.get("status") == "MEASURED" for item in children)
+    blocked = sum(item.get("status") == "BLOCKED" for item in children)
     loop_engine = {
         "compose": True,
         "promote": True,
@@ -666,7 +738,15 @@ def doctor_release_train(state_path: str | Path | None = None) -> Dict[str, Any]
             "canary": (state.get("canary") or {}).get("release_id") if isinstance(state.get("canary"), Mapping) else None,
             "stable": (state.get("stable") or {}).get("release_id") if isinstance(state.get("stable"), Mapping) else None,
         },
-        "children": list(CHILD_BLOCKERS),
+        "children": children,
+        "child_manifest_coverage": {
+            "status": "MEASURED" if workspace_root is not None and Path(workspace_root).expanduser().is_dir() else "UNVERIFIED",
+            "workspace_root": str(Path(workspace_root).expanduser()) if workspace_root is not None else None,
+            "total": len(children),
+            "measured": measured,
+            "blocked": blocked,
+            "unverified": len(children) - measured - blocked,
+        },
         "eight_repo_conformance": "UNVERIFIED",
         "auto_bump_across_repos": "UNVERIFIED",
         "live_registry_publish": "UNVERIFIED",
@@ -679,7 +759,7 @@ def doctor_release_train(state_path: str | Path | None = None) -> Dict[str, Any]
 def run_namespace(args: argparse.Namespace) -> int:
     try:
         if args.release_train_command == "doctor":
-            payload = doctor_release_train(args.state or None)
+            payload = doctor_release_train(args.state or None, workspace_root=args.workspace_root or None)
             print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
             return 0
         if args.release_train_command == "compose":
@@ -741,6 +821,7 @@ def configure_subparsers(sub: Any) -> None:
     rollback.add_argument("--release-id", default=None)
     doctor = sub.add_parser("doctor", help="report Loop-owned train status and child-repo blockers")
     doctor.add_argument("--state", default="", help="optional release-train state JSON")
+    doctor.add_argument("--workspace-root", default="", help="optional directory containing child checkouts")
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
