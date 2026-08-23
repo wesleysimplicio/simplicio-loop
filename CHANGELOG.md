@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.43.2] - 2026-08-23
+
+- Publish the latest `main` changes, including the current skill and operator-flow surface.
+
 ## [3.43.1] - 2026-08-14
 
 - Require the released Simplicio toolchain: Dev CLI 0.18.10, Mapper 0.26.20,
