@@ -45,6 +45,8 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"status={receipt.get('status', 'blocked')}\n")
               output.write(f"release_id={receipt.get('release_id', 'unknown')}\n")
+          if receipt.get("status") == "blocked":
+              raise SystemExit("release-train reconciliation blocked: " + "; ".join(receipt.get("errors", [])))
           PY
 
       - name: Run release-train checks
