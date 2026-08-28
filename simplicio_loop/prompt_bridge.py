@@ -335,6 +335,12 @@ def _runtime_route(
             "reason_code": "runtime_os_error:" + type(error).__name__,
             "exit_code": None,
         }
+    except Exception as error:  # Defensive custom-runner/provider boundary.
+        return None, {
+            "source": "runtime",
+            "reason_code": "runtime_runner_error:" + type(error).__name__,
+            "exit_code": None,
+        }
 
     exit_code = int(getattr(completed, "returncode", 1))
     if exit_code != 0:
@@ -443,7 +449,8 @@ def _materialize(
             continue
         heading = f"## Simplicio skill: {handle}\n\n"
         heading_bytes = len(heading.encode("utf-8"))
-        remaining = max_bytes - used
+        separator_bytes = 2 if sections else 0
+        remaining = max_bytes - used - separator_bytes
         if remaining <= heading_bytes:
             truncated = True
             break
@@ -455,14 +462,14 @@ def _materialize(
         if cut:
             section += "\n\n[skill body truncated by simplicio-prompt byte budget]"
         section_bytes = len(section.encode("utf-8"))
-        if used + section_bytes > max_bytes:
-            section, _ = _truncate_utf8(section, max_bytes - used)
+        if used + separator_bytes + section_bytes > max_bytes:
+            section, _ = _truncate_utf8(section, max_bytes - used - separator_bytes)
             section_bytes = len(section.encode("utf-8"))
             cut = True
         sections.append(section)
         loaded_handles.append(handle)
         digests.append(_sha256(included))
-        used += section_bytes
+        used += separator_bytes + section_bytes
         truncated = truncated or cut
         if used >= max_bytes:
             break
