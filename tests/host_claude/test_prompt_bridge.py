@@ -78,7 +78,7 @@ def test_runtime_success_uses_direct_argv_and_materializes_selected_skills(tmp_p
 
 def test_runtime_absence_is_visible_and_portable_route_still_enriches():
     result = bridge.enrich_user_prompt(
-        "implement and validate the parser",
+        "implement the parser",
         session_id="session-degraded",
         env={"SIMPLICIO_RUNTIME_AVAILABLE": "0"},
         body_loader=lambda handle: f"fallback body for {handle}",
