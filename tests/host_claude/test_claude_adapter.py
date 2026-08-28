@@ -54,6 +54,7 @@ def test_capabilities_only_claim_shipped_native_hooks():
     matrix = capabilities()
     assert matrix["native_interception"] is True
     assert matrix["self_paced"] is False
+    assert matrix["prompt_enrichment"]["runtime_route"] == "simplicio loop decide --prompt-route"
     for stage, info in matrix["stages"].items():
         assert info["supported"] is True
         assert info["enforcement"] == "native_hook"
@@ -65,6 +66,8 @@ def test_handshake_is_degraded_not_fail_open_without_runtime():
     assert receipt["fail_open"] is False
     assert receipt["status"] == "degraded"
     assert receipt["runtime_available"] is False
+    explicitly_absent = handshake({"PATH": str(Path("missing-bin-dir")), "SIMPLICIO_RUNTIME_AVAILABLE": "0"})
+    assert explicitly_absent["status"] == "degraded"
     ready = handshake({"SIMPLICIO_RUNTIME_AVAILABLE": "1"})
     assert ready["status"] == "ready"
     assert ready["runtime_mode"] == "runtime-backed"
@@ -75,9 +78,17 @@ def test_lifecycle_decisions():
     assert start["decision"] == "continue"
     assert start["handshake"]["status"] == "ready"
 
-    route = decide({"hook_event_name": "UserPromptSubmit", "prompt": "implement the roster fix"})
-    assert route["route"]["intent"] == "mutate"
-    assert "simplicio-dev-cli" in route["route"]["skill_subset"]
+    routed = decide({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "implement the roster fix",
+        "env": {"SIMPLICIO_RUNTIME_AVAILABLE": "0"},
+    })
+    assert routed["route"]["intent"] == "mutate"
+    assert "simplicio-dev-cli" in routed["route"]["selected_handles"]
+    assert routed["prompt_enrichment"]["schema"] == "simplicio.prompt-enrichment-receipt/v1"
+    assert routed["prompt_enrichment"]["fallback"]["used"] is True
+    assert routed["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert "simplicio.prompt-enrichment-receipt/v1" in routed["hookSpecificOutput"]["additionalContext"]
 
     read = decide({"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {"file_path": "a.py"}})
     assert read["decision"] == "allow"
@@ -135,12 +146,38 @@ def test_hook_scripts_round_trip():
     assert body["decision"] == "allow"
 
 
+def test_user_prompt_hook_emits_claude_additional_context():
+    payload = json.dumps({
+        "prompt": "survey repository",
+        "session_id": "hook-session",
+        "env": {"SIMPLICIO_RUNTIME_AVAILABLE": "0"},
+    })
+    script = ADAPTER / "hooks" / "user_prompt_submit.py"
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        input=payload,
+        text=True,
+        capture_output=True,
+        check=False,
+        cwd=str(REPO),
+    )
+    assert proc.returncode == 0, proc.stderr
+    body = json.loads(proc.stdout)
+    assert body["decision"] == "continue"
+    assert body["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert "simplicio.prompt-enrichment-receipt/v1" in body["hookSpecificOutput"]["additionalContext"]
+
+
 def test_e2e_fixture_python_edit_then_stop(tmp_path: Path):
     fixture = tmp_path / "roster.py"
     fixture.write_text("ROSTER = []\n", encoding="utf-8")
     events = [
         {"hook_event_name": "SessionStart", "env": {"SIMPLICIO_RUNTIME_AVAILABLE": "0"}},
-        {"hook_event_name": "UserPromptSubmit", "prompt": "fix roster.py"},
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "fix roster.py",
+            "env": {"SIMPLICIO_RUNTIME_AVAILABLE": "0"},
+        },
         {"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {"file_path": str(fixture)}},
         {"hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": {"path": str(fixture)}},
         {"hook_event_name": "PostToolUse", "tool_name": "Edit"},
