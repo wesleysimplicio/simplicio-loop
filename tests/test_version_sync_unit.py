@@ -9,7 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 
 from scripts.version_sync import (
+    ADAPTER_VERSION_FILES,
+    CLAUDE_DESCRIPTOR_FILES,
     VersionSyncError,
+    _claude_descriptor_digest,
     apply_version,
     check_version,
 )
@@ -117,6 +120,35 @@ def test_apply_is_idempotent_when_already_at_target_version(tmp_path):
     result = apply_version(repo, "9.9.9")
     assert result["changed_files"] == []
     assert result["ok"] is True
+
+
+def test_apply_updates_host_adapters_and_claude_descriptor_digests(tmp_path):
+    repo = _make_repo(tmp_path)
+    for relative in ADAPTER_VERSION_FILES:
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('ADAPTER_VERSION = "1.2.3"\n', encoding="utf-8")
+
+    descriptor = {
+        "schema": "simplicio.plugin-descriptor/v1",
+        "name": "simplicio-loop",
+        "host": "claude",
+        "version": "1.2.3",
+        "digest": _claude_descriptor_digest("1.2.3"),
+    }
+    for relative in CLAUDE_DESCRIPTOR_FILES:
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(descriptor, indent=2) + "\n", encoding="utf-8")
+
+    result = apply_version(repo, "2.0.0")
+    assert result["ok"] is True
+    for relative in ADAPTER_VERSION_FILES:
+        assert 'ADAPTER_VERSION = "2.0.0"' in (repo / relative).read_text(encoding="utf-8")
+    for relative in CLAUDE_DESCRIPTOR_FILES:
+        value = json.loads((repo / relative).read_text(encoding="utf-8"))
+        assert value["version"] == "2.0.0"
+        assert value["digest"] == _claude_descriptor_digest("2.0.0")
 
 
 def test_apply_rejects_malformed_version(tmp_path):
