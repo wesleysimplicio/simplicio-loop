@@ -39,6 +39,20 @@ def test_valid_component_release_has_no_errors():
     assert cr.validate_component_release(VALID_COMPONENT) == []
 
 
+def test_component_release_accepts_canonical_repository_field():
+    data = json.loads(json.dumps(VALID_COMPONENT))
+    del data["repo"]
+    data["repository"] = "https://github.com/wesleysimplicio/simplicio-loop"
+    assert cr.validate_component_release(data) == []
+
+
+def test_component_release_rejects_conflicting_repository_aliases():
+    data = json.loads(json.dumps(VALID_COMPONENT))
+    data["repository"] = "https://github.com/example/other"
+    errors = cr.validate_component_release(data)
+    assert any("same source" in error for error in errors)
+
+
 def test_component_release_rejects_non_object():
     assert cr.validate_component_release("not-a-dict") != []
     assert cr.validate_component_release(None) != []
