@@ -3,8 +3,8 @@
 First-class: native skills, plugin manifest, and a five-stage Plugin v1 lifecycle
 (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`) implemented by
 `adapters/claude/adapter.py`. Missing claimed hooks fail closed. Runtime absence is
-degraded, never silent fail-open. Descriptor version/digest must stay at `3.43.1` with
-`plugin/.claude-plugin/plugin.json`.
+degraded, never silent fail-open. Descriptor version/digest must stay aligned with the
+canonical package version (`pyproject.toml`) and `plugin/.claude-plugin/plugin.json`.
 
 ## Install
 

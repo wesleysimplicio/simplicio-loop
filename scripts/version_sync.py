@@ -24,6 +24,7 @@ provenance/attestation, signing, install smoke, environment-gated release) — t
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -36,6 +37,22 @@ from release_manifest import SCHEMA as RELEASE_MANIFEST_SCHEMA  # noqa: E402
 from release_manifest import VERSION_RE, build_manifest  # noqa: E402
 
 SCHEMA = "simplicio.version-sync/v1"
+
+# These surfaces are published or loaded independently from the Python package.  Keeping them
+# in this one mechanical command prevents a new package release from leaving an older host
+# adapter/marketplace descriptor behind (the exact failure mode tracked by #558).
+ADAPTER_VERSION_FILES = (
+    "adapters/claude/adapter.py",
+    "adapters/codex/adapter.py",
+    "adapters/cursor/adapter.py",
+    "adapters/grok/adapter.py",
+    "adapters/kiro/adapter.py",
+    "adapters/vscode/adapter.py",
+)
+CLAUDE_DESCRIPTOR_FILES = (
+    "adapters/claude/descriptor.json",
+    "plugin/.claude-plugin/plugin.json",
+)
 
 
 class VersionSyncError(ValueError):
@@ -103,6 +120,70 @@ def _apply_source_fallback(path: Path, version: str) -> bool:
     return False
 
 
+def _apply_adapter_version(path: Path, version: str) -> bool:
+    text = path.read_text(encoding="utf-8")
+    new_text, count = re.subn(
+        r'(?m)^(ADAPTER_VERSION\s*=\s*)["\'][^"\']+["\']',
+        lambda m: f'{m.group(1)}"{version}"',
+        text,
+        count=1,
+    )
+    if count == 0:
+        raise VersionSyncError(f"{path}: no ADAPTER_VERSION assignment found to rewrite")
+    if new_text != text:
+        path.write_text(new_text, encoding="utf-8")
+        return True
+    return False
+
+
+def _claude_descriptor_digest(version: str) -> str:
+    payload = {
+        "schema": "simplicio.plugin-descriptor/v1",
+        "name": "simplicio-loop",
+        "host": "claude",
+        "version": version,
+        "entrypoint": "simplicio-loop=simplicio_loop.cli:main",
+        "lifecycle": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"],
+        "hooks": {
+            "SessionStart": "hooks/session_start.py",
+            "UserPromptSubmit": "hooks/user_prompt_submit.py",
+            "PreToolUse": "hooks/pre_tool_use.py",
+            "PostToolUse": "hooks/post_tool_use.py",
+            "Stop": "hooks/stop.py",
+        },
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _apply_claude_descriptor(path: Path, version: str) -> bool:
+    text = path.read_text(encoding="utf-8")
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise VersionSyncError(f"{path}: descriptor must be a JSON object")
+    desired_digest = _claude_descriptor_digest(version)
+    if data.get("version") == version and data.get("digest") == desired_digest:
+        return False
+    new_text, version_count = re.subn(
+        r'("version"\s*:\s*)"[^"]*"',
+        lambda m: f'{m.group(1)}"{version}"',
+        text,
+        count=1,
+    )
+    if version_count == 0:
+        raise VersionSyncError(f'{path}: no "version" field found to rewrite')
+    new_text, digest_count = re.subn(
+        r'("digest"\s*:\s*)"[^"]*"',
+        lambda m: f'{m.group(1)}"{desired_digest}"',
+        new_text,
+        count=1,
+    )
+    if digest_count == 0:
+        raise VersionSyncError(f'{path}: no "digest" field found to rewrite')
+    path.write_text(new_text, encoding="utf-8")
+    return True
+
+
 def apply_version(repo: Path, version: str) -> dict:
     _validate_version(version)
     changed = []
@@ -118,6 +199,14 @@ def apply_version(repo: Path, version: str) -> dict:
     fallback = repo / "simplicio_loop" / "__init__.py"
     if fallback.exists() and _apply_source_fallback(fallback, version):
         changed.append(str(fallback.relative_to(repo)))
+    for relative in ADAPTER_VERSION_FILES:
+        path = repo / relative
+        if path.exists() and _apply_adapter_version(path, version):
+            changed.append(relative)
+    for relative in CLAUDE_DESCRIPTOR_FILES:
+        path = repo / relative
+        if path.exists() and _apply_claude_descriptor(path, version):
+            changed.append(relative)
     manifest = build_manifest(repo)
     return {
         "schema": SCHEMA,
