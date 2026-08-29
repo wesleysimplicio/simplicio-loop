@@ -54,6 +54,23 @@ def test_doctor_measures_valid_child_manifest(tmp_path: Path):
     assert report["eight_repo_conformance"] == "UNVERIFIED"
 
 
+def test_doctor_measures_runtime_style_repository_manifest(tmp_path: Path):
+    repo = tmp_path / "simplicio-runtime"
+    manifest_dir = repo / ".simplicio" / "release-train"
+    manifest_dir.mkdir(parents=True)
+    data = _manifest("simplicio-runtime")
+    del data["repo"]
+    data["repository"] = "https://github.com/wesleysimplicio/simplicio-runtime"
+    (manifest_dir / "component-release.json").write_text(
+        json.dumps(data), encoding="utf-8"
+    )
+
+    report = doctor_release_train(workspace_root=tmp_path)
+    runtime = next(item for item in report["children"] if item["component"] == "simplicio-runtime")
+    assert runtime["status"] == "MEASURED"
+    assert runtime["reason"] == "component_manifest_valid"
+
+
 def test_doctor_blocks_invalid_child_manifest(tmp_path: Path):
     repo = tmp_path / "simplicio-runtime"
     repo.mkdir()
