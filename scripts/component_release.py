@@ -83,7 +83,10 @@ COMPONENT_REQUIRED = {
     "artifacts", "compatibility", "breaking_change", "changelog", "channel",
 }
 COMPONENT_OPTIONAL = {"protocols", "migrations", "conformance_fixtures"}
-COMPONENT_ALLOWED = COMPONENT_REQUIRED | COMPONENT_OPTIONAL
+# ``repository`` is the canonical field emitted by Runtime and the public
+# update-manifest tooling.  ``repo`` remains accepted for the original v1
+# fixtures and older producers so the reconciler can consume both forms.
+COMPONENT_ALLOWED = COMPONENT_REQUIRED | COMPONENT_OPTIONAL | {"repository"}
 
 ARTIFACT_REQUIRED = {"registry", "os", "arch", "digest", "size", "signature"}
 ARTIFACT_OPTIONAL = {"sbom", "provenance"}
@@ -152,13 +155,20 @@ def validate_component_release(data: Any) -> List[str]:
     if not isinstance(data, dict):
         return ["manifest must be a JSON object"]
     _check_unknown(data, COMPONENT_ALLOWED, "manifest", errors)
-    _check_missing(data, COMPONENT_REQUIRED, "manifest", errors)
+    required = set(COMPONENT_REQUIRED)
+    if "repository" in data:
+        required.discard("repo")
+    _check_missing(data, required, "manifest", errors)
+
+    if "repo" in data and "repository" in data:
+        if data.get("repo") != data.get("repository"):
+            errors.append("repo and repository must identify the same source")
 
     version = data.get("version")
     if isinstance(version, str) and version and not SEMVER_RE.match(version):
         errors.append(f"version must be semantic MAJOR.MINOR.PATCH (got {version!r})")
 
-    for field in ("component", "repo", "package", "commit", "tag"):
+    for field in ("component", "repo", "repository", "package", "commit", "tag"):
         value = data.get(field)
         if field in data and (not isinstance(value, str) or not value.strip()):
             errors.append(f"{field} must be a non-empty string")

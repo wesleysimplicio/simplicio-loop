@@ -650,8 +650,11 @@ def _child_manifest_path(repo_path: Path) -> Optional[Path]:
     """Return the first supported component manifest in a child checkout."""
     for relative in (
         Path(".simplicio/component-release.json"),
+        Path(".simplicio/release-train/component-release.json"),
         Path("component-release.json"),
         Path("dist/component-release.json"),
+        Path("release/component-release.json"),
+        Path("release-train/component-release.json"),
         Path("release-manifest.json"),
     ):
         candidate = repo_path / relative

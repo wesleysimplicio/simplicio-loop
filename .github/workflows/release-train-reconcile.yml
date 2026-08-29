@@ -27,10 +27,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install release-train test dependencies
+        run: python -m pip install --disable-pip-version-check -e ".[dev]"
+
       - name: Reconcile latest compatible release
         id: reconcile
         env:
-          EVENT_FILE: \${{ github.event_path }}
+          EVENT_FILE: ${{ github.event_path }}
         run: |
           python scripts/release_train_reconciler.py reconcile \
             --repo "$GITHUB_WORKSPACE" \
@@ -61,22 +64,22 @@ jobs:
         if: steps.reconcile.outputs.status == 'changed'
         env:
           BRANCH: release-train/latest-compatible
-          RELEASE_ID: \${{ steps.reconcile.outputs.release_id }}
+          RELEASE_ID: ${{ steps.reconcile.outputs.release_id }}
         run: |
           git config user.name "simplicio-release-train[bot]"
           git config user.email "simplicio-release-train[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
           git add pyproject.toml .simplicio/release-train.lock.json
-          git commit -m "chore(release-train): propagate \${RELEASE_ID}" \
+          git commit -m "chore(release-train): propagate ${RELEASE_ID}" \
             -m "Refs #558"
           git push --force-with-lease origin "HEAD:$BRANCH"
 
       - name: Open or reuse the bump PR
         if: steps.reconcile.outputs.status == 'changed'
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
           BRANCH: release-train/latest-compatible
-          RELEASE_ID: \${{ steps.reconcile.outputs.release_id }}
+          RELEASE_ID: ${{ steps.reconcile.outputs.release_id }}
         run: |
           existing="$(gh pr list --base main --head "$BRANCH" --state open --json number --jq '.[0].number')"
           if [ -n "$existing" ]; then
