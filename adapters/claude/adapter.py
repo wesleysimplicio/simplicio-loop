@@ -281,6 +281,7 @@ def decide(event: Mapping[str, Any], *, timeout: bool = False) -> dict[str, Any]
             "decision": "continue",
             "reason": "prompt_enrichment_degraded" if degraded else "prompt_enriched",
             "route": enrichment["route"],
+            "route_decision": enrichment["route_decision"],
             "portable_route": enrichment["portable_route"],
             "prompt_enrichment": prompt_receipt,
             "hookSpecificOutput": {

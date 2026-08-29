@@ -19,10 +19,13 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from .route import route as portable_route
-
-ROUTE_SCHEMA = "simplicio.route-decision/v1"
+from .route_decision import (
+    AUTHORITY_LOCKED,
+    ROUTE_SCHEMA,
+    RouteDecisionError,
+    materialize_route_decision,
+)
 RECEIPT_SCHEMA = "simplicio.prompt-enrichment-receipt/v1"
-AUTHORITY_LOCKED = {"writes": False, "effects": False}
 
 DEFAULT_MAX_SKILLS = 8
 ABSOLUTE_MAX_SKILLS = 64
@@ -383,27 +386,19 @@ def _fallback_route(
     max_skills: int,
     max_bytes: int,
 ) -> dict[str, Any]:
-    intent = str(selected.get("intent") or "survey")
-    fingerprint = hashlib.sha256(task.encode("utf-8")).hexdigest()[:16]
     reason = str(diagnostic.get("reason_code") or "runtime_unavailable")
-    return {
-        "schema": ROUTE_SCHEMA,
-        "decision_id": f"loop-fallback:{fingerprint}",
-        "lane": _lane(intent),
-        "reason": reason,
-        "capability": "prompt.enrich",
-        "intent": intent,
-        "selected_handles": handles,
-        "max_skills": max_skills,
-        "max_bytes": max_bytes,
-        "runtime_status": "incompatible" if "incompatible" in reason else "unavailable",
-        "authority": dict(AUTHORITY_LOCKED),
-        "provenance": {
-            "producer": "simplicio-loop",
-            "portable_route_id": selected.get("route_id"),
-            "issue": 1210,
+    return materialize_route_decision(
+        task,
+        selected,
+        runtime_route=None,
+        selected_handles=handles,
+        max_skills=max_skills,
+        max_bytes=max_bytes,
+        diagnostic={
+            **dict(diagnostic),
+            "runtime_status": "incompatible" if "incompatible" in reason else "unavailable",
         },
-    }
+    )
 
 
 def _default_body_loader(handle: str) -> str | None:
@@ -584,6 +579,32 @@ def enrich_user_prompt(
             max_skills=max_skills,
             max_bytes=max_bytes,
         )
+    else:
+        try:
+            route = materialize_route_decision(
+                prompt,
+                selected,
+                runtime_route=route,
+                selected_handles=handles,
+                max_skills=max_skills,
+                max_bytes=max_bytes,
+                diagnostic=diagnostic,
+            )
+        except RouteDecisionError as error:
+            fallback_used = True
+            diagnostic = {
+                **dict(diagnostic),
+                "source": diagnostic.get("source") or "runtime",
+                "reason_code": "route_decision_materialization_error:" + type(error).__name__,
+            }
+            route = _fallback_route(
+                prompt,
+                selected,
+                handles,
+                diagnostic,
+                max_skills=max_skills,
+                max_bytes=max_bytes,
+            )
 
     route_handles = _canonical_handles(
         [str(item) for item in route.get("selected_handles", handles)],
@@ -657,6 +678,7 @@ def enrich_user_prompt(
     additional_context = f"{context}\n\n{block}" if context else block
     return {
         "route": route,
+        "route_decision": route,
         "portable_route": selected,
         "receipt": receipt,
         "additional_context": additional_context,
