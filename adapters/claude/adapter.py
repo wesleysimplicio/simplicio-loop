@@ -16,6 +16,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from simplicio_loop.prompt_bridge import enrich_user_prompt
+
 SCHEMA = "simplicio.host-adapter/v1"
 HOST = "claude"
 ADAPTER_VERSION = "3.43.1"
@@ -160,6 +162,11 @@ def capabilities() -> dict[str, Any]:
         "native_interception": True,
         "self_paced": False,
         "mcp_optional": True,
+        "prompt_enrichment": {
+            "schema": "simplicio.prompt-enrichment-receipt/v1",
+            "runtime_route": "simplicio loop decide --prompt-route",
+            "bounded": True,
+        },
         "stages": {
             stage: {
                 "supported": True,
@@ -173,11 +180,15 @@ def capabilities() -> dict[str, Any]:
     }
 
 
+def _env_truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def handshake(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     """SessionStart handshake. Runtime missing is degraded, not fail-open."""
     environ = env if env is not None else os.environ
     runtime = environ.get("SIMPLICIO_RUNTIME_BIN") or "simplicio"
-    available = bool(environ.get("SIMPLICIO_RUNTIME_AVAILABLE"))
+    available = _env_truthy(environ.get("SIMPLICIO_RUNTIME_AVAILABLE"))
     if not available:
         # Presence on PATH is a hint only; never pretend MCP ran.
         path = environ.get("PATH", "")
@@ -257,15 +268,24 @@ def decide(event: Mapping[str, Any], *, timeout: bool = False) -> dict[str, Any]
 
     if stage == "UserPromptSubmit":
         prompt = str(event.get("prompt") or event.get("user_prompt") or "")
-        mutate = bool(re.search(r"(?i)\b(edit|write|fix|implement|commit|push|apply)\b", prompt))
+        event_env = event.get("env") if isinstance(event.get("env"), Mapping) else None
+        enrichment = enrich_user_prompt(
+            prompt,
+            session_id=str(event.get("session_id") or event.get("sessionId") or ""),
+            repo=event.get("cwd") or event.get("workspace"),
+            env=event_env,
+        )
+        prompt_receipt = enrichment["receipt"]
+        degraded = bool(prompt_receipt["fallback"]["used"])
         receipt.update({
             "decision": "continue",
-            "reason": "route_materialized",
-            "route": {
-                "schema": "simplicio.route-decision/v1",
-                "intent": "mutate" if mutate else "read",
-                "skill_subset": ["simplicio-loop", "simplicio-orient"]
-                + (["simplicio-dev-cli"] if mutate else []),
+            "reason": "prompt_enrichment_degraded" if degraded else "prompt_enriched",
+            "route": enrichment["route"],
+            "portable_route": enrichment["portable_route"],
+            "prompt_enrichment": prompt_receipt,
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": enrichment["additional_context"],
             },
         })
         return receipt
