@@ -84,6 +84,8 @@ def test_lifecycle_decisions():
         "env": {"SIMPLICIO_RUNTIME_AVAILABLE": "0"},
     })
     assert routed["route"]["intent"] == "mutate"
+    assert routed["route_decision"] == routed["route"]
+    assert routed["prompt_enrichment"]["route_decision"] == routed["route_decision"]
     assert "simplicio-dev-cli" in routed["route"]["selected_handles"]
     assert routed["prompt_enrichment"]["schema"] == "simplicio.prompt-enrichment-receipt/v1"
     assert routed["prompt_enrichment"]["fallback"]["used"] is True

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import simplicio_loop.prompt_bridge as bridge
+from jsonschema import Draft7Validator
+from simplicio_loop.route_decision import POLICY_VERSION, validate_route_decision
 
 
 @dataclass
@@ -69,6 +71,9 @@ def test_runtime_success_uses_direct_argv_and_materializes_selected_skills(tmp_p
     assert "--selected-handle" in argv
     assert timeout <= 10
     assert result["route"]["runtime_status"] == "available"
+    assert result["route_decision"] == result["route"]
+    assert result["route_decision"]["policy_version"] == POLICY_VERSION
+    validate_route_decision(result["route_decision"])
     assert result["receipt"]["fallback"]["used"] is False
     assert result["receipt"]["authority"] == {"writes": False, "effects": False}
     assert result["receipt"]["materialized_handles"]
@@ -87,6 +92,7 @@ def test_runtime_absence_is_visible_and_portable_route_still_enriches():
     assert result["route"]["schema"] == bridge.ROUTE_SCHEMA
     assert result["route"]["runtime_status"] == "unavailable"
     assert result["route"]["intent"] == "mutate"
+    assert result["route_decision"]["decision_id"].startswith("loop-route/")
     assert result["receipt"]["fallback"]["used"] is True
     assert result["receipt"]["fallback"]["reason_code"] == "runtime_declared_unavailable"
     assert "simplicio-dev-cli" in result["receipt"]["selected_handles"]
@@ -107,6 +113,7 @@ def test_malformed_runtime_output_never_claims_runtime_success():
     assert result["receipt"]["fallback"]["used"] is True
     assert result["receipt"]["fallback"]["reason_code"] == "runtime_output_not_json"
     assert result["route"]["runtime_status"] == "unavailable"
+    assert result["route_decision"]["reason"] == "runtime_output_not_json"
 
 
 def test_existing_runtime_route_environment_avoids_process_call():
@@ -124,7 +131,46 @@ def test_existing_runtime_route_environment_avoids_process_call():
 
     assert result["receipt"]["fallback"]["used"] is False
     assert result["receipt"]["runtime"]["source"] == "env:SIMPLICIO_ROUTE_DECISION"
-    assert result["route"]["decision_id"] == "runtime-route:test"
+    assert result["route"]["decision_id"].startswith("loop-route/")
+    assert result["route"]["provenance"]["source_decision_id"] == "runtime-route:test"
+
+
+def test_route_decision_is_stable_and_distinguishes_read_from_mutation():
+    read_one = bridge.enrich_user_prompt(
+        "survey repository",
+        env={"SIMPLICIO_RUNTIME_AVAILABLE": "0"},
+        body_loader=lambda handle: "skill",
+    )["route_decision"]
+    read_two = bridge.enrich_user_prompt(
+        "survey repository",
+        env={"SIMPLICIO_RUNTIME_AVAILABLE": "0"},
+        body_loader=lambda handle: "skill",
+    )["route_decision"]
+    mutation = bridge.enrich_user_prompt(
+        "implement the parser",
+        env={"SIMPLICIO_RUNTIME_AVAILABLE": "0"},
+        body_loader=lambda handle: "skill",
+    )["route_decision"]
+
+    assert read_one == read_two
+    assert read_one["intent"] == "survey"
+    assert read_one["lane"] == "interactive"
+    assert mutation["intent"] == "mutate"
+    assert mutation["lane"] == "standard"
+    assert read_one["decision_id"] != mutation["decision_id"]
+    assert read_one["authority"] == {"writes": False, "effects": False}
+
+
+def test_route_decision_matches_published_contract():
+    result = bridge.enrich_user_prompt(
+        "implement the parser",
+        env={"SIMPLICIO_RUNTIME_AVAILABLE": "0"},
+        body_loader=lambda handle: "skill",
+    )
+    schema_path = Path(__file__).resolve().parents[2] / "contracts" / "runtime-routing" / "v1" / "route-decision.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    Draft7Validator.check_schema(schema)
+    Draft7Validator(schema).validate(result["route_decision"])
 
 
 def test_skill_materialization_honors_strict_byte_budget():

@@ -40,5 +40,6 @@ def test_marketplace_user_prompt_hook_runs_canonical_adapter():
     value = json.loads(process.stdout)
     assert value["decision"] == "continue"
     assert value["route"]["intent"] == "mutate"
+    assert value["route_decision"] == value["route"]
     assert value["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
     assert "simplicio.prompt-enrichment-receipt/v1" in value["hookSpecificOutput"]["additionalContext"]
