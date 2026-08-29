@@ -29,7 +29,7 @@ _FALLBACK_FLOORS = {
     "simplicio-mapper": "0.26.20",
     "simplicio-fast": "2.0.28",
     "simplicio-cli": "0.18.10",
-    "simplicio-loop": "3.43.1",
+    "simplicio-loop": "3.43.2",
 }
 
 
