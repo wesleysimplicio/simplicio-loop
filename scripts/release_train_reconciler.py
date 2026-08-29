@@ -26,6 +26,10 @@ from scripts.release_train import ReleaseTrainError, satisfies_range, select_lat
 SCHEMA = "simplicio.release-train-reconciliation/v1"
 LOCK_SCHEMA = "simplicio.release-train-lock/v1"
 _EVENT_TYPE = "simplicio.component-release.v1"
+_EVENT_TYPES = frozenset({
+    _EVENT_TYPE,
+    "simplicio.component-release-event/v1",
+})
 _VERSION_RE = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?")
 _SPEC_RE = re.compile(
     r"^(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)(?P<rest>"
@@ -135,6 +139,24 @@ def _event_payload(event: Mapping[str, Any]) -> Mapping[str, Any]:
     return event
 
 
+def _event_type(event: Mapping[str, Any]) -> str:
+    """Read either GitHub's dispatch type or a Runtime event schema.
+
+    Runtime's controller names the same wire family
+    ``simplicio.component-release-event/v1`` while the original Loop adapter
+    used ``simplicio.component-release.v1``. Accept both names, but keep the
+    manifest requirement below fail-closed: an artifact-only event is not
+    enough information to edit a consumer dependency safely.
+    """
+    payload = _event_payload(event)
+    value = event.get("event_type") or payload.get("event_type") or payload.get("schema")
+    if value is None:
+        return _EVENT_TYPE
+    if not isinstance(value, str) or value not in _EVENT_TYPES:
+        raise ReconciliationError(f"unsupported release-train event type: {value!r}")
+    return value
+
+
 def _event_manifests(event: Mapping[str, Any]) -> List[Mapping[str, Any]]:
     payload = _event_payload(event)
     raw = payload.get("manifests")
@@ -233,6 +255,7 @@ def reconcile(
     lock_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Reconcile one event and return a machine-readable receipt."""
+    event_type = _event_type(event)
     release_id = _event_id(event)
     payload = _event_payload(event)
     graph_hash = payload.get("graph_hash", "")
@@ -255,7 +278,7 @@ def reconcile(
         "schema": SCHEMA,
         "release_id": release_id,
         "graph_hash": graph_hash,
-        "event_type": payload.get("event_type", _EVENT_TYPE),
+        "event_type": event_type,
         "direct_components": sorted(direct_matches),
         "selected": {},
         "changed_files": [],
