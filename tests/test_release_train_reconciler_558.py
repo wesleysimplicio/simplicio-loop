@@ -50,15 +50,43 @@ def _repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _event(*manifests: dict, release_id: str = "release-1") -> dict:
-    return {
-        "client_payload": {
-            "event_type": "simplicio.component-release.v1",
-            "release_id": release_id,
-            "graph_hash": "sha256:" + "g" * 64,
-            "manifests": list(manifests),
-        }
+def _event(*manifests: dict, release_id: str = "release-1", event_type: str | None = None) -> dict:
+    payload = {
+        "release_id": release_id,
+        "graph_hash": "sha256:" + "g" * 64,
+        "manifests": list(manifests),
     }
+    if event_type is not None:
+        payload["event_type"] = event_type
+    return {
+        "client_payload": payload
+    }
+
+
+def test_accepts_runtime_event_type_when_manifest_payload_is_present(tmp_path: Path):
+    repo = _repo(tmp_path)
+    receipt = reconcile(
+        repo,
+        _event(
+            _manifest("simplicio-cli", "0.18.11", digest="b"),
+            release_id="runtime-event-1",
+            event_type="simplicio.component-release-event/v1",
+        ),
+    )
+    assert receipt["event_type"] == "simplicio.component-release-event/v1"
+    assert receipt["status"] == "changed"
+
+
+def test_runtime_event_without_manifest_stays_fail_closed(tmp_path: Path):
+    repo = _repo(tmp_path)
+    event = {
+        "schema": "simplicio.component-release-event/v1",
+        "event_id": "event-1",
+        "release_id": "runtime-event-1",
+        "artifacts": [{"component": "simplicio-runtime", "name": "runtime", "digest": "a" * 64}],
+    }
+    with pytest.raises(ReconciliationError, match="manifest or manifests"):
+        reconcile(repo, event)
 
 
 def test_selects_newest_candidate_inside_declared_range_and_writes_lock(tmp_path: Path):

@@ -2,7 +2,7 @@ name: release-train-reconcile
 
 on:
   repository_dispatch:
-    types: [simplicio.component-release.v1]
+    types: [simplicio.component-release.v1, simplicio.component-release-event/v1]
 
 concurrency:
   group: release-train-reconcile
