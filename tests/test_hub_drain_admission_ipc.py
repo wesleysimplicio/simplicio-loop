@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+import uuid
 
 import pytest
 
@@ -333,7 +334,7 @@ def test_real_unix_socket_admit_lookup_and_restart_replay(tmp_path, require_af_u
     request = build_admission_request(job, client_id="wire-client", workspace_id="wire-workspace")
     lock_path = str(tmp_path / "hub.lock")
     queue_path = str(tmp_path / "hub.db")
-    endpoint = default_endpoint(str(tmp_path))
+    endpoint = "/tmp/simplicio-hub-%s.sock" % uuid.uuid4().hex[:12]
 
     daemon = HubDaemon(lock_path, queue_path=queue_path)
     daemon.start()
@@ -371,7 +372,7 @@ def test_cli_uses_running_daemon_reports_non_execution_and_never_spawns(
     if default_transport() != "unix":
         return
     checkpoint, source = _checkpoint(tmp_path)
-    endpoint = default_endpoint(str(tmp_path))
+    endpoint = "/tmp/simplicio-hub-%s.sock" % uuid.uuid4().hex[:12]
     daemon = HubDaemon(str(tmp_path / "hub.lock"), queue_path=str(tmp_path / "hub.db"))
     daemon.start()
     server = HubSocketServer(daemon, endpoint, "unix")

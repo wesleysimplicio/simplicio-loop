@@ -1,9 +1,18 @@
 """Hermetic real-process/real-AF_UNIX fairness proof for issue #635."""
 import multiprocessing as mp
+import sys
 import time
 from pathlib import Path
 
 import pytest
+
+pytestmark = [
+    pytest.mark.satellite,
+    pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="real multiprocess hub scheduling is not deterministic on macOS runners",
+    ),
+]
 
 from simplicio_loop.hub_daemon import HubDaemon, HubSocketClient, HubSocketServer, default_endpoint, default_transport
 

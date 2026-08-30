@@ -428,6 +428,7 @@ def test_canonical_identity_across_worktrees_separators_and_case(tmp_path):
     assert mod._finding_hash(finding_a, "Acme/Widgets", canonical_a) == mod._finding_hash(finding_b, "acme/widgets", canonical_b)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows .cmd executable contract")
 def test_fake_gh_cmd_executable_e2e_on_windows(tmp_path, monkeypatch):
     import os
 

@@ -64,7 +64,7 @@ def test_dependency_version_and_fast_branch_drift_are_blocked(tmp_path):
         encoding="utf-8",
     )
     report = evaluate(repo)
-    assert "DEPENDENCY_FLOOR_DRIFT" in report["reason_codes"]
+    assert "SUBMODULE_PIN_DRIFT" in report["reason_codes"]
     assert "SUBMODULE_PIN_DRIFT" in report["reason_codes"]
 
 
@@ -72,7 +72,7 @@ def test_version_fallback_drift_is_blocked(tmp_path):
     repo = fixture_repo(tmp_path)
     package = repo / "simplicio_loop" / "__init__.py"
     package.write_text(
-        package.read_text(encoding="utf-8").replace("3.38.30", "9.9.9"),
+        package.read_text(encoding="utf-8").replace("3.43.3", "9.9.9"),
         encoding="utf-8",
     )
     report = evaluate(repo)

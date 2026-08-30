@@ -14,7 +14,22 @@ sys.path.insert(0, str(Path(__file__).parent))
 from test_loop_execution_receipt import _fixture  # noqa: E402
 
 
-@pytest.mark.skipif(shutil.which("simplicio") is None, reason="simplicio-runtime is not installed")
+def _runtime_is_usable() -> bool:
+    executable = shutil.which("simplicio")
+    if executable is None:
+        return False
+    probe = subprocess.run(
+        [executable, "--version"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+@pytest.mark.skipif(not _runtime_is_usable(), reason="simplicio-runtime is not usable")
+@pytest.mark.satellite
 def test_runtime_verifies_the_loop_published_receipt(tmp_path, monkeypatch):
     repo, run = _fixture(tmp_path)
     monkeypatch.setattr(receipt_mod, "_git_commit", lambda _repo: "a" * 40)

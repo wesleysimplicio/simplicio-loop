@@ -52,7 +52,9 @@ def test_windows_lock_retries_contention_and_expiry_is_fail_closed(tmp_path, mon
                 raise PermissionError(13, "simulated lock contention")
 
     fake = FakeMsvcrt(failures=2)
-    monkeypatch.setattr(task_backlog.os, "name", "nt")
+    from tests._os_proxy import os_with_name
+
+    monkeypatch.setattr(task_backlog, "os", os_with_name(task_backlog.os, "nt"))
     monkeypatch.setitem(sys.modules, "msvcrt", fake)
     lock_path = str(tmp_path / "backlog.jsonl")
     with task_backlog._state_lock(lock_path, timeout=0.2, retry=0.001):
@@ -79,7 +81,9 @@ def test_windows_lock_timeout_is_bounded_and_configurable(tmp_path, monkeypatch)
             if mode == self.LK_NBLCK:
                 raise OSError(13, "busy")
 
-    monkeypatch.setattr(task_backlog.os, "name", "nt")
+    from tests._os_proxy import os_with_name
+
+    monkeypatch.setattr(task_backlog, "os", os_with_name(task_backlog.os, "nt"))
     monkeypatch.setitem(sys.modules, "msvcrt", AlwaysBusy())
     with pytest.raises(task_backlog.BacklogLockTimeout):
         with task_backlog._state_lock(str(tmp_path / "backlog.jsonl"), timeout=0.01, retry=0.001):

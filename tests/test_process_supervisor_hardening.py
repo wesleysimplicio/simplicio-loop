@@ -23,7 +23,9 @@ def test_windows_taskkill_nonzero_falls_back_to_direct_kill(monkeypatch) -> None
             self.killed = True
 
     process = Process()
-    monkeypatch.setattr(supervisor_module.os, "name", "nt")
+    from tests._os_proxy import os_with_name
+
+    monkeypatch.setattr(supervisor_module, "os", os_with_name(supervisor_module.os, "nt"))
     monkeypatch.setattr(
         subprocess, "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args, 1),
@@ -43,7 +45,9 @@ def test_windows_taskkill_success_does_not_direct_kill(monkeypatch) -> None:
             self.killed = True
 
     process = Process()
-    monkeypatch.setattr(supervisor_module.os, "name", "nt")
+    from tests._os_proxy import os_with_name
+
+    monkeypatch.setattr(supervisor_module, "os", os_with_name(supervisor_module.os, "nt"))
     monkeypatch.setattr(
         subprocess, "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args, 0),

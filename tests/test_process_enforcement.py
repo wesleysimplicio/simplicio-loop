@@ -170,6 +170,7 @@ def test_proc_scan_omits_when_callers_nspid_is_missing(tmp_path) -> None:
     assert process_enforcement_module._scan_proc(tmp_path) == []
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="process registration timing is Linux-specific")
 def test_detector_flags_unsupervised_but_not_supervised(tmp_path) -> None:
     registry = ProcessRegistry(tmp_path / "registry.json")
 
@@ -220,6 +221,7 @@ def test_enforcement_default_off_observes_only_and_kills_nothing(tmp_path) -> No
         canary.wait(timeout=5)
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="process signaling semantics are Linux-specific")
 def test_enforcement_opt_in_terminates_a_flagged_process(tmp_path) -> None:
     canary = _spawn_marker_canary(sleep_seconds=10.0)
     try:
@@ -486,7 +488,13 @@ def test_proc_scan_omits_pid_reused_while_collecting_cmdline(tmp_path, monkeypat
 
 
 def test_windows_taskkill_failure_is_not_reported_as_success(monkeypatch) -> None:
-    monkeypatch.setattr(process_enforcement_module.os, "name", "nt")
+    from tests._os_proxy import os_with_name
+
+    monkeypatch.setattr(
+        process_enforcement_module,
+        "os",
+        os_with_name(process_enforcement_module.os, "nt"),
+    )
     monkeypatch.setattr(process_enforcement_module, "_windows_open_process", lambda pid, access: 77)
     monkeypatch.setattr(process_enforcement_module, "_windows_close_handle", lambda handle: None)
     monkeypatch.setattr(
@@ -504,6 +512,7 @@ def test_windows_command_line_parser_preserves_quoted_arguments() -> None:
     ) == ["C:\\Program Files\\Python\\python.exe", "-c", "print(1 + 2)"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows process metadata")
 def test_windows_scanner_pins_identity_and_preserves_argv(monkeypatch) -> None:
     class Process:
         info = {"pid": 123, "cmdline": ["simplicio-mapper", "argument with spaces"]}
@@ -519,6 +528,7 @@ def test_windows_scanner_pins_identity_and_preserves_argv(monkeypatch) -> None:
     ]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows process metadata")
 def test_windows_scanner_cim_fallback_parses_and_pins(monkeypatch) -> None:
     import psutil
     monkeypatch.setattr(psutil, "process_iter", lambda fields: [])
@@ -537,6 +547,7 @@ def test_windows_scanner_cim_fallback_parses_and_pins(monkeypatch) -> None:
     ]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows process metadata")
 def test_windows_scanner_rejects_failed_cim_and_identity_drift(monkeypatch) -> None:
     import psutil
     monkeypatch.setattr(psutil, "process_iter", lambda fields: [])
@@ -547,6 +558,7 @@ def test_windows_scanner_rejects_failed_cim_and_identity_drift(monkeypatch) -> N
     assert process_enforcement_module._scan_windows_processes() == []
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows process metadata")
 def test_windows_scanner_skips_invalid_rows_and_keeps_non_simplicio_cim(monkeypatch) -> None:
     import psutil
     class InvalidProcess:
@@ -583,6 +595,7 @@ def test_events_log_round_trips(tmp_path) -> None:
     assert [event["kind"] for event in events] == ["detection_scan", "cancel"]
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="process CLI integration is Linux-specific")
 def test_cli_status_top_queue_cancel_drain_reports(tmp_path) -> None:
     registry_path = tmp_path / "registry.json"
     module = [sys.executable, "-m", "simplicio_loop.process_enforcement_cli"]
@@ -694,6 +707,7 @@ def test_cli_queue_reports_unreachable_hub_honestly_not_silently(tmp_path) -> No
     assert report["hub"]["error"]
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="process-group termination is Linux-specific")
 def test_cli_drain_force_kills_remaining_after_timeout(tmp_path) -> None:
     registry_path = tmp_path / "registry.json"
     module = [sys.executable, "-m", "simplicio_loop.process_enforcement_cli"]

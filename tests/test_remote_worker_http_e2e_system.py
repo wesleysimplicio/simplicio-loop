@@ -26,6 +26,14 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = [
+    pytest.mark.satellite,
+    pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="real HTTP worker crash and lease handoff is Linux-specific",
+    ),
+]
+
 from simplicio_loop.remote_queue import HTTPRemoteQueue
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

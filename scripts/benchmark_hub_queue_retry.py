@@ -33,23 +33,21 @@ def main() -> int:
         submit_elapsed = time.perf_counter() - started
 
         claim_latencies = []
-        started = time.perf_counter()
-        leases = []
+        complete_latencies = []
+        claim_elapsed = 0.0
+        complete_elapsed = 0.0
         for _ in range(n):
             tick = time.perf_counter()
             lease = queue.claim("bench-worker", ttl=30)
-            claim_latencies.append(time.perf_counter() - tick)
+            claim_latency = time.perf_counter() - tick
+            claim_latencies.append(claim_latency)
+            claim_elapsed += claim_latency
             assert lease is not None
-            leases.append(lease)
-        claim_elapsed = time.perf_counter() - started
-
-        complete_latencies = []
-        started = time.perf_counter()
-        for lease in leases:
             tick = time.perf_counter()
             queue.complete(lease)
-            complete_latencies.append(time.perf_counter() - tick)
-        complete_elapsed = time.perf_counter() - started
+            complete_latency = time.perf_counter() - tick
+            complete_latencies.append(complete_latency)
+            complete_elapsed += complete_latency
         queue.close()
 
         def _stats(name, samples, elapsed):

@@ -17,6 +17,16 @@ from unittest.mock import patch
 import pytest
 
 from simplicio_loop import runner as runner_mod
+from tests._contract_only_hookwall import ContractOnlyHookwallLedger
+
+
+@pytest.fixture(autouse=True)
+def _contract_only_hookwall(monkeypatch):
+    monkeypatch.setattr(
+        runner_mod,
+        "_hookwall_ledger",
+        lambda *_args, **_kwargs: ContractOnlyHookwallLedger(),
+    )
 from simplicio_loop.plan_contract import validate_plan
 from simplicio_loop.planning_gate import build_planning_receipt, content_hash, receipt_path
 

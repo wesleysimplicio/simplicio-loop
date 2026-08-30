@@ -211,6 +211,7 @@ def test_bounded_run_uses_a_removed_per_run_home() -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="CAPABILITY_UNAVAILABLE[af_unix_eperm]: POSIX socket contract")
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux network containment contract")
 def test_core_network_hook_blocks_inet_but_not_unix(monkeypatch, tmp_path) -> None:
     spec = importlib.util.spec_from_file_location(
         "check_gate_conftest", str(check.REPO + "/tests/conftest.py")
@@ -450,7 +451,7 @@ def test_timeout_kills_group_after_leader_exits_but_child_keeps_pipes_open(tmp_p
     _assert_pid_gone(int(child_pid.read_text()))
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX setsid process-tree contract")
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux process-tree containment contract")
 def test_timeout_kills_observed_descendant_that_escapes_process_group(tmp_path) -> None:
     child_pid = tmp_path / "escaped-child.pid"
     child = (
@@ -545,7 +546,9 @@ def test_windows_thread_capture_does_not_register_pipes_with_selector(monkeypatc
         [sys.executable, "-c", "print('portable-capture')"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
     )
-    monkeypatch.setattr(check_runtime.os, "name", "nt")
+    from tests._os_proxy import os_with_name
+
+    monkeypatch.setattr(check_runtime, "os", os_with_name(check_runtime.os, "nt"))
     monkeypatch.setattr(
         check_runtime.selectors, "DefaultSelector",
         lambda: (_ for _ in ()).throw(AssertionError("Windows pipe selector used")),
@@ -568,7 +571,9 @@ def test_windows_thread_capture_timeout_is_bounded_when_taskkill_fails(monkeypat
     class FailedTaskkill:
         returncode = 1
 
-    monkeypatch.setattr(check_runtime.os, "name", "nt")
+    from tests._os_proxy import os_with_name
+
+    monkeypatch.setattr(check_runtime, "os", os_with_name(check_runtime.os, "nt"))
     monkeypatch.setattr(check_runtime.subprocess, "run", lambda *_args, **_kwargs: FailedTaskkill())
     started = time.monotonic()
     _stdout, _stderr, timed_out, leaked = check_runtime._bounded_capture(
@@ -780,7 +785,7 @@ def test_unknown_caller_nspid_depth_never_selects_a_host_pid(monkeypatch) -> Non
     assert check_runtime._visible_namespace_pid(4321, None, None) is None
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Linux subreaper containment contract")
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux subreaper containment contract")
 def test_unavailable_containment_is_a_failed_command_reason(monkeypatch) -> None:
     monkeypatch.setattr(check_runtime, "_enable_linux_subreaper", lambda: False)
     result = check_runtime.run_bounded([sys.executable, "-c", "pass"], phase="stdlib_test")
@@ -788,7 +793,7 @@ def test_unavailable_containment_is_a_failed_command_reason(monkeypatch) -> None
     assert result.returncode == 126
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Linux descendant discovery contract")
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux descendant discovery contract")
 def test_capture_containment_failure_cleans_previously_observed_descendant(monkeypatch) -> None:
     baseline_pid = 81001
     child_pid = 81002
@@ -824,7 +829,7 @@ def test_capture_containment_failure_cleans_previously_observed_descendant(monke
     assert cleanup_calls[-1] == ({child_pid}, {baseline_pid}, False)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Linux descendant discovery contract")
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux descendant discovery contract")
 def test_adopted_scan_failure_preserves_child_seen_in_same_iteration(monkeypatch) -> None:
     baseline_pid = 81501
     child_pid = 81502
@@ -858,7 +863,7 @@ def test_adopted_scan_failure_preserves_child_seen_in_same_iteration(monkeypatch
     assert cleanup_calls[-1] == ({child_pid}, {baseline_pid}, False)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Linux descendant discovery contract")
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux descendant discovery contract")
 def test_partial_descendant_error_is_cleaned_by_capture_caller(monkeypatch) -> None:
     baseline_pid = 81701
     safe_child_pids = []
@@ -888,7 +893,7 @@ def test_partial_descendant_error_is_cleaned_by_capture_caller(monkeypatch) -> N
     assert cleanup_calls == [({safe_child_pids[0]}, {baseline_pid}, False)]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Linux descendant discovery contract")
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux descendant discovery contract")
 def test_partial_leader_scan_still_combines_safe_adopted_scan(monkeypatch) -> None:
     baseline_pid = 91001
     partial_pid = 91002
@@ -921,7 +926,7 @@ def test_partial_leader_scan_still_combines_safe_adopted_scan(monkeypatch) -> No
     assert cleanup_calls == [({partial_pid, adopted_pid}, {baseline_pid}, False)]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Linux descendant discovery contract")
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux descendant discovery contract")
 def test_finished_leader_still_runs_known_cleanup_when_final_discovery_fails(monkeypatch) -> None:
     baseline_pid = 82001
     root_scans = 0

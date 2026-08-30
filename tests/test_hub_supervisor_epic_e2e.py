@@ -27,6 +27,14 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = [
+    pytest.mark.satellite,
+    pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="real process supervision depends on Linux process semantics",
+    ),
+]
+
 from simplicio_loop import process_supervisor_rust as psr
 from simplicio_loop.hub_daemon import HubDaemon, HubEnvelope
 from simplicio_loop.process_enforcement import ProcessRegistry

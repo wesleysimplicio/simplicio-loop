@@ -81,7 +81,7 @@ class AttemptCoordinator:
               acs: Sequence[str] = (), depends_on: Sequence[str] = (),
               source_refs: Sequence[str] = (), allowed_paths: Sequence[str] = (),
               issue_ref: str = "", issue_url: str = "",
-              ttl: float = 60.0) -> WorkItemAttempt:
+              ttl: float = 60.0, ensure_enqueued: bool = True) -> WorkItemAttempt:
         normalized = validate_identity(identity)
         item = str(work_item_id).strip()
         if not item:
@@ -89,7 +89,7 @@ class AttemptCoordinator:
         # The queue is the source of truth for exclusivity.  Enqueue is idempotent for the
         # supplied backends, allowing a runner to resume without a preflight mutation.
         enqueue = getattr(self.queue, "enqueue", None)
-        if enqueue is not None:
+        if ensure_enqueued and enqueue is not None:
             enqueue(item, {"run_id": self.run_id, "goal": str(goal).strip(), "acs": list(acs)})
         key = "%s:%s:%s" % (self.run_id, item, normalized["session_id"])
         lease = self.queue.claim(item, normalized["agent_id"], idempotency_key=key, ttl=ttl,

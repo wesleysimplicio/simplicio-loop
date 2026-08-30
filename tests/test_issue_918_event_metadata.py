@@ -1,6 +1,9 @@
 import json
+import shutil
 import subprocess
 import sys
+
+import pytest
 
 from simplicio_loop.event_metadata import infer_scope, normalise_event, validate_event_metadata
 from simplicio_loop.progress import build_progress
@@ -81,6 +84,11 @@ def test_runner_receipts_are_versioned_and_collection_explicit(tmp_path):
     assert persisted["event_id"] and persisted["run_id"] == "run-918"
 
 
+@pytest.mark.satellite
+@pytest.mark.skipif(
+    shutil.which("simplicio-mapper") is None,
+    reason="requires the external simplicio-mapper executable",
+)
 def test_bounded_plan_to_first_mapping_is_utf8_safe(tmp_path):
     task = tmp_path / "task.md"
     contract = tmp_path / "contract.json"

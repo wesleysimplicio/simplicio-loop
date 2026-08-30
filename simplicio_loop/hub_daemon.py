@@ -1125,13 +1125,14 @@ def default_endpoint(root: Optional[str] = None) -> str:
     if os.name == "nt":
         suffix = "default" if not root else hashlib.sha256(os.path.abspath(root).encode("utf-8")).hexdigest()[:12]
         return r"\\.\pipe\simplicio-loop-hub-%s" % suffix
+    short_temp_root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
     if root:
         # AF_UNIX paths are capped at a small platform-dependent length.  A
         # pytest/temp workspace path can exceed it, so keep the endpoint short
         # while retaining per-root isolation.
         digest = hashlib.sha256(os.path.abspath(root).encode("utf-8")).hexdigest()[:16]
-        return str(Path(tempfile.gettempdir()) / ("simplicio-loop-hub-%s.sock" % digest))
-    return str(Path(tempfile.gettempdir()) / "simplicio-loop-hub.sock")
+        return str(Path(short_temp_root) / ("simplicio-loop-hub-%s.sock" % digest))
+    return str(Path(short_temp_root) / "simplicio-loop-hub.sock")
 
 
 def _tcp_address(endpoint: str) -> Tuple[str, int]:

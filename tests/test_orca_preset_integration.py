@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -36,6 +38,13 @@ def test_macos_installer_configures_an_isolated_home(tmp_path: Path):
         path.chmod(0o755)
     codex = bin_dir / "codex"
     codex.write_text("#!/bin/sh\nexit 0\n"); codex.chmod(0o755)
+    python3 = bin_dir / "python3"
+    python3.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"-c\" ] && [ \"$2\" = \"import yaml\" ]; then exit 0; fi\n"
+        f"exec {shlex.quote(sys.executable)} \"$@\"\n"
+    )
+    python3.chmod(0o755)
     env = {**os.environ, "HOME": str(home), "PATH": f"{bin_dir}:{os.environ['PATH']}"}
     subprocess.run(["bash", str(PRESET / "install.sh")], check=True, env=env, capture_output=True, text=True)
     assert "tencent/hy3:free" in log.read_text()

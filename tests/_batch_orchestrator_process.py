@@ -7,11 +7,9 @@ run items, attaches a real ``SQLiteRemoteQueue`` (the same on-disk file every in
 shares) plus a real context pack to each, and calls the production
 ``simplicio_loop.runner.dispatch_operator_batch`` for real -- no mocking inside this process.
 Determinism for the parts that would otherwise require a live ``simplicio-mapper``/
-``simplicio-dev-cli`` binary or a live GitHub API comes entirely from the project's existing
-env-var opt-in test hooks (``SIMPLICIO_LOOP_FAKE_DEVCLI_PREFLIGHT_JSON``,
-``SIMPLICIO_LOOP_FAKE_OPERATOR_EXEC_JSON``), set by the parent test process before spawning
-this one -- this script itself does no monkeypatching, because it cannot: it is a genuinely
-separate OS process.
+``simplicio-dev-cli`` binary or a live GitHub API comes from the project's existing env-var
+opt-in test hooks. Hookwall persistence is replaced inside this test-only process because the
+scenario proves queue/journal crash recovery, while the legacy ledger is intentionally read-only.
 """
 from __future__ import annotations
 
@@ -28,6 +26,24 @@ from simplicio_loop.agent_contract import build_context_pack  # noqa: E402
 from simplicio_loop.remote_queue import SQLiteRemoteQueue  # noqa: E402
 
 
+class _ContractOnlyHookwallLedger:
+    """Exercise Hookwall validation without persisting into the retired legacy writer."""
+
+    def reserve(self, _envelope, _pre_decision):
+        return {"action": "EXECUTE", "state": "RESERVED"}
+
+    def effect_confirmed(self, _key, _result):
+        return {"state": "EFFECT_CONFIRMED"}
+
+    def verify_and_commit(self, envelope, pre_decision, receipt, post_decision):
+        from simplicio_loop.hookwall_gate import verify_post_receipt
+
+        return verify_post_receipt(envelope, pre_decision, receipt, post_decision)
+
+    def mark_unresolved(self, _key, _reason):
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--items-json", required=True)
@@ -40,6 +56,7 @@ def main() -> int:
 
     raw_items = json.loads(Path(args.items_json).read_text(encoding="utf-8"))
     queue = SQLiteRemoteQueue(args.queue_db)
+    runner_mod._hookwall_ledger = lambda *_args, **_kwargs: _ContractOnlyHookwallLedger()
 
     items = []
     for raw in raw_items:

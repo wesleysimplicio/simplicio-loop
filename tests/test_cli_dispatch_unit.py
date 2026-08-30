@@ -28,7 +28,7 @@ from simplicio_loop import cli
 def test_main_defaults_to_install_when_no_command(monkeypatch, tmp_path):
     captured = {}
 
-    def fake_install(target, globally):
+    def fake_install(target, globally, *_args):
         captured["target"] = target
         captured["globally"] = globally
         return 0
@@ -42,7 +42,11 @@ def test_main_defaults_to_install_when_no_command(monkeypatch, tmp_path):
 
 def test_main_install_global_flag(monkeypatch, tmp_path):
     captured = {}
-    monkeypatch.setattr(cli, "install", lambda target, globally: captured.update(globally=globally) or 0)
+    monkeypatch.setattr(
+        cli,
+        "install",
+        lambda target, globally, *_args: captured.update(globally=globally) or 0,
+    )
     rc = cli.main(["install", "--target", str(tmp_path), "--global"])
     assert rc == 0
     assert captured["globally"] is True

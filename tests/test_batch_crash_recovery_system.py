@@ -214,6 +214,10 @@ def test_orchestrator_crash_mid_batch_is_recovered_by_a_fresh_process(tmp_path, 
     common_env = dict(os.environ)
     common_env.update({
         "SIMPLICIO_GUARDED_DISPATCH": "1",
+        # A and B are still distinct OS orchestrator processes. Keep each process's
+        # single worker in-thread so the test-only Hookwall ledger seam installed by
+        # _batch_orchestrator_process.py remains visible to that worker.
+        "SIMPLICIO_LOOP_DISPATCH_MODE": "thread",
         "SIMPLICIO_AUTO_MERGE_PR": "0",
         "SIMPLICIO_REQUIRE_MUTATION_AUTHORITY": "0",
         # Generous relative to real per-item overhead (real ``git`` subprocess calls for
@@ -238,9 +242,21 @@ def test_orchestrator_crash_mid_batch_is_recovered_by_a_fresh_process(tmp_path, 
     try:
         # 1) Wait for item 0 to be durably journaled as succeeded -- proof process A made
         # real, persisted progress before we kill it.
+        def first_item_succeeded():
+            if proc_a.poll() is not None:
+                stdout, stderr = proc_a.communicate()
+                raise AssertionError(
+                    f"process A exited before journaling item 0 (rc={proc_a.returncode})\n"
+                    f"stdout:\n{stdout}\nstderr:\n{stderr}"
+                )
+            return any(
+                rec.get("task_id") == raw_items[0]["task_id"]
+                and rec.get("status") == "succeeded"
+                for rec in _journal_lines(journal_path)
+            )
+
         _wait_until(
-            lambda: any(rec.get("task_id") == raw_items[0]["task_id"] and rec.get("status") == "succeeded"
-                       for rec in _journal_lines(journal_path)),
+            first_item_succeeded,
             timeout=240.0, message="process A never journaled item 0 as succeeded",
         )
         # 2) Wait for item 1 to actually be claimed (an active, in-flight lease) before
@@ -316,11 +332,15 @@ def test_orchestrator_crash_mid_batch_is_recovered_by_a_fresh_process(tmp_path, 
         assert record["execution_state"] == "applied", record
         assert record["receipt_status"] == "VERIFIED", record.get("receipt_verdict_reason")
 
-    # --- the recovered lease is a genuinely new claim, not the stale abandoned one:
-    # strictly higher fencing token ---
+    # --- the recovered lease is a genuinely new claim, not the stale abandoned one.
+    # MapperStore fencing tokens are opaque UUID strings, so freshness is identity,
+    # not lexicographic ordering. ---
     recovered = queue.task(slow_task_id)
     assert recovered["status"] == "completed"
-    assert recovered["lease"]["fencing_token"] > abandoned_fencing_token
+    # Completed MapperStore queue rows intentionally clear their live lease. The
+    # durable worker receipt retains the fencing token that authorized the recovery.
+    recovered_fencing_token = workers_b[slow_task_id]["lease"]["fencing_token"]
+    assert recovered_fencing_token != abandoned_fencing_token
 
     # --- no lost tasks: all three end up completed exactly once ---
     for raw in raw_items:

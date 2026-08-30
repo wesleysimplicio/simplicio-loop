@@ -20,6 +20,16 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+
+import pytest
+
+pytestmark = [
+    pytest.mark.satellite,
+    pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="real process crash and lease handoff is Linux-specific",
+    ),
+]
 import time
 from pathlib import Path
 

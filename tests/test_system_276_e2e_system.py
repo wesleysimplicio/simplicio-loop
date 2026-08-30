@@ -29,6 +29,15 @@ import json
 import threading
 
 import pytest
+import sys
+
+pytestmark = [
+    pytest.mark.satellite,
+    pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="real concurrent fencing-token processes are Linux-specific",
+    ),
+]
 
 from simplicio_loop.work_item_claims import AttemptCoordinator
 from simplicio_loop.remote_queue import QueueConflict, SQLiteRemoteQueue

@@ -120,7 +120,7 @@ def test_required_ecc_admission_fails_closed(tmp_path: Path) -> None:
     try:
         ensure_ecc_ready(receipt)
     except ValueError as exc:
-        assert "required" in str(exc)
+        assert "required" in str(exc).casefold()
     else:
         raise AssertionError("required ECC admission should fail closed")
 

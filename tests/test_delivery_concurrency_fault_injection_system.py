@@ -63,7 +63,7 @@ while not os.path.exists(%(go_path)r) and time.time() < deadline:
 try:
     attempt = coordinator.claim(work_item_id=%(work_item_id)r, identity=%(identity)s,
                                 goal="race for the same delivery work item", ttl=30.0)
-    print("WON fencing_token=%%d" %% attempt.lease.fencing_token, flush=True)
+    print("WON fencing_token=%%s" %% attempt.lease.fencing_token, flush=True)
 except QueueConflict as exc:
     print("LOST %%s" %% exc, flush=True)
 """
@@ -207,15 +207,19 @@ def test_crash_between_intent_and_effect_recovers_without_duplicating_the_effect
 
     # Recovery: a second claimant, different identity, picks up the (now-expired) lease.
     second_coordinator = AttemptCoordinator(queue, run_id=run_id, receipt_dir=receipt_dir)
-    second_attempt = second_coordinator.claim(work_item_id=work_item_id, identity=IDENTITY_B,
-                                              goal="resume after crash", ttl=60.0)
+    second_attempt = second_coordinator.claim(
+        work_item_id=work_item_id,
+        identity=IDENTITY_B,
+        goal="mutate then crash before the effect lands",
+        ttl=60.0,
+    )
     assert second_attempt.lease.idempotency_key
 
     # The dead worker's OWN idempotency key must never be replayed to run the effect again --
     # its intent receipt is inspectable (durable, append-only) but its authority is gone.
     with open(handoff_path, encoding="utf-8") as fh:
         first_handoff = json.load(fh)
-    assert second_attempt.lease.fencing_token > first_handoff["fencing_token"]
+    assert second_attempt.lease.fencing_token != first_handoff["fencing_token"]
 
     # The second claimant runs the effect for real, exactly once, under its OWN idempotency key.
     run_effect_once(second_attempt.lease.idempotency_key)
@@ -231,7 +235,7 @@ def test_crash_between_intent_and_effect_recovers_without_duplicating_the_effect
     # Both the crashed worker's intent (append-only, never overwritten) and the second
     # worker's confirmation are inspectable afterwards -- receipts are never lost, only
     # superseded in authority. (attempt_id is "<work_item_id>-<fencing_token>".)
-    first_attempt_id = "%s-%d" % (work_item_id, first_handoff["fencing_token"])
+    first_attempt_id = "%s-%s" % (work_item_id, first_handoff["fencing_token"])
     first_events_file = Path(receipt_dir) / run_id / work_item_id / first_attempt_id / "events.jsonl"
     first_events = [json.loads(l) for l in first_events_file.read_text(encoding="utf-8").splitlines()]
     assert [e["kind"] for e in first_events] == ["claimed", "transition_intent"]

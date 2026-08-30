@@ -81,6 +81,13 @@ def _built_context_pack(task_id, goal, acs):
 
 
 def _arm_fixture(tmp_path, monkeypatch):
+    from tests._contract_only_hookwall import ContractOnlyHookwallLedger
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_hookwall_ledger",
+        lambda *_args, **_kwargs: ContractOnlyHookwallLedger(),
+    )
     """Arm one deterministic run without any real mapper/dev-cli/network calls (mirrors the
     harness in ``tests/test_runner_state_machine_unit.py``)."""
     repo = tmp_path / "repo"
@@ -239,7 +246,7 @@ def test_guarded_dispatch_and_auto_merge_are_wired_end_to_end(tmp_path, monkeypa
     assert isinstance(record["lease"]["fencing_token"], str)
 
     # --- simulated runtime work actually ran and produced a genuinely VERIFIED receipt pair ---
-    assert record["status"] == "succeeded", record
+    assert record["status"] == "succeeded", json.dumps(record, sort_keys=True)
     assert record["execution_state"] == "applied"
     assert record["receipt_status"] == "VERIFIED", record.get("receipt_verdict_reason")
 
@@ -285,7 +292,10 @@ def test_lease_lost_during_guarded_execution_is_reported_distinctly(tmp_path, mo
         other = dict(IDENTITY, agent_id="claude@device-b", runtime="claude", device_id="device-b",
                      session_id="session-b")
         AttemptCoordinator(self.queue, run_id=self.run_id).claim(
-            work_item_id=attempt.work_item_id, identity=other, goal="steal",
+            work_item_id=attempt.work_item_id,
+            identity=other,
+            goal="converge PLANES ordering",
+            acs=["RN01"],
         )
         raise LeaseLostDuringExecution(attempt.work_item_id, attempt.attempt_id,
                                        RuntimeError("fence lost"))
@@ -322,7 +332,7 @@ def test_unguarded_dispatch_is_unchanged_when_opt_ins_are_off(tmp_path, monkeypa
 
     record = runner_mod._operator_dispatch_attempt(item)
 
-    assert record["status"] == "succeeded"
+    assert record["status"] == "succeeded", json.dumps(record, sort_keys=True)
     assert record["receipt_status"] == "VERIFIED"
     assert record.get("guarded_dispatch") is False
     assert record["merge"] is None

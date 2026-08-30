@@ -16,7 +16,7 @@ from simplicio_loop.hub_governor import ResourceLimits, ResourceRequest
 
 
 def test_hub_submit_claim_complete_round_trip_in_process() -> None:
-    with tempfile.TemporaryDirectory() as directory:
+    with tempfile.TemporaryDirectory(dir="/tmp") as directory:
         daemon = HubDaemon(str(Path(directory) / "hub.lock"))
         daemon.start()
         client = HubClient(daemon, "alice")
@@ -160,7 +160,7 @@ def test_hub_submit_over_a_real_unix_socket_transport(require_af_unix) -> None:
     through the REAL IPC transport (Unix domain socket), not just direct dict dispatch."""
     if default_transport() != "unix":
         return  # this environment's default transport is exercised elsewhere (Windows CI)
-    with tempfile.TemporaryDirectory() as directory:
+    with tempfile.TemporaryDirectory(dir="/tmp") as directory:
         daemon = HubDaemon(str(Path(directory) / "hub.lock"))
         daemon.start()
         endpoint = default_endpoint(directory)

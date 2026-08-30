@@ -61,7 +61,7 @@ def test_full_delivery_lifecycle_claim_to_deployed_to_issue_closed(tmp_path):
         acs=["chain claim->merge->deploy->close proves consistent SHAs"],
         issue_ref=f"{REPO}#42", issue_url=f"https://github.com/{REPO}/issues/42", ttl=120.0,
     )
-    assert attempt.lease.fencing_token >= 1
+    assert str(attempt.lease.fencing_token).strip()
 
     # ------------------------------------------------------- 2. simulated worktree work ---
     worktree = tmp_path / "worktree"

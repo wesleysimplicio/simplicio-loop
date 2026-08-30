@@ -54,7 +54,14 @@ def probe_af_unix(
             return Capability(False, "af_unix_unsupported", "kernel does not support AF_UNIX sockets")
         raise
     try:
-        with tempfile.TemporaryDirectory(prefix="simplicio-af-unix-") as directory:
+        # Darwin limits AF_UNIX addresses to roughly one hundred bytes. Pytest
+        # and sandbox TMPDIR values can be much deeper than that, so keep this
+        # private capability probe under the conventional short temp root when
+        # it is available. Directory-creation failures still propagate.
+        short_temp_root = "/tmp" if os.path.isdir("/tmp") else None
+        with tempfile.TemporaryDirectory(
+            prefix="simplicio-af-unix-", dir=short_temp_root
+        ) as directory:
             endpoint = os.path.join(directory, "probe.sock")
             try:
                 probe.bind(endpoint)

@@ -89,13 +89,17 @@ def test_gui_available_true_on_darwin(monkeypatch):
 
 def test_gui_available_true_on_nt(monkeypatch):
     monkeypatch.setattr(cli_mod.sys, "platform", "linux")
-    monkeypatch.setattr(cli_mod.os, "name", "nt")
+    from tests._os_proxy import os_with_name
+
+    monkeypatch.setattr(cli_mod, "os", os_with_name(cli_mod.os, "nt"))
     assert cli_mod._gui_available() is True
 
 
 def test_gui_available_false_headless_linux(monkeypatch):
     monkeypatch.setattr(cli_mod.sys, "platform", "linux")
-    monkeypatch.setattr(cli_mod.os, "name", "posix")
+    from tests._os_proxy import os_with_name
+
+    monkeypatch.setattr(cli_mod, "os", os_with_name(cli_mod.os, "posix"))
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     assert cli_mod._gui_available() is False
@@ -103,7 +107,9 @@ def test_gui_available_false_headless_linux(monkeypatch):
 
 def test_gui_available_true_with_display_env(monkeypatch):
     monkeypatch.setattr(cli_mod.sys, "platform", "linux")
-    monkeypatch.setattr(cli_mod.os, "name", "posix")
+    from tests._os_proxy import os_with_name
+
+    monkeypatch.setattr(cli_mod, "os", os_with_name(cli_mod.os, "posix"))
     monkeypatch.setenv("DISPLAY", ":0")
     assert cli_mod._gui_available() is True
 

@@ -56,6 +56,13 @@ def _built_context_pack(task_id, goal, acs, identity):
 
 
 def _arm_fixture(tmp_path, monkeypatch, name):
+    from tests._contract_only_hookwall import ContractOnlyHookwallLedger
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_hookwall_ledger",
+        lambda *_args, **_kwargs: ContractOnlyHookwallLedger(),
+    )
     """Arm one deterministic run in its own repo (mirrors
     ``tests/test_dispatch_merge_wiring.py``'s fixture, but callable N times so each lane gets
     an independent repo/run_id -- the fan-in path's realistic shape)."""
@@ -191,6 +198,7 @@ def test_multi_pr_fan_in_batch_dispatch_independent_receipts_and_merges(tmp_path
     PR -- and no lane observes another lane's branch/PR/receipt."""
     monkeypatch.setenv("SIMPLICIO_GUARDED_DISPATCH", "1")
     monkeypatch.setenv("SIMPLICIO_AUTO_MERGE_PR", "1")
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "thread")
     monkeypatch.setenv("SIMPLICIO_REMOTE_REPO", "acme/widgets")
     monkeypatch.setenv("SIMPLICIO_MERGE_BASE", "main")
 
@@ -263,7 +271,7 @@ def test_multi_pr_fan_in_batch_dispatch_independent_receipts_and_merges(tmp_path
         # --- this lane's own claim/receipt/merge, not shared/borrowed state ---
         assert record["repo"] == exp["repo"], record
         assert record["run_id"] == exp["run_id"], record
-        assert record["status"] == "succeeded", record
+        assert record["status"] == "succeeded", json.dumps(record, sort_keys=True)
         assert record["execution_state"] == "applied", record
         assert record["receipt_status"] == "VERIFIED", record.get("receipt_verdict_reason")
         merge = record["merge"]

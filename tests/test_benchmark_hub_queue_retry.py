@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from scripts import benchmark_hub_queue_retry
 
 
+@pytest.mark.satellite
 def test_benchmark_reports_real_submit_claim_complete_throughput_and_p95(capsys) -> None:
     assert benchmark_hub_queue_retry.main() == 0
     payload = json.loads(capsys.readouterr().out)

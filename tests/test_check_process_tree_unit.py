@@ -8,6 +8,10 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux", reason="Linux process-tree containment contract"
+)
+
 from scripts import check, check_runtime
 from scripts.check_runtime import CommandReason, _visible_namespace_pid
 

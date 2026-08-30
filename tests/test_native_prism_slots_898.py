@@ -46,7 +46,9 @@ def test_native_prism_has_no_logical_slot_overflow_or_capacity_ceiling() -> None
     scheduler, _, _ = _build_native_prism_scheduler(items, worker_limit=25)
     snapshot = scheduler.snapshot()
     assert snapshot["metrics"]["logical_slots"] == 25
-    assert "overflow" not in {slot["supervisor_agent"] for slot in snapshot["slots"]}
+    assert "overflow" not in {
+        slot["supervisor_agent"] for slot in snapshot["slot_records"]
+    }
 
     same_slot_items = [
         {"run_id": "run", "task_id": f"task-{index}", "repo": ".",

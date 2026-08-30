@@ -20,8 +20,8 @@ class _Result:
 
 def test_normal_package_contract_requests_both_operator_distributions():
     pyproject = (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"simplicio-cli>=0.18.6"' in pyproject
-    assert '"simplicio-mapper>=0.26.10,<0.27"' in pyproject
+    assert '"simplicio-cli>=0.18.10,<0.19"' in pyproject
+    assert '"simplicio-mapper>=0.26.20,<0.27"' in pyproject
 
 
 def test_available_operators_do_not_run_pip(tmp_path, monkeypatch):
@@ -59,8 +59,10 @@ def test_missing_operators_install_together_and_become_visible(tmp_path, monkeyp
     receipt = operator_bootstrap.ensure_operators(tmp_path, env={}, run=fake_run)
     assert receipt["status"] == "installed"
     assert receipt["missing_after"] == []
-    assert calls and "simplicio-cli>=0.18.6" in calls[0]
-    assert "simplicio-mapper>=0.26.10,<0.27" in calls[0]
+    assert calls and "simplicio-cli" in calls[0]
+    assert "simplicio-mapper" in calls[0]
+    assert "simplicio-fast" in calls[0]
+    assert "simplicio-loop" in calls[0]
 
 
 def test_bootstrap_uses_safe_user_fallback_without_break_system_packages(

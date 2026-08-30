@@ -16,6 +16,16 @@ import signal
 import sqlite3
 import subprocess
 import sys
+
+import pytest
+
+pytestmark = [
+    pytest.mark.satellite,
+    pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="real multiprocess SQLite worker integration is Linux-specific",
+    ),
+]
 import threading
 import time
 from pathlib import Path

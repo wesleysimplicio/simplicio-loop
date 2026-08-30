@@ -11,11 +11,21 @@ from simplicio_loop.hub_daemon import HubDaemon, HubProtocolError, HubSocketClie
 
 
 def _claim(client, request_id="claim", *, code="print('ok')", timeout=2.0, limit=65536, key="k"):
-    return client.request(
-        request_id, "hub_agent_claim", idempotency_key=key, request={"processes": 1},
+    response = client.request(
+        request_id, "hub_agent_claim", client_id="test-client", worker_id="test-worker",
+        idempotency_key=key, request={"processes": 1},
         process_spec={"argv": [sys.executable, "-c", code], "timeout_seconds": timeout,
                       "max_output_bytes": limit, "idempotency_key": key},
-    )["execution"]
+    )
+    value = (
+        response.get("execution")
+        or response.get("handle")
+        or response.get("lease")
+        or response.get("claimed")
+        or response
+    )
+    assert isinstance(value, dict) and ("handle" in value or "handle_id" in value), response
+    return value
 
 
 def _terminal(client, handle, timeout=4.0):
@@ -29,7 +39,7 @@ def _terminal(client, handle, timeout=4.0):
 
 
 def test_real_process_receipt_duplicate_and_collect_after_reopen(require_af_unix):
-    with tempfile.TemporaryDirectory() as directory:
+    with tempfile.TemporaryDirectory(dir="/tmp") as directory:
         lock = str(Path(directory) / "hub.lock")
         daemon = HubDaemon(lock, resource_limits=None)
         daemon.start()
@@ -39,12 +49,15 @@ def test_real_process_receipt_duplicate_and_collect_after_reopen(require_af_unix
         try:
             claimed = _claim(client)
             duplicate = _claim(client, "duplicate")
-            assert duplicate["handle"] == claimed["handle"]
-            assert claimed["namespace"] == "hub-agent/v1"
+            assert duplicate["handle_id"] == claimed["handle_id"]
+            assert claimed["schema"] == "simplicio.hub-agent-handle/v1"
             assert "hub-agent-process/v1" in client.request(
                 "capabilities", "hub_agent_capabilities")["capabilities"]
-            client.request("send", "hub_agent_send", handle=claimed["handle"], fence=claimed["fence"])
-            done = _terminal(client, claimed["handle"])
+            sent_response = client.request(
+                "send", "hub_agent_send", handle=claimed, fence=claimed["fence"], stage_input={}
+            )
+            claimed = sent_response["handle"]
+            done = _terminal(client, claimed)
             assert done["result"]["stdout"] == "ok\n"
             assert done["receipt"]["cpu_seconds"] is None
             assert done["receipt"]["metrics_reason"] == "unmeasured"
@@ -54,7 +67,7 @@ def test_real_process_receipt_duplicate_and_collect_after_reopen(require_af_unix
         reopened = HubDaemon(lock)
         reopened.start()
         try:
-            collected = reopened.hub_agent.collect(claimed["handle"])
+            collected = reopened.hub_agent.collect(claimed["handle_id"])
             assert collected["state"] == "completed"
         finally:
             reopened.stop()
@@ -68,7 +81,7 @@ def test_real_process_receipt_duplicate_and_collect_after_reopen(require_af_unix
     ],
 )
 def test_timeout_and_truncation(code, timeout, limit, state, error, truncated):
-    with tempfile.TemporaryDirectory() as directory:
+    with tempfile.TemporaryDirectory(dir="/tmp") as directory:
         daemon = HubDaemon(str(Path(directory) / "hub.lock"))
         daemon.start()
         try:
@@ -122,7 +135,7 @@ def test_missing_executable_stale_fence_and_out_of_order():
 
 
 def test_cancel_from_second_socket_and_restart_recovery(require_af_unix):
-    with tempfile.TemporaryDirectory() as directory:
+    with tempfile.TemporaryDirectory(dir="/tmp") as directory:
         lock = str(Path(directory) / "hub.lock")
         endpoint = str(Path(directory) / "hub.sock")
         daemon = HubDaemon(lock)
@@ -131,15 +144,18 @@ def test_cancel_from_second_socket_and_restart_recovery(require_af_unix):
         server.start()
         client = HubSocketClient(endpoint, transport="unix")
         claimed = _claim(client, code="import time; time.sleep(5)", key="cancel")
-        sent = client.request(
-            "send", "hub_agent_send", handle=claimed["handle"], fence=claimed["fence"])["execution"]
+        sent_response = client.request(
+            "send", "hub_agent_send", handle=claimed, fence=claimed["fence"], stage_input={})
+        sent = sent_response["execution"]
+        claimed = sent_response["handle"]
         status = HubSocketClient(endpoint, transport="unix").request(
-            "status", "hub_agent_status", handle=claimed["handle"])
+            "status", "hub_agent_status", handle=claimed)
         assert status["execution"]["state"] == "running"
         cancelled = HubSocketClient(endpoint, transport="unix").request(
-            "cancel", "hub_agent_cancel", handle=claimed["handle"], fence=sent["fence"])
+            "cancel", "hub_agent_cancel", handle=claimed, fence=sent["fence"])
         assert cancelled["execution"]["state"] in {"cancelling", "cancelled"}
-        assert _terminal(client, claimed["handle"])["state"] == "cancelled"
+        claimed = cancelled["handle"]
+        assert _terminal(client, claimed)["state"] == "cancelled"
 
         held = _claim(client, "held", code="print('never')", key="restart")
         server.shutdown()
@@ -147,7 +163,7 @@ def test_cancel_from_second_socket_and_restart_recovery(require_af_unix):
         reopened = HubDaemon(lock)
         reopened.start()
         try:
-            assert reopened.hub_agent.collect(held["handle"])["state"] == "recovery_unknown"
+            assert reopened.hub_agent.collect(held["handle_id"])["state"] == "recovery_unknown"
             assert reopened.service.claim("worker", __import__(
                 "simplicio_loop.hub_governor", fromlist=["ResourceRequest"]).ResourceRequest()) is None
         finally:

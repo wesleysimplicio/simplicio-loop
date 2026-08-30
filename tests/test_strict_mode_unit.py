@@ -82,6 +82,6 @@ def test_preflight_payload_shape(monkeypatch, tmp_path):
     assert payload["schema"] == "simplicio.preflight/v1"
     assert payload["strict"] is True
     assert payload["runtime_available"] is True
-    assert payload["execution_profile"] == "runtime-backed"
+    assert payload["execution_profile"] == "standalone"
     assert payload["hand_edit_forbidden"] is True
-    assert "simplicio" in payload["required_operators"]
+    assert "simplicio" not in payload["required_operators"]

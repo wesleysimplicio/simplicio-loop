@@ -7,6 +7,16 @@ import json
 import pytest
 
 from simplicio_loop import runner
+from tests._contract_only_hookwall import ContractOnlyHookwallLedger
+
+
+@pytest.fixture(autouse=True)
+def _contract_only_hookwall(monkeypatch):
+    monkeypatch.setattr(
+        runner,
+        "_hookwall_ledger",
+        lambda *_args, **_kwargs: ContractOnlyHookwallLedger(),
+    )
 from simplicio_loop.hookwall_gate import HookwallBlocked, gate_completion
 from simplicio_loop.runtime_effect_adapter import EffectRequest, RuntimeEffectAdapter, RuntimeEffectError
 

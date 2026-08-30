@@ -85,7 +85,24 @@ def test_arm_run_auto_receipt_lets_execute_operator_run_without_manual_fixture(t
             "write_files": {"src/app.py": "def main():\n    return 'updated'\n"},
         }),
     }
-    with patch.dict(os.environ, exec_env, clear=False):
+    def fake_effect(**_kwargs):
+        target = repo / "src/app.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("def main():\n    return 'updated'\n", encoding="utf-8")
+        return {
+            "returncode": 0,
+            "stdout": {"kind": "operator-applied", "ok": True},
+            "stderr": "",
+            "source": "test_effect",
+            "effect_receipt": None,
+            "uncertain": False,
+            "hookwall_evidence": {"schema": "simplicio.hookwall-evidence/v1"},
+        }
+    with (
+        patch.dict(os.environ, exec_env, clear=False),
+        patch.object(runner_mod, "_execute_operator_effect", side_effect=fake_effect),
+        patch.object(runner_mod, "gate_completion", return_value=(True, "ok")),
+    ):
         payload = runner_mod.execute_operator(str(repo), run_id)
     assert payload["state"]["phase"] == "validating"
     op_receipt = json.loads((run_dir / "operator-receipt.json").read_text(encoding="utf-8"))

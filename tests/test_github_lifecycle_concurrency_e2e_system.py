@@ -152,7 +152,7 @@ while not os.path.exists(%(start_gate)r) and time.time() < deadline:
 result = {"agent_id": %(agent_id)r}
 try:
     attempt = coordinator.claim(work_item_id=%(work_item_id)r, identity=%(identity)s,
-                                goal="fix the bug", ttl=%(ttl)r)
+                                goal="fix the bug", ttl=%(ttl)r, ensure_enqueued=False)
     result["claimed"] = True
     result["fencing_token"] = attempt.lease.fencing_token
 
@@ -193,9 +193,15 @@ def test_two_real_processes_race_for_the_same_issue_lease_only_one_wins_no_dupli
     comment_store = str(tmp_path / "fake_github_comments.json")
     outbox_dir = str(tmp_path / "outbox")
     start_gate = str(tmp_path / "GO")
-    work_item_id = "ISSUE-42"
+    work_item_id = "ISSUE-42-%s-%s" % (tmp_path.name, time.time_ns())
     run_id = "run-concurrency-1"
     ttl = 30.0
+
+    # Register once before the workers race. The scenario under test is claim
+    # exclusivity, not concurrent task registration.
+    SQLiteRemoteQueue(db_path).enqueue(
+        work_item_id, {"run_id": run_id, "goal": "fix the bug", "acs": []}
+    )
 
     proc_a, result_a = _run_worker(tmp_path, agent_id=IDENTITY_A["agent_id"], identity=IDENTITY_A,
                                    work_item_id=work_item_id, run_id=run_id, db_path=db_path,
@@ -206,10 +212,9 @@ def test_two_real_processes_race_for_the_same_issue_lease_only_one_wins_no_dupli
                                    comment_store=comment_store, outbox_dir=outbox_dir,
                                    start_gate=start_gate, ttl=ttl)
 
-    # Both processes are now polling for the start gate; enqueue the shared task, then drop the
-    # gate file so they race as close to simultaneously as real OS process scheduling allows.
+    # Both processes are now polling for the start gate; drop it so they race as
+    # close to simultaneously as real OS process scheduling allows.
     queue = SQLiteRemoteQueue(db_path)
-    queue.enqueue(work_item_id, {"goal": "fix the bug"})
     time.sleep(0.2)
     with open(start_gate, "w", encoding="utf-8") as fh:
         fh.write("go")

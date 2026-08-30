@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.43.3] - 2026-08-30
+
+- Accept canonical Runtime event envelopes and repository manifests in the release train.
+- Emit the canonical `UserPromptSubmit` route decision and keep all release surfaces in lockstep.
+- Restore the canonical skill source tree and synchronize the plugin and bundled mirrors.
+- Align macOS AF_UNIX, opaque fencing-token, Hub IPC, and hermetic release-gate contracts.
+
 ## [3.43.2] - 2026-08-23
 
 - Publish the latest `main` changes, including the current skill and operator-flow surface.

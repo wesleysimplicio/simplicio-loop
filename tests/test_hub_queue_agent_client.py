@@ -179,7 +179,11 @@ def test_real_hub_socket_lifecycle_stale_fence_and_cancel(require_af_unix):
             cancel_context = dict(CONTEXT, attempt_id="attempt-2", process_spec=_process_spec(sys.executable, "-c", "import time; time.sleep(10)"))
             cancel_handle = client.claim(role="review_panel", stage="validating", context=cancel_context)
             client.send(cancel_handle, cancel_context)
-            client.cancel(dict(cancel_handle, fence=int(cancel_handle["fence"]) + 1), reason="dependent_failed")
+            with pytest.raises(HubQueueAgentError, match="stale fence"):
+                client.cancel(
+                    dict(cancel_handle, fence=int(cancel_handle["fence"]) + 1),
+                    reason="dependent_failed",
+                )
         finally:
             server.shutdown()
             daemon.stop()
