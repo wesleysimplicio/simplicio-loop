@@ -43,7 +43,7 @@ def _repo(tmp_path: Path) -> Path:
         "[project]\n"
         "dependencies = [\n"
         '  "simplicio-cli>=0.18.10,<0.19",\n'
-        '  "simplicio-mapper>=0.26.20,<0.27",\n'
+        '  "simplicio-mapper>=0.26.26,<0.27",\n'
         "]\n",
         encoding="utf-8",
     )

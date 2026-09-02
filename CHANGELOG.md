@@ -5,8 +5,11 @@ Total output lines: 1972
 
 ## Unreleased
 
+## [3.43.4] - 2026-09-02
+
 - Make `simplicio-loop-stack --check` prove the mandatory Mapper and Dev CLI
   dependency declarations, package-owned entrypoints, and `PATH` resolution.
+- Align the release train with `simplicio-mapper` 0.26.26 and its direct dependency floor.
 
 ## [3.43.3] - 2026-08-30
 

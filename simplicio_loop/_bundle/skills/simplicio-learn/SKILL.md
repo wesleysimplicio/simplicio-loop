@@ -39,7 +39,7 @@ Three durable categories — everything else is noise and is dropped:
    - `sibling_files`: related files changed
    - `hit_count`: incremented when the same fingerprint is seen again
    - `last_seen`: ISO timestamp
-   
+
    When `hit_count > 1`, flag the module for structural attention — it keeps breaking.
 4. **Stable facts & preferences** — durable workspace facts (build command, test runner, repo
    conventions) and recurring user preferences. Not one-time state.

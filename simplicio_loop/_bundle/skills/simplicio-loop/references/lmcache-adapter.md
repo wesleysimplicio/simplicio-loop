@@ -5,8 +5,8 @@ using [LMCache](https://github.com/LMCache/LMCache) — a high-performance KV ca
 layer for LLM inference. Reduces Time-To-First-Token (TTFT), improves throughput, and lowers
 GPU cost by caching KV caches across GPU, CPU, disk, and remote storage.
 
-**Author:** LMCache team / CMU + Princeton.  
-**Repo:** [github.com/LMCache/LMCache](https://github.com/LMCache/LMCache)  
+**Author:** LMCache team / CMU + Princeton.
+**Repo:** [github.com/LMCache/LMCache](https://github.com/LMCache/LMCache)
 **Docs:** [docs.lmcache.ai](https://docs.lmcache.ai)
 
 ---
