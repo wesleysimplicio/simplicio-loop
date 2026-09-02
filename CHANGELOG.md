@@ -1,4 +1,12 @@
+Warning: truncated output (original token count: 31910)
+Total output lines: 1972
+
 # Changelog
+
+## Unreleased
+
+- Make `simplicio-loop-stack --check` prove the mandatory Mapper and Dev CLI
+  dependency declarations, package-owned entrypoints, and `PATH` resolution.
 
 ## [3.43.3] - 2026-08-30
 
@@ -1009,111 +1017,7 @@ All notable changes to **simplicio-loop** are documented here. Format loosely fo
   `simplicio-loop` runs `python3 -m pip install -qU simplicio-mapper simplicio-cli` (with a PEP-668
   `--user --break-system-packages` fallback) so every run uses the newest mapper/dev-cli — no manual
   re-install needed to pick up a new `simplicio-mapper`. **Fail-open and offline-safe**: a
-  network/pip failure (or a deliberate pin) leaves the installed build in place and the loop
-  proceeds; a still-missing operator AFTER the attempt is the existing hard BLOCK. Runs once per
-  loop preflight, not per turn. Updated `simplicio-loop/SKILL.md` (preflight block + phase table);
-  mirrored into `plugin/` and `_bundle/`.
-
-## [3.13.0] — 2026-06-29
-
-### Changed
-- **Wired the `simplicio-mapper` two-tier async survey (v0.9+) into the loop.** The `orient` /
-  survey step now prefers `simplicio-mapper scan . --json` (instant `macro` skeleton + deep index
-  in the background) over the blocking `index` crawl, polls `simplicio-mapper status . --json` for
-  the deep-pass phase, and uses `macro . --json` for instant triage. `index . --json` is retained
-  as the forced-synchronous build (`scan --sync`/`--await` for blocking waits). Updated
-  `simplicio-loop/SKILL.md`, `simplicio-tasks/references/extension-points.md`, and the
-  understand-anything adapter; mirrored into `plugin/` and `_bundle/`.
-
-## [3.12.0] — 2026-06-29
-
-### Added
-- **Task anchor — durable working memory for SCOPE (`scripts/task_anchor.py`), the anti-deviation
-  guard.** The loop already remembered its ATTEMPTS (`loop_journal.py`, the stall detector); it now
-  also remembers what the TASK ACTUALLY IS. The anchor freezes the acceptance criteria once at
-  intake and makes three things deterministic and model-free: `check` flags goal-drift each turn
-  (exit 11 when the goal worked ≠ the frozen goal), `mark` records a per-AC receipt (a `done` with
-  no evidence is refused), and `gate` (exit 12) blocks "done"/PR-open while any criterion is still
-  unverified. Closes the "desvio de tarefas" complaint: the run can no longer silently narrow or
-  wander off the task.
-- **`pr_evidence` worker (`scripts/pr_evidence.py`) — every PR carries prints + an item-by-item AC
-  check.** Assembles the PR body mechanically (never hand-written): the item-by-item
-  acceptance-criteria checklist from the task anchor PLUS the screenshots/recordings captured by
-  `web_verify`/`video_evidence` under `.simplicio/orchestrator/tee/web`. With `--require-evidence` it FAILS
-  CLOSED (exit 3) rather than open a PR that has neither a checklist nor a print, and it honors a
-  discovered `.github/PULL_REQUEST_TEMPLATE.md`. Closes the "PR opened without prints / without an
-  item-by-item check of the task" complaint.
-
-### Changed
-- **The anti-drift gate is now ENFORCED, not just documented.** `hooks/loop_stop.py` and
-  `hooks/loop_capture.py` read the task anchor directly (self-contained — no dependency on
-  `scripts/`, which the lean plugin does not ship) and reject a completion `<promise>` while any
-  acceptance criterion is still unverified, exactly as they already reject a promise with no
-  in-turn evidence. Fail-open: a missing/unreadable/empty anchor never blocks, and any rejection
-  stays bounded by `max_iterations` + the explicit STOP/cancel path. The re-feed header now names the open
-  criteria so the next turn knows what blocks "done".
-- Wired both workers into the skills (`simplicio-tasks` Steps 2b/4/6, `simplicio-loop` triage +
-  evidence-gated promise) and the `delivery_gate` / `pr_template` extension points.
-
-## [3.11.0] — 2026-06-26
-
-### Removed
-- **The vendored native performance core and all its modules** (`simplicio-core` / `-py` /
-  `-proxy` / `-parity`) — removed in full, along with their build/parity tooling.
-- **The ported ONNX model engine modules and their subcommands** — `kompress`, `router`, `embed`,
-  and `image` (`engine/simplicio_kompress.py`, `engine/simplicio_router.py`,
-  `engine/simplicio_embed.py`, `engine/simplicio_image.py`) — plus the **GitHub Copilot OAuth port**
-  (`copilot`, `engine/simplicio_copilot.py`).
-- **The `[onnx]` and `[kompress]` optional-dependency extras** and the ONNX-model `doctor` checks
-  (onnxruntime / huggingface_hub / tokenizers / pillow are no longer pulled in or probed).
-- **All references to and integration with the external compression tool.** The native, stdlib-only
-  Simplicio capture engine (deterministic compression) is now the sole engine.
-- **Rust as a referenced target stack.** Dropped all Rust/ecosystem references project-wide —
-  the language-detection rule and `.rs` signature mapping in the engine, the `cargo*` entries in
-  the output-clamp allow-list (`hooks/orient_rewrite.py`), and every `cargo`/crate example across
-  the README + 13 translations, the skills, and the docs. Build/test/lint examples now use the
-  remaining stacks (node / python / go). The separate external `simplicio-runtime` is unaffected.
-
-## [3.10.3] — 2026-06-26
-
-### Changed
-- **`PreToolUse` (Bash) hooks are now project-scoped** — `action_gate.py` and `orient_rewrite.py`
-  fire only inside an active simplicio-loop project (an `.simplicio/orchestrator/` marker in cwd/an ancestor,
-  or `SIMPLICIO_LOOP=1`); elsewhere they no-op so the command runs unchanged. The home directory is
-  never treated as a project, so a stray `~/.simplicio/orchestrator` cannot widen the scope. This clears the
-  marketplace-scanner `has_broad_scope_hooks` finding (the gate no longer intercepts Bash globally)
-  while preserving the full fail-closed behavior inside a real run. Verified: outside a project a
-  `git push --force` is a no-op (exit 0); inside, it is BLOCKED (exit 2).
-- **Honest, behavior-matching descriptions** — `plugin.json` and the marketplace entry now disclose
-  both project-scoped PreToolUse Bash hooks (the fail-closed safety-gate and the opt-in read-only
-  output-clamp/rewrite) plus the Stop loop/learn hook, and that it runs 100% locally with no telemetry
-  or network calls. Removed the unverifiable "up to 96% fewer tokens" headline from the plugin copy
-  (that figure is the capture proxy's, which the plugin does not ship); the savings line remains
-  evidence-gated. Clears the scanner `description_matches_behavior` finding.
-- **Marketplace `category` corrected** `developer-tools` → `development` (a valid directory category).
-
-### Fixed
-- **Capture wiring no longer breaks the `claude` CLI.** The economy installer wired
-  `ANTHROPIC_BASE_URL=http://127.0.0.1:<proxy>` into the shell profile unconditionally. Claude Code /
-  the `claude` CLI authenticate via OAuth, and the proxy cannot relay that token — Anthropic returns
-  `401 Invalid authentication credentials`, so every terminal `claude` call failed (the proxy still
-  *captured* the request, but the call broke). `ANTHROPIC_BASE_URL` is now wired **only when a static
-  `ANTHROPIC_API_KEY` is present** (the one case the proxy can forward); otherwise it is skipped and
-  any stale proxy-pointing value is removed on the next `wire`. Fixed consistently in
-  `scripts/simplicio-economy.sh`, `scripts/install_services.py`, and `scripts/setup_simplicio.sh`.
-- **`doctor.py` no longer false-WARNs on OAuth setups.** The `always-capture wire` check required
-  `ANTHROPIC_BASE_URL` to point at the proxy; it now requires that only when a static
-  `ANTHROPIC_API_KEY` is set, and treats "OpenAI wired + Anthropic absent" as healthy for OAuth users.
-
-## [3.10.2] — 2026-06-25
-
-### Fixed
-- **Skill frontmatter now parses under strict YAML** — `simplicio-learn` and `simplicio-loop` had a
-  bare `: ` (colon-space, e.g. `memory lean: durable`, `Runtime-agnostic: binds`) inside an unquoted
-  `description:` scalar, so `claude plugin validate --strict` (Anthropic's submission validator)
-  rejected them and a strict parser dropped all metadata. Both descriptions are now double-quoted
-  (text unchanged). `claude plugin validate ./plugin --strict` and `… validate . --strict` both PASS.
-- Moved the `category` field from `plugin.json` to the `marketplace.json` plugin entry (where the
+  network/pip fa…1910 tokens truncated…ategory` field from `plugin.json` to the `marketplace.json` plugin entry (where the
   validator expects it) — clears the last strict-validation warning.
 
 ### Added

@@ -23,10 +23,12 @@ classifiers = [
   "Topic :: Utilities",
   "Operating System :: OS Independent",
 ]
-# The loop ships with bound operators and the Prompt contract runtime as direct
-# dependencies. Do not rely on transitive installs: partial/no-deps installations
-# must be diagnosed explicitly and normal `pip install simplicio-loop` must request
-# the complete route -> enrichment closure.
+# The loop ships with its two bound operators and the Prompt contract runtime as
+# direct dependencies. `simplicio-cli` is the distribution that exports the
+# `simplicio-dev-cli` entrypoint. Do not rely on transitive installs: partial /
+# no-deps installations must be diagnosed explicitly and normal
+# `pip install simplicio-loop` must request the complete route -> enrichment
+# closure.
 dependencies = [
   # Loop is the aggregate distribution. Keep one tested component train.
   "simplicio-cli>=0.18.10,<0.19",

@@ -18,6 +18,20 @@ python -m pip check
 python -m pytest -q
 ```
 
+Loop is the aggregate distribution for its two mandatory operators. A normal
+`pip install simplicio-loop` declares both `simplicio-mapper` and `simplicio-cli`
+directly; `simplicio-cli` provides the `simplicio-dev-cli` entrypoint. Verify the
+installed bundle, including dependency ownership and PATH entrypoints, with:
+
+```bash
+simplicio-loop-stack --check
+simplicio-loop preflight --repo . --strict --json
+```
+
+The check is expected to fail for `pip install --no-deps`, a manually removed
+operator, or an environment where the console scripts are not on `PATH`.
+Runtime and other accelerators remain separate optional components.
+
 Hermes Agent and Simplicio Sprint are separate consumers. Do not install both
 into the Loop environment. Their currently published requirements are
 incompatible (`hermes-agent` requires `rich==14.3.3`, while `simplicio-sprint`
