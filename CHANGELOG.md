@@ -5,6 +5,12 @@ Total output lines: 1972
 
 ## Unreleased
 
+## [3.43.5] - 2026-09-02
+
+- Add `setuptools>=77` to the `dev` extra so the declared development
+  environment can collect the full test suite consistently.
+- Keep local release validation aligned with the package build requirements.
+
 ## [3.43.4] - 2026-09-02
 
 - Make `simplicio-loop-stack --check` prove the mandatory Mapper and Dev CLI
