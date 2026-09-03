@@ -1,6 +1,6 @@
 {
   "schema": "simplicio.release-train.compatibility/v1",
-  "release_train_version": "v3.43.2",
+  "release_train_version": "v3.43.5",
   "components": [
     "runtime",
     "local",
