@@ -11,7 +11,7 @@
       "path": "components/simplicio-mapper",
       "url": "https://github.com/wesleysimplicio/simplicio-mapper.git",
       "ref": "main",
-      "sha": "b58c79e32df8c50fa2bef39f2dc0ed3abe67acec"
+      "sha": "4d754da6b9914005b876bd680598e14e7ac365c1"
     },
     "simplicio-dev-cli": {
       "path": "components/simplicio-dev-cli",

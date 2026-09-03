@@ -90,6 +90,29 @@ class SubmoduleContracts(unittest.TestCase):
                 subprocess.run(["git", "-C", str(component), "commit", "--allow-empty", "-qm", "divergence"], check=True)
                 self.assertEqual(submodules.inspect()["components"]["simplicio-fast"]["state"], "diverged")
 
+    def test_uninitialized_and_foreign_checkouts_never_use_parent_head(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            uninitialized = root / "components" / "simplicio-mapper"
+            uninitialized.mkdir(parents=True)
+            with mock.patch.object(submodules, "REPO", root):
+                report = submodules._path_status(uninitialized, "0" * 40)
+            self.assertEqual(report["state"], "uninitialized")
+            self.assertIsNone(report["observed_sha"])
+
+            foreign_repo = root / "foreign"
+            subprocess.run(["git", "init", "-q", str(foreign_repo)], check=True)
+            foreign_checkout = root / "components" / "simplicio-fast"
+            foreign_checkout.mkdir(parents=True)
+            (foreign_checkout / ".git").write_text(
+                f"gitdir: {foreign_repo / '.git'}\n", encoding="utf-8"
+            )
+            with mock.patch.object(submodules, "REPO", root):
+                report = submodules._path_status(foreign_checkout, "0" * 40)
+            self.assertEqual(report["state"], "wrong_repository")
+            self.assertIsNone(report["observed_sha"])
+
     def test_run_manifest_requires_verified_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "run.json"

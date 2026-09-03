@@ -148,19 +148,55 @@ def expected_components() -> dict[str, dict[str, str]]:
 
 
 def _path_status(path: Path, expected_sha: str) -> dict[str, Any]:
+    base = {"expected_sha": expected_sha, "observed_sha": None, "dirty": False}
     if not path.exists():
-        return {"state": "missing", "expected_sha": expected_sha, "observed_sha": None}
+        return {"state": "missing", **base}
     if not path.is_dir():
-        return {"state": "invalid_path", "expected_sha": expected_sha, "observed_sha": None}
-    result = _run(["git", "rev-parse", "HEAD"], cwd=path, check=False)
+        return {"state": "invalid_path", **base}
+
+    # An uninitialised submodule directory is still inside the superproject.
+    # Probe the owning repository before reading HEAD so git cannot silently
+    # walk upward and report the superproject commit as the component SHA.
+    root_result = _run(["git", "rev-parse", "--show-toplevel"], cwd=path, check=False)
+    repository_root_text = root_result.stdout.strip() if root_result.returncode == 0 else ""
+    if not repository_root_text:
+        return {"state": "not_repository", **base}
+    try:
+        repository_root = Path(repository_root_text).resolve()
+        component_root = path.resolve()
+        superproject_root = REPO.resolve()
+    except OSError:
+        return {"state": "not_repository", **base}
+    if repository_root != component_root:
+        state = (
+            "uninitialized"
+            if repository_root == superproject_root and component_root.is_relative_to(superproject_root)
+            else "wrong_repository"
+        )
+        return {"state": state, "repository_root": str(repository_root), **base}
+    superproject_result = _run(
+        ["git", "rev-parse", "--show-superproject-working-tree"],
+        cwd=path,
+        check=False,
+    )
+    if (path / ".git").is_file() and not superproject_result.stdout.strip():
+        return {"state": "wrong_repository", "repository_root": str(repository_root), **base}
+
+    result = _run(["git", "rev-parse", "--verify", "HEAD"], cwd=path, check=False)
     observed = result.stdout.strip().lower() if result.returncode == 0 else None
     if not observed:
-        return {"state": "not_repository", "expected_sha": expected_sha, "observed_sha": None}
+        return {"state": "not_repository", "repository_root": str(repository_root), **base}
     state = "ok" if observed == expected_sha else "diverged"
     dirty = _run(["git", "status", "--porcelain"], cwd=path, check=False).stdout.strip()
     if dirty and state == "ok":
         state = "dirty"
-    return {"state": state, "expected_sha": expected_sha, "observed_sha": observed, "dirty": bool(dirty)}
+    return {
+        "state": state,
+        "repository_root": str(repository_root),
+        "expected_sha": expected_sha,
+        "observed_sha": observed,
+        "dirty": bool(dirty),
+    }
 
 
 def inspect() -> dict[str, Any]:

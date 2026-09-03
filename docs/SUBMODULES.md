@@ -4,7 +4,7 @@
 
 | Component | Checkout | Declared branch | Pinned commit |
 | --- | --- | --- | --- |
-| `simplicio-mapper` | `components/simplicio-mapper` | `main` | `b58c79e32df8c50fa2bef39f2dc0ed3abe67acec` |
+| `simplicio-mapper` | `components/simplicio-mapper` | `main` | `4d754da6b9914005b876bd680598e14e7ac365c1` |
 | `simplicio-dev-cli` | `components/simplicio-dev-cli` | `main` | `924aa394d9f6394875db8884f34d31d47dac7f74` |
 | `simplicio-fast` | `components/simplicio-fast` | `master` | `992c9807205db6f6e9fb0c530f7a06f499be49c7` |
 
@@ -17,6 +17,7 @@ The branch names in `.gitmodules` are compatibility metadata and are checked
 against the manifest. In particular, Fast intentionally remains on `master`;
 this policy does not rename or delete any branch. Execution always uses the
 reviewed gitlink SHA, never a floating branch head.
+A directory created for an uninitialized submodule is reported as `uninitialized`, not as a divergent checkout: the probe requires Git's repository root to equal the component directory before reading `HEAD`. This prevents the superproject `HEAD` from being mistaken for a component revision. A checkout owned by another repository is reported as `wrong_repository`.
 
 ## Clone and install
 
@@ -56,7 +57,7 @@ If the objects are already in the local Git object database, use:
 python3 scripts/submodules.py bootstrap --offline
 ```
 
-An absent submodule, dirty worktree, or unexpected SHA is a hard, actionable failure:
+An absent submodule, uninitialized checkout, dirty worktree, or unexpected SHA is a hard, actionable failure:
 
 ```text
 SUBMODULE_ERROR: submodule verification failed:
