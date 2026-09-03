@@ -7,10 +7,12 @@ lower bounds when available so stack health does not drift from dependency pins.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.metadata as metadata
 import json
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,20 @@ REQUIRED_OPERATOR_BINDINGS = (
     ("simplicio-mapper", "simplicio-mapper", "simplicio-mapper"),
     ("simplicio-dev-cli", "simplicio-cli", "simplicio-dev-cli"),
 )
+
+MAPPER_VERSION_SCHEMA = "simplicio.mapper-version/v1"
+REQUIRED_MAPPER_CAPABILITIES = (
+    "simplicio.mapper-artifacts/v1",
+    "simplicio.precedent-index/v1",
+    "simplicio.context-snapshot/v1",
+    "simplicio.plugin.context-handle/v2",
+)
+REQUIRED_MAPPER_PROTOCOLS = (
+    "simplicio.component-release/v1",
+    "simplicio.execution-context/v1",
+    "simplicio.canonical-map/v1",
+)
+MAX_MAPPER_VERSION_OUTPUT_BYTES = 131_072
 
 _REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9_.-]+)")
 
@@ -152,6 +168,114 @@ def operator_bindings() -> list[dict[str, Any]]:
     return bindings
 
 
+def _sha256_file(path: str | Path) -> str | None:
+    candidate = Path(path)
+    if not candidate.is_file():
+        return None
+    digest = hashlib.sha256()
+    try:
+        with candidate.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return "sha256:" + digest.hexdigest()
+
+
+def _mapper_identity(binding: dict[str, Any], *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": "blocked",
+        "reason_code": "mapper-entrypoint-not-ready",
+        "requested": binding.get("dependency_spec", ""),
+        "selected": binding.get("installed"),
+        "distribution": binding.get("distribution", "simplicio-mapper"),
+        "entrypoint": binding.get("entrypoint", "simplicio-mapper"),
+        "entrypoint_owner_verified": bool(binding.get("entrypoint_declared")),
+        "executable": binding.get("resolved", ""),
+        "executable_sha256": None,
+        "artifact_digest": None,
+        "version_receipt_schema": None,
+        "capabilities": [],
+        "protocols": [],
+        "capability_result": "unverified",
+        "source": "installed distribution metadata plus simplicio-mapper version --json",
+    }
+    if binding.get("status") != "ok":
+        result["reason_code"] = "mapper-" + str(binding.get("status") or "entrypoint-not-ready")
+        return result
+
+    executable = str(binding.get("resolved") or "")
+    expected_executable = Path(sys.argv[0]).absolute().parent / str(result["entrypoint"])
+    result["expected_executable"] = str(expected_executable) if expected_executable.is_file() else None
+    if expected_executable.is_file() and Path(executable).resolve() != expected_executable.resolve():
+        result["reason_code"] = "mapper-entrypoint-stale-path"
+        return result
+    result["executable_sha256"] = _sha256_file(executable)
+    if result["executable_sha256"] is None:
+        result["reason_code"] = "mapper-executable-unreadable"
+        return result
+
+    try:
+        completed = subprocess.run(
+            [executable, "version", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        result["reason_code"] = "mapper-version-timeout"
+        return result
+    except OSError:
+        result["reason_code"] = "mapper-version-exec-failed"
+        return result
+
+    stdout = completed.stdout or ""
+    if len(stdout.encode("utf-8")) > MAX_MAPPER_VERSION_OUTPUT_BYTES:
+        result["reason_code"] = "mapper-version-output-too-large"
+        return result
+    if completed.returncode != 0:
+        result["reason_code"] = "mapper-version-nonzero-exit"
+        return result
+    try:
+        receipt = json.loads(stdout)
+    except (TypeError, ValueError):
+        result["reason_code"] = "mapper-version-invalid-json"
+        return result
+    if not isinstance(receipt, dict) or receipt.get("schema") != MAPPER_VERSION_SCHEMA:
+        result["reason_code"] = "mapper-version-schema-invalid"
+        return result
+
+    result["version_receipt_schema"] = receipt.get("schema")
+    result["artifact_digest"] = receipt.get("artifact_digest")
+    result["capabilities"] = sorted(str(item) for item in receipt.get("capabilities", []) if item)
+    result["protocols"] = sorted(str(item) for item in receipt.get("protocols", []) if item)
+    if receipt.get("component") != "simplicio-mapper":
+        result["reason_code"] = "mapper-component-mismatch"
+        return result
+    if receipt.get("version") != binding.get("installed"):
+        result["reason_code"] = "mapper-version-mismatch"
+        return result
+    if not isinstance(result["artifact_digest"], str) or not result["artifact_digest"].startswith("sha256:"):
+        result["reason_code"] = "mapper-artifact-digest-missing"
+        return result
+    missing = sorted(set(REQUIRED_MAPPER_CAPABILITIES) - set(result["capabilities"]))
+    if missing:
+        result["missing_capabilities"] = missing
+        result["reason_code"] = "mapper-capabilities-missing"
+        return result
+    missing_protocols = sorted(set(REQUIRED_MAPPER_PROTOCOLS) - set(result["protocols"]))
+    if missing_protocols:
+        result["missing_protocols"] = missing_protocols
+        result["reason_code"] = "mapper-protocols-missing"
+        return result
+
+    result["status"] = "ok"
+    result["reason_code"] = "mapper-identity-verified"
+    result["capability_result"] = "compatible"
+    return result
+
+
 def _installed_version(distribution: str) -> str | None:
     try:
         return metadata.version(distribution)
@@ -223,34 +347,48 @@ def stack_manifest() -> dict[str, Any]:
     drifted = []
     for distribution, role, expected in _train_components():
         installed = _installed_version(distribution)
-        # Healthy when installed meets the train floor (at floor or newer patch/minor).
         status = "ok"
+        reason_code = "component-version-compatible"
         if installed is None:
             status = "missing-or-drifted"
+            reason_code = "component-distribution-missing"
         elif installed != expected:
             inst_t = _version_tuple(installed)
             exp_t = _version_tuple(expected)
             if inst_t is None or exp_t is None or inst_t < exp_t:
                 status = "missing-or-drifted"
+                reason_code = "component-version-below-floor"
         components.append({
             "distribution": distribution,
             "role": role,
             "expected": expected,
             "installed": installed,
             "status": status,
+            "reason_code": reason_code,
         })
         if status != "ok":
             drifted.append(distribution)
     bindings = operator_bindings()
     binding_drift = [item["operator"] for item in bindings if item["status"] != "ok"]
-    missing_or_drifted = list(dict.fromkeys([*drifted, *binding_drift]))
+    mapper_binding = next(
+        (item for item in bindings if item["operator"] == "simplicio-mapper"),
+        {"operator": "simplicio-mapper", "status": "entrypoint-not-declared"},
+    )
+    mapper_identity = _mapper_identity(mapper_binding)
+    identity_drift = (
+        ["simplicio-mapper-identity"]
+        if mapper_binding.get("status") == "ok" and mapper_identity["status"] != "ok"
+        else []
+    )
+    missing_or_drifted = list(dict.fromkeys([*drifted, *binding_drift, *identity_drift]))
     return {
         "schema": STACK_SCHEMA,
         "version": 1,
         "package": "simplicio-loop",
         "components": components,
         "operator_bindings": bindings,
-        "operator_contract_healthy": not binding_drift,
+        "mapper_identity": mapper_identity,
+        "operator_contract_healthy": not binding_drift and not identity_drift,
         "healthy": not missing_or_drifted,
         "missing_or_drifted": missing_or_drifted,
         "source": "pyproject.toml or installed Requires-Dist metadata",
