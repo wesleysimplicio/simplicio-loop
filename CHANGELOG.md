@@ -5,6 +5,12 @@ Total output lines: 1972
 
 ## Unreleased
 
+## [3.43.6] - 2026-09-03
+
+- Verify the installed Mapper executable, artifact digest, capabilities and protocols in
+  `simplicio-loop-stack --check`, with stable fail-closed reason codes.
+- Keep the Loop stack fallback version inside the canonical mechanical version-sync command.
+
 ## [3.43.5] - 2026-09-02
 
 - Add `setuptools>=77` to the `dev` extra so the declared development
