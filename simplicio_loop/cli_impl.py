@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -22,6 +23,29 @@ try:
     from scripts import release_train as _release_train
 except Exception:  # pragma: no cover - import shim for bundled scripts
     _release_train = None
+
+
+def _load_release_manifest(repo: str):
+    """Load the release manifest helper from an explicit checkout when installed."""
+    if _release_manifest is not None:
+        return _release_manifest
+    script = Path(repo).resolve() / "scripts" / "release_manifest.py"
+    if not script.is_file():
+        return None
+    root = str(script.parent.parent)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "simplicio_loop_external_release_manifest", script
+        )
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # pragma: no cover - target checkout may be incomplete
+        return None
 try:
     from . import prototype_cli as _prototype_cli
 except Exception:  # pragma: no cover - keeps `simplicio-loop` importable if this is missing
@@ -1765,9 +1789,10 @@ def main(argv=None) -> int:
         )
     if command == "release-train":
         if args.release_train_command == "check":
-            if _release_manifest is None:
+            manifest_module = _load_release_manifest(args.repo)
+            if manifest_module is None:
                 parser.error("release_manifest script not importable")
-            return _release_manifest.release_train_check(args.repo)
+            return manifest_module.release_train_check(args.repo)
         if _release_train is None:
             parser.error("release_train script not importable")
         return _release_train.run_namespace(args)
