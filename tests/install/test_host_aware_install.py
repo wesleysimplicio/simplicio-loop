@@ -61,7 +61,7 @@ def test_uninstall_removes_only_loop_ownership(tmp_path: Path):
 def test_version_mismatch_blocks(tmp_path: Path):
     plan = plan_install(tmp_path, host="vscode", version="0.0.1")
     with pytest.raises(InstallError, match="version mismatch"):
-        verify_plan(plan, expected_version="3.43.2")
+        verify_plan(plan)
 
 
 def test_unknown_host_fails_closed(tmp_path: Path):
