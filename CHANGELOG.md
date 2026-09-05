@@ -5,6 +5,11 @@ Total output lines: 1972
 
 ## Unreleased
 
+## [3.43.7] - 2026-09-04
+
+- Fix release-manifest loading for installed Loop stacks.
+- Align the published package version with all release surfaces.
+
 ## [3.43.6] - 2026-09-03
 
 - Verify the installed Mapper executable, artifact digest, capabilities and protocols in
