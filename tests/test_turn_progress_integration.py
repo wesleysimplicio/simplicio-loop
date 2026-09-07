@@ -267,6 +267,57 @@ def test_existing_selftests_stay_green_after_turn_instrumentation():
         assert r.returncode == 0, "%s: %s" % (script, r.stdout + r.stderr)
 
 
+def test_journal_help_is_side_effect_free_in_disposable_dir(tmp_path):
+    env = _env(tmp_path)
+    env["SIMPLICIO_REPO"] = str(tmp_path)
+    commands = [
+        ["--help"], ["-h"],
+        *[[verb, flag] for verb in ("record", "fingerprint", "stall", "resume", "status",
+                                    "since", "delegation", "claims-gate", "suggest", "selftest")
+          for flag in ("--help", "-h")],
+    ]
+    for args in commands:
+        result = _run(JOURNAL_SCRIPT, args, str(tmp_path), env)
+        assert result.returncode == 0, args + [result.stdout, result.stderr]
+    assert list(tmp_path.rglob("*")) == [], "help created state: %s" % list(tmp_path.rglob("*"))
+
+
+def test_journal_invalid_record_args_do_not_create_state(tmp_path):
+    env = _env(tmp_path)
+    env["SIMPLICIO_REPO"] = str(tmp_path)
+    invalid = [
+        ["record"],
+        ["record", "--iteration", "1"],
+        ["record", "--iteration", "bad", "--action", "x", "--gate", "pass"],
+        ["record", "--iteration", "1", "--action", "x", "--gate", "pass", "--bogus", "x"],
+        ["record", "--iteration", "-1", "--action", "x", "--gate", "pass"],
+        ["record", "--iteration", "1", "--action", "x", "--gate", "oops"],
+        ["record", "--iteration", "1", "--action", "x", "--gate", "fail", "--gate-output", "missing.log"],
+        ["record", "--iteration", "1", "--action", "x", "--gate", "fail"],
+        ["record", "--iteration", "1", "--gate", "pass"],
+    ]
+    for args in invalid:
+        result = _run(JOURNAL_SCRIPT, args, str(tmp_path), env)
+        assert result.returncode == 2, args + [result.stdout, result.stderr]
+        assert "invalid arguments" in result.stderr, result.stderr
+    assert list(tmp_path.rglob("*")) == [], "invalid record created state"
+
+
+def test_journal_valid_record_appends_one_row_without_hypothesis(tmp_path):
+    env = _env(tmp_path)
+    env["SIMPLICIO_REPO"] = str(tmp_path)
+    result = _run(JOURNAL_SCRIPT,
+                   ["record", "--iteration", "1", "--action", "hook", "--gate", "pass"],
+                   str(tmp_path), env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    journal = tmp_path / ".simplicio" / "orchestrator" / "loop" / "journal.jsonl"
+    rows = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["iteration"] == 1
+    assert rows[0]["action"] == "hook"
+    assert rows[0]["gate"] == "pass"
+    assert rows[0]["hypothesis"] == ""
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _selfrun import run_module
