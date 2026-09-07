@@ -473,7 +473,48 @@ def _emit_loop_observability(rec, wrote, duration_ms):
         pass
 
 
+def _record_validation_errors(opts):
+    """Validate record inputs before any journal or progress path is created."""
+    errors = []
+    known = {
+        "iteration", "action", "hypothesis", "gate", "gate-output", "note",
+        "execution-state", "stage-id", "source-artifact", "chunk-id", "validator",
+        "decision", "retry-count", "blocked-reason", "next-action", "bh-address",
+        "_commit", "_now", "help",
+    }
+    unknown = sorted(key for key in opts if key not in known)
+    errors.extend("--%s is not a valid record option" % key for key in unknown)
+    iteration = opts.get("iteration")
+    try:
+        parsed_iteration = int(iteration) if iteration is not True and iteration is not None else None
+    except (TypeError, ValueError):
+        parsed_iteration = None
+    if parsed_iteration is None or parsed_iteration < 0:
+        errors.append("--iteration must be a non-negative integer")
+
+    action = opts.get("action")
+    if not isinstance(action, str) or not action.strip():
+        errors.append("--action must be a non-empty string")
+
+    gate = opts.get("gate")
+    if gate not in ("pass", "fail", "blocked"):
+        errors.append("--gate must be one of: pass, fail, blocked")
+
+    gate_output = opts.get("gate-output")
+    if gate == "fail" and gate_output is None:
+        errors.append("--gate-output is required when --gate fail")
+    if gate_output is True or gate_output == "":
+        errors.append("--gate-output must name a file or use - for stdin")
+    elif isinstance(gate_output, str) and gate_output != "-" and not os.path.isfile(gate_output):
+        errors.append("--gate-output file does not exist: %s" % gate_output)
+    return errors
+
+
 def cmd_record(opts):
+    errors = _record_validation_errors(opts)
+    if errors:
+        print("UNVERIFIED|record: invalid arguments: %s" % "; ".join(errors), file=sys.stderr)
+        return 2
     os.makedirs(LOOP_DIR, exist_ok=True)
     started = time.perf_counter()
     rec = _build_record(
@@ -1018,12 +1059,51 @@ def cmd_claims_gate_selftest_fail():
     return untagged > 0
 
 
+_HELP_TEXT = """Usage: python3 scripts/loop_journal.py <command> [options]
+Commands: record, fingerprint, stall, resume, status, since, delegation,
+          claims-gate, suggest, selftest
+Use '<command> --help' for command-specific options. Help never writes loop state.
+"""
+
+_COMMAND_HELP = {
+    "record": """Usage: loop_journal.py record --iteration N --action TEXT --gate pass|fail|blocked [options]
+Required: --iteration, --action, --gate
+Optional: --hypothesis, --gate-output FILE|- and lineage flags.
+""",
+    "fingerprint": """Usage: loop_journal.py fingerprint [--file FILE|--input TEXT]
+""",
+    "stall": """Usage: loop_journal.py stall [--k N] [--format text|json|toon] [--exit-code]
+""",
+    "resume": """Usage: loop_journal.py resume [--k N] [--events-root DIR]
+""",
+    "status": """Usage: loop_journal.py status [--n N]
+""",
+    "since": """Usage: loop_journal.py since
+""",
+    "delegation": """Usage: loop_journal.py delegation
+""",
+    "claims-gate": """Usage: loop_journal.py claims-gate [--check FILE|--file FILE]
+""",
+    "suggest": """Usage: loop_journal.py suggest [options]
+""",
+    "selftest": """Usage: loop_journal.py selftest
+""",
+}
+
+
+def _help_text(sub=None):
+    return _COMMAND_HELP.get(sub, _HELP_TEXT)
+
+
 def _parse(args):
     opts = {}
     i = 0
     while i < len(args):
         a = args[i]
-        if a.startswith("--"):
+        if a in ("-h", "--help"):
+            opts["help"] = True
+            i += 1
+        elif a.startswith("--"):
             key = a[2:]
             if i + 1 < len(args) and not args[i + 1].startswith("--"):
                 opts[key] = args[i + 1]
@@ -1039,8 +1119,11 @@ def _parse(args):
 def main():
     argv = sys.argv[1:]
     if not argv:
-        print(__doc__)
+        print(_help_text(), file=sys.stderr)
         sys.exit(2)
+    if argv[0] in ("-h", "--help"):
+        print(_help_text())
+        sys.exit(0)
     # --describe-cli: emit JSON spec of accepted verbs + flags
     if argv[0] == "--describe-cli":
         import json
@@ -1055,13 +1138,23 @@ def main():
         }))
         sys.exit(0)
     sub, opts = argv[0], _parse(argv[1:])
-    {"record": cmd_record, "fingerprint": cmd_fingerprint, "stall": cmd_stall,
-     "resume": cmd_resume, "status": cmd_status, "since": cmd_since,
-     "delegation": cmd_delegation, "claims-gate": cmd_claims_gate,
-     "suggest": cmd_suggest,
-     "selftest": cmd_selftest}.get(
-        sub, lambda _o: (print("unknown command '%s'. choices: record fingerprint stall resume "
-                               "status since delegation claims-gate suggest selftest" % sub), sys.exit(2)))(opts)
+    if "help" in opts:
+        if sub not in _COMMAND_HELP:
+            print("unknown command '%s'" % sub, file=sys.stderr)
+            sys.exit(2)
+        print(_help_text(sub))
+        sys.exit(0)
+    handler = {"record": cmd_record, "fingerprint": cmd_fingerprint, "stall": cmd_stall,
+               "resume": cmd_resume, "status": cmd_status, "since": cmd_since,
+               "delegation": cmd_delegation, "claims-gate": cmd_claims_gate,
+               "suggest": cmd_suggest, "selftest": cmd_selftest}.get(sub)
+    if handler is None:
+        print("unknown command '%s'. choices: record fingerprint stall resume status since "
+              "delegation claims-gate suggest selftest" % sub)
+        sys.exit(2)
+    result = handler(opts)
+    if isinstance(result, int):
+        sys.exit(result)
 
 
 if __name__ == "__main__":
