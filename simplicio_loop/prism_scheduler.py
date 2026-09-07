@@ -242,6 +242,17 @@ class AdmissionController:
         if task.task_id in self._active:
             raise PrismSchedulerError("task is already physically active")
         observation = self.observation
+        if "workers" in observation.unavailable:
+            return self._record(
+                task,
+                False,
+                "PHYSICAL_CAPACITY_UNAVAILABLE",
+                {
+                    "unavailable": list(observation.unavailable),
+                    "null_reasons": dict(observation.null_reasons),
+                    "limit": dataclasses.asdict(observation.limit),
+                },
+            )
         if (
             observation.provider_retry_after_ns is not None
             and now_ns < observation.provider_retry_after_ns

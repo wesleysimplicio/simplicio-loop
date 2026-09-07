@@ -77,7 +77,10 @@ class BudgetSample:
         if invalid:
             raise PrismBudgetError(f"unknown null_reason dimensions: {sorted(invalid)}")
         for name, reason in self.null_reasons.items():
-            if getattr(self, name) is not None or not str(reason).strip():
+            if (
+                getattr(self, name) is not None
+                and not (name == "workers" and getattr(self, name) == 0)
+            ) or not str(reason).strip():
                 raise PrismBudgetError(
                     f"null_reason for {name} requires an unknown metric"
                 )
@@ -93,7 +96,9 @@ class BudgetSample:
             if device.connected and device.trusted and device.worker_limit
         ]
         device_workers = sum(device.worker_limit for device in connected)
-        configured_workers = self.workers or policy.global_worker_limit
+        configured_workers = (
+            self.workers if self.workers is not None else policy.global_worker_limit
+        )
         if devices:
             configured_workers = min(configured_workers, max(1, device_workers))
 
@@ -111,6 +116,10 @@ class BudgetSample:
                 # A non-zero conservative bound avoids the ResourceVector
                 # convention where zero means "not constrained".
                 value = 1
+            elif name == "workers" and value == 0:
+                unavailable.append(name)
+                null_reasons.setdefault(name, "physical_capacity_unavailable")
+                measured.append(name)
             else:
                 measured.append(name)
             values[name] = value
