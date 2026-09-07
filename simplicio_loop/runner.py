@@ -4683,7 +4683,7 @@ def _build_native_prism_scheduler(
 
     if not items or worker_limit < 1:
         raise ValueError("native Prism requires work and a positive worker limit")
-    from .local_capacity import probe_local_capacity
+    from .local_capacity import PhysicalAdmissionMonitor
 
     capacity_root = Path(str(items[0].get("repo") or ".")).resolve()
     # Queue/worktree adapters may hand the scheduler a path that is created only
@@ -4691,10 +4691,13 @@ def _build_native_prism_scheduler(
     # that normal pre-launch state as an unavailable disk signal.
     while not capacity_root.exists() and capacity_root != capacity_root.parent:
         capacity_root = capacity_root.parent
-    capacity_sample = probe_local_capacity(
-        str(capacity_root), requested_workers=worker_limit,
+    capacity_monitor = PhysicalAdmissionMonitor(
+        str(capacity_root), worker_limit,
     )
-    worker_limit = max(1, min(int(worker_limit), capacity_sample.safe_workers))
+    capacity_sample = capacity_monitor.refresh(force=True)
+    # Keep one logical scheduler worker alive so its explicit unavailable sample
+    # can produce a blocked admission decision instead of bypassing the receipt.
+    worker_limit = max(1, min(int(worker_limit), max(1, capacity_sample.safe_workers)))
     run_id = str(items[0].get("run_id") or "local-batch")
     # Keep logical partitioning independent from physical workers.  A task may
     # provide an explicit partition identity; otherwise derive one from the
@@ -4761,6 +4764,10 @@ def _build_native_prism_scheduler(
                 "evidence_bytes",
             )
         }
+        if sample.safe_workers < 1 or sample.unavailable:
+            null_reasons["workers"] = sample.null_reasons.get(
+                "workers", "required_capacity_signal_unavailable"
+            )
         return BudgetSample(
             workers=int(sample.safe_workers),
             observed_at_ns=int(sample.observed_at_ns),
@@ -4813,30 +4820,30 @@ def _build_native_prism_scheduler(
         ))
     capacity_receipt = capacity_sample.to_dict()
     capacity_receipt["budget_governor"] = governor.status()
+    capacity_receipt["monitor"] = capacity_monitor.status()
     capacity_receipt["policy"] = {
         "recovery_reserve": policy.recovery_reserve,
         "validation_reserve": policy.validation_reserve,
         "global_worker_limit": policy.global_worker_limit,
     }
 
-    def refresh_capacity() -> None:
-        refreshed = probe_local_capacity(
-            str(capacity_root), requested_workers=worker_limit,
-        )
+    def refresh_capacity(*, force: bool = True) -> None:
+        refreshed = capacity_monitor.refresh(force=force)
         scheduler.controller.update(governor.observe(_budget_sample(refreshed)))
         capacity_receipt.clear()
         capacity_receipt.update(refreshed.to_dict())
         capacity_receipt["budget_governor"] = governor.status()
+        capacity_receipt["monitor"] = capacity_monitor.status()
         capacity_receipt["policy"] = {
             "recovery_reserve": policy.recovery_reserve,
             "validation_reserve": policy.validation_reserve,
             "global_worker_limit": policy.global_worker_limit,
         }
 
-    # The dispatch bridge calls this before each refill. Keeping the hook on the
-    # scheduler preserves the existing return contract while making every
-    # admission wave use a fresh, hash-addressed governor event.
+    # The dispatch bridge calls this before each refill and on the monitor clock.
+    # Keeping the hook on the scheduler preserves the existing return contract.
     scheduler.native_capacity_refresh = refresh_capacity
+    scheduler.native_capacity_monitor = capacity_monitor
     return scheduler, root.prism_id, capacity_receipt
 
 
@@ -4882,6 +4889,9 @@ def _allocation_context(allocation: Any, item: Mapping[str, Any]) -> Dict[str, A
         "lane": str(value("lane", "") or ""),
         "reattached": bool(value("reattached", False)),
         "lock_receipt": str(value("lock_receipt", "") or ""),
+        "worktree_id": str(value("worktree_id", "") or ""),
+        "terminal_handle": str(value("terminal_handle", "") or ""),
+        "lease_owner": str(value("lease_owner", "") or ""),
         "source_repo": str(item.get("source_repo") or item.get("repo") or ""),
         "source_run_id": str(item.get("source_run_id") or item.get("run_id") or ""),
     }
@@ -5735,6 +5745,7 @@ def dispatch_operator_batch(
     journal_dir: Optional[str] = None,
     worktree_queue: Any = None,
     stop_requested: Optional[Callable[[], bool]] = None,
+    owned_cancel: Optional[Callable[[str], Any]] = None,
 ) -> Dict[str, Any]:
     """Continuously dispatch real operator workers and refill freed slots.
 
@@ -5822,31 +5833,103 @@ def dispatch_operator_batch(
                     task_indices=[item["task_index"]],
                 )
             raise
-    _prepare_worktree_contexts(normalized, worktree_queue)
     requested_workers = max_workers
     effective_workers = _operator_worker_limit(max_workers, len(normalized))
-    isolation_keys = {item["isolation_key"] for item in normalized}
     serial_fallback_reason = ""
-    if effective_workers > 1 and len(isolation_keys) < len(normalized):
+    # A queued worktree is a lease-bearing mutation resource.  Reserve independent
+    # worktree lanes for the capacity request, but retain the shared-run serial guard
+    # when no queue can provide those lanes.  Allocation itself happens only after the
+    # first physical admission decision below.
+    candidate_isolation_keys = {
+        ("worktree:%s" % item["task_id"]
+         if worktree_queue is not None and str(item.get("isolation") or "worktree") == "worktree"
+         else item["isolation_key"])
+        for item in normalized
+    }
+    if effective_workers > 1 and len(candidate_isolation_keys) < len(normalized):
         effective_workers = 1
         serial_fallback_reason = "shared_run_state"
     retry_budget = max(0, int(retry_budget))
-
+    from .local_capacity import PhysicalAdmissionMonitor
     if prism_enabled:
         prism_scheduler, prism_id, capacity_sample = _build_native_prism_scheduler(
             normalized, effective_workers,
         )
-        effective_workers = max(1, min(effective_workers, int(capacity_sample["safe_workers"])))
+        physical_monitor = getattr(prism_scheduler, "native_capacity_monitor", None)
+        direct_governor = None
+        effective_workers = max(0, min(effective_workers, int(capacity_sample["safe_workers"])))
     else:
-        # One to three tasks use the direct executor path.  Keep the same
-        # receipt/journal/lease machinery, but do not create a Prism graph.
+        # One to three tasks use the direct executor path. Keep the same
+        # receipt/journal/lease machinery and the same physical governor,
+        # without creating a second scheduler graph.
+        from .prism_budgets import AdaptiveBudgetGovernor, BudgetSample
+        from .prism_scheduler import PrismPolicy
+        capacity_root = Path(str((normalized[0].get("repo") if normalized else None) or ".")).resolve()
+        while not capacity_root.exists() and capacity_root != capacity_root.parent:
+            capacity_root = capacity_root.parent
+        physical_monitor = PhysicalAdmissionMonitor(
+            str(capacity_root), effective_workers,
+        )
+        direct_policy = PrismPolicy(
+            global_worker_limit=max(1, effective_workers),
+            recovery_reserve=0,
+            validation_reserve=0,
+        )
+        direct_governor = AdaptiveBudgetGovernor(direct_policy, relief_samples=2)
+
+        def _direct_budget_sample(sample: Any) -> BudgetSample:
+            null_reasons = {
+                name: "local_probe_not_supported"
+                for name in (
+                    "cpu_millis", "rss_bytes", "io_units", "provider_requests",
+                    "tokens", "model_slots", "network_queue", "context_tokens",
+                    "evidence_bytes",
+                )
+            }
+            if sample.safe_workers < 1 or sample.unavailable:
+                null_reasons["workers"] = sample.null_reasons.get(
+                    "workers", "required_capacity_signal_unavailable"
+                )
+            return BudgetSample(
+                workers=int(sample.safe_workers),
+                observed_at_ns=int(sample.observed_at_ns),
+                null_reasons=null_reasons,
+            )
+
+        direct_sample = physical_monitor.refresh(force=True)
+        effective_workers = max(0, min(effective_workers, int(direct_sample.safe_workers)))
+        direct_governor.observe(_direct_budget_sample(direct_sample))
         prism_scheduler = None
         prism_id = ""
-        capacity_sample = {
-            "schema": "simplicio.direct-parallelism-capacity/v1",
-            "safe_workers": effective_workers,
-            "source": "operator_worker_limit",
+        capacity_sample = direct_sample.to_dict()
+        capacity_sample["schema"] = "simplicio.direct-parallelism-capacity/v1"
+        capacity_sample["source"] = "physical_admission_monitor"
+        capacity_sample["budget_governor"] = direct_governor.status()
+        capacity_sample["monitor"] = physical_monitor.status()
+        capacity_sample["policy"] = {
+            "recovery_reserve": direct_policy.recovery_reserve,
+            "validation_reserve": direct_policy.validation_reserve,
+            "global_worker_limit": direct_policy.global_worker_limit,
         }
+    capacity_admission: dict[str, Any] = (
+        physical_monitor.admission_status()
+        if physical_monitor is not None
+        else {
+            "admitted": False,
+            "reason_code": "PHYSICAL_SAMPLE_UNAVAILABLE",
+            "reason": "monitor_unavailable",
+            "evidence": {},
+        }
+    )
+    # Admission precedes all queue allocation.  A blocked batch therefore leaves no
+    # worktree or shared-checkout lease behind for a later retry to mistake as owned.
+    if capacity_admission.get("admitted"):
+        _prepare_worktree_contexts(normalized, worktree_queue)
+        actual_isolation_keys = {item["isolation_key"] for item in normalized}
+        if effective_workers > 1 and len(actual_isolation_keys) < len(normalized):
+            effective_workers = 1
+            serial_fallback_reason = "shared_run_state"
+
     pending = deque(
         item for item in normalized
         if prior.get((item["repo"], item["run_id"], item["task_index"]), {}).get("status") != "succeeded"
@@ -5858,7 +5941,7 @@ def dispatch_operator_batch(
     # A resumed batch can have a completed item at the head of Prism's ready queue.
     # Retire those durable successes before admitting fresh work; otherwise a full
     # capacity sample leaves the pending item permanently invisible behind the skip.
-    if prism_enabled:
+    if prism_enabled and capacity_admission.get("admitted"):
         while True:
             admitted = prism_scheduler.next_batch()
             if not admitted:
@@ -5927,6 +6010,7 @@ def dispatch_operator_batch(
     refill_count = 0
     initial_admissions = 0
     stop_reason = ""
+    capacity_stop_reason = ""
 
     def _drain_requested() -> bool:
         nonlocal stop_reason
@@ -5991,15 +6075,124 @@ def dispatch_operator_batch(
             return item
         return None
 
-    def _refill_prism() -> None:
+    def _refill_prism(*, refresh_capacity: bool = True) -> None:
         if not prism_enabled:
             return
-        refresh = getattr(prism_scheduler, "native_capacity_refresh", None)
-        if refresh is not None:
-            refresh()
+        if refresh_capacity:
+            refresh = getattr(prism_scheduler, "native_capacity_refresh", None)
+            if refresh is not None:
+                refresh()
         for task in prism_scheduler.next_batch():
             if task.task_id not in prism_admitted:
                 prism_admitted.append(task.task_id)
+
+    def _update_direct_capacity_receipt(sample: Any) -> None:
+        capacity_sample.clear()
+        capacity_sample.update(sample.to_dict())
+        capacity_sample["schema"] = "simplicio.direct-parallelism-capacity/v1"
+        capacity_sample["source"] = "physical_admission_monitor"
+        capacity_sample["budget_governor"] = direct_governor.status()
+        capacity_sample["monitor"] = physical_monitor.status()
+        capacity_sample["policy"] = {
+            "recovery_reserve": direct_policy.recovery_reserve,
+            "validation_reserve": direct_policy.validation_reserve,
+            "global_worker_limit": direct_policy.global_worker_limit,
+        }
+
+    def _refresh_physical_admission(*, force: bool = False) -> dict[str, Any]:
+        nonlocal capacity_admission
+        monitor = physical_monitor
+        if monitor is None:
+            capacity_admission = {
+                "admitted": False,
+                "reason_code": "PHYSICAL_SAMPLE_UNAVAILABLE",
+                "reason": "monitor_unavailable",
+                "evidence": {},
+            }
+            return capacity_admission
+        if force or monitor.due():
+            if prism_enabled:
+                refresh = getattr(prism_scheduler, "native_capacity_refresh", None)
+                if refresh is None:
+                    monitor.refresh(force=True)
+                else:
+                    refresh(force=True)
+            else:
+                refreshed = monitor.refresh(force=force)
+                direct_governor.observe(_direct_budget_sample(refreshed))
+                _update_direct_capacity_receipt(refreshed)
+        sample = monitor.sample
+        if sample is None:
+            capacity_admission = {
+                "admitted": False,
+                "reason_code": "PHYSICAL_SAMPLE_UNAVAILABLE",
+                "reason": "no_sample",
+                "action": "suspend_new",
+                "evidence": {},
+            }
+        else:
+            capacity_admission = monitor.admission_status()
+        return capacity_admission
+
+    def _set_capacity_stop(admission: Mapping[str, Any]) -> None:
+        nonlocal capacity_stop_reason
+        if admission.get("admitted"):
+            # Physical pressure is resumable after the monitor's sustained-recovery
+            # window.  Operator stop requests remain in ``stop_reason`` below.
+            capacity_stop_reason = ""
+            return
+        code = str(admission.get("reason_code") or "PHYSICAL_ADMISSION_BLOCKED")
+        reason = str(admission.get("reason") or "capacity_not_admitted")
+        capacity_stop_reason = f"{code}:{reason}"
+
+    owned_shutdown: dict[str, Any] = {
+        "status": "not_requested", "action": "", "cancelled_task_ids": [],
+        "limitations": [], "errors": [],
+    }
+
+    def _request_owned_cancel(task_id: str) -> Any:
+        """Use an injected/queue cancellation hook for this coordinator-owned task only."""
+        if owned_cancel is not None:
+            return owned_cancel(task_id)
+        if worktree_queue is not None:
+            for method_name in ("request_cancel", "cancel_task", "release_task", "cancel"):
+                method = getattr(worktree_queue, method_name, None)
+                if not callable(method):
+                    continue
+                try:
+                    return method(task_id, reason="physical_pressure_terminate")
+                except TypeError:
+                    return method(task_id)
+        return None
+
+    def _shutdown_owned(admission: Mapping[str, Any], active: Mapping[Any, Mapping[str, Any]]) -> None:
+        if str(admission.get("action") or "") != "terminate_owned":
+            return
+        if owned_shutdown.get("action") == "terminate_owned":
+            return
+        owned_shutdown.update({"status": "requested", "action": "terminate_owned"})
+        for future, item in active.items():
+            task_id = str(item.get("task_id") or "")
+            if not task_id:
+                continue
+            # ``Future.cancel`` is safe for work not yet started.  A running process
+            # is cancellable only through the existing owned queue/registry hook.
+            if future.cancel():
+                owned_shutdown["cancelled_task_ids"].append(task_id)
+            try:
+                outcome = _request_owned_cancel(task_id)
+                if outcome is None:
+                    owned_shutdown["limitations"].append(
+                        f"{task_id}:running_subprocess_requires_owned_supervisor_hook"
+                    )
+                elif task_id not in owned_shutdown["cancelled_task_ids"]:
+                    owned_shutdown["cancelled_task_ids"].append(task_id)
+            except Exception as exc:
+                owned_shutdown["errors"].append(
+                    f"{task_id}:{type(exc).__name__}: {exc}"
+                )
+        if not owned_shutdown["cancelled_task_ids"] and not owned_shutdown["errors"]:
+            owned_shutdown["status"] = "limited"
 
     dispatch_mode = os.environ.get("SIMPLICIO_LOOP_DISPATCH_MODE", "process").strip().lower()
     if dispatch_mode not in {"process", "thread"}:
@@ -6012,10 +6205,15 @@ def dispatch_operator_batch(
     executor_kwargs = {"max_workers": effective_workers}
     if dispatch_mode == "thread":
         executor_kwargs["thread_name_prefix"] = "simplicio-operator"
-    if pending and effective_workers:
+    _set_capacity_stop(_refresh_physical_admission())
+    if pending and effective_workers and not stop_reason and not capacity_stop_reason:
         with executor_type(**executor_kwargs) as pool:
             active = {}
-            while pending and len(active) < effective_workers and not _drain_requested():
+            while pending and len(active) < effective_workers and not _drain_requested() and not stop_reason and not capacity_stop_reason:
+                admission = _refresh_physical_admission()
+                if not admission.get("admitted"):
+                    _set_capacity_stop(admission)
+                    break
                 item = _take_prism_admitted()
                 if item is None:
                     break
@@ -6039,7 +6237,21 @@ def dispatch_operator_batch(
                     active[pool.submit(_run_item, item)] = item
                     initial_admissions += 1
             while active:
-                done, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
+                timeout = (
+                    max(0.001, physical_monitor.sample_interval_ns / 1_000_000_000)
+                    if physical_monitor is not None else 5.0
+                )
+                done, _ = wait(
+                    tuple(active), timeout=timeout, return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    admission = _refresh_physical_admission()
+                    if not admission.get("admitted"):
+                        _set_capacity_stop(admission)
+                    _shutdown_owned(admission, active)
+                    if admission.get("admitted") and pending and prism_enabled and not stop_reason and not capacity_stop_reason:
+                        _refill_prism(refresh_capacity=False)
+                    continue
                 for future in done:
                     item = active.pop(future)
                     try:
@@ -6080,8 +6292,11 @@ def dispatch_operator_batch(
                             _refill_prism()
                     except Exception as exc:
                         final.setdefault("prism_error", f"{type(exc).__name__}: {exc}")
+                    admission = _refresh_physical_admission()
+                    _set_capacity_stop(admission)
+                    _shutdown_owned(admission, active)
                     # Refill as soon as this worker exits; there is no frozen wave barrier.
-                    if pending and not _drain_requested():
+                    if pending and not _drain_requested() and not stop_reason and not capacity_stop_reason:
                         next_item = _take_prism_admitted()
                         if next_item is None:
                             continue
@@ -6105,17 +6320,40 @@ def dispatch_operator_batch(
                         refill_count += 1
 
     final_records = []
+    capacity_blocked = not bool(capacity_admission.get("admitted"))
     for item in normalized:
         key = (item["repo"], item["run_id"], item["task_index"])
-        final_records.append(records.get(key, {
+        existing = records.get(key)
+        if existing is None and capacity_blocked:
+            # Every unsent task receives a durable blocked receipt with the exact
+            # physical evidence that prevented admission.  This keeps queue state
+            # auditable and gives a retry a concrete reason to reconcile.
+            blocked = {
+                "schema": "simplicio.operator-worker/v1", "worker_id": item["worker_id"],
+                "repo": item["repo"], "run_id": item["run_id"], "task_index": item["task_index"],
+                "task_id": item.get("task_id", ""),
+                "source_repo": item.get("source_repo", item["repo"]),
+                "worktree_context": item.get("worktree_context", {}),
+                "status": "blocked", "phase": "capacity", "execution_state": "paused",
+                "reason_code": capacity_admission.get("reason_code", "PHYSICAL_ADMISSION_BLOCKED"),
+                "reason": capacity_admission.get("reason", "capacity_not_admitted"),
+                "error": capacity_admission.get("reason", "capacity_not_admitted"),
+                "admission_evidence": capacity_admission.get("evidence", {}),
+                "receipt_status": "BLOCKED", "attempt": 0, "attempt_count": 0,
+                "dead_letter": False, "blocked": True,
+                "started_at": _now(), "finished_at": _now(),
+            }
+            _persist_attempt(blocked)
+            existing = blocked
+        final_records.append(existing or {
             "schema": "simplicio.operator-worker/v1", "worker_id": item["worker_id"],
             "repo": item["repo"], "run_id": item["run_id"], "task_index": item["task_index"],
             "task_id": item.get("task_id", ""),
             "source_repo": item.get("source_repo", item["repo"]),
             "worktree_context": item.get("worktree_context", {}),
             "status": "pending", "phase": "queued", "execution_state": "pending",
-            "drain_status": "held" if stop_reason else "queued",
-        }))
+            "drain_status": "held" if (stop_reason or capacity_stop_reason) else "queued",
+        })
     result = {
         "schema": BATCH_SCHEMA,
         "run_id": normalized[0]["run_id"] if normalized and len({i["run_id"] for i in normalized}) == 1 else "",
@@ -6129,13 +6367,15 @@ def dispatch_operator_batch(
         "active_workers": 0,
         "worker_count": len(final_records),
         "queue_depth": 0,
+        "capacity_admission": capacity_admission,
+        "owned_shutdown": owned_shutdown,
         "refill_count": refill_count,
         "initial_admissions": initial_admissions,
         "serial_fallback_reason": serial_fallback_reason,
         "dispatch_mode": dispatch_mode,
         "drain": {
-            "status": "drained" if stop_reason else "not_requested",
-            "reason_code": stop_reason or "none",
+            "status": "drained" if (stop_reason or capacity_stop_reason) else "not_requested",
+            "reason_code": stop_reason or capacity_stop_reason or "none",
             "pending_task_indices": [item["task_index"] for item in pending],
         },
         "durable_journal": str(durable_journal_path) if durable_journal_path else "",
