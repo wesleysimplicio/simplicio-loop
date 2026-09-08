@@ -47,6 +47,8 @@ ones without a recorded human decision.
 - **Review limits:** use one implementation review and one final independent verification, with at
   most two AC-scoped repair rounds. If a blocker remains, stop `BLOCKED` with evidence and ownership
   instead of opening an unbounded review/fix loop.
+
+- **Authorized continuation:** When the coordinator receives an explicit human instruction to continue the same frozen issue and acceptance criteria after this budget stops, record that instruction as the human decision that permits one new bounded continuation epoch. Preserve every prior review, repair, journal, anchor, and provenance record; append the authorization and lineage instead of resetting or deleting history. Set a fresh finite `max_iterations` and keep the review budget finite (at most two AC-scoped repair rounds in the continuation). Do not ask for the same authorization again. A changed goal or AC requires a new human decision; a routine base refresh/rebase or explicitly authorized owner handoff requires re-query, re-anchoring, and re-validation under the existing decision. A changed delivery authority without that handoff requires a new decision. This exception does not relax resource admission, safety, authorization/authentication, integrity/signatures, lease/fence, evidence, required human approvals, host hard limits, or branch protection. Unknown model telemetry remains unknown; its absence is not a blanket blocker.
 - **Ownership and integration:** only the active owner mutates the delivery branch. Reviewers are
   read-only unless ownership is explicitly handed off. Before the first mutation, acquire and
   confirm the cross-session claim/lease/fence against the live source; a stale or conflicting

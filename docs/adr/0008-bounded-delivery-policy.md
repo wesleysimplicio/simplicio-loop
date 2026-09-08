@@ -31,6 +31,8 @@ authorization.
 
 Repositories may impose stricter limits. A looser exception requires a recorded human decision.
 
+An explicit human instruction to continue the same frozen issue and ACs after the default review budget stops is the recorded human decision for one new bounded continuation epoch. The continuation appends its authorization and prior attempt/review lineage, preserves the original anchor and counters, and sets a fresh finite cap (at most two AC-scoped repair rounds); it never resets history or creates an unbounded loop. A changed scope or AC requires a new human decision; a routine base refresh/rebase or explicitly authorized owner handoff requires re-query, re-anchoring, and re-validation under the existing decision. A changed delivery authority without that handoff requires a new decision. This exception does not relax resource admission, safety, authorization/authentication, integrity/signatures, lease/fence, evidence, required human approvals, host hard limits, or branch protection. Unknown model telemetry remains unknown; its absence is not a blanket blocker.
+
 ## Alternatives considered
 
 1. Unbounded parallel WIP: increases throughput only superficially and obscures leases and finish
