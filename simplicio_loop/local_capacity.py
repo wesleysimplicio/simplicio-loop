@@ -252,6 +252,7 @@ class PhysicalAdmissionMonitor:
         *,
         sample_interval_ns: int = DEFAULT_SAMPLE_INTERVAL_NS,
         clock: Callable[[], int] = time.monotonic_ns,
+        observation_clock: Callable[[], int] = time.time_ns,
         probe: Callable[..., CapacitySample] | None = None,
         probe_kwargs: dict[str, Any] | None = None,
         pressure_probe: Callable[[str], Mapping[str, Any]] | None = None,
@@ -282,6 +283,8 @@ class PhysicalAdmissionMonitor:
         self.sample_interval_ns = int(sample_interval_ns)
         self.clock = clock
         default_probe = probe is None
+        self._default_probe = default_probe
+        self.observation_clock = observation_clock
         self.probe = probe or probe_local_capacity
         self.probe_kwargs = dict(probe_kwargs or {})
         configured_reserve = disk_reserve_bytes
@@ -319,6 +322,7 @@ class PhysicalAdmissionMonitor:
     def _exception_sample(self, now: int, error: Exception) -> CapacitySample:
         reason = "physical_probe_exception"
         unavailable = ("cpu_count", "disk_free_bytes", "memory_available_bytes")
+        observed_at = int(self.observation_clock()) if self._default_probe else now
         return CapacitySample(
             requested_workers=self.requested_workers,
             safe_workers=0,
@@ -328,7 +332,7 @@ class PhysicalAdmissionMonitor:
             measured=(),
             unavailable=unavailable,
             null_reasons={name: reason for name in (*unavailable, "workers")},
-            observed_at_ns=now,
+            observed_at_ns=observed_at,
         )
 
     def refresh(self, *, force: bool = False) -> CapacitySample:
@@ -337,10 +341,11 @@ class PhysicalAdmissionMonitor:
             return self.sample
         self.probe_error = ""
         try:
+            observation_now = int(self.observation_clock()) if self._default_probe else now
             sample = self.probe(
                 self.root,
                 requested_workers=self.requested_workers,
-                now_ns=now,
+                now_ns=observation_now,
                 **self.probe_kwargs,
             )
             if not isinstance(sample, CapacitySample):
@@ -365,10 +370,28 @@ class PhysicalAdmissionMonitor:
 
     poll = refresh
 
+    def _disk_suspend_active(self) -> bool:
+        pressure = self.pressure or {}
+        disk_used = pressure.get("disk_used_percent")
+        disk_free = pressure.get("disk_free_bytes")
+        if disk_used is None or disk_free is None:
+            return bool(pressure.get("disk_suspend"))
+        try:
+            return (
+                float(disk_used) >= self.disk_suspend_percent
+                and int(disk_free) < self.disk_suspend_floor_bytes
+            )
+        except (TypeError, ValueError):
+            return False
+
     def _update_recovery(self, now: int) -> None:
         pressure_percent = (self.pressure or {}).get("pressure_percent")
-        disk_suspend = bool((self.pressure or {}).get("disk_suspend"))
-        pressured = disk_suspend or (
+        disk_suspend = self._disk_suspend_active()
+        # A zero-worker sample is itself a physical-pressure observation.  It must
+        # enter the same sustained-recovery state as pressure percentages so a
+        # transient capacity return cannot immediately admit heavy work.
+        capacity_pressure = self.sample is not None and int(self.sample.safe_workers) < 1
+        pressured = capacity_pressure or disk_suspend or (
             isinstance(pressure_percent, (int, float))
             and float(pressure_percent) >= self.no_new_pressure_percent
         )
@@ -447,12 +470,7 @@ class PhysicalAdmissionMonitor:
             })
             return base
         percent = pressure.get("pressure_percent")
-        disk_suspend = bool(
-            pressure.get("disk_used_percent") is not None
-            and float(pressure["disk_used_percent"]) >= self.disk_suspend_percent
-            and pressure.get("disk_free_bytes") is not None
-            and int(pressure["disk_free_bytes"]) < self.disk_suspend_floor_bytes
-        )
+        disk_suspend = self._disk_suspend_active()
         if disk_suspend:
             base.update({
                 "admitted": False,
