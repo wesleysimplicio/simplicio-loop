@@ -14,7 +14,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Optional, Sequence, Set
+from typing import Callable, Dict, Optional, Sequence, Set
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -36,6 +36,7 @@ PHASE_TIMEOUT_SECONDS = {
     "repo_budget": 60.0,
     "conformance": 60.0,
     "package_content": 300.0,
+    "quality_gate": 120.0,
 }
 MAX_CAPTURE_BYTES = 1024 * 1024
 POST_KILL_DRAIN_SECONDS = 1.0
@@ -65,6 +66,7 @@ class CommandReason(str, Enum):
 
     OK = "ok"
     TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
     DESCENDANT_LEAK = "descendant_leak"
     CONTAINMENT_UNAVAILABLE = "containment_unavailable"
 
@@ -76,6 +78,8 @@ class CommandResult:
     stdout: str = ""
     stderr: str = ""
     reason: CommandReason = CommandReason.OK
+    cancelled: bool = False
+    cancel_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -733,10 +737,22 @@ class _CaptureBuffer:
         return prefix + marker + suffix
 
 
+
+def _cancel_check_reason(cancel_check: Optional[Callable[[], Optional[str]]]) -> str:
+    """Poll an owner-supplied cancellation/admission check fail-closed."""
+    if cancel_check is None:
+        return ""
+    try:
+        value = cancel_check()
+    except Exception as exc:  # a failed safety probe must stop the owned phase
+        return "cancel_check_error:%s" % type(exc).__name__
+    return str(value) if value else ""
+
 def _bounded_capture_threads(
     proc: subprocess.Popen, timeout: float, baseline: Set[int], *, discover: bool,
+    cancel_check: Optional[Callable[[], Optional[str]]] = None,
 ):
-    """Portable pipe capture for hosts where selectors reject pipe HANDLEs."""
+    """Portable pipe capture with bounded timeout and owner cancellation."""
     chunks = None
     finished = None
     readers = []
@@ -744,6 +760,8 @@ def _bounded_capture_threads(
     pipes = ()
     descendants = set()
     cleanup_started = False
+    cleanup_available = True
+    cancel_reason = ""
 
     def read_pipe(name, pipe) -> None:
         try:
@@ -759,15 +777,15 @@ def _bounded_capture_threads(
             finished[name].set()
 
     def terminate_once() -> None:
-        nonlocal cleanup_started
+        nonlocal cleanup_started, cleanup_available
         if cleanup_started:
             return
         cleanup_started = True
-        _terminate_and_reap(proc, descendants, baseline=baseline, discover=discover)
+        cleanup_available = _terminate_and_reap(
+            proc, descendants, baseline=baseline, discover=discover
+        )
 
     try:
-        # Every allocation below occurs after the process was spawned and is
-        # therefore inside the same cleanup region as polling and rendering.
         pipes = tuple(pipe for pipe in (proc.stdout, proc.stderr) if pipe is not None)
         chunks = {"stdout": _CaptureBuffer(), "stderr": _CaptureBuffer()}
         finished = {"stdout": threading.Event(), "stderr": threading.Event()}
@@ -784,6 +802,10 @@ def _bounded_capture_threads(
         deadline = time.monotonic() + timeout
         timed_out = False
         while True:
+            cancel_reason = _cancel_check_reason(cancel_check)
+            if cancel_reason:
+                terminate_once()
+                break
             if discover and not _observe_descendants(proc.pid, descendants, baseline):
                 raise _ContainmentUnavailable(descendants, baseline)
             if proc.poll() is not None and all(
@@ -798,23 +820,21 @@ def _bounded_capture_threads(
                 terminate_once()
                 break
             time.sleep(min(0.02, remaining))
+        if not cleanup_available:
+            raise _ContainmentUnavailable(descendants, baseline)
         if reader_errors:
             raise reader_errors[0]
 
-        # A descendant can retain an inherited pipe after the leader exits.
-        # Give readers one bounded drain interval before finally closing our
-        # handles and letting daemon readers unwind.
         drain_deadline = time.monotonic() + POST_KILL_DRAIN_SECONDS
         for reader in readers:
             reader.join(max(0.0, drain_deadline - time.monotonic()))
+        if cancel_reason:
+            setattr(proc, "_simplicio_cancel_reason", cancel_reason)
         return (
             chunks["stdout"].render("stdout"), chunks["stderr"].render("stderr"),
             timed_out, False,
         )
     except BaseException:
-        # Covers setup plus every operational step after it: poll, wait,
-        # reader coordination and rendering. A spawned phase never escapes an
-        # exceptional capture path.
         terminate_once()
         raise
     finally:
@@ -829,11 +849,12 @@ def _bounded_capture_threads(
 
 def _bounded_capture(
     proc: subprocess.Popen, timeout: float, baseline: Set[int], *, discover: bool,
+    cancel_check: Optional[Callable[[], Optional[str]]] = None,
 ):
-    """Read pipes without an unbounded post-timeout communicate()."""
+    """Read pipes without unbounded communicate(), including owner cancellation."""
     if os.name == "nt":
         return _bounded_capture_threads(
-            proc, timeout, baseline, discover=discover,
+            proc, timeout, baseline, discover=discover, cancel_check=cancel_check,
         )
     selector = None
     chunks = None
@@ -841,6 +862,7 @@ def _bounded_capture(
     descendants = set()
     deadline = time.monotonic() + timeout
     timed_out = False
+    cancel_reason = ""
     try:
         pipes = tuple(pipe for pipe in (proc.stdout, proc.stderr) if pipe is not None)
         selector = selectors.DefaultSelector()
@@ -850,6 +872,13 @@ def _bounded_capture(
                 os.set_blocking(pipe.fileno(), False)
                 selector.register(pipe, selectors.EVENT_READ, name)
         while selector.get_map() or proc.poll() is None:
+            cancel_reason = _cancel_check_reason(cancel_check)
+            if cancel_reason:
+                if not _terminate_and_reap(
+                    proc, descendants, baseline=baseline, discover=discover,
+                ):
+                    raise _ContainmentUnavailable(descendants, baseline)
+                break
             if discover and not _observe_descendants(proc.pid, descendants, baseline):
                 raise _ContainmentUnavailable(descendants, baseline)
             remaining = deadline - time.monotonic()
@@ -871,8 +900,7 @@ def _bounded_capture(
                 proc, descendants, baseline=baseline, discover=discover,
             ):
                 raise _ContainmentUnavailable(descendants, baseline)
-            # Pipes inherited by an escaped process may never reach EOF.  Drain
-            # only for a fixed interval and then close our ends.
+        if timed_out or cancel_reason:
             drain_deadline = time.monotonic() + POST_KILL_DRAIN_SECONDS
             while selector.get_map() and time.monotonic() < drain_deadline:
                 for key, _ in selector.select(min(0.05, drain_deadline - time.monotonic())):
@@ -897,14 +925,14 @@ def _bounded_capture(
                 proc, survivors, baseline=baseline, discover=discover,
             ):
                 raise _ContainmentUnavailable(descendants, baseline)
+        if cancel_reason:
+            setattr(proc, "_simplicio_cancel_reason", cancel_reason)
         return (chunks["stdout"].render("stdout"),
                 chunks["stderr"].render("stderr"), timed_out,
                 leaked_descendant)
     except _ContainmentUnavailable:
         raise
     except BaseException:
-        # Selector creation/registration and pipe setup happen after spawn.
-        # Any failure there must still terminate the phase before propagating.
         _terminate_and_reap(
             proc, descendants, baseline=baseline, discover=False,
         )
@@ -932,18 +960,15 @@ def run_bounded(
     env: Optional[Dict[str, str]] = None,
     capture_output: bool = False,
     timeout_seconds: Optional[float] = None,
+    cancel_check: Optional[Callable[[], Optional[str]]] = None,
 ) -> CommandResult:
-    """Run a phase in its own process group and classify a bounded timeout."""
+    """Run a phase in its own process group with bounded owner cancellation."""
     timeout = PHASE_TIMEOUT_SECONDS[phase] if timeout_seconds is None else timeout_seconds
     isolated_home = tempfile.mkdtemp(prefix="simplicio-check-")
     proc = None
     windows_bootstrap_ready = None
     windows_bootstrap_started = None
     try:
-        # Linux receives the strongest contract: procfs plus a subreaper can
-        # discover escaped double-forks.  Other supported hosts still run in
-        # a fresh process group (Windows uses taskkill /T); their bounded
-        # lifecycle does not pretend to provide Linux-only escape discovery.
         discover = (
             os.name != "nt" and sys.platform.startswith("linux")
             and os.path.isdir("/proc")
@@ -971,11 +996,6 @@ def run_bounded(
         if capture_output:
             kwargs.update({"stdout": subprocess.PIPE, "stderr": subprocess.PIPE})
         else:
-            # Gate phases that do not request evidence capture must not inherit
-            # an embedding process's possibly-invalid Windows console handles
-            # (notably pytest's captured stderr).  The phase is intentionally
-            # silent on this path, and DEVNULL keeps subprocess creation
-            # deterministic without weakening the timeout contract.
             kwargs.update({"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
         kwargs["start_new_session"] = True
         spawn_argv = list(argv)
@@ -993,11 +1013,18 @@ def run_bounded(
         if capture_output:
             try:
                 stdout, stderr, timed_out, leaked_descendant = _bounded_capture(
-                    proc, timeout, baseline, discover=discover,
+                    proc, timeout, baseline, discover=discover, cancel_check=cancel_check,
                 )
+                cancelled_reason = getattr(proc, "_simplicio_cancel_reason", "")
             except _ContainmentUnavailable as exc:
                 return _containment_unavailable_result(
                     proc, exc.descendants, exc.baseline,
+                )
+            if cancelled_reason:
+                return CommandResult(
+                    proc.returncode if proc.returncode is not None else 130,
+                    stdout=stdout, stderr=stderr, reason=CommandReason.CANCELLED,
+                    cancelled=True, cancel_reason=cancelled_reason,
                 )
             if not timed_out:
                 if leaked_descendant:
@@ -1009,10 +1036,36 @@ def run_bounded(
         else:
             descendants = set()
             deadline = time.monotonic() + timeout
+            cancelled_reason = ""
             while proc.poll() is None and time.monotonic() < deadline:
+                cancelled_reason = _cancel_check_reason(cancel_check)
+                if cancelled_reason:
+                    discovered = _terminate_and_reap(
+                        proc, descendants, baseline=baseline, discover=discover,
+                    )
+                    if not discovered:
+                        return _containment_unavailable_result(proc, descendants, baseline)
+                    break
                 if discover and not _observe_descendants(proc.pid, descendants, baseline):
                     return _containment_unavailable_result(proc, descendants, baseline)
                 time.sleep(0.02)
+            if cancelled_reason:
+                if discover:
+                    survivors = _post_exit_survivors(proc.pid, descendants, baseline)
+                    if survivors is None:
+                        return _containment_unavailable_result(proc, descendants, baseline)
+                else:
+                    survivors = set()
+                if survivors:
+                    if not _terminate_and_reap(
+                        proc, survivors, baseline=baseline, discover=discover,
+                    ):
+                        return _containment_unavailable_result(proc, descendants, baseline)
+                return CommandResult(
+                    proc.returncode if proc.returncode is not None else 130,
+                    reason=CommandReason.CANCELLED, cancelled=True,
+                    cancel_reason=cancelled_reason,
+                )
             if proc.poll() is not None:
                 if discover:
                     survivors = _post_exit_survivors(
@@ -1034,9 +1087,6 @@ def run_bounded(
             discovered = _terminate_and_reap(
                 proc, descendants, baseline=baseline, discover=discover,
             )
-            # A double-fork can be adopted only after the process-group kill.
-            # Re-scan after termination and reap those late adoptions before
-            # returning the timeout result from the non-capturing path.
             if discover:
                 survivors = _post_exit_survivors(
                     proc.pid, descendants, baseline,
@@ -1060,9 +1110,7 @@ def run_bounded(
             )
             return CommandResult(
                 proc.returncode if proc.returncode is not None else 124,
-                timed_out=True,
-                stdout=stdout or "",
-                stderr=stderr or "",
+                timed_out=True, stdout=stdout or "", stderr=stderr or "",
                 reason=CommandReason.TIMEOUT,
             )
     finally:

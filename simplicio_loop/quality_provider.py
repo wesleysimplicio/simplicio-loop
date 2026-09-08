@@ -29,6 +29,10 @@ QUALITY_MATRIX_SCHEMA = "simplicio.quality-matrix/v1"
 PROVIDER_MODULE_TEMPLATE = "simplicio_loop.quality_providers.{name}"
 EXTENSION_ENTRY_POINT_GROUP = "simplicio.loop_extension"
 PROVIDER_TIMEOUT_SECONDS = 30.0
+# Only this shipped builtin route may exceed the historical provider default.
+# 930s = the existing 900s core-gate deadline + 30s bounded cleanup grace.
+BUILTIN_QUALITY_PROVIDER_MODULE = "simplicio_loop.quality_providers.simplicio_loop_quality"
+BUILTIN_PROVIDER_TIMEOUT_SECONDS = 930.0
 MIN_PROVIDER_PROTOCOL_VERSION = (1, 0, 0)
 
 
@@ -223,6 +227,14 @@ def _run_provider_sync(
         error_box.append(exc)
 
 
+def _provider_timeout_seconds(spec: QualityProviderSpec) -> float:
+    """Return the finite deadline for an identified builtin route only."""
+    if (spec.name == "simplicio_loop_quality"
+            and spec.module_path == BUILTIN_QUALITY_PROVIDER_MODULE):
+        return BUILTIN_PROVIDER_TIMEOUT_SECONDS
+    return PROVIDER_TIMEOUT_SECONDS
+
+
 def run_quality_gate(
     repo: str,
     run_id: str,
@@ -252,7 +264,7 @@ def run_quality_gate(
         daemon=True,
     )
     worker.start()
-    worker.join(timeout=PROVIDER_TIMEOUT_SECONDS)
+    worker.join(timeout=_provider_timeout_seconds(spec))
     if worker.is_alive():
         cancel_event.set()
         return QualityResult(

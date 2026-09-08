@@ -143,6 +143,48 @@ def test_run_quality_gate_timeout_blocks():
     assert "timed out" in result.detail.lower()
 
 
+def test_run_quality_gate_provider_metadata_cannot_extend_default(monkeypatch):
+    class _SlowButNotAllowed:
+        @staticmethod
+        def run(**kwargs):
+            time.sleep(0.05)
+            return {"status": "PASS"}
+
+    spec = qp.QualityProviderSpec(
+        name="slow-allowed", policy="p", version="1.0.0",
+        capabilities={"provider_timeout_seconds": 0.2},
+        module_path="tests.test_quality_provider._SlowButNotAllowed",
+    )
+    real_import = importlib.import_module
+
+    def fake_import(name, *a, **k):
+        if name == "tests.test_quality_provider._SlowButNotAllowed":
+            return _SlowButNotAllowed
+        return real_import(name, *a, **k)
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(importlib, "import_module", fake_import)
+        mp.setattr(qp, "PROVIDER_TIMEOUT_SECONDS", 0.01)
+        result = run_quality_gate(".", "run-provider-metadata-timeout", spec)
+    assert result.status == "BLOCKED"
+    assert "timed out" in result.detail.lower()
+
+
+def test_builtin_quality_provider_uses_explicit_finite_outer_deadline():
+    builtin = qp.QualityProviderSpec(
+        name="simplicio_loop_quality", policy="p", version="1.0.0",
+        capabilities={"quality_gate_outer_timeout_seconds": 930.0},
+        module_path="simplicio_loop.quality_providers.simplicio_loop_quality",
+    )
+    external = qp.QualityProviderSpec(
+        name="simplicio_loop_quality", policy="p", version="1.0.0",
+        capabilities={"quality_gate_outer_timeout_seconds": 930.0},
+        module_path="external.provider",
+    )
+    assert qp._provider_timeout_seconds(builtin) == 930.0
+    assert qp._provider_timeout_seconds(external) == qp.PROVIDER_TIMEOUT_SECONDS
+
+
 def test_run_quality_gate_crash_blocks():
     class _Boom:
         @staticmethod
