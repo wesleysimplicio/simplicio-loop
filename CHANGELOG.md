@@ -5,6 +5,10 @@ Total output lines: 1972
 
 ## Unreleased
 
+## [3.43.8] - 2026-09-05
+
+- Synchronize every Loop plugin, adapter, package, and stack manifest surface to 3.43.8 after the merged release metadata fixes.
+
 ## [3.43.7] - 2026-09-04
 
 - Fix release-manifest loading for installed Loop stacks.
