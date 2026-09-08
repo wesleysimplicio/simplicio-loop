@@ -75,7 +75,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["simplicio_loop*", "scripts*"]
+include = ["simplicio_loop*"]
 namespaces = true
 
 [tool.setuptools.package-data]
