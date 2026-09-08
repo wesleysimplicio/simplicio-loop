@@ -5,6 +5,9 @@ DEFER_ACTIVE_CLAIM/RECLAIM_STALE/VERIFY_PARTIAL), and the duplicate_risk collisi
 scenario observed live in this repo (two sessions building competing modules for the same issue).
 """
 import importlib.util
+
+import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -55,6 +58,28 @@ def test_has_merged_pr_referencing_respects_after_ts():
     prs = [{"number": 1, "state": "MERGED", "body": "#466", "title": "", "merged_at": NOW - 5 * HOUR}]
     assert coordinator.has_merged_pr_referencing(466, prs, after_ts=NOW - HOUR) is False
     assert coordinator.has_merged_pr_referencing(466, prs, after_ts=NOW - 10 * HOUR) is True
+
+
+def test_issue_reference_does_not_match_larger_issue_number():
+    prs = [{"number": 1, "state": "MERGED", "body": "fixes #1232", "title": "#1232", "merged_at": NOW}]
+    assert coordinator.has_merged_pr_referencing(12, prs) is False
+    assert coordinator.has_active_delivery_pr_referencing(12, [{"state": "OPEN", "body": "fixes #1232", "title": "#1232"}]) is False
+
+
+def test_historical_merged_pr_is_not_active_delivery_ownership():
+    prs = [{"number": 1, "state": "MERGED", "body": "fixes #1232", "title": "x",
+            "merged_at": NOW - HOUR}]
+    decision = coordinator.decide_for_issue(1232, [], prs, "follow-up")
+    assert decision["action"] == "VERIFY_PARTIAL"
+    assert decision["historical_merged_pr"] is True
+    assert decision["active_delivery_pr"] is False
+
+
+def test_open_delivery_pr_is_reported_as_active():
+    prs = [{"number": 2, "state": "OPEN", "body": "fixes #1232", "title": "x"}]
+    decision = coordinator.decide_for_issue(1232, [], prs, "follow-up")
+    assert decision["historical_merged_pr"] is False
+    assert decision["active_delivery_pr"] is True
 
 
 def test_decide_own_when_untouched():
@@ -155,3 +180,111 @@ def test_cmd_decide_rejects_invalid_json(tmp_path, capsys):
     assert exc_info.value.code == 2
     out = capsys.readouterr().out
     assert "UNVERIFIED|" in out
+
+
+@pytest.mark.parametrize("value, expected", [
+    (12, 12), ("12", 12), (" 12 ", 12),
+    (0, None), (-1, None), (12.5, None), (True, None), (None, None), ("12.5", None),
+])
+def test_canonical_issue_number_rejects_non_integer_or_non_positive(value, expected):
+    assert coordinator._canonical_issue_number(value) == expected
+
+
+@pytest.mark.parametrize("invalid", [None, 12.5, "12.5", True, 0])
+def test_decide_invalid_issue_number_fails_closed(invalid):
+    decision = coordinator.decide_for_issue(
+        invalid, [], [{"state": "MERGED", "body": "#12", "merged_at": NOW}], "self"
+    )
+    assert decision["action"] == "INVALID_INPUT"
+    assert decision["issue"] == invalid
+    assert decision["has_merged_pr"] is False
+
+
+def _invoke_cli(monkeypatch, capsys, *args):
+    import sys
+    monkeypatch.setattr(sys, "argv", ["coordinator.py", *args])
+    with pytest.raises(SystemExit) as exc_info:
+        coordinator.main()
+    return exc_info.value.code, capsys.readouterr()
+
+
+def test_cli_decide_snapshot_invalid_numbers_are_unverified(tmp_path, monkeypatch, capsys):
+    import json
+    snapshot = {"issues": [{}, {"number": 12.5}], "prs": [{"state": "MERGED", "body": "#12", "merged_at": NOW}]}
+    path = tmp_path / "invalid-numbers.json"
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    code, output = _invoke_cli(monkeypatch, capsys, "decide", "--snapshot-file", str(path))
+    rows = [json.loads(line[len("UNVERIFIED|"):]) for line in output.out.splitlines()]
+    assert code == 0
+    assert len(rows) == 2
+    assert all(row["action"] == "INVALID_INPUT" for row in rows)
+    assert output.err == ""
+
+
+def test_cli_snapshot_decide_entrypoint(tmp_path, monkeypatch, capsys):
+    import json
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps({"issues": [{"number": 7}], "prs": []}), encoding="utf-8")
+    code, output = _invoke_cli(monkeypatch, capsys, "decide", "--snapshot-file", str(path))
+    assert code == 0
+    assert output.out.startswith("UNVERIFIED|")
+    assert json.loads(output.out[len("UNVERIFIED|"):])["action"] == "OWN"
+
+
+def test_cli_describe_and_parser_errors(monkeypatch, capsys):
+    code, output = _invoke_cli(monkeypatch, capsys, "--describe-cli")
+    assert code == 0
+    assert "decide" in json.loads(output.out)["verbs"]
+    code, output = _invoke_cli(monkeypatch, capsys)
+    assert code == 2 and "coordinator decision core" in output.out
+    code, output = _invoke_cli(monkeypatch, capsys, "unknown")
+    assert code == 2 and "unknown command" in output.out
+
+
+def test_cli_survey_missing_and_invalid_args(monkeypatch, capsys):
+    code, output = _invoke_cli(monkeypatch, capsys, "survey")
+    assert code == 2 and "--repo and --issues are required" in output.out
+    code, output = _invoke_cli(monkeypatch, capsys, "survey", "--repo", "acme/repo", "--issues", "12.5")
+    assert code == 2 and "comma-separated list of integers" in output.out
+
+
+def test_cli_survey_fail_open_when_gh_unavailable(monkeypatch, capsys):
+    def unavailable(*args, **kwargs):
+        raise FileNotFoundError("gh")
+    monkeypatch.setattr(coordinator.subprocess, "run", unavailable)
+    code, output = _invoke_cli(monkeypatch, capsys, "survey", "--repo", "acme/repo", "--issues", "1")
+    payload = json.loads(output.out)
+    assert code == 0
+    assert payload["status"] == "UNVERIFIED"
+    assert payload["reason_code"] == "gh_unavailable"
+
+
+def test_cli_survey_measured_snapshot(monkeypatch, capsys):
+    import json
+    from types import SimpleNamespace
+    def fake_run(argv, **kwargs):
+        if argv[1:3] == ["pr", "list"]:
+            stdout = json.dumps([{"number": 9, "state": "OPEN", "body": "#7", "title": "x"}])
+        else:
+            stdout = json.dumps({"number": 7, "title": "item", "state": "open", "comments": []})
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+    monkeypatch.setattr(coordinator.subprocess, "run", fake_run)
+    code, output = _invoke_cli(monkeypatch, capsys, "survey", "--repo", "acme/repo", "--issues", "7")
+    payload = json.loads(output.out)
+    assert code == 0
+    assert payload["status"] == "MEASURED"
+    assert payload["issues"][0]["number"] == 7
+
+
+def test_selftest_failure_reports_unverified(monkeypatch, capsys):
+    original = coordinator.decide_for_issue
+    calls = {"count": 0}
+    def fail_first(*args, **kwargs):
+        result = dict(original(*args, **kwargs))
+        if calls["count"] == 0:
+            result["action"] = "BROKEN"
+        calls["count"] += 1
+        return result
+    monkeypatch.setattr(coordinator, "decide_for_issue", fail_first)
+    assert coordinator.cmd_selftest({}) == 1
+    assert "UNVERIFIED|coordinator selftest" in capsys.readouterr().out

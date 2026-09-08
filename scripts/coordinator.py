@@ -31,6 +31,11 @@ Verbs:
               Every issue additionally gets a `duplicate_risk` flag: true when 2+ distinct branches
               posted a claim for the SAME issue within --collision-window-hours of each other with
               no merge in between (the exact `finding_collector.py` vs `findings.py` scenario).
+
+              `VERIFY_PARTIAL` is residual verification of an issue with historical merged delivery; it
+              does not claim active delivery ownership. After the remaining ACs are re-queried and a
+              focused continuation is authorized, a new real claim may proceed. The result also exposes
+              `historical_merged_pr` and `active_delivery_pr` so callers do not conflate those states.
     survey    Best-effort, network-touching helper: shells out to `gh issue list`/`gh issue view`/
               `gh pr list` for --repo and writes a snapshot JSON `decide` can consume. Fail-open: if
               `gh` is missing/unauthenticated, prints an UNVERIFIED stub and exits 0 (the decision
@@ -107,19 +112,46 @@ def extract_claims(comments):
     return claims
 
 
+def _canonical_issue_number(value):
+    """Return a positive canonical issue integer, or None for malformed input."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if re.fullmatch(r"[1-9]\d*", text):
+            return int(text)
+    return None
+
+
+def _references_issue(issue_number, text):
+    """Match a GitHub issue reference without treating a larger number as this issue."""
+    canonical = _canonical_issue_number(issue_number)
+    return re.search(rf"(?<!\d)#{canonical}(?!\d)", text or "") is not None if canonical else False
+
+
 def has_merged_pr_referencing(issue_number, prs, after_ts=0.0):
-    """True if any PR in `prs` is MERGED, its body references #issue_number, and (optionally)
-    it merged after `after_ts` — used to tell 'delivered since the claim' from 'delivered before'."""
-    needle = f"#{issue_number}"
+    """True if any PR in `prs` is MERGED, references the issue, and (optionally) merged after `after_ts`."""
     for pr in prs or []:
         if pr.get("state") != "MERGED":
             continue
-        body = pr.get("body") or ""
-        title = pr.get("title") or ""
-        if needle in body or needle in title:
+        if _references_issue(issue_number, pr.get("body") or "") or _references_issue(
+                issue_number, pr.get("title") or ""):
             merged_ts = _parse_ts(_field(pr, "merged_at", "mergedAt"))
             if merged_ts >= after_ts:
                 return True
+    return False
+
+
+def has_active_delivery_pr_referencing(issue_number, prs):
+    """True when an OPEN PR references the issue; merged PRs are historical evidence only."""
+    for pr in prs or []:
+        if str(pr.get("state") or "").upper() != "OPEN":
+            continue
+        if _references_issue(issue_number, pr.get("body") or "") or _references_issue(
+                issue_number, pr.get("title") or ""):
+            return True
     return False
 
 
@@ -128,6 +160,19 @@ def decide_for_issue(issue_number, comments, prs, self_branch,
                       collision_window_hours=DEFAULT_COLLISION_WINDOW_HOURS,
                       now=None):
     now = now if now is not None else time.time()
+    canonical_issue = _canonical_issue_number(issue_number)
+    if canonical_issue is None:
+        return {
+            "issue": issue_number,
+            "action": "INVALID_INPUT",
+            "reason": "issue number must be a positive integer",
+            "duplicate_risk": False,
+            "claims": [],
+            "has_merged_pr": False,
+            "historical_merged_pr": False,
+            "active_delivery_pr": False,
+        }
+    issue_number = canonical_issue
     claims = extract_claims(comments)
     any_merged_pr = has_merged_pr_referencing(issue_number, prs)
 
@@ -180,7 +225,10 @@ def decide_for_issue(issue_number, comments, prs, self_branch,
         "reason": reason,
         "duplicate_risk": duplicate_risk,
         "claims": [{"branch": b, "ts": t} for b, t in claims],
+        # Compatibility field: a merged PR is historical evidence, not active ownership.
         "has_merged_pr": any_merged_pr,
+        "historical_merged_pr": any_merged_pr,
+        "active_delivery_pr": has_active_delivery_pr_referencing(issue_number, prs),
     }
 
 
@@ -220,7 +268,14 @@ def cmd_survey(opts):
         print("UNVERIFIED|coordinator survey: --repo and --issues are required")
         return 2
     try:
-        issue_numbers = [int(x.strip()) for x in issue_numbers_raw.split(",") if x.strip()]
+        issue_numbers = []
+        for raw_number in issue_numbers_raw.split(","):
+            if not raw_number.strip():
+                continue
+            number = _canonical_issue_number(raw_number)
+            if number is None:
+                raise ValueError
+            issue_numbers.append(number)
     except ValueError:
         print("UNVERIFIED|coordinator survey: --issues must be a comma-separated list of integers")
         return 2
