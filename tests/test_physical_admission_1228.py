@@ -148,15 +148,18 @@ def test_pressure_bands_and_monotonic_recovery_window():
     assert monitor.admission_status()["admitted"] is True
 
 
-def test_probe_exception_is_converted_to_fail_closed_sample():
+def test_probe_exception_is_converted_to_fail_closed_sample(monkeypatch):
     def raising_probe(*_args, **_kwargs):
         raise RuntimeError("probe offline")
 
+    monkeypatch.setattr(local_capacity, "probe_local_capacity", raising_probe)
     monitor = local_capacity.PhysicalAdmissionMonitor(
-        ".", 2, probe=raising_probe,
+        ".", 2, clock=lambda: 7, observation_clock=lambda: 99,
         pressure_probe=lambda _root: {"available": True, "pressure_percent": 0.0},
     )
     sample = monitor.refresh(force=True)
+    assert sample.observed_at_ns == 99
+    assert monitor.last_sample_ns == 7
     admission = monitor.admission_status()
     assert sample.safe_workers == 0
     assert set(sample.unavailable) == {"cpu_count", "disk_free_bytes", "memory_available_bytes"}
@@ -304,3 +307,327 @@ def test_pressure_bands_and_disk_suspend_profile():
     disk_admission = disk_monitor.admission_status()
     assert disk_admission["reason_code"] == "PHYSICAL_DISK_SUSPEND"
     assert disk_admission["action"] == "suspend_new"
+
+
+
+def test_zero_safe_workers_requires_monotonic_recovery_window():
+    now = [0]
+    samples = [_sample(safe_workers=0, now_ns=0), _sample(safe_workers=1, now_ns=1),
+               _sample(safe_workers=1, now_ns=60_000_000_001)]
+
+    def probe(_root, *, requested_workers, now_ns, **_kwargs):
+        return samples.pop(0)
+
+    monitor = local_capacity.PhysicalAdmissionMonitor(
+        ".", 1, sample_interval_ns=1, clock=lambda: now[0], probe=probe,
+        pressure_probe=lambda _root: {
+            "available": True, "pressure_percent": 0.0,
+            "disk_used_percent": 0.0, "disk_free_bytes": 30 << 30,
+        }, recovery_window_ns=60_000_000_000,
+    )
+    monitor.refresh(force=True)
+    assert monitor.admission_status()["reason_code"] == "PHYSICAL_CAPACITY_PRESSURE"
+    now[0] = 1
+    monitor.refresh(force=True)
+    assert monitor.admission_status()["reason_code"] == "PHYSICAL_RECOVERY_SUSTAINING"
+    now[0] = 60_000_000_001
+    monitor.refresh(force=True)
+    assert monitor.admission_status()["admitted"] is True
+
+
+def test_worktree_allocation_is_deferred_past_pressure_poll(monkeypatch, tmp_path):
+    allocations = []
+    teardowns = []
+
+    class Queue:
+        def register_tasks(self, _specs):
+            return None
+
+        def allocate(self, spec, **kwargs):
+            allocations.append((spec.task_id, kwargs))
+            return {"task_id": spec.task_id, "mode": "worktree", "path": str(tmp_path / "allocated")}
+
+        def teardown(self, task_id):
+            teardowns.append(task_id)
+
+    class Monitor:
+        def __init__(self, _root, _workers):
+            self.sample_interval_ns = 1
+            self.polls = 0
+
+        def refresh(self, *, force=False):
+            self.polls += 1
+            return _sample(safe_workers=1 if self.polls == 1 else 0, now_ns=self.polls)
+
+        @property
+        def sample(self):
+            return _sample(safe_workers=1 if self.polls == 1 else 0, now_ns=self.polls)
+
+        def due(self):
+            return True
+
+        def admission_status(self):
+            if self.polls > 1:
+                return {"admitted": False, "reason_code": "PHYSICAL_PRESSURE_TERMINATE",
+                        "reason": "pressure_terminate_owned", "action": "terminate_owned", "evidence": {}}
+            return {"admitted": True, "reason_code": "PHYSICAL_CAPACITY_AVAILABLE",
+                    "reason": "", "action": "admit", "evidence": {}}
+
+        def status(self):
+            return {}
+
+    monkeypatch.setattr(local_capacity, "PhysicalAdmissionMonitor", Monitor)
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "thread")
+    result = runner.dispatch_operator_batch(
+        [{"repo": str(tmp_path), "run_id": "r-worktree", "task_index": 1,
+          "task_id": "deferred", "isolation": "worktree"}],
+        max_workers=1, retry_budget=0, worktree_queue=Queue(),
+    )
+    assert allocations == []
+    assert teardowns == []
+    assert result["blocked_task_indices"] == [1]
+
+
+def test_production_owned_child_is_terminated_without_cancel_injection(monkeypatch, tmp_path):
+    import os
+
+    class Monitor:
+        def __init__(self, _root, _workers):
+            self.sample_interval_ns = 1
+            self.refresh_count = 0
+            self.due_checks = 0
+
+        def refresh(self, *, force=False):
+            self.refresh_count += 1
+            return _sample(safe_workers=1, now_ns=self.refresh_count)
+
+        @property
+        def sample(self):
+            return _sample(safe_workers=1, now_ns=self.refresh_count)
+
+        def due(self):
+            self.due_checks += 1
+            return self.due_checks >= 100
+
+        def admission_status(self):
+            if self.refresh_count >= 2:
+                return {"admitted": False, "reason_code": "PHYSICAL_PRESSURE_TERMINATE",
+                        "reason": "pressure_terminate_owned", "action": "terminate_owned", "evidence": {}}
+            return {"admitted": True, "reason_code": "PHYSICAL_CAPACITY_AVAILABLE",
+                    "reason": "", "action": "admit", "evidence": {}}
+
+        def status(self):
+            return {}
+
+    def production_worker(item):
+        outcome = runner._execute_operator_effect_unchecked(
+            profile="standalone", adapter=None, request=None, argv=[
+                sys.executable, "-c", "import time; time.sleep(5)"
+            ], env=dict(os.environ), repo_path=tmp_path, attempt_coordinator=None,
+            guarded_attempt=None, owned_process_registry=item.get("owned_process_registry"),
+            owned_task_id="owned-production",
+        )
+        (tmp_path / "child-returncode").write_text(str(outcome["returncode"]), encoding="utf-8")
+        return [{"repo": str(tmp_path), "run_id": "r-owned", "task_index": 1,
+                 "task_id": "owned-production", "worker_id": "w1", "status": "failed",
+                 "phase": "blocked", "execution_state": "error", "dead_letter": True,
+                 "attempt_count": 1, "dispatch_attempt": 1, "receipt_status": "UNVERIFIED"}]
+
+    monkeypatch.setattr(local_capacity, "PhysicalAdmissionMonitor", Monitor)
+    monkeypatch.setattr(runner, "_operator_dispatch_attempt", production_worker)
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "process")
+    result = runner.dispatch_operator_batch(
+        [{"repo": str(tmp_path), "run_id": "r-owned", "task_index": 1,
+          "task_id": "owned-production"}],
+        max_workers=1, retry_budget=0,
+    )
+    assert result["owned_shutdown"]["status"] == "requested"
+    assert result["owned_shutdown"]["cancelled_task_ids"] == ["owned-production"]
+    assert result["owned_shutdown"]["limitations"] == []
+    assert (tmp_path / "child-returncode").read_text(encoding="utf-8") == "-15"
+
+
+
+def test_default_probe_receipt_uses_wall_clock_observation_separate_from_schedule(monkeypatch):
+    observed = []
+
+    def default_probe(_root, *, requested_workers, now_ns, **_kwargs):
+        observed.append(now_ns)
+        return _sample(safe_workers=1, now_ns=now_ns)
+
+    monkeypatch.setattr(local_capacity, "probe_local_capacity", default_probe)
+    monitor = local_capacity.PhysicalAdmissionMonitor(
+        ".", 1, clock=lambda: 7, observation_clock=lambda: 99,
+        pressure_probe=lambda _root: {"available": True, "pressure_percent": 0.0},
+    )
+    sample = monitor.refresh(force=True)
+    assert observed == [99]
+    assert sample.observed_at_ns == 99
+    assert monitor.last_sample_ns == 7
+
+
+def test_configured_disk_suspend_threshold_controls_recovery_and_admission():
+    pressure = {
+        "available": True, "pressure_percent": 0.0,
+        "disk_used_percent": 86.0, "disk_free_bytes": (10 << 30) - 1,
+    }
+    permissive = local_capacity.PhysicalAdmissionMonitor(
+        ".", 1, disk_suspend_percent=90.0,
+        probe=lambda *_args, **_kwargs: _sample(safe_workers=1),
+        pressure_probe=lambda _root: pressure,
+    )
+    permissive.refresh(force=True)
+    assert permissive.admission_status()["admitted"] is True
+
+    strict = local_capacity.PhysicalAdmissionMonitor(
+        ".", 1, disk_suspend_percent=80.0,
+        probe=lambda *_args, **_kwargs: _sample(safe_workers=1),
+        pressure_probe=lambda _root: pressure,
+    )
+    strict.refresh(force=True)
+    assert strict.admission_status()["reason_code"] == "PHYSICAL_DISK_SUSPEND"
+    assert strict.status()["recovery"]["had_pressure"] is True
+
+
+def test_cancelled_process_future_releases_allocated_isolated_worktree(monkeypatch, tmp_path):
+    from concurrent.futures import Future
+
+    allocations = []
+    teardowns = []
+
+    class Queue:
+        def register_tasks(self, _specs):
+            return None
+
+        def allocate(self, spec, **kwargs):
+            allocations.append(spec.id)
+            return {"task_id": spec.id, "mode": "worktree", "path": str(tmp_path / "allocated")}
+
+        def teardown(self, task_id):
+            teardowns.append(task_id)
+
+    class Monitor:
+        def __init__(self, _root, _workers):
+            self.sample_interval_ns = 1_000_000
+            self.refresh_count = 0
+            self.due_calls = 0
+
+        def refresh(self, *, force=False):
+            self.refresh_count += 1
+            return _sample(safe_workers=1, now_ns=self.refresh_count)
+
+        @property
+        def sample(self):
+            return _sample(safe_workers=1, now_ns=self.refresh_count)
+
+        def due(self):
+            self.due_calls += 1
+            return self.due_calls in (1, 3)
+
+        def admission_status(self):
+            if self.refresh_count >= 3:
+                return {"admitted": False, "reason_code": "PHYSICAL_PRESSURE_TERMINATE",
+                        "reason": "pressure_terminate_owned", "action": "terminate_owned", "evidence": {}}
+            return {"admitted": True, "reason_code": "PHYSICAL_CAPACITY_AVAILABLE",
+                    "reason": "", "action": "admit", "evidence": {}}
+
+        def status(self):
+            return {}
+
+    class PendingPool:
+        def __init__(self, **_kwargs):
+            self.futures = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, *_args):
+            future = Future()
+            self.futures.append(future)
+            return future
+
+    monkeypatch.setattr(local_capacity, "PhysicalAdmissionMonitor", Monitor)
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", PendingPool)
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "process")
+    result = runner.dispatch_operator_batch(
+        [{"repo": str(tmp_path), "run_id": "r-race", "task_index": 1,
+          "task_id": "race", "isolation": "worktree"}],
+        max_workers=1, retry_budget=0, worktree_queue=Queue(),
+    )
+    assert allocations == ["race"]
+    assert teardowns == ["race"]
+    assert result["owned_shutdown"]["status"] == "requested"
+
+
+def test_owned_termination_requires_identity_and_group_proof(monkeypatch):
+    import subprocess
+
+    def child():
+        return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"], start_new_session=True)
+
+    first = child()
+    registry = {"missing": {"pid": first.pid, "pgid": first.pid, "start_time": "", "task_id": "missing"}}
+    monkeypatch.setattr(runner, "_owned_process_start_time", lambda _pid: "")
+    missing = runner._terminate_owned_process(registry, "missing")
+    assert missing["scope"] == "owned_supervisor_request"
+    assert first.poll() is None
+    first.terminate()
+    first.wait(timeout=2)
+
+    second = child()
+    monkeypatch.setattr(runner, "_owned_process_start_time", lambda _pid: "birth-token")
+    registry["wrong-pgid"] = {"pid": second.pid, "pgid": second.pid + 1000,
+                                   "start_time": "birth-token", "task_id": "wrong-pgid"}
+    wrong = runner._terminate_owned_process(registry, "wrong-pgid")
+    assert wrong == {"cancelled": False, "reason": "owned_pgid_mismatch"}
+    assert second.poll() is None
+    second.terminate()
+    second.wait(timeout=2)
+
+
+def test_dispatch_propagates_configured_physical_profile(monkeypatch, tmp_path):
+    captured = []
+
+    class Monitor:
+        def __init__(self, _root, _workers, **kwargs):
+            captured.append(dict(kwargs))
+            self.sample_interval_ns = 1
+            self.sample = _sample(safe_workers=1, now_ns=1)
+
+        def refresh(self, *, force=False):
+            return self.sample
+
+        def due(self):
+            return False
+
+        def admission_status(self):
+            return {"admitted": True, "reason_code": "PHYSICAL_CAPACITY_AVAILABLE",
+                    "reason": "", "action": "admit", "evidence": {"sample": self.sample.to_dict()}}
+
+        def status(self):
+            return {"sample": self.sample.to_dict()}
+
+    def success(item):
+        return {"repo": item["repo"], "run_id": item["run_id"],
+                "task_index": item["task_index"], "task_id": item["task_id"],
+                "worker_id": item["worker_id"], "status": "succeeded",
+                "phase": "completed", "execution_state": "applied",
+                "receipt_status": "VERIFIED"}
+
+    monkeypatch.setattr(local_capacity, "PhysicalAdmissionMonitor", Monitor)
+    monkeypatch.setattr(runner, "_operator_dispatch_attempt", success)
+    monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "thread")
+    profile = {"target_pressure_percent": 70.0, "no_new_pressure_percent": 78.0,
+               "checkpoint_pressure_percent": 84.0, "terminate_pressure_percent": 90.0,
+               "disk_suspend_percent": 87.0, "disk_suspend_floor_bytes": 9,
+               "recovery_window_ns": 123}
+    result = runner.dispatch_operator_batch(
+        [{"repo": str(tmp_path), "run_id": "r-profile", "task_index": 1,
+          "task_id": "profile"}], max_workers=1, retry_budget=0,
+        physical_monitor_kwargs=profile,
+    )
+    assert captured == [profile]
+    assert result["workers"][0]["status"] == "succeeded"

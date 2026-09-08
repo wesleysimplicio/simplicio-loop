@@ -6,11 +6,13 @@ import os
 import random
 import re
 import shutil
+import signal
+import tempfile
 import subprocess
 import time
 import string
 import sys
-from threading import RLock
+from threading import RLock, Thread
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -940,12 +942,144 @@ def _parse_effect_stdout(value: Any) -> Dict[str, Any]:
         return dict(parsed) if isinstance(parsed, dict) else {"raw": redact_sensitive_text(value)}
     return {}
 
+def _owned_registry_path(registry: Any, task_id: str) -> Path | None:
+    if isinstance(registry, (str, Path)) and task_id:
+        digest = hashlib.sha256(str(task_id).encode("utf-8")).hexdigest()[:32]
+        return Path(registry) / f"{digest}.json"
+    return None
+
+
+def _owned_process_start_time(pid: int) -> str:
+    """Return Linux process start time for safe PID-reuse checks when available."""
+    try:
+        fields = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+        return str(fields[19])
+    except (OSError, IndexError, ValueError, TypeError):
+        return ""
+
+
+def _register_owned_process(registry: Any, task_id: str, process: Any) -> None:
+    if registry is None or not task_id or getattr(process, "pid", None) is None:
+        return
+    pid = int(process.pid)
+    entry = {"pid": pid, "pgid": pid if os.name == "posix" else None,
+             "start_time": _owned_process_start_time(pid), "task_id": str(task_id)}
+    path = _owned_registry_path(registry, task_id)
+    try:
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(entry, sort_keys=True), encoding="utf-8")
+            os.replace(temporary, path)
+        else:
+            registry[str(task_id)] = entry
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return
+
+
+def _read_owned_process(registry: Any, task_id: str) -> Mapping[str, Any] | None:
+    path = _owned_registry_path(registry, task_id)
+    try:
+        if path is not None:
+            if not path.is_file():
+                return None
+            value = json.loads(path.read_text(encoding="utf-8"))
+            return value if isinstance(value, Mapping) else None
+        value = registry.get(str(task_id)) if registry is not None else None
+        return value if isinstance(value, Mapping) else None
+    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _remove_owned_process(registry: Any, task_id: str, pid: int) -> None:
+    path = _owned_registry_path(registry, task_id)
+    try:
+        entry = _read_owned_process(registry, task_id)
+        if entry is None or int(entry.get("pid", -1)) != int(pid):
+            return
+        if path is not None:
+            path.unlink(missing_ok=True)
+        elif registry is not None:
+            registry.pop(str(task_id), None)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return
+
+
+def _request_owned_supervisor_cancel(registry: Any, task_id: str, reason: str) -> bool:
+    """Ask the owning worker to cancel without signalling an unverified PID."""
+    path = _owned_registry_path(registry, task_id)
+    try:
+        entry = _read_owned_process(registry, task_id)
+        if entry is None:
+            return False
+        payload = dict(entry)
+        payload["cancel_requested"] = True
+        payload["cancel_reason"] = str(reason)
+        if path is not None:
+            temporary = path.with_suffix(".cancel.tmp")
+            temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            os.replace(temporary, path)
+        elif isinstance(registry, dict):
+            registry[str(task_id)] = payload
+        else:
+            return False
+        return True
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _terminate_owned_process(registry: Any, task_id: str) -> Dict[str, Any] | None:
+    """Terminate only after PID start-time and process-group ownership are proven."""
+    entry = _read_owned_process(registry, task_id)
+    if entry is None:
+        return None
+    pid = -1
+    try:
+        pid = int(entry.get("pid"))
+        expected_start = str(entry.get("start_time") or "")
+        actual_start = _owned_process_start_time(pid)
+        if not expected_start or not actual_start:
+            if _request_owned_supervisor_cancel(registry, task_id, "owned_identity_unavailable"):
+                return {"cancelled": True, "pid": pid, "scope": "owned_supervisor_request"}
+            return {"cancelled": False, "reason": "owned_identity_unavailable"}
+        if expected_start != actual_start:
+            _remove_owned_process(registry, task_id, pid)
+            return {"cancelled": False, "reason": "owned_pid_reused"}
+        if os.name != "posix":
+            if _request_owned_supervisor_cancel(registry, task_id, "owned_pgid_unavailable"):
+                return {"cancelled": True, "pid": pid, "scope": "owned_supervisor_request"}
+            return {"cancelled": False, "reason": "owned_pgid_unavailable"}
+        recorded_pgid = int(entry.get("pgid") or -1)
+        if recorded_pgid != pid:
+            return {"cancelled": False, "reason": "owned_pgid_mismatch"}
+        try:
+            actual_pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            _remove_owned_process(registry, task_id, pid)
+            return {"cancelled": False, "reason": "owned_process_already_exited"}
+        except OSError:
+            if _request_owned_supervisor_cancel(registry, task_id, "owned_pgid_unavailable"):
+                return {"cancelled": True, "pid": pid, "scope": "owned_supervisor_request"}
+            return {"cancelled": False, "reason": "owned_pgid_unavailable"}
+        if actual_pgid != recorded_pgid:
+            return {"cancelled": False, "reason": "owned_pgid_mismatch"}
+        os.killpg(recorded_pgid, signal.SIGTERM)
+        return {"cancelled": True, "pid": pid, "scope": "owned_process_group"}
+    except ProcessLookupError:
+        if pid > 0:
+            _remove_owned_process(registry, task_id, pid)
+        return {"cancelled": False, "reason": "owned_process_already_exited"}
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return {"cancelled": False, "reason": f"owned_process_termination_failed:{type(exc).__name__}"}
+
 
 def _execute_operator_effect_unchecked(*, profile: str, adapter: RuntimeEffectAdapter,
                              request: EffectRequest, argv: List[str],
                              env: Mapping[str, str], repo_path: Path,
                              attempt_coordinator: Optional[AttemptCoordinator],
-                             guarded_attempt: Any) -> Dict[str, Any]:
+                             guarded_attempt: Any,
+                             owned_process_registry: Any = None,
+                             owned_task_id: str = "") -> Dict[str, Any]:
     if profile == "runtime-backed":
         effect_receipt = adapter.execute(request, argv, env=env)
         result = dict(effect_receipt.get("result") or {})
@@ -986,11 +1120,55 @@ def _execute_operator_effect_unchecked(*, profile: str, adapter: RuntimeEffectAd
                 guarded_attempt, argv, cwd=repo_path,
                 timeout=_operator_timeout("execute"), env=env,
             )
-        else:
+        elif owned_process_registry is None:
             result = subprocess.run(
                 argv, cwd=str(repo_path), capture_output=True, text=True,
                 timeout=_operator_timeout("execute"), env=env,
             )
+        else:
+            process = subprocess.Popen(
+                argv, cwd=str(repo_path), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, stdin=subprocess.DEVNULL, env=env,
+                start_new_session=(os.name == "posix"),
+            )
+            _register_owned_process(owned_process_registry, owned_task_id, process)
+            try:
+                communication: Dict[str, Any] = {}
+
+                def _communicate() -> None:
+                    try:
+                        communication["result"] = process.communicate(timeout=_operator_timeout("execute"))
+                    except BaseException as exc:
+                        communication["error"] = exc
+
+                communication_thread = Thread(target=_communicate, name=f"simplicio-owned-{owned_task_id}", daemon=True)
+                communication_thread.start()
+                cancel_sent = False
+                while communication_thread.is_alive():
+                    owned_entry = _read_owned_process(owned_process_registry, owned_task_id)
+                    if owned_entry and owned_entry.get("cancel_requested") and not cancel_sent:
+                        try:
+                            if os.name == "posix":
+                                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                            else:
+                                process.terminate()
+                        except ProcessLookupError:
+                            pass
+                        cancel_sent = True
+                    communication_thread.join(0.05)
+                if "error" in communication:
+                    error = communication["error"]
+                    if isinstance(error, subprocess.TimeoutExpired):
+                        process.kill()
+                        stdout, stderr = process.communicate()
+                        raise subprocess.TimeoutExpired(
+                            argv, error.timeout, output=stdout, stderr=stderr,
+                        ) from error
+                    raise error
+                stdout, stderr = communication["result"]
+            finally:
+                _remove_owned_process(owned_process_registry, owned_task_id, process.pid)
+            result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
         return {
             "returncode": result.returncode,
             "stdout": _parse_effect_stdout((result.stdout or "").strip()),
@@ -1008,7 +1186,6 @@ def _execute_operator_effect_unchecked(*, profile: str, adapter: RuntimeEffectAd
             "effect_receipt": None,
             "uncertain": False,
         }
-
 
 
 def _hookwall_digest(payload: Mapping[str, Any]) -> str:
@@ -1062,7 +1239,9 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
                              attempt_coordinator: Optional[AttemptCoordinator],
                              guarded_attempt: Any,
                              source_hash: Optional[str] = None,
-                             storage_route: StorageRoute | str | None = None) -> Dict[str, Any]:
+                             storage_route: StorageRoute | str | None = None,
+                             owned_process_registry: Any = None,
+                             owned_task_id: str = "") -> Dict[str, Any]:
     """Run one mutable operator only inside a lineage-bound Hookwall chain."""
     source_hash = source_hash or str(_repo_fingerprint(repo_path).get("tree_hash") or "")
     plan_id = request.gate_id or request.transaction_id or request.idempotency_key
@@ -1120,6 +1299,8 @@ def _execute_operator_effect(*, profile: str, adapter: RuntimeEffectAdapter,
         repo_path=repo_path,
         attempt_coordinator=attempt_coordinator,
         guarded_attempt=guarded_attempt,
+        owned_process_registry=owned_process_registry,
+        owned_task_id=owned_task_id,
     )
     outcome["hookwall_envelope"] = envelope
     outcome["hookwall_pre_decision"] = pre_decision
@@ -4061,7 +4242,9 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
                       attempt_coordinator: Optional[AttemptCoordinator] = None,
                       guarded_attempt: Any = None,
                       authority_receipt: Optional[Mapping[str, Any]] = None,
-                      admission_fence: int = 1) -> Dict[str, Any]:
+                      admission_fence: int = 1,
+                      owned_process_registry: Any = None,
+                      owned_task_id: str = "") -> Dict[str, Any]:
     """Execute one planned task through the real dev-cli and persist an immutable receipt.
 
     `run` intentionally arms and dry-runs only.  This explicit tick is the mutation boundary;
@@ -4338,6 +4521,8 @@ def execute_operator(repo: str, run_id: str, task_index: int = 1, *,
         guarded_attempt=guarded_attempt,
         source_hash=str(before.get("tree_hash") or ""),
         storage_route=storage_route.get("selected"),
+        owned_process_registry=owned_process_registry,
+        owned_task_id=owned_task_id,
     )
     returncode = effect_outcome["returncode"]
     stdout = effect_outcome["stdout"]
@@ -4660,9 +4845,41 @@ def _operator_worker_limit(requested: Optional[int], item_count: int) -> int:
     return max(1, min(int(requested), item_count))
 
 
+_PHYSICAL_MONITOR_ENV = (
+    ("SIMPLICIO_LOOP_TARGET_PRESSURE_PERCENT", "target_pressure_percent", float),
+    ("SIMPLICIO_LOOP_NO_NEW_PRESSURE_PERCENT", "no_new_pressure_percent", float),
+    ("SIMPLICIO_LOOP_CHECKPOINT_PRESSURE_PERCENT", "checkpoint_pressure_percent", float),
+    ("SIMPLICIO_LOOP_TERMINATE_PRESSURE_PERCENT", "terminate_pressure_percent", float),
+    ("SIMPLICIO_LOOP_DISK_SUSPEND_PERCENT", "disk_suspend_percent", float),
+    ("SIMPLICIO_LOOP_DISK_SUSPEND_FLOOR_BYTES", "disk_suspend_floor_bytes", int),
+    ("SIMPLICIO_LOOP_RECOVERY_WINDOW_NS", "recovery_window_ns", int),
+)
+_PHYSICAL_MONITOR_KEYS = frozenset(key for _env, key, _converter in _PHYSICAL_MONITOR_ENV)
+
+
+def _physical_monitor_kwargs(overrides: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    """Resolve safe monitor profile values at the production dispatch boundary."""
+    values: Dict[str, Any] = {}
+    for env_name, key, converter in _PHYSICAL_MONITOR_ENV:
+        raw = os.environ.get(env_name, "").strip()
+        if not raw:
+            continue
+        try:
+            values[key] = converter(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid {env_name} physical admission setting") from exc
+    if overrides is not None:
+        unknown = set(overrides).difference(_PHYSICAL_MONITOR_KEYS)
+        if unknown:
+            raise ValueError("unsupported physical admission setting: " + ", ".join(sorted(unknown)))
+        values.update(dict(overrides))
+    return values
+
 def _build_native_prism_scheduler(
     items: Sequence[Mapping[str, Any]],
     worker_limit: int,
+    *,
+    physical_monitor_kwargs: Optional[Mapping[str, Any]] = None,
 ) -> tuple[Any, str, dict[str, Any]]:
     """Build the native Prism admission authority for a local operator batch.
 
@@ -4691,9 +4908,15 @@ def _build_native_prism_scheduler(
     # that normal pre-launch state as an unavailable disk signal.
     while not capacity_root.exists() and capacity_root != capacity_root.parent:
         capacity_root = capacity_root.parent
-    capacity_monitor = PhysicalAdmissionMonitor(
-        str(capacity_root), worker_limit,
-    )
+    monitor_kwargs = _physical_monitor_kwargs(physical_monitor_kwargs)
+    if monitor_kwargs:
+        capacity_monitor = PhysicalAdmissionMonitor(
+            str(capacity_root), worker_limit, **monitor_kwargs,
+        )
+    else:
+        capacity_monitor = PhysicalAdmissionMonitor(
+            str(capacity_root), worker_limit,
+        )
     capacity_sample = capacity_monitor.refresh(force=True)
     # Keep one logical scheduler worker alive so its explicit unavailable sample
     # can produce a blocked admission decision instead of bypassing the receipt.
@@ -4949,8 +5172,8 @@ def _persist_isolated_run_context(item: Dict[str, Any], context: Dict[str, Any])
             pass
 
 
-def _prepare_worktree_contexts(normalized: List[Dict[str, Any]], worktree_queue: Any) -> None:
-    """Allocate/persist optional worktree contexts before any worker starts."""
+def _prepare_worktree_contexts(normalized: List[Dict[str, Any]], worktree_queue: Any, *, defer_worktrees: bool = False) -> None:
+    """Register optional worktrees and defer allocation until an admitted spawn."""
     if worktree_queue is None or not normalized:
         return
     specs = [_worktree_task_spec(item) for item in normalized]
@@ -4967,12 +5190,15 @@ def _prepare_worktree_contexts(normalized: List[Dict[str, Any]], worktree_queue:
         if isolation not in {"worktree", "shared"}:
             item["worktree_error"] = "ValueError: unsupported worktree isolation mode"
             continue
-        if isolation == "shared":
-            # WorktreeQueue intentionally holds one shared-checkout lock.  Defer allocation
-            # until this item reaches the serial worker lane so the next item can acquire it
-            # only after ``_release_shared_context`` runs.
+        if isolation == "shared" or defer_worktrees:
+            # Both shared checkouts and isolated worktrees are allocated only after the
+            # immediately preceding admission poll.  This prevents a later pressure sample
+            # from leaving an unsent queue lease behind.
             item["worktree_deferred"] = True
-            item["isolation_key"] = "%s:%s" % (item.get("repo"), item.get("run_id"))
+            item["isolation_key"] = (
+                "worktree:%s" % item.get("task_id")
+                if isolation == "worktree" else "%s:%s" % (item.get("repo"), item.get("run_id"))
+            )
             continue
         try:
             allocation = worktree_queue.allocate(spec)
@@ -5005,17 +5231,27 @@ def _prepare_worktree_contexts(normalized: List[Dict[str, Any]], worktree_queue:
 
 
 def _ensure_deferred_worktree_context(item: Dict[str, Any], worktree_queue: Any) -> None:
-    """Acquire one deferred shared-checkout lease immediately before execution."""
+    """Acquire one deferred queue context immediately before its admitted spawn."""
     if not item.get("worktree_deferred") or item.get("worktree_context") or item.get("worktree_error"):
         return
     try:
         spec = _worktree_task_spec(item)
-        allocation = worktree_queue.allocate(spec, isolation="shared", shared_policy=True)
+        isolation = str(item.get("isolation") or "worktree").strip().lower()
+        if isolation == "shared":
+            allocation = worktree_queue.allocate(spec, isolation="shared", shared_policy=True)
+        else:
+            allocation = worktree_queue.allocate(spec, isolation="worktree")
         context = _allocation_context(allocation, item)
         item["worktree_context"] = context
         item["source_repo"] = str(item.get("repo") or "")
         item["source_run_id"] = str(item.get("run_id") or "")
-        _persist_isolated_run_context(item, context)
+        if context["mode"] == "worktree" and context["path"]:
+            _persist_isolated_run_context(item, context)
+            item["repo"] = context["path"]
+            item["isolation_key"] = context["path"]
+        else:
+            _persist_isolated_run_context(item, context)
+            item["isolation_key"] = "%s:%s" % (item.get("repo"), item.get("run_id"))
         recorder = getattr(worktree_queue, "record_context", None)
         if callable(recorder):
             recorder(context["task_id"], context)
@@ -5023,12 +5259,35 @@ def _ensure_deferred_worktree_context(item: Dict[str, Any], worktree_queue: Any)
         item["worktree_error"] = f"{type(exc).__name__}: {exc}"
 
 
-def _release_shared_context(item: Mapping[str, Any], worktree_queue: Any) -> None:
+def _release_shared_context(item: Mapping[str, Any], worktree_queue: Any, *, force: bool = False) -> None:
     context = item.get("worktree_context") or {}
-    if str(context.get("mode") or "") != "shared":
+    if not force and str(context.get("mode") or "") != "shared":
         return
-    teardown = getattr(worktree_queue, "teardown", None)
     task_id = str(context.get("task_id") or item.get("task_id") or "")
+    if force and task_id:
+        recorder = getattr(worktree_queue, "record_context", None)
+        if callable(recorder):
+            released = dict(context)
+            released["active"] = False
+            try:
+                recorder(task_id, released)
+            except Exception:
+                pass
+        cleanup = getattr(worktree_queue, "record_cleanup_receipt", None)
+        worktree_id = str(context.get("worktree_id") or "")
+        lease_owner = str(context.get("lease_owner") or "")
+        if callable(cleanup) and worktree_id and lease_owner:
+            try:
+                cleanup(task_id, {
+                    "worktree_id": worktree_id,
+                    "terminal_handle": str(context.get("terminal_handle") or ""),
+                    "lease_owner": lease_owner,
+                    "cleanup_decision": "cleanup",
+                    "reason": "cancelled_before_spawn",
+                })
+            except Exception:
+                pass
+    teardown = getattr(worktree_queue, "teardown", None)
     if callable(teardown) and task_id:
         try:
             teardown(task_id)
@@ -5526,6 +5785,8 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
             attempt_coordinator=attempt_coordinator, guarded_attempt=attempt_obj,
             authority_receipt=item.get("authority_receipt"),
             admission_fence=int(item.get("admission_fence") or 1),
+            owned_process_registry=item.get("owned_process_registry"),
+            owned_task_id=str(common.get("task_id") or ""),
         )
         state = payload.get("state") or {}
         operator = state.get("operator") or {}
@@ -5645,7 +5906,7 @@ def _operator_dispatch_attempt(item: Mapping[str, Any]) -> Dict[str, Any]:
         }
 
 
-def _run_operator_item_process(item: Mapping[str, Any], retry_budget: int) -> List[Dict[str, Any]]:
+def _run_operator_item_process(item: Mapping[str, Any], retry_budget: int, owned_process_registry: Any = None) -> List[Dict[str, Any]]:
     """Run one complete operator lane in a supervised child process.
 
     The input is a plain dispatch item and the returned records are compact JSON-like
@@ -5655,7 +5916,9 @@ def _run_operator_item_process(item: Mapping[str, Any], retry_budget: int) -> Li
     attempts: List[Dict[str, Any]] = []
     previous_fingerprint = ""
     for attempt_no in range(1, max(0, int(retry_budget)) + 2):
-        record = _operator_dispatch_attempt(item)
+        dispatch_item = dict(item)
+        dispatch_item["owned_process_registry"] = owned_process_registry
+        record = _operator_dispatch_attempt(dispatch_item)
         record["dispatch_attempt"] = attempt_no
         if previous_fingerprint and record.get("failure_fingerprint") == previous_fingerprint:
             record["retry_strategy"] = "same_fingerprint_bounded"
@@ -5746,6 +6009,7 @@ def dispatch_operator_batch(
     worktree_queue: Any = None,
     stop_requested: Optional[Callable[[], bool]] = None,
     owned_cancel: Optional[Callable[[str], Any]] = None,
+    physical_monitor_kwargs: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Continuously dispatch real operator workers and refill freed slots.
 
@@ -5851,9 +6115,10 @@ def dispatch_operator_batch(
         serial_fallback_reason = "shared_run_state"
     retry_budget = max(0, int(retry_budget))
     from .local_capacity import PhysicalAdmissionMonitor
+    monitor_kwargs = _physical_monitor_kwargs(physical_monitor_kwargs)
     if prism_enabled:
         prism_scheduler, prism_id, capacity_sample = _build_native_prism_scheduler(
-            normalized, effective_workers,
+            normalized, effective_workers, physical_monitor_kwargs=monitor_kwargs,
         )
         physical_monitor = getattr(prism_scheduler, "native_capacity_monitor", None)
         direct_governor = None
@@ -5867,9 +6132,14 @@ def dispatch_operator_batch(
         capacity_root = Path(str((normalized[0].get("repo") if normalized else None) or ".")).resolve()
         while not capacity_root.exists() and capacity_root != capacity_root.parent:
             capacity_root = capacity_root.parent
-        physical_monitor = PhysicalAdmissionMonitor(
-            str(capacity_root), effective_workers,
-        )
+        if monitor_kwargs:
+            physical_monitor = PhysicalAdmissionMonitor(
+                str(capacity_root), effective_workers, **monitor_kwargs,
+            )
+        else:
+            physical_monitor = PhysicalAdmissionMonitor(
+                str(capacity_root), effective_workers,
+            )
         direct_policy = PrismPolicy(
             global_worker_limit=max(1, effective_workers),
             recovery_reserve=0,
@@ -5924,7 +6194,7 @@ def dispatch_operator_batch(
     # Admission precedes all queue allocation.  A blocked batch therefore leaves no
     # worktree or shared-checkout lease behind for a later retry to mistake as owned.
     if capacity_admission.get("admitted"):
-        _prepare_worktree_contexts(normalized, worktree_queue)
+        _prepare_worktree_contexts(normalized, worktree_queue, defer_worktrees=True)
         actual_isolation_keys = {item["isolation_key"] for item in normalized}
         if effective_workers > 1 and len(actual_isolation_keys) < len(normalized):
             effective_workers = 1
@@ -6030,13 +6300,15 @@ def dispatch_operator_batch(
             _append_jsonl(journal_path, record)
         records[(record["repo"], record["run_id"], record["task_index"])] = record
 
-    def _run_item(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _run_item(item: Dict[str, Any], owned_process_registry: Any = None) -> List[Dict[str, Any]]:
         attempts: List[Dict[str, Any]] = []
         previous_fingerprint = ""
         _ensure_deferred_worktree_context(item, worktree_queue)
         try:
             for attempt_no in range(1, retry_budget + 2):
-                record = _operator_dispatch_attempt(item)
+                dispatch_item = dict(item)
+                dispatch_item["owned_process_registry"] = owned_process_registry
+                record = _operator_dispatch_attempt(dispatch_item)
                 record["dispatch_attempt"] = attempt_no
                 if previous_fingerprint and record.get("failure_fingerprint") == previous_fingerprint:
                     record["retry_strategy"] = "same_fingerprint_bounded"
@@ -6145,13 +6417,25 @@ def dispatch_operator_batch(
         reason = str(admission.get("reason") or "capacity_not_admitted")
         capacity_stop_reason = f"{code}:{reason}"
 
+    dispatch_mode = os.environ.get("SIMPLICIO_LOOP_DISPATCH_MODE", "process").strip().lower()
+    if dispatch_mode not in {"process", "thread"}:
+        raise ValueError("SIMPLICIO_LOOP_DISPATCH_MODE must be process or thread")
+    registry_manager = None
+    owned_process_registry: Any = {}
+    if dispatch_mode == "process":
+        registry_manager = Path(tempfile.mkdtemp(prefix="simplicio-owned-processes-"))
+        owned_process_registry = str(registry_manager)
+
     owned_shutdown: dict[str, Any] = {
         "status": "not_requested", "action": "", "cancelled_task_ids": [],
         "limitations": [], "errors": [],
     }
 
     def _request_owned_cancel(task_id: str) -> Any:
-        """Use an injected/queue cancellation hook for this coordinator-owned task only."""
+        """Terminate the registered child, then fall back to a queue cancellation hook."""
+        outcome = _terminate_owned_process(owned_process_registry, task_id)
+        if outcome is not None:
+            return outcome
         if owned_cancel is not None:
             return owned_cancel(task_id)
         if worktree_queue is not None:
@@ -6179,9 +6463,11 @@ def dispatch_operator_batch(
             # is cancellable only through the existing owned queue/registry hook.
             if future.cancel():
                 owned_shutdown["cancelled_task_ids"].append(task_id)
+                continue
             try:
                 outcome = _request_owned_cancel(task_id)
-                if outcome is None:
+                cancelled = not isinstance(outcome, Mapping) or outcome.get("cancelled", True) is not False
+                if outcome is None or not cancelled:
                     owned_shutdown["limitations"].append(
                         f"{task_id}:running_subprocess_requires_owned_supervisor_hook"
                     )
@@ -6194,9 +6480,17 @@ def dispatch_operator_batch(
         if not owned_shutdown["cancelled_task_ids"] and not owned_shutdown["errors"]:
             owned_shutdown["status"] = "limited"
 
-    dispatch_mode = os.environ.get("SIMPLICIO_LOOP_DISPATCH_MODE", "process").strip().lower()
-    if dispatch_mode not in {"process", "thread"}:
-        raise ValueError("SIMPLICIO_LOOP_DISPATCH_MODE must be process or thread")
+
+    def _submit_process_item(pool: Any, item: Dict[str, Any]) -> Any:
+        _ensure_deferred_worktree_context(item, worktree_queue)
+        try:
+            return pool.submit(_run_operator_item_process, item, retry_budget, owned_process_registry)
+        except Exception:
+            # Allocation happened before submission; a failed submission must release
+            # the owned lease even when no worker ever receives the item.
+            _release_shared_context(item, worktree_queue, force=True)
+            raise
+
     # Queue clients remain coordinator-owned and are never sent to children.  The
     # child receives only the already-persisted, JSON-safe worktree context; the
     # coordinator releases the queue lease after the child returns.  This keeps
@@ -6218,14 +6512,13 @@ def dispatch_operator_batch(
                 if item is None:
                     break
                 if dispatch_mode == "process":
-                    _ensure_deferred_worktree_context(item, worktree_queue)
                     _append_dispatch_journal(
                         durable_journal_path, item["run_id"], "dispatch_started",
                         {"task_id": item["task_id"], "task_index": item["task_index"],
                          "worker_id": item["worker_id"], "mode": dispatch_mode},
                         f"dispatch:{item['task_id']}:started",
                     )
-                    active[pool.submit(_run_operator_item_process, item, retry_budget)] = item
+                    active[_submit_process_item(pool, item)] = item
                     initial_admissions += 1
                 else:
                     _append_dispatch_journal(
@@ -6234,16 +6527,20 @@ def dispatch_operator_batch(
                          "worker_id": item["worker_id"], "mode": dispatch_mode},
                         f"dispatch:{item['task_id']}:started",
                     )
-                    active[pool.submit(_run_item, item)] = item
+                    active[pool.submit(_run_item, item, owned_process_registry)] = item
                     initial_admissions += 1
             while active:
                 timeout = (
                     max(0.001, physical_monitor.sample_interval_ns / 1_000_000_000)
                     if physical_monitor is not None else 5.0
                 )
-                done, _ = wait(
+                done, not_done = wait(
                     tuple(active), timeout=timeout, return_when=FIRST_COMPLETED,
                 )
+                # A coordinator cancellation can leave a Future in CANCELLED until the
+                # executor notifies its waiter; process it immediately so owned context
+                # cleanup does not wait for a cancelled task forever.
+                done.update(future for future in not_done if future.cancelled())
                 if not done:
                     admission = _refresh_physical_admission()
                     if not admission.get("admitted"):
@@ -6269,7 +6566,7 @@ def dispatch_operator_batch(
                             "started_at": _now(), "finished_at": _now(),
                         }]
                     if dispatch_mode == "process":
-                        _release_shared_context(item, worktree_queue)
+                        _release_shared_context(item, worktree_queue, force=future.cancelled())
                     for record in attempts:
                         _persist_attempt(record)
                     final = attempts[-1]
@@ -6301,14 +6598,13 @@ def dispatch_operator_batch(
                         if next_item is None:
                             continue
                         if dispatch_mode == "process":
-                            _ensure_deferred_worktree_context(next_item, worktree_queue)
                             _append_dispatch_journal(
                                 durable_journal_path, next_item["run_id"], "dispatch_started",
                                 {"task_id": next_item["task_id"], "task_index": next_item["task_index"],
                                  "worker_id": next_item["worker_id"], "mode": dispatch_mode},
                                 f"dispatch:{next_item['task_id']}:started",
                             )
-                            active[pool.submit(_run_operator_item_process, next_item, retry_budget)] = next_item
+                            active[_submit_process_item(pool, next_item)] = next_item
                         else:
                             _append_dispatch_journal(
                                 durable_journal_path, next_item["run_id"], "dispatch_started",
@@ -6316,8 +6612,11 @@ def dispatch_operator_batch(
                                  "worker_id": next_item["worker_id"], "mode": dispatch_mode},
                                 f"dispatch:{next_item['task_id']}:started",
                             )
-                            active[pool.submit(_run_item, next_item)] = next_item
+                            active[pool.submit(_run_item, next_item, owned_process_registry)] = next_item
                         refill_count += 1
+
+    if registry_manager is not None:
+        shutil.rmtree(registry_manager, ignore_errors=True)
 
     final_records = []
     capacity_blocked = not bool(capacity_admission.get("admitted"))
@@ -6459,6 +6758,7 @@ def execute_operator_batch(
     isolated_contexts: Optional[Mapping[int, Mapping[str, Any]]] = None,
     worktree_queue: Any = None,
     auto_fan_out: Optional[bool] = None,
+    physical_monitor_kwargs: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Dispatch all (or selected) tasks from one run through the real operator bridge.
 
@@ -6596,6 +6896,7 @@ def execute_operator_batch(
         journal_dir=str(Path(status["run_dir"])),
         worktree_queue=worktree_queue,
         stop_requested=_batch_stop_requested,
+        physical_monitor_kwargs=physical_monitor_kwargs,
     )
     lifecycle_result: Dict[str, Any]
     try:
