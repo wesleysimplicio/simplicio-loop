@@ -5,8 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from scripts.check import CORE_GATE_TIMEOUT_SECONDS
-from scripts.check_runtime import CommandReason, run_bounded
+from simplicio_loop.quality_process import CORE_GATE_TIMEOUT_SECONDS, CommandReason, run_bounded
 
 PROVIDER_VERSION = "1.2.0"
 QUALITY_TIMEOUT_SECONDS = CORE_GATE_TIMEOUT_SECONDS
