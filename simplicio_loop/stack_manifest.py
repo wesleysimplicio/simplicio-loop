@@ -29,10 +29,10 @@ _COMPONENT_ROLES = (
 
 # Fallback floors when pyproject cannot be read (offline wheel / missing checkout).
 _FALLBACK_FLOORS = {
-    "simplicio-mapper": "0.26.26",
-    "simplicio-fast": "2.0.28",
-    "simplicio-cli": "0.18.10",
-    "simplicio-loop": "3.43.8",
+    "simplicio-mapper": "0.26.29",
+    "simplicio-fast": "2.0.31",
+    "simplicio-cli": "0.18.12",
+    "simplicio-loop": "3.43.9",
 }
 
 # These are operator identities, not distribution names.  ``simplicio-dev-cli``

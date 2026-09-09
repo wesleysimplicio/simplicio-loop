@@ -5,6 +5,12 @@ Total output lines: 1972
 
 ## Unreleased
 
+## [3.43.9] - 2026-09-09
+
+- Raise the Mapper floor to the current PyPI release `simplicio-mapper` 0.26.29.
+- Align the operator train with `simplicio-cli` 0.18.12, `simplicio-fast` 2.0.31, and `simplicio-prompt` 1.14.4.
+- Publish the merged `main` work since 3.43.8: physical admission governor (#1228), journal help side-effect-free (#1229), bounded continuation (#1232), changelog restore (#1234), and isolated quality-provider process boundary (#1233).
+
 ## [3.43.8] - 2026-09-05
 
 - Synchronize every Loop plugin, adapter, package, and stack manifest surface to 3.43.8 after the merged release metadata fixes.
