@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 SCHEMA = "simplicio.host-adapter/v1"
 HOST = "vscode"
-ADAPTER_VERSION = "3.43.9"
+ADAPTER_VERSION = "3.43.10"
 PUBLIC_APIS = (
     "workspace_open",
     "mcp.json",
