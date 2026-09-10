@@ -3,6 +3,10 @@ Total output lines: 1972
 
 # Changelog
 
+## [3.43.10] - 2026-09-10
+- Bound benchmark preflight inputs and outputs and make signature literal minimization explicit.
+- Add focused regression coverage for signature views and invalid-trial preflight behavior.
+
 ## Unreleased
 
 ## [3.43.9] - 2026-09-09
