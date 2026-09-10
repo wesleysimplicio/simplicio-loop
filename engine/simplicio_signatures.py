@@ -12,7 +12,7 @@ Python (.py): uses the `ast` module for robust extraction.
 Other langs: regex fallback that keeps signature-like lines.
 
 CLI:
-    python simplicio_signatures.py <file> [<file2> ...]
+    python simplicio_signatures.py <file> [<file2> ...] [--raw]
     python simplicio_signatures.py - --lang py   # read stdin
     python simplicio_signatures.py --selftest    # run the built-in self-test
 """
@@ -20,6 +20,7 @@ CLI:
 from __future__ import annotations
 
 import ast
+import copy
 import os
 import re
 import sys
@@ -45,32 +46,85 @@ _LANG_BY_EXT = {
     ".hpp": "cpp",
 }
 
-# Keep top-level assignments whose value is short or a simple literal; otherwise
-# the value is elided to `...` to avoid leaking large bodies/data.
-_MAX_ASSIGN_REPR = 60
+# Initializer values are always elided in signature mode. Full source is only
+# emitted when the caller explicitly supplies `--raw`.
 
 
 def _first_docstring_line(node: ast.AST) -> str | None:
-    """Return the first non-empty line of a node's docstring, or None."""
+    """Return a neutral marker when a node has a docstring.
+
+    Docstring text is implementation content and can contain credentials or
+    private URLs. Signature mode preserves the fact that documentation exists
+    without copying its literal value.
+    """
     try:
         doc = ast.get_docstring(node, clean=True)
     except TypeError:
         return None
     if not doc:
         return None
-    for line in doc.splitlines():
-        line = line.strip()
-        if line:
-            return line
-    return None
+    return "docstring"
+
+
+class _ElideConstants(ast.NodeTransformer):
+    """Replace literal AST values with an ellipsis marker."""
+
+    def visit_Constant(self, node: ast.Constant) -> ast.AST:
+        return ast.copy_location(ast.Constant(value=Ellipsis), node)
+
+
+def _safe_expr(node: ast.AST) -> str:
+    """Unparse an expression after removing all literal values."""
+    try:
+        clean = _ElideConstants().visit(copy.deepcopy(node))
+        ast.fix_missing_locations(clean)
+        return ast.unparse(clean)
+    except Exception:
+        return "..."
+
+
+def _safe_decorator(node: ast.AST) -> str:
+    """Keep a decorator's callable shape while eliding call arguments."""
+    if isinstance(node, ast.Call):
+        return f"{_safe_expr(node.func)}(...)"
+    return _safe_expr(node)
 
 
 def _format_args(node: ast.AST) -> str:
-    """Render the argument list of a function via ast.unparse (real signature)."""
-    try:
-        return ast.unparse(node.args)
-    except Exception:
-        return "..."
+    """Render argument names/types and replace every default with ``...``."""
+    args = node.args
+    positional = list(getattr(args, "posonlyargs", [])) + list(args.args)
+    default_count = len(args.defaults)
+    parts: list[str] = []
+    for index, arg in enumerate(positional):
+        item = arg.arg
+        if arg.annotation is not None:
+            item += ": " + _safe_expr(arg.annotation)
+        if index >= len(positional) - default_count:
+            item += " = ..."
+        parts.append(item)
+        if getattr(args, "posonlyargs", []) and index + 1 == len(args.posonlyargs):
+            parts.append("/")
+    if args.vararg is not None:
+        item = "*" + args.vararg.arg
+        if args.vararg.annotation is not None:
+            item += ": " + _safe_expr(args.vararg.annotation)
+        parts.append(item)
+    elif args.kwonlyargs:
+        parts.append("*")
+    for arg, default in zip(args.kwonlyargs, args.kw_defaults):
+        item = arg.arg
+        if arg.annotation is not None:
+            item += ": " + _safe_expr(arg.annotation)
+        if default is not None:
+            item += " = ..."
+        parts.append(item)
+    if args.kwarg is not None:
+        item = "**" + args.kwarg.arg
+        if args.kwarg.annotation is not None:
+            item += ": " + _safe_expr(args.kwarg.annotation)
+        parts.append(item)
+    return ", ".join(parts)
 
 
 def _format_returns(node: ast.AST) -> str:
@@ -78,7 +132,7 @@ def _format_returns(node: ast.AST) -> str:
     if ret is None:
         return ""
     try:
-        return " -> " + ast.unparse(ret)
+        return " -> " + _safe_expr(ret)
     except Exception:
         return ""
 
@@ -87,7 +141,7 @@ def _decorators(node: ast.AST, indent: str) -> list[str]:
     out = []
     for dec in getattr(node, "decorator_list", []):
         try:
-            out.append(f"{indent}@{ast.unparse(dec)}")
+            out.append(f"{indent}@{_safe_decorator(dec)}")
         except Exception:
             out.append(f"{indent}@<decorator>")
     return out
@@ -133,12 +187,12 @@ def _class_lines(node: ast.ClassDef, indent: str) -> list[str]:
     bases = []
     for b in node.bases:
         try:
-            bases.append(ast.unparse(b))
+            bases.append(_safe_expr(b))
         except Exception:
             bases.append("...")
     for kw in node.keywords:
         try:
-            bases.append(ast.unparse(kw))
+            bases.append(_safe_expr(kw))
         except Exception:
             pass
     base_str = f"({', '.join(bases)})" if bases else ""
@@ -183,12 +237,10 @@ def _assign_line(node: ast.AST, indent: str) -> str | None:
     value = getattr(node, "value", None)
     if value is None:
         return f"{indent}{names[0]}{annotation}"
-    try:
-        rendered = ast.unparse(value)
-    except Exception:
-        rendered = "..."
-    if len(rendered) > _MAX_ASSIGN_REPR or "\n" in rendered:
-        rendered = "..."
+    # Initializers are deliberately never rendered. The omission marker keeps
+    # the declaration shape while guaranteeing literal minimization for short,
+    # multiline and nested values alike.
+    rendered = "..."
     target = ", ".join(names) if len(names) > 1 else names[0]
     return f"{indent}{target}{annotation} = {rendered}"
 
@@ -266,20 +318,114 @@ _SIG_RE = re.compile("|".join(f"(?:{p})" for p in _SIG_PATTERNS))
 _KEEP_RE = re.compile(
     r"^\s*(?:import\b|from\s+\S+\s+import\b|#include\b|package\b|use\b|using\b"
     r"|export\s+(?:default\s+)?(?:\{|\*|const|class|function|interface|type|enum)"
+    r"|(?:const|let|var|static|final)\b"
     r"|@\w+)"
 )
 
 
 def signatures_regex(source: str) -> str:
-    """Signature view via regex: keep signature-like + structural lines only."""
+    """Signature view via regex with lexical literal/body minimization."""
     out: list[str] = []
     for raw in source.splitlines():
         line = raw.rstrip("\n")
         if not line.strip():
             continue
         if _KEEP_RE.match(line) or _SIG_RE.match(line):
-            out.append(line)
+            out.append(_sanitize_regex_line(line))
     return "\n".join(out) + ("\n" if out else "")
+
+
+def _assignment_index(line: str) -> int | None:
+    """Locate a top-level assignment outside strings/comments."""
+    quote: str | None = None
+    escaped = False
+    paren = bracket = brace = 0
+    i = 0
+    while i < len(line):
+        char = line[i]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            i += 1
+            continue
+        if char in "'\"`":
+            quote = char
+            i += 1
+            continue
+        if line.startswith("//", i):
+            break
+        if char == "#":
+            break
+        if char == "(":
+            paren += 1
+        elif char == ")":
+            paren = max(0, paren - 1)
+        elif char == "[":
+            bracket += 1
+        elif char == "]":
+            bracket = max(0, bracket - 1)
+        elif char == "{":
+            brace += 1
+        elif char == "}":
+            brace = max(0, brace - 1)
+        elif char == "=" and not (paren or bracket or brace):
+            prev = line[i - 1] if i else ""
+            nxt = line[i + 1] if i + 1 < len(line) else ""
+            if prev not in "=!<>" and nxt not in "=>":
+                return i
+        i += 1
+    return None
+
+
+def _sanitize_regex_line(line: str) -> str:
+    """Preserve declaration shape while removing initializer/body literals."""
+    stripped = line.lstrip()
+    value_decl = (
+        stripped.startswith(("const ", "static ", "let ", "var ", "final "))
+        or " const " in stripped
+        or " static " in stripped
+        or " final " in stripped
+    )
+    if value_decl:
+        index = _assignment_index(line)
+        if index is not None:
+            head = line[:index].rstrip()
+            if line[index:].rstrip().endswith(";"):
+                head += ";"
+            return head
+
+    # Remove an inline body only when the brace is outside argument/type
+    # brackets and quoted text. Object literals in an initializer were handled
+    # above, so they cannot leak values into the signature view.
+    quote: str | None = None
+    escaped = False
+    paren = bracket = 0
+    for index, char in enumerate(line):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in "'\"`":
+            quote = char
+        elif char == "(":
+            paren += 1
+        elif char == ")":
+            paren = max(0, paren - 1)
+        elif char == "[":
+            bracket += 1
+        elif char == "]":
+            bracket = max(0, bracket - 1)
+        elif char == "{" and not (paren or bracket):
+            return line[:index].rstrip() + " { ... }"
+    return line
 
 
 def signatures(source: str, lang: str | None) -> str:
@@ -304,14 +450,15 @@ def _count_lines(text: str) -> int:
     return text.count("\n") + (0 if text.endswith("\n") else 1)
 
 
-def _process(name: str, source: str, lang: str | None) -> str:
+def _process(name: str, source: str, lang: str | None, raw: bool = False) -> str:
     """Build the signature view and emit the savings report to stderr."""
-    view = signatures(source, lang)
+    view = source if raw else signatures(source, lang)
     orig = _count_lines(source)
     sig = _count_lines(view)
     pct = (1 - (sig / orig)) * 100 if orig else 0.0
+    mode = "raw" if raw else "signatures"
     sys.stderr.write(
-        f"# signatures[{name}]: {orig} -> {sig} lines ({pct:.0f}% saved)\n"
+        f"# {mode}[{name}]: {orig} -> {sig} lines ({pct:.0f}% saved)\n"
     )
     return view
 
@@ -319,6 +466,9 @@ def _process(name: str, source: str, lang: str | None) -> str:
 def run_cli(argv: list[str]) -> int:
     """CLI entry point. Returns a process exit code."""
     args = list(argv)
+    raw = "--raw" in args
+    if raw:
+        args.remove("--raw")
     forced_lang: str | None = None
     if "--lang" in args:
         i = args.index("--lang")
@@ -347,7 +497,7 @@ def run_cli(argv: list[str]) -> int:
                 source = fh.read()
             lang = forced_lang or _lang_for(path)
             name = path
-        chunks.append(_process(name, source, lang))
+        chunks.append(_process(name, source, lang, raw=raw))
 
     sys.stdout.write("\n".join(chunks))
     return 0
