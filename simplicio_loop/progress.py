@@ -112,14 +112,20 @@ def _normalise_technical_debts(state: Mapping[str, Any]) -> list[Dict[str, Any]]
     return debts
 
 
-def _normalise_blockers(state: Mapping[str, Any], events: Iterable[Mapping[str, Any]]) -> list[str]:
+def _normalise_blockers(state: Mapping[str, Any], events: Iterable[Mapping[str, Any]], *,
+                        terminal_verified: bool = False) -> list[str]:
     blockers = []
     raw = state.get("blockers") or []
     if isinstance(raw, str):
         raw = [raw]
     if isinstance(raw, (list, tuple)):
         blockers.extend(str(item) for item in raw if str(item).strip())
-    blockers.extend(str(item["blocker"]) for item in events if item.get("blocker"))
+    # Event history is append-only and may contain transient failures that were
+    # subsequently recovered.  Once the oracle has verified a terminal run, only
+    # the current state blockers are actionable; replaying historical blockers in
+    # the progress card makes a successful run look blocked.
+    if not terminal_verified:
+        blockers.extend(str(item["blocker"]) for item in events if item.get("blocker"))
     return list(dict.fromkeys(blockers))
 
 
@@ -195,7 +201,7 @@ def build_progress(state: Mapping[str, Any], *, run_dir: str | Path | None = Non
             verified += int(item.get("verified") or 0)
     events = _normalise_events(state.get("events") or state.get("phase_events"),
                                run_id=str(state.get("run_id") or ""))
-    blockers = _normalise_blockers(state, events)
+    blockers = _normalise_blockers(state, events, terminal_verified=ready and phase == "done")
     technical_debts = _normalise_technical_debts(state)
     status = "COMPLETE" if ready else ("BLOCKED" if phase == "blocked" else
                                         "CANCELLED" if phase == "cancelled" else
