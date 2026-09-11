@@ -53,6 +53,7 @@ Repository = "https://github.com/wesleysimplicio/simplicio-loop"
 Issues = "https://github.com/wesleysimplicio/simplicio-loop/issues"
 
 [project.scripts]
+simplicio = "simplicio_loop.savings_cli:main"
 simplicio-loop = "simplicio_loop.cli:main"
 issue-factory = "simplicio_loop.issue_factory_cli:main"
 simplicio-ecosystem-doctor = "simplicio_loop.ecosystem_doctor:main"
