@@ -1409,7 +1409,7 @@ def main(argv=None) -> int:
         "--max-workers",
         type=int,
         default=0,
-        help="maximum live operator workers (default: SIMPLICIO_LOOP_OPERATOR_WORKERS/6)",
+        help="worker demand (default/0: automatic; live CPU/RAM/disk admission governs concurrency; positive values set an explicit ceiling)",
     )
     p_batch.add_argument("--retry-budget", type=int, default=3, help="retries after the first attempt")
     p_batch.add_argument(

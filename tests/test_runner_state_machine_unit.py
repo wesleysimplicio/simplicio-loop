@@ -20,14 +20,42 @@ from pathlib import Path
 
 import pytest
 
-from simplicio_loop import runner as runner_mod
+from simplicio_loop import local_capacity, runner as runner_mod
 from scripts.distributed_trust_policy import TrustPolicyError
 
 
 @pytest.fixture(autouse=True)
 def _use_thread_dispatch_for_in_process_fakes(monkeypatch):
-    """Keep monkeypatched worker calls in this in-process state-machine harness."""
+    """Keep this state-machine harness independent of the host's physical pressure."""
     monkeypatch.setenv("SIMPLICIO_LOOP_DISPATCH_MODE", "thread")
+
+    def healthy_probe(_root, *, requested_workers, now_ns=None, **_kwargs):
+        requested = max(1, int(requested_workers))
+        return local_capacity.CapacitySample(
+            requested_workers=requested,
+            safe_workers=requested,
+            cpu_count=8,
+            memory_available_bytes=8 << 30,
+            disk_free_bytes=100 << 30,
+            measured=("cpu_count", "disk_free_bytes", "memory_available_bytes"),
+            unavailable=(),
+            null_reasons={},
+            observed_at_ns=int(now_ns or 1),
+        )
+
+    monkeypatch.setattr(local_capacity, "probe_local_capacity", healthy_probe)
+    monkeypatch.setattr(
+        local_capacity,
+        "_physical_pressure",
+        lambda _root: {
+            "available": True,
+            "pressure_percent": 0.0,
+            "disk_used_percent": 0.0,
+            "disk_free_bytes": 100 << 30,
+            "memory_used_percent": 0.0,
+            "disk_suspend": False,
+        },
+    )
 
 TASK = """Sistema: PLANES
 Funcionalidade: Tela de Modelagem — Ordenacao de linhas
@@ -777,20 +805,30 @@ def test_dispatch_operator_batch_forces_serial_fallback_for_shared_run_state(tmp
     ("requested", "item_count", "expected"),
     [
         (None, 0, 0),
-        (None, 20, runner_mod.DEFAULT_OPERATOR_WORKERS),
-        (0, 20, runner_mod.DEFAULT_OPERATOR_WORKERS),
-        (-3, 20, runner_mod.DEFAULT_OPERATOR_WORKERS),
+        (None, 20, 20),
+        (0, 20, 20),
+        (-3, 20, 20),
         (2, 5, 2),
         (99, 5, 5),
         (3, 0, 0),
     ],
 )
 def test_operator_worker_limit_bounds_pool_size(requested, item_count, expected, monkeypatch):
-    # Pin cpu_count so "no explicit request" resolves deterministically to
-    # DEFAULT_OPERATOR_WORKERS regardless of the machine running the suite.
+    # Logical demand has no fixed six-worker cap. Physical admission is separate.
     monkeypatch.delenv("SIMPLICIO_LOOP_OPERATOR_WORKERS", raising=False)
     monkeypatch.setattr(runner_mod.os, "cpu_count", lambda: 64)
     assert runner_mod._operator_worker_limit(requested, item_count) == expected
+
+
+def test_operator_worker_auto_env_preserves_full_demand(monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_LOOP_OPERATOR_WORKERS", "0")
+    assert runner_mod._operator_worker_limit(None, 100) == 100
+
+
+def test_operator_worker_invalid_env_fails_explicitly(monkeypatch):
+    monkeypatch.setenv("SIMPLICIO_LOOP_OPERATOR_WORKERS", "invalid")
+    with pytest.raises(ValueError, match="must be an integer"):
+        runner_mod._operator_worker_limit(None, 10)
 
 
 # ---------------------------------------------------------------------------

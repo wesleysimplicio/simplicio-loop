@@ -30,7 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--workspace", default=".")
     run.add_argument("--checkpoint", default="")
     run.add_argument("--agent-command", default="")
-    run.add_argument("--max-workers", type=int, default=1)
+    run.add_argument("--max-workers", type=int, default=0,
+                     help="0/default: host capacity with physical admission; positive: explicit ceiling")
     run.add_argument("--retry-budget", type=int, default=1)
     args = parser.parse_args(argv)
     if args.dry_run:
@@ -38,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
             from .tasks_live import run_live
             result = run_live(
                 args.scope, workspace=args.workspace, checkpoint=args.checkpoint,
-                agent_command=(), action_gate=False, cancel=False,
+                agent_command=(), action_gate=False, dry_run=True, cancel=False,
                 max_workers=args.max_workers, retry_budget=args.retry_budget,
             )
         except Exception as exc:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from simplicio_loop import local_capacity, runner
@@ -91,6 +92,36 @@ def test_cgroup_budget_is_a_lower_bound_when_host_memory_is_larger(monkeypatch):
     )
     monkeypatch.setattr(local_capacity, "_cgroup_memory_available", lambda: 1 << 20)
     assert local_capacity._memory_available() == 1 << 20
+
+
+def test_macos_memory_probe_works_without_psutil(monkeypatch):
+    outputs = {
+        "sysctl": SimpleNamespace(returncode=0, stdout="17179869184\n"),
+        "vm_stat": SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "Mach Virtual Memory Statistics: (page size of 4096 bytes)\n"
+                "Pages free: 1000.\n"
+                "Pages inactive: 2000.\n"
+                "Pages speculative: 250.\n"
+                "Pages purgeable: 750.\n"
+            ),
+        ),
+    }
+
+    monkeypatch.setattr(local_capacity.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        local_capacity.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(
+        local_capacity.subprocess,
+        "run",
+        lambda argv, **_kwargs: outputs[Path(argv[0]).name],
+    )
+
+    assert local_capacity._macos_memory_available() == 16_384_000
 
 
 def test_direct_dispatch_fails_closed_before_worker_submission(monkeypatch, tmp_path):

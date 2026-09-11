@@ -77,13 +77,18 @@ def arm(
     repo = repo.resolve()
     from simplicio_loop.economy_profile import (
         prism_is_eligible,
+        recommend_prism_slots,
         resolve_prism_batch_size,
     )
+    requested_slots = int(slots)
+    if requested_slots < 0:
+        raise ValueError("Prism slots must be non-negative")
+    slots = requested_slots or int(recommend_prism_slots())
+    slots = max(1, slots)
     loop_dir = repo / ".simplicio" / "orchestrator" / "loop"
     loop_dir.mkdir(parents=True, exist_ok=True)
     open_n = _open_issue_count(repo)
     versions = _versions()
-    slots = max(1, int(slots))
     batch_size = resolve_prism_batch_size(batch_size)
     eligibility = prism_is_eligible(open_n or 0)
     if open_n is None:
@@ -189,15 +194,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
     slots = int(args.slots)
-    if slots <= 0:
-        try:
-            from simplicio_loop.economy_profile import recommend_prism_slots
-
-            slots = int(recommend_prism_slots())
-        except Exception:
-            import os
-
-            slots = max(2, int(os.cpu_count() or 4) - 1)
+    if slots < 0:
+        p.error("--slots must be non-negative")
     receipt = arm(
         Path(args.repo),
         slots=slots,
