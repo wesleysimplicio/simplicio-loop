@@ -38,6 +38,18 @@ def test_progress_reaches_100_only_for_complete_oracle():
     assert "100%" in render_markdown(event)
 
 
+def test_verified_terminal_progress_does_not_replay_historical_blockers():
+    event = build_progress(_state(
+        phase="done",
+        blockers=[],
+        completion={"ready": True, "verdict": "COMPLETE"},
+        evidence={"ready": True, "status": "VERIFIED"},
+        events=[{"kind": "test_gate", "blocker": "transient_evidence_failure"}],
+    ))
+    assert event["blockers"] == []
+    assert "Blockers:" not in render_markdown(event)
+
+
 def test_json_stream_is_machine_consumable(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
