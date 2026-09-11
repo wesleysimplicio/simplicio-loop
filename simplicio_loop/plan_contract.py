@@ -116,6 +116,7 @@ def validate_plan(
     steps = list(plan.get("steps") or [])
     if len(steps) != len(tasks):
         errors.append("task_step_count_mismatch")
+    planned_creations: set[str] = set()
     for index, task in enumerate(tasks, start=1):
         step = steps[index - 1] if index <= len(steps) and isinstance(steps[index - 1], Mapping) else {}
         # Tolerate both object form {"id": ...} and bare-string form so a
@@ -160,6 +161,7 @@ def validate_plan(
         targets = list(step.get("candidate_targets") or [])
         if not targets:
             errors.append(f"task[{index}] targets_missing")
+        to_create = {str(item).replace("\\", "/").strip() for item in step.get("to_create") or []}
         for raw in targets:
             value = str(raw).replace("\\", "/").strip()
             try:
@@ -168,9 +170,9 @@ def validate_plan(
             except (OSError, ValueError):
                 errors.append(f"task[{index}] target_outside_repo:{value}")
                 continue
-            to_create = {str(item).replace("\\", "/").strip() for item in step.get("to_create") or []}
-            if not path.exists() and value not in to_create:
+            if not path.exists() and value not in to_create and value not in planned_creations:
                 errors.append(f"task[{index}] target_missing_without_to_create:{value}")
+        planned_creations.update(to_create)
 
     _validate_dag(plan, steps, errors)
 
